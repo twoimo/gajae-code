@@ -91,7 +91,7 @@ export function setProjectDir(dir: string): void {
 
 /** Get the config directory name relative to home (e.g. ".gjc" or GJC_CONFIG_DIR override). */
 export function getConfigDirName(): string {
-	return process.env.GJC_CONFIG_DIR ?? process.env.PI_CONFIG_DIR || CONFIG_DIR_NAME;
+	return process.env.GJC_CONFIG_DIR ?? process.env.PI_CONFIG_DIR ?? CONFIG_DIR_NAME;
 }
 
 /** Get the config agent directory name relative to home (e.g. ".gjc/agent" or GJC_CONFIG_DIR + "/agent"). */
