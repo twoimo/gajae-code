@@ -26,6 +26,18 @@ function createMcpCustomTool(name: string, serverName: string, mcpToolName: stri
 	} as CustomTool;
 }
 
+function createLocalCustomTool(name: string): CustomTool {
+	return {
+		name,
+		label: name,
+		description: `Local inline tool ${name}`,
+		parameters: z.object({ query: z.string() }),
+		async execute() {
+			return { content: [{ type: "text", text: `${name} executed` }] };
+		},
+	} as CustomTool;
+}
+
 function createReasoningModel(): Model<"openai-responses"> {
 	return {
 		id: "mock-reasoning",
@@ -176,6 +188,39 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				expect.arrayContaining(["read", "search_tool_bm25", "mcp__github_create_issue"]),
 			);
 			expect(session.getActiveToolNames()).not.toContain("mcp__slack_post_message");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("keeps inline local mcp__-prefixed custom tools active while quarantining MCP bridge tools", async () => {
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read", "search_tool_bm25"],
+			customTools: [
+				createLocalCustomTool("mcp__local_inline_tool"),
+				createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
+			],
+		});
+		try {
+			expect(session.getActiveToolNames()).toEqual(
+				expect.arrayContaining(["read", "search_tool_bm25", "mcp__local_inline_tool"]),
+			);
+			expect(session.getActiveToolNames()).not.toContain("mcp__github_create_issue");
+			expect(session.getSelectedMCPToolNames()).toEqual([]);
+			expect(session.getDiscoverableMCPTools().map(tool => tool.name)).toEqual(["mcp__github_create_issue"]);
 		} finally {
 			await session.dispose();
 		}
