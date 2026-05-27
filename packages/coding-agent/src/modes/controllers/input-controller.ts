@@ -3,7 +3,7 @@ import { type AgentMessage, ThinkingLevel } from "@gajae-code/agent-core";
 import type { AutocompleteProvider, SlashCommand } from "@gajae-code/tui";
 import { $env, sanitizeText } from "@gajae-code/utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
-import { buildSkillPromptMessage } from "../../extensibility/skills";
+import { buildSkillPromptMessage, parseSkillInvocations } from "../../extensibility/skills";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { theme } from "../../modes/theme/theme";
@@ -409,9 +409,9 @@ export class InputController {
 	}
 
 	/**
-	 * Dispatch a skill slash invocation (`/skill:<name>`) through `promptCustomMessage`
+	 * Dispatch skill slash invocation(s) (`/skill:<name>`) through custom messages
 	 * using the supplied `streamingBehavior`. Returns true if the text was a
-	 * recognised skill command and was dispatched. A failure to load the skill
+	 * recognised skill command chain and was dispatched. A failure to load a skill
 	 * file is surfaced via `showError` but still returns true — the editor was
 	 * already cleared on the success path, so falling through to plain-text
 	 * handling at that point would double-submit. Returns false when the text
@@ -423,35 +423,48 @@ export class InputController {
 	 */
 	async #invokeSkillCommand(text: string, streamingBehavior: "steer" | "followUp"): Promise<boolean> {
 		if (!text.startsWith("/")) return false;
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
-		const skill = this.ctx.skillCommands?.get(commandName);
-		if (!skill) return false;
+		const invocations = parseSkillInvocations(text, this.ctx.skillCommands ?? new Map());
+		if (invocations.length === 0) return false;
 		this.ctx.editor.addToHistory(text);
 		this.ctx.editor.setText("");
 		try {
-			const built = await buildSkillPromptMessage(skill, args);
-			const details: SkillPromptDetails = built.details;
-			// When the agent is streaming, register the compact slash-form text as
-			// the pending-display twin BEFORE dispatching the CustomMessage. The
-			// returned tag is embedded in details so AgentSession.#handleAgentEvent
-			// can remove the matching display entry when the agent consumes this
-			// message (mirrors the user-message dequeue path).
-			if (this.ctx.session.isStreaming) {
-				const tag = this.ctx.session.enqueueCustomMessageDisplay(text, streamingBehavior);
-				details.__pendingDisplayTag = tag;
+			for (let index = 0; index < invocations.length; index += 1) {
+				const invocation = invocations[index];
+				if (!invocation) continue;
+				const built = await buildSkillPromptMessage(invocation.skill, invocation.args);
+				const details: SkillPromptDetails = built.details;
+				const displayText = `/${invocation.commandName}${invocation.args ? ` ${invocation.args}` : ""}`;
+				// When the agent is streaming, register a compact slash-form text as
+				// the pending-display twin BEFORE dispatching the CustomMessage. The
+				// returned tag is embedded in details so AgentSession.#handleAgentEvent
+				// can remove the matching display entry when the agent consumes this
+				// message (mirrors the user-message dequeue path).
+				if (this.ctx.session.isStreaming) {
+					const tag = this.ctx.session.enqueueCustomMessageDisplay(displayText, streamingBehavior);
+					details.__pendingDisplayTag = tag;
+				}
+				const isLast = index === invocations.length - 1;
+				if (!this.ctx.session.isStreaming && !isLast) {
+					await this.ctx.session.sendCustomMessage({
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: built.message,
+						display: true,
+						details,
+						attribution: "user",
+					});
+					continue;
+				}
+				await this.ctx.session.promptCustomMessage(
+					{
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: built.message,
+						display: true,
+						details,
+						attribution: "user",
+					},
+					{ streamingBehavior },
+				);
 			}
-			await this.ctx.session.promptCustomMessage(
-				{
-					customType: SKILL_PROMPT_MESSAGE_TYPE,
-					content: built.message,
-					display: true,
-					details,
-					attribution: "user",
-				},
-				{ streamingBehavior },
-			);
 			if (this.ctx.session.isStreaming) {
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();

@@ -55,6 +55,7 @@ import {
 	getSkillSlashCommandNames,
 	isNamespacedSkillSlashCommandName,
 	isSkillSlashCommandName,
+	parseSkillInvocations,
 } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { loadAllExtensions } from "../../modes/components/extensions/state-manager";
@@ -710,6 +711,37 @@ export class AcpAgent implements Agent {
 		}
 		if (!record.session.skillsSettings?.enableSkillCommands) {
 			return false;
+		}
+		const skillsByCommandName = new Map(
+			record.session.skills
+				.filter(skill => skill.hide !== true)
+				.flatMap(skill => getSkillSlashCommandNames(skill).map(commandName => [commandName, skill] as const)),
+		);
+		const invocations = parseSkillInvocations(text, skillsByCommandName);
+		if (invocations.length > 0) {
+			for (let index = 0; index < invocations.length; index += 1) {
+				const invocation = invocations[index];
+				if (!invocation) continue;
+				const built = await buildSkillPromptMessage(invocation.skill, invocation.args);
+				if (index === invocations.length - 1) {
+					await record.session.promptCustomMessage({
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: built.message,
+						display: true,
+						details: built.details,
+						attribution: "user",
+					});
+				} else {
+					await record.session.sendCustomMessage({
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: built.message,
+						display: true,
+						details: built.details,
+						attribution: "user",
+					});
+				}
+			}
+			return true;
 		}
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);

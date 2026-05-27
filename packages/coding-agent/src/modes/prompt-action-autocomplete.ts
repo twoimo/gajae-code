@@ -22,6 +22,10 @@ interface PromptActionAutocompleteItem extends AutocompleteItem {
 	execute: (prefix: string) => void;
 }
 
+interface SkillCommandAutocompleteItem extends AutocompleteItem {
+	normalizedSkillCommand: true;
+}
+
 interface PromptActionAutocompleteOptions {
 	commands: SlashCommand[];
 	basePath: string;
@@ -76,6 +80,10 @@ function isPromptActionItem(item: AutocompleteItem): item is PromptActionAutocom
 	return "actionId" in item && "execute" in item && typeof item.execute === "function";
 }
 
+function isSkillCommandAutocompleteItem(item: AutocompleteItem): item is SkillCommandAutocompleteItem {
+	return "normalizedSkillCommand" in item && item.normalizedSkillCommand === true;
+}
+
 function getPromptActionPrefix(textBeforeCursor: string): string | null {
 	const hashIndex = textBeforeCursor.lastIndexOf("#");
 	if (hashIndex === -1) return null;
@@ -88,13 +96,25 @@ function getPromptActionPrefix(textBeforeCursor: string): string | null {
 	return textBeforeCursor.slice(hashIndex);
 }
 
+function getSlashTokenPrefix(textBeforeCursor: string): string | null {
+	const slashIndex = textBeforeCursor.lastIndexOf("/");
+	if (slashIndex === -1) return null;
+	const beforeSlash = textBeforeCursor.slice(0, slashIndex);
+	if (beforeSlash && !/\s$/.test(beforeSlash)) return null;
+	const token = textBeforeCursor.slice(slashIndex);
+	if (/[\s]/.test(token)) return null;
+	return token;
+}
+
 export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
+	#commands: SlashCommand[];
 
 	constructor(commands: SlashCommand[], basePath: string, actions: PromptActionDefinition[]) {
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath);
 		this.#actions = actions;
+		this.#commands = commands;
 	}
 
 	async getSuggestions(
@@ -127,6 +147,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				return { items, prefix: promptActionPrefix };
 			}
 		}
+
+		const skillCommandSuggestions = this.#getSkillCommandSuggestions(textBeforeCursor);
+		if (skillCommandSuggestions) return skillCommandSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
 			const emojiSuggestions = getEmojiSuggestions(textBeforeCursor);
@@ -173,6 +196,18 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		if (isEmojiPrefix(prefix)) {
 			return applyEmojiCompletion(lines, cursorLine, cursorCol, item, prefix);
 		}
+		if (prefix.startsWith("/") && isSkillCommandAutocompleteItem(item)) {
+			const currentLine = lines[cursorLine] || "";
+			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+			const afterCursor = currentLine.slice(cursorCol);
+			const newLines = [...lines];
+			newLines[cursorLine] = `${beforePrefix}/${item.value} ${afterCursor}`;
+			return {
+				lines: newLines,
+				cursorLine,
+				cursorCol: beforePrefix.length + item.value.length + 2,
+			};
+		}
 		return this.#baseProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 	}
 
@@ -180,11 +215,73 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		return this.#baseProvider.getInlineHint?.(lines, cursorLine, cursorCol) ?? null;
 	}
 	trySyncSlashCompletion(textBeforeCursor: string): { items: AutocompleteItem[]; prefix: string } | null {
+		const skillCommandSuggestions = this.#getSkillCommandSuggestions(textBeforeCursor);
+		if (skillCommandSuggestions) return skillCommandSuggestions;
 		return this.#baseProvider.trySyncSlashCompletion?.(textBeforeCursor) ?? null;
 	}
 	trySyncInlineReplace(textBeforeCursor: string): { replaceLen: number; insert: string } | null {
 		if (isSettingsInitialized() && !settings.get("emojiAutocomplete")) return null;
 		return tryEmojiInlineReplace(textBeforeCursor);
+	}
+
+	#getSkillCommandSuggestions(textBeforeCursor: string): { items: AutocompleteItem[]; prefix: string } | null {
+		const prefix = getSlashTokenPrefix(textBeforeCursor);
+		if (!prefix) return null;
+		const query = prefix.slice(1).toLowerCase();
+		if (query.length === 0) return null;
+		const normalizedQuery = query.startsWith("skill-") ? `skill:${query.slice("skill-".length)}` : query;
+		const exactNonSkillCommand = this.#commands.some(
+			command => command.name === query && !command.name.startsWith("skill:"),
+		);
+		if (exactNonSkillCommand) {
+			const command = this.#commands.find(
+				candidate => candidate.name === query && !candidate.name.startsWith("skill:"),
+			);
+			if (command) {
+				return {
+					items: [{ value: command.name, label: command.name, description: command.description }],
+					prefix,
+				};
+			}
+		}
+		const items = this.#commands
+			.filter(command => command.name.startsWith("skill:"))
+			.map(command => {
+				const skillName = command.name.slice("skill:".length);
+				if (exactNonSkillCommand && query === skillName.toLowerCase()) return null;
+				const searchTargets = [
+					command.name,
+					`skill-${skillName}`,
+					...(exactNonSkillCommand ? [] : [skillName]),
+					command.description ?? "",
+				].map(target => target.toLowerCase());
+				if (
+					!searchTargets.some(target => fuzzyMatch(normalizedQuery, target) || target.includes(normalizedQuery))
+				) {
+					return null;
+				}
+				const bestScore = Math.max(
+					...searchTargets.map(target =>
+						fuzzyMatch(normalizedQuery, target)
+							? fuzzyScore(normalizedQuery, target)
+							: target.includes(normalizedQuery)
+								? 60
+								: 0,
+					),
+				);
+				return {
+					value: command.name,
+					label: command.name,
+					description: command.description,
+					normalizedSkillCommand: true,
+					score: bestScore,
+				} satisfies SkillCommandAutocompleteItem & { score: number };
+			})
+			.filter(item => item !== null)
+			.sort((a, b) => b.score - a.score)
+			.map(({ score: _score, ...item }) => item);
+		if (items.length === 0) return null;
+		return { items, prefix };
 	}
 }
 

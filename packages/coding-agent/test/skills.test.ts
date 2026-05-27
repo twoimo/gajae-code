@@ -4,7 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type Skill as CapabilitySkill, skillCapability } from "@gajae-code/coding-agent/capability/skill";
 import { getCapability } from "@gajae-code/coding-agent/discovery";
-import { loadSkills, loadSkillsFromDir, type Skill } from "@gajae-code/coding-agent/extensibility/skills";
+import {
+	loadSkills,
+	loadSkillsFromDir,
+	parseSkillInvocations,
+	type Skill,
+} from "@gajae-code/coding-agent/extensibility/skills";
 
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
@@ -18,6 +23,39 @@ const expectedFixtureSkillOrder: string[] = [
 	"unknown-field",
 	"valid-skill",
 ];
+
+function makeSkill(name: string): Skill {
+	return {
+		name,
+		description: `${name} description`,
+		filePath: `/tmp/${name}/SKILL.md`,
+		baseDir: `/tmp/${name}`,
+		source: "test",
+	};
+}
+
+describe("parseSkillInvocations", () => {
+	const alpha = makeSkill("alpha");
+	const beta = makeSkill("beta");
+	const skillsByCommandName = new Map([
+		["skill:alpha", alpha],
+		["skill:beta", beta],
+		["alpha", alpha],
+	]);
+
+	it("splits chained canonical skill invocations without treating args as commands", () => {
+		expect(parseSkillInvocations("/skill:alpha first /skill:beta second /not-a-skill", skillsByCommandName)).toEqual([
+			{ commandName: "skill:alpha", args: "first", skill: alpha },
+			{ commandName: "skill:beta", args: "second /not-a-skill", skill: beta },
+		]);
+	});
+
+	it("requires the prompt to start with a recognized canonical skill command", () => {
+		expect(parseSkillInvocations("normal text /skill:alpha later", skillsByCommandName)).toEqual([]);
+		expect(parseSkillInvocations("/alpha autocomplete alias is not invocation", skillsByCommandName)).toEqual([]);
+		expect(parseSkillInvocations("/skill:unknown /skill:alpha later", skillsByCommandName)).toEqual([]);
+	});
+});
 
 describe("skills", () => {
 	describe("loadSkillsFromDir", () => {

@@ -105,6 +105,9 @@ class FakeAgentSession {
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
+	sendCustomMessage = async (message: { customType: string; content: string; details?: unknown }): Promise<void> => {
+		this.customMessages.push(message);
+	};
 	#listeners = new Set<(event: AgentSessionEvent) => void>();
 
 	constructor(
@@ -306,8 +309,6 @@ class FakeAgentSession {
 		this.forcedToolChoice = toolName;
 	}
 
-	async sendCustomMessage(_message: string, _options?: unknown): Promise<void> {}
-
 	async sendUserMessage(_content: string, _options?: unknown): Promise<void> {}
 
 	async compact(_instructions?: string, _options?: unknown): Promise<void> {}
@@ -440,6 +441,20 @@ async function createHarness(): Promise<AgentHarness> {
  */
 async function waitForBootstrapGuard(): Promise<void> {
 	await Bun.sleep(ACP_BOOTSTRAP_RACE_GUARD_MS + 30);
+}
+
+async function waitForAvailableCommandsUpdate(harness: AgentHarness, sessionId: string): Promise<void> {
+	const deadline = Date.now() + ACP_BOOTSTRAP_RACE_GUARD_MS + 500;
+	while (Date.now() < deadline) {
+		if (
+			harness.updates.some(
+				update => update.sessionId === sessionId && update.update.sessionUpdate === "available_commands_update",
+			)
+		) {
+			return;
+		}
+		await Bun.sleep(10);
+	}
 }
 
 describe("ACP agent", () => {
@@ -1059,7 +1074,7 @@ describe("ACP agent", () => {
 				source: "test",
 			},
 		];
-		await waitForBootstrapGuard();
+		await waitForAvailableCommandsUpdate(harness, created.sessionId);
 
 		const commandUpdates = harness.updates.filter(
 			update =>
@@ -1140,6 +1155,43 @@ describe("ACP agent", () => {
 
 		expect(session.customMessages).toEqual([]);
 		expect(session.fastMode).toBe(true);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("executes chained ACP skill commands in source order", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		const sampleDir = path.join(harness.cwdA, ".skills", "sample");
+		const samplePath = path.join(sampleDir, "SKILL.md");
+		const secondDir = path.join(harness.cwdA, ".skills", "second");
+		const secondPath = path.join(secondDir, "SKILL.md");
+		await fs.promises.mkdir(sampleDir, { recursive: true });
+		await fs.promises.mkdir(secondDir, { recursive: true });
+		await fs.promises.writeFile(samplePath, "---\ndescription: Sample skill\n---\n# Sample\nDo work.\n");
+		await fs.promises.writeFile(secondPath, "---\ndescription: Second skill\n---\n# Second\nDo second work.\n");
+		session.skills = [
+			{ name: "sample", description: "Sample skill", filePath: samplePath, baseDir: sampleDir, source: "test" },
+			{ name: "second", description: "Second skill", filePath: secondPath, baseDir: secondDir, source: "test" },
+		];
+
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			messageId: "00000000-0000-4000-8000-000000000003",
+			prompt: [{ type: "text", text: "/skill:sample first /skill:second next args" }],
+		} as PromptRequest);
+
+		expect(session.promptCalls).toEqual([]);
+		expect(session.customMessages.map(message => message.content.match(/User: .*/)?.[0] ?? message.content)).toEqual([
+			"User: first",
+			"User: next args",
+		]);
+		expect(session.customMessages[0]!.content).toContain("# Sample\nDo work.");
+		expect(session.customMessages[0]!.content).toContain("User: first");
+		expect(session.customMessages[1]!.content).toContain("# Second\nDo second work.");
+		expect(session.customMessages[1]!.content).toContain("User: next args");
 
 		harness.abortController.abort();
 		await Bun.sleep(0);

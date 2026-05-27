@@ -75,6 +75,7 @@ function createStubInputControllerContext(opts: { skillCommands: Map<string, Ski
 	const promptCustomMessage = vi.fn(
 		async (_message: { content: string; details: SkillPromptDetails }, _options?: unknown) => {},
 	);
+	const sendCustomMessage = vi.fn(async (_message: { content: string; details: SkillPromptDetails }) => {});
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
@@ -90,6 +91,7 @@ function createStubInputControllerContext(opts: { skillCommands: Map<string, Ski
 			isEvalRunning: false,
 			extensionRunner: undefined,
 			enqueueCustomMessageDisplay,
+			sendCustomMessage,
 			promptCustomMessage,
 		},
 		showError,
@@ -105,7 +107,7 @@ function createStubInputControllerContext(opts: { skillCommands: Map<string, Ski
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
 	} as unknown as InteractiveModeContext;
 
-	return { ctx, editor, enqueueCustomMessageDisplay, promptCustomMessage };
+	return { ctx, editor, enqueueCustomMessageDisplay, promptCustomMessage, sendCustomMessage };
 }
 
 describe("InputController #invokeSkillCommand (E1-E3)", () => {
@@ -226,6 +228,33 @@ describe("InputController #invokeSkillCommand (E1-E3)", () => {
 		}
 		const messageArg = firstCall[0];
 		expect(messageArg.details.__pendingDisplayTag).toBeUndefined();
+	});
+
+	it("dispatches chained canonical skill commands in order while idle", async () => {
+		const secondSkillPath = writeSkillFile(tempDir.path(), "second-skill", "Do the second thing.");
+		skillCommands.set("skill:second-skill", {
+			name: "second-skill",
+			description: "Second skill",
+			filePath: secondSkillPath,
+			baseDir: tempDir.path(),
+			source: "test",
+		});
+		const { ctx, editor, sendCustomMessage, promptCustomMessage } = createStubInputControllerContext({
+			skillCommands,
+			isStreaming: false,
+		});
+
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		editor.setText("/skill:test-skill alpha /skill:second-skill beta gamma");
+		await editor.onSubmit?.("/skill:test-skill alpha /skill:second-skill beta gamma");
+
+		expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+		expect(promptCustomMessage).toHaveBeenCalledTimes(1);
+		expect(sendCustomMessage.mock.calls[0]?.[0].content).toContain("Do the thing.");
+		expect(sendCustomMessage.mock.calls[0]?.[0].content).toContain("User: alpha");
+		expect(promptCustomMessage.mock.calls[0]?.[0].content).toContain("Do the second thing.");
+		expect(promptCustomMessage.mock.calls[0]?.[0].content).toContain("User: beta gamma");
 	});
 });
 

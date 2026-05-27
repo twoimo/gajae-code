@@ -302,6 +302,52 @@ export interface ResolvedSkillSlashCommand {
 	skill: Skill;
 }
 
+export interface ParsedSkillInvocation {
+	commandName: string;
+	args: string;
+	skill: Skill;
+}
+
+interface SkillTokenMatch {
+	index: number;
+	end: number;
+	commandName: string;
+	skill: Skill;
+}
+
+export function parseSkillInvocations(
+	text: string,
+	skillsByCommandName: ReadonlyMap<string, Skill>,
+): ParsedSkillInvocation[] {
+	const trimmedText = text.trim();
+	if (!trimmedText.startsWith("/")) return [];
+	const canonicalSkillCommandPattern = /(^|\s)\/(skill:[^\s]+)/g;
+	const matches: SkillTokenMatch[] = [];
+	for (const match of trimmedText.matchAll(canonicalSkillCommandPattern)) {
+		const commandName = match[2];
+		if (!commandName) continue;
+		const skill = skillsByCommandName.get(commandName);
+		if (!skill) continue;
+		const leading = match[1] ?? "";
+		const index = (match.index ?? 0) + leading.length;
+		matches.push({
+			index,
+			end: index + commandName.length + 1,
+			commandName,
+			skill,
+		});
+	}
+	if (matches.length === 0 || matches[0]?.index !== 0) return [];
+	return matches.map((match, index) => {
+		const next = matches[index + 1];
+		return {
+			commandName: match.commandName,
+			args: trimmedText.slice(match.end, next?.index).trim(),
+			skill: match.skill,
+		};
+	});
+}
+
 export function resolveSkillSlashCommands(
 	skills: readonly Skill[],
 	_reservedDirectCommandNames: ReadonlySet<string>,

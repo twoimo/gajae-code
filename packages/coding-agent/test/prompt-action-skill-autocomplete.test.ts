@@ -1,0 +1,49 @@
+import { describe, expect, it } from "bun:test";
+import type { KeybindingsManager } from "../src/config/keybindings";
+import { createPromptActionAutocompleteProvider } from "../src/modes/prompt-action-autocomplete";
+
+function createProvider() {
+	return createPromptActionAutocompleteProvider({
+		commands: [
+			{ name: "fast", description: "Built-in fast mode" },
+			{ name: "skill:deep-interview", description: "Deep interview" },
+			{ name: "skill:fast", description: "Colliding skill" },
+		],
+		basePath: "/tmp",
+		keybindings: { getKeys: () => [] } as unknown as KeybindingsManager,
+		copyCurrentLine: () => {},
+		copyPrompt: () => {},
+		undo: () => {},
+		moveCursorToMessageEnd: () => {},
+		moveCursorToMessageStart: () => {},
+		moveCursorToLineStart: () => {},
+		moveCursorToLineEnd: () => {},
+	});
+}
+
+describe("prompt action skill autocomplete", () => {
+	it("normalizes direct skill-name typing to the canonical skill command", async () => {
+		const provider = createProvider();
+		const suggestions = await provider.getSuggestions(["/deep"], 0, 5);
+		expect(suggestions?.prefix).toBe("/deep");
+		expect(suggestions?.items[0]?.value).toBe("skill:deep-interview");
+		const applied = provider.applyCompletion(["/deep"], 0, 5, suggestions!.items[0]!, suggestions!.prefix);
+		expect(applied.lines[0]).toBe("/skill:deep-interview ");
+	});
+
+	it("normalizes slash-skill-name typing at intermediate positions", async () => {
+		const provider = createProvider();
+		const line = "/skill:deep-interview first /skill-deep";
+		const suggestions = await provider.getSuggestions([line], 0, line.length);
+		expect(suggestions?.prefix).toBe("/skill-deep");
+		expect(suggestions?.items[0]?.value).toBe("skill:deep-interview");
+		const applied = provider.applyCompletion([line], 0, line.length, suggestions!.items[0]!, suggestions!.prefix);
+		expect(applied.lines[0]).toBe("/skill:deep-interview first /skill:deep-interview ");
+	});
+
+	it("does not let direct-name normalization shadow an exact non-skill command", async () => {
+		const provider = createProvider();
+		const suggestions = await provider.getSuggestions(["/fast"], 0, 5);
+		expect(suggestions?.items.some(item => item.value === "skill:fast")).toBe(false);
+	});
+});
