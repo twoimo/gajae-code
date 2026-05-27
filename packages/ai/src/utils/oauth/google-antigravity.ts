@@ -1,5 +1,5 @@
 /**
- * Antigravity OAuth flow (Gemini 3, Claude, GPT-OSS via Google Cloud)
+ * Antigravity OAuth flow (Gemini 3, Anthropic model, GPT-OSS via Google Cloud)
  * Uses different OAuth credentials than google-gemini-cli for access to additional models.
  */
 import { getAntigravityUserAgent } from "../../providers/google-gemini-headers";

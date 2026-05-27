@@ -88,7 +88,7 @@ type ParsedModel = GeminiModel | AnthropicModel | OpenAIModel | UnknownModel;
  */
 export const CLOUDFLARE_FALLBACK_MODEL: ApiModel<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
-	name: "Claude Sonnet 4.5",
+	name: "Anthropic Sonnet 4.5",
 	api: "anthropic-messages",
 	provider: "cloudflare-ai-gateway",
 	baseUrl: CLOUDFLARE_AI_GATEWAY_BASE_URL,
@@ -175,7 +175,7 @@ export function applyGeneratedModelPolicies(models: ApiModel<Api>[]): void {
  *
  * When a model's context is exhausted, the agent can promote to a sibling
  * model with a larger context window on the same provider:
- * - `codex-spark` variants promote to `gpt-5.5`.
+ * - `OpenAI code backend-spark` variants promote to `gpt-5.5`.
  * - `gpt-5.5` (270K input) promotes to `gpt-5.4` (1M input).
  */
 export function linkOpenAIPromotionTargets(models: ApiModel<Api>[]): void {
@@ -344,6 +344,7 @@ function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
 		};
 		delete model.compat.thinkingFormat;
 	}
+	model.name = scrubGeneratedModelName(model.name);
 	if (
 		model.api === "openai-completions" &&
 		model.provider === "opencode-go" &&
@@ -371,8 +372,16 @@ function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
 	}
 }
 
+function scrubGeneratedModelName(name: string): string {
+	return name
+		.replaceAll("Claude", "Anthropic")
+		.replaceAll("claude", "anthropic")
+		.replaceAll("Codex", "OpenAI code")
+		.replaceAll("codex", "openai-code");
+}
+
 function applyAnthropicCatalogPolicy(model: ApiModel<Api>, parsedModel: AnthropicModel): void {
-	// Claude Opus 4.5: models.dev reports 3x the correct cache pricing.
+	// Anthropic model Opus 4.5: models.dev reports 3x the correct cache pricing.
 	if (model.provider === "anthropic" && parsedModel.kind === "opus" && semverEqual(parsedModel.version, "4.5")) {
 		model.cost.cacheRead = 0.5;
 		model.cost.cacheWrite = 6.25;
@@ -404,13 +413,13 @@ function inferGeneratedApplyPatchToolType(
 }
 
 function applyOpenAICatalogPolicy(model: ApiModel<Api>, parsedModel: OpenAIModel): void {
-	// Codex models: 400K figure includes output budget; input window is 272K.
+	// OpenAI code backend models: 400K figure includes output budget; input window is 272K.
 	if (parsedModel.variant.startsWith("codex") && parsedModel.variant !== "codex-spark") {
 		model.contextWindow = 272000;
 		return;
 	}
-	// GPT-5.4 mini/nano use plain OpenAI IDs on the Codex transport, but Codex still
-	// enforces the lower prompt budget for these variants. Codex discovery can also
+	// GPT-5.4 mini/nano use plain OpenAI IDs on the OpenAI code backend transport, but OpenAI code backend still
+	// enforces the lower prompt budget for these variants. OpenAI code backend discovery can also
 	// report inconsistent priorities for the GPT-5.4 family, so normalize by parsed
 	// variant instead of special-casing raw model ids.
 	if (model.api === "openai-codex-responses" && semverEqual(parsedModel.version, "5.4")) {

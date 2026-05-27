@@ -4,7 +4,7 @@
  *
  * Unsupported / opaque controls (background/include/metadata/prompt/…) are
  * accepted as `z.unknown().optional()` so we silently ignore rather than 400.
- * Real clients (codex, openai-python, llm-git) routinely send these and a 400
+ * Real clients (OpenAI code backend, openai-python, llm-git) routinely send these and a 400
  * is a worse outcome than dropping them on the floor.
  */
 import type {
@@ -115,7 +115,7 @@ const functionCallItemSchema = z.object({
 const functionCallOutputItemSchema = z.object({
 	type: z.literal("function_call_output"),
 	call_id: z.string().min(1),
-	// Codex CLI replays multimodal tool results in array form (text + refusal).
+	// OpenAI code backend CLI replays multimodal tool results in array form (text + refusal).
 	output: z.union([z.string(), z.array(outputContentBlockSchema)]).optional(),
 });
 
@@ -212,7 +212,7 @@ export const toolChoiceSchema = z.union([
 		type: z.literal("function"),
 		name: z.string().min(1),
 	}),
-	// Codex apply_patch flow.
+	// OpenAI code backend apply_patch flow.
 	z.object({
 		type: z.literal("custom"),
 		name: z.string().min(1),

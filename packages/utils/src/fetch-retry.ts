@@ -11,7 +11,7 @@ const TRY_AGAIN_PATTERN = /try again in\s+(\d+(?:\.\d+)?)\s*(ms|s)(?:ec)?/i;
 
 /**
  * Server-suggested retry delay extraction. Merges the patterns historically used
- * by the OpenAI Codex and Google Gemini retry helpers.
+ * by the OpenAI code provider and Google Gemini retry helpers.
  *
  * Header sources (checked in order):
  *  - `Retry-After` (numeric seconds, or HTTP date)

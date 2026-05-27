@@ -509,7 +509,7 @@ describe("AuthStorage codex oauth ranking", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Claude (Anthropic) ranking tests
+// Anthropic model (Anthropic) ranking tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 function createClaudeLimit(args: {

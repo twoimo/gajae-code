@@ -17,7 +17,7 @@
 
 ### Fixed
 
-- Fixed `<sym> is not a function` crashes on Windows after `bun install -g @gajae-code/coding-agent` updates while an `omp` process was running. Bun cannot overwrite a locked `node_modules/@gajae-code/natives/native/pi_natives.win32-x64.node` and silently keeps the old binary alongside the new ESM wrapper, so the next launch loads mismatched code. The loader now mirrors the addon into `~/.omp/natives/<version>/` on Windows npm installs and prefers that copy at load time — each version gets its own filesystem path, so future updates land in `node_modules` unchallenged. The new version sentinel detects any remaining drift up front.
+- Fixed `<sym> is not a function` crashes on Windows after `bun install -g @gajae-code/coding-agent` updates while a `gjc` process was running. Bun cannot overwrite a locked `node_modules/@gajae-code/natives/native/pi_natives.win32-x64.node` and silently keeps the old binary alongside the new ESM wrapper, so the next launch loads mismatched code. The loader now mirrors the addon into `~/.gjc/natives/<version>/` on Windows npm installs and prefers that copy at load time — each version gets its own filesystem path, so future updates land in `node_modules` unchallenged. The new version sentinel detects any remaining drift up front.
 
 ### Fixed
 
@@ -255,7 +255,7 @@
 - Changed `EditOperation` interface to use `find` parameter for scoped find/replace operations instead of `line` and `endLine` parameters
 - Changed `EditParams` documentation to remove mention of scheduling reordering for line-scoped groups
 - Simplified native build pipeline by removing `--dev` flag support; debug builds no longer available through npm scripts
-- Updated native module loader to check `XDG_DATA_HOME` environment variable for native addon location before falling back to `~/.omp/natives`
+- Updated native module loader to check `XDG_DATA_HOME` environment variable for native addon location before falling back to `~/.gjc/natives`
 - Removed native binding validation function that checked for required exports at load time
 - Refactored build pipeline to use napi-rs generated bindings instead of hand-written TypeScript wrappers
 - Updated `build-native.ts` to generate runtime enum exports after native compilation
@@ -475,7 +475,7 @@
 
 ### Added
 
-- Added automatic extraction of embedded native addon to `~/.omp/natives/<version>` on first run for compiled binaries
+- Added automatic extraction of embedded native addon to `~/.gjc/natives/<version>` on first run for compiled binaries
 - Added `embed:native` build script to embed platform-specific native addon payloads into compiled binaries
 - Exported `Shell` class for creating persistent shell sessions with `run()` method and session options
 - Exported `ShellOptions`, `ShellRunOptions`, and `ShellRunResult` types for shell session management
@@ -501,7 +501,7 @@
 - Refactored module exports to use direct destructuring from native bindings instead of wrapper functions
 - Changed `PhotonImage` API to use instance methods (`resize()`, `encode()`) instead of standalone functions
 - Changed `PhotonImage` to use property accessors for `width` and `height` instead of getter methods
-- Embedded native addon payload for compiled binaries and extract to `~/.omp/natives/<version>` on first run
+- Embedded native addon payload for compiled binaries and extract to `~/.gjc/natives/<version>` on first run
 
 ## [9.7.0] - 2026-02-01
 

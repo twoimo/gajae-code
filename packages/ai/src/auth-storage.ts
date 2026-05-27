@@ -390,7 +390,7 @@ const USAGE_LAST_GOOD_RETENTION_MS = 24 * 60 * 60_000;
  * on the next poll.
  */
 const USAGE_FAILURE_BACKOFF_MS = 10_000;
-// Bumped from 3s — Claude usage retries up to 3 times with exponential backoff
+// Bumped from 3s — Anthropic model usage retries up to 3 times with exponential backoff
 // (~3.5s total worst case); a tight per-request budget aborts retries mid-cycle.
 const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
@@ -447,7 +447,7 @@ type OAuthResolutionResult = { apiKey: string; credential: OAuthCredential };
 /**
  * Refreshed OAuth access plus identity metadata returned by
  * {@link AuthStorage.getOAuthAccess}. Callers that authenticate via a bearer
- * AND need the credential's identity (Codex `chatgpt-account-id`, Google
+ * AND need the credential's identity (OpenAI code backend `chatgpt-account-id`, Google
  * `projectId`, GitHub `enterpriseUrl`) consume this shape directly; the
  * refresh slot is deliberately omitted because rotating refresh tokens never
  * leave {@link AuthStorage}.
@@ -1336,7 +1336,7 @@ export class AuthStorage {
 		ctrl: OAuthController & {
 			/** onAuth is required by auth-storage but optional in OAuthController */
 			onAuth: (info: { url: string; instructions?: string }) => void;
-			/** onPrompt is required for some providers (github-copilot, openai-codex) */
+			/** onPrompt is required for some providers (github-copilot, OpenAI code provider) */
 			onPrompt: (prompt: { message: string; placeholder?: string }) => Promise<string>;
 		},
 	): Promise<void> {
@@ -1396,7 +1396,7 @@ export class AuthStorage {
 				break;
 			}
 			case "openai-codex-device": {
-				// Device/headless flow — stores credentials under "openai-codex" so the
+				// Device/headless flow — stores credentials under "OpenAI code provider" so the
 				// provider can pick them up without a separate provider configuration.
 				const deviceCredentials = await loginOpenAICodexDevice(ctrl);
 				const newCredential: OAuthCredential = { type: "oauth", ...deviceCredentials };
@@ -3040,7 +3040,7 @@ export class AuthStorage {
 	 * the API-key bytes.
 	 *
 	 * Use this when the caller needs to inject identity headers alongside the
-	 * bearer (Codex `chatgpt-account-id`, Google `project`, GitHub
+	 * bearer (OpenAI code backend `chatgpt-account-id`, Google `project`, GitHub
 	 * `enterpriseUrl`). For pure "give me the bytes for `Authorization`"
 	 * scenarios, prefer {@link AuthStorage.getApiKey}.
 	 *

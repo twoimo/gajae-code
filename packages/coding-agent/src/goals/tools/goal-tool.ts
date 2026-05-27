@@ -14,7 +14,7 @@ import type { ToolSession } from "../../tools";
 import { formatErrorMessage, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { ToolError } from "../../tools/tool-errors";
 import { renderStatusLine, truncateToWidth } from "../../tui";
-import { completionBudgetReport, remainingTokens } from "../runtime";
+import { completionBudgetReport, remainingTokens, validateGoalObjective } from "../runtime";
 import type { Goal, GoalStatus, GoalToolDetails } from "../state";
 
 const goalSchema = z.object({
@@ -64,9 +64,11 @@ function validateCreateParams(params: { objective?: string; token_budget?: numbe
 	objective: string;
 	tokenBudget?: number;
 } {
-	const objective = params.objective?.trim();
-	if (!objective) {
-		throw new ToolError("objective is required when op=create");
+	let objective: string;
+	try {
+		objective = validateGoalObjective(params.objective ?? "", "create");
+	} catch (error) {
+		throw new ToolError(error instanceof Error ? error.message : String(error));
 	}
 	const tokenBudget = params.token_budget;
 	if (tokenBudget !== undefined && (!Number.isInteger(tokenBudget) || tokenBudget <= 0)) {

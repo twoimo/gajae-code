@@ -1010,7 +1010,7 @@ export class MCPCommandController {
 				lines.push("");
 			}
 
-			// Show discovered servers (from .claude.json, .cursor/mcp.json, .vscode/mcp.json, etc.)
+			// Show discovered servers (from .Anthropic model.json, .cursor/mcp.json, .vscode/mcp.json, etc.)
 			if (discoveredServers.length > 0) {
 				for (const { providerName, shortPath, items: entries } of groupBySource(discoveredServers, e => e.source)) {
 					lines.push(theme.fg("accent", providerName) + theme.fg("muted", ` (${shortPath}):`));

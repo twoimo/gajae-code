@@ -94,7 +94,7 @@ providers:
 
 - `openai-completions`
 - `openai-responses`
-- `openai-codex-responses`
+- `openai-code-responses`
 - `azure-openai-responses`
 - `anthropic-messages`
 - `google-generative-ai`
@@ -165,9 +165,9 @@ The registry keeps every concrete provider model and then builds a canonical lay
 
 Canonical ids are official upstream ids only, for example:
 
-- `claude-opus-4-6`
-- `claude-haiku-4-5`
-- `gpt-5.3-codex`
+- `anthropic-model-opus-4-6`
+- `anthropic-model-haiku-4-5`
+- `gpt-5.3-openai-code`
 
 ### `models.yml` equivalence config
 
@@ -178,10 +178,10 @@ providers:
   zenmux:
     baseUrl: https://api.zenmux.example/v1
     apiKey: ZENMUX_API_KEY
-    api: openai-codex-responses
+    api: openai-code-responses
     models:
-      - id: codex
-        name: Zenmux Codex
+      - id: openai-code
+        name: Zenmux OpenAI code
         reasoning: true
         input: [text]
         cost:
@@ -194,10 +194,10 @@ providers:
 
 equivalence:
   overrides:
-    zenmux/codex: gpt-5.3-codex
-    p-codex/codex: gpt-5.3-codex
+    zenmux/openai-code: gpt-5.3-openai-code
+    p-openai-code/openai-code: gpt-5.3-openai-code
   exclude:
-    - demo/codex-preview
+    - demo/openai-code-preview
 ```
 
 Build order for canonical grouping:
@@ -381,12 +381,12 @@ Related settings:
 - `enabledModels` (scoped pattern list)
 - `modelProviderOrder` (global canonical-provider precedence)
 - `providers.kimiApiFormat` (`openai` or `anthropic` request format)
-- `providers.openaiWebsockets` (`auto|off|on` websocket preference for OpenAI Codex transport)
+- `providers.openaiWebsockets` (`auto|off|on` websocket preference for OpenAI code provider transport)
 
 `modelRoles` may store either:
 
 - `provider/modelId` to pin a concrete provider variant
-- a canonical id such as `gpt-5.3-codex` to allow provider coalescing
+- a canonical id such as `gpt-5.3-openai-code` to allow provider coalescing
 
 For `enabledModels` and CLI `--models`:
 
@@ -398,10 +398,10 @@ Global `enabledModels` and `disabledProviders` entries may also be scoped to a p
 
 ```yaml
 enabledModels:
-  - claude-sonnet-4-5
+  - anthropic-model-sonnet-4-5
   - path: ~/work
     models:
-      - anthropic/claude-opus-4-5
+      - anthropic/anthropic-model-opus-4-5
 disabledProviders:
   - ollama
   - path: ~/private
@@ -443,9 +443,9 @@ Selection is model-driven, not role-driven:
 
 Candidates are ignored unless credentials resolve (`ModelRegistry.getApiKey(...)`).
 
-### OpenAI Codex websocket handoff
+### OpenAI code provider websocket handoff
 
-If switching from/to `openai-codex-responses`, session provider state key `openai-codex-responses` is closed before model switch. This drops websocket transport state so the next turn starts clean on the promoted model.
+If switching from/to `openai-code-responses`, session provider state key `openai-code-responses` is closed before model switch. This drops websocket transport state so the next turn starts clean on the promoted model.
 
 ### Persistence behavior
 
@@ -467,10 +467,10 @@ Example (`models.yml`) for Spark -> non-Spark on the same provider:
 
 ```yaml
 providers:
-  openai-codex:
+  openai-code:
     modelOverrides:
-      gpt-5.3-codex-spark:
-        contextPromotionTarget: openai-codex/gpt-5.3-codex
+      gpt-5.3-openai-code-spark:
+        contextPromotionTarget: openai-code/gpt-5.3-openai-code
 ```
 
 The built-in model generator also assigns this automatically for `*-spark` models when a same-provider base model exists.
@@ -534,8 +534,8 @@ providers:
     api: anthropic-messages
     disableStrictTools: true
     models:
-      - id: claude-sonnet-4-20250514
-        name: Claude Sonnet 4 (Bedrock)
+      - id: anthropic-model-sonnet-4-20250514
+        name: Anthropic model Sonnet 4 (Bedrock)
         input: [text, image]
         contextWindow: 200000
         maxTokens: 16384
@@ -581,8 +581,8 @@ providers:
     authHeader: true
     disableStrictTools: true  # if the proxy doesn't support strict tool schemas
     models:
-      - id: claude-sonnet-4-20250514
-        name: Claude Sonnet 4 (Proxy)
+      - id: anthropic-model-sonnet-4-20250514
+        name: Anthropic model Sonnet 4 (Proxy)
         reasoning: true
         input: [text, image]
 ```
@@ -596,7 +596,7 @@ providers:
     headers:
       X-Team: platform
     modelOverrides:
-      anthropic/claude-sonnet-4:
+      anthropic/anthropic-model-sonnet-4:
         name: Sonnet 4 (Corp)
         compat:
           openRouterRouting:

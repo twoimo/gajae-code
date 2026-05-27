@@ -1,5 +1,5 @@
 /**
- * Multi-file orchestrator for the Codex `apply_patch` envelope.
+ * Multi-file orchestrator for the OpenAI code backend `apply_patch` envelope.
  *
  * Decoupled from tool-registration: takes raw patch text + options, parses
  * it, and applies each hunk via the existing single-file `applyPatch` in
@@ -29,7 +29,7 @@ export interface ApplyCodexPatchResult {
 }
 
 /**
- * Apply a full Codex `*** Begin Patch` envelope.
+ * Apply a full OpenAI code backend `*** Begin Patch` envelope.
  *
  * Note: renames are reported under `modified` with the original path (spec
  * §9.1), not as a delete + add.

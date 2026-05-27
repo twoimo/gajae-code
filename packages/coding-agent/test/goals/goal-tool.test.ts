@@ -170,6 +170,21 @@ describe("GoalTool", () => {
 		expect(harness.getState()).toBeUndefined();
 	});
 
+	it("rejects op=create when the objective is only the slash command name", async () => {
+		const harness = createRuntimeHarness();
+		const tool = new GoalTool(
+			createToolSession({
+				getGoalRuntime: () => harness.runtime,
+				getGoalModeState: () => harness.getState(),
+			}),
+		);
+
+		await expect(tool.execute("call-slash", { op: "create", objective: "/goal" })).rejects.toThrow(
+			"objective must describe the goal",
+		);
+		expect(harness.getState()).toBeUndefined();
+	});
+
 	it("rejects op=create when the token_budget is zero or negative", async () => {
 		const harness = createRuntimeHarness();
 		const tool = new GoalTool(

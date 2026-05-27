@@ -13,7 +13,7 @@ import {
 } from "@gajae-code/coding-agent/edit";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Test-local adapters over the production Codex envelope API.
+// Test-local adapters over the production OpenAI code backend envelope API.
 // (Kept as thin shims so the pre-existing tests keep their original shape;
 // the production API returns PatchInput[] directly.)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -571,7 +571,7 @@ describe("simple replace mode", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Production Codex envelope API — spec §10 edge-case coverage
+// Production OpenAI code backend envelope API — spec §10 edge-case coverage
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("parseApplyPatch (production)", () => {

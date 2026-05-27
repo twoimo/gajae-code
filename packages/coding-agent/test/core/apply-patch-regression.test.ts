@@ -563,7 +563,7 @@ describe("plan: Codex-style wrapped patches", () => {
 		const filePath = path.join(tempDir, "wrapped.txt");
 		await Bun.write(filePath, "old content\n");
 
-		// Full Codex-style wrapper - the diff inside should be extracted
+		// Full OpenAI code backend-style wrapper - the diff inside should be extracted
 		await applyPatch(
 			{
 				path: "wrapped.txt",

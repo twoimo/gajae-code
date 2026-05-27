@@ -58,7 +58,7 @@ export interface SkillPromptDetails {
  *  `ui-helpers.addMessageToChat` (renderers), `SessionObserverOverlay
  *  #buildTranscriptLines`, `runPrintMode`, and `AcpAgent#replayAssistantMessage`
  *  (fallback error emission) read it via `isSilentAbort`. */
-export const SILENT_ABORT_MARKER = "__omp.silent_abort__";
+export const SILENT_ABORT_MARKER = "__gjc.silent_abort__";
 
 /** Type-guard for `SILENT_ABORT_MARKER`. Renderers MUST branch on this rather
  *  than string-comparing inline so refactors to the marker constant (e.g.,

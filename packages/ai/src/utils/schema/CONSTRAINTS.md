@@ -8,7 +8,7 @@ This document is the operational contract for schema normalization/strictness in
   - `normalize.ts` — Google, CCA, MCP, OpenAI Responses, and OpenAI strict-mode (sanitize + enforce) sanitization. All schema walkers live here.
   - `adapt.ts` — thin composer wrapping `tryEnforceStrictSchema` for provider call sites, plus the `PI_NO_STRICT` env flag callers consult to opt out of strict mode.
   - `fields.ts` — keyword classification sets used by the walkers.
-- Covers OpenAI-style strict mode, OpenAI Responses `oneOf` rejection, Google schema constraints, and Cloud Code Assist Claude constraints.
+- Covers OpenAI-style strict mode, OpenAI Responses `oneOf` rejection, Google schema constraints, and Cloud Code Assist Anthropic constraints.
 ---
 
 ## 1) OpenAI-style strict mode (`adaptSchemaForStrict` / `tryEnforceStrictSchema`)
@@ -80,19 +80,19 @@ Schemas sent on the Google JSON Schema path MUST follow:
    - `{ "type": "object" }` becomes `{ "type": "object", "properties": {} }`.
 ---
 
-## 3) Claude via Cloud Code Assist (`normalizeSchemaForCCA`)
+## 3) Anthropic model via Cloud Code Assist (`normalizeSchemaForCCA`)
 
-For Cloud Code Assist Claude tool declarations, schema MUST satisfy stricter constraints than generic Google path.
+For Cloud Code Assist Anthropic tool declarations, schema MUST satisfy stricter constraints than generic Google path.
 
 ### 3.1 Transport contract
 
-1. **Use legacy `parameters` field** (not `parametersJsonSchema`) for CCA Claude.
+1. **Use legacy `parameters` field** (not `parametersJsonSchema`) for CCA Anthropic model.
 2. CCA path uses the full `normalizeSchemaForCCA` pipeline.
 
 ### 3.2 Sanitization contract
 
 1. Start with Google unsupported-key stripping behavior.
-2. **`nullable` keyword MUST be stripped** in CCA Claude path.
+2. **`nullable` keyword MUST be stripped** in CCA Anthropic model path.
 3. `type: ["T", "null"]` becomes `type: "T"` with no `nullable` marker.
 4. Human-meaningful stripped keys are appended to `description` with the same spill format used by the Google dispatcher.
 
@@ -138,14 +138,14 @@ If any remain, schema is incompatible.
 
 ## 4) Practical provider mapping
 
-- **OpenAI-compatible strict paths** (`openai-completions`, `openai-responses`, `openai-codex-responses`):
+- **OpenAI-compatible strict paths** (`openai-completions`, `openai-responses`, `openai-code-responses`):
   - Use `adaptSchemaForStrict`.
   - Emit `strict: true` only when effective strict enforcement succeeded.
 
-- **Google Gemini/Vertex/Gemini CLI (non-CCA Claude)**:
+- **Google Gemini/Vertex/Gemini CLI (non-CCA Anthropic model)**:
   - Use `normalizeSchemaForGoogle` and send schema on `parametersJsonSchema` path.
 
-- **Cloud Code Assist Claude models (`model.id` starts with `claude-`)**:
+- **Cloud Code Assist Anthropic models (`model.id` starts with `anthropic-model-`)**:
   - Use `normalizeSchemaForCCA` and send sanitized normalized schema in `parameters`.
 
 ---
@@ -161,4 +161,4 @@ When adding/changing provider adapters:
 
 ## 6) Gemini CLI / Antigravity CCA parity
 
-The Gemini CLI / Antigravity Claude path MUST run the same full `normalizeSchemaForCCA` pipeline as the shared Google Claude path. It MUST NOT call only the first keyword-stripping pass, because that leaves object combiners, nullable unions, residual combiners, and fallback gating inconsistent between transports.
+The Gemini CLI / Antigravity Anthropic model path MUST run the same full `normalizeSchemaForCCA` pipeline as the shared Google Anthropic path. It MUST NOT call only the first keyword-stripping pass, because that leaves object combiners, nullable unions, residual combiners, and fallback gating inconsistent between transports.

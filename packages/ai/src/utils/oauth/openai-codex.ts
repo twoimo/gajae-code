@@ -1,5 +1,5 @@
 /**
- * OpenAI Codex (ChatGPT OAuth) flow — browser and device-code flows.
+ * OpenAI code provider (ChatGPT OAuth) flow — browser and device-code flows.
  */
 import { OAuthCallbackFlow, type OAuthCallbackFlowOptions } from "./callback-server";
 import { generatePKCE } from "./pkce";
@@ -150,10 +150,10 @@ async function exchangeCodeForToken(code: string, verifier: string, redirectUri:
 }
 
 /**
- * Login with OpenAI Codex OAuth
+ * Login with OpenAI code provider OAuth
  */
 export type OpenAICodexLoginOptions = OAuthController & {
-	/** Optional originator value for OpenAI Codex OAuth. Default: "opencode". */
+	/** Optional originator value for OpenAI code provider OAuth. Default: "opencode". */
 	originator?: string;
 };
 
@@ -166,7 +166,7 @@ export async function loginOpenAICodex(options: OpenAICodexLoginOptions): Promis
 }
 
 /**
- * Login with OpenAI Codex using the device-code (headless) flow.
+ * Login with OpenAI code provider using the device-code (headless) flow.
  *
  * Avoids a local callback server entirely — useful when port 1455 is unavailable
  * or when the browser callback flow fails with 403 (e.g. network/proxy issues).
@@ -253,7 +253,7 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 }
 
 /**
- * Refresh OpenAI Codex OAuth token
+ * Refresh OpenAI code provider OAuth token
  */
 export async function refreshOpenAICodexToken(refreshToken: string): Promise<OAuthCredentials> {
 	const response = await fetch(TOKEN_URL, {

@@ -2,7 +2,7 @@
  * Tests for plan mode thinking level propagation.
  *
  * Bug: When entering plan mode, the thinking level configured on the plan role
- * (e.g., "anthropic/claude-sonnet-4-5:xhigh") is discarded. resolveRoleModel()
+ * (e.g., "anthropic/Anthropic model-sonnet-4-5:xhigh") is discarded. resolveRoleModel()
  * calls resolveModelRoleValue() but only returns .model, dropping the thinking level.
  * #applyPlanModeModel() therefore has no thinking level to apply.
  */

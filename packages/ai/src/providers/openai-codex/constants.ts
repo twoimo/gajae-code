@@ -1,5 +1,5 @@
 /**
- * Constants for OpenAI Codex (ChatGPT OAuth) backend
+ * Constants for OpenAI code provider (ChatGPT OAuth) backend
  */
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
@@ -26,8 +26,8 @@ export const URL_PATHS = {
 export const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 
 /**
- * Extract account ID from a Codex JWT access token.
- * Returns undefined if the token is not a valid Codex JWT.
+ * Extract account ID from a OpenAI code backend JWT access token.
+ * Returns undefined if the token is not a valid OpenAI code backend JWT.
  */
 export function getCodexAccountId(accessToken: string): string | undefined {
 	try {

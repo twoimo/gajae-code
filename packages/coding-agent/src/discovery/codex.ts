@@ -1,8 +1,8 @@
 /**
- * OpenAI Codex project provider.
+ * OpenAI code provider project provider.
  *
- * Supports project-local `.codex/` compatibility only. User-home Codex
- * directories are intentionally ignored so `~/.codex` content is never injected
+ * Supports project-local `.OpenAI code backend/` compatibility only. User-home OpenAI code backend
+ * directories are intentionally ignored so `~/.OpenAI code backend` content is never injected
  * into GJC sessions.
  */
 import * as path from "node:path";

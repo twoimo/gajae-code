@@ -7,7 +7,7 @@ before tools are sent on the wire. All walkers live in
 
 There is no separate `strict-mode.ts` module any more — OpenAI strict-mode
 sanitization, OpenAI Responses `oneOf` rewriting, Google/Vertex/Gemini-CLI
-sanitization, Cloud Code Assist Claude sanitization, and MCP sanitization all
+sanitization, Cloud Code Assist Anthropic sanitization, and MCP sanitization all
 share the same option-driven walk.
 
 ## Entry points
@@ -16,7 +16,7 @@ All exports live under `@gajae-code/ai/utils/schema`:
 
 - `normalizeSchema(value, options)` — generic option-driven walker.
 - `normalizeSchemaForGoogle(value)` — Gemini / Vertex / Gemini CLI.
-- `normalizeSchemaForCCA(value)` — Cloud Code Assist Claude (Antigravity + GCA).
+- `normalizeSchemaForCCA(value)` — Cloud Code Assist Anthropic (Antigravity + GCA).
 - `normalizeSchemaForMCP(value)` — MCP inputSchemas before they enter the
   custom-tool registry. `tool-bridge.ts` runs every MCP `inputSchema` through
   this dispatcher.
@@ -45,16 +45,16 @@ Removed in the unified-flow refactor:
 
 | Provider transport(s)                                                | Dispatcher                                   |
 | -------------------------------------------------------------------- | -------------------------------------------- |
-| `openai-completions`, `openai-responses`, `openai-codex-responses`   | `adaptSchemaForStrict` (sanitize + enforce)  |
+| `openai-completions`, `openai-responses`, `openai-code-responses`   | `adaptSchemaForStrict` (sanitize + enforce)  |
 | `openai-responses` family (`oneOf` → `anyOf` only)                   | `normalizeSchemaForOpenAIResponses`          |
 | `google-generative-ai`, `google-vertex`, Gemini CLI                  | `normalizeSchemaForGoogle`                   |
-| Cloud Code Assist Claude (Antigravity + GCA, `claude-*` model ids)   | `normalizeSchemaForCCA`                      |
+| Cloud Code Assist Anthropic (Antigravity + GCA, `anthropic-model-*` model ids)   | `normalizeSchemaForCCA`                      |
 | MCP `inputSchema` ingestion                                          | `normalizeSchemaForMCP`                      |
 | `anthropic-messages` (native, not CCA)                               | per-provider whitelist in `anthropic.ts`     |
 
 Gemini CLI / Antigravity CCA MUST run the full `normalizeSchemaForCCA`
 pipeline (not just the first keyword-stripping pass) to keep parity with the
-shared Google Claude path.
+shared Google Anthropic path.
 
 ## Walk semantics
 

@@ -52,7 +52,7 @@ gjc team "ship end-to-end fix with verification"
 
 `gjc team ...` is now the canonical launch path for coordinated execution.
 Team mode should carry visible worker delivery/verification lanes without
-requiring a separate linked execution loop up front. GJC team supports OMX-style multi-worker mode; explicit `N:agent-type` values select worker count and shared role.
+requiring a separate linked execution loop up front. GJC team supports current-window multi-worker mode; explicit `N:agent-type` values select worker count and shared role.
 
 - **Canonical launch:** use plain `gjc team ...` / `$team ...` for the coordinated worker.
 - **Verification ownership:** keep one lane focused on tests, regression coverage, and evidence before shutdown.
@@ -136,7 +136,7 @@ When `$team` is used as a follow-up mode from ralplan, carry forward the approve
    - `.gjc/state/team/<team>/tasks/task-1.json`
    - `.gjc/state/team/<team>/mailbox/worker-1.json`
 4. Resolve the worker command from `GJC_TEAM_WORKER_COMMAND` or the active `gjc` entrypoint.
-5. Split the current tmux window like OMX team: worker 1 is split horizontally to the right of the leader, workers 2..N are vertically stacked in the right column, then `select-layout main-vertical` and `main-pane-width` keep leader-left/worker-right at roughly 50/50.
+5. Split the current tmux window like GJC team: worker 1 is split horizontally to the right of the leader, workers 2..N are vertically stacked in the right column, then `select-layout main-vertical` and `main-pane-width` keep leader-left/worker-right at roughly 50/50.
 6. Launch the worker with:
    - `GJC_TEAM_NAME=<team>`
    - `GJC_TEAM_WORKER_ID=worker-1`
@@ -224,7 +224,7 @@ Canonical worker lifecycle operations:
 - `transition-task-status`
 - `release-task-claim`
 
-OMX-parity interop operations are also available for mailbox, worker heartbeat/status, events, monitor snapshots, approvals, and shutdown request/ack flows; run `gjc team api --help` for the full operation list.
+GJC-team interop operations are also available for mailbox, worker heartbeat/status, events, monitor snapshots, approvals, and shutdown request/ack flows; run `gjc team api --help` for the full operation list.
 
 Worker protocol:
 

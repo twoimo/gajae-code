@@ -22,7 +22,7 @@ export interface SignParams {
 	method: string;
 	/** Hostname only — used to build the `host` header and the canonical request. */
 	host: string;
-	/** URI path component, e.g. `/model/anthropic.claude/converse-stream`. */
+	/** URI path component, e.g. `/model/anthropic.Anthropic model/converse-stream`. */
 	path: string;
 	/** Optional pre-built query string (without leading `?`). */
 	query?: string;

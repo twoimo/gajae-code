@@ -24,9 +24,9 @@ import {
 	writeMarketplacesRegistry,
 } from "@gajae-code/coding-agent/extensibility/plugins/marketplace";
 
-// Inline the parseClaudePluginsRegistry validation logic to avoid pulling
+// Inline the parseAnthropic modelPluginsRegistry validation logic to avoid pulling
 // in discovery/helpers.ts which transitively imports @gajae-code/natives.
-// Matches the exact checks in helpers.ts parseClaudePluginsRegistry().
+// Matches the exact checks in helpers.ts parseAnthropic modelPluginsRegistry().
 function validateClaudeRegistryFormat(content: string): Record<string, unknown> | null {
 	let data: Record<string, unknown>;
 	try {

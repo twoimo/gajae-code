@@ -1,18 +1,18 @@
 /**
  * Discovery integration tests for GJC plugin registry reading.
  *
- * NOTE: listClaudePluginRoots() lives in discovery/helpers.ts which imports
+ * NOTE: listAnthropic modelPluginRoots() lives in discovery/helpers.ts which imports
  * @gajae-code/natives (native Rust addon via glob). We cannot call it here.
  *
- * Instead these tests validate the structural contract that listClaudePluginRoots
+ * Instead these tests validate the structural contract that listAnthropic modelPluginRoots
  * depends on:
  *   1. GJC registry lives at path.join(home, ".gjc", "plugins", "installed_plugins.json")
  *      (matches getConfigDirName() == ".gjc")
- *   2. The registry format passes the same validator that parseClaudePluginsRegistry uses
+ *   2. The registry format passes the same validator that parseAnthropic modelPluginsRegistry uses
  *   3. readInstalledPluginsRegistry / writeInstalledPluginsRegistry produce files that
  *      satisfy that validator
  *
- * End-to-end wiring (calling listClaudePluginRoots) is covered by wiring.test.ts,
+ * End-to-end wiring (calling listAnthropic modelPluginRoots) is covered by wiring.test.ts,
  * which runs in an environment where the native addon is available.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -29,7 +29,7 @@ import {
 
 // ── Inline validator ───────────────────────────────────────────────────────────
 //
-// Mirrors parseClaudePluginsRegistry() in discovery/helpers.ts exactly.
+// Mirrors parseAnthropic modelPluginsRegistry() in discovery/helpers.ts exactly.
 // Kept here to avoid importing helpers.ts (which pulls in @gajae-code/natives).
 function validateClaudeRegistryFormat(content: string): Record<string, unknown> | null {
 	let data: Record<string, unknown>;
@@ -86,7 +86,7 @@ afterEach(() => {
 
 describe("GJC registry path contract", () => {
 	it("GJC registry lives at home/.gjc/plugins/installed_plugins.json", () => {
-		// This is the path that listClaudePluginRoots reads.
+		// This is the path that listAnthropic modelPluginRoots reads.
 		// Any change to this path must be reflected in helpers.ts.
 		const expected = path.join(tmpHome, ".gjc", "plugins", "installed_plugins.json");
 		expect(gjcRegistryPath).toBe(expected);
@@ -130,7 +130,7 @@ describe("GJC registry format compatibility with Claude parser", () => {
 	});
 
 	it("file with missing version field fails validator (regression)", () => {
-		// Ensures validator correctly rejects what parseClaudePluginsRegistry rejects.
+		// Ensures validator correctly rejects what parseAnthropic modelPluginsRegistry rejects.
 		const badContent = JSON.stringify({ plugins: {} });
 		expect(validateClaudeRegistryFormat(badContent)).toBeNull();
 	});
@@ -200,7 +200,7 @@ describe("GJC registry round-trip", () => {
 	});
 
 	it("missing file returns empty registry (not an error)", async () => {
-		// listClaudePluginRoots treats absent file as empty, not a failure.
+		// listAnthropic modelPluginRoots treats absent file as empty, not a failure.
 		// readInstalledPluginsRegistry must match this behaviour.
 		const missingPath = path.join(tmpHome, "nonexistent", "installed_plugins.json");
 		const reg = await readInstalledPluginsRegistry(missingPath);
@@ -210,7 +210,7 @@ describe("GJC registry round-trip", () => {
 
 // ── Precedence contract (structural) ─────────────────────────────────────────
 //
-// listClaudePluginRoots must replace Claude entries with GJC entries when the same
+// listAnthropic modelPluginRoots must replace Anthropic model entries with GJC entries when the same
 // plugin ID appears in both registries. We cannot call that function here, but we
 // can verify the data shapes that the replacement logic reads are correct.
 
@@ -221,7 +221,7 @@ describe("GJC precedence contract (registry structure)", () => {
 		const id = buildPluginId("shared-plugin", "common-mkt");
 		const gjcEntry = makeEntry("/gjc/cached/path");
 
-		// GJC registry entry has installPath (required by listClaudePluginRoots)
+		// GJC registry entry has installPath (required by listAnthropic modelPluginRoots)
 		expect(gjcEntry.installPath).toBeTruthy();
 		expect(typeof gjcEntry.installPath).toBe("string");
 		// ID parses correctly with lastIndexOf("@")
@@ -236,7 +236,7 @@ describe("GJC precedence contract (registry structure)", () => {
 		const id = buildPluginId("dup-plugin", "mkt");
 		const sharedPath = "/tmp/shared-install-path";
 
-		// Simulate what listClaudePluginRoots would do:
+		// Simulate what listAnthropic modelPluginRoots would do:
 		const roots: Array<{ id: string; path: string }> = [{ id, path: sharedPath }];
 
 		// Second entry with same installPath should be deduplicated

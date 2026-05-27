@@ -66,7 +66,7 @@ Use for read-only plan critique. It approves only when execution can proceed wit
 <runtime-state>
 - Runtime state, specs, plans, and workflow ledgers belong under `.gjc/`.
 - Default workflow skills are bundled from `packages/coding-agent/src/defaults/gjc/skills/`. Runtime user/project `.gjc` discovery remains supported, but committed repo-visible `.gjc` defaults are not the source of truth.
-- Do not load or inject user-home Claude or Codex instructions (`~/.claude`, `~/.codex`) into the model context.
+- Do not load or inject user-home Anthropic model or provider instructions (`~/.anthropic-model`, `~/.openai-code`) into the model context.
 - Public commands, paths, examples, and workflow names must use `gjc` and `.gjc`.
 </runtime-state>
 </gjc-runtime>

@@ -31,10 +31,10 @@ export interface LoadResult<T> {
  * A provider that can load items for a capability.
  */
 export interface Provider<T> {
-	/** Unique provider ID (e.g., "claude", "gjc", "mcp-json", "agents-md") */
+	/** Unique provider ID (e.g., "Anthropic model", "gjc", "mcp-json", "agents-md") */
 	id: string;
 
-	/** Human-readable name for UI display (e.g., "Claude Code", "OpenAI Codex") */
+	/** Human-readable name for UI display (e.g., "Anthropic Code", "OpenAI code provider") */
 	displayName: string;
 
 	/** Short description for settings UI (e.g., "Load config from .gjc/") */
@@ -44,7 +44,7 @@ export interface Provider<T> {
 	 * Priority (higher = checked first, wins on conflicts).
 	 * Suggested ranges:
 	 *   100+ : Primary providers (gjc, pi)
-	 *   50-99: Tool-specific providers (claude, codex, gemini)
+	 *   50-99: Tool-specific providers (Anthropic model, OpenAI code backend, gemini)
 	 *   1-49 : Shared standards (mcp-json, agents-md)
 	 */
 	priority: number;

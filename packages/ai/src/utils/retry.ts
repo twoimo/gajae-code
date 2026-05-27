@@ -2,7 +2,7 @@ import { scheduler } from "node:timers/promises";
 import { extractHttpStatusFromError, isRetryableError } from "@gajae-code/utils";
 
 /**
- * GitHub Copilot intermittently rejects preview models (gpt-5.3-codex,
+ * GitHub Copilot intermittently rejects preview models (gpt-5.3-OpenAI code backend,
  * gpt-5.4, gpt-5.4-mini, ...) with HTTP 400 `model_not_supported`, even
  * though the model is listed as enabled on the user's account via `/models`.
  *

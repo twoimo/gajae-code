@@ -1,8 +1,8 @@
 /**
- * Codex usage parser regressions. The widget client (osx-widgets) keys spark
+ * OpenAI code backend usage parser regressions. The widget client (osx-widgets) keys spark
  * detection off `limit.id.includes("spark")`, so the parser MUST surface
- * `additional_rate_limits[].metered_feature == "codex_bengalfox"` (the upstream
- * codename for GPT-5.3-Codex-Spark) as separate `UsageLimit` entries with
+ * `additional_rate_limits[].metered_feature == "OpenAI code backend_bengalfox"` (the upstream
+ * codename for GPT-5.3-OpenAI code backend-Spark) as separate `UsageLimit` entries with
  * `spark` in the id. If this contract breaks, both the TUI and the macOS
  * widget lose per-model visibility.
  */

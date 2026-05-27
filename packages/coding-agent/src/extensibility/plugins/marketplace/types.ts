@@ -3,9 +3,9 @@
  *
  * Two registries:
  *   - MarketplacesRegistry: which marketplace catalogs the user has added (config)
- *   - InstalledPluginsRegistry: which plugins are installed (data, Claude Code-compatible)
+ *   - InstalledPluginsRegistry: which plugins are installed (data, Anthropic Code-compatible)
  *
- * The installed registry MUST pass `parseClaudePluginsRegistry()` validation —
+ * The installed registry MUST pass `parseAnthropic modelPluginsRegistry()` validation —
  * it uses `version: 2` (numeric) and `plugins: Record<string, ...[]>`.
  */
 
@@ -151,11 +151,11 @@ export interface MarketplaceRegistryEntry {
 }
 
 // ── Installed plugins registry ───────────────────────────────────────
-// MUST match ClaudePluginsRegistry shape for parseClaudePluginsRegistry()
+// MUST match Anthropic modelPluginsRegistry shape for parseAnthropic modelPluginsRegistry()
 // compatibility: `version: number`, `plugins: Record<string, entry[]>`.
 
 export interface InstalledPluginsRegistry {
-	/** MUST be 2 — parseClaudePluginsRegistry rejects non-numeric version. */
+	/** MUST be 2 — parseAnthropic modelPluginsRegistry rejects non-numeric version. */
 	version: 2;
 	plugins: Record<string, InstalledPluginEntry[]>;
 }
@@ -171,7 +171,7 @@ export interface InstalledPluginEntry {
 	lastUpdated: string;
 	/** For git-sourced plugins. */
 	gitCommitSha?: string;
-	/** GJC extension — not in Claude Code's type. CLI/UI concern only in v1. */
+	/** GJC extension — not in Anthropic Code's type. CLI/UI concern only in v1. */
 	enabled?: boolean;
 }
 

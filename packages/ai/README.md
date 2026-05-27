@@ -47,7 +47,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 ## Supported Providers
 
 - **OpenAI**
-- **OpenAI Codex** (ChatGPT Plus/Pro subscription, requires OAuth, see below)
+- **OpenAI code provider** (ChatGPT Plus/Pro subscription, requires OAuth, see below)
 - **Anthropic**
 - **Google**
 - **Vertex AI** (Gemini via Vertex AI)
@@ -441,7 +441,7 @@ Many models support thinking/reasoning capabilities where they can show their in
 import { getModel, streamSimple, completeSimple } from "@gajae-code/ai";
 
 // Many models across providers support thinking/reasoning
-const model = getModel("anthropic", "claude-sonnet-4-20250514");
+const model = getModel("anthropic", "anthropic-model-sonnet-4-20250514");
 // or getModel('openai', 'gpt-5-mini');
 // or getModel('google', 'gemini-2.5-flash');
 // or getModel('xai', 'grok-code-fast-1');
@@ -489,8 +489,8 @@ await complete(openaiModel, context, {
 	reasoningSummary: "detailed", // OpenAI Responses API only
 });
 
-// Anthropic Thinking (Claude Sonnet 4)
-const anthropicModel = getModel("anthropic", "claude-sonnet-4-20250514");
+// Anthropic Thinking (Anthropic model Sonnet 4)
+const anthropicModel = getModel("anthropic", "anthropic-model-sonnet-4-20250514");
 await complete(anthropicModel, context, {
 	thinkingEnabled: true,
 	thinkingBudgetTokens: 8192, // Optional token limit
@@ -753,8 +753,8 @@ const litellmModel: Model<"openai-completions"> = {
 
 // Example: Custom endpoint with headers (bypassing Cloudflare bot detection)
 const proxyModel: Model<"anthropic-messages"> = {
-	id: "claude-sonnet-4",
-	name: "Claude Sonnet 4 (Proxied)",
+	id: "anthropic-model-sonnet-4",
+	name: "Anthropic model Sonnet 4 (Proxied)",
 	api: "anthropic-messages",
 	provider: "custom-proxy",
 	baseUrl: "https://proxy.example.com/v1",
@@ -796,10 +796,10 @@ Models are typed by their API, ensuring type-safe options:
 
 ```typescript
 // TypeScript knows this is an Anthropic model
-const claude = getModel("anthropic", "claude-sonnet-4-20250514");
+const anthropic-model = getModel("anthropic", "anthropic-model-sonnet-4-20250514");
 
 // So these options are type-checked for AnthropicOptions
-await stream(claude, context, {
+await stream(anthropic-model, context, {
 	thinkingEnabled: true, // ✓ Valid for anthropic-messages
 	thinkingBudgetTokens: 2048, // ✓ Valid for anthropic-messages
 	// reasoningEffort: 'high'  // ✗ TypeScript error: not valid for anthropic-messages
@@ -824,19 +824,19 @@ When messages from one provider are sent to a different provider, the library au
 ```typescript
 import { getModel, complete, Context } from "@gajae-code/ai";
 
-// Start with Claude
-const claude = getModel("anthropic", "claude-sonnet-4-20250514");
+// Start with Anthropic model
+const anthropic-model = getModel("anthropic", "anthropic-model-sonnet-4-20250514");
 const context: Context = {
 	messages: [],
 };
 
 context.messages.push({ role: "user", content: "What is 25 * 18?" });
-const claudeResponse = await complete(claude, context, {
+const anthropic-modelResponse = await complete(anthropic-model, context, {
 	thinkingEnabled: true,
 });
-context.messages.push(claudeResponse);
+context.messages.push(anthropic-modelResponse);
 
-// Switch to GPT-5 - it will see Claude's thinking as <thinking> tagged text
+// Switch to GPT-5 - it will see Anthropic model's thinking as <thinking> tagged text
 const gpt5 = getModel("openai", "gpt-5-mini");
 context.messages.push({ role: "user", content: "Is that calculation correct?" });
 const gptResponse = await complete(gpt5, context);
@@ -893,7 +893,7 @@ const restored: Context = JSON.parse(localStorage.getItem("conversation")!);
 restored.messages.push({ role: "user", content: "Tell me more about its type system" });
 
 // Continue with any model
-const newModel = getModel("anthropic", "claude-haiku-4-5-20251001");
+const newModel = getModel("anthropic", "anthropic-model-haiku-4-5-20251001");
 const continuation = await complete(newModel, restored);
 ```
 
@@ -907,7 +907,7 @@ The library supports browser environments. You must pass the API key explicitly 
 import { getModel, complete } from "@gajae-code/ai";
 
 // API key must be passed explicitly in browser
-const model = getModel("anthropic", "claude-haiku-4-5-20251001");
+const model = getModel("anthropic", "anthropic-model-haiku-4-5-20251001");
 
 const response = await complete(
 	model,
@@ -929,7 +929,7 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | Provider       | Environment Variable(s)                                                      |
 | -------------- | ---------------------------------------------------------------------------- |
 | OpenAI         | `OPENAI_API_KEY`                                                             |
-| Anthropic      | `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` (or `ANTHROPIC_FOUNDRY_API_KEY` when `CLAUDE_CODE_USE_FOUNDRY=true`) |
+| Anthropic      | `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` (or `ANTHROPIC_FOUNDRY_API_KEY` when `ANTHROPIC_MODEL_CODE_USE_FOUNDRY=true`) |
 | Google         | `GEMINI_API_KEY`                                                             |
 | Vertex AI      | `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) + `GOOGLE_CLOUD_LOCATION` + ADC |
 | Mistral        | `MISTRAL_API_KEY`                                                            |
@@ -960,9 +960,9 @@ In Node.js environments, you can set environment variables to avoid passing API 
 For Cloudflare AI Gateway models, use provider base URL format
 `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic`.
 
-For Anthropic Foundry routing, set `CLAUDE_CODE_USE_FOUNDRY=true` plus:
+For Anthropic Foundry routing, set `ANTHROPIC_MODEL_CODE_USE_FOUNDRY=true` plus:
 `FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`, optional `ANTHROPIC_CUSTOM_HEADERS`,
-and optional mTLS material (`CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY`, `NODE_EXTRA_CA_CERTS`).
+and optional mTLS material (`ANTHROPIC_MODEL_CODE_CLIENT_CERT`, `ANTHROPIC_MODEL_CODE_CLIENT_KEY`, `NODE_EXTRA_CA_CERTS`).
 
 Provider endpoint defaults for the current OpenAI-compatible integrations:
 
@@ -1008,11 +1008,11 @@ const key = getEnvApiKey("openai"); // checks OPENAI_API_KEY
 
 Several providers support OAuth authentication (some also support static API keys):
 
-- **Anthropic** (Claude Pro/Max subscription)
-- **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
+- **Anthropic** (Anthropic model Pro/Max subscription)
+- **OpenAI code provider** (ChatGPT Plus/Pro subscription, access to GPT-5.x OpenAI code models)
 - **GitHub Copilot** (Copilot subscription)
 - **Google Gemini CLI** (Gemini 2.0/2.5 via Google Cloud Code Assist; free tier or paid subscription)
-- **Antigravity** (Free Gemini 3, Claude, GPT-OSS via Google Cloud)
+- **Antigravity** (Free Gemini 3, Anthropic model, GPT-OSS via Google Cloud)
 - **Qwen Portal** (Qwen OAuth token or API key)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
@@ -1068,7 +1068,7 @@ bunx @gajae-code/ai list               # list available providers
 
 Credentials are saved to `agent.db` in the agent directory. `/login qianfan` opens the Qianfan console and stores the pasted API key.
 
-`login` supports OAuth providers (Anthropic, OpenAI Codex, GitHub Copilot, Gemini CLI, Antigravity) and API-key onboarding flows.
+`login` supports OAuth providers (Anthropic, OpenAI code provider, GitHub Copilot, Gemini CLI, Antigravity) and API-key onboarding flows.
 
 For the current API-key onboarding flows, the library covers Together, Moonshot, Qianfan, NVIDIA, NanoGPT, Hugging Face, Venice, Xiaomi, vLLM, LiteLLM, Cloudflare AI Gateway, Qwen Portal, and Ollama Cloud. Ollama remains the local runtime integration; set `OLLAMA_API_KEY` only when your local or self-hosted deployment enforces bearer auth.
 
@@ -1080,7 +1080,7 @@ The library provides login and token refresh functions. Credential storage is th
 import {
 	// Login functions (return credentials, do not store)
 	loginAnthropic,
-	loginOpenAICodex,
+	loginOpenAIOpenAI code,
 	loginGitHubCopilot,
 	loginGeminiCli,
 	loginAntigravity,
@@ -1102,15 +1102,15 @@ import {
 	getOAuthApiKey, // (provider, credentialsMap) => { newCredentials, apiKey } | null
 
 	// Types
-	type OAuthProvider, // includes 'anthropic', 'openai-codex', 'github-copilot', 'google-gemini-cli', 'google-antigravity', 'together', 'moonshot', 'qianfan', 'nvidia', 'nanogpt', 'huggingface', 'venice', 'xiaomi', 'vllm', 'litellm', 'cloudflare-ai-gateway', 'qwen-portal', ...
+	type OAuthProvider, // includes 'anthropic', 'openai-code', 'github-copilot', 'google-gemini-cli', 'google-antigravity', 'together', 'moonshot', 'qianfan', 'nvidia', 'nanogpt', 'huggingface', 'venice', 'xiaomi', 'vllm', 'litellm', 'cloudflare-ai-gateway', 'qwen-portal', ...
 	type OAuthCredentials,
 } from "@gajae-code/ai";
 ```
 
-`loginOpenAICodex` accepts an optional `originator` value used in the OAuth flow:
+`loginOpenAIOpenAI code` accepts an optional `originator` value used in the OAuth flow:
 
 ```typescript
-await loginOpenAICodex({
+await loginOpenAIOpenAI code({
 	onAuth: ({ url }) => console.log(url),
 	originator: "my-cli",
 });
@@ -1170,7 +1170,7 @@ const response = await complete(
 
 ### Provider Notes
 
-**OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options.
+**OpenAI code provider**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x OpenAI code models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options.
 
 **GitHub Copilot**: If you get "The requested model is not supported" error, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
 

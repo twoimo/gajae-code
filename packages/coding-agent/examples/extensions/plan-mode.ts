@@ -1,7 +1,7 @@
 /**
  * Plan Mode Extension
  *
- * Provides a Claude Code-style "plan mode" for safe code exploration.
+ * Provides a Anthropic Code-style "plan mode" for safe code exploration.
  * When enabled, the agent can only use read-only tools and cannot modify files.
  *
  * Features:

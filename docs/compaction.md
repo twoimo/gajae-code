@@ -204,7 +204,7 @@ Remote summarization modes:
 - If `compaction.remoteEndpoint` is set and remote compaction is enabled, local summary generation POSTs:
   - `{ systemPrompt, prompt }`
 - Expects JSON containing at least `{ summary }`.
-- For OpenAI/OpenAI Codex models, compaction first tries the provider-native `/responses/compact` endpoint when remote compaction is enabled. It preserves provider replacement history in `preserveData.openaiRemoteCompaction` and falls back to local summarization if that native request fails.
+- For OpenAI/OpenAI code provider models, compaction first tries the provider-native `/responses/compact` endpoint when remote compaction is enabled. It preserves provider replacement history in `preserveData.openaiRemoteCompaction` and falls back to local summarization if that native request fails.
 
 ### Handoff generation
 

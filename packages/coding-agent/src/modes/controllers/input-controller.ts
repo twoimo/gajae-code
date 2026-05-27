@@ -633,7 +633,7 @@ export class InputController {
 					data: imageData.data,
 					mimeType: imageData.mimeType,
 				});
-				// Insert placeholder at cursor like Claude does
+				// Insert placeholder at cursor like Anthropic model does
 				const imageNum = this.ctx.pendingImages.length;
 				const placeholder = `[Image #${imageNum}]`;
 				this.ctx.editor.insertText(`${placeholder} `);

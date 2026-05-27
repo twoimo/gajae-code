@@ -1,5 +1,5 @@
 /**
- * Edit mode wrapper for the Codex `apply_patch` envelope format.
+ * Edit mode wrapper for the OpenAI code backend `apply_patch` envelope format.
  *
  * The mode accepts a single `input` string containing a full
  * `*** Begin Patch ... *** End Patch` block, parses it, and fans out to

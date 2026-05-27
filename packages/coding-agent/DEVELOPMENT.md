@@ -519,7 +519,7 @@ extensions loader  hooks loader   skills loader
 `packages/coding-agent/src/discovery/index.ts` is a side-effect bootstrap module:
 
 - It imports capability definitions first (`../capability/*`) so registry entries exist before providers register.
-- It then imports provider modules (`./builtin`, `./claude`, `./agents`, `./codex`, `./cursor`, `./gemini`, `./opencode`, `./github`, `./mcp-json`, `./ssh`, `./vscode`, `./windsurf`, etc.).
+- It then imports provider modules (`./builtin`, `./anthropic-model`, `./agents`, `./openai-code`, `./cursor`, `./gemini`, `./opencode`, `./github`, `./mcp-json`, `./ssh`, `./vscode`, `./windsurf`, etc.).
 - Providers self-register during module import.
 - It re-exports the runtime API from `../capability` (`loadCapability`, provider enable/disable, cache controls, introspection helpers).
 
@@ -609,7 +609,7 @@ Provider-driven loading:
 
 - Calls `loadCapability<CapabilitySkill>(skillCapability.id, { cwd })`.
 - Applies source gating through `isSourceEnabled(source)`:
-  - explicit toggles for `codex:user`, `claude:user`, `claude:project`, `native:user`, `native:project`,
+  - explicit toggles for `openai-code:user`, `anthropic-model:user`, `anthropic-model:project`, `native:user`, `native:project`,
   - other providers treated as built-in and allowed when any built-in source toggle is enabled.
 - Applies name filters using `includeSkills` / `ignoredSkills` (`Bun.Glob`).
 
@@ -1046,7 +1046,7 @@ This tool is intentionally distinct from `fetch`: it executes page interactions 
 
 Provider registry (`SEARCH_PROVIDERS`) and fallback order (`SEARCH_PROVIDER_ORDER`) are defined in `provider.ts`:
 
-`perplexity → brave → jina → kimi → anthropic → gemini → codex → zai → exa → tavily → kagi → synthetic`
+`perplexity → brave → jina → kimi → anthropic → gemini → openai-code → zai → exa → tavily → kagi → synthetic`
 
 `resolveProviderChain(preferredProvider)` behavior:
 

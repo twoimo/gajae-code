@@ -252,8 +252,8 @@ describe("Anthropic request fingerprint alignment", () => {
 	});
 
 	it("preserves real Claude Code JSON-format metadata.user_id for OAuth requests", async () => {
-		// Matches the shape produced by services/api/claude.ts → getAPIMetadata in
-		// the Claude Code source: { device_id, account_uuid, session_id, ...extra }.
+		// Matches the shape produced by services/api/Anthropic model.ts → getAPIMetadata in
+		// the Anthropic Code source: { device_id, account_uuid, session_id, ...extra }.
 		const userId = JSON.stringify({
 			device_id: "a".repeat(64),
 			account_uuid: "12345678-1234-1234-1234-1234567890ab",

@@ -84,8 +84,17 @@ export function renderTrustedObjective(objective: string): string {
 	return `<objective>\n${escapeXmlText(objective)}\n</objective>`;
 }
 
+export function validateGoalObjective(objective: string, op: "create" | "replace"): string {
+	const trimmed = objective.trim();
+	if (!trimmed) throw new Error(`objective is required when op=${op}`);
+	if (trimmed === "/goal") {
+		throw new Error("objective must describe the goal; `/goal` is the command name, not a goal objective");
+	}
+	return trimmed;
+}
+
 export function goalTokenDelta(current: GoalTokenUsage, baseline: GoalTokenUsage): number {
-	// Diverges from codex-rs: codex omits cache creation because its target providers
+	// Diverges from OpenAI code backend-rs: OpenAI code backend omits cache creation because its target providers
 	// do not bill cache writes distinctly through the token-usage stream. Pi receives
 	// cacheWrite separately on Anthropic/Bedrock; rotating a 1h ephemeral cache or
 	// re-anchoring a changed system prompt can write 100K+ tokens, which the goal
@@ -378,8 +387,7 @@ export class GoalRuntime {
 	}
 
 	async createGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
-		const objective = input.objective.trim();
-		if (!objective) throw new Error("objective is required when op=create");
+		const objective = validateGoalObjective(input.objective, "create");
 		validateTokenBudget(input.tokenBudget);
 		return await this.#withAccounting(async () => {
 			const existing = this.#host.getState();
@@ -395,8 +403,7 @@ export class GoalRuntime {
 	}
 
 	async replaceGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
-		const objective = input.objective.trim();
-		if (!objective) throw new Error("objective is required when op=replace");
+		const objective = validateGoalObjective(input.objective, "replace");
 		validateTokenBudget(input.tokenBudget);
 		return await this.#withAccounting(async () => {
 			const existing = this.#host.getState();

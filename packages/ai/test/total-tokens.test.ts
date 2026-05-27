@@ -540,7 +540,7 @@ describe("totalTokens field", () => {
 	});
 
 	// =========================================================================
-	// OpenAI Codex (OAuth)
+	// OpenAI code provider (OAuth)
 	// =========================================================================
 
 	describe("OpenAI Codex (OAuth)", () => {

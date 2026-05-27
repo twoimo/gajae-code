@@ -56,9 +56,9 @@ gjc auth-broker status    [--json]
 
 - `serve` opens the local SQLite store at `getAgentDbPath()` and binds an HTTP listener (default `127.0.0.1:8765`). On startup a token is ensured at `<config-dir>/auth-broker.token` (mode `0600`, `0700` parent dir). The background refresher refreshes any OAuth credential whose `expires - Date.now() < refreshSkewMs` (default 5 min) every `refreshIntervalMs` (default 60 s).
 - `token` prints the cached bearer or generates a new one. `--regenerate` rotates it.
-- `login <provider>` runs the per-provider OAuth flow locally, or — with `--via=user@host` — `ssh -L <callback-port>:127.0.0.1:<callback-port> user@host gjc auth-broker login <provider>` so the OAuth callback hits the local browser but the credential is written on the broker host. Built-in callback ports: `anthropic:54545`, `openai-codex:1455`, `google-gemini-cli:8085`, `google-antigravity:51121`, `gitlab-duo:8080`.
+- `login <provider>` runs the per-provider OAuth flow locally, or — with `--via=user@host` — `ssh -L <callback-port>:127.0.0.1:<callback-port> user@host gjc auth-broker login <provider>` so the OAuth callback hits the local browser but the credential is written on the broker host. Built-in callback ports: `anthropic:54545`, `openai-code:1455`, `google-gemini-cli:8085`, `google-antigravity:51121`, `gitlab-duo:8080`.
 - `logout <provider>` deletes every credential row for `<provider>`.
-- `import <file|dir>` imports CLIProxyAPI-style JSON credentials into the local SQLite store. Maps `type` field → gjc provider (`claude → anthropic`, `codex → openai-codex`, `gemini → google-gemini-cli`, `antigravity → google-antigravity`, `gemini-cli → google-gemini-cli`).
+- `import <file|dir>` imports CLIProxyAPI-style JSON credentials into the local SQLite store. Maps `type` field → gjc provider (`anthropic-model → anthropic`, `openai-code → openai-code`, `gemini → google-gemini-cli`, `antigravity → google-antigravity`, `gemini-cli → google-gemini-cli`).
 - `migrate --from-local` walks the local SQLite store + env-derived credentials and idempotently uploads them to the configured broker (`POST /v1/credential`).
 - `status` health-pings the configured remote broker.
 
@@ -109,7 +109,7 @@ gjc auth-gateway status  [--json]
 The model id is read from the top-level `model` field. The gateway picks the first bundled `Model<Api>` matching that id and:
 
 - **Passthrough fast-path** — when the inbound wire format matches the model’s native API (`openai-chat → openai-completions`, `anthropic-messages → anthropic-messages`, `openai-responses → openai-responses`), the request body is forwarded byte-for-byte with the client `Authorization`/`x-api-key` stripped and replaced by `Authorization: Bearer <resolved-access-token>`. Provider-specific fields (`cache_control`, `service_tier`, tool-choice extensions, …) flow through unmodified. Hop-by-hop headers (RFC 7230) plus `Content-Encoding`/`Content-Length` are stripped from the upstream response.
-- **Translate path** — when the inbound format and the resolved model’s API differ (e.g. `/v1/chat/completions` targeting an Anthropic model, or `/v1/responses` targeting `openai-codex-responses` which runs over a websocket transport), the request is parsed against the wire schema, rebuilt into an gjc `Context`, dispatched through `streamSimple()`, and re-encoded back to the inbound format (SSE for streamed responses).
+- **Translate path** — when the inbound format and the resolved model’s API differ (e.g. `/v1/chat/completions` targeting an Anthropic model, or `/v1/responses` targeting `openai-code-responses` which runs over a websocket transport), the request is parsed against the wire schema, rebuilt into an gjc `Context`, dispatched through `streamSimple()`, and re-encoded back to the inbound format (SSE for streamed responses).
 
 `idleTimeout` on the underlying `Bun.serve` is set to `255 s` so long thinking-budget calls do not get killed by Bun’s default idle timeout.
 

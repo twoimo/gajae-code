@@ -267,7 +267,7 @@ export class ModelSelectorComponent extends Container {
 			const providerCmp = a.provider.localeCompare(b.provider);
 			if (providerCmp !== 0) return providerCmp;
 
-			// Priority field (lower = better, e.g. Codex priority values)
+			// Priority field (lower = better, e.g. OpenAI code backend priority values)
 			const aPri = a.model.priority ?? Number.MAX_SAFE_INTEGER;
 			const bPri = b.model.priority ?? Number.MAX_SAFE_INTEGER;
 			if (aPri !== bPri) return aPri - bPri;
@@ -779,12 +779,12 @@ export class ModelSelectorComponent extends Container {
 	}
 }
 
-/** Extract the first version number from a model ID (e.g. "gemini-2.5-pro" → 2.5, "claude-sonnet-4-6" → 4.6). */
+/** Extract the first version number from a model ID (e.g. "gemini-2.5-pro" → 2.5, "Anthropic model-sonnet-4-6" → 4.6). */
 function extractVersionNumber(id: string): number {
 	// Dot-separated version: "gemini-2.5-pro" → 2.5
 	const dotMatch = id.match(/(?:^|[-_])(\d+\.\d+)/);
 	if (dotMatch) return Number.parseFloat(dotMatch[1]);
-	// Dash-separated short segments: "claude-sonnet-4-6" → 4.6, "llama-3-1-8b" → 3.1
+	// Dash-separated short segments: "Anthropic model-sonnet-4-6" → 4.6, "llama-3-1-8b" → 3.1
 	const dashMatch = id.match(/(?:^|[-_])(\d{1,2})-(\d{1,2})(?=-|$)/);
 	if (dashMatch) return Number.parseFloat(`${dashMatch[1]}.${dashMatch[2]}`);
 	// Single number after separator: "gpt-4o" → 4

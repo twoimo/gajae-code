@@ -1020,15 +1020,15 @@ export interface ExtensionAPI {
 	 *
 	 * @example
 	 * // Register a new provider with custom models and streaming
-	 * pi.registerProvider("google-vertex-claude", {
+	 * pi.registerProvider("google-vertex-Anthropic model", {
 	 *   baseUrl: "https://us-east5-aiplatform.googleapis.com",
 	 *   apiKey: "GOOGLE_CLOUD_PROJECT",
-	 *   api: "vertex-claude-api",
+	 *   api: "vertex-Anthropic model-api",
 	 *   streamSimple: myStreamFunction,
 	 *   models: [
 	 *     {
-	 *       id: "claude-sonnet-4@20250514",
-	 *       name: "Claude Sonnet 4 (Vertex)",
+	 *       id: "Anthropic model-sonnet-4@20250514",
+	 *       name: "Anthropic model Sonnet 4 (Vertex)",
 	 *       reasoning: true,
 	 *       thinking: { mode: "anthropic-adaptive", minLevel: "minimal", maxLevel: "high" },
 	 *       input: ["text", "image"],
@@ -1087,9 +1087,9 @@ export interface ProviderConfig {
 
 /** Configuration for a model within a provider. */
 export interface ProviderModelConfig {
-	/** Model ID (e.g., "claude-sonnet-4@20250514"). */
+	/** Model ID (e.g., "Anthropic model-sonnet-4@20250514"). */
 	id: string;
-	/** Display name (e.g., "Claude Sonnet 4 (Vertex)"). */
+	/** Display name (e.g., "Anthropic model Sonnet 4 (Vertex)"). */
 	name: string;
 	/** API type override for this model. */
 	api?: Api;

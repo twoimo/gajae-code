@@ -477,7 +477,7 @@ describe("native gjc team runtime", () => {
 		expect(status.task_counts.in_progress).toBe(1);
 	});
 
-	it("supports OMX-parity behavioral API operations", async () => {
+	it("supports GJC team parity behavioral API operations", async () => {
 		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-team-runtime-"));
 		await startGjcTeam({
 			workerCount: 2,

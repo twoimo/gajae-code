@@ -12,7 +12,7 @@ import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir, withTimeout } from "@gajae-code/utils";
 
-const runtimeSignalStoreKey = "__ompRuntimeSignals";
+const runtimeSignalStoreKey = "__gjcRuntimeSignals";
 
 type RuntimeSignalGlobal = typeof globalThis & { [runtimeSignalStoreKey]?: string[] };
 

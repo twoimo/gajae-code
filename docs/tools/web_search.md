@@ -11,9 +11,9 @@
   - `packages/coding-agent/src/web/search/render.ts` — TUI renderer details type.
   - `packages/coding-agent/src/web/search/providers/base.ts` — provider interface and shared params contract.
   - `packages/coding-agent/src/web/search/providers/utils.ts` — credential lookup; source normalization.
-  - `packages/coding-agent/src/web/search/providers/anthropic.ts` — Claude web-search provider.
+  - `packages/coding-agent/src/web/search/providers/anthropic.ts` — Anthropic model web-search provider.
   - `packages/coding-agent/src/web/search/providers/brave.ts` — Brave Search API adapter.
-  - `packages/coding-agent/src/web/search/providers/codex.ts` — OpenAI Codex SSE adapter.
+  - `packages/coding-agent/src/web/search/providers/openai-code.ts` — OpenAI code provider SSE adapter.
   - `packages/coding-agent/src/web/search/providers/exa.ts` — Exa API adapter.
   - `packages/coding-agent/src/web/search/providers/gemini.ts` — Gemini grounding SSE adapter.
   - `packages/coding-agent/src/web/search/providers/jina.ts` — Jina Reader search adapter.
@@ -90,7 +90,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
 - **Provider selection**
   - **Forced provider**: internal callers may pass `provider`; unavailable forced providers fall back to the auto chain instead of hard-failing (`packages/coding-agent/src/web/search/index.ts`). This field is not in the model-facing schema.
   - **Preferred provider**: `setPreferredSearchProvider()` sets a module-global default used by `resolveProviderChain()`. `packages/coding-agent/src/sdk.ts` and `packages/coding-agent/src/modes/controllers/selector-controller.ts` wire this from settings.
-  - **Auto chain order**: `tavily`, `perplexity`, `brave`, `jina`, `kimi`, `anthropic`, `gemini`, `codex`, `zai`, `exa`, `parallel`, `kagi`, `synthetic`, `searxng` (`SEARCH_PROVIDER_ORDER` in `packages/coding-agent/src/web/search/provider.ts`).
+  - **Auto chain order**: `tavily`, `perplexity`, `brave`, `jina`, `kimi`, `anthropic`, `gemini`, `openai-code`, `zai`, `exa`, `parallel`, `kagi`, `synthetic`, `searxng` (`SEARCH_PROVIDER_ORDER` in `packages/coding-agent/src/web/search/provider.ts`).
 - **Provider adapters**
   - **Tavily** — `packages/coding-agent/src/web/search/providers/tavily.ts`
     - Availability: API key from env or `agent.db` via `findCredential()`.
@@ -122,7 +122,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
     - Output: `sources`, `requestId`.
   - **Anthropic** — `packages/coding-agent/src/web/search/providers/anthropic.ts`
     - Availability: `findAnthropicAuth()` from `@gajae-code/ai`.
-    - Querying: Claude Messages API with web-search tool enabled.
+    - Querying: Anthropic model Messages API with web-search tool enabled.
     - `max_tokens` and `temperature` pass through.
     - `limit` and `num_search_results` are collapsed together before dispatch: `num_results = params.numSearchResults ?? params.limit`.
     - Output may include `answer`, `sources`, `citations`, `searchQueries`, `usage.searchRequests`, `model`, `requestId`.
@@ -132,9 +132,9 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
     - `max_tokens` and `temperature` pass through as `generationConfig.maxOutputTokens` / `generationConfig.temperature`.
     - `limit` and `num_search_results` are collapsed together before dispatch.
     - Output may include `answer`, `sources`, `citations`, `searchQueries`, `usage`, `model`.
-  - **Codex** — `packages/coding-agent/src/web/search/providers/codex.ts`
-    - Availability: non-expired OAuth credential for `openai-codex` in `agent.db`.
-    - Querying: SSE POST to `https://chatgpt.com/backend-api/codex/responses` with `tool_choice: { type: "web_search" }` and `search_context_size: "high"` by default.
+  - **OpenAI code** — `packages/coding-agent/src/web/search/providers/openai-code.ts`
+    - Availability: non-expired OAuth credential for `openai-code` in `agent.db`.
+    - Querying: SSE POST to `https://chatgpt.com/backend-api/openai-code/responses` with `tool_choice: { type: "web_search" }` and `search_context_size: "high"` by default.
     - Ignores `recency`, `max_tokens`, and `temperature` in this tool path.
     - `limit` and `num_search_results` are collapsed together before dispatch.
     - Output may include `answer`, `sources`, `usage`, `model`, `requestId`. If the streamed response has no `url_citation` annotations, the adapter falls back to scraping markdown links and bare URLs from the answer text.
@@ -177,7 +177,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
 ## Side Effects
 - Network
   - Calls one or more external search providers over HTTPS until one succeeds or all fail.
-  - Provider-specific transports include JSON POST, JSON GET, SSE streaming (Perplexity OAuth/API, Gemini, Codex), and JSON-RPC over HTTP (Z.AI).
+  - Provider-specific transports include JSON POST, JSON GET, SSE streaming (Perplexity OAuth/API, Gemini, OpenAI code), and JSON-RPC over HTTP (Z.AI).
 - Subprocesses / native bindings
   - None.
 - Session state (transcript, memory, jobs, checkpoints, registries)
@@ -198,7 +198,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
 - Kagi result count: default `10`, max `40` (`packages/coding-agent/src/web/search/providers/kagi.ts`).
 - SearXNG result count: default `10`, max `20` (`packages/coding-agent/src/web/search/providers/searxng.ts`).
 - Perplexity API-key mode defaults: `max_tokens = 8192`, `temperature = 0.2`, `num_search_results = 10` (`packages/coding-agent/src/web/search/providers/perplexity.ts`).
-- Anthropic defaults: model `claude-haiku-4-5`, `DEFAULT_MAX_TOKENS = 4096` when the provider omits `max_tokens` (`packages/coding-agent/src/web/search/providers/anthropic.ts`).
+- Anthropic defaults: model `anthropic-model-haiku-4-5`, `DEFAULT_MAX_TOKENS = 4096` when the provider omits `max_tokens` (`packages/coding-agent/src/web/search/providers/anthropic.ts`).
 - Gemini retries: up to `3` retries per endpoint, base delay `1000` ms, rate-limit delay budget `5 * 60 * 1000` ms (`packages/coding-agent/src/web/search/providers/gemini.ts`).
 
 ## Errors
@@ -210,7 +210,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
   - Anthropic: missing credentials throw a plain `Error`; a `404` is remapped to a special final message by `formatProviderError()`.
   - Perplexity: missing auth throws a plain `Error`; OAuth stream `error_code` events become `SearchProviderError("perplexity", ...)`.
   - Gemini: auth refresh, endpoint fallback, and retry logic are internal; final exhausted failures surface as `SearchProviderError("gemini", ...)`.
-  - Codex and Gemini both fail if the HTTP response has no body after a `200`.
+  - OpenAI code and Gemini both fail if the HTTP response has no body after a `200`.
   - Z.AI treats malformed SSE/JSON-RPC payloads as provider errors and retries only argument-shape failures across request variants.
   - SearXNG `findAuth()` can throw configuration errors before any HTTP call if Basic auth fields are incomplete or invalid.
 
@@ -220,5 +220,5 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
 - Most providers treat `limit` and `num_search_results` as the same number because adapters pass `params.numSearchResults ?? params.limit`. Perplexity is the only implementation that preserves both concepts.
 - The prompt says `recency` is for Brave and Perplexity, but code also implements it for Tavily and SearXNG.
 - The year rewrite in `executeSearch()` is blunt: any `2020`-`2029` substring is replaced with the current year.
-- `packages/coding-agent/src/config/settings-schema.ts` exposes provider preferences for `auto`, `exa`, `brave`, `jina`, `kimi`, `perplexity`, `anthropic`, `zai`, `tavily`, `kagi`, `synthetic`, `parallel`, and `searxng`. Gemini and Codex are in the registry and auto chain but not in that settings enum.
+- `packages/coding-agent/src/config/settings-schema.ts` exposes provider preferences for `auto`, `exa`, `brave`, `jina`, `kimi`, `perplexity`, `anthropic`, `zai`, `tavily`, `kagi`, `synthetic`, `parallel`, and `searxng`. Gemini and OpenAI code are in the registry and auto chain but not in that settings enum.
 - Exa availability fails closed unless `EXA_API_KEY` is present and Exa settings remain enabled.

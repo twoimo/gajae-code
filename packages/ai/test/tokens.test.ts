@@ -44,7 +44,7 @@ async function testTokensOnAbort<TApi extends Api>(llm: Model<TApi>, options: Op
 
 	expect(msg.stopReason).toBe("aborted");
 
-	// OpenAI providers, OpenAI Codex, Gemini CLI, zai, and the GPT-OSS model on Antigravity only send usage in the final chunk,
+	// OpenAI providers, OpenAI code provider, Gemini CLI, zai, and the GPT-OSS model on Antigravity only send usage in the final chunk,
 	// so when aborted they have no token stats Anthropic and Google send usage information early in the stream
 	if (
 		llm.api === "openai-completions" ||
@@ -60,7 +60,7 @@ async function testTokensOnAbort<TApi extends Api>(llm: Model<TApi>, options: Op
 		expect(msg.usage.input).toBeGreaterThan(0);
 		expect(msg.usage.output).toBeGreaterThan(0);
 
-		// Antigravity Gemini and Claude models report token usage, but no cost
+		// Antigravity Gemini and Anthropic model models report token usage, but no cost
 		if (llm.provider !== "google-antigravity") {
 			expect(msg.usage.cost.input).toBeGreaterThan(0);
 			expect(msg.usage.cost.total).toBeGreaterThan(0);

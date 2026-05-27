@@ -247,7 +247,7 @@ const IMAGE_TOKEN_ESTIMATE = 1200;
 
 /**
  * Estimate token count for a message using cl100k_base via the native
- * tokenizer. This is not Claude's first-party tokenizer (Anthropic doesn't
+ * tokenizer. This is not Anthropic's first-party tokenizer (Anthropic doesn't
  * publish one) but is within ~5–10% across English/code text.
  */
 export function estimateTokens(message: AgentMessage): number {

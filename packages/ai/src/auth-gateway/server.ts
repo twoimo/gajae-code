@@ -3,7 +3,7 @@
  *
  * Accepts any provider-format request (OpenAI chat-completions, Anthropic
  * messages, OpenAI Responses) and dispatches through pi-ai's `streamSimple()`
- * — which handles credential injection, anthropic-beta headers, codex
+ * — which handles credential injection, anthropic-beta headers, OpenAI code backend
  * websocket transport, and all the per-provider intricacies. The gateway is
  * pure protocol translation: foreign wire → gjc Context → pi-ai stream() →
  * gjc events → foreign wire.
@@ -63,13 +63,13 @@ const FORMAT_ROUTES: Record<string, { module: FormatModule; label: string }> = {
 };
 
 // (passthrough fast-path removed — it bypassed pi-ai provider logic, in
-// particular the Anthropic Claude-Code OAuth system-prompt prefix injection.
+// particular the Anthropic Anthropic-code OAuth system-prompt prefix injection.
 // Every request now takes the translate path so credential-specific request
 // shaping always applies.)
 
 // Options the caller's wire format may carry but the resolved provider can't
 // honour are dropped silently in `buildStreamOptions`. We used to 400 here
-// (`Unsupported option: temperature for openai-codex-responses`), but every
+// (`Unsupported option: temperature for OpenAI code provider-responses`), but every
 // realistic client (llm-git, openai SDK, anthropic SDK) bakes some of these
 // defaults in without knowing which model they'll resolve to. Failing loudly
 // just turned that into per-call config hell. Silent strip is what the
@@ -78,11 +78,11 @@ const FORMAT_ROUTES: Record<string, { module: FormatModule; label: string }> = {
 /**
  * Derive a stable cache identity from the parts of the request that don't
  * change turn-to-turn within a logical conversation: model id, system prompt,
- * tool definitions, and the first message (the conversation seed). Codex-class
+ * tool definitions, and the first message (the conversation seed). OpenAI code backend-class
  * backends only cache prefixes when an explicit `prompt_cache_key` is set;
  * without one, two requests with the same prefix but different trailing
  * messages don't coalesce. This bridges Anthropic-style clients (which signal
- * caching via `cache_control` markers rather than an opaque key) to Codex's
+ * caching via `cache_control` markers rather than an opaque key) to OpenAI code backend's
  * keyed model so cross-protocol caching "just works".
  *
  * Including the first message scopes the key to one logical conversation:
@@ -108,7 +108,7 @@ function deriveSessionId(modelId: string, context: Context): string {
 	}
 	const seed = parts.join("\u0000");
 	const hex = new Bun.CryptoHasher("sha256").update(seed).digest("hex");
-	// Format the leading 128 bits as a v4-shape UUID (8-4-4-4-12). Codex's
+	// Format the leading 128 bits as a v4-shape UUID (8-4-4-4-12). OpenAI code backend's
 	// `normalizeOpenAIResponsesPromptCacheKey` accepts ≤64 chars verbatim, so
 	// the 36-char UUID flows through unchanged.
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
@@ -117,7 +117,7 @@ function deriveSessionId(modelId: string, context: Context): string {
 function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: AbortSignal): SimpleStreamOptions {
 	const opts: SimpleStreamOptions = { signal };
 	const { options } = parsed;
-	// Codex backend rejects `temperature` / `top_p` (per-model defaults only),
+	// OpenAI code backend backend rejects `temperature` / `top_p` (per-model defaults only),
 	// so we drop them silently for that one provider. Every other unsupported
 	// option is just ignored by `streamSimple` if the underlying provider
 	// doesn't honour it.
@@ -144,7 +144,7 @@ function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: Abort
 	if (options.cacheRetention !== undefined) opts.cacheRetention = options.cacheRetention;
 	// Client-supplied `prompt_cache_key` wins; otherwise derive a stable
 	// key from the model + system + tools so prefix caching engages on
-	// Codex-class backends across turns of the same logical conversation.
+	// OpenAI code backend-class backends across turns of the same logical conversation.
 	opts.sessionId = options.promptCacheKey ?? deriveSessionId(parsed.modelId, parsed.context);
 	if (options.thinkingBudgets) {
 		opts.thinkingBudgets = { ...(opts.thinkingBudgets ?? {}), ...options.thinkingBudgets };
@@ -331,8 +331,8 @@ async function handleFormatEndpoint(
 	// canonical Context, dispatch through pi-ai's streamSimple, encode the
 	// canonical event stream back to the inbound format. There is no
 	// passthrough fast-path — every request flows through pi-ai so that
-	// credential-specific request shaping (OAuth Claude-Code prefix, beta
-	// headers, codex websocket transport, …) always applies.
+	// credential-specific request shaping (OAuth Anthropic-code prefix, beta
+	// headers, OpenAI code backend websocket transport, …) always applies.
 	let parsed: ParsedFormatRequest;
 	try {
 		parsed = route.module.parseRequest(body, req.headers);
@@ -442,8 +442,8 @@ async function handleFormatEndpoint(
  * just to bridge forward again is wasted work.
  *
  * Every other gateway concern (bearer auth, model resolve, credential fetch,
- * abort mirroring, codex temperature/topP strip, prefix-cache key derivation,
- * Claude-Code OAuth shaping inside `streamSimple`) still applies — only
+ * abort mirroring, OpenAI code backend temperature/topP strip, prefix-cache key derivation,
+ * Anthropic-code OAuth shaping inside `streamSimple`) still applies — only
  * `parseRequest`/`encodeResponse`/`encodeStream` differ from the format-endpoint
  * path.
  */
@@ -498,8 +498,8 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 
 	// Build the SimpleStreamOptions actually handed to `streamSimple`. We
 	// trust the client's options (already allow-listed by `parseRequest`) and
-	// only inject server-controlled fields. The codex temperature/topP strip
-	// matches `buildStreamOptions` — Codex rejects them with a 400.
+	// only inject server-controlled fields. The OpenAI code backend temperature/topP strip
+	// matches `buildStreamOptions` — OpenAI code backend rejects them with a 400.
 	const streamOpts: SimpleStreamOptions = { ...parsed.options, apiKey, signal: controller.signal };
 	streamOpts.onAuthError = (provider, oldKey, error) =>
 		refreshGatewayApiKeyAfterAuthError(
@@ -521,7 +521,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	const captured = captureRequestHeaders(req.headers);
 	streamOpts.headers = { ...captured, ...(streamOpts.headers ?? {}) };
 	// Cache identity: explicit `sessionId` wins, then derive a stable key
-	// from model + system + tools + first message so Codex prefix caching
+	// from model + system + tools + first message so OpenAI code backend prefix caching
 	// engages on the same logical conversation across turns.
 	streamOpts.sessionId ??= deriveSessionId(parsed.modelId, parsed.context);
 

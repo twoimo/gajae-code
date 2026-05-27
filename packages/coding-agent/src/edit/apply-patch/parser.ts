@@ -1,5 +1,5 @@
 /**
- * Parser for the Codex `apply_patch` envelope format.
+ * Parser for the OpenAI code backend `apply_patch` envelope format.
  *
  *     *** Begin Patch
  *     *** Add File: <path>
@@ -37,7 +37,7 @@ interface ParseApplyPatchOptions {
 }
 
 /**
- * Parse a Codex `*** Begin Patch` envelope into a list of single-file
+ * Parse a OpenAI code backend `*** Begin Patch` envelope into a list of single-file
  * patch inputs.
  */
 export function parseApplyPatch(patchText: string): PatchInput[] {

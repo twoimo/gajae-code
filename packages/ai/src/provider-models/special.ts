@@ -3,7 +3,7 @@ import type { ModelManagerOptions } from "../model-manager";
 import { fetchCodexModels } from "../utils/discovery/codex";
 
 // ---------------------------------------------------------------------------
-// OpenAI Codex
+// OpenAI code provider
 // ---------------------------------------------------------------------------
 
 export interface OpenAICodexModelManagerConfig {

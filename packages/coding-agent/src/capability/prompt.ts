@@ -1,7 +1,7 @@
 /**
  * Prompts Capability
  *
- * Reusable prompt templates (Codex format) available via /prompts: menu.
+ * Reusable prompt templates (OpenAI code backend format) available via /prompts: menu.
  */
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";

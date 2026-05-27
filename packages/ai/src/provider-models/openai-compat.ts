@@ -2066,7 +2066,7 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_BEDROCK: readonly ModelsDevProviderDescrip
 				id: crossRegionId,
 				name: toModelName(m.name, crossRegionId),
 			};
-			// Also emit EU variants for Claude models
+			// Also emit EU variants for Anthropic model models
 			if (modelId.startsWith("anthropic.claude-")) {
 				return [
 					bedrockModel,

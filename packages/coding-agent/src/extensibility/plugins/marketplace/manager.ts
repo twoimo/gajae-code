@@ -3,7 +3,7 @@
  *
  * Constructor takes explicit paths for testability (same pattern as registry.ts).
  * The `clearPluginRootsCache` dependency is injected so callers can provide
- * the real `clearClaudePluginRootsCache` while tests supply a counter stub.
+ * the real `clearAnthropic modelPluginRootsCache` while tests supply a counter stub.
  */
 
 import * as fs from "node:fs/promises";
@@ -51,7 +51,7 @@ export interface MarketplaceManagerOptions {
 	projectInstalledRegistryPath?: string;
 	marketplacesCacheDir: string;
 	pluginsCacheDir: string;
-	/** Injected for testing; production callers pass clearClaudePluginRootsCache.
+	/** Injected for testing; production callers pass clearAnthropic modelPluginRootsCache.
 	 *  Receives any additional file paths that should also be invalidated from the fs cache.
 	 */
 	clearPluginRootsCache?: (extraPaths?: readonly string[]) => void;
@@ -257,7 +257,7 @@ export class MarketplaceManager {
 		}
 
 		// 4. Resolve source path.
-		// marketplaceClonePath is the marketplace root — the directory containing .claude-plugin/
+		// marketplaceClonePath is the marketplace root — the directory containing .Anthropic model-plugin/
 		// catalogPath is <marketplacesCacheDir>/<name>/marketplace.json, so the root is two levels up.
 		// For local sources the content was fetched from a local path; the stored catalog is a copy
 		// under marketplacesCacheDir. We need the original source root for resolving relative paths.
@@ -364,7 +364,7 @@ export class MarketplaceManager {
 	/**
 	 * Resolve plugin version from multiple sources:
 	 * 1. Catalog entry version (if set)
-	 * 2. Plugin manifest (.claude-plugin/plugin.json or package.json)
+	 * 2. Plugin manifest (.Anthropic model-plugin/plugin.json or package.json)
 	 * 3. Git SHA from source (truncated to 7 chars)
 	 * 4. Fallback "0.0.0"
 	 */
@@ -749,7 +749,7 @@ export class MarketplaceManager {
 	 * Compute the marketplace root directory for source resolution.
 	 *
 	 * For local sources: sourceUri IS the local path, so resolve it directly.
-	 * This gives the directory containing `.claude-plugin/marketplace.json`,
+	 * This gives the directory containing `.Anthropic model-plugin/marketplace.json`,
 	 * which is what resolvePluginSource expects as `marketplaceClonePath`.
 	 *
 	 * For remote sources (git/github/url): the catalog was cloned into

@@ -2,7 +2,7 @@
  * Tests for project-scope registry resolution contracts.
  *
  * resolveActiveProjectRegistryPath: walk-up, .git fallback, null return, canonical path.
- * listClaudePluginRoots: project entries shadow user entries for same plugin ID.
+ * listAnthropic modelPluginRoots: project entries shadow user entries for same plugin ID.
  *
  * Note: helpers.ts imports @gajae-code/natives (Rust addon via glob).
  * This file imports from helpers.ts directly — the native addon IS present in the
@@ -132,14 +132,14 @@ describe("resolveActiveProjectRegistryPath", () => {
 	});
 });
 
-// ── listClaudePluginRoots: project shadows user ───────────────────────────────
+// ── listAnthropic modelPluginRoots: project shadows user ───────────────────────────────
 
 describe("listClaudePluginRoots — project shadows user", () => {
 	let tmpHome: string;
 	let tmpProject: string;
-	/** Path where listClaudePluginRoots reads the user GJC registry. */
+	/** Path where listAnthropic modelPluginRoots reads the user GJC registry. */
 	let userRegPath: string;
-	/** Path where listClaudePluginRoots reads the project registry (resolved from tmpProject). */
+	/** Path where listAnthropic modelPluginRoots reads the project registry (resolved from tmpProject). */
 	let projectRegPath: string;
 
 	beforeEach(() => {

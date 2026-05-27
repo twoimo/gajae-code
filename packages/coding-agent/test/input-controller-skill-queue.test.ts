@@ -527,7 +527,7 @@ describe("UiHelpers / InputController against the queued-display layer (E8-E9)",
 // E10: EventController refreshes the pending-messages bar on tagged custom
 // dequeue.
 //
-// Regression guard for the Codex P2 review finding on PR #1043: the
+// Regression guard for the OpenAI code backend P2 review finding on PR #1043: the
 // custom-role `message_start` branch in AgentSession.#handleAgentEvent spliced
 // the matching entry out of #steeringMessages / #followUpMessages correctly,
 // but EventController.#handleMessageStart only called updatePendingMessagesDisplay

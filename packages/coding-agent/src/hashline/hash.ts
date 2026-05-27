@@ -7,7 +7,7 @@ import bigrams from "./bigrams.json" with { type: "json" };
 
 /**
  * 647 single-token BPE bigrams for hashline anchors. Every entry tokenizes as
- * exactly one token in modern BPE vocabularies (cl100k / o200k / Claude family),
+ * exactly one token in modern BPE vocabularies (cl100k / o200k / Anthropic model family),
  * so a hashline anchor built from one bigram is exactly 1 token.
  *
  * This is the complete set of 2-letter lowercase combinations that are single

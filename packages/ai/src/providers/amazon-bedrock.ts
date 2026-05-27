@@ -47,15 +47,15 @@ export interface BedrockOptions extends StreamOptions {
 	reasoning?: Effort;
 	/* Custom token budgets per thinking level. Overrides default budgets. */
 	thinkingBudgets?: ThinkingBudgets;
-	/* Only supported by Claude 4.x models, see https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html#claude-messages-extended-thinking-tool-use-interleaved */
+	/* Only supported by Anthropic model 4.x models, see https://docs.aws.amazon.com/bedrock/latest/userguide/Anthropic model-messages-extended-thinking.html#Anthropic model-messages-extended-thinking-tool-use-interleaved */
 	interleavedThinking?: boolean;
 	/**
-	 * Controls how Claude returns thinking content in Bedrock responses.
+	 * Controls how Anthropic model returns thinking content in Bedrock responses.
 	 * - `"summarized"`: thinking blocks include human-readable summaries (default here).
 	 * - `"omitted"`: thinking content is suppressed; the encrypted signature still
 	 *   travels back for multi-turn continuity.
 	 *
-	 * Starting with Claude Opus 4.7 the Anthropic API default is `"omitted"`, which
+	 * Starting with Anthropic model Opus 4.7 the Anthropic API default is `"omitted"`, which
 	 * leaves callers waiting on a silent stream during long reasoning runs (issue
 	 * #1373). We default to `"summarized"` so adaptive-thinking models that accept
 	 * the field keep producing visible thinking deltas. Older adaptive-thinking
@@ -510,7 +510,7 @@ function handleContentBlockStop(
 
 /**
  * Check if the model supports prompt caching.
- * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x+ models, Haiku 4.5+
+ * Supported: Anthropic model 3.5 Haiku, Anthropic model 3.7 Sonnet, Anthropic model 4.x+ models, Haiku 4.5+
  *
  * For base models and system-defined inference profiles the model ID / ARN
  * contains the model name, so we can decide locally.
@@ -522,11 +522,11 @@ function handleContentBlockStop(
 function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean {
 	if (model.cost.cacheRead || model.cost.cacheWrite) return true;
 	const id = model.id.toLowerCase();
-	// Claude 4.x models (opus-4, sonnet-4, haiku-4)
+	// Anthropic model 4.x models (opus-4, sonnet-4, haiku-4)
 	if (id.includes("claude") && (id.includes("-4-") || id.includes("-4."))) return true;
-	// Claude 3.5 Haiku, Claude 3.7 Sonnet (legacy naming)
+	// Anthropic model 3.5 Haiku, Anthropic model 3.7 Sonnet (legacy naming)
 	if (id.includes("claude-3-7-sonnet") || id.includes("claude-3-5-haiku")) return true;
-	// Claude Haiku 4.5+ (new naming)
+	// Anthropic model Haiku 4.5+ (new naming)
 	if (id.includes("claude-haiku")) return true;
 	// Application inference profiles don't contain the model name in the ARN.
 	// Allow users to force cache points via environment variable.
@@ -536,7 +536,7 @@ function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean
 
 /**
  * Check if the model supports thinking signatures in reasoningContent.
- * Only Anthropic Claude models support the signature field.
+ * Only Anthropic Anthropic model models support the signature field.
  * Other models (Nova, Titan, Mistral, Llama, etc.) reject it with:
  * "This model doesn't support the reasoningContent.reasoningText.signature field"
  */
@@ -555,7 +555,7 @@ function buildSystemPrompt(
 
 	const blocks: SystemContent[] = prompts.map(prompt => ({ text: prompt }));
 
-	// Add cache point for supported Claude models
+	// Add cache point for supported Anthropic model models
 	if (cacheRetention !== "none" && supportsPromptCaching(model)) {
 		blocks.push({
 			cachePoint: { type: "default", ...(cacheRetention === "long" ? { ttl: "1h" } : {}) },
@@ -699,7 +699,7 @@ function convertMessages(
 		}
 	}
 
-	// Add cache point to the last user message for supported Claude models
+	// Add cache point to the last user message for supported Anthropic model models
 	if (cacheRetention !== "none" && supportsPromptCaching(model) && result.length > 0) {
 		const lastMessage = result[result.length - 1];
 		if (lastMessage.role === "user" && lastMessage.content) {
@@ -768,7 +768,7 @@ function buildAdditionalModelRequestFields(
 	const mode = model.thinking?.mode;
 	if (mode === "anthropic-adaptive") {
 		const effort = mapEffortToAnthropicAdaptiveEffort(model, reasoning);
-		// Starting with Claude Opus 4.7, Anthropic switched the adaptive-thinking
+		// Starting with Anthropic model Opus 4.7, Anthropic switched the adaptive-thinking
 		// default to "omitted", which silently suppresses streamed reasoning and
 		// can read as a stalled stream during long reasoning runs (issue #1373).
 		// Opt back into "summarized" by default on models that accept the field.
@@ -808,10 +808,10 @@ function buildAdditionalModelRequestFields(
 }
 
 /**
- * Adaptive thinking `display` is supported starting with Claude Opus 4.7.
+ * Adaptive thinking `display` is supported starting with Anthropic model Opus 4.7.
  * Older adaptive-thinking models (Opus 4.6, Sonnet 4.6+) reject the field.
  * Bedrock model ids are prefixed with region/inference-profile slugs (e.g.
- * `eu.anthropic.claude-opus-4-7-...`); the regex matches the `claude-opus-X-Y`
+ * `eu.anthropic.Anthropic model-opus-4-7-...`); the regex matches the `Anthropic model-opus-X-Y`
  * fragment regardless of prefix.
  */
 function supportsAdaptiveThinkingDisplay(modelId: string): boolean {

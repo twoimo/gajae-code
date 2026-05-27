@@ -40,7 +40,7 @@ export function parseModelString(
 	if (slashIdx <= 0) return undefined;
 	const id = modelStr.slice(slashIdx + 1);
 	const provider = modelStr.slice(0, slashIdx);
-	// Strip valid thinking level suffix (e.g., "claude-sonnet-4-6:high" -> id "claude-sonnet-4-6", thinkingLevel "high")
+	// Strip valid thinking level suffix (e.g., "Anthropic model-sonnet-4-6:high" -> id "Anthropic model-sonnet-4-6", thinkingLevel "high")
 	const colonIdx = id.lastIndexOf(":");
 	if (colonIdx !== -1) {
 		const suffix = id.slice(colonIdx + 1);
@@ -848,7 +848,7 @@ function resolveExactCanonicalScopePattern(
  * Resolve model patterns to actual Model objects with optional thinking levels
  * Format: "pattern:level" where :level is optional
  * For each pattern, finds all matching models and picks the best version:
- * 1. Prefer alias (e.g., claude-sonnet-4-5) over dated versions (claude-sonnet-4-5-20250929)
+ * 1. Prefer alias (e.g., Anthropic model-sonnet-4-5) over dated versions (Anthropic model-sonnet-4-5-20250929)
  * 2. If no alias, pick the latest dated version
  *
  * Supports models with colons in their IDs (e.g., OpenRouter's model:exacto).
@@ -1363,7 +1363,7 @@ export async function findSmolModel(
 
 /**
  * Find a slow/comprehensive model using the priority chain.
- * Prioritizes reasoning and codex models for thorough analysis.
+ * Prioritizes reasoning and OpenAI code backend models for thorough analysis.
  *
  * @param modelRegistry The model registry to search
  * @param savedModel Optional saved model string from settings (provider/modelId)

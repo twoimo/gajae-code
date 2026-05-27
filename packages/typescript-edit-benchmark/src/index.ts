@@ -3,7 +3,7 @@
  * Edit benchmark CLI entry point.
  *
  * Usage:
- *   bun run bench:edit --model anthropic/claude-sonnet-4-5
+ *   bun run bench:edit --model anthropic/Anthropic model-sonnet-4-5
  *   bun run bench:edit --tasks core-memory-recall,operations-division
  *   bun run bench:edit --runs 5 --output report.md
  *   bun run bench:edit --fixtures fixtures.tar.gz

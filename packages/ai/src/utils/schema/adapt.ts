@@ -8,7 +8,7 @@ import { tryEnforceStrictSchema } from "./normalize";
  * comparing strict vs non-strict outputs).
  *
  * Honored by every provider that emits `strict: true` on its function tools —
- * see `openai-completions`, `openai-responses`, `openai-codex-responses`, and
+ * see `openai-completions`, `openai-responses`, `OpenAI code provider-responses`, and
  * the strict candidate selection in `anthropic`.
  */
 export const NO_STRICT = $flag("PI_NO_STRICT");

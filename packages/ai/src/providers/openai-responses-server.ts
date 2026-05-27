@@ -184,7 +184,7 @@ function mapToolChoice(value: ParsedToolChoice | undefined): ParsedRequest["opti
 	if (value === undefined) return undefined;
 	if (value === "auto" || value === "none" || value === "required") return value;
 	if ("type" in value) {
-		// `custom` (codex apply_patch) and `function` both resolve to the same
+		// `custom` (OpenAI code backend apply_patch) and `function` both resolve to the same
 		// pi-ai shape: pi-ai's dispatcher matches `Tool.name` AND `customWireName`,
 		// so passing the wire name works for either.
 		if (value.type === "function" || value.type === "custom") return { name: value.name };

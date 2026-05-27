@@ -14,7 +14,7 @@
  * BASIC LIMITS (small images):
  * | Provider    | Model              | Max Images | Max Size | Max Dim  |
  * |-------------|--------------------|------------|----------|----------|
- * | Anthropic   | claude-haiku-4-5   | 100        | 5MB      | 8000px   |
+ * | Anthropic   | Anthropic model-haiku-4-5   | 100        | 5MB      | 8000px   |
  * | OpenAI      | gpt-4o-mini        | 500        | ≥25MB    | ≥20000px |
  * | Gemini      | gemini-2.5-flash   | ~2000*     | ≥40MB    | 8000px   |
  * | Mistral     | pixtral-12b        | 8          | ~15MB    | 8000px   |
@@ -244,7 +244,7 @@ describe("Image Limits E2E Tests", () => {
 	});
 
 	// -------------------------------------------------------------------------
-	// Anthropic (claude-haiku-4-5-20251001)
+	// Anthropic (Anthropic model-haiku-4-5-20251001)
 	// Limits: 100 images, 5MB per image, 8000px max dimension
 	// -------------------------------------------------------------------------
 	describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("Anthropic (claude-haiku-4-5-20251001)", () => {

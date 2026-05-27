@@ -17,7 +17,7 @@ import { getModel } from "@gajae-code/ai";
 const agent = new Agent({
 	initialState: {
 		systemPrompt: ["You are a helpful assistant."],
-		model: getModel("anthropic", "claude-sonnet-4-20250514"),
+		model: getModel("anthropic", "anthropic-model-sonnet-4-20250514"),
 	},
 });
 

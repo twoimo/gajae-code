@@ -3,7 +3,7 @@
  *
  * Discovers standalone AGENTS.md files by walking up from cwd.
  * This handles AGENTS.md files that live in project root (not in config directories
- * like .codex/ or .gemini/, which are handled by their respective providers).
+ * like .OpenAI code backend/ or .gemini/, which are handled by their respective providers).
  */
 import * as path from "node:path";
 import { registerProvider } from "../capability";

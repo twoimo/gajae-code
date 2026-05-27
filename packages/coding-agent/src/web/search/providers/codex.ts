@@ -1,8 +1,8 @@
 /**
- * OpenAI Codex Web Search Provider
+ * OpenAI code provider Web Search Provider
  *
- * Uses Codex's built-in web_search tool via the Responses API.
- * Auth is resolved through `AuthStorage.getOAuthAccess("openai-codex")` so the
+ * Uses OpenAI code backend's built-in web_search tool via the Responses API.
+ * Auth is resolved through `AuthStorage.getOAuthAccess("OpenAI code provider")` so the
  * broker is the sole refresh authority — this module never opens a sibling
  * SQLite store, never POSTs the broker sentinel to an OpenAI token endpoint.
  */
@@ -72,7 +72,7 @@ export interface CodexSearchParams {
 	search_context_size?: "low" | "medium" | "high";
 }
 
-/** Codex API response structure */
+/** OpenAI code backend API response structure */
 interface CodexResponseItem {
 	type: string;
 	id?: string;
@@ -135,7 +135,7 @@ function countCharacter(text: string, target: string): number {
 
 /**
  * Strips prose punctuation and unmatched closing delimiters from extracted URLs.
- * Codex often returns links in markdown or sentence text without structured annotations.
+ * OpenAI code backend often returns links in markdown or sentence text without structured annotations.
  */
 function normalizeExtractedUrl(candidate: string): string | null {
 	let url = candidate.trim();
@@ -202,7 +202,7 @@ function findMarkdownLinkUrlEnd(text: string, openParenIndex: number): number | 
 
 /**
  * Extracts citation sources from markdown links and bare URLs in the answer text.
- * Used as a fallback when the Codex response omits `url_citation` annotations.
+ * Used as a fallback when the OpenAI code backend response omits `url_citation` annotations.
  */
 function extractTextSources(text: string): SearchSource[] {
 	const sources: SearchSource[] = [];
@@ -237,7 +237,7 @@ function extractTextSources(text: string): SearchSource[] {
 }
 
 /**
- * Extracts account ID from a Codex access token.
+ * Extracts account ID from a OpenAI code backend access token.
  * @param accessToken - JWT access token
  * @returns Account ID string, or null if not found
  */
@@ -249,7 +249,7 @@ function getAccountIdFromJwt(accessToken: string): string | null {
 }
 
 /**
- * Resolve a Codex bearer + accountId through {@link AuthStorage} — the single
+ * Resolve a OpenAI code backend bearer + accountId through {@link AuthStorage} — the single
  * refresh authority. Returns `null` when no OAuth credential is configured,
  * when the credential cannot be refreshed (broker error, revoked token, etc.),
  * or when the access token carries no `chatgpt_account_id` claim.
@@ -267,7 +267,7 @@ async function findCodexAuth(
 }
 
 /**
- * Builds HTTP headers for Codex API requests.
+ * Builds HTTP headers for OpenAI code backend API requests.
  */
 function buildCodexHeaders(accessToken: string, accountId: string): Record<string, string> {
 	return {
@@ -282,9 +282,9 @@ function buildCodexHeaders(accessToken: string, accountId: string): Record<strin
 }
 
 /**
- * Calls the Codex Responses API with web search tool enabled.
+ * Calls the OpenAI code backend Responses API with web search tool enabled.
  * The caller provides the exact model id to send; retry / fallback policy
- * lives one layer up in `searchCodex()` so we can distinguish explicit user
+ * lives one layer up in `searchOpenAI code backend()` so we can distinguish explicit user
  * overrides from the default ChatGPT-account model-selection path.
  */
 async function callCodexSearch(
@@ -432,7 +432,7 @@ async function callCodexSearch(
 				? streamedAnswer
 				: finalAnswer;
 
-	// Fallback: when Codex omits url_citation annotations, scrape markdown links
+	// Fallback: when OpenAI code backend omits url_citation annotations, scrape markdown links
 	// and bare URLs from the synthesized answer so callers still receive sources.
 	if (sources.length === 0 && answer.length > 0) {
 		for (const source of extractTextSources(answer)) {
@@ -450,15 +450,15 @@ async function callCodexSearch(
 }
 
 /**
- * Executes a web search using OpenAI Codex's built-in web search tool.
+ * Executes a web search using OpenAI code provider's built-in web search tool.
  *
  * Default-model behavior:
- * - If `PI_CODEX_WEB_SEARCH_MODEL` is set, use it exactly once and surface any
+ * - If `PI_OPENAI_CODE_WEB_SEARCH_MODEL` is set, use it exactly once and surface any
  *   upstream error verbatim.
  * - Otherwise prefer ChatGPT-account-safe bundled defaults (GPT-5.4, GPT-5
- *   Codex, GPT-5, …) and retry the next candidate only when Codex returns the
+ *   OpenAI code backend, GPT-5, …) and retry the next candidate only when OpenAI code backend returns the
  *   known 400 "model is not supported" family. This avoids selecting
- *   `gpt-5-codex-mini` first on ChatGPT accounts, which OpenAI rejects.
+ *   `gpt-5-OpenAI code backend-mini` first on ChatGPT accounts, which OpenAI rejects.
  */
 export async function searchCodex(params: SearchParams): Promise<SearchResponse> {
 	const auth = await findCodexAuth(params.authStorage, params.sessionId, params.signal);
@@ -531,17 +531,17 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 }
 
 /**
- * Checks if Codex web search is available.
+ * Checks if OpenAI code backend web search is available.
  */
 export async function hasCodexSearch(authStorage: AuthStorage): Promise<boolean> {
 	// `isAvailable` runs before every request — keep the probe cheap.
 	// `hasOAuth(...)` is a synchronous in-memory check that returns true as soon
-	// as a Codex OAuth credential is loaded, without driving the refresh
-	// pipeline. The actual refresh happens lazily in `searchCodex`.
+	// as a OpenAI code backend OAuth credential is loaded, without driving the refresh
+	// pipeline. The actual refresh happens lazily in `searchOpenAI code backend`.
 	return authStorage.hasOAuth("openai-codex");
 }
 
-/** Search provider for OpenAI Codex web search. */
+/** Search provider for OpenAI code provider web search. */
 export class CodexProvider extends SearchProvider {
 	readonly id = "codex";
 	readonly label = "OpenAI";

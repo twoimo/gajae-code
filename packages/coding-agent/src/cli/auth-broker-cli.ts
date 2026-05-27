@@ -252,7 +252,7 @@ async function runLogout(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 
 /**
  * Maps the `type` field of a CLIProxyAPI credential JSON to the gjc provider id.
- * The filename also encodes the type (e.g. `claude-foo@bar.json`), but the
+ * The filename also encodes the type (e.g. `Anthropic model-foo@bar.json`), but the
  * in-file `type` is authoritative — we only fall back to filename if absent.
  */
 const CLIPROXY_TYPE_TO_PROVIDER: Record<string, string> = {

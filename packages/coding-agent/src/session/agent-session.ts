@@ -487,12 +487,12 @@ function dedupeIrcReply(text: string): string {
 
 /**
  * Build the per-request `metadata` payload for the Anthropic provider, shaped
- * like real Claude Code's `getAPIMetadata` output (`{ session_id, account_uuid,
+ * like real Anthropic Code's `getAPIMetadata` output (`{ session_id, account_uuid,
  * device_id }`) so the backend buckets requests under one session and attributes
  * them to the authenticated OAuth account when available. Resolved at request
  * time so token refreshes and login/logout transitions don't strand a stale
  * account UUID in memory. `account_uuid` and `device_id` are omitted for
- * non-Anthropic providers to avoid leaking the user's Claude identity to
+ * non-Anthropic providers to avoid leaking the user's Anthropic model identity to
  * third-party APIs (including Anthropic-format-compatible proxies such as
  * cloudflare-ai-gateway or gitlab-duo).
  *
@@ -514,7 +514,7 @@ function buildSessionMetadata(
 ): Record<string, unknown> {
 	const userId: Record<string, string> = { session_id: sessionId };
 	// Only look up account_uuid when the request is going to Anthropic. Injecting
-	// a Claude OAuth account_uuid into requests bound for other providers (including
+	// a Anthropic model OAuth account_uuid into requests bound for other providers (including
 	// Anthropic-format-compatible proxies like cloudflare-ai-gateway or gitlab-duo)
 	// would leak the user's Anthropic identity to unrelated third-party APIs.
 	if (provider === "anthropic") {
@@ -2734,7 +2734,7 @@ export class AgentSession {
 	/**
 	 * Set agent.sessionId from the session manager and install a dynamic
 	 * metadata resolver so every API request carries `metadata.user_id` shaped
-	 * like real Claude Code's `getAPIMetadata` output: `{ session_id,
+	 * like real Anthropic Code's `getAPIMetadata` output: `{ session_id,
 	 * account_uuid }` (the latter only when an Anthropic OAuth credential with
 	 * a known account UUID is loaded). Resolving live keeps the value in sync
 	 * with auth-state changes (login/logout, token refresh that surfaces a new
@@ -3840,7 +3840,7 @@ export class AgentSession {
 	/**
 	 * Resolve a role to its model AND thinking level.
 	 * Unlike resolveRoleModel(), this preserves the thinking level suffix
-	 * from role configuration (e.g., "anthropic/claude-sonnet-4-5:xhigh").
+	 * from role configuration (e.g., "anthropic/Anthropic model-sonnet-4-5:xhigh").
 	 */
 	resolveRoleModelWithThinking(role: string): ResolvedModelRoleValue {
 		return this.#resolveRoleModelFull(role, this.#modelRegistry.getAvailable(), this.model);
@@ -5266,7 +5266,7 @@ export class AgentSession {
 	 * True when *any* fast-mode-granting service tier is configured, regardless
 	 * of whether the active model's provider actually realizes it. Used by the
 	 * toggle (`/fast on|off`) so re-toggling a scoped tier (`openai-only`,
-	 * `claude-only`) doesn't silently broaden it to unscoped `priority`.
+	 * `Anthropic model-only`) doesn't silently broaden it to unscoped `priority`.
 	 *
 	 * For "is fast mode actually applied to the next request?" use
 	 * {@link isFastModeActive} instead — that one respects the model's provider.
@@ -5744,13 +5744,13 @@ export class AgentSession {
 		const generation = this.#promptGeneration;
 		// Skip overflow check if the message came from a different model.
 		// This handles the case where user switched from a smaller-context model (e.g. opus)
-		// to a larger-context model (e.g. codex) - the overflow error from the old model
+		// to a larger-context model (e.g. OpenAI code backend) - the overflow error from the old model
 		// shouldn't trigger compaction for the new model.
 		const sameModel =
 			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
 		// This handles the case where an error was kept after compaction (in the "kept" region).
 		// The error shouldn't trigger another compaction since we already compacted.
-		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
+		// Example: opus fails -> switch to OpenAI code backend -> compact -> switch back to opus -> opus error
 		// is still in context but shouldn't trigger compaction again.
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const errorIsFromBeforeCompaction =

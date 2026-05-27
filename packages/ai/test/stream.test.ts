@@ -1412,7 +1412,7 @@ describe("Generate E2E Tests", () => {
 		it.skipIf(!antigravityToken)(
 			"should handle thinking",
 			async () => {
-				// claude-sonnet-4-5 has reasoning: false, use claude-sonnet-4-5-thinking
+				// Anthropic model-sonnet-4-5 has reasoning: false, use Anthropic model-sonnet-4-5-thinking
 				const thinkingModel = getBundledModel("google-antigravity", "claude-sonnet-4-5-thinking");
 				await handleThinking(thinkingModel, {
 					apiKey: antigravityToken,

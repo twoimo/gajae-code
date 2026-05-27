@@ -464,7 +464,7 @@ export async function requestOpenAiRemoteCompaction(
 		...(model.headers ?? {}),
 	};
 
-	// Codex endpoints require additional auth headers
+	// OpenAI code backend endpoints require additional auth headers
 	if (model.provider === "openai-codex") {
 		const accountId = getCodexAccountId(apiKey);
 		if (accountId) {

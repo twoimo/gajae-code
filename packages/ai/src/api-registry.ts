@@ -2,7 +2,7 @@
  * Custom API provider registry.
  *
  * Allows extensions to register streaming functions for custom API types
- * (e.g., "vertex-claude-api") that are not built into stream.ts.
+ * (e.g., "vertex-Anthropic model-api") that are not built into stream.ts.
  */
 import type {
 	Api,

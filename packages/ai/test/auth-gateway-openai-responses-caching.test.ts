@@ -38,7 +38,7 @@ interface OpenAIResponse {
 
 const GATEWAY_URL = Bun.env.GJC_E2E_GATEWAY_URL ?? "http://127.0.0.1:4000";
 const TOKEN_PATH = path.join(os.homedir(), ".gjc", "auth-gateway.token");
-// `gpt-5.3-codex` is the model we've verified the ChatGPT-subscription Codex
+// `gpt-5.3-OpenAI code backend` is the model we've verified the ChatGPT-subscription OpenAI code backend
 // backend accepts; older or higher-tier ids 4xx with "model not supported".
 const MODEL = Bun.env.GJC_E2E_OPENAI_RESPONSES_MODEL ?? "gpt-5.3-codex";
 
@@ -136,7 +136,7 @@ describe.skipIf(!gateway.ok)("auth-gateway: openai-responses prompt caching e2e"
 		// Prepend (not append) — OpenAI caches at prefix-tree granularity, so the
 		// first chunk must differ across runs to guarantee a cold start.
 		const instructionsWithNonce = `[run-nonce: ${nonce}]\n\n${INSTRUCTIONS}`;
-		// Stable per-run cache key. The ChatGPT-subscription Codex backend
+		// Stable per-run cache key. The ChatGPT-subscription OpenAI code backend backend
 		// only coalesces prefixes across requests when an explicit
 		// `prompt_cache_key` is set — caching is opt-in there, unlike public
 		// OpenAI Responses which caches automatically. Reusing the same key

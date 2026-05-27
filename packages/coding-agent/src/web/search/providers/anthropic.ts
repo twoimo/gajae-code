@@ -1,7 +1,7 @@
 /**
  * Anthropic Web Search Provider
  *
- * Uses Claude's built-in web_search_20250305 tool to search the web.
+ * Uses Anthropic's built-in web_search_20250305 tool to search the web.
  * Returns synthesized answers with citations and source metadata.
  */
 import {
@@ -51,7 +51,7 @@ function getModel(): string {
 /**
  * Builds system instruction blocks for the Anthropic API request.
  * @param auth - Authentication configuration
- * @param model - Model identifier (affects whether Claude Code instruction is included)
+ * @param model - Model identifier (affects whether Anthropic Code instruction is included)
  * @param systemPrompt - Optional system prompt for guiding response style
  * @returns Array of system blocks for the API request
  */
@@ -236,7 +236,7 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 }
 
 /**
- * Executes a web search using Anthropic's Claude with built-in web search tool.
+ * Executes a web search using Anthropic's Anthropic model with built-in web search tool.
  * @param params - Search parameters including query and optional settings
  * @returns Search response with synthesized answer, sources, and citations
  * @throws {Error} If no Anthropic credentials are configured
@@ -287,7 +287,7 @@ export async function searchAnthropic(
 	return result;
 }
 
-/** Search provider for Anthropic Claude web search. */
+/** Search provider for Anthropic Anthropic model web search. */
 export class AnthropicProvider extends SearchProvider {
 	readonly id = "anthropic";
 	readonly label = "Anthropic";

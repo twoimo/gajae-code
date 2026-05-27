@@ -14,7 +14,7 @@ import {
  * Root cause hypothesis: buildSessionContext walks entries in path order and
  * overwrites `models.default` from every assistant message's reported model.
  * When a temporary fallback (e.g. retry fallback or a server-side downgrade
- * in the codex provider) emits an assistant message tagged with the older
+ * in the OpenAI code backend provider) emits an assistant message tagged with the older
  * model id, that id clobbers the user's explicitly chosen default.
  *
  * Contract under test: an explicit `model_change` with role="default" must
@@ -83,7 +83,7 @@ describe("issue #849: explicit default model survives later assistant-message in
 
 	it("preserves explicit user-selected default when the codex backend reports a different model id", () => {
 		// User picks gpt-5.5; the assistant message returned by the upstream
-		// codex backend is tagged "gpt-5.4" (server-side downgrade /
+		// OpenAI code backend backend is tagged "gpt-5.4" (server-side downgrade /
 		// stale id mapping).  Resume must still restore what the user picked.
 		const entries: SessionEntry[] = [
 			makeModelChange("b1", null, "openai-codex/gpt-5.5", "default"),

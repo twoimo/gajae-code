@@ -446,7 +446,7 @@ describe("Orphan Tool Result (handoff/compaction) Regression", () => {
 		//    priority (Ollama: developer -> system; OpenAI chat-completions
 		//    reasoning models: developer -> developer). Stale tool output must not
 		//    gain instruction priority above the user/developer messages it lived
-		//    alongside before compaction. See Codex review on PR #1165.
+		//    alongside before compaction. See OpenAI code backend review on PR #1165.
 		const noteCarriers = transformed.filter(
 			(m): m is UserMessage =>
 				m.role === "user" &&
@@ -547,7 +547,7 @@ describe("Orphan Tool Result (handoff/compaction) Regression", () => {
 	});
 
 	it("drops orphan tool_result inside an aborted-tool-call window without corrupting the real later result", () => {
-		// Codex P1 review on PR #1165: if message order is
+		// OpenAI code backend P1 review on PR #1165: if message order is
 		//   assistant(stopReason=aborted, toolCall A) -> orphan toolResult X -> real toolResult A
 		// the previous version of the orphan branch called
 		// `flushPendingAbortedToolCalls()` inside the orphan-`toolResult` handler.
@@ -621,7 +621,7 @@ describe("Orphan Tool Result (handoff/compaction) Regression", () => {
 		expect(orphanNotes.length).toBe(0);
 
 		// 3. The REAL toolResult for the aborted id must survive intact —
-		//    NOT be replaced by a synthetic "aborted" one (this is the Codex bug).
+		//    NOT be replaced by a synthetic "aborted" one (this is the OpenAI code backend bug).
 		const abortedResults = transformed.filter(
 			(m): m is ToolResultMessage => m.role === "toolResult" && (m as ToolResultMessage).toolCallId === abortedId,
 		);
@@ -640,7 +640,7 @@ describe("Orphan Tool Result (handoff/compaction) Regression", () => {
 	});
 
 	it("never emits orphan tool output via the developer channel (no instruction-priority elevation)", () => {
-		// Codex P1 on PR #1165: emitting orphan tool output as a `developer`-role
+		// OpenAI code backend P1 on PR #1165: emitting orphan tool output as a `developer`-role
 		// message is unsafe across providers. Ollama serializes `developer` as a
 		// `system` message (highest instruction priority); OpenAI chat-completions
 		// reasoning models forward `developer` as `developer` (above-user
@@ -690,7 +690,7 @@ describe("Orphan Tool Result (handoff/compaction) Regression", () => {
 			).toBe(0);
 
 			// Orphan content must NOT appear in any developer-channel message —
-			// that is the instruction-priority elevation Codex flagged.
+			// that is the instruction-priority elevation OpenAI code backend flagged.
 			const developerLeaks = transformed.filter(
 				(t): t is DeveloperMessage =>
 					t.role === "developer" &&
@@ -720,7 +720,7 @@ describe("Orphan Tool Result (handoff/compaction) Regression", () => {
 });
 
 /**
- * Tests for Codex-style abort handling:
+ * Tests for OpenAI code backend-style abort handling:
  * - Tool calls are preserved (not converted to text summaries)
  * - Synthetic "aborted" tool results are injected
  * - A <turn-aborted> guidance marker is added as synthetic user message

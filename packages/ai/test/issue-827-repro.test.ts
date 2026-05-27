@@ -136,7 +136,7 @@ describe("issue #827 — kimi reasoning models drop reasoning under forced tool_
 	});
 
 	it("strips reasoning_effort for Anthropic Claude models served via openai-completions (e.g. LiteLLM/OpenRouter proxies)", async () => {
-		// LiteLLM / Vertex proxies often expose Claude through chat-completions; Anthropic
+		// LiteLLM / Vertex proxies often expose Anthropic model through chat-completions; Anthropic
 		// itself rejects reasoning + forced tool_choice (see anthropic.ts:disableThinkingIfToolChoiceForced),
 		// so the same constraint must follow the model when it's reached through the OpenAI shape.
 		const model: Model<"openai-completions"> = {

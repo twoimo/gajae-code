@@ -193,7 +193,7 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	// Check custom API registry first (extension-provided APIs like "vertex-claude-api")
+	// Check custom API registry first (extension-provided APIs like "vertex-Anthropic model-api")
 	const customApiProvider = getCustomApi(model.api);
 	if (customApiProvider) {
 		return customApiProvider.stream(model, context, options as StreamOptions);

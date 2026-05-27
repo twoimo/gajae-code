@@ -99,11 +99,11 @@ Commands:
   list              List available providers
 
 Providers:
-  anthropic         Anthropic (Claude Pro/Max)
+  anthropic         Anthropic
   github-copilot    GitHub Copilot
   google-gemini-cli Google Gemini CLI
-  google-antigravity Antigravity (Gemini 3, Claude, GPT-OSS)
-  openai-codex      OpenAI Codex (ChatGPT Plus/Pro)
+  google-antigravity Antigravity (Gemini 3, Anthropic, GPT-OSS)
+  openai-codex      OpenAI code provider (ChatGPT Plus/Pro)
   kimi-code         Kimi Code
   kilo              Kilo Gateway
   kagi              Kagi
@@ -113,7 +113,7 @@ Providers:
   nanogpt           NanoGPT
   minimax-code      MiniMax Coding Plan (International)
   minimax-code-cn   MiniMax Coding Plan (China)
-  cursor            Cursor (Claude, GPT, etc.)
+  cursor            Cursor (Anthropic, GPT, etc.)
   zenmux            ZenMux
   ollama-cloud      Ollama Cloud
 

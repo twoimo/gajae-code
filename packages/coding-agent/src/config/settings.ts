@@ -191,7 +191,7 @@ export class Settings {
 
 	/** Global settings from config.yml */
 	#global: RawSettings = {};
-	/** Project settings from .claude/settings.yml etc */
+	/** Project settings from .Anthropic model/settings.yml etc */
 	#project: RawSettings = {};
 	/** Runtime overrides (not persisted) */
 	#overrides: RawSettings = {};

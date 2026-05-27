@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Restored `gjc team` multi-worker OMX-parity orchestration with current-window worker panes, GJC-scoped state/API semantics, and `N:agent-type` launches.
+- Restored `gjc team` multi-worker GJC-team parity orchestration with current-window worker panes, GJC-scoped state/API semantics, and `N:agent-type` launches.
 
 ### Added
 
@@ -13,9 +13,9 @@
 - Added shared `/model` onboarding guidance and an interactive `/provider` onboarding chooser so first launch, slash commands, and TUI no-model states point at the same provider setup flows.
 - Added a native in-TUI skill HUD rail backed by `.gjc/state/skill-active-state.json`, so active GJC workflow skills are visible without a separate tmux pane.
 - Added bundled `executor`, `architect`, `planner`, and `critic` role agents for task delegation, including source-defined prompt files and role-agent discovery coverage.
-- Added a native `gjc team` runtime that writes GJC-scoped state, mailboxes, task lifecycle files, and telemetry without delegating to an external `omx` binary
-- Added `codex` and `gemini` to the web search provider settings so users can configure OpenAI and Gemini web search directly from provider selection
-- Added OpenAI (`codex`) and Gemini web search options with updated setup descriptions for `omp /login openai-codex` and Gemini OAuth login
+- Added a native `gjc team` runtime that writes GJC-scoped state, mailboxes, task lifecycle files, and telemetry without delegating to an external team binary
+- Added `openai-code` and `gemini` to the web search provider settings so users can configure OpenAI and Gemini web search directly from provider selection
+- Added OpenAI (`openai-code`) and Gemini web search options with updated setup descriptions for `gjc /login openai-code` and Gemini OAuth login
 
 ### Changed
 
@@ -29,7 +29,7 @@
 - Constrained the visible GJC utility surface to the retained workflow/runtime endpoints and four bundled task agents, with MCP, arbitrary skill, plugin, extension, marketplace, and custom discovery surfaces quarantined from default public use.
 - Redesigned the interactive TUI chrome with a minimal opencode-style prompt composer, simple user/gajae transcript labels, a forge-style welcome surface, and compact cwd/pulse indicators tuned for terminal coding-agent ergonomics.
 - Changed web search provider credential lookup to use the shared `AuthStorage` pipeline (`getApiKey`/`getOAuthAccess`) for API-key and OAuth auth instead of direct `AgentStorage` access
-- Changed the `codex` web search provider display label from `Codex` to `OpenAI`
+- Changed the `openai-code` web search provider display label from `OpenAI code` to `OpenAI`
 - Updated `anthropic` and `openai`/`gemini` web search option descriptions to reflect their native `web_search`/OAuth requirements
 - Changed `/model` selection to a canonical single default-model action, removing the redundant role assignment menu for smol/slow/vision/plan/designer/commit/task models.
 - Changed public API-compatible provider setup to require `--api-key-env` and reject raw `--api-key` values.
@@ -52,9 +52,9 @@
 - Wired GJC native UserPromptSubmit/Stop skill-state hooks, including `gjc setup hooks`, so public workflow keywords activate `.gjc/state`, active skill state can block premature Stop events, and active Ultragoal sessions remind steering prompts to use `gjc ultragoal steer`.
 - Fixed `gjc ultragoal create-goals` to seed GJC goal mode runtime state automatically, avoiding a separate manual `/goal` setup step.
 - Fixed legacy Pi plugin import remapping and stale GJC config-path tests so rebranded `.gjc` discovery contracts pass while preserving legacy compatibility.
-- Fixed web search OAuth-backed providers (including Codex and Gemini) to use broker-managed token retrieval and account metadata, avoiding direct token-store refresh behavior that could cause search authentication failures
+- Fixed web search OAuth-backed providers (including OpenAI code and Gemini) to use broker-managed token retrieval and account metadata, avoiding direct token-store refresh behavior that could cause search authentication failures
 - Updated Tavily missing-credential feedback to prompt users to configure an API-key provider setting instead of referencing `agent.db` directly
-- Refreshed expired OpenAI Codex OAuth tokens during `web_search` execution and persisted the updated credentials so searches continue working after token expiry
+- Refreshed expired OpenAI code provider OAuth tokens during `web_search` execution and persisted the updated credentials so searches continue working after token expiry
 - Wired `/login`, `/logout`, `/model`, and `/provider` TUI slash commands through interactive provider/model selectors and existing OAuth flows.
 
 ### Fixed
@@ -67,7 +67,7 @@
 - Added inline `|TEXT` payload support to `»` and `«` hashline insert operations, allowing single-line inserts on the op line and still supporting additional payload lines
 - Added support for using inline payloads with BOF/EOF inserts so `|TEXT` is treated as inserted content at file boundaries
 - Added live nested-`task` rendering: while a subagent is mid-flight, the parent UI now surfaces both completed nested `task` sub-calls and the in-flight nested snapshot (forwarded from `tool_execution_update`), matching the finished-result tree
-- Added `omp auth-gateway check` (and matching `GET /v1/credentials/check` endpoint) — probes each broker-supplied credential against its provider's auth-verifying usage endpoint and prints per-credential health, so when a multi-account pool starts returning 401s you can identify which row in the broker is the bad one. The existing `/v1/usage` endpoint silently drops failed credentials, which is the wrong shape for diagnosing auth — the new endpoint captures errors and surfaces the credential's id, provider, type, email/accountId, and the upstream error string. CLI groups results per-provider, exits non-zero when any credential failed, and supports `--json` for scripting. The probe also exercises OAuth refresh on expired tokens, so a working refresh + working access reports as `ok` and a revoked refresh token reports as `oauth refresh failed: …` instead of being masked by the cached expired access token.
+- Added `gjc auth-gateway check` (and matching `GET /v1/credentials/check` endpoint) — probes each broker-supplied credential against its provider's auth-verifying usage endpoint and prints per-credential health, so when a multi-account pool starts returning 401s you can identify which row in the broker is the bad one. The existing `/v1/usage` endpoint silently drops failed credentials, which is the wrong shape for diagnosing auth — the new endpoint captures errors and surfaces the credential's id, provider, type, email/accountId, and the upstream error string. CLI groups results per-provider, exits non-zero when any credential failed, and supports `--json` for scripting. The probe also exercises OAuth refresh on expired tokens, so a working refresh + working access reports as `ok` and a revoked refresh token reports as `oauth refresh failed: …` instead of being masked by the cached expired access token.
 
 ### Fixed
 
@@ -114,13 +114,13 @@
 ## [15.2.3] - 2026-05-22
 ### Breaking Changes
 
-- Changed PR and task-isolation worktree directory layout to hash-based `~/.omp/wt/<identifier>-<path-hash>` style paths, replacing the previous nested encoded-repo layout
+- Changed PR and task-isolation worktree directory layout to hash-based `~/.gjc/wt/<identifier>-<path-hash>` style paths, replacing the previous nested encoded-repo layout
 
 ### Added
 
-- Added `omp worktree` command (alias `wt`) to list and manage agent-managed worktrees under `~/.omp/wt`
-- Added `omp worktree clear` to remove orphaned worktree directories, with `--all` to include live PR-checkouts, `--dry-run` for preview, and `--json` reporting
-- Added machine-readable JSON output to `omp worktree list` for scripted inspection
+- Added `gjc worktree` command (alias `wt`) to list and manage agent-managed worktrees under `~/.gjc/wt`
+- Added `gjc worktree clear` to remove orphaned worktree directories, with `--all` to include live PR-checkouts, `--dry-run` for preview, and `--json` reporting
+- Added machine-readable JSON output to `gjc worktree list` for scripted inspection
 - Added `display.shimmer` appearance setting with `classic`, `kitt` (Knight Rider K.I.T.T. scanner), and `disabled` modes
 
 ### Changed
@@ -142,7 +142,7 @@
 
 ### Fixed
 
-- Fixed `RULES.md` not being injected. The documented sticky-rules file at `~/.omp/agent/RULES.md` and `<repo>/.omp/RULES.md` was never read by any discovery provider; only `.omp/rules/*.md` was scanned. The native provider now loads both as always-apply rules so they re-attach every turn as documented ([#1266](https://github.com/can1357/gajae-code/issues/1266)).
+- Fixed `RULES.md` not being injected. The documented sticky-rules file at `~/.gjc/agent/RULES.md` and `<repo>/.gjc/RULES.md` was never read by any discovery provider; only `.gjc/rules/*.md` was scanned. The native provider now loads both as always-apply rules so they re-attach every turn as documented ([#1266](https://github.com/can1357/gajae-code/issues/1266)).
 
 ## [15.2.1] - 2026-05-21
 
@@ -177,11 +177,11 @@
 
 ### Fixed
 
-- Fixed `omp acp` auto-discovering host `.mcp.json` servers in parallel with the ACP client's `session/new.mcpServers`, which shadowed client-supplied MCP tools in `search_tool_bm25` and the session tool registry. The ACP session factory now forces `enableMCP: false`, so MCP ownership stays with `AcpAgent#configureMcpServers`. Non-ACP modes keep on-disk discovery. ([#1234](https://github.com/can1357/gajae-code/issues/1234))
+- Fixed `gjc acp` auto-discovering host `.mcp.json` servers in parallel with the ACP client's `session/new.mcpServers`, which shadowed client-supplied MCP tools in `search_tool_bm25` and the session tool registry. The ACP session factory now forces `enableMCP: false`, so MCP ownership stays with `AcpAgent#configureMcpServers`. Non-ACP modes keep on-disk discovery. ([#1234](https://github.com/can1357/gajae-code/issues/1234))
 
 ### Fixed
 
-- Fixed binary `omp update` rollbacks so a downloaded replacement that fails post-install version verification no longer remains installed over the previous working binary. ([#1240](https://github.com/can1357/gajae-code/issues/1240))
+- Fixed binary `gjc update` rollbacks so a downloaded replacement that fails post-install version verification no longer remains installed over the previous working binary. ([#1240](https://github.com/can1357/gajae-code/issues/1240))
 
 ### Fixed
 
@@ -189,7 +189,7 @@
 
 ### Fixed
 
-- Fixed `web_search` freezing the session when an upstream provider stalled. Bun's WinHTTP backend on Windows can silently drop `AbortSignal` once a TCP/TLS connection hangs (oven-sh/bun#15275, oven-sh/bun#18536), so Esc never reached the in-flight fetch and the only recovery was Ctrl+C + `omp --resume`. Every web-search provider's outbound `fetch` (anthropic, brave, codex, exa, gemini, jina, kagi, kimi, parallel, perplexity, searxng, synthetic, tavily, z.ai) now composes the caller signal with a 60s hard timeout via a shared `withHardTimeout` helper, guaranteeing the request settles within a minute even when Bun's abort fails to propagate. Independently, `executeSearch`'s provider-fallback loop was masking real cancellations as ordinary provider errors and returning "All web search providers failed"; it now re-throws as `ToolAbortError` the moment the caller's signal aborts, so the session sees a clean cancel on every platform. ([#1221](https://github.com/can1357/gajae-code/issues/1221))
+- Fixed `web_search` freezing the session when an upstream provider stalled. Bun's WinHTTP backend on Windows can silently drop `AbortSignal` once a TCP/TLS connection hangs (oven-sh/bun#15275, oven-sh/bun#18536), so Esc never reached the in-flight fetch and the only recovery was Ctrl+C + `gjc --resume`. Every web-search provider's outbound `fetch` (anthropic, brave, openai-code, exa, gemini, jina, kagi, kimi, parallel, perplexity, searxng, synthetic, tavily, z.ai) now composes the caller signal with a 60s hard timeout via a shared `withHardTimeout` helper, guaranteeing the request settles within a minute even when Bun's abort fails to propagate. Independently, `executeSearch`'s provider-fallback loop was masking real cancellations as ordinary provider errors and returning "All web search providers failed"; it now re-throws as `ToolAbortError` the moment the caller's signal aborts, so the session sees a clean cancel on every platform. ([#1221](https://github.com/can1357/gajae-code/issues/1221))
 
 ### Added
 
@@ -200,7 +200,7 @@
 ### Fixed
 
 - Fixed streaming edit previews for `apply_patch` and `hashline` jittering as the model typed `+added` lines. Two root causes addressed: (1) the trailing partial line of the streaming text input is now trimmed at each tick so a half-typed `+added` line no longer flickers; (2) the preview is rendered in the model's input order during streaming instead of re-deriving a unified diff via `Diff.structuredPatch`, whose coalescing previously reshuffled existing `+added` lines downward each time a new `-removed` line arrived. Existing additions now stay put and the preview only grows at the bottom while streaming. A residual trailing `-removed`/hunk-header block whose matching `+added` companion has not yet arrived is also suppressed until the additions land.
-- Fixed Perplexity web search appearing "logged out" roughly an hour after `omp auth login perplexity`. The search provider's `findOAuthToken` was honoring the bogus `expires = login_time + 1h` written by older logins (Perplexity JWTs typically omit `exp` because sessions are server-side) and silently dropping the credential. The loader now decodes the JWT's `exp` claim directly and only skips when the JWT itself is expired; tokens without an `exp` claim are treated as non-expiring.
+- Fixed Perplexity web search appearing "logged out" roughly an hour after `gjc auth login perplexity`. The search provider's `findOAuthToken` was honoring the bogus `expires = login_time + 1h` written by older logins (Perplexity JWTs typically omit `exp` because sessions are server-side) and silently dropping the credential. The loader now decodes the JWT's `exp` claim directly and only skips when the JWT itself is expired; tokens without an `exp` claim are treated as non-expiring.
 
 ### Fixed
 
@@ -213,18 +213,18 @@
 - Fixed `debug` launch/attach failures so `configurationDone` no longer masks the underlying DAP launch error, early stop-outcome watchers cannot emit unhandled rejections, and directory-valued launch programs are rejected before adapter selection. ([#1187](https://github.com/can1357/gajae-code/issues/1187))
 - Fixed hashline edit payloads that use a readability space after `~` by warning on separator-padding-shaped payload blocks and tightening the model prompt. ([#1166](https://github.com/can1357/gajae-code/issues/1166))
 - Fixed ACP bash permission requests to include execute tool metadata and command content so clients can render command approval prompts consistently. ([#1189](https://github.com/can1357/gajae-code/issues/1189))
-- Fixed the status-line fast-mode indicator (`⚡`) rendering for scoped service tiers (`openai-only`, `claude-only`) even when the active model's provider didn't realize them — e.g. `serviceTier: "openai-only"` would still show the indicator next to a Claude model the wire request couldn't apply fast mode to. The indicator now consults a new `AgentSession.isFastModeActive()` predicate that runs the configured tier through `resolveServiceTier(tier, model.provider)` and only lights up when the result is `"priority"` for the current model. `isFastModeEnabled()` keeps its scope-aware semantics so `/fast on|off|toggle` and `/fast status` continue to reflect the user's configured intent.
+- Fixed the status-line fast-mode indicator (`⚡`) rendering for scoped service tiers (`openai-only`, `anthropic-model-only`) even when the active model's provider didn't realize them — e.g. `serviceTier: "openai-only"` would still show the indicator next to a Anthropic model model the wire request couldn't apply fast mode to. The indicator now consults a new `AgentSession.isFastModeActive()` predicate that runs the configured tier through `resolveServiceTier(tier, model.provider)` and only lights up when the result is `"priority"` for the current model. `isFastModeEnabled()` keeps its scope-aware semantics so `/fast on|off|toggle` and `/fast status` continue to reflect the user's configured intent.
 ### Fixed
 
 - Fixed status-line context% computation freezing the UI for ~1.1 s every 2 s on long sessions (2,000+ messages). The earlier alignment fix (which uses `computeContextBreakdown` to match the `/context` slash command) was running on every agent event via `updateEditorTopBorder()` (event-controller.ts:163), and `computeContextBreakdown` walks every message through the native `countTokens` tokenizer (~0.5 ms each) — for the user's 2,312-message session this was ~1,120 ms synchronous blocking per cache miss, producing the user-visible "jittery rendering" and "status bar disappearing during streaming". `StatusLineComponent.getCachedContextBreakdown()` now uses an incremental per-message token cache: messages are walked ONCE during warm-up, and subsequent refreshes only compute tokens for the NEW messages appended since last call (typically 0–1 per refresh during streaming). The LAST message is always recomputed because its content may still be growing mid-stream; all prior messages are immutable once a newer message exists. Compaction (messages array shrinks) resets the cache. Non-message tokens (system prompt + tools + skills) are cached separately and invalidated via a cheap identity fingerprint. Result: 2,300-message warm refresh drops from ~1,120 ms to ~0.04 ms — 28,000× faster. Functional parity with the prior `computeContextBreakdown` path is preserved.
 
 ### Added
 
-- Added scoped service tier values to the `serviceTier` setting: `priority (OpenAI only)` and `priority (Claude only)`. They let you opt into premium processing on one provider family without paying premium costs on the other when switching models mid-session. `/fast on` continues to set the unscoped `"priority"` (active everywhere supported); `/fast status` and `isFastModeEnabled()` now report `on` for any scoped value too.
+- Added scoped service tier values to the `serviceTier` setting: `priority (OpenAI only)` and `priority (Anthropic model only)`. They let you opt into premium processing on one provider family without paying premium costs on the other when switching models mid-session. `/fast on` continues to set the unscoped `"priority"` (active everywhere supported); `/fast status` and `isFastModeEnabled()` now report `on` for any scoped value too.
 
 ### Changed
 
-- Changed `/fast` to be a single provider-agnostic toggle: enabling the command sets `serviceTier: "priority"` for every provider, and the anthropic-messages provider translates `priority` into `speed: "fast"` plus the `fast-mode-2026-02-01` beta. Anthropic fast mode is currently supported on Claude Opus 4.6 and 4.7; the server rejects other models, which triggers the provider's auto-fallback (request retried without the priority signal, `providerSessionState.fastModeDisabled` persisted for the rest of the session). The session listens for the `"priority"` marker in `AssistantMessage.disabledFeatures`, syncs `/fast` off, and emits a warning notice. Re-running `/fast on` clears the per-session disable so the next request actually re-tries priority.
+- Changed `/fast` to be a single provider-agnostic toggle: enabling the command sets `serviceTier: "priority"` for every provider, and the anthropic-messages provider translates `priority` into `speed: "fast"` plus the `fast-mode-2026-02-01` beta. Anthropic fast mode is currently supported on Anthropic model Opus 4.6 and 4.7; the server rejects other models, which triggers the provider's auto-fallback (request retried without the priority signal, `providerSessionState.fastModeDisabled` persisted for the rest of the session). The session listens for the `"priority"` marker in `AssistantMessage.disabledFeatures`, syncs `/fast` off, and emits a warning notice. Re-running `/fast on` clears the per-session disable so the next request actually re-tries priority.
 
 ## [15.1.6] - 2026-05-19
 
@@ -256,29 +256,29 @@
 ## [15.1.3] - 2026-05-17
 ### Breaking Changes
 
-- Renamed the embedded-documentation internal URL scheme from `pi://` to `omp://`. `OmpProtocolHandler` replaces `PiProtocolHandler`; update any external references accordingly.
+- Renamed the embedded-documentation internal URL scheme from `pi://` to `gjc://`. `GjcProtocolHandler` replaces `PiProtocolHandler`; update any external references accordingly.
 - Removed the `StringEnum` re-export from `@gajae-code/coding-agent`. Custom tools and extensions should use `z.enum([...])` directly via the injected `pi.zod`.
 - Replaced the `eval` tool's LARK-grammar `input` string with a structured `cells` array. Each cell is `{ language: "py" | "js", code, title?, timeout?, reset? }`. Removed the implicit/sniffed language path, the `*** Cell` / `*** End` / `*** Abort` markers, and the per-cell `t:<duration>` unit suffixes — `timeout` is now seconds (1-600).
 
 ### Added
 
-- Added `providers.<name>.transport: "pi-native"` to `models.yml`. When set, every model under that provider routes its streaming dispatch through the auth-gateway's `POST /v1/pi/stream` endpoint instead of the per-provider SDK. The provider's `baseUrl` must point at a compatible `omp auth-gateway` and `apiKey` must carry the gateway bearer. The slot's `models.json` still resolves locally for pricing/capabilities/thinking config; only the wire dispatch is redirected. Use case: containerized omp installs (robogjc slots, swarm extension) where the slot must stay credential-free and a sidecar gateway holds the real provider tokens. Also surfaced as `transport` on `ProviderConfigInput` for extension-registered providers.
-- Added optional backend push for the auto-QA grievance database (`dev.autoqaPush.enabled`, `dev.autoqaPush.endpoint`, `dev.autoqaPush.token`; env overrides `PI_AUTO_QA_PUSH`, `PI_AUTO_QA_PUSH_URL`, `PI_AUTO_QA_PUSH_TOKEN`). When enabled, every `report_tool_issue` call schedules a background flush that `POST`s pending rows to the configured endpoint and deletes them on HTTP 2xx. Each push carries a stable per-install UUID (`installId`) generated on first use and persisted at `~/.omp/install-id` via `getInstallId()` (new export from `@gajae-code/utils`), so the receiver can dedup retries across host renames and `autoqa.db` wipes. Single-flight, 5s request timeout, 30s in-memory cooldown after failure, and a row-id watermark so rows inserted during an in-flight push survive and ship next time. Tool execution remains non-blocking and never throws.
-- `ModelRegistry` now promotes `models.yml` `providers.<name>.apiKey` entries to `AuthStorage`'s new config-override tier (above OAuth, below `--api-key`). Pinning a bearer in `models.yml` was previously a no-op when the broker had an OAuth credential for the same provider — the OAuth access token won and got sent unmodified to whatever `baseUrl` you redirected to, which an auth-gateway in front of that endpoint rightly rejected with 401. The override is now honored, and is cleared/repopulated atomically on `models.yml` reload (`#reloadStaticModels` calls `clearConfigApiKeys` before re-parsing). Use case: route `anthropic` / `openai-codex` to `http://llm-gateway.internal:4000` with the gateway's own bearer.
-- Added `omp auth-broker` subcommand for running and consuming a hosted credential vault.
+- Added `providers.<name>.transport: "pi-native"` to `models.yml`. When set, every model under that provider routes its streaming dispatch through the auth-gateway's `POST /v1/pi/stream` endpoint instead of the per-provider SDK. The provider's `baseUrl` must point at a compatible `gjc auth-gateway` and `apiKey` must carry the gateway bearer. The slot's `models.json` still resolves locally for pricing/capabilities/thinking config; only the wire dispatch is redirected. Use case: containerized gjc installs (robogjc slots, swarm extension) where the slot must stay credential-free and a sidecar gateway holds the real provider tokens. Also surfaced as `transport` on `ProviderConfigInput` for extension-registered providers.
+- Added optional backend push for the auto-QA grievance database (`dev.autoqaPush.enabled`, `dev.autoqaPush.endpoint`, `dev.autoqaPush.token`; env overrides `PI_AUTO_QA_PUSH`, `PI_AUTO_QA_PUSH_URL`, `PI_AUTO_QA_PUSH_TOKEN`). When enabled, every `report_tool_issue` call schedules a background flush that `POST`s pending rows to the configured endpoint and deletes them on HTTP 2xx. Each push carries a stable per-install UUID (`installId`) generated on first use and persisted at `~/.gjc/install-id` via `getInstallId()` (new export from `@gajae-code/utils`), so the receiver can dedup retries across host renames and `autoqa.db` wipes. Single-flight, 5s request timeout, 30s in-memory cooldown after failure, and a row-id watermark so rows inserted during an in-flight push survive and ship next time. Tool execution remains non-blocking and never throws.
+- `ModelRegistry` now promotes `models.yml` `providers.<name>.apiKey` entries to `AuthStorage`'s new config-override tier (above OAuth, below `--api-key`). Pinning a bearer in `models.yml` was previously a no-op when the broker had an OAuth credential for the same provider — the OAuth access token won and got sent unmodified to whatever `baseUrl` you redirected to, which an auth-gateway in front of that endpoint rightly rejected with 401. The override is now honored, and is cleared/repopulated atomically on `models.yml` reload (`#reloadStaticModels` calls `clearConfigApiKeys` before re-parsing). Use case: route `anthropic` / `openai-code` to `http://llm-gateway.internal:4000` with the gateway's own bearer.
+- Added `gjc auth-broker` subcommand for running and consuming a hosted credential vault.
 - `serve [--bind=host:port]` — boots a local broker against the SQLite store at `$AGENT_DB_PATH`.
-- `token [--regenerate]` — prints (and rotates) the bearer token stored at `~/.omp/auth-broker.token`.
+- `token [--regenerate]` — prints (and rotates) the bearer token stored at `~/.gjc/auth-broker.token`.
 - `login <provider> [--via=user@host] [--dry-run]` — drives the OAuth flow locally or via SSH `-L` tunnel into a remote broker (callback ports pinned per provider).
 - `logout <provider>` — disables every credential for the given provider in the local SQLite store.
-- `import <file|dir> [--provider=<id>] [--include-disabled] [--dry-run]` — imports CLIProxyAPI-style JSON credential dumps (`~/.cliproxy/auth/*.json`). When `GJC_AUTH_BROKER_URL` is configured, credentials are uploaded to the remote broker via `POST /v1/credential`; otherwise they go into the local SQLite store. JSON `type` is mapped to omp providers (`claude` → `anthropic`, `codex` → `openai-codex`, `gemini[-cli]` → `google-gemini-cli`, `antigravity` → `google-antigravity`); `--provider` overrides the mapping for unrecognized types.
+- `import <file|dir> [--provider=<id>] [--include-disabled] [--dry-run]` — imports CLIProxyAPI-style JSON credential dumps (`~/.cliproxy/auth/*.json`). When `GJC_AUTH_BROKER_URL` is configured, credentials are uploaded to the remote broker via `POST /v1/credential`; otherwise they go into the local SQLite store. JSON `type` is mapped to gjc providers (`anthropic-model` → `anthropic`, `openai-code` → `openai-code`, `gemini[-cli]` → `google-gemini-cli`, `antigravity` → `google-antigravity`); `--provider` overrides the mapping for unrecognized types.
 - `status` — pings the configured remote broker (`GJC_AUTH_BROKER_URL`).
-- Added remote credential vault support to `discoverAuthStorage`. Configure via env (`GJC_AUTH_BROKER_URL` / `GJC_AUTH_BROKER_TOKEN`) or by setting `auth.broker.url` and `auth.broker.token` in `~/.omp/agent/config.yml` (hidden from the settings UI; supports `!command` resolution). Falls back to `~/.omp/auth-broker.token` when no token is provided inline. Otherwise behavior is unchanged.
-- Added `omp auth-broker migrate --from-local [--include-env] [--include-oauth] [--dry-run]` — uploads local SQLite credentials (and optionally env-var API keys) to the configured broker. Skips anything already on the broker via identity-key matching. OAuth is skipped by default (handled via `cliproxy` import). Idempotent on re-runs.
-- Added `omp auth-gateway` subcommand for running a forward-proxy that hides access tokens from less-trusted clients:
+- Added remote credential vault support to `discoverAuthStorage`. Configure via env (`GJC_AUTH_BROKER_URL` / `GJC_AUTH_BROKER_TOKEN`) or by setting `auth.broker.url` and `auth.broker.token` in `~/.gjc/agent/config.yml` (hidden from the settings UI; supports `!command` resolution). Falls back to `~/.gjc/auth-broker.token` when no token is provided inline. Otherwise behavior is unchanged.
+- Added `gjc auth-broker migrate --from-local [--include-env] [--include-oauth] [--dry-run]` — uploads local SQLite credentials (and optionally env-var API keys) to the configured broker. Skips anything already on the broker via identity-key matching. OAuth is skipped by default (handled via `cliproxy` import). Idempotent on re-runs.
+- Added `gjc auth-gateway` subcommand for running a forward-proxy that hides access tokens from less-trusted clients:
 - `serve [--bind=…]` — boots the gateway against the configured broker. Listens on `127.0.0.1:4000` by default.
-- `token [--regenerate]` — manages the gateway bearer token at `~/.omp/auth-gateway.token` (separate from the broker bearer).
+- `token [--regenerate]` — manages the gateway bearer token at `~/.gjc/auth-gateway.token` (separate from the broker bearer).
 - `status` — verifies gateway config and authenticated broker readiness.
-- One wire surface: `POST /v1/chat/completions` (OpenAI chat-completions), `POST /v1/messages` (Anthropic messages), `POST /v1/responses` (OpenAI Responses), `GET /v1/usage` (aggregated, 5-min per-credential cache), `GET /v1/models` (catalog). Model id in the request body selects which omp provider/model services it; the gateway translates wire format ↔ omp canonical `Context` and dispatches through `pi-ai` `streamSimple()`. Container deployments (robogjc, etc.) get inference auth without ever holding access tokens or the broker bearer.
+- One wire surface: `POST /v1/chat/completions` (OpenAI chat-completions), `POST /v1/messages` (Anthropic messages), `POST /v1/responses` (OpenAI Responses), `GET /v1/usage` (aggregated, 5-min per-credential cache), `GET /v1/models` (catalog). Model id in the request body selects which gjc provider/model services it; the gateway translates wire format ↔ gjc canonical `Context` and dispatches through `pi-ai` `streamSimple()`. Container deployments (robogjc, etc.) get inference auth without ever holding access tokens or the broker bearer.
 
 ### Changed
 
@@ -288,9 +288,9 @@
 
 - Fixed streaming API requests to recover from provider auth errors by invalidating stale credentials and retrying with a fresh key
 - Fixed `auth-broker` migration, `auth-gateway` startup, and `discoverAuthStorage` to fail fast with a clear error when the broker snapshot endpoint returns a non-200 response
-- Fixed `omp auth-broker migrate` to skip local placeholder `<authenticated>` API credentials (not real keys) when exporting to a remote broker
+- Fixed `gjc auth-broker migrate` to skip local placeholder `<authenticated>` API credentials (not real keys) when exporting to a remote broker
 - Fixed `auth-gateway` token initialization to avoid clobbering an existing token when multiple processes initialize it concurrently
-- Fixed `omp auth-gateway` request handling to reject unsupported OpenAI/Anthropic protocol controls with 400 instead of accepting and ignoring them, propagate upstream error/abort terminal states as failures, preserve Responses reasoning and completed text items, accept string/system Responses messages, and keep Anthropic tool-result ordering valid.
+- Fixed `gjc auth-gateway` request handling to reject unsupported OpenAI/Anthropic protocol controls with 400 instead of accepting and ignoring them, propagate upstream error/abort terminal states as failures, preserve Responses reasoning and completed text items, accept string/system Responses messages, and keep Anthropic tool-result ordering valid.
 - Fixed gateway usage reporting to include cached-token totals for OpenAI Chat/Responses and to serve the last good cached report during transient upstream usage fetch failures.
 - Fixed auth-gateway request cancellation for requests that are already aborted before dispatch.
 - Fixed `/login` and `/logout` provider selector overflowing tall provider lists off-screen on small terminals. The selector now scrolls a 10-item window centered on the highlighted entry, shows a `(n/total)` indicator when windowed, and accepts PageUp/PageDown for faster navigation.
@@ -392,12 +392,12 @@
 - Fixed command-fixup notices to list all stripped segments instead of reporting only one
 - Fixed summarized `read` output stalling agents on elided regions by appending an explicit footer like `[NN lines across MM elided regions; read <path>:raw or a line range like <path>:1-9999 for verbatim content]`. The footer fires whenever the structural summarizer elided at least one span, so the model gets a concrete recovery selector instead of having to guess from a bare `...` / `{ .. }` marker. Surfaces `elidedLines` on `ReadToolDetails.summary` alongside the existing `elidedSpans`. ([#1046](https://github.com/can1357/gajae-code/issues/1046))
 - Updated the `read` tool prompt to describe the new elision footer and instruct the model to follow `:raw` (or an explicit line range) when the elided body is actually needed, rather than guessing.
-- Fixed plugin extensions failing to load when their `peerDependencies` reference internal `pi-*` packages under any scope other than `@mariozechner` (e.g. `Cannot find module '@earendil-works/pi-tui'` from `@juicesharp/rpiv-ask-user-question`, or `Cannot find module '@gajae-code/utils'` from `@gajae-code/swarm-extension`). The legacy-pi specifier shim now treats `@mariozechner`, `@earendil-works`, **and** the canonical `@gajae-code` itself as aliases for the same set of bundled in-process packages (`pi-agent-core`, `pi-ai`, `gajae-code`, `pi-natives`, `pi-tui`, `pi-utils`), and additionally rewrites the upstream-only `pi-ai/oauth` subpath onto our `pi-ai/utils/oauth` layout. Restored the `Key` runtime helper export on `@gajae-code/tui` to match upstream — plugins using `Key.enter` / `Key.ctrl("c")` (e.g. `@plannotator/pi-extension`, `@juicesharp/rpiv-ask-user-question`) no longer fail with `Export named 'Key' not found`. End-to-end verified against `@juicesharp/rpiv-ask-user-question`, `@gajae-code/swarm-extension`, and `@plannotator/pi-extension` — each now loads cleanly with all of its tools/commands/handlers registered. Plugins importing any of those scopes are remapped to the omp binary's own copy at load time, so peer deps are no longer dragged in from npm and there is exactly one module instance per package regardless of which scope name the plugin's manifest happened to declare.
-- Fixed `omp commit` hanging after a successful commit instead of returning to the shell. The command now mirrors the `runPrintMode` exit pattern and calls `postmortem.quit(0)` once the pipeline resolves so lingering HTTP/2 keep-alive sockets, the Settings autosave timer, and other AgentSession background handles don't keep the event loop pinned. ([#1041](https://github.com/can1357/gajae-code/issues/1041))
+- Fixed plugin extensions failing to load when their `peerDependencies` reference internal `pi-*` packages under any scope other than `@mariozechner` (e.g. `Cannot find module '@earendil-works/pi-tui'` from `@juicesharp/rpiv-ask-user-question`, or `Cannot find module '@gajae-code/utils'` from `@gajae-code/swarm-extension`). The legacy-pi specifier shim now treats `@mariozechner`, `@earendil-works`, **and** the canonical `@gajae-code` itself as aliases for the same set of bundled in-process packages (`pi-agent-core`, `pi-ai`, `gajae-code`, `pi-natives`, `pi-tui`, `pi-utils`), and additionally rewrites the upstream-only `pi-ai/oauth` subpath onto our `pi-ai/utils/oauth` layout. Restored the `Key` runtime helper export on `@gajae-code/tui` to match upstream — plugins using `Key.enter` / `Key.ctrl("c")` (e.g. `@plannotator/pi-extension`, `@juicesharp/rpiv-ask-user-question`) no longer fail with `Export named 'Key' not found`. End-to-end verified against `@juicesharp/rpiv-ask-user-question`, `@gajae-code/swarm-extension`, and `@plannotator/pi-extension` — each now loads cleanly with all of its tools/commands/handlers registered. Plugins importing any of those scopes are remapped to the gjc binary's own copy at load time, so peer deps are no longer dragged in from npm and there is exactly one module instance per package regardless of which scope name the plugin's manifest happened to declare.
+- Fixed `gjc commit` hanging after a successful commit instead of returning to the shell. The command now mirrors the `runPrintMode` exit pattern and calls `postmortem.quit(0)` once the pipeline resolves so lingering HTTP/2 keep-alive sockets, the Settings autosave timer, and other AgentSession background handles don't keep the event loop pinned. ([#1041](https://github.com/can1357/gajae-code/issues/1041))
 - Fixed hashline payload parsing to silently treat truly-blank lines as empty `~`-prefixed payload lines when more payload follows in the same run. The previous behavior broke at the blank ("payload line has no preceding +, <, or = operation.") even though the intent is obvious — the only ambiguity is between in-payload blanks and end-of-section blanks, and a one-line lookahead resolves it: blanks that precede a non-payload op still end the run cleanly as section separators. Recovers the common case of forgetting the leading separator on a blank inserted line without changing how trailing blanks between ops behave.
 - Rewrote the hashline edit prompt examples to use an ASCII-only `TITLE = "Mr"` → `"Mrs"` / `"Dr"` motif instead of the previous `" • "` and `"·"` separators. Some agents had been copying the middle-dot literal characters into real edits as if they were format scaffolding (e.g. emitting payload lines like `~	·`), since the demo inserts were near-twins of the existing string. The new example keeps every original op shape (single-line replace, multiline replace, insert AFTER/BEFORE, append, delete, blank, plus both anti-patterns) but uses content that is obviously domain-specific and clearly distinct from any payload separator. Pure prompt change; no parser, schema, or runtime behavior is affected.
 - Fixed startup fallback-chain validation to recognize cached runtime-discovered standard provider models, including Ollama Cloud models listed by `--list-models`, so `retry.fallbackChains` no longer warns that valid `ollama-cloud/<model>` selectors are unknown. ([#1052](https://github.com/can1357/gajae-code/issues/1052))
-- Fixed `discoverAgents()` ignoring `disabledProviders` for the `claude-plugins` provider. Plugin roots from `~/.claude/plugins/` were scanned unconditionally, so agents from Claude Code marketplace plugins continued to appear in `/agents` and the Agent Control Center even when `disabledProviders: [claude-plugins]` was set. The discovery path now checks `isProviderEnabled("claude-plugins")` before calling `listClaudePluginRoots()`, matching how every other capability respects the disabled-providers set. ([#1075](https://github.com/can1357/gajae-code/issues/1075))
+- Fixed `discoverAgents()` ignoring `disabledProviders` for the `anthropic-model-plugins` provider. Plugin roots from `~/.anthropic-model/plugins/` were scanned unconditionally, so agents from Anthropic Code marketplace plugins continued to appear in `/agents` and the Agent Control Center even when `disabledProviders: [anthropic-model-plugins]` was set. The discovery path now checks `isProviderEnabled("anthropic-model-plugins")` before calling `listAnthropic modelPluginRoots()`, matching how every other capability respects the disabled-providers set. ([#1075](https://github.com/can1357/gajae-code/issues/1075))
 
 ### Fixed
 
@@ -415,7 +415,7 @@
 - Added `hide: true` frontmatter option for skill `SKILL.md` files. Hidden skills are still loaded and remain reachable via `skill://<name>` URLs and (when enabled) `/skill:<name>` slash commands, but are omitted from the rendered system prompt's `<skills>` listing so the model won't auto-discover them. Use for skills the user opts into explicitly rather than ones the model should pick up from descriptions.
 - Added middle elision for streaming tool outputs (bash, ssh, python, js eval) and post-execution tool result spill. When `tools.artifactHeadBytes` is set (default 20 KB), large outputs now keep both the first N KB and the last N KB with an inline `[… N lines elided (M KB) …]` marker between them, instead of dropping everything before the trailing tail. Setting `tools.artifactHeadBytes = 0` reverts to the previous tail-only behavior. The full output is still mirrored to the session artifact (`artifact://<id>`) regardless of elision mode. Exposes `truncateMiddle` and `formatMiddleElisionMarker` from `@gajae-code/coding-agent/session/streaming-output`, extends `OutputSinkOptions` with `headBytes`, and adds `direction: "middle"` plus `headRange` / `tailRange` / `elidedLines` / `elidedBytes` to `TruncationMeta`.
 - Added per-line column cap shared across streaming tool outputs (`bash`, `ssh`, `python`, `js eval`) and the `read` tool. Lines wider than `tools.outputMaxColumns` bytes (default **768**) are ellipsis-truncated at write time and remaining bytes up to the next `\n` are dropped — bounded memory even on multi-MB single-line outputs (e.g. `cat /dev/urandom`). The cap lives on `OutputSink` as the new `maxColumns` option, persists state across chunk boundaries so split-mid-line writes still respect the budget, and exposes `columnDroppedBytes` / `columnTruncatedLines` on `OutputSummary`. Middle-elision byte math subtracts column drops so the "elided from middle" count stays honest. `read` reuses the same setting but trims its already-collected lines via `truncateLine`. Skipped when the read selector is `:raw`. The artifact file (`artifact://<id>`) keeps the full uncapped stream. Set `tools.outputMaxColumns = 0` to disable.
-- Added Bun HTTP/2 fetch opt-in. Dev scripts (`bun run dev`, `bun run stats`) now pass `bun --experimental-http2-fetch` so every `fetch()` advertises `h2` in the TLS ALPN list and falls back to HTTP/1.1 when the server doesn't select it. Multiplexing collapses parallel requests to the same origin onto one TLS connection. For the installed `omp` binary, export `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1` in your shell to enable the same behavior (the flag has to be set before Bun starts; `process.env` from inside JS is too late). Requires Bun **1.3.14**.
+- Added Bun HTTP/2 fetch opt-in. Dev scripts (`bun run dev`, `bun run stats`) now pass `bun --experimental-http2-fetch` so every `fetch()` advertises `h2` in the TLS ALPN list and falls back to HTTP/1.1 when the server doesn't select it. Multiplexing collapses parallel requests to the same origin onto one TLS connection. For the installed `gjc` binary, export `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1` in your shell to enable the same behavior (the flag has to be set before Bun starts; `process.env` from inside JS is too late). Requires Bun **1.3.14**.
 - Added per-subagent cost display (`$X.XX` in the task progress tree and the session-observer stats line). Cost is accumulated incrementally from `message_end` events and shown only when non-zero, using the `statusLineCost` theme color. Providers that do not report per-turn cost data (e.g. subscription/OAuth usage) continue to show nothing.
 - Added ACP elicitation bridge so skills/extensions calling `select`, `confirm`, or `input` on the extension UI context now produce real `unstable_createElicitation` form requests to the ACP client (rather than always resolving to `undefined` / `false`). The `acpExtensionUiContext` constant is promoted to `createAcpExtensionUiContext(connection, getSessionId, clientCapabilities)` — invoked once per session inside `#configureExtensions`, with `getSessionId: () => string` so the live `record.session.sessionId` is read on every elicitation (the underlying id mutates when an extension command calls `ctx.newSession` / `ctx.switchSession`). Each method maps to a single-property `value` schema: `select` → `{type: "string", enum}`, `confirm` → `{type: "boolean"}` (joined `title` + `message` when the trimmed message is non-empty; otherwise just `title`), `input` → `{type: "string", description: placeholder?}` (ACP has no `placeholder` field on `StringPropertySchema`; empty / whitespace-only placeholders are treated as absent). `accept` responses narrow the returned `ElicitationContentValue` back to the method's declared type with a runtime `typeof` guard; `decline` / `cancel` / transport failures fall back to the prior stub return values. `dialogOptions.signal` is honored: an already-aborted signal short-circuits before any SDK round-trip, and an abort mid-flight races against the elicitation so the caller's promise resolves to the stub fallback (the ACP request itself keeps running on the client side — the SDK exposes no form-mode cancel surface; `unstable_completeElicitation` is URL-mode only — matching the in-flight pattern used by `requestRpcEditor`). `dialogOptions.timeout` is honored on parity with `RpcExtensionUIContext`: when the timer fires before the client responds, `onTimeout` is invoked and the caller resolves to the stub fallback. A throwing `onTimeout` is caught and logged (`logger.warn`) so the elicitation promise still settles. Late SDK rejections that arrive after abort/timeout are dropped silently to keep operator logs clean; transport failures still emit `logger.warn` with `{ sessionId, method, error }`. Calls are skipped when the client did not advertise `clientCapabilities.elicitation.form` during `initialize`, so non-elicitation clients are unaffected. `createAcpExtensionUiContext` is exported for tests.
 
@@ -451,17 +451,17 @@
 
 - Removed `op: issue_view` and `op: pr_view` from the `github` tool. Read single issues/PRs via the `read` tool against `issue://<N>` / `pr://<N>` (or the long form `issue://<owner>/<repo>/<N>` / `pr://<owner>/<repo>/<N>`); append `?comments=0` to drop the comments section. The `issue` and `comments` parameters were removed from the tool schema since no remaining op consumes them. Mutating ops (`pr_create`, `pr_checkout`, `pr_push`), `repo_view`, `search_*`, and `run_watch` are unchanged.
 - Removed `op: pr_diff` (along with the `nameOnly` and `exclude` schema fields) from the `github` tool. Read PR diffs through the new `pr://` URL family: `pr://<N>/diff` for the changed-file listing, `pr://<N>/diff/<i>` for a single file slice (1-indexed), and `pr://<N>/diff/all` for the verbatim unified diff. Long-form `pr://<owner>/<repo>/<N>/diff[/…]` works the same way. All three variants share one `gh pr diff` invocation through a new `pr-diff` cache row, so the listing and per-file slices reconstruct from cached bytes without re-shelling. Diff content is served as `text/plain` so the `read` tool's line selectors (e.g. `pr://<N>/diff/all:200-400`) page the cached output without falsely advertising hashline anchors.
-- Renamed ACP custom extension methods from `omp/*` to `_omp/*` to comply with the ACP spec's `_`-prefix requirement for non-spec methods; existing callers must update method names
+- Renamed ACP custom extension methods from `gjc/*` to `_gjc/*` to comply with the ACP spec's `_`-prefix requirement for non-spec methods; existing callers must update method names
 
 ### Added
 
 - Added markdown rendering for `read` results when content type is `text/markdown`, so GitHub internal-URL outputs are shown as formatted markdown instead of plain code blocks
 - Added `pr://<N>/diff`, `pr://<N>/diff/<i>`, and `pr://<N>/diff/all` internal-URL shapes covering changed-file listings, per-file slices, and the full unified diff. They share one `pr-diff` SQLite cache row with the same TTL knobs as `pr://<N>` views (`github.cache.softTtlSec` / `github.cache.hardTtlSec` / `github.cache.enabled`). Single PR views now advertise the diff entry point via a `Diff: pr://<owner>/<repo>/<N>/diff` note. Cache schema bumped to `user_version = 3`; older rows are dropped on first open to add credential-scoped keys and relax the `kind` CHECK constraint.
-- Added `issue://` / `pr://` internal-URL schemes that share a SQLite-backed cache with the rest of the `github` tool. Single-item reads (`issue://<N>`, `issue://<owner>/<repo>/<N>`) return rendered markdown and within `github.cache.softTtlSec` (default 5 minutes) skip the `gh` round-trip entirely; within `github.cache.hardTtlSec` (default 7 days) the cached row is returned and a background refresh is scheduled. Root and repo-scoped reads (`issue://`, `pr://owner/repo`) issue a live `gh issue list` / `gh pr list` for browsing, supporting `?state=open|closed|all` for issues, `?state=open|closed|merged|all` for PRs, and `?limit=`, `?author=`, `?label=` query params. Rendered output lands in `~/.omp/cache/github-cache.db` (override via `GJC_GITHUB_CACHE_DB`); disable the cache entirely with `github.cache.enabled = false`. Cwd→default-repo lookups (`gh repo view`) are memoized per-process.
+- Added `issue://` / `pr://` internal-URL schemes that share a SQLite-backed cache with the rest of the `github` tool. Single-item reads (`issue://<N>`, `issue://<owner>/<repo>/<N>`) return rendered markdown and within `github.cache.softTtlSec` (default 5 minutes) skip the `gh` round-trip entirely; within `github.cache.hardTtlSec` (default 7 days) the cached row is returned and a background refresh is scheduled. Root and repo-scoped reads (`issue://`, `pr://owner/repo`) issue a live `gh issue list` / `gh pr list` for browsing, supporting `?state=open|closed|all` for issues, `?state=open|closed|merged|all` for PRs, and `?limit=`, `?author=`, `?label=` query params. Rendered output lands in `~/.gjc/cache/github-cache.db` (override via `GJC_GITHUB_CACHE_DB`); disable the cache entirely with `github.cache.enabled = false`. Cwd→default-repo lookups (`gh repo view`) are memoized per-process.
 - Added new `Approve and compact context` choice to the ExitPlanMode approval selector. Sits between `Approve and execute` (purge session) and `Approve and keep context` (full transcript) — runs `/compact` on the plan-mode transcript with a planning-specific summarization hint, then dispatches the plan-approved execution turn so it lands on a fresh cache anchor with the summarized rationale carried over. Cancelling the compaction (Esc or any other abort source) defers the execution dispatch and surfaces a warning so the operator can resubmit manually; non-abort failures proceed best-effort.
 - Added `CompactionCancelledError` typed sentinel and `CompactionOutcome` (`"ok" | "cancelled" | "failed"`) return type to `@gajae-code/agent-core/compaction`. `CommandController.executeCompaction` and `handleCompactCommand` now return the outcome instead of `void` so callers can discriminate user-driven aborts from generic failures without inspecting error messages.
 - Added a `credential_disabled` extension event so extensions can subscribe via `pi.on("credential_disabled", handler)` and react when `AuthStorage` automatically soft-disables a credential (e.g. OAuth `invalid_grant`). Replaces the current `agent_end` errorMessage regex pattern downstream extensions have to match against. Handler payload is `{ type, provider, disabledCause }`. `createAgentSession()` subscribes the per-session extension runner to the shared `AuthStorage` via `authStorage.onCredentialDisabled(...)` at the very top of session creation — before any startup model probes run — so events fire on every disable regardless of whether the embedder also has a constructor `onCredentialDisabled` handler attached. The SDK forwards through `ExtensionRunner.emitCredentialDisabled(event)`, which buffers events until `runner.initialize(...)` runs in the mode controller and then flushes them through `emit()` so extension handlers see populated UI/runtime context (rather than the constructor's no-op default with `hasUI=false`, an unset model, and no-op runtime actions). On `session.dispose()` the subscription is unsubscribed; the embedder's constructor-attached listener keeps firing through its own permanent subscription. The outer `createAgentSession()` catch also releases the subscription if startup throws before the dispose-wrap is wired, so repeated retries don't accumulate dead listeners.
-- Added `omp acp` subcommand for launching as an ACP (Agent Client Protocol) server over stdio
+- Added `gjc acp` subcommand for launching as an ACP (Agent Client Protocol) server over stdio
 - Added explicit `type` discriminators to ACP `initialize` auth methods, including a `terminal` setup method gated on `clientCapabilities.auth.terminal`
 - Added ACP equivalents for the remaining TUI slash commands (`/jobs`, `/changelog`, `/dump`, `/copy`, `/hotkeys`, `/extensions`, `/agents`, `/model`, `/plan`, `/loop`, `/btw`, `/login`, `/logout`, `/resume`, `/tree`, `/branch`, `/new`, `/drop`, `/handoff`, `/fork`, `/session delete`, `/export`, `/share`, `/todo`, `/memory`, `/move`, `/mcp`, `/ssh`, `/marketplace`, `/plugins`) so ACP clients reach feature parity with the TUI for non-interactive flows
 - Added ACP `plan` mode: when `plan.enabled` setting is on, ACP `session/new`/`load`/`resume`/`fork` advertise a `plan` mode alongside `default`; `session/set_mode` toggles plan-mode state so the next agent turn injects the plan-mode system prompt
@@ -483,7 +483,7 @@
 ### Fixed
 
 - Deferred flushing of buffered `credential_disabled` events during extension runner initialization to a microtask so handler failures are now routed through `onError()` registrations made immediately after `initialize()`, preserving extension error reporting
-- Fixed `eval` tool dynamic `await import("./relative.ts")` calls failing with `Cannot find module ... from .../eval/js/shared/runtime.ts`. The static-import rewriter only handled `ImportDeclaration` nodes, so dynamic-import call expressions resolved their specifier against the worker module's URL instead of the session cwd. The rewriter now walks the full AST and additionally swaps `import` callees in `CallExpression` nodes for `__omp_import__`, which forwards the optional options bag verbatim to native `import()` so `{ with: { type: "json" } }` round-trips. Renamed `rewriteStaticImports` → `rewriteImports`.
+- Fixed `eval` tool dynamic `await import("./relative.ts")` calls failing with `Cannot find module ... from .../eval/js/shared/runtime.ts`. The static-import rewriter only handled `ImportDeclaration` nodes, so dynamic-import call expressions resolved their specifier against the worker module's URL instead of the session cwd. The rewriter now walks the full AST and additionally swaps `import` callees in `CallExpression` nodes for `__gjc_import__`, which forwards the optional options bag verbatim to native `import()` so `{ with: { type: "json" } }` round-trips. Renamed `rewriteStaticImports` → `rewriteImports`.
 - Fixed `pr://<owner>/<repo>/diff` URLs for repositories named `diff` to continue resolving to PR list lookups instead of being parsed as short-form diff links
 - Fixed `issue://<N>/diff` short form previously misparsing as a repo named `<N>/diff` and surfacing a confusing GraphQL "Could not resolve to a Repository" error. The numeric-host disambiguation that already routed `pr://<N>/diff` through the diff path now applies to both schemes, so `issue://<N>/diff[/…]` falls through to the existing "Issue views do not have a diff; use pr://<owner>/<repo>/<n>/diff for pull requests." rejection — matching the long-form `issue://<owner>/<repo>/<N>/diff` behavior. `<scheme>://<owner>/diff` listings for a repo literally named `diff` are unchanged.
 - Fixed PR unified diff parsing so changed-file headers with quoted paths (such as paths containing spaces) are now detected correctly and hunk content lines beginning with `---`/`+++` are counted in additions/deletions
@@ -521,7 +521,7 @@
 - Fixed `github` view cache evicting valid rows on open whenever a longer-than-default `github.cache.hardTtlSec` was configured. `openDb()` no longer sweeps with the 7-day default before settings load; the per-lookup `sweepIfDue()` enforces the configured retention exclusively.
 - Fixed extension `ctx.shutdown()` being a no-op in the primary interactive path. The handler in `initHooksAndCustomTools` now sets `shutdownRequested` (mirroring the backgrounded-reinit path), and the main REPL loop drains the flag at the post-stream idle boundary so queued steering messages still flush before teardown.
 - Fixed plan-mode "Approve and compact context" dispatching queued user input against the stale plan-mode reference path. `setPlanReferencePath(finalPlanFilePath)` now runs before `handleCompactCommand` flushes the compaction queue, so any message typed during compaction is delivered with the approved plan context attached.
-- Fixed `.omp/commands/fix-issues.md` and `.omp/commands/review-prs.md` still instructing agents to call the removed `github issue_view` / `pr_view` / `pr_diff` ops; they now reference `read issue://<N>` and `read pr://<N>[/diff[/all|<i>]]`.
+- Fixed `.gjc/commands/fix-issues.md` and `.gjc/commands/review-prs.md` still instructing agents to call the removed `github issue_view` / `pr_view` / `pr_diff` ops; they now reference `read issue://<N>` and `read pr://<N>[/diff[/all|<i>]]`.
 - Fixed `ExtensionRunner.initialize()` flushing buffered `credential_disabled` events before mode controllers had a chance to register their `onError` listener. Mode controllers call `runner.initialize(...)` immediately followed by `runner.onError(...)` synchronously; the flush now runs in a microtask after splicing the buffer, so a synchronously throwing `credential_disabled` handler is routed through the registered error listener instead of being silently dropped.
 
 ### Security
@@ -534,7 +534,7 @@
 
 - Added new `task.isolation.mode` values `auto`, `apfs`, `btrfs`, `zfs`, `reflink`, `overlayfs`, `projfs`, `block-clone`, and `rcopy` for native PAL-backed task isolation backends
 - Added automatic PAL-backed isolation backend selection so `task.isolation.mode` uses the host's best-available backend
-- Added input-token and output-token totals to `omp stats --summary`.
+- Added input-token and output-token totals to `gjc stats --summary`.
 
 ### Changed
 
@@ -586,7 +586,7 @@
 ### Breaking Changes
 
 - Changed the `timeoutMs` execution option to no longer be enforced during worker-based JS runs, so callers must rely on external cancellation signals for time limits
-- Replaced the Jupyter kernel gateway + WebSocket protocol behind the Python `eval` backend with a subprocess-backed runner that speaks NDJSON over stdin/stdout; removed the `jupyter_kernel_gateway`/`ipykernel` pip dependencies, the `python.sharedGateway` setting, the `omp jupyter` CLI command, and the `PI_PYTHON_GATEWAY_URL` / `PI_PYTHON_GATEWAY_TOKEN` environment variables
+- Replaced the Jupyter kernel gateway + WebSocket protocol behind the Python `eval` backend with a subprocess-backed runner that speaks NDJSON over stdin/stdout; removed the `jupyter_kernel_gateway`/`ipykernel` pip dependencies, the `python.sharedGateway` setting, the `gjc jupyter` CLI command, and the `PI_PYTHON_GATEWAY_URL` / `PI_PYTHON_GATEWAY_TOKEN` environment variables
 
 ### Added
 
@@ -765,7 +765,7 @@
 
 ### Fixed
 
-- Fixed legacy pi extensions failing to import their own bare-specifier dependencies (e.g. `import x from "pkg"`): files loaded via the `omp-legacy-pi-file:` namespace now pre-resolve bare imports against the extension's directory so the extension's own `node_modules` is honored.
+- Fixed legacy pi extensions failing to import their own bare-specifier dependencies (e.g. `import x from "pkg"`): files loaded via the `gjc-legacy-pi-file:` namespace now pre-resolve bare imports against the extension's directory so the extension's own `node_modules` is honored.
 
 ### Changed
 
@@ -780,7 +780,7 @@
 ## [14.7.6] - 2026-05-07
 ### Changed
 
-- Changed the "Hide Thinking Blocks" setting (Ctrl+T) to also instruct the provider to omit thinking/reasoning summaries from responses, instead of just hiding them client-side. Anthropic sees `thinking.display = "omitted"` (where supported); OpenAI Responses / Azure / Codex requests drop `reasoning.summary` entirely.
+- Changed the "Hide Thinking Blocks" setting (Ctrl+T) to also instruct the provider to omit thinking/reasoning summaries from responses, instead of just hiding them client-side. Anthropic sees `thinking.display = "omitted"` (where supported); OpenAI Responses / Azure / OpenAI code requests drop `reasoning.summary` entirely.
 
 ### Fixed
 
@@ -996,7 +996,7 @@
 
 ### Breaking Changes
 
-- Reworked autoresearch storage and protocol. State now lives in `~/.omp/autoresearch/<project>.db` (SQLite) and per-run logs in `~/.omp/autoresearch/<project>/runs/<id>/benchmark.log`. The repo-side artifacts `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.program.md`, `autoresearch.ideas.md`, `autoresearch.jsonl`, `.autoresearch/`, and `autoresearch.config.json` are no longer read or written; they are deleted by `/autoresearch clear`. Any existing data is not migrated.
+- Reworked autoresearch storage and protocol. State now lives in `~/.gjc/autoresearch/<project>.db` (SQLite) and per-run logs in `~/.gjc/autoresearch/<project>/runs/<id>/benchmark.log`. The repo-side artifacts `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.program.md`, `autoresearch.ideas.md`, `autoresearch.jsonl`, `.autoresearch/`, and `autoresearch.config.json` are no longer read or written; they are deleted by `/autoresearch clear`. Any existing data is not migrated.
 - Removed the autoresearch edit guard. `write`/`edit`/`ast_edit` are no longer blocked based on scope. Scope/off-limits are now post-hoc accountability fields on `log_experiment`.
 - Replaced rigid `init_experiment` contract validation with a simpler schema: `name`, `goal`, `primary_metric`, `metric_unit`, `direction`, `secondary_metrics`, `scope_paths`, `off_limits`, `constraints`, `max_iterations`, `new_segment`. Removed `from_autoresearch_md`, `abandon_unlogged_runs`, `force`, and `preferred_command` flags — the harness `./autoresearch.sh` is the canonical workload, edit it and bump segment when you need to change it.
 - `run_experiment` no longer accepts a `command` parameter. The tool always runs `bash autoresearch.sh`. To change the workload, edit the harness and call `init_experiment new_segment: true`. Removed `force`, `checks_timeout_seconds`, and the legacy `autoresearch.checks.sh` auto-execution; run validation through the regular `bash` tool.
@@ -1006,7 +1006,7 @@
 - Split `/autoresearch` into a two-phase protocol. Phase 1 (no session) prompts the agent to build the benchmark harness as `./autoresearch.sh` (must exit 0 and print `METRIC <name>=<value>`). Calling `init_experiment` ends Phase 1: it requires `./autoresearch.sh` to exist, auto-commits any pending harness changes on an `autoresearch/*` branch, then records that commit as the baseline. Phase 2 is the existing iteration loop.
 - Autoresearch sessions are now scoped to the git branch they were created on. Switching off the `autoresearch/*` branch hides the dashboard widget, detaches the experiment tools, and skips the autoresearch system prompt; switching back resumes seamlessly. `/autoresearch` on a fresh branch starts a fresh session instead of resurrecting a session bound to a different branch.
 - `log_experiment discard` no longer rewinds prior `keep` commits. On an `autoresearch/*` branch it now resets the worktree to `HEAD` (and `git clean`s untracked) instead of `git reset --hard $baseline_commit`. Discard reverts only the current iteration's uncommitted edits; previously kept improvements stay on the branch. `/autoresearch clear` continues to reset to the recorded baseline commit when explicitly requested.
-- Autoresearch SQLite storage is now created lazily on first `init_experiment`. Running `omp` in a project that never invokes `/autoresearch` no longer creates a per-folder DB.
+- Autoresearch SQLite storage is now created lazily on first `init_experiment`. Running `gjc` in a project that never invokes `/autoresearch` no longer creates a per-folder DB.
 
 - Changed `search`, `find`, `ast_grep`, and `ast_edit` to accept `paths: string[]` instead of comma- or whitespace-delimited path strings.
 
@@ -1126,7 +1126,7 @@
 
 ### Breaking Changes
 
-- Removed the `worktree` parameter from `github` `pr_checkout`. Worktrees are now always written to `~/.omp/wt/<encoded-primary-repo>/pr-<number>/`, derived from the primary repository path
+- Removed the `worktree` parameter from `github` `pr_checkout`. Worktrees are now always written to `~/.gjc/wt/<encoded-primary-repo>/pr-<number>/`, derived from the primary repository path
 - Stopped reading the `branch` parameter for `github` `pr_checkout`. The local branch is now always `pr-<number>`; the `branch` schema field is still accepted by `pr_push`, `repo_view`, and `run_watch`
 
 ### Added
@@ -1357,7 +1357,7 @@
 
 ### Removed
 
-- Removed the `chunk` edit mode, chunk-aware `read` selectors, chunk-aware `grep` rendering, and the `omp read` chunk CLI subcommand
+- Removed the `chunk` edit mode, chunk-aware `read` selectors, chunk-aware `grep` rendering, and the `gjc read` chunk CLI subcommand
 - Removed the `read.prosechunks`, `read.explorechunks`, and `read.anchorstyle` settings
 - Removed the underlying `chunk` native module and AST-based chunk schema generation from `pi-natives`
 
@@ -1410,7 +1410,7 @@
 ### Added
 
 - Added inline file overrides in atom locators (`loc: "a.ts:160sr"`) so cross-file edits can be written without a separate per-entry `path` field
-- Added `openai` to the `providers.image` options, allowing image generation to be explicitly routed through the active GPT Responses/Codex model
+- Added `openai` to the `providers.image` options, allowing image generation to be explicitly routed through the active GPT Responses/OpenAI code model
 - Added `between` atom edit operation to replace only the lines between two surviving anchors while preserving the boundary anchors
 - Added conflict detection for `between` atom edits to require non-overlapping regions and forbid edits targeting lines strictly inside those regions
 - Added `atom` edit mode to `edit` with single-anchor operations (`set`, `before`, `after`, `del`, `sub`, `ins`) for hashline-anchored line edits
@@ -1440,7 +1440,7 @@
 - Updated the `edit` workflow to treat `atom` mode like hashline mode for read output, so hashline anchors are shown when `atom` is selected
 - Adjusted patch/replace/chunk tooling to accept optional entry paths and to apply a top-level path default
 - Updated hashline/chunk selector parsing to the new stable bigram token set used for checksums
-- Renamed the image generation implementation module to `image-gen` and routed active GPT Responses/Codex models through OpenAI's hosted `image_generation` tool with WebP output
+- Renamed the image generation implementation module to `image-gen` and routed active GPT Responses/OpenAI code models through OpenAI's hosted `image_generation` tool with WebP output
 
 ### Removed
 
@@ -1451,7 +1451,7 @@
 ### Fixed
 
 - Improved no-op edit diagnostics for `atom` and `hashline` operations so edits that leave content unchanged now fail with contextual details (edit index, locator, and reason), including guidance for `replace_range` no-op cases
-- Wrapped `todo_write` operations in an `ops` object so Codex/OpenAI function schemas always use a JSON Schema object.
+- Wrapped `todo_write` operations in an `ops` object so OpenAI code/OpenAI function schemas always use a JSON Schema object.
 - Fixed JSON tree rendering for tool arguments by excluding injected internal keys from displayed root records
 - Printed assistant `errorMessage` text in print mode output to stderr so message-level errors are visible during non-interactive runs
 - Displayed assistant `errorMessage` text in the assistant message component for completed tool responses with non-terminal stop reasons
@@ -1528,7 +1528,7 @@
 
 ### Added
 
-- Added an `apply_patch` edit mode that accepts Codex `*** Begin Patch` envelopes, shares patch-mode execution and diagnostics, and renders streaming per-file diffs in the TUI.
+- Added an `apply_patch` edit mode that accepts OpenAI code `*** Begin Patch` envelopes, shares patch-mode execution and diagnostics, and renders streaming per-file diffs in the TUI.
 
 ### Changed
 
@@ -1540,7 +1540,7 @@
 
 - Fixed `apply_patch` streaming previews to avoid showing the missing `*** End Patch` parse error while the patch body is still arriving.
 - Fixed diagnostics rendering to replace tabs before TUI output, preventing compiler messages from breaking tree alignment.
-- Fixed compiled `omp` binaries to ignore project-local `bunfig.toml` and `.env` autoloading at startup, preventing unrelated project config from crashing or preloading code into the CLI
+- Fixed compiled `gjc` binaries to ignore project-local `bunfig.toml` and `.env` autoloading at startup, preventing unrelated project config from crashing or preloading code into the CLI
 - Fixed edit tool diff and replace operations to report missing-file failures as `File not found: <path>` errors instead of raw filesystem ENOENT errors
 - Fixed `local://` URL path leak on Linux where `//` collapsing to `/` produced `local:/path` forms that bypassed the internal protocol handler and leaked as filesystem paths, breaking plan mode file resolution
 - Fixed Darwin compiled binaries failing to start under Bun 1.3.12 by ad-hoc signing local and release binary builds after applying Bun's no-codesign workaround ([#754](https://github.com/can1357/gajae-code/issues/754))
@@ -1728,11 +1728,11 @@
 - Fixed chunk edit tool to report file-not-found error distinctly when attempting to use chunk selectors on non-existent files, with guidance to use write tool or verify the path
 - Fixed stale child selector reuse to correctly match chunks by checksum when multiple sibling chunks with the same name exist under the same parent
 - Fixed stale diagnostics being reused after unrelated file publishes by clearing cached diagnostics before refreshing file state
-- Fixed Codex search to use streamed answer text when final answer is an image placeholder or empty
+- Fixed OpenAI code search to use streamed answer text when final answer is an image placeholder or empty
 
 ### Fixed
 
-- Fixed MCP config docs and schema to use `~/.omp/agent/mcp.json` for user-scoped GJC-native MCP config while keeping project config at `<cwd>/.omp/mcp.json`
+- Fixed MCP config docs and schema to use `~/.gjc/agent/mcp.json` for user-scoped GJC-native MCP config while keeping project config at `<cwd>/.gjc/mcp.json`
 
 ## [14.0.4] - 2026-04-10
 
@@ -1930,8 +1930,8 @@
 - Chunk edit documentation clarified: region defaults to full chunk when omitted; leaf chunks no longer support region targeting
 - Chunk read documentation updated: selector examples now use region-specific selectors based on `@head`, `@body`, and `@tail`
 - LSP server connecting status in welcome banner now uses muted pending symbol instead of warning symbol for clearer visual distinction
-- Codex websocket prewarm now runs asynchronously in the background instead of blocking session creation, allowing faster startup
-- Codex websocket status updates now display in interactive mode when prewarm completes or fails
+- OpenAI code websocket prewarm now runs asynchronously in the background instead of blocking session creation, allowing faster startup
+- OpenAI code websocket status updates now display in interactive mode when prewarm completes or fails
 - LSP server warmup now runs asynchronously in the background instead of blocking session creation, allowing faster startup
 - LSP servers returned from `createAgentSession()` now include `connecting` status during initial warmup phase
 - Interactive mode now subscribes to LSP startup events and displays status updates and error messages to the user
@@ -2159,9 +2159,9 @@
 - Added `gh_search_prs` tool to search GitHub pull requests with repository scoping
 - Added `gh_run_watch` tool to watch GitHub Actions workflow runs, fast-fail on job failures, and stream tailed logs for failed jobs
 - Added bundled `/green` command to generate iterative CI fix prompts with optional tag instructions when HEAD is tagged
-- Project-scoped marketplace plugin installs: `omp plugin install --scope project name@marketplace` and `/marketplace install --scope project name@marketplace` install plugins into the nearest `.omp/` or `.git`-rooted project directory instead of the user directory ([#581](https://github.com/can1357/gajae-code/issues/581))
+- Project-scoped marketplace plugin installs: `gjc plugin install --scope project name@marketplace` and `/marketplace install --scope project name@marketplace` install plugins into the nearest `.gjc/` or `.git`-rooted project directory instead of the user directory ([#581](https://github.com/can1357/gajae-code/issues/581))
 - `--scope user|project` flag added to `/marketplace uninstall`, `/marketplace upgrade`, `/plugins enable`, and `/plugins disable` to disambiguate when a plugin is installed in both scopes
-- `omp plugin upgrade --scope project` with no plugin ID warns that `--scope` is ignored for bulk upgrades
+- `gjc plugin upgrade --scope project` with no plugin ID warns that `--scope` is ignored for bulk upgrades
 - Added opt-in `gh_*` GitHub CLI tools behind the `github.enabled` setting for repository, issue, pull request, diff, and search workflows
 - Added opt-in `gh_run_watch` to fast-fail GitHub Actions runs, stream job status snapshots, and return tailed logs for failed jobs
 - Added bundled `/green` command to generate the iterative “fix CI until green” prompt, with final tag instructions included only when `HEAD` already has a tag
@@ -2208,19 +2208,19 @@
 - Added `marketplace.autoUpdate` setting (`off`/`notify`/`auto`, default `notify`) for automatic plugin update checking on startup
 - Added background marketplace catalog refresh on startup when catalogs are stale (>24h)
 - Added `/marketplace upgrade [name@marketplace]` slash command to upgrade outdated plugins
-- Added `omp plugin upgrade [name@marketplace]` CLI command for plugin upgrades
+- Added `gjc plugin upgrade [name@marketplace]` CLI command for plugin upgrades
 - Added `checkForUpdates()`, `upgradePlugin()`, `upgradeAllPlugins()`, and `refreshStaleMarketplaces()` to MarketplaceManager
-- Added marketplace plugin system: registry types, ID helpers, atomic read/write for `marketplaces.json` and `installed_plugins.json` (Claude Code-compatible format)
+- Added marketplace plugin system: registry types, ID helpers, atomic read/write for `marketplaces.json` and `installed_plugins.json` (Anthropic Code-compatible format)
 - Added `MarketplaceManager` orchestrator for marketplace and plugin lifecycle (add/remove/update marketplaces, install/uninstall/enable plugins)
 - Added marketplace fetcher with source classification (GitHub, git, URL, local) and catalog validation
 - Added plugin source resolver with `pathIsWithin` containment checks and versioned cache manager
-- Added CLI commands: `omp plugin marketplace add|remove|update|list`, `omp plugin discover [marketplace]`
+- Added CLI commands: `gjc plugin marketplace add|remove|update|list`, `gjc plugin discover [marketplace]`
 - Added `classifyInstallTarget()` to distinguish `name@marketplace` from npm install targets
-- Extended `listClaudePluginRoots()` to read GJC's installed plugins registry alongside Claude Code's, with GJC as authoritative for duplicate plugin IDs
+- Extended `listAnthropic modelPluginRoots()` to read GJC's installed plugins registry alongside Anthropic Code's, with GJC as authoritative for duplicate plugin IDs
 - Added `--plugin-dir <path>` repeatable CLI flag for loading plugins from local directories
 - Added `/reload-plugins` slash command that invalidates fs content cache and plugin roots cache
 - Added `printPluginHelp()` entries for marketplace and discover commands
-- Added MCP server loading from marketplace plugin `.mcp.json` files with `${CLAUDE_PLUGIN_ROOT}` variable substitution
+- Added MCP server loading from marketplace plugin `.mcp.json` files with `${ANTHROPIC_MODEL_PLUGIN_ROOT}` variable substitution
 - Added skill and command namespacing for marketplace plugins (`plugin-name:skill-name`)
 - Added LSP config loading from marketplace plugin roots via `getPreloadedPluginRoots()`
 - Wired `--plugin-dir` runtime injection into plugin roots at session startup with highest precedence
@@ -2541,7 +2541,7 @@
 
 ### Fixed
 
-- Fixed SDK-created default sessions to honor the configured `agentDir` for session storage, preventing tests from writing stray session directories into the real `~/.omp/agent/sessions` root
+- Fixed SDK-created default sessions to honor the configured `agentDir` for session storage, preventing tests from writing stray session directories into the real `~/.gjc/agent/sessions` root
 - Fixed session directory resolution to correctly handle symlink-equivalent paths, ensuring aliased home and temp directories resolve to the same session storage location as their real targets
 
 ## [13.12.7] - 2026-03-16
@@ -2653,7 +2653,7 @@
 - Added support for `supportsUsageInStreaming`, `requiresToolResultName`, `requiresAssistantAfterToolResult`, `requiresThinkingAsText`, `thinkingFormat`, and `supportsStrictMode` OpenAI compatibility options
 - Added support for provider-configurable `OpenAICompat.extraBody` to inject request-body fields for custom gateway/proxy routing
 - Added `close()` method to SessionManager for properly closing persistent writers after flushing pending data
-- Added `omp config init-xdg` command to initialize XDG Base Directory structure on Linux
+- Added `gjc config init-xdg` command to initialize XDG Base Directory structure on Linux
 - Added `getHistoryDbPath()`, `getModelDbPath()`, `getMemoriesDir()`, `getTerminalSessionsDir()` path helpers
 
 ### Changed
@@ -2936,7 +2936,7 @@
 - Added `/fast` slash command to toggle OpenAI service tier priority mode for faster response processing
 - Added `serviceTier` setting to control OpenAI processing priority (none, auto, default, flex, scale, priority)
 - Added `compaction.remoteEnabled` setting to control use of remote compaction endpoints
-- Added remote compaction support for OpenAI and OpenAI Codex models with encrypted reasoning preservation
+- Added remote compaction support for OpenAI and OpenAI code provider models with encrypted reasoning preservation
 - Added fast mode indicator (⚡) to model segment in status line when priority service tier is active
 - Added context usage threshold levels (normal, warning, purple, error) with token-aware thresholds for better context awareness
 - Added `isFastModeEnabled()`, `setFastMode()`, and `toggleFastMode()` methods to AgentSession for fast mode control
@@ -2981,13 +2981,13 @@
 
 - Updated label lookup to use `targetId` field instead of `parentId` for label references
 - Changed model change entry display to use `model` field instead of separate `provider` and `modelId` fields
-- Simplified model change rendering by removing OpenAI Codex bridge prompt display
+- Simplified model change rendering by removing OpenAI code provider bridge prompt display
 - Updated searchable text extraction to include Python code from `pythonExecution` messages
 
 ### Removed
 
-- Removed `codexInjectionInfo` from session data destructuring
-- Removed OpenAI Codex-specific bridge prompt UI from model change entries
+- Removed `openai-codeInjectionInfo` from session data destructuring
+- Removed OpenAI code provider-specific bridge prompt UI from model change entries
 
 ### Fixed
 
@@ -3020,14 +3020,14 @@
 
 ### Fixed
 
-- Fixed provider session state not being cleared when branching or navigating tree history, preventing resource leaks with codex provider sessions
+- Fixed provider session state not being cleared when branching or navigating tree history, preventing resource leaks with openai-code provider sessions
 
 ## [13.8.0] - 2026-03-04
 
 ### Added
 
 - Added `buildCompactHashlineDiffPreview()` function to generate compact diff previews for model-visible tool responses, collapsing long unchanged runs and consecutive additions/removals to show edit shape without full file content
-- Added project-level discovery for `.agent/` and `.agents/` directories, walking up from cwd to repo root (matching behavior of other providers like `.omp`, `.claude`, `.codex`). Applies to skills, rules, prompts, commands, context files (AGENTS.md), and system prompts (SYSTEM.md)
+- Added project-level discovery for `.agent/` and `.agents/` directories, walking up from cwd to repo root (matching behavior of other providers like `.gjc`, `.anthropic-model`, `.openai-code`). Applies to skills, rules, prompts, commands, context files (AGENTS.md), and system prompts (SYSTEM.md)
 
 ### Changed
 
@@ -3036,7 +3036,7 @@
 
 ### Fixed
 
-- Fixed `:thinking` suffix in `modelRoles` config values silently breaking model resolution (e.g., `slow: anthropic/claude-opus-4-6:high`) and being stripped on Ctrl+P role cycling
+- Fixed `:thinking` suffix in `modelRoles` config values silently breaking model resolution (e.g., `slow: anthropic/anthropic-model-opus-4-6:high`) and being stripped on Ctrl+P role cycling
 
 ## [13.7.6] - 2026-03-04
 
@@ -3112,9 +3112,9 @@
 
 ### Fixed
 
-- Fixed `omp update` silently succeeding without actually updating the binary when the update channel (bun global vs compiled binary) doesn't match the installation method ([#247](https://github.com/can1357/gajae-code/issues/247))
-- Added post-update verification that checks the resolved `omp` binary reports the expected version, with actionable warnings on mismatch
-- `omp update` now detects when the `omp` in PATH is not managed by bun and falls back to binary replacement instead of updating the wrong location
+- Fixed `gjc update` silently succeeding without actually updating the binary when the update channel (bun global vs compiled binary) doesn't match the installation method ([#247](https://github.com/can1357/gajae-code/issues/247))
+- Added post-update verification that checks the resolved `gjc` binary reports the expected version, with actionable warnings on mismatch
+- `gjc update` now detects when the `gjc` in PATH is not managed by bun and falls back to binary replacement instead of updating the wrong location
 
 ## [13.6.0] - 2026-03-03
 
@@ -3131,7 +3131,7 @@
 ### Changed
 
 - Updated MCP resource update notifications to recommend using `read(path="mcp://<uri>")` instead of the deprecated `read_resource` tool
-- Updated Anthropic Foundry environment variable documentation and CLI help text to the canonical names: `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_CLIENT_CERT`, and `CLAUDE_CODE_CLIENT_KEY`
+- Updated Anthropic Foundry environment variable documentation and CLI help text to the canonical names: `ANTHROPIC_MODEL_CODE_USE_FOUNDRY`, `ANTHROPIC_MODEL_CODE_CLIENT_CERT`, and `ANTHROPIC_MODEL_CODE_CLIENT_KEY`
 - Documented Foundry-specific Anthropic runtime configuration (`FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`, `ANTHROPIC_CUSTOM_HEADERS`, `NODE_EXTRA_CA_CERTS`) in environment variable reference docs
 - `fuse-overlay` task isolation now targets `fuse-overlayfs` on Unix hosts only; on Windows it falls back to `worktree` with a `<system-notification>` suggesting `fuse-projfs`.
 - `fuse-projfs` now performs Windows ProjFS preflight checks and falls back to `worktree` when host or repository prerequisites are unavailable.
@@ -3151,7 +3151,7 @@
 
 ### Changed
 
-- Updated OAuth client name from 'gajae-code MCP' to 'Codex' for dynamic client registration
+- Updated OAuth client name from 'gajae-code MCP' to 'OpenAI code' for dynamic client registration
 
 ### Fixed
 
@@ -3172,7 +3172,7 @@
 - Added support for `/.well-known/oauth-protected-resource` discovery endpoint to resolve authorization servers
 - Added recursive auth server discovery to follow `authorization_servers` references when discovering OAuth endpoints
 
-- Added `omp agents unpack` CLI subcommand to export bundled subagent definitions to `~/.omp/agent/agents` by default, with `--project` support for `./.omp/agents`
+- Added `gjc agents unpack` CLI subcommand to export bundled subagent definitions to `~/.gjc/agent/agents` by default, with `--project` support for `./.gjc/agents`
 
 ### Changed
 
@@ -3258,7 +3258,7 @@
 - `deferrable?: boolean` field added to `AgentTool`, `CustomTool`, and `ToolDefinition` interfaces; tools that set it signal they may stage pending actions
 - `HIDDEN_TOOLS` and `ResolveTool` exported from `@gajae-code/coding-agent` SDK for manual tool composition
 - `PendingActionStore` now uses a LIFO stack (`push`/`peek`/`pop`); multiple deferrable tools can stage actions that resolve in reverse order of registration
-- Added `gemini`, `codex`, and `synthetic` as supported values for the `providers.webSearch` setting
+- Added `gemini`, `openai-code`, and `synthetic` as supported values for the `providers.webSearch` setting
 - `ast_grep` tool now accepts a `patterns` array (replaces single `pattern`); multiple patterns run in one native pass and results are merged before offset/limit
 - `ast_edit` tool now accepts an `ops` array of `{ pat, out }` entries (replaces `pattern` + `rewrite`); duplicate patterns are rejected upfront
 - AST find output now uses `>>` prefix on match-start lines and pads line numbers; directory-tree grouping with `# dir` / `## └─ file` headers for directory-scoped searches
@@ -3432,7 +3432,7 @@
 - Fixed handling of circular and deeply nested output schemas to prevent stack overflow and enable successful result submission with fallback unconstrained schema
 - Fixed processing of non-object output schemas (arrays, primitives, booleans) to accept valid result submissions without blocking
 - Fixed handling of mixed JTD and JSON Schema output definitions to properly convert all nested JTD elements (e.g., `elements` → `items`, `int32` → `integer`)
-- Fixed strict schema generation for output schemas with only required fields, enabling proper Claude API compatibility
+- Fixed strict schema generation for output schemas with only required fields, enabling proper Anthropic model API compatibility
 - Fixed handling of union type schemas (e.g., object|null) to normalize them into strict-mode compatible variants
 
 ## [13.3.6] - 2026-02-26
@@ -3809,7 +3809,7 @@
 
 ### Fixed
 
-- Fixed `omp stats` failing on npm/bun installs by including required stats build files in published `@gajae-code/stats` package ([#113](https://github.com/can1357/gajae-code/pull/113) by [@masonc15](https://github.com/masonc15))
+- Fixed `gjc stats` failing on npm/bun installs by including required stats build files in published `@gajae-code/stats` package ([#113](https://github.com/can1357/gajae-code/pull/113) by [@masonc15](https://github.com/masonc15))
 
 ## [12.14.0] - 2026-02-19
 
@@ -3827,7 +3827,7 @@
 
 ### Changed
 
-- System prompt now identifies agent as operating inside Gajae Code harness and instructs reading docs:// URLs for omp/pi topics
+- System prompt now identifies agent as operating inside Gajae Code harness and instructs reading docs:// URLs for gjc/pi topics
 - Tool discovery now accepts executable script extensions (.ts, .js, .sh, .bash, .py) in addition to .json and .md files
 - Updated bash and read tool documentation to reference `docs://` URL support
 - Hashline format separator changed from pipe (`|`) to colon (`:`) for improved readability (e.g., `LINE#ID:content` instead of `LINE#ID|content`)
@@ -3858,7 +3858,7 @@
 
 - Added `ssh` command for managing SSH host configurations (add, list, remove)
 - Added `/ssh` slash command in interactive mode to manage SSH hosts with subcommands
-- Added support for SSH host configuration at project and user scopes (.omp/ssh.json and ~/.omp/agent/ssh.json)
+- Added support for SSH host configuration at project and user scopes (.gjc/ssh.json and ~/.gjc/agent/ssh.json)
 - Added `--host`, `--user`, `--port`, `--key`, `--desc`, `--compat`, and `--scope` flags for SSH host configuration
 - Added discovery of SSH hosts from project configuration files alongside manually configured hosts
 - Added NanoGPT as a login provider (`/login nanogpt`) with API key prompt flow linking to `https://nano-gpt.com/api` ([#111](https://github.com/can1357/gajae-code/issues/111))
@@ -3871,7 +3871,7 @@
 - Updated handlebars helpers: renamed `hashline` to `href` and added `hline` for formatted line output
 - Improved insert operation to support `before`, `after`, and `between` (both anchors) positioning modes
 - Made autocorrect heuristics (boundary echo stripping, indent restoration) conditional on `PI_HL_AUTOCORRECT` environment variable
-- Updated SSH host discovery to load from managed omp config paths (.omp/ssh.json and ~/.omp/agent/ssh.json) in addition to legacy root-level ssh.json and .ssh.json files
+- Updated SSH host discovery to load from managed gjc config paths (.gjc/ssh.json and ~/.gjc/agent/ssh.json) in addition to legacy root-level ssh.json and .ssh.json files
 - Improved terminal output handling in interactive bash sessions to ensure all queued writes complete before returning results
 
 ### Fixed
@@ -3921,7 +3921,7 @@
 ### Fixed
 
 - Fixed model selector search initialization to apply the latest live query after asynchronous model loading.
-- Fixed Codex provider session lifecycle on model switches and history rewrites to clear stale session metadata before continuing the conversation.
+- Fixed OpenAI code provider session lifecycle on model switches and history rewrites to clear stale session metadata before continuing the conversation.
 
 ## [12.11.0] - 2026-02-19
 
@@ -3986,7 +3986,7 @@
 - Changed TTSR injection tracking to record all turns where rules were injected (instead of only the last turn) to support repeat-after-gap mode across resumed sessions
 - Changed TTSR injection messages to use custom message type with metadata instead of synthetic user messages for better session tracking
 - Changed TTSR rule injection to persist injected rule names in session state for restoration when resuming sessions
-- Changed model discovery to automatically discover built-in provider models (Anthropic, OpenAI, Groq, Cerebras, Xai, Mistral, OpenCode, OpenRouter, Vercel AI Gateway, Kimi Code, GitHub Copilot, Google, Cursor, Google Antigravity, Google Gemini CLI, OpenAI Codex) when credentials are configured
+- Changed model discovery to automatically discover built-in provider models (Anthropic, OpenAI, Groq, Cerebras, Xai, Mistral, OpenCode, OpenRouter, Vercel AI Gateway, Kimi Code, GitHub Copilot, Google, Cursor, Google Antigravity, Google Gemini CLI, OpenAI code provider) when credentials are configured
 - Changed `getModel()` and `getModels()` imports to `getBundledModel()` and `getBundledModels()` across test utilities
 - Changed TTSR rule matching from single `ttsrTrigger` regex to multiple `condition` patterns with scope filtering
 - Changed TTSR buffer management to use per-stream-key buffers instead of a single global buffer
@@ -4067,7 +4067,7 @@
 - Updated session compaction reserve token calculation to enforce a minimum 15% context window floor, ensuring more predictable compaction behavior regardless of configuration
 - Improved session compaction to limit file operation summaries to 20 files per category, with indication of omitted files when exceeded
 - Updated CLI update mechanism to support multiple native addon variants per platform, enabling fallback to baseline versions when modern variants are unavailable
-- Updated web search provider priority order to include Brave (Exa → Brave → Jina → Perplexity → Anthropic → Gemini → Codex → Z.AI)
+- Updated web search provider priority order to include Brave (Exa → Brave → Jina → Perplexity → Anthropic → Gemini → OpenAI code → Z.AI)
 - Extended recency filter support to Brave provider alongside Perplexity
 - Changed GitHub issue comment fetching to use paginated API requests with 100 comments per page instead of single request with 50-comment limit
 
@@ -4176,9 +4176,9 @@
 
 - Added `providerSessionState` property to AgentSession for managing provider-scoped transport and session caches
 - Added automatic cleanup of provider session state resources on session disposal
-- Added `providers.openaiWebsockets` setting to prefer websocket transport for OpenAI Codex models
+- Added `providers.openaiWebsockets` setting to prefer websocket transport for OpenAI code provider models
 - Added provider details display in session info showing authentication mode, transport, and connection settings
-- Added automatic prewarm of OpenAI Codex websocket connections on session creation for improved performance
+- Added automatic prewarm of OpenAI code provider websocket connections on session creation for improved performance
 - Added real-time authentication validation in OAuth provider selector with visual status indicators (checking, valid, invalid)
 - Added `validateAuth` and `requestRender` options to OAuthSelectorComponent for custom authentication validation and UI refresh callbacks
 
@@ -4207,7 +4207,7 @@
 - Filesystem scan cache invalidation helpers (`invalidateFsScanAfterWrite`, `invalidateFsScanAfterDelete`, `invalidateFsScanAfterRename`) to properly invalidate shared caches after file mutations
 - Named discovery profile for file mention candidates to standardize cache visibility and ignore semantics across callers
 - Comprehensive `models.yml` provider integration guide documenting custom model registration, provider overrides, API adapters, merge behavior, and practical integration patterns for Ollama, vLLM, LM Studio, and proxy endpoints
-- Claude Code marketplace plugin discovery: automatically loads skills, commands, hooks, tools, and agents from `~/.claude/plugins/cache/` based on `installed_plugins.json` registry ([#48](https://github.com/can1357/gajae-code/issues/48))
+- Anthropic Code marketplace plugin discovery: automatically loads skills, commands, hooks, tools, and agents from `~/.anthropic-model/plugins/cache/` based on `installed_plugins.json` registry ([#48](https://github.com/can1357/gajae-code/issues/48))
 
 ### Changed
 
@@ -4215,7 +4215,7 @@
 - Updated imports throughout codebase to use centralized directory path functions from `@gajae-code/utils/dirs`
 - Updated interactive bash terminal UI label from 'InteractiveTerm' to 'Console' for clarity
 - Enhanced bash execution environment with comprehensive non-interactive defaults for pagers, editors, and package managers to prevent command blocking and interactive prompts
-- Updated custom models configuration to use `~/.omp/agent/models.yml` (YAML format) while maintaining backward compatibility with legacy `models.json`
+- Updated custom models configuration to use `~/.gjc/agent/models.yml` (YAML format) while maintaining backward compatibility with legacy `models.json`
 
 ## [12.0.0] - 2026-02-12
 
@@ -4230,8 +4230,8 @@
 
 ### Fixed
 
-- Fixed `omp setup` crashing with uncaught exception when no component argument provided; now shows help ([#35](https://github.com/can1357/gajae-code/issues/35))
-- Fixed `/mcp list` showing "No MCP servers configured" when servers are loaded from discovery sources like `.claude.json`, `.cursor/mcp.json`, `.vscode/mcp.json` ([#34](https://github.com/can1357/gajae-code/issues/34))
+- Fixed `gjc setup` crashing with uncaught exception when no component argument provided; now shows help ([#35](https://github.com/can1357/gajae-code/issues/35))
+- Fixed `/mcp list` showing "No MCP servers configured" when servers are loaded from discovery sources like `.anthropic-model.json`, `.cursor/mcp.json`, `.vscode/mcp.json` ([#34](https://github.com/can1357/gajae-code/issues/34))
 - Fixed model selector sorting to show newest models first within each provider instead of alphabetical; `-latest` aliases now appear before dated versions ([#37](https://github.com/can1357/gajae-code/issues/37))
 
 ## [11.14.4] - 2026-02-12
@@ -4305,7 +4305,7 @@
 
 ### Breaking Changes
 
-- Removed support for `.pi` configuration directory alias; use `.omp` instead
+- Removed support for `.pi` configuration directory alias; use `.gjc` instead
 
 ### Added
 
@@ -4704,7 +4704,7 @@
 
 ### Added
 
-- Added resumption hint printed to stderr on session exit showing command to resume the session (e.g., `Resume this session with claude --resume <session-id>`)
+- Added resumption hint printed to stderr on session exit showing command to resume the session (e.g., `Resume this session with anthropic-model --resume <session-id>`)
 - New `BlobStore` class for content-addressed storage of large binary data (images) externalized from session files
 - New `getBlobsDir()` function to get path to blob store directory
 - Support for externalizing large images to blob store during session persistence, reducing JSONL file size
@@ -4759,7 +4759,7 @@
 - Improved `@` prefix normalization to only strip leading `@` for well-known path syntaxes (absolute paths, home directory, internal URL shorthands) to avoid mangling literal paths
 - Enhanced git URL parsing to strip credentials from repository URLs and validate URL-encoded hash fragments
 - Improved null data handling in task submission to preserve agent output when `submit_result` is called with null/undefined data, enabling fallback text extraction instead of discarding output
-- Updated default model IDs across providers: Claude Sonnet 4.5 → Claude Opus 4.6, Gemini 2.5 Pro → Gemini 3 Pro variants, and others
+- Updated default model IDs across providers: Anthropic model Sonnet 4.5 → Anthropic model Opus 4.6, Gemini 2.5 Pro → Gemini 3 Pro variants, and others
 - Made model definition fields optional with sensible defaults for local models (Ollama, LM Studio, etc.)
 - Modified custom tool execute signature to reorder parameters: `(toolCallId, params, signal, onUpdate, ctx)` instead of `(toolCallId, params, onUpdate, ctx, signal)`
 - Changed `--version` and `--list-models` flags to exit with `process.exit(0)` instead of returning
@@ -4804,24 +4804,24 @@
 
 ### Fixed
 
-- Fixed CLI invocation with flags only (e.g. `pi --model=codex`) to route to the default command instead of erroring
+- Fixed CLI invocation with flags only (e.g. `pi --model=openai-code`) to route to the default command instead of erroring
 
 ## [11.2.0] - 2026-02-05
 
 ### Added
 
-- Added `omp commit` command to generate commit messages and update changelogs with `--push`, `--dry-run`, `--no-changelog`, and model override flags
-- Added `omp config` command to manage configuration settings with actions: list, get, set, reset, path
-- Added `omp grep` command to test grep tool with pattern matching, glob filtering, context lines, and output modes
-- Added `omp jupyter` command to manage the shared Jupyter gateway with status and kill actions
-- Added `omp plugin` command to manage plugins with install, uninstall, list, link, doctor, features, config, enable, and disable actions
-- Added `omp setup` command to install dependencies for optional features like Python
-- Added `omp shell` command for interactive shell console with working directory and timeout configuration
-- Added `omp stats` command to view usage statistics with dashboard server, JSON output, and summary options
-- Added `omp update` command to check for and install updates with force and check-only modes
-- Added `omp web-search` command (alias `omp q`) to test web search providers with provider selection, recency filtering, and result limits
+- Added `gjc commit` command to generate commit messages and update changelogs with `--push`, `--dry-run`, `--no-changelog`, and model override flags
+- Added `gjc config` command to manage configuration settings with actions: list, get, set, reset, path
+- Added `gjc grep` command to test grep tool with pattern matching, glob filtering, context lines, and output modes
+- Added `gjc jupyter` command to manage the shared Jupyter gateway with status and kill actions
+- Added `gjc plugin` command to manage plugins with install, uninstall, list, link, doctor, features, config, enable, and disable actions
+- Added `gjc setup` command to install dependencies for optional features like Python
+- Added `gjc shell` command for interactive shell console with working directory and timeout configuration
+- Added `gjc stats` command to view usage statistics with dashboard server, JSON output, and summary options
+- Added `gjc update` command to check for and install updates with force and check-only modes
+- Added `gjc web-search` command (alias `gjc q`) to test web search providers with provider selection, recency filtering, and result limits
 - Migrated CLI from custom argument parser to oclif framework for improved command structure and help system
-- Added `omp q` CLI subcommand for testing web search providers with query, provider, recency, and limit options
+- Added `gjc q` CLI subcommand for testing web search providers with query, provider, recency, and limit options
 - Added web search provider information API with authentication requirements and provider metadata
 - Added support for `hour` recency filter option in Perplexity web search
 - Support for image file mentions—images are now automatically detected, resized, and attached when referenced with @filepath syntax
@@ -5000,7 +5000,7 @@
 
 ### Removed
 
-- Removed support for `omp/` model role prefix; use `pi/` prefix instead
+- Removed support for `gjc/` model role prefix; use `pi/` prefix instead
 
 ## [10.6.0] - 2026-02-04
 
@@ -5185,7 +5185,7 @@
 - Migrated bash command execution from ptree-based persistent sessions to native shell bindings with streaming support
 - Simplified bash executor to use brush-core native API instead of managing long-lived shell processes
 - Routed clipboard copy and image paste through native arboard bindings instead of shell commands
-- Embedded native addon payload for compiled binaries and extract to `~/.omp/natives/<version>` on first run
+- Embedded native addon payload for compiled binaries and extract to `~/.gjc/natives/<version>` on first run
 
 ### Removed
 
@@ -5375,11 +5375,11 @@
 
 ### Added
 
-- Added grep CLI subcommand (`omp grep`) for testing pattern matching
+- Added grep CLI subcommand (`gjc grep`) for testing pattern matching
 - Added fuzzy matching for model resolution with scoring and ranking fallback
 - Added 'Open: artifact folder' menu option to debug selector for quick access to session artifacts
 - Added Kimi API format setting for selecting between OpenAI and Anthropic formats
-- Added Codex and Gemini web search providers with OAuth and grounding support
+- Added OpenAI code and Gemini web search providers with OAuth and grounding support
 - Added /debug command with interactive menu for profiling, heap snapshots, session dumps, and diagnostics
 - Added configurable ask timeout and notification settings
 - Added gitignore-aware project tree scanning with ripgrep integration
@@ -5420,7 +5420,7 @@
 - Enhanced error reporting with debug stack trace when DEBUG env is set
 - Improved OAuth token refresh error handling to distinguish transient vs definitive failures
 - Added windowsHide option to child process spawn calls to prevent console windows on Windows
-- External edits to config.yml are now preserved when omp reloads or saves settings
+- External edits to config.yml are now preserved when gjc reloads or saves settings
 - Exposed LSP server startup errors in session display and logs
 - Improved error handling and security in agent storage initialization with restrictive file permissions
 - Fixed LSP server display showing unknown when server warmup fails
@@ -5432,7 +5432,7 @@
 
 ### Fixed
 
-- External edits to `config.yml` are now preserved when omp reloads or saves unrelated settings. Previously, editing config.yml directly (e.g., removing a package from `packages` array) would be silently reverted on next omp startup when automatic setters like `setLastChangelogVersion()` triggered a save. ([#1046](https://github.com/badlogic/pi-mono/pull/1046) by [@nicobailonMD](https://github.com/nicobailonMD))
+- External edits to `config.yml` are now preserved when gjc reloads or saves unrelated settings. Previously, editing config.yml directly (e.g., removing a package from `packages` array) would be silently reverted on next gjc startup when automatic setters like `setLastChangelogVersion()` triggered a save. ([#1046](https://github.com/badlogic/pi-mono/pull/1046) by [@nicobailonMD](https://github.com/nicobailonMD))
 
 ## [8.13.0] - 2026-01-29
 
@@ -5564,7 +5564,7 @@
 
 - Merged patch application warnings into edit tool diagnostics output
 - Cached Python prelude docs for subagent workers to avoid repeated warmups
-- Simplified image placeholders inserted on paste to match Claude-style markers
+- Simplified image placeholders inserted on paste to match Anthropic model-style markers
 
 ### Fixed
 
@@ -5599,7 +5599,7 @@
 
 ### Added
 
-- Added `omp commit` command to generate conventional commits with changelog updates
+- Added `gjc commit` command to generate conventional commits with changelog updates
 - Added agentic commit mode with commit-specific tools and `--legacy` fallback
 - Added configurable settings for map-reduce analysis including concurrency, timeout, file thresholds, and token limits
 - Added support for excluding YAML lock files (`.lock.yml`, `.lock.yaml`, `-lock.yml`, `-lock.yaml`) from commit analysis
@@ -5610,7 +5610,7 @@
 - Added renderStatusLine component for standardized tool status headers with icons, descriptions, and metadata
 - Added renderOutputBlock component for bordered output containers with structured sections
 - Added renderOutputBlock to Bash tool for improved output formatting with status indicators
-- Added `--legacy` flag to `omp commit` for using the deterministic pipeline instead of agentic mode
+- Added `--legacy` flag to `gjc commit` for using the deterministic pipeline instead of agentic mode
 - Added split commit support to automatically create multiple atomic commits for unrelated changes
 - Added git hunk inspection tools for fine-grained diff analysis in commit generation
 - Added commit message validation with filler word and meta phrase detection
@@ -5666,7 +5666,7 @@
 - Changed tool result rendering to merge call and result displays, showing tool arguments (command, pattern, query, path) in result headers for Bash, Calculator, Fetch, Find, Grep, Ls, LSP, Notebook, Read, SSH, TodoWrite, Web Search, and Write tools
 - Changed Read tool title to display line range when offset or limit arguments are provided
 - Changed worker instantiation to use direct URL import instead of pre-bundled worker files
-- Changed `omp commit` to use agentic mode by default with tool-based git inspection
+- Changed `gjc commit` to use agentic mode by default with tool-based git inspection
 - Changed agentic commit progress output to show real-time thinking previews and structured tool argument details
 - Changed agentic commit progress output to display full multi-line assistant messages and render tool arguments with tree-style formatting for improved readability
 - Changed agentic commit progress output to render assistant messages as formatted Markdown with proper word wrapping
@@ -5824,7 +5824,7 @@
 - Added patch application system that applies changes only when all patches are valid
 - Added working directory information to environment info display
 - Added `/usage` command to display provider usage and limits
-- Added support for multiple usage providers beyond Codex
+- Added support for multiple usage providers beyond OpenAI code
 - Added usage report caching with configurable TTL
 - Added visual usage bars and account aggregation in usage display
 - Added `fetchUsageReports()` method to agent session
@@ -5849,7 +5849,7 @@
 - Enhanced verification and integration methodology sections
 - Updated skills and rules formatting for cleaner presentation
 - Added stronger emphasis on completeness and quality standards
-- Refactored usage tracking from Codex-specific to generic provider system
+- Refactored usage tracking from OpenAI code-specific to generic provider system
 - Updated usage limit detection to work with multiple provider APIs
 - Changed usage cache to use persistent storage instead of in-memory only
 - Limited diagnostic messages to 50 items to prevent overwhelming output when processing files with many issues
@@ -5883,7 +5883,7 @@
 - Added extension system support for user Python execution events
 - Added Python mode border color theming across all themes
 - Added Python execution indicator to welcome screen help text
-- Added `omp stats` command for viewing AI usage statistics dashboard
+- Added `gjc stats` command for viewing AI usage statistics dashboard
 - Added support for JSON output and console summary of usage statistics
 - Added configurable port option for stats dashboard server
 - Added multi-cell Python execution with sequential processing in persistent kernel
@@ -6055,7 +6055,7 @@
 - Changed default edit tool mode to use apply-patch format instead of oldText/newText
 - Converted tool implementations from factory functions to class-based architecture
 - Refactored edit tool with modular patch architecture (moved from `edit/` to `patch/` module)
-- Enhanced patch parsing: unified diff format, Codex-style patches, nested anchors, multi-file markers
+- Enhanced patch parsing: unified diff format, patch-envelope patches, nested anchors, multi-file markers
 - Improved fuzzy matching with multiple match tracking, ambiguity detection, and out-of-order hunk processing
 - Better diff rendering: smarter truncation, optional line numbers, trailing newline preservation
 - Improved error messages with hierarchical context display using `>` separator
@@ -6107,7 +6107,7 @@
 
 ### Added
 
-- Added Cursor and OpenAI Codex OAuth providers
+- Added Cursor and OpenAI code provider OAuth providers
 - Added Windows installer bash shell auto-configuration
 - Added dedicated TTSR settings tab (separated from Voice/TTS)
 
@@ -6144,7 +6144,7 @@
 ### Added
 
 - Added support for loading Python prelude extension modules from user and project directories
-- Added automatic discovery of Python modules from `.omp/modules` and `.pi/modules` directories
+- Added automatic discovery of Python modules from `.gjc/modules` and `.pi/modules` directories
 - Added prioritized module loading with project-level modules overriding user-level modules
 
 ## [5.6.7] - 2026-01-18
@@ -6340,7 +6340,7 @@
 
 ### Added
 
-- Add `omp config` subcommand for managing settings (`list`, `get`, `set`, `reset`, `path`)
+- Add `gjc config` subcommand for managing settings (`list`, `get`, `set`, `reset`, `path`)
 - Add `todoCompletion` setting to warn agent when it stops with incomplete todos (up to 3 reminders)
 - Add multi-part questions support to `ask` tool via `questions` array parameter
 
@@ -6443,7 +6443,7 @@
 ### Added
 
 - Added Cursor provider support with browser-based OAuth authentication
-- Added default model configuration for Cursor provider (claude-sonnet-4-5)
+- Added default model configuration for Cursor provider (anthropic-model-sonnet-4-5)
 - Added execution bridge for Cursor tool calls including read, ls, grep, write, delete, shell, diagnostics, and MCP operations
 
 ### Fixed
@@ -6464,7 +6464,7 @@
 
 ### Added
 
-- Added persistent cache storage for Codex usage data that survives application restarts
+- Added persistent cache storage for OpenAI code usage data that survives application restarts
 - Added `--no-lsp` to disable LSP tools, formatting, diagnostics, and warmup for a session
 
 ### Changed
@@ -6491,11 +6491,11 @@
 ### Changed
 
 - Refactored skill discovery to use unified `loadSkillsFromDir` helper across all providers, reducing code duplication
-- Updated skill discovery to scan only `skills/*/SKILL.md` entries instead of recursive walks in Codex provider
+- Updated skill discovery to scan only `skills/*/SKILL.md` entries instead of recursive walks in OpenAI code provider
 - Added guidance to Task tool documentation to isolate file scopes when assigning tasks to prevent agent conflicts
 - Updated Task tool documentation to emphasize that subagents have no access to conversation history and require all relevant context to be explicitly passed
 - Revised task agent prompt to clarify that subagents have full tool access and can make file edits, run commands, and create files
-- OpenAI Codex: updated to use bundled system prompt from upstream
+- OpenAI code provider: updated to use bundled system prompt from upstream
 - Changed `complete` tool to make `data` parameter optional when aborting, while still requiring it for successful completions
 - Skills discovery now scans only `skills/*/SKILL.md` entries instead of recursive walks
 
@@ -6518,7 +6518,7 @@
 - Added automatic Nerd Fonts detection for terminals like iTerm, WezTerm, Kitty, Ghostty, and Alacritty to set appropriate symbol preset
 - Added `NERD_FONTS` environment variable override (`1` or `0`) to manually control Nerd Fonts symbol preset
 - Added Handlebars templating engine for prompt template rendering with `{{arg}}` helper for positional arguments
-- Added support for custom share scripts at ~/.omp/agent/share.ts to replace default GitHub Gist sharing
+- Added support for custom share scripts at ~/.gjc/agent/share.ts to replace default GitHub Gist sharing
 
 ### Changed
 
@@ -6564,12 +6564,12 @@
 
 ### Added
 
-- Added usage limit error detection to enable automatic credential switching when Codex accounts hit rate limits
-- Added Codex usage API integration to proactively check account limits before credential selection
+- Added usage limit error detection to enable automatic credential switching when OpenAI code accounts hit rate limits
+- Added OpenAI code usage API integration to proactively check account limits before credential selection
 - Added credential backoff tracking to temporarily skip rate-limited accounts during selection
-- Multi-credential usage-aware selection for OpenAI Codex OAuth accounts with automatic fallback when rate limits are reached
+- Multi-credential usage-aware selection for OpenAI code provider OAuth accounts with automatic fallback when rate limits are reached
 - Consistent session-to-credential hashing (FNV-1a) for stable credential assignment across sessions
-- Codex usage API integration to detect and cache rate limit status per account
+- OpenAI code usage API integration to detect and cache rate limit status per account
 - Automatic mid-session credential switching when usage limits are hit
 
 ### Changed
@@ -6595,14 +6595,14 @@
 - `blockImages` setting to prevent images from being sent to LLM providers
 - `thinkingBudgets` setting to customize token budgets per thinking level
 - `PI_SKIP_VERSION_CHECK` environment variable to disable new version notifications at startup
-- Anthropic OAuth support via `/login` to authenticate with Claude Pro/Max subscription
+- Anthropic OAuth support via `/login` to authenticate with Anthropic model Pro/Max subscription
 - OpenCode Zen provider support via `OPENCODE_API_KEY` env var and `opencode/<model-id>` syntax
 - Session picker (`pi -r`) and `--session` flag support searching/resuming by session ID (UUID prefix)
-- Session ID forwarding to LLM providers for session-based caching (used by OpenAI Codex for prompt caching)
+- Session ID forwarding to LLM providers for session-based caching (used by OpenAI code provider for prompt caching)
 - `dequeue` keybinding (`Alt+Up`) to restore queued steering/follow-up messages back into the editor
 - Pluggable operations for built-in tools enabling remote execution via SSH or other transports (`ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`)
 - `/model <search>` pre-filters the model selector or auto-selects on exact match; use `provider/model` syntax to disambiguate
-- Managed binaries directory (`~/.omp/bin/`) for fd and rg tools
+- Managed binaries directory (`~/.gjc/bin/`) for fd and rg tools
 - `FooterDataProvider` for custom footers with `getGitBranch()`, `getExtensionStatuses()`, and `onBranchChange()`
 - `ctx.ui.custom()` accepts `{ overlay: true }` option for floating modal components
 - `ctx.ui.getAllThemes()`, `ctx.ui.getTheme(name)`, `ctx.ui.setTheme(name | Theme)` for theme management
@@ -6617,16 +6617,16 @@
 - Built-in renderers used automatically for tool overrides without custom `renderCall`/`renderResult`
 - `InteractiveMode`, `runPrintMode()`, `runRpcMode()` exported for building custom run modes
 - Copy link button on messages for deep linking to specific entries
-- Codex injection info display showing system prompt modifications
+- OpenAI code injection info display showing system prompt modifications
 - URL parameter support for `leafId` and `targetId` deep linking
 - Wayland clipboard support for `/copy` command using wl-copy with xclip/xsel fallback
 
 ### Changed
 
 - Bash tool output truncation now recalculates on terminal resize instead of using cached width
-- Web search tool headers updated to match Claude Code client format for better compatibility
+- Web search tool headers updated to match Anthropic Code client format for better compatibility
 - `discoverSkills()` return type documented as `{ skills: Skill[], warnings: SkillWarning[] }` in SDK docs
-- Default model for OpenCode provider changed from `claude-sonnet-4-5` to `claude-opus-4-5`
+- Default model for OpenCode provider changed from `anthropic-model-sonnet-4-5` to `anthropic-model-opus-4-5`
 - Terminal color mode detection defaults to truecolor for modern terminals instead of 256color
 - System prompt restructured with XML tags and clearer instructions format
 - `before_agent_start` event receives `systemPrompt` in the event object and returns `systemPrompt` (full replacement) instead of `systemPromptAppend`
@@ -6654,7 +6654,7 @@
 - Malformed thinking text in Gemini/Antigravity responses where thinking content appeared as regular text
 - `--no-skills` flag correctly prevents skills from loading in interactive mode
 - Overflow-based compaction skips if error came from a different model or was already handled
-- OpenAI Codex context window reduced from 400k to 272k tokens to match Codex CLI defaults
+- OpenAI code provider context window reduced from 400k to 272k tokens to match OpenAI code CLI defaults
 - Context overflow detection recognizes `context_length_exceeded` errors
 - Key presses no longer dropped when input is batched over SSH
 - Clipboard image support works on Alpine Linux and other musl-based distros
@@ -6884,7 +6884,7 @@
 
 ### Changed
 
-- Changed subagent execution from spawning separate `omp` processes to running in Bun Workers with direct event streaming
+- Changed subagent execution from spawning separate `gjc` processes to running in Bun Workers with direct event streaming
 - Changed tool factories to accept `ToolSession` parameter instead of separate cwd and options arguments
 - Changed `createTools` to return tools as a Map and support conditional tool creation based on session context
 - Changed system prompt builder to dynamically generate tool descriptions from the tool registry
@@ -6935,13 +6935,13 @@
 - Added ImageMagick fallback for image processing when sharp module is unavailable
 - Added slash commands to the extensions inspector panel for visibility and management
 - Added support for file-based slash commands from `commands/` directories
-- Added `$ARGUMENTS` placeholder for slash command argument substitution, aligning with Claude and Codex conventions
+- Added `$ARGUMENTS` placeholder for slash command argument substitution, aligning with Anthropic model and OpenAI code conventions
 
 ### Changed
 
 - Refactored tool renderers to be co-located with their respective tool implementations for improved code organization
 - Changed web search to try all configured providers in sequence with fallback before reporting errors
-- Changed default Anthropic web search model from `claude-sonnet-4-5-20250514` to `claude-haiku-4-5`
+- Changed default Anthropic web search model from `anthropic-model-sonnet-4-5-20250514` to `anthropic-model-haiku-4-5`
 - Changed read tool to show first 50KB of oversized lines instead of directing users to bash sed
 - Changed web_fetch to use `Bun.which()` instead of spawning `which`/`where` for command detection
 - Changed web_fetch to check Content-Length header before downloading to reject oversized files early
@@ -6978,8 +6978,8 @@
 
 ### Added
 
-- Added extensions API with auto-discovery (`.omp/extensions`) and `--extension`/`-e` loading for custom tools, commands, and lifecycle hooks
-- Added prompt templates loaded from global and project `.omp/prompts` directories with `/template` expansion in the input box
+- Added extensions API with auto-discovery (`.gjc/extensions`) and `--extension`/`-e` loading for custom tools, commands, and lifecycle hooks
+- Added prompt templates loaded from global and project `.gjc/prompts` directories with `/template` expansion in the input box
 - Built-in provider overrides in `models.json`: override just `baseUrl` to route a built-in provider through a proxy while keeping all its models, or define `models` to fully replace the provider
 - Shell commands without context contribution: use `!!command` to execute a bash command that is shown in the TUI and saved to session history but excluded from LLM context. Useful for running commands you don't want the AI to see
 - Added VoiceSupervisor class for realtime voice mode using OpenAI Realtime API with continuous mic streaming and semantic VAD turn detection
@@ -6994,7 +6994,7 @@
 - Added `getApiKeyForProvider()` method to ModelRegistry for retrieving API keys by provider name
 - Added voice settings configuration for transcription model, TTS model, voice, and audio format
 - Added shared render utilities module with standardized formatting functions for truncation, byte/token/duration display, and tree rendering
-- Added `resolveOmpCommand()` helper to resolve subprocess command from environment or entry point
+- Added `resolveGjcCommand()` helper to resolve subprocess command from environment or entry point
 - Added `/background` (or `/bg`) command to detach UI and continue agent execution in the background
 - Added completion notification system with configurable methods (bell, osc99, osc9, auto, off) when agent finishes
 - Added `completionNotification` setting to configure how the agent notifies on completion
@@ -7203,7 +7203,7 @@
 ### Changed
 
 - Improved `/status` command output formatting to use consistent column alignment across all sections
-- Updated version update notification to suggest `omp update` instead of manual npm install command
+- Updated version update notification to suggest `gjc update` instead of manual npm install command
 
 ## [3.1.1337] - 2026-01-03
 
@@ -7220,7 +7220,7 @@
 
 ### Added
 
-- Added unified capability-based discovery system for loading configuration from multiple AI coding tools (Claude Code, Cursor, Windsurf, Gemini, Codex, Cline, GitHub Copilot, VS Code)
+- Added unified capability-based discovery system for loading configuration from multiple AI coding tools (Anthropic Code, Cursor, Windsurf, Gemini, OpenAI code, Cline, GitHub Copilot, VS Code)
 - Added support for discovering MCP servers, rules, skills, hooks, tools, slash commands, prompts, and context files from tool-specific config directories
 - Added Discovery settings tab in interactive mode to enable/disable individual configuration providers
 - Added provider source attribution showing which tool contributed each configuration item
@@ -7229,9 +7229,9 @@
 - Added support for Cline rules from .clinerules file or directory
 - Added support for GitHub Copilot instructions with applyTo glob patterns
 - Added support for Gemini extensions and system.md customization files
-- Added support for Codex AGENTS.md and config.toml settings
+- Added support for OpenAI code AGENTS.md and config.toml settings
 - Added automatic migration of `PI_*` environment variables to `GJC_*` equivalents for backwards compatibility
-- Added multi-path config discovery supporting `.omp`, `.pi`, and `.claude` directories with priority ordering
+- Added multi-path config discovery supporting `.gjc`, `.pi`, and `.anthropic-model` directories with priority ordering
 - Added `getConfigDirPaths()`, `findConfigFile()`, and `readConfigFile()` functions for unified config resolution
 - Added documentation for config module usage patterns
 
@@ -7239,16 +7239,16 @@
 
 - Changed MCP tool name parsing to use last underscore separator for better server name handling
 - Changed /config output to show provider attribution for discovered items
-- Renamed CLI binary from `pi` to `omp` and updated all command references
-- Changed config directory from `.pi` to `.omp` with fallback support for legacy paths
+- Renamed CLI binary from `pi` to `gjc` and updated all command references
+- Changed config directory from `.pi` to `.gjc` with fallback support for legacy paths
 - Renamed environment variables from `PI_*` to `GJC_*` prefix (e.g., `GJC_SMOL_MODEL`, `GJC_SLOW_MODEL`)
-- Changed model role alias prefix from `pi/` to `omp/` (e.g., `omp/slow` instead of `pi/slow`)
+- Changed model role alias prefix from `pi/` to `gjc/` (e.g., `gjc/slow` instead of `pi/slow`)
 
 ## [2.1.1337] - 2026-01-03
 
 ### Added
 
-- Added `omp update` command to check for and install updates from GitHub releases or via bun
+- Added `gjc update` command to check for and install updates from GitHub releases or via bun
 
 ### Changed
 
@@ -7277,7 +7277,7 @@
 - Added provider tabs to model selector with Tab/Arrow navigation for filtering models by provider
 - Added context menu to model selector for choosing model role (Default, Smol, Slow) instead of keyboard shortcuts
 - Added LSP diagnostics display in tool execution output showing errors and warnings after file edits
-- Added centralized file logger with daily rotation to `~/.omp/logs/` for debugging production issues
+- Added centralized file logger with daily rotation to `~/.gjc/logs/` for debugging production issues
 - Added `logger` property to hook and custom tool APIs for error/warning/debug logging
 - Added `output` tool to read full agent/task outputs by ID when truncated previews are insufficient
 - Added `task` tool to reviewer agent, enabling parallel exploration of large codebases during reviews
@@ -7288,9 +7288,9 @@
 - Added `explicitTools` option to `createAgentSession` for enabling hidden tools by name
 - Added example review tools (`report_finding`, `submit_review`) with structured findings accumulation and verdict rendering
 - Added `/review` example command for interactive code review with branch comparison, uncommitted changes, and commit review modes
-- Custom TypeScript slash commands: Create programmable commands at `~/.omp/agent/commands/[name]/index.ts` or `.omp/commands/[name]/index.ts`. Commands export a factory returning `{ name, description, execute(args, ctx) }`. Return a string to send as LLM prompt, or void for fire-and-forget actions. Full access to `HookCommandContext` for UI dialogs, session control, and shell execution.
-- Claude command directories: Markdown slash commands now also load from `~/.claude/commands/` and `.claude/commands/` (parallel to existing `.omp/commands/` support)
-- `commands.enableClaudeUser` and `commands.enableClaudeProject` settings to disable Claude command directory loading
+- Custom TypeScript slash commands: Create programmable commands at `~/.gjc/agent/commands/[name]/index.ts` or `.gjc/commands/[name]/index.ts`. Commands export a factory returning `{ name, description, execute(args, ctx) }`. Return a string to send as LLM prompt, or void for fire-and-forget actions. Full access to `HookCommandContext` for UI dialogs, session control, and shell execution.
+- Anthropic model command directories: Markdown slash commands now also load from `~/.anthropic-model/commands/` and `.anthropic-model/commands/` (parallel to existing `.gjc/commands/` support)
+- `commands.enableAnthropic modelUser` and `commands.enableAnthropic modelProject` settings to disable Anthropic model command directory loading
 - `/export --copy` option to copy entire session as formatted text to clipboard
 
 ### Changed
@@ -7345,7 +7345,7 @@
 - Model selector shows role markers: ✓ for default, ⚡ for smol, 🧠 for slow
 - `pi/<role>` model aliases in Task tool agent definitions (e.g., `model: pi/smol, haiku, flash, mini`)
 - Smol model auto-discovery using priority chain: haiku > flash > mini
-- Slow model auto-discovery using priority chain: gpt-5.2-codex > codex > gpt > opus > pro
+- Slow model auto-discovery using priority chain: gpt-5.2-openai-code > openai-code > gpt > opus > pro
 - CLI args for model roles: `--smol <model>` and `--slow <model>` (ephemeral, not persisted)
 - Env var overrides: `GJC_SMOL_MODEL` and `GJC_SLOW_MODEL`
 - Title generation now uses configured smol model from settings
@@ -7359,7 +7359,7 @@
 - Edit fuzzy match setting: Added `edit.fuzzyMatch` setting (enabled by default) to control whether the edit tool accepts high-confidence fuzzy matches for whitespace/indentation differences. Toggle via `/settings`.
 - Multi-server LSP diagnostics: Diagnostics now query all applicable language servers for a file type. For TypeScript/JavaScript projects with Biome, this means both type errors (from tsserver) and lint errors (from Biome) are reported together.
 - Comprehensive LSP server configurations for 40+ languages including Rust, Go, Python, Java, Kotlin, Scala, Haskell, OCaml, Elixir, Ruby, PHP, C#, Lua, Nix, and many more. Each server includes sensible defaults for args, settings, and init options.
-- Extended LSP config file search paths: Now searches for `lsp.json`, `.lsp.json` in project root and `.omp/` subdirectory, plus user-level configs in `~/.omp/` and home directory.
+- Extended LSP config file search paths: Now searches for `lsp.json`, `.lsp.json` in project root and `.gjc/` subdirectory, plus user-level configs in `~/.gjc/` and home directory.
 
 ### Changed
 
@@ -7584,8 +7584,8 @@ See [docs/custom-tools.md](docs/custom-tools.md) and [examples/custom-tools/](ex
 ```typescript
 import { discoverAuthStorage, discoverModels } from "@gajae-code/coding-agent";
 
-const authStorage = discoverAuthStorage(); // ~/.omp/agent/auth.json
-const modelRegistry = discoverModels(authStorage); // + ~/.omp/agent/models.json
+const authStorage = discoverAuthStorage(); // ~/.gjc/agent/auth.json
+const modelRegistry = discoverModels(authStorage); // + ~/.gjc/agent/models.json
 
 // Get all models (built-in + custom)
 const allModels = modelRegistry.getAll();
@@ -7594,7 +7594,7 @@ const allModels = modelRegistry.getAll();
 const available = await modelRegistry.getAvailable();
 
 // Find specific model
-const model = modelRegistry.find("anthropic", "claude-sonnet-4-20250514");
+const model = modelRegistry.find("anthropic", "anthropic-model-sonnet-4-20250514");
 
 // Get API key for a model
 const apiKey = await modelRegistry.getApiKey(model);
@@ -7720,25 +7720,25 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Fixed
 
-- **Sessions saved to wrong directory**: In v0.30.0, sessions were being saved to `~/.omp/agent/` instead of `~/.omp/agent/sessions/<encoded-cwd>/`, breaking `--resume` and `/resume`. Misplaced sessions are automatically migrated on startup. ([#320](https://github.com/badlogic/pi-mono/issues/320) by [@aliou](https://github.com/aliou))
+- **Sessions saved to wrong directory**: In v0.30.0, sessions were being saved to `~/.gjc/agent/` instead of `~/.gjc/agent/sessions/<encoded-cwd>/`, breaking `--resume` and `/resume`. Misplaced sessions are automatically migrated on startup. ([#320](https://github.com/badlogic/pi-mono/issues/320) by [@aliou](https://github.com/aliou))
 - **Custom system prompts missing context**: When using a custom system prompt string, project context files (AGENTS.md), skills, date/time, and working directory were not appended. ([#321](https://github.com/badlogic/pi-mono/issues/321))
 
 ## [0.30.0] - 2025-12-25
 
 ### Breaking Changes
 
-- **SessionManager API**: The second parameter of `create()`, `continueRecent()`, and `list()` changed from `agentDir` to `sessionDir`. When provided, it specifies the session directory directly (no cwd encoding). When omitted, uses default (`~/.omp/agent/sessions/<encoded-cwd>/`). `open()` no longer takes `agentDir`. ([#313](https://github.com/badlogic/pi-mono/pull/313))
+- **SessionManager API**: The second parameter of `create()`, `continueRecent()`, and `list()` changed from `agentDir` to `sessionDir`. When provided, it specifies the session directory directly (no cwd encoding). When omitted, uses default (`~/.gjc/agent/sessions/<encoded-cwd>/`). `open()` no longer takes `agentDir`. ([#313](https://github.com/badlogic/pi-mono/pull/313))
 
 ### Added
 
-- **`--session-dir` flag**: Use a custom directory for sessions instead of the default `~/.omp/agent/sessions/<encoded-cwd>/`. Works with `-c` (continue) and `-r` (resume) flags. ([#313](https://github.com/badlogic/pi-mono/pull/313) by [@scutifer](https://github.com/scutifer))
+- **`--session-dir` flag**: Use a custom directory for sessions instead of the default `~/.gjc/agent/sessions/<encoded-cwd>/`. Works with `-c` (continue) and `-r` (resume) flags. ([#313](https://github.com/badlogic/pi-mono/pull/313) by [@scutifer](https://github.com/scutifer))
 - **Reverse model cycling and model selector**: Shift+Ctrl+P cycles models backward, Ctrl+L opens model selector (retaining text in editor). ([#315](https://github.com/badlogic/pi-mono/pull/315) by [@mitsuhiko](https://github.com/mitsuhiko))
 
 ## [0.29.1] - 2025-12-25
 
 ### Added
 
-- **Automatic custom system prompt loading**: GJC now auto-loads `SYSTEM.md` files to replace the default system prompt. Project-local `.omp/SYSTEM.md` takes precedence over global `~/.omp/agent/SYSTEM.md`. CLI `--system-prompt` flag overrides both. ([#309](https://github.com/badlogic/pi-mono/issues/309))
+- **Automatic custom system prompt loading**: GJC now auto-loads `SYSTEM.md` files to replace the default system prompt. Project-local `.gjc/SYSTEM.md` takes precedence over global `~/.gjc/agent/SYSTEM.md`. CLI `--system-prompt` flag overrides both. ([#309](https://github.com/badlogic/pi-mono/issues/309))
 - **Unified `/settings` command**: New settings menu consolidating thinking level, theme, queue mode, auto-compact, show images, hide thinking, and collapse changelog. Replaces individual `/thinking`, `/queue`, `/theme`, `/autocompact`, and `/show-images` commands. ([#310](https://github.com/badlogic/pi-mono/issues/310))
 
 ### Fixed
@@ -7765,7 +7765,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Changed
 
-- **Credential storage refactored**: API keys and OAuth tokens are now stored in `~/.omp/agent/auth.json` instead of `oauth.json` and `settings.json`. Existing credentials are automatically migrated on first run. ([#296](https://github.com/badlogic/pi-mono/issues/296))
+- **Credential storage refactored**: API keys and OAuth tokens are now stored in `~/.gjc/agent/auth.json` instead of `oauth.json` and `settings.json`. Existing credentials are automatically migrated on first run. ([#296](https://github.com/badlogic/pi-mono/issues/296))
 
 - **SDK API changes** ([#296](https://github.com/badlogic/pi-mono/issues/296)):
   - Added `AuthStorage` class for credential management (API keys and OAuth tokens)
@@ -7799,7 +7799,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Fixed
 
-- **Thinking tag leakage**: Fixed Claude mimicking literal `</thinking>` tags in responses. Unsigned thinking blocks (from aborted streams) are now converted to plain text without `<thinking>` tags. The TUI still displays them as thinking blocks. ([#302](https://github.com/badlogic/pi-mono/pull/302) by [@nicobailon](https://github.com/nicobailon))
+- **Thinking tag leakage**: Fixed Anthropic model mimicking literal `</thinking>` tags in responses. Unsigned thinking blocks (from aborted streams) are now converted to plain text without `<thinking>` tags. The TUI still displays them as thinking blocks. ([#302](https://github.com/badlogic/pi-mono/pull/302) by [@nicobailon](https://github.com/nicobailon))
 
 ## [0.27.6] - 2025-12-24
 
@@ -7831,13 +7831,13 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Fixed
 
-- **Symlinked skill directories**: Skills in symlinked directories (e.g., `~/.omp/agent/skills/my-skills -> /path/to/skills`) are now correctly discovered and loaded.
+- **Symlinked skill directories**: Skills in symlinked directories (e.g., `~/.gjc/agent/skills/my-skills -> /path/to/skills`) are now correctly discovered and loaded.
 
 ## [0.27.3] - 2025-12-24
 
 ### Added
 
-- **API keys in settings.json**: Store API keys in `~/.omp/agent/settings.json` under the `apiKeys` field (e.g., `{ "apiKeys": { "anthropic": "sk-..." } }`). Settings keys take priority over environment variables. ([#295](https://github.com/badlogic/pi-mono/issues/295))
+- **API keys in settings.json**: Store API keys in `~/.gjc/agent/settings.json` under the `apiKeys` field (e.g., `{ "apiKeys": { "anthropic": "sk-..." } }`). Settings keys take priority over environment variables. ([#295](https://github.com/badlogic/pi-mono/issues/295))
 
 ### Fixed
 
@@ -7888,7 +7888,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **SDK for programmatic usage**: New `createAgentSession()` factory with full control over model, tools, hooks, skills, session persistence, and settings. Philosophy: "omit to discover, provide to override". Includes 12 examples and comprehensive documentation. ([#272](https://github.com/badlogic/pi-mono/issues/272))
 
-- **Project-specific settings**: Settings now load from both `~/.omp/agent/settings.json` (global) and `<cwd>/.omp/settings.json` (project). Project settings override global with deep merge for nested objects. Project settings are read-only (for version control). ([#276](https://github.com/badlogic/pi-mono/pull/276))
+- **Project-specific settings**: Settings now load from both `~/.gjc/agent/settings.json` (global) and `<cwd>/.gjc/settings.json` (project). Project settings override global with deep merge for nested objects. Project settings are read-only (for version control). ([#276](https://github.com/badlogic/pi-mono/pull/276))
 
 - **SettingsManager static factories**: `SettingsManager.create(cwd?, agentDir?)` for file-based settings, `SettingsManager.inMemory(settings?)` for testing. Added `applyOverrides()` for programmatic overrides.
 
@@ -7908,9 +7908,9 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **External editor support**: Press `Ctrl+G` to edit your message in an external editor. Uses `$VISUAL` or `$EDITOR` environment variable. On successful save, the message is replaced; on cancel, the original is kept. ([#266](https://github.com/badlogic/pi-mono/pull/266) by [@aliou](https://github.com/aliou))
 
-- **Process suspension**: Press `Ctrl+Z` to suspend omp and return to the shell. Resume with `fg` as usual. ([#267](https://github.com/badlogic/pi-mono/pull/267) by [@aliou](https://github.com/aliou))
+- **Process suspension**: Press `Ctrl+Z` to suspend gjc and return to the shell. Resume with `fg` as usual. ([#267](https://github.com/badlogic/pi-mono/pull/267) by [@aliou](https://github.com/aliou))
 
-- **Configurable skills directories**: Added granular control over skill sources with `enableCodexUser`, `enableClaudeUser`, `enableClaudeProject`, `enablePiUser`, `enablePiProject` toggles, plus `customDirectories` and `ignoredSkills` settings. ([#269](https://github.com/badlogic/pi-mono/pull/269) by [@nicobailon](https://github.com/nicobailon))
+- **Configurable skills directories**: Added granular control over skill sources with `enableOpenAI codeUser`, `enableAnthropic modelUser`, `enableAnthropic modelProject`, `enablePiUser`, `enablePiProject` toggles, plus `customDirectories` and `ignoredSkills` settings. ([#269](https://github.com/badlogic/pi-mono/pull/269) by [@nicobailon](https://github.com/nicobailon))
 
 - **Skills CLI filtering**: Added `--skills <patterns>` flag for filtering skills with glob patterns. Also added `includeSkills` setting and glob pattern support for `ignoredSkills`. ([#268](https://github.com/badlogic/pi-mono/issues/268))
 
@@ -7936,7 +7936,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **Google Gemini CLI OAuth provider**: Access Gemini 2.0/2.5 models for free via Google Cloud Code Assist. Login with `/login` and select "Google Gemini CLI". Uses your Google account with rate limits.
 
-- **Google Antigravity OAuth provider**: Access Gemini 3, Claude (sonnet/opus thinking models), and GPT-OSS models for free via Google's Antigravity sandbox. Login with `/login` and select "Antigravity". Uses your Google account with rate limits.
+- **Google Antigravity OAuth provider**: Access Gemini 3, Anthropic model (sonnet/opus thinking models), and GPT-OSS models for free via Google's Antigravity sandbox. Login with `/login` and select "Antigravity". Uses your Google account with rate limits.
 
 ### Changed
 
@@ -7948,7 +7948,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **Thinking level not clamped on model switch**: Fixed TUI showing xhigh thinking level after switching to a model that doesn't support it. Thinking level is now automatically clamped to model capabilities. ([#253](https://github.com/badlogic/pi-mono/issues/253))
 
-- **Cross-model thinking handoff**: Fixed error when switching between models with different thinking signature formats (e.g., GPT-OSS to Claude thinking models via Antigravity). Thinking blocks without signatures are now converted to text with `<thinking>` delimiters.
+- **Cross-model thinking handoff**: Fixed error when switching between models with different thinking signature formats (e.g., GPT-OSS to Anthropic model thinking models via Antigravity). Thinking blocks without signatures are now converted to text with `<thinking>` delimiters.
 
 ## [0.24.5] - 2025-12-20
 
@@ -7980,7 +7980,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **OAuth and model config exports**: Scripts using `AgentSession` directly can now import `getAvailableModels`, `getApiKeyForModel`, `findModel`, `login`, `logout`, and `getOAuthProviders` from `@gajae-code/coding-agent` to reuse OAuth token storage and model resolution. ([#245](https://github.com/badlogic/pi-mono/issues/245))
 
-- **xhigh thinking level for gpt-5.2 models**: The thinking level selector and shift+tab cycling now show xhigh option for gpt-5.2 and gpt-5.2-codex models (in addition to gpt-5.1-codex-max). ([#236](https://github.com/badlogic/pi-mono/pull/236) by [@theBucky](https://github.com/theBucky))
+- **xhigh thinking level for gpt-5.2 models**: The thinking level selector and shift+tab cycling now show xhigh option for gpt-5.2 and gpt-5.2-openai-code models (in addition to gpt-5.1-openai-code-max). ([#236](https://github.com/badlogic/pi-mono/pull/236) by [@theBucky](https://github.com/theBucky))
 
 ### Fixed
 
@@ -7992,7 +7992,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **OpenRouter models with colons in IDs**: Fixed parsing of OpenRouter model IDs that contain colons (e.g., `openrouter:meta-llama/llama-4-scout:free`). ([#242](https://github.com/badlogic/pi-mono/pull/242) by [@aliou](https://github.com/aliou))
 
-- **Global AGENTS.md loaded twice**: Fixed global AGENTS.md being loaded twice when present in both `~/.omp/agent/` and the current directory. ([#239](https://github.com/badlogic/pi-mono/pull/239) by [@aliou](https://github.com/aliou))
+- **Global AGENTS.md loaded twice**: Fixed global AGENTS.md being loaded twice when present in both `~/.gjc/agent/` and the current directory. ([#239](https://github.com/badlogic/pi-mono/pull/239) by [@aliou](https://github.com/aliou))
 
 - **Kitty keyboard protocol on Linux**: Fixed keyboard input not working in Ghostty on Linux when Num Lock is enabled. The Kitty protocol includes Caps Lock and Num Lock state in modifier values, which broke key detection. Now correctly masks out lock key bits when matching keyboard shortcuts. ([#243](https://github.com/badlogic/pi-mono/issues/243))
 
@@ -8024,13 +8024,13 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Fixed
 
-- **JSON mode stdout flush**: Fixed race condition where `omp --mode json` could exit before all output was written to stdout, causing consumers to miss final events.
+- **JSON mode stdout flush**: Fixed race condition where `gjc --mode json` could exit before all output was written to stdout, causing consumers to miss final events.
 
 - **Symlinked tools, hooks, and slash commands**: Discovery now correctly follows symlinks when scanning for custom tools, hooks, and slash commands. ([#219](https://github.com/badlogic/pi-mono/pull/219), [#232](https://github.com/badlogic/pi-mono/pull/232) by [@aliou](https://github.com/aliou))
 
 ### Breaking Changes
 
-- **Custom tools now require `index.ts` entry point**: Auto-discovered custom tools must be in a subdirectory with an `index.ts` file. The old pattern `~/.omp/agent/tools/mytool.ts` must become `~/.omp/agent/tools/mytool/index.ts`. This allows multi-file tools to import helper modules. Explicit paths via `--tool` or `settings.json` still work with any `.ts` file.
+- **Custom tools now require `index.ts` entry point**: Auto-discovered custom tools must be in a subdirectory with an `index.ts` file. The old pattern `~/.gjc/agent/tools/mytool.ts` must become `~/.gjc/agent/tools/mytool/index.ts`. This allows multi-file tools to import helper modules. Explicit paths via `--tool` or `settings.json` still work with any `.ts` file.
 
 - **Hook `tool_result` event restructured**: The `ToolResultEvent` now exposes full tool result data instead of just text. ([#233](https://github.com/badlogic/pi-mono/pull/233))
   - Removed: `result: string` field
@@ -8085,7 +8085,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Fixed
 
-- Fixed Claude models via GitHub Copilot re-answering all previous prompts in multi-turn conversations. The issue was that assistant message content was sent as an array instead of a string, which Copilot's Claude adapter misinterpreted. Also added missing `Openai-Intent: conversation-edits` header and fixed `X-Initiator` logic to check for any assistant/tool message in history. ([#209](https://github.com/badlogic/pi-mono/issues/209))
+- Fixed Anthropic model models via GitHub Copilot re-answering all previous prompts in multi-turn conversations. The issue was that assistant message content was sent as an array instead of a string, which Copilot's Anthropic model adapter misinterpreted. Also added missing `Openai-Intent: conversation-edits` header and fixed `X-Initiator` logic to check for any assistant/tool message in history. ([#209](https://github.com/badlogic/pi-mono/issues/209))
 
 - Detect image MIME type via file magic (read tool and `@file` attachments), not filename extension.
 
@@ -8097,13 +8097,13 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - Fixed TUI performance regression caused by Box component lacking render caching. Built-in tools now use Text directly (like v0.22.5), and Box has proper caching for custom tool rendering.
 
-- Fixed custom tools failing to load from `~/.omp/agent/tools/` when omp is installed globally. Module imports (`@sinclair/typebox`, `@gajae-code/tui`, `@gajae-code/ai`) are now resolved via aliases.
+- Fixed custom tools failing to load from `~/.gjc/agent/tools/` when gjc is installed globally. Module imports (`@sinclair/typebox`, `@gajae-code/tui`, `@gajae-code/ai`) are now resolved via aliases.
 
 ## [0.23.0] - 2025-12-17
 
 ### Added
 
-- **Custom tools**: Extend omp with custom tools written in TypeScript. Tools can provide custom TUI rendering, interact with users via `omp.ui` (select, confirm, input, notify), and maintain state across sessions via `onSession` callback. See [docs/custom-tools.md](docs/custom-tools.md) and [examples/custom-tools/](examples/custom-tools/). ([#190](https://github.com/badlogic/pi-mono/issues/190))
+- **Custom tools**: Extend gjc with custom tools written in TypeScript. Tools can provide custom TUI rendering, interact with users via `gjc.ui` (select, confirm, input, notify), and maintain state across sessions via `onSession` callback. See [docs/custom-tools.md](docs/custom-tools.md) and [examples/custom-tools/](examples/custom-tools/). ([#190](https://github.com/badlogic/pi-mono/issues/190))
 
 - **Hook and tool examples**: Added `examples/hooks/` and `examples/custom-tools/` with working examples. Examples are now bundled in npm and binary releases.
 
@@ -8149,7 +8149,7 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 ### Changed
 
-- Updated `@gajae-code/ai` with interleaved thinking enabled by default for Anthropic Claude 4 models.
+- Updated `@gajae-code/ai` with interleaved thinking enabled by default for Anthropic Anthropic model 4 models.
 
 ## [0.22.1] - 2025-12-15
 
@@ -8163,7 +8163,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **GitHub Copilot support**: Use GitHub Copilot models via OAuth login (`/login` -> "GitHub Copilot"). Supports both github.com and GitHub Enterprise. Models are sourced from models.dev and include Claude, GPT, Gemini, Grok, and more. All models are automatically enabled after login. ([#191](https://github.com/badlogic/pi-mono/pull/191) by [@cau1k](https://github.com/cau1k))
+- **GitHub Copilot support**: Use GitHub Copilot models via OAuth login (`/login` -> "GitHub Copilot"). Supports both github.com and GitHub Enterprise. Models are sourced from models.dev and include Anthropic model, GPT, Gemini, Grok, and more. All models are automatically enabled after login. ([#191](https://github.com/badlogic/pi-mono/pull/191) by [@cau1k](https://github.com/cau1k))
 
 ### Fixed
 
@@ -8193,7 +8193,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Breaking Changes
 
-- **GJC skills now use `SKILL.md` convention**: GJC skills must now be named `SKILL.md` inside a directory, matching Codex CLI format. Previously any `*.md` file was treated as a skill. Migrate by renaming `~/.omp/agent/skills/foo.md` to `~/.omp/agent/skills/foo/SKILL.md`.
+- **GJC skills now use `SKILL.md` convention**: GJC skills must now be named `SKILL.md` inside a directory, matching OpenAI code CLI format. Previously any `*.md` file was treated as a skill. Migrate by renaming `~/.gjc/agent/skills/foo.md` to `~/.gjc/agent/skills/foo/SKILL.md`.
 
 ### Added
 
@@ -8209,7 +8209,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Skills system**: Auto-discover and load instruction files on-demand. Supports Claude Code (`~/.claude/skills/*/SKILL.md`), Codex CLI (`~/.codex/skills/`), and GJC-native formats (`~/.omp/agent/skills/`, `.omp/skills/`). Skills are listed in system prompt with descriptions, agent loads them via read tool when needed. Supports `{baseDir}` placeholder. Disable with `--no-skills` or `skills.enabled: false` in settings. ([#169](https://github.com/badlogic/pi-mono/issues/169))
+- **Skills system**: Auto-discover and load instruction files on-demand. Supports Anthropic Code (`~/.anthropic-model/skills/*/SKILL.md`), OpenAI code CLI (`~/.openai-code/skills/`), and GJC-native formats (`~/.gjc/agent/skills/`, `.gjc/skills/`). Skills are listed in system prompt with descriptions, agent loads them via read tool when needed. Supports `{baseDir}` placeholder. Disable with `--no-skills` or `skills.enabled: false` in settings. ([#169](https://github.com/badlogic/pi-mono/issues/169))
 
 - **Version flag**: Added `--version` / `-v` flag to display the current version and exit. ([#170](https://github.com/badlogic/pi-mono/pull/170))
 
@@ -8227,7 +8227,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 - **In-memory branching for `--no-session` mode**: Branching now works correctly in `--no-session` mode without creating any session files. The conversation is truncated in memory.
 
-- **Git branch indicator now works in subdirectories**: The footer's git branch detection now walks up the directory hierarchy to find the git root, so it works when running omp from a subdirectory of a repository. ([#156](https://github.com/badlogic/pi-mono/issues/156))
+- **Git branch indicator now works in subdirectories**: The footer's git branch detection now walks up the directory hierarchy to find the git root, so it works when running gjc from a subdirectory of a repository. ([#156](https://github.com/badlogic/pi-mono/issues/156))
 
 ## [0.18.1] - 2025-12-10
 
@@ -8243,7 +8243,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Hooks system**: TypeScript modules that extend agent behavior by subscribing to lifecycle events. Hooks can intercept tool calls, prompt for confirmation, modify results, and inject messages from external sources. Auto-discovered from `~/.omp/agent/hooks/*.ts` and `.omp/hooks/*.ts`. Thanks to [@nicobailon](https://github.com/nicobailon) for the collaboration on the design and implementation. ([#145](https://github.com/badlogic/pi-mono/issues/145), supersedes [#158](https://github.com/badlogic/pi-mono/pull/158))
+- **Hooks system**: TypeScript modules that extend agent behavior by subscribing to lifecycle events. Hooks can intercept tool calls, prompt for confirmation, modify results, and inject messages from external sources. Auto-discovered from `~/.gjc/agent/hooks/*.ts` and `.gjc/hooks/*.ts`. Thanks to [@nicobailon](https://github.com/nicobailon) for the collaboration on the design and implementation. ([#145](https://github.com/badlogic/pi-mono/issues/145), supersedes [#158](https://github.com/badlogic/pi-mono/pull/158))
 
 - **`pi.send()` API**: Hooks can inject messages into the agent session from external sources (file watchers, webhooks, CI systems). If streaming, messages are queued; otherwise a new agent loop starts immediately.
 
@@ -8319,9 +8319,9 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 - **OpenAI compatibility overrides in models.json**: Custom models using `openai-completions` API can now specify a `compat` object to override provider quirks (`supportsStore`, `supportsDeveloperRole`, `supportsReasoningEffort`, `maxTokensField`). Useful for LiteLLM, custom proxies, and other non-standard endpoints. ([#133](https://github.com/badlogic/pi-mono/issues/133), thanks @fink-andreas for the initial idea and PR)
 
-- **xhigh thinking level**: Added `xhigh` thinking level for OpenAI codex-max models. Cycle through thinking levels with Shift+Tab; `xhigh` appears only when using a codex-max model. ([#143](https://github.com/badlogic/pi-mono/issues/143))
+- **xhigh thinking level**: Added `xhigh` thinking level for OpenAI openai-code-max models. Cycle through thinking levels with Shift+Tab; `xhigh` appears only when using a openai-code-max model. ([#143](https://github.com/badlogic/pi-mono/issues/143))
 
-- **Collapse changelog setting**: Add `"collapseChangelog": true` to `~/.omp/agent/settings.json` to show a condensed "Updated to vX.Y.Z" message instead of the full changelog after updates. Use `/changelog` to view the full changelog. ([#148](https://github.com/badlogic/pi-mono/issues/148))
+- **Collapse changelog setting**: Add `"collapseChangelog": true` to `~/.gjc/agent/settings.json` to show a condensed "Updated to vX.Y.Z" message instead of the full changelog after updates. Use `/changelog` to view the full changelog. ([#148](https://github.com/badlogic/pi-mono/issues/148))
 
 - **Bash mode**: Execute shell commands directly from the editor by prefixing with `!` (e.g., `!ls -la`). Output streams in real-time, is added to the LLM context, and persists in session history. Supports multiline commands, cancellation (Escape), truncation for large outputs, and preview/expand toggle (Ctrl+O). Also available in RPC mode via `{"type":"bash","command":"..."}`. ([#112](https://github.com/badlogic/pi-mono/pull/112), original implementation by [@markusylisiurunen](https://github.com/markusylisiurunen))
 
@@ -8341,7 +8341,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Flexible Windows shell configuration**: The bash tool now supports multiple shell sources beyond Git Bash. Resolution order: (1) custom `shellPath` in settings.json, (2) Git Bash in standard locations, (3) any bash.exe on PATH. This enables Cygwin, MSYS2, and other bash environments. Configure with `~/.omp/agent/settings.json`: `{"shellPath": "C:\\cygwin64\\bin\\bash.exe"}`.
+- **Flexible Windows shell configuration**: The bash tool now supports multiple shell sources beyond Git Bash. Resolution order: (1) custom `shellPath` in settings.json, (2) Git Bash in standard locations, (3) any bash.exe on PATH. This enables Cygwin, MSYS2, and other bash environments. Configure with `~/.gjc/agent/settings.json`: `{"shellPath": "C:\\cygwin64\\bin\\bash.exe"}`.
 
 ### Fixed
 
@@ -8378,8 +8378,8 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Fuzzy search models and sessions**: Implemented a simple fuzzy search for models and sessions (e.g., `codexmax` now finds `gpt-5.1-codex-max`). ([#122](https://github.com/badlogic/pi-mono/pull/122) by [@markusylisiurunen](https://github.com/markusylisiurunen))
-- **Prompt History Navigation**: Browse previously submitted prompts using Up/Down arrow keys when the editor is empty. Press Up to cycle through older prompts, Down to return to newer ones or clear the editor. Similar to shell history and Claude Code's prompt history feature. History is session-scoped and stores up to 100 entries. ([#121](https://github.com/badlogic/pi-mono/pull/121) by [@nicobailon](https://github.com/nicobailon))
+- **Fuzzy search models and sessions**: Implemented a simple fuzzy search for models and sessions (e.g., `openai-codemax` now finds `gpt-5.1-openai-code-max`). ([#122](https://github.com/badlogic/pi-mono/pull/122) by [@markusylisiurunen](https://github.com/markusylisiurunen))
+- **Prompt History Navigation**: Browse previously submitted prompts using Up/Down arrow keys when the editor is empty. Press Up to cycle through older prompts, Down to return to newer ones or clear the editor. Similar to shell history and Anthropic Code's prompt history feature. History is session-scoped and stores up to 100 entries. ([#121](https://github.com/badlogic/pi-mono/pull/121) by [@nicobailon](https://github.com/nicobailon))
 - **`/resume` Command**: Switch to a different session mid-conversation. Opens an interactive selector showing all available sessions. Equivalent to the `--resume` CLI flag but can be used without restarting the agent. ([#117](https://github.com/badlogic/pi-mono/pull/117) by [@hewliyang](https://github.com/hewliyang))
 
 ## [0.12.11] - 2025-12-05
@@ -8405,7 +8405,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- Added `gpt-5.1-codex-max` model support
+- Added `gpt-5.1-openai-code-max` model support
 
 ## [0.12.9] - 2025-12-04
 
@@ -8554,7 +8554,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **File-based Slash Commands**: Create custom reusable prompts as `.txt` files in `~/.omp/slash-commands/`. Files become `/filename` commands with first-line descriptions. Supports `{{selection}}` placeholder for referencing selected/attached content.
+- **File-based Slash Commands**: Create custom reusable prompts as `.txt` files in `~/.gjc/slash-commands/`. Files become `/filename` commands with first-line descriptions. Supports `{{selection}}` placeholder for referencing selected/attached content.
 - **`/branch` Command**: Create conversation branches from any previous user message. Opens a selector to pick a message, then creates a new session file starting from that point. Original message text is placed in the editor for modification.
 - **Unified Content References**: Both `@path` in messages and `--file path` CLI arguments now use the same attachment system with consistent MIME type detection.
 - **Drag & Drop Files**: Drop files onto the terminal to attach them to your message. Supports multiple files and both text and image content.
@@ -8616,7 +8616,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- Added thinking level persistence. Default level stored in `~/.omp/settings.json`, restored on startup. Per-session overrides saved in session files.
+- Added thinking level persistence. Default level stored in `~/.gjc/settings.json`, restored on startup. Per-session overrides saved in session files.
 - Added model cycling shortcut: `Ctrl+I` cycles through available models (or scoped models with `-m` flag).
 - Added automatic retry with exponential backoff for transient API errors (network issues, 500s, overload).
 - Cumulative token usage now shown in footer (total tokens used across all messages in session).
@@ -8625,7 +8625,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Changed
 
-- Replaced `--models` flag with `-m/--model` supporting multiple values. Specify models as `provider/model@thinking` (e.g., `anthropic/claude-sonnet-4-20250514@high`). Multiple `-m` flags scope available models for the session.
+- Replaced `--models` flag with `-m/--model` supporting multiple values. Specify models as `provider/model@thinking` (e.g., `anthropic/anthropic-model-sonnet-4-20250514@high`). Multiple `-m` flags scope available models for the session.
 - Thinking level border now persists visually after selector closes.
 - Improved tool result display with collapsible output (default collapsed, expand with `Ctrl+O`).
 
@@ -8633,7 +8633,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- Add custom model configuration via `~/.omp/models.json`
+- Add custom model configuration via `~/.gjc/models.json`
 
 ## [0.10.0] - 2025-11-25
 
@@ -8645,13 +8645,13 @@ Initial public release.
 - Conversation session management with `--continue`, `--resume`, and `--session` flags
 - Multi-line input support (Shift+Enter or Option+Enter for new lines)
 - Tool execution: `read`, `write`, `edit`, `bash`, `glob`, `grep`, `think`
-- Thinking mode support for Claude with visual indicator and `/thinking` selector
+- Thinking mode support for Anthropic model with visual indicator and `/thinking` selector
 - File path autocompletion with `@` prefix
 - Slash command autocompletion
 - `/export` command for HTML session export
 - `/model` command for runtime model switching
 - `/session` command for session statistics
-- Model provider support: Anthropic (Claude), OpenAI, Google (Gemini)
+- Model provider support: Anthropic (Anthropic model), OpenAI, Google (Gemini)
 - Git branch display in footer
 - Message queueing during streaming responses
 - OAuth integration for Gmail and Google Calendar access

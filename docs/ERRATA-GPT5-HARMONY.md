@@ -53,9 +53,9 @@ Source: `~/.gjc/stats.db` (`ss_tool_calls`, `ss_assistant_msgs`), through
 | Model            | Leaks in tool args | Calls   | per million |
 |------------------|-------------------:|--------:|------------:|
 | gpt-5.4          | 37                 | 226,957 | 163         |
-| gpt-5.3-codex    | 17                 | 112,243 | 151         |
+| gpt-5.3-openai-code    | 17                 | 112,243 | 151         |
 | gpt-5.5          | 2                  |  80,750 |  25         |
-| gpt-5.2-codex    | 0                  |    —    |   —         |
+| gpt-5.2-openai-code    | 0                  |    —    |   —         |
 
 Plus 15 hits in assistant visible text / thinking blobs.
 

@@ -74,7 +74,7 @@ const PASSTHROUGH_HEADER_NAMES: Record<string, true> = {
 	"openai-organization": true,
 	"openai-project": true,
 	"openai-beta": true,
-	// Codex / ChatGPT-OAuth backend headers (see openai-codex/constants.ts).
+	// OpenAI code backend / ChatGPT-OAuth backend headers (see OpenAI code provider/constants.ts).
 	// `session_id` and `conversation_id` thread the upstream session so prompt
 	// caching and per-conversation rate limiting work; `chatgpt-account-id` and
 	// `originator` identify the calling account and client surface.
@@ -126,7 +126,7 @@ function readBodyCacheKey(body: unknown): string | undefined {
 	// Explicit body fields (OpenAI Responses / Chat).
 	const direct = root.prompt_cache_key;
 	if (typeof direct === "string" && direct.length > 0) return direct;
-	// Nested `metadata` (Codex CLI / Anthropic clients that route a session
+	// Nested `metadata` (OpenAI code backend CLI / Anthropic clients that route a session
 	// identifier through the metadata bag).
 	const metadata = root.metadata;
 	if (metadata === null || typeof metadata !== "object") return undefined;
@@ -144,7 +144,7 @@ function readBodyCacheKey(body: unknown): string | undefined {
  *   1. Body `prompt_cache_key`
  *   2. Body `metadata.{prompt_cache_key,session_id,conversation_id}`
  *   3. Header `x-prompt-cache-key`
- *   4. Header `session_id` / `conversation_id` (Codex / ChatGPT-OAuth surface)
+ *   4. Header `session_id` / `conversation_id` (OpenAI code backend / ChatGPT-OAuth surface)
  *   5. Header `x-session-id` / `x-conversation-id` (common informal)
  * Returns undefined when none present; the gateway then derives a stable
  * UUID from the request's stable parts.

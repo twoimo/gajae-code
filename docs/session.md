@@ -120,7 +120,7 @@ Stores an `AgentMessage` directly.
   "message": {
     "role": "assistant",
     "provider": "anthropic",
-    "model": "claude-sonnet-4-5",
+    "model": "anthropic-model-sonnet-4-5",
     "content": [{ "type": "text", "text": "Done." }],
     "usage": {
       "input": 100,

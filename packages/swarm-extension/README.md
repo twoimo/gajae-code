@@ -80,7 +80,7 @@ swarm:
   workspace: ./workspace # Working directory (relative to YAML file location)
   mode: pipeline # pipeline | parallel | sequential
   target_count: 10 # Iterations (pipeline mode only, default: 1)
-  model: claude-opus-4-6 # Default model for agents without an override (optional)
+  model: anthropic-model-opus-4-6 # Default model for agents without an override (optional)
 
   agents:
     first_agent:
@@ -93,7 +93,7 @@ swarm:
         - downstream_agent
       waits_for:
         - upstream_agent
-      model: claude-sonnet-4-5 # Optional per-agent override
+      model: anthropic-model-sonnet-4-5 # Optional per-agent override
 ```
 
 ### Top-Level Fields
@@ -149,7 +149,7 @@ swarm:
   workspace: ./workspace
   mode: pipeline
   target_count: 25
-  model: claude-opus-4-6
+  model: anthropic-model-opus-4-6
 
   agents:
     finder:
@@ -440,7 +440,7 @@ Any model configured in gjc works. Set a swarm default and optionally override p
 
 ```yaml
 swarm:
-  model: claude-opus-4-6
+  model: anthropic-model-opus-4-6
   agents:
     writer:
       role: technical-writer
@@ -448,7 +448,7 @@ swarm:
         Write the draft.
     reviewer:
       role: reviewer
-      model: claude-sonnet-4-5
+      model: anthropic-model-sonnet-4-5
       task: |
         Review the draft.
 ```

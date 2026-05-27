@@ -18,7 +18,7 @@ const PROVIDER_ID = "mcp-json";
 const DISPLAY_NAME = "MCP Config";
 
 /**
- * Raw MCP JSON format (matches Claude Desktop's format).
+ * Raw MCP JSON format (matches Anthropic model Desktop's format).
  */
 interface MCPConfigFile {
 	mcpServers?: Record<

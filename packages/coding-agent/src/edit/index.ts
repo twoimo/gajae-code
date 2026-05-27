@@ -315,7 +315,7 @@ export class EditTool implements AgentTool<TInput> {
 	}
 
 	/**
-	 * When in `apply_patch` mode, expose the Codex Lark grammar so providers
+	 * When in `apply_patch` mode, expose the OpenAI code backend Lark grammar so providers
 	 * that support OpenAI-style custom tools can emit a grammar-constrained
 	 * variant. Providers that don't support custom tools ignore this field
 	 * and fall back to emitting a JSON function tool from `parameters`.

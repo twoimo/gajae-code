@@ -21,7 +21,7 @@ describe("getPriorityPremiumRequests", () => {
 	});
 
 	it("ignores priority tier on providers that drop service_tier", () => {
-		// `priority` is realized on `openai`, `openai-codex`, and direct `anthropic`
+		// `priority` is realized on `openai`, `OpenAI code provider`, and direct `anthropic`
 		// (as fast mode). Everywhere else it's silently dropped, so it must not
 		// be billed as premium.
 		expect(getPriorityPremiumRequests("priority", "github-copilot")).toBe(0);

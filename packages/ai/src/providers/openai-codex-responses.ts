@@ -1302,7 +1302,7 @@ async function tryReconnectCodexWebSocketOnConnectionLimit(
 		return false;
 	}
 
-	// Close the stale connection so getOrCreateCodexWebSocketConnection creates a fresh one.
+	// Close the stale connection so getOrCreateOpenAI code backendWebSocketConnection creates a fresh one.
 	websocketState.connection?.close("connection_limit");
 	websocketState.connection = undefined;
 	resetCodexWebSocketAppendState(websocketState);
@@ -2450,12 +2450,12 @@ function normalizeInputMessageContent(
 export { convertMessages as convertCodexResponsesMessages };
 
 /**
- * Whether this Codex-backend model should get the custom-tool grammar
- * variant for `apply_patch`. codex-rs uses a single serializer for both
+ * Whether this OpenAI code backend-backend model should get the custom-tool grammar
+ * variant for `apply_patch`. OpenAI code backend-rs uses a single serializer for both
  * the public Responses endpoint and `chatgpt.com/backend-api`, so the
  * backend already accepts `{type: "custom"}` tools in production. The
  * generated model catalog sets `applyPatchToolType` for first-party GPT-5
- * Codex models; this runtime path only consumes that metadata.
+ * OpenAI code backend models; this runtime path only consumes that metadata.
  */
 function supportsFreeformApplyPatchCodex(model: Model<"openai-codex-responses">): boolean {
 	return model.applyPatchToolType === "freeform";

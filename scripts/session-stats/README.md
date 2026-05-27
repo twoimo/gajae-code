@@ -33,7 +33,7 @@ and only re-tokenize / re-classify what changed. A bump of `EDIT_PARSER_VERSION`
 in `sync.py` invalidates `ss_edit_*` rows on next sync.
 
 Tokenization is `o200k_base` (GPT-4o / GPT-5 family) via tiktoken — well
-within ~5–10% of Claude's BPE in aggregate.
+within ~5–10% of Anthropic model's BPE in aggregate.
 
 ## Schema
 

@@ -744,7 +744,7 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
  * // With explicit model
  * import { getModel } from '@gajae-code/ai';
  * const { session } = await createAgentSession({
- *   model: getModel('anthropic', 'claude-opus-4-5'),
+ *   model: getModel('anthropic', 'Anthropic model-opus-4-5'),
  *   thinkingLevel: 'high',
  * });
  *

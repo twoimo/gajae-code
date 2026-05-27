@@ -265,7 +265,7 @@ describe("Context overflow error handling", () => {
 	});
 
 	// =============================================================================
-	// OpenAI Codex (OAuth)
+	// OpenAI code provider (OAuth)
 	// Uses ChatGPT Plus/Pro subscription via OAuth
 	// =============================================================================
 

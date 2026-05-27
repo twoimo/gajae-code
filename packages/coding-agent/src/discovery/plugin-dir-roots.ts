@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-/** Synthetic plugin root for a --plugin-dir path. Shape-compatible with ClaudePluginRoot. */
+/** Synthetic plugin root for a --plugin-dir path. Shape-compatible with Anthropic modelPluginRoot. */
 export interface PluginDirRoot {
 	id: string;
 	marketplace: string;

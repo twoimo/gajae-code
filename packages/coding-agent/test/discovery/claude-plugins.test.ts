@@ -436,7 +436,7 @@ describe("listClaudePluginRoots", () => {
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-precedence");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
-		// commands points to .claude/commands, slash-commands points to a different dir
+		// commands points to .Anthropic model/commands, slash-commands points to a different dir
 		await fs.mkdir(path.join(pluginPath, ".claude", "commands"), { recursive: true });
 		await fs.mkdir(path.join(pluginPath, "legacy-commands"), { recursive: true });
 

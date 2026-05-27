@@ -138,7 +138,7 @@ function walkSchema(
 }
 
 /**
- * Strict-mode audit (OpenAI Responses / Codex `strict: true`):
+ * Strict-mode audit (OpenAI Responses / OpenAI code backend `strict: true`):
  *  1. Forbid keywords that strict mode disallows (`format`, `pattern`, `const`,
  *     `nullable`, etc. — see `STRICT_FORBIDDEN_KEYS`).
  *  2. Every node must declare *something* concrete: a `type`, a combinator,

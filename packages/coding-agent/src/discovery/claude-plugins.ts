@@ -279,8 +279,8 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		const obj = parsed as Record<string, unknown>;
 
 		// Two shapes are supported:
-		//   nested: { "mcpServers": { name: cfg, ... } }   (GJC/Claude Code project shape)
-		//   flat:   { name: cfg, ... }                      (Claude marketplace plugin shape)
+		//   nested: { "mcpServers": { name: cfg, ... } }   (GJC/Anthropic Code project shape)
+		//   flat:   { name: cfg, ... }                      (Anthropic model marketplace plugin shape)
 		// If "mcpServers" is present and an object, treat it as the canonical map.
 		// Otherwise, treat the whole object as the server map.
 		let servers: Record<string, unknown>;
@@ -312,7 +312,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				oauth?: MCPServer["oauth"];
 				type?: string;
 			};
-			// Require either command (stdio) or url (HTTP/SSE) — Claude marketplace plugins
+			// Require either command (stdio) or url (HTTP/SSE) — Anthropic model marketplace plugins
 			// occasionally ship .mcp.json entries with neither, which would register a useless
 			// server and surface as a connection error at runtime.
 			if (typeof raw.command !== "string" && typeof raw.url !== "string") {

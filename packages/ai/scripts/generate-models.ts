@@ -222,7 +222,7 @@ async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuth
 			// `getOAuthAccess` runs the full AuthStorage refresh pipeline so an
 			// expired-but-refreshable credential gets rotated before discovery,
 			// and identity metadata (accountId/projectId/email) flows through
-			// for Codex/Antigravity downstream calls.
+			// for OpenAI code backend/Antigravity downstream calls.
 			return (await authStorage.getOAuthAccess(provider)) ?? null;
 		} finally {
 			store.close();
@@ -265,7 +265,7 @@ async function fetchAntigravityModels(): Promise<Model<"google-gemini-cli">[]> {
 }
 
 /**
- * Extract accountId from a Codex JWT access token.
+ * Extract accountId from a OpenAI code backend JWT access token.
  */
 function extractCodexAccountId(accessToken: string): string | null {
 	try {
@@ -286,7 +286,7 @@ async function fetchCodexDiscoveryModels(): Promise<Model<"openai-codex-response
 		return [];
 	}
 	try {
-		console.log("Fetching models from Codex API...");
+		console.log("Fetching models from OpenAI code API...");
 		const accessToken = access.accessToken;
 		const accountId = access.accountId ?? extractCodexAccountId(accessToken);
 		const codexDiscovery = await fetchCodexModels({
@@ -294,16 +294,16 @@ async function fetchCodexDiscoveryModels(): Promise<Model<"openai-codex-response
 			accountId: accountId ?? undefined,
 		});
 		if (codexDiscovery === null) {
-			console.warn("Codex API fetch failed");
+			console.warn("OpenAI code API fetch failed");
 			return [];
 		}
 		if (codexDiscovery.models.length > 0) {
-			console.log(`Fetched ${codexDiscovery.models.length} models from Codex API`);
+			console.log(`Fetched ${codexDiscovery.models.length} models from OpenAI code API`);
 			return codexDiscovery.models;
 		}
 		return [];
 	} catch (error) {
-		console.error("Failed to fetch Codex models:", error);
+		console.error("Failed to fetch OpenAI code models:", error);
 		return [];
 	}
 }
@@ -329,7 +329,7 @@ async function generateModels() {
 
 	const specialDiscoverySources = [
 		{ label: "Antigravity", fetch: fetchAntigravityModels },
-		{ label: "Codex", fetch: fetchCodexDiscoveryModels },
+		{ label: "OpenAI code", fetch: fetchCodexDiscoveryModels },
 	] as const;
 	const specialDiscoveries = await Promise.all(
 		specialDiscoverySources.map(async source => ({

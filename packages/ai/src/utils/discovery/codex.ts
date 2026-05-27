@@ -45,20 +45,20 @@ interface NormalizedCodexModel {
 }
 
 /**
- * Fetch options for OpenAI Codex model discovery.
+ * Fetch options for OpenAI code provider model discovery.
  */
 export interface CodexModelDiscoveryOptions {
 	/** OAuth access token used for `Authorization: Bearer ...`. */
 	accessToken: string;
 	/** ChatGPT account id value used for `chatgpt-account-id` header. */
 	accountId?: string;
-	/** Base URL for Codex backend. Defaults to `https://chatgpt.com/backend-api`. */
+	/** Base URL for OpenAI code backend backend. Defaults to `https://chatgpt.com/backend-api`. */
 	baseUrl?: string;
 	/** Optional client version attached as `client_version` query parameter. */
 	clientVersion?: string;
-	/** Optional endpoint path candidates. Defaults to `/codex/models`, then `/models`. */
+	/** Optional endpoint path candidates. Defaults to `/OpenAI code backend/models`, then `/models`. */
 	paths?: readonly string[];
-	/** Additional headers merged on top of required Codex headers. */
+	/** Additional headers merged on top of required OpenAI code backend headers. */
 	headers?: Record<string, string>;
 	/** Abort signal for network request cancellation. */
 	signal?: AbortSignal;
@@ -69,7 +69,7 @@ export interface CodexModelDiscoveryOptions {
 }
 
 /**
- * Normalized Codex discovery response.
+ * Normalized OpenAI code backend discovery response.
  */
 export interface CodexModelDiscoveryResult {
 	models: Model<"openai-codex-responses">[];
@@ -77,7 +77,7 @@ export interface CodexModelDiscoveryResult {
 }
 
 /**
- * Fetches model metadata from Codex backend and normalizes it for pi model management.
+ * Fetches model metadata from OpenAI code backend backend and normalizes it for pi model management.
  *
  * Returns `null` when no supported model-list route can be fetched/parsed.
  * Returns `{ models: [] }` when a route succeeds but yields no usable models.

@@ -63,7 +63,7 @@ async function resolveRelativeSource(
 	const pluginRoot = context.catalogMetadata?.pluginRoot;
 	const relativePath = pluginRoot ? `./${path.join(pluginRoot, source.slice(2))}` : source;
 
-	// Resolve against marketplace root (not the .claude-plugin/ catalog subdirectory)
+	// Resolve against marketplace root (not the .Anthropic model-plugin/ catalog subdirectory)
 	const resolved = path.resolve(context.marketplaceClonePath, relativePath);
 
 	if (!pathIsWithin(context.marketplaceClonePath, resolved)) {

@@ -6,7 +6,7 @@ import type { SearchProviderId, SearchResponse } from "../types";
  *
  * `authStorage` is the **only** credential source providers may consult.
  * Opening a sibling SQLite handle or calling provider-direct refresh helpers
- * (e.g. `refreshOpenAICodexToken`, `refreshGoogleCloudToken`) is prohibited:
+ * (e.g. `refreshOpenAIOpenAI code backendToken`, `refreshGoogleCloudToken`) is prohibited:
  * it races the broker's per-credential refresh and POSTs the broker sentinel
  * (`REMOTE_REFRESH_SENTINEL`) to the upstream token endpoint, which classifies
  * as `invalid_grant` and disables the row.

@@ -35,7 +35,7 @@ The default-visible product should read as **gajae-code / GJC**, not legacy upst
 
 - Renaming `gjc`, `gjc-stats`, `gjc-swarm`, or `@gajae-code/*` package surfaces.
 - Removing legacy runtime roots, env aliases, clegacyatibility internals, migration notes, generated/vendor content, or attribution/history solely because they mention legacy/Pi.
-- Copying OpenAI Codex, SST/opencode, Claude Code, or legacy upstream visuals verbatim.
+- Copying OpenAI code provider, SST/opencode, Anthropic Code, or legacy upstream visuals verbatim.
 - Making exports decorative enough to reduce audit readability.
 - Replacing the TUI framework as part of the brand redesign.
 

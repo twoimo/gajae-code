@@ -212,7 +212,7 @@ const ANTHROPIC_STOP_SEQUENCES_MAX = 4;
 let warnedStopSequencesTrim = false;
 
 /**
- * Adaptive thinking `display` is supported starting with Claude Opus 4.7.
+ * Adaptive thinking `display` is supported starting with Anthropic model Opus 4.7.
  * Older adaptive-thinking models (Opus 4.6, Sonnet 4.6+) reject the field.
  */
 function supportsAdaptiveThinkingDisplay(modelId: string): boolean {
@@ -286,7 +286,7 @@ export function isAnthropicFastModeUnsupportedError(error: unknown): boolean {
 	if (status !== 400 && status !== 429) return false;
 	const message = error instanceof Error ? error.message : String(error);
 	// 400 invalid_request_error — model doesn't accept `speed` at all.
-	// Observed: "'claude-opus-4-5-20251101' does not support the `speed` parameter."
+	// Observed: "'Anthropic model-opus-4-5-20251101' does not support the `speed` parameter."
 	// Stay tolerant of phrasing drift ("is not supported", quoted vs backticked field).
 	if (
 		status === 400 &&
@@ -347,7 +347,7 @@ function getCacheControl(
 	};
 }
 
-// Stealth mode: Mimic Claude Code headers and tool prefixing.
+// Stealth mode: Mimic Anthropic Code headers and tool prefixing.
 export const claudeCodeVersion = "2.1.63";
 export const claudeToolPrefix: string = "proxy_";
 export const claudeCodeSystemInstruction = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
@@ -435,9 +435,9 @@ export function isClaudeCloakingUserId(userId: string): boolean {
 }
 
 /**
- * Real Claude Code sends `metadata.user_id` as a JSON-stringified object of the
+ * Real Anthropic Code sends `metadata.user_id` as a JSON-stringified object of the
  * shape `{ device_id, account_uuid, session_id, ...extra }` (see
- * services/api/claude.ts → getAPIMetadata). Accept that shape so callers that
+ * services/api/Anthropic model.ts → getAPIMetadata). Accept that shape so callers that
  * supply a stable `session_id` aren't silently overwritten with fresh entropy
  * on every request, which would inflate the backend session count.
  */
@@ -550,7 +550,7 @@ export type AnthropicThinkingDisplay = "summarized" | "omitted";
 export interface AnthropicOptions extends StreamOptions {
 	/**
 	 * Enable extended thinking.
-	 * For Opus 4.6+: uses adaptive thinking (Claude decides when/how much to think).
+	 * For Opus 4.6+: uses adaptive thinking (Anthropic model decides when/how much to think).
 	 * For older models: uses budget-based thinking with thinkingBudgetTokens.
 	 */
 	thinkingEnabled?: boolean;
@@ -561,7 +561,7 @@ export interface AnthropicOptions extends StreamOptions {
 	thinkingBudgetTokens?: number;
 	/**
 	 * Effort level for adaptive thinking (Opus 4.6+ only).
-	 * Controls how much thinking Claude allocates:
+	 * Controls how much thinking Anthropic model allocates:
 	 * - "max": Always thinks with no constraints
 	 * - "high": Always thinks, deep reasoning (default)
 	 * - "medium": Moderate thinking, may skip for simple queries
@@ -1944,7 +1944,7 @@ function buildParams(
 
 			const compat = getAnthropicCompat(model);
 			if (mode === "anthropic-adaptive" && !compat.disableAdaptiveThinking) {
-				// Starting with Claude Opus 4.7, adaptive thinking content is omitted from the
+				// Starting with Anthropic model Opus 4.7, adaptive thinking content is omitted from the
 				// response by default. Opt into summarized reasoning so thinking deltas keep
 				// streaming with human-readable content for callers that rely on it.
 				const adaptive: { type: "adaptive"; display?: AnthropicThinkingDisplay } = { type: "adaptive" };
@@ -1954,7 +1954,7 @@ function buildParams(
 				params.thinking = adaptive as typeof params.thinking;
 				if (effort) {
 					// SDK's OutputConfig.effort type is not yet widened to include the new "xhigh"
-					// level introduced with Claude Opus 4.7. Cast until the SDK catches up.
+					// level introduced with Anthropic model Opus 4.7. Cast until the SDK catches up.
 					params.output_config = { effort } as typeof params.output_config;
 				}
 			} else {

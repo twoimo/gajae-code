@@ -290,7 +290,7 @@
 	"amazon-bedrock": {
 		"anthropic.claude-3-5-haiku-20241022-v1:0": {
 			"id": "anthropic.claude-3-5-haiku-20241022-v1:0",
-			"name": "Claude Haiku 3.5",
+			"name": "Anthropic Haiku 3.5",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -310,7 +310,7 @@
 		},
 		"anthropic.claude-3-5-sonnet-20240620-v1:0": {
 			"id": "anthropic.claude-3-5-sonnet-20240620-v1:0",
-			"name": "Claude Sonnet 3.5",
+			"name": "Anthropic Sonnet 3.5",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -330,7 +330,7 @@
 		},
 		"anthropic.claude-3-5-sonnet-20241022-v2:0": {
 			"id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -350,7 +350,7 @@
 		},
 		"anthropic.claude-3-haiku-20240307-v1:0": {
 			"id": "anthropic.claude-3-haiku-20240307-v1:0",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -370,7 +370,7 @@
 		},
 		"anthropic.claude-3-opus-20240229-v1:0": {
 			"id": "anthropic.claude-3-opus-20240229-v1:0",
-			"name": "Claude Opus 3",
+			"name": "Anthropic Opus 3",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -390,7 +390,7 @@
 		},
 		"anthropic.claude-3-sonnet-20240229-v1:0": {
 			"id": "anthropic.claude-3-sonnet-20240229-v1:0",
-			"name": "Claude Sonnet 3",
+			"name": "Anthropic Sonnet 3",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -410,7 +410,7 @@
 		},
 		"anthropic.claude-opus-4-6-v1": {
 			"id": "anthropic.claude-opus-4-6-v1",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -435,7 +435,7 @@
 		},
 		"anthropic.claude-opus-4-7": {
 			"id": "anthropic.claude-opus-4-7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -460,7 +460,7 @@
 		},
 		"au.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
-			"name": "Claude Haiku 4.5 (AU)",
+			"name": "Anthropic Haiku 4.5 (AU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -485,7 +485,7 @@
 		},
 		"au.anthropic.claude-opus-4-6-v1": {
 			"id": "au.anthropic.claude-opus-4-6-v1",
-			"name": "AU Anthropic Claude Opus 4.6",
+			"name": "AU Anthropic Anthropic Opus 4.6",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -510,7 +510,7 @@
 		},
 		"au.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 			"id": "au.anthropic.claude-sonnet-4-5-20250929-v1:0",
-			"name": "Claude Sonnet 4.5 (AU)",
+			"name": "Anthropic Sonnet 4.5 (AU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -535,7 +535,7 @@
 		},
 		"au.anthropic.claude-sonnet-4-6": {
 			"id": "au.anthropic.claude-sonnet-4-6",
-			"name": "AU Anthropic Claude Sonnet 4.6",
+			"name": "AU Anthropic Anthropic Sonnet 4.6",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -670,7 +670,7 @@
 		},
 		"eu.anthropic.claude-3-5-haiku-20241022-v1:0": {
 			"id": "eu.anthropic.claude-3-5-haiku-20241022-v1:0",
-			"name": "Claude Haiku 3.5 (EU)",
+			"name": "Anthropic Haiku 3.5 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -690,7 +690,7 @@
 		},
 		"eu.anthropic.claude-3-5-sonnet-20240620-v1:0": {
 			"id": "eu.anthropic.claude-3-5-sonnet-20240620-v1:0",
-			"name": "Claude Sonnet 3.5 (EU)",
+			"name": "Anthropic Sonnet 3.5 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -710,7 +710,7 @@
 		},
 		"eu.anthropic.claude-3-5-sonnet-20241022-v2:0": {
 			"id": "eu.anthropic.claude-3-5-sonnet-20241022-v2:0",
-			"name": "Claude Sonnet 3.5 v2 (EU)",
+			"name": "Anthropic Sonnet 3.5 v2 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -730,7 +730,7 @@
 		},
 		"eu.anthropic.claude-3-7-sonnet-20250219-v1:0": {
 			"id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
-			"name": "Claude Sonnet 3.7 (EU)",
+			"name": "Anthropic Sonnet 3.7 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -750,7 +750,7 @@
 		},
 		"eu.anthropic.claude-3-haiku-20240307-v1:0": {
 			"id": "eu.anthropic.claude-3-haiku-20240307-v1:0",
-			"name": "Claude Haiku 3 (EU)",
+			"name": "Anthropic Haiku 3 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -770,7 +770,7 @@
 		},
 		"eu.anthropic.claude-3-opus-20240229-v1:0": {
 			"id": "eu.anthropic.claude-3-opus-20240229-v1:0",
-			"name": "Claude Opus 3 (EU)",
+			"name": "Anthropic Opus 3 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -790,7 +790,7 @@
 		},
 		"eu.anthropic.claude-3-sonnet-20240229-v1:0": {
 			"id": "eu.anthropic.claude-3-sonnet-20240229-v1:0",
-			"name": "Claude Sonnet 3 (EU)",
+			"name": "Anthropic Sonnet 3 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -810,7 +810,7 @@
 		},
 		"eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-			"name": "Claude Haiku 4.5 (EU)",
+			"name": "Anthropic Haiku 4.5 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -835,7 +835,7 @@
 		},
 		"eu.anthropic.claude-opus-4-1-20250805-v1:0": {
 			"id": "eu.anthropic.claude-opus-4-1-20250805-v1:0",
-			"name": "Claude Opus 4.1 (EU)",
+			"name": "Anthropic Opus 4.1 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -860,7 +860,7 @@
 		},
 		"eu.anthropic.claude-opus-4-20250514-v1:0": {
 			"id": "eu.anthropic.claude-opus-4-20250514-v1:0",
-			"name": "Claude Opus 4 (EU)",
+			"name": "Anthropic Opus 4 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -885,7 +885,7 @@
 		},
 		"eu.anthropic.claude-opus-4-5-20251101-v1:0": {
 			"id": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
-			"name": "Claude Opus 4.5 (EU)",
+			"name": "Anthropic Opus 4.5 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -910,7 +910,7 @@
 		},
 		"eu.anthropic.claude-opus-4-6-v1": {
 			"id": "eu.anthropic.claude-opus-4-6-v1",
-			"name": "Claude Opus 4.6 (EU)",
+			"name": "Anthropic Opus 4.6 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -935,7 +935,7 @@
 		},
 		"eu.anthropic.claude-opus-4-7": {
 			"id": "eu.anthropic.claude-opus-4-7",
-			"name": "Claude Opus 4.7 (EU)",
+			"name": "Anthropic Opus 4.7 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -960,7 +960,7 @@
 		},
 		"eu.anthropic.claude-sonnet-4-20250514-v1:0": {
 			"id": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
-			"name": "Claude Sonnet 4 (EU)",
+			"name": "Anthropic Sonnet 4 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -985,7 +985,7 @@
 		},
 		"eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 			"id": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-			"name": "Claude Sonnet 4.5 (EU)",
+			"name": "Anthropic Sonnet 4.5 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1010,7 +1010,7 @@
 		},
 		"eu.anthropic.claude-sonnet-4-6": {
 			"id": "eu.anthropic.claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6 (EU)",
+			"name": "Anthropic Sonnet 4.6 (EU)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1055,7 +1055,7 @@
 		},
 		"global.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-			"name": "Claude Haiku 4.5 (Global)",
+			"name": "Anthropic Haiku 4.5 (Global)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1080,7 +1080,7 @@
 		},
 		"global.anthropic.claude-opus-4-5-20251101-v1:0": {
 			"id": "global.anthropic.claude-opus-4-5-20251101-v1:0",
-			"name": "Claude Opus 4.5 (Global)",
+			"name": "Anthropic Opus 4.5 (Global)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1105,7 +1105,7 @@
 		},
 		"global.anthropic.claude-opus-4-6-v1": {
 			"id": "global.anthropic.claude-opus-4-6-v1",
-			"name": "Claude Opus 4.6 (Global)",
+			"name": "Anthropic Opus 4.6 (Global)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1130,7 +1130,7 @@
 		},
 		"global.anthropic.claude-opus-4-7": {
 			"id": "global.anthropic.claude-opus-4-7",
-			"name": "Claude Opus 4.7 (Global)",
+			"name": "Anthropic Opus 4.7 (Global)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1155,7 +1155,7 @@
 		},
 		"global.anthropic.claude-sonnet-4-20250514-v1:0": {
 			"id": "global.anthropic.claude-sonnet-4-20250514-v1:0",
-			"name": "Claude Sonnet 4 (Global)",
+			"name": "Anthropic Sonnet 4 (Global)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1180,7 +1180,7 @@
 		},
 		"global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 			"id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-			"name": "Claude Sonnet 4.5 (Global)",
+			"name": "Anthropic Sonnet 4.5 (Global)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1205,7 +1205,7 @@
 		},
 		"global.anthropic.claude-sonnet-4-6": {
 			"id": "global.anthropic.claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1270,7 +1270,7 @@
 		},
 		"jp.anthropic.claude-opus-4-7": {
 			"id": "jp.anthropic.claude-opus-4-7",
-			"name": "Claude Opus 4.7 (JP)",
+			"name": "Anthropic Opus 4.7 (JP)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1295,7 +1295,7 @@
 		},
 		"jp.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 			"id": "jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
-			"name": "Claude Sonnet 4.5 (JP)",
+			"name": "Anthropic Sonnet 4.5 (JP)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1320,7 +1320,7 @@
 		},
 		"jp.anthropic.claude-sonnet-4-6": {
 			"id": "jp.anthropic.claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6 (JP)",
+			"name": "Anthropic Sonnet 4.6 (JP)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2113,7 +2113,7 @@
 		},
 		"us.anthropic.claude-3-7-sonnet-20250219-v1:0": {
 			"id": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-			"name": "Claude Sonnet 3.7",
+			"name": "Anthropic Sonnet 3.7",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2133,7 +2133,7 @@
 		},
 		"us.anthropic.claude-haiku-4-5-20251001-v1:0": {
 			"id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-			"name": "Claude Haiku 4.5 (US)",
+			"name": "Anthropic Haiku 4.5 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2158,7 +2158,7 @@
 		},
 		"us.anthropic.claude-opus-4-1-20250805-v1:0": {
 			"id": "us.anthropic.claude-opus-4-1-20250805-v1:0",
-			"name": "Claude Opus 4.1 (US)",
+			"name": "Anthropic Opus 4.1 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2183,7 +2183,7 @@
 		},
 		"us.anthropic.claude-opus-4-20250514-v1:0": {
 			"id": "us.anthropic.claude-opus-4-20250514-v1:0",
-			"name": "Claude Opus 4 (US)",
+			"name": "Anthropic Opus 4 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2208,7 +2208,7 @@
 		},
 		"us.anthropic.claude-opus-4-5-20251101-v1:0": {
 			"id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
-			"name": "Claude Opus 4.5 (US)",
+			"name": "Anthropic Opus 4.5 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2233,7 +2233,7 @@
 		},
 		"us.anthropic.claude-opus-4-6-v1": {
 			"id": "us.anthropic.claude-opus-4-6-v1",
-			"name": "Claude Opus 4.6 (US)",
+			"name": "Anthropic Opus 4.6 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2258,7 +2258,7 @@
 		},
 		"us.anthropic.claude-opus-4-7": {
 			"id": "us.anthropic.claude-opus-4-7",
-			"name": "Claude Opus 4.7 (US)",
+			"name": "Anthropic Opus 4.7 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2283,7 +2283,7 @@
 		},
 		"us.anthropic.claude-sonnet-4-20250514-v1:0": {
 			"id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-			"name": "Claude Sonnet 4 (US)",
+			"name": "Anthropic Sonnet 4 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2308,7 +2308,7 @@
 		},
 		"us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 			"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-			"name": "Claude Sonnet 4.5 (US)",
+			"name": "Anthropic Sonnet 4.5 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2333,7 +2333,7 @@
 		},
 		"us.anthropic.claude-sonnet-4-6": {
 			"id": "us.anthropic.claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6 (US)",
+			"name": "Anthropic Sonnet 4.6 (US)",
 			"api": "bedrock-converse-stream",
 			"provider": "amazon-bedrock",
 			"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2641,7 +2641,7 @@
 	"anthropic": {
 		"claude-3-5-sonnet-20240620": {
 			"id": "claude-3-5-sonnet-20240620",
-			"name": "Claude Sonnet 3.5",
+			"name": "Anthropic Sonnet 3.5",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2661,7 +2661,7 @@
 		},
 		"claude-3-5-sonnet-20241022": {
 			"id": "claude-3-5-sonnet-20241022",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2681,7 +2681,7 @@
 		},
 		"claude-3-haiku-20240307": {
 			"id": "claude-3-haiku-20240307",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2701,7 +2701,7 @@
 		},
 		"claude-haiku-4-5": {
 			"id": "claude-haiku-4-5",
-			"name": "Claude Haiku 4.5 (latest)",
+			"name": "Anthropic Haiku 4.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2726,7 +2726,7 @@
 		},
 		"claude-haiku-4-5-20251001": {
 			"id": "claude-haiku-4-5-20251001",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2751,7 +2751,7 @@
 		},
 		"claude-opus-4-0": {
 			"id": "claude-opus-4-0",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2776,7 +2776,7 @@
 		},
 		"claude-opus-4-1": {
 			"id": "claude-opus-4-1",
-			"name": "Claude Opus 4.1 (latest)",
+			"name": "Anthropic Opus 4.1 (latest)",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2801,7 +2801,7 @@
 		},
 		"claude-opus-4-1-20250805": {
 			"id": "claude-opus-4-1-20250805",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2826,7 +2826,7 @@
 		},
 		"claude-opus-4-20250514": {
 			"id": "claude-opus-4-20250514",
-			"name": "Claude Opus 4",
+			"name": "Anthropic Opus 4",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2851,7 +2851,7 @@
 		},
 		"claude-opus-4-5": {
 			"id": "claude-opus-4-5",
-			"name": "Claude Opus 4.5 (latest)",
+			"name": "Anthropic Opus 4.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2876,7 +2876,7 @@
 		},
 		"claude-opus-4-5-20251101": {
 			"id": "claude-opus-4-5-20251101",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2901,7 +2901,7 @@
 		},
 		"claude-opus-4-6": {
 			"id": "claude-opus-4-6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2926,7 +2926,7 @@
 		},
 		"claude-opus-4-7": {
 			"id": "claude-opus-4-7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2951,7 +2951,7 @@
 		},
 		"claude-sonnet-4-0": {
 			"id": "claude-sonnet-4-0",
-			"name": "Claude Sonnet 4 (latest)",
+			"name": "Anthropic Sonnet 4 (latest)",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -2976,7 +2976,7 @@
 		},
 		"claude-sonnet-4-20250514": {
 			"id": "claude-sonnet-4-20250514",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -3001,7 +3001,7 @@
 		},
 		"claude-sonnet-4-5": {
 			"id": "claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5 (latest)",
+			"name": "Anthropic Sonnet 4.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -3026,7 +3026,7 @@
 		},
 		"claude-sonnet-4-5-20250929": {
 			"id": "claude-sonnet-4-5-20250929",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -3051,7 +3051,7 @@
 		},
 		"claude-sonnet-4-6": {
 			"id": "claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "anthropic-messages",
 			"provider": "anthropic",
 			"baseUrl": "https://api.anthropic.com",
@@ -3199,7 +3199,7 @@
 	"cloudflare-ai-gateway": {
 		"anthropic/claude-3-5-haiku": {
 			"id": "anthropic/claude-3-5-haiku",
-			"name": "Claude Haiku 3.5 (latest)",
+			"name": "Anthropic Haiku 3.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3219,7 +3219,7 @@
 		},
 		"anthropic/claude-3-haiku": {
 			"id": "anthropic/claude-3-haiku",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3239,7 +3239,7 @@
 		},
 		"anthropic/claude-3-opus": {
 			"id": "anthropic/claude-3-opus",
-			"name": "Claude Opus 3",
+			"name": "Anthropic Opus 3",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3259,7 +3259,7 @@
 		},
 		"anthropic/claude-3-sonnet": {
 			"id": "anthropic/claude-3-sonnet",
-			"name": "Claude Sonnet 3",
+			"name": "Anthropic Sonnet 3",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3279,7 +3279,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude Haiku 3.5 (latest)",
+			"name": "Anthropic Haiku 3.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3299,7 +3299,7 @@
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3319,7 +3319,7 @@
 		},
 		"anthropic/claude-haiku-4-5": {
 			"id": "anthropic/claude-haiku-4-5",
-			"name": "Claude Haiku 4.5 (latest)",
+			"name": "Anthropic Haiku 4.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3344,7 +3344,7 @@
 		},
 		"anthropic/claude-opus-4": {
 			"id": "anthropic/claude-opus-4",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3369,7 +3369,7 @@
 		},
 		"anthropic/claude-opus-4-1": {
 			"id": "anthropic/claude-opus-4-1",
-			"name": "Claude Opus 4.1 (latest)",
+			"name": "Anthropic Opus 4.1 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3394,7 +3394,7 @@
 		},
 		"anthropic/claude-opus-4-5": {
 			"id": "anthropic/claude-opus-4-5",
-			"name": "Claude Opus 4.5 (latest)",
+			"name": "Anthropic Opus 4.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3419,7 +3419,7 @@
 		},
 		"anthropic/claude-opus-4-6": {
 			"id": "anthropic/claude-opus-4-6",
-			"name": "Claude Opus 4.6 (latest)",
+			"name": "Anthropic Opus 4.6 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3444,7 +3444,7 @@
 		},
 		"anthropic/claude-opus-4-7": {
 			"id": "anthropic/claude-opus-4-7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3469,7 +3469,7 @@
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
-			"name": "Claude Sonnet 4 (latest)",
+			"name": "Anthropic Sonnet 4 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3494,7 +3494,7 @@
 		},
 		"anthropic/claude-sonnet-4-5": {
 			"id": "anthropic/claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5 (latest)",
+			"name": "Anthropic Sonnet 4.5 (latest)",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3519,7 +3519,7 @@
 		},
 		"anthropic/claude-sonnet-4-6": {
 			"id": "anthropic/claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3544,7 +3544,7 @@
 		},
 		"claude-sonnet-4-5": {
 			"id": "claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3673,7 +3673,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3723,7 +3723,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -3748,7 +3748,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "anthropic-messages",
 			"provider": "cloudflare-ai-gateway",
 			"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
@@ -4047,7 +4047,7 @@
 	"cursor": {
 		"claude-4.5-opus-high": {
 			"id": "claude-4.5-opus-high",
-			"name": "Claude 4.5 Opus",
+			"name": "Anthropic 4.5 Opus",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4067,7 +4067,7 @@
 		},
 		"claude-4.5-opus-high-thinking": {
 			"id": "claude-4.5-opus-high-thinking",
-			"name": "Claude 4.5 Opus (Thinking)",
+			"name": "Anthropic 4.5 Opus (Thinking)",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4092,7 +4092,7 @@
 		},
 		"claude-4.5-sonnet": {
 			"id": "claude-4.5-sonnet",
-			"name": "Claude 4.5 Sonnet",
+			"name": "Anthropic 4.5 Sonnet",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4112,7 +4112,7 @@
 		},
 		"claude-4.5-sonnet-thinking": {
 			"id": "claude-4.5-sonnet-thinking",
-			"name": "Claude 4.5 Sonnet (Thinking)",
+			"name": "Anthropic 4.5 Sonnet (Thinking)",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4137,7 +4137,7 @@
 		},
 		"claude-4.6-opus-high": {
 			"id": "claude-4.6-opus-high",
-			"name": "Claude 4.6 Opus",
+			"name": "Anthropic 4.6 Opus",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4156,7 +4156,7 @@
 		},
 		"claude-4.6-opus-high-thinking": {
 			"id": "claude-4.6-opus-high-thinking",
-			"name": "Claude 4.6 Opus (Thinking)",
+			"name": "Anthropic 4.6 Opus (Thinking)",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4175,7 +4175,7 @@
 		},
 		"claude-4.6-sonnet-medium": {
 			"id": "claude-4.6-sonnet-medium",
-			"name": "Claude 4.6 Sonnet",
+			"name": "Anthropic 4.6 Sonnet",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4194,7 +4194,7 @@
 		},
 		"claude-4.6-sonnet-medium-thinking": {
 			"id": "claude-4.6-sonnet-medium-thinking",
-			"name": "Claude 4.6 Sonnet (Thinking)",
+			"name": "Anthropic 4.6 Sonnet (Thinking)",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4354,7 +4354,7 @@
 		},
 		"gpt-5.1-codex-max": {
 			"id": "gpt-5.1-codex-max",
-			"name": "GPT-5.1 Codex Max",
+			"name": "GPT-5.1 OpenAI code Max",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4379,7 +4379,7 @@
 		},
 		"gpt-5.1-codex-max-high": {
 			"id": "gpt-5.1-codex-max-high",
-			"name": "GPT-5.1 Codex Max High",
+			"name": "GPT-5.1 OpenAI code Max High",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4404,7 +4404,7 @@
 		},
 		"gpt-5.1-codex-mini": {
 			"id": "gpt-5.1-codex-mini",
-			"name": "GPT-5.1 Codex mini",
+			"name": "GPT-5.1 OpenAI code mini",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4473,7 +4473,7 @@
 		},
 		"gpt-5.2-codex": {
 			"id": "gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4498,7 +4498,7 @@
 		},
 		"gpt-5.2-codex-fast": {
 			"id": "gpt-5.2-codex-fast",
-			"name": "GPT-5.2 Codex Fast",
+			"name": "GPT-5.2 OpenAI code Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4517,7 +4517,7 @@
 		},
 		"gpt-5.2-codex-high": {
 			"id": "gpt-5.2-codex-high",
-			"name": "GPT-5.2 Codex High",
+			"name": "GPT-5.2 OpenAI code High",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4536,7 +4536,7 @@
 		},
 		"gpt-5.2-codex-high-fast": {
 			"id": "gpt-5.2-codex-high-fast",
-			"name": "GPT-5.2 Codex High Fast",
+			"name": "GPT-5.2 OpenAI code High Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4555,7 +4555,7 @@
 		},
 		"gpt-5.2-codex-low": {
 			"id": "gpt-5.2-codex-low",
-			"name": "GPT-5.2 Codex Low",
+			"name": "GPT-5.2 OpenAI code Low",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4574,7 +4574,7 @@
 		},
 		"gpt-5.2-codex-low-fast": {
 			"id": "gpt-5.2-codex-low-fast",
-			"name": "GPT-5.2 Codex Low Fast",
+			"name": "GPT-5.2 OpenAI code Low Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4593,7 +4593,7 @@
 		},
 		"gpt-5.2-codex-xhigh": {
 			"id": "gpt-5.2-codex-xhigh",
-			"name": "GPT-5.2 Codex Extra High",
+			"name": "GPT-5.2 OpenAI code Extra High",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4612,7 +4612,7 @@
 		},
 		"gpt-5.2-codex-xhigh-fast": {
 			"id": "gpt-5.2-codex-xhigh-fast",
-			"name": "GPT-5.2 Codex Extra High Fast",
+			"name": "GPT-5.2 OpenAI code Extra High Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4656,7 +4656,7 @@
 		},
 		"gpt-5.3-codex": {
 			"id": "gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4681,7 +4681,7 @@
 		},
 		"gpt-5.3-codex-fast": {
 			"id": "gpt-5.3-codex-fast",
-			"name": "GPT-5.3 Codex Fast",
+			"name": "GPT-5.3 OpenAI code Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4700,7 +4700,7 @@
 		},
 		"gpt-5.3-codex-high": {
 			"id": "gpt-5.3-codex-high",
-			"name": "GPT-5.3 Codex High",
+			"name": "GPT-5.3 OpenAI code High",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4719,7 +4719,7 @@
 		},
 		"gpt-5.3-codex-high-fast": {
 			"id": "gpt-5.3-codex-high-fast",
-			"name": "GPT-5.3 Codex High Fast",
+			"name": "GPT-5.3 OpenAI code High Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4738,7 +4738,7 @@
 		},
 		"gpt-5.3-codex-low": {
 			"id": "gpt-5.3-codex-low",
-			"name": "GPT-5.3 Codex Low",
+			"name": "GPT-5.3 OpenAI code Low",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4757,7 +4757,7 @@
 		},
 		"gpt-5.3-codex-low-fast": {
 			"id": "gpt-5.3-codex-low-fast",
-			"name": "GPT-5.3 Codex Low Fast",
+			"name": "GPT-5.3 OpenAI code Low Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4776,7 +4776,7 @@
 		},
 		"gpt-5.3-codex-spark-preview": {
 			"id": "gpt-5.3-codex-spark-preview",
-			"name": "GPT-5.3 Codex Spark",
+			"name": "GPT-5.3 OpenAI code Spark",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4795,7 +4795,7 @@
 		},
 		"gpt-5.3-codex-xhigh": {
 			"id": "gpt-5.3-codex-xhigh",
-			"name": "GPT-5.3 Codex Extra High",
+			"name": "GPT-5.3 OpenAI code Extra High",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -4814,7 +4814,7 @@
 		},
 		"gpt-5.3-codex-xhigh-fast": {
 			"id": "gpt-5.3-codex-xhigh-fast",
-			"name": "GPT-5.3 Codex Extra High Fast",
+			"name": "GPT-5.3 OpenAI code Extra High Fast",
 			"api": "cursor-agent",
 			"provider": "cursor",
 			"baseUrl": "https://api2.cursor.sh",
@@ -5329,7 +5329,7 @@
 	"github-copilot": {
 		"claude-haiku-4.5": {
 			"id": "claude-haiku-4.5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5358,7 +5358,7 @@
 		},
 		"claude-opus-4.5": {
 			"id": "claude-opus-4.5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5386,7 +5386,7 @@
 		},
 		"claude-opus-4.6": {
 			"id": "claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5415,7 +5415,7 @@
 		},
 		"claude-opus-4.7": {
 			"id": "claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5443,7 +5443,7 @@
 		},
 		"claude-sonnet-4": {
 			"id": "claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5471,7 +5471,7 @@
 		},
 		"claude-sonnet-4.5": {
 			"id": "claude-sonnet-4.5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5499,7 +5499,7 @@
 		},
 		"claude-sonnet-4.6": {
 			"id": "claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "anthropic-messages",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5836,7 +5836,7 @@
 		},
 		"gpt-5.1-codex": {
 			"id": "gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-responses",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5864,7 +5864,7 @@
 		},
 		"gpt-5.1-codex-max": {
 			"id": "gpt-5.1-codex-max",
-			"name": "GPT-5.1 Codex Max",
+			"name": "GPT-5.1 OpenAI code Max",
 			"api": "openai-responses",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5892,7 +5892,7 @@
 		},
 		"gpt-5.1-codex-mini": {
 			"id": "gpt-5.1-codex-mini",
-			"name": "GPT-5.1 Codex mini",
+			"name": "GPT-5.1 OpenAI code mini",
 			"api": "openai-responses",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5948,7 +5948,7 @@
 		},
 		"gpt-5.2-codex": {
 			"id": "gpt-5.2-codex",
-			"name": "GPT-5.2-Codex",
+			"name": "GPT-5.2-OpenAI code",
 			"api": "openai-responses",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -5976,7 +5976,7 @@
 		},
 		"gpt-5.3-codex": {
 			"id": "gpt-5.3-codex",
-			"name": "GPT-5.3-Codex",
+			"name": "GPT-5.3-OpenAI code",
 			"api": "openai-responses",
 			"provider": "github-copilot",
 			"baseUrl": "https://api.githubcopilot.com",
@@ -6125,7 +6125,7 @@
 	"gitlab-duo": {
 		"claude-haiku-4-5-20251001": {
 			"id": "claude-haiku-4-5-20251001",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://cloud.gitlab.com/ai/v1/proxy/anthropic/",
 			"reasoning": true,
@@ -6150,7 +6150,7 @@
 		},
 		"claude-opus-4-5-20251101": {
 			"id": "claude-opus-4-5-20251101",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://cloud.gitlab.com/ai/v1/proxy/anthropic/",
 			"reasoning": true,
@@ -6175,7 +6175,7 @@
 		},
 		"claude-sonnet-4-5-20250929": {
 			"id": "claude-sonnet-4-5-20250929",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://cloud.gitlab.com/ai/v1/proxy/anthropic/",
 			"reasoning": true,
@@ -6250,7 +6250,7 @@
 		},
 		"duo-chat-gpt-5-2-codex": {
 			"id": "duo-chat-gpt-5-2-codex",
-			"name": "Duo Chat GPT-5.2 Codex",
+			"name": "Duo Chat GPT-5.2 OpenAI code",
 			"api": "openai-responses",
 			"provider": "gitlab-duo",
 			"baseUrl": "https://cloud.gitlab.com/ai/v1/proxy/openai/v1",
@@ -6275,7 +6275,7 @@
 		},
 		"duo-chat-gpt-5-codex": {
 			"id": "duo-chat-gpt-5-codex",
-			"name": "Duo Chat GPT-5 Codex",
+			"name": "Duo Chat GPT-5 OpenAI code",
 			"api": "openai-responses",
 			"provider": "gitlab-duo",
 			"baseUrl": "https://cloud.gitlab.com/ai/v1/proxy/openai/v1",
@@ -6450,7 +6450,7 @@
 		},
 		"gpt-5-codex": {
 			"id": "gpt-5-codex",
-			"name": "GPT-5-Codex",
+			"name": "GPT-5-OpenAI code",
 			"api": "openai-responses",
 			"baseUrl": "https://cloud.gitlab.com/ai/v1/proxy/openai/v1",
 			"reasoning": true,
@@ -7310,7 +7310,7 @@
 	"google-antigravity": {
 		"claude-opus-4-5-thinking": {
 			"id": "claude-opus-4-5-thinking",
-			"name": "Claude Opus 4.5 Thinking (Antigravity)",
+			"name": "Anthropic Opus 4.5 Thinking (Antigravity)",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -7335,7 +7335,7 @@
 		},
 		"claude-opus-4-6-thinking": {
 			"id": "claude-opus-4-6-thinking",
-			"name": "Claude Opus 4.6 (Thinking) (Antigravity)",
+			"name": "Anthropic Opus 4.6 (Thinking) (Antigravity)",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -7360,7 +7360,7 @@
 		},
 		"claude-sonnet-4-5": {
 			"id": "claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -7385,7 +7385,7 @@
 		},
 		"claude-sonnet-4-5-thinking": {
 			"id": "claude-sonnet-4-5-thinking",
-			"name": "Claude Sonnet 4.5 Thinking (Antigravity)",
+			"name": "Anthropic Sonnet 4.5 Thinking (Antigravity)",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -7410,7 +7410,7 @@
 		},
 		"claude-sonnet-4-6": {
 			"id": "claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -7435,7 +7435,7 @@
 		},
 		"claude-sonnet-4-6-thinking": {
 			"id": "claude-sonnet-4-6-thinking",
-			"name": "Claude Sonnet 4.6 Thinking (Antigravity)",
+			"name": "Anthropic Sonnet 4.6 Thinking (Antigravity)",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -8670,7 +8670,7 @@
 	"kilo": {
 		"~anthropic/claude-haiku-latest": {
 			"id": "~anthropic/claude-haiku-latest",
-			"name": "Anthropic Claude Haiku Latest",
+			"name": "Anthropic Anthropic Haiku Latest",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -8689,7 +8689,7 @@
 		},
 		"~anthropic/claude-opus-latest": {
 			"id": "~anthropic/claude-opus-latest",
-			"name": "Anthropic: Claude Opus Latest",
+			"name": "Anthropic: Anthropic Opus Latest",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -8708,7 +8708,7 @@
 		},
 		"~anthropic/claude-sonnet-latest": {
 			"id": "~anthropic/claude-sonnet-latest",
-			"name": "Anthropic Claude Sonnet Latest",
+			"name": "Anthropic Anthropic Sonnet Latest",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9221,7 +9221,7 @@
 		},
 		"anthropic/claude-3-haiku": {
 			"id": "anthropic/claude-3-haiku",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9241,7 +9241,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Anthropic 3.5 Haiku",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9261,7 +9261,7 @@
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9281,7 +9281,7 @@
 		},
 		"anthropic/claude-3.7-sonnet": {
 			"id": "anthropic/claude-3.7-sonnet",
-			"name": "Claude 3.7 Sonnet",
+			"name": "Anthropic 3.7 Sonnet",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9306,7 +9306,7 @@
 		},
 		"anthropic/claude-3.7-sonnet:thinking": {
 			"id": "anthropic/claude-3.7-sonnet:thinking",
-			"name": "Anthropic: Claude 3.7 Sonnet (thinking)",
+			"name": "Anthropic: Anthropic 3.7 Sonnet (thinking)",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9325,7 +9325,7 @@
 		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9345,7 +9345,7 @@
 		},
 		"anthropic/claude-opus-4": {
 			"id": "anthropic/claude-opus-4",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9370,7 +9370,7 @@
 		},
 		"anthropic/claude-opus-4.1": {
 			"id": "anthropic/claude-opus-4.1",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9395,7 +9395,7 @@
 		},
 		"anthropic/claude-opus-4.5": {
 			"id": "anthropic/claude-opus-4.5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9420,7 +9420,7 @@
 		},
 		"anthropic/claude-opus-4.6": {
 			"id": "anthropic/claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9445,7 +9445,7 @@
 		},
 		"anthropic/claude-opus-4.6-fast": {
 			"id": "anthropic/claude-opus-4.6-fast",
-			"name": "Anthropic: Claude Opus 4.6 (Fast) ($$$$)",
+			"name": "Anthropic: Anthropic Opus 4.6 (Fast) ($$$$)",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9464,7 +9464,7 @@
 		},
 		"anthropic/claude-opus-4.7": {
 			"id": "anthropic/claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9489,7 +9489,7 @@
 		},
 		"anthropic/claude-opus-4.7-fast": {
 			"id": "anthropic/claude-opus-4.7-fast",
-			"name": "Anthropic: Claude Opus 4.7 (Fast) ($$$$)",
+			"name": "Anthropic: Anthropic Opus 4.7 (Fast) ($$$$)",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9508,7 +9508,7 @@
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9533,7 +9533,7 @@
 		},
 		"anthropic/claude-sonnet-4.5": {
 			"id": "anthropic/claude-sonnet-4.5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -9558,7 +9558,7 @@
 		},
 		"anthropic/claude-sonnet-4.6": {
 			"id": "anthropic/claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -13723,7 +13723,7 @@
 		},
 		"openai/gpt-5-codex": {
 			"id": "openai/gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -13888,7 +13888,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -13913,7 +13913,7 @@
 		},
 		"openai/gpt-5.1-codex-max": {
 			"id": "openai/gpt-5.1-codex-max",
-			"name": "OpenAI: GPT-5.1-Codex-Max",
+			"name": "OpenAI: GPT-5.1-OpenAI code-Max",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -13932,7 +13932,7 @@
 		},
 		"openai/gpt-5.1-codex-mini": {
 			"id": "openai/gpt-5.1-codex-mini",
-			"name": "GPT-5.1-Codex-Mini",
+			"name": "GPT-5.1-OpenAI code-Mini",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -14001,7 +14001,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -14070,7 +14070,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -16288,9 +16288,47 @@
 			"contextWindow": 222222,
 			"maxTokens": 8888
 		},
+		"stealth/claude-opus-4.6": {
+			"id": "stealth/claude-opus-4.6",
+			"name": "Stealth: Anthropic Opus 4.6 (20% off)",
+			"api": "openai-completions",
+			"provider": "kilo",
+			"baseUrl": "https://api.kilo.ai/api/gateway",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
 		"stealth/claude-opus-4.7": {
 			"id": "stealth/claude-opus-4.7",
-			"name": "Stealth: Claude Opus 4.7 (20% off)",
+			"name": "Stealth: Anthropic Opus 4.7 (20% off)",
+			"api": "openai-completions",
+			"provider": "kilo",
+			"baseUrl": "https://api.kilo.ai/api/gateway",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 222222,
+			"maxTokens": 8888
+		},
+		"stealth/claude-sonnet-4.6": {
+			"id": "stealth/claude-sonnet-4.6",
+			"name": "Stealth: Anthropic Sonnet 4.6 (20% off)",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -17836,7 +17874,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Anthropic 3.5 Haiku",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17856,7 +17894,7 @@
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17876,7 +17914,7 @@
 		},
 		"anthropic/claude-3.7-sonnet": {
 			"id": "anthropic/claude-3.7-sonnet",
-			"name": "Claude 3.7 Sonnet",
+			"name": "Anthropic 3.7 Sonnet",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17901,7 +17939,7 @@
 		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17921,7 +17959,7 @@
 		},
 		"anthropic/claude-haiku-latest": {
 			"id": "anthropic/claude-haiku-latest",
-			"name": "anthropic/claude-haiku-latest",
+			"name": "anthropic/anthropic-haiku-latest",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17940,7 +17978,7 @@
 		},
 		"anthropic/claude-opus-4": {
 			"id": "anthropic/claude-opus-4",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17965,7 +18003,7 @@
 		},
 		"anthropic/claude-opus-4.1": {
 			"id": "anthropic/claude-opus-4.1",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -17990,7 +18028,7 @@
 		},
 		"anthropic/claude-opus-4.5": {
 			"id": "anthropic/claude-opus-4.5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18015,7 +18053,7 @@
 		},
 		"anthropic/claude-opus-4.6": {
 			"id": "anthropic/claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18040,7 +18078,7 @@
 		},
 		"anthropic/claude-opus-4.7": {
 			"id": "anthropic/claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18065,7 +18103,7 @@
 		},
 		"anthropic/claude-opus-latest": {
 			"id": "anthropic/claude-opus-latest",
-			"name": "anthropic/claude-opus-latest",
+			"name": "anthropic/anthropic-opus-latest",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18084,7 +18122,7 @@
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18109,7 +18147,7 @@
 		},
 		"anthropic/claude-sonnet-4.5": {
 			"id": "anthropic/claude-sonnet-4.5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18134,7 +18172,7 @@
 		},
 		"anthropic/claude-sonnet-4.6": {
 			"id": "anthropic/claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18159,7 +18197,7 @@
 		},
 		"anthropic/claude-sonnet-latest": {
 			"id": "anthropic/claude-sonnet-latest",
-			"name": "anthropic/claude-sonnet-latest",
+			"name": "anthropic/anthropic-sonnet-latest",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18811,7 +18849,7 @@
 		},
 		"claude-3-5-haiku": {
 			"id": "claude-3-5-haiku",
-			"name": "Claude Haiku 3.5",
+			"name": "Anthropic Haiku 3.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18831,7 +18869,7 @@
 		},
 		"claude-3-5-haiku-20241022": {
 			"id": "claude-3-5-haiku-20241022",
-			"name": "claude-3-5-haiku-20241022",
+			"name": "anthropic-3-5-haiku-20241022",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18850,7 +18888,7 @@
 		},
 		"claude-3-5-sonnet-20240620": {
 			"id": "claude-3-5-sonnet-20240620",
-			"name": "Claude Sonnet 3.5",
+			"name": "Anthropic Sonnet 3.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18870,7 +18908,7 @@
 		},
 		"claude-3-5-sonnet-20241022": {
 			"id": "claude-3-5-sonnet-20241022",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18890,7 +18928,7 @@
 		},
 		"claude-3-7-sonnet": {
 			"id": "claude-3-7-sonnet",
-			"name": "claude-3-7-sonnet",
+			"name": "anthropic-3-7-sonnet",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18909,7 +18947,7 @@
 		},
 		"claude-3-7-sonnet-20250219": {
 			"id": "claude-3-7-sonnet-20250219",
-			"name": "claude-3-7-sonnet-20250219",
+			"name": "anthropic-3-7-sonnet-20250219",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18928,7 +18966,7 @@
 		},
 		"claude-3-7-sonnet-reasoner": {
 			"id": "claude-3-7-sonnet-reasoner",
-			"name": "claude-3-7-sonnet-reasoner",
+			"name": "anthropic-3-7-sonnet-reasoner",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18947,7 +18985,7 @@
 		},
 		"claude-3-7-sonnet-thinking": {
 			"id": "claude-3-7-sonnet-thinking",
-			"name": "claude-3-7-sonnet-thinking",
+			"name": "anthropic-3-7-sonnet-thinking",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18966,7 +19004,7 @@
 		},
 		"claude-3-7-sonnet-thinking:1024": {
 			"id": "claude-3-7-sonnet-thinking:1024",
-			"name": "claude-3-7-sonnet-thinking:1024",
+			"name": "anthropic-3-7-sonnet-thinking:1024",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -18985,7 +19023,7 @@
 		},
 		"claude-3-7-sonnet-thinking:128000": {
 			"id": "claude-3-7-sonnet-thinking:128000",
-			"name": "claude-3-7-sonnet-thinking:128000",
+			"name": "anthropic-3-7-sonnet-thinking:128000",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19004,7 +19042,7 @@
 		},
 		"claude-3-7-sonnet-thinking:32768": {
 			"id": "claude-3-7-sonnet-thinking:32768",
-			"name": "claude-3-7-sonnet-thinking:32768",
+			"name": "anthropic-3-7-sonnet-thinking:32768",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19023,7 +19061,7 @@
 		},
 		"claude-3-7-sonnet-thinking:8192": {
 			"id": "claude-3-7-sonnet-thinking:8192",
-			"name": "claude-3-7-sonnet-thinking:8192",
+			"name": "anthropic-3-7-sonnet-thinking:8192",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19042,7 +19080,7 @@
 		},
 		"claude-3-haiku-20240307": {
 			"id": "claude-3-haiku-20240307",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19062,7 +19100,7 @@
 		},
 		"claude-haiku-4-5": {
 			"id": "claude-haiku-4-5",
-			"name": "Claude Haiku 4.5 (latest)",
+			"name": "Anthropic Haiku 4.5 (latest)",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19087,7 +19125,7 @@
 		},
 		"claude-haiku-4-5-20251001": {
 			"id": "claude-haiku-4-5-20251001",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19112,7 +19150,7 @@
 		},
 		"claude-haiku-4-5-20251001-thinking": {
 			"id": "claude-haiku-4-5-20251001-thinking",
-			"name": "claude-haiku-4-5-20251001-thinking",
+			"name": "anthropic-haiku-4-5-20251001-thinking",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19131,7 +19169,7 @@
 		},
 		"claude-opus-4": {
 			"id": "claude-opus-4",
-			"name": "claude-opus-4",
+			"name": "anthropic-opus-4",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19150,7 +19188,7 @@
 		},
 		"claude-opus-4-0": {
 			"id": "claude-opus-4-0",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19175,7 +19213,7 @@
 		},
 		"claude-opus-4-1": {
 			"id": "claude-opus-4-1",
-			"name": "Claude Opus 4.1 (latest)",
+			"name": "Anthropic Opus 4.1 (latest)",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19200,7 +19238,7 @@
 		},
 		"claude-opus-4-1-20250805": {
 			"id": "claude-opus-4-1-20250805",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19225,7 +19263,7 @@
 		},
 		"claude-opus-4-1-thinking": {
 			"id": "claude-opus-4-1-thinking",
-			"name": "claude-opus-4-1-thinking",
+			"name": "anthropic-opus-4-1-thinking",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19244,7 +19282,7 @@
 		},
 		"claude-opus-4-1-thinking:1024": {
 			"id": "claude-opus-4-1-thinking:1024",
-			"name": "claude-opus-4-1-thinking:1024",
+			"name": "anthropic-opus-4-1-thinking:1024",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19263,7 +19301,7 @@
 		},
 		"claude-opus-4-1-thinking:32000": {
 			"id": "claude-opus-4-1-thinking:32000",
-			"name": "claude-opus-4-1-thinking:32000",
+			"name": "anthropic-opus-4-1-thinking:32000",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19282,7 +19320,7 @@
 		},
 		"claude-opus-4-1-thinking:32768": {
 			"id": "claude-opus-4-1-thinking:32768",
-			"name": "claude-opus-4-1-thinking:32768",
+			"name": "anthropic-opus-4-1-thinking:32768",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19301,7 +19339,7 @@
 		},
 		"claude-opus-4-1-thinking:8192": {
 			"id": "claude-opus-4-1-thinking:8192",
-			"name": "claude-opus-4-1-thinking:8192",
+			"name": "anthropic-opus-4-1-thinking:8192",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19320,7 +19358,7 @@
 		},
 		"claude-opus-4-20250514": {
 			"id": "claude-opus-4-20250514",
-			"name": "Claude Opus 4",
+			"name": "Anthropic Opus 4",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19345,7 +19383,7 @@
 		},
 		"claude-opus-4-5": {
 			"id": "claude-opus-4-5",
-			"name": "Claude Opus 4.5 (latest)",
+			"name": "Anthropic Opus 4.5 (latest)",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19370,7 +19408,7 @@
 		},
 		"claude-opus-4-5-20251101": {
 			"id": "claude-opus-4-5-20251101",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19395,7 +19433,7 @@
 		},
 		"claude-opus-4-6": {
 			"id": "claude-opus-4-6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19420,7 +19458,7 @@
 		},
 		"claude-opus-4-7": {
 			"id": "claude-opus-4-7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19445,7 +19483,7 @@
 		},
 		"claude-opus-4-thinking": {
 			"id": "claude-opus-4-thinking",
-			"name": "claude-opus-4-thinking",
+			"name": "anthropic-opus-4-thinking",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19464,7 +19502,7 @@
 		},
 		"claude-opus-4-thinking:1024": {
 			"id": "claude-opus-4-thinking:1024",
-			"name": "claude-opus-4-thinking:1024",
+			"name": "anthropic-opus-4-thinking:1024",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19483,7 +19521,7 @@
 		},
 		"claude-opus-4-thinking:32000": {
 			"id": "claude-opus-4-thinking:32000",
-			"name": "claude-opus-4-thinking:32000",
+			"name": "anthropic-opus-4-thinking:32000",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19502,7 +19540,7 @@
 		},
 		"claude-opus-4-thinking:32768": {
 			"id": "claude-opus-4-thinking:32768",
-			"name": "claude-opus-4-thinking:32768",
+			"name": "anthropic-opus-4-thinking:32768",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19521,7 +19559,7 @@
 		},
 		"claude-opus-4-thinking:8192": {
 			"id": "claude-opus-4-thinking:8192",
-			"name": "claude-opus-4-thinking:8192",
+			"name": "anthropic-opus-4-thinking:8192",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19540,7 +19578,7 @@
 		},
 		"claude-sonnet-4": {
 			"id": "claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19565,7 +19603,7 @@
 		},
 		"claude-sonnet-4-0": {
 			"id": "claude-sonnet-4-0",
-			"name": "Claude Sonnet 4 (latest)",
+			"name": "Anthropic Sonnet 4 (latest)",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19590,7 +19628,7 @@
 		},
 		"claude-sonnet-4-20250514": {
 			"id": "claude-sonnet-4-20250514",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19615,7 +19653,7 @@
 		},
 		"claude-sonnet-4-5": {
 			"id": "claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19640,7 +19678,7 @@
 		},
 		"claude-sonnet-4-5-20250929": {
 			"id": "claude-sonnet-4-5-20250929",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19665,7 +19703,7 @@
 		},
 		"claude-sonnet-4-5-20250929-thinking": {
 			"id": "claude-sonnet-4-5-20250929-thinking",
-			"name": "claude-sonnet-4-5-20250929-thinking",
+			"name": "anthropic-sonnet-4-5-20250929-thinking",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19684,7 +19722,7 @@
 		},
 		"claude-sonnet-4-6": {
 			"id": "claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19709,7 +19747,7 @@
 		},
 		"claude-sonnet-4-thinking": {
 			"id": "claude-sonnet-4-thinking",
-			"name": "claude-sonnet-4-thinking",
+			"name": "anthropic-sonnet-4-thinking",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19728,7 +19766,7 @@
 		},
 		"claude-sonnet-4-thinking:1024": {
 			"id": "claude-sonnet-4-thinking:1024",
-			"name": "claude-sonnet-4-thinking:1024",
+			"name": "anthropic-sonnet-4-thinking:1024",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19747,7 +19785,7 @@
 		},
 		"claude-sonnet-4-thinking:32768": {
 			"id": "claude-sonnet-4-thinking:32768",
-			"name": "claude-sonnet-4-thinking:32768",
+			"name": "anthropic-sonnet-4-thinking:32768",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19766,7 +19804,7 @@
 		},
 		"claude-sonnet-4-thinking:64000": {
 			"id": "claude-sonnet-4-thinking:64000",
-			"name": "claude-sonnet-4-thinking:64000",
+			"name": "anthropic-sonnet-4-thinking:64000",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19785,7 +19823,7 @@
 		},
 		"claude-sonnet-4-thinking:8192": {
 			"id": "claude-sonnet-4-thinking:8192",
-			"name": "claude-sonnet-4-thinking:8192",
+			"name": "anthropic-sonnet-4-thinking:8192",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19804,7 +19842,7 @@
 		},
 		"codex-auto-review": {
 			"id": "codex-auto-review",
-			"name": "codex-auto-review",
+			"name": "openai-code-auto-review",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -19918,7 +19956,7 @@
 		},
 		"deepclaude": {
 			"id": "deepclaude",
-			"name": "deepclaude",
+			"name": "deepanthropic",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23117,7 +23155,7 @@
 		},
 		"gpt-5-codex": {
 			"id": "gpt-5-codex",
-			"name": "GPT-5-Codex",
+			"name": "GPT-5-OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23142,7 +23180,7 @@
 		},
 		"gpt-5-codex-mini": {
 			"id": "gpt-5-codex-mini",
-			"name": "gpt-5-codex-mini",
+			"name": "gpt-5-openai-code-mini",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23186,7 +23224,7 @@
 		},
 		"gpt-5.1-codex": {
 			"id": "gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23211,7 +23249,7 @@
 		},
 		"gpt-5.1-codex-max": {
 			"id": "gpt-5.1-codex-max",
-			"name": "GPT-5.1 Codex Max",
+			"name": "GPT-5.1 OpenAI code Max",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23236,7 +23274,7 @@
 		},
 		"gpt-5.1-codex-mini": {
 			"id": "gpt-5.1-codex-mini",
-			"name": "GPT-5.1 Codex mini",
+			"name": "GPT-5.1 OpenAI code mini",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23286,7 +23324,7 @@
 		},
 		"gpt-5.2-codex": {
 			"id": "gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23311,7 +23349,7 @@
 		},
 		"gpt-5.3-codex": {
 			"id": "gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -23336,7 +23374,7 @@
 		},
 		"gpt-5.3-codex-spark": {
 			"id": "gpt-5.3-codex-spark",
-			"name": "GPT-5.3 Codex Spark",
+			"name": "GPT-5.3 OpenAI code Spark",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -27912,7 +27950,7 @@
 		},
 		"openai/gpt-5-codex": {
 			"id": "openai/gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -28077,7 +28115,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -28102,7 +28140,7 @@
 		},
 		"openai/gpt-5.1-codex-max": {
 			"id": "openai/gpt-5.1-codex-max",
-			"name": "openai/gpt-5.1-codex-max",
+			"name": "openai/gpt-5.1-openai-code-max",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -28121,7 +28159,7 @@
 		},
 		"openai/gpt-5.1-codex-mini": {
 			"id": "openai/gpt-5.1-codex-mini",
-			"name": "GPT-5.1-Codex-Mini",
+			"name": "GPT-5.1-OpenAI code-Mini",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -28190,7 +28228,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -28259,7 +28297,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-completions",
 			"provider": "litellm",
 			"baseUrl": "http://localhost:4000/v1",
@@ -35735,7 +35773,7 @@
 		},
 		"anthropic/claude-haiku-latest": {
 			"id": "anthropic/claude-haiku-latest",
-			"name": "anthropic/claude-haiku-latest",
+			"name": "anthropic/anthropic-haiku-latest",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -35754,7 +35792,7 @@
 		},
 		"anthropic/claude-opus-4.6": {
 			"id": "anthropic/claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -35779,7 +35817,7 @@
 		},
 		"anthropic/claude-opus-4.7": {
 			"id": "anthropic/claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -35804,7 +35842,7 @@
 		},
 		"anthropic/claude-opus-latest": {
 			"id": "anthropic/claude-opus-latest",
-			"name": "anthropic/claude-opus-latest",
+			"name": "anthropic/anthropic-opus-latest",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -35823,7 +35861,7 @@
 		},
 		"anthropic/claude-sonnet-4.6": {
 			"id": "anthropic/claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -35848,7 +35886,7 @@
 		},
 		"anthropic/claude-sonnet-latest": {
 			"id": "anthropic/claude-sonnet-latest",
-			"name": "anthropic/claude-sonnet-latest",
+			"name": "anthropic/anthropic-sonnet-latest",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36364,7 +36402,7 @@
 		},
 		"claude-3-5-haiku-20241022": {
 			"id": "claude-3-5-haiku-20241022",
-			"name": "claude-3-5-haiku-20241022",
+			"name": "anthropic-3-5-haiku-20241022",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36383,7 +36421,7 @@
 		},
 		"claude-3-5-sonnet-20240620": {
 			"id": "claude-3-5-sonnet-20240620",
-			"name": "Claude Sonnet 3.5",
+			"name": "Anthropic Sonnet 3.5",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36403,7 +36441,7 @@
 		},
 		"claude-3-5-sonnet-20241022": {
 			"id": "claude-3-5-sonnet-20241022",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36423,7 +36461,7 @@
 		},
 		"claude-3-7-sonnet-20250219": {
 			"id": "claude-3-7-sonnet-20250219",
-			"name": "claude-3-7-sonnet-20250219",
+			"name": "anthropic-3-7-sonnet-20250219",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36442,7 +36480,7 @@
 		},
 		"claude-3-7-sonnet-reasoner": {
 			"id": "claude-3-7-sonnet-reasoner",
-			"name": "claude-3-7-sonnet-reasoner",
+			"name": "anthropic-3-7-sonnet-reasoner",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36461,7 +36499,7 @@
 		},
 		"claude-3-7-sonnet-thinking": {
 			"id": "claude-3-7-sonnet-thinking",
-			"name": "claude-3-7-sonnet-thinking",
+			"name": "anthropic-3-7-sonnet-thinking",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36480,7 +36518,7 @@
 		},
 		"claude-3-7-sonnet-thinking:1024": {
 			"id": "claude-3-7-sonnet-thinking:1024",
-			"name": "claude-3-7-sonnet-thinking:1024",
+			"name": "anthropic-3-7-sonnet-thinking:1024",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36499,7 +36537,7 @@
 		},
 		"claude-3-7-sonnet-thinking:128000": {
 			"id": "claude-3-7-sonnet-thinking:128000",
-			"name": "claude-3-7-sonnet-thinking:128000",
+			"name": "anthropic-3-7-sonnet-thinking:128000",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36518,7 +36556,7 @@
 		},
 		"claude-3-7-sonnet-thinking:32768": {
 			"id": "claude-3-7-sonnet-thinking:32768",
-			"name": "claude-3-7-sonnet-thinking:32768",
+			"name": "anthropic-3-7-sonnet-thinking:32768",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36537,7 +36575,7 @@
 		},
 		"claude-3-7-sonnet-thinking:8192": {
 			"id": "claude-3-7-sonnet-thinking:8192",
-			"name": "claude-3-7-sonnet-thinking:8192",
+			"name": "anthropic-3-7-sonnet-thinking:8192",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36556,7 +36594,7 @@
 		},
 		"claude-haiku-4-5-20251001": {
 			"id": "claude-haiku-4-5-20251001",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36581,7 +36619,7 @@
 		},
 		"claude-haiku-4-5-20251001-thinking": {
 			"id": "claude-haiku-4-5-20251001-thinking",
-			"name": "claude-haiku-4-5-20251001-thinking",
+			"name": "anthropic-haiku-4-5-20251001-thinking",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36600,7 +36638,7 @@
 		},
 		"claude-opus-4-1-20250805": {
 			"id": "claude-opus-4-1-20250805",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36625,7 +36663,7 @@
 		},
 		"claude-opus-4-1-thinking": {
 			"id": "claude-opus-4-1-thinking",
-			"name": "claude-opus-4-1-thinking",
+			"name": "anthropic-opus-4-1-thinking",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36644,7 +36682,7 @@
 		},
 		"claude-opus-4-1-thinking:1024": {
 			"id": "claude-opus-4-1-thinking:1024",
-			"name": "claude-opus-4-1-thinking:1024",
+			"name": "anthropic-opus-4-1-thinking:1024",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36663,7 +36701,7 @@
 		},
 		"claude-opus-4-1-thinking:32000": {
 			"id": "claude-opus-4-1-thinking:32000",
-			"name": "claude-opus-4-1-thinking:32000",
+			"name": "anthropic-opus-4-1-thinking:32000",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36682,7 +36720,7 @@
 		},
 		"claude-opus-4-1-thinking:32768": {
 			"id": "claude-opus-4-1-thinking:32768",
-			"name": "claude-opus-4-1-thinking:32768",
+			"name": "anthropic-opus-4-1-thinking:32768",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36701,7 +36739,7 @@
 		},
 		"claude-opus-4-1-thinking:8192": {
 			"id": "claude-opus-4-1-thinking:8192",
-			"name": "claude-opus-4-1-thinking:8192",
+			"name": "anthropic-opus-4-1-thinking:8192",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36720,7 +36758,7 @@
 		},
 		"claude-opus-4-20250514": {
 			"id": "claude-opus-4-20250514",
-			"name": "Claude Opus 4",
+			"name": "Anthropic Opus 4",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36745,7 +36783,7 @@
 		},
 		"claude-opus-4-5-20251101": {
 			"id": "claude-opus-4-5-20251101",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36770,7 +36808,7 @@
 		},
 		"claude-opus-4-thinking": {
 			"id": "claude-opus-4-thinking",
-			"name": "claude-opus-4-thinking",
+			"name": "anthropic-opus-4-thinking",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36789,7 +36827,7 @@
 		},
 		"claude-opus-4-thinking:1024": {
 			"id": "claude-opus-4-thinking:1024",
-			"name": "claude-opus-4-thinking:1024",
+			"name": "anthropic-opus-4-thinking:1024",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36808,7 +36846,7 @@
 		},
 		"claude-opus-4-thinking:32000": {
 			"id": "claude-opus-4-thinking:32000",
-			"name": "claude-opus-4-thinking:32000",
+			"name": "anthropic-opus-4-thinking:32000",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36827,7 +36865,7 @@
 		},
 		"claude-opus-4-thinking:32768": {
 			"id": "claude-opus-4-thinking:32768",
-			"name": "claude-opus-4-thinking:32768",
+			"name": "anthropic-opus-4-thinking:32768",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36846,7 +36884,7 @@
 		},
 		"claude-opus-4-thinking:8192": {
 			"id": "claude-opus-4-thinking:8192",
-			"name": "claude-opus-4-thinking:8192",
+			"name": "anthropic-opus-4-thinking:8192",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36865,7 +36903,7 @@
 		},
 		"claude-sonnet-4-20250514": {
 			"id": "claude-sonnet-4-20250514",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36890,7 +36928,7 @@
 		},
 		"claude-sonnet-4-5-20250929": {
 			"id": "claude-sonnet-4-5-20250929",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36915,7 +36953,7 @@
 		},
 		"claude-sonnet-4-5-20250929-thinking": {
 			"id": "claude-sonnet-4-5-20250929-thinking",
-			"name": "claude-sonnet-4-5-20250929-thinking",
+			"name": "anthropic-sonnet-4-5-20250929-thinking",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36934,7 +36972,7 @@
 		},
 		"claude-sonnet-4-thinking": {
 			"id": "claude-sonnet-4-thinking",
-			"name": "claude-sonnet-4-thinking",
+			"name": "anthropic-sonnet-4-thinking",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36953,7 +36991,7 @@
 		},
 		"claude-sonnet-4-thinking:1024": {
 			"id": "claude-sonnet-4-thinking:1024",
-			"name": "claude-sonnet-4-thinking:1024",
+			"name": "anthropic-sonnet-4-thinking:1024",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36972,7 +37010,7 @@
 		},
 		"claude-sonnet-4-thinking:32768": {
 			"id": "claude-sonnet-4-thinking:32768",
-			"name": "claude-sonnet-4-thinking:32768",
+			"name": "anthropic-sonnet-4-thinking:32768",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -36991,7 +37029,7 @@
 		},
 		"claude-sonnet-4-thinking:64000": {
 			"id": "claude-sonnet-4-thinking:64000",
-			"name": "claude-sonnet-4-thinking:64000",
+			"name": "anthropic-sonnet-4-thinking:64000",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -37010,7 +37048,7 @@
 		},
 		"claude-sonnet-4-thinking:8192": {
 			"id": "claude-sonnet-4-thinking:8192",
-			"name": "claude-sonnet-4-thinking:8192",
+			"name": "anthropic-sonnet-4-thinking:8192",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -37200,7 +37238,7 @@
 		},
 		"deepclaude": {
 			"id": "deepclaude",
-			"name": "deepclaude",
+			"name": "deepanthropic",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -39084,7 +39122,7 @@
 		},
 		"Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled": {
 			"id": "Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled",
-			"name": "Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled",
+			"name": "Gemma-4-31B-Anthropic-4.6-Opus-Reasoning-Distilled",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -43667,7 +43705,7 @@
 		},
 		"openai/gpt-5-codex": {
 			"id": "openai/gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -43850,7 +43888,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -43875,7 +43913,7 @@
 		},
 		"openai/gpt-5.1-codex-max": {
 			"id": "openai/gpt-5.1-codex-max",
-			"name": "OpenAI: GPT-5.1-Codex-Max",
+			"name": "OpenAI: GPT-5.1-OpenAI code-Max",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -43900,7 +43938,7 @@
 		},
 		"openai/gpt-5.1-codex-mini": {
 			"id": "openai/gpt-5.1-codex-mini",
-			"name": "GPT-5.1-Codex-Mini",
+			"name": "GPT-5.1-OpenAI code-Mini",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -43970,7 +44008,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-completions",
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"provider": "nanogpt",
@@ -44039,7 +44077,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-completions",
 			"provider": "nanogpt",
 			"baseUrl": "https://nano-gpt.com/api/v1",
@@ -51105,7 +51143,7 @@
 	"openai": {
 		"codex-mini-latest": {
 			"id": "codex-mini-latest",
-			"name": "Codex Mini",
+			"name": "OpenAI code Mini",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51220,7 +51258,7 @@
 			"cost": {
 				"input": 0.1,
 				"output": 0.4,
-				"cacheRead": 0.03,
+				"cacheRead": 0.025,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1047576,
@@ -51320,7 +51358,7 @@
 			"cost": {
 				"input": 0.15,
 				"output": 0.6,
-				"cacheRead": 0.08,
+				"cacheRead": 0.075,
 				"cacheWrite": 0
 			},
 			"contextWindow": 128000,
@@ -51375,7 +51413,7 @@
 		},
 		"gpt-5-codex": {
 			"id": "gpt-5-codex",
-			"name": "GPT-5-Codex",
+			"name": "GPT-5-OpenAI code",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51491,7 +51529,7 @@
 			"cost": {
 				"input": 1.25,
 				"output": 10,
-				"cacheRead": 0.13,
+				"cacheRead": 0.125,
 				"cacheWrite": 0
 			},
 			"contextWindow": 400000,
@@ -51531,7 +51569,7 @@
 		},
 		"gpt-5.1-codex": {
 			"id": "gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51557,7 +51595,7 @@
 		},
 		"gpt-5.1-codex-max": {
 			"id": "gpt-5.1-codex-max",
-			"name": "GPT-5.1 Codex Max",
+			"name": "GPT-5.1 OpenAI code Max",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51583,7 +51621,7 @@
 		},
 		"gpt-5.1-codex-mini": {
 			"id": "gpt-5.1-codex-mini",
-			"name": "GPT-5.1 Codex mini",
+			"name": "GPT-5.1 OpenAI code mini",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51661,7 +51699,7 @@
 		},
 		"gpt-5.2-codex": {
 			"id": "gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51734,7 +51772,7 @@
 		},
 		"gpt-5.3-codex": {
 			"id": "gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -51760,7 +51798,7 @@
 		},
 		"gpt-5.3-codex-spark": {
 			"id": "gpt-5.3-codex-spark",
-			"name": "GPT-5.3 Codex Spark",
+			"name": "GPT-5.3 OpenAI code Spark",
 			"api": "openai-responses",
 			"provider": "openai",
 			"baseUrl": "https://api.openai.com/v1",
@@ -52106,7 +52144,7 @@
 			"cost": {
 				"input": 1.1,
 				"output": 4.4,
-				"cacheRead": 0.28,
+				"cacheRead": 0.275,
 				"cacheWrite": 0
 			},
 			"contextWindow": 200000,
@@ -52146,7 +52184,7 @@
 	"openai-codex": {
 		"codex-auto-review": {
 			"id": "codex-auto-review",
-			"name": "Codex Auto Review",
+			"name": "OpenAI code Auto Review",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52201,7 +52239,7 @@
 		},
 		"gpt-5-codex": {
 			"id": "gpt-5-codex",
-			"name": "GPT-5-Codex",
+			"name": "GPT-5-OpenAI code",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52229,7 +52267,7 @@
 		},
 		"gpt-5-codex-mini": {
 			"id": "gpt-5-codex-mini",
-			"name": "gpt-5-codex-mini",
+			"name": "gpt-5-openai-code-mini",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52285,7 +52323,7 @@
 		},
 		"gpt-5.1-codex": {
 			"id": "gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52313,7 +52351,7 @@
 		},
 		"gpt-5.1-codex-max": {
 			"id": "gpt-5.1-codex-max",
-			"name": "GPT-5.1 Codex Max",
+			"name": "GPT-5.1 OpenAI code Max",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52341,7 +52379,7 @@
 		},
 		"gpt-5.1-codex-mini": {
 			"id": "gpt-5.1-codex-mini",
-			"name": "GPT-5.1 Codex mini",
+			"name": "GPT-5.1 OpenAI code mini",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52397,7 +52435,7 @@
 		},
 		"gpt-5.2-codex": {
 			"id": "gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52425,7 +52463,7 @@
 		},
 		"gpt-5.3-codex": {
 			"id": "gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52453,7 +52491,7 @@
 		},
 		"gpt-5.3-codex-spark": {
 			"id": "gpt-5.3-codex-spark",
-			"name": "GPT-5.3 Codex Spark",
+			"name": "GPT-5.3 OpenAI code Spark",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -52619,7 +52657,7 @@
 		},
 		"gpt-5.3-codex-spark": {
 			"id": "gpt-5.3-codex-spark",
-			"name": "GPT-5.3 Codex Spark",
+			"name": "GPT-5.3 OpenAI code Spark",
 			"api": "openai-responses",
 			"provider": "opencode",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53069,6 +53107,30 @@
 				"minLevel": "minimal",
 				"maxLevel": "high"
 			}
+		},
+		"qwen3.7-max": {
+			"id": "qwen3.7-max",
+			"name": "Qwen3.7 Max",
+			"api": "anthropic-messages",
+			"provider": "opencode-go",
+			"baseUrl": "https://opencode.ai/zen/go",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 2.5,
+				"output": 7.5,
+				"cacheRead": 0.5,
+				"cacheWrite": 3.125
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "budget",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
 		}
 	},
 	"opencode-zen": {
@@ -53089,7 +53151,7 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 200000,
-			"maxTokens": 128000,
+			"maxTokens": 32000,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -53098,7 +53160,7 @@
 		},
 		"claude-3-5-haiku": {
 			"id": "claude-3-5-haiku",
-			"name": "Claude Haiku 3.5",
+			"name": "Anthropic Haiku 3.5",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53118,7 +53180,7 @@
 		},
 		"claude-haiku-4-5": {
 			"id": "claude-haiku-4-5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53143,7 +53205,7 @@
 		},
 		"claude-opus-4-1": {
 			"id": "claude-opus-4-1",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53168,7 +53230,7 @@
 		},
 		"claude-opus-4-5": {
 			"id": "claude-opus-4-5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53193,7 +53255,7 @@
 		},
 		"claude-opus-4-6": {
 			"id": "claude-opus-4-6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53218,7 +53280,7 @@
 		},
 		"claude-opus-4-7": {
 			"id": "claude-opus-4-7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53243,7 +53305,7 @@
 		},
 		"claude-sonnet-4": {
 			"id": "claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53268,7 +53330,7 @@
 		},
 		"claude-sonnet-4-5": {
 			"id": "claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53293,7 +53355,7 @@
 		},
 		"claude-sonnet-4-6": {
 			"id": "claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "anthropic-messages",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen",
@@ -53571,7 +53633,7 @@
 		},
 		"gpt-5-codex": {
 			"id": "gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53646,7 +53708,7 @@
 		},
 		"gpt-5.1-codex": {
 			"id": "gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53671,7 +53733,7 @@
 		},
 		"gpt-5.1-codex-max": {
 			"id": "gpt-5.1-codex-max",
-			"name": "GPT-5.1 Codex Max",
+			"name": "GPT-5.1 OpenAI code Max",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53696,7 +53758,7 @@
 		},
 		"gpt-5.1-codex-mini": {
 			"id": "gpt-5.1-codex-mini",
-			"name": "GPT-5.1 Codex Mini",
+			"name": "GPT-5.1 OpenAI code Mini",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53746,7 +53808,7 @@
 		},
 		"gpt-5.2-codex": {
 			"id": "gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53771,7 +53833,7 @@
 		},
 		"gpt-5.3-codex": {
 			"id": "gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -53796,7 +53858,7 @@
 		},
 		"gpt-5.3-codex-spark": {
 			"id": "gpt-5.3-codex-spark",
-			"name": "GPT-5.3 Codex Spark",
+			"name": "GPT-5.3 OpenAI code Spark",
 			"api": "openai-responses",
 			"provider": "opencode-zen",
 			"baseUrl": "https://opencode.ai/zen/v1",
@@ -54446,7 +54508,7 @@
 	"openrouter": {
 		"~anthropic/claude-haiku-latest": {
 			"id": "~anthropic/claude-haiku-latest",
-			"name": "Anthropic Claude Haiku Latest",
+			"name": "Anthropic Anthropic Haiku Latest",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -54471,7 +54533,7 @@
 		},
 		"~anthropic/claude-opus-latest": {
 			"id": "~anthropic/claude-opus-latest",
-			"name": "Anthropic: Claude Opus Latest",
+			"name": "Anthropic: Anthropic Opus Latest",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -54496,7 +54558,7 @@
 		},
 		"~anthropic/claude-sonnet-latest": {
 			"id": "~anthropic/claude-sonnet-latest",
-			"name": "Anthropic Claude Sonnet Latest",
+			"name": "Anthropic Anthropic Sonnet Latest",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -54824,7 +54886,7 @@
 		},
 		"anthropic/claude-3-haiku": {
 			"id": "anthropic/claude-3-haiku",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54844,7 +54906,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Anthropic 3.5 Haiku",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54864,7 +54926,7 @@
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54884,7 +54946,7 @@
 		},
 		"anthropic/claude-3.7-sonnet": {
 			"id": "anthropic/claude-3.7-sonnet",
-			"name": "Claude 3.7 Sonnet",
+			"name": "Anthropic 3.7 Sonnet",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54909,7 +54971,7 @@
 		},
 		"anthropic/claude-3.7-sonnet:thinking": {
 			"id": "anthropic/claude-3.7-sonnet:thinking",
-			"name": "Anthropic: Claude 3.7 Sonnet (thinking)",
+			"name": "Anthropic: Anthropic 3.7 Sonnet (thinking)",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54934,7 +54996,7 @@
 		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54954,7 +55016,7 @@
 		},
 		"anthropic/claude-opus-4": {
 			"id": "anthropic/claude-opus-4",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -54979,7 +55041,7 @@
 		},
 		"anthropic/claude-opus-4.1": {
 			"id": "anthropic/claude-opus-4.1",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -55004,7 +55066,7 @@
 		},
 		"anthropic/claude-opus-4.5": {
 			"id": "anthropic/claude-opus-4.5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -55029,7 +55091,7 @@
 		},
 		"anthropic/claude-opus-4.6": {
 			"id": "anthropic/claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -55054,7 +55116,7 @@
 		},
 		"anthropic/claude-opus-4.6-fast": {
 			"id": "anthropic/claude-opus-4.6-fast",
-			"name": "Anthropic: Claude Opus 4.6 (Fast)",
+			"name": "Anthropic: Anthropic Opus 4.6 (Fast)",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -55079,7 +55141,7 @@
 		},
 		"anthropic/claude-opus-4.7": {
 			"id": "anthropic/claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -55104,7 +55166,7 @@
 		},
 		"anthropic/claude-opus-4.7-fast": {
 			"id": "anthropic/claude-opus-4.7-fast",
-			"name": "Anthropic: Claude Opus 4.7 (Fast)",
+			"name": "Anthropic: Anthropic Opus 4.7 (Fast)",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -55129,7 +55191,7 @@
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -55154,7 +55216,7 @@
 		},
 		"anthropic/claude-sonnet-4.5": {
 			"id": "anthropic/claude-sonnet-4.5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -55179,7 +55241,7 @@
 		},
 		"anthropic/claude-sonnet-4.6": {
 			"id": "anthropic/claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -55606,13 +55668,13 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.32,
-				"output": 0.8899999999999999,
+				"input": 0.2288,
+				"output": 0.9144,
 				"cacheRead": 0.15,
 				"cacheWrite": 0
 			},
-			"contextWindow": 163840,
-			"maxTokens": 16384
+			"contextWindow": 131072,
+			"maxTokens": 16000
 		},
 		"deepseek/deepseek-chat-v3-0324": {
 			"id": "deepseek/deepseek-chat-v3-0324",
@@ -58367,7 +58429,7 @@
 		},
 		"openai/gpt-5-codex": {
 			"id": "openai/gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -58562,7 +58624,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -58587,7 +58649,7 @@
 		},
 		"openai/gpt-5.1-codex-max": {
 			"id": "openai/gpt-5.1-codex-max",
-			"name": "OpenAI: GPT-5.1-Codex-Max",
+			"name": "OpenAI: GPT-5.1-OpenAI code-Max",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -58612,7 +58674,7 @@
 		},
 		"openai/gpt-5.1-codex-mini": {
 			"id": "openai/gpt-5.1-codex-mini",
-			"name": "GPT-5.1-Codex-Mini",
+			"name": "GPT-5.1-OpenAI code-Mini",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -58682,7 +58744,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-completions",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -58751,7 +58813,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-completions",
 			"provider": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
@@ -59517,8 +59579,8 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 131072,
-			"maxTokens": 8192,
+			"contextWindow": 262144,
+			"maxTokens": 32768,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -59541,8 +59603,8 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 131072,
-			"maxTokens": 8192,
+			"contextWindow": 262144,
+			"maxTokens": 32768,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -60578,7 +60640,7 @@
 				"input": 0.3,
 				"output": 1.7999999999999998,
 				"cacheRead": 0,
-				"cacheWrite": 0
+				"cacheWrite": 0.375
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 65536,
@@ -60600,13 +60662,13 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.3,
+				"input": 0.29,
 				"output": 3.1999999999999997,
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
 			"contextWindow": 262144,
-			"maxTokens": 262144,
+			"maxTokens": 262140,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -60625,7 +60687,7 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.15,
+				"input": 0.14,
 				"output": 1,
 				"cacheRead": 0.049999999999999996,
 				"cacheWrite": 0
@@ -60771,10 +60833,10 @@
 				"text"
 			],
 			"cost": {
-				"input": 2.5,
-				"output": 7.5,
-				"cacheRead": 0,
-				"cacheWrite": 3.125
+				"input": 1.25,
+				"output": 3.75,
+				"cacheRead": 0.25,
+				"cacheWrite": 1.5625
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 65536,
@@ -61506,9 +61568,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.39999999999999997,
-				"output": 2,
-				"cacheRead": 0.08,
+				"input": 0.14,
+				"output": 0.28,
+				"cacheRead": 0.0028,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1048576,
@@ -61530,13 +61592,13 @@
 				"text"
 			],
 			"cost": {
-				"input": 1,
-				"output": 3,
-				"cacheRead": 0.19999999999999998,
+				"input": 0.435,
+				"output": 0.87,
+				"cacheRead": 0.0036,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1048576,
-			"maxTokens": 16384,
+			"maxTokens": 131072,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -61597,13 +61659,13 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.13,
-				"output": 0.85,
+				"input": 0.125,
+				"output": 0.84,
 				"cacheRead": 0.024999999999999998,
 				"cacheWrite": 0
 			},
 			"contextWindow": 131072,
-			"maxTokens": 98304,
+			"maxTokens": 131070,
 			"thinking": {
 				"mode": "effort",
 				"minLevel": "minimal",
@@ -62577,7 +62639,7 @@
 		},
 		"claude-opus-4-5": {
 			"id": "claude-opus-4-5",
-			"name": "Claude Opus 4.5 (latest)",
+			"name": "Anthropic Opus 4.5 (latest)",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62605,7 +62667,7 @@
 		},
 		"claude-opus-4-6": {
 			"id": "claude-opus-4-6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62633,7 +62695,7 @@
 		},
 		"claude-opus-4-6-fast": {
 			"id": "claude-opus-4-6-fast",
-			"name": "claude-opus-4-6-fast",
+			"name": "anthropic-opus-4-6-fast",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62655,7 +62717,7 @@
 		},
 		"claude-opus-4-7": {
 			"id": "claude-opus-4-7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62683,7 +62745,7 @@
 		},
 		"claude-opus-4-7-fast": {
 			"id": "claude-opus-4-7-fast",
-			"name": "claude-opus-4-7-fast",
+			"name": "anthropic-opus-4-7-fast",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62697,7 +62759,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 1000000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -62705,7 +62767,7 @@
 		},
 		"claude-opus-45": {
 			"id": "claude-opus-45",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62733,7 +62795,7 @@
 		},
 		"claude-sonnet-4-5": {
 			"id": "claude-sonnet-4-5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62761,7 +62823,7 @@
 		},
 		"claude-sonnet-4-6": {
 			"id": "claude-sonnet-4-6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62789,7 +62851,7 @@
 		},
 		"claude-sonnet-45": {
 			"id": "claude-sonnet-45",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -62934,7 +62996,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 64000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -62956,7 +63018,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 32000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63176,7 +63238,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 32000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63198,7 +63260,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 128000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63286,7 +63348,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 1000000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -63639,7 +63701,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 256000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -64130,7 +64192,7 @@
 		},
 		"openai-gpt-52-codex": {
 			"id": "openai-gpt-52-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -64158,7 +64220,7 @@
 		},
 		"openai-gpt-53-codex": {
 			"id": "openai-gpt-53-codex",
-			"name": "openai-gpt-53-codex",
+			"name": "openai-gpt-53-openai-code",
 			"api": "openai-completions",
 			"provider": "venice",
 			"baseUrl": "https://api.venice.ai/api/v1",
@@ -64348,7 +64410,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 222222,
+			"contextWindow": 1000000,
 			"maxTokens": 8888,
 			"compat": {
 				"supportsUsageInStreaming": false
@@ -65285,7 +65347,7 @@
 		},
 		"anthropic/claude-3-haiku": {
 			"id": "anthropic/claude-3-haiku",
-			"name": "Claude Haiku 3",
+			"name": "Anthropic Haiku 3",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65305,7 +65367,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Anthropic 3.5 Haiku",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65325,7 +65387,7 @@
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65345,7 +65407,7 @@
 		},
 		"anthropic/claude-3.5-sonnet-20240620": {
 			"id": "anthropic/claude-3.5-sonnet-20240620",
-			"name": "Claude 3.5 Sonnet (2024-06-20)",
+			"name": "Anthropic 3.5 Sonnet (2024-06-20)",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65365,7 +65427,7 @@
 		},
 		"anthropic/claude-3.7-sonnet": {
 			"id": "anthropic/claude-3.7-sonnet",
-			"name": "Claude 3.7 Sonnet",
+			"name": "Anthropic 3.7 Sonnet",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65390,7 +65452,7 @@
 		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65410,7 +65472,7 @@
 		},
 		"anthropic/claude-opus-4": {
 			"id": "anthropic/claude-opus-4",
-			"name": "Claude Opus 4 (latest)",
+			"name": "Anthropic Opus 4 (latest)",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65435,7 +65497,7 @@
 		},
 		"anthropic/claude-opus-4.1": {
 			"id": "anthropic/claude-opus-4.1",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65460,7 +65522,7 @@
 		},
 		"anthropic/claude-opus-4.5": {
 			"id": "anthropic/claude-opus-4.5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65485,7 +65547,7 @@
 		},
 		"anthropic/claude-opus-4.6": {
 			"id": "anthropic/claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65510,7 +65572,7 @@
 		},
 		"anthropic/claude-opus-4.7": {
 			"id": "anthropic/claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "anthropic-messages",
 			"provider": "vercel-ai-gateway",
 			"baseUrl": "https://ai-gateway.vercel.sh",
@@ -65535,7 +65597,7 @@
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65560,7 +65622,7 @@
 		},
 		"anthropic/claude-sonnet-4.5": {
 			"id": "anthropic/claude-sonnet-4.5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -65585,7 +65647,7 @@
 		},
 		"anthropic/claude-sonnet-4.6": {
 			"id": "anthropic/claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67078,7 +67140,7 @@
 		},
 		"openai/codex-mini": {
 			"id": "openai/codex-mini",
-			"name": "Codex Mini",
+			"name": "OpenAI code Mini",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67273,7 +67335,7 @@
 		},
 		"openai/gpt-5-codex": {
 			"id": "openai/gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67373,7 +67435,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1 Codex",
+			"name": "GPT-5.1 OpenAI code",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67398,7 +67460,7 @@
 		},
 		"openai/gpt-5.1-codex-max": {
 			"id": "openai/gpt-5.1-codex-max",
-			"name": "GPT 5.1 Codex Max",
+			"name": "GPT 5.1 OpenAI code Max",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67423,7 +67485,7 @@
 		},
 		"openai/gpt-5.1-codex-mini": {
 			"id": "openai/gpt-5.1-codex-mini",
-			"name": "GPT-5.1-Codex-Mini",
+			"name": "GPT-5.1-OpenAI code-Mini",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67548,7 +67610,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2 Codex",
+			"name": "GPT-5.2 OpenAI code",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -67617,7 +67679,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "anthropic-messages",
 			"provider": "vercel-ai-gateway",
 			"baseUrl": "https://ai-gateway.vercel.sh",
@@ -68588,9 +68650,9 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.39999999999999997,
-				"output": 2,
-				"cacheRead": 0.08,
+				"input": 0.14,
+				"output": 0.28,
+				"cacheRead": 0.0028,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1050000,
@@ -68612,9 +68674,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 1,
-				"output": 3,
-				"cacheRead": 0.19999999999999998,
+				"input": 0.435,
+				"output": 0.87,
+				"cacheRead": 0.0036,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1050000,
@@ -70019,7 +70081,7 @@
 	"zenmux": {
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Anthropic 3.5 Haiku",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70039,7 +70101,7 @@
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
-			"name": "Claude Sonnet 3.5 v2",
+			"name": "Anthropic Sonnet 3.5 v2",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70059,7 +70121,7 @@
 		},
 		"anthropic/claude-3.7-sonnet": {
 			"id": "anthropic/claude-3.7-sonnet",
-			"name": "Claude 3.7 Sonnet",
+			"name": "Anthropic 3.7 Sonnet",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70084,7 +70146,7 @@
 		},
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
-			"name": "Claude Haiku 4.5",
+			"name": "Anthropic Haiku 4.5",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70104,7 +70166,7 @@
 		},
 		"anthropic/claude-opus-4": {
 			"id": "anthropic/claude-opus-4",
-			"name": "Claude Opus 4",
+			"name": "Anthropic Opus 4",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70129,7 +70191,7 @@
 		},
 		"anthropic/claude-opus-4.1": {
 			"id": "anthropic/claude-opus-4.1",
-			"name": "Claude Opus 4.1",
+			"name": "Anthropic Opus 4.1",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70154,7 +70216,7 @@
 		},
 		"anthropic/claude-opus-4.5": {
 			"id": "anthropic/claude-opus-4.5",
-			"name": "Claude Opus 4.5",
+			"name": "Anthropic Opus 4.5",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70179,7 +70241,7 @@
 		},
 		"anthropic/claude-opus-4.6": {
 			"id": "anthropic/claude-opus-4.6",
-			"name": "Claude Opus 4.6",
+			"name": "Anthropic Opus 4.6",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70204,7 +70266,7 @@
 		},
 		"anthropic/claude-opus-4.7": {
 			"id": "anthropic/claude-opus-4.7",
-			"name": "Claude Opus 4.7",
+			"name": "Anthropic Opus 4.7",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70229,7 +70291,7 @@
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
-			"name": "Claude Sonnet 4",
+			"name": "Anthropic Sonnet 4",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70254,7 +70316,7 @@
 		},
 		"anthropic/claude-sonnet-4.5": {
 			"id": "anthropic/claude-sonnet-4.5",
-			"name": "Claude Sonnet 4.5",
+			"name": "Anthropic Sonnet 4.5",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -70279,7 +70341,7 @@
 		},
 		"anthropic/claude-sonnet-4.6": {
 			"id": "anthropic/claude-sonnet-4.6",
-			"name": "Claude Sonnet 4.6",
+			"name": "Anthropic Sonnet 4.6",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -71923,7 +71985,7 @@
 		},
 		"openai/gpt-5-codex": {
 			"id": "openai/gpt-5-codex",
-			"name": "GPT-5 Codex",
+			"name": "GPT-5 OpenAI code",
 			"api": "openai-completions",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/v1",
@@ -72068,7 +72130,7 @@
 		},
 		"openai/gpt-5.1-codex": {
 			"id": "openai/gpt-5.1-codex",
-			"name": "GPT-5.1-Codex",
+			"name": "GPT-5.1-OpenAI code",
 			"api": "openai-completions",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/v1",
@@ -72093,7 +72155,7 @@
 		},
 		"openai/gpt-5.1-codex-mini": {
 			"id": "openai/gpt-5.1-codex-mini",
-			"name": "GPT-5.1-Codex-Mini",
+			"name": "GPT-5.1-OpenAI code-Mini",
 			"api": "openai-completions",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/v1",
@@ -72168,7 +72230,7 @@
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
-			"name": "GPT-5.2-Codex",
+			"name": "GPT-5.2-OpenAI code",
 			"api": "openai-completions",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/v1",
@@ -72237,7 +72299,7 @@
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
-			"name": "GPT-5.3 Codex",
+			"name": "GPT-5.3 OpenAI code",
 			"api": "openai-completions",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/v1",

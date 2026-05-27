@@ -119,7 +119,7 @@ function resolveThoughtSignature(isSameProviderAndModel: boolean, signature: str
 }
 
 /**
- * Claude models via Google APIs require explicit tool call IDs in function calls/responses.
+ * Anthropic model models via Google APIs require explicit tool call IDs in function calls/responses.
  */
 export function requiresToolCallId(modelId: string): boolean {
 	return modelId.startsWith("claude-");
@@ -200,7 +200,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
-					// Skip empty text blocks - they can cause issues with some models (e.g. Claude via Antigravity)
+					// Skip empty text blocks - they can cause issues with some models (e.g. Anthropic model via Antigravity)
 					if (!block.text || block.text.trim() === "") continue;
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.textSignature);
 					parts.push({
@@ -263,7 +263,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const hasImages = imageContent.length > 0;
 
 			// Gemini 3+ models support multimodal function responses with images nested inside
-			// functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
+			// functionResponse.parts. Anthropic model and other non-Gemini models behind Cloud Code Assist /
 			// Antigravity also accept this shape. Gemini < 3 still needs a separate user image turn.
 			const modelSupportsMultimodalFunctionResponse = supportsMultimodalFunctionResponse(model.id);
 
@@ -327,7 +327,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
  *
  * We prefer `parametersJsonSchema` (full JSON Schema: anyOf/oneOf/const/etc.).
  *
- * Claude models via Cloud Code Assist require the legacy `parameters` field; the API
+ * Anthropic model models via Cloud Code Assist require the legacy `parameters` field; the API
  * translates it into Anthropic's `input_schema`. When using that path, we sanitize the
  * schema to remove Google-unsupported JSON Schema keywords.
  */
@@ -338,7 +338,7 @@ export function convertTools(
 	if (tools.length === 0) return undefined;
 
 	/**
-	 * Claude models on Cloud Code Assist need the legacy `parameters` field;
+	 * Anthropic model models on Cloud Code Assist need the legacy `parameters` field;
 	 * the API translates it into Anthropic's `input_schema`.
 	 */
 	const useParameters = model.id.startsWith("claude-");

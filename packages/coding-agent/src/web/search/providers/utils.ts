@@ -46,7 +46,7 @@ export function findCredential(
 /**
  * Default hard ceiling for a single web-search round-trip. 60s tolerates
  * legitimate slow LLM-mediated responses (anthropic web_search_20250305,
- * perplexity, gemini, codex) while still guaranteeing the session unfreezes
+ * perplexity, gemini, OpenAI code backend) while still guaranteeing the session unfreezes
  * within a minute if Bun's `AbortSignal` fails to propagate on Windows.
  *
  * Pure search APIs (brave, exa, jina, tavily, searxng, synthetic, zai)

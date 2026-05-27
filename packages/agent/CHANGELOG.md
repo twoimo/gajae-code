@@ -99,7 +99,7 @@
 
 ### Changed
 
-- Changed OpenAI Codex model runs to detect GPT-5 Harmony protocol leakage during streaming and automatically retry or recover tool calls instead of sending contaminated arguments downstream
+- Changed OpenAI code provider model runs to detect GPT-5 Harmony protocol leakage during streaming and automatically retry or recover tool calls instead of sending contaminated arguments downstream
 
 ### Security
 
@@ -293,7 +293,7 @@
 
 ### Changed
 
-- Updated ThinkingLevel documentation to include support for gpt-5.3 and gpt-5.3-codex models with 'xhigh' thinking level
+- Updated ThinkingLevel documentation to include support for gpt-5.3 and gpt-5.3-openai-code models with 'xhigh' thinking level
 
 ## [11.2.0] - 2026-02-05
 
@@ -393,7 +393,7 @@
 
 ### Added
 
-- Added `sessionId` option for provider caching (e.g., OpenAI Codex session-based prompt caching)
+- Added `sessionId` option for provider caching (e.g., OpenAI code provider session-based prompt caching)
 - Added `sessionId` getter/setter on Agent class for runtime session switching
 
 ## [3.20.0] - 2026-01-06

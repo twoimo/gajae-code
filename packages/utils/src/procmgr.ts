@@ -57,7 +57,7 @@ function buildSpawnEnv(shell: string): Record<string, string> {
 
 /**
  * Get shell args, optionally including login shell flag.
- * Supports PI_BASH_NO_LOGIN and CLAUDE_BASH_NO_LOGIN to skip -l.
+ * Supports PI_BASH_NO_LOGIN and ANTHROPIC_MODEL_BASH_NO_LOGIN to skip -l.
  */
 function getShellArgs(): string[] {
 	const noLogin = $env.PI_BASH_NO_LOGIN || $env.CLAUDE_BASH_NO_LOGIN;

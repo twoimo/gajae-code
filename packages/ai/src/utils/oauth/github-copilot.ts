@@ -253,7 +253,7 @@ export function refreshGitHubCopilotToken(refreshToken: string, enterpriseDomain
 
 /**
  * Enable a model for the user's GitHub Copilot account.
- * This is required for some models (like Claude, Grok) before they can be used.
+ * This is required for some models (like Anthropic model, Grok) before they can be used.
  */
 async function enableGitHubCopilotModel(token: string, modelId: string, enterpriseDomain?: string): Promise<boolean> {
 	const baseUrl = getGitHubCopilotBaseUrl(enterpriseDomain);

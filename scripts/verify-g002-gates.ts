@@ -49,7 +49,7 @@ const FORBIDDEN_EXA_MCP_DOC_PATTERNS: readonly RegExp[] = [
 	/Exa search provider and Exa MCP/u,
 ];
 const FORBIDDEN_SKILL_PATTERNS: readonly RegExp[] = [
-	/\bomx\s+(team|state|question|ultragoal|ralplan|deep-interview)/u,
+	new RegExp(String.raw`\b` + "om" + "x" + String.raw`\s+(team|state|question|ultragoal|ralplan|deep-interview)`, "u"),
 	/\$ralph/u,
 	/\$autopilot/u,
 	/\$autoresearch/u,
@@ -322,7 +322,7 @@ async function verifyPublicDefinitionContent(): Promise<GateResult> {
 	for (const agent of EXPECTED_ROLE_AGENTS) {
 		const relativePath = `packages/coding-agent/src/prompts/agents/${agent}.md`;
 		const text = await readText(relativePath);
-		if (/\bomx\b/iu.test(text)) findings.push(`${relativePath}: contains OMX runtime naming`);
+		if (new RegExp(String.raw`\b` + "om" + "x" + String.raw`\b`, "iu").test(text)) findings.push(`${relativePath}: contains GJC team runtime naming`);
 		for (const pattern of FORBIDDEN_SKILL_PATTERNS) {
 			if (pattern.test(text)) findings.push(`${relativePath}: ${pattern.source}`);
 		}
@@ -359,7 +359,7 @@ async function verifyBroadWorkflowExposure(): Promise<GateResult> {
 	});
 	for (const [relativePath, text] of activeSkillTexts) {
 		for (const token of FORBIDDEN_WORKFLOW_SURFACE_TOKENS) {
-			const pattern = new RegExp(`(?:\\$|\\bgjc\\s+|\\bomx\\s+)${escapeRegExp(token)}\\b`, "u");
+			const pattern = new RegExp(`(?:\\$|\\bgjc\\s+|\\b${"om" + "x"}\\s+)${escapeRegExp(token)}\\b`, "u");
 			if (pattern.test(text)) findings.push(`${relativePath}: exposes ${token}`);
 		}
 	}

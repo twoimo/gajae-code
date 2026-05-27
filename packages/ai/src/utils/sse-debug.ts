@@ -28,7 +28,7 @@ function isSseResponse(response: Response): boolean {
 	const contentType = response.headers.get("content-type");
 	// All providers in this repo emit lowercase `text/event-stream` (verified
 	// against anthropic, openai-completions, openai-responses, azure-openai-responses,
-	// google-shared, google-gemini-cli, openai-codex-responses, pi-native-client,
+	// google-shared, google-gemini-cli, OpenAI code provider-responses, pi-native-client,
 	// and the auth-gateway server). A canonical `includes` check is sufficient;
 	// if a future provider sends mixed case it will fall back to the unwrapped
 	// fetch — observably safe, just no debug tee for that response.

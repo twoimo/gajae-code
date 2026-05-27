@@ -1,7 +1,7 @@
 /**
  * Provider-specific JSON Schema normalization used in the request path.
  *
- * Google's Schema proto, Cloud Code Assist's Claude bridge, and MCP/AJV
+ * Google's Schema proto, Cloud Code Assist's Anthropic model bridge, and MCP/AJV
  * validation all reject different subsets of standard JSON Schema. This module
  * exposes one option-driven core plus thin dispatchers that pin the option set
  * for each target.
@@ -1405,7 +1405,7 @@ export function sanitizeSchemaForStrictMode(
 }
 
 /**
- * Recursively enforces JSON Schema constraints required by OpenAI/Codex strict mode:
+ * Recursively enforces JSON Schema constraints required by OpenAI/OpenAI code backend strict mode:
  *   - `additionalProperties: false` on every object node
  *   - every key in `properties` present in `required`
  *

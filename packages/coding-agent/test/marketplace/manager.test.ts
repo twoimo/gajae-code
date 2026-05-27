@@ -300,7 +300,7 @@ describe("MarketplaceManager", () => {
 		await Bun.write(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
 		const instEntry = await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
-		// No catalog version, but fixture's .claude-plugin/plugin.json has version "1.0.0"
+		// No catalog version, but fixture's .Anthropic model-plugin/plugin.json has version "1.0.0"
 		expect(instEntry.version).toBe("1.0.0");
 	});
 	// ── Scope feature ────────────────────────────────────────────────────────

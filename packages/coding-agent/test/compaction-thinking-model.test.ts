@@ -2,8 +2,8 @@
  * Test for compaction with thinking models.
  *
  * Tests both:
- * - Claude via Antigravity (google-gemini-cli API)
- * - Claude via real Anthropic API (anthropic-messages API)
+ * - Anthropic model via Antigravity (google-gemini-cli API)
+ * - Anthropic model via real Anthropic API (anthropic-messages API)
  *
  * Reproduces issue where compact fails when maxTokens < thinkingBudget.
  */

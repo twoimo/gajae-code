@@ -621,11 +621,11 @@ export function buildExtensionModuleItems(
 }
 
 // =============================================================================
-// Claude Code Plugin Cache Helpers
+// Anthropic Code Plugin Cache Helpers
 // =============================================================================
 
 /**
- * Entry for an installed Claude Code plugin.
+ * Entry for an installed Anthropic Code plugin.
  */
 export interface ClaudePluginEntry {
 	scope: "user" | "project";
@@ -638,7 +638,7 @@ export interface ClaudePluginEntry {
 }
 
 /**
- * Claude Code installed_plugins.json registry format.
+ * Anthropic Code installed_plugins.json registry format.
  */
 export interface ClaudePluginsRegistry {
 	version: number;
@@ -649,7 +649,7 @@ export interface ClaudePluginsRegistry {
  * Resolved plugin root for loading.
  */
 export interface ClaudePluginRoot {
-	/** Plugin ID (e.g., "simpleclaude-core@simpleclaude") */
+	/** Plugin ID (e.g., "simpleAnthropic model-core@simpleAnthropic model") */
 	id: string;
 	/** Marketplace name */
 	marketplace: string;
@@ -664,7 +664,7 @@ export interface ClaudePluginRoot {
 }
 
 /**
- * Parse Claude Code installed_plugins.json content.
+ * Parse Anthropic Code installed_plugins.json content.
  */
 export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegistry | null {
 	const data = tryParseJson<ClaudePluginsRegistry>(content);
@@ -929,8 +929,8 @@ export function getPreloadedPluginRoots(): readonly ClaudePluginRoot[] {
 
 /**
  * Inject synthetic plugin roots from --plugin-dir paths.
- * These are prepended to the cache with highest precedence (before GJC/Claude entries).
- * Must be called before any listClaudePluginRoots() access.
+ * These are prepended to the cache with highest precedence (before GJC/Anthropic model entries).
+ * Must be called before any listAnthropic modelPluginRoots() access.
  */
 export async function injectPluginDirRoots(home: string, dirs: string[], cwd?: string): Promise<void> {
 	const injected: ClaudePluginRoot[] = [];
@@ -952,7 +952,7 @@ export async function injectPluginDirRoots(home: string, dirs: string[], cwd?: s
 		injected.push(buildPluginDirRoot(resolved, pluginName));
 	}
 
-	// Set injected roots BEFORE populating cache so listClaudePluginRoots merges them.
+	// Set injected roots BEFORE populating cache so listAnthropic modelPluginRoots merges them.
 	injectedPluginDirRoots = injected;
 	lastPreloadHome = home; // ensure cache-clear re-warm fires even when injectPluginDirRoots was the startup path
 	// Clear any stale cache entries (populated before injected roots were set).

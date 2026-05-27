@@ -138,7 +138,7 @@ export function collectCustomCallIds(messages: ResponseInput): Set<string> {
  * it as-is 400s the request. Folding it into an assistant `message` preserves
  * the payload (call_id + truncated output) while staying within the Responses
  * input grammar. Matches the behavior of {@link transformRequestBody} in the
- * codex provider — issue #1351 / regression of #472.
+ * OpenAI code backend provider — issue #1351 / regression of #472.
  */
 export function repairOrphanResponsesToolOutputs(input: ResponseInput): ResponseInput {
 	const knownCallIds = new Set<string>();

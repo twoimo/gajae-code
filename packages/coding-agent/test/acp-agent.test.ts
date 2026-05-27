@@ -613,7 +613,7 @@ describe("ACP agent", () => {
 	});
 
 	it("suppresses lifetime config_option_update during the bootstrap window", async () => {
-		// Regression for codex review on #1060: an extension `session_start`
+		// Regression for OpenAI code backend review on #1060: an extension `session_start`
 		// handler calling `setThinkingLevel` must not push a
 		// `config_option_update` for a session id the client has not been told
 		// about yet (matches Zed's `Received session notification for unknown
@@ -699,7 +699,7 @@ describe("ACP agent", () => {
 	it("accepts only ACP underscore-prefixed extension methods", async () => {
 		const harness = await createHarness();
 
-		const result = await harness.agent.extMethod("_omp/sessions/listAll", { limit: 2 });
+		const result = await harness.agent.extMethod("_gjc/sessions/listAll", { limit: 2 });
 
 		expect(Array.isArray(result.sessions)).toBe(true);
 		expect(typeof result.total).toBe("number");
@@ -1086,7 +1086,7 @@ describe("ACP agent", () => {
 				: [],
 		);
 		expect(names).toContain("fast");
-		expect(names).toContain("force");
+		expect(names).not.toContain("force");
 		expect(names).toContain("skill:sample");
 		expect(names).not.toContain("sample");
 		expect(names).not.toContain("settings");
@@ -1659,7 +1659,7 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
-	it("executes force builtins and forwards remaining prompt text", async () => {
+	it("forwards removed force slash commands as normal prompts", async () => {
 		const harness = await createHarness();
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const session = harness.findSession(created.sessionId)!;
@@ -1670,8 +1670,8 @@ describe("ACP agent", () => {
 			prompt: [{ type: "text", text: "/force read inspect package.json" }],
 		} as PromptRequest);
 
-		expect(session.forcedToolChoice).toBe("read");
-		expect(session.promptCalls).toEqual(["inspect package.json"]);
+		expect(session.forcedToolChoice).toBeUndefined();
+		expect(session.promptCalls).toEqual(["/force read inspect package.json"]);
 
 		harness.abortController.abort();
 		await Bun.sleep(0);

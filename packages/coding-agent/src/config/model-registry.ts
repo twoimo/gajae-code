@@ -589,7 +589,7 @@ function mergeAuthHeader(
  * - Explicit `auth: oauth` → force on.
  * - Explicit `auth: apiKey` / `auth: none` → leave unset (auto-detect by key prefix).
  * - No `auth` specified and `api: anthropic-messages` → default on. Custom Anthropic
- *   endpoints are typically Claude-Code-style proxies (e.g. CLIProxyAPI) that expect
+ *   endpoints are typically Anthropic-code-style proxies (e.g. CLIProxyAPI) that expect
  *   the cloaked request shape regardless of how the proxy itself is authenticated.
  * - Otherwise → unset.
  */

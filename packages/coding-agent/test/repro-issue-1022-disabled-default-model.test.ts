@@ -15,7 +15,7 @@ import { YAML } from "bun";
  * configured, the default-model fallback ignores the path-scoped allow-list and
  * picks any provider with stored credentials. In the user's report a Haiku
  * model (anthropic) is selected even though the path enables only
- * `openai-codex`.
+ * `OpenAI code provider`.
  */
 describe("issue #1022 — path-scoped enabledModels respected by default fallback", () => {
 	let testDir: string;
@@ -54,7 +54,7 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 
 		const authStorage = await AuthStorage.create(path.join(testDir, "auth.db"));
 		// Only anthropic has credentials. Per `enabledModels` the path allows
-		// only openai-codex, so no anthropic model should be selected.
+		// only OpenAI code provider, so no anthropic model should be selected.
 		authStorage.setRuntimeApiKey("anthropic", "test-anthropic-key");
 
 		const modelRegistry = new ModelRegistry(authStorage, path.join(testDir, "models.yml"));
@@ -81,7 +81,7 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 				// path-scoped enabledModels allow-list.
 				expect(session.model?.provider).not.toBe("anthropic");
 				expect(session.model?.provider).not.toBe("github-copilot");
-				// No openai-codex creds set → nothing in the allow-list is
+				// No OpenAI code provider creds set → nothing in the allow-list is
 				// usable. Expect no model and a fallback message.
 				expect(session.model).toBeUndefined();
 				expect(modelFallbackMessage).toBeDefined();

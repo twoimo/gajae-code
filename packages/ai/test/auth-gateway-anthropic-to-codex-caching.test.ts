@@ -1,20 +1,20 @@
 /**
- * E2E test: send an Anthropic Messages request to an OPENAI CODEX backend
+ * E2E test: send an Anthropic Messages request to an OPENAI OPENAI_CODE backend
  * through the auth-gateway and assert prompt caching survives the
  * cross-protocol translate path in the other direction.
  *
  * Pipeline under test:
  *   client → POST /v1/messages (Anthropic shape, cache_control markers)
  *     → anthropic-messages parser → gjc Context (cacheRetention derived)
- *     → pi-ai openai-codex-responses provider
- *     → upstream Codex (ChatGPT-subscription Responses API)
+ *     → pi-ai OpenAI code provider-responses provider
+ *     → upstream OpenAI code backend (ChatGPT-subscription Responses API)
  *     → assistant stream → anthropic-messages encoder
  *     → Anthropic-shape response with cache_read_input_tokens carrying
- *       Codex's cached_tokens (mapped via usage.cacheRead)
+ *       OpenAI code backend's cached_tokens (mapped via usage.cacheRead)
  *
  * Regression surface: the inbound parser strips cache_control hints into
- * `cacheRetention`, but the codex provider doesn't consume `cacheRetention`
- * directly — caching only works if pi-ai's codex transport reaches Codex
+ * `cacheRetention`, but the OpenAI code backend provider doesn't consume `cacheRetention`
+ * directly — caching only works if pi-ai's OpenAI code backend transport reaches OpenAI code backend
  * with an effective cache identity (prompt_cache_key from sessionId, or
  * implicit session reuse). If that path breaks, this test catches it.
  *
@@ -22,7 +22,7 @@
  * (override via `GJC_E2E_GATEWAY_URL`) AND the bearer token file exists at
  * `~/.gjc/auth-gateway.token`.
  *
- * To run: `bun --cwd packages/ai test test/auth-gateway-anthropic-to-codex-caching.test.ts`
+ * To run: `bun --cwd packages/ai test test/auth-gateway-anthropic-to-OpenAI code backend-caching.test.ts`
  */
 import { describe, expect, it } from "bun:test";
 import { AUTH_GATEWAY_E2E_URL, checkAuthGatewayE2EAvailable } from "./helpers";
@@ -46,7 +46,7 @@ const MODEL = Bun.env.GJC_E2E_CODEX_MODEL ?? "gpt-5.3-codex";
 
 const gateway = await checkAuthGatewayE2EAvailable();
 
-// Long deterministic instructions, repeated to clear Codex's 1024-token
+// Long deterministic instructions, repeated to clear OpenAI code backend's 1024-token
 // cache floor with headroom.
 const SYSTEM_PARAGRAPH = `
 You are a precise assistant participating in an automated end-to-end test of
@@ -158,8 +158,8 @@ describe.skipIf(!gateway.ok)("auth-gateway: anthropic-messages → openai-codex 
 		// is 0, one of:
 		//   - anthropic-messages parser stripped the cache_control hint and
 		//     downstream lost the cache-retention signal;
-		//   - the codex provider didn't surface a stable cache identity to
-		//     Codex (no prompt_cache_key, no session reuse, etc.);
+		//   - the OpenAI code backend provider didn't surface a stable cache identity to
+		//     OpenAI code backend (no prompt_cache_key, no session reuse, etc.);
 		//   - the anthropic-messages encoder forgot to map pi-ai's
 		//     `usage.cacheRead` to `cache_read_input_tokens` on the wire.
 		const turn2Read = turn2.usage.cache_read_input_tokens ?? 0;

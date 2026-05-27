@@ -205,7 +205,7 @@ export function dropIncompleteLastEdit<T>(edits: readonly T[], partialJson: stri
 }
 
 // -----------------------------------------------------------------------------
-// Apply_patch remains multi-file because the Codex envelope carries paths per hunk.
+// Apply_patch remains multi-file because the OpenAI code backend envelope carries paths per hunk.
 // -----------------------------------------------------------------------------
 
 function groupApplyPatchEntriesByPath(entries: readonly ApplyPatchEntry[]): Map<string, ApplyPatchEntry[]> {

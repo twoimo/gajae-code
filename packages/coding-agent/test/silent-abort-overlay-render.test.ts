@@ -1,7 +1,7 @@
 /**
  * Regression: observer overlay must not render SILENT_ABORT_MARKER verbatim.
  *
- * Codex review flagged that `session-observer-overlay.ts` renders `errorMessage`
+ * OpenAI code backend review flagged that `session-observer-overlay.ts` renders `errorMessage`
  * without filtering the silent-abort sentinel. This test exercises the full
  * `#buildTranscriptLines` path through a real JSONL session file and mock registry.
  */

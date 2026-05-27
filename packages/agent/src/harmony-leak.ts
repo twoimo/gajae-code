@@ -105,7 +105,7 @@ export interface HarmonyRecoveredToolCall {
 
 /**
  * Whether to run leak detection on responses from this model. We default-on
- * for every openai-codex model rather than enumerating ids, so a future
+ * for every OpenAI code provider model rather than enumerating ids, so a future
  * gpt-5.6 (or whatever) doesn't silently bypass the mitigation. Detection
  * itself is cheap; the cost of missing a leak on a new model is not.
  */
@@ -220,7 +220,7 @@ export function detectHarmonyLeakInAssistantMessage(message: AssistantMessage): 
  * for auditing. Returns undefined when the tool is not recovery-eligible or
  * the truncation would leave nothing meaningful to dispatch.
  *
- * `providerPayload` is dropped from the recovered message: for Codex the
+ * `providerPayload` is dropped from the recovered message: for OpenAI code backend the
  * encrypted reasoning blob is opaque/signed and we cannot validate that it is
  * uncontaminated. The model re-reasons on the next turn.
  */

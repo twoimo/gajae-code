@@ -1,8 +1,8 @@
 /**
- * Claude Code project provider.
+ * Anthropic Code project provider.
  *
- * Supports project-local `.claude/` compatibility only. User-home Claude
- * directories are intentionally ignored so `~/.claude` content is never injected
+ * Supports project-local `.Anthropic model/` compatibility only. User-home Anthropic model
+ * directories are intentionally ignored so `~/.Anthropic model` content is never injected
  * into GJC sessions.
  */
 import * as path from "node:path";

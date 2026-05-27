@@ -76,7 +76,7 @@ export function withHttpStatus(error: unknown, status: number): Error {
  * Must run AFTER finalizeErrorMessage since it replaces the message entirely.
  *
  * 400 `model_not_supported` = Copilot routing rollout gap for our OAuth client.
- *        A preview model (gpt-5.3-codex, gpt-5.4*, ...) flaps between 200 and
+ *        A preview model (gpt-5.3-OpenAI code backend, gpt-5.4*, ...) flaps between 200 and
  *        400 because only some of Copilot's backends have the model. After the
  *        in-request retry exhausts, surface guidance rather than the raw error.
  * 401 = token invalid/expired → credential removal is safe, prompt re-login.

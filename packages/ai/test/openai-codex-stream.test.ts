@@ -146,11 +146,11 @@ const DEFAULT_USAGE = {
 };
 
 /**
- * Drop-in mock for the global `WebSocket` used by the codex websocket transport.
+ * Drop-in mock for the global `WebSocket` used by the OpenAI code backend websocket transport.
  *
  * Production code wires lifecycle handlers via `onopen`/`onmessage`/`onerror`/`onclose`
  * properties; tests drive the connection by calling `emit()`, `scheduleOpen()`,
- * `sendJson()`, or the `emitCodexResponse()` convenience.
+ * `sendJson()`, or the `emitOpenAI code backendResponse()` convenience.
  */
 class MockWebSocket {
 	static readonly CONNECTING = 0;
@@ -201,7 +201,7 @@ class MockWebSocket {
 		this.sendMessage(JSON.stringify(payload));
 	}
 
-	/** Emit the standard Codex completed-response sequence. */
+	/** Emit the standard OpenAI code backend completed-response sequence. */
 	emitCodexResponse(opts: {
 		messageId: string;
 		responseId: string;

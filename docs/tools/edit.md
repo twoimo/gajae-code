@@ -97,7 +97,7 @@ Warnings:
 - `hashline` — default mode; line-anchored patch language described here (`packages/coding-agent/src/utils/edit-mode.ts`).
 - `replace` — exact/fuzzy old/new text replacement (`packages/coding-agent/src/edit/modes/replace.ts`).
 - `patch` — structured JSON diff-hunk mode (`packages/coding-agent/src/edit/modes/patch.ts`).
-- `apply_patch` — freeform Codex-style `*** Begin Patch` envelope, internally expanded into patch-mode entries (`packages/coding-agent/src/edit/modes/apply-patch.ts`).
+- `apply_patch` — freeform patch-envelope `*** Begin Patch` envelope, internally expanded into patch-mode entries (`packages/coding-agent/src/edit/modes/apply-patch.ts`).
 - `vim` — persistent modal editing buffer (`packages/coding-agent/src/tools/vim.ts`).
 
 Hashline op examples:
@@ -217,7 +217,7 @@ export const done = true;
 - `computeLineHash()` trims trailing whitespace before hashing. Anchors survive line-ending changes and trailing-space-only changes, but not substantive line edits.
 - For punctuation-only lines, the hash mixes in the line number; identical `}` lines on different lines intentionally get different anchors.
 - `splitHashlineInputs()` normalizes absolute `§PATH` headers back to a cwd-relative path when the file is inside the current working tree. Headers with any run of leading `§` chars (e.g. `§foo.ts`, `§§foo.ts`, `§§§foo.ts`) are accepted; the canonical form is `§PATH`.
-- Optional `*** Begin Patch` / `*** End Patch` markers are accepted in hashline mode, but the file sections are still `§PATH`-based, not Codex `*** Update File:` hunks.
+- Optional `*** Begin Patch` / `*** End Patch` markers are accepted in hashline mode, but the file sections are still `§PATH`-based, not OpenAI code `*** Update File:` hunks.
 - `*** Abort` terminates parsing early and returns `ABORT_WARNING`; ops parsed before the marker still apply.
 - File-read cache invalidation is conflict-based, not write-through invalidation. If `read` later records content for a line that disagrees with the cached snapshot, the entire snapshot for that path is replaced with the newly observed lines (`packages/coding-agent/src/edit/file-read-cache.ts`).
 - There is no resolve-style apply/discard phase for hashline edits. The only preview path is the transient TUI diff preview in `packages/coding-agent/src/edit/streaming.ts`.

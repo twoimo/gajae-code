@@ -1,7 +1,7 @@
 /**
  * Google Gemini CLI / Antigravity provider.
  * Shared implementation for both google-gemini-cli and google-antigravity providers.
- * Uses the Cloud Code Assist API endpoint to access Gemini and Claude models.
+ * Uses the Cloud Code Assist API endpoint to access Gemini and Anthropic model models.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";

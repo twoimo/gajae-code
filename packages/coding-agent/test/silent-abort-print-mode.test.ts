@@ -1,7 +1,7 @@
 /**
  * Regression: print-mode must not write SILENT_ABORT_MARKER to stderr.
  *
- * Codex review flagged that `print-mode.ts` renders `errorMessage` verbatim
+ * OpenAI code backend review flagged that `print-mode.ts` renders `errorMessage` verbatim
  * when stopReason is "aborted", which would surface the sentinel to stderr
  * (and exit with code 1). This test verifies the guard skips silent-abort.
  */

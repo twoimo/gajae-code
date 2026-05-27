@@ -66,7 +66,7 @@ export function substituteArgs(content: string, args: string[]): string {
 	// Pre-compute all args joined (optimization)
 	const allArgs = args.join(" ");
 
-	// Replace $ARGUMENTS with all args joined (new syntax, aligns with Claude, Codex, OpenCode)
+	// Replace $ARGUMENTS with all args joined (new syntax, aligns with Anthropic model, OpenAI code backend, OpenCode)
 	result = result.replaceAll("$ARGUMENTS", allArgs);
 
 	// Replace $@ with all args joined (existing syntax)

@@ -24,7 +24,7 @@ export interface ResizedImage {
 const DEFAULT_MAX_BYTES = 500 * 1024;
 
 const DEFAULT_OPTIONS: Required<Omit<ImageResizeOptions, "excludeWebP">> = {
-	// Anthropic's "internal recommended size" — Claude internally caps images at
+	// Anthropic's "internal recommended size" — Anthropic model internally caps images at
 	// 1568px on the longest edge before vision processing.
 	maxWidth: 1568,
 	maxHeight: 1568,

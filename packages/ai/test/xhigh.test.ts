@@ -18,7 +18,7 @@ function makeContext(): Context {
 
 describe.skipIf(!e2eApiKey("OPENAI_API_KEY"))("xhigh reasoning", () => {
 	describe("codex-max (supports xhigh)", () => {
-		// Note: codex models only support the responses API, not chat completions
+		// Note: OpenAI code backend models only support the responses API, not chat completions
 		it("should work with openai-responses", async () => {
 			const model = getBundledModel("openai", "gpt-5.1-codex-max");
 			const s = stream(model, makeContext(), { reasoning: "xhigh" });

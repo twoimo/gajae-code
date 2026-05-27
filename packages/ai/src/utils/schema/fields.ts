@@ -113,7 +113,7 @@ export const NON_STRUCTURAL_SCHEMA_KEYS: Record<string, true> = {
 
 /**
  * Cloud Code Assist type-specific allowed keys per JSON Schema type.
- * Used when collapsing mixed-type combiner variants for CCA Claude.
+ * Used when collapsing mixed-type combiner variants for CCA Anthropic model.
  */
 export const CLOUD_CODE_ASSIST_TYPE_SPECIFIC_KEYS: Record<string, Record<string, true>> = {
 	array: {
@@ -175,7 +175,7 @@ export const CLOUD_CODE_ASSIST_SHARED_SCHEMA_KEYS: Record<string, true> = {
 export const COMBINATOR_KEYS = ["anyOf", "allOf", "oneOf"] as const;
 
 /**
- * Cloud Code Assist Claude unsupported schema fields.
+ * Cloud Code Assist Anthropic model unsupported schema fields.
  * Much smaller than UNSUPPORTED_SCHEMA_FIELDS (Google) because CCA supports
  * validation keywords like additionalProperties, minLength, pattern, etc.
  * Meta/reference keywords plus object-key validators that CCA cannot resolve are stripped.

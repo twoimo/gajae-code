@@ -115,7 +115,7 @@ export interface AgentOptions {
 
 	/**
 	 * Optional session identifier forwarded to LLM providers.
-	 * Used by providers that support session-based caching (e.g., OpenAI Codex).
+	 * Used by providers that support session-based caching (e.g., OpenAI code provider).
 	 */
 	sessionId?: string;
 	/**

@@ -14768,12 +14768,12 @@ export enum PackageType {
 	CURSOR_PERSONAL = 2,
 
 	/**
-	 * @generated from enum value: PACKAGE_TYPE_CLAUDE_SKILL = 3;
+	 * @generated from enum value: PACKAGE_TYPE_ANTHROPIC_MODEL_SKILL = 3;
 	 */
 	CLAUDE_SKILL = 3,
 
 	/**
-	 * @generated from enum value: PACKAGE_TYPE_CLAUDE_PLUGIN = 4;
+	 * @generated from enum value: PACKAGE_TYPE_ANTHROPIC_MODEL_PLUGIN = 4;
 	 */
 	CLAUDE_PLUGIN = 4,
 }

@@ -4,7 +4,7 @@ import type { AssistantMessage, Model, ToolResultMessage, UserMessage } from "@g
 
 /**
  * Issue #814: Z.AI returns 500
- * "'ClaudeContentBlockToolResult' object has no attribute 'id'" on every
+ * "'Anthropic modelContentBlockToolResult' object has no attribute 'id'" on every
  * request that contains a tool_result block.
  *
  * Z.AI's Python proxy at api.z.ai/api/anthropic deserializes tool_result

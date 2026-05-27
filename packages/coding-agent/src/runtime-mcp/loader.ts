@@ -98,7 +98,7 @@ export async function discoverAndLoadMCPTools(cwd: string, options?: MCPToolsLoa
 			connection?._source?.providerName ?? source?.providerName ?? connection?._source?.provider ?? source?.provider;
 
 		// Format path with provider info if available
-		// Format: "mcp:serverName via providerName" (e.g., "mcp:agentx via Claude Code")
+		// Format: "mcp:serverName via providerName" (e.g., "mcp:agentx via Anthropic Code")
 		const path = serverName && providerName ? `mcp:${serverName} via ${providerName}` : `mcp:${tool.name}`;
 
 		return {

@@ -176,8 +176,8 @@ export type CacheRetention = "none" | "short" | "long";
  * They let users opt into priority on one family without paying premium
  * costs on the other when switching models mid-session.
  *
- * - `"openai-only"` → `"priority"` on `openai` and `openai-codex`; ignored elsewhere.
- * - `"claude-only"` → `"priority"` on direct `anthropic` (not Bedrock/Vertex Claude).
+ * - `"openai-only"` → `"priority"` on `openai` and `OpenAI code provider`; ignored elsewhere.
+ * - `"Anthropic model-only"` → `"priority"` on direct `anthropic` (not Bedrock/Vertex Anthropic model).
  */
 export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "openai-only" | "claude-only";
 
@@ -867,7 +867,7 @@ export interface Model<TApi extends Api = any> {
 			? AnthropicCompat
 			: never;
 	/**
-	 * Which shape to use when exposing the Codex `apply_patch` tool to this model.
+	 * Which shape to use when exposing the OpenAI code backend `apply_patch` tool to this model.
 	 * Generated catalog policy sets `"freeform"` for first-party GPT-5 Responses
 	 * models that support OpenAI custom tools with a Lark grammar. The freeform
 	 * variant sends a raw patch string with no JSON envelope.
@@ -877,7 +877,7 @@ export interface Model<TApi extends Api = any> {
 	/**
 	 * Force OAuth-style request shaping for providers whose API key prefix doesn't
 	 * match an OAuth token (e.g. routing Anthropic traffic through a proxy that
-	 * expects Claude Code framing). When true, the streaming layer sets
+	 * expects Anthropic Code framing). When true, the streaming layer sets
 	 * `options.isOAuth = true` for the underlying provider call.
 	 */
 	isOAuth?: boolean;

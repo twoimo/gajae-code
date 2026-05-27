@@ -4,7 +4,7 @@ Gajae-Code (`gjc`) is a minimal coding-agent harness with a deliberately fixed p
 
 ## Story
 
-I created `oh-my-codex` and `oh-my-claudecode`. After living with those harnesses, I felt the same thing kept happening: the harness got bloated, but the work still collapsed into one useful loop.
+I created an earlier OpenAI code harness and `an earlier Anthropic-code harness`. After living with those harnesses, I felt the same thing kept happening: the harness got bloated, but the work still collapsed into one useful loop.
 
 My claw, Gajae, and I realized the real method was:
 

@@ -834,7 +834,7 @@ export class AcpAgent implements Agent {
 
 	async extMethod(method: string, params: { [key: string]: unknown }): Promise<{ [key: string]: unknown }> {
 		switch (method) {
-			case "_omp/sessions/listAll": {
+			case "_gjc/sessions/listAll": {
 				const limit = typeof params.limit === "number" ? Math.max(1, Math.min(5000, params.limit as number)) : 1000;
 				const sessions = await SessionManager.listAll();
 				const sorted = sessions.sort((l, r) => r.modified.getTime() - l.modified.getTime()).slice(0, limit);
@@ -843,7 +843,7 @@ export class AcpAgent implements Agent {
 					total: sessions.length,
 				};
 			}
-			case "_omp/projects/list": {
+			case "_gjc/projects/list": {
 				const sessions = await SessionManager.listAll();
 				const buckets = new Map<
 					string,
@@ -871,7 +871,7 @@ export class AcpAgent implements Agent {
 				const projects = Array.from(buckets.values()).sort((a, b) => b.lastActivityAt - a.lastActivityAt);
 				return { projects, totalSessions: sessions.length };
 			}
-			case "_omp/chats/byCwd": {
+			case "_gjc/chats/byCwd": {
 				const cwd = typeof params.cwd === "string" ? (params.cwd as string) : undefined;
 				if (!cwd) throw new Error("cwd required");
 				const limit = typeof params.limit === "number" ? Math.max(1, Math.min(500, params.limit as number)) : 100;
@@ -879,7 +879,7 @@ export class AcpAgent implements Agent {
 				const sorted = sessions.sort((l, r) => r.modified.getTime() - l.modified.getTime()).slice(0, limit);
 				return { sessions: sorted.map(s => this.#toSessionInfo(s)) };
 			}
-			case "_omp/usage": {
+			case "_gjc/usage": {
 				const [firstRecord] = this.#sessions.values();
 				const target = firstRecord?.session ?? this.#initialSession;
 				if (!target) {
@@ -888,14 +888,14 @@ export class AcpAgent implements Agent {
 				const reports = await target.fetchUsageReports();
 				return { reports: reports ?? [] };
 			}
-			case "_omp/extensions": {
+			case "_gjc/extensions": {
 				const cwd = typeof params.cwd === "string" ? (params.cwd as string) : undefined;
 				const sm = await Settings.init();
 				const disabledIds = (sm.get("disabledExtensions") as string[] | undefined) ?? [];
 				const extensions = await loadAllExtensions(cwd, disabledIds);
 				return { extensions: extensions as unknown as Array<{ [key: string]: unknown }> };
 			}
-			case "_omp/extensions/toggle": {
+			case "_gjc/extensions/toggle": {
 				const providerId = params.providerId;
 				if (typeof providerId !== "string") throw new Error("providerId required");
 				if (params.enabled === false) {
