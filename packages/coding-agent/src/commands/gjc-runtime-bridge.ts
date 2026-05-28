@@ -170,7 +170,11 @@ export async function runGjcRuntimeBridgeWithHudSidecar(
 			const payload = await readHudPayload(sidecarPath, options.sidecarSkill);
 			if (!payload) return;
 			latestPayload = payload;
-			await options.onHudPayload?.(payload);
+			try {
+				await options.onHudPayload?.(payload);
+			} catch {
+				// HUD sync must remain best-effort and never change runtime command semantics.
+			}
 		};
 		try {
 			const child = spawn(command, [endpoint, ...args], {

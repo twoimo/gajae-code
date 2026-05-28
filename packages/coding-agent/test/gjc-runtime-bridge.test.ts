@@ -90,4 +90,27 @@ exit 7
 		expect(result.status).toBe(7);
 		expect(result.hudPayload?.hud.chips?.[0]?.value).toBe("critic");
 	});
+	it("keeps child status when HUD callback rejects", async () => {
+		cleanupRoot = await mkdtemp(join(tmpdir(), "gjc-runtime-bridge-"));
+		const runtimePath = join(cleanupRoot, "gjc-runtime.sh");
+		await writeFile(
+			runtimePath,
+			`#!/bin/sh
+printf '{"version":1,"skill":"ralplan","phase":"critic","hud":{"version":1,"chips":[{"label":"stage","value":"critic"}]}}' > "$GJC_WORKFLOW_HUD_SIDECAR"
+`,
+			{ mode: 0o755 },
+		);
+
+		const result = await runGjcRuntimeBridgeWithHudSidecar("ralplan", [], {
+			env: { GJC_RUNTIME_BINARY: runtimePath, PATH: "" },
+			sidecarSkill: "ralplan",
+			pollIntervalMs: 25,
+			onHudPayload: () => {
+				throw new Error("boom");
+			},
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.hudPayload?.phase).toBe("critic");
+	});
 });

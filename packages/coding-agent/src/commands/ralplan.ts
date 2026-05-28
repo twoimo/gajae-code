@@ -18,7 +18,7 @@ export default class Ralplan extends Command {
 					skill: "ralplan",
 					active: payload.active ?? true,
 					phase: payload.phase,
-					sessionId: payload.session_id,
+					sessionId: payload.session_id ?? process.env.GJC_SESSION_ID,
 					threadId: payload.thread_id,
 					turnId: payload.turn_id,
 					hud: payload.hud,

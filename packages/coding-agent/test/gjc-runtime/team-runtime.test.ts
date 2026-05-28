@@ -537,6 +537,24 @@ describe("native gjc team runtime", () => {
 		expect(stopped.phase).toBe("complete");
 		expect(stopped.workers[0]?.status).toBe("stopped");
 	});
+	it("hydrates live worker status into snapshots and preserves leader cwd", async () => {
+		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-team-runtime-"));
+		const snapshot = await startGjcTeam({
+			workerCount: 1,
+			agentType: "executor",
+			task: "Hydrate worker status",
+			teamName: "status-hydration-team",
+			cwd: cleanupRoot,
+			dryRun: true,
+			env: { PATH: "" },
+		});
+		await writeWorkerStatus(snapshot.state_dir, "worker-1", "blocked");
+
+		const hydrated = await readGjcTeamSnapshot("status-hydration-team", cleanupRoot, { PATH: "" });
+
+		expect(hydrated.leader_cwd).toBe(cleanupRoot);
+		expect(hydrated.workers[0]?.status).toBe("blocked");
+	});
 
 	it("allows only one worker to claim a task under concurrent claim attempts", async () => {
 		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-team-runtime-"));

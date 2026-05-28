@@ -24,7 +24,7 @@ async function syncTeamHud(snapshot: GjcTeamSnapshot): Promise<void> {
 	try {
 		const events = await readGjcTeamEvents(snapshot.team_name);
 		await syncSkillActiveState({
-			cwd: process.cwd(),
+			cwd: snapshot.leader_cwd,
 			skill: "team",
 			active: snapshot.phase !== "complete" && snapshot.phase !== "cancelled",
 			phase: snapshot.phase,

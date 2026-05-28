@@ -28,7 +28,7 @@ export interface GjcTeamWorker {
 	agent_type: string;
 	role: string;
 	pane_id?: string;
-	status: "starting" | "idle" | "busy" | "stopped";
+	status: "starting" | "idle" | "busy" | "blocked" | "failed" | "stopped" | "unknown";
 	last_heartbeat: string;
 	assigned_tasks: string[];
 	worktree_repo_root?: string;
@@ -124,6 +124,7 @@ export interface GjcTeamSnapshot {
 	display_name: string;
 	phase: GjcTeamPhase;
 	state_dir: string;
+	leader_cwd: string;
 	tmux_session: string;
 	tmux_session_name: string;
 	tmux_target: string;
@@ -1401,6 +1402,45 @@ export async function startGjcTeam(options: GjcTeamStartOptions): Promise<GjcTea
 	return readGjcTeamSnapshot(teamName, cwd, env);
 }
 
+function mapWorkerStatusState(
+	state: GjcWorkerStatusState | undefined,
+	fallback: GjcTeamWorker["status"],
+): GjcTeamWorker["status"] {
+	switch (state) {
+		case "working":
+		case "draining":
+			return "busy";
+		case "blocked":
+			return "blocked";
+		case "failed":
+			return "failed";
+		case "done":
+			return "stopped";
+		case "idle":
+			return "idle";
+		case "unknown":
+			return "unknown";
+		default:
+			return fallback;
+	}
+}
+
+async function hydrateLiveWorkerStates(dir: string, workers: GjcTeamWorker[]): Promise<GjcTeamWorker[]> {
+	return await Promise.all(
+		workers.map(async worker => {
+			if (worker.status === "stopped") return worker;
+			const status = await readJsonFile<WorkerStatusFile>(path.join(workerDir(dir, worker.id), "status.json"));
+			return status
+				? {
+						...worker,
+						status: mapWorkerStatusState(status.state, worker.status),
+						last_heartbeat: status.updated_at || worker.last_heartbeat,
+					}
+				: worker;
+		}),
+	);
+}
+
 export async function readGjcTeamSnapshot(
 	teamName: string,
 	cwd = process.cwd(),
@@ -1419,17 +1459,19 @@ export async function readGjcTeamSnapshot(
 	};
 	for (const task of tasks) taskCounts[task.status] += 1;
 	const monitor = await readJsonFile<GjcTeamMonitorSnapshot>(monitorSnapshotPath(dir));
+	const workers = await hydrateLiveWorkerStates(dir, config.workers);
 	return {
 		team_name: config.team_name,
 		display_name: config.display_name,
 		phase,
 		state_dir: dir,
+		leader_cwd: config.leader_cwd,
 		tmux_session: config.tmux_session,
 		tmux_session_name: config.tmux_session_name,
 		tmux_target: config.tmux_target,
 		task_total: tasks.length,
 		task_counts: taskCounts,
-		workers: config.workers,
+		workers,
 		integration_by_worker: monitor?.integration_by_worker,
 		updated_at: config.updated_at,
 	};
