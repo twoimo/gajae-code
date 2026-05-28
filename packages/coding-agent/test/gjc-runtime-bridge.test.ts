@@ -137,4 +137,32 @@ printf '{"version":1,"skill":"ralplan","phase":"critic","hud":{"version":1,"chip
 		expect(result.status).toBe(0);
 		expect(result.hudPayload?.phase).toBe("critic");
 	});
+	it("serializes HUD publishes so older delayed callbacks cannot overwrite newer payloads", async () => {
+		cleanupRoot = await mkdtemp(join(tmpdir(), "gjc-runtime-bridge-"));
+		const runtimePath = join(cleanupRoot, "ordered-gjc-runtime.sh");
+		await writeFile(
+			runtimePath,
+			`#!/bin/sh
+printf '{"version":1,"skill":"ralplan","phase":"planner","hud":{"version":1,"chips":[{"label":"stage","value":"planner"}]}}' > "$GJC_WORKFLOW_HUD_SIDECAR"
+/bin/sleep 0.02
+printf '{"version":1,"skill":"ralplan","phase":"critic","hud":{"version":1,"chips":[{"label":"stage","value":"critic"}]}}' > "$GJC_WORKFLOW_HUD_SIDECAR"
+`,
+			{ mode: 0o755 },
+		);
+		const writes: string[] = [];
+
+		const result = await runGjcRuntimeBridgeWithHudSidecar("ralplan", [], {
+			env: { GJC_RUNTIME_BINARY: runtimePath, PATH: "" },
+			sidecarSkill: "ralplan",
+			pollIntervalMs: 5,
+			onHudPayload: async payload => {
+				if (payload.phase === "planner") await Bun.sleep(80);
+				writes.push(payload.phase ?? "");
+			},
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.hudPayload?.phase).toBe("critic");
+		expect(writes).toEqual(["planner", "critic"]);
+	});
 });

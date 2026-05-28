@@ -158,23 +158,38 @@ export async function runGjcRuntimeBridgeWithHudSidecar(
 		const sidecarPath = path.join(sidecarDir, `${options.sidecarSkill}-${randomUUID()}.json`);
 		let latestPayload: WorkflowHudBridgePayload | undefined;
 		let lastRaw = "";
+		let publishQueued = false;
+		let publishInFlight: Promise<void> | null = null;
 		const publishPayload = async (): Promise<void> => {
-			let raw = "";
-			try {
-				raw = await Bun.file(sidecarPath).text();
-			} catch {
+			if (publishInFlight) {
+				publishQueued = true;
+				await publishInFlight;
 				return;
 			}
-			if (!raw || raw === lastRaw) return;
-			lastRaw = raw;
-			const payload = await readHudPayload(sidecarPath, options.sidecarSkill);
-			if (!payload) return;
-			latestPayload = payload;
-			try {
-				await options.onHudPayload?.(payload);
-			} catch {
-				// HUD sync must remain best-effort and never change runtime command semantics.
-			}
+			publishInFlight = (async () => {
+				do {
+					publishQueued = false;
+					let raw = "";
+					try {
+						raw = await Bun.file(sidecarPath).text();
+					} catch {
+						return;
+					}
+					if (!raw || raw === lastRaw) continue;
+					lastRaw = raw;
+					const payload = await readHudPayload(sidecarPath, options.sidecarSkill);
+					if (!payload) continue;
+					latestPayload = payload;
+					try {
+						await options.onHudPayload?.(payload);
+					} catch {
+						// HUD sync must remain best-effort and never change runtime command semantics.
+					}
+				} while (publishQueued);
+			})().finally(() => {
+				publishInFlight = null;
+			});
+			await publishInFlight;
 		};
 		try {
 			const child = spawn(command, [endpoint, ...args], {
