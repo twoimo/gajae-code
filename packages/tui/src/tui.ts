@@ -574,7 +574,7 @@ export class TUI extends Container {
 			this.#renderTimer = undefined;
 		}
 		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
-		if (this.#previousLines.length > 0) {
+		if (this.terminal.isDead !== true && this.#previousLines.length > 0) {
 			const targetRow = this.#previousLines.length; // Line after the last content
 			const lineDiff = targetRow - this.#hardwareCursorRow;
 			if (lineDiff > 0) {
@@ -585,7 +585,7 @@ export class TUI extends Container {
 			this.terminal.write("\r\n");
 		}
 
-		this.terminal.showCursor();
+		if (this.terminal.isDead !== true) this.terminal.showCursor();
 		this.terminal.stop();
 	}
 
@@ -1040,7 +1040,7 @@ export class TUI extends Container {
 	}
 
 	#doRender(): void {
-		if (this.#stopped) return;
+		if (this.#stopped || this.terminal.isDead === true) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		let viewportTop = Math.max(0, this.#maxLinesRendered - height);

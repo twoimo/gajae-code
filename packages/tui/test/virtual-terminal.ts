@@ -15,6 +15,7 @@ export class VirtualTerminal implements Terminal {
 	#writeLog: string[] = [];
 	private _columns: number;
 	private _rows: number;
+	#dead = false;
 
 	constructor(columns = 80, rows = 24) {
 		this._columns = columns;
@@ -28,6 +29,10 @@ export class VirtualTerminal implements Terminal {
 			disableStdin: true,
 			allowProposedApi: true,
 		});
+	}
+
+	get isDead(): boolean {
+		return this.#dead;
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void): void {

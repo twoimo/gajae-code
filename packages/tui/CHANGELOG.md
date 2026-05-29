@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Suppressed uncaught TUI render writes after stdout/PTY write failures such as `EIO`, marking the terminal unavailable and skipping follow-up render/cleanup writes when the PTY has disappeared.
+
 ## [0.2.0] - 2026-05-28
 
 ### Changed

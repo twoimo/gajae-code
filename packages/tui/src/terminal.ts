@@ -50,6 +50,9 @@ export function emergencyTerminalRestore(): void {
 /** Terminal-reported appearance (dark/light mode). */
 export type TerminalAppearance = "dark" | "light";
 export interface Terminal {
+	// Whether terminal writes have failed and future rendering should be skipped
+	readonly isDead?: boolean;
+
 	// Start the terminal with input and resize handlers
 	start(onInput: (data: string) => void, onResize: () => void): void;
 
@@ -132,6 +135,11 @@ export class ProcessTerminal implements Terminal {
 	#osc11PollTimer?: Timer;
 	#mode2031DebounceTimer?: Timer;
 	#progressTimer?: ReturnType<typeof setInterval>;
+	#stdoutErrorHandler?: (error: Error) => void;
+
+	get isDead(): boolean {
+		return this.#dead;
+	}
 
 	get kittyProtocolActive(): boolean {
 		return this.#kittyProtocolActive;
@@ -152,6 +160,8 @@ export class ProcessTerminal implements Terminal {
 		// Register for emergency cleanup
 		activeTerminal = this;
 		terminalEverStarted = true;
+		this.#dead = false;
+		this.#installStdoutErrorHandler();
 
 		// Save previous state and enable raw mode
 		this.#wasRaw = process.stdin.isRaw || false;
@@ -621,6 +631,8 @@ export class ProcessTerminal implements Terminal {
 		if (process.stdin.setRawMode) {
 			process.stdin.setRawMode(this.#wasRaw);
 		}
+
+		this.#removeStdoutErrorHandler();
 	}
 
 	write(data: string): void {
@@ -639,13 +651,48 @@ export class ProcessTerminal implements Terminal {
 		// Skip control sequences when stdout isn't a TTY (piped output, tests, log
 		// files). They serve no purpose there and would surface as visible noise.
 		if (!process.stdout.isTTY) return;
-		try {
-			process.stdout.write(data);
-		} catch (err) {
-			// Any write failure means terminal is dead - no recovery possible
-			this.#dead = true;
-			logger.warn("terminal is dead - no recovery possible", { error: err, data });
+		if (this.#isStdoutClosed()) {
+			this.#markDead(new Error("stdout is closed"));
+			return;
 		}
+		try {
+			process.stdout.write(data, err => {
+				if (err) this.#markDead(err, data);
+			});
+		} catch (err) {
+			this.#markDead(err, data);
+		}
+	}
+
+	#installStdoutErrorHandler(): void {
+		this.#removeStdoutErrorHandler();
+		this.#stdoutErrorHandler = error => {
+			this.#markDead(error);
+		};
+		process.stdout.on("error", this.#stdoutErrorHandler);
+	}
+
+	#removeStdoutErrorHandler(): void {
+		if (!this.#stdoutErrorHandler) return;
+		process.stdout.removeListener("error", this.#stdoutErrorHandler);
+		this.#stdoutErrorHandler = undefined;
+	}
+
+	#isStdoutClosed(): boolean {
+		const stream = process.stdout as NodeJS.WriteStream & { writableEnded?: boolean; writableDestroyed?: boolean };
+		return stream.destroyed || stream.writableEnded === true || stream.writableDestroyed === true;
+	}
+
+	#markDead(error: unknown, data?: string): void {
+		if (this.#dead) return;
+		this.#dead = true;
+		this.#stopOsc11Poll();
+		this.#clearProgressTimer();
+		if (this.#mode2031DebounceTimer) {
+			clearTimeout(this.#mode2031DebounceTimer);
+			this.#mode2031DebounceTimer = undefined;
+		}
+		logger.warn("terminal output is unavailable; suppressing further TUI writes", { error, data });
 	}
 
 	get columns(): number {
