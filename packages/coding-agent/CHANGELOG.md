@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `gjc session` for listing, inspecting, removing, and attaching GJC-managed tmux sessions.
+
+### Changed
+
+- Changed `gjc --tmux` startup to create a fresh GJC-managed tmux session instead of attaching to an existing default session.
 ## [0.2.1] - 2026-05-30
 
 ### Fixed

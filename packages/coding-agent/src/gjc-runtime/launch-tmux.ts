@@ -1,12 +1,30 @@
 import * as path from "node:path";
 import type { Args } from "../cli/args";
+import {
+	buildGjcTmuxProfileCommands,
+	buildGjcTmuxSessionName,
+	buildGjcTmuxSessionSlug,
+	GJC_DEFAULT_TMUX_SESSION,
+	GJC_TMUX_COMMAND_ENV,
+	GJC_TMUX_MOUSE_ENV,
+	GJC_TMUX_PROFILE_ENV,
+	GJC_TMUX_SESSION_PREFIX,
+	type GjcTmuxProfileCommand,
+	resolveGjcTmuxCommand,
+} from "./tmux-common";
+import { findGjcTmuxSessionByBranch } from "./tmux-sessions";
 
-export const GJC_DEFAULT_TMUX_SESSION = "gajae_code";
+export {
+	buildGjcTmuxProfileCommands,
+	GJC_DEFAULT_TMUX_SESSION,
+	GJC_TMUX_COMMAND_ENV,
+	GJC_TMUX_MOUSE_ENV,
+	GJC_TMUX_PROFILE_ENV,
+	GJC_TMUX_SESSION_PREFIX,
+};
+
 export const GJC_TMUX_LAUNCHED_ENV = "GJC_TMUX_LAUNCHED";
 export const GJC_LAUNCH_POLICY_ENV = "GJC_LAUNCH_POLICY";
-export const GJC_TMUX_COMMAND_ENV = "GJC_TMUX_COMMAND";
-export const GJC_TMUX_PROFILE_ENV = "GJC_TMUX_PROFILE";
-export const GJC_TMUX_MOUSE_ENV = "GJC_MOUSE";
 
 type LaunchPolicy = "direct" | "tmux";
 
@@ -26,6 +44,10 @@ export interface TmuxLaunchContext {
 	tty?: TtyState;
 	spawnSync?: TmuxSpawnSync;
 	tmuxAvailable?: boolean;
+	worktreeBranch?: string | null;
+	currentBranch?: string | null;
+	existingBranchSessionName?: string | null;
+	project?: string | null;
 }
 
 export interface TmuxSpawnResult {
@@ -50,12 +72,9 @@ export interface TmuxLaunchPlan {
 	cwd: string;
 	innerCommand: string;
 	newSessionArgs: string[];
-	attachSessionArgs: string[];
-}
-
-export interface GjcTmuxProfileCommand {
-	description: string;
-	args: string[];
+	branch?: string | null;
+	attachSessionName?: string;
+	project?: string | null;
 }
 
 export interface GjcTmuxProfileResult {
@@ -70,6 +89,9 @@ export interface GjcTmuxProfileContext {
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
 	spawnSync?: TmuxSpawnSync;
+	branch?: string | null;
+	branchSlug?: string | null;
+	project?: string | null;
 }
 
 interface CommandResolutionContext {
@@ -103,35 +125,14 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function envDisabled(value: string | undefined): boolean {
-	const normalized = value?.trim().toLowerCase();
-	return normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no";
-}
-
-export function buildGjcTmuxProfileCommands(
-	target: string,
-	env: NodeJS.ProcessEnv = process.env,
-): GjcTmuxProfileCommand[] {
-	if (envDisabled(env[GJC_TMUX_PROFILE_ENV])) return [];
-	const commands: GjcTmuxProfileCommand[] = [
-		{ description: "mark GJC tmux ownership", args: ["set-option", "-t", target, "@gjc-profile", "1"] },
-		{ description: "enable tmux clipboard integration", args: ["set-option", "-t", target, "set-clipboard", "on"] },
-		{
-			description: "make copy-mode selection readable",
-			args: ["set-window-option", "-t", target, "mode-style", "fg=colour231,bg=colour60"],
-		},
-	];
-	if (!envDisabled(env[GJC_TMUX_MOUSE_ENV]))
-		commands.unshift({
-			description: "enable tmux mouse scrolling",
-			args: ["set-option", "-t", target, "mouse", "on"],
-		});
-	return commands;
-}
-
 export function applyGjcTmuxProfile(context: GjcTmuxProfileContext): GjcTmuxProfileResult {
 	const env = context.env ?? process.env;
-	const commands = buildGjcTmuxProfileCommands(context.target, env);
+	const branchSlug = context.branch ? buildGjcTmuxSessionSlug(context.branch) : (context.branchSlug ?? null);
+	const commands = buildGjcTmuxProfileCommands(context.target, env, {
+		branch: context.branch ?? null,
+		branchSlug,
+		project: context.project ?? null,
+	});
 	if (commands.length === 0) return { skipped: true, commands: [], failures: [] };
 	const spawnSync = context.spawnSync ?? defaultSpawnSync;
 	const cwd = context.cwd ?? process.cwd();
@@ -160,6 +161,25 @@ function buildInnerCommand(context: CommandResolutionContext, rawArgs: string[])
 	return `exec env ${GJC_TMUX_LAUNCHED_ENV}=1 ${quoted}`;
 }
 
+function readCurrentBranch(cwd: string): string | null {
+	try {
+		const result = Bun.spawnSync(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], {
+			cwd,
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		if (result.exitCode !== 0) return null;
+		const branch = result.stdout.toString().trim();
+		return branch || null;
+	} catch {
+		return null;
+	}
+}
+
+function cleanupCreatedTmuxSession(plan: TmuxLaunchPlan, spawnSync: TmuxSpawnSync, options: TmuxSpawnOptions): void {
+	spawnSync(plan.tmuxCommand, ["kill-session", "-t", `=${plan.sessionName}`], options);
+}
+
 export function buildDefaultTmuxLaunchPlan(context: TmuxLaunchContext): TmuxLaunchPlan | undefined {
 	const env = context.env ?? process.env;
 	const policy = parseLaunchPolicy(env);
@@ -171,10 +191,18 @@ export function buildDefaultTmuxLaunchPlan(context: TmuxLaunchContext): TmuxLaun
 	if (policy === "tmux" && !isInteractiveRootLaunch(context.parsed, tty)) return undefined;
 
 	const cwd = context.cwd ?? process.cwd();
-	const sessionName = env.GJC_TMUX_SESSION?.trim() || GJC_DEFAULT_TMUX_SESSION;
-	const tmuxCommand = env[GJC_TMUX_COMMAND_ENV]?.trim() || "tmux";
+	const branch = context.worktreeBranch ?? context.currentBranch ?? readCurrentBranch(cwd);
+	const project = context.project ?? cwd;
+	const sessionName = buildGjcTmuxSessionName(env, { branch });
+	const tmuxCommand = resolveGjcTmuxCommand(env);
 	const tmuxAvailable = context.tmuxAvailable ?? Bun.which(tmuxCommand) !== null;
 	if (!tmuxAvailable) return undefined;
+	const existingBranchSessionName =
+		"existingBranchSessionName" in context
+			? (context.existingBranchSessionName ?? undefined)
+			: context.worktreeBranch
+				? findGjcTmuxSessionByBranch(context.worktreeBranch, env, project)?.name
+				: undefined;
 	const innerCommand = buildInnerCommand(
 		{
 			cwd,
@@ -189,7 +217,9 @@ export function buildDefaultTmuxLaunchPlan(context: TmuxLaunchContext): TmuxLaun
 		cwd,
 		innerCommand,
 		newSessionArgs: ["new-session", "-d", "-s", sessionName, "-c", cwd, innerCommand],
-		attachSessionArgs: ["attach-session", "-t", sessionName],
+		branch,
+		project,
+		attachSessionName: existingBranchSessionName,
 	};
 }
 
@@ -217,17 +247,27 @@ export function launchDefaultTmuxIfNeeded(context: TmuxLaunchContext): boolean {
 		stdout: "inherit",
 		stderr: "inherit",
 	};
+	if (plan.attachSessionName) {
+		const attached = spawnSync(plan.tmuxCommand, ["attach-session", "-t", `=${plan.attachSessionName}`], options);
+		return attached.exitCode === 0;
+	}
 	const created = spawnSync(plan.tmuxCommand, plan.newSessionArgs, options);
 	if (created.exitCode === 0) {
-		applyGjcTmuxProfile({
+		const profile = applyGjcTmuxProfile({
 			tmuxCommand: plan.tmuxCommand,
 			target: plan.sessionName,
 			cwd: plan.cwd,
 			env,
 			spawnSync,
+			branch: plan.branch,
+			project: plan.project,
 		});
+		if (profile.failures.length > 0) {
+			cleanupCreatedTmuxSession(plan, spawnSync, options);
+			return false;
+		}
 	}
-	const attached = spawnSync(plan.tmuxCommand, plan.attachSessionArgs, options);
-	if (created.exitCode === 0) return attached.exitCode === 0;
+	if (created.exitCode !== 0) return false;
+	const attached = spawnSync(plan.tmuxCommand, ["attach-session", "-t", plan.sessionName], options);
 	return attached.exitCode === 0;
 }
