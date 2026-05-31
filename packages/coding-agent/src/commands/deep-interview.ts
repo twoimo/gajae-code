@@ -1,31 +1,15 @@
 import { Command } from "@gajae-code/utils/cli";
-import { syncSkillActiveState } from "../skill-state/active-state";
-import { runGjcRuntimeBridgeWithHudSidecar } from "./gjc-runtime-bridge";
+import { runNativeDeepInterviewCommand } from "../gjc-runtime/deep-interview-runtime";
 
 export default class DeepInterview extends Command {
-	static description = "Run private GJC deep-interview bridge commands (requires GJC_RUNTIME_BINARY)";
+	static description = "Run native GJC deep-interview workflow";
 	static strict = false;
-	static examples = ["$ GJC_RUNTIME_BINARY=/path/to/private-runtime gjc deep-interview --help"];
+	static examples = ['$ gjc deep-interview --standard "<idea>"'];
 
 	async run(): Promise<void> {
-		const cwd = process.cwd();
-		const result = await runGjcRuntimeBridgeWithHudSidecar("deep-interview", this.argv, {
-			cwd,
-			sidecarSkill: "deep-interview",
-			onHudPayload: payload =>
-				syncSkillActiveState({
-					cwd,
-					skill: "deep-interview",
-					active: payload.active ?? true,
-					phase: payload.phase,
-					sessionId: payload.session_id,
-					threadId: payload.thread_id,
-					turnId: payload.turn_id,
-					hud: payload.hud,
-					source: "gjc-runtime-bridge",
-				}),
-		});
-		if (result.error) process.stderr.write(`${result.error}\n`);
+		const result = await runNativeDeepInterviewCommand(this.argv, process.cwd());
+		if (result.stdout) process.stdout.write(result.stdout);
+		if (result.stderr) process.stderr.write(result.stderr);
 		process.exitCode = result.status;
 	}
 }

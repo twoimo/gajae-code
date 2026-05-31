@@ -1,31 +1,19 @@
 import { Command } from "@gajae-code/utils/cli";
-import { syncSkillActiveState } from "../skill-state/active-state";
-import { runGjcRuntimeBridgeWithHudSidecar } from "./gjc-runtime-bridge";
+import { runNativeRalplanCommand } from "../gjc-runtime/ralplan-runtime";
 
 export default class Ralplan extends Command {
-	static description = "Run private GJC RALPLAN bridge commands (requires GJC_RUNTIME_BINARY)";
+	static description = "Run native GJC RALPLAN consensus planning workflow";
 	static strict = false;
-	static examples = ["$ GJC_RUNTIME_BINARY=/path/to/private-runtime gjc ralplan --help"];
+	static examples = [
+		'$ gjc ralplan "<task description>"',
+		'$ gjc ralplan --interactive --deliberate "<task description>"',
+		'$ gjc ralplan --write --stage planner --stage_n 1 --artifact "<markdown or path>"',
+	];
 
 	async run(): Promise<void> {
-		const cwd = process.cwd();
-		const result = await runGjcRuntimeBridgeWithHudSidecar("ralplan", this.argv, {
-			cwd,
-			sidecarSkill: "ralplan",
-			onHudPayload: payload =>
-				syncSkillActiveState({
-					cwd,
-					skill: "ralplan",
-					active: payload.active ?? true,
-					phase: payload.phase,
-					sessionId: payload.session_id,
-					threadId: payload.thread_id,
-					turnId: payload.turn_id,
-					hud: payload.hud,
-					source: "gjc-runtime-bridge",
-				}),
-		});
-		if (result.error) process.stderr.write(`${result.error}\n`);
+		const result = await runNativeRalplanCommand(this.argv, process.cwd());
+		if (result.stdout) process.stdout.write(result.stdout);
+		if (result.stderr) process.stderr.write(result.stderr);
 		process.exitCode = result.status;
 	}
 }

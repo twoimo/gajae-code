@@ -23,7 +23,7 @@ Ralplan is the consensus planning workflow. It triggers iterative planning with 
 - `--deliberate`: Forces deliberate mode for high-risk work. Adds pre-mortem (3 scenarios) and expanded test planning (unit/integration/e2e/observability). Without this flag, deliberate mode can still auto-enable when the request explicitly signals high risk (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage).
 - `--architect openai-code`: Use OpenAI code for the Architect pass when OpenAI code CLI is available. Otherwise, briefly note the fallback and keep the default GJC Architect review.
 - `--critic openai-code`: Use OpenAI code for the Critic pass when OpenAI code CLI is available. Otherwise, briefly note the fallback and keep the default GJC Critic review.
-- `--write --stage <type> --stage_n <N> --artifact <markdown file path or markdown string>`: Private-runtime artifact write path for ralplan stage outputs. Use this for Planner, Architect, Critic, revision, ADR, and final pending-approval plan artifacts instead of directly editing `.gjc/` files.
+- `--write --stage <type> --stage_n <N> --artifact <markdown file path or markdown string>`: Native artifact write path persisting Planner, Architect, Critic, revision, ADR, and final pending-approval plan markdown under `.gjc/plans/ralplan/<run-id>/`. Use this instead of editing `.gjc/` files directly.
 
 ## Usage with interactive mode
 
@@ -43,7 +43,7 @@ Planning artifacts and stage handoffs MUST be persisted through the ralplan CLI 
 gjc ralplan --write --stage <type> --stage_n <N> --artifact "markdown file path or markdown string"
 ```
 
-Use stage values that match the producer or artifact kind, such as `planner`, `architect`, `critic`, `revision`, `adr`, or `final`. Increment `--stage_n` for each consensus-loop pass. The `--artifact` value may be either a markdown file path prepared outside `.gjc/` for ingestion or the markdown content string itself. Direct `write`, `edit`, or `ast_edit` calls against `.gjc/specs`, `.gjc/plans`, `.gjc/state`, or any other `.gjc/` path are forbidden unless an explicit force override is active.
+Use stage values that match the producer or artifact kind, such as `planner`, `architect`, `critic`, `revision`, `adr`, or `final`. Increment `--stage_n` for each consensus-loop pass. The `--artifact` value may be either a markdown file path prepared outside `.gjc/` for ingestion or the markdown content string itself. The native `--write` handler persists markdown under `.gjc/plans/ralplan/<run-id>/stage-<NN>-<stage>.md`, maintains an `index.jsonl` audit log, and for `final` stages additionally writes a `pending-approval.md` copy. Direct `write`, `edit`, or `ast_edit` calls against `.gjc/specs`, `.gjc/plans`, `.gjc/state`, or any other `.gjc/` path are forbidden unless an explicit force override is active.
 
 This skill runs GJC planning in consensus mode for the provided arguments.
 

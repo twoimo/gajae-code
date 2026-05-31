@@ -282,7 +282,10 @@ function validateProviderConfiguration(
 		const requiresAuth =
 			mode === "runtime-register"
 				? !usesProviderCredentialChain && !config.apiKey && !config.oauthConfigured
-				: !usesProviderCredentialChain && !config.apiKey && !config.apiKeyEnv && (config.auth ?? "apiKey") !== "none";
+				: !usesProviderCredentialChain &&
+					!config.apiKey &&
+					!config.apiKeyEnv &&
+					(config.auth ?? "apiKey") !== "none";
 		if (requiresAuth) {
 			throw new Error(
 				mode === "runtime-register"

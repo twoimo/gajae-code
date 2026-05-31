@@ -211,7 +211,7 @@ Project executor override body.
 		}
 		expect(content).toContain("/skill:ralplan");
 		expect(content).toContain("/skill:team");
-		expect(content).toContain("private runtime bridge");
+		expect(content).toContain("`gjc ralplan` is a native CLI");
 		expect(content).toContain("Direct `.gjc/` file edits are forbidden");
 		expect(content).toContain("do not edit `.gjc/state` directly without force override");
 		expect(content).toContain("default `0.05`");

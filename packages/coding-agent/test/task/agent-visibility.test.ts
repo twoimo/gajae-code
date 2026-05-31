@@ -76,7 +76,7 @@ describe("task agent visibility", () => {
 		expect(unknownText).not.toContain("support_agent");
 	});
 
-	it("keeps hidden agents resolvable for private runtime calls", async () => {
+	it("keeps hidden agents resolvable for direct task invocations", async () => {
 		const hidden: AgentDefinition = {
 			name: "support_agent",
 			description: "Support agent",

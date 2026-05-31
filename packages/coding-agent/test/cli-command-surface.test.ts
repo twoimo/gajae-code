@@ -10,7 +10,7 @@ const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts"
 function extractRegisteredCommands(source: string): string[] {
 	const commandsBlock = source.match(/const commands: CommandEntry\[\] = \[([\s\S]*?)\];/);
 	if (!commandsBlock) return [];
-	return [...commandsBlock[1].matchAll(/\{ name: "([^"]+)"/g)].map(match => match[1]);
+	return [...commandsBlock[1].matchAll(/\bname:\s*"([^"]+)"/g)].map(match => match[1]);
 }
 
 describe("GJC public CLI command surface", () => {
@@ -18,7 +18,6 @@ describe("GJC public CLI command surface", () => {
 		const source = await Bun.file(cliEntry).text();
 		expect(extractRegisteredCommands(source)).toEqual([
 			"codex-native-hook",
-			"question",
 			"state",
 			"setup",
 			"skills",
@@ -32,7 +31,7 @@ describe("GJC public CLI command surface", () => {
 		]);
 	});
 
-	it("documents private bridge runtime requirements in command help", async () => {
+	it("documents the native CLI surface in command help", async () => {
 		for (const command of ["ralplan", "deep-interview", "state"]) {
 			const result = Bun.spawnSync(["bun", cliEntry, command, "--help"], {
 				cwd: repoRoot,
@@ -42,7 +41,8 @@ describe("GJC public CLI command surface", () => {
 			const output = `${result.stdout.toString()}\n${result.stderr.toString()}`;
 
 			expect(result.exitCode, output).toBe(0);
-			expect(output).toContain("GJC_RUNTIME_BINARY");
+			expect(output).not.toContain("GJC_RUNTIME_BINARY");
+			expect(output).not.toContain("private runtime");
 		}
 	});
 

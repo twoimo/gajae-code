@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import type { AgentMessage } from "@gajae-code/agent-core";
-import { $ } from "bun";
 import { TempDir } from "@gajae-code/utils";
+import { $ } from "bun";
 import {
 	buildContributionPrepWorkerPrompt,
 	prepareContributionPrep,

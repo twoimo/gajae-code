@@ -85,7 +85,7 @@ function goalToolSnapshot(objective: string, status = "active", updatedAt = Date
 }
 
 describe("native GJC ultragoal runtime", () => {
-	it("reports missing status without requiring a private runtime binary", async () => {
+	it("reports missing status from a fresh repo", async () => {
 		const root = await tempDir();
 
 		const result = await runNativeUltragoalCommand(["status"], root);

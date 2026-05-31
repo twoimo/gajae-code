@@ -21,7 +21,7 @@ function runState(cwd: string, args: string[]) {
 		cwd,
 		stderr: "pipe",
 		stdout: "pipe",
-		env: { ...process.env, GJC_RUNTIME_BINARY: "" },
+		env: { ...process.env },
 	});
 }
 

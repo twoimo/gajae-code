@@ -431,7 +431,7 @@ if "__gjc_prelude_loaded__" not in globals():
             return data.get("value")
 
     class _ToolProxy:
-        """`tool.<name>(args)` proxy mirroring the JS runtime bridge."""
+        """`tool.<name>(args)` proxy mirroring the JS session tool API."""
 
         __slots__ = ("_base", "_token", "_session")
 
