@@ -243,6 +243,10 @@ interface ProviderValidationConfig {
 	models: ProviderValidationModel[];
 }
 
+function usesAwsCredentialChain(api: Api | undefined): boolean {
+	return api === "bedrock-converse-stream";
+}
+
 function validateProviderConfiguration(
 	providerName: string,
 	config: ProviderValidationConfig,
@@ -274,10 +278,11 @@ function validateProviderConfiguration(
 		if (!config.baseUrl) {
 			throw new Error(`Provider ${providerName}: "baseUrl" is required when defining custom models.`);
 		}
+		const usesProviderCredentialChain = usesAwsCredentialChain(config.api);
 		const requiresAuth =
 			mode === "runtime-register"
-				? !config.apiKey && !config.oauthConfigured
-				: !config.apiKey && !config.apiKeyEnv && (config.auth ?? "apiKey") !== "none";
+				? !usesProviderCredentialChain && !config.apiKey && !config.oauthConfigured
+				: !usesProviderCredentialChain && !config.apiKey && !config.apiKeyEnv && (config.auth ?? "apiKey") !== "none";
 		if (requiresAuth) {
 			throw new Error(
 				mode === "runtime-register"

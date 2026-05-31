@@ -295,6 +295,7 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
 export const DEFAULT_MODEL_PER_PROVIDER: Record<KnownProvider, string> = {
 	...Object.fromEntries(PROVIDER_DESCRIPTORS.map(d => [d.providerId, d.defaultModel])),
 	// Providers not in PROVIDER_DESCRIPTORS (special auth or no standard discovery)
+	"azure-openai": "gpt-4.1",
 	"alibaba-coding-plan": "qwen3.5-plus",
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 	"google-antigravity": "gemini-3-pro-high",

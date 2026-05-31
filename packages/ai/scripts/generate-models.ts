@@ -39,6 +39,29 @@ import { fetchAntigravityDiscoveryModels } from "../src/utils/discovery/antigrav
 import { fetchCodexModels } from "../src/utils/discovery/codex";
 import type { OAuthProvider } from "../src/utils/oauth/types";
 
+const AZURE_OPENAI_CATALOG_MODEL_IDS = ["gpt-4.1", "gpt-4o", "gpt-4o-mini", "o3", "o3-mini"] as const;
+
+function createAzureOpenAICatalogModels(): Model<"azure-openai-responses">[] {
+	return AZURE_OPENAI_CATALOG_MODEL_IDS.map(modelId => {
+		const reference = (prevModelsJson as Record<string, Record<string, Model>>).openai?.[modelId];
+		return {
+			...(reference ?? {
+				name: modelId,
+				reasoning: modelId.startsWith("o"),
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: UNK_CONTEXT_WINDOW,
+				maxTokens: UNK_MAX_TOKENS,
+			}),
+			id: modelId,
+			name: reference?.name ?? modelId,
+			api: "azure-openai-responses",
+			provider: "azure-openai",
+			baseUrl: "",
+		} as Model<"azure-openai-responses">;
+	});
+}
+
 const packageRoot = path.join(import.meta.dir, "..");
 
 async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscoveryConfig): Promise<string | undefined> {
@@ -319,7 +342,7 @@ async function generateModels() {
 	const gitLabDuoModels = getGitLabDuoModels();
 	// Combine models (models.dev has priority)
 	let allModels = applyGlobalModelsDevFallback(
-		[...modelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
+		[...modelsDevModels, ...catalogProviderModels, ...gitLabDuoModels, ...createAzureOpenAICatalogModels()],
 		modelsDevModels,
 	);
 

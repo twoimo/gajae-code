@@ -75,6 +75,39 @@ describe("provider onboarding setup core", () => {
 		expect(parsed.providers.minimax?.models.map(model => model.id)).toEqual(["MiniMax-M2.7-highspeed"]);
 	});
 
+	it("accepts first-class Azure OpenAI and Bedrock provider config shapes", async () => {
+		const modelsPath = await tempModelsPath();
+		await Bun.write(
+			modelsPath,
+			YAML.stringify({
+				providers: {
+					"azure-openai": {
+						baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+						apiKeyEnv: "AZURE_OPENAI_API_KEY",
+						api: "azure-openai-responses",
+						models: [{ id: "gpt-4.1" }],
+					},
+					"amazon-bedrock": {
+						baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+						api: "bedrock-converse-stream",
+						models: [{ id: "us.anthropic.claude-opus-4-6-v1" }],
+					},
+				},
+			}),
+		);
+
+		const result = await addApiCompatibleProvider({
+			compatibility: "openai",
+			providerId: "glm-proxy",
+			baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+			apiKeyEnv: "ZAI_API_KEY",
+			models: ["glm-4.6"],
+			modelsPath,
+		});
+
+		expect(result.providerId).toBe("glm-proxy");
+	});
+
 	it("adds an Anthropic-compatible provider without deleting unrelated providers", async () => {
 		const modelsPath = await tempModelsPath();
 		await Bun.write(

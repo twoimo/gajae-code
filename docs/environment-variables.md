@@ -59,6 +59,7 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `MISTRAL_API_KEY`               | Mistral auth                                     | Using Mistral models                                           |                                                                                                     |
 | `ZAI_API_KEY`                   | z.ai auth                                        | Using z.ai models                                              | Also used by z.ai web search provider                                                               |
 | `MINIMAX_API_KEY`               | MiniMax auth                                     | Using `minimax` provider                                       |                                                                                                     |
+| `AZURE_OPENAI_API_KEY`          | Azure OpenAI auth                               | Using `azure-openai` / `azure-openai-responses` models         | Pair with `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`                                   |
 | `MINIMAX_CODE_API_KEY`          | MiniMax Code auth                                | Using `minimax-code` provider                                  |                                                                                                     |
 | `MINIMAX_CODE_CN_API_KEY`       | MiniMax Code CN auth                             | Using `minimax-code-cn` provider                               |                                                                                                     |
 | `OPENCODE_API_KEY`              | OpenCode auth                                    | Using `opencode-go` / `opencode-zen` models                    |                                                                                                     |
@@ -140,6 +141,8 @@ When `ANTHROPIC_MODEL_CODE_USE_FOUNDRY` is enabled, Anthropic requests switch to
 | `NO_PROXY`                                                                      | Excludes matching hosts from proxy routing when a proxy variable is configured                |
 
 Region fallback in provider code: `options.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`.
+
+Credential fallback order is static env (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` plus optional `AWS_SESSION_TOKEN`), named profile / SSO / `credential_process`, then EC2 IMDSv2. `models.yml` Bedrock entries use `api: bedrock-converse-stream` and do not require `apiKey` or `apiKeyEnv` because the provider signs requests from this AWS chain.
 
 ### Azure OpenAI Responses
 

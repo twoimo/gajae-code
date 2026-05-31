@@ -107,6 +107,7 @@ modelBindings:
 - `openai-responses`
 - `openai-codex-responses`
 - `azure-openai-responses`
+- `bedrock-converse-stream`
 - `anthropic-messages`
 - `bedrock-converse-stream`
 - `google-generative-ai`
@@ -115,6 +116,71 @@ modelBindings:
 - `ollama-chat`
 - `cursor-agent`
 
+
+### First-class Azure OpenAI and Amazon Bedrock examples
+
+Azure OpenAI uses canonical OpenAI model IDs in GJC and resolves those IDs to Azure deployment names at request time. Set `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` to avoid assuming model id equals deployment name:
+
+```yaml
+providers:
+  azure-openai:
+    baseUrl: https://my-resource.openai.azure.com/openai/v1
+    apiKeyEnv: AZURE_OPENAI_API_KEY
+    api: azure-openai-responses
+    models:
+      - id: gpt-4.1
+      - id: o3
+```
+
+```sh
+export AZURE_OPENAI_DEPLOYMENT_NAME_MAP='gpt-4.1=gpt-41-prod,o3=o3-reasoning-prod'
+```
+
+Amazon Bedrock uses the native `bedrock-converse-stream` transport and AWS credential chain auth. Do not put AWS access keys in `models.yml`; configure `AWS_REGION` / `AWS_PROFILE` or standard static AWS credential environment variables instead:
+
+```yaml
+providers:
+  amazon-bedrock:
+    baseUrl: https://bedrock-runtime.us-east-1.amazonaws.com
+    api: bedrock-converse-stream
+    models:
+      - id: us.anthropic.claude-opus-4-6-v1
+      - id: anthropic.claude-3-5-sonnet-20241022-v2:0
+```
+
+### MiniMax and GLM custom provider examples
+
+MiniMax's OpenAI-compatible endpoint rejects multiple system messages and emits thinking in `reasoning_content`, so pin the public-safe compatibility fields when hand-authoring a custom provider:
+
+```yaml
+providers:
+  minimax-custom:
+    baseUrl: https://api.minimax.io/v1
+    apiKeyEnv: MINIMAX_API_KEY
+    api: openai-completions
+    compat:
+      supportsStore: false
+      supportsDeveloperRole: false
+      supportsReasoningEffort: false
+      reasoningContentField: reasoning_content
+    models:
+      - id: MiniMax-M2.5
+```
+
+GLM via z.ai is available as the first-class `zai` provider. For a private GLM-compatible proxy, keep secrets in an env var and disable OpenAI-only request fields as needed:
+
+```yaml
+providers:
+  glm-proxy:
+    baseUrl: https://open.bigmodel.cn/api/paas/v4
+    apiKeyEnv: ZAI_API_KEY
+    api: openai-completions
+    compat:
+      supportsDeveloperRole: false
+      supportsReasoningEffort: false
+    models:
+      - id: glm-4.6
+```
 ### Allowed auth/discovery values
 
 - `auth`: `apiKey` (default), `none`, or `oauth`; for `models.yml` custom models, `oauth` is accepted by schema but does not waive the `apiKey` requirement

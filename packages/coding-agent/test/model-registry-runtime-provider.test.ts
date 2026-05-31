@@ -126,6 +126,35 @@ describe("ModelRegistry runtime provider registration", () => {
 		}
 	});
 
+	test("loads Bedrock models without apiKey because AWS credential chain supplies auth", async () => {
+		await Bun.write(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"amazon-bedrock": {
+						baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+						api: "bedrock-converse-stream",
+						models: [{ id: "us.anthropic.claude-opus-4-6-v1" }],
+					},
+				},
+			}),
+		);
+
+		const registry = new ModelRegistry(authStorage, modelsJsonPath);
+		const model = registry.find("amazon-bedrock", "us.anthropic.claude-opus-4-6-v1");
+
+		expect(registry.getError()).toBeUndefined();
+		expect(model?.api).toBe("bedrock-converse-stream");
+		expect(model?.baseUrl).toBe("https://bedrock-runtime.us-east-1.amazonaws.com");
+	});
+
+	test("exposes first-class Azure OpenAI catalog models", () => {
+		const registry = new ModelRegistry(authStorage, modelsJsonPath);
+		const model = registry.find("azure-openai", "gpt-4.1");
+
+		expect(model?.api).toBe("azure-openai-responses");
+		expect(model?.provider).toBe("azure-openai");
+	});
 	test("validates provider config before mutating custom API state", () => {
 		const registry = new ModelRegistry(authStorage, modelsJsonPath);
 		const beforeAnthropicCount = registry.getAll().filter(model => model.provider === "anthropic").length;
