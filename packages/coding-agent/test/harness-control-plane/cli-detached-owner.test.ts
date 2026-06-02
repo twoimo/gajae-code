@@ -8,6 +8,7 @@ import { readLease } from "../../src/harness-control-plane/session-lease";
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
 const SID = "d";
+const FAKE_RPC = path.join(import.meta.dir, "fixtures", "fake-rpc.ts");
 
 let root: string;
 let workspace: string;
@@ -15,7 +16,12 @@ let workspace: string;
 async function runHarness(args: string[]): Promise<{ code: number; json: Record<string, unknown> | null }> {
 	const proc = Bun.spawn(["bun", cliEntry, "harness", ...args], {
 		cwd: workspace,
-		env: { ...process.env, GJC_HARNESS_STATE_ROOT: root, GJC_HARNESS_OWNER_FAKE_RPC: "1" },
+		env: {
+			...process.env,
+			GJC_HARNESS_STATE_ROOT: root,
+			// Drive the REAL GajaeCodeRpc against a protocol fixture (no shipped fake seam).
+			GJC_HARNESS_RPC_COMMAND: JSON.stringify(["bun", FAKE_RPC]),
+		},
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -72,12 +78,13 @@ describe("gjc harness start --detach (detached owner lifecycle, B1)", () => {
 		expect((sub.json?.evidence as Record<string, unknown>).accepted).toBe(true);
 		expect((sub.json?.state as Record<string, unknown>).lifecycle).toBe("observing");
 
-		// Owner-backed finalize over the evidence gate (fake checks pass).
+		// Owner-backed finalize: the evidence gate HONESTLY refuses without real commit/PR/tests
+		// (no fake completion evidence in shipped code).
 		const fin = await runHarness(["finalize", "--session", SID]);
-		expect((fin.json?.evidence as Record<string, unknown>).finalize).toBeTruthy();
-		expect(((fin.json?.evidence as Record<string, unknown>).finalize as Record<string, unknown>).completed).toBe(
-			true,
-		);
+		const finEvidence = (fin.json?.evidence as Record<string, unknown>).finalize as Record<string, unknown>;
+		expect(finEvidence).toBeTruthy();
+		expect(finEvidence.completed).toBe(false);
+		expect((finEvidence.blockers as unknown[]).length).toBeGreaterThan(0);
 
 		// Retire stops the owner and releases the lease.
 		const ret = await runHarness(["retire", "--session", SID]);

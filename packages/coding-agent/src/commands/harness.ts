@@ -13,9 +13,8 @@ import { existsSync } from "node:fs";
 import { Args, Command, Flags } from "@gajae-code/utils/cli";
 import { classifyRecovery } from "../harness-control-plane/classifier";
 import { callEndpoint, EndpointUnreachableError } from "../harness-control-plane/control-endpoint";
-import type { FinalizeChecks } from "../harness-control-plane/finalize";
 import { RuntimeOwner, resolveOwner } from "../harness-control-plane/owner";
-import { GajaeCodeRpc, type HarnessRpc, type RpcStateSnapshot } from "../harness-control-plane/rpc-adapter";
+import { GajaeCodeRpc } from "../harness-control-plane/rpc-adapter";
 import { buildResponse, buildStateView } from "../harness-control-plane/state-machine";
 import {
 	generateSessionId,
@@ -192,18 +191,12 @@ export default class Harness extends Command {
 	/** Detached owner daemon (spawned by `start --detach`). Runs until retired or signalled. */
 	async #runOwner(root: string, input: Record<string, unknown>, flagSession: string | undefined): Promise<void> {
 		const sessionId = requireSessionId(input, flagSession);
-		const useFake = process.env.GJC_HARNESS_OWNER_FAKE_RPC === "1";
-		const rpc: HarnessRpc = useFake
-			? this.#fakeRpc()
-			: new GajaeCodeRpc({ sessionDir: sessionPaths(root, sessionId).gjcSessionDir });
-		const finalizeChecks: FinalizeChecks | undefined = useFake ? this.#fakeChecks() : undefined;
-		const owner = new RuntimeOwner({
-			root,
-			sessionId,
-			rpc,
-			finalizeChecks,
-			validationCommands: useFake ? [{ name: "smoke", command: "true" }] : undefined,
-		});
+		const sessionDir = sessionPaths(root, sessionId).gjcSessionDir;
+		// Optional rpc command override (tests / non-default hosts); defaults to `gjc --mode rpc`.
+		const override = process.env.GJC_HARNESS_RPC_COMMAND;
+		const command = override ? (JSON.parse(override) as string[]) : undefined;
+		const rpc = new GajaeCodeRpc({ sessionDir, command });
+		const owner = new RuntimeOwner({ root, sessionId, rpc });
 		const info = await owner.start();
 		writeJson({ ok: true, owner: info });
 		await new Promise<void>(resolve => {
@@ -221,44 +214,6 @@ export default class Harness extends Command {
 		});
 		await owner.stop();
 		process.exit(0);
-	}
-
-	#fakeRpc(): HarnessRpc {
-		let cursor = 0;
-		const starts: number[] = [];
-		return {
-			async getState(): Promise<RpcStateSnapshot> {
-				return { isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
-			},
-			eventCursor: () => cursor,
-			async sendPrompt() {
-				cursor += 1;
-				starts.push(cursor);
-				return { commandId: "fake", ack: true };
-			},
-			async waitForAgentStart(after: number) {
-				const found = starts.find(c => c > after);
-				return found === undefined ? null : { cursor: found };
-			},
-			async close() {},
-		};
-	}
-
-	#fakeChecks(): FinalizeChecks {
-		return {
-			async runValidation(spec) {
-				return { exactCommand: spec.command, cwd: ".", exitStatus: 0, pass: true };
-			},
-			async resolveCommit() {
-				return "fakecommit";
-			},
-			async commitOnBranch() {
-				return true;
-			},
-			async prOrIssue() {
-				return { prUrl: "fake://pr/1", issueArtifact: null };
-			},
-		};
 	}
 
 	/** Spawn the detached owner daemon and poll until it holds the lease. */
