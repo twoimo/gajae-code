@@ -167,6 +167,7 @@ import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
 import { buildGjcRuntimeSessionEnv, consumePendingGoalModeRequest } from "../gjc-runtime/goal-mode-request";
+import { writeArtifact } from "../gjc-runtime/state-writer";
 import { requestGjcWorkerIntegrationAttempt } from "../gjc-runtime/team-runtime";
 import { GoalRuntime } from "../goals/runtime";
 import type { Goal, GoalModeState } from "../goals/state";
@@ -281,6 +282,11 @@ export type AgentSessionEvent =
  * `gjc state` runtime selector resolver.
  */
 const SAFE_PATH_COMPONENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
+
+function isUnderProjectGjc(cwd: string, targetPath: string): boolean {
+	const relative = path.relative(path.join(path.resolve(cwd), ".gjc"), path.resolve(targetPath));
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -3485,7 +3491,7 @@ export class AgentSession {
 	 * prompts or tool execution can run.
 	 */
 	#wrapToolForDeepInterviewMutationGuard<T extends AgentTool>(tool: T): T {
-		if (!["edit", "write", "ast_edit"].includes(tool.name)) return tool;
+		if (!["edit", "write", "ast_edit", "bash"].includes(tool.name)) return tool;
 		return new Proxy(tool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return Reflect.get(target, prop, target);
@@ -5931,7 +5937,14 @@ export class AgentSession {
 				if (artifactsDir) {
 					const handoffFilePath = path.join(artifactsDir, createHandoffFileName());
 					try {
-						await Bun.write(handoffFilePath, `${handoffText}\n`);
+						if (isUnderProjectGjc(this.sessionManager.getCwd(), handoffFilePath)) {
+							await writeArtifact(handoffFilePath, `${handoffText}\n`, {
+								cwd: this.sessionManager.getCwd(),
+								audit: { category: "artifact", verb: "write", owner: "gjc-runtime" },
+							});
+						} else {
+							await Bun.write(handoffFilePath, `${handoffText}\n`);
+						}
 						savedPath = handoffFilePath;
 					} catch (error) {
 						logger.warn("Failed to save handoff document to disk", {

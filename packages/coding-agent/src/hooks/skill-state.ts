@@ -1,6 +1,6 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { SkillDiscoverySettings } from "../config/skill-settings-defaults";
+import { writeJsonAtomic } from "../gjc-runtime/state-writer";
 import { isUltragoalBypassPrompt, readUltragoalVerificationState } from "../gjc-runtime/ultragoal-guard";
 import { buildSessionContext, loadEntriesFromFile, type SessionEntry } from "../session/session-manager";
 import type { SkillActiveEntry as CanonicalSkillActiveEntry, WorkflowHudSummary } from "../skill-state/active-state";
@@ -252,9 +252,11 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 	}
 }
 
-async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
-	await fs.mkdir(path.dirname(filePath), { recursive: true });
-	await Bun.write(filePath, `${JSON.stringify(value, null, 2)}\n`);
+async function writeJsonFile(filePath: string, value: unknown, cwd: string): Promise<void> {
+	await writeJsonAtomic(filePath, value, {
+		cwd,
+		audit: { category: "state", verb: "write", owner: "gjc-hook" },
+	});
 }
 
 function entryMatchesContext(
@@ -337,10 +339,10 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
 		modeState.threshold_source = "default";
 	}
 
-	await writeJsonFile(initializedStatePath, modeState);
-	await writeJsonFile(skillStatePath(resolvedStateDir, input.sessionId), state);
+	await writeJsonFile(initializedStatePath, modeState, input.cwd);
+	await writeJsonFile(skillStatePath(resolvedStateDir, input.sessionId), state, input.cwd);
 	if (!input.sessionId) return state;
-	await writeJsonFile(skillStatePath(resolvedStateDir), state);
+	await writeJsonFile(skillStatePath(resolvedStateDir), state, input.cwd);
 	return state;
 }
 
