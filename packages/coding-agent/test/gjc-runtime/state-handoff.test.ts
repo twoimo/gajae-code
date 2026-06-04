@@ -119,6 +119,62 @@ describe("gjc state handoff", () => {
 		});
 	});
 
+	it("bootstraps an absent callee mode-state during handoff", async () => {
+		await withTempCwd(async cwd => {
+			const callerPath = path.join(cwd, ".gjc/state/deep-interview-state.json");
+			const calleePath = path.join(cwd, ".gjc/state/ralplan-state.json");
+			await writeJson(callerPath, {
+				skill: "deep-interview",
+				version: 1,
+				active: true,
+				current_phase: "interviewing",
+			});
+
+			const result = await runNativeStateCommand(
+				["handoff", "--mode", "deep-interview", "--to", "ralplan", "--json"],
+				cwd,
+			);
+
+			expect(result.status).toBe(0);
+			const callee = await readJson(calleePath);
+			expect(callee?.active).toBe(true);
+			expect(callee?.current_phase).toBe("planner");
+			expect(callee?.handoff_from).toBe("deep-interview");
+		});
+	});
+
+	it("rejects corrupt callee mode-state without --force and overwrites with --force", async () => {
+		await withTempCwd(async cwd => {
+			const callerPath = path.join(cwd, ".gjc/state/deep-interview-state.json");
+			const calleePath = path.join(cwd, ".gjc/state/ralplan-state.json");
+			await writeJson(callerPath, {
+				skill: "deep-interview",
+				version: 1,
+				active: true,
+				current_phase: "interviewing",
+			});
+			await fs.mkdir(path.dirname(calleePath), { recursive: true });
+			await fs.writeFile(calleePath, "{broken json", "utf-8");
+
+			const rejected = await runNativeStateCommand(
+				["handoff", "--mode", "deep-interview", "--to", "ralplan", "--json"],
+				cwd,
+			);
+			expect(rejected.status).toBe(2);
+			expect(rejected.stderr).toContain("existing state for ralplan is corrupt or tampered");
+			expect(await fs.readFile(calleePath, "utf-8")).toBe("{broken json");
+
+			const forced = await runNativeStateCommand(
+				["handoff", "--mode", "deep-interview", "--to", "ralplan", "--json", "--force"],
+				cwd,
+			);
+			expect(forced.status).toBe(0);
+			const callee = await readJson(calleePath);
+			expect(callee?.active).toBe(true);
+			expect(callee?.handoff_from).toBe("deep-interview");
+		});
+	});
+
 	it("writes callee mode-state before caller mode-state (HUD-coherent ordering)", async () => {
 		await withTempCwd(async cwd => {
 			const callerPath = path.join(cwd, ".gjc/state/deep-interview-state.json");

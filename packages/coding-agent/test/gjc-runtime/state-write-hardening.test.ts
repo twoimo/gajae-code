@@ -101,6 +101,31 @@ describe("gjc state write hardening", () => {
 		expect(onDisk.current_phase).toBe("planner");
 	});
 
+	it("defaults blank incoming current_phase to the manifest initial phase", async () => {
+		const root = await tempDir();
+		const result = await writeState(root, "ralplan", { current_phase: "" });
+		expect(result.status).toBe(0);
+		expect(receiptFrom(result.stdout).current_phase).toBe("planner");
+		const onDisk = JSON.parse(await fs.readFile(path.join(root, ".gjc", "state", "ralplan-state.json"), "utf-8"));
+		expect(onDisk.current_phase).toBe("planner");
+	});
+
+	it("defaults retained blank legacy current_phase to the manifest initial phase", async () => {
+		const root = await tempDir();
+		await writeRawState(root, "ralplan", {
+			skill: "ralplan",
+			version: 2,
+			active: true,
+			current_phase: "  ",
+		});
+
+		const result = await writeState(root, "ralplan", { active: true });
+		expect(result.status).toBe(0);
+		expect(receiptFrom(result.stdout).current_phase).toBe("planner");
+		const onDisk = JSON.parse(await fs.readFile(path.join(root, ".gjc", "state", "ralplan-state.json"), "utf-8"));
+		expect(onDisk.current_phase).toBe("planner");
+	});
+
 	it("rejects retained unknown existing phases unless forced", async () => {
 		const root = await tempDir();
 		await writeRawState(root, "ralplan", {

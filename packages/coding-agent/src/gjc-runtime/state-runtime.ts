@@ -46,6 +46,7 @@ import {
 	detectWorkflowEnvelopeIntegrityMismatch,
 	type GenericHardPruneTarget,
 	hardPrune,
+	readExistingStateForMutation,
 	type StateWriterAuditContext,
 	softDelete,
 	updateWorkflowTransactionJournal,
@@ -371,23 +372,6 @@ async function readJsonValue(filePath: string): Promise<unknown | null> {
 		if (err.code === "ENOENT") return null;
 		process.stderr.write(`WARNING: failed to read ${filePath}; ignoring corrupt state: ${err.message}\n`);
 		return null;
-	}
-}
-type StrictMutationReadResult =
-	| { kind: "absent" }
-	| { kind: "corrupt"; error: string }
-	| { kind: "valid"; value: Record<string, unknown> };
-
-async function readExistingStateForMutation(filePath: string): Promise<StrictMutationReadResult> {
-	try {
-		const raw = await fs.readFile(filePath, "utf-8");
-		const parsed = JSON.parse(raw);
-		if (isPlainObject(parsed)) return { kind: "valid", value: parsed };
-		return { kind: "corrupt", error: "state file must contain a JSON object" };
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err.code === "ENOENT") return { kind: "absent" };
-		return { kind: "corrupt", error: err.message };
 	}
 }
 
@@ -1116,9 +1100,12 @@ async function handleWrite(
 	merged.skill = mode;
 	if (incomingPhase) {
 		merged.current_phase = incomingPhase;
-	} else if (typeof merged.current_phase !== "string") {
-		merged.current_phase =
-			typeof existingPayload.current_phase === "string" ? existingPayload.current_phase : initialPhaseForSkill(mode);
+	} else if (typeof merged.current_phase !== "string" || !merged.current_phase.trim()) {
+		const retainedPhase =
+			typeof existingPayload.current_phase === "string" ? existingPayload.current_phase.trim() : "";
+		merged.current_phase = retainedPhase || initialPhaseForSkill(mode);
+	} else {
+		merged.current_phase = merged.current_phase.trim();
 	}
 	merged.version = WORKFLOW_STATE_VERSION;
 	if (typeof merged.active !== "boolean") merged.active = true;
@@ -1126,10 +1113,11 @@ async function handleWrite(
 	merged.receipt = receipt;
 	if (sessionId && typeof merged.session_id !== "string") merged.session_id = sessionId;
 
-	const fromPhase = typeof existingPayload.current_phase === "string" ? existingPayload.current_phase : undefined;
-	const toPhase = typeof merged.current_phase === "string" ? merged.current_phase : undefined;
+	const fromPhase =
+		typeof existingPayload.current_phase === "string" ? existingPayload.current_phase.trim() : undefined;
+	const toPhase = merged.current_phase as string;
 	const manifestStates = new Set(getSkillManifest(mode).states.map(state => state.id));
-	if (toPhase && !manifestStates.has(toPhase) && !forced) {
+	if (!manifestStates.has(toPhase) && !forced) {
 		throw new StateCommandError(2, `unknown ${mode} phase "${toPhase}"; use --force to bypass`);
 	}
 	if (fromPhase && toPhase && isKnownWorkflowState(mode, fromPhase) && isKnownWorkflowState(mode, toPhase)) {
@@ -1298,14 +1286,29 @@ async function handleHandoff(
 
 	const callerPath = modeStateFile(cwd, caller, sessionId);
 	const calleePath = modeStateFile(cwd, callee, sessionId);
-	const existingCaller = await readJsonFile(callerPath);
-	if (!existingCaller) {
+	const forced = hasFlag(args, "--force");
+	const callerRead = await readExistingStateForMutation(callerPath);
+	if (callerRead.kind === "corrupt" && !forced) {
+		throw new StateCommandError(
+			2,
+			`existing state for ${caller} is corrupt or tampered (${callerRead.error}); use --force to overwrite`,
+		);
+	}
+	if (callerRead.kind !== "valid") {
 		throw new StateCommandError(
 			2,
 			`gjc state ${caller} handoff: caller is not active (no mode-state file at ${callerPath})`,
 		);
 	}
-	const existingCallee = (await readJsonFile(calleePath)) ?? {};
+	const calleeRead = await readExistingStateForMutation(calleePath);
+	if (calleeRead.kind === "corrupt" && !forced) {
+		throw new StateCommandError(
+			2,
+			`existing state for ${callee} is corrupt or tampered (${calleeRead.error}); use --force to overwrite`,
+		);
+	}
+	const existingCaller = callerRead.value;
+	const existingCallee = calleeRead.kind === "valid" ? calleeRead.value : {};
 
 	const handoffAt = nowIso();
 	const mutationId = `${caller}:handoff:${callee}:${handoffAt}`;

@@ -7,7 +7,7 @@ import { WORKFLOW_STATE_VERSION } from "../skill-state/workflow-state-contract";
 import { renderCliWriteReceipt } from "./cli-write-receipt";
 import { isRestrictedRoleAgentBash } from "./restricted-role-agent-bash";
 import { migrateWorkflowState } from "./state-migrations";
-import { appendJsonl, writeArtifact, writeWorkflowEnvelopeAtomic } from "./state-writer";
+import { appendJsonl, readExistingStateForMutation, writeArtifact, writeWorkflowEnvelopeAtomic } from "./state-writer";
 
 /**
  * Native implementation of `gjc ralplan`.
@@ -179,16 +179,15 @@ async function readActiveRunId(cwd: string, sessionId: string | undefined): Prom
 
 async function persistActiveRunId(cwd: string, sessionId: string | undefined, runId: string): Promise<void> {
 	const statePath = ralplanStatePath(cwd, sessionId);
-	let existing: Record<string, unknown> = {};
-	try {
-		const raw = await fs.readFile(statePath, "utf-8");
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			existing = parsed as Record<string, unknown>;
-		}
-	} catch {
-		// fresh receipt; fall through to create
+	const existingRead = await readExistingStateForMutation(statePath);
+	if (existingRead.kind === "corrupt") {
+		throw new RalplanCommandError(
+			2,
+			`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+		);
 	}
+	let existing: Record<string, unknown> = existingRead.kind === "valid" ? existingRead.value : {};
+
 	if (existing.run_id === runId && existing.version === WORKFLOW_STATE_VERSION) return;
 	existing.run_id = runId;
 	if (typeof existing.skill !== "string") existing.skill = "ralplan";
@@ -328,16 +327,14 @@ async function applyPlannerStateUpdate(
 	update: PlannerStateUpdate,
 ): Promise<void> {
 	const statePath = ralplanStatePath(cwd, sessionId);
-	let existing: Record<string, unknown> = {};
-	try {
-		const raw = await fs.readFile(statePath, "utf-8");
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			existing = parsed as Record<string, unknown>;
-		}
-	} catch {
-		// fresh state; fall through to create
+	const existingRead = await readExistingStateForMutation(statePath);
+	if (existingRead.kind === "corrupt") {
+		throw new RalplanCommandError(
+			2,
+			`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+		);
 	}
+	let existing: Record<string, unknown> = existingRead.kind === "valid" ? existingRead.value : {};
 	Object.assign(existing, plannerStatePayload(update));
 	if (typeof existing.skill !== "string") existing.skill = "ralplan";
 	if (typeof existing.active !== "boolean") existing.active = true;

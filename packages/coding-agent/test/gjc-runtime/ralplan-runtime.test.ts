@@ -397,6 +397,49 @@ describe("native gjc ralplan runtime — persisted Planner state", () => {
 		expect("planner_resumable" in state).toBe(false);
 	});
 
+	it("rejects corrupt ralplan state before persisting an active run id", async () => {
+		const root = await tempDir();
+		await fs.mkdir(path.dirname(statePath(root)), { recursive: true });
+		await fs.writeFile(statePath(root), "{broken json", "utf-8");
+
+		const result = await runNativeRalplanCommand(
+			["--write", "--stage", "planner", "--stage_n", "1", "--artifact", "# Plan", "--run-id", "corrupt", "--json"],
+			root,
+		);
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toContain("existing ralplan state is corrupt or tampered");
+		expect(await fs.readFile(statePath(root), "utf-8")).toBe("{broken json");
+	});
+
+	it("rejects corrupt ralplan state before applying planner metadata", async () => {
+		const root = await tempDir();
+		await fs.mkdir(path.dirname(statePath(root)), { recursive: true });
+		await fs.writeFile(statePath(root), "{broken json", "utf-8");
+
+		const result = await runNativeRalplanCommand(
+			[
+				"--write",
+				"--stage",
+				"planner",
+				"--stage_n",
+				"1",
+				"--artifact",
+				"# Plan",
+				"--run-id",
+				"corrupt-planner",
+				"--planner-id",
+				"0-Planner",
+				"--json",
+			],
+			root,
+		);
+
+		expect(result.status).toBe(2);
+		expect(result.stderr).toContain("existing ralplan state is corrupt or tampered");
+		expect(await fs.readFile(statePath(root), "utf-8")).toBe("{broken json");
+	});
+
 	it("records fallback metadata together with a fresh planner id", async () => {
 		const root = await tempDir();
 		const result = await runNativeRalplanCommand(

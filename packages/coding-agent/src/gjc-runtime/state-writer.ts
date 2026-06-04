@@ -132,6 +132,27 @@ export class AlreadyExistsError extends Error {
 	}
 }
 
+export type StrictMutationReadResult =
+	| { kind: "absent" }
+	| { kind: "corrupt"; error: string }
+	| { kind: "valid"; value: Record<string, unknown> };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export async function readExistingStateForMutation(filePath: string): Promise<StrictMutationReadResult> {
+	try {
+		const raw = await fs.readFile(filePath, "utf-8");
+		const parsed = JSON.parse(raw);
+		if (isPlainObject(parsed)) return { kind: "valid", value: parsed };
+		return { kind: "corrupt", error: "state file must contain a JSON object" };
+	} catch (error) {
+		const err = error as NodeJS.ErrnoException;
+		if (err.code === "ENOENT") return { kind: "absent" };
+		return { kind: "corrupt", error: err.message };
+	}
+}
 function isErrno(error: unknown, code: string): boolean {
 	return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }
