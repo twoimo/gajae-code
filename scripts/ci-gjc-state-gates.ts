@@ -32,9 +32,11 @@ const boundedGateCommands = [
 	["bun", "test", "packages/coding-agent/test/gjc-runtime/state-graph.test.ts"],
 	["bun", "test", "packages/coding-agent/test/gjc-runtime/state-read-markdown.test.ts"],
 	["bun", "test", "packages/coding-agent/test/gjc-runtime/state-token-thrift.test.ts"],
-	["bun", "test", "packages/coding-agent/test/deep-interview-mutation-guard.test.ts"],
-	["bun", "test", "packages/coding-agent/test/gjc-skill-state-hooks.test.ts"],
-	["bun", "test", "packages/coding-agent/test/skill-active-state.test.ts"],
+	// Lane H read-only doctor: imports only the native-free state-runtime module.
+	["bun", "test", "packages/coding-agent/test/gjc-runtime/state-doctor.test.ts"],
+	// NOTE: deep-interview-mutation-guard, gjc-skill-state-hooks, and skill-active-state
+	// load the @gajae-code/natives addon transitively via the tool/hook runtime, so they
+	// run in the heavier "Affected path validation" job rather than this native-free gate.
 ];
 
 async function changedFiles(): Promise<string[]> {
