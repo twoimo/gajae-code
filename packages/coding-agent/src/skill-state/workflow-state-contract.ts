@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { CANONICAL_GJC_WORKFLOW_SKILLS, type CanonicalGjcWorkflowSkill, SKILL_ACTIVE_STATE_FILE } from "./active-state";
 import { WORKFLOW_STATE_RECEIPT_FRESH_MS, WORKFLOW_STATE_RECEIPT_VERSION } from "./workflow-state-version";
+
 export {
 	WORKFLOW_STATE_RECEIPT_FRESH_MS,
 	WORKFLOW_STATE_RECEIPT_VERSION,
@@ -8,8 +9,6 @@ export {
 } from "./workflow-state-version";
 
 export type { CanonicalGjcWorkflowSkill };
-
-
 export type WorkflowStateMutationOwner = "gjc-state-cli" | "gjc-runtime" | "gjc-hook";
 export type WorkflowStateReceiptStatus = "fresh" | "stale";
 
