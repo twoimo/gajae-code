@@ -128,6 +128,26 @@ describe("workflow state writer drift guard", () => {
 		await expectPersistedEnvelope(statePath);
 	});
 
+	it("normalizes ralplan persist-run-id when legacy v1 already has the selected run_id", async () => {
+		const root = await tempDir();
+		const statePath = path.join(root, ".gjc", "state", "ralplan-state.json");
+		await fs.mkdir(path.dirname(statePath), { recursive: true });
+		await fs.writeFile(
+			statePath,
+			`${JSON.stringify({ version: 1, skill: "ralplan", active: true, current_phase: "planning", updated_at: "2026-01-01T00:00:00.000Z", run_id: "legacy-run" })}\n`,
+			"utf-8",
+		);
+
+		const result = await runNativeRalplanCommand(
+			["--write", "--stage", "planner", "--stage_n", "1", "--artifact", "# Plan", "--run-id", "legacy-run"],
+			root,
+		);
+		expect(result.status).toBe(0);
+		await expectPersistedEnvelope(statePath);
+		const persisted = await readJson(statePath);
+		expect(persisted.run_id).toBe("legacy-run");
+	});
+
 	it("persists required-on-write v2 envelope for ralplan planner-state from legacy v1 state", async () => {
 		const root = await tempDir();
 		const statePath = path.join(root, ".gjc", "state", "ralplan-state.json");

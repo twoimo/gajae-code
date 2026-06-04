@@ -189,7 +189,7 @@ async function persistActiveRunId(cwd: string, sessionId: string | undefined, ru
 	} catch {
 		// fresh receipt; fall through to create
 	}
-	if (existing.run_id === runId) return;
+	if (existing.run_id === runId && existing.version === WORKFLOW_STATE_VERSION) return;
 	existing.run_id = runId;
 	if (typeof existing.skill !== "string") existing.skill = "ralplan";
 	if (typeof existing.active !== "boolean") existing.active = true;
