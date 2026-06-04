@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
+import { WORKFLOW_STATE_VERSION } from "../../src/skill-state/workflow-state-contract";
 
 async function withTempCwd(fn: (cwd: string) => Promise<void>): Promise<void> {
 	const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-state-handoff-"));
@@ -65,11 +66,13 @@ describe("gjc state handoff", () => {
 			expect(caller?.current_phase).toBe("handoff");
 			expect(caller?.handoff_to).toBe("ralplan");
 			expect(caller?.handoff_at).toBe(handoffAt);
+			expect(caller?.version).toBe(WORKFLOW_STATE_VERSION);
 
 			const callee = await readJson(path.join(cwd, ".gjc/state/ralplan-state.json"));
 			expect(callee?.active).toBe(true);
 			expect(callee?.handoff_from).toBe("deep-interview");
 			expect(callee?.handoff_at).toBe(handoffAt);
+			expect(callee?.version).toBe(WORKFLOW_STATE_VERSION);
 
 			const activeState = await readJson(path.join(cwd, ".gjc/state/skill-active-state.json"));
 			const activeSkills = (activeState?.active_skills as Array<Record<string, unknown>>) ?? [];

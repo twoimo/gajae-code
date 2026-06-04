@@ -1287,7 +1287,7 @@ async function handleHandoff(
 	const mergedCalleeState: Record<string, unknown> = {
 		...existingCallee,
 		skill: callee,
-		version: typeof existingCallee.version === "number" ? existingCallee.version : 1,
+		version: WORKFLOW_STATE_VERSION,
 		active: true,
 		current_phase: calleeInitial,
 		handoff_from: caller,
@@ -1301,6 +1301,7 @@ async function handleHandoff(
 	const mergedCallerState: Record<string, unknown> = {
 		...existingCaller,
 		skill: caller,
+		version: WORKFLOW_STATE_VERSION,
 		active: false,
 		current_phase: "handoff",
 		handoff_to: callee,

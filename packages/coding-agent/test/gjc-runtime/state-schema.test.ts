@@ -9,6 +9,7 @@ import {
 	SkillActiveStateSchema,
 	WorkflowStateEnvelopeSchema,
 } from "@gajae-code/coding-agent/gjc-runtime/state-schema";
+import { WORKFLOW_STATE_VERSION } from "@gajae-code/coding-agent/skill-state/workflow-state-contract";
 
 const roots: string[] = [];
 
@@ -69,17 +70,27 @@ describe("state-schema (A1)", () => {
 		};
 		const ok = RequiredOnWriteEnvelopeSchema.safeParse({
 			skill: "ralplan",
-			version: 1,
+			version: WORKFLOW_STATE_VERSION,
 			updated_at: "2026-01-01T00:00:00.000Z",
 			current_phase: "planner",
 			active: true,
 			receipt: validReceipt,
 		});
 		expect(ok.success).toBe(true);
+
+		const v1 = RequiredOnWriteEnvelopeSchema.safeParse({
+			skill: "ralplan",
+			version: 1,
+			updated_at: "2026-01-01T00:00:00.000Z",
+			current_phase: "planner",
+			active: true,
+			receipt: validReceipt,
+		});
+		expect(v1.success).toBe(false);
 		// missing content_sha256 -> rejected (write fail-closed depends on this)
 		const noChecksum = RequiredOnWriteEnvelopeSchema.safeParse({
 			skill: "ralplan",
-			version: 1,
+			version: WORKFLOW_STATE_VERSION,
 			updated_at: "2026-01-01T00:00:00.000Z",
 			current_phase: "planner",
 			active: true,
