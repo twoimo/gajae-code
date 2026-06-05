@@ -448,7 +448,10 @@ export default class Harness extends Command {
 		try {
 			const input = parseInput(flags.input);
 			const sessionId = flags.session ?? (typeof input.sessionId === "string" ? input.sessionId : undefined);
-			if (verb !== "start" && sessionId) root = await resolveHarnessSessionRoot(root, sessionId);
+			const expectedWorkspace = typeof input.workspace === "string" ? input.workspace : undefined;
+			if (verb !== "start" && sessionId) {
+				root = await resolveHarnessSessionRoot(root, sessionId, process.env, { expectedWorkspace });
+			}
 			switch (verb) {
 				case "start":
 					return await this.#start(root, input);
