@@ -11,7 +11,7 @@ import * as z from "zod/v4";
 import { getFileReadCache } from "../edit/file-read-cache";
 import { isNotebookPath, readEditableNotebookText } from "../edit/notebook";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import { formatHashLine, formatHashLines, formatLineHash, HL_BODY_SEP } from "../hashline/hash";
+import { computeLineHash, formatHashLine, formatHashLines, formatLineHash, HL_BODY_SEP } from "../hashline/hash";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
@@ -122,6 +122,38 @@ function formatTextWithMode(
 	if (shouldAddHashLines) return formatHashLines(text, startNum);
 	if (shouldAddLineNumbers) return prependLineNumbers(text, startNum);
 	return text;
+}
+function formatLinesWithMode(
+	sourceLines: readonly string[],
+	displayLines: readonly string[],
+	startNum: number,
+	shouldAddHashLines: boolean,
+	shouldAddLineNumbers: boolean,
+): string {
+	if (shouldAddHashLines) {
+		return displayLines
+			.map((line, i) => `${startNum + i}${computeLineHash(startNum + i, sourceLines[i] ?? "")}${HL_BODY_SEP}${line}`)
+			.join("\n");
+	}
+	if (shouldAddLineNumbers) return displayLines.map((line, i) => `${startNum + i}|${line}`).join("\n");
+	return displayLines.join("\n");
+}
+
+function truncateDisplayLines(
+	lines: readonly string[],
+	maxColumns: number,
+): { lines: string[]; columnTruncated: boolean } {
+	const displayLines = [...lines];
+	let columnTruncated = false;
+	if (maxColumns <= 0) return { lines: displayLines, columnTruncated };
+	for (let i = 0; i < displayLines.length; i++) {
+		const { text, wasTruncated } = truncateLine(displayLines[i], maxColumns);
+		if (wasTruncated) {
+			displayLines[i] = text;
+			columnTruncated = true;
+		}
+	}
+	return { lines: displayLines, columnTruncated };
 }
 
 const BRACE_PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
@@ -1030,23 +1062,22 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				continue;
 			}
 
-			const collectedLines = streamResult.lines;
-			if (!rawSelector && maxColumns > 0) {
-				for (let i = 0; i < collectedLines.length; i++) {
-					const { text, wasTruncated } = truncateLine(collectedLines[i], maxColumns);
-					if (wasTruncated) {
-						collectedLines[i] = text;
-						columnTruncated = maxColumns;
-					}
-				}
+			const sourceLines = streamResult.lines;
+			const truncatedDisplay = rawSelector
+				? { lines: [...sourceLines], columnTruncated: false }
+				: truncateDisplayLines(sourceLines, maxColumns);
+			const displayLines = truncatedDisplay.lines;
+			if (truncatedDisplay.columnTruncated) {
+				columnTruncated = maxColumns;
 			}
 
-			if (collectedLines.length > 0) {
-				getFileReadCache(this.session).recordContiguous(absolutePath, range.startLine, collectedLines);
+			if (sourceLines.length > 0) {
+				getFileReadCache(this.session).recordContiguous(absolutePath, range.startLine, sourceLines);
 			}
 
-			const blockText = collectedLines.join("\n");
-			blocks.push(formatTextWithMode(blockText, range.startLine, shouldAddHashLines, shouldAddLineNumbers));
+			blocks.push(
+				formatLinesWithMode(sourceLines, displayLines, range.startLine, shouldAddHashLines, shouldAddLineNumbers),
+			);
 		}
 
 		let outputText = blocks.join("\n\n…\n\n");
@@ -1763,7 +1794,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					);
 
 					const {
-						lines: collectedLines,
+						lines: sourceLines,
 						totalFileLines,
 						collectedBytes,
 						stoppedByByteLimit,
@@ -1790,22 +1821,20 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// view — column truncation surfaces separately via `.limits()`.
 					const rawSelector = isRawSelector(parsed);
 					const maxColumns = resolveOutputMaxColumns(this.session.settings);
-					if (!rawSelector && maxColumns > 0) {
-						for (let i = 0; i < collectedLines.length; i++) {
-							const { text, wasTruncated } = truncateLine(collectedLines[i], maxColumns);
-							if (wasTruncated) {
-								collectedLines[i] = text;
-								columnTruncated = maxColumns;
-							}
-						}
+					const truncatedDisplay = rawSelector
+						? { lines: [...sourceLines], columnTruncated: false }
+						: truncateDisplayLines(sourceLines, maxColumns);
+					const displayLines = truncatedDisplay.lines;
+					if (truncatedDisplay.columnTruncated) {
+						columnTruncated = maxColumns;
 					}
 
-					const selectedContent = collectedLines.join("\n");
-					const userLimitedLines = collectedLines.length;
+					const selectedContent = displayLines.join("\n");
+					const userLimitedLines = sourceLines.length;
 
 					const totalSelectedLines = totalFileLines - startLine;
 					const totalSelectedBytes = collectedBytes;
-					const wasTruncated = collectedLines.length < totalSelectedLines || stoppedByByteLimit;
+					const wasTruncated = sourceLines.length < totalSelectedLines || stoppedByByteLimit;
 					const firstLineExceedsLimit = firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead;
 
 					const truncation: TruncationResult = {
@@ -1814,14 +1843,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						truncatedBy: stoppedByByteLimit ? "bytes" : wasTruncated ? "lines" : undefined,
 						totalLines: totalSelectedLines,
 						totalBytes: totalSelectedBytes,
-						outputLines: collectedLines.length,
+						outputLines: sourceLines.length,
 						outputBytes: collectedBytes,
 						lastLinePartial: false,
 						firstLineExceedsLimit,
 					};
 
-					if (collectedLines.length > 0 && !firstLineExceedsLimit) {
-						getFileReadCache(this.session).recordContiguous(absolutePath, startLineDisplay, collectedLines);
+					if (sourceLines.length > 0 && !firstLineExceedsLimit) {
+						getFileReadCache(this.session).recordContiguous(absolutePath, startLineDisplay, sourceLines);
 					}
 
 					const shouldAddHashLines = !rawSelector && displayMode.hashLines;
@@ -1829,7 +1858,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					let capturedDisplayContent: { text: string; startLine: number } | undefined;
 					const formatText = (text: string, startNum: number): string => {
 						capturedDisplayContent = { text, startLine: startNum };
-						return formatTextWithMode(text, startNum, shouldAddHashLines, shouldAddLineNumbers);
+						return formatLinesWithMode(
+							sourceLines,
+							text.split("\n"),
+							startNum,
+							shouldAddHashLines,
+							shouldAddLineNumbers,
+						);
 					};
 
 					let outputText: string;
@@ -1883,8 +1918,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						details.displayContent = capturedDisplayContent;
 					}
 
-					if (!firstLineExceedsLimit && collectedLines.length > 0) {
-						const blocks = scanConflictLines(collectedLines, startLineDisplay);
+					if (!firstLineExceedsLimit && sourceLines.length > 0) {
+						const blocks = scanConflictLines(sourceLines, startLineDisplay);
 						if (blocks.length > 0) {
 							const history = getConflictHistory(this.session);
 							const displayPathForWarning = formatPathRelativeToCwd(absolutePath, this.session.cwd);

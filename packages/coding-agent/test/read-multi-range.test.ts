@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
+import { computeLineHash, executeHashlineSingle } from "@gajae-code/coding-agent/edit";
 import type { ClientBridge } from "@gajae-code/coding-agent/session/client-bridge";
 import type { ToolSession } from "@gajae-code/coding-agent/tools";
 import type { ReadToolDetails } from "@gajae-code/coding-agent/tools/read";
@@ -37,6 +38,10 @@ function makeNumberedContent(lines: number): string {
 	return Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join("\n");
 }
 
+beforeEach(async () => {
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true });
+});
 describe("read tool multi-range selector", () => {
 	let tmpDir: string;
 
@@ -155,5 +160,38 @@ describe("read tool multi-range selector", () => {
 		expect(text).toContain("bridge five");
 		expect(text).not.toContain("bridge three");
 		expect(text).not.toContain("disk");
+	});
+
+	it("keeps hashline anchors based on full source lines when display output is column-truncated", async () => {
+		const filePath = path.join(tmpDir, "wide.txt");
+		const wideLine = `prefix-${"x".repeat(80)}-suffix`;
+		await fs.writeFile(filePath, `${wideLine}\nsecond\n`);
+
+		const session = createSession(tmpDir);
+		session.settings.set("tools.outputMaxColumns", 16);
+		const tool = new ReadTool(session);
+		const result = await tool.execute("call-wide", { path: `${filePath}:1+1` });
+		const text = textOutput(result);
+		const anchor = `1${computeLineHash(1, wideLine)}`;
+
+		expect(text).toContain("…");
+		expect(text).toContain(`${anchor}|`);
+		const snapshot = session.fileReadCache?.get(filePath);
+		expect(snapshot?.lines.get(1)).toBe(wideLine);
+
+		await executeHashlineSingle({
+			session,
+			input: `§wide.txt\n≔${anchor}\nreplacement`,
+			writethrough: async (targetPath, content) => {
+				await Bun.write(targetPath, content);
+				return undefined;
+			},
+			beginDeferredDiagnosticsForPath: () => ({
+				onDeferredDiagnostics: () => {},
+				signal: new AbortController().signal,
+				finalize: () => {},
+			}),
+		});
+		expect(await fs.readFile(filePath, "utf8")).toBe("replacement\nsecond\n");
 	});
 });
