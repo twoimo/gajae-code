@@ -1844,6 +1844,7 @@
 					"enum": [
 						"auto",
 						"openai",
+						"antigravity",
 						"gemini",
 						"openrouter"
 					],

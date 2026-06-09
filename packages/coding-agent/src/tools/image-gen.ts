@@ -11,6 +11,7 @@ import {
 import {
 	$env,
 	isEnoent,
+	logger,
 	parseImageMetadata,
 	prompt,
 	ptree,
@@ -404,15 +405,51 @@ interface ParsedAntigravityCredentials {
 	projectId: string;
 }
 
-function parseAntigravityCredentials(raw: string): ParsedAntigravityCredentials | null {
-	try {
-		const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
-		if (parsed.token && parsed.projectId) {
-			return { accessToken: parsed.token, projectId: parsed.projectId };
+export function parseAntigravityCredentials(raw: string): ParsedAntigravityCredentials | null {
+	const value = raw.trim();
+	if (!value) return null;
+
+	// Antigravity credentials are normally a structured JSON document
+	// ({ token, projectId }). Some provider configurations instead hand back a
+	// raw OAuth token. Accept both the structured (JSON/object) form and a raw
+	// token, and emit a diagnostic when config is present but unusable so the
+	// image tool fails loudly instead of silently dropping the provider.
+	if (value.startsWith("{")) {
+		let parsed: { token?: unknown; projectId?: unknown; project_id?: unknown };
+		try {
+			parsed = JSON.parse(value) as typeof parsed;
+		} catch {
+			logger.warn("Antigravity image credentials are not valid JSON; skipping image provider", {
+				provider: "google-antigravity",
+			});
+			return null;
 		}
-	} catch {
-		// Invalid JSON
+		const token = typeof parsed.token === "string" ? parsed.token.trim() : "";
+		const projectId =
+			typeof parsed.projectId === "string"
+				? parsed.projectId.trim()
+				: typeof parsed.project_id === "string"
+					? parsed.project_id.trim()
+					: "";
+		if (token && projectId) {
+			return { accessToken: token, projectId };
+		}
+		logger.warn("Antigravity image credentials missing token or projectId; skipping image provider", {
+			provider: "google-antigravity",
+		});
+		return null;
 	}
+
+	// Raw token form: the Antigravity image endpoint requires a project, so a
+	// bare token is only usable when a project id is available from the env.
+	const projectId = ($env.GOOGLE_CLOUD_PROJECT ?? $env.GOOGLE_ANTIGRAVITY_PROJECT_ID ?? "").trim();
+	if (projectId) {
+		return { accessToken: value, projectId };
+	}
+	logger.warn(
+		"Antigravity image credentials are a raw token without a project id; set GOOGLE_CLOUD_PROJECT to enable the image provider",
+		{ provider: "google-antigravity" },
+	);
 	return null;
 }
 

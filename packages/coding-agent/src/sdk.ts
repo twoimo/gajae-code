@@ -867,6 +867,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	if (
 		imageProvider === "auto" ||
 		imageProvider === "openai" ||
+		imageProvider === "antigravity" ||
 		imageProvider === "gemini" ||
 		imageProvider === "openrouter"
 	) {

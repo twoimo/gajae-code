@@ -2,9 +2,15 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import type { Model } from "@gajae-code/ai";
 import type { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
+import { getEnumValues } from "@gajae-code/coding-agent/config/settings-schema";
 import type { CustomToolContext } from "@gajae-code/coding-agent/extensibility/custom-tools";
 import type { ReadonlySessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { imageGenTool, setPreferredImageProvider } from "@gajae-code/coding-agent/tools/image-gen";
+import {
+	getImageGenToolsWithRegistry,
+	imageGenTool,
+	parseAntigravityCredentials,
+	setPreferredImageProvider,
+} from "@gajae-code/coding-agent/tools/image-gen";
 
 const originalFetch = global.fetch;
 const originalOpenRouterKey = Bun.env.OPENROUTER_API_KEY;
@@ -190,5 +196,75 @@ describe("imageGenTool", () => {
 		generatedImagePaths.push(...(result.details?.imagePaths ?? []));
 
 		expect(requestUrl).toBe("https://api.openai.com/v1/responses");
+	});
+});
+
+describe("antigravity image provider config", () => {
+	it("exposes antigravity as a selectable providers.image value", () => {
+		expect(getEnumValues("providers.image")).toContain("antigravity");
+	});
+});
+
+describe("parseAntigravityCredentials", () => {
+	const originalCloudProject = Bun.env.GOOGLE_CLOUD_PROJECT;
+	const originalAntigravityProject = Bun.env.GOOGLE_ANTIGRAVITY_PROJECT_ID;
+
+	afterEach(() => {
+		if (originalCloudProject === undefined) delete Bun.env.GOOGLE_CLOUD_PROJECT;
+		else Bun.env.GOOGLE_CLOUD_PROJECT = originalCloudProject;
+		if (originalAntigravityProject === undefined) delete Bun.env.GOOGLE_ANTIGRAVITY_PROJECT_ID;
+		else Bun.env.GOOGLE_ANTIGRAVITY_PROJECT_ID = originalAntigravityProject;
+	});
+
+	it("parses the structured JSON credential form", () => {
+		expect(parseAntigravityCredentials(JSON.stringify({ token: "tok", projectId: "proj-1" }))).toEqual({
+			accessToken: "tok",
+			projectId: "proj-1",
+		});
+	});
+
+	it("accepts the snake_case project_id alias", () => {
+		expect(parseAntigravityCredentials(JSON.stringify({ token: "tok", project_id: "proj-2" }))).toEqual({
+			accessToken: "tok",
+			projectId: "proj-2",
+		});
+	});
+
+	it("returns null for structured credentials missing a projectId", () => {
+		expect(parseAntigravityCredentials(JSON.stringify({ token: "tok" }))).toBeNull();
+	});
+
+	it("returns null for a raw token when no project id is available", () => {
+		delete Bun.env.GOOGLE_CLOUD_PROJECT;
+		delete Bun.env.GOOGLE_ANTIGRAVITY_PROJECT_ID;
+		expect(parseAntigravityCredentials("raw-oauth-token")).toBeNull();
+	});
+
+	it("accepts a raw token when GOOGLE_CLOUD_PROJECT is set", () => {
+		delete Bun.env.GOOGLE_ANTIGRAVITY_PROJECT_ID;
+		Bun.env.GOOGLE_CLOUD_PROJECT = "proj-env";
+		expect(parseAntigravityCredentials("raw-oauth-token")).toEqual({
+			accessToken: "raw-oauth-token",
+			projectId: "proj-env",
+		});
+	});
+
+	it("returns null for malformed JSON and empty input", () => {
+		expect(parseAntigravityCredentials("{not-json")).toBeNull();
+		expect(parseAntigravityCredentials("   ")).toBeNull();
+	});
+});
+
+describe("getImageGenToolsWithRegistry (antigravity)", () => {
+	it("registers the image tool when antigravity is preferred and structured credentials exist", async () => {
+		setPreferredImageProvider("antigravity");
+		const modelRegistry = {
+			getApiKeyForProvider: async () => JSON.stringify({ token: "tok", projectId: "proj-1" }),
+			getApiKey: async () => undefined,
+		} as unknown as ModelRegistry;
+
+		const tools = await getImageGenToolsWithRegistry(modelRegistry);
+		expect(tools).toHaveLength(1);
+		expect(tools[0]).toBe(imageGenTool);
 	});
 });

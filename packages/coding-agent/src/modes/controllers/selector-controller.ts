@@ -506,7 +506,13 @@ export class SelectorController {
 				}
 				break;
 			case "providers.image":
-				if (value === "auto" || value === "openai" || value === "gemini" || value === "openrouter") {
+				if (
+					value === "auto" ||
+					value === "openai" ||
+					value === "antigravity" ||
+					value === "gemini" ||
+					value === "openrouter"
+				) {
 					setPreferredImageProvider(value);
 				}
 				break;
