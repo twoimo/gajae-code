@@ -53,6 +53,7 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimit, Semaphore } from "./parallel";
 import { assertNoRawTaskFields, buildTaskReceipt, buildTaskRoiSummary } from "./receipt";
 import { renderResult, renderCall as renderTaskCall } from "./render";
+import { reconcileSpawnRoi } from "./roi-reconciliation";
 import { getTaskSimpleModeCapabilities, type TaskSimpleMode } from "./simple-mode";
 import { DEFAULT_SPAWN_THRESHOLD, evaluateReviewerExploreGate, evaluateSpawnGate } from "./spawn-gate";
 import {
@@ -1713,6 +1714,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 			const receipts = results.map(buildTaskReceipt);
 			const roiSummary = buildTaskRoiSummary(receipts);
+			const roiReconciliation = reconcileSpawnRoi(params.spawnPlan, receipts);
 			const summaries = receipts.map(r => {
 				const status = r.status === "merge_failed" ? "merge failed" : r.status;
 				return {
@@ -1755,6 +1757,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				usage: hasAggregatedUsage ? aggregatedUsage : undefined,
 				forkContextClonedTokens: forkContextClonedTokens > 0 ? forkContextClonedTokens : undefined,
 				roiSummary,
+				roiReconciliation,
 			};
 			assertNoRawTaskFields(details, "task.return.details");
 			return {
