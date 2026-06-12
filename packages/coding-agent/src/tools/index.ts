@@ -403,7 +403,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		toolNames && toolNames.length > 0 ? [...new Set(toolNames.map(name => name.toLowerCase()))] : undefined;
 	const goalEnabled = session.settings.get("goal.enabled");
 	const goalStateToolNames = [...GOAL_MODE_TOOL_NAMES];
-	if (goalEnabled && session.getGoalRuntime !== undefined && requestedTools && !requestedTools.includes("goal")) {
+	if (goalEnabled && requestedTools && !requestedTools.includes("goal")) {
 		requestedTools = [...requestedTools, "goal"];
 	}
 	if (goalEnabled && requestedTools) {
@@ -482,7 +482,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		allToolsByRequestName.set(name.toLowerCase(), [name, factory]);
 	}
 	const isToolAllowed = (name: string) => {
-		if (name === "goal") return goalEnabled && session.getGoalRuntime !== undefined;
+		if (name === "goal") return goalEnabled;
 		if (goalStateToolNames.includes(name as (typeof GOAL_MODE_TOOL_NAMES)[number])) return goalEnabled;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return true;

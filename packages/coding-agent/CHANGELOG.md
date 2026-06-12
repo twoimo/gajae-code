@@ -11,6 +11,7 @@
 - Added a deterministic fork-context mode advisory (`adviseForkContextMode`): recommends `none`/`receipt`/`last-turn` from assignment-text dependence signals with parent-capped per-mode cloned-token estimates, never overrides an explicit caller mode, and is surfaced receipt-visible-only as `TaskResultReceipt.forkContextAdvisory` (no change to actual mode selection).
 
 ### Fixed
+- Kept the unified `goal` tool registered and active by default whenever `goal.enabled` is true, including explicit tool subsets and `gjc ultragoal create-goals` arming flows.
 
 - Tool-output pruning no longer rewrites already-sent provider-facing history mid prompt-cache epoch: `#checkCompaction` now invokes pruning only when un-pruned context already crosses the compaction threshold (a sanctioned maintenance boundary), preserving the prefix-stability invariant. Also fixed a latent no-op where pruning mutated materialized branch copies and never persisted; `SessionManager.applyEntryMessageUpdates` now writes pruned messages back into the canonical store.
 

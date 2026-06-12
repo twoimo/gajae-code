@@ -105,7 +105,10 @@ function computeNonMessageBreakdown(session: AgentSession): {
 	const systemPromptParts = session.systemPrompt ?? [];
 	const rulesTokens = estimateRulesTokens(systemPromptParts);
 	const systemContextTokens = estimateTextTokensHeuristic(systemPromptParts.slice(1));
-	const systemPromptTokens = Math.max(0, estimateTextTokensHeuristic(systemPromptParts[0] ?? "") - skillsTokens - rulesTokens);
+	const systemPromptTokens = Math.max(
+		0,
+		estimateTextTokensHeuristic(systemPromptParts[0] ?? "") - skillsTokens - rulesTokens,
+	);
 	return { rulesTokens, skillsTokens, toolsTokens, systemContextTokens, systemPromptTokens };
 }
 

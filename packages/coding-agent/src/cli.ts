@@ -1,14 +1,11 @@
 #!/usr/bin/env bun
-import { APP_NAME, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
-
-
-
 
 /**
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
+import { APP_NAME, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -20,7 +17,6 @@ if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 process.title = APP_NAME;
 const rootHelpFlags = ["--help", "-h", "help"];
 const versionFlags = ["--version", "-v"];
-
 
 const commands: CommandEntry[] = [
 	{ name: "codex-native-hook", load: () => import("./commands/codex-native-hook").then(m => m.default) },
@@ -74,7 +70,6 @@ async function loadLaunchCommand() {
 	return import("./commands/launch").then(m => m.default);
 }
 
-
 class RootHelpCommand extends Command {
 	static description = "Red-claw AI coding assistant";
 	static hidden = true;
@@ -97,7 +92,10 @@ class RootHelpCommand extends Command {
 		"system-prompt": Flags.string({ description: "System prompt (default: coding assistant prompt)" }),
 		"append-system-prompt": Flags.string({ description: "Append text or file contents to the system prompt" }),
 		"allow-home": Flags.boolean({ description: "Allow starting in ~ without auto-switching to a temp dir" }),
-		mode: Flags.string({ description: "Output mode: text (default), json, rpc, acp, rpc-ui, or bridge", options: ["text", "json", "rpc", "acp", "rpc-ui", "bridge"] }),
+		mode: Flags.string({
+			description: "Output mode: text (default), json, rpc, acp, rpc-ui, or bridge",
+			options: ["text", "json", "rpc", "acp", "rpc-ui", "bridge"],
+		}),
 		print: Flags.boolean({ char: "p", description: "Non-interactive mode: process prompt and exit" }),
 		continue: Flags.boolean({ char: "c", description: "Continue previous session" }),
 		resume: Flags.string({ char: "r", description: "Resume a session (by ID prefix, path, or picker if omitted)" }),
@@ -109,9 +107,16 @@ class RootHelpCommand extends Command {
 		"no-pty": Flags.boolean({ description: "Disable PTY-based interactive bash execution" }),
 		tmux: Flags.boolean({ description: "Launch interactive startup inside tmux" }),
 		tools: Flags.string({ description: "Comma-separated list of tools to enable (default: all)" }),
-		thinking: Flags.string({ description: "Set thinking level: ultra, high, medium, low", options: ["ultra", "high", "medium", "low"] }),
+		thinking: Flags.string({
+			description: "Set thinking level: ultra, high, medium, low",
+			options: ["ultra", "high", "medium", "low"],
+		}),
 		hook: Flags.string({ description: "Load a hook/extension file (can be used multiple times)", multiple: true }),
-		extension: Flags.string({ char: "e", description: "Load an extension file (can be used multiple times)", multiple: true }),
+		extension: Flags.string({
+			char: "e",
+			description: "Load an extension file (can be used multiple times)",
+			multiple: true,
+		}),
 		"no-extensions": Flags.boolean({ description: "Disable extension discovery (explicit -e paths still work)" }),
 		"no-skills": Flags.boolean({ description: "Disable skills discovery and loading" }),
 		skills: Flags.string({ description: "Comma-separated glob patterns to filter skills (e.g., git-*,docker)" }),

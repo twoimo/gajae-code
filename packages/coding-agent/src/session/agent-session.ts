@@ -4389,7 +4389,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const previousTools = this.getActiveToolNames().filter(name => name !== "goal");
+		const previousTools = this.getActiveToolNames();
 		const goalTools = [...new Set([...previousTools, "goal"])];
 		await this.#goalRuntime.createGoal({ objective: pendingGoal.objective });
 		await this.setActiveToolsByName(goalTools);
@@ -8348,6 +8348,7 @@ export class AgentSession {
 				onChunk,
 				signal: abortController.signal,
 				sessionKey: this.sessionId,
+				cwd,
 				timeout: clampTimeout("bash") * 1000,
 				env: buildGjcRuntimeSessionEnv({
 					sessionFile: this.sessionManager.getSessionFile(),

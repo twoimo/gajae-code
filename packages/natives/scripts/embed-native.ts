@@ -74,7 +74,8 @@ for (const candidate of candidates) {
 			platformTag,
 			hostPlatformTag,
 			readBuildSidecar,
-			loadNativeAddon: candidatePath => require(candidatePath) as { nativeBuildInfo?: () => { languageSet?: string } },
+			loadNativeAddon: candidatePath =>
+				require(candidatePath) as { nativeBuildInfo?: () => { languageSet?: string } },
 			warn: message => console.warn(message),
 		});
 		available.push(candidate);

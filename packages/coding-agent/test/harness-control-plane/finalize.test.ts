@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { type FinalizeChecks, runFinalize, type ValidationCommandSpec } from "../../src/harness-control-plane/finalize";
-import { readReceiptIndex } from "../../src/harness-control-plane/storage";
 import type { ReviewFailureEvidence, ReviewVerdictEvidence } from "../../src/harness-control-plane/receipts";
+import { readReceiptIndex } from "../../src/harness-control-plane/storage";
 
 let root: string;
 const SID = "f";

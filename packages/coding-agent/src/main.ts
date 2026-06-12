@@ -33,9 +33,9 @@ import { getDefault, type SettingPath, Settings, settings } from "./config/setti
 import { initializeWithSettings } from "./discovery";
 import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
-import type { InteractiveMode, InteractiveModeOptions } from "./modes/interactive-mode";
-import type { SubmittedUserInput } from "./modes/types";
+import type { InteractiveMode } from "./modes/interactive-mode";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
+import type { SubmittedUserInput } from "./modes/types";
 import type { MCPManager } from "./runtime-mcp";
 import {
 	type CreateAgentSessionOptions,
