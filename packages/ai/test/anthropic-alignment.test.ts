@@ -326,30 +326,6 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.metadata?.user_id).not.toBe("invalid-user-id");
 		expect(isClaudeCloakingUserId(payload.metadata?.user_id ?? "")).toBe(true);
 	});
-	it("omits forced tool_choice for Anthropic Fable models via compat resolution", async () => {
-		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-fable-5", name: "Claude Fable 5", compat: { toolChoiceSupport: "auto" } },
-			{
-				systemPrompt: ["Stay concise."],
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-				tools: [
-					{
-						name: "resolve",
-						description: "resolve a pending action",
-						parameters: {
-							type: "object",
-							properties: { action: { type: "string" } },
-							required: ["action"],
-						} as TJsonSchema,
-					},
-				],
-			},
-			{ toolChoice: { type: "tool", name: "resolve" } },
-		)) as { tool_choice?: unknown; tools?: unknown[] };
-
-		expect(payload.tool_choice).toBeUndefined();
-		expect(payload.tools).toHaveLength(1);
-	});
 
 	it("omits forced tool_choice for Anthropic Mythos models via compat resolution", async () => {
 		const payload = (await captureAnthropicPayload(
@@ -376,22 +352,9 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.tools).toHaveLength(1);
 	});
 
-	it("keeps non-forced tool_choice for Anthropic Fable models", async () => {
-		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-fable-5", name: "Claude Fable 5" },
-			{
-				systemPrompt: ["Stay concise."],
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-			{ toolChoice: "none" },
-		)) as { tool_choice?: unknown };
-
-		expect(payload.tool_choice).toEqual({ type: "none" });
-	});
-
-	it("does not hard-code Fable/Mythos forced tool_choice gating in Anthropic request code", () => {
+	it("does not hard-code Mythos forced tool_choice gating in Anthropic request code", () => {
 		const source = fs.readFileSync(path.join(import.meta.dir, "../src/providers/anthropic.ts"), "utf8");
-		expect(source).not.toContain("claude-(?:fable|mythos)");
+		expect(source).not.toContain("claude-mythos");
 	});
 
 	it("keeps forced tool_choice for compatible Anthropic models", async () => {

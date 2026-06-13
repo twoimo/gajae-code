@@ -89,13 +89,6 @@ export const BUILTIN_MODEL_PROFILES: readonly ModelProfileDefinition[] = [
 		critic: "anthropic/claude-opus-4-8:high",
 		architect: "anthropic/claude-opus-4-8:xhigh",
 	}),
-	profile("claude-fable", ["anthropic"], {
-		default: "anthropic/claude-fable-5:xhigh",
-		executor: "anthropic/claude-sonnet-4-6",
-		planner: "anthropic/claude-opus-4-8:low",
-		critic: "anthropic/claude-opus-4-8:high",
-		architect: "anthropic/claude-fable-5:xhigh",
-	}),
 	profile("glm-eco", ["zai"], {
 		default: "zai/glm-5.1:low",
 		executor: "zai/glm-5.1:minimal",
@@ -222,13 +215,6 @@ export const BUILTIN_MODEL_PROFILES: readonly ModelProfileDefinition[] = [
 		critic: "minimax-code/minimax-v3:xhigh",
 		architect: "minimax-code/minimax-v3:xhigh",
 	}),
-	profile("fable-codex", ["anthropic", "openai-codex"], {
-		default: "anthropic/claude-fable-5:xhigh",
-		executor: "openai-codex/gpt-5.5:low",
-		planner: "openai-codex/gpt-5.5:medium",
-		critic: "openai-codex/gpt-5.5:high",
-		architect: "openai-codex/gpt-5.5:xhigh",
-	}),
 	profile("opus-codex", ["anthropic", "openai-codex"], {
 		default: "anthropic/claude-opus-4-8:xhigh",
 		executor: "openai-codex/gpt-5.5:low",
@@ -256,7 +242,6 @@ const PROFILE_PRESENTATION: Record<string, ModelProfilePresentation> = {
 	"codex-pro": { displayName: "Codex Pro", providerGroup: "CODEX" },
 	opencodego: { displayName: "OpenCodeGo", providerGroup: "OPENCODEGO" },
 	"claude-opus": { displayName: "Claude Opus", providerGroup: "CLAUDE" },
-	"claude-fable": { displayName: "Claude Fable", providerGroup: "CLAUDE" },
 	"glm-eco": { displayName: "GLM Eco", providerGroup: "GLM" },
 	"glm-medium": { displayName: "GLM Medium", providerGroup: "GLM" },
 	"glm-pro": { displayName: "GLM Pro", providerGroup: "GLM" },
@@ -275,7 +260,6 @@ const PROFILE_PRESENTATION: Record<string, ModelProfilePresentation> = {
 	"minimax-eco": { displayName: "MiniMax Eco", providerGroup: "MINIMAX" },
 	"minimax-medium": { displayName: "MiniMax Medium", providerGroup: "MINIMAX" },
 	"minimax-pro": { displayName: "MiniMax Pro", providerGroup: "MINIMAX" },
-	"fable-codex": { displayName: "Fable + Codex", providerGroup: "COMBOS" },
 	"opus-codex": { displayName: "Opus + Codex", providerGroup: "COMBOS" },
 	"codex-opencodego": { displayName: "Codex + OpenCodeGo", providerGroup: "COMBOS" },
 };

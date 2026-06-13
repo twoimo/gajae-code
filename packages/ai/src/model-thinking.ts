@@ -387,7 +387,7 @@ function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
 		(model.api === "anthropic-messages" || model.api === "bedrock-converse-stream") &&
 		isClaudeForcedToolChoiceIncapableModelId(model.id)
 	) {
-		// Claude Fable/Mythos accept tools but reject forced tool use (Anthropic
+		// Claude Mythos accepts tools but rejects forced tool use (Anthropic
 		// 400: "tool_choice forces tool use is not compatible with this model").
 		model.compat = { ...(model.compat ?? {}), toolChoiceSupport: "auto" } as typeof model.compat;
 	}

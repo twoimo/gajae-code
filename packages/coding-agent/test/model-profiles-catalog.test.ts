@@ -74,17 +74,6 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		},
 	},
 	{
-		name: "claude-fable",
-		requiredProviders: ["anthropic"],
-		mapping: {
-			default: "anthropic/claude-fable-5:xhigh",
-			executor: "anthropic/claude-sonnet-4-6",
-			planner: "anthropic/claude-opus-4-8:low",
-			critic: "anthropic/claude-opus-4-8:high",
-			architect: "anthropic/claude-fable-5:xhigh",
-		},
-	},
-	{
 		name: "glm-eco",
 		requiredProviders: ["zai"],
 		mapping: {
@@ -283,17 +272,6 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		},
 	},
 	{
-		name: "fable-codex",
-		requiredProviders: ["anthropic", "openai-codex"],
-		mapping: {
-			default: "anthropic/claude-fable-5:xhigh",
-			executor: "openai-codex/gpt-5.5:low",
-			planner: "openai-codex/gpt-5.5:medium",
-			critic: "openai-codex/gpt-5.5:high",
-			architect: "openai-codex/gpt-5.5:xhigh",
-		},
-	},
-	{
 		name: "opus-codex",
 		requiredProviders: ["anthropic", "openai-codex"],
 		mapping: {
@@ -329,6 +307,8 @@ const oldNames = [
 	"minimax-cn-standard",
 	"kimi-standard",
 	"glm-standard",
+	"claude-fable",
+	"fable-codex",
 ];
 
 function selectorExists(selector: string): boolean {
@@ -338,7 +318,7 @@ function selectorExists(selector: string): boolean {
 }
 
 describe("built-in model profile catalog", () => {
-	test("contains exact 26-profile matrix cell-for-cell", () => {
+	test("contains exact 25-profile matrix cell-for-cell", () => {
 		expect(BUILTIN_MODEL_PROFILES.map(profile => profile.name)).toEqual(
 			expectedProfiles.map(profile => profile.name),
 		);

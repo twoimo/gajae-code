@@ -1,4 +1,5 @@
-import { extractHttpStatusFromError, logger } from "@gajae-code/utils";
+import { extractHttpStatusFromError } from "@gajae-code/utils/fetch-retry";
+import * as logger from "@gajae-code/utils/logger";
 import type { Api, Model, ToolChoice, ToolChoiceCompat, ToolChoiceSupport, ToolChoiceSupportSource } from "../types";
 
 const supportRank: Record<ToolChoiceSupport, number> = {
@@ -12,12 +13,12 @@ const registry = new Map<string, ToolChoiceSupport>();
 const loggedRegistryKeys = new Set<string>();
 
 /**
- * Claude Fable/Mythos accept tools but reject forced tool use (Anthropic 400:
+ * Claude Mythos accepts tools but rejects forced tool use (Anthropic 400:
  * "tool_choice forces tool use is not compatible with this model"). Catalog
  * generation and dynamic discovery use this to default `toolChoiceSupport`.
  */
 export function isClaudeForcedToolChoiceIncapableModelId(modelId: string): boolean {
-	return /(?:^|[/.])claude-(?:fable|mythos)(?:-|$)/i.test(modelId);
+	return /(?:^|[/.])claude-mythos(?:-|$)/i.test(modelId);
 }
 
 /** Derives the effective static tool-choice support from compatibility flags. */

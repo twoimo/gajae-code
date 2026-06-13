@@ -30,7 +30,7 @@ function getProviderModels(provider: GeneratedProvider): Map<string, Model<Api>>
 /**
  * Bundled-catalog compat defaults applied at load time so stale committed
  * models.json snapshots still receive policy-critical fields (e.g. Claude
- * Fable/Mythos rejecting forced tool use) without a full regeneration.
+ * Mythos rejecting forced tool use) without a full regeneration.
  */
 function applyBundledCompatDefaults(model: Model<Api>): Model<Api> {
 	if (

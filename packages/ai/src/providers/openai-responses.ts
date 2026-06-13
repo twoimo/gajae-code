@@ -1,4 +1,11 @@
-import { $env, $inheritedEnv, extractHttpStatusFromError, logger, structuredCloneJSON } from "@gajae-code/utils";
+import {
+	$credentialEnv,
+	$env,
+	$inheritedEnv,
+	extractHttpStatusFromError,
+	logger,
+	structuredCloneJSON,
+} from "@gajae-code/utils";
 import OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
@@ -392,12 +399,12 @@ function createClient(
 	baseUrl: string | undefined;
 } {
 	if (!apiKey) {
-		if (!$env.OPENAI_API_KEY) {
+		apiKey = $credentialEnv("OPENAI_API_KEY");
+		if (!apiKey) {
 			throw new Error(
 				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
 			);
 		}
-		apiKey = $env.OPENAI_API_KEY;
 	}
 	const rawApiKey = apiKey;
 

@@ -194,9 +194,9 @@ Built-in profiles are grouped by provider mix and tier:
 
 - `codex-{eco,medium,pro}` — all roles on `openai-codex/gpt-5.5`, differing only by per-role reasoning effort
 - `opencodego` — single OpenCode Go preset (Kimi default, DeepSeek executor/architect, Qwen planner, MiMo critic)
-- `claude-opus` / `claude-fable` — Anthropic OAuth presets; `claude-fable` moves the default and architect roles to `claude-fable-5`
+- `claude-opus` — Anthropic OAuth preset centered on `claude-opus-4-8`
 - Single-provider tiers: `glm-{eco,medium,pro}`, `kimi-coding-plan-{eco,medium,pro}`, `mimo-{eco,medium,pro}`, `grok-{eco,medium,pro}`, `cursor-{eco,medium,pro}`, `minimax-{eco,medium,pro}`
-- Combos: `fable-codex`, `opus-codex` (Claude main agent with Codex support roles), `codex-opencodego` (Codex orchestrator/architect with OpenCode Go workers)
+- Combos: `opus-codex` (Claude main agent with Codex support roles), `codex-opencodego` (Codex orchestrator/architect with OpenCode Go workers)
 
 The `eco` tier favors cheaper/faster defaults, `medium` matches normal production defaults, and `pro` raises reasoning for architect, critic, and planner roles. Effort suffixes are clamped to each model's supported thinking range at preview and activation time (for example `codex-eco`'s executor `:minimal` resolves to effective `low` on `gpt-5.5`). Single-provider tiers pin each provider's current flagship (`zai/glm-5.1`, `kimi-code/kimi-k2.7-code`, `xiaomi/mimo-v2.5-pro`, `xai/grok-4.3`, `cursor/composer-1.5`, `minimax-code/minimax-v3`). User-defined profiles override built-ins by exact profile name.
 

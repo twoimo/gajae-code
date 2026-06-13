@@ -9,7 +9,7 @@
 ### Added
 
 - Made `/model` open to a preset-first landing view: provider-grouped presets with live auth checkmarks, highlight-to-expand tiers, a full clamped role→model preview before applying, and a session/default apply scope choice; typing still jumps straight to model search, "Browse all models" opens the classic tabbed selector, and temporary-only quick-switch bypasses the landing entirely.
-- Rebuilt the builtin model profile catalog as 27 profiles: `codex-{eco,medium,pro}` on `gpt-5.5` effort spreads, a single `opencodego` preset, `claude-opus`/`claude-fable`, `{glm,kimi-coding-plan,mimo,grok,cursor,minimax}-{eco,medium,pro}` trios with thinking levels clamped to provider support, and `fable-codex`/`opus-codex`/`codex-opencodego` combos. Legacy profile names (including the `*-standard` family) were removed clean-break and now fail with the available-profile listing.
+- Rebuilt the builtin model profile catalog as 25 profiles: `codex-{eco,medium,pro}` on `gpt-5.5` effort spreads, a single `opencodego` preset, `claude-opus`, `{glm,kimi-coding-plan,mimo,grok,cursor,minimax}-{eco,medium,pro}` trios with thinking levels clamped to provider support, and `opus-codex`/`codex-opencodego` combos. Legacy profile names (including the `*-standard` family and retired Fable presets) were removed clean-break and now fail with the available-profile listing.
 - Added a post-`/login` smart preset recommendation: when login succeeds and no profile is active, prompts "Apply <preset> now?" (session-only on confirm); when a profile is active, prints a one-line hint instead. The active profile is tracked in-memory on the session with rollback-safe activation.
 - Bundled `kimi-code/kimi-k2.7-code` and `minimax-code/minimax-v3` model entries; MiniMax presets use the canonical `minimax-code` provider id throughout.
 - Added a harness receipt JSONL spool exporter for gajae receipt-runtime interop: configured `gjc harness --receipt-spool-dir <dir>` / `GJC_RECEIPT_SPOOL_DIR` now appends persisted native `ReceiptEnvelope` records as `{cursor,envelope}` lines to `spool.jsonl`, with restart-safe 12-digit cursors and installed-package smoke coverage (#545).
@@ -20,6 +20,7 @@
 ### Removed
 
 - Removed the hardcoded OpenAI Codex role-preset action from the model selector; builtin model profiles are now the only preset concept.
+- Removed retired Fable model profiles (`claude-fable`, `fable-codex`) after `claude-fable-5` was removed upstream.
 
 ### Changed
 

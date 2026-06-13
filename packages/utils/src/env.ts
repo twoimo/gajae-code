@@ -242,8 +242,8 @@ export function $pickenv(...keys: string[]): string | undefined {
  */
 export function $credentialEnv(name: string): string | undefined {
 	return (
-		resolveLiveCredentialEnvValue(name) ??
 		$inheritedEnv(name) ??
+		resolveLiveCredentialEnvValue(name) ??
 		resolveFileEnvValue(agentEnv, name) ??
 		resolveFileEnvValue(piEnv, name) ??
 		resolveFileEnvValue(homeEnv, name) ??
