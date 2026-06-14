@@ -92,7 +92,15 @@ function runListSessions(format: string, env: NodeJS.ProcessEnv = process.env): 
 		output = runTmux(["list-sessions", "-F", format], env);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (message.includes("no server running") || message.includes("failed to connect to server")) return [];
+		// No tmux server, an unreachable server, or no tmux binary installed all mean
+		// there are no tmux sessions to enumerate. Read-only callers such as `gjc gc`
+		// must not hard-fail on hosts without tmux.
+		if (
+			message.includes("no server running") ||
+			message.includes("failed to connect to server") ||
+			message.includes("Executable not found")
+		)
+			return [];
 		throw error;
 	}
 	return output

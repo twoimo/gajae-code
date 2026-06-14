@@ -26,6 +26,7 @@ describe("GJC public CLI command surface", () => {
 			"coordinator",
 			"team",
 			"ultragoal",
+			"gc",
 			"ralplan",
 			"config",
 			"mcp-serve",
@@ -150,7 +151,7 @@ describe("GJC public CLI command surface", () => {
 
 			expect(result.exitCode, stderr).toBe(0);
 			const payload = JSON.parse(stdout) as { written?: number; targetRoot?: string };
-			expect(payload.written).toBe(7);
+			expect(payload.written).toBe(8);
 			expect(payload.targetRoot).toContain(path.join(home, ".gjc", "agent"));
 		} finally {
 			await fs.rm(home, { recursive: true, force: true });

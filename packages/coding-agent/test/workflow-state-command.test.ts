@@ -65,8 +65,8 @@ describe("gjc state workflow command", () => {
 				expect(modeState).toMatchObject({
 					skill,
 					current_phase: initialPhases[skill],
-					blocked_reason: "execution approval missing",
 				});
+				expect(modeState.blocked_reason ?? modeState.state?.blocked_reason).toBe("execution approval missing");
 				expect(modeState.receipt.command).toBe(`gjc state ${skill} write`);
 
 				const activeState = await Bun.file(
