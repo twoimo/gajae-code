@@ -16,7 +16,8 @@ describe("GJC dogfood skill template", () => {
 		expect(template).toContain("<project>/.gjc/skills/gjc-dogfood/SKILL.md");
 		expect(template).toContain("The live issue has no comment approving a fifth bundled default workflow skill");
 		expect(template).toContain("Use when running or reviewing work through GJC sessions");
-		expect(template).toContain("gjc --tmux --worktree <path>");
+		expect(template).toContain("gjc --tmux --worktree <branch-like-name>");
+		expect(template).toContain("Do not pass filesystem paths to `--worktree`");
 		expect(template).toContain("gajae-code-93-dogfood-skill");
 		expect(template).toContain("Verify the prompt was accepted");
 		expect(template).toContain("create or link the gajae-code issue");

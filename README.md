@@ -88,7 +88,11 @@ gjc
 gjc --tmux
 
 # Use an isolated worktree for risky or reviewable work
-gjc --tmux --worktree ../my-task-worktree
+# --worktree takes an optional branch-like name, not a filesystem path.
+gjc --tmux --worktree my-task-branch
+
+# If you already created a worktree directory, launch from that directory instead.
+cd ../my-task-worktree && gjc --tmux
 ```
 
 Inside a GJC session, use the public workflow surface:
@@ -136,10 +140,10 @@ No sprawling default skill zoo: GJC improves by making this small method better.
 
 | Tool        | Recommended GJC command                        | Boundary                                               |
 | ----------- | ---------------------------------------------- | ------------------------------------------------------ |
-| Codex CLI   | `gjc --tmux --worktree <path>` or `gjc`        | External runner; run both from the same repo/worktree. |
-| Claude Code | `gjc --tmux` or `gjc --tmux --worktree <path>` | GJC does not become a Claude Code extension.           |
+| Codex CLI   | `gjc --tmux --worktree <name>` or `gjc`        | `--worktree` names a GJC-managed sibling worktree; for an existing path, `cd` there first. |
+| Claude Code | `gjc --tmux` or `gjc --tmux --worktree <name>` | GJC does not become a Claude Code extension.           |
 | OpenCode    | `gjc` or `gjc --tmux`                          | External-runner workflow only today.                   |
-| Claw Code   | `gjc --tmux --worktree <path>`                 | GJC does not install into or replace Claw Code.        |
+| Claw Code   | `gjc --tmux --worktree <name>`                 | GJC does not install into or replace Claw Code.        |
 
 For remote-control protocol details, see [`docs/bridge.md`](docs/bridge.md). For the Gajae Remote thin phone steering wheel design (v0), see [`docs/gajae-remote.md`](docs/gajae-remote.md).
 

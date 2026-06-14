@@ -267,7 +267,7 @@ For Hermes/Claw-style orchestration, treat `gjc` as an external runner. The orch
 Public orchestration boundaries:
 
 1. Choose the repo/worktree and branch that will own changes, logs, and review evidence.
-2. Start or attach the GJC leader with `gjc --tmux` (or `gjc --tmux --worktree <path>` when the worktree path is part of the launch).
+2. Start or attach the GJC leader with `gjc --tmux` from that directory. If you want GJC to create the sibling worktree, use `gjc --tmux --worktree <branch-like-name>`; the argument is a worktree/branch name, not a filesystem path.
 3. Submit the workflow appropriate to the task: `/skill:deep-interview` for requirements discovery, `/skill:ralplan` for plan consensus, and `gjc ultragoal ...` for durable goal tracking through execution and verification.
 4. Use `gjc team ...` only when coordinated parallel tmux workers help with implementation or verification; single-lane work should stay in the leader session.
 5. Collect the handoff state: whether the session stopped cleanly, changed files, commands/checks run, failures, unresolved risks, and evidence summaries.
