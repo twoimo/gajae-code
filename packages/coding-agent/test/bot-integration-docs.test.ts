@@ -54,6 +54,11 @@ describe("external controller integration docs", () => {
 			"docs-index.generated.ts",
 		);
 
+		expect(readme).toContain("docs/agent-control-setup.md");
+		expect(readme).toContain("GJC Agent Control Plane");
+		expect(readme).toContain("MCP/RPC/ACP are transport adapters");
+		expect(overview).toContain("docs/agent-control-setup.md");
+		expect(generated).toContain('"agent-control-setup.md"');
 		expect(readme).toContain("docs/bot-integration.md");
 		expect(readme).toContain("External controller / bot");
 		expect(readme).toContain("provider-independent smokes");
@@ -120,6 +125,7 @@ describe("external controller integration docs", () => {
 			await readRepoFile("docs", "hermes-mcp-bridge.md"),
 			await readRepoFile("docs", "codebase-overview.md"),
 			await readRepoFile("docs", "external-control-readiness.md"),
+			await readRepoFile("docs", "agent-control-setup.md"),
 		];
 
 		for (const content of docs) {

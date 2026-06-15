@@ -36,6 +36,7 @@ Main `gjc` CLI and product runtime.
 - `packages/coding-agent/src/coordinator/contract.ts` defines the transport-neutral third-party coordinator contract used by `gjc mcp-serve coordinator`, `gjc coordinator`, and `gjc setup hermes`.
 - `packages/coding-agent/src/coordinator-mcp/server.ts` implements the outward MCP adapter for bot/coordinator integrations, including session start/register, turn state, question answering, status reports, and artifact reads.
 - `docs/external-control-readiness.md` classifies the public external-control surfaces: Coordinator MCP for multi-session control planes, RPC stdio for subprocess workers, ACP for editor/ACP clients, and Bridge HTTPS as experimental/fail-closed protocol scaffolding.
+- `docs/agent-control-setup.md` packages Coordinator MCP, RPC stdio, and ACP stdio as one GJC Agent Control Plane with transport adapters.
 
 ### `packages/ai/`
 
@@ -108,7 +109,7 @@ Typed Python client for `gjc --mode rpc`.
 
 - `python/gjc-rpc/pyproject.toml` packages `gjc-rpc` for Python 3.11+.
 - `python/gjc-rpc/README.md` documents the process-backed stdio client, typed command methods, startup flags, event listeners, todo seeding, host-owned tools, and host-owned URI schemes.
-- `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together coordinator MCP, RPC stdio, bridge limitations, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption.
+- `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together coordinator MCP, RPC stdio, bridge limitations, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption. Use `docs/agent-control-setup.md` when the immediate task is wiring an agent host to the unified Agent Control Plane.
 
 ### `python/robogjc/`
 

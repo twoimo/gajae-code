@@ -144,9 +144,9 @@ No sprawling default skill zoo: GJC improves by making this small method better.
 | Claude Code | `gjc --tmux` or `gjc --tmux --worktree <name>` | GJC does not become a Claude Code extension. |
 | OpenCode | `gjc` or `gjc --tmux` | External-runner workflow only today. |
 | Claw Code | `gjc --tmux --worktree <name>` | GJC does not install into or replace Claw Code. |
-| External controller / bot | `gjc mcp-serve coordinator` plus `gjc setup hermes` for compatible config, or `gjc --mode rpc` for a subprocess worker | Any MCP/RPC-capable bot drives GJC through the generic coordinator/RPC contract, not scrollback scraping. |
+| External controller / bot | GJC Agent Control Plane (`gjc mcp-serve coordinator` by default, `gjc --mode rpc` / `gjc acp` as adapters) | Agent hosts integrate through one control-plane concept; MCP/RPC/ACP are transport adapters, not separate product modes. |
 
-For generic third-party bot setup and provider-independent smokes, see [`docs/bot-integration.md`](docs/bot-integration.md). For the readiness classification across MCP, RPC, ACP, and Bridge/HTTPS surfaces, see [`docs/external-control-readiness.md`](docs/external-control-readiness.md). For lower-level protocol details, see [`docs/hermes-mcp-bridge.md`](docs/hermes-mcp-bridge.md), [`docs/rpc.md`](docs/rpc.md), [`docs/bridge.md`](docs/bridge.md), and [`docs/gajae-remote.md`](docs/gajae-remote.md).
+For agent-host setup, see the unified [`docs/agent-control-setup.md`](docs/agent-control-setup.md) guide for the GJC Agent Control Plane and its MCP/RPC/ACP adapters. For generic third-party bot setup and provider-independent smokes, see [`docs/bot-integration.md`](docs/bot-integration.md). For the readiness classification across MCP, RPC, ACP, and Bridge/HTTPS surfaces, see [`docs/external-control-readiness.md`](docs/external-control-readiness.md). For lower-level protocol details, see [`docs/hermes-mcp-bridge.md`](docs/hermes-mcp-bridge.md), [`docs/rpc.md`](docs/rpc.md), [`docs/bridge.md`](docs/bridge.md), and [`docs/gajae-remote.md`](docs/gajae-remote.md).
 
 ## Configuration
 
