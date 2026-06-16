@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { loadConfigFromEnv } from "../src/config";
+import { presetName } from "../src/presets";
 
 const presetsJson = JSON.stringify([
-	{ id: "demo", workdir: "/home/bot/src/project", sessionCommand: "gjc --worktree", taskTemplate: "Do: {{task}}" },
+	{
+		id: "demo",
+		name: "Demo preset",
+		workdir: "/home/bot/src/project",
+		sessionCommand: "gjc --worktree",
+		taskTemplate: "Do: {{task}}",
+	},
 ]);
 
 function baseEnv(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
@@ -20,6 +27,7 @@ describe("loadConfigFromEnv", () => {
 		expect(config.botToken).toBe("123:abc");
 		expect([...config.policy.allowedUserIds]).toEqual(["100", "200"]);
 		expect(config.policy.presets.has("demo")).toBe(true);
+		expect(config.policy.presets.get("demo")?.name).toBe("Demo preset");
 		expect(config.coordinator.command).toBe("gjc");
 		expect(config.coordinator.args).toEqual(["mcp-serve", "coordinator"]);
 	});
@@ -48,6 +56,29 @@ describe("loadConfigFromEnv", () => {
 		const config = loadConfigFromEnv(baseEnv());
 		expect(config.coordinator.env.GJC_COORDINATOR_MCP_WORKDIR_ROOTS).toBe("/home/bot/src/project");
 		expect(config.coordinator.env.GJC_COORDINATOR_MCP_SESSION_COMMAND).toBe("gjc --worktree");
+	});
+
+	test("preset name is optional", () => {
+		const config = loadConfigFromEnv(
+			baseEnv({
+				GJC_TELEGRAM_REMOTE_PRESETS: JSON.stringify([
+					{ id: "plain", workdir: "/home/bot/src/project", sessionCommand: "gjc --worktree" },
+				]),
+			}),
+		);
+		expect(config.policy.presets.get("plain")?.name).toBeUndefined();
+	});
+
+	test("presetName falls back to id", () => {
+		const config = loadConfigFromEnv(
+			baseEnv({
+				GJC_TELEGRAM_REMOTE_PRESETS: JSON.stringify([
+					{ id: "plain", workdir: "/home/bot/src/project", sessionCommand: "gjc --worktree" },
+				]),
+			}),
+		);
+		const plain = config.policy.presets.get("plain");
+		expect(plain && presetName(plain)).toBe("plain");
 	});
 
 	test("rejects ambiguous session commands without an explicit override", () => {

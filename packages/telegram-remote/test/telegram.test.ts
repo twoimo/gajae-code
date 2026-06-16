@@ -54,7 +54,7 @@ describe("TelegramBotApiTransport", () => {
 		expect(getUpdates?.body.allowed_updates).toEqual(["message", "callback_query"]);
 		const setCommands = calls.find(c => c.method === "setMyCommands");
 		const names = (setCommands?.body.commands as Array<{ command: string }>).map(c => c.command);
-		expect(names).toEqual(["sessions", "observe", "stop", "help", "start"]);
+		expect(names).toEqual(["sessions", "observe", "presets", "stop", "help", "start"]);
 		expect(names.some(n => n.includes("-"))).toBe(false);
 	});
 

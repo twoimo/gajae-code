@@ -21,6 +21,8 @@ export type RawRecord = Record<string, unknown>;
 export interface GatewayPreset {
 	/** The only preset reference a chat user may name. */
 	id: string;
+	/** Optional display name; chat-safe when trimmed, falls back to id. */
+	name?: string;
 	/** Fixed workdir; must be inside the coordinator workdir allowlist. */
 	workdir: string;
 	/** Fixed session command (e.g. `gjc --worktree`). Enforced coordinator-side. */
@@ -60,6 +62,7 @@ export type ParsedCommand =
 	| { kind: "start" }
 	| { kind: "sessions"; query: string | null }
 	| { kind: "observe"; sessionId: string | null }
+	| { kind: "presets" }
 	| { kind: "start_session"; presetId: string | null; task: string | null }
 	| { kind: "stop"; sessionId: string | null; confirm: boolean }
 	| { kind: "unknown" };

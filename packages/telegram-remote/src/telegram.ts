@@ -40,6 +40,7 @@ interface TelegramUpdate {
 const BOT_COMMANDS = [
 	{ command: "sessions", description: "List live/recent sessions" },
 	{ command: "observe", description: "Bounded status for one session" },
+	{ command: "presets", description: "List session presets" },
 	{ command: "stop", description: "Request a graceful stop (confirm required)" },
 	{ command: "help", description: "Show the command set" },
 	{ command: "start", description: "Onboarding" },

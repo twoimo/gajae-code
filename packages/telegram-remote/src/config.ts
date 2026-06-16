@@ -68,6 +68,7 @@ function parsePresets(value: string | undefined, defaultTaskMaxLen: number): Map
 		const record = entry as Record<string, unknown>;
 		const preset: GatewayPreset = {
 			id: String(record.id ?? ""),
+			name: typeof record.name === "string" ? record.name : undefined,
 			workdir: String(record.workdir ?? ""),
 			sessionCommand: String(record.sessionCommand ?? ""),
 			taskTemplate: typeof record.taskTemplate === "string" ? record.taskTemplate : undefined,

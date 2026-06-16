@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { parseCommand } from "../src/commands";
 
 describe("parseCommand", () => {
-	test("parses the five commands plus help", () => {
+	test("parses the command vocabulary", () => {
 		expect(parseCommand("/help")).toEqual({ kind: "help" });
+		expect(parseCommand("/presets")).toEqual({ kind: "presets" });
 		expect(parseCommand("/sessions")).toEqual({ kind: "sessions", query: null });
 		expect(parseCommand("/sessions feat x")).toEqual({ kind: "sessions", query: "feat x" });
 		expect(parseCommand("/observe sess-1")).toEqual({ kind: "observe", sessionId: "sess-1" });
@@ -18,6 +19,7 @@ describe("parseCommand", () => {
 
 	test("strips @botname mention and is case-insensitive", () => {
 		expect(parseCommand("/Sessions@MyGjcBot")).toEqual({ kind: "sessions", query: null });
+		expect(parseCommand("/Presets@MyGjcBot")).toEqual({ kind: "presets" });
 		expect(parseCommand("/STOP sess-1 CONFIRM")).toEqual({ kind: "stop", sessionId: "sess-1", confirm: true });
 	});
 

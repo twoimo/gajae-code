@@ -13,7 +13,8 @@ import type { SessionFilter } from "./types";
 
 export type SessionCallbackAction = "observe" | "refresh_observe" | "stop_arm" | "stop_confirm" | "cancel";
 export type ListCallbackAction = "sessions_page" | "sessions_filter";
-export type CallbackAction = SessionCallbackAction | ListCallbackAction;
+export type PresetCallbackAction = "preset_start";
+export type CallbackAction = SessionCallbackAction | ListCallbackAction | PresetCallbackAction;
 
 export interface BaseCallbackTokenRecord {
 	chatId: string;
@@ -38,7 +39,13 @@ export interface ListCallbackPayload {
 	page: number;
 }
 
-export type CallbackTokenRecord = BaseCallbackTokenRecord & (SessionCallbackPayload | ListCallbackPayload);
+export interface PresetCallbackPayload {
+	action: PresetCallbackAction;
+	presetId: string;
+}
+
+export type CallbackTokenRecord = BaseCallbackTokenRecord &
+	(SessionCallbackPayload | ListCallbackPayload | PresetCallbackPayload);
 
 export const CALLBACK_PREFIX = "gtr:v1:";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -69,7 +76,7 @@ export class CallbackTokenStore {
 	/** Issue a token for an action and return the opaque `gtr:v1:<token>` callback data. */
 	issue(
 		record: Omit<BaseCallbackTokenRecord, "expiresAt" | "used"> &
-			(SessionCallbackPayload | ListCallbackPayload) & { ttlMs: number },
+			(SessionCallbackPayload | ListCallbackPayload | PresetCallbackPayload) & { ttlMs: number },
 	): string {
 		this.evictExpired();
 		const token = randomBytes(16).toString("base64url");

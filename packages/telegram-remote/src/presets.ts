@@ -9,6 +9,10 @@ import type { GatewayPreset } from "./types";
 /** The single substitution token allowed in a preset task template. */
 export const TASK_SLOT = "{{task}}";
 
+export function presetName(preset: GatewayPreset): string {
+	return preset.name?.trim() || preset.id;
+}
+
 /** Outcome of resolving a chat-supplied preset id + task into a prompt. */
 export type PresetResolution =
 	| { ok: true; preset: GatewayPreset; prompt: string | undefined }

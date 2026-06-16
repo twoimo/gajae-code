@@ -12,7 +12,7 @@
  */
 import { parseCommand } from "./commands";
 import { MESSAGES } from "./messages";
-import { resolvePreset } from "./presets";
+import { presetName, resolvePreset } from "./presets";
 import {
 	activeTurnId,
 	escapeHtml,
@@ -30,6 +30,7 @@ import {
 	type CallbackTokenRecord,
 	CallbackTokenStore,
 	type ListCallbackAction,
+	type PresetCallbackAction,
 	type SessionCallbackAction,
 } from "./tokens";
 import type {
@@ -55,6 +56,7 @@ const PAGE_SIZE = 8;
 const DEFAULT_RICH_TTL_MS = 600_000;
 const BUTTON_NAME_MAX = 40;
 const STOP_SUMMARY = "Operator requested graceful stop via Telegram remote.";
+const MAX_PENDING_PRESET_TASKS = 200;
 
 /** Authorization + preset + rich-UI policy the gateway enforces. */
 export interface GatewayPolicy {
@@ -100,6 +102,7 @@ export class TelegramRemoteGateway {
 	private readonly tokens: CallbackTokenStore;
 	/** Pending text `/stop` confirmations keyed by `${chatId}:${sessionId}` → expiry ms. */
 	private readonly pendingStops = new Map<string, number>();
+	private readonly pendingPresetTasks = new Map<string, { presetId: string; expiresAt: number }>();
 
 	constructor(policy: GatewayPolicy, deps: GatewayDeps) {
 		this.policy = policy;
@@ -123,6 +126,10 @@ export class TelegramRemoteGateway {
 
 	private async dispatchText(message: IncomingTextMessage): Promise<ChatReply> {
 		const ctx: CallbackContext = { chatId: message.chatId, userId: message.userId };
+		if (!message.text.trim().startsWith("/")) {
+			const pending = this.takePendingPresetTask(ctx);
+			if (pending) return this.startPreset(pending.presetId, message.text);
+		}
 		const command = parseCommand(message.text);
 		switch (command.kind) {
 			case "help":
@@ -133,8 +140,10 @@ export class TelegramRemoteGateway {
 				return this.handleSessions(ctx, command.query);
 			case "observe":
 				return this.handleObserve(command.sessionId, ctx);
+			case "presets":
+				return this.handlePresets(ctx);
 			case "start_session":
-				return this.handleStartSession(command.presetId, command.task);
+				return this.handleStartSession(command.presetId, command.task, ctx);
 			case "stop":
 				return this.handleStop(ctx, command.sessionId, command.confirm);
 			default:
@@ -166,8 +175,24 @@ export class TelegramRemoteGateway {
 		return this.viewReply(view, sessionId, ctx);
 	}
 
-	private async handleStartSession(presetId: string | null, task: string | null): Promise<ChatReply> {
-		if (!presetId) return this.chat(MESSAGES.startUsage);
+	private async handleStartSession(
+		presetId: string | null,
+		task: string | null,
+		ctx: CallbackContext,
+	): Promise<ChatReply> {
+		if (!presetId) {
+			// Arg-less: show preset buttons (rich) or a safe id/name list (plain). renderPresets handles both.
+			if (this.policy.presets.size > 0) return this.renderPresets(ctx);
+			return this.chat(MESSAGES.startUsage);
+		}
+		return this.startPreset(presetId, task);
+	}
+
+	private async handlePresets(ctx: CallbackContext): Promise<ChatReply> {
+		return this.renderPresets(ctx);
+	}
+
+	private async startPreset(presetId: string, task: string | null): Promise<ChatReply> {
 		const resolution = resolvePreset(this.policy.presets, presetId, task);
 		if (!resolution.ok) {
 			return this.chat(resolution.reason === "unknown_preset" ? MESSAGES.unknownPreset : MESSAGES.taskTooLong);
@@ -238,6 +263,8 @@ export class TelegramRemoteGateway {
 			case "sessions_page":
 			case "sessions_filter":
 				return this.callbackSessionsList(record, ctx, update.messageId);
+			case "preset_start":
+				return this.callbackPresetStart(token, record, ctx);
 		}
 	}
 
@@ -269,6 +296,25 @@ export class TelegramRemoteGateway {
 			ctx,
 			editMessageId ?? undefined,
 		);
+		reply.callbackAnswer = { text: MESSAGES.callbackDone };
+		return reply;
+	}
+
+	private async callbackPresetStart(
+		token: string,
+		record: Extract<CallbackTokenRecord, { action: PresetCallbackAction }>,
+		ctx: CallbackContext,
+	): Promise<OutgoingReply> {
+		const preset = this.policy.presets.get(record.presetId);
+		if (!preset) return this.answerOnly(MESSAGES.unknownPreset);
+		// Single-use: consume the button before any start / pending mutation so a replayed
+		// preset button cannot start a duplicate session or re-arm a task prompt.
+		this.tokens.markUsed(token);
+		if (preset.taskTemplate) {
+			this.setPendingPresetTask(ctx, preset.id);
+			return { ...this.chat(MESSAGES.presetNeedsTask), callbackAnswer: { text: MESSAGES.callbackDone } };
+		}
+		const reply = await this.startPreset(preset.id, null);
 		reply.callbackAnswer = { text: MESSAGES.callbackDone };
 		return reply;
 	}
@@ -380,6 +426,25 @@ export class TelegramRemoteGateway {
 		return reply;
 	}
 
+	private renderPresets(ctx: CallbackContext): ChatReply {
+		if (this.policy.presets.size === 0) return this.chat(MESSAGES.noPresets);
+		const lines = [
+			"Presets:",
+			...[...this.policy.presets.values()].map(preset => `- ${presetName(preset)} (${preset.id})`),
+		];
+		const reply: ChatReply = { kind: "chat", text: lines.join("\n") };
+		if (this.rich) reply.replyMarkup = this.presetsKeyboard(ctx);
+		return reply;
+	}
+
+	private presetsKeyboard(ctx: CallbackContext): TelegramInlineKeyboardMarkup {
+		return {
+			inline_keyboard: [...this.policy.presets.values()].map(preset => [
+				{ text: presetName(preset), callbackData: this.issuePreset(preset.id, ctx) },
+			]),
+		};
+	}
+
 	private sessionsKeyboard(
 		rows: Array<{ rawSessionId: string; summary: { name: string } }>,
 		state: { filter: SessionFilter; query: string | null; page: number },
@@ -464,6 +529,16 @@ export class TelegramRemoteGateway {
 		return this.tokens.issue({ ...payload, chatId: ctx.chatId, userId: ctx.userId, ttlMs });
 	}
 
+	private issuePreset(presetId: string, ctx: CallbackContext): string {
+		return this.tokens.issue({
+			action: "preset_start",
+			presetId,
+			chatId: ctx.chatId,
+			userId: ctx.userId,
+			ttlMs: this.richTtl,
+		});
+	}
+
 	// --- Helpers ---
 
 	private get rich(): boolean {
@@ -516,5 +591,36 @@ export class TelegramRemoteGateway {
 	private isArmed(key: string, now: number): boolean {
 		const expiry = this.pendingStops.get(key);
 		return expiry !== undefined && expiry > now;
+	}
+
+	private pendingPresetKey(ctx: CallbackContext): string {
+		return `${ctx.chatId}:${ctx.userId ?? ""}`;
+	}
+
+	private takePendingPresetTask(ctx: CallbackContext): { presetId: string } | null {
+		this.prunePendingPresetTasks();
+		const key = this.pendingPresetKey(ctx);
+		const pending = this.pendingPresetTasks.get(key);
+		if (!pending) return null;
+		this.pendingPresetTasks.delete(key);
+		if (pending.expiresAt <= this.now()) return null;
+		return { presetId: pending.presetId };
+	}
+
+	private setPendingPresetTask(ctx: CallbackContext, presetId: string): void {
+		this.prunePendingPresetTasks();
+		this.pendingPresetTasks.set(this.pendingPresetKey(ctx), { presetId, expiresAt: this.now() + this.confirmTtl });
+		while (this.pendingPresetTasks.size > MAX_PENDING_PRESET_TASKS) {
+			const oldest = this.pendingPresetTasks.keys().next().value;
+			if (oldest === undefined) break;
+			this.pendingPresetTasks.delete(oldest);
+		}
+	}
+
+	private prunePendingPresetTasks(): void {
+		const now = this.now();
+		for (const [key, pending] of this.pendingPresetTasks) {
+			if (pending.expiresAt <= now) this.pendingPresetTasks.delete(key);
+		}
 	}
 }

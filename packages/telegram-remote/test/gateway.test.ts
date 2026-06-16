@@ -89,9 +89,59 @@ describe("read commands", () => {
 	});
 });
 
-describe("/start-session preset binding", () => {
-	test("missing preset id shows usage and calls no backend", async () => {
+describe("/presets discoverability", () => {
+	test("authorized /presets lists only safe id and name", async () => {
+		const gateway = makeGateway({
+			presets: presetMap(
+				preset({
+					id: "demo",
+					name: "Demo preset",
+					workdir: "/secret/workdir",
+					sessionCommand: "secret command",
+					taskTemplate: "Secret {{task}}",
+				}),
+			),
+		});
+		const reply = await gateway.handleMessage(message({ text: "/presets" }));
+		expect(reply).toContain("Demo preset (demo)");
+		expect(reply).not.toContain("/secret/workdir");
+		expect(reply).not.toContain("secret command");
+		expect(reply).not.toContain("Secret {{task}}");
+		expect(coordinator.calls).toHaveLength(0);
+	});
+
+	test("unauthorized /presets gets the identical refusal and no backend call", async () => {
 		const gateway = makeGateway();
+		const reply = await gateway.handleMessage(message({ userId: "999", chatId: "999", text: "/presets" }));
+		expect(reply).toBe(UNAUTHORIZED_REFUSAL);
+		expect(coordinator.calls).toHaveLength(0);
+	});
+
+	test("arg-less rich /start-session renders preset buttons", async () => {
+		const gateway = makeGateway({
+			enableRichMessages: true,
+			presets: presetMap(preset({ id: "demo", name: "Demo preset" })),
+		});
+		const reply = asChat(await gateway.handleUpdate(message({ text: "/start-session" })));
+		expect(reply.text).toContain("Demo preset (demo)");
+		expect(buttons(reply).find(b => b.text === "Demo preset")).toBeDefined();
+		expect(coordinator.countOf("startSession")).toBe(0);
+	});
+
+	test("arg-less plain /start-session renders the safe preset id/name list", async () => {
+		const gateway = makeGateway({
+			enableRichMessages: false,
+			presets: presetMap(preset({ id: "demo", name: "Demo preset", workdir: "/secret/workdir" })),
+		});
+		const reply = await gateway.handleMessage(message({ text: "/start-session" }));
+		expect(reply).toContain("Demo preset (demo)");
+		expect(reply).not.toContain("/secret/workdir");
+	});
+});
+
+describe("/start-session preset binding", () => {
+	test("missing preset id with no presets configured shows usage and calls no backend", async () => {
+		const gateway = makeGateway({ presets: presetMap() });
 		expect(await gateway.handleMessage(message({ text: "/start-session" }))).toBe(MESSAGES.startUsage);
 		expect(coordinator.countOf("startSession")).toBe(0);
 	});
@@ -308,6 +358,60 @@ describe("rich messaging + callbacks", () => {
 		expect(malformed.kind).toBe("callback_answer");
 		expect(missingChat.kind).toBe("callback_answer");
 		expect(coordinator.calls.length).toBe(before);
+	});
+
+	test("preset callback_data is opaque and no-template preset starts in one tap", async () => {
+		const gateway = makeGateway({
+			enableRichMessages: true,
+			presets: presetMap(
+				preset({
+					id: "plain",
+					name: "Plain",
+					taskTemplate: undefined,
+					workdir: "/safe/cwd",
+					sessionCommand: "hidden command",
+				}),
+			),
+		});
+		const presets = asChat(await gateway.handleUpdate(message({ text: "/presets" })));
+		const button = buttons(presets).find(b => b.text === "Plain")!;
+		expect(Buffer.byteLength(button.callbackData, "utf8")).toBeLessThanOrEqual(64);
+		expect(button.callbackData).toMatch(/^gtr:v1:/);
+		expect(button.callbackData).not.toContain("plain");
+		expect(button.callbackData).not.toContain("/safe/cwd");
+		expect(button.callbackData).not.toContain("hidden command");
+		const reply = asChat(await gateway.handleUpdate(callback({ data: button.callbackData })));
+		expect(reply.text).toContain("sess-1");
+		expect(reply.callbackAnswer?.text).toBe(MESSAGES.callbackDone);
+		expect(coordinator.calls.at(-1)?.args).toEqual({ cwd: "/safe/cwd", prompt: undefined });
+	});
+
+	test("templated preset prompts for task, then following plain text starts with sanitized task", async () => {
+		const gateway = makeGateway({ enableRichMessages: true });
+		const presets = asChat(await gateway.handleUpdate(message({ text: "/presets" })));
+		const button = buttons(presets).find(b => b.text === "demo")!;
+		const prompt = asChat(await gateway.handleUpdate(callback({ data: button.callbackData })));
+		expect(prompt.text).toBe(MESSAGES.presetNeedsTask);
+		expect(coordinator.countOf("startSession")).toBe(0);
+		const reply = asChat(await gateway.handleUpdate(message({ text: "  fix\u0000\n bug  " })));
+		expect(reply.text).toContain("sess-1");
+		expect(coordinator.countOf("startSession")).toBe(1);
+		expect(coordinator.calls.at(-1)?.args).toEqual({ cwd: "/home/bot/src/project", prompt: "Task: fix bug" });
+	});
+
+	test("a preset_start button is single-use: replay does not start a second session", async () => {
+		const gateway = makeGateway({
+			enableRichMessages: true,
+			presets: presetMap(preset({ id: "plain", name: "Plain", taskTemplate: undefined })),
+		});
+		const presets = asChat(await gateway.handleUpdate(message({ text: "/presets" })));
+		const button = buttons(presets).find(b => b.text === "Plain")!;
+		const first = await gateway.handleUpdate(callback({ data: button.callbackData }));
+		expect(first.kind).toBe("chat");
+		expect(coordinator.countOf("startSession")).toBe(1);
+		const replay = await gateway.handleUpdate(callback({ data: button.callbackData }));
+		expect(replay.kind).toBe("callback_answer");
+		expect(coordinator.countOf("startSession")).toBe(1);
 	});
 
 	test("cancel callback is answer-only and invalidates the token", async () => {

@@ -18,6 +18,7 @@ export const MESSAGES = {
 		"",
 		"/sessions — list live/recent sessions",
 		"/observe <sessionId> — bounded status for one session",
+		"/presets — list approved session presets",
 		"/start-session <presetId> [task] — start a session from an approved preset",
 		"/stop <sessionId> — request a graceful stop (confirm required)",
 		"/help — show this message",
@@ -32,6 +33,7 @@ export const MESSAGES = {
 		"",
 		"/sessions — list live/recent sessions",
 		"/observe <sessionId> — bounded status for one session",
+		"/presets — list approved session presets",
 		"/start-session <presetId> [task] — start a session from an approved preset",
 		"/stop <sessionId> — request a graceful stop (confirm required)",
 		"/help — show the command set",
@@ -45,6 +47,8 @@ export const MESSAGES = {
 	callbackInvalid: "That button is no longer valid.",
 	callbackCancelled: "Cancelled.",
 
+	noPresets: "No presets configured.",
+	presetNeedsTask: "Send the task for this preset.",
 	// Usage hints (authorized senders, malformed arguments).
 	startUsage: "Usage: /start-session <presetId> [task]",
 	observeUsage: "Usage: /observe <sessionId>",
