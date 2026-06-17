@@ -18,7 +18,6 @@ import * as path from "node:path";
 const LIVE = process.env.GJC_RLM_LIVE === "1";
 const SALES_CSV = "region,amount\nnorth,100\nnorth,150\nsouth,200\nsouth,50\neast,300\n";
 
-
 describe("rlm live model-driven e2e", () => {
 	test.skipIf(!LIVE)(
 		"real model drives the python tool and the report captures computed totals",
