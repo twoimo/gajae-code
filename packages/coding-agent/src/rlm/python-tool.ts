@@ -5,6 +5,7 @@
 import type { AgentToolResult } from "@gajae-code/agent-core";
 import { type Static, z } from "@gajae-code/ai";
 import { executePython } from "../eval/py/executor";
+import { RLM_MANAGED_PYTHON_PACKAGES } from "../eval/py/runtime";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { RlmNotebookWriter } from "./notebook";
 import type { RlmCellResult } from "./types";
@@ -16,6 +17,7 @@ export interface RlmPythonToolContext {
 	sessionId: string;
 	artifactsDir: string;
 	notebook: RlmNotebookWriter;
+	managedWorkspaceVenv?: boolean;
 }
 
 const paramsSchema = z.object({
@@ -31,6 +33,8 @@ export function createRlmPythonTool(rlm: RlmPythonToolContext): CustomTool<typeo
 		description:
 			"Execute Python in the persistent research kernel. Variables, imports, and loaded data persist across calls like notebook cells. Every call is recorded as a cell in the session notebook.",
 		parameters: paramsSchema,
+		strict: true,
+		concurrency: "exclusive",
 		async execute(
 			_toolCallId: string,
 			params: Static<typeof paramsSchema>,
@@ -44,6 +48,9 @@ export function createRlmPythonTool(rlm: RlmPythonToolContext): CustomTool<typeo
 				sessionId: `rlm:${rlm.sessionId}`,
 				kernelOwnerId: `rlm:${rlm.sessionId}`,
 				artifactsDir: rlm.artifactsDir,
+				runtimeOptions: rlm.managedWorkspaceVenv
+					? { managedWorkspaceVenv: true, seedPackages: RLM_MANAGED_PYTHON_PACKAGES }
+					: undefined,
 				signal,
 			});
 			const cell: RlmCellResult = {

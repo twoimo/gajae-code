@@ -12,6 +12,8 @@ export interface RlmArtifactPaths {
 	reportPath: string;
 	/** Absolute path to the session metadata.json */
 	metadataPath: string;
+	/** Directory for the underlying GJC conversation session files. */
+	agentSessionDir: string;
 }
 
 /** Outcome of a single RLM python cell execution. */
@@ -29,4 +31,10 @@ export interface RlmSessionMetadata {
 	cwd: string;
 	dataPath: string | null;
 	cellCount: number;
+	mode?: "interactive" | "autonomous";
+	resumedFrom?: string | null;
+	completedAt?: string | null;
+	finalSummary?: string | null;
+	minSuccessfulRuns?: number;
+	successfulRuns?: number;
 }

@@ -721,6 +721,7 @@ interface RunRootCommandDependencies {
 	runAcpMode?: (createSession: AcpSessionFactory) => Promise<void>;
 	settings?: Settings;
 	rlmPreset?: RlmPreset;
+	suppressProcessExit?: boolean;
 }
 
 export async function runRootCommand(
@@ -1061,9 +1062,13 @@ export async function runRootCommand(
 			if ($env.PI_TIMING) {
 				logger.printTimings();
 			}
-			await session.dispose();
-			stopThemeWatcher();
-			await postmortem.quit(0);
+			if (!deps.suppressProcessExit) {
+				await session.dispose();
+				stopThemeWatcher();
+				await postmortem.quit(0);
+			} else {
+				stopThemeWatcher();
+			}
 		}
 	}
 }

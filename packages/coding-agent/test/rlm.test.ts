@@ -191,20 +191,37 @@ describe("rlm data context", () => {
 
 describe("rlm preset tool boundary", () => {
 	test("allowlist membership is exact, case-insensitive, and excludes mutation tools", () => {
-		expect(RLM_TOOL_ALLOWLIST).toEqual(["python", "read", "web_search", "search_tool_bm25", "bash", "goal"]);
+		expect(RLM_TOOL_ALLOWLIST).toEqual([
+			"python",
+			"read",
+			"web_search",
+			"search_tool_bm25",
+			"bash",
+			"goal",
+			"complete_research",
+		]);
 		expect(isRlmToolAllowed("python")).toBe(true);
 		expect(isRlmToolAllowed("READ")).toBe(true);
 		expect(isRlmToolAllowed("web_search")).toBe(true);
 		expect(isRlmToolAllowed("search_tool_bm25")).toBe(true);
 		expect(isRlmToolAllowed("bash")).toBe(true);
 		expect(isRlmToolAllowed("goal")).toBe(true);
+		expect(isRlmToolAllowed("complete_research")).toBe(true);
 		expect(isRlmToolAllowed("edit")).toBe(false);
 		expect(isRlmToolAllowed("write")).toBe(false);
 	});
 
 	test("assertRlmToolAllowlist passes for the RLM surface", () => {
 		expect(() =>
-			assertRlmToolAllowlist(["python", "read", "web_search", "search_tool_bm25", "bash", "goal"]),
+			assertRlmToolAllowlist([
+				"python",
+				"read",
+				"web_search",
+				"search_tool_bm25",
+				"bash",
+				"goal",
+				"complete_research",
+			]),
 		).not.toThrow();
 	});
 

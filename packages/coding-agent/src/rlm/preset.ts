@@ -30,6 +30,7 @@ export const RLM_TOOL_ALLOWLIST: readonly string[] = [
 	"search_tool_bm25",
 	"bash",
 	"goal",
+	"complete_research",
 ];
 
 export function isRlmToolAllowed(name: string): boolean {
@@ -56,13 +57,19 @@ export const RLM_RESEARCH_PROMPT: string = rlmResearchPrompt;
 
 /**
  * Build the systemPrompt transform for createAgentSession: appends the research
- * prompt and (when present) the data-context block to the default blocks.
+ * prompt, data context, and prior-notebook replay context to the default blocks.
  */
-export function buildRlmSystemPrompt(dataContext: RlmDataContext | null): (defaultPrompt: string[]) => string[] {
+export function buildRlmSystemPrompt(
+	dataContext: RlmDataContext | null,
+	resumeContext?: string,
+): (defaultPrompt: string[]) => string[] {
 	return (defaultPrompt: string[]): string[] => {
 		const blocks = [...defaultPrompt, rlmResearchPrompt];
 		if (dataContext) {
 			blocks.push(`# Data context (from ${dataContext.path})\n\n${dataContext.content}`);
+		}
+		if (resumeContext && resumeContext.trim().length > 0) {
+			blocks.push(`# Prior notebook replay context\n\n${resumeContext}`);
 		}
 		return blocks;
 	};

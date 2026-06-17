@@ -3,6 +3,7 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { readNotebookDocument } from "../edit/notebook";
 import type { RlmArtifactPaths } from "./types";
 
 export const RLM_DIR_SEGMENT = path.join(".gjc", "rlm");
@@ -30,9 +31,30 @@ export function resolveRlmArtifactPaths(cwd: string, sessionId: string): RlmArti
 		notebookPath: path.join(dir, "notebook.ipynb"),
 		reportPath: path.join(dir, "report.md"),
 		metadataPath: path.join(dir, "metadata.json"),
+		agentSessionDir: path.join(dir, "agent-session"),
 	};
 }
 
 export async function ensureRlmSessionDir(paths: RlmArtifactPaths): Promise<void> {
 	await fs.mkdir(paths.dir, { recursive: true });
+}
+
+export async function rlmSessionExists(cwd: string, sessionId: string): Promise<boolean> {
+	const paths = resolveRlmArtifactPaths(cwd, sessionId);
+	try {
+		const stat = await fs.stat(paths.dir);
+		return stat.isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+export async function readRlmNotebookIfPresent(cwd: string, sessionId: string) {
+	const paths = resolveRlmArtifactPaths(cwd, sessionId);
+	try {
+		return await readNotebookDocument(paths.notebookPath, paths.notebookPath);
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith("File not found:")) return undefined;
+		throw error;
+	}
 }

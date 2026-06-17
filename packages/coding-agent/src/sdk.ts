@@ -626,6 +626,7 @@ function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		label: tool.label,
 		description: tool.description,
 		parameters: tool.parameters,
+		concurrency: tool.concurrency,
 		hidden: tool.hidden,
 		deferrable: tool.deferrable,
 		mcpServerName: tool.mcpServerName,
