@@ -12,6 +12,7 @@ import {
 	type Message,
 	type MessageAttribution,
 	type Model,
+	type ProviderSessionState,
 	type Usage,
 } from "@gajae-code/ai";
 import { isCompiledBinary, logger, prompt } from "@gajae-code/utils";
@@ -236,6 +237,56 @@ export function shouldCompact(
 	return contextTokens > thresholdTokens;
 }
 
+/** Reason a compaction was triggered. `token` is the normal user-configurable path; the rest are emergency floors. */
+export type CompactionTriggerReason = "token" | "heap" | "providerBytes" | "messageCount" | "imageBytes";
+
+/** A point-in-time resource sample. Supplied by an injectable sampler so tests never read real RSS. */
+export interface EmergencyCompactionSample {
+	/** Resident heap bytes (e.g. process.memoryUsage().heapUsed). */
+	heapUsedBytes: number;
+	/** Approximate serialized provider-context bytes. */
+	providerBytes: number;
+	/** Provider-visible message count. */
+	messageCount: number;
+	/** Approximate inline image bytes in the provider context. */
+	imageBytes: number;
+}
+
+export interface EmergencyCompactionLimits {
+	heapUsedBytes: number;
+	providerBytes: number;
+	messageCount: number;
+	imageBytes: number;
+}
+
+/**
+ * Non-disableable emergency floors. These sit well above normal usage and exist so a
+ * long session on weak hardware compacts before OOM even when token-based compaction is
+ * disabled or its threshold is set too high. They are NOT user-tunable down to zero.
+ */
+export const DEFAULT_EMERGENCY_COMPACTION_LIMITS: EmergencyCompactionLimits = {
+	heapUsedBytes: 1_536 * 1024 * 1024, // 1.5 GiB resident heap
+	providerBytes: 24 * 1024 * 1024, // 24 MiB serialized provider context
+	messageCount: 4000,
+	imageBytes: 64 * 1024 * 1024, // 64 MiB inline image bytes
+};
+
+/**
+ * Returns the first emergency limit exceeded (heap > providerBytes > imageBytes > messageCount),
+ * or null when none is. Pure and sampler-injected; the caller routes the result through the
+ * normal pair-safe `compact()` cut logic so a tool_use/tool_result pair is never split.
+ */
+export function emergencyCompactionReason(
+	sample: EmergencyCompactionSample,
+	limits: EmergencyCompactionLimits = DEFAULT_EMERGENCY_COMPACTION_LIMITS,
+): CompactionTriggerReason | null {
+	if (sample.heapUsedBytes > limits.heapUsedBytes) return "heap";
+	if (sample.providerBytes > limits.providerBytes) return "providerBytes";
+	if (sample.imageBytes > limits.imageBytes) return "imageBytes";
+	if (sample.messageCount > limits.messageCount) return "messageCount";
+	return null;
+}
+
 export function resolveThresholdTokens(
 	contextWindow: number,
 	settings: CompactionSettings,
@@ -301,7 +352,18 @@ function nativeTokenizerEntrypoint(): string {
 	return isCompiledBinary() ? COMPILED_NATIVE_TOKENIZER_ENTRYPOINT : SOURCE_NATIVE_TOKENIZER_ENTRYPOINT;
 }
 
+/** Max total fragment chars sent to the synchronous native tokenizer (F22). */
+const MAX_NATIVE_TOKENIZE_CHARS = 2 * 1024 * 1024;
+
 function nativeCountTokens(fragments: string[]): number {
+	let totalChars = 0;
+	for (const fragment of fragments) totalChars += fragment.length;
+	if (totalChars > MAX_NATIVE_TOKENIZE_CHARS) {
+		// F22: skip the synchronous native BPE tokenizer (materializes a ~39MB table and is
+		// O(text)) on pathologically large inputs; the cheap chars/token heuristic is more
+		// than accurate enough for size/budget decisions and never blocks the event loop.
+		return estimateTextTokensHeuristic(fragments);
+	}
 	if (!cachedNativeCountTokens) {
 		const natives = requireFromCompaction(nativeTokenizerEntrypoint()) as NativeTokenizerModule;
 		cachedNativeCountTokens = natives.countTokens;
@@ -674,6 +736,16 @@ export interface SummaryOptions {
 	 */
 	telemetry?: AgentTelemetry;
 	authCredentialType?: "api_key" | "oauth";
+	/**
+	 * Provider session affinity id forwarded to the maintenance LLM call so it
+	 * reuses the live turn's provider/WebSocket session (matches the
+	 * `providerSessionId ?? sessionId` the agent loop sends for normal turns).
+	 */
+	sessionId?: string;
+	/** Shared provider state map so maintenance calls reuse session-scoped transport/session caches. */
+	providerSessionState?: Map<string, ProviderSessionState>;
+	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
+	preferWebsockets?: boolean;
 }
 
 export async function generateSummary(
@@ -740,6 +812,9 @@ export async function generateSummary(
 			reasoning: Effort.High,
 			initiatorOverride: options?.initiatorOverride,
 			metadata: options?.metadata,
+			sessionId: options?.sessionId,
+			providerSessionState: options?.providerSessionState,
+			preferWebsockets: options?.preferWebsockets,
 		},
 		{ telemetry: options?.telemetry, oneshotKind: "compaction_summary" },
 	);
@@ -775,6 +850,15 @@ export interface HandoffOptions {
 	 */
 	telemetry?: AgentTelemetry;
 	authCredentialType?: "api_key" | "oauth";
+	/**
+	 * Provider session affinity id forwarded to the handoff LLM call so it
+	 * reuses the live turn's provider/WebSocket session.
+	 */
+	sessionId?: string;
+	/** Shared provider state map so the handoff call reuses session-scoped transport/session caches. */
+	providerSessionState?: Map<string, ProviderSessionState>;
+	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
+	preferWebsockets?: boolean;
 }
 
 export function renderHandoffPrompt(customInstructions?: string): string {
@@ -816,6 +900,9 @@ export async function generateHandoff(
 			toolChoice: "none",
 			initiatorOverride: options.initiatorOverride,
 			metadata: options.metadata,
+			sessionId: options.sessionId,
+			providerSessionState: options.providerSessionState,
+			preferWebsockets: options.preferWebsockets,
 		},
 		{ telemetry: options.telemetry, oneshotKind: "handoff" },
 	);
@@ -875,6 +962,9 @@ async function generateShortSummary(
 			reasoning: Effort.High,
 			initiatorOverride: options?.initiatorOverride,
 			metadata: options?.metadata,
+			sessionId: options?.sessionId,
+			providerSessionState: options?.providerSessionState,
+			preferWebsockets: options?.preferWebsockets,
 		},
 		{ telemetry: options?.telemetry, oneshotKind: "compaction_short_summary" },
 	);
@@ -1059,6 +1149,9 @@ export async function compact(
 		metadata: options?.metadata,
 		convertToLlm: options?.convertToLlm,
 		telemetry: options?.telemetry,
+		sessionId: options?.sessionId,
+		providerSessionState: options?.providerSessionState,
+		preferWebsockets: options?.preferWebsockets,
 	};
 
 	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
@@ -1098,9 +1191,22 @@ export async function compact(
 	// Generate summaries (can be parallel if both needed) and merge into one
 	let summary: string;
 
+	// A single active Codex WebSocket session cannot service two concurrent
+	// requests ("websocket request already in progress"). When the maintenance
+	// calls use the Codex Responses provider, share one provider session, and
+	// websocket transport is not explicitly disabled, run the split-turn history
+	// and turn-prefix summaries sequentially. This covers websocket activation
+	// from config/env/model defaults too: the provider can select websockets even
+	// when `preferWebsockets` is undefined, while non-Codex providers keep the
+	// previous parallel behavior.
+	const summariesMayShareWebSocketSession = Boolean(
+		model.api === "openai-codex-responses" &&
+			summaryOptions.providerSessionState &&
+			summaryOptions.preferWebsockets !== false,
+	);
+
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		// Generate both summaries in parallel
-		const [historyResult, turnPrefixResult] = await Promise.all([
+		const runHistorySummary = () =>
 			messagesToSummarize.length > 0
 				? generateSummary(
 						messagesToSummarize,
@@ -1112,9 +1218,19 @@ export async function compact(
 						previousSummary,
 						summaryOptions,
 					)
-				: Promise.resolve("No prior history."),
-			generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, signal, summaryOptions),
-		]);
+				: Promise.resolve("No prior history.");
+		const runTurnPrefixSummary = () =>
+			generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, signal, summaryOptions);
+
+		let historyResult: string;
+		let turnPrefixResult: string;
+		if (summariesMayShareWebSocketSession) {
+			// Sequential: avoids concurrent requests on the same provider session.
+			historyResult = await runHistorySummary();
+			turnPrefixResult = await runTurnPrefixSummary();
+		} else {
+			[historyResult, turnPrefixResult] = await Promise.all([runHistorySummary(), runTurnPrefixSummary()]);
+		}
 		// Merge into single summary
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
 	} else if (messagesToSummarize.length > 0) {
@@ -1150,6 +1266,9 @@ export async function compact(
 			initiatorOverride: summaryOptions.initiatorOverride,
 			metadata: summaryOptions.metadata,
 			telemetry: summaryOptions.telemetry,
+			sessionId: summaryOptions.sessionId,
+			providerSessionState: summaryOptions.providerSessionState,
+			preferWebsockets: summaryOptions.preferWebsockets,
 		},
 	);
 
@@ -1205,6 +1324,9 @@ async function generateTurnPrefixSummary(
 			reasoning: Effort.High,
 			initiatorOverride: options?.initiatorOverride,
 			metadata: options?.metadata,
+			sessionId: options?.sessionId,
+			providerSessionState: options?.providerSessionState,
+			preferWebsockets: options?.preferWebsockets,
 		},
 		{ telemetry: options?.telemetry, oneshotKind: "compaction_turn_prefix" },
 	);

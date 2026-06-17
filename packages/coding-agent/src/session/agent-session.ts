@@ -41,6 +41,8 @@ import {
 	calculatePromptTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	type EmergencyCompactionSample,
+	emergencyCompactionReason,
 	estimateMessageTokensHeuristic,
 	estimateTokens,
 	generateBranchSummary,
@@ -142,6 +144,7 @@ import { onAppendOnlyModeChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
+import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import {
 	disposeKernelSessionsByOwner,
 	executePython as executePythonCommand,
@@ -234,6 +237,7 @@ import {
 import type { ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
 import { assertEditableFile } from "../tools/auto-generated-guard";
+import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState } from "../tools/checkpoint";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
@@ -544,6 +548,13 @@ function formatRetryFallbackBaseSelector(selector: RetryFallbackSelector): strin
 }
 
 const IRC_REPLY_MAX_BYTES = 4096;
+
+/**
+ * Hard cap for {@link AgentSession.disposeChildSubprocesses}. A `SIGINT`/`SIGTERM` handler
+ * awaits this teardown before exiting, so it must never block longer than this even if a
+ * subprocess (wedged Chrome renderer, stuck Python cell) refuses to settle.
+ */
+const SIGNAL_TEARDOWN_TIMEOUT_MS = 5_000;
 
 /**
  * Collapse degenerate IRC ephemeral replies before they hit the relay.
@@ -907,6 +918,7 @@ export class AgentSession {
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
 	#autoCompactionAbortController: AbortController | undefined = undefined;
+	#resourceSampler: () => EmergencyCompactionSample = () => this.#defaultResourceSample();
 	#prePromptContextCheckPromise: Promise<void> | undefined = undefined;
 
 	// Branch summarization state
@@ -3187,6 +3199,13 @@ export class AgentSession {
 			}
 		}
 		await shutdownAllLspClients();
+		// F13: release only THIS session's browser tabs on dispose (kill:false → remote
+		// browsers disconnect, headless close gracefully). Scoped by the session id the
+		// browser tool tagged tabs with, so other live sessions' tabs are untouched.
+		// No-op when this session opened no tabs. Failure is logged, not thrown.
+		await releaseTabsForOwner(this.sessionManager.getSessionId()).catch((error: unknown) =>
+			logger.warn("session dispose: releaseTabsForOwner failed", { error }),
+		);
 		const pythonExecutionsSettled = await this.#prepareEvalExecutionsForDispose();
 		if (!pythonExecutionsSettled) {
 			logger.warn(
@@ -3194,6 +3213,7 @@ export class AgentSession {
 			);
 		}
 		await disposeKernelSessionsByOwner(this.#evalKernelOwnerId);
+		await disposeVmContextsByOwner(this.#evalKernelOwnerId);
 		this.#releasePowerAssertion();
 		await this.sessionManager.close();
 		this.#closeAllProviderSessions("dispose");
@@ -3206,6 +3226,36 @@ export class AgentSession {
 			this.#unsubscribeAppendOnly = undefined;
 		}
 		this.#eventListeners = [];
+	}
+
+	/**
+	 * Bounded, best-effort teardown of the subprocess-spawning resources this session
+	 * owns: the browser tool's headless/spawned Chrome and the Python eval kernel + JS VM
+	 * contexts. Unlike {@link dispose}, this touches only child processes and is time-boxed,
+	 * so a top-level `SIGINT`/`SIGTERM`/`SIGHUP` handler can run it without hanging — without
+	 * it, an external kill bypasses `dispose()` and orphans Chrome/Python to PID 1 (#698).
+	 *
+	 * Idempotent: every step is a no-op once the graceful {@link dispose} path has released
+	 * the resources. Never throws; per-step failures are logged and the whole run is capped
+	 * at `timeoutMs` so a wedged subprocess can't stall process exit.
+	 */
+	async disposeChildSubprocesses(timeoutMs = SIGNAL_TEARDOWN_TIMEOUT_MS): Promise<void> {
+		const sessionId = this.sessionManager.getSessionId();
+		const kernelOwnerId = this.#evalKernelOwnerId;
+		const work = Promise.allSettled([
+			// kill:true so a forced exit also reaps spawned-app Chrome we own (headless
+			// always closes; connected/attached browsers only disconnect — never killed).
+			releaseTabsForOwner(sessionId, { kill: true }).catch((error: unknown) =>
+				logger.warn("signal teardown: releaseTabsForOwner failed", { error }),
+			),
+			disposeKernelSessionsByOwner(kernelOwnerId).catch((error: unknown) =>
+				logger.warn("signal teardown: disposeKernelSessionsByOwner failed", { error }),
+			),
+			disposeVmContextsByOwner(kernelOwnerId).catch((error: unknown) =>
+				logger.warn("signal teardown: disposeVmContextsByOwner failed", { error }),
+			),
+		]);
+		await Promise.race([work, Bun.sleep(timeoutMs)]);
 	}
 
 	#closeAllProviderSessions(reason: string): void {
@@ -6018,12 +6068,50 @@ export class AgentSession {
 
 	/**
 	 * True when the configured `serviceTier` resolves to `"priority"` for the
+	 * given model `provider`. Returns false for scoped tiers that don't match
+	 * (e.g. `"openai-only"` on an anthropic provider) and when `provider` is
+	 * undefined. This is the canonical provider-aware fast-mode predicate.
+	 */
+	isFastForProvider(provider?: string): boolean {
+		// Fast mode applies to a concrete model's provider. With no provider
+		// (no model selected) it cannot apply, even under an unscoped `priority`
+		// tier that `resolveServiceTier` would otherwise pass through.
+		if (provider === undefined) return false;
+		return resolveServiceTier(this.serviceTier, provider) === "priority";
+	}
+
+	/**
+	 * Effective service tier applied to task-tool subagent sessions
+	 * (executor/architect/planner/critic). They run under `task.serviceTier`
+	 * unless it is `"inherit"`, in which case they inherit the main session
+	 * tier — mirroring `createSubagentSettings`.
+	 */
+	#subagentServiceTier(): ServiceTier | undefined {
+		const configured = this.settings.get("task.serviceTier");
+		if (configured === "inherit") return this.serviceTier;
+		if (configured === "none") return undefined;
+		return configured;
+	}
+
+	/**
+	 * Provider-aware fast-mode predicate for task-tool subagent roles, evaluated
+	 * against the effective subagent tier (`task.serviceTier`) rather than the
+	 * main session tier. Use this for `task.agentModelOverrides` role rows so the
+	 * ⚡ glyph reflects the tier the subagent actually runs under.
+	 */
+	isFastForSubagentProvider(provider?: string): boolean {
+		if (provider === undefined) return false;
+		return resolveServiceTier(this.#subagentServiceTier(), provider) === "priority";
+	}
+
+	/**
+	 * True when the configured `serviceTier` resolves to `"priority"` for the
 	 * *currently selected model's provider*. Returns false for scoped tiers
 	 * that don't match (e.g. `"openai-only"` on an anthropic model) and when
 	 * no model is selected.
 	 */
 	isFastModeActive(): boolean {
-		return resolveServiceTier(this.serviceTier, this.model?.provider) === "priority";
+		return this.isFastForProvider(this.model?.provider);
 	}
 
 	setServiceTier(serviceTier: ServiceTier | undefined): void {
@@ -6394,6 +6482,7 @@ export class AgentSession {
 				model,
 				apiKey,
 				{
+					...this.#maintenanceProviderTransport(),
 					systemPrompt: this.#baseSystemPrompt,
 					tools: this.agent.state.tools,
 					customInstructions,
@@ -6587,11 +6676,55 @@ export class AgentSession {
 		}
 	}
 
+	/** Test seam: override the emergency-compaction resource sampler so tests never read real RSS. */
+	setResourceSampler(sampler: () => EmergencyCompactionSample): void {
+		this.#resourceSampler = sampler;
+	}
+
+	#defaultResourceSample(): EmergencyCompactionSample {
+		let providerBytes = 0;
+		let imageBytes = 0;
+		for (const message of this.state.messages) {
+			const content = (message as { content?: unknown }).content;
+			if (typeof content === "string") {
+				providerBytes += content.length;
+			} else if (Array.isArray(content)) {
+				for (const block of content) {
+					if (!block || typeof block !== "object") continue;
+					const typed = block as { text?: unknown; data?: unknown };
+					if (typeof typed.text === "string") providerBytes += typed.text.length;
+					if (typeof typed.data === "string") {
+						imageBytes += typed.data.length;
+						providerBytes += typed.data.length;
+					}
+				}
+			}
+		}
+		return {
+			heapUsedBytes: process.memoryUsage().heapUsed,
+			providerBytes,
+			messageCount: this.state.messages.length,
+			imageBytes,
+		};
+	}
+
 	async #checkEstimatedContextBeforePromptOnce(pendingMessages: readonly AgentMessage[]): Promise<void> {
 		const model = this.model;
 		if (!model) return;
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return;
+		// F6: non-disableable emergency floor — compact before OOM even when token-based
+		// compaction is disabled or its threshold is set too high (weak-hardware protection).
+		const emergencyReason = emergencyCompactionReason(this.#resourceSampler());
+		if (emergencyReason) {
+			logger.warn("Emergency compaction triggered (resource floor exceeded)", { reason: emergencyReason });
+			await this.#runAutoCompaction("overflow", false, false, {
+				continueAfterMaintenance: false,
+				deferHandoffMaintenance: false,
+				force: true,
+			});
+			return;
+		}
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return;
 
@@ -7243,7 +7376,17 @@ export class AgentSession {
 			addCandidate(this.#resolveRoleModelFull(role, availableModels, currentModel).model);
 		}
 
-		const sortedByContext = [...availableModels].sort((a, b) => b.contextWindow - a.contextWindow);
+		// Last-resort fallback: the largest-context model that shares the ACTIVE
+		// model's provider. Scoping this to the current provider keeps auto-
+		// compaction on the user's configured/custom route instead of silently
+		// defaulting to an unrelated provider (e.g. a stray OpenAI credential
+		// with no remaining credit) just because it happens to be in the bundled
+		// catalog. Cross-provider compaction stays possible, but only when the
+		// user opts in explicitly via modelRoles (handled by the loop above).
+		const fallbackProvider = currentModel?.provider;
+		const sortedByContext = [...availableModels]
+			.filter(model => fallbackProvider === undefined || model.provider === fallbackProvider)
+			.sort((a, b) => b.contextWindow - a.contextWindow);
 		for (const model of sortedByContext) {
 			if (!seen.has(this.#getModelKey(model))) {
 				addCandidate(model);
@@ -7271,6 +7414,25 @@ export class AgentSession {
 		);
 	}
 
+	/**
+	 * Transport-affinity fields forwarded into local maintenance one-shot LLM
+	 * calls (compaction, handoff, branch summary) so they reuse the live turn's
+	 * provider session state and configured WebSocket transport preference
+	 * instead of falling back to a fresh HTTP/SSE session. Mirrors the
+	 * `providerSessionId ?? sessionId` affinity the agent loop sends per turn.
+	 */
+	#maintenanceProviderTransport(): {
+		sessionId: string | undefined;
+		providerSessionState: Map<string, ProviderSessionState>;
+		preferWebsockets: boolean | undefined;
+	} {
+		return {
+			sessionId: this.agent.providerSessionId ?? this.agent.sessionId,
+			providerSessionState: this.#providerSessionState,
+			preferWebsockets: this.agent.preferWebsockets,
+		};
+	}
+
 	async #compactWithFallbackModel(
 		preparation: CompactionPreparation,
 		customInstructions: string | undefined,
@@ -7287,6 +7449,7 @@ export class AgentSession {
 			try {
 				return await compact(preparation, candidate, apiKey, customInstructions, signal, {
 					...options,
+					...this.#maintenanceProviderTransport(),
 					metadata: this.agent.metadataForProvider(candidate.provider),
 					convertToLlm,
 					telemetry,
@@ -7367,11 +7530,13 @@ export class AgentSession {
 		reason: "overflow" | "threshold" | "idle",
 		willRetry: boolean,
 		deferred = false,
-		options?: { continueAfterMaintenance?: boolean; deferHandoffMaintenance?: boolean },
+		options?: { continueAfterMaintenance?: boolean; deferHandoffMaintenance?: boolean; force?: boolean },
 	): Promise<void> {
 		const compactionSettings = this.settings.getGroup("compaction");
-		if (compactionSettings.strategy === "off") return;
-		if (reason !== "idle" && !compactionSettings.enabled) return;
+		// `force` is the non-disableable emergency floor (F6): it bypasses the user's
+		// disabled/off settings so a resource-floor breach still compacts before OOM.
+		if (!options?.force && compactionSettings.strategy === "off") return;
+		if (!options?.force && reason !== "idle" && !compactionSettings.enabled) return;
 		const generation = this.#promptGeneration;
 		if (
 			options?.deferHandoffMaintenance !== false &&
@@ -7574,6 +7739,7 @@ export class AgentSession {
 					while (true) {
 						try {
 							compactResult = await compact(preparation, candidate, apiKey, undefined, autoCompactionSignal, {
+								...this.#maintenanceProviderTransport(),
 								promptOverride: compactionPrep.hookPrompt,
 								extraContext: compactionPrep.hookContext,
 								remoteInstructions: this.#baseSystemPrompt.join("\n\n"),
@@ -7799,7 +7965,12 @@ export class AgentSession {
 	 */
 	#isRetryableError(message: AssistantMessage): boolean {
 		const classification = this.#classifyErrorForRetry(message);
-		return classification === "usage_limit" || classification === "transient" || classification === "unknown";
+		return (
+			classification === "usage_limit" ||
+			classification === "transient" ||
+			classification === "unknown" ||
+			classification === "first_event_timeout"
+		);
 	}
 
 	#isTransientErrorMessage(errorMessage: string): boolean {
@@ -7825,6 +7996,33 @@ export class AgentSession {
 		);
 	}
 
+	#isFirstEventTimeoutErrorMessage(errorMessage: string): boolean {
+		// First-event timeout: the stream watchdog aborted because no event
+		// arrived within the first-event window. Matches the shared lazy-stream
+		// message and the per-provider variants
+		// ("<Provider> stream timed out while waiting for the first event").
+		return /timed?\s*out while waiting for the first event|timeout waiting for first/i.test(errorMessage);
+	}
+
+	/**
+	 * Whether a first-event timeout on the error's provider should fail closed —
+	 * i.e. retry a bounded number of times (capped at retry.maxRetries) and then
+	 * surface, instead of joining the unbounded transient-retry class.
+	 *
+	 * Targets the ollama-chat API, which is exclusively ollama-cloud (local
+	 * Ollama uses the openai-responses API). That remote, queued backend can
+	 * stall before its first token even for tiny prompts; an unbounded
+	 * continuation retry re-issues the full request on every attempt and can
+	 * silently spike upstream usage (#713). First-party providers keep their
+	 * existing unbounded first-event-timeout retry behavior.
+	 */
+	#shouldFailClosedOnFirstEventTimeout(message: AssistantMessage): boolean {
+		// Prefer the active model's API (the model that produced the error);
+		// the errored message's API is a fallback for the rare case where the
+		// session model has already moved on.
+		return this.model?.api === "ollama-chat" || message.api === "ollama-chat";
+	}
+
 	#isTerminalErrorMessage(errorMessage: string): boolean {
 		// Errors that will never succeed on retry (auth/permission, malformed
 		// request, unknown/unsupported model). These surface immediately rather
@@ -7846,11 +8044,12 @@ export class AgentSession {
 
 	/**
 	 * Ordered retry classification: overflow (compaction) -> terminal (surface)
-	 * -> usage_limit (rotation) -> transient (retry) -> unknown (retry).
+	 * -> usage_limit (rotation) -> first_event_timeout (bounded retry) ->
+	 * transient (retry) -> unknown (retry).
 	 */
 	#classifyErrorForRetry(
 		message: AssistantMessage,
-	): "none" | "overflow" | "terminal" | "usage_limit" | "transient" | "unknown" {
+	): "none" | "overflow" | "terminal" | "usage_limit" | "first_event_timeout" | "transient" | "unknown" {
 		if (message.stopReason !== "error" || !message.errorMessage) return "none";
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return "overflow";
@@ -7877,6 +8076,13 @@ export class AgentSession {
 		// parsed an incidental quota number such as "400 requests per minute".
 		if (isTerminalHttp4xx && (explicitStatus !== undefined || !/rate.?limit|too many requests/i.test(err))) {
 			return "terminal";
+		}
+		// A first-event timeout on ollama-cloud (the ollama-chat API) must not
+		// join the unbounded transient class: each continuation retry re-issues
+		// the full request to a remote, billable backend, so an unbounded loop
+		// can silently spike usage (#713). Bound it to retry.maxRetries instead.
+		if (this.#isFirstEventTimeoutErrorMessage(err) && this.#shouldFailClosedOnFirstEventTimeout(message)) {
+			return "first_event_timeout";
 		}
 		if (this.#isTransientErrorMessage(err)) return "transient";
 		return "unknown";
@@ -9381,6 +9587,7 @@ export class AgentSession {
 			}
 			const branchSummarySettings = this.settings.getGroup("branchSummary");
 			const result = await generateBranchSummary(entriesToSummarize, {
+				...this.#maintenanceProviderTransport(),
 				model,
 				apiKey,
 				signal: this.#branchSummaryAbortController.signal,
@@ -9508,17 +9715,15 @@ export class AgentSession {
 	 */
 	getSessionStats(): SessionStats {
 		const state = this.state;
-		const userMessages = state.messages.filter(m => m.role === "user").length;
-		const assistantMessages = state.messages.filter(m => m.role === "assistant").length;
-		const toolResults = state.messages.filter(m => m.role === "toolResult").length;
-
+		let userMessages = 0;
+		let assistantMessages = 0;
+		let toolResults = 0;
 		let toolCalls = 0;
 		let totalInput = 0;
 		let totalOutput = 0;
 		let totalCacheRead = 0;
 		let totalCacheWrite = 0;
 		let totalCost = 0;
-
 		let totalPremiumRequests = 0;
 		const getTaskToolUsage = (details: unknown): Usage | undefined => {
 			if (!details || typeof details !== "object") return undefined;
@@ -9528,8 +9733,13 @@ export class AgentSession {
 			return usage as Usage;
 		};
 
+		// Single pass over messages (replaces three role filters plus a separate usage
+		// loop) so per-turn stats stay O(messages + assistant content blocks), not O(4N).
 		for (const message of state.messages) {
-			if (message.role === "assistant") {
+			if (message.role === "user") {
+				userMessages += 1;
+			} else if (message.role === "assistant") {
+				assistantMessages += 1;
 				const assistantMsg = message as AssistantMessage;
 				toolCalls += assistantMsg.content.filter(c => c.type === "toolCall").length;
 				totalInput += assistantMsg.usage.input;
@@ -9538,17 +9748,18 @@ export class AgentSession {
 				totalCacheWrite += assistantMsg.usage.cacheWrite;
 				totalPremiumRequests += assistantMsg.usage.premiumRequests ?? 0;
 				totalCost += assistantMsg.usage.cost.total;
-			}
-
-			if (message.role === "toolResult" && message.toolName === "task") {
-				const usage = getTaskToolUsage(message.details);
-				if (usage) {
-					totalInput += usage.input;
-					totalOutput += usage.output;
-					totalCacheRead += usage.cacheRead;
-					totalCacheWrite += usage.cacheWrite;
-					totalPremiumRequests += usage.premiumRequests ?? 0;
-					totalCost += usage.cost.total;
+			} else if (message.role === "toolResult") {
+				toolResults += 1;
+				if (message.toolName === "task") {
+					const usage = getTaskToolUsage(message.details);
+					if (usage) {
+						totalInput += usage.input;
+						totalOutput += usage.output;
+						totalCacheRead += usage.cacheRead;
+						totalCacheWrite += usage.cacheWrite;
+						totalPremiumRequests += usage.premiumRequests ?? 0;
+						totalCost += usage.cost.total;
+					}
 				}
 			}
 		}
@@ -9709,11 +9920,46 @@ export class AgentSession {
 		return tokens;
 	}
 
+	#nativeTokenCache = new WeakMap<AgentMessage, { len: number; tokens: number }>();
+
+	/** Cheap content-size signal to invalidate the native token cache on mutation (growth). */
+	/**
+	 * Cheap content-size signal to invalidate the native token cache on mutation. Recursively
+	 * sums string lengths across the whole message (depth-bounded), so it covers every
+	 * provider-visible shape (text/thinking/tool args, toolResult output, tool names, etc.)
+	 * without allocating a serialized copy. A size-preserving in-place edit yields only a
+	 * benign estimate drift.
+	 */
+	#messageTokenSize(value: unknown, depth = 0): number {
+		if (depth > 6) return 0;
+		if (typeof value === "string") return value.length;
+		if (typeof value === "number" || typeof value === "boolean") return 8;
+		if (Array.isArray(value)) {
+			let size = 0;
+			for (const item of value) size += this.#messageTokenSize(item, depth + 1);
+			return size;
+		}
+		if (value && typeof value === "object") {
+			let size = 0;
+			for (const item of Object.values(value)) size += this.#messageTokenSize(item, depth + 1);
+			return size;
+		}
+		return 0;
+	}
+
 	#estimateMessageNativeContextTokens(message: AgentMessage): number {
+		// F10/F22: cache the expensive native token count per message object, invalidated by a
+		// cheap content-size signal, so unchanged (stable-size) messages are not re-tokenized on
+		// every pre-prompt estimate. A rare size-preserving in-place edit yields only a benign
+		// token-estimate drift, never wrong output.
+		const len = this.#messageTokenSize(message);
+		const cached = this.#nativeTokenCache.get(message);
+		if (cached && cached.len === len) return cached.tokens;
 		let tokens = 0;
 		for (const llmMessage of convertToLlm([message])) {
 			tokens += estimateTokens(llmMessage);
 		}
+		this.#nativeTokenCache.set(message, { len, tokens });
 		return tokens;
 	}
 

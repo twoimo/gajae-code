@@ -409,6 +409,15 @@ export class Agent {
 	}
 
 	/**
+	 * Whether websocket transport is preferred when the provider implementation
+	 * supports it. Read by maintenance one-shot calls (compaction, handoff,
+	 * branch summary) so they forward the same transport preference as live turns.
+	 */
+	get preferWebsockets(): boolean | undefined {
+		return this.#preferWebsockets;
+	}
+
+	/**
 	 * Static metadata forwarded to every API request when no resolver is installed
 	 * (e.g. `metadata.user_id` for Anthropic session attribution). Setting this
 	 * clears any installed resolver.
@@ -827,7 +836,10 @@ export class Agent {
 	}
 
 	appendMessage(m: AgentMessage) {
-		this.#state.messages = [...this.#state.messages, m];
+		// In-place push (not [...messages, m]): appending M messages over a session of
+		// N is O(N+M), not O(M*N). Consumers read state.messages fresh; run() snapshots
+		// via slice() at the API boundary, so no caller relies on per-append array identity.
+		this.#state.messages.push(m);
 	}
 
 	popMessage(): AgentMessage | undefined {

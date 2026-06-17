@@ -2160,6 +2160,68 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"computer.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Computer",
+			description:
+				"Manually enable the macOS computer tool for this session on a supported Apple Silicon host. Default off; on supported hosts the tool is already available via computer.alwaysOn.",
+		},
+	},
+
+	"computer.alwaysOn": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Computer Always On",
+			description:
+				"Keep the macOS computer tool available by default on supported Apple Silicon hosts without per-session enablement. Set to false to disable default availability.",
+		},
+	},
+
+	"computer.autoScreenshot": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "Computer Auto Screenshot",
+			description: "Automatically request bounded screenshots after computer actions when supported.",
+		},
+	},
+
+	"computer.screenshotMaxBytes": {
+		type: "number",
+		default: 5_000_000,
+		ui: {
+			tab: "tools",
+			label: "Computer Screenshot Max Bytes",
+			description: "Maximum screenshot payload size for computer action results.",
+		},
+	},
+
+	"computer.killSwitchHotkey": {
+		type: "string",
+		default: "Control+Option+Command+Escape",
+		ui: {
+			tab: "tools",
+			label: "Computer Kill Switch Hotkey",
+			description: "Native stop/suspend hotkey shown to users for computer-use sessions.",
+		},
+	},
+
+	"computer.auditLog.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Computer Audit Log",
+			description: "Persist audit records for enabled computer-use actions.",
+		},
+	},
+
 	// Tool execution
 	"tools.intentTracing": {
 		type: "boolean",

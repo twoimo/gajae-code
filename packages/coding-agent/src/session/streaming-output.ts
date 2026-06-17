@@ -8,6 +8,13 @@ function sanitizeOutputChunk(rawChunk: string): string {
 	return sanitizeWithOptionalSixelPassthrough(rawChunk, sanitizeText);
 }
 
+/**
+ * Flush threshold for the opt-in sanitize-coalescing path (F21). When coalescing is enabled, raw
+ * chunks accumulate until they reach this many chars, then are sanitized + delivered as one batch,
+ * so many-small-chunk output pays one sanitize pass per batch instead of one per tiny chunk.
+ */
+const COALESCE_FLUSH_CHARS = 64 * 1024;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -15,6 +22,7 @@ function sanitizeOutputChunk(rawChunk: string): string {
 export const DEFAULT_MAX_LINES = 3000;
 export const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
 export const DEFAULT_MAX_COLUMN = 1024; // Max chars per grep match line
+export const DEFAULT_ARTIFACT_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 
 const NL = "\n";
 
@@ -41,6 +49,8 @@ export interface OutputSummary {
 	columnTruncatedLines?: number;
 	/** Artifact ID for internal URL access (artifact://<id>) when truncated */
 	artifactId?: string;
+	/** Bytes omitted from artifact storage after the artifact hard cap was reached. */
+	artifactTruncatedBytes?: number;
 }
 
 export interface OutputSinkOptions {
@@ -61,6 +71,8 @@ export interface OutputSinkOptions {
 	 * writes still respect the budget. Default 0 = no per-line cap.
 	 */
 	maxColumns?: number;
+	/** Hard cap for artifact writes/pending replay. Default DEFAULT_ARTIFACT_MAX_BYTES. */
+	artifactMaxBytes?: number;
 	onChunk?: (chunk: string) => void;
 	/** Minimum ms between onChunk calls. 0 = every chunk (default). */
 	chunkThrottleMs?: number;
@@ -75,6 +87,13 @@ export interface OutputSinkOptions {
 	 * relative to the sink (the sink does not catch errors from this callback).
 	 */
 	onRawChunk?: (chunk: string) => void;
+	/**
+	 * Opt-in (F21): when true, sanitization + live callback delivery + retention are coalesced over
+	 * batched raw chunks instead of run per chunk, bounding sync CPU for many-small-chunk output. The
+	 * raw artifact mirror stays byte-correct. Defaults to the PI_OUTPUT_SANITIZE_COALESCE env flag
+	 * (default OFF — the per-chunk path is byte-identical to historical behavior).
+	 */
+	coalesceSanitize?: boolean;
 }
 
 export interface TruncationResult {
@@ -668,6 +687,9 @@ export class OutputSink {
 	#sawData = false;
 	#truncated = false;
 	#lastChunkTime = 0;
+	#artifactBytes = 0;
+	#artifactTruncatedBytes = 0;
+	#artifactTruncationNoticeWritten = false;
 
 	// Per-line column cap streaming state (persists across `push` calls so a
 	// long line split across chunks still trips the same trigger).
@@ -697,6 +719,9 @@ export class OutputSink {
 	readonly #onRawChunk?: (chunk: string) => void;
 	readonly #chunkThrottleMs: number;
 	readonly #maxColumns: number;
+	readonly #artifactMaxBytes: number;
+	readonly #coalesceSanitize: boolean;
+	#coalesceBuf = "";
 
 	constructor(options?: OutputSinkOptions) {
 		const {
@@ -708,6 +733,8 @@ export class OutputSink {
 			onChunk,
 			chunkThrottleMs = 0,
 			onRawChunk,
+			artifactMaxBytes = DEFAULT_ARTIFACT_MAX_BYTES,
+			coalesceSanitize = process.env.PI_OUTPUT_SANITIZE_COALESCE === "1",
 		} = options ?? {};
 		this.#artifactPath = artifactPath;
 		this.#artifactId = artifactId;
@@ -717,6 +744,8 @@ export class OutputSink {
 		this.#onChunk = onChunk;
 		this.#onRawChunk = onRawChunk;
 		this.#chunkThrottleMs = chunkThrottleMs;
+		this.#artifactMaxBytes = Math.max(0, artifactMaxBytes);
+		this.#coalesceSanitize = coalesceSanitize;
 	}
 
 	#headText(): string {
@@ -754,7 +783,28 @@ export class OutputSink {
 	 * visible retention windows are selected from the sanitized/column-capped
 	 * stream so production-default display matches the historical processed view.
 	 */
+	// F21: with coalescing enabled, accumulate raw chunks and process them in batches; the default
+	// (disabled) path calls #ingest directly and is byte-identical to the historical per-chunk path.
 	push(chunk: string): void {
+		if (!this.#coalesceSanitize) {
+			this.#ingest(chunk);
+			return;
+		}
+		this.#coalesceBuf += chunk;
+		if (this.#coalesceBuf.length >= COALESCE_FLUSH_CHARS) {
+			this.#flushCoalesced();
+		}
+	}
+
+	/** Process any buffered coalesced chunks as a single batch (F21). */
+	#flushCoalesced(): void {
+		if (this.#coalesceBuf.length === 0) return;
+		const batch = this.#coalesceBuf;
+		this.#coalesceBuf = "";
+		this.#ingest(batch);
+	}
+
+	#ingest(chunk: string): void {
 		const rawChunk = chunk;
 
 		// Live callbacks historically observe sanitized, uncapped chunks. The same
@@ -907,6 +957,40 @@ export class OutputSink {
 		}
 	}
 
+	#artifactTruncationNotice(droppedBytes: number): string {
+		return `\n[artifact truncated after ${this.#artifactBytes} bytes; omitted at least ${droppedBytes} bytes]\n`;
+	}
+
+	#capArtifactChunk(chunk: string, bytes: number): { chunk: string; bytes: number } | null {
+		if (bytes === 0) return null;
+		if (this.#artifactMaxBytes <= 0 || this.#artifactBytes >= this.#artifactMaxBytes) {
+			this.#artifactTruncatedBytes += bytes;
+			return null;
+		}
+		const room = this.#artifactMaxBytes - this.#artifactBytes;
+		if (bytes <= room) {
+			return { chunk, bytes };
+		}
+		const kept = truncateHeadBytes(chunk, room);
+		this.#artifactTruncatedBytes += bytes - kept.bytes;
+		return kept.bytes > 0 ? { chunk: kept.text, bytes: kept.bytes } : null;
+	}
+
+	#writeArtifactTruncationNotice(): void {
+		if (this.#artifactTruncatedBytes <= 0 || this.#artifactTruncationNoticeWritten) return;
+		const notice = this.#artifactTruncationNotice(this.#artifactTruncatedBytes);
+		try {
+			if (this.#fileReady && this.#file) {
+				this.#file.sink.write(notice);
+			} else {
+				this.#queuePendingFileWrite(notice, Buffer.byteLength(notice, "utf-8"));
+			}
+			this.#artifactTruncationNoticeWritten = true;
+		} catch {
+			/* ignore */
+		}
+	}
+
 	#queuePendingFileWrite(chunk: string, bytes = Buffer.byteLength(chunk, "utf-8")): void {
 		if (!this.#pendingFileWrites) this.#pendingFileWrites = [chunk];
 		else this.#pendingFileWrites.push(chunk);
@@ -915,14 +999,17 @@ export class OutputSink {
 	}
 
 	#enqueueFileWrite(chunk: string, bytes: number): void {
+		const capped = this.#capArtifactChunk(chunk, bytes);
+		if (!capped) return;
+		this.#artifactBytes += capped.bytes;
 		if (!this.#fileReady || !this.#file) {
-			this.#queuePendingFileWrite(chunk, bytes);
+			this.#queuePendingFileWrite(capped.chunk, capped.bytes);
 			if (this.#willOverflow(bytes) || this.#pendingFileWriteBytes > this.#spillThreshold) this.#createFileSink();
 			return;
 		}
 
 		try {
-			this.#file.sink.write(chunk);
+			this.#file.sink.write(capped.chunk);
 		} catch {
 			try {
 				void this.#file.sink.end();
@@ -931,7 +1018,7 @@ export class OutputSink {
 			}
 			this.#file = undefined;
 			this.#fileReady = false;
-			this.#queuePendingFileWrite(chunk, bytes);
+			this.#queuePendingFileWrite(capped.chunk, capped.bytes);
 			this.#createFileSink();
 		}
 	}
@@ -998,6 +1085,7 @@ export class OutputSink {
 	 * branch in `dump()` against stale totals.
 	 */
 	replace(text: string): void {
+		this.#coalesceBuf = "";
 		this.#setTail(text);
 		this.#head = "";
 		this.#headBytes = 0;
@@ -1015,10 +1103,13 @@ export class OutputSink {
 	}
 
 	async dump(notice?: string): Promise<OutputSummary> {
+		this.#flushCoalesced();
 		const noticeLine = notice ? `[${notice}]\n` : "";
 		const totalLines = this.#sawData ? this.#totalLines + 1 : 0;
 
 		let artifactId: string | undefined;
+		if (this.#artifactTruncatedBytes > 0) this.#createFileSink();
+		this.#writeArtifactTruncationNotice();
 		if (this.#file) {
 			artifactId = this.#file.artifactId;
 			await this.#file.sink.end();
@@ -1095,6 +1186,7 @@ export class OutputSink {
 			elidedLines,
 			columnDroppedBytes: this.#columnDroppedBytes > 0 ? this.#columnDroppedBytes : undefined,
 			columnTruncatedLines: this.#columnTruncatedLines > 0 ? this.#columnTruncatedLines : undefined,
+			artifactTruncatedBytes: this.#artifactTruncatedBytes > 0 ? this.#artifactTruncatedBytes : undefined,
 			artifactId,
 		};
 	}
