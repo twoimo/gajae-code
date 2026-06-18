@@ -172,6 +172,7 @@ function createNativeComputerController(): NativeController {
 let controllerFactory: ComputerControllerFactory = createNativeComputerController;
 let platformOverrideForTests: NodeJS.Platform | undefined;
 let archOverrideForTests: NodeJS.Architecture | undefined;
+const screenshotFallbackDirs = new WeakMap<ToolSession, Promise<string>>();
 
 export function setComputerControllerFactoryForTests(factory: ComputerControllerFactory | undefined): void {
 	controllerFactory = factory ?? createNativeComputerController;
@@ -286,7 +287,7 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 				details.message = describeComputerSuccess(details);
 				const image = imageContentFromNativeResult(batchResult.screenshotSource);
 				if (batchResult.screenshotSource !== undefined) {
-					await persistScreenshotFallback(batchResult.screenshotSource, details.screenshot);
+					await persistScreenshotFallback(batchResult.screenshotSource, details.screenshot, this.session);
 					details.message = describeComputerSuccess(details);
 				}
 				await writeComputerAuditLog(this.session, details);
@@ -303,7 +304,7 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 			details.message = describeComputerSuccess(details);
 			const image = imageContentFromNativeResult(result);
 			if (screenshot) {
-				await persistScreenshotFallback(result, details.screenshot);
+				await persistScreenshotFallback(result, details.screenshot, this.session);
 				details.message = describeComputerSuccess(details);
 			}
 			await writeComputerAuditLog(this.session, details);
@@ -485,15 +486,30 @@ function imageContentFromNativeResult(value: unknown): ImageContent | undefined 
 async function persistScreenshotFallback(
 	value: unknown,
 	screenshot: ComputerScreenshotDetails | undefined,
+	session: ToolSession,
 ): Promise<void> {
 	if (!screenshot || screenshot.path) return;
 	const image = imageContentFromNativeResult(value);
 	if (!image) return;
-	const dir = path.join(os.tmpdir(), "gjc-computer-screenshots");
-	await fs.mkdir(dir, { recursive: true });
+	const dir = await getScreenshotFallbackDir(session);
 	const filePath = path.join(dir, `computer-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
-	await fs.writeFile(filePath, Buffer.from(image.data, "base64"));
+	await fs.writeFile(filePath, Buffer.from(image.data, "base64"), { mode: 0o600 });
 	screenshot.path = filePath;
+}
+
+function getScreenshotFallbackDir(session: ToolSession): Promise<string> {
+	let dir = screenshotFallbackDirs.get(session);
+	if (!dir) {
+		dir = createScreenshotFallbackDir();
+		screenshotFallbackDirs.set(session, dir);
+	}
+	return dir;
+}
+
+async function createScreenshotFallbackDir(): Promise<string> {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-computer-screenshots-"));
+	await fs.chmod(dir, 0o700);
+	return dir;
 }
 
 function pngToBase64(png: NativeScreenshot["png"]): string | undefined {

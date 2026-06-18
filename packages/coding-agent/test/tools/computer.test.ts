@@ -238,6 +238,36 @@ describe("computer tool dispatch", () => {
 		expect(calls[3].args).toEqual([undefined, 1, 2, 5, -6]);
 	});
 
+	it("persists screenshot fallbacks in private per-session directories with restrictive file modes", async () => {
+		setComputerPlatformForTests("darwin");
+		setComputerArchForTests("arm64");
+		setComputerControllerFactoryForTests(() => ({
+			screenshot: () => ({ widthPx: 20, heightPx: 10, png: new Uint8Array([1, 2, 3]) }),
+		}));
+		const firstTool = new ComputerTool(createSession(Settings.isolated({ "computer.enabled": true })));
+		const secondTool = new ComputerTool(createSession(Settings.isolated({ "computer.enabled": true })));
+		const first = await firstTool.execute("first", { action: "screenshot" });
+		const second = await secondTool.execute("second", { action: "screenshot" });
+		const firstPath = first.details?.screenshot?.path;
+		const secondPath = second.details?.screenshot?.path;
+		expect(firstPath).toBeTruthy();
+		expect(secondPath).toBeTruthy();
+		if (!firstPath || !secondPath) throw new Error("expected persisted screenshot paths");
+		const firstDir = path.dirname(firstPath);
+		const secondDir = path.dirname(secondPath);
+
+		try {
+			expect(firstDir).not.toBe(path.join(os.tmpdir(), "gjc-computer-screenshots"));
+			expect(path.basename(firstDir)).toStartWith("gjc-computer-screenshots-");
+			expect(firstDir).not.toBe(secondDir);
+			expect((await fs.stat(firstPath)).mode & 0o777).toBe(0o600);
+			expect((await fs.stat(firstDir)).mode & 0o777).toBe(0o700);
+		} finally {
+			await fs.rm(firstDir, { recursive: true, force: true });
+			await fs.rm(secondDir, { recursive: true, force: true });
+		}
+	});
+
 	it("executes batch actions sequentially and reports per-step results", async () => {
 		setComputerPlatformForTests("darwin");
 		setComputerArchForTests("arm64");
