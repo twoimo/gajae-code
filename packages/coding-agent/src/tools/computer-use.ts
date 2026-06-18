@@ -1,12 +1,12 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@gajae-code/agent-core";
 import { prompt } from "@gajae-code/utils";
 import * as z from "zod/v4";
-import linuxComputerUseDescription from "../prompts/tools/linux-computer-use.md" with { type: "text" };
+import computerUseDescription from "../prompts/tools/computer-use.md" with { type: "text" };
 import type { ToolSession } from "./index";
 
-const linuxComputerUseActionSchema = z.record(z.string(), z.unknown());
+const computerUseActionSchema = z.record(z.string(), z.unknown());
 
-const linuxComputerUseSchema = z
+const computerUseSchema = z
 	.object({
 		action: z
 			.enum(["health", "observe", "act", "act_and_observe", "accessibility_tree"] as const)
@@ -15,7 +15,7 @@ const linuxComputerUseSchema = z
 			.string()
 			.url()
 			.optional()
-			.describe("LCU HTTP API base URL. Defaults to linuxComputerUse.baseUrl or http://127.0.0.1:8765."),
+			.describe("LCU HTTP API base URL. Defaults to computerUse.baseUrl or http://127.0.0.1:8765."),
 		token: z
 			.string()
 			.optional()
@@ -23,7 +23,7 @@ const linuxComputerUseSchema = z
 				"Optional API token for LCU_API_TOKEN-protected targets. Prefer environment/config over inline tokens.",
 			),
 		actions: z
-			.array(linuxComputerUseActionSchema)
+			.array(computerUseActionSchema)
 			.optional()
 			.describe("Provider-neutral LCU actions for act and act_and_observe."),
 		includeScreenshot: z
@@ -35,10 +35,10 @@ const linuxComputerUseSchema = z
 	})
 	.strict();
 
-type LinuxComputerUseParams = z.infer<typeof linuxComputerUseSchema>;
+type ComputerUseParams = z.infer<typeof computerUseSchema>;
 
-export interface LinuxComputerUseToolDetails {
-	action: LinuxComputerUseParams["action"];
+export interface ComputerUseToolDetails {
+	action: ComputerUseParams["action"];
 	baseUrl: string;
 	status: number;
 	backend?: string;
@@ -102,7 +102,7 @@ function buildHeaders(token: string | undefined): Headers {
 	return headers;
 }
 
-function resolveToken(params: LinuxComputerUseParams, configuredBaseUrl: string, baseUrl: string): string | undefined {
+function resolveToken(params: ComputerUseParams, configuredBaseUrl: string, baseUrl: string): string | undefined {
 	if (params.token !== undefined) return params.token;
 	if (baseUrl === trimTrailingSlash(configuredBaseUrl)) return Bun.env.LCU_API_TOKEN;
 	return undefined;
@@ -118,12 +118,12 @@ async function readJsonResponse(response: Response): Promise<unknown> {
 	}
 }
 
-export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSchema, LinuxComputerUseToolDetails> {
-	readonly name = "linux_computer_use";
-	readonly label = "LinuxComputerUse";
-	readonly summary = "Control a Linux Computer Use HTTP target";
+export class ComputerUseTool implements AgentTool<typeof computerUseSchema, ComputerUseToolDetails> {
+	readonly name = "computer_use";
+	readonly label = "ComputerUse";
+	readonly summary = "Control a Computer Use Bridge HTTP target";
 	readonly description: string;
-	readonly parameters = linuxComputerUseSchema;
+	readonly parameters = computerUseSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";
 
@@ -131,17 +131,17 @@ export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSc
 
 	constructor(session: ToolSession) {
 		this.#session = session;
-		this.description = prompt.render(linuxComputerUseDescription);
+		this.description = prompt.render(computerUseDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: LinuxComputerUseParams,
+		params: ComputerUseParams,
 		signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<LinuxComputerUseToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<ComputerUseToolDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<LinuxComputerUseToolDetails>> {
-		const configuredBaseUrl = this.#session.settings.get("linuxComputerUse.baseUrl") ?? "http://127.0.0.1:8765";
+	): Promise<AgentToolResult<ComputerUseToolDetails>> {
+		const configuredBaseUrl = this.#session.settings.get("computerUse.baseUrl") ?? "http://127.0.0.1:8765";
 		const baseUrl = trimTrailingSlash(params.baseUrl ?? configuredBaseUrl);
 		const token = resolveToken(params, configuredBaseUrl, baseUrl);
 		const headers = buildHeaders(token);
@@ -162,7 +162,7 @@ export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSc
 		}
 
 		const observation = this.#extractObservation(params.action, body);
-		const content: AgentToolResult<LinuxComputerUseToolDetails>["content"] = [];
+		const content: AgentToolResult<ComputerUseToolDetails>["content"] = [];
 		if (observation) {
 			content.push({ type: "text", text: summarizeObservation(observation) });
 			if (includeScreenshot && observation.screenshot_base64) {
@@ -190,7 +190,7 @@ export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSc
 		};
 	}
 
-	#pathFor(action: LinuxComputerUseParams["action"]): string {
+	#pathFor(action: ComputerUseParams["action"]): string {
 		switch (action) {
 			case "health":
 				return "/health";
@@ -205,7 +205,7 @@ export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSc
 		}
 	}
 
-	#requestInit(params: LinuxComputerUseParams, headers: Headers, signal: AbortSignal | undefined): RequestInit {
+	#requestInit(params: ComputerUseParams, headers: Headers, signal: AbortSignal | undefined): RequestInit {
 		if (params.action === "health" || params.action === "observe") {
 			return { method: "GET", headers, signal };
 		}
@@ -213,7 +213,7 @@ export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSc
 		return { method: "POST", headers, body: JSON.stringify(body), signal };
 	}
 
-	#requestBody(params: LinuxComputerUseParams): Record<string, unknown> {
+	#requestBody(params: ComputerUseParams): Record<string, unknown> {
 		switch (params.action) {
 			case "act":
 				return { actions: params.actions ?? [] };
@@ -227,7 +227,7 @@ export class LinuxComputerUseTool implements AgentTool<typeof linuxComputerUseSc
 		}
 	}
 
-	#extractObservation(action: LinuxComputerUseParams["action"], body: unknown): LcuObservation | undefined {
+	#extractObservation(action: ComputerUseParams["action"], body: unknown): LcuObservation | undefined {
 		if (action === "observe") return readObservation(body);
 		if (action !== "act_and_observe" || !body || typeof body !== "object") return undefined;
 		return (body as LcuActAndObserveResponse).observation;

@@ -1,6 +1,6 @@
-Drive a local Linux Computer Use (LCU) HTTP target.
+Drive a local Computer Use Bridge (LCU) HTTP target.
 
-Use this tool when a task needs a real Linux GUI/X11 desktop that can be observed and controlled over the LCU provider-neutral API. Prefer the normal `browser` tool for DOM-aware browser automation; use `linux_computer_use` for desktop-level GUI state, noVNC/Xvfb targets, native Linux apps, or coordinate-based computer-use loops.
+Use this tool when a task needs a real GUI/X11 desktop that can be observed and controlled over the LCU provider-neutral API. Prefer the normal `browser` tool for DOM-aware browser automation; use `computer_use` for desktop-level GUI state, noVNC/Xvfb targets, native desktop apps, or coordinate-based computer-use loops.
 
 Actions:
 - `health` checks the LCU server/backend.

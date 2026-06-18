@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Settings } from "../../src/config/settings";
 import type { ToolSession } from "../../src/tools";
-import { LinuxComputerUseTool } from "../../src/tools/linux-computer-use";
+import { ComputerUseTool } from "../../src/tools/computer-use";
 
 const originalFetch = globalThis.fetch;
 const originalLcuApiToken = Bun.env.LCU_API_TOKEN;
@@ -10,13 +10,13 @@ function makeSession(baseUrl = "http://lcu.local:8765"): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
-		settings: Settings.isolated({ "linuxComputerUse.baseUrl": baseUrl }),
+		settings: Settings.isolated({ "computerUse.baseUrl": baseUrl }),
 		getSessionFile: () => null,
 		getSessionSpawns: () => null,
 	} as unknown as ToolSession;
 }
 
-describe("LinuxComputerUseTool", () => {
+describe("ComputerUseTool", () => {
 	afterEach(() => {
 		globalThis.fetch = originalFetch;
 		Bun.env.LCU_API_TOKEN = originalLcuApiToken;
@@ -36,7 +36,7 @@ describe("LinuxComputerUseTool", () => {
 			});
 		}) as typeof fetch;
 
-		const tool = new LinuxComputerUseTool(makeSession());
+		const tool = new ComputerUseTool(makeSession());
 		const result = await tool.execute("call", { action: "observe" });
 
 		expect(calls).toEqual([
@@ -60,7 +60,7 @@ describe("LinuxComputerUseTool", () => {
 			});
 		}) as typeof fetch;
 
-		const tool = new LinuxComputerUseTool(makeSession());
+		const tool = new ComputerUseTool(makeSession());
 		const result = await tool.execute("call", {
 			action: "act_and_observe",
 			actions: [{ type: "wait", ms: 100 }],
@@ -79,7 +79,7 @@ describe("LinuxComputerUseTool", () => {
 			return Response.json({ ok: true });
 		}) as typeof fetch;
 
-		const tool = new LinuxComputerUseTool(makeSession("http://configured.local:8765"));
+		const tool = new ComputerUseTool(makeSession("http://configured.local:8765"));
 		await tool.execute("call", { action: "health" });
 		await tool.execute("call", { action: "health", baseUrl: "http://configured.local:8765/" });
 		await tool.execute("call", { action: "health", baseUrl: "http://attacker.local:8765" });

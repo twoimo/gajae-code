@@ -38,6 +38,7 @@ import { BrowserTool } from "./browser";
 import { CalculatorTool } from "./calculator";
 import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
 import { ComputerTool, isComputerCallable, isComputerLoadablePlatform } from "./computer";
+import { ComputerUseTool } from "./computer-use";
 import { CronCreateTool, CronDeleteTool, CronListTool } from "./cron";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
@@ -46,7 +47,6 @@ import { GithubTool } from "./gh";
 import { InspectImageTool } from "./inspect-image";
 import { IrcTool } from "./irc";
 import { JobTool } from "./job";
-import { LinuxComputerUseTool } from "./linux-computer-use";
 import { MonitorTool } from "./monitor";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
@@ -77,6 +77,7 @@ export * from "./browser";
 export * from "./calculator";
 export * from "./checkpoint";
 export * from "./computer";
+export * from "./computer-use";
 export * from "./cron";
 export * from "./debug";
 export * from "./eval";
@@ -86,7 +87,6 @@ export * from "./image-gen";
 export * from "./inspect-image";
 export * from "./irc";
 export * from "./job";
-export * from "./linux-computer-use";
 export * from "./monitor";
 export * from "./read";
 export * from "./recipe";
@@ -371,7 +371,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
 	...(isComputerLoadablePlatform() ? { computer: ComputerTool.createIf } : {}),
-	linux_computer_use: s => new LinuxComputerUseTool(s),
+	computer_use: s => new ComputerUseTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),
@@ -547,7 +547,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "skill") return session.settings.get("skill.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "computer") return isComputerCallable(session);
-		if (name === "linux_computer_use") return session.settings.get("linuxComputerUse.enabled");
+		if (name === "computer_use") return session.settings.get("computerUse.enabled");
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");
 		if (name === "irc") {
 			if (!session.settings.get("irc.enabled")) return false;

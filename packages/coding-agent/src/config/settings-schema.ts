@@ -2220,23 +2220,23 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"linuxComputerUse.enabled": {
+	"computerUse.enabled": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tools",
-			label: "Linux Computer Use",
-			description: "Enable the linux_computer_use tool for local LCU/Xvfb/noVNC desktop targets",
+			label: "Computer Use Bridge",
+			description: "Enable the computer_use tool for local LCU/Xvfb/noVNC desktop targets",
 		},
 	},
 
-	"linuxComputerUse.baseUrl": {
+	"computerUse.baseUrl": {
 		type: "string",
 		default: "http://127.0.0.1:8765",
 		ui: {
 			tab: "tools",
-			label: "Linux Computer Use URL",
-			description: "Default HTTP API base URL for a Linux Computer Use target",
+			label: "Computer Use Bridge URL",
+			description: "Default HTTP API base URL for a Computer Use Bridge target",
 		},
 	},
 	// Tool execution

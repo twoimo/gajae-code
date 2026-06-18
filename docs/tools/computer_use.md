@@ -1,15 +1,15 @@
-# linux_computer_use
+# computer_use
 
-> Drive a local Linux Computer Use (LCU) HTTP target from GJC.
+> Drive a local Computer Use Bridge (LCU) HTTP target from GJC.
 
 ## Source
 
-- Entry: `packages/coding-agent/src/tools/linux-computer-use.ts`
-- Model-facing prompt: `packages/coding-agent/src/prompts/tools/linux-computer-use.md`
+- Entry: `packages/coding-agent/src/tools/computer-use.ts`
+- Model-facing prompt: `packages/coding-agent/src/prompts/tools/computer-use.md`
 
 ## Purpose
 
-`linux_computer_use` is a draft bridge for Linux desktop computer-use loops. It talks to a running LCU HTTP server, such as a Docker/Xvfb/noVNC desktop target, and exposes a provider-neutral observe/action cycle to the agent.
+`computer_use` is a draft bridge for desktop computer-use loops. It talks to a running LCU HTTP server, such as a Docker/Xvfb/noVNC desktop target, and exposes a provider-neutral observe/action cycle to the agent.
 
 Use it when the task needs OS-level GUI state that the DOM-focused `browser` tool cannot see or control. Keep ordinary web automation on `browser` when DOM access is available.
 
@@ -17,8 +17,8 @@ Use it when the task needs OS-level GUI state that the DOM-focused `browser` too
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `linuxComputerUse.enabled` | `true` | Registers the tool. |
-| `linuxComputerUse.baseUrl` | `http://127.0.0.1:8765` | Default LCU HTTP API base URL. |
+| `computerUse.enabled` | `true` | Registers the tool. |
+| `computerUse.baseUrl` | `http://127.0.0.1:8765` | Default LCU HTTP API base URL. |
 
 If the target requires API auth, set `LCU_API_TOKEN` in the environment or pass `token` for a single call.
 

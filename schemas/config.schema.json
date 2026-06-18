@@ -662,8 +662,8 @@
 				"steer",
 				"queue"
 			],
-			"description": "What a submitted prompt does while the agent is busy: steer (interrupt the active turn) or queue (run after the active turn completes)",
-			"default": "steer"
+			"description": "What a submitted prompt does while the agent is busy: queue normal chat for the next turn, or steer to interrupt the active turn",
+			"default": "queue"
 		},
 		"doubleEscapeAction": {
 			"type": "string",
@@ -1713,17 +1713,17 @@
 			},
 			"additionalProperties": false
 		},
-		"linuxComputerUse": {
+		"computerUse": {
 			"type": "object",
 			"properties": {
 				"enabled": {
 					"type": "boolean",
-					"description": "Enable the linux_computer_use tool for local LCU/Xvfb/noVNC desktop targets",
+					"description": "Enable the computer_use tool for local LCU/Xvfb/noVNC desktop targets",
 					"default": true
 				},
 				"baseUrl": {
 					"type": "string",
-					"description": "Default HTTP API base URL for a Linux Computer Use target",
+					"description": "Default HTTP API base URL for a Computer Use Bridge target",
 					"default": "http://127.0.0.1:8765"
 				}
 			},
