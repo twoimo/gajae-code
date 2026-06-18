@@ -41,6 +41,9 @@ const LISTEN_ONLY: u32 = 1; // kCGEventTapOptionListenOnly
 const EVENT_KEY_DOWN: u32 = 10; // kCGEventKeyDown
 const KEYCODE_FIELD: u32 = 9; // kCGKeyboardEventKeycode
 const KEY_DOWN_MASK: u64 = 1 << EVENT_KEY_DOWN; // CGEventMaskBit(kCGEventKeyDown)
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+const RUN_LOOP_TIMED_OUT: i32 = 3;
+const RUN_LOOP_HANDLED_SOURCE: i32 = 4;
 
 // Default hotkey: Control+Option+Command+Escape — distinctive, unlikely to
 // collide.
@@ -61,6 +64,7 @@ unsafe extern "C" {
 		user_info: *mut c_void,
 	) -> CfMachPortRef;
 	fn CGEventTapEnable(tap: CfMachPortRef, enable: bool);
+	fn CGEventTapIsEnabled(tap: CfMachPortRef) -> bool;
 	fn CGEventGetIntegerValueField(event: CgEventRef, field: u32) -> i64;
 	fn CGEventGetFlags(event: CgEventRef) -> u64;
 }
@@ -68,6 +72,7 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
 	static kCFRunLoopCommonModes: CfStringRef;
+	static kCFRunLoopDefaultMode: CfStringRef;
 	fn CFMachPortCreateRunLoopSource(
 		allocator: CfAllocatorRef,
 		port: CfMachPortRef,
@@ -75,8 +80,13 @@ unsafe extern "C" {
 	) -> CfRunLoopSourceRef;
 	fn CFRunLoopGetCurrent() -> CfRunLoopRef;
 	fn CFRunLoopAddSource(rl: CfRunLoopRef, source: CfRunLoopSourceRef, mode: CfStringRef);
-	fn CFRunLoopRun();
+	fn CFRunLoopRunInMode(mode: CfStringRef, seconds: f64, return_after_source_handled: bool)
+	-> i32;
 	fn CFRelease(cf: *const c_void);
+}
+
+const fn run_loop_result_allows_heartbeat(run_loop_result: i32) -> bool {
+	matches!(run_loop_result, RUN_LOOP_TIMED_OUT | RUN_LOOP_HANDLED_SOURCE)
 }
 
 const fn matches_hotkey(keycode: i64, flags: u64) -> bool {
@@ -122,9 +132,8 @@ pub fn start() -> bool {
 
 fn run_listener() {
 	// SAFETY: a listen-only key-down session tap; the returned mach port and
-	// run-loop source are added to this thread's run loop, which then runs for
-	// the process lifetime. Handles are released only on the (non-returning)
-	// teardown path below.
+	// run-loop source are added to this thread's run loop, which is stepped on a
+	// bounded interval so the listener owner can refresh liveness while idle.
 	unsafe {
 		let tap = CGEventTapCreate(
 			SESSION_EVENT_TAP,
@@ -146,13 +155,35 @@ fn run_listener() {
 		}
 		CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
 		CGEventTapEnable(tap, true);
+		if !CGEventTapIsEnabled(tap) {
+			Supervisor::global().set_hotkey_live(false);
+			CFRelease(source.cast_const());
+			CFRelease(tap.cast_const());
+			return;
+		}
 		Supervisor::global().set_hotkey_live(true);
-		CFRunLoopRun();
-		// Unreached in normal operation; if the run loop ever returns, fail closed.
+
+		loop {
+			let result =
+				CFRunLoopRunInMode(kCFRunLoopDefaultMode, HEARTBEAT_INTERVAL.as_secs_f64(), false);
+			if !listener_step_is_live(tap, result) {
+				break;
+			}
+			Supervisor::global().heartbeat();
+		}
+
+		// If the run loop exits, the tap is disabled/dead, or stepping returns an
+		// unexpected status, fail closed before releasing listener-owned handles.
 		Supervisor::global().set_hotkey_live(false);
 		CFRelease(source.cast_const());
 		CFRelease(tap.cast_const());
 	}
+}
+
+fn listener_step_is_live(tap: CfMachPortRef, run_loop_result: i32) -> bool {
+	run_loop_result_allows_heartbeat(run_loop_result) &&
+		// SAFETY: called only by the listener thread while it owns a valid event tap.
+		unsafe { CGEventTapIsEnabled(tap) }
 }
 
 fn wait_until_live(timeout: Duration) -> bool {
@@ -170,7 +201,11 @@ fn wait_until_live(timeout: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::{HOTKEY_KEYCODE, HOTKEY_MODS, matches_hotkey};
+	use super::{
+		HEARTBEAT_INTERVAL, HOTKEY_KEYCODE, HOTKEY_MODS, RUN_LOOP_HANDLED_SOURCE, RUN_LOOP_TIMED_OUT,
+		matches_hotkey, run_loop_result_allows_heartbeat,
+	};
+	use crate::computer::supervisor::{HEARTBEAT_FRESH_MS, Supervisor};
 
 	#[test]
 	fn matches_only_the_full_hotkey_combo() {
@@ -179,6 +214,31 @@ mod tests {
 		assert!(!matches_hotkey(HOTKEY_KEYCODE, 0)); // no modifiers
 		assert!(!matches_hotkey(HOTKEY_KEYCODE, 0x0004_0000)); // only control
 		assert!(!matches_hotkey(0, HOTKEY_MODS)); // wrong key
+	}
+
+	#[test]
+	fn recurring_idle_heartbeat_keeps_supervisor_fresh_beyond_freshness_window() {
+		let interval_ms = u64::try_from(HEARTBEAT_INTERVAL.as_millis()).unwrap_or(u64::MAX);
+		assert!(interval_ms < HEARTBEAT_FRESH_MS);
+
+		let supervisor = Supervisor::new();
+		supervisor.set_hotkey_live(true);
+		let mut now_ms = 10_000;
+		let deadline_ms = now_ms + HEARTBEAT_FRESH_MS + interval_ms;
+		while now_ms <= deadline_ms {
+			supervisor.heartbeat_at(now_ms);
+			assert!(supervisor.status_at(now_ms).input_allowed());
+			now_ms += interval_ms;
+		}
+	}
+
+	#[test]
+	fn only_active_run_loop_steps_keep_listener_live() {
+		assert!(run_loop_result_allows_heartbeat(RUN_LOOP_TIMED_OUT));
+		assert!(run_loop_result_allows_heartbeat(RUN_LOOP_HANDLED_SOURCE));
+		assert!(!run_loop_result_allows_heartbeat(1)); // kCFRunLoopRunFinished
+		assert!(!run_loop_result_allows_heartbeat(2)); // kCFRunLoopRunStopped
+		assert!(!run_loop_result_allows_heartbeat(0)); // unexpected/unknown status
 	}
 }
 

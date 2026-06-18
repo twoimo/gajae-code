@@ -62,6 +62,30 @@ describe("computer tool schema", () => {
 		expect(() => computerSchema.parse({ action: "scroll", x: 1, y: 2, scrollX: 0, scrollY: 1 })).toThrow();
 		expect(() => computerSchema.parse({ action: "screenshot", includeScreenshot: true })).toThrow();
 	});
+
+	it("keeps runtime validation authoritative for action-specific fields", () => {
+		expect(() => computerSchema.parse({ action: "screenshot", x: 1 })).toThrow();
+		expect(() => computerSchema.parse({ action: "screenshot", text: "ignored" })).toThrow();
+
+		expect(() => computerSchema.parse({ action: "click", y: 2 })).toThrow();
+		expect(() => computerSchema.parse({ action: "click", x: 1 })).toThrow();
+		expect(() => computerSchema.parse({ action: "move", y: 2 })).toThrow();
+		expect(() => computerSchema.parse({ action: "move", x: 1 })).toThrow();
+
+		expect(() => computerSchema.parse({ action: "drag", x: 1, y: 2, to_y: 4 })).toThrow();
+		expect(() => computerSchema.parse({ action: "drag", x: 1, y: 2, to_x: 3 })).toThrow();
+
+		expect(() => computerSchema.parse({ action: "type" })).toThrow();
+
+		expect(() => computerSchema.parse({ action: "keypress" })).toThrow();
+		expect(() => computerSchema.parse({ action: "keypress", keys: [] })).toThrow();
+
+		expect(() => computerSchema.parse({ action: "wait" })).toThrow();
+		expect(() => computerSchema.parse({ action: "wait", ms: 1.5 })).toThrow();
+		expect(() => computerSchema.parse({ action: "wait", ms: -1 })).toThrow();
+
+		expect(() => computerSchema.parse({ action: "launch" })).toThrow();
+	});
 });
 
 describe("computer tool gating", () => {

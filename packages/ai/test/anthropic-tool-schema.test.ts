@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { normalizeAnthropicToolSchema } from "@gajae-code/ai/providers/anthropic";
+import {
+	normalizeAnthropicToolRootInputSchema,
+	normalizeAnthropicToolSchema,
+} from "@gajae-code/ai/providers/anthropic";
 
 describe("normalizeAnthropicToolSchema — SDK whitelist", () => {
 	describe("number / integer nodes", () => {
@@ -169,7 +172,7 @@ describe("normalizeAnthropicToolSchema — SDK whitelist", () => {
 			});
 		});
 
-		it("preserves universal keys: $ref, $defs, anyOf, enum, const, default, title", () => {
+		it("preserves universal keys: $ref, $defs, anyOf, oneOf, enum, const, default, title", () => {
 			const out = normalizeAnthropicToolSchema({
 				$defs: { Color: { type: "string", enum: ["r", "g", "b"] } },
 				type: "object",
@@ -177,6 +180,7 @@ describe("normalizeAnthropicToolSchema — SDK whitelist", () => {
 				properties: {
 					ref: { $ref: "#/$defs/Color" },
 					union: { anyOf: [{ type: "string" }, { type: "number" }] },
+					exclusive: { oneOf: [{ type: "string" }, { type: "number" }] },
 					choice: { const: "x" },
 					hint: { type: "string", default: "anon" },
 				},
@@ -185,9 +189,114 @@ describe("normalizeAnthropicToolSchema — SDK whitelist", () => {
 			expect(out.$defs).toEqual({ Color: { type: "string", enum: ["r", "g", "b"] } });
 			expect(out.properties.ref).toEqual({ $ref: "#/$defs/Color" });
 			expect(out.properties.union.anyOf).toEqual([{ type: "string" }, { type: "number" }]);
+			expect(out.properties.exclusive.oneOf).toEqual([{ type: "string" }, { type: "number" }]);
 			expect(out.properties.choice).toEqual({ const: "x" });
 			expect(out.properties.hint).toEqual({ type: "string", default: "anon" });
 		});
+	});
+});
+
+describe("normalizeAnthropicToolRootInputSchema", () => {
+	it("removes root combinators, keeps common required fields only, derives action enum, and preserves nested combinators", () => {
+		const out = normalizeAnthropicToolRootInputSchema(
+			normalizeAnthropicToolSchema({
+				type: "object",
+				oneOf: [
+					{
+						type: "object",
+						description: "Move the cursor",
+						properties: {
+							action: { const: "move" },
+							x: { type: "integer" },
+							y: { type: "integer" },
+							button: { anyOf: [{ type: "string", enum: ["left"] }, { type: "null" }] },
+						},
+						required: ["action", "x", "y"],
+					},
+					{
+						type: "object",
+						description: "Type text",
+						properties: {
+							action: { enum: ["type"] },
+							text: { type: "string" },
+						},
+						required: ["action", "text"],
+					},
+				],
+			}) as Record<string, unknown>,
+		);
+
+		expect(out).not.toHaveProperty("oneOf");
+		expect(out).not.toHaveProperty("anyOf");
+		expect(out).not.toHaveProperty("allOf");
+		expect(out.type).toBe("object");
+		expect(out.required).toEqual(["action"]);
+
+		const properties = out.properties as Record<string, Record<string, unknown>>;
+		expect(properties.action.enum).toEqual(["move", "type"]);
+		expect(properties.button.anyOf).toEqual([{ type: "string", enum: ["left"] }, { type: "null" }]);
+		expect(out.description).toContain("rootCombinatorGuidance");
+		expect(out.description).toContain("Move the cursor");
+		expect(out.description).toContain("branch-required fields: action, x, y");
+	});
+
+	it("demotes unsafe root combinators into description without removing nested combinators", () => {
+		const out = normalizeAnthropicToolRootInputSchema(
+			normalizeAnthropicToolSchema({
+				type: "object",
+				properties: {
+					value: { anyOf: [{ type: "string" }, { type: "integer" }] },
+				},
+				anyOf: [{ type: "string" }, { type: "integer" }],
+			}) as Record<string, unknown>,
+		);
+
+		expect(out).not.toHaveProperty("anyOf");
+		expect(out.type).toBe("object");
+		expect(out.description).toContain("anyOf");
+		const properties = out.properties as Record<string, Record<string, unknown>>;
+		expect(properties.value.anyOf).toEqual([{ type: "string" }, { type: "integer" }]);
+	});
+
+	it("derives the complete computer action enum without globally requiring branch fields", () => {
+		const actions = [
+			{ action: "screenshot", required: ["action"] },
+			{ action: "click", required: ["action", "x", "y"] },
+			{ action: "double_click", required: ["action", "x", "y"] },
+			{ action: "move", required: ["action", "x", "y"] },
+			{ action: "drag", required: ["action", "x", "y", "to_x", "to_y"] },
+			{ action: "scroll", required: ["action", "x", "y", "scroll_x", "scroll_y"] },
+			{ action: "type", required: ["action", "text"] },
+			{ action: "keypress", required: ["action", "keys"] },
+			{ action: "wait", required: ["action", "ms"] },
+		];
+		const out = normalizeAnthropicToolRootInputSchema(
+			normalizeAnthropicToolSchema({
+				type: "object",
+				oneOf: actions.map(({ action, required }) => ({
+					type: "object",
+					properties: {
+						action: { const: action },
+						x: { type: "number" },
+						y: { type: "number" },
+						to_x: { type: "number" },
+						to_y: { type: "number" },
+						scroll_x: { type: "number" },
+						scroll_y: { type: "number" },
+						text: { type: "string" },
+						keys: { type: "array", items: { type: "string" }, minItems: 1 },
+						ms: { type: "integer" },
+					},
+					required,
+				})),
+			}) as Record<string, unknown>,
+		);
+
+		expect(out).not.toHaveProperty("oneOf");
+		expect(out.required).toEqual(["action"]);
+		const properties = out.properties as Record<string, Record<string, unknown>>;
+		expect(properties.action.enum).toEqual(actions.map(({ action }) => action));
+		expect(out.description).toContain("branch-required fields: action, x, y, to_x, to_y");
 	});
 });
 

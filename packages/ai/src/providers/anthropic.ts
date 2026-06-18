@@ -2573,6 +2573,99 @@ export function normalizeAnthropicToolSchema(schema: unknown): unknown {
 	return result;
 }
 
+function getRequiredNames(schema: Record<string, unknown>): Set<string> {
+	return new Set(
+		Array.isArray(schema.required)
+			? schema.required.filter((entry): entry is string => typeof entry === "string")
+			: [],
+	);
+}
+
+function getSingleLiteralValue(schema: unknown): unknown | undefined {
+	if (!isRecord(schema)) return undefined;
+	if (Object.hasOwn(schema, "const")) return schema.const;
+	if (Array.isArray(schema.enum) && schema.enum.length === 1) return schema.enum[0];
+	return undefined;
+}
+
+function describeAnthropicRootBranch(index: number, branch: Record<string, unknown>, action: unknown): string {
+	const required = [...getRequiredNames(branch)];
+	const parts = [`Branch ${index + 1}`];
+	if (typeof action === "string" || typeof action === "number" || typeof action === "boolean") {
+		parts.push(`action ${JSON.stringify(action)}`);
+	}
+	if (required.length > 0) parts.push(`branch-required fields: ${required.join(", ")}`);
+	if (typeof branch.description === "string" && branch.description.length > 0) parts.push(branch.description);
+	return parts.join("; ");
+}
+
+/**
+ * Anthropic rejects tool `input_schema` roots containing top-level oneOf/anyOf/allOf.
+ * Keep the generic normalizer schema-preserving, then flatten only provider-emitted
+ * tool roots into one object while leaving nested combinators untouched.
+ */
+export function normalizeAnthropicToolRootInputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = { ...schema };
+	const rootCombinators = COMBINATOR_KEYS.filter(key => Array.isArray(result[key]));
+	if (rootCombinators.length === 0) return result;
+
+	const baseProperties = isRecord(result.properties) ? { ...result.properties } : {};
+	const flattenKey = rootCombinators.find(key => {
+		const variants = result[key];
+		return (
+			Array.isArray(variants) &&
+			variants.length > 0 &&
+			variants.every(variant => isRecord(variant) && isJsonSchemaObjectNode(variant))
+		);
+	});
+
+	result.type = "object";
+	result.properties = baseProperties;
+	result.additionalProperties = result.additionalProperties === undefined ? false : result.additionalProperties;
+
+	if (flattenKey !== undefined) {
+		const variants = result[flattenKey] as unknown[];
+		const commonRequired = variants.map(variant => getRequiredNames(variant as Record<string, unknown>));
+		const required =
+			commonRequired.length === 0
+				? []
+				: [...commonRequired[0]].filter(name => commonRequired.every(set => set.has(name)));
+		const actionValues: unknown[] = [];
+		const guidance: string[] = [];
+
+		for (const [index, variant] of variants.entries()) {
+			const branch = variant as Record<string, unknown>;
+			if (isRecord(branch.properties)) {
+				Object.assign(baseProperties, branch.properties);
+				const actionValue = getSingleLiteralValue(branch.properties.action);
+				if (actionValue !== undefined && !actionValues.includes(actionValue)) actionValues.push(actionValue);
+				guidance.push(describeAnthropicRootBranch(index, branch, actionValue));
+			} else {
+				guidance.push(describeAnthropicRootBranch(index, branch, undefined));
+			}
+		}
+
+		if (actionValues.length > 0) {
+			const existingAction = isRecord(baseProperties.action) ? { ...baseProperties.action } : {};
+			delete existingAction.const;
+			baseProperties.action = { ...existingAction, enum: actionValues };
+		}
+		result.required = required;
+		spillToDescription(result, [
+			["rootCombinatorGuidance", guidance],
+			...rootCombinators.filter(key => key !== flattenKey).map(key => [key, result[key]] as [string, unknown]),
+		]);
+	} else {
+		spillToDescription(
+			result,
+			rootCombinators.map(key => [key, result[key]]),
+		);
+	}
+
+	for (const key of COMBINATOR_KEYS) delete result[key];
+	return result;
+}
+
 type AnthropicToolInputSchema = Anthropic.Messages.Tool["input_schema"];
 
 type AnthropicToolSchemaPlan = {
@@ -2740,14 +2833,16 @@ function normalizeAnthropicStrictSchema(
 
 function buildAnthropicBaseToolInputSchema(tool: Tool): Record<string, unknown> {
 	const jsonSchema = toolWireSchema(tool);
-	return normalizeAnthropicToolSchema({
-		...jsonSchema,
-		type: "object",
-		properties: isRecord(jsonSchema.properties) ? jsonSchema.properties : {},
-		required: Array.isArray(jsonSchema.required)
-			? jsonSchema.required.filter((entry): entry is string => typeof entry === "string")
-			: [],
-	}) as Record<string, unknown>;
+	return normalizeAnthropicToolRootInputSchema(
+		normalizeAnthropicToolSchema({
+			...jsonSchema,
+			type: "object",
+			properties: isRecord(jsonSchema.properties) ? jsonSchema.properties : {},
+			required: Array.isArray(jsonSchema.required)
+				? jsonSchema.required.filter((entry): entry is string => typeof entry === "string")
+				: [],
+		}) as Record<string, unknown>,
+	);
 }
 
 function buildAnthropicToolSchemaPlans(tools: Tool[], disableStrictTools = false): AnthropicToolSchemaPlan[] {
