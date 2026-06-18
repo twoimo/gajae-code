@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@gajae-code/agent-core";
+import type { ImageContent } from "@gajae-code/ai";
 import { prompt } from "@gajae-code/utils";
 import * as z from "zod/v4";
 import computerDescription from "../prompts/tools/computer.md" with { type: "text" };
@@ -282,7 +283,12 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 				}
 				details.message = describeComputerSuccess(details);
 				await writeComputerAuditLog(this.session, details);
-				return toolResult(details).text(details.message).done();
+				const image = imageContentFromNativeResult(batchResult.screenshotSource);
+				return image
+					? toolResult(details)
+							.content([{ type: "text", text: details.message }, image])
+							.done()
+					: toolResult(details).text(details.message).done();
 			}
 			const result = await dispatchComputerAction(controller, params, timeoutMs);
 			const screenshot = normalizeScreenshot(result);
@@ -290,7 +296,12 @@ export class ComputerTool implements AgentTool<typeof computerSchema, ComputerTo
 			details.status = "success";
 			details.message = describeComputerSuccess(details);
 			await writeComputerAuditLog(this.session, details);
-			return toolResult(details).text(details.message).done();
+			const image = imageContentFromNativeResult(result);
+			return image
+				? toolResult(details)
+						.content([{ type: "text", text: details.message }, image])
+						.done()
+				: toolResult(details).text(details.message).done();
 		} catch (error) {
 			if (error instanceof ToolAbortError) throw error;
 			const mapped = mapComputerError(error, hotkey);
@@ -362,6 +373,7 @@ function dispatchComputerAction(
 interface BatchDispatchResult {
 	steps: ComputerToolDetails[];
 	screenshot?: ComputerScreenshotDetails;
+	screenshotSource?: unknown;
 	failedStep?: { code: string; message: string };
 }
 
@@ -373,6 +385,7 @@ async function dispatchBatchComputerActions(
 ): Promise<BatchDispatchResult> {
 	const steps: ComputerToolDetails[] = [];
 	let lastScreenshot: ComputerScreenshotDetails | undefined;
+	let lastScreenshotSource: unknown;
 	let bounds: CoordinateBounds | undefined;
 	for (const single of actions) {
 		const stepDetails = detailsFromParams(single);
@@ -382,6 +395,7 @@ async function dispatchBatchComputerActions(
 			if (screenshot) {
 				stepDetails.screenshot = screenshot;
 				lastScreenshot = screenshot;
+				lastScreenshotSource = result;
 				bounds = screenshot;
 			}
 			stepDetails.status = "success";
@@ -393,11 +407,16 @@ async function dispatchBatchComputerActions(
 			stepDetails.code = mapped.code;
 			stepDetails.message = mapped.message;
 			steps.push(stepDetails);
-			return { steps, screenshot: lastScreenshot, failedStep: { code: mapped.code, message: mapped.message } };
+			return {
+				steps,
+				screenshot: lastScreenshot,
+				screenshotSource: lastScreenshotSource,
+				failedStep: { code: mapped.code, message: mapped.message },
+			};
 		}
 		steps.push(stepDetails);
 	}
-	return { steps, screenshot: lastScreenshot };
+	return { steps, screenshot: lastScreenshot, screenshotSource: lastScreenshotSource };
 }
 
 function detailsFromParams(params: ComputerParams): ComputerToolDetails {
@@ -440,6 +459,24 @@ function normalizeScreenshot(value: unknown): ComputerScreenshotDetails | undefi
 		captureId: shot.captureId,
 		pngBytes: getPngByteLength(shot.png),
 	};
+}
+
+function imageContentFromNativeResult(value: unknown): ImageContent | undefined {
+	const candidate =
+		value && typeof value === "object" && "screenshot" in value
+			? (value as { screenshot?: unknown }).screenshot
+			: value;
+	if (!candidate || typeof candidate !== "object") return undefined;
+	const png = (candidate as NativeScreenshot).png;
+	const data = pngToBase64(png);
+	return data ? { type: "image", data, mimeType: "image/png" } : undefined;
+}
+
+function pngToBase64(png: NativeScreenshot["png"]): string | undefined {
+	if (png === undefined) return undefined;
+	if (typeof png === "string") return png;
+	if (png instanceof ArrayBuffer) return Buffer.from(png).toString("base64");
+	return Buffer.from(png).toString("base64");
 }
 
 function getPngByteLength(png: NativeScreenshot["png"]): number | undefined {

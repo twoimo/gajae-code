@@ -226,6 +226,9 @@ describe("computer tool dispatch", () => {
 		await tool.execute("scroll", { action: "scroll", x: 1, y: 2, scroll_x: 5, scroll_y: -6 });
 
 		expect(shot.details?.screenshot).toMatchObject({ widthPx: 20, heightPx: 10, pngBytes: 3, captureId: "cap-1" });
+		expect(shot.content.some(block => block.type === "image")).toBe(true);
+		const image = shot.content.find(block => block.type === "image");
+		expect(image).toMatchObject({ type: "image", mimeType: "image/png", data: "AQID" });
 		expect(calls.map(call => call.method)).toEqual(["screenshot", "doubleClick", "drag", "scroll"]);
 		// Positional native ABI: (expectedEpoch, x, y, ...rest)
 		expect(calls[1].args).toEqual([undefined, 1, 2, "right"]);
@@ -261,6 +264,9 @@ describe("computer tool dispatch", () => {
 		expect(result.details?.steps?.map(s => s.action)).toEqual(["screenshot", "click", "type"]);
 		expect(result.details?.steps?.every(s => s.status === "success")).toBe(true);
 		expect(result.details?.screenshot).toMatchObject({ widthPx: 100, heightPx: 50 });
+		expect(result.content.some(block => block.type === "image")).toBe(true);
+		const image = result.content.find(block => block.type === "image");
+		expect(image).toMatchObject({ type: "image", mimeType: "image/png", data: "AQID" });
 		expect(calls.map(call => call.method)).toEqual(["screenshot", "click", "type"]);
 	});
 
