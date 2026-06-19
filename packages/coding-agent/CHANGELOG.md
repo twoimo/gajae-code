@@ -14,6 +14,16 @@
 
 - Fixed the `computer` tool (and any other `z.union`/discriminated-union tool) shipping a bare top-level `anyOf`/`oneOf`/`allOf` `input_schema` root that strict providers (Amazon Bedrock Converse incl. Kiro/CodeWhisperer relays, OpenAI strict mode, Gemini) reject. Tool schema roots are now flattened to a single `type: "object"` across all providers via the shared `flattenToolRootCombinators`. See `@gajae-code/ai` 0.6.1.
 
+### Fixed
+
+- `gjc update` now runs the freshly installed `gjc --smoke-test` after version verification and tells users to restart running sessions, surfacing stale or partial runtime updates such as native-addon release mismatches immediately.
+
+## [0.6.1] - 2026-06-18
+
+### Fixed
+
+- Fixed the `computer` tool (and any other `z.union`/discriminated-union tool) shipping a bare top-level `anyOf`/`oneOf`/`allOf` `input_schema` root that strict providers (Amazon Bedrock Converse incl. Kiro/CodeWhisperer relays, OpenAI strict mode, Gemini) reject. Tool schema roots are now flattened to a single `type: "object"` across all providers via the shared `flattenToolRootCombinators`. See `@gajae-code/ai` 0.6.1.
+
 ## [0.6.0] - 2026-06-18
 ### Added
 
