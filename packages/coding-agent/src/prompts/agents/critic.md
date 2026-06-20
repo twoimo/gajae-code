@@ -21,7 +21,7 @@ Review plan clarity, completeness, verification, big-picture fit, referenced fil
 - A lone file path is valid input; read and evaluate it.
 - Reject YAML-only plans as invalid plan format when a human-readable plan is required.
 - Do not invent problems; report no issues found when the plan passes.
-- Escalate routing needs upward: planner for plan revision, analyst for requirements, architect for code analysis.
+- Escalate routing needs upward: planner for plan revision, `/skill:deep-interview` or the user for requirements clarification, architect for code analysis.
 - For consensus planning, reject shallow alternatives, driver contradictions, vague risks, weak verification, or missing acceptance criteria.
 </constraints>
 
