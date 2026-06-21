@@ -498,3 +498,56 @@ export function isUltragoalBypassPrompt(prompt: string): boolean {
 		) || /goal[\s\S]{0,80}complete/i.test(normalized)
 	);
 }
+export interface UltragoalPauseBlockDiagnostic {
+	blocked: boolean;
+	reason: string;
+}
+
+/**
+ * While an Ultragoal run is active, `goal({"op":"pause"})` is only allowed when the
+ * current durable Ultragoal state is readable and the latest durable ledger event
+ * classifies the current blocker as `human_blocked`. Resolvable blockers must be
+ * worked, not parked. Reads fail closed so unreadable durable state or ledger data
+ * blocks pause rather than silently allowing a give-up.
+ */
+export async function isUltragoalPauseBlocked(cwd: string): Promise<UltragoalPauseBlockDiagnostic> {
+	if (!cwd) return { blocked: false, reason: "No cwd to resolve durable Ultragoal state." };
+	const ask = await isUltragoalAskBlocked(cwd);
+	if (ask.source === "durable_state_unreadable") {
+		return {
+			blocked: true,
+			reason: `Unable to verify current durable Ultragoal state for pause: ${ask.reason}`,
+		};
+	}
+	if (!ask.active) return { blocked: false, reason: "No active Ultragoal run." };
+	let ledger: UltragoalLedgerEvent[];
+	try {
+		ledger = await readUltragoalLedger(cwd);
+	} catch (error) {
+		return {
+			blocked: true,
+			reason: `Unable to read durable Ultragoal ledger: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+	const latest = ledger.at(-1);
+	if (latest?.event === "blocker_classified" && latest.classification === "human_blocked") {
+		return { blocked: false, reason: "Latest Ultragoal ledger event classifies the blocker as human_blocked." };
+	}
+	return {
+		blocked: true,
+		reason:
+			"An Ultragoal run is active. Pausing requires the current blocker to be classified human_blocked as the latest ledger event.",
+	};
+}
+
+export async function assertUltragoalPauseAllowed(cwd: string): Promise<void> {
+	const diagnostic = await isUltragoalPauseBlocked(cwd);
+	if (!diagnostic.blocked) return;
+	throw new Error(
+		[
+			diagnostic.reason,
+			"Resolvable blockers must be worked, not paused: investigate, `gjc ultragoal steer --kind add_subgoal`, delegate an executor, or `gjc ultragoal record-review-blockers`.",
+			'If the blocker is genuinely human-only, record `gjc ultragoal classify-blocker --classification human_blocked --evidence "<human-only dependency>"` immediately before pausing.',
+		].join("\n"),
+	);
+}
