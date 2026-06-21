@@ -1,7 +1,7 @@
 import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
-	keybindings: Pick<KeybindingsManager, "getDisplayString">;
+	keybindings: Pick<KeybindingsManager, "getDisplayString"> & Partial<Pick<KeybindingsManager, "getConflicts">>;
 }
 
 function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): string {
@@ -9,7 +9,7 @@ function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): strin
 }
 
 export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string {
-	return [
+	const lines = [
 		"**Navigation**",
 		"| Key | Action |",
 		"|-----|--------|",
@@ -57,5 +57,18 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"| `!!` | Run bash command (excluded from context) |",
 		"| `$` | Run Python in shared kernel |",
 		"| `$$` | Run Python (excluded from context) |",
-	].join("\n");
+	];
+
+	const conflicts = bindings.keybindings.getConflicts?.() ?? [];
+	if (conflicts.length > 0) {
+		lines.push(
+			"",
+			"**Keybinding conflicts** (same chord bound to multiple actions in `keybindings.json`)",
+			"| Key | Conflicting actions |",
+			"|-----|---------------------|",
+			...conflicts.map(conflict => `| \`${conflict.key}\` | ${conflict.keybindings.join(", ")} |`),
+		);
+	}
+
+	return lines.join("\n");
 }

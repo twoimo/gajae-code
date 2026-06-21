@@ -67,4 +67,27 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Disabled` | Select model (temporary) |");
 		expect(markdown).toContain("| `Ctrl+L` | Select default model |");
 	});
+
+	it("appends a conflicts section when getConflicts reports remap collisions", () => {
+		const markdown = buildHotkeysMarkdown({
+			keybindings: {
+				getDisplayString: () => "Ctrl+X",
+				getConflicts: () => [{ key: "ctrl+x", keybindings: ["app.clear", "app.exit"] }],
+			},
+		});
+
+		expect(markdown).toContain("**Keybinding conflicts**");
+		expect(markdown).toContain("| `ctrl+x` | app.clear, app.exit |");
+	});
+
+	it("omits the conflicts section when there are no conflicts", () => {
+		const markdown = buildHotkeysMarkdown({
+			keybindings: {
+				getDisplayString: () => "Ctrl+X",
+				getConflicts: () => [],
+			},
+		});
+
+		expect(markdown).not.toContain("**Keybinding conflicts**");
+	});
 });
