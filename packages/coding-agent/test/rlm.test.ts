@@ -113,7 +113,7 @@ describe("rlm gjc session resolution (regression: standalone `gjc rlm`)", () => 
 		const resolved = ensureRlmGjcSessionId();
 		expect(resolved.startsWith("rlm-")).toBe(true);
 		expect(isValidRlmSessionId(resolved)).toBe(true);
-		expect(process.env.GJC_SESSION_ID).toBe(resolved);
+		expect(String(process.env.GJC_SESSION_ID)).toBe(resolved);
 		// After establishing the session, artifact-path resolution no longer throws.
 		const paths = resolveRlmArtifactPaths(tmp, "sess1");
 		expect(paths.dir).toBe(rlmArtifactRoot(tmp, resolved, "sess1"));
