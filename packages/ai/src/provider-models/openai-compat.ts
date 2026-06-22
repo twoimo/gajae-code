@@ -2282,7 +2282,7 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_CODING_PLANS: readonly ModelsDevProviderDe
 	anthropicMessagesDescriptor(
 		"glm-zcode-coding-plan",
 		"glm-zcode",
-		process.env.ZCODE_PLAN_ANTHROPIC_BASE_URL ?? "https://api.z.ai/api/anthropic",
+		process.env.ZCODE_PLAN_ANTHROPIC_BASE_URL ?? "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
 	),
 	// --- Xiaomi ---
 	openAiCompletionsDescriptor("xiaomi", "xiaomi", "https://api.xiaomimimo.com/v1", {
