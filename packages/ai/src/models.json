@@ -75704,7 +75704,14 @@
 			"name": "GLM-5.2 (ZCode)",
 			"api": "anthropic-messages",
 			"provider": "glm-zcode",
-			"baseUrl": "https://api.z.ai/api/anthropic",
+			"baseUrl": "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+			"headers": {
+				"User-Agent": "ZCode/1.0.0",
+				"HTTP-Referer": "https://zcode.z.ai",
+				"X-Title": "Z Code@electron",
+				"X-ZCode-App-Version": "1.0.0",
+				"X-ZCode-Agent": "glm"
+			},
 			"reasoning": true,
 			"input": [
 				"text"

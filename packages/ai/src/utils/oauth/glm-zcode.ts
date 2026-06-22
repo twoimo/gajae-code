@@ -7,21 +7,27 @@
  * violate ZCode/Z.AI Terms of Service. Endpoints and the client id are
  * overridable via `ZCODE_OAUTH_*` environment variables.
  *
- * Triple-hop token exchange:
+ * Login flow:
  *   1. Authorize:  GET  {authorize}?redirect_uri=zcode://oauth/callback&response_type=code&client_id=...&state=...
  *                  (custom-protocol redirect → a CLI cannot catch it, so the user pastes the code/redirect URL)
- *   2. Broker:     POST {broker}        { provider: "zai", code, redirect_uri, state }
- *                       → { data: { token: <zcode JWT>, zai: { access_token: <upstream Z.AI token> } } }
- *   3. Business:   POST {zai z/login}   { token: <upstream Z.AI token> }
- *                       → { data: { access_token: <business token>, expires_in } }
+ *   2. Broker:     POST {broker}  { provider: "zai", code, redirect_uri, state }
+ *                       → { code: 0, data: { token: <ZCode JWT>, zai: { access_token: <upstream Z.AI token> }, expires_in } }
  *
- * Credential mapping:
- *   - `access`  = business token (sent to GLM /v1/messages as `Authorization: Bearer`)
- *   - `refresh` = the plain upstream Z.AI access token (re-run z/login to re-mint `access`)
- * The ZCode JWT is used only transiently for identity decode at login; it is never stored.
+ * Credential mapping (verified against the ZCode host bundle):
+ *   - `access`  = the **ZCode JWT** (`data.token`). This is the GLM coding-plan
+ *                 model credential: ZCode stores it under the `zcodejwttoken`
+ *                 key and sends it as `Authorization: Bearer` to the coding-plan
+ *                 gateway `${ZCODE_PLAN_ANTHROPIC_BASE_URL}` (default
+ *                 https://zcode.z.ai/api/v1/zcode-plan/anthropic), which
+ *                 validates the ZCode session and injects the upstream GLM key
+ *                 server-side. Model traffic does NOT go to api.z.ai directly.
+ *   - `refresh` = the upstream Z.AI OAuth access token (`data.zai.access_token`),
+ *                 kept for identity/userinfo only. ZCode's separate z/login
+ *                 "business token" is used by ZCode for billing/userinfo, NOT
+ *                 model calls, so it is intentionally never minted here.
  *
- * The business token reaches the Anthropic-messages request as a plain bearer
- * automatically (the GLM base URL is not api.anthropic.com). This provider must
+ * The ZCode JWT reaches the Anthropic-messages request as a plain bearer
+ * automatically (the gateway base is not api.anthropic.com). This provider must
  * NEVER force `isOAuth=true`, which would route GLM into the Claude-Code OAuth
  * header branch (claude-cli UA, `claude_` tool prefixes, Claude system prompt).
  */
@@ -36,8 +42,15 @@ export const GLM_ZCODE_OAUTH_AUTHORIZE_URL = "https://chat.z.ai/api/oauth/author
 export const GLM_ZCODE_OAUTH_CLIENT_ID = "client_P8X5CMWmlaRO9gyO-KSqtg";
 export const GLM_ZCODE_OAUTH_REDIRECT_URI = "zcode://oauth/callback";
 export const GLM_ZCODE_OAUTH_BROKER_TOKEN_URL = "https://zcode.z.ai/api/v1/oauth/token";
-export const GLM_ZCODE_ZAI_LOGIN_URL = "https://api.z.ai/api/auth/z/login";
 export const GLM_ZCODE_USERINFO_URL = "https://chat.z.ai/api/oauth/userinfo";
+
+/**
+ * Default coding-plan ("start plan") Anthropic gateway base. ZCode derives this
+ * as `${zcodeBackend}/api/v1/zcode-plan/anthropic`. Model requests go here
+ * (NOT api.z.ai), authenticated with the ZCode JWT. Override via
+ * `ZCODE_PLAN_ANTHROPIC_BASE_URL`. Exported for the model descriptor / catalog.
+ */
+export const GLM_ZCODE_PLAN_ANTHROPIC_BASE_URL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic";
 
 type FetchImpl = typeof globalThis.fetch;
 
@@ -58,9 +71,6 @@ function resolveRedirectUri(): string {
 function resolveBrokerTokenUrl(): string {
 	return envOr("ZCODE_OAUTH_BROKER_TOKEN_URL", GLM_ZCODE_OAUTH_BROKER_TOKEN_URL);
 }
-function resolveZaiLoginUrl(): string {
-	return envOr("ZCODE_OAUTH_ZAI_LOGIN_URL", GLM_ZCODE_ZAI_LOGIN_URL);
-}
 function resolveUserinfoUrl(): string {
 	return envOr("ZCODE_OAUTH_USERINFO_URL", GLM_ZCODE_USERINFO_URL);
 }
@@ -73,7 +83,7 @@ export function isGlmZcodeOAuthConfigured(): boolean {
 	return resolveClientId().length > 0;
 }
 
-/** Mask token-like substrings so broker/upstream/business tokens never leak into errors or logs. */
+/** Mask token-like substrings so broker/upstream/JWT tokens never leak into errors or logs. */
 function redactSecrets(text: string): string {
 	return text
 		.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted-jwt]")
@@ -195,7 +205,13 @@ async function resolveIdentity(
 	return identityFromJwts(jwtCandidates);
 }
 
-function parseBrokerResponse(payload: unknown): { zcodeToken: string; upstreamZaiAccess: string } {
+interface BrokerResult {
+	zcodeToken: string;
+	upstreamZaiAccess: string;
+	expiresIn: number;
+}
+
+function parseBrokerResponse(payload: unknown): BrokerResult {
 	const data = isRecord(payload) && isRecord(payload.data) ? payload.data : undefined;
 	const zcodeToken = data && typeof data.token === "string" ? data.token : undefined;
 	const zai = data && isRecord(data.zai) ? data.zai : undefined;
@@ -203,43 +219,9 @@ function parseBrokerResponse(payload: unknown): { zcodeToken: string; upstreamZa
 	if (!zcodeToken || !upstreamZaiAccess) {
 		throw new Error("GLM ZCode broker response missing data.token or data.zai.access_token");
 	}
-	return { zcodeToken, upstreamZaiAccess };
-}
-
-interface BusinessToken {
-	access: string;
-	expiresIn: number;
-}
-
-async function resolveBusinessToken(
-	fetchImpl: FetchImpl,
-	upstreamZaiAccess: string,
-	signal: AbortSignal | undefined,
-): Promise<BusinessToken> {
-	const zaiLoginUrl = validateHttpsEndpoint(resolveZaiLoginUrl(), "z/login");
-	const payload = await postJson(fetchImpl, zaiLoginUrl, { token: upstreamZaiAccess }, "z/login", signal);
-	const data = isRecord(payload) && isRecord(payload.data) ? payload.data : undefined;
-	const access = data && typeof data.access_token === "string" ? data.access_token : undefined;
-	if (!access) {
-		throw new Error("GLM ZCode z/login response missing data.access_token");
-	}
 	const expiresIn =
 		data && typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
-	return { access, expiresIn };
-}
-
-function credentialsFromBusiness(
-	business: BusinessToken,
-	upstreamZaiAccess: string,
-	identity: Identity,
-): OAuthCredentials {
-	return {
-		refresh: upstreamZaiAccess,
-		access: business.access,
-		expires: Date.now() + business.expiresIn * 1000 - GLM_ZCODE_REFRESH_SKEW_MS,
-		email: identity.email,
-		accountId: identity.accountId,
-	};
+	return { zcodeToken, upstreamZaiAccess, expiresIn };
 }
 
 async function exchangeGlmZcodeCode(
@@ -258,15 +240,17 @@ async function exchangeGlmZcodeCode(
 		"broker",
 		signal,
 	);
-	const { zcodeToken, upstreamZaiAccess } = parseBrokerResponse(brokerPayload);
-	const business = await resolveBusinessToken(fetchImpl, upstreamZaiAccess, signal);
-	const identity = await resolveIdentity(
-		fetchImpl,
-		upstreamZaiAccess,
-		[zcodeToken, upstreamZaiAccess, business.access],
-		signal,
-	);
-	return credentialsFromBusiness(business, upstreamZaiAccess, identity);
+	const { zcodeToken, upstreamZaiAccess, expiresIn } = parseBrokerResponse(brokerPayload);
+	const identity = await resolveIdentity(fetchImpl, upstreamZaiAccess, [zcodeToken, upstreamZaiAccess], signal);
+	// access = ZCode JWT (the coding-plan model credential); refresh = upstream
+	// Z.AI token (identity only — there is no documented JWT refresh grant).
+	return {
+		access: zcodeToken,
+		refresh: upstreamZaiAccess,
+		expires: Date.now() + expiresIn * 1000 - GLM_ZCODE_REFRESH_SKEW_MS,
+		email: identity.email,
+		accountId: identity.accountId,
+	};
 }
 
 export interface GlmZcodeOAuthFlowOptions {
@@ -322,33 +306,16 @@ export interface GlmZcodeRefreshOptions {
 }
 
 /**
- * Re-mint the GLM business token. ZCode exposes no documented refresh endpoint,
- * so this re-runs z/login with the stored upstream Z.AI token. If that fails the
- * caller must re-login; expired credentials are never returned as valid.
+ * The ZCode session JWT is the model credential. ZCode mints it from a one-time
+ * authorization code via the broker and exposes no documented refresh grant, so
+ * there is no autonomous refresh: an expired credential requires re-login
+ * (`/login glm-zcode`). Never return an expired credential as valid.
  */
 export async function refreshGlmZcodeToken(
-	credentials: OAuthCredentials,
-	options: AbortSignal | GlmZcodeRefreshOptions = {},
+	_credentials: OAuthCredentials,
+	_options: AbortSignal | GlmZcodeRefreshOptions = {},
 ): Promise<OAuthCredentials> {
-	const { signal, fetch: fetchImpl } =
-		options instanceof AbortSignal ? { signal: options, fetch: undefined } : options;
-	const upstreamZaiAccess = credentials.refresh;
-	if (!upstreamZaiAccess) {
-		throw new Error(
-			"glm-zcode credentials require re-login; no stored upstream Z.AI token and no documented refresh endpoint",
-		);
-	}
-	const resolvedFetch = fetchImpl ?? globalThis.fetch;
-	let business: BusinessToken;
-	try {
-		business = await resolveBusinessToken(resolvedFetch, upstreamZaiAccess, signal);
-	} catch (error) {
-		throw new Error(
-			`glm-zcode credentials require re-login; re-minting via z/login failed (${redactSecrets(String(error))})`,
-		);
-	}
-	return credentialsFromBusiness(business, upstreamZaiAccess, {
-		email: credentials.email,
-		accountId: credentials.accountId,
-	});
+	throw new Error(
+		"glm-zcode session expired; re-login required (`/login glm-zcode`). The ZCode coding-plan token has no documented refresh endpoint.",
+	);
 }
