@@ -9,11 +9,11 @@ import { buildAnthropicClientOptions, buildAnthropicHeaders } from "../src/provi
 import { isOAuthToken } from "../src/utils/anthropic-auth";
 import { getOAuthProviders, refreshOAuthToken } from "../src/utils/oauth";
 import {
+	GLM_ZCODE_ANTHROPIC_BASE_URL,
 	GLM_ZCODE_OAUTH_AUTHORIZE_URL,
 	GLM_ZCODE_OAUTH_BROKER_TOKEN_URL,
 	GLM_ZCODE_OAUTH_CLIENT_ID,
 	GLM_ZCODE_OAUTH_REDIRECT_URI,
-	GLM_ZCODE_PLAN_ANTHROPIC_BASE_URL,
 	GlmZcodeOAuthFlow,
 	isGlmZcodeOAuthConfigured,
 	refreshGlmZcodeToken,
@@ -21,62 +21,66 @@ import {
 import { withEnv } from "./helpers";
 
 const originalFetch = global.fetch;
-const USERINFO_URL = "https://chat.z.ai/api/oauth/userinfo";
 const SUPPRESS_ENV = {
 	GLM_ZCODE_API_KEY: undefined,
 	ZAI_API_KEY: undefined,
 	ZCODE_OAUTH_CLIENT_ID: undefined,
 } as const;
 
-// The ZCode JWT (broker data.token) is the GLM coding-plan model credential.
-const ZCODE_JWT = jwt({ sub: "zcode-sub-id", email: "ZJwt@Example.com" });
-const UPSTREAM_ZAI_TOKEN = "upstream-zai-access-token-value-1234567890";
+const ZCODE_JWT = jwt({ sub: "zcode-sub", email: "Z@Example.com" });
+const UPSTREAM = "upstream-zai-access-token-1234567890";
+const BUSINESS = "business-session-token-abcdefghijklmnop";
+const ORG = "org-default-123";
+const PROJ = "proj_default_456";
+const KEY_ID = "keyid6670babb";
+const SECRET = "secretYkn1K3E1a3J";
+const MINTED_KEY = `${KEY_ID}.${SECRET}`;
 
 function jwt(payload: Record<string, unknown>): string {
-	const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-	return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.`;
+	const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+	return `${enc({ alg: "none" })}.${enc(payload)}.`;
 }
 
-interface MockOptions {
-	expiresIn?: number;
-	zcodeToken?: string;
-	userinfo?: { email?: string; id?: string } | null;
-	captureBroker?: (body: string) => void;
-	brokerPayloadOverride?: unknown;
-	brokerStatus?: number;
+interface MockOpts {
+	existingKey?: boolean; // api_keys list already contains "zcode-api-key"
+	captureCreate?: () => void;
 }
 
-function routingFetch(options: MockOptions = {}) {
+function routingFetch(opts: MockOpts = {}) {
+	const keysUrl = `https://api.z.ai/api/biz/v1/organization/${ORG}/projects/${PROJ}/api_keys`;
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+		const method = (init?.method ?? "GET").toUpperCase();
+		const json = (o: unknown) => new Response(JSON.stringify(o), { headers: { "Content-Type": "application/json" } });
 		if (url === GLM_ZCODE_OAUTH_BROKER_TOKEN_URL) {
-			options.captureBroker?.(String(init?.body ?? ""));
-			if (options.brokerStatus && options.brokerStatus >= 400) {
-				return new Response("rejected", { status: options.brokerStatus });
-			}
-			return new Response(
-				JSON.stringify(
-					options.brokerPayloadOverride ?? {
-						code: 0,
-						data: {
-							token: options.zcodeToken ?? ZCODE_JWT,
-							zai: { access_token: UPSTREAM_ZAI_TOKEN },
-							expires_in: options.expiresIn ?? 3600,
-						},
-					},
-				),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
+			return json({ code: 0, data: { token: ZCODE_JWT, zai: { access_token: UPSTREAM } } });
 		}
-		if (url === USERINFO_URL) {
-			if (options.userinfo === null) return new Response("no", { status: 404 });
-			const data = options.userinfo ?? { email: "Member@Example.com", id: "account-xyz" };
-			return new Response(JSON.stringify({ data }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
+		if (url === "https://api.z.ai/api/auth/z/login") {
+			return json({ code: 0, data: { access_token: BUSINESS } });
+		}
+		if (url === "https://api.z.ai/api/biz/customer/getCustomerInfo") {
+			return json({
+				code: 200,
+				data: {
+					id: "5053550",
+					email: "member@example.com",
+					organizations: [
+						{ organizationId: ORG, isDefault: true, projects: [{ projectId: PROJ, isDefault: true }] },
+					],
+				},
 			});
 		}
-		throw new Error(`Unexpected fetch: ${url}`);
+		if (url === keysUrl && method === "GET") {
+			return json({ code: 200, data: opts.existingKey ? [{ name: "zcode-api-key", apiKey: KEY_ID }] : [] });
+		}
+		if (url === keysUrl && method === "POST") {
+			opts.captureCreate?.();
+			return json({ code: 200, data: { apiKey: KEY_ID } });
+		}
+		if (url === `${keysUrl}/copy/${KEY_ID}`) {
+			return json({ code: 200, data: { secretKey: SECRET } });
+		}
+		throw new Error(`Unexpected fetch: ${method} ${url}`);
 	});
 }
 
@@ -104,8 +108,7 @@ describe("GLM ZCode OAuth login provider", () => {
 	});
 
 	it("registers glm-zcode as an available, opt-in-labeled login provider", () => {
-		const provider = getOAuthProviders().find(p => p.id === "glm-zcode");
-		expect(provider).toEqual({
+		expect(getOAuthProviders().find(p => p.id === "glm-zcode")).toEqual({
 			id: "glm-zcode",
 			name: "GLM ZCode OAuth (unofficial, opt-in)",
 			available: true,
@@ -113,18 +116,11 @@ describe("GLM ZCode OAuth login provider", () => {
 		expect(isGlmZcodeOAuthConfigured()).toBe(true);
 	});
 
-	it("uses the exact ZCode client id and custom-protocol redirect by default", () => {
+	it("uses the exact ZCode client id, custom redirect, and api.z.ai model base", () => {
 		expect(GLM_ZCODE_OAUTH_CLIENT_ID).toBe("client_P8X5CMWmlaRO9gyO-KSqtg");
 		expect(GLM_ZCODE_OAUTH_REDIRECT_URI).toBe("zcode://oauth/callback");
-	});
-
-	it("defaults the model base to the ZCode coding-plan gateway, not api.z.ai", () => {
-		expect(GLM_ZCODE_PLAN_ANTHROPIC_BASE_URL).toBe("https://zcode.z.ai/api/v1/zcode-plan/anthropic");
-		const model = getBundledModel("glm-zcode", "glm-5.2");
-		expect(model.baseUrl).toBe("https://zcode.z.ai/api/v1/zcode-plan/anthropic");
-		// ZCode source headers must accompany coding-plan requests.
-		expect(model.headers?.["X-ZCode-Agent"]).toBe("glm");
-		expect(model.headers?.["User-Agent"]).toMatch(/^ZCode\//);
+		expect(GLM_ZCODE_ANTHROPIC_BASE_URL).toBe("https://api.z.ai/api/anthropic");
+		expect(getBundledModel("glm-zcode", "glm-5.2").baseUrl).toBe("https://api.z.ai/api/anthropic");
 	});
 
 	it("builds the authorize URL with client id, custom redirect, response_type, and state", async () => {
@@ -132,41 +128,47 @@ describe("GLM ZCode OAuth login provider", () => {
 			{ onAuth: () => {}, onPrompt: async () => "" },
 			{ fetch: routingFetch() as unknown as typeof fetch },
 		);
-		const { url, instructions } = await flow.generateAuthUrl("state-123", GLM_ZCODE_OAUTH_REDIRECT_URI);
+		const { url, instructions } = await flow.generateAuthUrl("state-1", GLM_ZCODE_OAUTH_REDIRECT_URI);
 		const authUrl = new URL(url);
 		expect(authUrl.origin + authUrl.pathname).toBe(GLM_ZCODE_OAUTH_AUTHORIZE_URL);
 		expect(authUrl.searchParams.get("client_id")).toBe(GLM_ZCODE_OAUTH_CLIENT_ID);
 		expect(authUrl.searchParams.get("redirect_uri")).toBe(GLM_ZCODE_OAUTH_REDIRECT_URI);
 		expect(authUrl.searchParams.get("response_type")).toBe("code");
-		expect(authUrl.searchParams.get("state")).toBe("state-123");
+		expect(authUrl.searchParams.get("state")).toBe("state-1");
 		expect(instructions ?? "").toMatch(/unofficial/i);
 	});
 
-	it("exchanges the code via the broker and maps the ZCode JWT to access", async () => {
-		let brokerBody = "";
-		const fetchMock = routingFetch({ captureBroker: body => (brokerBody = body) });
+	it("exchanges the code and provisions a Z.AI API key as the credential", async () => {
+		let created = false;
+		const fetchMock = routingFetch({ captureCreate: () => (created = true) });
 		const flow = new GlmZcodeOAuthFlow(
 			{ onAuth: () => {}, onPrompt: async () => "" },
 			{ fetch: fetchMock as unknown as typeof fetch },
 		);
-		const credentials = await flow.exchangeToken("auth-code", "state-123", GLM_ZCODE_OAUTH_REDIRECT_URI);
-
-		expect(JSON.parse(brokerBody)).toEqual({
-			provider: "zai",
-			code: "auth-code",
-			redirect_uri: GLM_ZCODE_OAUTH_REDIRECT_URI,
-			state: "state-123",
-		});
-		// The model credential is the ZCode JWT (data.token), NOT a z/login business token.
-		expect(credentials.access).toBe(ZCODE_JWT);
-		expect(credentials.refresh).toBe(UPSTREAM_ZAI_TOKEN);
+		const credentials = await flow.exchangeToken("auth-code", "state-1", GLM_ZCODE_OAUTH_REDIRECT_URI);
+		// access is the minted "{id}.{secret}" Z.AI API key — NOT a JWT.
+		expect(credentials.access).toBe(MINTED_KEY);
+		expect(credentials.access.split(".")).toHaveLength(2);
+		expect(credentials.refresh).toBe(UPSTREAM);
 		expect(credentials.email).toBe("member@example.com");
-		expect(credentials.accountId).toBe("account-xyz");
-		expect(credentials.expires).toBeGreaterThan(Date.now());
-		expect(credentials.expires).toBeLessThanOrEqual(Date.now() + 3600 * 1000 - 60_000);
-		// No direct call to api.z.ai/z-login is made during login.
-		const calledUrls = fetchMock.mock.calls.map(c => String(c[0]));
-		expect(calledUrls.some(u => u.includes("/api/auth/z/login"))).toBe(false);
+		expect(credentials.expires).toBeGreaterThan(Date.now() + 365 * 24 * 60 * 60 * 1000); // long-lived
+		expect(created).toBe(true); // no existing key → created one
+		// hit the provisioning endpoints
+		const urls = fetchMock.mock.calls.map(c => String(c[0]));
+		expect(urls.some(u => u.includes("/api/biz/customer/getCustomerInfo"))).toBe(true);
+		expect(urls.some(u => u.includes("/api_keys/copy/"))).toBe(true);
+	});
+
+	it("reuses an existing zcode-api-key without creating a new one", async () => {
+		let created = false;
+		const fetchMock = routingFetch({ existingKey: true, captureCreate: () => (created = true) });
+		const flow = new GlmZcodeOAuthFlow(
+			{ onAuth: () => {}, onPrompt: async () => "" },
+			{ fetch: fetchMock as unknown as typeof fetch },
+		);
+		const credentials = await flow.exchangeToken("auth-code", "state-1", GLM_ZCODE_OAUTH_REDIRECT_URI);
+		expect(credentials.access).toBe(MINTED_KEY);
+		expect(created).toBe(false);
 	});
 
 	it("accepts a pasted full zcode:// redirect URL as the code", async () => {
@@ -176,69 +178,46 @@ describe("GLM ZCode OAuth login provider", () => {
 			{ fetch: fetchMock as unknown as typeof fetch },
 		);
 		const credentials = await flow.exchangeToken(
-			"zcode://oauth/callback?code=pasted-code&state=state-123",
-			"state-123",
+			"zcode://oauth/callback?code=pasted&state=state-1",
+			"state-1",
 			GLM_ZCODE_OAUTH_REDIRECT_URI,
 		);
-		expect(credentials.access).toBe(ZCODE_JWT);
+		expect(credentials.access).toBe(MINTED_KEY);
 		const brokerCall = fetchMock.mock.calls.find(c => String(c[0]) === GLM_ZCODE_OAUTH_BROKER_TOKEN_URL);
-		expect(JSON.parse(String((brokerCall?.[1] as RequestInit).body)).code).toBe("pasted-code");
+		expect(JSON.parse(String((brokerCall?.[1] as RequestInit).body)).code).toBe("pasted");
 	});
 
-	it("falls back to JWT identity decode when userinfo fails", async () => {
-		const fetchMock = routingFetch({ userinfo: null });
-		const flow = new GlmZcodeOAuthFlow(
-			{ onAuth: () => {}, onPrompt: async () => "" },
+	it("refresh re-provisions the API key from the stored upstream token", async () => {
+		const fetchMock = routingFetch({ existingKey: true });
+		const refreshed = await refreshGlmZcodeToken(
+			{ access: "old", refresh: UPSTREAM, expires: Date.now() - 1 },
 			{ fetch: fetchMock as unknown as typeof fetch },
 		);
-		const credentials = await flow.exchangeToken("auth-code", "state-123", GLM_ZCODE_OAUTH_REDIRECT_URI);
-		expect(credentials.email).toBe("zjwt@example.com");
-		expect(credentials.accountId).toBe("zcode-sub-id");
+		expect(refreshed.access).toBe(MINTED_KEY);
+		expect(refreshed.refresh).toBe(UPSTREAM);
 	});
 
-	it("rejects a malformed broker payload missing the ZCode JWT", async () => {
-		const fetchMock = routingFetch({ brokerPayloadOverride: { code: 0, data: { zai: { access_token: "x" } } } });
-		const flow = new GlmZcodeOAuthFlow(
-			{ onAuth: () => {}, onPrompt: async () => "" },
-			{ fetch: fetchMock as unknown as typeof fetch },
-		);
-		await expect(flow.exchangeToken("auth-code", "state-123", GLM_ZCODE_OAUTH_REDIRECT_URI)).rejects.toThrow(
-			/broker response missing/i,
+	it("refresh fails with a re-login error when no upstream token is stored", async () => {
+		await expect(refreshGlmZcodeToken({ access: "x", refresh: "", expires: Date.now() - 1 })).rejects.toThrow(
+			/re-login/i,
 		);
 	});
 
-	it("redacts token-like strings echoed in a broker error body", async () => {
-		const leaked = "leaked-secret-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-		const fetchMock = vi.fn(async () => new Response(`upstream said: ${leaked}`, { status: 500 }));
-		const flow = new GlmZcodeOAuthFlow(
-			{ onAuth: () => {}, onPrompt: async () => "" },
-			{ fetch: fetchMock as unknown as typeof fetch },
-		);
-		let caught: unknown;
-		try {
-			await flow.exchangeToken("auth-code", "state-123", GLM_ZCODE_OAUTH_REDIRECT_URI);
-		} catch (error) {
-			caught = error;
-		}
-		expect(String(caught)).not.toContain(leaked);
-		expect(String(caught)).toContain("[redacted]");
+	it("dispatches refreshOAuthToken('glm-zcode') to re-provisioning", async () => {
+		const fetchMock = routingFetch({ existingKey: true });
+		global.fetch = fetchMock as unknown as typeof fetch;
+		const refreshed = await refreshOAuthToken("glm-zcode", {
+			access: "old",
+			refresh: UPSTREAM,
+			expires: Date.now() - 1,
+		});
+		expect(refreshed.access).toBe(MINTED_KEY);
 	});
 
-	it("refresh requires re-login (ZCode JWT has no documented refresh grant)", async () => {
-		await expect(
-			refreshGlmZcodeToken({ access: ZCODE_JWT, refresh: UPSTREAM_ZAI_TOKEN, expires: Date.now() - 1 }),
-		).rejects.toThrow(/re-login required/i);
-		// Same via the registry dispatcher.
-		await expect(
-			refreshOAuthToken("glm-zcode", { access: ZCODE_JWT, refresh: UPSTREAM_ZAI_TOKEN, expires: Date.now() - 1 }),
-		).rejects.toThrow(/re-login required/i);
-	});
-
-	it("stores glm-zcode login as OAuth and getApiKey returns the ZCode JWT", async () => {
+	it("stores glm-zcode login as OAuth and getApiKey returns the provisioned key", async () => {
 		if (!store || !authStorage) throw new Error("test setup failed");
 		const fetchMock = routingFetch();
 		global.fetch = fetchMock as unknown as typeof fetch;
-
 		let capturedState: string | undefined;
 		await authStorage.login("glm-zcode", {
 			onAuth: info => {
@@ -247,16 +226,11 @@ describe("GLM ZCode OAuth login provider", () => {
 			onPrompt: async () => "",
 			onManualCodeInput: async () => `zcode://oauth/callback?code=login-code&state=${capturedState ?? ""}`,
 		});
-
-		const credentials = store.listAuthCredentials("glm-zcode");
-		expect(credentials).toHaveLength(1);
-		expect(credentials[0]?.credential).toMatchObject({
-			type: "oauth",
-			access: ZCODE_JWT,
-			refresh: UPSTREAM_ZAI_TOKEN,
-		});
+		const creds = store.listAuthCredentials("glm-zcode");
+		expect(creds).toHaveLength(1);
+		expect(creds[0]?.credential).toMatchObject({ type: "oauth", access: MINTED_KEY, refresh: UPSTREAM });
 		await withEnv(SUPPRESS_ENV, async () => {
-			expect(await authStorage?.getApiKey("glm-zcode", "session-glm-zcode")).toBe(ZCODE_JWT);
+			expect(await authStorage?.getApiKey("glm-zcode", "session-glm")).toBe(MINTED_KEY);
 		});
 	});
 
@@ -264,9 +238,7 @@ describe("GLM ZCode OAuth login provider", () => {
 		if (!store || !authStorage) throw new Error("test setup failed");
 		const fetchMock = routingFetch();
 		global.fetch = fetchMock as unknown as typeof fetch;
-
 		await authStorage.set("zai", { type: "api_key", key: "legacy-zai-key" });
-
 		let capturedState: string | undefined;
 		await authStorage.login("glm-zcode", {
 			onAuth: info => {
@@ -275,17 +247,11 @@ describe("GLM ZCode OAuth login provider", () => {
 			onPrompt: async () => "",
 			onManualCodeInput: async () => `zcode://oauth/callback?code=login-code&state=${capturedState ?? ""}`,
 		});
-
-		const zaiCreds = store.listAuthCredentials("zai");
-		expect(zaiCreds).toHaveLength(1);
-		expect(zaiCreds[0]?.credential).toMatchObject({ type: "api_key" });
-		const glmCreds = store.listAuthCredentials("glm-zcode");
-		expect(glmCreds).toHaveLength(1);
-		expect(glmCreds[0]?.credential).toMatchObject({ type: "oauth" });
-
+		expect(store.listAuthCredentials("zai")[0]?.credential).toMatchObject({ type: "api_key" });
+		expect(store.listAuthCredentials("glm-zcode")[0]?.credential).toMatchObject({ type: "oauth" });
 		await withEnv(SUPPRESS_ENV, async () => {
-			expect(await authStorage?.getApiKey("zai", "session-zai")).toBe("legacy-zai-key");
-			expect(await authStorage?.getApiKey("glm-zcode", "session-glm")).toBe(ZCODE_JWT);
+			expect(await authStorage?.getApiKey("zai", "s-zai")).toBe("legacy-zai-key");
+			expect(await authStorage?.getApiKey("glm-zcode", "s-glm")).toBe(MINTED_KEY);
 		});
 	});
 
@@ -296,40 +262,29 @@ describe("GLM ZCode OAuth login provider", () => {
 		expect(model.api).toBe("anthropic-messages");
 	});
 
-	it("sends Authorization: Bearer (no x-api-key, no claude-cli UA, no isOAuth) for the ZCode JWT", () => {
-		// The gateway base is not api.anthropic.com → the non-Anthropic-base branch
-		// emits a plain bearer. isOAuth must NOT be set; the ZCode JWT is not a
-		// Claude OAuth token, so no Claude-Code header/tool-prefix behavior applies.
-		expect(isOAuthToken(ZCODE_JWT)).toBe(false);
-		const headers = buildAnthropicHeaders({
-			apiKey: ZCODE_JWT,
-			baseUrl: GLM_ZCODE_PLAN_ANTHROPIC_BASE_URL,
-			modelHeaders: { "User-Agent": "ZCode/1.0.0", "X-ZCode-Agent": "glm" },
-		});
-		expect(headers.Authorization).toBe(`Bearer ${ZCODE_JWT}`);
-		expect(headers["X-Api-Key"]).toBeUndefined();
-		expect(headers["X-ZCode-Agent"]).toBe("glm");
-		expect((headers["User-Agent"] ?? "").toLowerCase().startsWith("claude-cli")).toBe(false);
-	});
-
-	it("pins the request base to the ZCode gateway even if model.baseUrl was polluted to api.z.ai", () => {
-		// Dynamic discovery / stale bundled catalogs / model cache can overwrite
-		// model.baseUrl with api.z.ai (which rejects the ZCode JWT with 401). The
-		// request-time resolver must force the coding-plan gateway regardless.
+	it("pins the request base to api.z.ai even if model.baseUrl was polluted", () => {
 		const model = {
 			id: "glm-5.2",
 			name: "GLM-5.2 (ZCode)",
 			api: "anthropic-messages",
 			provider: "glm-zcode",
-			baseUrl: "https://api.z.ai/api/anthropic",
+			baseUrl: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
 			reasoning: true,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 1_000_000,
 			maxTokens: 131072,
 		} as unknown as Parameters<typeof buildAnthropicClientOptions>[0]["model"];
-		const resolved = buildAnthropicClientOptions({ model, apiKey: ZCODE_JWT });
-		expect(resolved.baseURL).toBe(GLM_ZCODE_PLAN_ANTHROPIC_BASE_URL);
+		const resolved = buildAnthropicClientOptions({ model, apiKey: MINTED_KEY });
+		expect(resolved.baseURL).toBe("https://api.z.ai/api/anthropic");
 		expect(resolved.isOAuthToken).toBe(false);
+	});
+
+	it("sends Authorization: Bearer (no x-api-key, no claude-cli UA, no isOAuth) for the API key", () => {
+		expect(isOAuthToken(MINTED_KEY)).toBe(false);
+		const headers = buildAnthropicHeaders({ apiKey: MINTED_KEY, baseUrl: GLM_ZCODE_ANTHROPIC_BASE_URL });
+		expect(headers.Authorization).toBe(`Bearer ${MINTED_KEY}`);
+		expect(headers["X-Api-Key"]).toBeUndefined();
+		expect((headers["User-Agent"] ?? "").toLowerCase().startsWith("claude-cli")).toBe(false);
 	});
 });
