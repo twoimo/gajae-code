@@ -678,6 +678,15 @@ function resolveAnthropicBaseUrl(model: Model<"anthropic-messages">, apiKey?: st
 	if (model.provider === "github-copilot") {
 		return normalizeAnthropicBaseUrl(resolveGitHubCopilotBaseUrl(model.baseUrl, apiKey) ?? model.baseUrl);
 	}
+	// glm-zcode is the unofficial ZCode coding-plan gateway. Pin its base to the
+	// ZCode plan gateway so dynamic discovery / stale bundled catalogs / model
+	// cache can never redirect it to api.z.ai (which rejects the ZCode JWT).
+	if (model.provider === "glm-zcode") {
+		return (
+			normalizeAnthropicBaseUrl(process.env.ZCODE_PLAN_ANTHROPIC_BASE_URL) ??
+			"https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+		);
+	}
 	if (model.provider === "anthropic" && isFoundryEnabled()) {
 		const foundryBaseUrl = normalizeAnthropicBaseUrl($env.FOUNDRY_BASE_URL);
 		if (foundryBaseUrl) {

@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 import { AuthStorage, SqliteAuthCredentialStore } from "../src/auth-storage";
 import { getBundledModel } from "../src/models";
-import { buildAnthropicHeaders } from "../src/providers/anthropic";
+import { buildAnthropicClientOptions, buildAnthropicHeaders } from "../src/providers/anthropic";
 import { isOAuthToken } from "../src/utils/anthropic-auth";
 import { getOAuthProviders, refreshOAuthToken } from "../src/utils/oauth";
 import {
@@ -310,5 +310,26 @@ describe("GLM ZCode OAuth login provider", () => {
 		expect(headers["X-Api-Key"]).toBeUndefined();
 		expect(headers["X-ZCode-Agent"]).toBe("glm");
 		expect((headers["User-Agent"] ?? "").toLowerCase().startsWith("claude-cli")).toBe(false);
+	});
+
+	it("pins the request base to the ZCode gateway even if model.baseUrl was polluted to api.z.ai", () => {
+		// Dynamic discovery / stale bundled catalogs / model cache can overwrite
+		// model.baseUrl with api.z.ai (which rejects the ZCode JWT with 401). The
+		// request-time resolver must force the coding-plan gateway regardless.
+		const model = {
+			id: "glm-5.2",
+			name: "GLM-5.2 (ZCode)",
+			api: "anthropic-messages",
+			provider: "glm-zcode",
+			baseUrl: "https://api.z.ai/api/anthropic",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000_000,
+			maxTokens: 131072,
+		} as unknown as Parameters<typeof buildAnthropicClientOptions>[0]["model"];
+		const resolved = buildAnthropicClientOptions({ model, apiKey: ZCODE_JWT });
+		expect(resolved.baseURL).toBe(GLM_ZCODE_PLAN_ANTHROPIC_BASE_URL);
+		expect(resolved.isOAuthToken).toBe(false);
 	});
 });
