@@ -884,7 +884,7 @@ test("ensureTelegramDaemonRunning spawns the daemon subcommand with owner-id and
 	expect(ai).toBeGreaterThanOrEqual(0);
 	expect(captured!.args[ai + 1]).toBe(agentDir);
 });
-test("image_attachment frame uploads via sendPhoto into the session topic", async () => {
+test("image_attachment frame uploads via sendPhoto into an identified session topic", async () => {
 	const agentDir = tempAgentDir();
 	const bot = new FakeBotApi();
 	const daemon = new TelegramNotificationDaemon({
@@ -901,6 +901,12 @@ test("image_attachment frame uploads via sendPhoto into the session topic", asyn
 		pending: new Map(),
 	};
 	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "gajae-code",
+		branch: "dev",
+	});
+	await daemon.handleSessionMessage(session as any, {
 		type: "image_attachment",
 		sessionId: "S",
 		source: "computer",
@@ -910,9 +916,76 @@ test("image_attachment frame uploads via sendPhoto into the session topic", asyn
 	const createTopic = bot.calls.find(c => c.method === "createForumTopic");
 	const photo = bot.calls.find(c => c.method === "sendPhoto");
 	expect(createTopic).toBeTruthy();
+	expect(createTopic!.body.name).toBe("gajae-code/dev");
 	expect(photo).toBeTruthy();
 	expect(photo!.body.photo).toBe("AAAA");
 	expect(Number(photo!.body.message_thread_id)).toBeGreaterThan(0);
+});
+
+test("identity-less threaded frames wait for identity instead of creating fallback topics", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "image_attachment",
+		sessionId: "S",
+		source: "computer",
+		mime: "image/png",
+		data: "AAAA",
+	});
+	expect(bot.calls.find(c => c.method === "createForumTopic")).toBeUndefined();
+	expect(bot.calls.find(c => c.method === "sendPhoto")).toBeUndefined();
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "gajae-code",
+		branch: "dev",
+	});
+	const createTopic = bot.calls.find(c => c.method === "createForumTopic");
+	const photo = bot.calls.find(c => c.method === "sendPhoto");
+	expect(createTopic).toBeTruthy();
+	expect(createTopic!.body.name).toBe("gajae-code/dev");
+	expect(photo).toBeTruthy();
+	expect(photo!.body.message_thread_id).toBeGreaterThan(0);
+});
+
+test("transient identity for an existing repo branch does not create a duplicate topic", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const live = { sessionId: "LIVE", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+	const transient = { sessionId: "DEAD", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(live as any, {
+		type: "identity_header",
+		sessionId: "LIVE",
+		repo: "gajae-code",
+		branch: "dev",
+	});
+	await daemon.handleSessionMessage(transient as any, {
+		type: "identity_header",
+		sessionId: "DEAD",
+		repo: "gajae-code",
+		branch: "dev",
+	});
+
+	expect(bot.calls.filter(c => c.method === "createForumTopic")).toHaveLength(1);
+	expect(bot.calls.filter(c => c.method === "sendMessage")).toHaveLength(1);
 });
 
 test("threaded mode off: frames fall back to the flat paired chat with a one-time notice", async () => {
@@ -1021,6 +1094,10 @@ test("threaded mode off: image_attachment uploads flat without message_thread_id
 		chatId: "42",
 		botApi: bot,
 	});
+	await daemon.handleSessionMessage(
+		{ sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() } as any,
+		{ type: "identity_header", sessionId: "S", repo: "r", branch: "b" },
+	);
 	await daemon.handleSessionMessage(
 		{ sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() } as any,
 		{ type: "image_attachment", sessionId: "S", source: "computer", mime: "image/png", data: "AAAA" },
