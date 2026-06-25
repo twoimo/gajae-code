@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Expanded the initial GJC forge welcome box to the live terminal viewport width and pinned the status/composer area to the bottom when the startup layout is shorter than the screen (#1120).
+
 - Deep Interview Restate/option gates now recover through the ask selector path instead of waiting on plaintext `Options:` output.
 
 ## [0.7.2] - 2026-06-24

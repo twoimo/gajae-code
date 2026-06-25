@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added bottom-pinned TUI layout support so short initial screens can pad above composer/status components and keep the prompt anchored to the terminal viewport bottom (#1120).
+
 ## [0.6.0] - 2026-06-18
 
 ### Fixed

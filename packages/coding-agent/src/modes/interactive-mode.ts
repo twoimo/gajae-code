@@ -568,6 +568,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.hookWidgetContainerAbove);
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.hookWidgetContainerBelow);
+		this.ui.setBottomPinnedComponent(this.statusLine);
 		this.ui.setFocus(this.editor);
 
 		this.#inputController.setupKeyHandlers();
