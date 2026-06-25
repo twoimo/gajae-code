@@ -121,7 +121,7 @@ describe("redesigned interactive shell chrome", () => {
 		const wideTop = Bun.stripANSI(wideLines[0] ?? "");
 
 		expect(visibleWidth(narrowTop)).toBe(98);
-		expect(visibleWidth(wideTop)).toBe(132);
+		expect(visibleWidth(wideTop)).toBe(158);
 		expect(visibleWidth(wideTop)).toBeGreaterThan(visibleWidth(narrowTop));
 		expect(wideTop).toContain("GJC forge");
 		for (const line of wideLines) {
