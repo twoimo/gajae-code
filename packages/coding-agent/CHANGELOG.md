@@ -12,6 +12,7 @@
 ### Documentation
 
 - Documented the docs-only Aside evaluation boundary as an opt-in search/context retrieval sidecar using explicit user-provided MCP configuration, with browser actions, login flows, payments, internal tools, secrets, and raw browser/session payload logging out of scope by default (#1097).
+- Documented the Windows psmux namespace boundary for `gjc --tmux`, `gjc session`, and `gjc team`: cwd/`-c` is now called out as a start directory rather than server isolation, `-L <namespace>` is identified as the psmux namespace primitive, and tmux command overrides are documented as executable names rather than shell command lines (#1118).
 
 ### Fixed
 

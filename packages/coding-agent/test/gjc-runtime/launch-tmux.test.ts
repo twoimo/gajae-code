@@ -395,6 +395,30 @@ describe("default GJC tmux launch", () => {
 		expect(plan?.attachSessionName).toBe("custom-gjc");
 		expect(plan?.newSessionArgs.slice(0, 6)).toEqual(["new-session", "-d", "-s", "custom-gjc", "-c", "/repo"]);
 	});
+
+	it("treats GJC_TMUX_COMMAND as an executable override instead of splitting psmux flags", () => {
+		const plan = buildDefaultTmuxLaunchPlan({
+			parsed: args({ messages: ["hello world"], tmux: true }),
+			rawArgs: ["--tmux", "hello world"],
+			cwd: "C:\\repo",
+			env: { GJC_TMUX_COMMAND: "psmux -L repo" },
+			argv: ["C:\\Program Files\\GJC\\gjc.exe"],
+			execPath: "C:\\Program Files\\GJC\\gjc.exe",
+			platform: "win32",
+			tty: interactiveTty,
+			tmuxAvailable: true,
+			currentBranch: "",
+			existingBranchSessionName: null,
+		});
+
+		expect(plan).toBeDefined();
+		if (!plan) throw new Error("expected tmux plan");
+
+		expect(plan.tmuxCommand).toBe("psmux -L repo");
+		expect(plan.newSessionArgs[0]).toBe("new-session");
+		expect(plan.newSessionArgs).not.toContain("-L");
+		expect(plan.newSessionArgs).not.toContain("repo");
+	});
 	it("does not auto-reuse scoped sessions from another GJC version", () => {
 		spyOn(Bun, "spawnSync").mockReturnValue(
 			spawnResult(
