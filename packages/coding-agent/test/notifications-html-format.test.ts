@@ -218,6 +218,12 @@ describe("daemon send sites force parse_mode HTML (AC1)", () => {
 		const bot = new CapturingBotApi();
 		const daemon = makeDaemon(bot, agentDir);
 		await daemon.handleSessionMessage(fakeSession() as any, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "r",
+			branch: "b",
+		});
+		await daemon.handleSessionMessage(fakeSession() as any, {
 			type: "turn_stream",
 			sessionId: "S",
 			phase: "finalized",
@@ -230,6 +236,12 @@ describe("daemon send sites force parse_mode HTML (AC1)", () => {
 	test("image_attachment sendPhoto sets parse_mode", async () => {
 		const bot = new CapturingBotApi();
 		const daemon = makeDaemon(bot, Bun.env.TMPDIR ?? "/tmp");
+		await daemon.handleSessionMessage(fakeSession() as any, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "r",
+			branch: "b",
+		});
 		await daemon.handleSessionMessage(fakeSession() as any, {
 			type: "image_attachment",
 			sessionId: "S",
@@ -245,13 +257,19 @@ describe("daemon send sites force parse_mode HTML (AC1)", () => {
 		const bot = new CapturingBotApi();
 		const daemon = makeDaemon(bot, Bun.env.TMPDIR ?? "/tmp");
 		await daemon.handleSessionMessage(fakeSession() as any, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "r",
+			branch: "b",
+		});
+		await daemon.handleSessionMessage(fakeSession() as any, {
 			type: "action_needed",
 			kind: "ask",
 			id: "act-1",
 			question: "Pick",
 			options: ["Yes", "No"],
 		});
-		const send = bot.calls.find(c => c.method === "sendMessage");
+		const send = bot.calls.find(c => c.method === "sendMessage" && c.body.reply_markup);
 		expect(send?.body.parse_mode).toBe(TELEGRAM_PARSE_MODE);
 		const keyboard = send?.body.reply_markup?.inline_keyboard as Array<
 			Array<{ text: string; callback_data: string }>

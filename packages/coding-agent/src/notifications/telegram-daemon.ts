@@ -105,6 +105,7 @@ const TYPING_REFRESH_INTERVAL_MS = 4_000;
 // Native reactions used as a two-stage delivery double-check on inbound thread
 // messages: queued on receipt, consumed once a turn picks the message up.
 const QUEUED_REACTION = "👀";
+const PENDING_TOPIC_FRAME_LIMIT = 20;
 const CONSUMED_REACTION = "✅";
 
 /**
@@ -724,6 +725,11 @@ interface SessionSocket {
 	pingTimer: ReturnType<typeof setInterval> | undefined;
 }
 
+interface PendingThreadedFrame {
+	send: ThreadedSend;
+	msg: Record<string, unknown>;
+}
+
 export class TelegramNotificationDaemon {
 	readonly aliasTable: AliasTable;
 	readonly messageRoutes = new Map<string | number, CallbackRoute | Omit<CallbackRoute, "answer">>();
@@ -739,6 +745,10 @@ export class TelegramNotificationDaemon {
 	private readonly pool: RateLimitPool<{ send: ThreadedSend; topicId?: string }>;
 	private readonly poller: TelegramUpdatePoller;
 	private readonly dispatchState = new TelegramEventDispatchState();
+	/** Identity-bearing sessions by repo/branch surface, used to avoid transient duplicate topics. */
+	private readonly topicOwnerByIdentity = new Map<string, string>();
+	/** Non-identity frames held until identity creates the correct thread. */
+	private readonly pendingThreadedFrames = new Map<string, PendingThreadedFrame[]>();
 	/** True once the daemon has nudged the user to enable Threaded Mode. */
 	private threadedFallbackNoticeSent = false;
 	/** Sessions whose identity header was already sent flat (Threaded Mode off). */
@@ -989,6 +999,60 @@ export class TelegramNotificationDaemon {
 		if (base) return title ? `${base} - ${title}` : base;
 		if (title) return title;
 		return `GJC ${sessionId.slice(-6)}`;
+	}
+
+	private topicIdentityKey(msg: { repo?: unknown; branch?: unknown }): string | undefined {
+		const repo = typeof msg?.repo === "string" && msg.repo.trim() ? msg.repo.trim() : undefined;
+		if (!repo) return undefined;
+		const branch = typeof msg?.branch === "string" && msg.branch.trim() ? msg.branch.trim() : "";
+		return `${repo}\0${branch}`;
+	}
+
+	private topicIdentityBase(msg: { repo?: unknown; branch?: unknown }): string | undefined {
+		const repo = typeof msg?.repo === "string" && msg.repo.trim() ? msg.repo.trim() : undefined;
+		if (!repo) return undefined;
+		const branch = typeof msg?.branch === "string" && msg.branch.trim() ? msg.branch.trim() : undefined;
+		return branch ? `${repo}/${branch}` : repo;
+	}
+
+	private topicOwnerForIdentity(msg: { repo?: unknown; branch?: unknown }): string | undefined {
+		const identityKey = this.topicIdentityKey(msg);
+		const remembered = identityKey ? this.topicOwnerByIdentity.get(identityKey) : undefined;
+		if (remembered && this.topics.get(remembered)) return remembered;
+		const base = this.topicIdentityBase(msg);
+		if (!identityKey || !base) return undefined;
+		for (const sessionId of this.topics.sessionIds()) {
+			const name = this.topics.get(sessionId)?.name;
+			if (name === base || name?.startsWith(`${base} - `)) {
+				this.topicOwnerByIdentity.set(identityKey, sessionId);
+				return sessionId;
+			}
+		}
+		return undefined;
+	}
+
+	private async submitThreadedFrame(sessionId: string, send: ThreadedSend, topicId: string): Promise<void> {
+		this.pool.submit({
+			sessionId,
+			lane: send.lane,
+			coalesceKey: send.coalesceKey,
+			payload: { send, topicId },
+		});
+		await this.flushPool();
+	}
+
+	private rememberPendingThreadedFrame(sessionId: string, send: ThreadedSend, msg: Record<string, unknown>): void {
+		const frames = this.pendingThreadedFrames.get(sessionId) ?? [];
+		frames.push({ send, msg });
+		if (frames.length > PENDING_TOPIC_FRAME_LIMIT) frames.shift();
+		this.pendingThreadedFrames.set(sessionId, frames);
+	}
+
+	private async flushPendingThreadedFrames(sessionId: string, topicId: string): Promise<void> {
+		const frames = this.pendingThreadedFrames.get(sessionId);
+		if (!frames || frames.length === 0) return;
+		this.pendingThreadedFrames.delete(sessionId);
+		for (const frame of frames) await this.submitThreadedFrame(sessionId, frame.send, topicId);
 	}
 
 	/**
@@ -1304,12 +1368,28 @@ export class TelegramNotificationDaemon {
 		if (typeof msg?.type === "string" && TelegramNotificationDaemon.THREADED_FRAMES.has(msg.type)) {
 			const send = renderThreadedFrame(msg);
 			if (!send) return;
-			const topicId = await this.ensureTopic(session.sessionId, this.topicNameFor(session.sessionId, msg));
+			const existingTopic = this.topics.get(session.sessionId)?.topicId;
+			if (!send.identity && !existingTopic && !this.flatIdentitySent.has(session.sessionId)) {
+				this.rememberPendingThreadedFrame(session.sessionId, send, msg as Record<string, unknown>);
+				return;
+			}
+			if (send.identity) {
+				const ownerId = this.topicOwnerForIdentity(msg);
+				const ownerTopic = ownerId ? this.topics.get(ownerId) : undefined;
+				if (ownerId && ownerId !== session.sessionId && ownerTopic) {
+					await this.flushPendingThreadedFrames(session.sessionId, ownerTopic.topicId);
+					return;
+				}
+			}
+			const topicId =
+				existingTopic ?? (await this.ensureTopic(session.sessionId, this.topicNameFor(session.sessionId, msg)));
 			if (!topicId) {
 				await this.deliverFlatFallback(session.sessionId, send);
 				return;
 			}
 			if (send.identity) {
+				const identityKey = this.topicIdentityKey(msg);
+				if (identityKey) this.topicOwnerByIdentity.set(identityKey, session.sessionId);
 				// Rename the topic if the title changed (e.g. the session title was
 				// auto-generated after the topic was first created). This runs on
 				// every identity frame, but does NOT re-send the bulleted message.
@@ -1327,25 +1407,14 @@ export class TelegramNotificationDaemon {
 				}
 				// Send the full bulleted identity header EXACTLY ONCE per topic.
 				if (this.topics.needsIdentity(session.sessionId)) {
-					this.pool.submit({
-						sessionId: session.sessionId,
-						lane: send.lane,
-						coalesceKey: send.coalesceKey,
-						payload: { send, topicId },
-					});
-					await this.flushPool();
+					await this.submitThreadedFrame(session.sessionId, send, topicId);
 					this.topics.markIdentitySent(session.sessionId);
 				}
+				await this.flushPendingThreadedFrames(session.sessionId, topicId);
 				await this.persistTopics();
 				return;
 			}
-			this.pool.submit({
-				sessionId: session.sessionId,
-				lane: send.lane,
-				coalesceKey: send.coalesceKey,
-				payload: { send, topicId },
-			});
-			await this.flushPool();
+			await this.submitThreadedFrame(session.sessionId, send, topicId);
 			return;
 		}
 		if (msg.type === "action_needed" && msg.id) {
