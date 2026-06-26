@@ -24,6 +24,7 @@ export const NotificationControlServer = nativeBindings.NotificationControlServe
 export const NotificationServer = nativeBindings.NotificationServer;
 export const Process = nativeBindings.Process;
 export const PtySession = nativeBindings.PtySession;
+export const RpcSdkPipeline = nativeBindings.RpcSdkPipeline;
 export const Shell = nativeBindings.Shell;
 
 // functions
@@ -66,6 +67,9 @@ export const nativeBuildInfo = nativeBindings.nativeBuildInfo;
 export const parseKey = nativeBindings.parseKey;
 export const parseKittySequence = nativeBindings.parseKittySequence;
 export const readImageFromClipboard = nativeBindings.readImageFromClipboard;
+export const rpcSdkClassifyCommand = nativeBindings.rpcSdkClassifyCommand;
+export const rpcSdkCommandCount = nativeBindings.rpcSdkCommandCount;
+export const rpcSdkProtocolVersion = nativeBindings.rpcSdkProtocolVersion;
 export const search = nativeBindings.search;
 export const sliceWithWidth = nativeBindings.sliceWithWidth;
 export const summarizeCode = nativeBindings.summarizeCode;

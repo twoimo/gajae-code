@@ -39,6 +39,7 @@ pub mod html;
 pub mod keys;
 pub mod linediff;
 pub mod notifications;
+pub mod rpc_sdk;
 pub mod sixel;
 pub use pi_ast::language;
 

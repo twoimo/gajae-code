@@ -1,0 +1,15 @@
+=== G006 conformance harness verification (2026-06-26T04:25:22Z) ===
+--- cargo test -p gjc-rpc-sdk (incl conformance integration) ---
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- clippy ---
+0
+(count)
+--- conformance stale-check ---
+OK: runtime_io_conformance in sync (90 fixtures across 5 sections)
+--- CI relevance carve-out ---
+ci-job-relevance: relevant=true (relevant path changed: docs/rpc-sdk/runtime-io-inventory.json)
+--- ci-dev-affected tests ---
+ 28 pass
+ 0 fail

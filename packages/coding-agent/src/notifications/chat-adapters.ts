@@ -4,6 +4,7 @@ import type {
 	NotificationPresentationAdapter,
 	NotificationReplyRoute,
 } from "./engine";
+import { connectNotificationDaemon, type NotificationDaemonClientOptions } from "./daemon-client";
 import { truncate } from "./helpers";
 
 type AdapterKind = "discord" | "slack";
@@ -136,6 +137,37 @@ class SlackNotificationAdapter implements NotificationPresentationAdapter {
 	mapInbound(input: unknown): NotificationReplyRoute | undefined {
 		return routeFromInbound(input);
 	}
+}
+export interface DaemonChatPresentationOptions extends NotificationDaemonClientOptions {
+	adapters: readonly NotificationPresentationAdapter[];
+	deliver(payload: NotificationAdapterPayload): void | Promise<void>;
+}
+
+export interface DaemonChatPresentationClient {
+	close(): void;
+	mapInbound(adapterKind: NotificationPresentationAdapter["kind"], input: unknown): Promise<boolean>;
+}
+
+export async function connectDaemonChatPresentation(
+	opts: DaemonChatPresentationOptions,
+): Promise<DaemonChatPresentationClient> {
+	const client = await connectNotificationDaemon(opts, event => {
+		for (const adapter of opts.adapters) {
+			for (const payload of adapter.render(event)) void opts.deliver(payload);
+		}
+	});
+	return {
+		close() {
+			client.close();
+		},
+		async mapInbound(adapterKind, input) {
+			const adapter = opts.adapters.find(candidate => candidate.kind === adapterKind);
+			const route = adapter?.mapInbound(input);
+			if (!route) return false;
+			await client.sendReply(route);
+			return true;
+		},
+	};
 }
 
 export function createDiscordAdapter(opts: Omit<ChatAdapterOptions, "kind"> = {}): NotificationPresentationAdapter {

@@ -1,3 +1,11 @@
+import {
+	buildHelloFrame,
+	connectUds,
+	defaultDaemonSocketPath,
+	type GjcFrame,
+	type UdsTransport,
+} from "@gajae-code/rpc-sdk";
+
 import type { BridgeClientCommand, BridgeCommandHelpers, BridgeCommandOptions } from "./commands";
 import type { BridgeFrame } from "./reference-consumer";
 
@@ -517,5 +525,60 @@ export class BridgeClient implements BridgeCommandHelpers {
 			throw new Error(`Bridge request failed: ${response.status}`);
 		}
 		return (await response.json()) as T;
+	}
+}
+export interface BridgeDaemonClientOptions {
+	socketPath?: string;
+	sessions: string[];
+	grantId?: string;
+}
+
+export class BridgeDaemonClient {
+	#transport: UdsTransport | undefined;
+
+	constructor(readonly options: BridgeDaemonClientOptions) {}
+
+	async connect(): Promise<GjcFrame<unknown>> {
+		const transport = await connectUds({ socketPath: this.options.socketPath ?? defaultDaemonSocketPath() });
+		this.#transport = transport;
+		const ready = this.#waitForFrame();
+		await transport.write(buildHelloFrame({ sessions: this.options.sessions, grantId: this.options.grantId }));
+		return ready;
+	}
+
+	async write(frame: GjcFrame<unknown>): Promise<void> {
+		const transport = this.#transport;
+		if (!transport) throw new Error("BridgeDaemonClient is not connected");
+		await transport.write(frame);
+	}
+
+	async nextFrame(): Promise<GjcFrame<unknown>> {
+		return this.#waitForFrame();
+	}
+
+	close(): void {
+		this.#transport?.close();
+		this.#transport = undefined;
+	}
+
+	#waitForFrame(): Promise<GjcFrame<unknown>> {
+		const transport = this.#transport;
+		if (!transport) return Promise.reject(new Error("BridgeDaemonClient is not connected"));
+		const { promise, resolve, reject } = Promise.withResolvers<GjcFrame<unknown>>();
+		const cleanup = () => {
+			transport.off("frame", onFrame);
+			transport.off("error", onError);
+		};
+		const onFrame = (frame: GjcFrame<unknown>) => {
+			cleanup();
+			resolve(frame);
+		};
+		const onError = (error: Error) => {
+			cleanup();
+			reject(error);
+		};
+		transport.on("frame", onFrame);
+		transport.on("error", onError);
+		return promise;
 	}
 }

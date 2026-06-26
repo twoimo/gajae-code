@@ -114,6 +114,7 @@ import {
 	theme,
 } from "./theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, SubmittedUserInput, TodoItem, TodoPhase } from "./types";
+import { createNativeTuiRuntimeBoundary, type NativeTuiRuntimeBoundary } from "./native-tui-runtime-boundary";
 import { UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
@@ -271,6 +272,7 @@ export interface InteractiveModeOptions {
 
 export class InteractiveMode implements InteractiveModeContext {
 	session: AgentSession;
+	runtimeBoundary: NativeTuiRuntimeBoundary;
 	sessionManager: SessionManager;
 	settings: Settings;
 	keybindings: KeybindingsManager;
@@ -392,6 +394,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		eventBus?: EventBus,
 	) {
 		this.session = session;
+		this.runtimeBoundary = createNativeTuiRuntimeBoundary(session);
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		this.keybindings = KeybindingsManager.inMemory();
@@ -656,7 +659,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#subscribeToAgent();
 
 		this.#eventBusUnsubscribers.push(
-			this.session.subscribe(event => {
+			this.runtimeBoundary.subscribe(event => {
 				void this.#handleGoalSessionEvent(event);
 			}),
 		);
@@ -1691,7 +1694,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			finalPlanFilePath: options.finalPlanFilePath,
 			contextPreserved: options.preserveContext === true,
 		});
-		await this.session.prompt(planModePrompt, { synthetic: true });
+		await this.runtimeBoundary.prompt(planModePrompt, { synthetic: true });
 	}
 
 	async handlePlanModeCommand(initialPrompt?: string): Promise<void> {
@@ -1907,7 +1910,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// plan) while the popup is showing. The event listener fires asynchronously
 		// (agent's #emit is fire-and-forget), so without this the model sees
 		// "Plan ready for approval." and immediately re-invokes `resolve` in a loop.
-		await this.session.abort({ timeoutMs: INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS });
+		await this.runtimeBoundary.abort({ timeoutMs: INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS });
 
 		const planFilePath = details.planFilePath || this.planModePlanFilePath || (await this.#getPlanFilePath());
 		this.planModePlanFilePath = planFilePath;

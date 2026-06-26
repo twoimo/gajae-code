@@ -4,82 +4,33 @@
   <img src="../assets/telegram-mobile-hero.png" alt="Gajae Code 0.7.0 mobile answers for coding agents hero illustration" width="100%" />
 </p>
 
-A small, transport-agnostic way to get **action-needed** signals out of a GJC
-session and deliver **replies** back — without scraping the terminal and without
-the depth of the RPC / Coordinator / Bridge surfaces.
+Notifications now cross the daemon boundary. The legacy per-session loopback
+WebSocket endpoint, discovery file, and token-query handshake were removed;
+running GJC sessions no longer host their own notification server. Chat
+integrations use the daemon notification client (`packages/coding-agent/src/notifications/daemon-client.ts`)
+and the daemon-owned RPC/notification route.
 
-The stable contract is deliberately generic: every running session exposes one
-loopback WebSocket endpoint, and integrations are user-written clients that
-connect to that endpoint. Telegram, Discord, Slack, mobile apps, and local tools
-all use the same JSON protocol. No upstream Rust, N-API, or wire-protocol change
-is required for a new integration.
-
-> Status: the Rust core (`crates/gjc-notifications`) provides the wire protocol,
-> action lifecycle, loopback WebSocket server, and endpoint discovery file. The
-> bundled Telegram daemon is a reference client layered on top of this SDK; it is
-> not the upstream topology.
+> Status: the daemon owns notification fan-out and authentication. The old
+> `NotificationServer` endpoint under `.gjc/state/notifications/<session>.json`
+> is removed.
 
 ## Architecture
 
 ```
-GJC session (upstream)                          your client (anywhere)
-┌───────────────────────────────┐               ┌──────────────────────────┐
-│ ask-tool fires / agent idle    │  action_needed │ Telegram / Discord / ... │
-│   → notifications core         │ ─────────────▶ │  render + collect reply  │
-│ ws://127.0.0.1:<port> (+token) │ ◀───────────── │                          │
-│   reply → resolve ask gate     │     reply       │                          │
-└───────────────────────────────┘               └──────────────────────────┘
+GJC session / TS worker           gjc-rpc-sdk daemon              chat adapter
+┌─────────────────────┐          ┌────────────────────┐          ┌────────────┐
+│ ask / idle / events │ ───────▶ │ authenticated route │ ───────▶ │ Telegram / │
+│ daemon worker frame │ ◀─────── │ notification fanout │ ◀─────── │ Slack / ...│
+└─────────────────────┘          └────────────────────┘          └────────────┘
 ```
 
-- **One endpoint per session.** Each session runs its own loopback WebSocket
-  server. Upstream does not maintain a shared daemon, singleton, or
-  chat-to-session registry; multiplexing many sessions into one integration is a
-  client-side concern.
-- **Integrations are clients.** A client discovers endpoint files, connects to
-  one or more WebSockets, renders `action_needed`, and sends `reply` messages.
-- **Zero upstream change.** New transports do not require changes to
-  `crates/gjc-notifications` or the JSON protocol.
-- **Off unless configured.** No endpoint exists unless notifications are enabled
-  and a token is present.
-- **tmux-agnostic.** The endpoint behaves identically with or without tmux.
-
-## Endpoint discovery
-
-A running session writes a discovery file at:
-
-```
-<repo>/.gjc/state/notifications/<sessionId>.json
-```
-
-(`.gjc/state/` is git-ignored.) Shape:
-
-```json
-{
-  "version": 1,
-  "sessionId": "019edd41-...",
-  "pid": 12345,
-  "host": "127.0.0.1",
-  "port": 53124,
-  "url": "ws://127.0.0.1:53124",
-  "token": "<per-session token>",
-  "startedAt": 1718760000000,
-  "updatedAt": 1718760000000,
-  "stale": false
-}
-```
-
-- The file is created `0700`/`0600` (unix) and written atomically.
-- The **token is in the file** because clients need it; never log it raw.
-  Stale files (dead PID, past TTL, or explicitly marked) are cleaned up on the
-  next start.
-
-Connect with the token as a query parameter:
-
-```
-ws://127.0.0.1:<port>/?token=<token>
-```
-
-A wrong/missing token is rejected at the handshake with HTTP `401`.
+- **No per-session WebSocket.** Sessions do not write notification endpoint
+  discovery files and do not accept `?token=` WebSocket handshakes.
+- **Daemon-owned auth.** Authentication and authorization are handled by the
+  rpc-sdk daemon, sharing the same secure-bind/authz boundary as other daemon
+  routes.
+- **Integrations are daemon clients.** Telegram, Discord, and Slack adapters use
+  `connectNotificationDaemon()` instead of scanning session endpoint files.
 
 ## Protocol
 

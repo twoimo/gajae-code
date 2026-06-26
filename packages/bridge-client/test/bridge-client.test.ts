@@ -15,7 +15,7 @@ describe("BridgeClient", () => {
 					headers: Object.fromEntries(headers.entries()),
 					body: init?.body?.toString() ?? null,
 				});
-				return new Response(JSON.stringify({ status: "accepted", session_id: "sess-1" }), { status: 200 });
+				return new Response(JSON.stringify({ status: "accepted", sessionId: "sess-1" }), { status: 200 });
 			},
 		});
 
@@ -118,7 +118,7 @@ describe("BridgeClient", () => {
 						start(controller) {
 							controller.enqueue(
 								new TextEncoder().encode(
-									'data: {"protocol_version":2,"session_id":"sess-1","seq":1,"frame_id":"frame-1","type":"event","payload":{"event_type":"agent_start"}}\r\n\r\n',
+									'data: {"protocolVersion":1,"sessionId":"sess-1","seq":1,"frameId":"frame-1","direction":"server_to_client","kind":"event","type":"event","replay":false,"payload":{"eventType":"agent_start"}}\r\n\r\n',
 								),
 							);
 							controller.close();

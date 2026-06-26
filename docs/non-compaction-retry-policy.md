@@ -168,10 +168,7 @@ RPC command surface:
 - `set_auto_retry` → `session.setAutoRetryEnabled(command.enabled)`
 - `abort_retry` → `session.abortRetry()`
 
-Client helpers:
-
-- `RpcClient.setAutoRetry(enabled)`
-- `RpcClient.abortRetry()`
+Daemon clients expose these as ordinary correlated commands over the authenticated transport.
 
 Both commands return success responses; retry progress/failure details come from streamed session events, not command response payloads.
 

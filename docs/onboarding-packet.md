@@ -41,8 +41,8 @@ Do not add a fifth default skill, fifth public role agent, new command, new conf
 - `packages/utils/` — shared TypeScript utilities, logging, formatting, process helpers, JSON/frontmatter, and sanitization.
 - `packages/stats/` — local observability dashboard and session/model usage aggregation.
 - `packages/typescript-edit-benchmark/` — TypeScript edit benchmark tooling.
-- `python/gjc-rpc/` — Python client for `gjc --mode rpc`.
-- `python/robogjc/` — GitHub triage/fix bot that drives `gjc --mode rpc`; this subtree has its own `AGENTS.md`.
+- `python/gjc-rpc/` — Python client experiments for the daemon RPC transport.
+- `python/robogjc/` — GitHub triage/fix bot that drives GJC through the supported external-control surfaces; this subtree has its own `AGENTS.md`.
 
 ## Build, test, and validation commands
 

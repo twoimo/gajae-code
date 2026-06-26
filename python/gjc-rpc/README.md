@@ -1,18 +1,21 @@
 # gjc-rpc
 
-Typed Python bindings for the `gjc --mode rpc` protocol used by the coding agent.
+Thin Python reference client for Gajae Code RPC hosts.
 
-This package wraps the newline-delimited JSON RPC transport exposed by the CLI and
-provides:
+This package intentionally is **not** a maintained full Python SDK. It is a
+small reference consumer for hosts that need to drive Gajae Code from Python
+while the supported SDK surface remains TypeScript and Rust. It provides:
 
+- a default subprocess JSONL client that starts `gjc --mode rpc-daemon-worker`
+- `command=` support for hosts and tests that provide their own RPC subprocess
+- an opt-in Unix-domain-socket client for the rpc-sdk daemon GjcFrame v1 transport
+- a byte-faithful GjcFrame codec: 4-byte big-endian length prefix plus UTF-8 JSON body
 - typed command methods for the stable RPC surface
-- typed startup options for common `gjc --mode rpc` flags such as thinking level,
-  tool selection, prompt appends, provider session IDs, and headless session toggles
-- typed protocol models for state, bash results, compaction, and session stats
-- a process-backed client that manages request correlation over stdio
+- typed startup options for both subprocess and daemon socket routes
 - typed per-event listeners plus a typed catch-all notification hook
 - helpers for collecting prompt runs and handling extension UI requests in manual or headless mode
 - typed host-tool helpers so Python RPC owners can expose custom tools with JSON Schema metadata
+
 
 ## Basic Usage
 
@@ -26,6 +29,33 @@ with RpcClient(provider="anthropic", model="claude-sonnet-4-5") as client:
     turn = client.prompt_and_wait("Reply with just the word hello")
     print(turn.require_assistant_text())
 ```
+
+By default `RpcClient` starts a subprocess using `gjc --mode rpc-daemon-worker`
+and speaks the JSONL RPC transport over stdin/stdout. Pass `command=` to run a
+custom RPC subprocess instead:
+
+```python
+from gjc_rpc import RpcClient
+
+with RpcClient(command=["python", "fake_rpc_server.py"]) as client:
+    print(client.get_state().session_id)
+```
+
+To connect to the rpc-sdk daemon over a Unix domain socket, opt in with
+`socket_path=`. The helper `default_daemon_socket_path()` matches the TypeScript
+SDK discovery order:
+
+1. `GJC_RPC_DAEMON_SOCKET`, when set
+2. `$XDG_RUNTIME_DIR/gjc/rpc-sdk/daemon.sock`, when `XDG_RUNTIME_DIR` is set
+3. `.gjc/state/rpc-sdk/daemon.sock` under the current working directory
+
+```python
+from gjc_rpc import RpcClient, default_daemon_socket_path
+
+with RpcClient(socket_path=default_daemon_socket_path()) as client:
+    print(client.get_state().session_id)
+```
+
 
 The wrapper also exposes the common RPC startup flags directly, so scripts do not
 need to build `extra_args` by hand:
@@ -71,14 +101,7 @@ with RpcClient(model="openrouter/anthropic/claude-sonnet-4.6", no_session=True) 
 `set_todos()` accepts either a flat list of todo strings/items or explicit
 phases, and `get_state().todo_phases` returns the typed current todo state.
 
-By default the client runs:
-
-```bash
-gjc --mode rpc
-```
-
-You can also point it at a custom command, which is useful inside this repo while
-developing against the Bun entrypoint:
+For advanced subprocess orchestration, pass an explicit `command=`:
 
 ```python
 from gjc_rpc import RpcClient
@@ -97,6 +120,9 @@ with RpcClient(
 ) as client:
     print(client.get_state().session_id)
 ```
+
+Use `socket_path=` only when a daemon is already running and you want the UDS
+route instead of spawning a subprocess.
 
 ## Host-Owned Custom Tools
 
@@ -259,7 +285,7 @@ full = assistant_text_with_thinking(message)
 
 ## Event Frames
 
-AgentSession events are delivered on stdout as canonical `event` frames:
+AgentSession events are delivered as canonical `event` frames inside daemon GjcFrame payloads:
 
 ```json
 { "type": "event", "protocol_version": 2, "session_id": "…", "seq": 1, "frame_id": "…",

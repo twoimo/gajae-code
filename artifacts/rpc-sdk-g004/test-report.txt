@@ -1,0 +1,47 @@
+=== cargo test -p gjc-rpc-sdk (G004 UDS daemon) ===
+running 68 tests
+test authz_eval::tests::denies_expired_grant ... ok
+test authz_eval::tests::denies_control_without_control_scope ... ok
+test authz_eval::tests::all_sessions_requires_admin_issuer ... ok
+test authz_eval::tests::denies_cross_session_subscribe ... ok
+test authz_eval::tests::denies_revoked_grant_everywhere ... ok
+test authz_eval::tests::grants_control_on_listed_session ... ok
+test authz_eval::tests::denies_when_no_grant_matches_principal ... ok
+test daemon::tests::authz_control_without_control_denied ... ok
+test daemon::tests::authz_cross_session_subscribe_denied ... ok
+test daemon::tests::authz_gate_answer_denied ... ok
+test daemon::tests::authz_enumeration_without_grant_denied ... ok
+test daemon::tests::authz_host_tool_result_denied ... ok
+test daemon::tests::authz_host_uri_result_denied ... ok
+test daemon::tests::authz_read_without_subscribe_denied ... ok
+test daemon::tests::authz_redacts_live_and_replay_frames ... ok
+test daemon::tests::authz_revoked_grant_denied_everywhere ... ok
+test daemon::tests::uds_hello_denied_grant_fails_whole_handshake ... ok
+test daemon::tests::uds_hello_negotiates_protocol_1_scopes_principal_grants_and_filters ... ok
+test daemon::tests::uds_hello_wrong_version_rejected ... ok
+test peer_cred::tests::peer_cred_bearer_fallback_disabled_by_default_fails_closed ... ok
+test peer_cred::tests::peer_cred_linux_so_peercred_maps_uid_gid_pid ... ok
+test cross_transport::tests::same_vector_logically_equal_in_process_and_uds ... ok
+test peer_cred::tests::peer_cred_macos_getpeereid_maps_uid_gid_no_pid ... ok
+test peer_cred::tests::peer_cred_unsupported_platform_fails_closed_before_grant_lookup ... ok
+test peer_cred::tests::supported_peer_identity_derives_principal ... ok
+test registry::tests::remove_session_drops_its_correlations ... ok
+test registry::tests::active_sessions_excludes_failed ... ok
+test registry::tests::worker_crash_mid_broker_calls_fail_all_pending_fails_session_no_replay ... ok
+test uds_codec::tests::encode_decode_round_trip ... ok
+test uds_codec::tests::malformed_json_body_rejected ... ok
+test uds_codec::tests::multiple_frames_in_one_buffer ... ok
+test uds_codec::tests::oversized_length_prefix_rejected_before_alloc ... ok
+test uds_codec::tests::partial_reads_are_reassembled ... ok
+test worker_supervisor::tests::restart_policy_bounds_restarts ... ok
+test worker_supervisor::tests::sanitized_env_drops_non_allowlisted_vars ... ok
+test uds_transport::tests::uds_round_trip_and_peer_principal ... ok
+test uds_transport::tests::clean_eof_returns_none ... ok
+test worker_supervisor::tests::worker_two_lane_echo_and_graceful_drain ... ok
+test worker_supervisor::tests::worker_crash_is_detected ... ok
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== cargo clippy -p gjc-rpc-sdk --all-targets ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s

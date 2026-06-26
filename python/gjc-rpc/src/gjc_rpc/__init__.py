@@ -29,6 +29,7 @@ from .host_uris import (
     HostUriWriteHandler,
     host_uri,
 )
+from .uds_client import GjcFrameCodecError, GjcFrameDecoder, default_daemon_socket_path, encode_frame, read_frame, write_frame
 from .protocol import (
     AgentEndEvent,
     AgentStartEvent,
@@ -141,6 +142,8 @@ __all__ = [
     "WorkflowGateEvent",
     "FileMentionMessage",
     "HostTool",
+    "GjcFrameCodecError",
+    "GjcFrameDecoder",
     "HostToolContext",
     "HostToolResultPayload",
     "HostToolResultValue",
@@ -214,6 +217,10 @@ __all__ = [
     "parse_workflow_gate_event",
     "parse_session_state",
     "parse_todo_phases",
+    "default_daemon_socket_path",
+    "encode_frame",
+    "read_frame",
+    "write_frame",
     "host_tool",
     "host_uri",
 ]

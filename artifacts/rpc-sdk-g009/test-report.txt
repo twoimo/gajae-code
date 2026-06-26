@@ -1,0 +1,13 @@
+=== G009 packages/rpc-sdk verification (2026-06-26T02:49:39Z) ===
+--- bun test packages/rpc-sdk ---
+ 17 pass
+ 0 fail
+ 73 expect() calls
+Ran 17 tests across 5 files. [162.00ms]
+--- check:types ---
+check:types EXIT 0
+--- cargo test -p gjc-rpc-sdk (hello serde touched) ---
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- clippy ---
+0
+(warnings/errors)

@@ -1,0 +1,10 @@
+=== G005 crates/gjc-rpc-sdk verification (2026-06-26T04:04:12Z) ===
+--- cargo test -p gjc-rpc-sdk (debug) ---
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+--- cargo test -p gjc-rpc-sdk --release ---
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+--- clippy --all-targets ---
+0
+(warnings/errors)
+--- daemon-path red-team tests present ---
+crates/gjc-rpc-sdk/src/daemon_server.rs

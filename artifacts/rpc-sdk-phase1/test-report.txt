@@ -1,0 +1,20 @@
+=== cargo test -p gjc-rpc-sdk ===
+running 3 tests
+test tests::protocol_version_is_v1 ... ok
+test tests::frame_roundtrips_json ... ok
+test tests::grant_record_roundtrips_json ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== cargo clippy -p gjc-rpc-sdk (clean) ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+
+=== inventory --check ===
+OK: runtime_io_inventory in sync (90 items across 5 sections)
+
+=== adversarial: corrupt inventory -> --check must FAIL ===
+FAIL: runtime_io_inventory out of sync with sources; regenerate.
+exit=0
+restored:
+OK: runtime_io_inventory in sync (90 items across 5 sections)

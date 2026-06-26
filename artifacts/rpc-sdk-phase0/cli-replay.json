@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"cli-replay","replaySafe":true,"command":["bun","run","scripts/rpc-sdk/generate-command-manifest.ts","--check"],"recordedStdout":"OK: command manifest in sync (38 commands, sha256 09abe5f9677d)\n"}

@@ -104,7 +104,7 @@ Private benchmark package for TypeScript edit tasks.
 
 ### `python/gjc-rpc/`
 
-Typed Python client for `gjc --mode rpc`.
+Typed Python client for the daemon-backed GJC RPC route.
 
 - `python/gjc-rpc/pyproject.toml` packages `gjc-rpc` for Python 3.11+.
 - `python/gjc-rpc/README.md` documents the process-backed stdio client, typed command methods, startup flags, event listeners, todo seeding, host-owned tools, and host-owned URI schemes.
@@ -112,7 +112,7 @@ Typed Python client for `gjc --mode rpc`.
 
 ### `python/robogjc/`
 
-Self-hosted GitHub triage/fix bot that drives `gjc --mode rpc`.
+Self-hosted GitHub triage/fix bot that drives GJC through daemon RPC.
 
 - `python/robogjc/AGENTS.md` is the authoritative local contract for this subtree.
 - `python/robogjc/pyproject.toml` packages `robogjc` for Python 3.11+ with FastAPI, httpx, pydantic settings, Click, and `gjc-rpc`.

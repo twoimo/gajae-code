@@ -20,8 +20,22 @@ interface Decision {
 	reason: string;
 }
 
+const RPC_SDK_GENERATED_INPUTS: ReadonlySet<string> = new Set([
+	"docs/rpc-sdk/command-classification-manifest.json",
+	"docs/rpc-sdk/runtime-io-inventory.json",
+]);
+
 function isProvablyIrrelevant(changedPath: string): boolean {
-	return changedPath.endsWith(".md") || changedPath.startsWith("docs/") || changedPath.startsWith(".gjc/");
+	return (
+		!RPC_SDK_GENERATED_INPUTS.has(changedPath)
+		&& (changedPath.endsWith(".md") || changedPath.startsWith("docs/") || changedPath.startsWith(".gjc/"))
+	);
+}
+
+function changedFilesFromEnv(): string[] | undefined {
+	const raw = process.env.CI_JOB_CHANGED_PATHS;
+	if (!raw) return undefined;
+	return raw.split(/\r?\n|,/).map(file => file.trim()).filter(Boolean);
 }
 
 async function changedFiles(baseSha: string): Promise<string[]> {
@@ -41,7 +55,15 @@ async function decide(): Promise<Decision> {
 		return { relevant: true, reason: "GITHUB_BASE_SHA missing; running everything" };
 	}
 
-	const files = await changedFiles(baseSha);
+	const envFiles = changedFilesFromEnv();
+	if (envFiles) {
+		return decideForFiles(envFiles);
+	}
+
+	return decideForFiles(await changedFiles(baseSha));
+}
+
+function decideForFiles(files: readonly string[]): Decision {
 	if (files.length === 0) {
 		return { relevant: true, reason: "empty diff against base; running everything" };
 	}
@@ -53,7 +75,7 @@ async function decide(): Promise<Decision> {
 
 	return {
 		relevant: false,
-		reason: `all ${files.length} changed path(s) are provably irrelevant (*.md, docs/, .gjc/)`,
+		reason: `all ${files.length} changed path(s) are provably irrelevant (*.md, docs/ except RPC-SDK generated inputs, .gjc/)`,
 	};
 }
 

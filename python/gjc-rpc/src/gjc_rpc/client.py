@@ -4,6 +4,8 @@ import json
 import os
 import queue
 import subprocess
+import socket
+import uuid
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,6 +15,7 @@ from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar, cast
 from .host_tools import HostTool, HostToolContext
 from .host_uris import HostUri, HostUriContext, normalize_read_result
 from .registry import SessionHandle, list_sessions as _list_sessions
+from .uds_client import GjcFrameDecoder, read_frame, write_frame
 from .protocol import (
     AgentStartEvent,
     AgentEndEvent,
@@ -318,6 +321,8 @@ class RpcClient:
         request_timeout: float = 30.0,
         max_event_history: int | None = 10_000,
         max_stderr_chunks: int | None = 512,
+        socket_path: str | Path | None = None,
+        use_legacy_subprocess: bool | None = None,
     ) -> None:
         self._command = tuple(command) if command is not None else None
         self._executable = executable
@@ -345,8 +350,12 @@ class RpcClient:
         self._request_timeout = request_timeout
         self._max_event_history = self._validate_history_limit("max_event_history", max_event_history)
         self._max_stderr_chunks = self._validate_history_limit("max_stderr_chunks", max_stderr_chunks)
+        self._socket_path = str(socket_path) if socket_path is not None else None
+        self._use_uds = socket_path is not None
+
 
         self._process: subprocess.Popen[str] | None = None
+        self._socket: socket.socket | None = None
         self._stdout_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -409,7 +418,7 @@ class RpcClient:
             return self._listener_errors.snapshot()
 
     def start(self) -> RpcClient:
-        if self._process is not None:
+        if self._process is not None or self._socket is not None:
             raise RpcError("RPC client is already started")
 
         self._ready.clear()
@@ -429,6 +438,33 @@ class RpcClient:
             self._protocol_errors.clear()
             self._listener_errors.clear()
 
+        if self._use_uds:
+            return self._start_uds()
+        self._start_subprocess()
+
+
+        if not self._ready.wait(self._startup_timeout):
+            stderr = self.stderr
+            self.stop()
+            raise RpcTimeoutError(f"Timed out waiting for RPC ready signal. Stderr: {stderr}")
+
+        if not self._ready_received:
+            error = self._closed_error
+            stderr = self.stderr
+            self.stop()
+            if isinstance(error, RpcError):
+                raise error
+            if error is not None:
+                raise RpcProcessExitError(f"RPC transport stopped before ready: {error}. Stderr: {stderr}") from error
+            raise RpcTimeoutError(f"Timed out waiting for RPC ready signal. Stderr: {stderr}")
+
+        if self._custom_tools:
+            self.set_custom_tools(self._custom_tools)
+        if self._host_uris:
+            self.set_host_uris(self._host_uris)
+        return self
+
+    def _start_subprocess(self) -> None:
         process = subprocess.Popen(
             list(self._build_command()),
             cwd=str(self._cwd) if self._cwd is not None else None,
@@ -451,21 +487,45 @@ class RpcClient:
         self._stdout_thread.start()
         self._stderr_thread.start()
 
-        if not self._ready.wait(self._startup_timeout):
-            stderr = self.stderr
-            self.stop()
-            raise RpcTimeoutError(f"Timed out waiting for RPC ready signal. Stderr: {stderr}")
+    def _start_uds(self) -> RpcClient:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(self._socket_path)
+        except OSError as exc:
+            raise RpcProcessExitError(f"Failed to connect to GJC RPC daemon socket {self._socket_path}: {exc}") from exc
 
+        self._socket = sock
+        self._stdout_thread = threading.Thread(target=self._read_socket_loop, name="gjc-rpc-uds", daemon=True)
+        self._stdout_thread.start()
+        session_id = str(self._session_dir) if self._session_dir is not None else "default"
+        self._write_frame(
+            {
+                "protocolVersion": 1,
+                "frameId": "py_hello",
+                "sessionId": session_id,
+                "seq": 0,
+                "direction": "client_to_server",
+                "kind": "hello",
+                "type": "hello",
+                "replay": False,
+                "payload": {
+                    "protocolVersion": 1,
+                    "requested": [{"session": session_id, "redaction": "none"}],
+                },
+            }
+        )
+
+        if not self._ready.wait(self._startup_timeout):
+            self.stop()
+            raise RpcTimeoutError(f"Timed out waiting for RPC daemon hello at {self._socket_path}")
         if not self._ready_received:
             error = self._closed_error
-            stderr = self.stderr
             self.stop()
             if isinstance(error, RpcError):
                 raise error
             if error is not None:
-                raise RpcProcessExitError(f"RPC process stopped before ready: {error}. Stderr: {stderr}") from error
-            raise RpcTimeoutError(f"Timed out waiting for RPC ready signal. Stderr: {stderr}")
-
+                raise RpcProcessExitError(f"RPC daemon stopped before hello completed: {error}") from error
+            raise RpcTimeoutError(f"Timed out waiting for RPC daemon hello at {self._socket_path}")
         if self._custom_tools:
             self.set_custom_tools(self._custom_tools)
         if self._host_uris:
@@ -474,7 +534,8 @@ class RpcClient:
 
     def stop(self) -> None:
         process = self._process
-        if process is None:
+        sock = self._socket
+        if process is None and sock is None:
             return
 
         self._stopping = True
@@ -482,6 +543,23 @@ class RpcClient:
             pending_call.cancel_event.set()
         for pending_uri in self._pending_host_uri_requests.values():
             pending_uri.cancel_event.set()
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+            self._socket = None
+            self._mark_closed(RpcProcessExitError("RPC daemon socket closed"))
+            self._pending_host_tool_calls.clear()
+            self._pending_host_uri_requests.clear()
+            if self._stdout_thread is not None:
+                self._stdout_thread.join(timeout=1.0)
+            self._stdout_thread = None
+            return
 
         try:
             if process.stdin is not None:
@@ -879,7 +957,7 @@ class RpcClient:
 
     def set_custom_tools(self, tools: Sequence[HostTool[Any, Any]]) -> tuple[str, ...]:
         self._custom_tools = tuple(tools)
-        if self._process is None:
+        if self._process is None and self._socket is None:
             return tuple(tool.name for tool in self._custom_tools)
 
         payload = self._request(
@@ -905,7 +983,7 @@ class RpcClient:
 
     def set_host_uris(self, host_uris: Sequence[HostUri[Any]]) -> tuple[str, ...]:
         self._host_uris = tuple(host_uris)
-        if self._process is None:
+        if self._process is None and self._socket is None:
             return tuple(uri.scheme for uri in self._host_uris)
 
         schemes_payload: list[JsonObject] = []
@@ -1091,7 +1169,6 @@ class RpcClient:
                 self._event_condition.wait(remaining)
 
     def _request(self, command_type: str, **payload: JsonValue) -> JsonObject:
-        process = self._require_process()
         request_id = self._next_request_id()
         envelope: JsonObject = {"id": request_id, "type": command_type}
         for key, value in payload.items():
@@ -1103,7 +1180,7 @@ class RpcClient:
             self._pending[request_id] = _PendingRequest(command=command_type, response_queue=response_queue)
 
         try:
-            self._write_json(process, envelope)
+            self._write_payload(envelope, request_id=request_id, command_type=command_type)
         except BaseException:
             with self._state_lock:
                 self._pending.pop(request_id, None)
@@ -1128,8 +1205,7 @@ class RpcClient:
         return _clone_json_object(data)
 
     def _send_notification(self, payload: JsonObject) -> None:
-        process = self._require_process()
-        self._write_json(process, payload)
+        self._write_payload(payload)
 
     def _normalize_host_tool_result(self, result: object) -> JsonObject:
         if isinstance(result, str):
@@ -1396,7 +1472,7 @@ class RpcClient:
         if self._command is not None:
             return self._command
 
-        command: list[str] = [self._executable, "--mode", "rpc"]
+        command: list[str] = [self._executable, "--mode", "rpc-daemon-worker"]
         if self._provider:
             command.extend(["--provider", self._provider])
         if self._model:
@@ -1447,6 +1523,128 @@ class RpcClient:
             except (BrokenPipeError, OSError) as exc:
                 raise RpcProcessExitError(f"Failed to write RPC command: {exc}") from exc
 
+    def _write_payload(self, payload: JsonObject, *, request_id: str | None = None, command_type: str | None = None) -> None:
+        if not self._use_uds:
+            self._write_json(self._require_process(), payload)
+            return
+        frame_type = command_type or str(payload.get("type", "notification"))
+        frame: JsonObject = {
+            "protocolVersion": 1,
+            "frameId": f"py_{uuid.uuid4().hex}",
+            "sessionId": str(self._session_dir) if self._session_dir is not None else "default",
+            "seq": 0,
+            "direction": "client_to_server",
+            "kind": "command" if request_id is not None else "notification",
+            "type": frame_type,
+            "replay": False,
+            "payload": payload,
+        }
+        if request_id is not None:
+            frame["correlationId"] = request_id
+        self._write_frame(frame)
+
+    def _write_frame(self, frame: JsonObject) -> None:
+        sock = self._socket
+        if sock is None:
+            raise RpcError("RPC daemon socket is not started")
+        with self._write_lock:
+            try:
+                write_frame(sock, frame)
+            except OSError as exc:
+                raise RpcProcessExitError(f"Failed to write RPC daemon frame: {exc}") from exc
+
+    def _payload_from_frame(self, frame: JsonObject) -> JsonObject:
+        payload = frame.get("payload")
+        if isinstance(payload, Mapping):
+            out = cast(JsonObject, dict(payload))
+        else:
+            out = {}
+        kind = frame.get("kind")
+        frame_type = frame.get("type")
+        if kind == "ready":
+            out.setdefault("type", "ready")
+        elif kind == "response":
+            out.setdefault("type", "response")
+            out.setdefault("success", True)
+            out.setdefault("command", frame_type if isinstance(frame_type, str) else "")
+            correlation_id = frame.get("correlationId")
+            if isinstance(correlation_id, str):
+                out.setdefault("id", correlation_id)
+        elif kind == "error":
+            out.setdefault("type", "response")
+            out.setdefault("success", False)
+            out.setdefault("command", frame_type if isinstance(frame_type, str) else "")
+            out.setdefault("error", str(out.get("denied") or out.get("error") or frame_type or "RPC daemon error"))
+            correlation_id = frame.get("correlationId")
+            if isinstance(correlation_id, str):
+                out.setdefault("id", correlation_id)
+        else:
+            out.setdefault("type", frame_type if isinstance(frame_type, str) else str(kind or "notification"))
+        return out
+
+    def _handle_inbound_payload(self, payload: JsonObject) -> None:
+        if payload.get("type") == "response":
+            self._handle_response(payload)
+            return
+        if payload.get("type") == "host_tool_call":
+            self._handle_host_tool_call(payload)
+            return
+        if payload.get("type") == "host_tool_cancel":
+            self._handle_host_tool_cancel(payload)
+            return
+        if payload.get("type") == "host_uri_request":
+            self._handle_host_uri_request(payload)
+            return
+        if payload.get("type") == "host_uri_cancel":
+            self._handle_host_uri_cancel(payload)
+            return
+
+        notification = parse_notification(payload)
+        listener_notification = parse_notification(payload)
+        self._dispatch_listeners("notification", listener_notification.type, self._notification_listeners, listener_notification)
+
+        if isinstance(notification, ReadyEvent):
+            self._ready_received = True
+            self._ready.set()
+            self._dispatch_listeners("ready", listener_notification.type, self._ready_listeners, listener_notification)
+            return
+        if isinstance(notification, ExtensionUiRequest):
+            self._ui_requests.put(notification)
+            self._dispatch_listeners("ui_request", listener_notification.type, self._ui_request_listeners, cast(ExtensionUiRequest, listener_notification))
+            return
+        if isinstance(notification, WorkflowGate):
+            self._workflow_gates.put(parse_workflow_gate_event(payload))
+            self._dispatch_listeners("workflow_gate", listener_notification.type, self._workflow_gate_listeners, cast(WorkflowGate, listener_notification))
+            return
+        if isinstance(notification, ExtensionError):
+            self._dispatch_listeners("extension_error", listener_notification.type, self._extension_error_listeners, cast(ExtensionError, listener_notification))
+            return
+        if isinstance(notification, UnknownNotification):
+            self._dispatch_listeners("unknown_notification", listener_notification.type, self._unknown_notification_listeners, listener_notification)
+            return
+        listener_event = cast(RpcAgentEvent, listener_notification)
+        self._append_event(payload)
+        if listener_event.type == "agent_end":
+            self._mark_agent_run_completed()
+        self._dispatch_listeners("event", listener_event.type, self._event_listeners, listener_event)
+        self._dispatch_listeners("typed_event", listener_event.type, self._typed_event_listeners.get(listener_event.type, []), listener_event)
+
+    def _read_socket_loop(self) -> None:
+        sock = self._socket
+        if sock is None:
+            return
+        decoder = GjcFrameDecoder()
+        try:
+            while True:
+                frame = read_frame(sock, decoder)
+                if frame is None:
+                    break
+                self._handle_inbound_payload(self._payload_from_frame(frame))
+        except Exception as exc:
+            self._mark_closed(exc)
+        else:
+            if not self._stopping:
+                self._mark_closed(RpcProcessExitError("RPC daemon socket closed"))
     def _read_stdout_loop(self) -> None:
         process = self._process
         if process is None or process.stdout is None:

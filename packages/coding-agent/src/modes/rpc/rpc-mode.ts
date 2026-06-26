@@ -11,7 +11,7 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
-import { $pickenv, logger, readLines, Snowflake } from "@gajae-code/utils";
+import { $pickenv, readLines, Snowflake } from "@gajae-code/utils";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -30,7 +30,6 @@ import { modelSupportsTokenCostMetrics, UnattendedSessionControlPlane } from "..
 import { FileGateStore } from "../shared/agent-wire/workflow-gate-broker";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
-import { prepareRpcSocketPath, verifyRpcSocketAfterListen } from "./rpc-socket-security";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -60,6 +59,98 @@ type RpcOutput = (
 		| RpcHostUriCancelRequest
 		| object,
 ) => void;
+
+type GjcFrame = {
+	protocolVersion: number;
+	frameId: string;
+	sessionId: string;
+	seq: number;
+	direction: "client_to_server" | "server_to_client";
+	kind:
+		| "ready"
+		| "hello"
+		| "command"
+		| "response"
+		| "event"
+		| "ui_request"
+		| "permission_request"
+		| "host_tool_call"
+		| "host_uri_request"
+		| "workflow_gate"
+		| "notification"
+		| "reset"
+		| "error";
+	type: string;
+	correlationId?: string;
+	replay: boolean;
+	capabilityScope?: string;
+	payload: unknown;
+};
+
+type RpcTransportMode = "jsonl" | "gjc-frame";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function normalizeInboundFrame(parsed: unknown): unknown {
+	if (!isRecord(parsed) || parsed.kind !== "command") return parsed;
+	const payload = isRecord(parsed.payload) ? parsed.payload : {};
+	return {
+		...payload,
+		type: typeof parsed.type === "string" ? parsed.type : payload.type,
+		id:
+			typeof parsed.correlationId === "string"
+				? parsed.correlationId
+				: typeof parsed.frameId === "string"
+					? parsed.frameId
+					: payload.id,
+	};
+}
+
+function frameKindForRpcObject(obj: Record<string, unknown>): GjcFrame["kind"] {
+	if (obj.type === "ready") return "ready";
+	if (obj.type === "response") return "response";
+	if (obj.type === "event") return "event";
+	if (obj.type === "extension_ui_request") return "ui_request";
+	if (obj.type === "host_tool_call") return "host_tool_call";
+	if (obj.type === "host_uri_request") return "host_uri_request";
+	if (obj.type === "workflow_gate") return "workflow_gate";
+	if (obj.type === "reset") return "reset";
+	if (obj.type === "error") return "error";
+	return "event";
+}
+
+function rpcObjectToGjcFrame(obj: unknown, session: AgentSession, seq: () => number): GjcFrame {
+	const record = isRecord(obj) ? obj : {};
+	const frameKind = frameKindForRpcObject(record);
+	const command =
+		typeof record.command === "string" ? record.command : typeof record.type === "string" ? record.type : frameKind;
+	const correlationId = typeof record.id === "string" ? record.id : undefined;
+	const embeddedPayload = isRecord(record.payload) ? record.payload : undefined;
+	return {
+		protocolVersion: 1,
+		frameId:
+			typeof record.frame_id === "string"
+				? record.frame_id
+				: typeof record.frameId === "string"
+					? record.frameId
+					: Snowflake.next(),
+		sessionId:
+			typeof record.session_id === "string"
+				? record.session_id
+				: typeof record.sessionId === "string"
+					? record.sessionId
+					: session.sessionId,
+		seq: typeof record.seq === "number" ? record.seq : seq(),
+		direction: "server_to_client",
+		kind: frameKind,
+		type: command,
+		...(correlationId ? { correlationId } : {}),
+		replay: typeof record.replay === "boolean" ? record.replay : false,
+		payload: embeddedPayload ?? record,
+	};
+}
 
 function parseValueDialogResponse(
 	response: RpcExtensionUIResponse,
@@ -168,43 +259,6 @@ function auditOutcomeFor(event: string): "accepted" | "rejected" | "denied" | "e
 	return "info";
 }
 
-export class RpcListenRefusedError extends Error {
-	constructor(socketPath: string) {
-		super(
-			`RPC --listen refused: a live server is already listening on ${socketPath}. ` +
-				"Stop it first or choose a different --listen path.",
-		);
-		this.name = "RpcListenRefusedError";
-	}
-}
-
-/**
- * Probe whether a unix-domain socket path has a live server accepting
- * connections. Returns `true` when a connection succeeds (a previous owner is
- * still alive), and returns `false` only for known missing/stale endpoints
- * (ENOENT / ECONNREFUSED). Unexpected probe failures fail closed as "alive" so
- * `--listen` startup refuses to unlink a path it could not safely classify.
- */
-export async function isUnixSocketAlive(socketPath: string): Promise<boolean> {
-	try {
-		const socket = await Bun.connect({
-			unix: socketPath,
-			socket: { data() {}, open() {}, error() {}, close() {} },
-		});
-		socket.end();
-		return true;
-	} catch (err) {
-		const code = err && typeof err === "object" ? (err as { code?: unknown }).code : undefined;
-		if (code === "ENOENT" || code === "ECONNREFUSED") return false;
-		logger.warn("RPC --listen socket probe failed closed", {
-			socketPath,
-			code: typeof code === "string" ? code : undefined,
-			error: err instanceof Error ? err.message : String(err),
-		});
-		return true;
-	}
-}
-
 export function requestRpcEditor(
 	pendingRequests: Map<string, PendingExtensionRequest>,
 	output: RpcOutput,
@@ -275,7 +329,7 @@ export function requestRpcEditor(
 export async function runRpcMode(
 	session: AgentSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
-	options?: { listen?: string },
+	options?: { transport?: RpcTransportMode },
 ): Promise<never> {
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
@@ -284,18 +338,16 @@ export async function runRpcMode(
 	// may write there.
 	process.env.PI_NOTIFICATIONS = "off";
 
-	// Frames go to a swappable sink: stdout for stdio, the active client socket for a
-	// persistent --listen (UDS) server. Defaults to stdout, so the stdio path is unchanged.
-	let frameSink = (line: string): void => {
+	const frameSink = (line: string): void => {
 		process.stdout.write(line);
 	};
+	let frameSeq = 0;
+	const nextFrameSeq = (): number => ++frameSeq;
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
-		frameSink(`${JSON.stringify(obj)}\n`);
+		const payload = options?.transport === "gjc-frame" ? rpcObjectToGjcFrame(obj, session, nextFrameSeq) : obj;
+		frameSink(`${JSON.stringify(payload)}\n`);
 	};
-	// stdio announces readiness immediately; the UDS server announces it per client connection.
-	if (!options?.listen) {
-		output({ type: "ready" });
-	}
+	output({ type: "ready" });
 	const emitRpcTitles = shouldEmitRpcTitles();
 	const decodeError = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -687,7 +739,7 @@ export async function runRpcMode(
 	async function handleInboundLine(text: string): Promise<void> {
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(text);
+			parsed = normalizeInboundFrame(JSON.parse(text));
 		} catch (err) {
 			output(error(undefined, "parse", `Failed to parse command: ${decodeError(err)}`));
 			return;
@@ -718,70 +770,6 @@ export async function runRpcMode(
 		} catch (err) {
 			output(error(undefined, "parse", `Failed to parse command: ${decodeError(err)}`));
 		}
-	}
-
-	// Persistent UDS server (issue 09): keep the AgentSession alive across client
-	// reconnects instead of exiting on stdin EOF. Frames route to the active client
-	// socket; while no client is connected they are dropped (clients resync via
-	// get_state/get_messages on reconnect).
-	if (options?.listen) {
-		const socketPath = options.listen;
-		await prepareRpcSocketPath(socketPath);
-		await registerRpcSession({
-			sessionId: session.sessionId,
-			pid: process.pid,
-			transport: "socket",
-			cwd: session.sessionManager.getCwd(),
-			model: session.model?.id,
-			startedAt: new Date().toISOString(),
-			endpoint: socketPath,
-		}).catch(() => {});
-
-		const noopSink = (_line: string): void => {};
-		let currentSocket: object | undefined;
-		let buf = "";
-		const server = Bun.listen({
-			unix: socketPath,
-			socket: {
-				open(socket) {
-					currentSocket = socket;
-					buf = "";
-					frameSink = (line: string) => {
-						socket.write(line);
-					};
-					output({ type: "ready" });
-				},
-				data(socket, data) {
-					if (socket !== currentSocket) return;
-					buf += inputDecoder.decode(data);
-					while (true) {
-						const nl = buf.indexOf("\n");
-						if (nl < 0) break;
-						const text = buf.slice(0, nl).trim();
-						buf = buf.slice(nl + 1);
-						if (text) void handleInboundLine(text);
-					}
-				},
-				close(socket) {
-					if (socket === currentSocket) {
-						currentSocket = undefined;
-						frameSink = noopSink;
-					}
-				},
-				error() {},
-			},
-		});
-		await verifyRpcSocketAfterListen(socketPath);
-		void server;
-
-		const onSignal = (): void => {
-			void shutdown(0, "RPC socket server signal");
-		};
-		process.on("SIGINT", onSignal);
-		process.on("SIGTERM", onSignal);
-		// Block until an explicit shutdown (signal/extension) calls process.exit.
-		await new Promise<never>(() => {});
-		throw new Error("RPC socket server returned unexpectedly");
 	}
 
 	// Register this stdio RPC session so other processes can discover it (issue 10).

@@ -33,19 +33,25 @@ const gate: WorkflowGate = {
 describe("bridge-client workflow_gate helpers (#322)", () => {
 	it("isWorkflowGateFrame narrows workflow_gate frames", () => {
 		const frame: BridgeFrame = {
-			protocol_version: 2,
-			session_id: "s",
+			protocolVersion: 1,
+			sessionId: "s",
 			seq: 1,
-			frame_id: "f",
+			frameId: "f",
+			direction: "server_to_client",
+			kind: "workflow_gate",
 			type: "workflow_gate",
+			replay: false,
 			payload: gate,
 		};
 		const other: BridgeFrame = {
-			protocol_version: 2,
-			session_id: "s",
+			protocolVersion: 1,
+			sessionId: "s",
 			seq: 2,
-			frame_id: "g",
+			frameId: "g",
+			direction: "server_to_client",
+			kind: "event",
 			type: "event",
+			replay: false,
 			payload: {},
 		};
 		expect(isWorkflowGateFrame(frame)).toBe(true);

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "surface": "native",
+  "tool": "pi-natives-computer-redteam-harness",
+  "actions": [
+    {
+      "type": "custom",
+      "timestamp": 1782438147715,
+      "selector": "synthetic_hotkey_triggers_stop"
+    }
+  ],
+  "assertions": [
+    {
+      "message": "Control+Option+Command+Escape posted through the real CGEventTap latched the supervisor",
+      "actual": {
+        "latched_via_event_tap": true,
+        "posted_ms": 1782438147926
+      },
+      "timestamp": 1782438147926,
+      "status": "passed"
+    },
+    {
+      "message": "input blocked after latch (kill-switch not bypassable)",
+      "actual": {
+        "result": "Err(Suspended)",
+        "sink_ops": 0
+      },
+      "timestamp": 1782438147926,
+      "status": "passed"
+    }
+  ]
+}

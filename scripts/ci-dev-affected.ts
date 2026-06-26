@@ -15,6 +15,11 @@ const PYTHON_DEV_SETUP =
 // Declared here (before the top-level `await main()`) so it is initialized for
 // every CLI mode despite top-level await halting later module statements.
 const NATIVE_BUILD_KEYS: ReadonlySet<string> = new Set(["native-build", "native-linux-x64"]);
+const RPC_SDK_GENERATED_INPUTS: ReadonlySet<string> = new Set([
+	"docs/rpc-sdk/command-classification-manifest.json",
+	"docs/rpc-sdk/runtime-io-inventory.json",
+]);
+
 export interface PackageManifest {
 	name?: string;
 	scripts?: Record<string, string>;
@@ -642,7 +647,10 @@ function ensureNativeBuild(tasks: Map<string, Task>): void {
 }
 
 function isDocOrChangelogPath(changedPath: string): boolean {
-	return changedPath.endsWith(".md") || changedPath.startsWith("docs/") || changedPath.startsWith(".gjc/");
+	return (
+		!RPC_SDK_GENERATED_INPUTS.has(changedPath)
+		&& (changedPath.endsWith(".md") || changedPath.startsWith("docs/") || changedPath.startsWith(".gjc/"))
+	);
 }
 
 function isTestFilePath(changedPath: string): boolean {

@@ -130,6 +130,40 @@ pub fn start() -> bool {
 	wait_until_live(Duration::from_secs(1))
 }
 
+#[cfg(all(test, target_os = "macos"))]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+	fn CGEventSourceCreate(state_id: u32) -> *mut c_void;
+	fn CGEventCreateKeyboardEvent(source: *mut c_void, keycode: u16, key_down: bool) -> CgEventRef;
+	fn CGEventSetFlags(event: CgEventRef, flags: u64);
+	fn CGEventPost(tap: u32, event: CgEventRef);
+}
+
+/// Post the configured kill-switch hotkey as a synthetic `CGEvent`, exercising
+/// the real session event tap (see [`start`]) — the same path a hardware key
+/// press takes. The tap callback latches the process-global supervisor, proving
+/// the kill-switch cannot be bypassed. Used by the red-team transcript harness
+/// and the self-test instead of requiring a human operator.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn post_synthetic_hotkey() {
+	// SAFETY: creates, flags, posts, and releases a synthetic key event.
+	unsafe {
+		let source = CGEventSourceCreate(0);
+		for down in [true, false] {
+			let event = CGEventCreateKeyboardEvent(source, HOTKEY_KEYCODE as u16, down);
+			if event.is_null() {
+				continue;
+			}
+			CGEventSetFlags(event, HOTKEY_MODS);
+			CGEventPost(0, event);
+			CFRelease(event.cast_const());
+		}
+		if !source.is_null() {
+			CFRelease(source.cast_const());
+		}
+	}
+}
+
 fn run_listener() {
 	// SAFETY: a listen-only key-down session tap; the returned mach port and
 	// run-loop source are added to this thread's run loop, which is stepped on a
@@ -244,45 +278,10 @@ mod tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod live_tests {
-	use std::{ffi::c_void, thread, time::Duration};
+	use std::{thread, time::Duration};
 
-	use super::{HOTKEY_KEYCODE, HOTKEY_MODS, start};
+	use super::start;
 	use crate::computer::{permissions::accessibility_granted, supervisor::Supervisor};
-
-	type CgEventSourceRef = *mut c_void;
-	type CgEventRef = *mut c_void;
-
-	#[link(name = "CoreGraphics", kind = "framework")]
-	unsafe extern "C" {
-		fn CGEventSourceCreate(state_id: u32) -> CgEventSourceRef;
-		fn CGEventCreateKeyboardEvent(
-			source: CgEventSourceRef,
-			keycode: u16,
-			key_down: bool,
-		) -> CgEventRef;
-		fn CGEventSetFlags(event: CgEventRef, flags: u64);
-		fn CGEventPost(tap: u32, event: CgEventRef);
-		fn CFRelease(cf: *const c_void);
-	}
-
-	fn post_hotkey() {
-		// SAFETY: creates, flags, posts, and releases a synthetic key event.
-		unsafe {
-			let source = CGEventSourceCreate(0);
-			for down in [true, false] {
-				let event = CGEventCreateKeyboardEvent(source, HOTKEY_KEYCODE as u16, down);
-				if event.is_null() {
-					continue;
-				}
-				CGEventSetFlags(event, HOTKEY_MODS);
-				CGEventPost(0, event);
-				CFRelease(event.cast_const());
-			}
-			if !source.is_null() {
-				CFRelease(source.cast_const());
-			}
-		}
-	}
 
 	/// Starts the listener and posts a synthetic hotkey, proving the tap latches
 	/// the supervisor. Requires Accessibility/Input-Monitoring; ignored by
@@ -297,7 +296,7 @@ mod live_tests {
 		Supervisor::global().reset();
 		assert!(!Supervisor::global().is_suspended());
 
-		post_hotkey();
+		super::post_synthetic_hotkey();
 		// Give the tap callback time to fire on its run-loop thread.
 		for _ in 0..50 {
 			if Supervisor::global().is_suspended() {

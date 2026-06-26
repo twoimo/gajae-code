@@ -1,6 +1,8 @@
 # RPC Protocol Reference
 
-RPC mode runs the coding agent as a newline-delimited JSON protocol over stdio.
+The user-facing `gjc --mode rpc` / `gjc --mode rpc-ui` standalone server was removed. The JSON protocol implementation now runs behind the `gjc-rpc-sdk` daemon, which starts the private `--mode rpc-daemon-worker` entry and frames traffic over the daemon's authenticated transport. `src/modes/rpc/rpc-mode.ts` remains as the worker library, not as a public CLI mode.
+
+RPC worker mode runs the coding agent as a newline-delimited JSON protocol over stdio for daemon supervision.
 
 - **stdin**: commands (`RpcCommand`), `workflow_gate_response`, extension UI responses, and host-tool updates/results
 - **stdout**: a ready frame, command responses (`RpcResponse`), session/agent events, `workflow_gate`, extension UI requests, host-tool requests/cancellations
@@ -16,15 +18,17 @@ Primary implementation:
 ## Startup
 
 ```bash
-gjc --mode rpc [regular CLI options]
+gjc-rpc-daemon
+# internal worker entry, daemon-owned only:
+# gjc --mode rpc-daemon-worker
 ```
 
 Behavior notes:
 
-- `@file` CLI arguments are rejected in RPC mode.
-- RPC mode disables automatic session title generation by default to avoid an extra model call.
-- RPC mode resets workflow-altering `todo.*`, `task.*`, `async.*`, and `bash.autoBackground.*` settings to their built-in defaults instead of inheriting user overrides.
-- The process reads stdin as JSONL (`readJsonl(Bun.stdin.stream())`).
+- Public `--mode rpc` and `--mode rpc-ui` invocations are no longer accepted.
+- The daemon worker disables automatic session title generation by default to avoid an extra model call.
+- The daemon worker resets workflow-altering `todo.*`, `task.*`, `async.*`, and `bash.autoBackground.*` settings to their built-in defaults instead of inheriting user overrides.
+- The daemon-supervised worker reads stdin frames from the daemon transport.
 - At startup it writes `{ "type": "ready" }` before processing commands.
 - When stdin closes, pending host-tool calls are rejected and the process exits with code `0`.
 - Responses/events are written as one JSON object per line.
@@ -715,11 +719,11 @@ For OpenClaw- or Hermes-style hosts, keep MCP servers and skills on the host sid
 
 ## Notes on `RpcClient` helper
 
-`src/modes/rpc/rpc-client.ts` is a convenience wrapper, not the protocol definition.
+`src/modes/rpc/rpc-client.ts` is legacy compatibility code for tests and older embedders, not the default protocol definition. New hosts use the daemon SDK clients.
 
-Current helper characteristics:
+Current legacy helper characteristics:
 
-- Spawns `bun <cliPath> --mode rpc`
+- The standalone server spawn path has been removed; daemon clients connect through `gjc-rpc-sdk`
 - Correlates responses by generated `req_<n>` ids
 - Dispatches recognized `AgentEvent` types to event listeners
 - Dispatches top-level `workflow_gate` frames to `onWorkflowGate()` listeners

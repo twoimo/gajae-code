@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "surface": "native",
+  "tool": "pi-natives-computer-redteam-harness",
+  "actions": [
+    {
+      "type": "custom",
+      "timestamp": 1782461060182,
+      "selector": "blast_radius_caps_oversized_actions"
+    }
+  ],
+  "assertions": [
+    {
+      "message": "oversized Type exceeded the blast-radius cap and was rejected",
+      "actual": "Err(BlastRadiusExceeded { action: \"type\", observed: 5001, limit: 5000 })",
+      "timestamp": 1782461060182,
+      "status": "passed"
+    },
+    {
+      "message": "no sink ops emitted (rejected before side effect)",
+      "actual": 0,
+      "timestamp": 1782461060182,
+      "status": "passed"
+    }
+  ]
+}

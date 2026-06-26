@@ -391,6 +391,13 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		expect(targeted(["docs/guide.md", "CHANGELOG.md", "packages/coding-agent/README.md"])).toEqual([]);
 	});
 
+	test("RPC-SDK generated-input manifests run the root stale checks", () => {
+		const tasks = targeted(["docs/rpc-sdk/runtime-io-inventory.json"]);
+		const keys = tasks.map(task => task.key);
+		expect(keys).toContain("root-check");
+		expect(keys.filter(key => key === "native-linux-x64" || key === "native-build")).toEqual(["native-linux-x64"]);
+	});
+
 	test("robogjc static asset changes plan no Python lint/test shards", () => {
 		expect(targeted(["python/robogjc/assets/icon.png", "python/robogjc/assets/icon.jpg"])).toEqual([]);
 	});

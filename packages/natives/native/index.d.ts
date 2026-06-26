@@ -255,6 +255,50 @@ export declare class PtySession {
   kill(): void
 }
 
+/**
+ * In-process `RuntimePort` handle exposed to the native TUI process.
+ *
+ * Wraps a single-session `InProcessPipeline`. The TS side constructs one per
+ * session and submits runtime-input commands; authorization runs before
+ * scheduling and the two-lane causality contract is enforced in Rust. Grants and
+ * the calling principal cross the boundary as JSON (small control metadata, not
+ * runtime payloads); the runtime command/event payloads themselves stay typed.
+ */
+export declare class RpcSdkPipeline {
+  /**
+   * Build a session pipeline. `grants_json` is a JSON array of `GrantRecord`;
+   * `redaction_policy` is one of `full` | `redacted` | `metadata_only`.
+   */
+  constructor(sessionId: string, grantsJson: string, now: string, replayCapacity: number, redactionPolicy: string)
+  /**
+   * Submit a runtime-input command for `principal_json` (a JSON Principal).
+   * Returns `immediate` or `queued:<n>`; an authorization denial or unknown
+   * command is surfaced as a JS error (fail closed).
+   */
+  submit(principalJson: string, command: string): string
+  /** Mark the current ordered command complete and return the next promoted command, if any. */
+  completeOrdered(): string | null
+  /**
+   * Emit a runtime-output frame (JSON `GjcFrame`): persists it for replay and
+   * returns the redaction-applied frame JSON for live fanout. Note: emit/replay
+   * over N-API serialize the frame as JSON at the boundary (the TS-driven path);
+   * the zero-serialization native path is the in-process Rust pipeline.
+   */
+  emit(frameJson: string): string
+  /**
+   * Replay frames after `cursor`. Returns JSON `{"kind":"frames","frames":[...]}`
+   * (redaction applied, `replay:true`) or `{"kind":"reset","floor":n}` when the
+   * cursor predates the retained floor.
+   */
+  replayFrom(cursor: number): string
+  /**
+   * Whether the underlying pipeline serializes runtime payloads (false: the
+   * in-process core is zero-serialization; the JSON emit/replay above are the
+   * N-API edge convenience, not the native in-process path).
+   */
+  isZeroSerialization(): boolean
+}
+
 /** Persistent brush-core shell session. */
 export declare class Shell {
   /**
@@ -1473,6 +1517,18 @@ export interface ReplyEvent {
   /** Optional idempotency key supplied by the client. */
   idempotencyKey?: string
 }
+
+/**
+ * Classify a command into its scheduling lane, or `null` if the command is not in
+ * the generated manifest (the TS side must treat `null` as fail-closed/unknown).
+ */
+export declare function rpcSdkClassifyCommand(command: string): string | null
+
+/** Number of commands in the embedded generated classification manifest. */
+export declare function rpcSdkCommandCount(): number
+
+/** The stable unified-boundary protocol version exposed by the native core. */
+export declare function rpcSdkProtocolVersion(): number
 
 /**
  * Search content for a pattern (one-shot, compiles pattern each time).

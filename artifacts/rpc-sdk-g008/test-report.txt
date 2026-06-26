@@ -1,0 +1,15 @@
+=== G008 legacy deletion + agent-hosting cutover (2026-06-26T07:26:18Z) ===
+--- cargo (agent-hosting e2e + continuous pump) ---
+test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+--- clippy ---
+0
+(count)
+--- absence gate (extended to package markdown) ---
+runtime_io_legacy_surface_absence: ok
+--- legacy deleted: rpc-socket-security.ts gone, --mode rpc/rpc-ui removed, --listen removed ---
+ls: packages/coding-agent/src/modes/rpc/rpc-socket-security.ts: No such file or directory
+0
+--- python thin client ---
+======================== 70 passed, 5 skipped in 1.54s =========================
+--- consumer smokes ---
+ 0 fail

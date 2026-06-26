@@ -44,7 +44,7 @@ createAgentSession(...)
    │
    ├── runInteractiveMode(...)  -> InteractiveMode
    ├── runPrintMode(...)        -> one-shot output
-   └── runRpcMode(...)          -> JSONL stdin/stdout server
+   └── runRpcMode(...)          -> agent-wire frame worker (`rpc-daemon-worker`)
 ```
 
 ### Runtime layers
@@ -64,13 +64,12 @@ createAgentSession(...)
      - `InteractiveMode`
      - `runPrintMode`
      - `runRpcMode`
-     - `RpcClient` (+ RPC types)
    - Registers a postmortem terminal recovery hook:
      - `postmortem.register("terminal-restore", () => emergencyTerminalRestore())`
 
 4. **SDK/programmatic surface layer** (`packages/coding-agent/src/index.ts`)
    - Re-exports SDK/session/mode/theme/tool/types for non-CLI consumers.
-   - Includes direct exports for `main`, `createAgentSession`, `runPrintMode`, `runRpcMode`, `InteractiveMode`, discovery helpers, and extension/custom-tool types.
+   - Includes direct exports for `main`, `createAgentSession`, `runPrintMode`, `runRpcMode`, `InteractiveMode`, discovery helpers, and extension/custom-tool types. RPC clients live in `@gajae-code/rpc-sdk`, not the coding-agent root barrel.
 
 ### Startup flow (CLI path)
 
@@ -84,21 +83,21 @@ createAgentSession(...)
    - Build/open session management (`createSessionManager(...)`, resume handling via `selectSession(...)` when `--resume` has no value).
    - Build options (`buildSessionOptions(...)`) and create runtime session (`createAgentSession(sessionOptions)`).
    - Dispatch mode:
-     - `mode === "rpc"` -> `runRpcMode(session)`
+     - `mode === "rpc-daemon-worker"` -> `runRpcMode(session, undefined, { transport: "gjc-frame" })`
      - interactive -> `runInteractiveMode(...)` (wrapper around `new InteractiveMode(...)` loop)
      - non-interactive text/json stream path -> `runPrintMode(session, ...)`
 
 ### CLI vs programmatic usage
 
 - **CLI path**: starts at `src/cli.ts` (`#!/usr/bin/env bun`), uses command registry + argv normalization, and routes into command handlers.
-- **Programmatic path**: imports from `src/index.ts` directly (for example `createAgentSession`, `runPrintMode`, `runRpcMode`, `InteractiveMode`, `Settings`, `ModelRegistry`) without going through `runCli` or command alias logic.
+- **Programmatic path**: imports from `src/index.ts` directly (for example `createAgentSession`, `runPrintMode`, `runRpcMode`, `InteractiveMode`, `Settings`, `ModelRegistry`) without going through `runCli` or command alias logic. Daemon/bridge consumers use `@gajae-code/rpc-sdk` for frame types, command builders, hello, and UDS transport helpers.
 
 ### What `index.ts` exposes for SDK consumers
 
 `packages/coding-agent/src/index.ts` acts as the package barrel and includes:
 
 - **Core runtime/session APIs**: `createAgentSession`, `AgentSession`, `SessionManager`, prompt/compaction/session types.
-- **Mode APIs**: `InteractiveMode`, `runPrintMode`, `runRpcMode`, `RpcClient` and RPC event/types.
+- **Mode APIs**: `InteractiveMode`, `runPrintMode`, `runRpcMode`, and RPC event/types.
 - **Discovery + tool constructors**: `discoverAuthStorage`, `discoverExtensions`, `discoverMCPServers`, `createTools`, built-in tool classes (`ReadTool`, `WriteTool`, `BashTool`, `EvalTool`, `FindTool`, `GrepTool`, `EditTool`).
 - **Extensibility interfaces**: extension/custom-command/custom-tool/skill/slash-command types and loaders.
 - **UI/theming helpers**: TUI components plus `initTheme`, `Theme`, and code-highlighting/theme utilities.
@@ -114,16 +113,16 @@ createAgentSession(...)
         ┌────────────────┼────────────────┐
         ▼                ▼                ▼
 InteractiveMode      runPrintMode      runRpcMode
-(TUI event loop)     (non-TUI batch)   (JSONL protocol)
+(TUI event loop)     (non-TUI batch)   (agent-wire worker)
         │                │                │
-controllers/components   stdout text/json  RpcCommand/RpcResponse
+controllers/components   stdout text/json  GjcFrame command/response/event
 ```
 
 The coding agent exposes three execution styles in `packages/coding-agent/src/modes/`:
 
 - Interactive TUI mode (`interactive-mode.ts`)
 - One-shot print mode (`print-mode.ts`)
-- Headless RPC mode (`rpc/rpc-mode.ts` + `rpc/rpc-types.ts` + `rpc/rpc-client.ts`)
+- Headless RPC worker mode (`rpc/rpc-mode.ts` + `rpc/rpc-types.ts`, invoked by `modes/rpc-daemon-worker.ts`)
 
 ### Interactive mode (`InteractiveMode`)
 
@@ -161,37 +160,37 @@ Additional responsibilities:
 - Supports `initialMessage` + `initialImages`, then additional queued `messages`.
 - Flushes stdout before returning and disposes the session (`await session.dispose()`).
 
-### RPC mode server (`runRpcMode`)
+### RPC daemon worker (`runRpcMode`)
 
-`runRpcMode(session)` in `rpc-mode.ts` is a stdin/stdout JSONL protocol server for embedding.
+`runRpcMode(session, undefined, { transport: "gjc-frame" })` in `rpc-mode.ts` is the headless worker used by `--mode rpc-daemon-worker` and the compiled `modes/rpc-daemon-worker.ts` entrypoint. Public clients do not import a coding-agent client wrapper; they use `@gajae-code/rpc-sdk` for `GjcFrame` types, command builders, `performHello`, `defaultDaemonSocketPath`, and `connectUds`.
 
 Transport and framing:
 
-- Input: JSON lines from `readJsonl(Bun.stdin.stream())`.
-- Output: one JSON object per line via `process.stdout.write(JSON.stringify(obj) + "\n")`.
-- Startup handshake: immediately emits `{ "type": "ready" }`.
+- Worker stdin/stdout: newline-delimited canonical `GjcFrame` objects.
+- Daemon/client route: consumers connect to the daemon Unix-domain socket with `connectUds(...)`, then call `performHello(...)` for the target session before exchanging frames.
+- Startup handshake: the worker emits a `ready` frame.
 
 Command handling:
 
-- Accepts `RpcCommand` unions (defined in `rpc-types.ts`).
-- Responds with `RpcResponse` objects: `type: "response"`, `command`, `success`, optional `data`, optional `error`.
-- Also streams raw `AgentSession` events through stdout via `session.subscribe(...)`.
+- Accepts agent-wire command frames whose payload is the RPC command union (defined in `rpc-types.ts` and mirrored by `@gajae-code/rpc-sdk` generated command metadata).
+- Responds with response frames carrying `success`, optional `data`, and optional `error` payload fields.
+- Streams `AgentSession` events as canonical `event` frames using the shared agent-wire envelope helpers.
 
 Extension UI bridge:
 
-- Implements `RpcExtensionUIContext` to translate extension UI calls into `extension_ui_request` output messages.
-- Tracks pending dialog requests by generated `id` and resolves them when matching `extension_ui_response` arrives on stdin.
+- Implements `RpcExtensionUIContext` to translate extension UI calls into `ui_request` frames.
+- Tracks pending dialog requests by generated id and resolves them when matching `extension_ui_response` messages arrive.
 - Supports timeout/abort-aware dialog defaults for `select`, `confirm`, and `input`.
 - Fire-and-forget UI notifications (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`) are emitted as requests without expected responses.
-- TUI-specific operations are explicitly unsupported in RPC mode (`setFooter`, `setHeader`, theme switching, custom editor components).
+- TUI-specific operations are explicitly unsupported in headless RPC mode (`setFooter`, `setHeader`, theme switching, custom editor components).
 
 Shutdown behavior:
 
 - Extension `shutdown()` marks a deferred flag.
 - After each command, `checkShutdownRequested()` emits `session_shutdown` (if handlers exist) and exits.
-- EOF on stdin exits cleanly (`process.exit(0)`).
+- EOF on stdin exits cleanly after flushing session state.
 
-### RPC protocol shape (`rpc-types.ts`)
+### RPC protocol shape (`rpc-types.ts` / `@gajae-code/rpc-sdk`)
 
 `RpcCommand` categories in source:
 
@@ -205,30 +204,15 @@ Shutdown behavior:
 
 `RpcSessionState` (returned by `get_state`) includes model/thinking info, streaming/compaction flags, queue mode settings, session identity (`sessionFile`, `sessionId`, `sessionName`), and message queue counts.
 
-`RpcResponse` is a discriminated union:
+Response frames carry the discriminated command result payload:
 
 - Success variants are command-specific (many include typed `data` payloads).
-- Failure variant is generic: `{ type: "response", command: string, success: false, error: string }`.
+- Failure variant is generic: `{ type: "response", command: string, success: false, error: string }` inside the frame payload.
 
 Extension protocol types:
 
 - Outbound UI requests: `RpcExtensionUIRequest` (`select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`).
 - Inbound UI replies: `RpcExtensionUIResponse` (`value`, `confirmed`, or `cancelled`).
-
-### RPC client wrapper (`RpcClient`)
-
-`RpcClient` in `rpc-client.ts` is a typed process wrapper around `--mode rpc`.
-
-Key behaviors:
-
-- Spawns `bun <cliPath> --mode rpc` (default `dist/cli.js`) with optional provider/model/session args.
-- Waits for server ready signal (`type === "ready"`) with startup timeout (30s) and early-exit error propagation including captured stderr.
-- Sends commands with generated request IDs (`req_<n>`), correlates responses through `#pendingRequests`, and enforces per-request timeout (30s).
-- Exposes typed methods (`prompt`, `steer`, `setModel`, `bash`, `getState`, etc.) that map 1:1 to RPC commands.
-- Emits only `AgentEvent` values through `onEvent()`; `waitForIdle()`/`collectEvents()` resolve on `agent_end`.
-- Provides `stop()` and `[Symbol.dispose]()` for cleanup.
-
-Notable current limitation from implementation: `#handleLine()` handles `RpcResponse` and agent events only; `extension_ui_request` messages are not surfaced by `RpcClient` APIs.
 
 ## Session Lifecycle, Persistence, and Settings Boundaries
 

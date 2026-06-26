@@ -20,7 +20,7 @@ import { type ResolvedOwner, RuntimeOwner, resolveOwner, resolveOwnerLive } from
 import { preserveDirtyWorktree } from "../harness-control-plane/preserve";
 import { RECEIPT_SPOOL_DIR_ENV } from "../harness-control-plane/receipt-spool";
 import { buildReceipt, requiresVanishBeforeAction, type VanishEvidence } from "../harness-control-plane/receipts";
-import { GajaeCodeRpc } from "../harness-control-plane/rpc-adapter";
+import { GajaeCodeDaemonRpc } from "../harness-control-plane/rpc-adapter";
 import { classifyLeaseStatus, readLease } from "../harness-control-plane/session-lease";
 import { buildResponse, buildStateView, submitUnavailableReason } from "../harness-control-plane/state-machine";
 import {
@@ -624,10 +624,18 @@ export default class Harness extends Command {
 	async #runOwner(root: string, input: Record<string, unknown>, flagSession: string | undefined): Promise<void> {
 		const sessionId = requireSessionId(input, flagSession);
 		const sessionDir = sessionPaths(root, sessionId).gjcSessionDir;
-		// Optional rpc command override (tests / non-default hosts); defaults to `gjc --mode rpc`.
-		const override = process.env.GJC_HARNESS_RPC_COMMAND;
-		const command = override ? (JSON.parse(override) as string[]) : undefined;
-		const rpc = new GajaeCodeRpc({ sessionDir, command });
+		void sessionDir;
+		if (process.env.GJC_HARNESS_RPC_COMMAND) {
+			throw new Error(
+				"GJC_HARNESS_RPC_COMMAND was removed with the legacy --mode rpc server; use the daemon RPC route.",
+			);
+		}
+		const rpc = new GajaeCodeDaemonRpc({
+			sessionId,
+			socketPath: process.env.GJC_RPC_DAEMON_SOCKET,
+			grantId: process.env.GJC_RPC_DAEMON_GRANT_ID,
+		});
+		await rpc.connect();
 		const owner = new RuntimeOwner({ root, sessionId, rpc });
 		const info = await owner.start();
 		writeJson({ ok: true, owner: info });
@@ -689,8 +697,11 @@ export default class Harness extends Command {
 		if (process.env[RECEIPT_SPOOL_DIR_ENV]) {
 			envAssignments.push(`${RECEIPT_SPOOL_DIR_ENV}=${shellQuote(process.env[RECEIPT_SPOOL_DIR_ENV])}`);
 		}
-		if (process.env.GJC_HARNESS_RPC_COMMAND) {
-			envAssignments.push(`GJC_HARNESS_RPC_COMMAND=${shellQuote(process.env.GJC_HARNESS_RPC_COMMAND)}`);
+		if (process.env.GJC_RPC_DAEMON_SOCKET) {
+			envAssignments.push(`GJC_RPC_DAEMON_SOCKET=${shellQuote(process.env.GJC_RPC_DAEMON_SOCKET)}`);
+		}
+		if (process.env.GJC_RPC_DAEMON_GRANT_ID) {
+			envAssignments.push(`GJC_RPC_DAEMON_GRANT_ID=${shellQuote(process.env.GJC_RPC_DAEMON_GRANT_ID)}`);
 		}
 		if (process.env.GJC_HARNESS_TEST_NODE_MODULES) {
 			envAssignments.push(`GJC_HARNESS_TEST_NODE_MODULES=${shellQuote(process.env.GJC_HARNESS_TEST_NODE_MODULES)}`);

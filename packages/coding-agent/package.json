@@ -56,6 +56,7 @@
 		"@gajae-code/agent-core": "catalog:",
 		"@gajae-code/ai": "catalog:",
 		"@gajae-code/natives": "catalog:",
+		"@gajae-code/rpc-sdk": "workspace:*",
 		"@gajae-code/tui": "catalog:",
 		"@gajae-code/utils": "catalog:",
 		"@puppeteer/browsers": "catalog:",

@@ -390,6 +390,10 @@ async function main(): Promise<void> {
 	}
 
 	const guided = values["no-guided"] ? false : values.guided;
+	if (values["no-in-process"]) {
+		console.error("--no-in-process was removed with legacy subprocess RPC mode; benchmarks now run in-process only.");
+		process.exit(1);
+	}
 
 	const formatType = values.format === "json" ? "json" : "markdown";
 	const config: BenchmarkConfig = {
@@ -414,7 +418,7 @@ async function main(): Promise<void> {
 		maxProviderFailureRetries: maxProviderRetries,
 		mutationScopeWindow,
 		connectionTimeout,
-		inProcess: !values["no-in-process"],
+		inProcess: true,
 		earlyStopOnMatch: !values["no-early-stop-on-match"],
 	};
 	const outputPath = values.output ?? generateReportFilename(config, formatType);

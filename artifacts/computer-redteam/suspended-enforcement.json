@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "surface": "native",
+  "tool": "pi-natives-computer-redteam-harness",
+  "actions": [
+    {
+      "type": "custom",
+      "timestamp": 1782461060178,
+      "selector": "suspended_rejects_before_any_sink_op"
+    }
+  ],
+  "assertions": [
+    {
+      "message": "observed ExecError::Suspended",
+      "actual": "Err(Suspended)",
+      "timestamp": 1782461060178,
+      "status": "passed"
+    },
+    {
+      "message": "sink op count remained zero",
+      "actual": 0,
+      "timestamp": 1782461060178,
+      "status": "passed"
+    }
+  ]
+}

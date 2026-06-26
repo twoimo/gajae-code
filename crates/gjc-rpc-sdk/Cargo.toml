@@ -1,0 +1,32 @@
+[package]
+name = "gjc-rpc-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# Phase 1 scaffold: the unified runtime I/O boundary core (protocol envelope,
+# scheduler, authz, transports, runtime port, brokers, replay, redaction,
+# observability, inventory). Module interfaces only this phase; implementations
+# land in Phases 2-4. rlib keeps the core unit-testable without native tooling.
+crate-type = ["rlib"]
+
+[[bin]]
+name = "gjc-rpc-daemon"
+path = "src/bin/gjc_rpc_daemon.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true }

@@ -98,7 +98,7 @@ export class ExtensionUiController {
 		const actions: ExtensionActions = {
 			sendMessage: (message, options) => {
 				const wasStreaming = this.ctx.session.isStreaming;
-				this.ctx.session
+				this.ctx.runtimeBoundary
 					.sendCustomMessage(message, options)
 					.then(() => this.#applyCustomMessageDisplay(wasStreaming, message.display))
 					.catch((err: unknown) => {
@@ -132,7 +132,7 @@ export class ExtensionUiController {
 		const contextActions: ExtensionContextActions = {
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
-			abort: () => this.ctx.session.abort(),
+			abort: () => this.ctx.runtimeBoundary.abort(),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
 				// Defer the actual teardown to the main loop, which calls
@@ -339,7 +339,7 @@ export class ExtensionUiController {
 		const actions: ExtensionActions = {
 			sendMessage: (message, options) => {
 				const wasStreaming = this.ctx.session.isStreaming;
-				this.ctx.session
+				this.ctx.runtimeBoundary
 					.sendCustomMessage(message, options)
 					.then(() => this.#applyCustomMessageDisplay(wasStreaming, message.display))
 					.catch((err: unknown) => {
@@ -376,7 +376,7 @@ export class ExtensionUiController {
 		const contextActions: ExtensionContextActions = {
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
-			abort: () => this.ctx.session.abort(),
+			abort: () => this.ctx.runtimeBoundary.abort(),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
 				// Defer the actual teardown to the main loop, which calls
@@ -558,7 +558,7 @@ export class ExtensionUiController {
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 						hasQueuedMessages: () => this.ctx.session.queuedMessageCount > 0,
 						abort: () => {
-							this.ctx.session.abort();
+							this.ctx.runtimeBoundary.abort();
 						},
 						shutdown: () => {
 							// Signal shutdown request
@@ -939,7 +939,7 @@ export class ExtensionUiController {
 	}
 
 	#sendExtensionUserMessage: SendUserMessageHandler = (content, options) => {
-		this.ctx.session.sendUserMessage(content, options).catch((err: unknown) => {
+		this.ctx.runtimeBoundary.sendUserMessage(content, options).catch((err: unknown) => {
 			this.ctx.showError(`Extension sendUserMessage failed: ${err instanceof Error ? err.message : String(err)}`);
 		});
 	};

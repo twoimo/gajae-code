@@ -49,6 +49,9 @@
     "packages/bridge-client": {
       "name": "@gajae-code/bridge-client",
       "version": "0.7.3",
+      "dependencies": {
+        "@gajae-code/rpc-sdk": "workspace:*",
+      },
       "devDependencies": {
         "@types/bun": "catalog:",
       },
@@ -65,6 +68,7 @@
         "@gajae-code/agent-core": "catalog:",
         "@gajae-code/ai": "catalog:",
         "@gajae-code/natives": "catalog:",
+        "@gajae-code/rpc-sdk": "workspace:*",
         "@gajae-code/stats": "catalog:",
         "@gajae-code/tui": "catalog:",
         "@gajae-code/utils": "catalog:",
@@ -111,6 +115,13 @@
     "packages/orchestration-token-benchmark": {
       "name": "@gajae-code/orchestration-token-benchmark",
       "version": "0.0.1",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/rpc-sdk": {
+      "name": "@gajae-code/rpc-sdk",
+      "version": "0.7.2",
       "devDependencies": {
         "@types/bun": "catalog:",
       },
@@ -410,6 +421,8 @@
     "@gajae-code/natives": ["@gajae-code/natives@workspace:packages/natives"],
 
     "@gajae-code/orchestration-token-benchmark": ["@gajae-code/orchestration-token-benchmark@workspace:packages/orchestration-token-benchmark"],
+
+    "@gajae-code/rpc-sdk": ["@gajae-code/rpc-sdk@workspace:packages/rpc-sdk"],
 
     "@gajae-code/stats": ["@gajae-code/stats@workspace:packages/stats"],
 

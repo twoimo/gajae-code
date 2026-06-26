@@ -29,7 +29,7 @@ describe("external controller integration docs", () => {
 		expect(guide).toContain("Dry-run lifecycle smoke");
 		expect(guide).toContain("Optional live smoke");
 		expect(guide).toContain("not privileged integration modes");
-		expect(guide).toContain("gjc --mode rpc");
+		expect(guide).toContain("gjc-rpc-daemon");
 		expect(guide).toContain("gjc_coordinator_register_session");
 		expect(guide).toContain("visible tmux fallback");
 		expect(guide).toContain("active_turn_exists");
@@ -99,7 +99,7 @@ describe("external controller integration docs", () => {
 
 		expect(readiness).toContain("# External control surface readiness");
 		expect(readiness).toContain("Coordinator MCP | Preferred multi-session bot/control-plane surface");
-		expect(readiness).toContain("RPC stdio | Stable subprocess worker surface");
+		expect(readiness).toContain("Daemon RPC | Default daemon-backed worker surface");
 		expect(readiness).toContain("ACP mode | Editor/ACP client surface");
 		expect(readiness).toContain("Bridge HTTPS | Experimental, fail-closed remote session-control surface");
 		expect(readiness).toContain(
@@ -109,7 +109,7 @@ describe("external controller integration docs", () => {
 
 		for (const command of [
 			"gjc mcp-serve coordinator",
-			"gjc --mode rpc",
+			"gjc-rpc-daemon",
 			"gjc --mode acp",
 			"gjc acp",
 			"gjc --mode bridge",
@@ -120,8 +120,8 @@ describe("external controller integration docs", () => {
 		for (const smoke of [
 			"packages/coding-agent/test/coordinator-mcp.test.ts",
 			"packages/coding-agent/test/setup-cli.test.ts",
-			"packages/coding-agent/test/rpc-unattended-stdio.test.ts",
-			"packages/coding-agent/test/rpc-client.start.test.ts",
+			"packages/coding-agent/test/harness-control-plane/g007_harness_smoke.test.ts",
+			"packages/coding-agent/test/notifications-chat-daemon-smoke.test.ts",
 			"packages/coding-agent/test/acp-initialize-conformance.test.ts",
 			"packages/coding-agent/test/acp-stdout-hygiene.test.ts",
 			"packages/coding-agent/test/bridge/bridge-mode-handler.test.ts",
@@ -130,7 +130,7 @@ describe("external controller integration docs", () => {
 			expect(readiness).toContain(smoke);
 		}
 
-		expect(cliArgs).toContain('export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge"');
+		expect(cliArgs).toContain('export type Mode = "text" | "json" | "acp" | "bridge" | "rpc-daemon-worker"');
 		expect(acpCommand).toContain("Run Gajae Code as an ACP (Agent Client Protocol) server over stdio");
 		expect(mcpCommand).toContain('server !== "coordinator" && server !== "hermes"');
 		expect(bridgeMode).toContain("const FAIL_CLOSED_BRIDGE_ENDPOINTS");

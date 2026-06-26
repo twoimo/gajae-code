@@ -42,7 +42,7 @@ export class InputController {
 	#steerConsumePending = false;
 
 	#abortInteractive(options?: { silent?: boolean }): Promise<void> {
-		return this.ctx.session.abort({
+		return this.ctx.runtimeBoundary.abort({
 			timeoutMs: INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS,
 			cause: "user_interrupt",
 			silent: options?.silent,
@@ -406,7 +406,7 @@ export class InputController {
 				const streamingBehavior = this.#busyStreamingBehavior();
 				await this.ctx.withLocalSubmission(
 					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior, images }),
+					() => this.ctx.runtimeBoundary.prompt(text, { streamingBehavior, images }),
 					{ imageCount: images?.length ?? 0 },
 				);
 				this.ctx.updatePendingMessagesDisplay();
@@ -567,7 +567,7 @@ export class InputController {
 				}
 				const isLast = index === invocations.length - 1;
 				if (!this.ctx.session.isStreaming && !isLast) {
-					await this.ctx.session.sendCustomMessage({
+					await this.ctx.runtimeBoundary.sendCustomMessage({
 						customType: SKILL_PROMPT_MESSAGE_TYPE,
 						content: built.message,
 						display: true,
@@ -576,7 +576,7 @@ export class InputController {
 					});
 					continue;
 				}
-				await this.ctx.session.promptCustomMessage(
+				await this.ctx.runtimeBoundary.promptCustomMessage(
 					{
 						customType: SKILL_PROMPT_MESSAGE_TYPE,
 						content: built.message,
@@ -624,7 +624,7 @@ export class InputController {
 			this.ctx.editor.addToHistory(text);
 			this.ctx.editor.setText("");
 			await this.ctx.withLocalSubmission(text, () =>
-				this.ctx.session.prompt(text, { streamingBehavior: "followUp" }),
+				this.ctx.runtimeBoundary.prompt(text, { streamingBehavior: "followUp" }),
 			);
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.ui.requestRender();
@@ -634,7 +634,7 @@ export class InputController {
 		// Not streaming — just submit normally
 		this.ctx.editor.addToHistory(text);
 		this.ctx.editor.setText("");
-		await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text));
+		await this.ctx.withLocalSubmission(text, () => this.ctx.runtimeBoundary.prompt(text));
 	}
 
 	/** Send editor text explicitly as a queued next-turn message. */
@@ -710,7 +710,7 @@ export class InputController {
 		if (this.ctx.unsubscribe) {
 			this.ctx.unsubscribe();
 		}
-		this.ctx.unsubscribe = this.ctx.session.subscribe(async (event: AgentSessionEvent) => {
+		this.ctx.unsubscribe = this.ctx.runtimeBoundary.subscribe(async (event: AgentSessionEvent) => {
 			await this.ctx.handleBackgroundEvent(event);
 		});
 

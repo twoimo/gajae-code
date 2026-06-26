@@ -1118,7 +1118,7 @@ export class CommandController {
 				metaLines.push(`User: ${args}`);
 			}
 			const message = `${body}\n\n---\n\n${metaLines.join("\n")}`;
-			await this.ctx.session.prompt(message);
+			await this.ctx.runtimeBoundary.prompt(message);
 		} catch (err) {
 			this.ctx.showError(`Failed to load skill: ${err instanceof Error ? err.message : String(err)}`);
 		}

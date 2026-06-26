@@ -1,6 +1,6 @@
 """Discovery of running gjc RPC sessions (issue 10).
 
-Each live `gjc --mode rpc` server writes a record under
+Each live daemon-backed RPC worker writes a record under
 ``<agent-dir>/rpc-sessions/<sessionId>.json``. ``list_sessions`` reads that
 directory and reaps records whose owning process is gone, so a crashed server
 never leaves a permanent phantom entry.

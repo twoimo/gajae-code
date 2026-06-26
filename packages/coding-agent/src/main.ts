@@ -35,6 +35,7 @@ import { initializeWithSettings } from "./discovery";
 import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import type { InteractiveMode } from "./modes/interactive-mode";
+import type { NativeTuiRuntimeBoundary } from "./modes/native-tui-runtime-boundary";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
 import type { MCPManager } from "./runtime-mcp";
@@ -127,7 +128,7 @@ export async function submitInteractiveInput(
 		InteractiveMode,
 		"markPendingSubmissionStarted" | "finishPendingSubmission" | "showError" | "checkShutdownRequested"
 	>,
-	session: Pick<AgentSession, "prompt" | "promptCustomMessage">,
+	runtimeBoundary: Pick<NativeTuiRuntimeBoundary, "prompt" | "promptCustomMessage">,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {
@@ -140,14 +141,14 @@ export async function submitInteractiveInput(
 			return;
 		}
 		if (input.customType) {
-			await session.promptCustomMessage({
+			await runtimeBoundary.promptCustomMessage({
 				customType: input.customType,
 				content: input.text,
 				display: input.display ?? false,
 				attribution: "agent",
 			});
 		} else {
-			await session.prompt(input.text, { images: input.images });
+			await runtimeBoundary.prompt(input.text, { images: input.images });
 		}
 	} catch (error: unknown) {
 		const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -347,7 +348,7 @@ async function runInteractiveMode(
 
 	if (initialMessage !== undefined) {
 		try {
-			await session.prompt(initialMessage, { images: initialImages });
+			await mode.runtimeBoundary.prompt(initialMessage, { images: initialImages });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -363,7 +364,7 @@ async function runInteractiveMode(
 			});
 			if (slashResult === true) continue;
 			if (typeof slashResult === "string") text = slashResult;
-			await session.prompt(text);
+			await mode.runtimeBoundary.prompt(text);
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -372,7 +373,7 @@ async function runInteractiveMode(
 
 	while (true) {
 		const input = await mode.getUserInput();
-		await submitInteractiveInput(mode, session, input);
+		await submitInteractiveInput(mode, mode.runtimeBoundary, input);
 	}
 }
 
@@ -792,35 +793,18 @@ export async function runRootCommand(
 		process.exit(0);
 	}
 
-	if (
-		(parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui" || parsedArgs.mode === "bridge") &&
-		parsedArgs.fileArgs.length > 0
-	) {
+	if (parsedArgs.mode === "bridge" && parsedArgs.fileArgs.length > 0) {
 		process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC or bridge mode")}\n`);
 		process.exit(1);
 	}
 
 	const cwd = getProjectDir();
 	const settingsInstance = deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd }));
-	if (
-		parsedArgs.mode === "rpc" ||
-		parsedArgs.mode === "rpc-ui" ||
-		parsedArgs.mode === "acp" ||
-		parsedArgs.mode === "bridge"
-	) {
+	if (parsedArgs.mode === "acp" || parsedArgs.mode === "bridge") {
 		applyRpcDefaultSettingOverrides(settingsInstance);
 	}
 	modelRegistry.applyConfiguredModelBindings(settingsInstance);
-	if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui") {
-		Bun.env.PI_NO_PTY = "1";
-	}
-	if (
-		parsedArgs.noTitle ||
-		parsedArgs.mode === "rpc" ||
-		parsedArgs.mode === "rpc-ui" ||
-		parsedArgs.mode === "acp" ||
-		parsedArgs.mode === "bridge"
-	) {
+	if (parsedArgs.noTitle || parsedArgs.mode === "acp" || parsedArgs.mode === "bridge") {
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
@@ -944,7 +928,7 @@ export async function runRootCommand(
 	);
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
-	sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+	sessionOptions.hasUI = isInteractive;
 	sessionOptions.settings = settingsInstance;
 
 	// Research-mode (RLM) preset: augment session options before session creation.
@@ -1027,7 +1011,7 @@ export async function runRootCommand(
 
 		applyExtensionFlagValues(session, rawArgs);
 
-		if (!isInteractive && !session.model) {
+		if (!isInteractive && mode !== "rpc-daemon-worker" && !session.model) {
 			process.stderr.write(
 				`${chalk.red(modelFallbackMessage ?? `No models available. ${formatModelOnboardingGuidance()}`)}\n`,
 			);
@@ -1037,21 +1021,9 @@ export async function runRootCommand(
 			process.exit(1);
 		}
 
-		if (mode === "rpc" || mode === "rpc-ui") {
-			const { RpcListenRefusedError, runRpcMode } = await import("./modes/rpc/rpc-mode");
-			try {
-				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, {
-					listen: parsedArgs.rpcListen,
-				});
-			} catch (error) {
-				if (!(error instanceof RpcListenRefusedError)) throw error;
-				logger.setTransports({ console: true, file: true });
-				logger.error(error.message);
-				await session.dispose();
-				stopThemeWatcher();
-				await postmortem.quit(1);
-				process.exit(1);
-			}
+		if (mode === "rpc-daemon-worker") {
+			const { runRpcMode } = await import("./modes/rpc/rpc-mode");
+			await runRpcMode(session, undefined, { transport: "gjc-frame" });
 		} else if (mode === "bridge") {
 			const { runBridgeMode } = await import("./modes/bridge/bridge-mode");
 			await runBridgeMode(session, setToolUIContext);

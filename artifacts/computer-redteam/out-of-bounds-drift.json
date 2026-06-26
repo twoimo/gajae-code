@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "surface": "native",
+  "tool": "pi-natives-computer-redteam-harness",
+  "actions": [
+    {
+      "type": "custom",
+      "timestamp": 1782461060181,
+      "selector": "out_of_bounds_coordinate_errors_and_releases"
+    }
+  ],
+  "assertions": [
+    {
+      "message": "observed ExecError::Coord",
+      "actual": "Err(Coord(OutOfBounds { x: 999.0, y: 0.0, width_px: 200, height_px: 100 }))",
+      "timestamp": 1782461060181,
+      "status": "passed"
+    },
+    {
+      "message": "button down count equals button up count",
+      "actual": {
+        "downs": 1,
+        "ups": 1
+      },
+      "timestamp": 1782461060181,
+      "status": "passed"
+    }
+  ]
+}

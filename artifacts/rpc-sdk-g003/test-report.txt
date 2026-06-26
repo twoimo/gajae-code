@@ -1,0 +1,14 @@
+=== G003 native in-process zero-serialization routing (2026-06-26T08:28:18Z) ===
+--- native-tui boundary gate (scans main.ts + controllers + utils; wrapped-call aware) ---
+OK: native-TUI runtime control routes through NativeTuiRuntimeBoundary and RpcSdkPipeline
+--- boundary + interactive tests ---
+ 0 fail
+--- natives rpc-sdk binding test ---
+ 0 fail
+--- cargo gjc-rpc-sdk (incl complete_ordered) ---
+test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s
+--- clippy gjc-rpc-sdk ---
+0
+(count)
+--- zero-serialization: no direct session.<control> in native-TUI files ---
+none (all routed)

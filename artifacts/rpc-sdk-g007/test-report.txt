@@ -1,0 +1,14 @@
+=== G007 consumer migration verification (2026-06-26T05:47:35Z) ===
+--- cargo (daemon correlationId fix) ---
+test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+--- clippy ---
+0
+(count)
+--- bridge smoke ---
+ 0 fail
+--- harness smoke ---
+ 0 fail
+--- chat/e2e ---
+ 0 fail
+--- python ---
+======================== 91 passed, 5 skipped in 2.50s =========================

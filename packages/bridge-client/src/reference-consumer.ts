@@ -1,12 +1,6 @@
-export interface BridgeFrame<TPayload = unknown> {
-	protocol_version: number;
-	session_id: string;
-	seq: number;
-	frame_id: string;
-	correlation_id?: string;
-	type: string;
-	payload: TPayload;
-}
+import type { GjcFrame } from "@gajae-code/rpc-sdk";
+
+export type BridgeFrame<TPayload = unknown> = GjcFrame<TPayload>;
 
 export interface RenderedBridgeFrame {
 	seq: number;
@@ -25,6 +19,7 @@ function escapeHtml(value: string): string {
 
 function payloadSummary(payload: unknown): string {
 	if (!payload || typeof payload !== "object") return String(payload ?? "");
+	if ("eventType" in payload && typeof payload.eventType === "string") return payload.eventType;
 	if ("event_type" in payload && typeof payload.event_type === "string") return payload.event_type;
 	if ("kind" in payload && typeof payload.kind === "string") return payload.kind;
 	if ("command" in payload && typeof payload.command === "string") return payload.command;
@@ -33,7 +28,7 @@ function payloadSummary(payload: unknown): string {
 
 export function renderBridgeFrame(frame: BridgeFrame): RenderedBridgeFrame {
 	const summary = escapeHtml(payloadSummary(frame.payload));
-	const correlation = frame.correlation_id ? ` data-correlation="${escapeHtml(frame.correlation_id)}"` : "";
+	const correlation = frame.correlationId ? ` data-correlation="${escapeHtml(frame.correlationId)}"` : "";
 	return {
 		seq: frame.seq,
 		type: frame.type,

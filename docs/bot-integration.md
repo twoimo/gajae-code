@@ -12,7 +12,7 @@ Use the smallest surface that fits your bot:
 | --- | --- | --- | --- |
 | Coordinator MCP | Any external controller that can call MCP tools to start/register tmux sessions, send turns, answer questions, and read artifacts. | `gjc mcp-serve coordinator` | Preferred orchestration surface. `gjc mcp-serve hermes` is a compatibility alias, not a separate contract. |
 | Setup adapter | Rendering a portable MCP config and operator instructions for a controller profile. | `gjc setup hermes --root /path/to/repo` | Compatibility-oriented config renderer; does not call an LLM or validate provider credentials. |
-| RPC stdio | A controller that embeds a single `gjc --mode rpc` subprocess and handles JSONL frames directly or through `python/gjc-rpc`. | `gjc --mode rpc` | Best for process-backed, single-session bot workers. |
+| Daemon RPC | A controller that connects to the authenticated rpc-sdk daemon; the daemon owns the private TS worker lifecycle. | `gjc-rpc-daemon` | Best for daemon-backed, single-session bot workers after the standalone RPC cutover. |
 | Bridge HTTPS | Experimental remote control for an already-running session. | `gjc --mode bridge` | Session-control endpoints are fail-closed by default; do not use as the default bot lifecycle surface yet. |
 | Visible tmux fallback | Human-supervised lanes where an existing visible `gjc --tmux` pane should become coordinator-authoritative. | `gjc --tmux`, then `gjc_coordinator_register_session` | Use when an operator already opened a pane or wants direct terminal visibility. |
 
@@ -277,41 +277,26 @@ Use `gjc_coordinator_list_artifacts` to inspect safe roots and `gjc_coordinator_
 
 Artifact paths are canonicalized, symlink escapes are rejected, and output is byte-capped. Use `gjc_coordinator_read_coordination_status` for status reports written through `gjc_coordinator_report_status`.
 
-## RPC stdio integration
+## Daemon RPC integration
 
-Use RPC when your bot owns a single worker subprocess rather than an MCP coordinator. The wire protocol is JSONL over stdio:
+Use daemon RPC when your bot owns a single worker through the authenticated daemon rather than an MCP coordinator. The daemon frames traffic for the private worker:
 
 ```sh
-gjc --mode rpc --provider anthropic --model claude-sonnet-4-5
+gjc-rpc-daemon
 ```
 
-Recommended Python client:
-
-```python
-from gjc_rpc import RpcClient, WorkflowGate
-
-with RpcClient(no_session=True, no_rules=True) as client:
-    client.install_headless_ui()
-
-    def on_gate(gate: WorkflowGate) -> None:
-        if gate.kind == "approval":
-            client.respond_gate(gate.gate_id, {"decision": "approve"})
-
-    client.on_workflow_gate(on_gate)
-    turn = client.prompt_and_wait("Inspect this repo and report the integration contract.")
-    print(turn.require_assistant_text())
-```
+Recommended clients should connect through the daemon SDK (`@gajae-code/rpc-sdk`) or the Python daemon transport when available. The old standalone subprocess client has been removed; hosts should start or connect to `gjc-rpc-daemon`, subscribe to worker events, and issue commands through the daemon transport.
 
 RPC hosts can also expose host-owned tools and URI schemes. Use these to give GJC controlled access to your bot's issue tracker, queue, database rows, or artifact store without leaking long-lived credentials into the GJC process.
 
 Key RPC lifecycle facts:
 
 - `{ "type": "ready" }` means the subprocess is ready for commands.
-- `prompt` is acknowledged immediately; completion is observed through `agent_end` or `RpcClient.prompt_and_wait()`.
+- `prompt` is acknowledged immediately; completion is observed through `agent_end` on the daemon event stream.
 - `workflow_gate` frames are answered with `workflow_gate_response`.
 - `extension_ui_request` frames are answered with `extension_ui_response` or a headless policy.
 - Host tool calls and host URI requests are explicit callback frames that must be completed or rejected by the host.
-- `RpcClient` enforces single-flight prompt lifecycle collection; use one client per concurrent worker.
+- The daemon enforces single-flight prompt lifecycle collection; use one daemon worker session per concurrent turn.
 - `abort` and `abort_and_prompt` are the RPC cancellation commands for subprocess workers; coordinator MCP cancellation is recorded through terminal turn status instead.
 
 ## Error handling playbook
@@ -381,4 +366,4 @@ Hermes and OpenClaw can use the same MCP tool contract. Their names here are exa
 - [`docs/rpc.md`](./rpc.md) — JSONL RPC protocol, event frames, workflow gates, host tools, and host URI schemes.
 - [`docs/bridge.md`](./bridge.md) — experimental HTTPS bridge and fail-closed endpoint matrix.
 - [`python/gjc-rpc/README.md`](../python/gjc-rpc/README.md) — typed Python RPC client examples.
-- [`python/robogjc/README.md`](../python/robogjc/README.md) — example self-hosted GitHub bot using `gjc --mode rpc`.
+- [`python/robogjc/README.md`](../python/robogjc/README.md) — example self-hosted GitHub bot using the daemon RPC route.

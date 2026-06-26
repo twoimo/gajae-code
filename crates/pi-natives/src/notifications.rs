@@ -29,11 +29,11 @@ use parking_lot::Mutex;
 #[napi(object)]
 pub struct NotificationEndpoint {
 	/// Bind host (loopback).
-	pub host:       String,
+	pub host: String,
 	/// Bound port.
-	pub port:       u32,
+	pub port: u32,
 	/// `ws://host:port` URL.
-	pub url:        String,
+	pub url: String,
 	/// The session id this endpoint serves.
 	pub session_id: String,
 }
@@ -42,9 +42,9 @@ pub struct NotificationEndpoint {
 #[napi(object)]
 pub struct ReplyEvent {
 	/// The action id being answered (the real broker `gate_id` for asks).
-	pub id:              String,
+	pub id: String,
 	/// JSON-encoded `ReplyAnswer` (number, string, or `{selected,custom}`).
-	pub answer_json:     String,
+	pub answer_json: String,
 	/// Optional idempotency key supplied by the client.
 	pub idempotency_key: Option<String>,
 }
@@ -54,22 +54,22 @@ pub struct ReplyEvent {
 #[napi(object)]
 pub struct InboundEvent {
 	/// Either `"user_message"` or `"config_command"`.
-	pub kind:       String,
+	pub kind: String,
 	/// The session this inbound belongs to.
 	pub session_id: String,
 	/// Free-text body (`user_message` only).
-	pub text:       Option<String>,
+	pub text: Option<String>,
 	/// Telegram update id for dedupe (`user_message` only).
-	pub update_id:  Option<i64>,
+	pub update_id: Option<i64>,
 	/// Originating thread/topic id (`user_message` only).
-	pub thread_id:  Option<String>,
+	pub thread_id: Option<String>,
 	/// Requested verbosity `"lean"|"verbose"` (`config_command` only).
-	pub verbosity:  Option<String>,
+	pub verbosity: Option<String>,
 	/// Requested redaction state (`config_command` only).
-	pub redact:     Option<bool>,
+	pub redact: Option<bool>,
 	/// Inline image attachments forwarded with the message (`user_message`
 	/// only).
-	pub images:     Option<Vec<InboundImageEvent>>,
+	pub images: Option<Vec<InboundImageEvent>>,
 }
 
 /// One inline image attachment forwarded with an inbound user message.
@@ -84,9 +84,9 @@ pub struct InboundImageEvent {
 /// In-process notification server handle exposed to TypeScript.
 #[napi]
 pub struct NotificationServer {
-	config:     Mutex<Option<ServerConfig>>,
-	handle:     Mutex<Option<ServerHandle>>,
-	on_reply:   Mutex<Option<ThreadsafeFunction<ReplyEvent>>>,
+	config: Mutex<Option<ServerConfig>>,
+	handle: Mutex<Option<ServerHandle>>,
+	on_reply: Mutex<Option<ThreadsafeFunction<ReplyEvent>>>,
 	on_inbound: Mutex<Option<ThreadsafeFunction<InboundEvent>>>,
 }
 
@@ -110,9 +110,9 @@ impl NotificationServer {
 		// TS always owns gate resolution, so the core forwards replies.
 		config.forward_replies = true;
 		Self {
-			config:     Mutex::new(Some(config)),
-			handle:     Mutex::new(None),
-			on_reply:   Mutex::new(None),
+			config: Mutex::new(Some(config)),
+			handle: Mutex::new(None),
+			on_reply: Mutex::new(None),
 			on_inbound: Mutex::new(None),
 		}
 	}
@@ -161,8 +161,8 @@ impl NotificationServer {
 			napi::tokio::spawn(async move {
 				while let Some(reply) = rx.recv().await {
 					let event = ReplyEvent {
-						id:              reply.id,
-						answer_json:     serde_json::to_string(&reply.answer)
+						id: reply.id,
+						answer_json: serde_json::to_string(&reply.answer)
 							.unwrap_or_else(|_| "null".to_owned()),
 						idempotency_key: reply.idempotency_key,
 					};
@@ -179,12 +179,12 @@ impl NotificationServer {
 				while let Some(msg) = rx.recv().await {
 					let event = match msg {
 						ClientMessage::UserMessage(u) => InboundEvent {
-							kind:       "user_message".to_owned(),
+							kind: "user_message".to_owned(),
 							session_id: u.session_id,
-							text:       Some(u.text),
-							update_id:  u.update_id,
-							thread_id:  u.thread_id,
-							images:     if u.images.is_empty() {
+							text: Some(u.text),
+							update_id: u.update_id,
+							thread_id: u.thread_id,
+							images: if u.images.is_empty() {
 								None
 							} else {
 								Some(
@@ -194,21 +194,21 @@ impl NotificationServer {
 										.collect(),
 								)
 							},
-							verbosity:  None,
-							redact:     None,
+							verbosity: None,
+							redact: None,
 						},
 						ClientMessage::ConfigCommand(c) => InboundEvent {
-							kind:       "config_command".to_owned(),
+							kind: "config_command".to_owned(),
 							session_id: c.session_id,
-							text:       None,
-							update_id:  None,
-							thread_id:  None,
-							verbosity:  c.verbosity.map(|v| match v {
+							text: None,
+							update_id: None,
+							thread_id: None,
+							verbosity: c.verbosity.map(|v| match v {
 								Verbosity::Lean => "lean".to_owned(),
 								Verbosity::Verbose => "verbose".to_owned(),
 							}),
-							redact:     c.redact,
-							images:     None,
+							redact: c.redact,
+							images: None,
 						},
 						_ => continue,
 					};

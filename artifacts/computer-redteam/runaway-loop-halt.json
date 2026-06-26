@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "surface": "native",
+  "tool": "pi-natives-computer-redteam-harness",
+  "actions": [
+    {
+      "type": "custom",
+      "timestamp": 1782461060181,
+      "selector": "stale_heartbeat_disables_input"
+    }
+  ],
+  "assertions": [
+    {
+      "message": "stale heartbeat disabled input",
+      "actual": {
+        "suspended": false,
+        "hotkey_live": true,
+        "heartbeat_fresh": false,
+        "input_allowed": false
+      },
+      "timestamp": 1782461060181,
+      "status": "passed"
+    }
+  ]
+}

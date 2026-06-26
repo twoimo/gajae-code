@@ -23,7 +23,7 @@ gjc mcp remove context7
 | --- | --- | --- |
 | External bot or multi-session controller wants to drive GJC | [Coordinator MCP](./hermes-mcp-bridge.md) via `gjc mcp-serve coordinator` | GJC exposes an **outward** MCP server with GJC coordinator tools. This is not a way to import arbitrary MCP tools into the standalone TUI. |
 | Editor/ACP client owns MCP servers and wants GJC as the agent backend | [ACP mode](./external-control-readiness.md#acp-mode) via `gjc --mode acp` or `gjc acp` | The ACP client supplies and owns MCP servers. GJC keeps those client-owned MCP tools isolated from standalone on-disk discovery. |
-| Host application already manages MCP servers and policies | [RPC host tools](./rpc.md#host-tool-sub-protocol) via `gjc --mode rpc` | Convert the selected MCP capabilities into host-owned RPC tools. The host executes the MCP call and returns `host_tool_result`. |
+| Host application already manages MCP servers and policies | [RPC host tools](./rpc.md#host-tool-sub-protocol) via the daemon RPC route | Convert the selected MCP capabilities into host-owned RPC tools. The host executes the MCP call and returns `host_tool_result`. |
 | OpenClaw/Hermes-style host wants to map its own MCP/skills into GJC | [OpenClaw / Hermes RPC integration notes](./openclaw-hermes-rpc-integration.md) | Treat MCP as a host implementation detail and expose only policy-approved capabilities as RPC host tools. |
 | Codex / Claude Code want a one-step install to delegate planning/execution to GJC | [Canonical gajae-code plugin](./hermes-mcp-bridge.md) under `plugins/` via `gjc setup claude` / `gjc setup codex` | Installs the Coordinator MCP server plus `gjc_delegate_plan/execute/team` commands. Fail-closed: workdir-scoped roots, mutations off until opt-in. Install with `codex plugin marketplace add ./plugins` (verified on Codex CLI 0.139.0) or `/plugin marketplace add ./plugins` for Claude Code. |
 
@@ -44,8 +44,8 @@ This boundary is intentional: MCP servers often carry credentials, local filesys
 If you need a context engine, internal search server, browser MCP, database MCP, or another custom MCP inside GJC:
 
 1. Keep the MCP server configured in the host that owns its credentials and policy.
-2. Start GJC through RPC (`gjc --mode rpc`) from that host.
-3. Register a narrow host-owned tool with `set_host_tools` / `RpcClient#setCustomTools()`.
+2. Start GJC through the daemon RPC route from that host.
+3. Register a narrow host-owned tool through the daemon RPC host-tool command.
 4. Have the host tool call the real MCP server and return the result to GJC as `host_tool_result`.
 
 That shape keeps the MCP server's auth, approvals, filesystem access, and process lifetime with the host while still letting the GJC model request the capability when needed.

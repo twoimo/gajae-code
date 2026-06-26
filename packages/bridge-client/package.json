@@ -47,5 +47,8 @@
 			"types": "./src/*.ts",
 			"import": "./src/*.ts"
 		}
+	},
+	"dependencies": {
+		"@gajae-code/rpc-sdk": "workspace:*"
 	}
 }

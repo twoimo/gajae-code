@@ -16,11 +16,14 @@ const gate: WorkflowGate = {
 
 function frame(type: string, payload: unknown): BridgeFrame {
 	return {
-		protocol_version: 2,
-		session_id: "sess-1",
+		protocolVersion: 1,
+		sessionId: "sess-1",
 		seq: 1,
-		frame_id: `${type}-1`,
+		frameId: `${type}-1`,
+		direction: "server_to_client",
+		kind: type as BridgeFrame["kind"],
 		type,
+		replay: false,
 		payload,
 	};
 }

@@ -1,18 +1,27 @@
 /**
  * gajae-code RPC adapter + single-flight acceptance.
  *
- * The gajae-code harness is driven via `gjc --mode rpc` (see docs/rpc.md). Acceptance
- * is a PROTOCOL FACT, not an echo: a prompt is `accepted` only when the RPC command is
- * acked AND the next `agent_start` event arrives after the pre-submit cursor within the
- * timeout, with an idle + empty-queue pre-state. Ack alone never means accepted.
+ * The harness control plane is driven through the rpc-sdk UDS daemon transport.
+ * Acceptance is a PROTOCOL FACT, not an echo: a prompt is `accepted` only when
+ * the RPC command is acked AND the next `agent_start` event arrives after the
+ * pre-submit cursor within `timeoutMs`, with an idle + empty-queue pre-state.
+ * Ack alone never means accepted.
  *
  * The acceptance logic ({@link singleFlightAccept}) is decoupled from the transport via
  * the {@link HarnessRpc} interface so it is unit-testable with a fake, while
- * {@link GajaeCodeRpc} provides the real `gjc --mode rpc` subprocess implementation
- * (exercised by the M10 e2e suite).
+ * {@link GajaeCodeDaemonRpc} provides the rpc-sdk daemon-backed implementation.
  */
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+
 import { randomUUID } from "node:crypto";
+import {
+	buildCommandFrame,
+	connectUds,
+	defaultDaemonSocketPath,
+	type GjcFrame,
+	type JsonObject,
+	performHello,
+	type UdsTransport,
+} from "@gajae-code/rpc-sdk";
 
 export interface RpcStateSnapshot {
 	isStreaming: boolean;
@@ -107,13 +116,35 @@ interface PendingResponse {
 	reject: (error: Error) => void;
 }
 
+function framePayloadObject(frame: GjcFrame<unknown>): Record<string, unknown> {
+	return frame.payload && typeof frame.payload === "object" && !Array.isArray(frame.payload)
+		? (frame.payload as Record<string, unknown>)
+		: {};
+}
+
+function responseAck(frame: GjcFrame<unknown>): boolean {
+	const payload = framePayloadObject(frame);
+	return (
+		frame.kind === "response" &&
+		(payload.success === true || payload.ok === true || frame.type === "dispatch_immediate")
+	);
+}
+
 /**
- * Real adapter: spawns `gjc --mode rpc --session-dir <dir>` and speaks the JSONL
- * protocol from docs/rpc.md. Verified end-to-end in the M10 suite.
+ * rpc-sdk daemon-backed adapter. This is the migrated harness transport path:
+ * connect to the local UDS daemon, perform hello for the harness session, and
+ * exchange canonical GjcFrames instead of spawning legacy JSONL RPC mode.
+ *
+ * The current Rust daemon dispatch path is a protocol/broker pipeline. It acks
+ * scheduled commands but does not yet host the coding-agent runtime, so state and
+ * agent events are only available once runtime hosting is wired into the daemon.
  */
-export class GajaeCodeRpc implements HarnessRpc {
-	#proc: ChildProcessWithoutNullStreams;
-	#buffer = "";
+export class GajaeCodeDaemonRpc implements HarnessRpc {
+	#transport: UdsTransport | undefined;
+	#sessionId: string;
+	#socketPath: string;
+	#grantId: string | undefined;
+	#seq = 0;
 	#cursor = 0;
 	#pending = new Map<string, PendingResponse>();
 	#agentStartCursors: number[] = [];
@@ -124,64 +155,49 @@ export class GajaeCodeRpc implements HarnessRpc {
 	}[] = [];
 	#frameListeners: ((frame: Record<string, unknown>) => void)[] = [];
 	#lastFrameAt: string | null = null;
-	#alive = true;
+	#alive = false;
+	#lastAssistantText: string | null = null;
 
-	constructor(opts: { sessionDir: string; command?: string[]; cwd?: string; env?: NodeJS.ProcessEnv }) {
-		const base = opts.command ?? ["gjc", "--mode", "rpc"];
-		const args = [...base.slice(1), "--session-dir", opts.sessionDir];
-		this.#proc = spawn(base[0], args, {
-			cwd: opts.cwd,
-			env: opts.env ?? process.env,
-			stdio: ["pipe", "pipe", "pipe"],
-		}) as ChildProcessWithoutNullStreams;
-		this.#proc.stdout.setEncoding("utf8");
-		this.#proc.stdout.on("data", chunk => this.#onData(chunk as string));
-		this.#proc.on("exit", () => {
-			this.#alive = false;
-		});
-		this.#proc.on("error", () => {
-			this.#alive = false;
-		});
+	constructor(opts: { sessionId: string; socketPath?: string; grantId?: string }) {
+		this.#sessionId = opts.sessionId;
+		this.#socketPath = opts.socketPath ?? defaultDaemonSocketPath();
+		this.#grantId = opts.grantId;
 	}
 
-	#onData(chunk: string): void {
-		this.#buffer += chunk;
-		let idx = this.#buffer.indexOf("\n");
-		while (idx >= 0) {
-			const line = this.#buffer.slice(0, idx).trim();
-			this.#buffer = this.#buffer.slice(idx + 1);
-			if (line) this.#onFrame(line);
-			idx = this.#buffer.indexOf("\n");
-		}
-	}
-
-	#onFrame(line: string): void {
-		let frame: Record<string, unknown>;
-		try {
-			frame = JSON.parse(line) as Record<string, unknown>;
-		} catch {
-			return;
-		}
-		const type = frame.type;
-		if (type === "response") {
-			const id = typeof frame.id === "string" ? frame.id : undefined;
-			if (id && this.#pending.has(id)) {
-				const pending = this.#pending.get(id);
+	async connect(): Promise<void> {
+		const transport = await connectUds({ socketPath: this.#socketPath });
+		this.#transport = transport;
+		transport.on("frame", frame => this.#onFrame(frame));
+		transport.on("close", () => {
+			this.#alive = false;
+		});
+		transport.on("error", error => {
+			this.#alive = false;
+			for (const [id, pending] of this.#pending) {
 				this.#pending.delete(id);
-				pending?.resolve(frame);
+				pending.reject(error);
 			}
+		});
+		await performHello(transport, { sessions: [this.#sessionId], grantId: this.#grantId });
+		this.#alive = true;
+	}
+
+	#onFrame(frame: GjcFrame<unknown>): void {
+		if (frame.kind === "ready") return;
+		const correlationId = typeof frame.correlationId === "string" ? frame.correlationId : undefined;
+		if ((frame.kind === "response" || frame.kind === "error") && correlationId && this.#pending.has(correlationId)) {
+			const pending = this.#pending.get(correlationId);
+			this.#pending.delete(correlationId);
+			if (frame.kind === "error") pending?.reject(new Error(JSON.stringify(frame.payload)));
+			else pending?.resolve(frame as unknown as Record<string, unknown>);
 			return;
 		}
-		if (type === "ready") return;
-		// Any other frame is a session/agent event: advance the cursor.
+
 		this.#cursor += 1;
 		this.#lastFrameAt = new Date().toISOString();
-		// Session events arrive as canonical `event` frames: the agent event type
-		// lives in `payload.event_type`. Non-event frames keep their flat `type`.
+		const payload = framePayloadObject(frame);
 		const effectiveType =
-			type === "event" && frame.payload && typeof frame.payload === "object"
-				? (frame.payload as { event_type?: unknown }).event_type
-				: type;
+			frame.kind === "event" && typeof payload.event_type === "string" ? payload.event_type : frame.type;
 		if (effectiveType === "agent_start") {
 			const cursor = this.#cursor;
 			this.#agentStartCursors.push(cursor);
@@ -194,27 +210,41 @@ export class GajaeCodeRpc implements HarnessRpc {
 				return true;
 			});
 		}
-		// Fire-and-forget frame listeners (owner maps + emits). Never await; never let a listener kill the reader.
+		if (
+			typeof payload.text === "string" &&
+			(frame.type === "assistant_message" || effectiveType === "assistant_message")
+		) {
+			this.#lastAssistantText = payload.text;
+		}
 		for (const listener of this.#frameListeners) {
 			try {
-				listener(frame);
+				listener(frame as unknown as Record<string, unknown>);
 			} catch {
 				// swallow listener errors
 			}
 		}
 	}
 
-	#send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
-		const id = randomUUID();
-		return new Promise((resolve, reject) => {
-			this.#pending.set(id, { resolve, reject });
-			this.#proc.stdin.write(`${JSON.stringify({ id, ...command })}\n`, err => {
-				if (err) {
-					this.#pending.delete(id);
-					reject(err);
-				}
-			});
+	async #send(type: "get_state" | "prompt", payload: JsonObject): Promise<GjcFrame<unknown>> {
+		const transport = this.#transport;
+		if (!transport) throw new Error("GajaeCodeDaemonRpc is not connected");
+		const commandId = randomUUID();
+		const frame = buildCommandFrame(type, {
+			sessionId: this.#sessionId,
+			commandId,
+			frameId: commandId,
+			seq: ++this.#seq,
+			payload,
 		});
+		const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+		this.#pending.set(commandId, { resolve, reject });
+		try {
+			await transport.write(frame);
+		} catch (error) {
+			this.#pending.delete(commandId);
+			throw error;
+		}
+		return (await promise) as unknown as GjcFrame<unknown>;
 	}
 
 	onEventFrame(listener: (frame: Record<string, unknown>) => void): () => void {
@@ -233,34 +263,29 @@ export class GajaeCodeRpc implements HarnessRpc {
 	}
 
 	async getState(): Promise<RpcStateSnapshot> {
-		const res = await this.#send({ type: "get_state" });
-		const data = (res.data ?? {}) as Record<string, unknown>;
+		const frame = await this.#send("get_state", {});
+		const payload = framePayloadObject(frame);
+		const data = (payload.data && typeof payload.data === "object" ? payload.data : payload) as Record<
+			string,
+			unknown
+		>;
 		return {
 			isStreaming: Boolean(data.isStreaming),
 			steeringQueueDepth: typeof data.queuedMessageCount === "number" ? data.queuedMessageCount : 0,
-			followupQueueDepth: 0,
+			followupQueueDepth: typeof data.followupQueueDepth === "number" ? data.followupQueueDepth : 0,
 		};
 	}
 
 	async getLastAssistantText(): Promise<string | null> {
-		const res = await this.#send({ type: "get_last_assistant_text" });
-		const data = (res.data ?? {}) as Record<string, unknown>;
-		return typeof data.text === "string" ? data.text : null;
+		return this.#lastAssistantText;
 	}
 
 	async sendPrompt(prompt: string): Promise<{ commandId: string; ack: boolean }> {
-		const id = randomUUID();
-		const ackPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
-			this.#pending.set(id, { resolve, reject });
-			this.#proc.stdin.write(`${JSON.stringify({ id, type: "prompt", message: prompt })}\n`, err => {
-				if (err) {
-					this.#pending.delete(id);
-					reject(err);
-				}
-			});
-		});
-		const res = await ackPromise;
-		return { commandId: id, ack: res.success === true };
+		const frame = await this.#send("prompt", { message: prompt });
+		return {
+			commandId: typeof frame.correlationId === "string" ? frame.correlationId : frame.frameId,
+			ack: responseAck(frame),
+		};
 	}
 
 	eventCursor(): number {
@@ -280,11 +305,8 @@ export class GajaeCodeRpc implements HarnessRpc {
 	}
 
 	async close(): Promise<void> {
-		try {
-			this.#proc.stdin.end();
-		} catch {
-			// ignore
-		}
-		this.#proc.kill();
+		this.#transport?.close();
+		this.#transport = undefined;
+		this.#alive = false;
 	}
 }

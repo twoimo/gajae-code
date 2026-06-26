@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "kind": "rpc-sdk-command-classification",
+  "generatedFrom": [
+    "packages/coding-agent/src/modes/shared/agent-wire/scopes.ts",
+    "packages/coding-agent/src/modes/rpc/rpc-mode.ts"
+  ],
+  "commandCount": 38,
+  "commands": [
+    {
+      "command": "abort",
+      "bridgeScope": "prompt",
+      "lane": "fast_lane_cancellation"
+    },
+    {
+      "command": "abort_and_prompt",
+      "bridgeScope": "prompt",
+      "lane": "ordered"
+    },
+    {
+      "command": "abort_bash",
+      "bridgeScope": "bash",
+      "lane": "fast_lane_cancellation"
+    },
+    {
+      "command": "abort_retry",
+      "bridgeScope": "control",
+      "lane": "fast_lane_cancellation"
+    },
+    {
+      "command": "bash",
+      "bridgeScope": "bash",
+      "lane": "ordered"
+    },
+    {
+      "command": "branch",
+      "bridgeScope": "session",
+      "lane": "ordered"
+    },
+    {
+      "command": "compact",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "cycle_model",
+      "bridgeScope": "model",
+      "lane": "ordered"
+    },
+    {
+      "command": "cycle_thinking_level",
+      "bridgeScope": "model",
+      "lane": "ordered"
+    },
+    {
+      "command": "export_html",
+      "bridgeScope": "export",
+      "lane": "ordered"
+    },
+    {
+      "command": "follow_up",
+      "bridgeScope": "prompt",
+      "lane": "ordered"
+    },
+    {
+      "command": "get_available_models",
+      "bridgeScope": "model",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_branch_messages",
+      "bridgeScope": "session",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_last_assistant_text",
+      "bridgeScope": "message:read",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_login_providers",
+      "bridgeScope": "admin",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_messages",
+      "bridgeScope": "message:read",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_pending_workflow_gates",
+      "bridgeScope": "message:read",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_session_stats",
+      "bridgeScope": "message:read",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "get_state",
+      "bridgeScope": "message:read",
+      "lane": "fast_lane_safe_read"
+    },
+    {
+      "command": "handoff",
+      "bridgeScope": "admin",
+      "lane": "ordered"
+    },
+    {
+      "command": "login",
+      "bridgeScope": "admin",
+      "lane": "ordered"
+    },
+    {
+      "command": "negotiate_unattended",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "new_session",
+      "bridgeScope": "session",
+      "lane": "ordered"
+    },
+    {
+      "command": "prompt",
+      "bridgeScope": "prompt",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_auto_compaction",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_auto_retry",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_follow_up_mode",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_host_tools",
+      "bridgeScope": "host_tools",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_host_uri_schemes",
+      "bridgeScope": "host_uri",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_interrupt_mode",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_model",
+      "bridgeScope": "model",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_session_name",
+      "bridgeScope": "session",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_steering_mode",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_thinking_level",
+      "bridgeScope": "model",
+      "lane": "ordered"
+    },
+    {
+      "command": "set_todos",
+      "bridgeScope": "control",
+      "lane": "ordered"
+    },
+    {
+      "command": "steer",
+      "bridgeScope": "prompt",
+      "lane": "ordered"
+    },
+    {
+      "command": "switch_session",
+      "bridgeScope": "session",
+      "lane": "ordered"
+    },
+    {
+      "command": "workflow_gate_response",
+      "bridgeScope": "prompt",
+      "lane": "ordered"
+    }
+  ],
+  "unclassified": []
+}

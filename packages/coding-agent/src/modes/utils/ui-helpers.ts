@@ -613,11 +613,13 @@ export class UiHelpers {
 
 	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {
 		if (this.ctx.isKnownSlashCommand(message.text)) {
-			await this.ctx.session.prompt(message.text);
+			await this.ctx.runtimeBoundary.prompt(message.text);
 			return;
 		}
 		await this.ctx.withLocalSubmission(message.text, () =>
-			message.mode === "followUp" ? this.ctx.session.followUp(message.text) : this.ctx.session.steer(message.text),
+			message.mode === "followUp"
+				? this.ctx.runtimeBoundary.followUp(message.text)
+				: this.ctx.runtimeBoundary.steer(message.text),
 		);
 	}
 
@@ -678,7 +680,7 @@ export class UiHelpers {
 			}
 			if (firstPromptIndex === -1) {
 				for (const message of queuedMessages) {
-					await this.ctx.session.prompt(message.text);
+					await this.ctx.runtimeBoundary.prompt(message.text);
 				}
 				return;
 			}
@@ -708,7 +710,7 @@ export class UiHelpers {
 			// `restoreQueue` rather than rethrown, so we use the primitive
 			// recordLocalSubmission and dispose manually in the catch.
 			const disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text);
-			const promptPromise = this.ctx.session
+			const promptPromise = this.ctx.runtimeBoundary
 				.prompt(firstPrompt.text, {
 					streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
 				})

@@ -1,0 +1,29 @@
+=== cargo test -p gjc-rpc-sdk red-team failure-mode coverage ===
+Command: cargo test -p gjc-rpc-sdk
+Result: test result: ok. 79 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+Adversarial/failure-mode tests confirmed PASSING:
+1. uds_codec::tests::oversized_length_prefix_rejected_before_alloc — defends codec DoS by rejecting oversized length prefixes before allocation.
+2. uds_codec::tests::malformed_json_body_rejected — defends protocol parser integrity by rejecting malformed JSON frame bodies.
+3. uds_transport::tests::truncated_frame_at_eof_is_protocol_error — defends protocol correctness by treating EOF mid-frame as a protocol error instead of a clean close.
+4. daemon_server::tests::hello_denied_performs_no_side_effects_over_real_uds — defends authz fail-closed behavior over a real Unix-domain socket by denying hello without registering sessions or performing side effects.
+5. daemon_server::tests::daemon_state_denies_unauthorized_control_with_no_scheduling — defends decision-core authorization by denying unauthorized control before command scheduling.
+6. daemon::tests::authz_control_without_control_denied — defends control-plane authorization by rejecting control without the control scope.
+7. daemon::tests::authz_cross_session_subscribe_denied — defends session isolation by rejecting subscribe access to an unauthorized session.
+8. daemon::tests::authz_enumeration_without_grant_denied — defends session enumeration by denying listing without an applicable grant.
+9. daemon::tests::authz_gate_answer_denied — defends gate-answer permissions by rejecting unauthorized gate answer RPCs.
+10. daemon::tests::authz_host_tool_result_denied — defends host-tool result injection by rejecting unauthorized host tool result RPCs.
+11. daemon::tests::authz_host_uri_result_denied — defends host-URI result injection by rejecting unauthorized host URI result RPCs.
+12. daemon::tests::authz_read_without_subscribe_denied — defends replay/read access by denying reads without subscribe permission.
+13. daemon::tests::authz_revoked_grant_denied_everywhere — defends revocation semantics by ensuring revoked grants fail across all relevant RPCs.
+14. peer_cred::tests::peer_cred_unsupported_platform_fails_closed_before_grant_lookup — defends peer-credential trust boundary by failing closed before grant lookup on unsupported platforms.
+15. peer_cred::tests::peer_cred_bearer_fallback_disabled_by_default_fails_closed — defends bearer fallback hardening by failing closed when peer credentials are unavailable and fallback is disabled.
+16. registry::tests::worker_crash_mid_broker_calls_fail_all_pending_fails_session_no_replay — defends worker crash containment by failing all pending broker calls, failing the session, and preventing replay after a mid-call crash.
+17. worker_supervisor::tests::supervise_crashing_respawns_then_stops_at_policy_bound — defends supervisor restart policy by respawning crashes only until the policy bound is reached.
+18. uds_transport::tests::secure_bind_refuses_insecure_parent_dir — defends socket filesystem hardening by refusing to bind under an insecure parent directory.
+19. uds_transport::tests::secure_bind_refuses_regular_file_at_path — defends socket path hardening by refusing to replace a regular file at the socket path.
+20. cross_transport::tests::same_vector_logically_equal_in_process_and_uds — defends cross-transport parity by proving the same vector is logically equal in-process and over UDS.
+
+=== cargo clippy -p gjc-rpc-sdk --all-targets ===
+Command: cargo clippy -p gjc-rpc-sdk --all-targets
+Result: Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s

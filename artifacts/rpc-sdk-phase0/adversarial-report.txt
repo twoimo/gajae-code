@@ -1,0 +1,6 @@
+RPC SDK Phase 0 — red-team / failure-mode results
+RT1 happy path: `--check` on in-sync manifest -> "OK ... 38 commands" exit 0. PASS
+RT2 drift injection: mutated one manifest entry's lane -> `--check` -> "FAIL: ... out of sync" exit 1 -> restored -> exit 0. PASS (gate rejects drift)
+RT3 lane-desync guard: generator throws if derived lane disagrees with isFastLaneRpcCommand(command) (build-time cross-check between scopes.ts and rpc-mode.ts). Covered in source (buildManifest).
+RT4 unclassified guard: generator exits 1 and lists any RpcCommand missing a bridge scope (unclassified[] non-empty). Covered in source (main()).
+Conclusion: the Phase 0 manifest gate fails closed on drift, desync, and unclassified commands.
