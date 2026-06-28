@@ -1715,7 +1715,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			| undefined;
 
 		if (mimeType) {
-			if (params.question !== undefined) {
+			if (params.question) {
 				const analysis = await this.#analyzeImage(readPath, absolutePath, mimeType, params.question, signal);
 				content = analysis.content;
 				details = { visionModel: analysis.model };

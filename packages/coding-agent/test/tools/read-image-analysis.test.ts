@@ -150,6 +150,25 @@ describe("read image analysis (question param)", () => {
 		expect(stub.calls).toHaveLength(0);
 	});
 
+	// Strict-mode providers send required-but-nullable optionals, so a plain image read
+	// arrives as `question: null` (or ""). These must embed the image, not delegate.
+	it("embeds the image when question is null or empty (strict-provider nullable optional)", async () => {
+		const imagePath = path.join(testDir, "screen.png");
+		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+		const stub = createCompleteSimpleForbiddenStub();
+		const tool = new ReadTool(createSession(testDir, visionModel), stub.fn);
+
+		for (const question of [null, ""] as Array<string | null>) {
+			const result = await tool.execute("call-embed-nullable", {
+				path: imagePath,
+				question: question as unknown as string | undefined,
+			});
+			expect((result.content as Array<{ type: string }>).some(c => c.type === "image")).toBe(true);
+		}
+		expect(stub.calls).toHaveLength(0);
+	});
+
 	it("records the resolved vision model in details", async () => {
 		const imagePath = path.join(testDir, "screen.png");
 		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
