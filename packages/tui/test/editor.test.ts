@@ -492,31 +492,49 @@ describe("Editor component", () => {
 			expect(editor.getText()).toBe("a1");
 		});
 
-		it("inserts a newline for Ctrl+Enter variants with NumLock or keypad Enter metadata", () => {
+		it("submits Ctrl+Enter variants with NumLock or keypad Enter metadata", () => {
 			const variants = ["\x1b[13;133u", "\x1b[57414;5u", "\x1b[57414;133u"];
 
 			for (const variant of variants) {
 				const editor = new Editor(defaultEditorTheme);
+				let submitted = "";
+				editor.onSubmit = text => {
+					submitted = text;
+				};
 
 				editor.handleInput("a");
 				editor.handleInput(variant);
-				editor.handleInput("b");
 
-				expect(editor.getText()).toBe("a\nb");
+				expect(submitted).toBe("a");
+				expect(editor.getText()).toBe("");
 			}
 		});
 
-		it("inserts a newline for Ctrl+Shift+Enter terminal protocol variants", () => {
-			const variants = ["\x1b[13;6u", "\x1b[27;6;13~", "\x1b[13;6~", "\x1b[13;2~", "\x1b[13;2u"];
+		it("submits Ctrl+Shift+Enter terminal protocol variants while Shift+Enter inserts newline", () => {
+			const submitVariants = ["\x1b[13;6u", "\x1b[27;6;13~", "\x1b[13;6~"];
+			const newlineVariants = ["\x1b[13;2~", "\x1b[13;2u"];
 
-			for (const [index, variant] of variants.entries()) {
+			for (const variant of submitVariants) {
 				const editor = new Editor(defaultEditorTheme);
-				const prefix = index === 0 ? "alpha" : "beta";
+				let submitted = "";
+				editor.onSubmit = text => {
+					submitted = text;
+				};
 
-				editor.setText(prefix);
+				editor.setText("alpha");
 				editor.handleInput(variant);
 
-				expect(editor.getText()).toBe(`${prefix}\n`);
+				expect(submitted).toBe("alpha");
+				expect(editor.getText()).toBe("");
+			}
+
+			for (const variant of newlineVariants) {
+				const editor = new Editor(defaultEditorTheme);
+
+				editor.setText("beta");
+				editor.handleInput(variant);
+
+				expect(editor.getText()).toBe("beta\n");
 			}
 		});
 
