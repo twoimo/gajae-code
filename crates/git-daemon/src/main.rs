@@ -87,6 +87,7 @@ fn system_clock() -> (String, String) {
 }
 
 /// Connect the gjc-rpc socket and build the work runner. Live-only.
+#[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
 async fn build_runner(
 	socket: &str,
 ) -> Result<SocketWorkRunner<tokio::net::UnixStream>, String> {
@@ -105,6 +106,7 @@ fn build_forge(cfg: &DaemonEnv) -> Result<GithubForge<ReqwestTransport>, String>
 	Ok(GithubForge::new(transport, cfg.token.clone(), cfg.repo.clone()))
 }
 
+#[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
 async fn cmd_once() -> Result<(), String> {
 	let cfg = load_env()?;
 	let mut store = GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
@@ -118,6 +120,7 @@ async fn cmd_once() -> Result<(), String> {
 	Ok(())
 }
 
+#[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
 async fn cmd_serve() -> Result<(), String> {
 	let cfg = load_env()?;
 	let store = GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;

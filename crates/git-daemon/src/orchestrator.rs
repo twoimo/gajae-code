@@ -9,6 +9,7 @@ use crate::config::MergePolicy;
 use crate::forge_adapter::{ForgeAdapter, MergeRequest};
 use crate::keys::ItemRef;
 use crate::merge_gate::{DenyReason, GateInputs, evaluate};
+use crate::state_machine::WorkItemState;
 use crate::store::{GitDaemonStateStore, StoreError};
 
 /// Outcome of an unattended run, including the live gate signals it produced.
@@ -18,6 +19,8 @@ pub struct RunResult {
 	pub pr_id: String,
 	/// Head SHA the run produced (the queued head for the gate decision).
 	pub head_sha: String,
+	/// Base branch the run targeted (the queued base for the gate decision).
+	pub base_branch: String,
 	pub ci_green: bool,
 	pub ultragoal_pass: bool,
 	pub reviews_resolved: bool,
@@ -46,6 +49,9 @@ pub enum DriveOutcome {
 	LockBusy,
 	/// The forge could not return live PR state for the SHA-bound refetch.
 	RefetchFailed,
+	/// The immutable SHA-bound merge evidence could not be persisted; the merge
+	/// is denied (evidence-write-failure fails closed).
+	EvidenceWriteFailed,
 }
 
 /// Drive one item from lock acquisition through a SHA-bound merge decision.
@@ -75,7 +81,22 @@ pub async fn drive_to_merge<F: ForgeAdapter, R: WorkRunner>(
 		Err(StoreError::LeaseConflict) => return Ok(DriveOutcome::LockBusy),
 		Err(e) => return Err(e),
 	};
-	let outcome = run_and_merge(forge, runner, work_key, policy).await;
+	let outcome = run_and_merge(store, forge, runner, work_key, policy, now).await?;
+	// Settle the work item out of the ready set so a later reconciliation tick
+	// cannot reselect and re-run/re-merge the same key. A merge is terminal
+	// (merged_dev); any other completed run escalates (a follow-up event will
+	// re-queue it via the dispatcher). A lock conflict never reaches here.
+	let settled = match &outcome {
+		DriveOutcome::Merged { .. } => Some(WorkItemState::MergedDev),
+		DriveOutcome::GateDenied(_)
+		| DriveOutcome::RunFailed
+		| DriveOutcome::RefetchFailed
+		| DriveOutcome::EvidenceWriteFailed => Some(WorkItemState::Escalated),
+		DriveOutcome::LockBusy => None,
+	};
+	if let Some(state) = settled {
+		store.set_work_state(work_key, state, now)?;
+	}
 	// Release only after the run/merge has settled (D3/D4: no budget/cap abort).
 	store.release_lock(&lock)?;
 	Ok(outcome)
@@ -86,24 +107,29 @@ pub async fn drive_to_merge<F: ForgeAdapter, R: WorkRunner>(
 	reason = "driven on a per-item task; no cross-thread Send boundary committed yet"
 )]
 async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
+	store: &GitDaemonStateStore,
 	forge: &F,
 	runner: &R,
 	work_key: &str,
 	policy: &MergePolicy,
-) -> DriveOutcome {
+	now: &str,
+) -> Result<DriveOutcome, StoreError> {
 	let run = runner.run(work_key).await;
 	if !run.succeeded {
-		return DriveOutcome::RunFailed;
+		return Ok(DriveOutcome::RunFailed);
 	}
 	// Immediate pre-merge refetch (SHA-bound).
 	let Ok(live) = forge.get_pr(&run.pr_id).await else {
-		return DriveOutcome::RefetchFailed;
+		return Ok(DriveOutcome::RefetchFailed);
 	};
+	// Live branch-protection read: an unverifiable state must fail closed.
+	let branch_protection_known = forge.get_branch_protection(&live.base_branch).await.is_ok();
 	let inputs = GateInputs {
 		queued_head_sha: &run.head_sha,
 		current_head_sha: &live.head_sha,
+		queued_base_branch: &run.base_branch,
 		base_branch: &live.base_branch,
-		branch_protection_known: true,
+		branch_protection_known,
 		ci_green: run.ci_green,
 		ultragoal_pass: run.ultragoal_pass,
 		reviews_resolved: run.reviews_resolved,
@@ -111,13 +137,29 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 		diff_in_scope: run.diff_in_scope,
 	};
 	let decision = evaluate(&inputs, policy);
-	if !decision.may_merge() {
-		return decision.reason.map_or(DriveOutcome::RunFailed, DriveOutcome::GateDenied);
+	// Persist the immutable, SHA-bound evidence BEFORE any merge call. A write
+	// failure denies the merge (fails closed) — we never merge without a record.
+	let reason = decision.reason.map(|r| format!("{r:?}"));
+	if store
+		.persist_merge_evidence(
+			work_key,
+			&decision.head_sha,
+			&decision.base_branch,
+			decision.allow,
+			reason.as_deref(),
+			now,
+		)
+		.is_err()
+	{
+		return Ok(DriveOutcome::EvidenceWriteFailed);
 	}
-	match forge.merge_pr(&MergeRequest { pr_id: run.pr_id, expected_head_sha: decision.head_sha }).await {
+	if !decision.may_merge() {
+		return Ok(decision.reason.map_or(DriveOutcome::RunFailed, DriveOutcome::GateDenied));
+	}
+	Ok(match forge.merge_pr(&MergeRequest { pr_id: run.pr_id, expected_head_sha: decision.head_sha }).await {
 		Ok(merge_sha) => DriveOutcome::Merged { merge_sha },
 		Err(_) => DriveOutcome::GateDenied(DenyReason::StaleHead),
-	}
+	})
 }
 
 #[cfg(test)]
@@ -141,6 +183,7 @@ mod tests {
 			succeeded: true,
 			pr_id: "PR_7".into(),
 			head_sha: head.into(),
+			base_branch: "dev".into(),
 			ci_green: true,
 			ultragoal_pass: true,
 			reviews_resolved: true,
@@ -161,6 +204,7 @@ mod tests {
 		ForgePr { id: "PR_7".into(), number: 7, head_sha: head.into(), base_branch: base.into() }
 	}
 
+	#[allow(clippy::future_not_send, reason = "test helper driven on one task")]
 	async fn run_with(pr: ForgePr, run: RunResult, policy: &MergePolicy) -> (DriveOutcome, FakeForge) {
 		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
 		let forge = FakeForge::new();
@@ -190,9 +234,63 @@ mod tests {
 
 	#[tokio::test]
 	async fn protected_base_is_denied_and_never_merged() {
-		let (out, forge) = run_with(pr("sha1", "main"), good_run("sha1"), &dev_policy()).await;
+		let mut run = good_run("sha1");
+		run.base_branch = "main".into(); // run targeted main; queued base matches
+		let (out, forge) = run_with(pr("sha1", "main"), run, &dev_policy()).await;
 		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::MainBranchDenied));
 		assert!(forge.merged().is_empty());
+	}
+
+	#[tokio::test]
+	async fn base_retarget_between_queue_and_merge_denies() {
+		// Run queued against dev; PR retargeted to dev2 before the refetch.
+		let policy = MergePolicy { protected_branches: vec![], allowed_dev_branches: vec!["dev".into(), "dev2".into()] };
+		let (out, forge) = run_with(pr("sha1", "dev2"), good_run("sha1"), &policy).await;
+		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::BaseChanged));
+		assert!(forge.merged().is_empty());
+	}
+
+	#[tokio::test]
+	async fn unknown_branch_protection_fails_closed() {
+		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
+		let forge = FakeForge::new();
+		forge.put_pr(pr("sha1", "dev"));
+		forge.set_protection_unreadable();
+		let runner = FakeRunner { result: good_run("sha1") };
+		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::BranchProtectionUnknown));
+		assert!(forge.merged().is_empty());
+	}
+
+	#[tokio::test]
+	async fn evidence_write_failure_denies_merge() {
+		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
+		let forge = FakeForge::new();
+		forge.put_pr(pr("sha1", "dev"));
+		// Pre-record evidence for the same (work_key, head) so the orchestrator's
+		// write conflicts -> evidence-write-failure must deny the merge.
+		store.persist_merge_evidence("wk", "sha1", "dev", true, None, "t0").unwrap();
+		let runner = FakeRunner { result: good_run("sha1") };
+		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		assert_eq!(out, DriveOutcome::EvidenceWriteFailed);
+		assert!(forge.merged().is_empty(), "must not merge without persisted evidence");
+	}
+
+	#[tokio::test]
+	async fn merge_settles_work_item_so_it_is_not_reselected() {
+		use crate::keys::ItemKind;
+		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
+		let forge = FakeForge::new();
+		forge.put_pr(pr("sha1", "dev"));
+		let it = ItemRef::new("github", "R_1", ItemKind::Issue, "I_9");
+		let wk = it.work_intent_key("resolve");
+		store.record_work_intent(&wk, "issue", "I_9", "t0").unwrap();
+		assert_eq!(store.list_ready_work(10).unwrap().len(), 1);
+		let runner = FakeRunner { result: good_run("sha1") };
+		let out = drive_to_merge(&mut store, &forge, &runner, &it, wk.as_str(), &dev_policy(), "t0", "t9").await.unwrap();
+		assert!(matches!(out, DriveOutcome::Merged { .. }));
+		// Settled to merged_dev: a later reconciliation tick must not reselect it.
+		assert!(store.list_ready_work(10).unwrap().is_empty(), "merged item must leave the ready set");
 	}
 
 	#[tokio::test]

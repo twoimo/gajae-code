@@ -62,6 +62,10 @@ impl core::error::Error for ForgeError {}
 pub trait ForgeAdapter {
 	/// Fetch current PR state (head SHA, base) at the immediate pre-merge refetch.
 	async fn get_pr(&self, pr_id: &str) -> Result<ForgePr, ForgeError>;
+	/// Determine whether the base branch's protection state could be read.
+	/// `Ok(is_protected)` on a successful read; `Err` when protection could not
+	/// be determined — the gate then fails closed (`BranchProtectionUnknown`).
+	async fn get_branch_protection(&self, base_branch: &str) -> Result<bool, ForgeError>;
 	/// Merge the PR, enforcing `expected_head_sha`. Returns the merge commit SHA.
 	async fn merge_pr(&self, req: &MergeRequest) -> Result<String, ForgeError>;
 	/// Post a comment on an item (issue or PR).
@@ -74,6 +78,9 @@ pub struct FakeForge {
 	prs: Mutex<HashMap<String, ForgePr>>,
 	merges: Mutex<Vec<String>>,
 	comments: Mutex<Vec<(String, String)>>,
+	/// When set, `get_branch_protection` returns an error (simulating an
+	/// unverifiable protection state so the gate fails closed).
+	protection_unreadable: Mutex<bool>,
 }
 
 impl FakeForge {
@@ -85,6 +92,12 @@ impl FakeForge {
 	/// Seed (or replace) a PR.
 	pub fn put_pr(&self, pr: ForgePr) {
 		self.prs.lock().unwrap().insert(pr.id.clone(), pr);
+	}
+
+	/// Simulate a base branch whose protection state cannot be read (the gate
+	/// must then fail closed with `BranchProtectionUnknown`).
+	pub fn set_protection_unreadable(&self) {
+		*self.protection_unreadable.lock().unwrap() = true;
 	}
 
 	/// PR ids that were merged, in order.
@@ -103,6 +116,13 @@ impl FakeForge {
 impl ForgeAdapter for FakeForge {
 	async fn get_pr(&self, pr_id: &str) -> Result<ForgePr, ForgeError> {
 		self.prs.lock().unwrap().get(pr_id).cloned().ok_or(ForgeError::NotFound)
+	}
+
+	async fn get_branch_protection(&self, _base_branch: &str) -> Result<bool, ForgeError> {
+		if *self.protection_unreadable.lock().unwrap() {
+			return Err(ForgeError::Transient("branch protection unreadable".to_owned()));
+		}
+		Ok(true)
 	}
 
 	async fn merge_pr(&self, req: &MergeRequest) -> Result<String, ForgeError> {
@@ -158,6 +178,7 @@ mod tests {
 		let inputs = GateInputs {
 			queued_head_sha: "sha1",
 			current_head_sha: &live.head_sha,
+			queued_base_branch: &live.base_branch,
 			base_branch: &live.base_branch,
 			branch_protection_known: true,
 			ci_green: true,

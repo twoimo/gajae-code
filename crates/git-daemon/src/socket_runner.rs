@@ -43,6 +43,7 @@ pub fn parse_stream_event(frame: &Value) -> Option<StreamEvent> {
 			seq,
 			pr_id: frame.get("pr_id")?.as_str()?.to_owned(),
 			head_sha: frame.get("head_sha")?.as_str()?.to_owned(),
+			base_branch: frame.get("base_branch").and_then(Value::as_str).unwrap_or_default().to_owned(),
 		}),
 		"gate_signals" => Some(StreamEvent::GateSignals {
 			seq,
@@ -145,6 +146,7 @@ const fn failed_result() -> RunResult {
 		succeeded: false,
 		pr_id: String::new(),
 		head_sha: String::new(),
+		base_branch: String::new(),
 		ci_green: false,
 		ultragoal_pass: false,
 		reviews_resolved: false,

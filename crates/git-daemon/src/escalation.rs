@@ -30,6 +30,7 @@ impl EscalationReason {
 		match self {
 			Self::GateDenied(reason) => match reason {
 				DenyReason::StaleHead => "gate_stale_head",
+				DenyReason::BaseChanged => "gate_base_changed",
 				DenyReason::BranchProtectionUnknown => "gate_protection_unknown",
 				DenyReason::MainBranchDenied => "gate_main_branch",
 				DenyReason::ProtectedBranch => "gate_protected_branch",

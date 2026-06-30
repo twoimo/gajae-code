@@ -16,7 +16,7 @@ use crate::keys::{DedupKey, LockKey, WorkIntentKey};
 use crate::state_machine::WorkItemState;
 
 /// Current migration version stamped into `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Errors surfaced by the store.
 #[derive(Debug)]
@@ -73,10 +73,10 @@ impl GitDaemonStateStore {
 		if let Some(parent) = path.parent() {
 			std::fs::create_dir_all(parent)
 				.map_err(|e| StoreError::MigrationFailed(format!("create_dir_all: {e}")))?;
-			Self::restrict_dir_permissions(parent);
+			Self::restrict_dir_permissions(parent)?;
 		}
 		let conn = Connection::open(path)?;
-		Self::restrict_file_permissions(path);
+		Self::restrict_file_permissions(path)?;
 		// busy_timeout BEFORE enabling WAL (matches the hardened auth-store order).
 		conn.busy_timeout(Duration::from_secs(5))?;
 		conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -101,22 +101,28 @@ impl GitDaemonStateStore {
 	}
 
 	#[cfg(unix)]
-	fn restrict_dir_permissions(dir: &Path) {
+	fn restrict_dir_permissions(dir: &Path) -> Result<(), StoreError> {
 		use std::os::unix::fs::PermissionsExt as _;
-		let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+		std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+			.map_err(|e| StoreError::MigrationFailed(format!("restrict dir 0700: {e}")))
 	}
 
 	#[cfg(unix)]
-	fn restrict_file_permissions(file: &Path) {
+	fn restrict_file_permissions(file: &Path) -> Result<(), StoreError> {
 		use std::os::unix::fs::PermissionsExt as _;
-		let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+		std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
+			.map_err(|e| StoreError::MigrationFailed(format!("restrict file 0600: {e}")))
 	}
 
 	#[cfg(not(unix))]
-	fn restrict_dir_permissions(_dir: &Path) {}
+	fn restrict_dir_permissions(_dir: &Path) -> Result<(), StoreError> {
+		Ok(())
+	}
 
 	#[cfg(not(unix))]
-	fn restrict_file_permissions(_file: &Path) {}
+	fn restrict_file_permissions(_file: &Path) -> Result<(), StoreError> {
+		Ok(())
+	}
 
 	fn migrate(&self) -> Result<(), StoreError> {
 		let version: i64 = self.conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -156,6 +162,15 @@ impl GitDaemonStateStore {
 				CREATE TABLE IF NOT EXISTS fencing_seq (
 					id    INTEGER PRIMARY KEY CHECK (id = 0),
 					value INTEGER NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS merge_gate_evidence (
+					work_key    TEXT NOT NULL,
+					head_sha    TEXT NOT NULL,
+					base_branch TEXT NOT NULL,
+					allow       INTEGER NOT NULL,
+					reason      TEXT,
+					recorded_at TEXT NOT NULL,
+					PRIMARY KEY (work_key, head_sha)
 				);
 				INSERT OR IGNORE INTO fencing_seq (id, value) VALUES (0, 0);
 				COMMIT;",
@@ -245,6 +260,54 @@ impl GitDaemonStateStore {
 			rusqlite::params![work_key, state.as_wire(), updated_at],
 		)?;
 		Ok(changed == 1)
+	}
+
+	/// Re-queue an existing work item on a follow-up event so the reconciler
+	/// schedules it again, without creating a second work key. CAS: only items in
+	/// a settled-but-reopenable state are moved back to `queued`; an item that is
+	/// already ready (`seen`/`queued`) or actively `running` is left untouched so
+	/// a follow-up cannot disrupt an in-flight run or duplicate ready work.
+	/// Returns whether a row was re-queued.
+	///
+	/// # Errors
+	/// Returns [`StoreError`] on a `SQLite` failure.
+	pub fn requeue_work(&self, work_key: &str, updated_at: &str) -> Result<bool, StoreError> {
+		let changed = self.conn.execute(
+			"UPDATE work_items SET state = 'queued', updated_at = ?2
+			 WHERE work_key = ?1 AND state NOT IN ('seen', 'queued', 'running')",
+			rusqlite::params![work_key, updated_at],
+		)?;
+		Ok(changed == 1)
+	}
+
+	/// Persist the immutable, SHA-bound merge-gate decision BEFORE the merge call.
+	/// Keyed by (`work_key`, `head_sha`) so the evidence for a given head is
+	/// write-once; a conflicting re-write fails rather than overwriting history.
+	/// The orchestrator must treat a write failure here as a merge denial
+	/// (evidence-write-failure fails closed).
+	///
+	/// # Errors
+	/// Returns [`StoreError`] on a `SQLite` failure (including a uniqueness
+	/// conflict for an already-recorded head).
+	pub fn persist_merge_evidence(
+		&self,
+		work_key: &str,
+		head_sha: &str,
+		base_branch: &str,
+		allow: bool,
+		reason: Option<&str>,
+		recorded_at: &str,
+	) -> Result<(), StoreError> {
+		let changed = self.conn.execute(
+			"INSERT INTO merge_gate_evidence (work_key, head_sha, base_branch, allow, reason, recorded_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+			rusqlite::params![work_key, head_sha, base_branch, i64::from(allow), reason, recorded_at],
+		)?;
+		if changed == 1 {
+			Ok(())
+		} else {
+			Err(StoreError::MigrationFailed("merge evidence not persisted".to_owned()))
+		}
 	}
 
 	/// Acquire a single-flight lock with a lease + fencing token. Steals a stale
@@ -341,6 +404,51 @@ mod tests {
 		assert!(store.insert_event(&key, "issue", "I_9", "issues", "2026-01-01T00:00:00Z").unwrap());
 		// A racing webhook + poll producing the same dedupe key inserts once.
 		assert!(!store.insert_event(&key, "issue", "I_9", "issues", "2026-01-01T00:00:01Z").unwrap());
+	}
+
+	fn temp_db_path(tag: &str) -> std::path::PathBuf {
+		let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+		std::env::temp_dir().join(format!("gd-store-{tag}-{}-{nanos}", std::process::id())).join("state.sqlite")
+	}
+
+	#[test]
+	#[cfg(unix)]
+	fn open_hardens_file_and_dir_permissions_to_0600_0700() {
+		use std::os::unix::fs::PermissionsExt as _;
+		let path = temp_db_path("perms");
+		let _store = GitDaemonStateStore::open(&path).unwrap();
+		let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+		let dir_mode = std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+		assert_eq!(file_mode, 0o600, "db file must be 0600");
+		assert_eq!(dir_mode, 0o700, "db dir must be 0700");
+		let _ = std::fs::remove_dir_all(path.parent().unwrap());
+	}
+
+	#[test]
+	fn concurrent_two_connection_insert_has_exactly_one_winner() {
+		use std::sync::{Arc, Barrier};
+		// Two independent connections (separate threads) to the SAME file-backed
+		// DB race to insert the same dedupe key; the unique constraint must admit
+		// exactly one winner across connections.
+		let path = temp_db_path("race");
+		// Create the DB + schema once so both threads open an existing file.
+		GitDaemonStateStore::open(&path).unwrap();
+		let barrier = Arc::new(Barrier::new(2));
+		let key = DedupKey::new(&item(), "issues", &EventSource::Webhook { delivery_id: "d1".into() }, "r1");
+		let mut handles = Vec::new();
+		for _ in 0..2 {
+			let p = path.clone();
+			let b = Arc::clone(&barrier);
+			let k = key.clone();
+			handles.push(std::thread::spawn(move || {
+				let store = GitDaemonStateStore::open(&p).unwrap();
+				b.wait();
+				store.insert_event(&k, "issue", "I_9", "issues", "2026-01-01T00:00:00Z").unwrap()
+			}));
+		}
+		let wins = handles.into_iter().map(|h| h.join().unwrap()).filter(|w| *w).count();
+		assert_eq!(wins, 1, "exactly one connection may win the dedupe insert");
+		let _ = std::fs::remove_dir_all(path.parent().unwrap());
 	}
 
 	#[test]

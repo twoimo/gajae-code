@@ -139,6 +139,7 @@ mod tests {
 				succeeded: true,
 				pr_id: "PR_7".into(),
 				head_sha: "sha1".into(),
+				base_branch: "dev".into(),
 				ci_green: true,
 				ultragoal_pass: true,
 				reviews_resolved: true,

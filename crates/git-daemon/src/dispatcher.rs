@@ -67,7 +67,14 @@ pub fn ingest(
 	let work_key = item.work_intent_key(normalized_action(event.item_kind));
 	let created = store.record_work_intent(&work_key, event.item_kind.as_str(), &event.item_node_id, now)?;
 	let key = work_key.as_str().to_owned();
-	Ok(if created { IngestOutcome::WorkCreated { work_key: key } } else { IngestOutcome::FollowUp { work_key: key } })
+	if created {
+		return Ok(IngestOutcome::WorkCreated { work_key: key });
+	}
+	// Follow-up on an existing item: re-queue it (CAS, no second work key) so the
+	// reconciler schedules it again even if it had settled (e.g. escalated,
+	// stream_lost, merged) — a follow-up must never be silently dropped.
+	store.requeue_work(&key, now)?;
+	Ok(IngestOutcome::FollowUp { work_key: key })
 }
 
 #[cfg(test)]
@@ -160,5 +167,32 @@ mod tests {
 		.unwrap();
 		let out = ingest(&s, &comment, &EventSource::Webhook { delivery_id: "d2".into() }, "t1").unwrap();
 		assert!(matches!(out, IngestOutcome::FollowUp { .. }));
+	}
+
+	#[test]
+	fn follow_up_requeues_a_settled_work_item() {
+		use crate::keys::{ItemKind, ItemRef};
+		use crate::state_machine::WorkItemState;
+		let s = store();
+		// Create the work item, then settle it (e.g. escalated) so it is no longer
+		// in the ready set.
+		ingest(&s, &issue_opened(), &EventSource::Webhook { delivery_id: "d1".into() }, "t0").unwrap();
+		let work_key = ItemRef::new("github", "R_1", ItemKind::Issue, "I_42").work_intent_key("resolve");
+		assert!(s.set_work_state(work_key.as_str(), WorkItemState::Escalated, "t1").unwrap());
+		assert!(s.list_ready_work(10).unwrap().is_empty(), "settled item is not ready");
+		// A later comment (distinct event, same item) must re-queue it.
+		let comment = normalize_github(
+			"issue_comment",
+			&json!({
+				"repository": { "node_id": "R_1" },
+				"issue": { "node_id": "I_42" },
+				"comment": { "updated_at": "2026-02-02T00:00:00Z" }
+			}),
+		)
+		.unwrap();
+		let out = ingest(&s, &comment, &EventSource::Webhook { delivery_id: "d2".into() }, "t2").unwrap();
+		assert!(matches!(out, IngestOutcome::FollowUp { .. }));
+		let ready: Vec<String> = s.list_ready_work(10).unwrap().into_iter().map(|(k, _, _)| k).collect();
+		assert_eq!(ready, vec![work_key.as_str().to_owned()], "follow-up must re-queue the existing item");
 	}
 }

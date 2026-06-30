@@ -13,8 +13,8 @@ use crate::spend_ledger::UsageObservation;
 /// One event from the unattended engine’s stream, carrying its sequence number.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
-	/// The daemon opened a PR with this head SHA.
-	PrOpened { seq: u64, pr_id: String, head_sha: String },
+	/// The daemon opened a PR with this head SHA and base branch.
+	PrOpened { seq: u64, pr_id: String, head_sha: String, base_branch: String },
 	/// Live gate signals observed for the current head.
 	GateSignals {
 		seq: u64,
@@ -64,6 +64,7 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 	let mut usage = UsageObservation::default();
 	let mut pr_id: Option<String> = None;
 	let mut head_sha: Option<String> = None;
+	let mut base_branch: Option<String> = None;
 	let mut ci_green = false;
 	let mut ultragoal_pass = false;
 	let mut reviews_resolved = false;
@@ -79,15 +80,19 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 			}
 			StreamProgress::Applied => {}
 			StreamProgress::ReplayNeededFrom(_) => {
-				// In a reduced (already-contiguous) slice the events are present, so
-				// treat the in-window gap as caught up and advance the cursor.
-				tracker.mark_resumed(event.seq());
+				// An in-window sequence gap. The live socket-runner path has no
+				// replay request/response channel before reduction, so we must NOT
+				// assume the missing events were delivered — doing so would let a
+				// gap (e.g. seq 1 -> seq 5 -> terminal) produce a false terminal
+				// success. Fail closed: mark the stream lost (non-terminal).
+				return RunReduction { result: None, stream_lost: true, usage, last_seq: tracker.last_seq() };
 			}
 		}
 		match event {
-			StreamEvent::PrOpened { pr_id: id, head_sha: sha, .. } => {
+			StreamEvent::PrOpened { pr_id: id, head_sha: sha, base_branch: base, .. } => {
 				pr_id = Some(id.clone());
 				head_sha = Some(sha.clone());
+				base_branch = Some(base.clone());
 			}
 			StreamEvent::GateSignals {
 				ci_green: ci,
@@ -116,6 +121,7 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 			succeeded: ok,
 			pr_id,
 			head_sha,
+			base_branch: base_branch.unwrap_or_default(),
 			ci_green,
 			ultragoal_pass,
 			reviews_resolved,
@@ -127,6 +133,7 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 			succeeded: false,
 			pr_id: String::new(),
 			head_sha: String::new(),
+			base_branch: String::new(),
 			ci_green,
 			ultragoal_pass,
 			reviews_resolved,
@@ -149,7 +156,7 @@ mod tests {
 	#[test]
 	fn reduces_a_successful_run() {
 		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into() },
+			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
 			StreamEvent::UsageObserved { seq: 2, usage: usage(100) },
 			StreamEvent::GateSignals {
 				seq: 3,
@@ -176,7 +183,7 @@ mod tests {
 	fn unbounded_usage_is_accumulated_not_capped() {
 		// D3: huge usage just accumulates; nothing aborts the reduction.
 		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into() },
+			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
 			StreamEvent::UsageObserved { seq: 2, usage: usage(10_000_000) },
 			StreamEvent::UsageObserved { seq: 3, usage: usage(10_000_000) },
 			StreamEvent::Terminal { seq: 4, succeeded: true },
@@ -189,7 +196,7 @@ mod tests {
 	#[test]
 	fn gap_beyond_window_marks_stream_lost_no_result() {
 		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into() },
+			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
 			// Jump to 100: gap beyond window -> lost, no terminal success.
 			StreamEvent::Terminal { seq: 100, succeeded: true },
 		];
@@ -204,5 +211,18 @@ mod tests {
 		let r = reduce_run_events(&events, 10);
 		assert!(!r.stream_lost);
 		assert!(!r.result.unwrap().succeeded);
+	}
+
+	#[test]
+	fn in_window_gap_before_terminal_is_stream_lost_not_success() {
+		// A gap WITHIN the replay window with no replay channel must NOT be
+		// treated as recovered: seq 1 -> seq 5 -> terminal must fail closed.
+		let events = vec![
+			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
+			StreamEvent::Terminal { seq: 5, succeeded: true },
+		];
+		let r = reduce_run_events(&events, 10);
+		assert!(r.stream_lost, "in-window gap must degrade to stream_lost");
+		assert!(r.result.is_none(), "must never reduce a gapped stream to terminal success");
 	}
 }

@@ -273,4 +273,19 @@ mod tests {
 		assert_eq!(sent["type"], "hindsight_retain");
 		assert_eq!(sent["document_id"], "doc-1");
 	}
+
+	#[tokio::test]
+	async fn reflect_sends_a_reflect_command() {
+		use tokio::io::AsyncReadExt;
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		let mut hs = HindsightRpcClient::new(RpcClient::new(client_side));
+		let tags = vec!["repo:acme/widget".to_owned()];
+		hs.reflect("what conventions apply", Some("issue 42"), Some(&tags)).await.unwrap();
+		let mut buf = vec![0u8; 4096];
+		let n = engine.read(&mut buf).await.unwrap();
+		let sent: Value = serde_json::from_str(String::from_utf8_lossy(&buf[..n]).trim()).unwrap();
+		assert_eq!(sent["type"], "hindsight_reflect");
+		assert_eq!(sent["query"], "what conventions apply");
+		assert_eq!(sent["context"], "issue 42");
+	}
 }

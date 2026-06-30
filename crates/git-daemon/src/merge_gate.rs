@@ -15,9 +15,11 @@ pub struct GateInputs<'a> {
 	pub queued_head_sha: &'a str,
 	/// Head SHA observed in the immediate pre-merge refetch.
 	pub current_head_sha: &'a str,
-	/// Target branch of the PR.
+	/// Base branch recorded when the item entered `merge_ready`.
+	pub queued_base_branch: &'a str,
+	/// Base branch observed in the immediate pre-merge refetch (the merge target).
 	pub base_branch: &'a str,
-	/// Live branch protection state; `None` means it could not be fetched.
+	/// Live branch protection state; `false` means it could not be fetched.
 	pub branch_protection_known: bool,
 	/// All required CI/checks are green.
 	pub ci_green: bool,
@@ -36,6 +38,8 @@ pub struct GateInputs<'a> {
 pub enum DenyReason {
 	/// Head SHA changed between `merge_ready` and the pre-merge refetch.
 	StaleHead,
+	/// Base branch changed (PR retargeted) between `merge_ready` and refetch.
+	BaseChanged,
 	/// Branch protection could not be fetched — refuse rather than guess.
 	BranchProtectionUnknown,
 	/// Target is `main`/`master`.
@@ -83,6 +87,10 @@ pub fn evaluate(inputs: &GateInputs<'_>, policy: &MergePolicy) -> GateDecision {
 	// 1. SHA-bound: the queued decision is void if the head moved.
 	if inputs.queued_head_sha != inputs.current_head_sha {
 		return deny(DenyReason::StaleHead);
+	}
+	// 1b. SHA-bound also covers the base: a retargeted PR voids the decision.
+	if inputs.queued_base_branch != inputs.base_branch {
+		return deny(DenyReason::BaseChanged);
 	}
 	// 2. Fail closed when protection is unknown.
 	if !inputs.branch_protection_known {
@@ -139,6 +147,7 @@ mod tests {
 		GateInputs {
 			queued_head_sha: "sha1",
 			current_head_sha: "sha1",
+			queued_base_branch: "dev",
 			base_branch: "dev",
 			branch_protection_known: true,
 			ci_green: true,
@@ -169,6 +178,17 @@ mod tests {
 	}
 
 	#[test]
+	fn base_change_retarget_denies() {
+		// PR retargeted from the queued dev base to another allowed dev branch.
+		let mut i = all_pass();
+		i.queued_base_branch = "dev";
+		i.base_branch = "dev2";
+		let d = evaluate(&i, &policy());
+		assert!(!d.may_merge());
+		assert_eq!(d.reason, Some(DenyReason::BaseChanged));
+	}
+
+	#[test]
 	fn unknown_protection_fails_closed() {
 		let mut i = all_pass();
 		i.branch_protection_known = false;
@@ -183,6 +203,7 @@ mod tests {
 			("release", DenyReason::ProtectedBranch),
 		] {
 			let mut i = all_pass();
+			i.queued_base_branch = branch;
 			i.base_branch = branch;
 			assert_eq!(evaluate(&i, &policy()).reason, Some(reason), "branch {branch}");
 		}
@@ -191,6 +212,7 @@ mod tests {
 	#[test]
 	fn non_allowed_dev_branch_denied() {
 		let mut i = all_pass();
+		i.queued_base_branch = "feature/x";
 		i.base_branch = "feature/x";
 		assert_eq!(evaluate(&i, &policy()).reason, Some(DenyReason::NotAnAllowedDevBranch));
 	}

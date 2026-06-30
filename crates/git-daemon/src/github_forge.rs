@@ -121,6 +121,25 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn get_branch_protection(&self, base_branch: &str) -> Result<bool, ForgeError> {
+		// GET .../branches/{branch}/protection: 200 => protected, 404 => not
+		// protected (both are a successful read); any other status is an
+		// unverifiable protection state and surfaces as an error (fail closed).
+		let req = HttpRequest {
+			method: "GET",
+			url: format!("{}/repos/{}/branches/{base_branch}/protection", self.api_base, self.repo_full_name),
+			headers: self.headers(),
+			body: None,
+		};
+		let resp = self.transport.send(req).await?;
+		match resp.status {
+			200 => Ok(true),
+			404 => Ok(false),
+			other => Err(map_status(other)),
+		}
+	}
+
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
 	async fn merge_pr(&self, req: &MergeRequest) -> Result<String, ForgeError> {
 		// GitHub enforces the expected head SHA server-side: a moved head returns
 		// 409, which we map to ShaMismatch (fail closed).

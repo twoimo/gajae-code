@@ -76,7 +76,17 @@ impl DirectiveSource {
 /// rank wins; ties keep the first occurrence (deterministic).
 #[must_use]
 pub fn authoritative_directive<'a>(directives: &[(DirectiveSource, &'a str)]) -> Option<&'a str> {
-	directives.iter().max_by_key(|(src, _)| src.rank()).map(|(_, content)| *content)
+	// First-wins on ties: only replace the leader when a strictly higher rank
+	// appears (`max_by_key` would instead keep the LAST maximum).
+	let mut best: Option<(u8, &'a str)> = None;
+	for (src, content) in directives {
+		let rank = src.rank();
+		match best {
+			Some((best_rank, _)) if rank <= best_rank => {}
+			_ => best = Some((rank, content)),
+		}
+	}
+	best.map(|(_, content)| content)
 }
 
 /// Deterministic Hindsight document id for a contributor.
@@ -133,6 +143,16 @@ mod tests {
 	#[test]
 	fn authoritative_is_none_when_empty() {
 		assert_eq!(authoritative_directive(&[]), None);
+	}
+
+	#[test]
+	fn equal_rank_keeps_first_occurrence() {
+		// Two MaintainerComment directives (same rank) -> the first wins.
+		let directives = [
+			(DirectiveSource::MaintainerComment, "first"),
+			(DirectiveSource::MaintainerComment, "second"),
+		];
+		assert_eq!(authoritative_directive(&directives), Some("first"));
 	}
 
 	#[test]
