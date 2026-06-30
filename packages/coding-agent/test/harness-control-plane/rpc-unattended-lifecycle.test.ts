@@ -53,6 +53,7 @@ function buildHarness() {
 			return {
 				run_id: runId,
 				actor: controller.actor,
+				budget_mode: controller.unbounded ? "unbounded" : "bounded",
 				budget: controller.budget,
 				scopes: [...controller.scopes],
 				action_allowlist: [...controller.actionAllowlist],

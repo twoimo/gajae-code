@@ -53,6 +53,9 @@ export interface AuditQuery {
 	event?: string;
 	since?: string;
 	until?: string;
+	/** Monotonic lower bound: return only records after this 1-based sequence
+	 * (ordinal position in the append-only log). Enables incremental polling. */
+	since_seq?: number;
 }
 
 export interface AuditLogOptions {
@@ -151,7 +154,8 @@ export class UnattendedAuditLog {
 
 	/** Query records with filters (run/session/actor/gate/outcome/event + time window). */
 	query(filter: AuditQuery = {}): AuditRecord[] {
-		return this.readAll().filter(r => {
+		return this.readAll().filter((r, i) => {
+			if (filter.since_seq !== undefined && i + 1 <= filter.since_seq) return false;
 			if (filter.run_id !== undefined && r.run_id !== filter.run_id) return false;
 			if (filter.session_id !== undefined && r.session_id !== filter.session_id) return false;
 			if (filter.actor !== undefined && r.actor !== filter.actor) return false;

@@ -853,14 +853,17 @@ behavior, including the provider token/cost accounting requirement.
 #### Retrieving the audit trail: `get_unattended_audit`
 
 ```json
-{ "type": "get_unattended_audit", "filter": { "outcome": "denied", "since": "2026-01-01T00:00:00.000Z" } }
+{ "type": "get_unattended_audit", "filter": { "outcome": "denied", "since": "2026-01-01T00:00:00.000Z", "since_seq": 120 } }
 ```
 
 Returns `{ records, count, redacted, integrity }`. Gate answers are redacted by
 default (`redacted: true`). A corrupt on-disk log is reported explicitly via
 `integrity: { ok: false, error }` rather than silently returning partial data.
-`filter` is optional; all fields (`run_id`, `session_id`, `actor`, `gate_id`,
-`outcome`, `event`, `since`, `until`) are optional strings.
+`filter` is optional; the string fields (`run_id`, `session_id`, `actor`,
+`gate_id`, `outcome`, `event`, `since`, `until`) are all optional. `since_seq` is
+an optional non-negative integer: a monotonic lower bound that returns only
+records **after** that 1-based log sequence (ordinal position in the append-only
+log), enabling incremental polling without re-scanning the whole trail.
 
 
 > **Status (live, #315/#318/#321):** the `workflow_gate` /
@@ -873,6 +876,28 @@ default (`redacted: true`). A corrupt on-disk log is reported explicitly via
 > session without that control plane returns a typed "not available" error for
 > these frames rather than silently dropping them.
 
+
+### Advisory memory: `hindsight_recall` / `hindsight_retain` / `hindsight_reflect`
+
+Unattended agents can read and write advisory Hindsight memory over the same
+control plane. These results are **advisory only** — they inform prompt context
+and never authorize or gate an action.
+
+```json
+{ "type": "hindsight_recall", "query": "how is auth handled", "types": ["convention"], "max_tokens": 1500, "tags": ["repo:acme/widget"], "tags_match": "any" }
+{ "type": "hindsight_retain", "content": "fixed the parser by ...", "document_id": "doc-1", "context": "issue 42", "tags": ["repo:acme/widget"] }
+{ "type": "hindsight_reflect", "query": "what conventions apply", "context": "issue 42", "tags": ["repo:acme/widget"] }
+```
+
+- `hindsight_recall` requires `query`; `types`, `max_tokens`, `tags`, and
+  `tags_match` are optional. Returns `{ results: [{ text, id?, type? }, ...] }`.
+- `hindsight_retain` requires `content`; `document_id`, `context`, `metadata`,
+  and `tags` are optional.
+- `hindsight_reflect` requires `query`; `context` and `tags` are optional.
+
+All three are registered in `RPC_COMMAND_SCOPE_REGISTRY`, validated by
+`command-validation.ts`, dispatched via `command-dispatch.ts`, exposed through
+the bridge client, and mirrored in the Python `gjc-rpc` client.
 
 ### Answering gates from a client (#322)
 

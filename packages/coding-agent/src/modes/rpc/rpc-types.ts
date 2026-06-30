@@ -89,8 +89,24 @@ export type RpcCommand =
 	// Unattended control plane (#318/#319 declaration handled here at #315 contract level)
 	| { id?: string; type: "negotiate_unattended"; declaration: RpcUnattendedDeclaration }
 	| { id?: string; type: "get_unattended_audit"; filter?: RpcUnattendedAuditFilter }
-	| { id?: string; type: "hindsight_recall"; query: string; types?: string[]; max_tokens?: number; tags?: string[]; tags_match?: string }
-	| { id?: string; type: "hindsight_retain"; content: string; document_id?: string; context?: string; metadata?: Record<string, string>; tags?: string[] }
+	| {
+			id?: string;
+			type: "hindsight_recall";
+			query: string;
+			types?: string[];
+			max_tokens?: number;
+			tags?: string[];
+			tags_match?: string;
+	  }
+	| {
+			id?: string;
+			type: "hindsight_retain";
+			content: string;
+			document_id?: string;
+			context?: string;
+			metadata?: Record<string, string>;
+			tags?: string[];
+	  }
 	| { id?: string; type: "hindsight_reflect"; query: string; context?: string; tags?: string[]; tags_match?: string }
 
 	// Workflow gate answer (inbound response to a workflow_gate event)
@@ -552,18 +568,32 @@ export interface RpcUnattendedBudget {
  * disables token/tool-call/wall-time/cost aborts while still observing usage. */
 export type RpcUnattendedBudgetMode = "bounded" | "unbounded";
 
-export interface RpcUnattendedDeclaration {
+interface RpcUnattendedDeclarationBase {
 	/** Identity of the operating external agent, recorded in the audit trail. */
 	actor: string;
-	/** Enforcement mode. Omitted ⇒ `bounded` (back-compat). */
-	budget_mode?: RpcUnattendedBudgetMode;
-	/** Required for `bounded` mode; ignored/omitted for `unbounded`. */
-	budget?: RpcUnattendedBudget;
 	/** Coarse command scopes the agent may use (maps to BridgeCommandScope). */
 	scopes: string[];
 	/** Action classes the agent is allowed to perform (default-deny otherwise). */
 	action_allowlist: string[];
 }
+
+/** Bounded declaration: a numeric budget is required and all caps are enforced. */
+export interface RpcBoundedUnattendedDeclaration extends RpcUnattendedDeclarationBase {
+	/** Omitted ⇒ `bounded` (back-compat). */
+	budget_mode?: "bounded";
+	budget: RpcUnattendedBudget;
+}
+
+/** Unbounded declaration: no numeric budget; cost/token/tool/wall aborts are
+ * disabled while usage is still observed (#318/#319 D3). */
+export interface RpcUnboundedUnattendedDeclaration extends RpcUnattendedDeclarationBase {
+	budget_mode: "unbounded";
+	budget?: undefined;
+}
+
+/** Discriminated union over `budget_mode`: bounded requires a budget; unbounded
+ * forbids one. The public type now rejects invalid bounded/unbounded shapes. */
+export type RpcUnattendedDeclaration = RpcBoundedUnattendedDeclaration | RpcUnboundedUnattendedDeclaration;
 
 export interface RpcUnattendedAccepted {
 	run_id: string;
@@ -588,6 +618,8 @@ export interface RpcUnattendedAuditFilter {
 	since?: string;
 	/** ISO-8601 upper bound (inclusive). */
 	until?: string;
+	/** Monotonic lower bound: only records after this 1-based log sequence. */
+	since_seq?: number;
 }
 
 /**

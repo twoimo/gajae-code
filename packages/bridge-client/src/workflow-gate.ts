@@ -36,18 +36,38 @@ export interface WorkflowGateResponse {
 	idempotency_key?: string;
 }
 
-/** Unattended declaration carried on the bridge handshake (#318/#319). */
-export interface UnattendedDeclaration {
+/** Numeric budget caps for bounded unattended mode. */
+export interface UnattendedBudget {
+	max_tokens: number;
+	max_tool_calls: number;
+	max_wall_time_ms: number;
+	max_cost_usd: number;
+}
+
+/** Budget enforcement mode: `bounded` (default) enforces caps; `unbounded`
+ * disables token/tool-call/wall-time/cost aborts while still observing usage. */
+export type UnattendedBudgetMode = "bounded" | "unbounded";
+
+interface UnattendedDeclarationBase {
 	actor: string;
-	budget: {
-		max_tokens: number;
-		max_tool_calls: number;
-		max_wall_time_ms: number;
-		max_cost_usd: number;
-	};
 	scopes: string[];
 	action_allowlist: string[];
 }
+
+/** Bounded declaration: a numeric budget is required. */
+export interface BoundedUnattendedDeclaration extends UnattendedDeclarationBase {
+	budget_mode?: "bounded";
+	budget: UnattendedBudget;
+}
+
+/** Unbounded declaration: no numeric budget (#318/#319 D3). */
+export interface UnboundedUnattendedDeclaration extends UnattendedDeclarationBase {
+	budget_mode: "unbounded";
+	budget?: undefined;
+}
+
+/** Unattended declaration carried on the bridge handshake (#318/#319). */
+export type UnattendedDeclaration = BoundedUnattendedDeclaration | UnboundedUnattendedDeclaration;
 
 /** Type guard: is this bridge frame a fully-formed workflow_gate frame? */
 export function isWorkflowGateFrame(frame: BridgeFrame): frame is BridgeFrame<WorkflowGate> {

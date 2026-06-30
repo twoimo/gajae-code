@@ -13,14 +13,16 @@ function budget(overrides: Partial<RpcUnattendedBudget> = {}): RpcUnattendedBudg
 	return { max_tokens: 100, max_tool_calls: 2, max_wall_time_ms: 1_000, max_cost_usd: 1, ...overrides };
 }
 
-function decl(overrides: Partial<RpcUnattendedDeclaration> = {}): RpcUnattendedDeclaration {
+function decl(overrides: Record<string, unknown> = {}): RpcUnattendedDeclaration {
+	// Red-team factory: deliberately builds invalid/edge declarations to test
+	// runtime rejection, so it casts to the discriminated union.
 	return {
 		actor: "redteam",
 		budget: budget(),
 		scopes: ["prompt", "control"],
 		action_allowlist: ["bash.readonly"],
 		...overrides,
-	};
+	} as RpcUnattendedDeclaration;
 }
 
 function ctx(

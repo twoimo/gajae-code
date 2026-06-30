@@ -231,12 +231,7 @@ export class UnattendedRunController {
 				"unattended mode requires an explicit provider token/cost accounting capability",
 			);
 		}
-		const controller = new UnattendedRunController(
-			d as unknown as RpcUnattendedDeclaration,
-			ctx,
-			budget,
-			unbounded,
-		);
+		const controller = new UnattendedRunController(d as unknown as RpcUnattendedDeclaration, ctx, budget, unbounded);
 		ctx.audit?.({ event: "unattended_negotiated", run_id: ctx.runId, actor: controller.actor });
 		return controller;
 	}

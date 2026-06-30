@@ -72,6 +72,19 @@ describe("UnattendedAuditLog", () => {
 		]);
 	});
 
+	it("filters by since_seq (monotonic 1-based log sequence)", () => {
+		const log = new UnattendedAuditLog(tmpFile());
+		log.record({ run_id: "r", event: "e1", outcome: "info", dedupe_key: "k1" });
+		log.record({ run_id: "r", event: "e2", outcome: "info", dedupe_key: "k2" });
+		log.record({ run_id: "r", event: "e3", outcome: "info", dedupe_key: "k3" });
+		// since_seq:1 drops the first record; since_seq:0 keeps all.
+		expect(log.query({ since_seq: 1 }).map(r => r.event)).toEqual(["e2", "e3"]);
+		expect(log.query({ since_seq: 0 }).map(r => r.event)).toEqual(["e1", "e2", "e3"]);
+		expect(log.query({ since_seq: 3 })).toEqual([]);
+		// Composes with other filters.
+		expect(log.export({ since_seq: 1, event: "e3" }).map(r => r.event)).toEqual(["e3"]);
+	});
+
 	it("redacts answers when configured but keeps the hash", () => {
 		const log = new UnattendedAuditLog(tmpFile(), { redactAnswers: true });
 		const rec = log.record({

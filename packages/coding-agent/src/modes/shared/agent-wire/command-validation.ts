@@ -100,8 +100,15 @@ function unattendedDeclaration(value: unknown): boolean {
 
 function unattendedAuditFilter(value: unknown): boolean {
 	if (!isRecord(value)) return false;
-	const keys = ["run_id", "session_id", "actor", "gate_id", "outcome", "event", "since", "until"] as const;
-	return keys.every(k => value[k] === undefined || typeof value[k] === "string");
+	const stringKeys = ["run_id", "session_id", "actor", "gate_id", "outcome", "event", "since", "until"] as const;
+	if (!stringKeys.every(k => value[k] === undefined || typeof value[k] === "string")) return false;
+	if (
+		value.since_seq !== undefined &&
+		(typeof value.since_seq !== "number" || !Number.isInteger(value.since_seq) || value.since_seq < 0)
+	) {
+		return false;
+	}
+	return true;
 }
 
 export function isRpcCommand(value: unknown): value is RpcCommand {

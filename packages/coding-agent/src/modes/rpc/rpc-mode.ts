@@ -18,13 +18,13 @@ import type {
 	ExtensionWidgetOptions,
 } from "../../extensibility/extensions";
 import { workflowGatePath } from "../../gjc-runtime/session-layout";
+import { computeBankScope } from "../../hindsight/bank";
+import { createHindsightClient } from "../../hindsight/client";
+import { isHindsightConfigured, loadHindsightConfig } from "../../hindsight/config";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { initializeExtensions } from "../runtime-init";
 import { dispatchRpcCommand } from "../shared/agent-wire/command-dispatch";
-import { computeBankScope } from "../../hindsight/bank";
-import { createHindsightClient } from "../../hindsight/client";
-import { isHindsightConfigured, loadHindsightConfig } from "../../hindsight/config";
 import {
 	AgentWireCompactEventEncoder,
 	AgentWireFrameSequencer,
@@ -650,7 +650,6 @@ export async function runRpcMode(
 				: toAgentWireEventFrame(event, eventSequencer),
 		);
 	});
-
 
 	// Advisory Hindsight memory over RPC. The leader resolves the client + bank
 	// scope lazily; when memory is not configured the fns stay undefined so

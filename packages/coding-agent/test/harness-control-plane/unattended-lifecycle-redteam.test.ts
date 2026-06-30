@@ -61,17 +61,19 @@ class ScriptedMemoryAgent {
 	}
 }
 
-function makeHarness(overrides: Partial<RpcUnattendedDeclaration> = {}) {
+function makeHarness(overrides: Record<string, unknown> = {}) {
 	const dir = mkdtempSync(path.join(tmpdir(), "unattended-redteam-"));
 	const runId = `redteam-${path.basename(dir)}`;
 	const sessionId = "redteam-session";
-	const declaration: RpcUnattendedDeclaration = {
+	// Red-team factory: builds varied declarations (bounded/unbounded/edge) for
+	// runtime testing, so it casts to the discriminated union.
+	const declaration = {
 		...DECLARATION,
 		...overrides,
 		budget: overrides.budget ?? DECLARATION.budget,
 		scopes: overrides.scopes ?? DECLARATION.scopes,
 		action_allowlist: overrides.action_allowlist ?? DECLARATION.action_allowlist,
-	};
+	} as RpcUnattendedDeclaration;
 	const auditLog = new UnattendedAuditLog(path.join(dir, "audit", "run.jsonl"));
 	const audit = (event: UnattendedAuditEvent) => {
 		if (event.event === "unattended_negotiated") {

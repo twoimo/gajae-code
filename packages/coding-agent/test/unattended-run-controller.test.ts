@@ -9,14 +9,17 @@ import {
 	UnattendedRunController,
 } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-run-controller";
 
-function decl(overrides: Partial<RpcUnattendedDeclaration> = {}): RpcUnattendedDeclaration {
+function decl(overrides: Record<string, unknown> = {}): RpcUnattendedDeclaration {
+	// Test factory: deliberately produces both bounded and unbounded shapes (and
+	// red-team edge combinations), so it builds a loose object and casts to the
+	// discriminated union — runtime negotiation/validation is what's under test.
 	return {
 		actor: "hermes",
 		budget: { max_tokens: 1000, max_tool_calls: 3, max_wall_time_ms: 10_000, max_cost_usd: 5 },
 		scopes: ["prompt", "control"],
 		action_allowlist: ["bash.readonly"],
 		...overrides,
-	};
+	} as RpcUnattendedDeclaration;
 }
 
 function ctx(
@@ -294,7 +297,10 @@ describe("UnattendedRunController unbounded mode (D3)", () => {
 	});
 
 	it("keeps enforcing budgets in bounded mode (back-compat)", () => {
-		const controller = UnattendedRunController.negotiate(decl({ budget: { max_tokens: 5, max_tool_calls: 1, max_wall_time_ms: 1000, max_cost_usd: 1 } }), ctx());
+		const controller = UnattendedRunController.negotiate(
+			decl({ budget: { max_tokens: 5, max_tool_calls: 1, max_wall_time_ms: 1000, max_cost_usd: 1 } }),
+			ctx(),
+		);
 		expect(controller.unbounded).toBe(false);
 		expect(() => controller.recordTokens(10)).toThrow(UnattendedBudgetExceededError);
 	});

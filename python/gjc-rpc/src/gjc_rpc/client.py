@@ -865,8 +865,13 @@ class RpcClient:
         payload = self._request("negotiate_unattended", declaration=cast(JsonValue, declaration))
         return parse_unattended_accepted(payload)
 
-    def get_unattended_audit(self, *, filter: dict[str, str] | None = None) -> JsonObject:
-        """Retrieve the unattended audit trail (answers redacted; corrupt logs reported via `integrity`)."""
+    def get_unattended_audit(self, *, filter: dict[str, str | int] | None = None) -> JsonObject:
+        """Retrieve the unattended audit trail (answers redacted; corrupt logs reported via `integrity`).
+
+        ``filter`` keys are optional: string fields ``run_id``, ``session_id``,
+        ``actor``, ``gate_id``, ``outcome``, ``event``, ``since``, ``until`` and
+        the integer ``since_seq`` (monotonic 1-based log-sequence lower bound).
+        """
         kwargs: dict[str, JsonValue] = {}
         if filter is not None:
             kwargs["filter"] = cast(JsonValue, dict(filter))
