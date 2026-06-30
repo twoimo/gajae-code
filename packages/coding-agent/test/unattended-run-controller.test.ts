@@ -259,3 +259,43 @@ describe("UnattendedRunController budget accounting", () => {
 		expect(settled).toMatchObject({ status: "abort_failed", failures: 1 });
 	});
 });
+
+describe("UnattendedRunController unbounded mode (D3)", () => {
+	it("negotiates without a budget and tolerates missing provider accounting", () => {
+		const controller = UnattendedRunController.negotiate(
+			{ actor: "git-daemon", budget_mode: "unbounded", scopes: ["prompt"], action_allowlist: ["bash.readonly"] },
+			ctx({ providerSupportsTokenCostMetrics: false }),
+		);
+		expect(controller.unbounded).toBe(true);
+		expect(controller.budget).toBeNull();
+		expect(controller.remainingWallTimeMs()).toBe(Number.POSITIVE_INFINITY);
+	});
+
+	it("never breaches on huge token/cost/tool-call usage but still observes it", () => {
+		const controller = UnattendedRunController.negotiate(
+			decl({ budget_mode: "unbounded", budget: undefined }),
+			ctx(),
+		);
+		for (let i = 0; i < 50; i++) controller.preflightToolCall();
+		controller.recordTokens(10_000_000);
+		controller.recordCost(9999);
+		controller.checkWallTime();
+		const snap = controller.usageSnapshot();
+		expect(snap.toolCalls).toBe(50);
+		expect(snap.tokens).toBe(10_000_000);
+		expect(snap.costUsd).toBe(9999);
+		expect(controller.isAborted).toBe(false);
+	});
+
+	it("rejects an invalid budget_mode value", () => {
+		expect(() =>
+			UnattendedRunController.negotiate(decl({ budget_mode: "infinite" as never, budget: undefined }), ctx()),
+		).toThrow(UnattendedNegotiationError);
+	});
+
+	it("keeps enforcing budgets in bounded mode (back-compat)", () => {
+		const controller = UnattendedRunController.negotiate(decl({ budget: { max_tokens: 5, max_tool_calls: 1, max_wall_time_ms: 1000, max_cost_usd: 1 } }), ctx());
+		expect(controller.unbounded).toBe(false);
+		expect(() => controller.recordTokens(10)).toThrow(UnattendedBudgetExceededError);
+	});
+});

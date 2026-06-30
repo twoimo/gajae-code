@@ -141,7 +141,9 @@ export class UnattendedRunController {
 	readonly runId: string;
 	readonly sessionId?: string;
 	readonly actor: string;
-	readonly budget: RpcUnattendedBudget;
+	readonly budget: RpcUnattendedBudget | null;
+	/** When true, all cost/token/tool-call/wall-time aborts are disabled (usage still observed). */
+	readonly unbounded: boolean;
 	readonly scopes: ReadonlySet<string>;
 	readonly actionAllowlist: ReadonlySet<string>;
 
@@ -153,11 +155,17 @@ export class UnattendedRunController {
 	private aborted = false;
 	private abortPromise?: Promise<void>;
 
-	private constructor(declaration: RpcUnattendedDeclaration, ctx: NegotiateContext, budget: RpcUnattendedBudget) {
+	private constructor(
+		declaration: RpcUnattendedDeclaration,
+		ctx: NegotiateContext,
+		budget: RpcUnattendedBudget | null,
+		unbounded: boolean,
+	) {
 		this.runId = ctx.runId;
 		this.sessionId = ctx.sessionId;
 		this.actor = declaration.actor;
 		this.budget = budget;
+		this.unbounded = unbounded;
 		this.scopes = new Set([...declaration.scopes, ...MANDATORY_FLOOR_COMMAND_SCOPES]);
 		this.actionAllowlist = new Set([
 			...declaration.action_allowlist,
@@ -203,16 +211,32 @@ export class UnattendedRunController {
 				`declaration.action_allowlist contains unknown action class(es): ${unknownActions.join(", ")}`,
 			);
 		}
-		const budget = validateBudget(d.budget);
-		// Reject providers that cannot account for tokens/cost (fail-closed): require
-		// an explicit positive capability signal — omitted/unknown is refused too.
-		if (ctx.providerSupportsTokenCostMetrics !== true) {
+		const budgetMode = d.budget_mode ?? "bounded";
+		if (budgetMode !== "bounded" && budgetMode !== "unbounded") {
+			throw new UnattendedNegotiationError(
+				"invalid_unattended_declaration",
+				`declaration.budget_mode must be "bounded" or "unbounded"`,
+			);
+		}
+		const unbounded = budgetMode === "unbounded";
+		// Unbounded mode never aborts on cost/token/wall-time, so a numeric budget is
+		// neither required nor enforced; usage is still observed best-effort.
+		const budget = unbounded ? null : validateBudget(d.budget);
+		// Bounded mode rejects providers that cannot account for tokens/cost
+		// (fail-closed). Unbounded mode tolerates missing accounting since it never
+		// aborts on a cap; it still records whatever usage the provider reports.
+		if (!unbounded && ctx.providerSupportsTokenCostMetrics !== true) {
 			throw new UnattendedNegotiationError(
 				"unsupported_budget_metric",
 				"unattended mode requires an explicit provider token/cost accounting capability",
 			);
 		}
-		const controller = new UnattendedRunController(d as unknown as RpcUnattendedDeclaration, ctx, budget);
+		const controller = new UnattendedRunController(
+			d as unknown as RpcUnattendedDeclaration,
+			ctx,
+			budget,
+			unbounded,
+		);
 		ctx.audit?.({ event: "unattended_negotiated", run_id: ctx.runId, actor: controller.actor });
 		return controller;
 	}
@@ -226,6 +250,7 @@ export class UnattendedRunController {
 	}
 
 	remainingWallTimeMs(): number {
+		if (this.unbounded || this.budget === null) return Number.POSITIVE_INFINITY;
 		return Math.max(0, this.budget.max_wall_time_ms - (this.now() - this.startedAt));
 	}
 
@@ -282,6 +307,7 @@ export class UnattendedRunController {
 
 	/** Pre-turn estimate: refuse to start a turn that would obviously breach. */
 	preTurnEstimate(estimate: { tokens?: number; costUsd?: number }): void {
+		if (this.unbounded || this.budget === null) return;
 		this.checkWallTime("pre-turn estimate");
 		if (estimate.tokens !== undefined) {
 			if (!Number.isFinite(estimate.tokens)) {
@@ -305,6 +331,10 @@ export class UnattendedRunController {
 
 	/** Reserve one tool-call unit BEFORE any side effect; breach if it would exceed. */
 	preflightToolCall(phase = "tool-call preflight"): void {
+		if (this.unbounded || this.budget === null) {
+			this.usage.toolCalls += 1;
+			return;
+		}
 		this.checkWallTime(phase);
 		if (this.usage.toolCalls + 1 > this.budget.max_tool_calls) {
 			this.breach("tool_calls", this.budget.max_tool_calls, this.usage.toolCalls + 1, phase);
@@ -314,6 +344,10 @@ export class UnattendedRunController {
 
 	/** Post-turn reconciliation of actual token usage. Fails closed on non-finite. */
 	recordTokens(tokens: number, phase = "post-turn reconciliation"): void {
+		if (this.unbounded || this.budget === null) {
+			if (Number.isFinite(tokens)) this.usage.tokens += Math.max(0, tokens);
+			return;
+		}
 		if (!Number.isFinite(tokens)) {
 			void this.fireAbort(`accounting:tokens`);
 			throw new UnattendedAccountingError("tokens", phase, tokens);
@@ -325,6 +359,10 @@ export class UnattendedRunController {
 	}
 
 	recordCost(costUsd: number, phase = "post-turn reconciliation"): void {
+		if (this.unbounded || this.budget === null) {
+			if (Number.isFinite(costUsd)) this.usage.costUsd += Math.max(0, costUsd);
+			return;
+		}
 		if (!Number.isFinite(costUsd)) {
 			void this.fireAbort(`accounting:cost`);
 			throw new UnattendedAccountingError("cost", phase, costUsd);
@@ -343,6 +381,7 @@ export class UnattendedRunController {
 
 	/** Wall-time check; call before/inside long operations. */
 	checkWallTime(phase = "wall-time"): void {
+		if (this.unbounded || this.budget === null) return;
 		const elapsed = this.now() - this.startedAt;
 		if (elapsed > this.budget.max_wall_time_ms) {
 			this.breach("wall_time", this.budget.max_wall_time_ms, elapsed, phase);

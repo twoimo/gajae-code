@@ -69,6 +69,23 @@ class TestUnattendedAccepted(unittest.TestCase):
         self.assertEqual(acc.scopes, ("prompt", "control"))
         self.assertEqual(acc.action_allowlist, ("command.prompt",))
         self.assertEqual(acc.accepted_at, "2026-01-01T00:00:00Z")
+        self.assertEqual(acc.budget_mode, "bounded")
+
+    def test_parse_unbounded(self) -> None:
+        acc = parse_unattended_accepted(
+            {
+                "run_id": "r2",
+                "actor": "git-daemon",
+                "budget_mode": "unbounded",
+                "budget": None,
+                "scopes": ["prompt", "bash"],
+                "action_allowlist": ["bash.mutating"],
+                "accepted_at": "2026-01-01T00:00:00Z",
+            }
+        )
+        self.assertEqual(acc.budget_mode, "unbounded")
+        self.assertIsNone(acc.budget)
+        self.assertEqual(acc.scopes, ("prompt", "bash"))
 
 
 class TestLoginProvider(unittest.TestCase):

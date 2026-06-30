@@ -39,6 +39,10 @@ export const BRIDGE_CLIENT_COMMAND_TYPES = [
 	"get_login_providers",
 	"login",
 	"negotiate_unattended",
+	"get_unattended_audit",
+	"hindsight_recall",
+	"hindsight_retain",
+	"hindsight_reflect",
 ] as const;
 
 export type BridgeClientCommandType = (typeof BRIDGE_CLIENT_COMMAND_TYPES)[number];

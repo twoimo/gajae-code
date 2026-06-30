@@ -59,6 +59,20 @@ export interface RpcCommandDispatchContext {
 	hostUriRegistry: RpcHostUriRegistry;
 	createUiContext: () => Pick<ExtensionUIContext, "notify">;
 	unattendedControlPlane?: RpcUnattendedControlPlane;
+	/** Export the unattended audit trail (corrupt-log + redaction owned by the leader). */
+	exportUnattendedAudit?: (
+		filter?: import("../../rpc/rpc-types").RpcUnattendedAuditFilter,
+	) => import("../../rpc/rpc-types").RpcUnattendedAuditExport;
+	/** Advisory memory ops (leader resolves the Hindsight client + bank scope; absent ⇒ unavailable). */
+	hindsightRecall?: (
+		cmd: Extract<RpcCommand, { type: "hindsight_recall" }>,
+	) => Promise<import("../../rpc/rpc-types").RpcHindsightRecallResult>;
+	hindsightRetain?: (
+		cmd: Extract<RpcCommand, { type: "hindsight_retain" }>,
+	) => Promise<import("../../rpc/rpc-types").RpcHindsightRetainResult>;
+	hindsightReflect?: (
+		cmd: Extract<RpcCommand, { type: "hindsight_reflect" }>,
+	) => Promise<import("../../rpc/rpc-types").RpcHindsightReflectResult>;
 }
 
 export function normalizeHostToolDefinitions(tools: RpcHostToolDefinition[]): RpcHostToolDefinition[] {
@@ -114,7 +128,18 @@ export async function dispatchRpcCommand(
 	command: RpcCommand,
 	context: RpcCommandDispatchContext,
 ): Promise<RpcResponse> {
-	const { session, output, hostToolRegistry, hostUriRegistry, createUiContext, unattendedControlPlane } = context;
+	const {
+		session,
+		output,
+		hostToolRegistry,
+		hostUriRegistry,
+		createUiContext,
+		unattendedControlPlane,
+		exportUnattendedAudit,
+		hindsightRecall,
+		hindsightRetain,
+		hindsightReflect,
+	} = context;
 	const id = command.id;
 	const typedError = (cmd: string, err: unknown): RpcResponse => rpcError(id, cmd, serializeRpcDispatchError(err));
 	const preflight = (): RpcResponse | undefined => {
@@ -226,6 +251,46 @@ export async function dispatchRpcCommand(
 			case "get_pending_workflow_gates": {
 				const gates = unattendedControlPlane?.listPendingGates?.() ?? [];
 				return rpcSuccess(id, "get_pending_workflow_gates", { gates });
+			}
+
+			case "get_unattended_audit": {
+				if (!exportUnattendedAudit) {
+					return rpcError(id, "get_unattended_audit", "unattended audit is not available in this session");
+				}
+				return rpcSuccess(id, "get_unattended_audit", exportUnattendedAudit(command.filter));
+			}
+
+			case "hindsight_recall": {
+				if (!hindsightRecall) {
+					return rpcError(id, "hindsight_recall", "hindsight memory is not available in this session");
+				}
+				try {
+					return rpcSuccess(id, "hindsight_recall", await hindsightRecall(command));
+				} catch (err) {
+					return rpcError(id, "hindsight_recall", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "hindsight_retain": {
+				if (!hindsightRetain) {
+					return rpcError(id, "hindsight_retain", "hindsight memory is not available in this session");
+				}
+				try {
+					return rpcSuccess(id, "hindsight_retain", await hindsightRetain(command));
+				} catch (err) {
+					return rpcError(id, "hindsight_retain", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "hindsight_reflect": {
+				if (!hindsightReflect) {
+					return rpcError(id, "hindsight_reflect", "hindsight memory is not available in this session");
+				}
+				try {
+					return rpcSuccess(id, "hindsight_reflect", await hindsightReflect(command));
+				} catch (err) {
+					return rpcError(id, "hindsight_reflect", err instanceof Error ? err.message : String(err));
+				}
 			}
 
 			case "set_host_uri_schemes": {

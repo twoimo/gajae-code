@@ -1,0 +1,33 @@
+[package]
+name = "git-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# Deterministic + contract core (keys, store, gate, runner contract, memory).
+# The async transports (GitHub HTTP, gjc-rpc) implement the ForgeAdapter /
+# WorkRunner traits in later slices; the lib stays unit-testable without them.
+crate-type = ["rlib"]
+
+[[bin]]
+name = "git-daemon"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
+hmac = "0.12"
+tokio = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

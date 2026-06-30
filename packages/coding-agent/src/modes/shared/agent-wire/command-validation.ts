@@ -29,6 +29,14 @@ function stringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every(item => typeof item === "string");
 }
 
+function optionalStringArray(value: unknown): boolean {
+	return value === undefined || stringArray(value);
+}
+
+function optionalStringRecord(value: unknown): boolean {
+	return value === undefined || (isRecord(value) && Object.values(value).every(v => typeof v === "string"));
+}
+
 const GET_STATE_INCLUDES = new Set(["tools", "dumpTools", "systemPrompt"]);
 
 function optionalGetStateInclude(value: unknown): boolean {
@@ -82,13 +90,18 @@ function unattendedBudget(value: unknown): boolean {
 }
 
 function unattendedDeclaration(value: unknown): boolean {
-	return (
-		isRecord(value) &&
-		typeof value.actor === "string" &&
-		unattendedBudget(value.budget) &&
-		stringArray(value.scopes) &&
-		stringArray(value.action_allowlist)
-	);
+	if (!isRecord(value) || typeof value.actor !== "string") return false;
+	if (!stringArray(value.scopes) || !stringArray(value.action_allowlist)) return false;
+	const mode = value.budget_mode ?? "bounded";
+	if (mode !== "bounded" && mode !== "unbounded") return false;
+	// Unbounded declarations omit/ignore the numeric budget; bounded requires it.
+	return mode === "unbounded" || unattendedBudget(value.budget);
+}
+
+function unattendedAuditFilter(value: unknown): boolean {
+	if (!isRecord(value)) return false;
+	const keys = ["run_id", "session_id", "actor", "gate_id", "outcome", "event", "since", "until"] as const;
+	return keys.every(k => value[k] === undefined || typeof value[k] === "string");
 }
 
 export function isRpcCommand(value: unknown): value is RpcCommand {
@@ -175,6 +188,31 @@ export function isRpcCommand(value: unknown): value is RpcCommand {
 			return stringField(value, "providerId");
 		case "negotiate_unattended":
 			return unattendedDeclaration(value.declaration);
+		case "get_unattended_audit":
+			return value.filter === undefined || unattendedAuditFilter(value.filter);
+		case "hindsight_recall":
+			return (
+				stringField(value, "query") &&
+				optionalStringArray(value.types) &&
+				(value.max_tokens === undefined || typeof value.max_tokens === "number") &&
+				optionalStringArray(value.tags) &&
+				optionalString(value.tags_match)
+			);
+		case "hindsight_retain":
+			return (
+				stringField(value, "content") &&
+				optionalString(value.document_id) &&
+				optionalString(value.context) &&
+				optionalStringRecord(value.metadata) &&
+				optionalStringArray(value.tags)
+			);
+		case "hindsight_reflect":
+			return (
+				stringField(value, "query") &&
+				optionalString(value.context) &&
+				optionalStringArray(value.tags) &&
+				optionalString(value.tags_match)
+			);
 		case "workflow_gate_response":
 			return stringField(value, "gate_id") && "answer" in value && optionalString(value.idempotency_key);
 	}

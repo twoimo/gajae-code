@@ -68,6 +68,8 @@ export type BridgeHandshakeResponse = BridgeHandshakeAccepted | BridgeHandshakeR
 export function isUnattendedDeclarationShape(value: unknown): value is RpcUnattendedDeclaration {
 	if (!value || typeof value !== "object") return false;
 	const d = value as Record<string, unknown>;
+	const mode = d.budget_mode ?? "bounded";
+	if (mode !== "bounded" && mode !== "unbounded") return false;
 	const b = d.budget as Record<string, unknown> | undefined;
 	const budgetOk =
 		!!b &&
@@ -76,10 +78,11 @@ export function isUnattendedDeclarationShape(value: unknown): value is RpcUnatte
 		["max_tokens", "max_tool_calls", "max_wall_time_ms", "max_cost_usd"].every(
 			k => typeof b[k] === "number" && Number.isFinite(b[k] as number) && (b[k] as number) > 0,
 		);
+	// Unbounded mode omits/ignores the numeric budget; bounded mode requires it.
+	if (mode === "bounded" && !budgetOk) return false;
 	return (
 		typeof d.actor === "string" &&
 		d.actor.trim() !== "" &&
-		budgetOk &&
 		Array.isArray(d.scopes) &&
 		d.scopes.every(s => typeof s === "string") &&
 		Array.isArray(d.action_allowlist) &&

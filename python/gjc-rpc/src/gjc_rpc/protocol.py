@@ -775,10 +775,11 @@ class UnattendedBudget:
 class UnattendedAccepted:
     run_id: str
     actor: str
-    budget: UnattendedBudget
+    budget: UnattendedBudget | None
     scopes: tuple[str, ...]
     action_allowlist: tuple[str, ...]
     accepted_at: str
+    budget_mode: Literal["bounded", "unbounded"] = "bounded"
 
 
 @dataclass(slots=True, frozen=True)
@@ -795,22 +796,30 @@ class HandoffResult:
 
 
 def parse_unattended_accepted(payload: JsonObject) -> UnattendedAccepted:
+    mode_raw = payload.get("budget_mode")
+    budget_mode: Literal["bounded", "unbounded"] = "unbounded" if mode_raw == "unbounded" else "bounded"
     budget_payload = payload.get("budget")
-    budget_dict = cast(JsonObject, budget_payload) if isinstance(budget_payload, dict) else {}
     scopes_payload = payload.get("scopes")
     actions_payload = payload.get("action_allowlist")
-    return UnattendedAccepted(
-        run_id=_require_str(payload, "run_id"),
-        actor=str(payload.get("actor", "")),
-        budget=UnattendedBudget(
+    budget: UnattendedBudget | None
+    if budget_mode == "unbounded" or not isinstance(budget_payload, dict):
+        budget = None
+    else:
+        budget_dict = cast(JsonObject, budget_payload)
+        budget = UnattendedBudget(
             max_tokens=float(budget_dict.get("max_tokens", 0)),
             max_tool_calls=float(budget_dict.get("max_tool_calls", 0)),
             max_wall_time_ms=float(budget_dict.get("max_wall_time_ms", 0)),
             max_cost_usd=float(budget_dict.get("max_cost_usd", 0)),
-        ),
+        )
+    return UnattendedAccepted(
+        run_id=_require_str(payload, "run_id"),
+        actor=str(payload.get("actor", "")),
+        budget=budget,
         scopes=tuple(str(s) for s in scopes_payload) if isinstance(scopes_payload, list) else (),
         action_allowlist=tuple(str(a) for a in actions_payload) if isinstance(actions_payload, list) else (),
         accepted_at=str(payload.get("accepted_at", "")),
+        budget_mode=budget_mode,
     )
 
 

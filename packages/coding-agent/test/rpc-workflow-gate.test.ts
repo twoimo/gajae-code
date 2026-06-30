@@ -16,6 +16,30 @@ describe("RPC workflow_gate contract", () => {
 		expect(scopeForRpcCommand("workflow_gate_response")).toBe("control");
 	});
 
+	it("recognizes, scopes, and validates the git-daemon protocol commands", () => {
+		for (const t of ["get_unattended_audit", "hindsight_recall", "hindsight_retain", "hindsight_reflect"] as const) {
+			expect(isRpcCommandType(t)).toBe(true);
+		}
+		expect(scopeForRpcCommand("get_unattended_audit")).toBe("message:read");
+		expect(scopeForRpcCommand("hindsight_recall")).toBe("message:read");
+		expect(scopeForRpcCommand("hindsight_reflect")).toBe("message:read");
+		expect(scopeForRpcCommand("hindsight_retain")).toBe("control");
+		// Validation: unbounded declaration (no numeric budget) is accepted.
+		expect(
+			isRpcCommand({
+				type: "negotiate_unattended",
+				declaration: { actor: "git-daemon", budget_mode: "unbounded", scopes: [], action_allowlist: [] },
+			}),
+		).toBe(true);
+		expect(isRpcCommand({ type: "get_unattended_audit" })).toBe(true);
+		expect(isRpcCommand({ type: "get_unattended_audit", filter: { outcome: "denied" } })).toBe(true);
+		expect(isRpcCommand({ type: "hindsight_recall", query: "x", tags: ["a"] })).toBe(true);
+		expect(isRpcCommand({ type: "hindsight_recall" })).toBe(false); // missing query
+		expect(isRpcCommand({ type: "hindsight_retain", content: "note" })).toBe(true);
+		expect(isRpcCommand({ type: "hindsight_retain" })).toBe(false); // missing content
+		expect(isRpcCommand({ type: "hindsight_reflect", query: "y" })).toBe(true);
+	});
+
 	it("validates negotiate_unattended declarations (fail-closed shape)", () => {
 		const ok = {
 			type: "negotiate_unattended",

@@ -239,6 +239,7 @@ export class UnattendedSessionControlPlane implements RpcUnattendedControlPlane,
 		return {
 			run_id: this.opts.runId,
 			actor: controller.actor,
+			budget_mode: controller.unbounded ? "unbounded" : "bounded",
 			budget: controller.budget,
 			scopes: [...controller.scopes],
 			action_allowlist: [...controller.actionAllowlist],

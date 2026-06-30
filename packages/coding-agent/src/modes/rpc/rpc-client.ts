@@ -29,6 +29,11 @@ import type {
 	RpcResponse,
 	RpcSessionState,
 	RpcUnattendedAccepted,
+	RpcUnattendedAuditExport,
+	RpcUnattendedAuditFilter,
+	RpcHindsightRecallResult,
+	RpcHindsightReflectResult,
+	RpcHindsightRetainResult,
 	RpcUnattendedDeclaration,
 	RpcWorkflowGate,
 	RpcWorkflowGateResolution,
@@ -573,6 +578,39 @@ export class RpcClient {
 	 */
 	async negotiateUnattended(declaration: RpcUnattendedDeclaration): Promise<RpcUnattendedAccepted> {
 		const response = await this.#send({ type: "negotiate_unattended", declaration });
+		return this.#getData(response);
+	}
+
+	/** Retrieve the unattended audit trail (answers redacted; corrupt logs reported via `integrity`). */
+	async getUnattendedAudit(filter?: RpcUnattendedAuditFilter): Promise<RpcUnattendedAuditExport> {
+		const response = await this.#send({ type: "get_unattended_audit", filter });
+		return this.#getData(response);
+	}
+
+	/** Recall advisory memories from the session's Hindsight bank. */
+	async hindsightRecall(
+		query: string,
+		options?: { types?: string[]; max_tokens?: number; tags?: string[]; tags_match?: string },
+	): Promise<RpcHindsightRecallResult> {
+		const response = await this.#send({ type: "hindsight_recall", query, ...options });
+		return this.#getData(response);
+	}
+
+	/** Retain an advisory memory into the session's Hindsight bank. */
+	async hindsightRetain(
+		content: string,
+		options?: { document_id?: string; context?: string; metadata?: Record<string, string>; tags?: string[] },
+	): Promise<RpcHindsightRetainResult> {
+		const response = await this.#send({ type: "hindsight_retain", content, ...options });
+		return this.#getData(response);
+	}
+
+	/** Reflect over the session's Hindsight bank. */
+	async hindsightReflect(
+		query: string,
+		options?: { context?: string; tags?: string[]; tags_match?: string },
+	): Promise<RpcHindsightReflectResult> {
+		const response = await this.#send({ type: "hindsight_reflect", query, ...options });
 		return this.#getData(response);
 	}
 

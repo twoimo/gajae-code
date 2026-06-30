@@ -48,6 +48,10 @@ const EXPECTED_RPC_COMMAND_TYPES: readonly RpcCommand["type"][] = [
 	"get_login_providers",
 	"login",
 	"negotiate_unattended",
+	"get_unattended_audit",
+	"hindsight_recall",
+	"hindsight_reflect",
+	"hindsight_retain",
 	"workflow_gate_response",
 ];
 

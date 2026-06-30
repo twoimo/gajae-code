@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar, cast
+from typing import Any, Callable, Generic, Literal, Mapping, Sequence, TypeVar, cast
 
 from .host_tools import HostTool, HostToolContext
 from .host_uris import HostUri, HostUriContext, normalize_read_result
@@ -841,28 +841,93 @@ class RpcClient:
         self,
         *,
         actor: str,
-        budget: UnattendedBudget,
         scopes: Sequence[str],
         action_allowlist: Sequence[str],
+        budget: UnattendedBudget | None = None,
+        budget_mode: Literal["bounded", "unbounded"] = "bounded",
     ) -> UnattendedAccepted:
-        payload = self._request(
-            "negotiate_unattended",
-            declaration=cast(
-                JsonValue,
-                {
-                    "actor": actor,
-                    "budget": {
-                        "max_tokens": budget.max_tokens,
-                        "max_tool_calls": budget.max_tool_calls,
-                        "max_wall_time_ms": budget.max_wall_time_ms,
-                        "max_cost_usd": budget.max_cost_usd,
-                    },
-                    "scopes": list(scopes),
-                    "action_allowlist": list(action_allowlist),
-                },
-            ),
-        )
+        declaration: dict[str, JsonValue] = {
+            "actor": actor,
+            "scopes": list(scopes),
+            "action_allowlist": list(action_allowlist),
+        }
+        if budget_mode == "unbounded":
+            declaration["budget_mode"] = "unbounded"
+        else:
+            if budget is None:
+                raise ValueError("bounded unattended mode requires a budget")
+            declaration["budget"] = {
+                "max_tokens": budget.max_tokens,
+                "max_tool_calls": budget.max_tool_calls,
+                "max_wall_time_ms": budget.max_wall_time_ms,
+                "max_cost_usd": budget.max_cost_usd,
+            }
+        payload = self._request("negotiate_unattended", declaration=cast(JsonValue, declaration))
         return parse_unattended_accepted(payload)
+
+    def get_unattended_audit(self, *, filter: dict[str, str] | None = None) -> JsonObject:
+        """Retrieve the unattended audit trail (answers redacted; corrupt logs reported via `integrity`)."""
+        kwargs: dict[str, JsonValue] = {}
+        if filter is not None:
+            kwargs["filter"] = cast(JsonValue, dict(filter))
+        return self._request("get_unattended_audit", **kwargs)
+
+    def hindsight_recall(
+        self,
+        query: str,
+        *,
+        types: Sequence[str] | None = None,
+        max_tokens: int | None = None,
+        tags: Sequence[str] | None = None,
+        tags_match: str | None = None,
+    ) -> JsonObject:
+        kwargs: dict[str, JsonValue] = {"query": query}
+        if types is not None:
+            kwargs["types"] = list(types)
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if tags is not None:
+            kwargs["tags"] = list(tags)
+        if tags_match is not None:
+            kwargs["tags_match"] = tags_match
+        return self._request("hindsight_recall", **kwargs)
+
+    def hindsight_retain(
+        self,
+        content: str,
+        *,
+        document_id: str | None = None,
+        context: str | None = None,
+        metadata: dict[str, str] | None = None,
+        tags: Sequence[str] | None = None,
+    ) -> JsonObject:
+        kwargs: dict[str, JsonValue] = {"content": content}
+        if document_id is not None:
+            kwargs["document_id"] = document_id
+        if context is not None:
+            kwargs["context"] = context
+        if metadata is not None:
+            kwargs["metadata"] = cast(JsonValue, dict(metadata))
+        if tags is not None:
+            kwargs["tags"] = list(tags)
+        return self._request("hindsight_retain", **kwargs)
+
+    def hindsight_reflect(
+        self,
+        query: str,
+        *,
+        context: str | None = None,
+        tags: Sequence[str] | None = None,
+        tags_match: str | None = None,
+    ) -> JsonObject:
+        kwargs: dict[str, JsonValue] = {"query": query}
+        if context is not None:
+            kwargs["context"] = context
+        if tags is not None:
+            kwargs["tags"] = list(tags)
+        if tags_match is not None:
+            kwargs["tags_match"] = tags_match
+        return self._request("hindsight_reflect", **kwargs)
 
     def handoff(self, custom_instructions: str | None = None) -> HandoffResult | None:
         payload = self._request("handoff", customInstructions=custom_instructions)

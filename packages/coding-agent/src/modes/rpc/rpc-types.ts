@@ -88,6 +88,10 @@ export type RpcCommand =
 
 	// Unattended control plane (#318/#319 declaration handled here at #315 contract level)
 	| { id?: string; type: "negotiate_unattended"; declaration: RpcUnattendedDeclaration }
+	| { id?: string; type: "get_unattended_audit"; filter?: RpcUnattendedAuditFilter }
+	| { id?: string; type: "hindsight_recall"; query: string; types?: string[]; max_tokens?: number; tags?: string[]; tags_match?: string }
+	| { id?: string; type: "hindsight_retain"; content: string; document_id?: string; context?: string; metadata?: Record<string, string>; tags?: string[] }
+	| { id?: string; type: "hindsight_reflect"; query: string; context?: string; tags?: string[]; tags_match?: string }
 
 	// Workflow gate answer (inbound response to a workflow_gate event)
 	| ({ id?: string; type: "workflow_gate_response" } & RpcWorkflowGateResponse);
@@ -251,6 +255,10 @@ export type RpcResponse =
 
 	// Unattended + workflow gates
 	| { id?: string; type: "response"; command: "negotiate_unattended"; success: true; data: RpcUnattendedAccepted }
+	| { id?: string; type: "response"; command: "get_unattended_audit"; success: true; data: RpcUnattendedAuditExport }
+	| { id?: string; type: "response"; command: "hindsight_recall"; success: true; data: RpcHindsightRecallResult }
+	| { id?: string; type: "response"; command: "hindsight_retain"; success: true; data: RpcHindsightRetainResult }
+	| { id?: string; type: "response"; command: "hindsight_reflect"; success: true; data: RpcHindsightReflectResult }
 	| {
 			id?: string;
 			type: "response";
@@ -540,10 +548,17 @@ export interface RpcUnattendedBudget {
 	max_cost_usd: number;
 }
 
+/** Budget enforcement mode. `bounded` (default) enforces all caps; `unbounded`
+ * disables token/tool-call/wall-time/cost aborts while still observing usage. */
+export type RpcUnattendedBudgetMode = "bounded" | "unbounded";
+
 export interface RpcUnattendedDeclaration {
 	/** Identity of the operating external agent, recorded in the audit trail. */
 	actor: string;
-	budget: RpcUnattendedBudget;
+	/** Enforcement mode. Omitted ⇒ `bounded` (back-compat). */
+	budget_mode?: RpcUnattendedBudgetMode;
+	/** Required for `bounded` mode; ignored/omitted for `unbounded`. */
+	budget?: RpcUnattendedBudget;
 	/** Coarse command scopes the agent may use (maps to BridgeCommandScope). */
 	scopes: string[];
 	/** Action classes the agent is allowed to perform (default-deny otherwise). */
@@ -553,10 +568,56 @@ export interface RpcUnattendedDeclaration {
 export interface RpcUnattendedAccepted {
 	run_id: string;
 	actor: string;
-	budget: RpcUnattendedBudget;
+	budget_mode: RpcUnattendedBudgetMode;
+	/** Populated for `bounded` mode; `null` when `unbounded`. */
+	budget: RpcUnattendedBudget | null;
 	scopes: string[];
 	action_allowlist: string[];
 	accepted_at: string;
+}
+
+/** Filter for `get_unattended_audit` (maps to the audit log's AuditQuery). */
+export interface RpcUnattendedAuditFilter {
+	run_id?: string;
+	session_id?: string;
+	actor?: string;
+	gate_id?: string;
+	outcome?: string;
+	event?: string;
+	/** ISO-8601 lower bound (inclusive). */
+	since?: string;
+	/** ISO-8601 upper bound (inclusive). */
+	until?: string;
+}
+
+/**
+ * Result of `get_unattended_audit`. `records` are append-only audit entries
+ * (answers already redacted when the log enables redaction). `integrity` reports
+ * an explicit failure when the on-disk log is corrupt, instead of silently
+ * returning partial/clean data.
+ */
+export interface RpcUnattendedAuditExport {
+	records: unknown[];
+	count: number;
+	redacted: boolean;
+	integrity: { ok: true } | { ok: false; error: string };
+}
+
+/** Result of `hindsight_recall` (pass-through of the Hindsight recall response). */
+export interface RpcHindsightRecallResult {
+	results: unknown[];
+	[key: string]: unknown;
+}
+
+/** Result of `hindsight_retain` (pass-through of the Hindsight retain response). */
+export interface RpcHindsightRetainResult {
+	[key: string]: unknown;
+}
+
+/** Result of `hindsight_reflect` (pass-through of the Hindsight reflect response). */
+export interface RpcHindsightReflectResult {
+	text?: string;
+	[key: string]: unknown;
 }
 
 export type RpcBudgetMetric = "tokens" | "tool_calls" | "wall_time" | "cost";

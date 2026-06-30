@@ -826,6 +826,42 @@ audit enforcement are layered on this contract by the unattended control plane
 (see issues #318/#319/#320). Attended mode is unaffected: clients that never send
 `negotiate_unattended` keep the existing extension-UI / permission behavior.
 
+#### Unbounded mode (`budget_mode: "unbounded"`)
+
+For autonomous operators that must not be aborted on cost/time (e.g. the git
+daemon), declare `budget_mode: "unbounded"` instead of a numeric `budget`:
+
+```json
+{
+  "type": "negotiate_unattended",
+  "declaration": {
+    "actor": "git-daemon",
+    "budget_mode": "unbounded",
+    "scopes": ["prompt", "control", "bash"],
+    "action_allowlist": ["bash.readonly", "bash.mutating", "file.write"]
+  }
+}
+```
+
+Unbounded mode disables every token/tool-call/wall-time/cost abort while still
+**observing** usage (surfaced via `get_session_stats` and audit events) and still
+enforcing scope/action authorization and workflow gates. `budget` is omitted (the
+accepted response returns `budget_mode: "unbounded"` and `budget: null`). Omitting
+`budget_mode` (or `"bounded"`) keeps the existing fail-closed numeric-budget
+behavior, including the provider token/cost accounting requirement.
+
+#### Retrieving the audit trail: `get_unattended_audit`
+
+```json
+{ "type": "get_unattended_audit", "filter": { "outcome": "denied", "since": "2026-01-01T00:00:00.000Z" } }
+```
+
+Returns `{ records, count, redacted, integrity }`. Gate answers are redacted by
+default (`redacted: true`). A corrupt on-disk log is reported explicitly via
+`integrity: { ok: false, error }` rather than silently returning partial data.
+`filter` is optional; all fields (`run_id`, `session_id`, `actor`, `gate_id`,
+`outcome`, `event`, `since`, `until`) are optional strings.
+
 
 > **Status (live, #315/#318/#321):** the `workflow_gate` /
 > `workflow_gate_response` / `negotiate_unattended` frames, the answer-schema

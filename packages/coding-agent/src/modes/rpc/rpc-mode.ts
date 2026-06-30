@@ -22,6 +22,9 @@ import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { initializeExtensions } from "../runtime-init";
 import { dispatchRpcCommand } from "../shared/agent-wire/command-dispatch";
+import { computeBankScope } from "../../hindsight/bank";
+import { createHindsightClient } from "../../hindsight/client";
+import { isHindsightConfigured, loadHindsightConfig } from "../../hindsight/config";
 import {
 	AgentWireCompactEventEncoder,
 	AgentWireFrameSequencer,
@@ -134,6 +137,9 @@ export const RPC_SAFE_READ_CONTROL_COMMANDS: ReadonlySet<RpcCommand["type"]> = n
 	"get_messages",
 	"get_login_providers",
 	"get_pending_workflow_gates",
+	"get_unattended_audit",
+	"hindsight_recall",
+	"hindsight_reflect",
 ]);
 
 /** True when a command may bypass the ordered serial chain and run immediately. */
@@ -645,6 +651,21 @@ export async function runRpcMode(
 		);
 	});
 
+
+	// Advisory Hindsight memory over RPC. The leader resolves the client + bank
+	// scope lazily; when memory is not configured the fns stay undefined so
+	// dispatch returns a typed "not available" error.
+	const hindsightConfig = loadHindsightConfig(session.settings);
+	const hindsightRuntime = isHindsightConfigured(hindsightConfig)
+		? {
+				client: createHindsightClient(hindsightConfig),
+				scope: computeBankScope(hindsightConfig, session.sessionManager.getCwd()),
+			}
+		: undefined;
+	const mergeTags = (a?: string[], b?: string[]): string[] | undefined => {
+		const merged = [...new Set([...(a ?? []), ...(b ?? [])])];
+		return merged.length > 0 ? merged : undefined;
+	};
 	// Handle a single command through the shared agent-wire dispatcher so RPC
 	// and bridge mode use one command surface.
 	const handleCommand = (command: RpcCommand): Promise<RpcResponse> =>
@@ -655,6 +676,53 @@ export async function runRpcMode(
 			hostUriRegistry: hostUriBridge,
 			createUiContext: () => new RpcExtensionUIContext(pendingExtensionRequests, output),
 			unattendedControlPlane,
+			exportUnattendedAudit: filter => {
+				// Corrupt-log handling + redaction live here (leader-owned). The audit
+				// log was constructed with redactAnswers:true, so answers are dropped.
+				try {
+					const records = auditLog.export(filter as Parameters<typeof auditLog.export>[0]);
+					return { records, count: records.length, redacted: true, integrity: { ok: true } };
+				} catch (err) {
+					return {
+						records: [],
+						count: 0,
+						redacted: true,
+						integrity: { ok: false, error: err instanceof Error ? err.message : String(err) },
+					};
+				}
+			},
+			hindsightRecall: hindsightRuntime
+				? async command => {
+						const { client, scope } = hindsightRuntime;
+						return client.recall(scope.bankId, command.query, {
+							types: command.types,
+							maxTokens: command.max_tokens,
+							tags: mergeTags(scope.recallTags, command.tags),
+							tagsMatch: (command.tags_match as never) ?? scope.recallTagsMatch,
+						});
+					}
+				: undefined,
+			hindsightRetain: hindsightRuntime
+				? async command => {
+						const { client, scope } = hindsightRuntime;
+						return client.retain(scope.bankId, command.content, {
+							documentId: command.document_id,
+							context: command.context,
+							metadata: command.metadata,
+							tags: mergeTags(scope.retainTags, command.tags),
+						});
+					}
+				: undefined,
+			hindsightReflect: hindsightRuntime
+				? async command => {
+						const { client, scope } = hindsightRuntime;
+						return client.reflect(scope.bankId, command.query, {
+							context: command.context,
+							tags: mergeTags(scope.recallTags, command.tags),
+							tagsMatch: (command.tags_match as never) ?? scope.recallTagsMatch,
+						});
+					}
+				: undefined,
 		});
 
 	// Fast-lane commands (cancellation + safe read/control, see
