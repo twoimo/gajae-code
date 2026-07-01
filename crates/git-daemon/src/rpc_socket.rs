@@ -17,14 +17,16 @@ use crate::rpc_framing::{decode_frames, encode_frame};
 /// A JSONL gjc-rpc client over a duplex byte stream.
 pub struct RpcClient<S> {
 	stream: S,
-	buf: String,
+	/// Raw byte buffer: bytes are only UTF-8-decoded once a full line is present,
+	/// so a multi-byte character split across two socket reads is never corrupted.
+	buf: Vec<u8>,
 	pending: VecDeque<Value>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RpcClient<S> {
 	/// Wrap an existing connected stream.
 	pub const fn new(stream: S) -> Self {
-		Self { stream, buf: String::new(), pending: VecDeque::new() }
+		Self { stream, buf: Vec::new(), pending: VecDeque::new() }
 	}
 
 	/// Send a command as one JSONL frame.
@@ -58,11 +60,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RpcClient<S> {
 			if n == 0 {
 				return Ok(None); // EOF
 			}
-			let text = String::from_utf8_lossy(&chunk[..n]);
-			self.buf.push_str(&text);
-			let (frames, leftover) = decode_frames(&self.buf).map_err(ForgeError::Transient)?;
-			self.buf = leftover;
-			self.pending.extend(frames);
+			self.buf.extend_from_slice(&chunk[..n]);
+			// Only decode up to the last complete line so a multi-byte character
+			// split across reads is never truncated mid-decode.
+			if let Some(pos) = self.buf.iter().rposition(|&b| b == b'\n') {
+				let complete = std::str::from_utf8(&self.buf[..=pos])
+					.map_err(|e| ForgeError::Transient(format!("rpc utf8: {e}")))?;
+				let (frames, _leftover) = decode_frames(complete).map_err(ForgeError::Transient)?;
+				self.pending.extend(frames);
+				self.buf.drain(..=pos);
+			}
 		}
 	}
 }
@@ -111,6 +118,26 @@ mod tests {
 		assert_eq!(f1["type"], "response");
 		let f2 = client.next_frame().await.unwrap().unwrap();
 		assert_eq!(f2["id"], "2");
+	}
+
+	#[tokio::test]
+	async fn next_frame_handles_multibyte_char_split_across_reads() {
+		let (client_side, mut peer) = tokio::io::duplex(1024);
+		let mut client = RpcClient::new(client_side);
+		// A frame whose JSON string contains a multi-byte char (Korean + emoji),
+		// with the byte stream split THROUGH a multi-byte char boundary.
+		let frame = serde_json::to_vec(&json!({ "type": "response", "msg": "한국어 🦀 ok" })).unwrap();
+		let mut bytes = frame.clone();
+		bytes.push(b'\n');
+		// Find a split point in the middle of the multi-byte content.
+		let split = frame.len() / 2;
+		peer.write_all(&bytes[..split]).await.unwrap();
+		peer.flush().await.unwrap();
+		peer.write_all(&bytes[split..]).await.unwrap();
+		peer.flush().await.unwrap();
+		let f = client.next_frame().await.unwrap().unwrap();
+		assert_eq!(f["type"], "response");
+		assert_eq!(f["msg"], "한국어 🦀 ok", "split multi-byte UTF-8 must decode intact");
 	}
 
 	#[tokio::test]
