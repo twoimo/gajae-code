@@ -32,10 +32,12 @@ impl StreamEvent {
 	}
 }
 
-/// Terminal lifecycle event types that end a run successfully.
+/// Terminal lifecycle event types that end the agent loop. Reaching one means
+/// the run completed; an `error` event mid-run is NOT terminal (the agent may
+/// recover and continue), so only the end-of-loop signal ends reduction. A
+/// stream that ends without one yields no outcome (the caller treats it as a
+/// failed run), so a truncated/aborted run never counts as success.
 const TERMINAL_OK: [&str; 2] = ["completed", "agent_end"];
-/// Terminal lifecycle event types that end a run unsuccessfully.
-const TERMINAL_FAIL: [&str; 2] = ["error", "budget_exceeded"];
 
 /// The outcome of reducing a run's event stream.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,10 +80,6 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 			StreamEvent::Lifecycle { event_type, .. } => {
 				if TERMINAL_OK.contains(&event_type.as_str()) {
 					succeeded = Some(true);
-					break;
-				}
-				if TERMINAL_FAIL.contains(&event_type.as_str()) {
-					succeeded = Some(false);
 					break;
 				}
 			}
@@ -127,9 +125,18 @@ mod tests {
 	}
 
 	#[test]
-	fn error_event_is_terminal_failure() {
+	fn mid_run_error_is_not_terminal_and_recovers_to_success() {
+		// An `error` event mid-run is not terminal; the agent recovers and the
+		// run still ends successfully at agent_end.
+		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "error"), life(3, "agent_end")], 10);
+		assert!(r.outcome.unwrap().succeeded, "recoverable mid-run error must not fail the run");
+	}
+
+	#[test]
+	fn error_without_terminal_yields_no_outcome() {
+		// A run that errors and never reaches agent_end has no outcome -> failed.
 		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "error")], 10);
-		assert!(!r.outcome.unwrap().succeeded);
+		assert!(r.outcome.is_none(), "no end-of-loop terminal => no outcome (caller treats as failed)");
 	}
 
 	#[test]

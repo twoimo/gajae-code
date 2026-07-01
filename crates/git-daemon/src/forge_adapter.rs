@@ -98,6 +98,12 @@ pub trait ForgeAdapter {
 	/// Find the open PR the unattended run created for `work_key`, if any (by the
 	/// daemon's head-branch convention). `None` means the run opened no PR.
 	async fn find_work_pr(&self, work_key: &str) -> Result<Option<ForgePr>, ForgeError>;
+	/// Find a daemon-authored head branch (`git-daemon/*`) that has commits ahead
+	/// of `base_branch`, if any — used when the run pushed a branch but opened no
+	/// PR, so the daemon can open it. `None` means no such branch.
+	async fn find_work_branch(&self, base_branch: &str) -> Result<Option<String>, ForgeError>;
+	/// Open a PR from `head_branch` into `base_branch`. Returns the created PR.
+	async fn create_pr(&self, head_branch: &str, base_branch: &str, title: &str, body: &str) -> Result<ForgePr, ForgeError>;
 	/// Fetch the live merge-gate signals (CI, reviews, diff) for a PR's head.
 	async fn fetch_merge_signals(&self, pr_id: &str, head_sha: &str) -> Result<MergeSignals, ForgeError>;
 	/// Determine whether the base branch's protection state could be read.
@@ -118,6 +124,9 @@ pub struct FakeForge {
 	comments: Mutex<Vec<(String, String)>>,
 	open_issues: Mutex<Vec<PolledItem>>,
 	work_pr: Mutex<Option<ForgePr>>,
+	work_branch: Mutex<Option<String>>,
+	work_branch_sha: Mutex<Option<String>>,
+	created_prs: Mutex<Vec<(String, String)>>,
 	merge_signals: Mutex<Option<MergeSignals>>,
 	/// When set, `get_branch_protection` returns an error (simulating an
 	/// unverifiable protection state so the gate fails closed).
@@ -143,6 +152,19 @@ impl FakeForge {
 	/// Seed the PR that `find_work_pr` returns for the run's work.
 	pub fn set_work_pr(&self, pr: ForgePr) {
 		*self.work_pr.lock().unwrap() = Some(pr);
+	}
+
+	/// Seed a daemon-authored branch (head name + head SHA) that `find_work_branch`
+	/// returns when no PR exists yet, so `create_pr` can open one.
+	pub fn set_work_branch(&self, head_branch: &str, head_sha: &str) {
+		*self.work_branch.lock().unwrap() = Some(head_branch.to_owned());
+		*self.work_branch_sha.lock().unwrap() = Some(head_sha.to_owned());
+	}
+
+	/// `(head, base)` pairs for PRs the daemon opened via `create_pr`.
+	#[must_use]
+	pub fn created_prs(&self) -> Vec<(String, String)> {
+		self.created_prs.lock().unwrap().clone()
 	}
 
 	/// Seed the merge signals `fetch_merge_signals` returns.
@@ -180,6 +202,23 @@ impl ForgeAdapter for FakeForge {
 
 	async fn find_work_pr(&self, _work_key: &str) -> Result<Option<ForgePr>, ForgeError> {
 		Ok(self.work_pr.lock().unwrap().clone())
+	}
+
+	async fn find_work_branch(&self, _base_branch: &str) -> Result<Option<String>, ForgeError> {
+		Ok(self.work_branch.lock().unwrap().clone())
+	}
+
+	async fn create_pr(&self, head_branch: &str, base_branch: &str, _title: &str, _body: &str) -> Result<ForgePr, ForgeError> {
+		// Record the created PR and expose it as the live PR for subsequent calls.
+		let pr = ForgePr {
+			id: format!("pr-for-{head_branch}"),
+			number: 4242,
+			head_sha: self.work_branch_sha.lock().unwrap().clone().unwrap_or_else(|| "sha1".to_owned()),
+			base_branch: base_branch.to_owned(),
+		};
+		self.created_prs.lock().unwrap().push((head_branch.to_owned(), base_branch.to_owned()));
+		self.prs.lock().unwrap().insert(pr.number.to_string(), pr.clone());
+		Ok(pr)
 	}
 
 	async fn fetch_merge_signals(&self, _pr_id: &str, _head_sha: &str) -> Result<MergeSignals, ForgeError> {

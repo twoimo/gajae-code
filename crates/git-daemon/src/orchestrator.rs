@@ -118,12 +118,26 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 	if !run.succeeded {
 		return Ok(DriveOutcome::RunFailed);
 	}
-	// The run (a coding agent) resolves the issue and opens a PR on the daemon's
-	// head-branch convention. Discover it via the forge — PR/gate signals are the
-	// daemon's GitHub observations, never engine events.
+	// The run (a coding agent) resolves the issue and pushes a branch on the
+	// daemon's head-branch convention. Discover its PR via the forge; if the run
+	// pushed the branch but did not open a PR, the DAEMON opens it (PR creation
+	// and merge are the daemon's forge operations, not the agent's). PR/gate
+	// signals are the daemon's GitHub observations, never engine events.
+	let base = policy.allowed_dev_branches.first().map_or("dev", String::as_str);
 	let pr = match forge.find_work_pr(work_key).await {
 		Ok(Some(pr)) => pr,
-		Ok(None) => return Ok(DriveOutcome::NoPrOpened),
+		Ok(None) => match forge.find_work_branch(base).await {
+			Ok(Some(head)) => {
+				let title = format!("git-daemon: resolve {work_key}");
+				let body = format!("Autonomous resolution by git-daemon for `{work_key}`.");
+				match forge.create_pr(&head, base, &title, &body).await {
+					Ok(pr) => pr,
+					Err(_) => return Ok(DriveOutcome::RefetchFailed),
+				}
+			}
+			Ok(None) => return Ok(DriveOutcome::NoPrOpened),
+			Err(_) => return Ok(DriveOutcome::RefetchFailed),
+		},
 		Err(_) => return Ok(DriveOutcome::RefetchFailed),
 	};
 	let pr_ref = pr.number.to_string();
@@ -243,6 +257,22 @@ mod tests {
 			run_with(pr(7, "sha1", "dev"), pr(7, "sha1", "dev"), good_signals(), outcome(true), &dev_policy()).await;
 		assert_eq!(out, DriveOutcome::Merged { merge_sha: "merge-sha1".into() });
 		assert_eq!(forge.merged(), vec!["7".to_owned()]);
+	}
+
+	#[tokio::test]
+	async fn daemon_opens_pr_from_pushed_branch_then_merges() {
+		// The run pushed a git-daemon/ branch but opened no PR; the DAEMON opens
+		// it and merges. No work_pr seeded -> find_work_pr None -> find_work_branch.
+		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
+		let forge = FakeForge::new();
+		forge.set_work_branch("git-daemon/fix-x", "sha1");
+		forge.put_pr(pr(4242, "sha1", "dev")); // the PR create_pr will expose (number 4242)
+		forge.set_merge_signals(good_signals());
+		let runner = FakeRunner { outcome: outcome(true) };
+		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		assert_eq!(out, DriveOutcome::Merged { merge_sha: "merge-sha1".into() });
+		assert_eq!(forge.created_prs(), vec![("git-daemon/fix-x".to_owned(), "dev".to_owned())]);
+		assert_eq!(forge.merged(), vec!["4242".to_owned()]);
 	}
 
 	#[tokio::test]

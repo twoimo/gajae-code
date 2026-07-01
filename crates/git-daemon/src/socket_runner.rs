@@ -21,8 +21,9 @@ use crate::rpc_socket::RpcClient;
 use crate::runner::unbounded_negotiation;
 use crate::spend_ledger::UsageObservation;
 
-/// Terminal engine lifecycle event types (mirrors the reducer's terminal set).
-const TERMINAL: [&str; 4] = ["completed", "agent_end", "error", "budget_exceeded"];
+/// End-of-loop lifecycle event types (mirrors the reducer's terminal set): only
+/// these end frame consumption. A mid-run `error` is not terminal.
+const TERMINAL: [&str; 2] = ["completed", "agent_end"];
 
 /// Build the `prompt` command that drives the unattended run.
 #[must_use]
@@ -214,11 +215,12 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn error_event_is_a_failed_outcome() {
+	async fn error_without_terminal_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
+		// A mid-run error that never reaches a terminal, then EOF -> failed.
 		let script = [accept(), frame(&event(1, "agent_start", json!({}))), frame(&event(2, "error", json!({})))].concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
-		engine.flush().await.unwrap();
+		drop(engine); // EOF: no end-of-loop terminal
 		let out = runner(client_side, 128).run("wk").await;
 		assert!(!out.succeeded);
 	}

@@ -183,6 +183,40 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn find_work_branch(&self, _base_branch: &str) -> Result<Option<String>, ForgeError> {
+		// Server-side prefix match (repos with many branches won't fit one page):
+		// GET /git/matching-refs/heads/git-daemon returns refs under the prefix.
+		let prefix = DAEMON_BRANCH_PREFIX.trim_end_matches('/');
+		let v = self
+			.get_json(&format!("{}/repos/{}/git/matching-refs/heads/{prefix}/", self.api_base, self.repo_full_name))
+			.await?;
+		let arr = v.as_array().ok_or_else(|| ForgeError::Transient("matching-refs body not array".to_owned()))?;
+		for r in arr {
+			if let Some(name) = r.get("ref").and_then(Value::as_str).and_then(|s| s.strip_prefix("refs/heads/")) {
+				return Ok(Some(name.to_owned()));
+			}
+		}
+		Ok(None)
+	}
+
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn create_pr(&self, head_branch: &str, base_branch: &str, title: &str, body: &str) -> Result<ForgePr, ForgeError> {
+		let payload = serde_json::json!({ "title": title, "head": head_branch, "base": base_branch, "body": body }).to_string();
+		let http = HttpRequest {
+			method: "POST",
+			url: format!("{}/repos/{}/pulls", self.api_base, self.repo_full_name),
+			headers: self.headers(),
+			body: Some(payload),
+		};
+		let resp = self.transport.send(http).await?;
+		if resp.status == 201 || resp.status == 200 {
+			parse_pr(&resp.body)
+		} else {
+			Err(map_status(resp.status))
+		}
+	}
+
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
 	async fn find_work_pr(&self, _work_key: &str) -> Result<Option<ForgePr>, ForgeError> {
 		// List open PRs and pick the one on the daemon's head-branch convention.
 		let req = HttpRequest {
@@ -406,5 +440,33 @@ mod tests {
 	#[tokio::test]
 	async fn list_open_issues_maps_error_status() {
 		assert_eq!(forge(401, "").list_open_issues().await.err(), Some(ForgeError::Auth));
+	}
+
+	#[tokio::test]
+	async fn find_work_branch_matches_daemon_prefix() {
+		let body = r#"[{"ref":"refs/heads/git-daemon/fix-telegram","object":{"sha":"abc"}}]"#;
+		let f = forge(200, body);
+		let br = f.find_work_branch("dev").await.unwrap();
+		assert_eq!(br, Some("git-daemon/fix-telegram".to_owned()));
+		let last = f.transport.last.lock().unwrap().clone().unwrap();
+		assert!(last.url.contains("/repos/acme/widget/git/matching-refs/heads/git-daemon/"));
+	}
+
+	#[tokio::test]
+	async fn find_work_branch_none_when_no_daemon_branch() {
+		let f = forge(200, "[]");
+		assert_eq!(f.find_work_branch("dev").await.unwrap(), None);
+	}
+
+	#[tokio::test]
+	async fn create_pr_posts_and_parses() {
+		let f = forge(201, r#"{"node_id":"PR_9","number":9,"head":{"sha":"abc"},"base":{"ref":"dev"}}"#);
+		let pr = f.create_pr("git-daemon/fix", "dev", "t", "b").await.unwrap();
+		assert_eq!(pr, ForgePr { id: "PR_9".into(), number: 9, head_sha: "abc".into(), base_branch: "dev".into() });
+		let last = f.transport.last.lock().unwrap().clone().unwrap();
+		assert_eq!(last.method, "POST");
+		assert!(last.url.ends_with("/repos/acme/widget/pulls"));
+		let body = last.body.unwrap();
+		assert!(body.contains("\"head\":\"git-daemon/fix\"") && body.contains("\"base\":\"dev\""));
 	}
 }
