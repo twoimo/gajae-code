@@ -98,10 +98,11 @@ pub trait ForgeAdapter {
 	/// Find the open PR the unattended run created for `work_key`, if any (by the
 	/// daemon's head-branch convention). `None` means the run opened no PR.
 	async fn find_work_pr(&self, work_key: &str) -> Result<Option<ForgePr>, ForgeError>;
-	/// Find a daemon-authored head branch (`git-daemon/*`) that has commits ahead
-	/// of `base_branch`, if any — used when the run pushed a branch but opened no
-	/// PR, so the daemon can open it. `None` means no such branch.
-	async fn find_work_branch(&self, base_branch: &str) -> Result<Option<String>, ForgeError>;
+	/// Find the daemon head branch bound to `work_key` (its deterministic
+	/// [`crate::keys::work_branch_ref`]), if the run pushed it but opened no PR, so
+	/// the daemon can open it. Matching on the work-item ref (not any `git-daemon/*`
+	/// branch) prevents attributing a stale/concurrent branch to this run.
+	async fn find_work_branch(&self, work_key: &str) -> Result<Option<String>, ForgeError>;
 	/// Open a PR from `head_branch` into `base_branch`. Returns the created PR.
 	async fn create_pr(&self, head_branch: &str, base_branch: &str, title: &str, body: &str) -> Result<ForgePr, ForgeError>;
 	/// Fetch the live merge-gate signals (CI, reviews, diff) for a PR's head.
@@ -204,8 +205,11 @@ impl ForgeAdapter for FakeForge {
 		Ok(self.work_pr.lock().unwrap().clone())
 	}
 
-	async fn find_work_branch(&self, _base_branch: &str) -> Result<Option<String>, ForgeError> {
-		Ok(self.work_branch.lock().unwrap().clone())
+	async fn find_work_branch(&self, work_key: &str) -> Result<Option<String>, ForgeError> {
+		// Bound to the work item: only return the branch if it is this work_key's
+		// deterministic ref (models attribution — a stale/other branch is ignored).
+		let want = crate::keys::work_branch_ref(work_key);
+		Ok(self.work_branch.lock().unwrap().clone().filter(|b| *b == want))
 	}
 
 	async fn create_pr(&self, head_branch: &str, base_branch: &str, _title: &str, _body: &str) -> Result<ForgePr, ForgeError> {
@@ -233,7 +237,7 @@ impl ForgeAdapter for FakeForge {
 		if *self.protection_unreadable.lock().unwrap() {
 			return Err(ForgeError::Transient("branch protection unreadable".to_owned()));
 		}
-		Ok(true)
+		Ok(false)
 	}
 
 	async fn merge_pr(&self, req: &MergeRequest) -> Result<String, ForgeError> {
@@ -292,6 +296,7 @@ mod tests {
 			queued_base_branch: &live.base_branch,
 			base_branch: &live.base_branch,
 			branch_protection_known: true,
+			base_is_protected: false,
 			ci_green: true,
 			ultragoal_pass: true,
 			reviews_resolved: true,

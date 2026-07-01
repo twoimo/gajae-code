@@ -21,6 +21,9 @@ pub struct GateInputs<'a> {
 	pub base_branch: &'a str,
 	/// Live branch protection state; `false` means it could not be fetched.
 	pub branch_protection_known: bool,
+	/// Live: the target branch has GitHub branch protection enabled. Even if the
+	/// branch is on the allow-list, a protected branch is never auto-merged.
+	pub base_is_protected: bool,
 	/// All required CI/checks are green.
 	pub ci_green: bool,
 	/// An ultragoal verification pass confirms the PR satisfies the issue.
@@ -96,6 +99,10 @@ pub fn evaluate(inputs: &GateInputs<'_>, policy: &MergePolicy) -> GateDecision {
 	if !inputs.branch_protection_known {
 		return deny(DenyReason::BranchProtectionUnknown);
 	}
+	// 2b. Fail closed when the branch is live-protected, even if allow-listed.
+	if inputs.base_is_protected {
+		return deny(DenyReason::ProtectedBranch);
+	}
 	// 3. Never merge to main/master.
 	if inputs.base_branch == "main" || inputs.base_branch == "master" {
 		return deny(DenyReason::MainBranchDenied);
@@ -150,6 +157,7 @@ mod tests {
 			queued_base_branch: "dev",
 			base_branch: "dev",
 			branch_protection_known: true,
+			base_is_protected: false,
 			ci_green: true,
 			ultragoal_pass: true,
 			reviews_resolved: true,
@@ -164,6 +172,15 @@ mod tests {
 		assert!(d.may_merge());
 		assert_eq!(d.reason, None);
 		assert_eq!(d.head_sha, "sha1");
+	}
+
+	#[test]
+	fn live_protected_branch_is_denied_even_if_allowlisted() {
+		let mut i = all_pass();
+		i.base_is_protected = true; // allow-listed "dev" but live-protected
+		let d = evaluate(&i, &policy());
+		assert!(!d.may_merge());
+		assert_eq!(d.reason, Some(DenyReason::ProtectedBranch));
 	}
 
 	#[test]

@@ -107,7 +107,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		if !self.await_negotiation_accepted(&mut client).await {
 			return failed_outcome();
 		}
-		let message = format!("{}\n\nWork item key: {work_key}", self.prompt);
+		// Bind the run to its work item: the agent MUST push exactly this branch,
+		// so daemon-side PR/branch discovery attributes the PR to this run.
+		let branch = crate::keys::work_branch_ref(work_key);
+		let message = format!(
+			"{}\n\nWork item key: {work_key}\nUse EXACTLY this git branch name for your work and PR head: {branch}",
+			self.prompt
+		);
 		if client.send(&prompt_command(&message)).await.is_err() {
 			return failed_outcome();
 		}

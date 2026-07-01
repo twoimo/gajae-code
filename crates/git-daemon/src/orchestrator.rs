@@ -126,7 +126,7 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 	let base = policy.allowed_dev_branches.first().map_or("dev", String::as_str);
 	let pr = match forge.find_work_pr(work_key).await {
 		Ok(Some(pr)) => pr,
-		Ok(None) => match forge.find_work_branch(base).await {
+		Ok(None) => match forge.find_work_branch(work_key).await {
 			Ok(Some(head)) => {
 				let title = format!("git-daemon: resolve {work_key}");
 				let body = format!("Autonomous resolution by git-daemon for `{work_key}`.");
@@ -145,7 +145,9 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 	let Ok(live) = forge.get_pr(&pr_ref).await else {
 		return Ok(DriveOutcome::RefetchFailed);
 	};
-	let branch_protection_known = forge.get_branch_protection(&live.base_branch).await.is_ok();
+	let protection = forge.get_branch_protection(&live.base_branch).await;
+	let branch_protection_known = protection.is_ok();
+	let base_is_protected = protection.unwrap_or(false);
 	let Ok(signals) = forge.fetch_merge_signals(&pr_ref, &live.head_sha).await else {
 		return Ok(DriveOutcome::RefetchFailed);
 	};
@@ -155,6 +157,7 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 		queued_base_branch: &pr.base_branch,
 		base_branch: &live.base_branch,
 		branch_protection_known,
+		base_is_protected,
 		ci_green: signals.ci_green,
 		// The daemon's own verification signal is the unattended run completing.
 		ultragoal_pass: run.succeeded,
@@ -265,13 +268,14 @@ mod tests {
 		// it and merges. No work_pr seeded -> find_work_pr None -> find_work_branch.
 		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
 		let forge = FakeForge::new();
-		forge.set_work_branch("git-daemon/fix-x", "sha1");
+		let branch = crate::keys::work_branch_ref("wk"); // the run's bound ref
+		forge.set_work_branch(&branch, "sha1");
 		forge.put_pr(pr(4242, "sha1", "dev")); // the PR create_pr will expose (number 4242)
 		forge.set_merge_signals(good_signals());
 		let runner = FakeRunner { outcome: outcome(true) };
 		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
 		assert_eq!(out, DriveOutcome::Merged { merge_sha: "merge-sha1".into() });
-		assert_eq!(forge.created_prs(), vec![("git-daemon/fix-x".to_owned(), "dev".to_owned())]);
+		assert_eq!(forge.created_prs(), vec![(branch, "dev".to_owned())]);
 		assert_eq!(forge.merged(), vec!["4242".to_owned()]);
 	}
 

@@ -29,12 +29,17 @@ async fn live_daemon_opens_and_merges_pr() {
 	let forge = GithubForge::new(ReqwestTransport::new().expect("transport"), token, &repo);
 	let policy = MergePolicy { protected_branches: vec!["main".into(), "master".into(), "dev".into()], allowed_dev_branches: vec![base.clone()] };
 
-	// 1. Find the daemon-authored branch pushed by the (prior) agent run.
-	let head = ForgeAdapter::find_work_branch(&forge, &base).await.expect("find_work_branch").expect("a git-daemon/* branch must exist");
+	// 1. Find the daemon head branch bound to a work key (GIT_DAEMON_WORK_KEY, or
+	// a default). A prior run must have pushed EXACTLY work_branch_ref(work_key).
+	let work_key = std::env::var("GIT_DAEMON_WORK_KEY").unwrap_or_else(|_| "wk".to_owned());
+	let Some(head) = ForgeAdapter::find_work_branch(&forge, &work_key).await.expect("find_work_branch") else {
+		eprintln!("SKIP: no branch {} on origin for work_key {work_key}", git_daemon::keys::work_branch_ref(&work_key));
+		return;
+	};
 	println!("LIVE merge: found work branch {head}");
 
 	// 2. Daemon opens the PR (find_work_pr None -> create_pr path).
-	let pr = if let Some(pr) = ForgeAdapter::find_work_pr(&forge, "wk").await.expect("find_work_pr") {
+	let pr = if let Some(pr) = ForgeAdapter::find_work_pr(&forge, &work_key).await.expect("find_work_pr") {
 		println!("LIVE merge: existing PR #{}", pr.number);
 		pr
 	} else {
@@ -46,7 +51,9 @@ async fn live_daemon_opens_and_merges_pr() {
 
 	// 3. SHA-bound refetch + live gate signals + protection.
 	let live = ForgeAdapter::get_pr(&forge, &pr_ref).await.expect("get_pr");
-	let protection_known = ForgeAdapter::get_branch_protection(&forge, &live.base_branch).await.is_ok();
+	let protection = ForgeAdapter::get_branch_protection(&forge, &live.base_branch).await;
+	let protection_known = protection.is_ok();
+	let base_is_protected = protection.unwrap_or(false);
 	let signals = ForgeAdapter::fetch_merge_signals(&forge, &pr_ref, &live.head_sha).await.expect("fetch_merge_signals");
 	println!("LIVE merge: signals ci={} reviews={} budget={} scope={} protection_known={}", signals.ci_green, signals.reviews_resolved, signals.diff_within_budget, signals.diff_in_scope, protection_known);
 
@@ -56,6 +63,7 @@ async fn live_daemon_opens_and_merges_pr() {
 		queued_base_branch: &pr.base_branch,
 		base_branch: &live.base_branch,
 		branch_protection_known: protection_known,
+		base_is_protected,
 		ci_green: signals.ci_green,
 		ultragoal_pass: true, // the fix is the agent's real resolution
 		reviews_resolved: signals.reviews_resolved,

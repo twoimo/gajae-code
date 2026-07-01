@@ -183,16 +183,16 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
-	async fn find_work_branch(&self, _base_branch: &str) -> Result<Option<String>, ForgeError> {
-		// Server-side prefix match (repos with many branches won't fit one page):
-		// GET /git/matching-refs/heads/git-daemon returns refs under the prefix.
-		let prefix = DAEMON_BRANCH_PREFIX.trim_end_matches('/');
+	async fn find_work_branch(&self, work_key: &str) -> Result<Option<String>, ForgeError> {
+		// Bind to the work item: match ONLY this work_key's deterministic ref via
+		// server-side exact ref lookup (never any git-daemon/* branch).
+		let want = crate::keys::work_branch_ref(work_key);
 		let v = self
-			.get_json(&format!("{}/repos/{}/git/matching-refs/heads/{prefix}/", self.api_base, self.repo_full_name))
+			.get_json(&format!("{}/repos/{}/git/matching-refs/heads/{want}", self.api_base, self.repo_full_name))
 			.await?;
 		let arr = v.as_array().ok_or_else(|| ForgeError::Transient("matching-refs body not array".to_owned()))?;
 		for r in arr {
-			if let Some(name) = r.get("ref").and_then(Value::as_str).and_then(|s| s.strip_prefix("refs/heads/")) {
+			if let Some(name) = r.get("ref").and_then(Value::as_str).and_then(|s| s.strip_prefix("refs/heads/")).filter(|n| *n == want) {
 				return Ok(Some(name.to_owned()));
 			}
 		}
@@ -217,8 +217,9 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
-	async fn find_work_pr(&self, _work_key: &str) -> Result<Option<ForgePr>, ForgeError> {
-		// List open PRs and pick the one on the daemon's head-branch convention.
+	async fn find_work_pr(&self, work_key: &str) -> Result<Option<ForgePr>, ForgeError> {
+		// Bind to the work item: match the open PR whose head is this work_key's ref.
+		let want = crate::keys::work_branch_ref(work_key);
 		let req = HttpRequest {
 			method: "GET",
 			url: format!("{}/repos/{}/pulls?state=open&per_page=100", self.api_base, self.repo_full_name),
@@ -233,7 +234,7 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 		let arr = v.as_array().ok_or_else(|| ForgeError::Transient("pulls body not array".to_owned()))?;
 		for pr in arr {
 			let head_ref = pr.pointer("/head/ref").and_then(Value::as_str).unwrap_or_default();
-			if head_ref.starts_with(DAEMON_BRANCH_PREFIX) {
+			if head_ref == want {
 				return Ok(Some(ForgePr {
 					id: pr.get("node_id").and_then(Value::as_str).unwrap_or_default().to_owned(),
 					number: pr.get("number").and_then(Value::as_u64).unwrap_or(0),
@@ -443,19 +444,29 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn find_work_branch_matches_daemon_prefix() {
-		let body = r#"[{"ref":"refs/heads/git-daemon/fix-telegram","object":{"sha":"abc"}}]"#;
-		let f = forge(200, body);
-		let br = f.find_work_branch("dev").await.unwrap();
-		assert_eq!(br, Some("git-daemon/fix-telegram".to_owned()));
+	async fn find_work_branch_matches_work_key_ref() {
+		let want = crate::keys::work_branch_ref("wk");
+		let body = format!(r#"[{{"ref":"refs/heads/{want}","object":{{"sha":"abc"}}}}]"#);
+		let f = forge(200, &body);
+		let br = f.find_work_branch("wk").await.unwrap();
+		assert_eq!(br, Some(want.clone()));
 		let last = f.transport.last.lock().unwrap().clone().unwrap();
-		assert!(last.url.contains("/repos/acme/widget/git/matching-refs/heads/git-daemon/"));
+		assert!(last.url.contains(&format!("/git/matching-refs/heads/{want}")));
 	}
 
 	#[tokio::test]
-	async fn find_work_branch_none_when_no_daemon_branch() {
+	async fn find_work_branch_none_when_ref_absent() {
 		let f = forge(200, "[]");
-		assert_eq!(f.find_work_branch("dev").await.unwrap(), None);
+		assert_eq!(f.find_work_branch("wk").await.unwrap(), None);
+	}
+
+	#[tokio::test]
+	async fn find_work_branch_ignores_a_different_daemon_branch() {
+		// A stale/concurrent git-daemon branch for another work item is NOT matched.
+		let other = crate::keys::work_branch_ref("other");
+		let body = format!(r#"[{{"ref":"refs/heads/{other}","object":{{"sha":"abc"}}}}]"#);
+		let f = forge(200, &body);
+		assert_eq!(f.find_work_branch("wk").await.unwrap(), None);
 	}
 
 	#[tokio::test]

@@ -6,6 +6,23 @@
 //! plus the `SQLite` unique constraints that store them.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// The deterministic head-branch ref the daemon assigns to a work item.
+///
+/// The coding agent is instructed to push exactly this branch, and PR/branch
+/// discovery matches on it, so a run's PR is bound to its own work item (never a
+/// stale or concurrent daemon branch for a different issue).
+#[must_use]
+pub fn work_branch_ref(work_key: &str) -> String {
+	use core::fmt::Write as _;
+	let digest = Sha256::digest(work_key.as_bytes());
+	let mut hex = String::with_capacity(16);
+	for b in digest.iter().take(8) {
+		let _ = write!(hex, "{b:02x}");
+	}
+	format!("git-daemon/wk-{hex}")
+}
 
 /// The kind of forge item a work unit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -210,6 +227,14 @@ mod tests {
 		let (parsed, action) = key.parse().expect("well-formed key parses");
 		assert_eq!(parsed, item);
 		assert_eq!(action, "resolve");
+	}
+
+	#[test]
+	fn work_branch_ref_is_deterministic_and_distinct() {
+		let a = work_branch_ref("work:github:R_1:issue:I_1:resolve");
+		assert_eq!(a, work_branch_ref("work:github:R_1:issue:I_1:resolve"), "same key -> same ref");
+		assert!(a.starts_with("git-daemon/wk-"));
+		assert_ne!(a, work_branch_ref("work:github:R_1:issue:I_2:resolve"), "distinct keys -> distinct refs");
 	}
 
 	#[test]

@@ -134,7 +134,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HindsightRpcClient<S> {
 		tags_match: Option<&str>,
 	) -> Result<Vec<RecalledMemory>, ForgeError> {
 		self.client.send(&recall_command(query, types, max_tokens, tags, tags_match)).await?;
-		Ok(self.client.next_frame().await?.map(|f| parse_recall(&f)).unwrap_or_default())
+		// The engine wraps results in {type:"response", command:"hindsight_recall",
+		// success, data:{results:[...]}}; skip the ready/other frames and parse the
+		// response's `data`. EOF/other terminal => empty (advisory, never blocks).
+		loop {
+			let Some(frame) = self.client.next_frame().await? else { return Ok(Vec::new()) };
+			if frame.get("type").and_then(Value::as_str) == Some("response")
+				&& frame.get("command").and_then(Value::as_str) == Some("hindsight_recall")
+			{
+				return Ok(frame.get("data").map(parse_recall).unwrap_or_default());
+			}
+		}
 	}
 
 	/// Retain an advisory memory (fire-and-forget; no response is awaited).
@@ -230,7 +240,8 @@ mod tests {
 
 		// Engine pre-loads a recall response frame.
 		let resp = crate::rpc_framing::encode_frame(&json!({
-			"results": [{ "text": "uses passport JWT", "id": "m1", "type": "convention" }]
+			"type": "response", "command": "hindsight_recall", "success": true,
+			"data": { "results": [{ "text": "uses passport JWT", "id": "m1", "type": "convention" }] }
 		}));
 		engine.write_all(resp.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
@@ -253,7 +264,7 @@ mod tests {
 	async fn recall_returns_empty_on_empty_results() {
 		use tokio::io::AsyncWriteExt;
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		let frame = crate::rpc_framing::encode_frame(&json!({ "results": [] }));
+		let frame = crate::rpc_framing::encode_frame(&json!({ "type": "response", "command": "hindsight_recall", "success": true, "data": { "results": [] } }));
 		engine.write_all(frame.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
 		let mut hs = HindsightRpcClient::new(RpcClient::new(client_side));

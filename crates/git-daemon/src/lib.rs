@@ -60,7 +60,7 @@ pub use scheduler::{available_slots, can_start, pick_next};
 pub use serve::{run_tick, serve_forever, serve_pass};
 pub use dispatcher::{IngestOutcome, ingest, reconcile_poll};
 pub use escalation::{ACK_REACTION, EscalationReason, escalation_comment};
-pub use keys::{DedupKey, ItemKind, ItemRef, LockKey, WorkIntentKey};
+pub use keys::{DedupKey, ItemKind, ItemRef, LockKey, WorkIntentKey, work_branch_ref};
 pub use lifecycle::{DaemonStatus, OwnershipRecord, TakeoverDecision, decide_takeover};
 pub use merge_gate::{DenyReason, GateDecision, GateInputs, evaluate as evaluate_merge_gate};
 pub use memory::{DirectiveSource, TrustBand, authoritative_directive, effective_trust};
