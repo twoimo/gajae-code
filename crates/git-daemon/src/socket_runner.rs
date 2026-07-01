@@ -100,6 +100,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		if client.send(&unbounded_negotiation(&self.actor, &scopes, &allow)).await.is_err() {
 			return failed_outcome();
 		}
+		// Fail closed unless the engine ACCEPTS the unbounded negotiation: an
+		// unaccepted run would not have its mutating actions auto-authorized, so
+		// proceeding would silently produce a run that cannot complete the work.
+		if !self.await_negotiation_accepted(&mut client).await {
+			return failed_outcome();
+		}
 		let message = format!("{}\n\nWork item key: {work_key}", self.prompt);
 		if client.send(&prompt_command(&message)).await.is_err() {
 			return failed_outcome();
@@ -123,6 +129,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		}
 
 		reduce_run_events(&events, self.replay_window).outcome.unwrap_or_else(failed_outcome)
+	}
+
+	/// Read frames until the `negotiate_unattended` response, returning whether
+	/// it was accepted. EOF/decode error => not accepted (fail closed).
+	async fn await_negotiation_accepted(&self, client: &mut RpcClient<S>) -> bool {
+		loop {
+			match client.next_frame().await {
+				Ok(Some(frame)) => {
+					if frame.get("type").and_then(Value::as_str) == Some("response")
+						&& frame.get("command").and_then(Value::as_str) == Some("negotiate_unattended")
+					{
+						return frame.get("success").and_then(Value::as_bool).unwrap_or(false);
+					}
+				}
+				Ok(None) | Err(_) => return false,
+			}
+		}
 	}
 }
 
@@ -150,6 +173,11 @@ mod tests {
 		json!({ "type": "event", "seq": seq, "payload": { "event_type": event_type, "event": inner } })
 	}
 
+	/// The engine's `negotiate_unattended` acceptance response frame.
+	fn accept() -> String {
+		frame(&json!({ "type": "response", "command": "negotiate_unattended", "success": true }))
+	}
+
 	#[test]
 	fn parses_lifecycle_and_usage_and_skips_non_events() {
 		assert!(matches!(
@@ -172,6 +200,7 @@ mod tests {
 	async fn drives_a_successful_run_from_scripted_events() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		let script = [
+			accept(),
 			frame(&event(1, "agent_start", json!({}))),
 			frame(&event(2, "message", json!({ "usage": { "tokens": 120, "tool_calls": 3, "cost_usd": 0.0, "wall_time_ms": 0 } }))),
 			frame(&event(3, "completed", json!({}))),
@@ -187,7 +216,7 @@ mod tests {
 	#[tokio::test]
 	async fn error_event_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		let script = [frame(&event(1, "agent_start", json!({}))), frame(&event(2, "error", json!({})))].concat();
+		let script = [accept(), frame(&event(1, "agent_start", json!({}))), frame(&event(2, "error", json!({})))].concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
 		let out = runner(client_side, 128).run("wk").await;
@@ -197,7 +226,8 @@ mod tests {
 	#[tokio::test]
 	async fn eof_before_terminal_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		engine.write_all(frame(&event(1, "agent_start", json!({}))).as_bytes()).await.unwrap();
+		let script = [accept(), frame(&event(1, "agent_start", json!({})))].concat();
+		engine.write_all(script.as_bytes()).await.unwrap();
 		drop(engine); // EOF with no terminal event
 		let out = runner(client_side, 128).run("wk").await;
 		assert!(!out.succeeded, "no terminal event must not yield success");
@@ -207,10 +237,22 @@ mod tests {
 	async fn lost_stream_is_not_a_success() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		// Gap beyond the replay window (seq 1 -> 50) before terminal.
-		let script = [frame(&event(1, "agent_start", json!({}))), frame(&event(50, "completed", json!({})))].concat();
+		let script = [accept(), frame(&event(1, "agent_start", json!({}))), frame(&event(50, "completed", json!({})))].concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
 		let out = runner(client_side, 4).run("wk").await;
 		assert!(!out.succeeded, "a lost stream must never reduce to success");
+	}
+
+	#[tokio::test]
+	async fn rejected_negotiation_fails_closed() {
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		// Engine REJECTS the negotiation; the runner must fail closed and never
+		// consume a run (even if events were to follow).
+		let reject = frame(&json!({ "type": "response", "command": "negotiate_unattended", "success": false, "error": { "code": "invalid_unattended_declaration" } }));
+		engine.write_all(reject.as_bytes()).await.unwrap();
+		engine.flush().await.unwrap();
+		let out = runner(client_side, 128).run("wk").await;
+		assert!(!out.succeeded, "a rejected negotiation must never yield a successful run");
 	}
 }

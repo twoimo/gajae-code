@@ -103,7 +103,7 @@ async fn build_runner(
 	Ok(SocketWorkRunner::new(
 		client,
 		"git-daemon",
-		vec!["prompt".to_owned(), "bash".to_owned(), "edit".to_owned()],
+		vec!["prompt".to_owned(), "bash".to_owned(), "control".to_owned()],
 		vec!["bash.mutating".to_owned()],
 		prompt,
 		256,
@@ -131,6 +131,9 @@ async fn cmd_once() -> Result<(), String> {
 	let out = serve_pass(&mut store, &forge, &runner, &cfg.policy, 0, cfg.max_concurrency, 64, &now, &lease)
 		.await
 		.map_err(|e| format!("reconciliation pass: {e}"))?;
+	for (work_key, outcome) in &out {
+		println!("git-daemon: {work_key} -> {outcome:?}");
+	}
 	println!("git-daemon: once drove {} item(s)", out.len());
 	Ok(())
 }
