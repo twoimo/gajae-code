@@ -99,6 +99,7 @@ pub async fn serve_forever<F: ForgeAdapter, R: WorkRunner>(
 	forge: F,
 	runner: R,
 	policy: MergePolicy,
+	repo_node_id: String,
 	max_concurrency: u32,
 	limit: u32,
 	period: Duration,
@@ -111,6 +112,11 @@ pub async fn serve_forever<F: ForgeAdapter, R: WorkRunner>(
 		tokio::select! {
 			_ = interval.tick() => {
 				let (now, lease) = clock();
+				// Poll phase: discover issues from the forge and ingest them so
+				// the ready queue reflects live work (poll is the at-least-once
+				// safety net; a forge error is transient and skips this tick's
+				// discovery without aborting the loop).
+				let _ = crate::dispatcher::reconcile_poll(&store, &forge, &repo_node_id, &now).await;
 				serve_pass(&mut store, &forge, &runner, &policy, 0, max_concurrency, limit, &now, &lease).await?;
 				ticks += 1;
 			}
@@ -251,6 +257,7 @@ mod tests {
 			forge,
 			FakeRunner,
 			policy(),
+			"R_1".to_owned(),
 			4,
 			10,
 			Duration::from_secs(1),
@@ -270,7 +277,7 @@ mod tests {
 		let (tx, rx) = watch::channel(false);
 		drop(tx); // sender gone -> changed() errors -> loop must exit
 		let ticks =
-			serve_forever(store, forge, FakeRunner, policy(), 4, 10, Duration::from_secs(1), rx, fixed_clock)
+			serve_forever(store, forge, FakeRunner, policy(), "R_1".to_owned(), 4, 10, Duration::from_secs(1), rx, fixed_clock)
 				.await
 				.unwrap();
 		// The immediate first interval tick may run before the dropped-sender

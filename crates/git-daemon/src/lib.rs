@@ -58,7 +58,7 @@ pub use webhook_handler::{WebhookHandleError, handle_github_webhook};
 pub use socket_runner::{SocketWorkRunner, parse_stream_event, start_run_command};
 pub use scheduler::{available_slots, can_start, pick_next};
 pub use serve::{run_tick, serve_forever, serve_pass};
-pub use dispatcher::{IngestOutcome, ingest};
+pub use dispatcher::{IngestOutcome, ingest, reconcile_poll};
 pub use escalation::{ACK_REACTION, EscalationReason, escalation_comment};
 pub use keys::{DedupKey, ItemKind, ItemRef, LockKey, WorkIntentKey};
 pub use lifecycle::{DaemonStatus, OwnershipRecord, TakeoverDecision, decide_takeover};

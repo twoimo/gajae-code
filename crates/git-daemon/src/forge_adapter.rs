@@ -18,6 +18,19 @@ pub struct ForgePr {
 	pub base_branch: String,
 }
 
+/// A forge item discovered by a poll sweep (issue or PR).
+///
+/// Normalized to the fields the ingestion dispatcher needs: `updated_at` is the
+/// observable revision (webhook + poll dedupe on it); `state` is the observable
+/// state (e.g. `open`/`closed`) folded into the poll dedupe token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolledItem {
+	pub node_id: String,
+	pub item_kind: crate::keys::ItemKind,
+	pub updated_at: String,
+	pub state: String,
+}
+
 /// A SHA-bound merge request. `expected_head_sha` is enforced by the forge so a
 /// race between the gate decision and the merge call fails closed.
 #[derive(Debug, Clone)]
@@ -62,6 +75,9 @@ impl core::error::Error for ForgeError {}
 pub trait ForgeAdapter {
 	/// Fetch current PR state (head SHA, base) at the immediate pre-merge refetch.
 	async fn get_pr(&self, pr_id: &str) -> Result<ForgePr, ForgeError>;
+	/// List open issues for the repository (poll reconciliation). Returns the
+	/// items the dispatcher will dedupe + turn into work intents.
+	async fn list_open_issues(&self) -> Result<Vec<PolledItem>, ForgeError>;
 	/// Determine whether the base branch's protection state could be read.
 	/// `Ok(is_protected)` on a successful read; `Err` when protection could not
 	/// be determined — the gate then fails closed (`BranchProtectionUnknown`).
@@ -78,6 +94,7 @@ pub struct FakeForge {
 	prs: Mutex<HashMap<String, ForgePr>>,
 	merges: Mutex<Vec<String>>,
 	comments: Mutex<Vec<(String, String)>>,
+	open_issues: Mutex<Vec<PolledItem>>,
 	/// When set, `get_branch_protection` returns an error (simulating an
 	/// unverifiable protection state so the gate fails closed).
 	protection_unreadable: Mutex<bool>,
@@ -92,6 +109,11 @@ impl FakeForge {
 	/// Seed (or replace) a PR.
 	pub fn put_pr(&self, pr: ForgePr) {
 		self.prs.lock().unwrap().insert(pr.id.clone(), pr);
+	}
+
+	/// Seed an open issue for poll reconciliation.
+	pub fn put_open_issue(&self, item: PolledItem) {
+		self.open_issues.lock().unwrap().push(item);
 	}
 
 	/// Simulate a base branch whose protection state cannot be read (the gate
@@ -116,6 +138,10 @@ impl FakeForge {
 impl ForgeAdapter for FakeForge {
 	async fn get_pr(&self, pr_id: &str) -> Result<ForgePr, ForgeError> {
 		self.prs.lock().unwrap().get(pr_id).cloned().ok_or(ForgeError::NotFound)
+	}
+
+	async fn list_open_issues(&self) -> Result<Vec<PolledItem>, ForgeError> {
+		Ok(self.open_issues.lock().unwrap().clone())
 	}
 
 	async fn get_branch_protection(&self, _base_branch: &str) -> Result<bool, ForgeError> {

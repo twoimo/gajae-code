@@ -113,6 +113,11 @@ async fn cmd_once() -> Result<(), String> {
 	let forge = build_forge(&cfg)?;
 	let runner = build_runner(&cfg.socket).await?;
 	let (now, lease) = system_clock();
+	// Poll phase: discover + ingest open issues, then reconcile the ready queue.
+	let ingested = git_daemon::dispatcher::reconcile_poll(&store, &forge, &cfg.repo, &now)
+		.await
+		.map_err(|e| format!("poll: {e}"))?;
+	println!("git-daemon: polled {} issue(s)", ingested.len());
 	let out = serve_pass(&mut store, &forge, &runner, &cfg.policy, 0, cfg.max_concurrency, 64, &now, &lease)
 		.await
 		.map_err(|e| format!("reconciliation pass: {e}"))?;
@@ -132,7 +137,7 @@ async fn cmd_serve() -> Result<(), String> {
 			let _ = tx.send(true);
 		}
 	});
-	let ticks = serve_forever(store, forge, runner, cfg.policy, cfg.max_concurrency, 64, cfg.poll, rx, system_clock)
+	let ticks = serve_forever(store, forge, runner, cfg.policy, cfg.repo.clone(), cfg.max_concurrency, 64, cfg.poll, rx, system_clock)
 		.await
 		.map_err(|e| format!("serve loop: {e}"))?;
 	println!("git-daemon: drained and stopped after {ticks} tick(s)");

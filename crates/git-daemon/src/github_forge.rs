@@ -8,7 +8,8 @@
 
 use serde_json::Value;
 
-use crate::forge_adapter::{ForgeAdapter, ForgeError, ForgePr, MergeRequest};
+use crate::forge_adapter::{ForgeAdapter, ForgeError, ForgePr, MergeRequest, PolledItem};
+use crate::keys::ItemKind;
 
 /// A minimal HTTP request the transport must perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +104,34 @@ fn parse_pr(body: &str) -> Result<ForgePr, ForgeError> {
 	Ok(ForgePr { id, number, head_sha, base_branch })
 }
 
+/// Parse a GitHub issues-list JSON array into [`PolledItem`]s. Entries that
+/// carry a `pull_request` key are PRs surfaced by the issues endpoint and are
+/// skipped (issues only).
+fn parse_open_issues(body: &str) -> Result<Vec<PolledItem>, ForgeError> {
+	let v: Value = serde_json::from_str(body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
+	let arr = v.as_array().ok_or_else(|| ForgeError::Transient("issues body is not an array".to_owned()))?;
+	let mut out = Vec::new();
+	for item in arr {
+		if item.get("pull_request").is_some() {
+			continue;
+		}
+		let (Some(node_id), Some(updated_at), Some(state)) = (
+			item.get("node_id").and_then(Value::as_str),
+			item.get("updated_at").and_then(Value::as_str),
+			item.get("state").and_then(Value::as_str),
+		) else {
+			continue;
+		};
+		out.push(PolledItem {
+			node_id: node_id.to_owned(),
+			item_kind: ItemKind::Issue,
+			updated_at: updated_at.to_owned(),
+			state: state.to_owned(),
+		});
+	}
+	Ok(out)
+}
+
 impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
 	async fn get_pr(&self, pr_id: &str) -> Result<ForgePr, ForgeError> {
@@ -115,6 +144,22 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 		let resp = self.transport.send(req).await?;
 		if resp.status == 200 {
 			parse_pr(&resp.body)
+		} else {
+			Err(map_status(resp.status))
+		}
+	}
+
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn list_open_issues(&self) -> Result<Vec<PolledItem>, ForgeError> {
+		let req = HttpRequest {
+			method: "GET",
+			url: format!("{}/repos/{}/issues?state=open&per_page=100", self.api_base, self.repo_full_name),
+			headers: self.headers(),
+			body: None,
+		};
+		let resp = self.transport.send(req).await?;
+		if resp.status == 200 {
+			parse_open_issues(&resp.body)
 		} else {
 			Err(map_status(resp.status))
 		}
@@ -256,5 +301,30 @@ mod tests {
 		assert_eq!(last.method, "POST");
 		assert!(last.url.ends_with("/repos/acme/widget/issues/42/comments"));
 		assert!(last.body.unwrap().contains("hello"));
+	}
+
+	#[tokio::test]
+	async fn list_open_issues_parses_and_skips_prs() {
+		// The issues endpoint returns issues + PRs; PR entries carry a
+		// pull_request key and must be skipped.
+		let body = r#"[
+			{"node_id":"I_1","updated_at":"2026-01-01T00:00:00Z","state":"open"},
+			{"node_id":"PR_9","updated_at":"2026-01-02T00:00:00Z","state":"open","pull_request":{"url":"x"}},
+			{"node_id":"I_2","updated_at":"2026-01-03T00:00:00Z","state":"open"}
+		]"#;
+		let f = forge(200, body);
+		let items = f.list_open_issues().await.unwrap();
+		assert_eq!(items.len(), 2, "PR entry skipped");
+		assert_eq!(items[0].node_id, "I_1");
+		assert_eq!(items[1].node_id, "I_2");
+		assert!(items.iter().all(|i| i.item_kind == crate::keys::ItemKind::Issue));
+		let last = f.transport.last.lock().unwrap().clone().unwrap();
+		assert_eq!(last.method, "GET");
+		assert!(last.url.contains("/repos/acme/widget/issues?state=open"));
+	}
+
+	#[tokio::test]
+	async fn list_open_issues_maps_error_status() {
+		assert_eq!(forge(401, "").list_open_issues().await.err(), Some(ForgeError::Auth));
 	}
 }

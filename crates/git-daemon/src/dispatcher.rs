@@ -7,7 +7,9 @@
 //! item instead of opening a duplicate PR.
 
 use crate::forge::ForgeEvent;
+use crate::forge_adapter::ForgeAdapter;
 use crate::keys::{DedupKey, EventSource, ItemRef};
+use crate::poll::poll_state_token;
 use crate::store::{GitDaemonStateStore, StoreError};
 
 /// What the dispatcher decided for an ingested event.
@@ -77,6 +79,52 @@ pub fn ingest(
 	Ok(IngestOutcome::FollowUp { work_key: key })
 }
 
+/// Poll reconciliation over the forge's open issues.
+///
+/// Lists open issues and ingests each as a poll-sourced event, so lost webhooks
+/// (or poll-only deployments) still discover work. Each item dedupes against
+/// prior webhook/poll deliveries via its observable revision + state token;
+/// `repo_node_id` must match the value the webhook path uses so the two sources
+/// collapse onto one work item.
+///
+/// Returns the per-item ingest outcomes.
+///
+/// # Errors
+/// Returns [`StoreError`] on a store failure. Forge errors abort the sweep and
+/// are surfaced as [`StoreError::MigrationFailed`] (transient; retried next tick).
+#[allow(clippy::future_not_send, reason = "driven on the daemon task; no cross-thread Send boundary yet")]
+pub async fn reconcile_poll<F: ForgeAdapter>(
+	store: &GitDaemonStateStore,
+	forge: &F,
+	repo_node_id: &str,
+	now: &str,
+) -> Result<Vec<IngestOutcome>, StoreError> {
+	let items = forge
+		.list_open_issues()
+		.await
+		.map_err(|e| StoreError::MigrationFailed(format!("poll list_open_issues: {e}")))?;
+	let mut outcomes = Vec::with_capacity(items.len());
+	for item in items {
+		let event = ForgeEvent {
+			provider: "github".to_owned(),
+			repo_node_id: repo_node_id.to_owned(),
+			item_kind: item.item_kind,
+			item_node_id: item.node_id.clone(),
+			event_family: "issues".to_owned(),
+			action: "poll_discovered".to_owned(),
+			actor_login: None,
+			event_revision: item.updated_at.clone(),
+			actionable: true,
+		};
+		let source = EventSource::Poll {
+			resource: "issues".to_owned(),
+			state_token: poll_state_token(&item.updated_at, &item.state),
+		};
+		outcomes.push(ingest(store, &event, &source, now)?);
+	}
+	Ok(outcomes)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -85,6 +133,24 @@ mod tests {
 
 	fn store() -> GitDaemonStateStore {
 		GitDaemonStateStore::open_in_memory().unwrap()
+	}
+
+	#[tokio::test]
+	async fn reconcile_poll_ingests_open_issues_and_dedupes() {
+		use crate::forge_adapter::{FakeForge, PolledItem};
+		use crate::keys::ItemKind;
+		let s = store();
+		let forge = FakeForge::new();
+		forge.put_open_issue(PolledItem { node_id: "I_1".into(), item_kind: ItemKind::Issue, updated_at: "2026-01-01T00:00:00Z".into(), state: "open".into() });
+		forge.put_open_issue(PolledItem { node_id: "I_2".into(), item_kind: ItemKind::Issue, updated_at: "2026-01-01T00:00:01Z".into(), state: "open".into() });
+		let out = reconcile_poll(&s, &forge, "R_1", "t0").await.unwrap();
+		assert_eq!(out.len(), 2);
+		assert!(out.iter().all(|o| matches!(o, IngestOutcome::WorkCreated { .. })));
+		assert_eq!(s.list_ready_work(10).unwrap().len(), 2, "both issues become ready work");
+		// Re-polling the same unchanged issues dedupes (no new work).
+		let again = reconcile_poll(&s, &forge, "R_1", "t1").await.unwrap();
+		assert!(again.iter().all(|o| matches!(o, IngestOutcome::Duplicate | IngestOutcome::FollowUp { .. })));
+		assert_eq!(s.list_ready_work(10).unwrap().len(), 2, "no duplicate work items");
 	}
 
 	fn issue_opened() -> ForgeEvent {
