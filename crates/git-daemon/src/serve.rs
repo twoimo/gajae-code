@@ -134,24 +134,15 @@ pub async fn serve_forever<F: ForgeAdapter, R: WorkRunner>(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::forge_adapter::{FakeForge, ForgePr};
+	use crate::forge_adapter::{FakeForge, ForgePr, MergeSignals};
 	use crate::keys::ItemKind;
-	use crate::orchestrator::RunResult;
+	use crate::orchestrator::RunOutcome;
+	use crate::spend_ledger::UsageObservation;
 
 	struct FakeRunner;
 	impl WorkRunner for FakeRunner {
-		async fn run(&self, _work_key: &str) -> RunResult {
-			RunResult {
-				succeeded: true,
-				pr_id: "PR_7".into(),
-				head_sha: "sha1".into(),
-				base_branch: "dev".into(),
-				ci_green: true,
-				ultragoal_pass: true,
-				reviews_resolved: true,
-				diff_within_budget: true,
-				diff_in_scope: true,
-			}
+		async fn run(&self, _work_key: &str) -> RunOutcome {
+			RunOutcome { succeeded: true, usage: UsageObservation::default() }
 		}
 	}
 
@@ -171,10 +162,18 @@ mod tests {
 
 	fn forge_with_prs(n: usize) -> FakeForge {
 		let forge = FakeForge::new();
-		// All items share PR_7 in this fake; one merge per driven item is fine for
+		let pr = ForgePr { id: "7".into(), number: 7, head_sha: "sha1".into(), base_branch: "dev".into() };
+		forge.set_work_pr(pr.clone());
+		forge.set_merge_signals(MergeSignals {
+			ci_green: true,
+			reviews_resolved: true,
+			diff_within_budget: true,
+			diff_in_scope: true,
+		});
+		// All items share PR #7 in this fake; one merge per driven item is fine for
 		// the concurrency-bound assertion.
 		for _ in 0..n {
-			forge.put_pr(ForgePr { id: "PR_7".into(), number: 7, head_sha: "sha1".into(), base_branch: "dev".into() });
+			forge.put_pr(pr.clone());
 		}
 		forge
 	}

@@ -31,6 +31,23 @@ pub struct PolledItem {
 	pub state: String,
 }
 
+/// Live merge-gate signals derived from the forge for a PR's current head.
+///
+/// These are the daemon's GitHub observations (CI, reviews, diff), NOT engine
+/// events — the orchestrator combines them with the run outcome and its own
+/// verification to evaluate the SHA-bound merge gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeSignals {
+	/// All required checks/CI concluded successfully (no failing runs).
+	pub ci_green: bool,
+	/// No unresolved `CHANGES_REQUESTED` review remains.
+	pub reviews_resolved: bool,
+	/// The diff is within the configured size/risk budget.
+	pub diff_within_budget: bool,
+	/// The diff touches only in-scope paths (no infra/secret/out-of-scope edits).
+	pub diff_in_scope: bool,
+}
+
 /// A SHA-bound merge request. `expected_head_sha` is enforced by the forge so a
 /// race between the gate decision and the merge call fails closed.
 #[derive(Debug, Clone)]
@@ -78,6 +95,11 @@ pub trait ForgeAdapter {
 	/// List open issues for the repository (poll reconciliation). Returns the
 	/// items the dispatcher will dedupe + turn into work intents.
 	async fn list_open_issues(&self) -> Result<Vec<PolledItem>, ForgeError>;
+	/// Find the open PR the unattended run created for `work_key`, if any (by the
+	/// daemon's head-branch convention). `None` means the run opened no PR.
+	async fn find_work_pr(&self, work_key: &str) -> Result<Option<ForgePr>, ForgeError>;
+	/// Fetch the live merge-gate signals (CI, reviews, diff) for a PR's head.
+	async fn fetch_merge_signals(&self, pr_id: &str, head_sha: &str) -> Result<MergeSignals, ForgeError>;
 	/// Determine whether the base branch's protection state could be read.
 	/// `Ok(is_protected)` on a successful read; `Err` when protection could not
 	/// be determined — the gate then fails closed (`BranchProtectionUnknown`).
@@ -95,6 +117,8 @@ pub struct FakeForge {
 	merges: Mutex<Vec<String>>,
 	comments: Mutex<Vec<(String, String)>>,
 	open_issues: Mutex<Vec<PolledItem>>,
+	work_pr: Mutex<Option<ForgePr>>,
+	merge_signals: Mutex<Option<MergeSignals>>,
 	/// When set, `get_branch_protection` returns an error (simulating an
 	/// unverifiable protection state so the gate fails closed).
 	protection_unreadable: Mutex<bool>,
@@ -114,6 +138,16 @@ impl FakeForge {
 	/// Seed an open issue for poll reconciliation.
 	pub fn put_open_issue(&self, item: PolledItem) {
 		self.open_issues.lock().unwrap().push(item);
+	}
+
+	/// Seed the PR that `find_work_pr` returns for the run's work.
+	pub fn set_work_pr(&self, pr: ForgePr) {
+		*self.work_pr.lock().unwrap() = Some(pr);
+	}
+
+	/// Seed the merge signals `fetch_merge_signals` returns.
+	pub fn set_merge_signals(&self, signals: MergeSignals) {
+		*self.merge_signals.lock().unwrap() = Some(signals);
 	}
 
 	/// Simulate a base branch whose protection state cannot be read (the gate
@@ -142,6 +176,18 @@ impl ForgeAdapter for FakeForge {
 
 	async fn list_open_issues(&self) -> Result<Vec<PolledItem>, ForgeError> {
 		Ok(self.open_issues.lock().unwrap().clone())
+	}
+
+	async fn find_work_pr(&self, _work_key: &str) -> Result<Option<ForgePr>, ForgeError> {
+		Ok(self.work_pr.lock().unwrap().clone())
+	}
+
+	async fn fetch_merge_signals(&self, _pr_id: &str, _head_sha: &str) -> Result<MergeSignals, ForgeError> {
+		self.merge_signals
+			.lock()
+			.unwrap()
+			.clone()
+			.ok_or_else(|| ForgeError::Transient("no merge signals seeded".to_owned()))
 	}
 
 	async fn get_branch_protection(&self, _base_branch: &str) -> Result<bool, ForgeError> {

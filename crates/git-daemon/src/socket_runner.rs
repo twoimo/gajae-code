@@ -1,68 +1,58 @@
 //! gjc-rpc [`WorkRunner`] over an async byte stream.
 //!
-//! This is the glue that turns the verified pieces — the [`RpcClient`] transport
-//! ([`crate::rpc_socket`]), the negotiation builder ([`crate::runner`]), and the
-//! event-stream reducer ([`crate::rpc_runner`]) — into a concrete
-//! [`WorkRunner`] the orchestrator can drive. It is generic over any
-//! `AsyncRead + AsyncWrite` stream, so the whole send-negotiation /
-//! read-frames / reduce-to-result flow is testable against an in-memory
-//! `tokio::io::duplex` pipe that scripts engine frames per the wire contract.
-//! The only live-only seam is [`RpcClient::connect_unix`].
+//! Turns the verified pieces — the [`RpcClient`] transport ([`crate::rpc_socket`]),
+//! the negotiation builder ([`crate::runner`]), and the engine-event reducer
+//! ([`crate::rpc_runner`]) — into a concrete [`WorkRunner`]. It negotiates
+//! unbounded mode, sends a `prompt` that instructs the coding agent to resolve
+//! the work item and open a PR on the daemon's head-branch convention, then
+//! consumes the engine's `{type:"event", seq, payload:{event_type, event}}`
+//! stream to a [`RunOutcome`]. PR discovery + merge-gate signals are the
+//! orchestrator's forge observations, not engine events. Generic over the
+//! stream so the flow is duplex-testable; the only live seam is
+//! [`RpcClient::connect_unix`].
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 
-use crate::orchestrator::{RunResult, WorkRunner};
+use crate::orchestrator::{RunOutcome, WorkRunner};
 use crate::rpc_runner::{StreamEvent, reduce_run_events};
 use crate::rpc_socket::RpcClient;
 use crate::runner::unbounded_negotiation;
+use crate::spend_ledger::UsageObservation;
 
-/// Build the command that starts an unbounded run for one work item.
-///
-/// The engine resolves `work_key` to the issue/PR it tracks and streams back
-/// ordered events terminated by a `terminal` frame.
+/// Terminal engine lifecycle event types (mirrors the reducer's terminal set).
+const TERMINAL: [&str; 4] = ["completed", "agent_end", "error", "budget_exceeded"];
+
+/// Build the `prompt` command that drives the unattended run.
 #[must_use]
-pub fn start_run_command(work_key: &str) -> Value {
-	json!({
-		"type": "start_unattended_run",
-		"work_key": work_key,
-	})
+pub fn prompt_command(message: &str) -> Value {
+	json!({ "type": "prompt", "message": message })
 }
 
 /// Parse one engine frame into a [`StreamEvent`].
 ///
-/// Returns `None` for frames that are not part of the run event stream (e.g.
-/// the negotiation acknowledgement or unrelated control frames), so the caller
-/// can skip them without losing the sequence cursor.
+/// Recognizes `{type:"event", seq, payload:{event_type, event}}` frames: a
+/// usage-bearing non-terminal event becomes [`StreamEvent::Usage`], everything
+/// else becomes [`StreamEvent::Lifecycle`]. Non-event frames (`ready`,
+/// `response`, …) return `None` and are skipped without losing the cursor.
 #[must_use]
 pub fn parse_stream_event(frame: &Value) -> Option<StreamEvent> {
-	let seq = frame.get("seq")?.as_u64()?;
-	match frame.get("type")?.as_str()? {
-		"pr_opened" => Some(StreamEvent::PrOpened {
-			seq,
-			pr_id: frame.get("pr_id")?.as_str()?.to_owned(),
-			head_sha: frame.get("head_sha")?.as_str()?.to_owned(),
-			base_branch: frame.get("base_branch").and_then(Value::as_str).unwrap_or_default().to_owned(),
-		}),
-		"gate_signals" => Some(StreamEvent::GateSignals {
-			seq,
-			ci_green: frame.get("ci_green").and_then(Value::as_bool).unwrap_or(false),
-			ultragoal_pass: frame.get("ultragoal_pass").and_then(Value::as_bool).unwrap_or(false),
-			reviews_resolved: frame.get("reviews_resolved").and_then(Value::as_bool).unwrap_or(false),
-			diff_within_budget: frame.get("diff_within_budget").and_then(Value::as_bool).unwrap_or(false),
-			diff_in_scope: frame.get("diff_in_scope").and_then(Value::as_bool).unwrap_or(false),
-		}),
-		"usage_observed" => {
-			let usage = serde_json::from_value(frame.get("usage")?.clone()).ok()?;
-			Some(StreamEvent::UsageObserved { seq, usage })
-		}
-		"terminal" => Some(StreamEvent::Terminal {
-			seq,
-			succeeded: frame.get("succeeded").and_then(Value::as_bool).unwrap_or(false),
-		}),
-		_ => None,
+	if frame.get("type")?.as_str()? != "event" {
+		return None;
 	}
+	let seq = frame.get("seq")?.as_u64()?;
+	let payload = frame.get("payload")?;
+	let event_type = payload.get("event_type")?.as_str()?.to_owned();
+	let usage = if TERMINAL.contains(&event_type.as_str()) {
+		None
+	} else {
+		payload.pointer("/event/usage").and_then(|u| serde_json::from_value::<UsageObservation>(u.clone()).ok())
+	};
+	if let Some(usage) = usage {
+		return Some(StreamEvent::Usage { seq, usage });
+	}
+	Some(StreamEvent::Lifecycle { seq, event_type })
 }
 
 /// A [`WorkRunner`] that drives an unbounded run over a gjc-rpc stream.
@@ -71,20 +61,21 @@ pub struct SocketWorkRunner<S> {
 	actor: String,
 	scopes: Vec<String>,
 	action_allowlist: Vec<String>,
+	prompt: String,
 	replay_window: u64,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
-	/// Wrap a connected [`RpcClient`].
-	///
-	/// `replay_window` bounds how large a sequence gap the bridge can replay
-	/// before the stream is declared lost (no false terminal success).
+	/// Wrap a connected [`RpcClient`]. `prompt` is the instruction sent to the
+	/// engine (the work-item key is appended); `replay_window` bounds the
+	/// tolerable event-sequence gap before the stream is declared lost.
 	#[must_use]
 	pub fn new(
 		client: RpcClient<S>,
 		actor: impl Into<String>,
 		scopes: Vec<String>,
 		action_allowlist: Vec<String>,
+		prompt: impl Into<String>,
 		replay_window: u64,
 	) -> Self {
 		Self {
@@ -92,25 +83,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 			actor: actor.into(),
 			scopes,
 			action_allowlist,
+			prompt: prompt.into(),
 			replay_window,
 		}
 	}
 
-	/// Negotiate, start the run, and collect its event stream into a result.
-	///
-	/// A lost stream or a stream that ends (EOF) before a terminal event yields
-	/// a failed [`RunResult`] — never a clean success — so the SHA-bound merge
-	/// gate downstream fails closed.
-	async fn drive(&self, work_key: &str) -> RunResult {
+	/// Negotiate, prompt, and consume the engine event stream into a
+	/// [`RunOutcome`]. A lost stream, an EOF before a terminal event, or a
+	/// transport error yields a failed outcome (never a false success), so the
+	/// SHA-bound merge gate downstream fails closed.
+	async fn drive(&self, work_key: &str) -> RunOutcome {
 		let mut client = self.client.lock().await;
 		let scopes: Vec<&str> = self.scopes.iter().map(String::as_str).collect();
 		let allow: Vec<&str> = self.action_allowlist.iter().map(String::as_str).collect();
 
 		if client.send(&unbounded_negotiation(&self.actor, &scopes, &allow)).await.is_err() {
-			return failed_result();
+			return failed_outcome();
 		}
-		if client.send(&start_run_command(work_key)).await.is_err() {
-			return failed_result();
+		let message = format!("{}\n\nWork item key: {work_key}", self.prompt);
+		if client.send(&prompt_command(&message)).await.is_err() {
+			return failed_outcome();
 		}
 
 		let mut events: Vec<StreamEvent> = Vec::new();
@@ -118,41 +110,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 			match client.next_frame().await {
 				Ok(Some(frame)) => {
 					if let Some(event) = parse_stream_event(&frame) {
-						let terminal = matches!(event, StreamEvent::Terminal { .. });
+						let terminal = matches!(&event, StreamEvent::Lifecycle { event_type, .. } if TERMINAL.contains(&event_type.as_str()));
 						events.push(event);
 						if terminal {
 							break;
 						}
 					}
 				}
-				Ok(None) => break, // EOF before terminal -> treated as failure below
-				Err(_) => return failed_result(),
+				Ok(None) => break, // EOF before terminal -> failure below
+				Err(_) => return failed_outcome(),
 			}
 		}
 
-		reduce_run_events(&events, self.replay_window).result.unwrap_or_else(failed_result)
+		reduce_run_events(&events, self.replay_window).outcome.unwrap_or_else(failed_outcome)
 	}
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> WorkRunner for SocketWorkRunner<S> {
-	async fn run(&self, work_key: &str) -> RunResult {
+	async fn run(&self, work_key: &str) -> RunOutcome {
 		self.drive(work_key).await
 	}
 }
 
-/// A failed run result with no PR and every gate signal false.
-const fn failed_result() -> RunResult {
-	RunResult {
-		succeeded: false,
-		pr_id: String::new(),
-		head_sha: String::new(),
-		base_branch: String::new(),
-		ci_green: false,
-		ultragoal_pass: false,
-		reviews_resolved: false,
-		diff_within_budget: false,
-		diff_in_scope: false,
-	}
+/// A failed run outcome with no observed usage.
+fn failed_outcome() -> RunOutcome {
+	RunOutcome { succeeded: false, usage: UsageObservation::default() }
 }
 
 #[cfg(test)]
@@ -164,87 +146,71 @@ mod tests {
 		crate::rpc_framing::encode_frame(v)
 	}
 
+	fn event(seq: u64, event_type: &str, inner: Value) -> Value {
+		json!({ "type": "event", "seq": seq, "payload": { "event_type": event_type, "event": inner } })
+	}
+
 	#[test]
-	fn parses_each_event_kind() {
+	fn parses_lifecycle_and_usage_and_skips_non_events() {
 		assert!(matches!(
-			parse_stream_event(&json!({"type":"pr_opened","seq":1,"pr_id":"PR_1","head_sha":"sha1"})),
-			Some(StreamEvent::PrOpened { .. })
+			parse_stream_event(&event(1, "agent_start", json!({}))),
+			Some(StreamEvent::Lifecycle { seq: 1, .. })
 		));
 		assert!(matches!(
-			parse_stream_event(&json!({"type":"terminal","seq":9,"succeeded":true})),
-			Some(StreamEvent::Terminal { seq: 9, succeeded: true })
+			parse_stream_event(&event(2, "message", json!({ "usage": { "tokens": 5, "tool_calls": 1, "cost_usd": 0.0, "wall_time_ms": 0 } }))),
+			Some(StreamEvent::Usage { seq: 2, .. })
 		));
-		assert!(parse_stream_event(&json!({"type":"handshake_ack"})).is_none());
-		assert!(parse_stream_event(&json!({"type":"pr_opened"})).is_none()); // missing seq
+		assert!(parse_stream_event(&json!({ "type": "ready" })).is_none());
+		assert!(parse_stream_event(&json!({ "type": "response", "command": "x" })).is_none());
+	}
+
+	fn runner(client_side: tokio::io::DuplexStream, replay_window: u64) -> SocketWorkRunner<tokio::io::DuplexStream> {
+		SocketWorkRunner::new(RpcClient::new(client_side), "git-daemon", vec!["prompt".to_owned()], Vec::new(), "resolve", replay_window)
 	}
 
 	#[tokio::test]
-	async fn drives_a_successful_run_from_scripted_frames() {
+	async fn drives_a_successful_run_from_scripted_events() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		// Script the engine's event stream, then close the write half (EOF).
 		let script = [
-			frame(&json!({"type":"pr_opened","seq":1,"pr_id":"PR_7","head_sha":"sha1"})),
-			frame(&json!({
-				"type":"gate_signals","seq":2,
-				"ci_green":true,"ultragoal_pass":true,"reviews_resolved":true,
-				"diff_within_budget":true,"diff_in_scope":true
-			})),
-			frame(&json!({"type":"terminal","seq":3,"succeeded":true})),
+			frame(&event(1, "agent_start", json!({}))),
+			frame(&event(2, "message", json!({ "usage": { "tokens": 120, "tool_calls": 3, "cost_usd": 0.0, "wall_time_ms": 0 } }))),
+			frame(&event(3, "completed", json!({}))),
 		]
 		.concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
-
-		let runner = SocketWorkRunner::new(
-			RpcClient::new(client_side),
-			"git-daemon",
-			vec!["prompt".to_owned()],
-			vec!["bash.mutating".to_owned()],
-			128,
-		);
-		let result = runner.run("github:R_1:issue:I_1:resolve").await;
-		assert!(result.succeeded);
-		assert_eq!(result.pr_id, "PR_7");
-		assert_eq!(result.head_sha, "sha1");
-		assert!(result.ci_green && result.ultragoal_pass && result.reviews_resolved);
+		let out = runner(client_side, 128).run("github:R_1:issue:I_1:resolve").await;
+		assert!(out.succeeded);
+		assert_eq!(out.usage.tokens, 120);
 	}
 
 	#[tokio::test]
-	async fn eof_before_terminal_is_a_failed_result() {
+	async fn error_event_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		let script = frame(&json!({"type":"pr_opened","seq":1,"pr_id":"PR_7","head_sha":"sha1"}));
+		let script = [frame(&event(1, "agent_start", json!({}))), frame(&event(2, "error", json!({})))].concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
-		drop(engine); // EOF with no terminal frame
-		let runner = SocketWorkRunner::new(
-			RpcClient::new(client_side),
-			"git-daemon",
-			vec!["prompt".to_owned()],
-			Vec::new(),
-			128,
-		);
-		let result = runner.run("wk").await;
-		assert!(!result.succeeded, "no terminal event must not yield success");
+		engine.flush().await.unwrap();
+		let out = runner(client_side, 128).run("wk").await;
+		assert!(!out.succeeded);
+	}
+
+	#[tokio::test]
+	async fn eof_before_terminal_is_a_failed_outcome() {
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		engine.write_all(frame(&event(1, "agent_start", json!({}))).as_bytes()).await.unwrap();
+		drop(engine); // EOF with no terminal event
+		let out = runner(client_side, 128).run("wk").await;
+		assert!(!out.succeeded, "no terminal event must not yield success");
 	}
 
 	#[tokio::test]
 	async fn lost_stream_is_not_a_success() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		// Gap beyond the replay window between seq 1 and seq 50 -> stream lost.
-		let script = [
-			frame(&json!({"type":"pr_opened","seq":1,"pr_id":"PR_7","head_sha":"sha1"})),
-			frame(&json!({"type":"terminal","seq":50,"succeeded":true})),
-		]
-		.concat();
+		// Gap beyond the replay window (seq 1 -> 50) before terminal.
+		let script = [frame(&event(1, "agent_start", json!({}))), frame(&event(50, "completed", json!({})))].concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
-		let runner = SocketWorkRunner::new(
-			RpcClient::new(client_side),
-			"git-daemon",
-			vec!["prompt".to_owned()],
-			Vec::new(),
-			4,
-		);
-		let result = runner.run("wk").await;
-		assert!(!result.succeeded, "a lost stream must never reduce to success");
+		let out = runner(client_side, 4).run("wk").await;
+		assert!(!out.succeeded, "a lost stream must never reduce to success");
 	}
 }

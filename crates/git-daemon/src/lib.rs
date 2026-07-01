@@ -55,7 +55,7 @@ pub use reqwest_transport::ReqwestTransport;
 pub use rpc_framing::{decode_frames, decode_line, encode_frame};
 pub use rpc_socket::RpcClient;
 pub use webhook_handler::{WebhookHandleError, handle_github_webhook};
-pub use socket_runner::{SocketWorkRunner, parse_stream_event, start_run_command};
+pub use socket_runner::{SocketWorkRunner, parse_stream_event, prompt_command};
 pub use scheduler::{available_slots, can_start, pick_next};
 pub use serve::{run_tick, serve_forever, serve_pass};
 pub use dispatcher::{IngestOutcome, ingest, reconcile_poll};
@@ -66,7 +66,7 @@ pub use merge_gate::{DenyReason, GateDecision, GateInputs, evaluate as evaluate_
 pub use memory::{DirectiveSource, TrustBand, authoritative_directive, effective_trust};
 pub use observability::{KpiSnapshot, StatusReport};
 pub use poll::{advance_watermark, needs_processing, poll_state_token};
-pub use orchestrator::{DriveOutcome, RunResult, WorkRunner, drive_to_merge};
+pub use orchestrator::{DriveOutcome, RunOutcome, WorkRunner, drive_to_merge};
 pub use runner::{StreamProgress, StreamTracker, unbounded_negotiation};
 pub use secrets::{ResolvedSecret, SecretCandidate, SecretError, SecretKind, SecretRequest, SecretSource, resolve_secret};
 pub use state_machine::{TransitionError, WorkItemState};

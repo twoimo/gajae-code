@@ -1,51 +1,47 @@
-//! gjc-rpc runner: reduce an engine event stream into a [`RunResult`].
+//! gjc-rpc runner: reduce the engine's unattended event stream into a run
+//! outcome.
 //!
-//! The live transport (socket connect, SSE read loop) is thin; the verifiable
-//! core is turning the ordered event stream into a run outcome while tracking
-//! the sequence (so a bridge reset degrades to `stream_lost` rather than a false
-//! success) and accumulating observed usage (D3). This reducer is pure and fully
-//! tested; the socket impl just feeds it [`StreamEvent`]s in arrival order.
+//! The engine emits agent-lifecycle event frames
+//! (`{type:"event", seq, payload:{event_type, event}}`) — `agent_start`,
+//! `turn_start`/`turn_end`, `message`, `completed`/`agent_end`, `error`,
+//! `budget_exceeded`. This reducer turns that ordered stream into a
+//! [`RunOutcome`] (did the run complete successfully + observed usage), tracking
+//! the sequence so a bridge reset degrades to `stream_lost` rather than a false
+//! success (D3: usage is observed, never enforced). PR discovery and merge-gate
+//! signals are NOT engine events — the orchestrator derives those from the forge
+//! after the run completes.
 
-use crate::orchestrator::RunResult;
+use crate::orchestrator::RunOutcome;
 use crate::runner::{StreamProgress, StreamTracker};
 use crate::spend_ledger::UsageObservation;
 
-/// One event from the unattended engine’s stream, carrying its sequence number.
+/// One frame from the engine's unattended event stream, carrying its sequence.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
-	/// The daemon opened a PR with this head SHA and base branch.
-	PrOpened { seq: u64, pr_id: String, head_sha: String, base_branch: String },
-	/// Live gate signals observed for the current head.
-	GateSignals {
-		seq: u64,
-		ci_green: bool,
-		ultragoal_pass: bool,
-		reviews_resolved: bool,
-		diff_within_budget: bool,
-		diff_in_scope: bool,
-	},
+	/// An agent-lifecycle event; `event_type` is the engine's `payload.event_type`.
+	Lifecycle { seq: u64, event_type: String },
 	/// Observed (not enforced) usage, accumulated for the ledger (D3).
-	UsageObserved { seq: u64, usage: UsageObservation },
-	/// Terminal event: the run finished (success or failure).
-	Terminal { seq: u64, succeeded: bool },
+	Usage { seq: u64, usage: UsageObservation },
 }
 
 impl StreamEvent {
 	const fn seq(&self) -> u64 {
 		match self {
-			Self::PrOpened { seq, .. }
-			| Self::GateSignals { seq, .. }
-			| Self::UsageObserved { seq, .. }
-			| Self::Terminal { seq, .. } => *seq,
+			Self::Lifecycle { seq, .. } | Self::Usage { seq, .. } => *seq,
 		}
 	}
 }
 
-/// The outcome of reducing a run’s event stream.
+/// Terminal lifecycle event types that end a run successfully.
+const TERMINAL_OK: [&str; 2] = ["completed", "agent_end"];
+/// Terminal lifecycle event types that end a run unsuccessfully.
+const TERMINAL_FAIL: [&str; 2] = ["error", "budget_exceeded"];
+
+/// The outcome of reducing a run's event stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunReduction {
-	/// The run result, if a terminal event was reached on an intact stream.
-	pub result: Option<RunResult>,
+	/// The run outcome, if a terminal event was reached on an intact stream.
+	pub outcome: Option<RunOutcome>,
 	/// True if the stream was lost (gap beyond the replay window) — non-terminal.
 	pub stream_lost: bool,
 	/// Total observed usage (always recorded, never enforced — D3).
@@ -54,95 +50,46 @@ pub struct RunReduction {
 	pub last_seq: Option<u64>,
 }
 
-/// Reduce an ordered slice of stream events into a [`RunReduction`].
+/// Reduce an ordered slice of engine events into a [`RunReduction`].
 ///
-/// Feeds each event’s sequence through a [`StreamTracker`]; a gap beyond
-/// `replay_window` marks the stream lost and stops (no false terminal success).
+/// A sequence gap (in-window or beyond) with no replay channel degrades to
+/// `stream_lost` with no outcome — never a false terminal success. A terminal
+/// event (`completed`/`agent_end` → success, `error`/`budget_exceeded` →
+/// failure) ends reduction; a stream that ends without a terminal event yields
+/// no outcome (the caller treats that as a failed run).
 #[must_use]
 pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduction {
 	let mut tracker = StreamTracker::new(replay_window);
 	let mut usage = UsageObservation::default();
-	let mut pr_id: Option<String> = None;
-	let mut head_sha: Option<String> = None;
-	let mut base_branch: Option<String> = None;
-	let mut ci_green = false;
-	let mut ultragoal_pass = false;
-	let mut reviews_resolved = false;
-	let mut diff_within_budget = false;
-	let mut diff_in_scope = false;
 	let mut succeeded: Option<bool> = None;
 
 	for event in events {
 		match tracker.observe(event.seq()) {
 			StreamProgress::Duplicate => continue,
-			StreamProgress::Lost { .. } => {
-				return RunReduction { result: None, stream_lost: true, usage, last_seq: tracker.last_seq() };
+			StreamProgress::Lost { .. } | StreamProgress::ReplayNeededFrom(_) => {
+				// No replay channel before reduction: any gap fails closed so a
+				// gapped stream can never reduce to a terminal success.
+				return RunReduction { outcome: None, stream_lost: true, usage, last_seq: tracker.last_seq() };
 			}
 			StreamProgress::Applied => {}
-			StreamProgress::ReplayNeededFrom(_) => {
-				// An in-window sequence gap. The live socket-runner path has no
-				// replay request/response channel before reduction, so we must NOT
-				// assume the missing events were delivered — doing so would let a
-				// gap (e.g. seq 1 -> seq 5 -> terminal) produce a false terminal
-				// success. Fail closed: mark the stream lost (non-terminal).
-				return RunReduction { result: None, stream_lost: true, usage, last_seq: tracker.last_seq() };
-			}
 		}
 		match event {
-			StreamEvent::PrOpened { pr_id: id, head_sha: sha, base_branch: base, .. } => {
-				pr_id = Some(id.clone());
-				head_sha = Some(sha.clone());
-				base_branch = Some(base.clone());
-			}
-			StreamEvent::GateSignals {
-				ci_green: ci,
-				ultragoal_pass: ug,
-				reviews_resolved: rr,
-				diff_within_budget: db,
-				diff_in_scope: ds,
-				..
-			} => {
-				ci_green = *ci;
-				ultragoal_pass = *ug;
-				reviews_resolved = *rr;
-				diff_within_budget = *db;
-				diff_in_scope = *ds;
-			}
-			StreamEvent::UsageObserved { usage: u, .. } => usage.add_observed(u),
-			StreamEvent::Terminal { succeeded: ok, .. } => {
-				succeeded = Some(*ok);
-				break;
+			StreamEvent::Usage { usage: u, .. } => usage.add_observed(u),
+			StreamEvent::Lifecycle { event_type, .. } => {
+				if TERMINAL_OK.contains(&event_type.as_str()) {
+					succeeded = Some(true);
+					break;
+				}
+				if TERMINAL_FAIL.contains(&event_type.as_str()) {
+					succeeded = Some(false);
+					break;
+				}
 			}
 		}
 	}
 
-	let result = match (succeeded, pr_id, head_sha) {
-		(Some(ok), Some(pr_id), Some(head_sha)) => Some(RunResult {
-			succeeded: ok,
-			pr_id,
-			head_sha,
-			base_branch: base_branch.unwrap_or_default(),
-			ci_green,
-			ultragoal_pass,
-			reviews_resolved,
-			diff_within_budget,
-			diff_in_scope,
-		}),
-		// Terminal failure before a PR was opened still yields a failed result.
-		(Some(false), _, _) => Some(RunResult {
-			succeeded: false,
-			pr_id: String::new(),
-			head_sha: String::new(),
-			base_branch: String::new(),
-			ci_green,
-			ultragoal_pass,
-			reviews_resolved,
-			diff_within_budget,
-			diff_in_scope,
-		}),
-		_ => None,
-	};
-	RunReduction { result, stream_lost: false, usage, last_seq: tracker.last_seq() }
+	let outcome = succeeded.map(|ok| RunOutcome { succeeded: ok, usage });
+	RunReduction { outcome, stream_lost: false, usage, last_seq: tracker.last_seq() }
 }
 
 #[cfg(test)]
@@ -153,76 +100,71 @@ mod tests {
 		UsageObservation { tokens: t, tool_calls: 1, cost_usd: 0.0, wall_time_ms: 0 }
 	}
 
+	fn life(seq: u64, ev: &str) -> StreamEvent {
+		StreamEvent::Lifecycle { seq, event_type: ev.to_owned() }
+	}
+
 	#[test]
 	fn reduces_a_successful_run() {
 		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
-			StreamEvent::UsageObserved { seq: 2, usage: usage(100) },
-			StreamEvent::GateSignals {
-				seq: 3,
-				ci_green: true,
-				ultragoal_pass: true,
-				reviews_resolved: true,
-				diff_within_budget: true,
-				diff_in_scope: true,
-			},
-			StreamEvent::Terminal { seq: 4, succeeded: true },
+			life(1, "agent_start"),
+			StreamEvent::Usage { seq: 2, usage: usage(100) },
+			life(3, "turn_end"),
+			life(4, "completed"),
 		];
 		let r = reduce_run_events(&events, 10);
 		assert!(!r.stream_lost);
-		let result = r.result.unwrap();
-		assert!(result.succeeded);
-		assert_eq!(result.pr_id, "PR_7");
-		assert_eq!(result.head_sha, "abc");
-		assert!(result.ci_green && result.ultragoal_pass);
-		assert_eq!(r.usage.tokens, 100);
+		let out = r.outcome.unwrap();
+		assert!(out.succeeded);
+		assert_eq!(out.usage.tokens, 100);
 		assert_eq!(r.last_seq, Some(4));
+	}
+
+	#[test]
+	fn agent_end_is_also_terminal_success() {
+		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "agent_end")], 10);
+		assert!(r.outcome.unwrap().succeeded);
+	}
+
+	#[test]
+	fn error_event_is_terminal_failure() {
+		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "error")], 10);
+		assert!(!r.outcome.unwrap().succeeded);
 	}
 
 	#[test]
 	fn unbounded_usage_is_accumulated_not_capped() {
 		// D3: huge usage just accumulates; nothing aborts the reduction.
 		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
-			StreamEvent::UsageObserved { seq: 2, usage: usage(10_000_000) },
-			StreamEvent::UsageObserved { seq: 3, usage: usage(10_000_000) },
-			StreamEvent::Terminal { seq: 4, succeeded: true },
+			life(1, "agent_start"),
+			StreamEvent::Usage { seq: 2, usage: usage(10_000_000) },
+			StreamEvent::Usage { seq: 3, usage: usage(10_000_000) },
+			life(4, "completed"),
 		];
 		let r = reduce_run_events(&events, 10);
 		assert_eq!(r.usage.tokens, 20_000_000);
-		assert!(r.result.unwrap().succeeded);
+		assert!(r.outcome.unwrap().succeeded);
 	}
 
 	#[test]
-	fn gap_beyond_window_marks_stream_lost_no_result() {
-		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
-			// Jump to 100: gap beyond window -> lost, no terminal success.
-			StreamEvent::Terminal { seq: 100, succeeded: true },
-		];
-		let r = reduce_run_events(&events, 10);
+	fn gap_beyond_window_marks_stream_lost_no_outcome() {
+		let r = reduce_run_events(&[life(1, "agent_start"), life(100, "completed")], 10);
 		assert!(r.stream_lost);
-		assert!(r.result.is_none());
-	}
-
-	#[test]
-	fn terminal_failure_yields_failed_result() {
-		let events = vec![StreamEvent::Terminal { seq: 1, succeeded: false }];
-		let r = reduce_run_events(&events, 10);
-		assert!(!r.stream_lost);
-		assert!(!r.result.unwrap().succeeded);
+		assert!(r.outcome.is_none());
 	}
 
 	#[test]
 	fn in_window_gap_before_terminal_is_stream_lost_not_success() {
-		// A gap WITHIN the replay window with no replay channel must NOT be
-		// treated as recovered: seq 1 -> seq 5 -> terminal must fail closed.
-		let events = vec![
-			StreamEvent::PrOpened { seq: 1, pr_id: "PR_7".into(), head_sha: "abc".into(), base_branch: "dev".into() },
-			StreamEvent::Terminal { seq: 5, succeeded: true },
-		];
-		let r = reduce_run_events(&events, 10);
+		// A gap WITHIN the replay window with no replay channel must fail closed.
+		let r = reduce_run_events(&[life(1, "agent_start"), life(5, "completed")], 10);
 		assert!(r.stream_lost, "in-window gap must degrade to stream_lost");
-		assert!(r.result.is_none(), "must never reduce a gapped stream to terminal success");
+		assert!(r.outcome.is_none(), "must never reduce a gapped stream to success");
+	}
+
+	#[test]
+	fn stream_without_terminal_yields_no_outcome() {
+		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "turn_end")], 10);
+		assert!(!r.stream_lost);
+		assert!(r.outcome.is_none(), "no terminal event => no outcome (caller treats as failed)");
 	}
 }

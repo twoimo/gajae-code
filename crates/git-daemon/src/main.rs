@@ -90,13 +90,22 @@ fn system_clock() -> (String, String) {
 #[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
 async fn build_runner(
 	socket: &str,
+	dev_branch: &str,
 ) -> Result<SocketWorkRunner<tokio::net::UnixStream>, String> {
 	let client = RpcClient::connect_unix(socket).await.map_err(|e| format!("rpc connect: {e}"))?;
+	let prompt = format!(
+		"You are the git-daemon autonomous worker for this repository. Resolve the referenced \
+		 open GitHub issue: read it with `gh issue list --state open` and `gh issue view`. \
+		 Implement a minimal, in-scope fix on a NEW branch named git-daemon/<short-slug>. Commit, \
+		 push, and open a pull request targeting the '{dev_branch}' branch. Do not merge it \
+		 yourself; the daemon runs the merge gate. Keep the diff small and in scope."
+	);
 	Ok(SocketWorkRunner::new(
 		client,
 		"git-daemon",
 		vec!["prompt".to_owned(), "bash".to_owned(), "edit".to_owned()],
 		vec!["bash.mutating".to_owned()],
+		prompt,
 		256,
 	))
 }
@@ -111,7 +120,8 @@ async fn cmd_once() -> Result<(), String> {
 	let cfg = load_env()?;
 	let mut store = GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
 	let forge = build_forge(&cfg)?;
-	let runner = build_runner(&cfg.socket).await?;
+	let dev = cfg.policy.allowed_dev_branches.first().map_or("dev", String::as_str);
+	let runner = build_runner(&cfg.socket, dev).await?;
 	let (now, lease) = system_clock();
 	// Poll phase: discover + ingest open issues, then reconcile the ready queue.
 	let ingested = git_daemon::dispatcher::reconcile_poll(&store, &forge, &cfg.repo, &now)
@@ -130,7 +140,8 @@ async fn cmd_serve() -> Result<(), String> {
 	let cfg = load_env()?;
 	let store = GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
 	let forge = build_forge(&cfg)?;
-	let runner = build_runner(&cfg.socket).await?;
+	let dev = cfg.policy.allowed_dev_branches.first().map_or("dev", String::as_str);
+	let runner = build_runner(&cfg.socket, dev).await?;
 	let (tx, rx) = tokio::sync::watch::channel(false);
 	tokio::spawn(async move {
 		if tokio::signal::ctrl_c().await.is_ok() {

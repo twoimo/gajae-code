@@ -8,8 +8,14 @@
 
 use serde_json::Value;
 
-use crate::forge_adapter::{ForgeAdapter, ForgeError, ForgePr, MergeRequest, PolledItem};
+use crate::forge_adapter::{ForgeAdapter, ForgeError, ForgePr, MergeRequest, MergeSignals, PolledItem};
 use crate::keys::ItemKind;
+
+/// Head-branch prefix the daemon instructs the engine to use, so its PR is
+/// discoverable via `find_work_pr`.
+pub const DAEMON_BRANCH_PREFIX: &str = "git-daemon/";
+/// Conservative changed-line ceiling for autonomous merge (diff budget).
+const DIFF_LINE_BUDGET: u64 = 5000;
 
 /// A minimal HTTP request the transport must perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +77,17 @@ impl<T: HttpTransport> GithubForge<T> {
 
 	fn pr_url(&self, number: &str) -> String {
 		format!("{}/repos/{}/pulls/{number}", self.api_base, self.repo_full_name)
+	}
+
+	/// GET a URL and parse a JSON body, mapping a non-200 status to a typed error.
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn get_json(&self, url: &str) -> Result<Value, ForgeError> {
+		let req = HttpRequest { method: "GET", url: url.to_owned(), headers: self.headers(), body: None };
+		let resp = self.transport.send(req).await?;
+		if resp.status != 200 {
+			return Err(map_status(resp.status));
+		}
+		serde_json::from_str(&resp.body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))
 	}
 }
 
@@ -163,6 +180,69 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 		} else {
 			Err(map_status(resp.status))
 		}
+	}
+
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn find_work_pr(&self, _work_key: &str) -> Result<Option<ForgePr>, ForgeError> {
+		// List open PRs and pick the one on the daemon's head-branch convention.
+		let req = HttpRequest {
+			method: "GET",
+			url: format!("{}/repos/{}/pulls?state=open&per_page=100", self.api_base, self.repo_full_name),
+			headers: self.headers(),
+			body: None,
+		};
+		let resp = self.transport.send(req).await?;
+		if resp.status != 200 {
+			return Err(map_status(resp.status));
+		}
+		let v: Value = serde_json::from_str(&resp.body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
+		let arr = v.as_array().ok_or_else(|| ForgeError::Transient("pulls body not array".to_owned()))?;
+		for pr in arr {
+			let head_ref = pr.pointer("/head/ref").and_then(Value::as_str).unwrap_or_default();
+			if head_ref.starts_with(DAEMON_BRANCH_PREFIX) {
+				return Ok(Some(ForgePr {
+					id: pr.get("node_id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+					number: pr.get("number").and_then(Value::as_u64).unwrap_or(0),
+					head_sha: pr.pointer("/head/sha").and_then(Value::as_str).unwrap_or_default().to_owned(),
+					base_branch: pr.pointer("/base/ref").and_then(Value::as_str).unwrap_or_default().to_owned(),
+				}));
+			}
+		}
+		Ok(None)
+	}
+
+	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
+	async fn fetch_merge_signals(&self, pr_id: &str, head_sha: &str) -> Result<MergeSignals, ForgeError> {
+		// CI: check-runs for the head SHA are all non-failing.
+		let checks = self.get_json(&format!("{}/repos/{}/commits/{head_sha}/check-runs", self.api_base, self.repo_full_name)).await?;
+		let ci_green = checks
+			.pointer("/check_runs")
+			.and_then(Value::as_array)
+			.is_none_or(|runs| runs.iter().all(|r| {
+				matches!(
+					r.get("conclusion").and_then(Value::as_str),
+					None | Some("success" | "neutral" | "skipped")
+				)
+			}));
+		// Reviews: no outstanding CHANGES_REQUESTED.
+		let reviews = self.get_json(&format!("{}/repos/{}/pulls/{pr_id}/reviews", self.api_base, self.repo_full_name)).await?;
+		let reviews_resolved = reviews
+			.as_array()
+			.is_none_or(|rs| rs.iter().all(|r| r.get("state").and_then(Value::as_str) != Some("CHANGES_REQUESTED")));
+		// Diff budget: total changed lines under a conservative ceiling.
+		let pr = self.get_json(&format!("{}/repos/{}/pulls/{pr_id}", self.api_base, self.repo_full_name)).await?;
+		let changed = pr.get("additions").and_then(Value::as_u64).unwrap_or(0)
+			+ pr.get("deletions").and_then(Value::as_u64).unwrap_or(0);
+		let diff_within_budget = changed <= DIFF_LINE_BUDGET;
+		// Scope: no changed file under an out-of-scope/infra/secret path.
+		let files = self.get_json(&format!("{}/repos/{}/pulls/{pr_id}/files?per_page=100", self.api_base, self.repo_full_name)).await?;
+		let diff_in_scope = files.as_array().is_none_or(|fs| {
+			fs.iter().all(|f| {
+				let p = f.get("filename").and_then(Value::as_str).unwrap_or_default();
+				!(p.starts_with(".github/") || p.contains(".env") || p.contains("secret"))
+			})
+		});
+		Ok(MergeSignals { ci_green, reviews_resolved, diff_within_budget, diff_in_scope })
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
