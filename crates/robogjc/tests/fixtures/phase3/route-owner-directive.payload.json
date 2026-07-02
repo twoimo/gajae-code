@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "comment": {
+    "author_association": "OWNER",
+    "body": "@robogjc-bot please refactor X",
+    "user": {
+      "login": "can1357"
+    }
+  },
+  "issue": {
+    "number": 9
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

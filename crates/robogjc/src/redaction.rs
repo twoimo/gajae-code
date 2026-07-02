@@ -19,8 +19,9 @@ pub fn redact_credentials(text: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde::Deserialize;
+
+	use super::*;
 
 	#[derive(Debug, Deserialize)]
 	struct RedactionFixture {

@@ -1,0 +1,11 @@
+{
+  "action": "opened",
+  "repository": { "full_name": "octo/widget" },
+  "issue": {
+    "number": 4,
+    "title": "Widget breaks",
+    "body": "Steps to reproduce...",
+    "user": { "login": "alice", "type": "User" },
+    "author_association": "FIRST_TIME_CONTRIBUTOR"
+  }
+}

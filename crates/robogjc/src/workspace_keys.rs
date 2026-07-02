@@ -52,7 +52,8 @@ pub fn make_branch(issue_number: u64, title: &str, seed: Option<&str>) -> String
 pub fn validate_branch_slug(slug: &str) -> Result<&str, String> {
 	if !BRANCH_SLUG_RE.is_match(slug) || slug.len() > 50 {
 		return Err(format!(
-			"invalid branch slug {slug:?}: expected kebab-case [a-z0-9-], 1-50 chars, no leading/trailing/double hyphen"
+			"invalid branch slug {slug:?}: expected kebab-case [a-z0-9-], 1-50 chars, no \
+			 leading/trailing/double hyphen"
 		));
 	}
 	Ok(slug)
@@ -60,8 +61,9 @@ pub fn validate_branch_slug(slug: &str) -> Result<&str, String> {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde::Deserialize;
+
+	use super::*;
 
 	#[derive(Debug, Deserialize)]
 	struct WorkspaceFixture {

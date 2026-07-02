@@ -1,0 +1,15 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "hi",
+    "user": {
+      "login": "robogjc-bot"
+    }
+  },
+  "issue": {
+    "number": 4
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

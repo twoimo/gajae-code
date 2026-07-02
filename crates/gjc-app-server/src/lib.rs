@@ -14,9 +14,10 @@
 //!   requirement. There is no single-active-turn fallback; unsafe process
 //!   globals are resolved by scoping or non-blocking-safe serialization, or
 //!   escalated as blockers (see `docs/phase0-isolation-audit.md`).
-//! - **Identity:** Rust owns an immutable [`ids::ThreadId`]; TS session metadata
-//!   is mutable; every backend attachment bumps [`ids::BackendGeneration`] and
-//!   every event is checked via [`identity::ThreadIdentity::accepts_event`].
+//! - **Identity:** Rust owns an immutable [`ids::ThreadId`]; TS session
+//!   metadata is mutable; every backend attachment bumps
+//!   [`ids::BackendGeneration`] and every event is checked via
+//!   [`identity::ThreadIdentity::accepts_event`].
 //! - **Field policy:** codex-core methods are lenient (ignore unknown fields);
 //!   `gjc/*` extension methods are strict (reject unknown fields).
 //! - **Framing:** JSON-RPC 2.0 with the `"jsonrpc"` header omitted on the wire.

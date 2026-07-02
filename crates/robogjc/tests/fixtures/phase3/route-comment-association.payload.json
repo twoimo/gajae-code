@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "comment": {
+    "author_association": "CONTRIBUTOR",
+    "body": "hi",
+    "user": {
+      "login": "bob"
+    }
+  },
+  "issue": {
+    "number": 4
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

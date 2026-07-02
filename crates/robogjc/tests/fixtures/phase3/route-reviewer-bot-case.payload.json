@@ -1,0 +1,19 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "feedback",
+    "user": {
+      "login": "ChatGPT-Codex-Connector",
+      "type": "Bot"
+    }
+  },
+  "issue": {
+    "number": 9,
+    "pull_request": {
+      "url": "x"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

@@ -1,36 +1,40 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+	collections::{HashMap, HashSet},
+	sync::Arc,
+};
 
+use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::error::{AppServerError, Result};
-use crate::ids::{ThreadId, TurnId};
-use parking_lot::Mutex;
-use std::sync::Arc;
+use crate::{
+	error::{AppServerError, Result},
+	ids::{ThreadId, TurnId},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostToolDescriptor {
-	pub name: String,
-	pub description: String,
-	pub input_schema: Value,
-	pub result_policy: Option<Value>,
+	pub name:            String,
+	pub description:     String,
+	pub input_schema:    Value,
+	pub result_policy:   Option<Value>,
 	pub redaction_hints: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostToolResult {
-	pub ok: bool,
+	pub ok:     bool,
 	pub result: Option<Value>,
-	pub error: Option<Value>,
+	pub error:  Option<Value>,
 }
 
 pub struct PendingHostToolCall {
-	pub thread_id: ThreadId,
+	pub thread_id:  ThreadId,
 	pub generation: crate::ids::BackendGeneration,
-	pub turn_id: TurnId,
-	pub tool: String,
-	pub progress: Arc<Mutex<Vec<Value>>>,
-	pub tx: oneshot::Sender<HostToolResult>,
+	pub turn_id:    TurnId,
+	pub tool:       String,
+	pub progress:   Arc<Mutex<Vec<Value>>>,
+	pub tx:         oneshot::Sender<HostToolResult>,
 }
 
 #[derive(Default)]
@@ -164,11 +168,11 @@ pub fn parse_result_params(
 			return Err(AppServerError::invalid_params("error.message must be a string"));
 		}
 	}
-	Ok((
-		thread_id,
-		call_id,
-		HostToolResult { ok, result: obj.get("result").cloned(), error: obj.get("error").cloned() },
-	))
+	Ok((thread_id, call_id, HostToolResult {
+		ok,
+		result: obj.get("result").cloned(),
+		error: obj.get("error").cloned(),
+	}))
 }
 
 pub fn parse_update_params(

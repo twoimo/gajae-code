@@ -1,0 +1,10 @@
+{
+  "action": "created",
+  "repository": { "full_name": "octo/widget" },
+  "issue": { "number": 9, "pull_request": { "url": "https://api.github.com/repos/octo/widget/pulls/9" } },
+  "comment": {
+    "id": 1002,
+    "user": { "login": "chatgpt-codex-connector[bot]", "type": "Bot" },
+    "body": "/model claude\nLeak in foo()"
+  }
+}

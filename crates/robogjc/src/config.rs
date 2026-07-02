@@ -1,12 +1,11 @@
 //! Configuration loading and validation boundary for robogjc.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::env;
-use std::fmt;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	env, fmt, fs,
+	path::{Path, PathBuf},
+	sync::atomic::{AtomicUsize, Ordering},
+};
 
 pub type ThinkingLevel = String;
 const THINKING_LEVELS: &[&str] = &["off", "low", "medium", "high", "xhigh"];
@@ -18,6 +17,7 @@ impl SecretString {
 	pub fn new(value: impl Into<String>) -> Self {
 		Self(value.into())
 	}
+
 	pub fn expose(&self) -> &str {
 		&self.0
 	}
@@ -252,13 +252,25 @@ impl Settings {
 		let has_url = gh_proxy_url.is_some();
 		let has_key = gh_proxy_hmac_key.is_some();
 		if has_token && has_url {
-			return Err("GITHUB_TOKEN and ROBGJC_GH_PROXY_URL are mutually exclusive — set ONE to choose between direct-PAT and gh-proxy modes.".to_owned());
+			return Err(
+				"GITHUB_TOKEN and ROBGJC_GH_PROXY_URL are mutually exclusive — set ONE to choose \
+				 between direct-PAT and gh-proxy modes."
+					.to_owned(),
+			);
 		}
 		if has_url != has_key {
-			return Err("ROBGJC_GH_PROXY_URL and ROBGJC_GH_PROXY_HMAC_KEY must both be set together (or both empty).".to_owned());
+			return Err(
+				"ROBGJC_GH_PROXY_URL and ROBGJC_GH_PROXY_HMAC_KEY must both be set together (or both \
+				 empty)."
+					.to_owned(),
+			);
 		}
 		if !has_token && !has_url {
-			return Err("no GitHub access configured: set GITHUB_TOKEN, or set ROBGJC_GH_PROXY_URL + ROBGJC_GH_PROXY_HMAC_KEY to use gh-proxy.".to_owned());
+			return Err(
+				"no GitHub access configured: set GITHUB_TOKEN, or set ROBGJC_GH_PROXY_URL + \
+				 ROBGJC_GH_PROXY_HMAC_KEY to use gh-proxy."
+					.to_owned(),
+			);
 		}
 
 		let bot_login = env_string(source, "ROBGJC_BOT_LOGIN", None)?
@@ -374,20 +386,25 @@ impl Settings {
 	pub fn repo_allowlist(&self) -> BTreeSet<String> {
 		csv_set(&self.repo_allowlist_raw, false)
 	}
+
 	pub fn rate_limit_unlimited(&self) -> BTreeSet<String> {
 		csv_set(&self.rate_limit_unlimited_raw, true)
 	}
+
 	pub fn maintainer_logins(&self) -> BTreeSet<String> {
 		csv_set(&self.maintainer_logins_raw, true)
 	}
+
 	pub fn reviewer_bots(&self) -> BTreeSet<String> {
 		csv_set(&self.reviewer_bots_raw, true)
 	}
+
 	pub fn allows(&self, full_name: &str) -> bool {
 		self
 			.repo_allowlist()
 			.contains(&full_name.to_ascii_lowercase())
 	}
+
 	pub fn model_pool(&self) -> Vec<String> {
 		let items: Vec<String> = self
 			.model
@@ -402,11 +419,13 @@ impl Settings {
 			items
 		}
 	}
+
 	pub fn pick_model(&self) -> String {
 		let pool = self.model_pool();
 		let idx = MODEL_PICK_COUNTER.fetch_add(1, Ordering::Relaxed) % pool.len();
 		pool[idx].clone()
 	}
+
 	pub fn resolved_author_name(&self) -> String {
 		self
 			.git_author_name
@@ -415,6 +434,7 @@ impl Settings {
 			.trim()
 			.to_owned()
 	}
+
 	pub fn ensure_paths(&self) -> std::io::Result<()> {
 		std::fs::create_dir_all(&self.workspace_root)?;
 		if let Some(parent) = self.sqlite_path.parent() {
@@ -426,8 +446,9 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use std::sync::{Mutex, OnceLock};
+
+	use super::*;
 
 	static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 	const KEYS: &[&str] = &[

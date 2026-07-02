@@ -1,0 +1,13 @@
+{
+  "action": "closed",
+  "pull_request": {
+    "merged": true,
+    "number": 9,
+    "user": {
+      "login": "robogjc-bot"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

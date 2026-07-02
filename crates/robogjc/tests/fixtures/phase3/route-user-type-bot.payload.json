@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "deps",
+    "user": {
+      "login": "renovate",
+      "type": "Bot"
+    }
+  },
+  "issue": {
+    "number": 4
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

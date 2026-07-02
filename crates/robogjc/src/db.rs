@@ -211,6 +211,7 @@ impl Database {
 	pub fn path(&self) -> &Path {
 		&self.path
 	}
+
 	pub fn user_version(&self) -> DbResult<i32> {
 		self
 			.conn
@@ -275,6 +276,7 @@ impl Database {
 		)?;
 		Ok(())
 	}
+
 	pub fn set_event_model(&self, delivery_id: &str, model: &str) -> DbResult<()> {
 		self
 			.conn
@@ -283,6 +285,7 @@ impl Database {
 			.execute("UPDATE events SET model=? WHERE delivery_id=?", params![model, delivery_id])?;
 		Ok(())
 	}
+
 	pub fn reset_stuck_running(&self) -> DbResult<usize> {
 		self
 			.conn
@@ -290,6 +293,7 @@ impl Database {
 			.unwrap()
 			.execute("UPDATE events SET state='queued' WHERE state='running'", [])
 	}
+
 	pub fn remove_event(&self, delivery_id: &str) -> DbResult<()> {
 		self
 			.conn
@@ -435,6 +439,7 @@ impl Database {
 		}
 		Ok(counts)
 	}
+
 	pub fn latest_issue_event_state_counts(&self) -> DbResult<HashMap<String, i64>> {
 		let mut counts = state_count_map();
 		let conn = self.conn.lock().unwrap();
@@ -456,6 +461,7 @@ impl Database {
 		}
 		Ok(counts)
 	}
+
 	pub fn list_running_events(&self) -> DbResult<Vec<RunningEvent>> {
 		let conn = self.conn.lock().unwrap();
 		let mut st = conn.prepare(
@@ -489,6 +495,7 @@ impl Database {
 		})?
 		.collect()
 	}
+
 	pub fn get_event(&self, delivery_id: &str) -> DbResult<Option<EventRow>> {
 		self
 			.conn
@@ -505,6 +512,7 @@ impl Database {
 			)
 			.optional()
 	}
+
 	pub fn requeue_event(&self, delivery_id: &str, from_states: Option<&[&str]>) -> DbResult<bool> {
 		let conn = self.conn.lock().unwrap();
 		let n = match from_states {
@@ -549,6 +557,7 @@ impl Database {
                 "#, params![key, repo, number, branch, session_dir, pr_number, state, utcnow()])?;
 		Ok(self.get_issue(key)?.expect("upserted issue missing"))
 	}
+
 	pub fn set_issue_state(&self, key: &str, state: &str) -> DbResult<()> {
 		self.conn.lock().unwrap().execute(
 			"UPDATE issues SET state=?, updated_at=? WHERE key=?",
@@ -556,6 +565,7 @@ impl Database {
 		)?;
 		Ok(())
 	}
+
 	pub fn set_issue_pr(&self, key: &str, pr_number: i64) -> DbResult<()> {
 		self.conn.lock().unwrap().execute(
 			"UPDATE issues SET pr_number=?, updated_at=? WHERE key=?",
@@ -563,6 +573,7 @@ impl Database {
 		)?;
 		Ok(())
 	}
+
 	pub fn set_issue_classification(&self, key: &str, classification: &str) -> DbResult<()> {
 		self.conn.lock().unwrap().execute(
 			"UPDATE issues SET classification=?, updated_at=? WHERE key=?",
@@ -570,6 +581,7 @@ impl Database {
 		)?;
 		Ok(())
 	}
+
 	pub fn set_issue_branch(&self, key: &str, branch: &str) -> DbResult<()> {
 		self.conn.lock().unwrap().execute(
 			"UPDATE issues SET branch=?, updated_at=? WHERE key=?",
@@ -577,12 +589,35 @@ impl Database {
 		)?;
 		Ok(())
 	}
+
 	pub fn get_issue(&self, key: &str) -> DbResult<Option<IssueRow>> {
-		self.conn.lock().unwrap().query_row("SELECT key, repo, number, branch, session_dir, pr_number, state, classification, updated_at FROM issues WHERE key=?", params![key], issue_from_row).optional()
+		self
+			.conn
+			.lock()
+			.unwrap()
+			.query_row(
+				"SELECT key, repo, number, branch, session_dir, pr_number, state, classification, \
+				 updated_at FROM issues WHERE key=?",
+				params![key],
+				issue_from_row,
+			)
+			.optional()
 	}
+
 	pub fn find_issue_by_pr(&self, repo: &str, pr_number: i64) -> DbResult<Option<IssueRow>> {
-		self.conn.lock().unwrap().query_row("SELECT key, repo, number, branch, session_dir, pr_number, state, classification, updated_at FROM issues WHERE repo=? AND pr_number=?", params![repo, pr_number], issue_from_row).optional()
+		self
+			.conn
+			.lock()
+			.unwrap()
+			.query_row(
+				"SELECT key, repo, number, branch, session_dir, pr_number, state, classification, \
+				 updated_at FROM issues WHERE repo=? AND pr_number=?",
+				params![repo, pr_number],
+				issue_from_row,
+			)
+			.optional()
 	}
+
 	pub fn find_issue_by_branch(&self, repo: &str, branch: &str) -> DbResult<Option<IssueRow>> {
 		self.conn.lock().unwrap().query_row(r#"
                 SELECT key, repo, number, branch, session_dir, pr_number, state, classification, updated_at
@@ -592,11 +627,16 @@ impl Database {
                 LIMIT 1
                 "#, params![repo, branch], issue_from_row).optional()
 	}
+
 	pub fn list_issues(&self, limit: i64) -> DbResult<Vec<IssueRow>> {
 		let conn = self.conn.lock().unwrap();
-		let mut st=conn.prepare("SELECT key, repo, number, branch, session_dir, pr_number, state, classification, updated_at FROM issues ORDER BY updated_at DESC LIMIT ?")?;
+		let mut st = conn.prepare(
+			"SELECT key, repo, number, branch, session_dir, pr_number, state, classification, \
+			 updated_at FROM issues ORDER BY updated_at DESC LIMIT ?",
+		)?;
 		st.query_map(params![limit], issue_from_row)?.collect()
 	}
+
 	pub fn processed_issue_keys(&self, keys: &[String]) -> DbResult<HashSet<String>> {
 		let unique: Vec<String> = keys
 			.iter()
@@ -630,7 +670,11 @@ impl Database {
 		error: Option<&str>,
 	) -> DbResult<i64> {
 		let conn = self.conn.lock().unwrap();
-		conn.execute("INSERT INTO tool_calls (issue_key, tool, args_json, result_json, error, ts) VALUES (?, ?, ?, ?, ?, ?)", params![issue_key, tool, compact_json(args), result.map(compact_json), error, utcnow()])?;
+		conn.execute(
+			"INSERT INTO tool_calls (issue_key, tool, args_json, result_json, error, ts) VALUES (?, \
+			 ?, ?, ?, ?, ?)",
+			params![issue_key, tool, compact_json(args), result.map(compact_json), error, utcnow()],
+		)?;
 		Ok(conn.last_insert_rowid())
 	}
 
@@ -667,6 +711,7 @@ impl Database {
 		tx.commit()?;
 		Ok(SubmissionAdmission { accepted: true, duplicate: false, used: used + 1 })
 	}
+
 	pub fn record_submission(
 		&self,
 		delivery_id: &str,
@@ -679,6 +724,7 @@ impl Database {
 		)?;
 		Ok(n > 0)
 	}
+
 	pub fn count_submissions_since(&self, login: &str, since: &str) -> DbResult<i64> {
 		self.conn.lock().unwrap().query_row(
 			"SELECT COUNT(*) AS n FROM submissions WHERE login=? AND ts>=?",
@@ -726,6 +772,7 @@ impl Database {
 		)?;
 		Ok(())
 	}
+
 	pub fn claim_due_closures(&self, now: &str, limit: i64) -> DbResult<Vec<PendingClosureRow>> {
 		let mut conn = self.conn.lock().unwrap();
 		let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -750,6 +797,7 @@ impl Database {
 		tx.commit()?;
 		Ok(rows)
 	}
+
 	pub fn finalize_closure(
 		&self,
 		issue_key: &str,
@@ -771,6 +819,7 @@ impl Database {
 		)?;
 		Ok(n > 0)
 	}
+
 	pub fn requeue_claimed_closure(&self, issue_key: &str) -> DbResult<bool> {
 		let n = self.conn.lock().unwrap().execute(
 			r#"
@@ -782,6 +831,7 @@ impl Database {
 		)?;
 		Ok(n > 0)
 	}
+
 	pub fn cancel_pending_closure(&self, issue_key: &str, reason: &str) -> DbResult<bool> {
 		let n = self.conn.lock().unwrap().execute(
 			r#"
@@ -793,6 +843,7 @@ impl Database {
 		)?;
 		Ok(n > 0)
 	}
+
 	pub fn get_pending_closure(&self, issue_key: &str) -> DbResult<Option<PendingClosureRow>> {
 		self
 			.conn
@@ -892,7 +943,6 @@ fn count_submissions_tx(tx: &rusqlite::Transaction<'_>, login: &str, since: &str
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use std::{
 		fs,
 		process::{Command, Stdio},
@@ -900,7 +950,10 @@ mod tests {
 		thread,
 		time::Duration as StdDuration,
 	};
+
 	use tempfile::tempdir;
+
+	use super::*;
 
 	fn db() -> (tempfile::TempDir, Database) {
 		let dir = tempdir().unwrap();
@@ -1262,7 +1315,20 @@ mod tests {
 		let dir = tempdir().unwrap();
 		let path = dir.path().join("legacy.sqlite");
 		let conn = Connection::open(&path).unwrap();
-		conn.execute_batch("CREATE TABLE events (delivery_id TEXT PRIMARY KEY, event_type TEXT, payload_json TEXT, received_at TEXT, state TEXT CHECK(state IN ('queued','running','done','failed','skipped')), attempts INTEGER DEFAULT 0, last_error TEXT, repo TEXT, issue_key TEXT, started_at TEXT, finished_at TEXT); CREATE TABLE issues (key TEXT PRIMARY KEY, repo TEXT, number INTEGER, branch TEXT, session_dir TEXT, pr_number INTEGER, state TEXT, updated_at TEXT); CREATE TABLE tool_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_key TEXT, tool TEXT, args_json TEXT, result_json TEXT, error TEXT, ts TEXT); INSERT INTO issues VALUES ('octo/widget#1','octo/widget',1,'farm/x','/tmp/s',NULL,'reproducing','2026-01-01T00:00:00Z');").unwrap();
+		conn
+			.execute_batch(
+				"CREATE TABLE events (delivery_id TEXT PRIMARY KEY, event_type TEXT, payload_json \
+				 TEXT, received_at TEXT, state TEXT CHECK(state IN \
+				 ('queued','running','done','failed','skipped')), attempts INTEGER DEFAULT 0, \
+				 last_error TEXT, repo TEXT, issue_key TEXT, started_at TEXT, finished_at TEXT); \
+				 CREATE TABLE issues (key TEXT PRIMARY KEY, repo TEXT, number INTEGER, branch TEXT, \
+				 session_dir TEXT, pr_number INTEGER, state TEXT, updated_at TEXT); CREATE TABLE \
+				 tool_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_key TEXT, tool TEXT, \
+				 args_json TEXT, result_json TEXT, error TEXT, ts TEXT); INSERT INTO issues VALUES \
+				 ('octo/widget#1','octo/widget',1,'farm/x','/tmp/s',NULL,'reproducing','2026-01-01T00:\
+				 00:00Z');",
+			)
+			.unwrap();
 		drop(conn);
 		let db = Database::open(&path).unwrap();
 		assert_eq!(
@@ -1654,7 +1720,8 @@ mod tests {
 		);
 	}
 	#[test]
-	#[ignore = "set ROBGJC_PY_COMPAT=1 and run with --ignored to exercise the Python interpreter compatibility gate"]
+	#[ignore = "set ROBGJC_PY_COMPAT=1 and run with --ignored to exercise the Python interpreter \
+	            compatibility gate"]
 	fn db_python_rust_compatibility() {
 		assert_eq!(
 			std::env::var("ROBGJC_PY_COMPAT").as_deref(),
@@ -1694,7 +1761,11 @@ mod tests {
 			None,
 		)
 		.unwrap();
-		let code = "import sys,json; from pathlib import Path; from robogjc.db import Database; db=Database(Path(sys.argv[1])); ev=db.get_event('rust-event'); issue=db.get_issue('octo/widget#808'); print(json.dumps({'delivery_id':ev.delivery_id,'action':ev.payload['action'],'pr':issue.pr_number,'branch':issue.branch})); db.close()";
+		let code = "import sys,json; from pathlib import Path; from robogjc.db import Database; \
+		            db=Database(Path(sys.argv[1])); ev=db.get_event('rust-event'); \
+		            issue=db.get_issue('octo/widget#808'); \
+		            print(json.dumps({'delivery_id':ev.delivery_id,'action':ev.payload['action'],'\
+		            pr':issue.pr_number,'branch':issue.branch})); db.close()";
 		let out = Command::new(py)
 			.arg("-c")
 			.arg(code)
@@ -1920,7 +1991,8 @@ db.close()
 				.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
 				.unwrap();
 			tx.execute(
-				"UPDATE events SET state='running', attempts=attempts+1 WHERE delivery_id='rollback-claim'",
+				"UPDATE events SET state='running', attempts=attempts+1 WHERE \
+				 delivery_id='rollback-claim'",
 				[],
 			)
 			.unwrap();
@@ -1942,7 +2014,8 @@ db.close()
 		] {
 			conn
 				.execute(
-					"INSERT INTO submissions (delivery_id, login, repo, ts) VALUES (?, 'edge', 'octo/widget', ?)",
+					"INSERT INTO submissions (delivery_id, login, repo, ts) VALUES (?, 'edge', \
+					 'octo/widget', ?)",
 					params![id, ts],
 				)
 				.unwrap();

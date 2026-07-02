@@ -2,13 +2,13 @@
 //!
 //! Usage:
 //!   gjc-app-server-schema            # write schemas/app-server.schema.json
-//!   gjc-app-server-schema --check    # exit non-zero if the committed file drifts
+//!   gjc-app-server-schema --check    # exit non-zero if the committed file
+//! drifts
 //!
 //! Wired into the repo `generate-schemas` / `check:schemas` gate so the
 //! Rust-derived schema is the source of truth and CI catches drift.
 
-use std::path::PathBuf;
-use std::process::ExitCode;
+use std::{path::PathBuf, process::ExitCode};
 
 fn output_path() -> PathBuf {
 	// CARGO_MANIFEST_DIR = crates/gjc-app-server; repo root is two levels up.
@@ -32,7 +32,8 @@ fn main() -> ExitCode {
 			ExitCode::SUCCESS
 		} else {
 			eprintln!(
-				"app-server schema DRIFT: {} is out of date. Run `cargo run -p gjc-app-server --bin gjc-app-server-schema` to regenerate.",
+				"app-server schema DRIFT: {} is out of date. Run `cargo run -p gjc-app-server --bin \
+				 gjc-app-server-schema` to regenerate.",
 				path.display()
 			);
 			ExitCode::FAILURE

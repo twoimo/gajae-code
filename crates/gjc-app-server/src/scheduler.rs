@@ -33,8 +33,8 @@ pub enum Lane {
 /// Classify a method name into its scheduling lane.
 ///
 /// Unknown methods default to [`Lane::Mutating`] (conservative: unknown effects
-/// are treated as ordered mutations). Method-not-found is handled earlier by the
-/// dispatcher; this only decides ordering for known/dispatchable methods.
+/// are treated as ordered mutations). Method-not-found is handled earlier by
+/// the dispatcher; this only decides ordering for known/dispatchable methods.
 #[must_use]
 pub fn classify(method: &str) -> Lane {
 	match method {
@@ -65,14 +65,14 @@ pub fn classify(method: &str) -> Lane {
 }
 
 /// Per-thread bounded admission control. Turn-accepting requests must pass
-/// [`Admission::try_admit_turn`] before the backend is called; cancel/read lanes
-/// are never rejected for capacity (they must reach in-flight work).
+/// [`Admission::try_admit_turn`] before the backend is called; cancel/read
+/// lanes are never rejected for capacity (they must reach in-flight work).
 #[derive(Debug)]
 pub struct Admission {
-	max_inflight_turns: usize,
-	inflight_turns: usize,
+	max_inflight_turns:   usize,
+	inflight_turns:       usize,
 	max_queued_mutations: usize,
-	queued_mutations: usize,
+	queued_mutations:     usize,
 }
 
 impl Admission {

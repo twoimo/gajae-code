@@ -1,0 +1,9 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 1
+  },
+  "repository": {
+    "full_name": "other/repo"
+  }
+}

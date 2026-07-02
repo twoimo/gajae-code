@@ -1,0 +1,19 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "This branch leaks memory.",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 50,
+    "user": {
+      "login": "robogjc-bot"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

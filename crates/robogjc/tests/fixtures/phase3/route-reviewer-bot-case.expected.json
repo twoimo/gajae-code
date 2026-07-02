@@ -1,0 +1,13 @@
+{
+  "association": null,
+  "directive": true,
+  "directive_author": "chatgpt-codex-connector",
+  "directive_body": "feedback",
+  "directive_pragmas": [],
+  "issue_key": "octo/widget#42",
+  "reason": "issue_comment.created on PR #9",
+  "repo": "octo/widget",
+  "should_queue": true,
+  "submitter": "ChatGPT-Codex-Connector",
+  "task": "handle_pr_conversation"
+}

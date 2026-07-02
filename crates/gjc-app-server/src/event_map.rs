@@ -1,16 +1,20 @@
 //! Item-lifecycle event mapping: gjc `AgentEvent` → codex `item/*` + `turn/*`
-//! notifications (Phase 1 core; resolves the plan's mechanical protocol mapping).
+//! notifications (Phase 1 core; resolves the plan's mechanical protocol
+//! mapping).
 //!
 //! A [`ThreadStream`] holds per-thread streaming state (active turn, current
-//! item, sequence counter, terminal latch) and turns each raw backend event into
-//! ordered JSON-RPC notifications. Every consumed gjc event is also preserved
-//! losslessly as a `gjc/event` notification so no gjc detail is dropped and
-//! unmapped/future event types still reach detail-consuming clients.
+//! item, sequence counter, terminal latch) and turns each raw backend event
+//! into ordered JSON-RPC notifications. Every consumed gjc event is also
+//! preserved losslessly as a `gjc/event` notification so no gjc detail is
+//! dropped and unmapped/future event types still reach detail-consuming
+//! clients.
 
-use crate::backend::BackendEvent;
-use crate::ids::{ItemId, ThreadId, TurnId};
-use crate::item_state::{SeqCounter, TerminalCause, TerminalLatch};
-use crate::jsonrpc::Notification;
+use crate::{
+	backend::BackendEvent,
+	ids::{ItemId, ThreadId, TurnId},
+	item_state::{SeqCounter, TerminalCause, TerminalLatch},
+	jsonrpc::Notification,
+};
 
 /// Kind of item a gjc tool/message maps to on the codex wire.
 fn classify_tool_item(tool_name: &str) -> &'static str {
@@ -24,12 +28,12 @@ fn classify_tool_item(tool_name: &str) -> &'static str {
 
 /// Per-thread streaming state machine.
 pub struct ThreadStream {
-	thread_id: ThreadId,
-	seq: SeqCounter,
-	active_turn: Option<TurnId>,
+	thread_id:    ThreadId,
+	seq:          SeqCounter,
+	active_turn:  Option<TurnId>,
 	/// The current assistant-message item, if streaming.
 	message_item: Option<ItemId>,
-	latch: TerminalLatch,
+	latch:        TerminalLatch,
 }
 
 impl ThreadStream {

@@ -32,21 +32,21 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct WsServerConfig {
-	pub host: String,
-	pub port: u16,
-	pub token: String,
+	pub host:       String,
+	pub port:       u16,
+	pub token:      String,
 	pub session_id: String,
 	pub state_root: PathBuf,
 }
 
 #[derive(Debug)]
 pub struct WsServerHandle {
-	addr: SocketAddr,
-	session_id: String,
-	state_root: PathBuf,
-	cancel: CancellationToken,
+	addr:        SocketAddr,
+	session_id:  String,
+	state_root:  PathBuf,
+	cancel:      CancellationToken,
 	accept_task: JoinHandle<()>,
-	stopped: AtomicBool,
+	stopped:     AtomicBool,
 }
 
 impl WsServerHandle {
@@ -194,7 +194,8 @@ fn cleanup_discovery(state_root: &Path, session_id: &str) -> std::io::Result<()>
 				std::io::Error::new(
 					write_err.kind(),
 					format!(
-						"failed to remove discovery record ({remove_err}); also failed to mark stale: {write_err}"
+						"failed to remove discovery record ({remove_err}); also failed to mark stale: \
+						 {write_err}"
 					),
 				)
 			})

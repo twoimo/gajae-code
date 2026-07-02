@@ -7,24 +7,26 @@
 //!
 //! Every call carries a [`BackendCallContext`] with `thread_id`, `generation`,
 //! `request_id`, `lane`, and a cancellation token. Every backend event carries
-//! `(thread_id, generation)` so [`crate::identity::ThreadIdentity::accepts_event`]
-//! can reject stale events. Payloads are `serde_json::Value` at the seam so the
-//! Rust core and the TS bridge share one wire shape; typed accessors live in the
-//! protocol modules.
+//! `(thread_id, generation)` so
+//! [`crate::identity::ThreadIdentity::accepts_event`] can reject stale events.
+//! Payloads are `serde_json::Value` at the seam so the Rust core and the TS
+//! bridge share one wire shape; typed accessors live in the protocol modules.
 
 use async_trait::async_trait;
 
-use crate::error::Result;
-use crate::ids::{BackendGeneration, ThreadId, TurnId};
-use crate::scheduler::Lane;
+use crate::{
+	error::Result,
+	ids::{BackendGeneration, ThreadId, TurnId},
+	scheduler::Lane,
+};
 
 /// Context threaded through every backend call.
 #[derive(Debug, Clone)]
 pub struct BackendCallContext {
-	pub thread_id: ThreadId,
+	pub thread_id:  ThreadId,
 	pub generation: BackendGeneration,
 	pub request_id: Option<crate::jsonrpc::RequestId>,
-	pub lane: Lane,
+	pub lane:       Lane,
 }
 
 /// A normalized event pushed from the backend (TS `AgentEvent` today) up into
@@ -33,26 +35,26 @@ pub struct BackendCallContext {
 /// codex `item/*` lifecycle notifications.
 #[derive(Debug, Clone)]
 pub struct BackendEvent {
-	pub thread_id: ThreadId,
+	pub thread_id:  ThreadId,
 	pub generation: BackendGeneration,
 	/// The gjc `AgentEvent` `type` discriminator (e.g. `agent_start`,
 	/// `text_delta`, `tool_execution_start`, `agent_end`).
 	pub event_type: String,
 	/// The full raw event value (lossless gjc detail).
-	pub payload: serde_json::Value,
+	pub payload:    serde_json::Value,
 }
 
 /// Metadata returned when a thread's backend is created/resumed/forked.
 #[derive(Debug, Clone)]
 pub struct BackendHandleInfo {
-	pub thread_id: ThreadId,
-	pub generation: BackendGeneration,
+	pub thread_id:        ThreadId,
+	pub generation:       BackendGeneration,
 	pub session_metadata: crate::identity::SessionMetadata,
 }
 
 /// The seam the app-server drives. Mirrors `AgentSession`'s surface; grouped by
-/// concern. Payloads are `Value` to keep one wire shape across the TS bridge and
-/// the future Rust implementor.
+/// concern. Payloads are `Value` to keep one wire shape across the TS bridge
+/// and the future Rust implementor.
 #[async_trait]
 pub trait AgentBackend: Send + Sync {
 	// -- prompt / turn lifecycle --
@@ -124,12 +126,15 @@ mod tests {
 		async fn prompt(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<TurnId> {
 			Ok(TurnId::generate())
 		}
+
 		async fn steer(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<TurnId> {
 			Ok(TurnId::generate())
 		}
+
 		async fn abort(&self, _c: &BackendCallContext, _t: &TurnId) -> Result<()> {
 			Ok(())
 		}
+
 		async fn get_state(
 			&self,
 			_c: &BackendCallContext,
@@ -137,9 +142,11 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({"idle": true}))
 		}
+
 		async fn get_messages(&self, _c: &BackendCallContext) -> Result<serde_json::Value> {
 			Ok(serde_json::json!([]))
 		}
+
 		async fn set_model(
 			&self,
 			_c: &BackendCallContext,
@@ -148,6 +155,7 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({"provider": provider, "modelId": model_id}))
 		}
+
 		async fn compact(
 			&self,
 			_c: &BackendCallContext,
@@ -155,9 +163,11 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({"compacted": true}))
 		}
+
 		async fn set_todos(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<()> {
 			Ok(())
 		}
+
 		async fn exec(
 			&self,
 			_c: &BackendCallContext,
@@ -165,6 +175,7 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({"exitCode": 0}))
 		}
+
 		async fn dispose(&self, _c: &BackendCallContext) -> Result<()> {
 			Ok(())
 		}
@@ -172,10 +183,10 @@ mod tests {
 
 	fn ctx() -> BackendCallContext {
 		BackendCallContext {
-			thread_id: ThreadId("thr_1".into()),
+			thread_id:  ThreadId("thr_1".into()),
 			generation: BackendGeneration::FIRST,
 			request_id: None,
-			lane: Lane::Mutating,
+			lane:       Lane::Mutating,
 		}
 	}
 
@@ -195,10 +206,10 @@ mod tests {
 	#[test]
 	fn backend_event_preserves_raw_payload() {
 		let ev = BackendEvent {
-			thread_id: ThreadId("thr_1".into()),
+			thread_id:  ThreadId("thr_1".into()),
 			generation: BackendGeneration::FIRST,
 			event_type: "text_delta".into(),
-			payload: serde_json::json!({"type": "text_delta", "delta": "hello", "contentIndex": 0}),
+			payload:    serde_json::json!({"type": "text_delta", "delta": "hello", "contentIndex": 0}),
 		};
 		assert_eq!(ev.payload["delta"], "hello");
 	}

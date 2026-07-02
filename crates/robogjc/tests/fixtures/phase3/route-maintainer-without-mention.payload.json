@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "comment": {
+    "author_association": "OWNER",
+    "body": "looks good to me",
+    "user": {
+      "login": "can1357"
+    }
+  },
+  "issue": {
+    "number": 9
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

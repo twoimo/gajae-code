@@ -1,0 +1,12 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 4,
+    "pull_request": {
+      "url": "x"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}
