@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "package-consumer-report",
+  "summary": {
+    "status": "passed",
+    "rust": "bun scripts/run-rs-task.ts test:rs -p robogjc: 681 passed, 6 skipped",
+    "pythonOracle": "/tmp/robogjc-uv/bin/python -m pytest python/robogjc/tests/test_sandbox.py python/robogjc/tests/test_slot_pool.py python/robogjc/tests/test_natives_cache.py: 78 passed",
+    "blockers": []
+  },
+  "commands": [
+    {"cmd": ["bun", "scripts/run-rs-task.ts", "test:rs", "-p", "robogjc"], "artifact": "artifact://455", "verdict": "passed-focused-before-full"},
+    {"cmd": ["bun", "scripts/run-rs-task.ts", "test:rs", "-p", "robogjc"], "verdict": "passed"},
+    {"cmd": ["/tmp/robogjc-uv/bin/python", "-m", "pytest", "python/robogjc/tests/test_sandbox.py", "python/robogjc/tests/test_slot_pool.py", "python/robogjc/tests/test_natives_cache.py"], "artifact": "artifact://459", "verdict": "passed"}
+  ],
+  "cases": [
+    {"name": "dirty-tree staged-only", "surface": "real temp git worktree", "verdict": "passed", "evidence": "phase4_sandbox_git::dirty_state_counts_staged_untracked_and_submodule_changes asserts A  staged.txt"},
+    {"name": "dirty-tree untracked-only", "surface": "real temp git worktree", "verdict": "passed", "evidence": "phase4_sandbox_git::dirty_state_counts_staged_untracked_and_submodule_changes asserts ?? untracked.txt"},
+    {"name": "dirty-tree submodule changes", "surface": "real temp git repo + file:// submodule", "verdict": "passed", "evidence": "phase4_sandbox_git::dirty_state_counts_staged_untracked_and_submodule_changes asserts deps/sub summary"},
+    {"name": "force-with-lease moved remote head", "surface": "real temp git remote plus second clone", "verdict": "passed", "evidence": "phase4_sandbox_git::force_with_lease_rejects_moved_remote_head_and_redacts_credentials verifies remote head is not clobbered"},
+    {"name": "branch rename collision", "surface": "real temp worktree", "verdict": "passed", "evidence": "phase4_sandbox_git::branch_rename_collision_invalid_slug_and_workspace_resume_after_pool_refresh rejects colliding target"},
+    {"name": "branch rename invalid slug", "surface": "real temp worktree", "verdict": "passed", "evidence": "same test rejects bad slug"},
+    {"name": "worktree resume after pool refresh", "surface": "real temp clone pool/worktree", "verdict": "passed", "evidence": "same test fetches pool then ensure_workspace preserves existing repo_dir and branch"},
+    {"name": "credential redaction in git error paths", "surface": "real failing git clone with credentialed URL", "verdict": "passed", "evidence": "same test asserts secret URL password and auth token absent from Display/cmd/stdout/stderr"},
+    {"name": "slot pool exhaustion", "surface": "tokio unit", "verdict": "passed", "evidence": "slot_pool::tests::concurrent_acquire_waits_until_release"},
+    {"name": "slot pool double-release", "surface": "tokio unit", "verdict": "passed", "evidence": "slot_pool::tests::double_release_rejected"},
+    {"name": "natives missing manifest", "surface": "filesystem cache", "verdict": "passed", "evidence": "natives_cache::tests::gc_drops_entry_with_missing_manifest and lookup_rejects_incomplete_entry"},
+    {"name": "natives concurrent capture flock", "surface": "threaded filesystem cache", "verdict": "passed", "evidence": "natives_cache::tests::capture_is_idempotent_under_lock"},
+    {"name": "natives EXDEV fallback", "surface": "injected EXDEV atomic link", "verdict": "passed", "evidence": "natives_cache::tests::populate_cross_device_falls_back_to_copy"},
+    {"name": "natives prune ordering byte/count", "surface": "filesystem cache GC", "verdict": "passed", "evidence": "natives_cache::tests::gc_evicts_oldest_beyond_entry_cap and gc_evicts_for_byte_cap"},
+    {"name": "safe.directory env non-leak", "surface": "recorded git runner", "verdict": "passed", "evidence": "phase4_sandbox_git::safe_directory_env_is_scoped_to_git_commands_only verifies default git env lacks GIT_CONFIG_COUNT"},
+    {"name": "python oracle comparison", "surface": "python/robogjc tests", "verdict": "passed", "evidence": "78 sandbox/slot_pool/natives_cache Python tests passed under /tmp/robogjc-uv/bin/python"}
+  ]
+}

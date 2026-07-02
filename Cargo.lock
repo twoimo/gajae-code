@@ -3338,9 +3338,11 @@ name = "robogjc"
 version = "0.7.9"
 dependencies = [
  "axum",
+ "base64",
  "bytes",
  "hmac",
  "http",
+ "libc",
  "regex",
  "reqwest",
  "rusqlite",
