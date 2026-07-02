@@ -1,0 +1,37 @@
+[package]
+name = "gjc-app-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# Pure protocol/runtime core (JSON-RPC, identity, scheduler, item state machine).
+# The N-API + transport wiring layers live in crates/pi-natives (app_server.rs),
+# mirroring the gjc-notifications rlib + pi-natives split so the core stays
+# independently unit-testable without native build tooling.
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true }
+
+[[bin]]
+name = "gjc-app-server-schema"
+path = "src/bin/schema.rs"
