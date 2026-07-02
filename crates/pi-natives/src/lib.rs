@@ -23,6 +23,7 @@
 
 pub mod app_server;
 pub mod appearance;
+pub mod app_server;
 pub mod ast;
 pub mod build_info;
 pub mod clipboard;
