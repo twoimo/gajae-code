@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 /// A single usage observation reported from an unattended run.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageObservation {
-	pub tokens: u64,
-	pub tool_calls: u64,
-	pub cost_usd: f64,
+	pub tokens:       u64,
+	pub tool_calls:   u64,
+	pub cost_usd:     f64,
 	pub wall_time_ms: u64,
 }
 
@@ -36,17 +36,17 @@ impl UsageObservation {
 /// Per-day aggregated usage.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DayRollup {
-	pub day: String,
+	pub day:          String,
 	pub observations: u64,
-	pub total: UsageObservation,
+	pub total:        UsageObservation,
 }
 
 /// Observability-only ledger. There is intentionally no cap or enforcement API:
 /// recording usage can never deny work or abort a run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SpendLedger {
-	by_day: BTreeMap<String, DayRollup>,
-	grand_total: UsageObservation,
+	by_day:            BTreeMap<String, DayRollup>,
+	grand_total:       UsageObservation,
 	observation_count: u64,
 }
 

@@ -8,17 +8,18 @@
 //! a required value or live endpoint is missing. `stop`/`reload` require IPC to
 //! a running daemon and remain honest stubs until that control channel lands.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
-use git_daemon::config::MergePolicy;
-use git_daemon::github_forge::GithubForge;
-use git_daemon::observability::StatusReport;
-use git_daemon::reqwest_transport::ReqwestTransport;
-use git_daemon::rpc_socket::RpcClient;
-use git_daemon::serve::{serve_forever, serve_pass};
-use git_daemon::socket_runner::SocketWorkRunner;
-use git_daemon::store::GitDaemonStateStore;
+use git_daemon::{
+	config::MergePolicy,
+	github_forge::GithubForge,
+	observability::StatusReport,
+	reqwest_transport::ReqwestTransport,
+	rpc_socket::RpcClient,
+	serve::{serve_forever, serve_pass},
+	socket_runner::SocketWorkRunner,
+	store::GitDaemonStateStore,
+};
 
 fn print_usage() {
 	println!(
@@ -28,12 +29,12 @@ fn print_usage() {
 
 /// Non-secret daemon settings resolved from the environment.
 struct DaemonEnv {
-	token: String,
-	repo: String,
-	socket: String,
-	state_db: PathBuf,
-	policy: MergePolicy,
-	poll: Duration,
+	token:           String,
+	repo:            String,
+	socket:          String,
+	state_db:        PathBuf,
+	policy:          MergePolicy,
+	poll:            Duration,
 	max_concurrency: u32,
 }
 
@@ -44,7 +45,13 @@ fn env_required(key: &str) -> Result<String, String> {
 fn csv_env(key: &str, default: &[&str]) -> Vec<String> {
 	std::env::var(key).map_or_else(
 		|_| default.iter().map(|s| (*s).to_owned()).collect(),
-		|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
+		|v| {
+			v.split(',')
+				.map(str::trim)
+				.filter(|s| !s.is_empty())
+				.map(str::to_owned)
+				.collect()
+		},
 	)
 }
 
@@ -68,7 +75,7 @@ fn load_env() -> Result<DaemonEnv, String> {
 		socket,
 		state_db,
 		policy: MergePolicy {
-			protected_branches: csv_env("GIT_DAEMON_PROTECTED_BRANCHES", &["main", "master"]),
+			protected_branches:   csv_env("GIT_DAEMON_PROTECTED_BRANCHES", &["main", "master"]),
 			allowed_dev_branches: csv_env("GIT_DAEMON_DEV_BRANCHES", &["dev"]),
 		},
 		poll: Duration::from_secs(poll_secs),
@@ -87,18 +94,23 @@ fn system_clock() -> (String, String) {
 }
 
 /// Connect the gjc-rpc socket and build the work runner. Live-only.
-#[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
+#[allow(
+	clippy::future_not_send,
+	reason = "driven on the single daemon task; no cross-thread Send boundary"
+)]
 async fn build_runner(
 	socket: &str,
 	dev_branch: &str,
 ) -> Result<SocketWorkRunner<tokio::net::UnixStream>, String> {
-	let client = RpcClient::connect_unix(socket).await.map_err(|e| format!("rpc connect: {e}"))?;
+	let client = RpcClient::connect_unix(socket)
+		.await
+		.map_err(|e| format!("rpc connect: {e}"))?;
 	let prompt = format!(
-		"You are the git-daemon autonomous worker for this repository. Resolve the referenced \
-		 open GitHub issue: read it with `gh issue list --state open` and `gh issue view`. \
-		 Implement a minimal, in-scope fix on a NEW branch named git-daemon/<short-slug>. Commit, \
-		 push, and open a pull request targeting the '{dev_branch}' branch. Do not merge it \
-		 yourself; the daemon runs the merge gate. Keep the diff small and in scope."
+		"You are the git-daemon autonomous worker for this repository. Resolve the referenced open \
+		 GitHub issue: read it with `gh issue list --state open` and `gh issue view`. Implement a \
+		 minimal, in-scope fix on a NEW branch named git-daemon/<short-slug>. Commit, push, and \
+		 open a pull request targeting the '{dev_branch}' branch. Do not merge it yourself; the \
+		 daemon runs the merge gate. Keep the diff small and in scope."
 	);
 	let runner = SocketWorkRunner::new(
 		client,
@@ -108,7 +120,10 @@ async fn build_runner(
 		prompt,
 		256,
 	);
-	match std::env::var("GIT_DAEMON_IDLE_SECS").ok().and_then(|s| s.parse::<u64>().ok()) {
+	match std::env::var("GIT_DAEMON_IDLE_SECS")
+		.ok()
+		.and_then(|s| s.parse::<u64>().ok())
+	{
 		Some(secs) => Ok(runner.with_idle_timeout(secs)),
 		None => Ok(runner),
 	}
@@ -119,12 +134,20 @@ fn build_forge(cfg: &DaemonEnv) -> Result<GithubForge<ReqwestTransport>, String>
 	Ok(GithubForge::new(transport, cfg.token.clone(), cfg.repo.clone()))
 }
 
-#[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
+#[allow(
+	clippy::future_not_send,
+	reason = "driven on the single daemon task; no cross-thread Send boundary"
+)]
 async fn cmd_once() -> Result<(), String> {
 	let cfg = load_env()?;
-	let mut store = GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
+	let mut store =
+		GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
 	let forge = build_forge(&cfg)?;
-	let dev = cfg.policy.allowed_dev_branches.first().map_or("dev", String::as_str);
+	let dev = cfg
+		.policy
+		.allowed_dev_branches
+		.first()
+		.map_or("dev", String::as_str);
 	let runner = build_runner(&cfg.socket, dev).await?;
 	let (now, lease) = system_clock();
 	// Poll phase: discover + ingest open issues, then reconcile the ready queue.
@@ -132,9 +155,19 @@ async fn cmd_once() -> Result<(), String> {
 		.await
 		.map_err(|e| format!("poll: {e}"))?;
 	println!("git-daemon: polled {} issue(s)", ingested.len());
-	let out = serve_pass(&mut store, &forge, &runner, &cfg.policy, 0, cfg.max_concurrency, 64, &now, &lease)
-		.await
-		.map_err(|e| format!("reconciliation pass: {e}"))?;
+	let out = serve_pass(
+		&mut store,
+		&forge,
+		&runner,
+		&cfg.policy,
+		0,
+		cfg.max_concurrency,
+		64,
+		&now,
+		&lease,
+	)
+	.await
+	.map_err(|e| format!("reconciliation pass: {e}"))?;
 	for (work_key, outcome) in &out {
 		println!("git-daemon: {work_key} -> {outcome:?}");
 	}
@@ -142,12 +175,20 @@ async fn cmd_once() -> Result<(), String> {
 	Ok(())
 }
 
-#[allow(clippy::future_not_send, reason = "driven on the single daemon task; no cross-thread Send boundary")]
+#[allow(
+	clippy::future_not_send,
+	reason = "driven on the single daemon task; no cross-thread Send boundary"
+)]
 async fn cmd_serve() -> Result<(), String> {
 	let cfg = load_env()?;
-	let store = GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
+	let store =
+		GitDaemonStateStore::open(&cfg.state_db).map_err(|e| format!("open state db: {e}"))?;
 	let forge = build_forge(&cfg)?;
-	let dev = cfg.policy.allowed_dev_branches.first().map_or("dev", String::as_str);
+	let dev = cfg
+		.policy
+		.allowed_dev_branches
+		.first()
+		.map_or("dev", String::as_str);
 	let runner = build_runner(&cfg.socket, dev).await?;
 	let (tx, rx) = tokio::sync::watch::channel(false);
 	tokio::spawn(async move {
@@ -155,9 +196,20 @@ async fn cmd_serve() -> Result<(), String> {
 			let _ = tx.send(true);
 		}
 	});
-	let ticks = serve_forever(store, forge, runner, cfg.policy, cfg.repo.clone(), cfg.max_concurrency, 64, cfg.poll, rx, system_clock)
-		.await
-		.map_err(|e| format!("serve loop: {e}"))?;
+	let ticks = serve_forever(
+		store,
+		forge,
+		runner,
+		cfg.policy,
+		cfg.repo.clone(),
+		cfg.max_concurrency,
+		64,
+		cfg.poll,
+		rx,
+		system_clock,
+	)
+	.await
+	.map_err(|e| format!("serve loop: {e}"))?;
 	println!("git-daemon: drained and stopped after {ticks} tick(s)");
 	Ok(())
 }
@@ -176,32 +228,33 @@ async fn main() {
 				Err(e) => {
 					eprintln!("git-daemon: failed to render status: {e}");
 					std::process::exit(1);
-				}
+				},
 			}
-		}
+		},
 		"once" => {
 			if let Err(e) = cmd_once().await {
 				eprintln!("git-daemon: once failed: {e}");
 				std::process::exit(1);
 			}
-		}
+		},
 		"serve" => {
 			if let Err(e) = cmd_serve().await {
 				eprintln!("git-daemon: serve failed: {e}");
 				std::process::exit(1);
 			}
-		}
+		},
 		"stop" | "reload" => {
 			eprintln!(
-				"git-daemon: '{cmd}' requires a control channel to a running daemon, which is not implemented in this build yet."
+				"git-daemon: '{cmd}' requires a control channel to a running daemon, which is not \
+				 implemented in this build yet."
 			);
 			std::process::exit(1);
-		}
+		},
 		"help" | "--help" | "-h" => print_usage(),
 		other => {
 			eprintln!("git-daemon: unknown command '{other}'");
 			print_usage();
 			std::process::exit(2);
-		}
+		},
 	}
 }

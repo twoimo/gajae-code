@@ -22,5 +22,10 @@ describe("Rust scope guard", () => {
 		expect(stdout).toContain("Notifications SDK Rust core");
 		expect(stdout).toContain("loopback WebSocket transport");
 		expect(stdout).toContain("planned N-API integration");
+		expect(stdout).toContain("crates/git-daemon");
+		expect(stdout).toContain("Autonomous per-repo git daemon");
+		expect(stdout).toContain("local SQLite state");
+		expect(stdout).toContain("process/RPC/socket runner");
+		expect(stdout).toContain("SHA-bound merge gate");
 	});
 });

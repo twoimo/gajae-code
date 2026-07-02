@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 /// A heartbeat-based ownership record persisted by the running daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnershipRecord {
-	pub owner_id: String,
-	pub pid: u32,
+	pub owner_id:     String,
+	pub pid:          u32,
 	/// ISO-8601 (UTC) timestamp of the last heartbeat.
 	pub heartbeat_at: String,
 }
@@ -42,7 +42,7 @@ pub fn decide_takeover(
 		Some(rec) if rec.owner_id == my_owner_id => TakeoverDecision::Acquire,
 		Some(rec) if rec.heartbeat_at.as_str() < heartbeat_cutoff => {
 			TakeoverDecision::Steal { stale_owner: rec.owner_id.clone() }
-		}
+		},
 		Some(rec) => TakeoverDecision::Refuse { live_owner: rec.owner_id.clone() },
 	}
 }
@@ -70,8 +70,9 @@ impl DaemonStatus {
 	pub const fn can_transition_to(self, to: Self) -> bool {
 		matches!(
 			(self, to),
-			(Self::Starting, Self::Running | Self::Draining) |
-(Self::Running, Self::Draining) | (Self::Draining, Self::Stopped)
+			(Self::Starting, Self::Running | Self::Draining)
+				| (Self::Running, Self::Draining)
+				| (Self::Draining, Self::Stopped)
 		)
 	}
 }
@@ -92,7 +93,10 @@ mod tests {
 	#[test]
 	fn own_record_reacquires() {
 		let r = rec("me", "2026-01-01T00:00:00Z");
-		assert_eq!(decide_takeover(Some(&r), "me", "2026-01-01T00:05:00Z"), TakeoverDecision::Acquire);
+		assert_eq!(
+			decide_takeover(Some(&r), "me", "2026-01-01T00:05:00Z"),
+			TakeoverDecision::Acquire
+		);
 	}
 
 	#[test]

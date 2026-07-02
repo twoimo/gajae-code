@@ -3,14 +3,16 @@
 //! Glues the pieces together for one ingested event: dedupe it in the store
 //! (exactly-once across webhook + poll), acknowledge non-actionable events as a
 //! first-class no-op (D1: broad intake, the action decides act-vs-ack), and for
-//! actionable events record a work intent so follow-ups update the existing work
-//! item instead of opening a duplicate PR.
+//! actionable events record a work intent so follow-ups update the existing
+//! work item instead of opening a duplicate PR.
 
-use crate::forge::ForgeEvent;
-use crate::forge_adapter::ForgeAdapter;
-use crate::keys::{DedupKey, EventSource, ItemRef};
-use crate::poll::poll_state_token;
-use crate::store::{GitDaemonStateStore, StoreError};
+use crate::{
+	forge::ForgeEvent,
+	forge_adapter::ForgeAdapter,
+	keys::{DedupKey, EventSource, ItemRef},
+	poll::poll_state_token,
+	store::{GitDaemonStateStore, StoreError},
+};
 
 /// What the dispatcher decided for an ingested event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +69,8 @@ pub fn ingest(
 		return Ok(IngestOutcome::AckedNoOp);
 	}
 	let work_key = item.work_intent_key(normalized_action(event.item_kind));
-	let created = store.record_work_intent(&work_key, event.item_kind.as_str(), &event.item_node_id, now)?;
+	let created =
+		store.record_work_intent(&work_key, event.item_kind.as_str(), &event.item_node_id, now)?;
 	let key = work_key.as_str().to_owned();
 	if created {
 		return Ok(IngestOutcome::WorkCreated { work_key: key });
@@ -91,8 +94,12 @@ pub fn ingest(
 ///
 /// # Errors
 /// Returns [`StoreError`] on a store failure. Forge errors abort the sweep and
-/// are surfaced as [`StoreError::MigrationFailed`] (transient; retried next tick).
-#[allow(clippy::future_not_send, reason = "driven on the daemon task; no cross-thread Send boundary yet")]
+/// are surfaced as [`StoreError::MigrationFailed`] (transient; retried next
+/// tick).
+#[allow(
+	clippy::future_not_send,
+	reason = "driven on the daemon task; no cross-thread Send boundary yet"
+)]
 pub async fn reconcile_poll<F: ForgeAdapter>(
 	store: &GitDaemonStateStore,
 	forge: &F,
@@ -106,18 +113,18 @@ pub async fn reconcile_poll<F: ForgeAdapter>(
 	let mut outcomes = Vec::with_capacity(items.len());
 	for item in items {
 		let event = ForgeEvent {
-			provider: "github".to_owned(),
-			repo_node_id: repo_node_id.to_owned(),
-			item_kind: item.item_kind,
-			item_node_id: item.node_id.clone(),
-			event_family: "issues".to_owned(),
-			action: "poll_discovered".to_owned(),
-			actor_login: None,
+			provider:       "github".to_owned(),
+			repo_node_id:   repo_node_id.to_owned(),
+			item_kind:      item.item_kind,
+			item_node_id:   item.node_id.clone(),
+			event_family:   "issues".to_owned(),
+			action:         "poll_discovered".to_owned(),
+			actor_login:    None,
 			event_revision: item.updated_at.clone(),
-			actionable: true,
+			actionable:     true,
 		};
 		let source = EventSource::Poll {
-			resource: "issues".to_owned(),
+			resource:    "issues".to_owned(),
 			state_token: poll_state_token(&item.updated_at, &item.state),
 		};
 		outcomes.push(ingest(store, &event, &source, now)?);
@@ -127,9 +134,10 @@ pub async fn reconcile_poll<F: ForgeAdapter>(
 
 #[cfg(test)]
 mod tests {
+	use serde_json::json;
+
 	use super::*;
 	use crate::forge::normalize_github;
-	use serde_json::json;
 
 	fn store() -> GitDaemonStateStore {
 		GitDaemonStateStore::open_in_memory().unwrap()
@@ -137,19 +145,38 @@ mod tests {
 
 	#[tokio::test]
 	async fn reconcile_poll_ingests_open_issues_and_dedupes() {
-		use crate::forge_adapter::{FakeForge, PolledItem};
-		use crate::keys::ItemKind;
+		use crate::{
+			forge_adapter::{FakeForge, PolledItem},
+			keys::ItemKind,
+		};
 		let s = store();
 		let forge = FakeForge::new();
-		forge.put_open_issue(PolledItem { node_id: "I_1".into(), item_kind: ItemKind::Issue, updated_at: "2026-01-01T00:00:00Z".into(), state: "open".into() });
-		forge.put_open_issue(PolledItem { node_id: "I_2".into(), item_kind: ItemKind::Issue, updated_at: "2026-01-01T00:00:01Z".into(), state: "open".into() });
+		forge.put_open_issue(PolledItem {
+			node_id:    "I_1".into(),
+			item_kind:  ItemKind::Issue,
+			updated_at: "2026-01-01T00:00:00Z".into(),
+			state:      "open".into(),
+		});
+		forge.put_open_issue(PolledItem {
+			node_id:    "I_2".into(),
+			item_kind:  ItemKind::Issue,
+			updated_at: "2026-01-01T00:00:01Z".into(),
+			state:      "open".into(),
+		});
 		let out = reconcile_poll(&s, &forge, "R_1", "t0").await.unwrap();
 		assert_eq!(out.len(), 2);
-		assert!(out.iter().all(|o| matches!(o, IngestOutcome::WorkCreated { .. })));
+		assert!(
+			out.iter()
+				.all(|o| matches!(o, IngestOutcome::WorkCreated { .. }))
+		);
 		assert_eq!(s.list_ready_work(10).unwrap().len(), 2, "both issues become ready work");
 		// Re-polling the same unchanged issues dedupes (no new work).
 		let again = reconcile_poll(&s, &forge, "R_1", "t1").await.unwrap();
-		assert!(again.iter().all(|o| matches!(o, IngestOutcome::Duplicate | IngestOutcome::FollowUp { .. })));
+		assert!(
+			again
+				.iter()
+				.all(|o| matches!(o, IngestOutcome::Duplicate | IngestOutcome::FollowUp { .. }))
+		);
 		assert_eq!(s.list_ready_work(10).unwrap().len(), 2, "no duplicate work items");
 	}
 
@@ -219,7 +246,8 @@ mod tests {
 	fn comment_follow_up_reuses_work_item() {
 		let s = store();
 		// Open the issue (creates work).
-		ingest(&s, &issue_opened(), &EventSource::Webhook { delivery_id: "d1".into() }, "t0").unwrap();
+		ingest(&s, &issue_opened(), &EventSource::Webhook { delivery_id: "d1".into() }, "t0")
+			.unwrap();
 		// A later comment on the same issue is a distinct event but shares the
 		// issue's work intent -> FollowUp.
 		let comment = normalize_github(
@@ -231,20 +259,28 @@ mod tests {
 			}),
 		)
 		.unwrap();
-		let out = ingest(&s, &comment, &EventSource::Webhook { delivery_id: "d2".into() }, "t1").unwrap();
+		let out =
+			ingest(&s, &comment, &EventSource::Webhook { delivery_id: "d2".into() }, "t1").unwrap();
 		assert!(matches!(out, IngestOutcome::FollowUp { .. }));
 	}
 
 	#[test]
 	fn follow_up_requeues_a_settled_work_item() {
-		use crate::keys::{ItemKind, ItemRef};
-		use crate::state_machine::WorkItemState;
+		use crate::{
+			keys::{ItemKind, ItemRef},
+			state_machine::WorkItemState,
+		};
 		let s = store();
 		// Create the work item, then settle it (e.g. escalated) so it is no longer
 		// in the ready set.
-		ingest(&s, &issue_opened(), &EventSource::Webhook { delivery_id: "d1".into() }, "t0").unwrap();
-		let work_key = ItemRef::new("github", "R_1", ItemKind::Issue, "I_42").work_intent_key("resolve");
-		assert!(s.set_work_state(work_key.as_str(), WorkItemState::Escalated, "t1").unwrap());
+		ingest(&s, &issue_opened(), &EventSource::Webhook { delivery_id: "d1".into() }, "t0")
+			.unwrap();
+		let work_key =
+			ItemRef::new("github", "R_1", ItemKind::Issue, "I_42").work_intent_key("resolve");
+		assert!(
+			s.set_work_state(work_key.as_str(), WorkItemState::Escalated, "t1")
+				.unwrap()
+		);
 		assert!(s.list_ready_work(10).unwrap().is_empty(), "settled item is not ready");
 		// A later comment (distinct event, same item) must re-queue it.
 		let comment = normalize_github(
@@ -256,9 +292,19 @@ mod tests {
 			}),
 		)
 		.unwrap();
-		let out = ingest(&s, &comment, &EventSource::Webhook { delivery_id: "d2".into() }, "t2").unwrap();
+		let out =
+			ingest(&s, &comment, &EventSource::Webhook { delivery_id: "d2".into() }, "t2").unwrap();
 		assert!(matches!(out, IngestOutcome::FollowUp { .. }));
-		let ready: Vec<String> = s.list_ready_work(10).unwrap().into_iter().map(|(k, _, _)| k).collect();
-		assert_eq!(ready, vec![work_key.as_str().to_owned()], "follow-up must re-queue the existing item");
+		let ready: Vec<String> = s
+			.list_ready_work(10)
+			.unwrap()
+			.into_iter()
+			.map(|(k, ..)| k)
+			.collect();
+		assert_eq!(
+			ready,
+			vec![work_key.as_str().to_owned()],
+			"follow-up must re-queue the existing item"
+		);
 	}
 }

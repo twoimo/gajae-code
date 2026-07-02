@@ -10,14 +10,13 @@
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::forge_adapter::ForgeError;
-use crate::rpc_socket::RpcClient;
+use crate::{forge_adapter::ForgeError, rpc_socket::RpcClient};
 
 /// A recalled advisory memory snippet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecalledMemory {
-	pub text: String,
-	pub id: Option<String>,
+	pub text:     String,
+	pub id:       Option<String>,
 	pub mem_type: Option<String>,
 }
 
@@ -133,12 +132,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HindsightRpcClient<S> {
 		tags: Option<&[String]>,
 		tags_match: Option<&str>,
 	) -> Result<Vec<RecalledMemory>, ForgeError> {
-		self.client.send(&recall_command(query, types, max_tokens, tags, tags_match)).await?;
+		self
+			.client
+			.send(&recall_command(query, types, max_tokens, tags, tags_match))
+			.await?;
 		// The engine wraps results in {type:"response", command:"hindsight_recall",
 		// success, data:{results:[...]}}; skip the ready/other frames and parse the
 		// response's `data`. EOF/other terminal => empty (advisory, never blocks).
 		loop {
-			let Some(frame) = self.client.next_frame().await? else { return Ok(Vec::new()) };
+			let Some(frame) = self.client.next_frame().await? else {
+				return Ok(Vec::new());
+			};
 			if frame.get("type").and_then(Value::as_str) == Some("response")
 				&& frame.get("command").and_then(Value::as_str) == Some("hindsight_recall")
 			{
@@ -158,7 +162,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HindsightRpcClient<S> {
 		context: Option<&str>,
 		tags: Option<&[String]>,
 	) -> Result<(), ForgeError> {
-		self.client.send(&retain_command(content, document_id, context, tags)).await
+		self
+			.client
+			.send(&retain_command(content, document_id, context, tags))
+			.await
 	}
 
 	/// Trigger a reflection (fire-and-forget; no response is awaited).
@@ -171,7 +178,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HindsightRpcClient<S> {
 		context: Option<&str>,
 		tags: Option<&[String]>,
 	) -> Result<(), ForgeError> {
-		self.client.send(&reflect_command(query, context, tags)).await
+		self
+			.client
+			.send(&reflect_command(query, context, tags))
+			.await
 	}
 }
 
@@ -247,7 +257,10 @@ mod tests {
 		engine.flush().await.unwrap();
 
 		let tags = vec!["repo:acme/widget".to_owned()];
-		let mems = hs.recall("how is auth done", None, Some(1500), Some(&tags), Some("any")).await.unwrap();
+		let mems = hs
+			.recall("how is auth done", None, Some(1500), Some(&tags), Some("any"))
+			.await
+			.unwrap();
 		assert_eq!(mems.len(), 1);
 		assert_eq!(mems[0].text, "uses passport JWT");
 
@@ -264,7 +277,9 @@ mod tests {
 	async fn recall_returns_empty_on_empty_results() {
 		use tokio::io::AsyncWriteExt;
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		let frame = crate::rpc_framing::encode_frame(&json!({ "type": "response", "command": "hindsight_recall", "success": true, "data": { "results": [] } }));
+		let frame = crate::rpc_framing::encode_frame(
+			&json!({ "type": "response", "command": "hindsight_recall", "success": true, "data": { "results": [] } }),
+		);
 		engine.write_all(frame.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
 		let mut hs = HindsightRpcClient::new(RpcClient::new(client_side));
@@ -277,7 +292,9 @@ mod tests {
 		use tokio::io::AsyncReadExt;
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		let mut hs = HindsightRpcClient::new(RpcClient::new(client_side));
-		hs.retain("fixed the parser", Some("doc-1"), None, None).await.unwrap();
+		hs.retain("fixed the parser", Some("doc-1"), None, None)
+			.await
+			.unwrap();
 		let mut buf = vec![0u8; 4096];
 		let n = engine.read(&mut buf).await.unwrap();
 		let sent: Value = serde_json::from_str(String::from_utf8_lossy(&buf[..n]).trim()).unwrap();
@@ -291,7 +308,9 @@ mod tests {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		let mut hs = HindsightRpcClient::new(RpcClient::new(client_side));
 		let tags = vec!["repo:acme/widget".to_owned()];
-		hs.reflect("what conventions apply", Some("issue 42"), Some(&tags)).await.unwrap();
+		hs.reflect("what conventions apply", Some("issue 42"), Some(&tags))
+			.await
+			.unwrap();
 		let mut buf = vec![0u8; 4096];
 		let n = engine.read(&mut buf).await.unwrap();
 		let sent: Value = serde_json::from_str(String::from_utf8_lossy(&buf[..n]).trim()).unwrap();

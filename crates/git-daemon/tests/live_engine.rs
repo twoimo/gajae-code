@@ -7,8 +7,7 @@
 //!   cargo test -p git-daemon --test live_engine -- --nocapture
 //! ```
 
-use git_daemon::runner::unbounded_negotiation;
-use git_daemon::RpcClient;
+use git_daemon::{RpcClient, runner::unbounded_negotiation};
 
 #[tokio::test]
 async fn live_connect_and_unbounded_negotiate() {
@@ -16,7 +15,9 @@ async fn live_connect_and_unbounded_negotiate() {
 		eprintln!("SKIP live_connect_and_unbounded_negotiate: set GIT_DAEMON_RPC_SOCKET");
 		return;
 	};
-	let mut client = RpcClient::connect_unix(&socket).await.expect("connect_unix to live engine");
+	let mut client = RpcClient::connect_unix(&socket)
+		.await
+		.expect("connect_unix to live engine");
 	println!("LIVE engine: connected to {socket}");
 
 	let neg = unbounded_negotiation("git-daemon", &["prompt", "bash"], &["bash.mutating"]);
@@ -34,15 +35,15 @@ async fn live_connect_and_unbounded_negotiate() {
 					assert_eq!(accepted, Some("unbounded"), "engine must accept unbounded mode");
 					break;
 				}
-			}
+			},
 			Ok(None) => {
 				println!("LIVE engine: stream EOF");
 				break;
-			}
+			},
 			Err(e) => {
 				println!("LIVE engine: read error: {e}");
 				break;
-			}
+			},
 		}
 	}
 }

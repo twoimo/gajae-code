@@ -82,7 +82,7 @@ pub fn authoritative_directive<'a>(directives: &[(DirectiveSource, &'a str)]) ->
 	for (src, content) in directives {
 		let rank = src.rank();
 		match best {
-			Some((best_rank, _)) if rank <= best_rank => {}
+			Some((best_rank, _)) if rank <= best_rank => {},
 			_ => best = Some((rank, content)),
 		}
 	}
@@ -157,7 +157,10 @@ mod tests {
 
 	#[test]
 	fn doc_ids_are_deterministic_and_namespaced() {
-		assert_eq!(contributor_doc_id("R_1", "github", "u9"), "gitdaemon:repo:R_1:contributor:github:u9");
+		assert_eq!(
+			contributor_doc_id("R_1", "github", "u9"),
+			"gitdaemon:repo:R_1:contributor:github:u9"
+		);
 		assert_eq!(issue_doc_id("R_1", "I_42"), "gitdaemon:repo:R_1:issue:I_42");
 		assert_eq!(pr_doc_id("R_1", "PR_7"), "gitdaemon:repo:R_1:pr:PR_7");
 	}

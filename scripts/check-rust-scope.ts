@@ -49,6 +49,11 @@ const RUST_SCOPE_ALLOWLIST: readonly RustScopeEntry[] = [
 		rationale: "Notifications SDK Rust core for loopback WebSocket transport, endpoint discovery, and planned N-API integration.",
 	},
 	{
+		dir: "crates/git-daemon",
+		packageName: "git-daemon",
+		rationale: "Autonomous per-repo git daemon with local SQLite state, GitHub webhook/polling I/O, process/RPC/socket runner, and SHA-bound merge gate.",
+	},
+	{
 		dir: "crates/brush-core-vendored",
 		packageName: "brush-core",
 		rationale: "Vendored Rust shell runtime dependency for the native shell boundary.",

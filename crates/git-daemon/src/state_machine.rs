@@ -41,7 +41,7 @@ pub enum WorkItemState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransitionError {
 	pub from: WorkItemState,
-	pub to: WorkItemState,
+	pub to:   WorkItemState,
 }
 
 impl core::fmt::Display for TransitionError {
@@ -109,11 +109,13 @@ impl WorkItemState {
 
 #[cfg(test)]
 mod tests {
-	use super::WorkItemState::{
-		AwaitingCi, Blocked, Closed, Escalated, MergeReady, MergedDev, PrOpen, Queued, Revising,
-		Running, Seen, StreamLost,
+	use super::{
+		WorkItemState::{
+			AwaitingCi, Blocked, Closed, Escalated, MergeReady, MergedDev, PrOpen, Queued, Revising,
+			Running, Seen, StreamLost,
+		},
+		*,
 	};
-	use super::*;
 
 	#[test]
 	fn every_item_is_queued_not_no_opped() {
@@ -130,7 +132,8 @@ mod tests {
 
 	#[test]
 	fn merged_dev_only_reachable_from_merge_ready() {
-		for s in [Seen, Queued, Running, PrOpen, AwaitingCi, Revising, Escalated, Blocked, StreamLost] {
+		for s in [Seen, Queued, Running, PrOpen, AwaitingCi, Revising, Escalated, Blocked, StreamLost]
+		{
 			assert_eq!(s.can_transition_to(MergedDev), s == MergeReady, "from {s:?}");
 		}
 		assert!(MergeReady.can_transition_to(MergedDev));

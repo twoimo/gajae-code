@@ -8,8 +8,10 @@
 
 use serde_json::Value;
 
-use crate::forge_adapter::{ForgeAdapter, ForgeError, ForgePr, MergeRequest, MergeSignals, PolledItem};
-use crate::keys::ItemKind;
+use crate::{
+	forge_adapter::{ForgeAdapter, ForgeError, ForgePr, MergeRequest, MergeSignals, PolledItem},
+	keys::ItemKind,
+};
 
 /// Head-branch prefix the daemon instructs the engine to use, so its PR is
 /// discoverable via `find_work_pr`.
@@ -20,17 +22,17 @@ const DIFF_LINE_BUDGET: u64 = 5000;
 /// A minimal HTTP request the transport must perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
-	pub method: &'static str,
-	pub url: String,
+	pub method:  &'static str,
+	pub url:     String,
 	pub headers: Vec<(String, String)>,
-	pub body: Option<String>,
+	pub body:    Option<String>,
 }
 
 /// A minimal HTTP response.
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
 	pub status: u16,
-	pub body: String,
+	pub body:   String,
 }
 
 /// Pluggable HTTP send. The live impl wraps `reqwest`; tests use a fake.
@@ -42,9 +44,9 @@ pub trait HttpTransport {
 /// GitHub adapter over a pluggable transport. `pr_id`/`item_id` are PR/issue
 /// numbers (GitHub REST addresses by number).
 pub struct GithubForge<T: HttpTransport> {
-	transport: T,
-	token: String,
-	api_base: String,
+	transport:      T,
+	token:          String,
+	api_base:       String,
 	repo_full_name: String,
 }
 
@@ -79,10 +81,16 @@ impl<T: HttpTransport> GithubForge<T> {
 		format!("{}/repos/{}/pulls/{number}", self.api_base, self.repo_full_name)
 	}
 
-	/// GET a URL and parse a JSON body, mapping a non-200 status to a typed error.
+	/// GET a URL and parse a JSON body, mapping a non-200 status to a typed
+	/// error.
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
 	async fn get_json(&self, url: &str) -> Result<Value, ForgeError> {
-		let req = HttpRequest { method: "GET", url: url.to_owned(), headers: self.headers(), body: None };
+		let req = HttpRequest {
+			method:  "GET",
+			url:     url.to_owned(),
+			headers: self.headers(),
+			body:    None,
+		};
 		let resp = self.transport.send(req).await?;
 		if resp.status != 200 {
 			return Err(map_status(resp.status));
@@ -105,9 +113,17 @@ fn map_status(status: u16) -> ForgeError {
 
 /// Parse a GitHub PR JSON object into a canonical [`ForgePr`].
 fn parse_pr(body: &str) -> Result<ForgePr, ForgeError> {
-	let v: Value = serde_json::from_str(body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
-	let id = v.get("node_id").and_then(Value::as_str).ok_or(ForgeError::NotFound)?.to_owned();
-	let number = v.get("number").and_then(Value::as_u64).ok_or(ForgeError::NotFound)?;
+	let v: Value =
+		serde_json::from_str(body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
+	let id = v
+		.get("node_id")
+		.and_then(Value::as_str)
+		.ok_or(ForgeError::NotFound)?
+		.to_owned();
+	let number = v
+		.get("number")
+		.and_then(Value::as_u64)
+		.ok_or(ForgeError::NotFound)?;
 	let head_sha = v
 		.pointer("/head/sha")
 		.and_then(Value::as_str)
@@ -125,8 +141,11 @@ fn parse_pr(body: &str) -> Result<ForgePr, ForgeError> {
 /// carry a `pull_request` key are PRs surfaced by the issues endpoint and are
 /// skipped (issues only).
 fn parse_open_issues(body: &str) -> Result<Vec<PolledItem>, ForgeError> {
-	let v: Value = serde_json::from_str(body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
-	let arr = v.as_array().ok_or_else(|| ForgeError::Transient("issues body is not an array".to_owned()))?;
+	let v: Value =
+		serde_json::from_str(body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
+	let arr = v
+		.as_array()
+		.ok_or_else(|| ForgeError::Transient("issues body is not an array".to_owned()))?;
 	let mut out = Vec::new();
 	for item in arr {
 		if item.get("pull_request").is_some() {
@@ -140,10 +159,10 @@ fn parse_open_issues(body: &str) -> Result<Vec<PolledItem>, ForgeError> {
 			continue;
 		};
 		out.push(PolledItem {
-			node_id: node_id.to_owned(),
-			item_kind: ItemKind::Issue,
+			node_id:    node_id.to_owned(),
+			item_kind:  ItemKind::Issue,
 			updated_at: updated_at.to_owned(),
-			state: state.to_owned(),
+			state:      state.to_owned(),
 		});
 	}
 	Ok(out)
@@ -153,10 +172,10 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
 	async fn get_pr(&self, pr_id: &str) -> Result<ForgePr, ForgeError> {
 		let req = HttpRequest {
-			method: "GET",
-			url: self.pr_url(pr_id),
+			method:  "GET",
+			url:     self.pr_url(pr_id),
 			headers: self.headers(),
-			body: None,
+			body:    None,
 		};
 		let resp = self.transport.send(req).await?;
 		if resp.status == 200 {
@@ -169,10 +188,13 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
 	async fn list_open_issues(&self) -> Result<Vec<PolledItem>, ForgeError> {
 		let req = HttpRequest {
-			method: "GET",
-			url: format!("{}/repos/{}/issues?state=open&per_page=100", self.api_base, self.repo_full_name),
+			method:  "GET",
+			url:     format!(
+				"{}/repos/{}/issues?state=open&per_page=100",
+				self.api_base, self.repo_full_name
+			),
 			headers: self.headers(),
-			body: None,
+			body:    None,
 		};
 		let resp = self.transport.send(req).await?;
 		if resp.status == 200 {
@@ -188,11 +210,21 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 		// server-side exact ref lookup (never any git-daemon/* branch).
 		let want = crate::keys::work_branch_ref(work_key);
 		let v = self
-			.get_json(&format!("{}/repos/{}/git/matching-refs/heads/{want}", self.api_base, self.repo_full_name))
+			.get_json(&format!(
+				"{}/repos/{}/git/matching-refs/heads/{want}",
+				self.api_base, self.repo_full_name
+			))
 			.await?;
-		let arr = v.as_array().ok_or_else(|| ForgeError::Transient("matching-refs body not array".to_owned()))?;
+		let arr = v
+			.as_array()
+			.ok_or_else(|| ForgeError::Transient("matching-refs body not array".to_owned()))?;
 		for r in arr {
-			if let Some(name) = r.get("ref").and_then(Value::as_str).and_then(|s| s.strip_prefix("refs/heads/")).filter(|n| *n == want) {
+			if let Some(name) = r
+				.get("ref")
+				.and_then(Value::as_str)
+				.and_then(|s| s.strip_prefix("refs/heads/"))
+				.filter(|n| *n == want)
+			{
 				return Ok(Some(name.to_owned()));
 			}
 		}
@@ -200,13 +232,19 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
-	async fn create_pr(&self, head_branch: &str, base_branch: &str, title: &str, body: &str) -> Result<ForgePr, ForgeError> {
+	async fn create_pr(
+		&self,
+		head_branch: &str,
+		base_branch: &str,
+		title: &str,
+		body: &str,
+	) -> Result<ForgePr, ForgeError> {
 		let payload = serde_json::json!({ "title": title, "head": head_branch, "base": base_branch, "body": body }).to_string();
 		let http = HttpRequest {
-			method: "POST",
-			url: format!("{}/repos/{}/pulls", self.api_base, self.repo_full_name),
+			method:  "POST",
+			url:     format!("{}/repos/{}/pulls", self.api_base, self.repo_full_name),
 			headers: self.headers(),
-			body: Some(payload),
+			body:    Some(payload),
 		};
 		let resp = self.transport.send(http).await?;
 		if resp.status == 201 || resp.status == 200 {
@@ -221,25 +259,46 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 		// Bind to the work item: match the open PR whose head is this work_key's ref.
 		let want = crate::keys::work_branch_ref(work_key);
 		let req = HttpRequest {
-			method: "GET",
-			url: format!("{}/repos/{}/pulls?state=open&per_page=100", self.api_base, self.repo_full_name),
+			method:  "GET",
+			url:     format!(
+				"{}/repos/{}/pulls?state=open&per_page=100",
+				self.api_base, self.repo_full_name
+			),
 			headers: self.headers(),
-			body: None,
+			body:    None,
 		};
 		let resp = self.transport.send(req).await?;
 		if resp.status != 200 {
 			return Err(map_status(resp.status));
 		}
-		let v: Value = serde_json::from_str(&resp.body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
-		let arr = v.as_array().ok_or_else(|| ForgeError::Transient("pulls body not array".to_owned()))?;
+		let v: Value = serde_json::from_str(&resp.body)
+			.map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
+		let arr = v
+			.as_array()
+			.ok_or_else(|| ForgeError::Transient("pulls body not array".to_owned()))?;
 		for pr in arr {
-			let head_ref = pr.pointer("/head/ref").and_then(Value::as_str).unwrap_or_default();
+			let head_ref = pr
+				.pointer("/head/ref")
+				.and_then(Value::as_str)
+				.unwrap_or_default();
 			if head_ref == want {
 				return Ok(Some(ForgePr {
-					id: pr.get("node_id").and_then(Value::as_str).unwrap_or_default().to_owned(),
-					number: pr.get("number").and_then(Value::as_u64).unwrap_or(0),
-					head_sha: pr.pointer("/head/sha").and_then(Value::as_str).unwrap_or_default().to_owned(),
-					base_branch: pr.pointer("/base/ref").and_then(Value::as_str).unwrap_or_default().to_owned(),
+					id:          pr
+						.get("node_id")
+						.and_then(Value::as_str)
+						.unwrap_or_default()
+						.to_owned(),
+					number:      pr.get("number").and_then(Value::as_u64).unwrap_or(0),
+					head_sha:    pr
+						.pointer("/head/sha")
+						.and_then(Value::as_str)
+						.unwrap_or_default()
+						.to_owned(),
+					base_branch: pr
+						.pointer("/base/ref")
+						.and_then(Value::as_str)
+						.unwrap_or_default()
+						.to_owned(),
 				}));
 			}
 		}
@@ -247,33 +306,60 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	}
 
 	#[allow(clippy::future_not_send, reason = "driven per-item; no cross-thread Send boundary yet")]
-	async fn fetch_merge_signals(&self, pr_id: &str, head_sha: &str) -> Result<MergeSignals, ForgeError> {
+	async fn fetch_merge_signals(
+		&self,
+		pr_id: &str,
+		head_sha: &str,
+	) -> Result<MergeSignals, ForgeError> {
 		// CI: check-runs for the head SHA are all non-failing.
-		let checks = self.get_json(&format!("{}/repos/{}/commits/{head_sha}/check-runs", self.api_base, self.repo_full_name)).await?;
+		let checks = self
+			.get_json(&format!(
+				"{}/repos/{}/commits/{head_sha}/check-runs",
+				self.api_base, self.repo_full_name
+			))
+			.await?;
 		let ci_green = checks
 			.pointer("/check_runs")
 			.and_then(Value::as_array)
-			.is_none_or(|runs| runs.iter().all(|r| {
-				matches!(
-					r.get("conclusion").and_then(Value::as_str),
-					None | Some("success" | "neutral" | "skipped")
-				)
-			}));
+			.is_none_or(|runs| {
+				runs.iter().all(|r| {
+					matches!(
+						r.get("conclusion").and_then(Value::as_str),
+						None | Some("success" | "neutral" | "skipped")
+					)
+				})
+			});
 		// Reviews: no outstanding CHANGES_REQUESTED.
-		let reviews = self.get_json(&format!("{}/repos/{}/pulls/{pr_id}/reviews", self.api_base, self.repo_full_name)).await?;
-		let reviews_resolved = reviews
-			.as_array()
-			.is_none_or(|rs| rs.iter().all(|r| r.get("state").and_then(Value::as_str) != Some("CHANGES_REQUESTED")));
+		let reviews = self
+			.get_json(&format!(
+				"{}/repos/{}/pulls/{pr_id}/reviews",
+				self.api_base, self.repo_full_name
+			))
+			.await?;
+		let reviews_resolved = reviews.as_array().is_none_or(|rs| {
+			rs.iter()
+				.all(|r| r.get("state").and_then(Value::as_str) != Some("CHANGES_REQUESTED"))
+		});
 		// Diff budget: total changed lines under a conservative ceiling.
-		let pr = self.get_json(&format!("{}/repos/{}/pulls/{pr_id}", self.api_base, self.repo_full_name)).await?;
+		let pr = self
+			.get_json(&format!("{}/repos/{}/pulls/{pr_id}", self.api_base, self.repo_full_name))
+			.await?;
 		let changed = pr.get("additions").and_then(Value::as_u64).unwrap_or(0)
 			+ pr.get("deletions").and_then(Value::as_u64).unwrap_or(0);
 		let diff_within_budget = changed <= DIFF_LINE_BUDGET;
 		// Scope: no changed file under an out-of-scope/infra/secret path.
-		let files = self.get_json(&format!("{}/repos/{}/pulls/{pr_id}/files?per_page=100", self.api_base, self.repo_full_name)).await?;
+		let files = self
+			.get_json(&format!(
+				"{}/repos/{}/pulls/{pr_id}/files?per_page=100",
+				self.api_base, self.repo_full_name
+			))
+			.await?;
 		let diff_in_scope = files.as_array().is_none_or(|fs| {
 			fs.iter().all(|f| {
-				let p = f.get("filename").and_then(Value::as_str).unwrap_or_default();
+				let p = f
+					.get("filename")
+					.and_then(Value::as_str)
+					.unwrap_or_default();
 				!(p.starts_with(".github/") || p.contains(".env") || p.contains("secret"))
 			})
 		});
@@ -286,10 +372,13 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 		// protected (both are a successful read); any other status is an
 		// unverifiable protection state and surfaces as an error (fail closed).
 		let req = HttpRequest {
-			method: "GET",
-			url: format!("{}/repos/{}/branches/{base_branch}/protection", self.api_base, self.repo_full_name),
+			method:  "GET",
+			url:     format!(
+				"{}/repos/{}/branches/{base_branch}/protection",
+				self.api_base, self.repo_full_name
+			),
 			headers: self.headers(),
-			body: None,
+			body:    None,
 		};
 		let resp = self.transport.send(req).await?;
 		match resp.status {
@@ -303,17 +392,18 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	async fn merge_pr(&self, req: &MergeRequest) -> Result<String, ForgeError> {
 		// GitHub enforces the expected head SHA server-side: a moved head returns
 		// 409, which we map to ShaMismatch (fail closed).
-		let body = serde_json::json!({ "sha": req.expected_head_sha, "merge_method": "squash" }).to_string();
+		let body =
+			serde_json::json!({ "sha": req.expected_head_sha, "merge_method": "squash" }).to_string();
 		let http = HttpRequest {
-			method: "PUT",
-			url: format!("{}/merge", self.pr_url(&req.pr_id)),
+			method:  "PUT",
+			url:     format!("{}/merge", self.pr_url(&req.pr_id)),
 			headers: self.headers(),
-			body: Some(body),
+			body:    Some(body),
 		};
 		let resp = self.transport.send(http).await?;
 		if resp.status == 200 {
-			let v: Value =
-				serde_json::from_str(&resp.body).map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
+			let v: Value = serde_json::from_str(&resp.body)
+				.map_err(|e| ForgeError::Transient(format!("bad json: {e}")))?;
 			v.get("sha")
 				.and_then(Value::as_str)
 				.map(ToOwned::to_owned)
@@ -327,10 +417,13 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 	async fn post_comment(&self, item_id: &str, body: &str) -> Result<(), ForgeError> {
 		let payload = serde_json::json!({ "body": body }).to_string();
 		let http = HttpRequest {
-			method: "POST",
-			url: format!("{}/repos/{}/issues/{item_id}/comments", self.api_base, self.repo_full_name),
+			method:  "POST",
+			url:     format!(
+				"{}/repos/{}/issues/{item_id}/comments",
+				self.api_base, self.repo_full_name
+			),
 			headers: self.headers(),
-			body: Some(payload),
+			body:    Some(payload),
 		};
 		let resp = self.transport.send(http).await?;
 		if resp.status == 201 || resp.status == 200 {
@@ -343,18 +436,22 @@ impl<T: HttpTransport> ForgeAdapter for GithubForge<T> {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use std::sync::Mutex;
+
+	use super::*;
 
 	/// Records the last request and returns a scripted response.
 	struct FakeHttp {
 		response: HttpResponse,
-		last: Mutex<Option<HttpRequest>>,
+		last:     Mutex<Option<HttpRequest>>,
 	}
 
 	impl FakeHttp {
 		fn new(status: u16, body: &str) -> Self {
-			Self { response: HttpResponse { status, body: body.to_owned() }, last: Mutex::new(None) }
+			Self {
+				response: HttpResponse { status, body: body.to_owned() },
+				last:     Mutex::new(None),
+			}
 		}
 	}
 
@@ -374,17 +471,29 @@ mod tests {
 		let json = r#"{"node_id":"PR_7","number":7,"head":{"sha":"abc"},"base":{"ref":"dev"}}"#;
 		let f = forge(200, json);
 		let pr = f.get_pr("7").await.unwrap();
-		assert_eq!(pr, ForgePr { id: "PR_7".into(), number: 7, head_sha: "abc".into(), base_branch: "dev".into() });
+		assert_eq!(pr, ForgePr {
+			id:          "PR_7".into(),
+			number:      7,
+			head_sha:    "abc".into(),
+			base_branch: "dev".into(),
+		});
 		let last = f.transport.last.lock().unwrap().clone().unwrap();
 		assert_eq!(last.method, "GET");
 		assert_eq!(last.url, "https://api.github.com/repos/acme/widget/pulls/7");
-		assert!(last.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer tok"));
+		assert!(
+			last
+				.headers
+				.iter()
+				.any(|(k, v)| k == "Authorization" && v == "Bearer tok")
+		);
 	}
 
 	#[tokio::test]
 	async fn merge_sends_expected_sha_and_returns_merge_sha() {
 		let f = forge(200, r#"{"sha":"merge-abc","merged":true}"#);
-		let out = f.merge_pr(&MergeRequest { pr_id: "7".into(), expected_head_sha: "abc".into() }).await;
+		let out = f
+			.merge_pr(&MergeRequest { pr_id: "7".into(), expected_head_sha: "abc".into() })
+			.await;
 		assert_eq!(out, Ok("merge-abc".into()));
 		let last = f.transport.last.lock().unwrap().clone().unwrap();
 		assert_eq!(last.method, "PUT");
@@ -395,7 +504,9 @@ mod tests {
 	#[tokio::test]
 	async fn merge_conflict_maps_to_sha_mismatch() {
 		let f = forge(409, r#"{"message":"Head branch was modified"}"#);
-		let out = f.merge_pr(&MergeRequest { pr_id: "7".into(), expected_head_sha: "abc".into() }).await;
+		let out = f
+			.merge_pr(&MergeRequest { pr_id: "7".into(), expected_head_sha: "abc".into() })
+			.await;
 		assert_eq!(out, Err(ForgeError::ShaMismatch));
 	}
 
@@ -432,7 +543,11 @@ mod tests {
 		assert_eq!(items.len(), 2, "PR entry skipped");
 		assert_eq!(items[0].node_id, "I_1");
 		assert_eq!(items[1].node_id, "I_2");
-		assert!(items.iter().all(|i| i.item_kind == crate::keys::ItemKind::Issue));
+		assert!(
+			items
+				.iter()
+				.all(|i| i.item_kind == crate::keys::ItemKind::Issue)
+		);
 		let last = f.transport.last.lock().unwrap().clone().unwrap();
 		assert_eq!(last.method, "GET");
 		assert!(last.url.contains("/repos/acme/widget/issues?state=open"));
@@ -451,7 +566,11 @@ mod tests {
 		let br = f.find_work_branch("wk").await.unwrap();
 		assert_eq!(br, Some(want.clone()));
 		let last = f.transport.last.lock().unwrap().clone().unwrap();
-		assert!(last.url.contains(&format!("/git/matching-refs/heads/{want}")));
+		assert!(
+			last
+				.url
+				.contains(&format!("/git/matching-refs/heads/{want}"))
+		);
 	}
 
 	#[tokio::test]
@@ -471,9 +590,18 @@ mod tests {
 
 	#[tokio::test]
 	async fn create_pr_posts_and_parses() {
-		let f = forge(201, r#"{"node_id":"PR_9","number":9,"head":{"sha":"abc"},"base":{"ref":"dev"}}"#);
-		let pr = f.create_pr("git-daemon/fix", "dev", "t", "b").await.unwrap();
-		assert_eq!(pr, ForgePr { id: "PR_9".into(), number: 9, head_sha: "abc".into(), base_branch: "dev".into() });
+		let f =
+			forge(201, r#"{"node_id":"PR_9","number":9,"head":{"sha":"abc"},"base":{"ref":"dev"}}"#);
+		let pr = f
+			.create_pr("git-daemon/fix", "dev", "t", "b")
+			.await
+			.unwrap();
+		assert_eq!(pr, ForgePr {
+			id:          "PR_9".into(),
+			number:      9,
+			head_sha:    "abc".into(),
+			base_branch: "dev".into(),
+		});
 		let last = f.transport.last.lock().unwrap().clone().unwrap();
 		assert_eq!(last.method, "POST");
 		assert!(last.url.ends_with("/repos/acme/widget/pulls"));

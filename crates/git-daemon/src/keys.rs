@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 /// The deterministic head-branch ref the daemon assigns to a work item.
 ///
 /// The coding agent is instructed to push exactly this branch, and PR/branch
-/// discovery matches on it, so a run's PR is bound to its own work item (never a
-/// stale or concurrent daemon branch for a different issue).
+/// discovery matches on it, so a run's PR is bound to its own work item (never
+/// a stale or concurrent daemon branch for a different issue).
 #[must_use]
 pub fn work_branch_ref(work_key: &str) -> String {
 	use core::fmt::Write as _;
@@ -56,9 +56,9 @@ impl ItemKind {
 /// Identifies a single forge item independent of the event that surfaced it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ItemRef {
-	pub provider: String,
+	pub provider:     String,
 	pub repo_node_id: String,
-	pub item_kind: ItemKind,
+	pub item_kind:    ItemKind,
 	pub item_node_id: String,
 }
 
@@ -142,7 +142,12 @@ pub struct LockKey(pub String);
 impl DedupKey {
 	/// Compose the dedupe key for an ingested event.
 	#[must_use]
-	pub fn new(item: &ItemRef, event_family: &str, source: &EventSource, event_revision: &str) -> Self {
+	pub fn new(
+		item: &ItemRef,
+		event_family: &str,
+		source: &EventSource,
+		event_revision: &str,
+	) -> Self {
 		Self(format!(
 			"forge:{}:repo:{}:event:{}:item:{}:{}:delivery:{}:revision:{}",
 			item.provider,
@@ -234,14 +239,26 @@ mod tests {
 		let a = work_branch_ref("work:github:R_1:issue:I_1:resolve");
 		assert_eq!(a, work_branch_ref("work:github:R_1:issue:I_1:resolve"), "same key -> same ref");
 		assert!(a.starts_with("git-daemon/wk-"));
-		assert_ne!(a, work_branch_ref("work:github:R_1:issue:I_2:resolve"), "distinct keys -> distinct refs");
+		assert_ne!(
+			a,
+			work_branch_ref("work:github:R_1:issue:I_2:resolve"),
+			"distinct keys -> distinct refs"
+		);
 	}
 
 	#[test]
 	fn parse_rejects_malformed_keys() {
 		assert!(WorkIntentKey("not-a-work-key".to_owned()).parse().is_none());
-		assert!(WorkIntentKey("work:github:R_1:issue:I_1".to_owned()).parse().is_none()); // no action
-		assert!(WorkIntentKey("work:github:R_1:bogus:I_1:resolve".to_owned()).parse().is_none()); // bad kind
+		assert!(
+			WorkIntentKey("work:github:R_1:issue:I_1".to_owned())
+				.parse()
+				.is_none()
+		); // no action
+		assert!(
+			WorkIntentKey("work:github:R_1:bogus:I_1:resolve".to_owned())
+				.parse()
+				.is_none()
+		); // bad kind
 	}
 
 	#[test]

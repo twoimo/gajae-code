@@ -1,25 +1,29 @@
 //! gjc-rpc [`WorkRunner`] over an async byte stream.
 //!
-//! Turns the verified pieces — the [`RpcClient`] transport ([`crate::rpc_socket`]),
-//! the negotiation builder ([`crate::runner`]), and the engine-event reducer
-//! ([`crate::rpc_runner`]) — into a concrete [`WorkRunner`]. It negotiates
-//! unbounded mode, sends a `prompt` that instructs the coding agent to resolve
-//! the work item and open a PR on the daemon's head-branch convention, then
-//! consumes the engine's `{type:"event", seq, payload:{event_type, event}}`
-//! stream to a [`RunOutcome`]. PR discovery + merge-gate signals are the
-//! orchestrator's forge observations, not engine events. Generic over the
-//! stream so the flow is duplex-testable; the only live seam is
-//! [`RpcClient::connect_unix`].
+//! Turns the verified pieces — the [`RpcClient`] transport
+//! ([`crate::rpc_socket`]), the negotiation builder ([`crate::runner`]), and
+//! the engine-event reducer ([`crate::rpc_runner`]) — into a concrete
+//! [`WorkRunner`]. It negotiates unbounded mode, sends a `prompt` that
+//! instructs the coding agent to resolve the work item and open a PR on the
+//! daemon's head-branch convention, then consumes the engine's `{type:"event",
+//! seq, payload:{event_type, event}}` stream to a [`RunOutcome`]. PR discovery
+//! and merge-gate signals are the orchestrator's forge observations, not engine
+//! events. Generic over the stream so the flow is duplex-testable; the only
+//! live seam is [`RpcClient::connect_unix`].
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::Mutex;
+use tokio::{
+	io::{AsyncRead, AsyncWrite},
+	sync::Mutex,
+};
 
-use crate::orchestrator::{RunOutcome, WorkRunner};
-use crate::rpc_runner::{StreamEvent, reduce_run_events};
-use crate::rpc_socket::RpcClient;
-use crate::runner::unbounded_negotiation;
-use crate::spend_ledger::UsageObservation;
+use crate::{
+	orchestrator::{RunOutcome, WorkRunner},
+	rpc_runner::{StreamEvent, reduce_run_events},
+	rpc_socket::RpcClient,
+	runner::unbounded_negotiation,
+	spend_ledger::UsageObservation,
+};
 
 /// End-of-loop lifecycle event types (mirrors the reducer's terminal set): only
 /// these end frame consumption. A mid-run `error` is not terminal.
@@ -48,7 +52,9 @@ pub fn parse_stream_event(frame: &Value) -> Option<StreamEvent> {
 	let usage = if TERMINAL.contains(&event_type.as_str()) {
 		None
 	} else {
-		payload.pointer("/event/usage").and_then(|u| serde_json::from_value::<UsageObservation>(u.clone()).ok())
+		payload
+			.pointer("/event/usage")
+			.and_then(|u| serde_json::from_value::<UsageObservation>(u.clone()).ok())
 	};
 	if let Some(usage) = usage {
 		return Some(StreamEvent::Usage { seq, usage });
@@ -58,12 +64,12 @@ pub fn parse_stream_event(frame: &Value) -> Option<StreamEvent> {
 
 /// A [`WorkRunner`] that drives an unbounded run over a gjc-rpc stream.
 pub struct SocketWorkRunner<S> {
-	client: Mutex<RpcClient<S>>,
-	actor: String,
-	scopes: Vec<String>,
-	action_allowlist: Vec<String>,
-	prompt: String,
-	replay_window: u64,
+	client:            Mutex<RpcClient<S>>,
+	actor:             String,
+	scopes:            Vec<String>,
+	action_allowlist:  Vec<String>,
+	prompt:            String,
+	replay_window:     u64,
 	idle_timeout_secs: u64,
 }
 
@@ -107,7 +113,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		let scopes: Vec<&str> = self.scopes.iter().map(String::as_str).collect();
 		let allow: Vec<&str> = self.action_allowlist.iter().map(String::as_str).collect();
 
-		if client.send(&unbounded_negotiation(&self.actor, &scopes, &allow)).await.is_err() {
+		if client
+			.send(&unbounded_negotiation(&self.actor, &scopes, &allow))
+			.await
+			.is_err()
+		{
 			return failed_outcome();
 		}
 		// Fail closed unless the engine ACCEPTS the unbounded negotiation: an
@@ -120,7 +130,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		// so daemon-side PR/branch discovery attributes the PR to this run.
 		let branch = crate::keys::work_branch_ref(work_key);
 		let message = format!(
-			"{}\n\nWork item key: {work_key}\nUse EXACTLY this git branch name for your work and PR head: {branch}",
+			"{}\n\nWork item key: {work_key}\nUse EXACTLY this git branch name for your work and PR \
+			 head: {branch}",
 			self.prompt
 		);
 		if client.send(&prompt_command(&message)).await.is_err() {
@@ -144,13 +155,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 							break;
 						}
 					}
-				}
+				},
 				Ok(None) => break, // EOF before terminal -> failure below
 				Err(_) => return failed_outcome(),
 			}
 		}
 
-		reduce_run_events(&events, self.replay_window).outcome.unwrap_or_else(failed_outcome)
+		reduce_run_events(&events, self.replay_window)
+			.outcome
+			.unwrap_or_else(failed_outcome)
 	}
 
 	/// Read frames until the `negotiate_unattended` response, returning whether
@@ -162,9 +175,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 					if frame.get("type").and_then(Value::as_str) == Some("response")
 						&& frame.get("command").and_then(Value::as_str) == Some("negotiate_unattended")
 					{
-						return frame.get("success").and_then(Value::as_bool).unwrap_or(false);
+						return frame
+							.get("success")
+							.and_then(Value::as_bool)
+							.unwrap_or(false);
 					}
-				}
+				},
 				Ok(None) | Err(_) => return false,
 			}
 		}
@@ -184,8 +200,9 @@ fn failed_outcome() -> RunOutcome {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use tokio::io::AsyncWriteExt;
+
+	use super::*;
 
 	fn frame(v: &Value) -> String {
 		crate::rpc_framing::encode_frame(v)
@@ -207,15 +224,29 @@ mod tests {
 			Some(StreamEvent::Lifecycle { seq: 1, .. })
 		));
 		assert!(matches!(
-			parse_stream_event(&event(2, "message", json!({ "usage": { "tokens": 5, "tool_calls": 1, "cost_usd": 0.0, "wall_time_ms": 0 } }))),
+			parse_stream_event(&event(
+				2,
+				"message",
+				json!({ "usage": { "tokens": 5, "tool_calls": 1, "cost_usd": 0.0, "wall_time_ms": 0 } })
+			)),
 			Some(StreamEvent::Usage { seq: 2, .. })
 		));
 		assert!(parse_stream_event(&json!({ "type": "ready" })).is_none());
 		assert!(parse_stream_event(&json!({ "type": "response", "command": "x" })).is_none());
 	}
 
-	fn runner(client_side: tokio::io::DuplexStream, replay_window: u64) -> SocketWorkRunner<tokio::io::DuplexStream> {
-		SocketWorkRunner::new(RpcClient::new(client_side), "git-daemon", vec!["prompt".to_owned()], Vec::new(), "resolve", replay_window)
+	fn runner(
+		client_side: tokio::io::DuplexStream,
+		replay_window: u64,
+	) -> SocketWorkRunner<tokio::io::DuplexStream> {
+		SocketWorkRunner::new(
+			RpcClient::new(client_side),
+			"git-daemon",
+			vec!["prompt".to_owned()],
+			Vec::new(),
+			"resolve",
+			replay_window,
+		)
 	}
 
 	#[tokio::test]
@@ -224,13 +255,19 @@ mod tests {
 		let script = [
 			accept(),
 			frame(&event(1, "agent_start", json!({}))),
-			frame(&event(2, "message", json!({ "usage": { "tokens": 120, "tool_calls": 3, "cost_usd": 0.0, "wall_time_ms": 0 } }))),
+			frame(&event(
+				2,
+				"message",
+				json!({ "usage": { "tokens": 120, "tool_calls": 3, "cost_usd": 0.0, "wall_time_ms": 0 } }),
+			)),
 			frame(&event(3, "completed", json!({}))),
 		]
 		.concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
-		let out = runner(client_side, 128).run("github:R_1:issue:I_1:resolve").await;
+		let out = runner(client_side, 128)
+			.run("github:R_1:issue:I_1:resolve")
+			.await;
 		assert!(out.succeeded);
 		assert_eq!(out.usage.tokens, 120);
 	}
@@ -239,7 +276,12 @@ mod tests {
 	async fn error_without_terminal_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		// A mid-run error that never reaches a terminal, then EOF -> failed.
-		let script = [accept(), frame(&event(1, "agent_start", json!({}))), frame(&event(2, "error", json!({})))].concat();
+		let script = [
+			accept(),
+			frame(&event(1, "agent_start", json!({}))),
+			frame(&event(2, "error", json!({}))),
+		]
+		.concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		drop(engine); // EOF: no end-of-loop terminal
 		let out = runner(client_side, 128).run("wk").await;
@@ -260,7 +302,12 @@ mod tests {
 	async fn lost_stream_is_not_a_success() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		// Gap beyond the replay window (seq 1 -> 50) before terminal.
-		let script = [accept(), frame(&event(1, "agent_start", json!({}))), frame(&event(50, "completed", json!({})))].concat();
+		let script = [
+			accept(),
+			frame(&event(1, "agent_start", json!({}))),
+			frame(&event(50, "completed", json!({}))),
+		]
+		.concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
 		let out = runner(client_side, 4).run("wk").await;
@@ -272,7 +319,9 @@ mod tests {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		// Engine REJECTS the negotiation; the runner must fail closed and never
 		// consume a run (even if events were to follow).
-		let reject = frame(&json!({ "type": "response", "command": "negotiate_unattended", "success": false, "error": { "code": "invalid_unattended_declaration" } }));
+		let reject = frame(
+			&json!({ "type": "response", "command": "negotiate_unattended", "success": false, "error": { "code": "invalid_unattended_declaration" } }),
+		);
 		engine.write_all(reject.as_bytes()).await.unwrap();
 		engine.flush().await.unwrap();
 		let out = runner(client_side, 128).run("wk").await;

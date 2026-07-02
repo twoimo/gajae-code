@@ -2,24 +2,28 @@
 //!
 //! Generic over any `AsyncRead + AsyncWrite` so the send/receive + JSONL
 //! buffering logic is fully testable with an in-memory `tokio::io::duplex` pipe
-//! (no real socket needed). The only live-only piece is [`RpcClient::connect_unix`],
-//! a one-line `UnixStream::connect`. Commands are framed via
-//! [`crate::rpc_framing`]; inbound bytes are buffered and split into JSON frames.
+//! (no real socket needed). The only live-only piece is
+//! [`RpcClient::connect_unix`], a one-line `UnixStream::connect`. Commands are
+//! framed via [`crate::rpc_framing`]; inbound bytes are buffered and split into
+//! JSON frames.
 
 use std::collections::VecDeque;
 
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::forge_adapter::ForgeError;
-use crate::rpc_framing::{decode_frames, encode_frame};
+use crate::{
+	forge_adapter::ForgeError,
+	rpc_framing::{decode_frames, encode_frame},
+};
 
 /// A JSONL gjc-rpc client over a duplex byte stream.
 pub struct RpcClient<S> {
-	stream: S,
-	/// Raw byte buffer: bytes are only UTF-8-decoded once a full line is present,
-	/// so a multi-byte character split across two socket reads is never corrupted.
-	buf: Vec<u8>,
+	stream:  S,
+	/// Raw byte buffer: bytes are only UTF-8-decoded once a full line is
+	/// present, so a multi-byte character split across two socket reads is
+	/// never corrupted.
+	buf:     Vec<u8>,
 	pending: VecDeque<Value>,
 }
 
@@ -35,11 +39,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RpcClient<S> {
 	/// Returns [`ForgeError::Transient`] on a write failure.
 	pub async fn send(&mut self, command: &Value) -> Result<(), ForgeError> {
 		let frame = encode_frame(command);
-		self.stream
+		self
+			.stream
 			.write_all(frame.as_bytes())
 			.await
 			.map_err(|e| ForgeError::Transient(format!("rpc write: {e}")))?;
-		self.stream.flush().await.map_err(|e| ForgeError::Transient(format!("rpc flush: {e}")))
+		self
+			.stream
+			.flush()
+			.await
+			.map_err(|e| ForgeError::Transient(format!("rpc flush: {e}")))
 	}
 
 	/// Read the next JSON frame, buffering partial reads. Returns `None` at EOF.
@@ -89,9 +98,10 @@ impl RpcClient<tokio::net::UnixStream> {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde_json::json;
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+	use super::*;
 
 	#[tokio::test]
 	async fn send_writes_a_jsonl_frame() {
@@ -112,7 +122,10 @@ mod tests {
 		let mut client = RpcClient::new(client_side);
 		// Peer writes two frames, the first split across two writes.
 		peer.write_all(b"{\"id\":\"1\",\"ty").await.unwrap();
-		peer.write_all(b"pe\":\"response\"}\n{\"id\":\"2\"}\n").await.unwrap();
+		peer
+			.write_all(b"pe\":\"response\"}\n{\"id\":\"2\"}\n")
+			.await
+			.unwrap();
 		let f1 = client.next_frame().await.unwrap().unwrap();
 		assert_eq!(f1["id"], "1");
 		assert_eq!(f1["type"], "response");
@@ -126,7 +139,8 @@ mod tests {
 		let mut client = RpcClient::new(client_side);
 		// A frame whose JSON string contains a multi-byte char (Korean + emoji),
 		// with the byte stream split THROUGH a multi-byte char boundary.
-		let frame = serde_json::to_vec(&json!({ "type": "response", "msg": "한국어 🦀 ok" })).unwrap();
+		let frame =
+			serde_json::to_vec(&json!({ "type": "response", "msg": "한국어 🦀 ok" })).unwrap();
 		let mut bytes = frame.clone();
 		bytes.push(b'\n');
 		// Find a split point in the middle of the multi-byte content.
@@ -152,12 +166,18 @@ mod tests {
 	async fn round_trips_a_command_then_response() {
 		let (client_side, mut peer) = tokio::io::duplex(1024);
 		let mut client = RpcClient::new(client_side);
-		client.send(&json!({ "id": "x", "type": "get_session_stats" })).await.unwrap();
+		client
+			.send(&json!({ "id": "x", "type": "get_session_stats" }))
+			.await
+			.unwrap();
 		// Peer reads the command and replies with a framed response.
 		let mut buf = [0u8; 256];
 		let n = peer.read(&mut buf).await.unwrap();
 		assert!(String::from_utf8_lossy(&buf[..n]).contains("get_session_stats"));
-		peer.write_all(b"{\"id\":\"x\",\"type\":\"response\",\"success\":true}\n").await.unwrap();
+		peer
+			.write_all(b"{\"id\":\"x\",\"type\":\"response\",\"success\":true}\n")
+			.await
+			.unwrap();
 		let resp = client.next_frame().await.unwrap().unwrap();
 		assert_eq!(resp["success"], true);
 	}

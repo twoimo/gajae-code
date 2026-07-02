@@ -6,8 +6,8 @@
 //! builds the exact `negotiate_unattended` declaration the TS engine expects in
 //! unbounded mode (D3), and tracks the event-stream sequence so a bridge reset
 //! is resolved by replay when possible and degraded to `stream_lost` (a
-//! non-terminal state, never a clean terminal success) when the replay window is
-//! exceeded.
+//! non-terminal state, never a clean terminal success) when the replay window
+//! is exceeded.
 
 use serde_json::{Value, json};
 
@@ -47,9 +47,9 @@ pub enum StreamProgress {
 /// Tracks the last applied event sequence and decides recovery on a gap.
 #[derive(Debug, Clone)]
 pub struct StreamTracker {
-	last_seq: Option<u64>,
+	last_seq:      Option<u64>,
 	replay_window: u64,
-	lost: bool,
+	lost:          bool,
 }
 
 impl StreamTracker {

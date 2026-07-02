@@ -1,10 +1,11 @@
 //! SHA-bound, fail-closed merge gate.
 //!
-//! The preliminary gate is never authority to merge. Immediately before merging,
-//! the daemon refetches live PR state and recomputes this decision bound to the
-//! *current* head SHA. Any change, unknown branch protection, protected/main
-//! target, or failing condition denies the merge. The merge call must then pass
-//! the expected head SHA so a race between decision and merge also fails closed.
+//! The preliminary gate is never authority to merge. Immediately before
+//! merging, the daemon refetches live PR state and recomputes this decision
+//! bound to the *current* head SHA. Any change, unknown branch protection,
+//! protected/main target, or failing condition denies the merge. The merge call
+//! must then pass the expected head SHA so a race between decision and merge
+//! also fails closed.
 
 use crate::config::MergePolicy;
 
@@ -12,28 +13,29 @@ use crate::config::MergePolicy;
 #[derive(Debug, Clone)]
 pub struct GateInputs<'a> {
 	/// Head SHA recorded when the item entered `merge_ready`.
-	pub queued_head_sha: &'a str,
+	pub queued_head_sha:         &'a str,
 	/// Head SHA observed in the immediate pre-merge refetch.
-	pub current_head_sha: &'a str,
+	pub current_head_sha:        &'a str,
 	/// Base branch recorded when the item entered `merge_ready`.
-	pub queued_base_branch: &'a str,
-	/// Base branch observed in the immediate pre-merge refetch (the merge target).
-	pub base_branch: &'a str,
+	pub queued_base_branch:      &'a str,
+	/// Base branch observed in the immediate pre-merge refetch (the merge
+	/// target).
+	pub base_branch:             &'a str,
 	/// Live branch protection state; `false` means it could not be fetched.
 	pub branch_protection_known: bool,
 	/// Live: the target branch has GitHub branch protection enabled. Even if the
 	/// branch is on the allow-list, a protected branch is never auto-merged.
-	pub base_is_protected: bool,
+	pub base_is_protected:       bool,
 	/// All required CI/checks are green.
-	pub ci_green: bool,
+	pub ci_green:                bool,
 	/// An ultragoal verification pass confirms the PR satisfies the issue.
-	pub ultragoal_pass: bool,
+	pub ultragoal_pass:          bool,
 	/// No unresolved review threads and no human `request changes`.
-	pub reviews_resolved: bool,
+	pub reviews_resolved:        bool,
 	/// Diff is within the configured size/risk budget.
-	pub diff_within_budget: bool,
+	pub diff_within_budget:      bool,
 	/// Diff touches only in-scope files (no out-of-scope/infra/secret edits).
-	pub diff_in_scope: bool,
+	pub diff_in_scope:           bool,
 }
 
 /// Why a merge was denied (fail-closed).
@@ -61,10 +63,10 @@ pub enum DenyReason {
 /// The immutable, SHA-bound gate decision (persisted before the merge attempt).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateDecision {
-	pub allow: bool,
-	pub reason: Option<DenyReason>,
+	pub allow:       bool,
+	pub reason:      Option<DenyReason>,
 	/// The head SHA the merge must be performed against (`expected head`).
-	pub head_sha: String,
+	pub head_sha:    String,
 	pub base_branch: String,
 }
 
@@ -76,14 +78,14 @@ impl GateDecision {
 	}
 }
 
-/// Evaluate the merge gate. Checks run in fail-closed priority order so the most
-/// fundamental safety violations are reported first.
+/// Evaluate the merge gate. Checks run in fail-closed priority order so the
+/// most fundamental safety violations are reported first.
 #[must_use]
 pub fn evaluate(inputs: &GateInputs<'_>, policy: &MergePolicy) -> GateDecision {
 	let deny = |reason: DenyReason| GateDecision {
-		allow: false,
-		reason: Some(reason),
-		head_sha: inputs.current_head_sha.to_owned(),
+		allow:       false,
+		reason:      Some(reason),
+		head_sha:    inputs.current_head_sha.to_owned(),
 		base_branch: inputs.base_branch.to_owned(),
 	};
 
@@ -108,11 +110,19 @@ pub fn evaluate(inputs: &GateInputs<'_>, policy: &MergePolicy) -> GateDecision {
 		return deny(DenyReason::MainBranchDenied);
 	}
 	// 4. Never merge to a configured protected branch.
-	if policy.protected_branches.iter().any(|b| b == inputs.base_branch) {
+	if policy
+		.protected_branches
+		.iter()
+		.any(|b| b == inputs.base_branch)
+	{
 		return deny(DenyReason::ProtectedBranch);
 	}
 	// 5. Only merge to an allowed dev branch.
-	if !policy.allowed_dev_branches.iter().any(|b| b == inputs.base_branch) {
+	if !policy
+		.allowed_dev_branches
+		.iter()
+		.any(|b| b == inputs.base_branch)
+	{
 		return deny(DenyReason::NotAnAllowedDevBranch);
 	}
 	// 6-9. The five ultragoal-LGTM conditions.
@@ -132,9 +142,9 @@ pub fn evaluate(inputs: &GateInputs<'_>, policy: &MergePolicy) -> GateDecision {
 		return deny(DenyReason::ScopeViolation);
 	}
 	GateDecision {
-		allow: true,
-		reason: None,
-		head_sha: inputs.current_head_sha.to_owned(),
+		allow:       true,
+		reason:      None,
+		head_sha:    inputs.current_head_sha.to_owned(),
 		base_branch: inputs.base_branch.to_owned(),
 	}
 }
@@ -145,24 +155,24 @@ mod tests {
 
 	fn policy() -> MergePolicy {
 		MergePolicy {
-			protected_branches: vec!["release".into()],
+			protected_branches:   vec!["release".into()],
 			allowed_dev_branches: vec!["dev".into()],
 		}
 	}
 
 	fn all_pass<'a>() -> GateInputs<'a> {
 		GateInputs {
-			queued_head_sha: "sha1",
-			current_head_sha: "sha1",
-			queued_base_branch: "dev",
-			base_branch: "dev",
+			queued_head_sha:         "sha1",
+			current_head_sha:        "sha1",
+			queued_base_branch:      "dev",
+			base_branch:             "dev",
 			branch_protection_known: true,
-			base_is_protected: false,
-			ci_green: true,
-			ultragoal_pass: true,
-			reviews_resolved: true,
-			diff_within_budget: true,
-			diff_in_scope: true,
+			base_is_protected:       false,
+			ci_green:                true,
+			ultragoal_pass:          true,
+			reviews_resolved:        true,
+			diff_within_budget:      true,
+			diff_in_scope:           true,
 		}
 	}
 

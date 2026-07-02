@@ -5,20 +5,23 @@
 //! (`{type:"event", seq, payload:{event_type, event}}`) — `agent_start`,
 //! `turn_start`/`turn_end`, `message`, `completed`/`agent_end`, `error`,
 //! `budget_exceeded`. This reducer turns that ordered stream into a
-//! [`RunOutcome`] (did the run complete successfully + observed usage), tracking
-//! the sequence so a bridge reset degrades to `stream_lost` rather than a false
-//! success (D3: usage is observed, never enforced). PR discovery and merge-gate
-//! signals are NOT engine events — the orchestrator derives those from the forge
-//! after the run completes.
+//! [`RunOutcome`] (did the run complete successfully + observed usage),
+//! tracking the sequence so a bridge reset degrades to `stream_lost` rather
+//! than a false success (D3: usage is observed, never enforced). PR discovery
+//! and merge-gate signals are NOT engine events — the orchestrator derives
+//! those from the forge after the run completes.
 
-use crate::orchestrator::RunOutcome;
-use crate::runner::{StreamProgress, StreamTracker};
-use crate::spend_ledger::UsageObservation;
+use crate::{
+	orchestrator::RunOutcome,
+	runner::{StreamProgress, StreamTracker},
+	spend_ledger::UsageObservation,
+};
 
 /// One frame from the engine's unattended event stream, carrying its sequence.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
-	/// An agent-lifecycle event; `event_type` is the engine's `payload.event_type`.
+	/// An agent-lifecycle event; `event_type` is the engine's
+	/// `payload.event_type`.
 	Lifecycle { seq: u64, event_type: String },
 	/// Observed (not enforced) usage, accumulated for the ledger (D3).
 	Usage { seq: u64, usage: UsageObservation },
@@ -43,13 +46,14 @@ const TERMINAL_OK: [&str; 2] = ["completed", "agent_end"];
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunReduction {
 	/// The run outcome, if a terminal event was reached on an intact stream.
-	pub outcome: Option<RunOutcome>,
-	/// True if the stream was lost (gap beyond the replay window) — non-terminal.
+	pub outcome:     Option<RunOutcome>,
+	/// True if the stream was lost (gap beyond the replay window) —
+	/// non-terminal.
 	pub stream_lost: bool,
 	/// Total observed usage (always recorded, never enforced — D3).
-	pub usage: UsageObservation,
+	pub usage:       UsageObservation,
 	/// Last applied sequence number.
-	pub last_seq: Option<u64>,
+	pub last_seq:    Option<u64>,
 }
 
 /// Reduce an ordered slice of engine events into a [`RunReduction`].
@@ -71,9 +75,14 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 			StreamProgress::Lost { .. } | StreamProgress::ReplayNeededFrom(_) => {
 				// No replay channel before reduction: any gap fails closed so a
 				// gapped stream can never reduce to a terminal success.
-				return RunReduction { outcome: None, stream_lost: true, usage, last_seq: tracker.last_seq() };
-			}
-			StreamProgress::Applied => {}
+				return RunReduction {
+					outcome: None,
+					stream_lost: true,
+					usage,
+					last_seq: tracker.last_seq(),
+				};
+			},
+			StreamProgress::Applied => {},
 		}
 		match event {
 			StreamEvent::Usage { usage: u, .. } => usage.add_observed(u),
@@ -82,7 +91,7 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 					succeeded = Some(true);
 					break;
 				}
-			}
+			},
 		}
 	}
 
@@ -128,7 +137,8 @@ mod tests {
 	fn mid_run_error_is_not_terminal_and_recovers_to_success() {
 		// An `error` event mid-run is not terminal; the agent recovers and the
 		// run still ends successfully at agent_end.
-		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "error"), life(3, "agent_end")], 10);
+		let r =
+			reduce_run_events(&[life(1, "agent_start"), life(2, "error"), life(3, "agent_end")], 10);
 		assert!(r.outcome.unwrap().succeeded, "recoverable mid-run error must not fail the run");
 	}
 
@@ -136,7 +146,10 @@ mod tests {
 	fn error_without_terminal_yields_no_outcome() {
 		// A run that errors and never reaches agent_end has no outcome -> failed.
 		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "error")], 10);
-		assert!(r.outcome.is_none(), "no end-of-loop terminal => no outcome (caller treats as failed)");
+		assert!(
+			r.outcome.is_none(),
+			"no end-of-loop terminal => no outcome (caller treats as failed)"
+		);
 	}
 
 	#[test]

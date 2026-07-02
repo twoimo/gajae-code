@@ -52,12 +52,20 @@ impl EscalationReason {
 		match self {
 			Self::GateDenied(DenyReason::MainBranchDenied | DenyReason::ProtectedBranch) => {
 				"The change targets a protected branch, which this daemon never merges autonomously."
-			}
-			Self::GateDenied(DenyReason::CiNotGreen) => "CI is not green; a human should review the failures.",
-			Self::GateDenied(DenyReason::DiffTooLarge) => "The diff exceeds the size/risk budget for autonomous merge.",
-			Self::GateDenied(DenyReason::ScopeViolation) => "The diff touches files outside the issue's scope.",
+			},
+			Self::GateDenied(DenyReason::CiNotGreen) => {
+				"CI is not green; a human should review the failures."
+			},
+			Self::GateDenied(DenyReason::DiffTooLarge) => {
+				"The diff exceeds the size/risk budget for autonomous merge."
+			},
+			Self::GateDenied(DenyReason::ScopeViolation) => {
+				"The diff touches files outside the issue's scope."
+			},
 			Self::GateDenied(_) => "The merge gate denied the change and it is not auto-correctable.",
-			Self::StreamLost => "The run stream was lost and could not be recovered; please check the run.",
+			Self::StreamLost => {
+				"The run stream was lost and could not be recovered; please check the run."
+			},
 			Self::RunFailed => "The autonomous run failed; manual attention is needed.",
 		}
 	}
@@ -67,7 +75,8 @@ impl EscalationReason {
 #[must_use]
 pub fn escalation_comment(item_node_id: &str, reason: &EscalationReason, detail: &str) -> String {
 	format!(
-		"⚠️ git-daemon escalation\n\nItem: {item_node_id}\nReason: {} ({})\n{}\n\nDetail: {detail}\n\nThis item is paused for human attention; reply or push a fix to re-engage.",
+		"⚠️ git-daemon escalation\n\nItem: {item_node_id}\nReason: {} ({})\n{}\n\nDetail: \
+		 {detail}\n\nThis item is paused for human attention; reply or push a fix to re-engage.",
 		reason.code(),
 		match reason {
 			EscalationReason::GateDenied(_) => "merge gate",

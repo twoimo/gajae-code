@@ -3,17 +3,19 @@
 //! With enforced budgets and self-revision caps disabled (D3/D4), correctness
 //! against duplicate/racing deliveries and concurrent runs rests on this store:
 //! unique constraints dedupe events and work intents, and leased + fenced locks
-//! enforce single-flight per item. The open sequence mirrors the repo's hardened
-//! `packages/ai/src/auth-storage.ts` pattern: `busy_timeout` is set **before**
-//! enabling WAL, and the DB file is created with restrictive permissions.
+//! enforce single-flight per item. The open sequence mirrors the repo's
+//! hardened `packages/ai/src/auth-storage.ts` pattern: `busy_timeout` is set
+//! **before** enabling WAL, and the DB file is created with restrictive
+//! permissions.
 
-use std::path::Path;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::keys::{DedupKey, LockKey, WorkIntentKey};
-use crate::state_machine::WorkItemState;
+use crate::{
+	keys::{DedupKey, LockKey, WorkIntentKey},
+	state_machine::WorkItemState,
+};
 
 /// Current migration version stamped into `PRAGMA user_version`.
 pub const SCHEMA_VERSION: i64 = 2;
@@ -53,7 +55,7 @@ impl From<rusqlite::Error> for StoreError {
 /// A held single-flight lock with its fencing token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockGuard {
-	pub lock_key: String,
+	pub lock_key:      String,
 	pub fencing_token: i64,
 }
 
@@ -125,11 +127,14 @@ impl GitDaemonStateStore {
 	}
 
 	fn migrate(&self) -> Result<(), StoreError> {
-		let version: i64 = self.conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+		let version: i64 = self
+			.conn
+			.pragma_query_value(None, "user_version", |row| row.get(0))?;
 		if version >= SCHEMA_VERSION {
 			return Ok(());
 		}
-		self.conn
+		self
+			.conn
 			.execute_batch(
 				"BEGIN;
 				CREATE TABLE IF NOT EXISTS forge_events (
@@ -176,7 +181,9 @@ impl GitDaemonStateStore {
 				COMMIT;",
 			)
 			.map_err(|e| StoreError::MigrationFailed(e.to_string()))?;
-		self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+		self
+			.conn
+			.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 		Ok(())
 	}
 
@@ -194,15 +201,16 @@ impl GitDaemonStateStore {
 		received_at: &str,
 	) -> Result<bool, StoreError> {
 		let changed = self.conn.execute(
-			"INSERT OR IGNORE INTO forge_events (dedup_key, item_kind, item_node_id, event_family, received_at)
+			"INSERT OR IGNORE INTO forge_events (dedup_key, item_kind, item_node_id, event_family, \
+			 received_at)
 			 VALUES (?1, ?2, ?3, ?4, ?5)",
 			rusqlite::params![key.as_str(), item_kind, item_node_id, event_family, received_at],
 		)?;
 		Ok(changed == 1)
 	}
 
-	/// Record a work intent idempotently. Returns `true` if this created the work
-	/// item, `false` if an intent for the same key already existed (so a
+	/// Record a work intent idempotently. Returns `true` if this created the
+	/// work item, `false` if an intent for the same key already existed (so a
 	/// follow-up updates the existing item rather than opening a duplicate PR).
 	///
 	/// # Errors
@@ -254,7 +262,12 @@ impl GitDaemonStateStore {
 	///
 	/// # Errors
 	/// Returns [`StoreError`] on a `SQLite` failure.
-	pub fn set_work_state(&self, work_key: &str, state: WorkItemState, updated_at: &str) -> Result<bool, StoreError> {
+	pub fn set_work_state(
+		&self,
+		work_key: &str,
+		state: WorkItemState,
+		updated_at: &str,
+	) -> Result<bool, StoreError> {
 		let changed = self.conn.execute(
 			"UPDATE work_items SET state = ?2, updated_at = ?3 WHERE work_key = ?1",
 			rusqlite::params![work_key, state.as_wire(), updated_at],
@@ -263,11 +276,11 @@ impl GitDaemonStateStore {
 	}
 
 	/// Re-queue an existing work item on a follow-up event so the reconciler
-	/// schedules it again, without creating a second work key. CAS: only items in
-	/// a settled-but-reopenable state are moved back to `queued`; an item that is
-	/// already ready (`seen`/`queued`) or actively `running` is left untouched so
-	/// a follow-up cannot disrupt an in-flight run or duplicate ready work.
-	/// Returns whether a row was re-queued.
+	/// schedules it again, without creating a second work key. CAS: only items
+	/// in a settled-but-reopenable state are moved back to `queued`; an item
+	/// that is already ready (`seen`/`queued`) or actively `running` is left
+	/// untouched so a follow-up cannot disrupt an in-flight run or duplicate
+	/// ready work. Returns whether a row was re-queued.
 	///
 	/// # Errors
 	/// Returns [`StoreError`] on a `SQLite` failure.
@@ -280,11 +293,11 @@ impl GitDaemonStateStore {
 		Ok(changed == 1)
 	}
 
-	/// Persist the immutable, SHA-bound merge-gate decision BEFORE the merge call.
-	/// Keyed by (`work_key`, `head_sha`) so the evidence for a given head is
-	/// write-once; a conflicting re-write fails rather than overwriting history.
-	/// The orchestrator must treat a write failure here as a merge denial
-	/// (evidence-write-failure fails closed).
+	/// Persist the immutable, SHA-bound merge-gate decision BEFORE the merge
+	/// call. Keyed by (`work_key`, `head_sha`) so the evidence for a given head
+	/// is write-once; a conflicting re-write fails rather than overwriting
+	/// history. The orchestrator must treat a write failure here as a merge
+	/// denial (evidence-write-failure fails closed).
 	///
 	/// # Errors
 	/// Returns [`StoreError`] on a `SQLite` failure (including a uniqueness
@@ -299,7 +312,8 @@ impl GitDaemonStateStore {
 		recorded_at: &str,
 	) -> Result<(), StoreError> {
 		let changed = self.conn.execute(
-			"INSERT INTO merge_gate_evidence (work_key, head_sha, base_branch, allow, reason, recorded_at)
+			"INSERT INTO merge_gate_evidence (work_key, head_sha, base_branch, allow, reason, \
+			 recorded_at)
 			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
 			rusqlite::params![work_key, head_sha, base_branch, i64::from(allow), reason, recorded_at],
 		)?;
@@ -311,7 +325,8 @@ impl GitDaemonStateStore {
 	}
 
 	/// Acquire a single-flight lock with a lease + fencing token. Steals a stale
-	/// lease (expired) and bumps the fencing token; refuses an actively-held lock.
+	/// lease (expired) and bumps the fencing token; refuses an actively-held
+	/// lock.
 	///
 	/// # Errors
 	/// - [`StoreError::LeaseConflict`] when the lock is held with a live lease.
@@ -339,7 +354,8 @@ impl GitDaemonStateStore {
 			tx.execute("DELETE FROM item_locks WHERE lock_key = ?1", rusqlite::params![key.as_str()])?;
 		}
 		tx.execute("UPDATE fencing_seq SET value = value + 1 WHERE id = 0", [])?;
-		let token: i64 = tx.query_row("SELECT value FROM fencing_seq WHERE id = 0", [], |row| row.get(0))?;
+		let token: i64 =
+			tx.query_row("SELECT value FROM fencing_seq WHERE id = 0", [], |row| row.get(0))?;
 		tx.execute(
 			"INSERT INTO item_locks (lock_key, fencing_token, holder, lease_expires_at)
 			 VALUES (?1, ?2, ?3, ?4)",
@@ -353,7 +369,8 @@ impl GitDaemonStateStore {
 	/// (another holder stole a stale lease in between).
 	///
 	/// # Errors
-	/// - [`StoreError::FencingTokenStale`] when the token no longer owns the lock.
+	/// - [`StoreError::FencingTokenStale`] when the token no longer owns the
+	///   lock.
 	/// - [`StoreError`] on a `SQLite` failure.
 	pub fn release_lock(&self, guard: &LockGuard) -> Result<(), StoreError> {
 		let changed = self.conn.execute(
@@ -400,15 +417,29 @@ mod tests {
 	#[test]
 	fn duplicate_event_dedupes_to_one_winner() {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
-		let key = DedupKey::new(&item(), "issues", &EventSource::Webhook { delivery_id: "d1".into() }, "r1");
-		assert!(store.insert_event(&key, "issue", "I_9", "issues", "2026-01-01T00:00:00Z").unwrap());
+		let key =
+			DedupKey::new(&item(), "issues", &EventSource::Webhook { delivery_id: "d1".into() }, "r1");
+		assert!(
+			store
+				.insert_event(&key, "issue", "I_9", "issues", "2026-01-01T00:00:00Z")
+				.unwrap()
+		);
 		// A racing webhook + poll producing the same dedupe key inserts once.
-		assert!(!store.insert_event(&key, "issue", "I_9", "issues", "2026-01-01T00:00:01Z").unwrap());
+		assert!(
+			!store
+				.insert_event(&key, "issue", "I_9", "issues", "2026-01-01T00:00:01Z")
+				.unwrap()
+		);
 	}
 
 	fn temp_db_path(tag: &str) -> std::path::PathBuf {
-		let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-		std::env::temp_dir().join(format!("gd-store-{tag}-{}-{nanos}", std::process::id())).join("state.sqlite")
+		let nanos = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		std::env::temp_dir()
+			.join(format!("gd-store-{tag}-{}-{nanos}", std::process::id()))
+			.join("state.sqlite")
 	}
 
 	#[test]
@@ -418,7 +449,11 @@ mod tests {
 		let path = temp_db_path("perms");
 		let _store = GitDaemonStateStore::open(&path).unwrap();
 		let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-		let dir_mode = std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+		let dir_mode = std::fs::metadata(path.parent().unwrap())
+			.unwrap()
+			.permissions()
+			.mode()
+			& 0o777;
 		assert_eq!(file_mode, 0o600, "db file must be 0600");
 		assert_eq!(dir_mode, 0o700, "db dir must be 0700");
 		let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -434,7 +469,8 @@ mod tests {
 		// Create the DB + schema once so both threads open an existing file.
 		GitDaemonStateStore::open(&path).unwrap();
 		let barrier = Arc::new(Barrier::new(2));
-		let key = DedupKey::new(&item(), "issues", &EventSource::Webhook { delivery_id: "d1".into() }, "r1");
+		let key =
+			DedupKey::new(&item(), "issues", &EventSource::Webhook { delivery_id: "d1".into() }, "r1");
 		let mut handles = Vec::new();
 		for _ in 0..2 {
 			let p = path.clone();
@@ -443,10 +479,16 @@ mod tests {
 			handles.push(std::thread::spawn(move || {
 				let store = GitDaemonStateStore::open(&p).unwrap();
 				b.wait();
-				store.insert_event(&k, "issue", "I_9", "issues", "2026-01-01T00:00:00Z").unwrap()
+				store
+					.insert_event(&k, "issue", "I_9", "issues", "2026-01-01T00:00:00Z")
+					.unwrap()
 			}));
 		}
-		let wins = handles.into_iter().map(|h| h.join().unwrap()).filter(|w| *w).count();
+		let wins = handles
+			.into_iter()
+			.map(|h| h.join().unwrap())
+			.filter(|w| *w)
+			.count();
 		assert_eq!(wins, 1, "exactly one connection may win the dedupe insert");
 		let _ = std::fs::remove_dir_all(path.parent().unwrap());
 	}
@@ -455,8 +497,16 @@ mod tests {
 	fn work_intent_is_unique_so_no_duplicate_pr() {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
 		let key = item().work_intent_key("resolve");
-		assert!(store.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:00Z").unwrap());
-		assert!(!store.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:01Z").unwrap());
+		assert!(
+			store
+				.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:00Z")
+				.unwrap()
+		);
+		assert!(
+			!store
+				.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:01Z")
+				.unwrap()
+		);
 	}
 
 	#[test]
@@ -464,13 +514,21 @@ mod tests {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
 		let k1 = ItemRef::new("github", "R_1", ItemKind::Issue, "I_1").work_intent_key("resolve");
 		let k2 = ItemRef::new("github", "R_1", ItemKind::Issue, "I_2").work_intent_key("resolve");
-		store.record_work_intent(&k1, "issue", "I_1", "2026-01-01T00:00:00Z").unwrap();
-		store.record_work_intent(&k2, "issue", "I_2", "2026-01-01T00:00:01Z").unwrap();
+		store
+			.record_work_intent(&k1, "issue", "I_1", "2026-01-01T00:00:00Z")
+			.unwrap();
+		store
+			.record_work_intent(&k2, "issue", "I_2", "2026-01-01T00:00:01Z")
+			.unwrap();
 		let ready = store.list_ready_work(10).unwrap();
 		assert_eq!(ready.len(), 2);
 		assert_eq!(ready[0].0, k1.as_str()); // FIFO by updated_at
 		// Move one to a non-ready state -> excluded.
-		assert!(store.set_work_state(k1.as_str(), WorkItemState::MergedDev, "2026-01-01T00:01:00Z").unwrap());
+		assert!(
+			store
+				.set_work_state(k1.as_str(), WorkItemState::MergedDev, "2026-01-01T00:01:00Z")
+				.unwrap()
+		);
 		let ready = store.list_ready_work(10).unwrap();
 		assert_eq!(ready.len(), 1);
 		assert_eq!(ready[0].0, k2.as_str());
@@ -480,8 +538,11 @@ mod tests {
 	fn list_ready_work_respects_limit() {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
 		for i in 0..5 {
-			let k = ItemRef::new("github", "R_1", ItemKind::Issue, format!("I_{i}")).work_intent_key("resolve");
-			store.record_work_intent(&k, "issue", &format!("I_{i}"), &format!("2026-01-01T00:00:0{i}Z")).unwrap();
+			let k = ItemRef::new("github", "R_1", ItemKind::Issue, format!("I_{i}"))
+				.work_intent_key("resolve");
+			store
+				.record_work_intent(&k, "issue", &format!("I_{i}"), &format!("2026-01-01T00:00:0{i}Z"))
+				.unwrap();
 		}
 		assert_eq!(store.list_ready_work(3).unwrap().len(), 3);
 	}
@@ -521,7 +582,10 @@ mod tests {
 	#[test]
 	fn schema_version_is_stamped() {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
-		let v: i64 = store.conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+		let v: i64 = store
+			.conn
+			.pragma_query_value(None, "user_version", |row| row.get(0))
+			.unwrap();
 		assert_eq!(v, SCHEMA_VERSION);
 	}
 
@@ -532,16 +596,26 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&dir);
 		{
 			let store = GitDaemonStateStore::open(&path).unwrap();
-			let mode: String =
-				store.conn.pragma_query_value(None, "journal_mode", |row| row.get(0)).unwrap();
+			let mode: String = store
+				.conn
+				.pragma_query_value(None, "journal_mode", |row| row.get(0))
+				.unwrap();
 			assert_eq!(mode.to_lowercase(), "wal");
 			let key = item().work_intent_key("resolve");
-			assert!(store.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:00Z").unwrap());
+			assert!(
+				store
+					.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:00Z")
+					.unwrap()
+			);
 		}
 		// Reopen: data persisted, dedupe still holds across connections.
 		let store = GitDaemonStateStore::open(&path).unwrap();
 		let key = item().work_intent_key("resolve");
-		assert!(!store.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:01Z").unwrap());
+		assert!(
+			!store
+				.record_work_intent(&key, "issue", "I_9", "2026-01-01T00:00:01Z")
+				.unwrap()
+		);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

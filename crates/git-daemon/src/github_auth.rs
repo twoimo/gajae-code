@@ -33,7 +33,8 @@ pub fn base64url_nopad(input: &[u8]) -> String {
 	out
 }
 
-/// Build the App JWT claim set: `iss` = app id, plus `iat`/`exp` (unix seconds).
+/// Build the App JWT claim set: `iss` = app id, plus `iat`/`exp` (unix
+/// seconds).
 #[must_use]
 pub fn app_jwt_claims(app_id: &str, iat: u64, exp: u64) -> Value {
 	json!({ "iat": iat, "exp": exp, "iss": app_id })

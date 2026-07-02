@@ -38,7 +38,7 @@ pub enum MemoryMode {
 pub struct PollConfig {
 	pub interval_secs: u64,
 	/// Overlap window so an event near a cursor boundary is never missed.
-	pub overlap_secs: u64,
+	pub overlap_secs:  u64,
 }
 
 impl Default for PollConfig {
@@ -51,7 +51,7 @@ impl Default for PollConfig {
 /// auto-merges to one of `allowed_dev_branches`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MergePolicy {
-	pub protected_branches: Vec<String>,
+	pub protected_branches:   Vec<String>,
 	pub allowed_dev_branches: Vec<String>,
 }
 
@@ -75,22 +75,22 @@ impl MergePolicy {
 /// Top-level per-repo daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitDaemonConfig {
-	pub provider: String,
-	pub repo_full_name: String,
-	pub repo_node_id: String,
+	pub provider:         String,
+	pub repo_full_name:   String,
+	pub repo_node_id:     String,
 	#[serde(default)]
 	pub webhook_topology: WebhookTopology,
 	#[serde(default)]
-	pub poll: PollConfig,
+	pub poll:             PollConfig,
 	#[serde(default)]
-	pub merge_policy: MergePolicy,
+	pub merge_policy:     MergePolicy,
 	#[serde(default)]
-	pub memory_mode: MemoryMode,
+	pub memory_mode:      MemoryMode,
 	/// gjc-rpc/bridge endpoint the daemon drives unattended runs through.
-	pub rpc_endpoint: String,
+	pub rpc_endpoint:     String,
 	/// Max issues worked concurrently (single-flight is still per item).
 	#[serde(default = "default_concurrency")]
-	pub max_concurrency: u32,
+	pub max_concurrency:  u32,
 }
 
 const fn default_concurrency() -> u32 {
@@ -108,7 +108,9 @@ impl core::fmt::Display for ConfigError {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		match self {
 			Self::MissingField(field) => write!(f, "missing required config field: {field}"),
-			Self::InvalidValue { field, reason } => write!(f, "invalid config field {field}: {reason}"),
+			Self::InvalidValue { field, reason } => {
+				write!(f, "invalid config field {field}: {reason}")
+			},
 		}
 	}
 }
@@ -136,10 +138,16 @@ impl GitDaemonConfig {
 			return Err(ConfigError::MissingField("rpc_endpoint"));
 		}
 		if self.max_concurrency == 0 {
-			return Err(ConfigError::InvalidValue { field: "max_concurrency", reason: "must be >= 1" });
+			return Err(ConfigError::InvalidValue {
+				field:  "max_concurrency",
+				reason: "must be >= 1",
+			});
 		}
 		if self.poll.interval_secs == 0 {
-			return Err(ConfigError::InvalidValue { field: "poll.interval_secs", reason: "must be >= 1" });
+			return Err(ConfigError::InvalidValue {
+				field:  "poll.interval_secs",
+				reason: "must be >= 1",
+			});
 		}
 		Ok(())
 	}
@@ -157,18 +165,18 @@ mod tests {
 
 	fn valid() -> GitDaemonConfig {
 		GitDaemonConfig {
-			provider: "github".into(),
-			repo_full_name: "acme/widget".into(),
-			repo_node_id: "R_1".into(),
+			provider:         "github".into(),
+			repo_full_name:   "acme/widget".into(),
+			repo_node_id:     "R_1".into(),
 			webhook_topology: WebhookTopology::ReverseProxy,
-			poll: PollConfig::default(),
-			merge_policy: MergePolicy {
-				protected_branches: vec!["release".into()],
+			poll:             PollConfig::default(),
+			merge_policy:     MergePolicy {
+				protected_branches:   vec!["release".into()],
 				allowed_dev_branches: vec!["dev".into()],
 			},
-			memory_mode: MemoryMode::Hindsight,
-			rpc_endpoint: "unix:///tmp/gjc.sock".into(),
-			max_concurrency: 2,
+			memory_mode:      MemoryMode::Hindsight,
+			rpc_endpoint:     "unix:///tmp/gjc.sock".into(),
+			max_concurrency:  2,
 		}
 	}
 
@@ -188,13 +196,16 @@ mod tests {
 	fn zero_concurrency_is_rejected() {
 		let mut c = valid();
 		c.max_concurrency = 0;
-		assert!(matches!(c.validate(), Err(ConfigError::InvalidValue { field: "max_concurrency", .. })));
+		assert!(matches!(
+			c.validate(),
+			Err(ConfigError::InvalidValue { field: "max_concurrency", .. })
+		));
 	}
 
 	#[test]
 	fn never_auto_merges_protected_or_main() {
 		let policy = MergePolicy {
-			protected_branches: vec!["release".into()],
+			protected_branches:   vec!["release".into()],
 			allowed_dev_branches: vec!["dev".into(), "main".into()], // even if mislisted
 		};
 		assert!(!policy.may_auto_merge("main"));

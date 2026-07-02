@@ -2,15 +2,17 @@
 //!
 //! This is the e2e seam that composes the safety pieces. It is generic over the
 //! [`ForgeAdapter`] and a [`WorkRunner`] (the unattended engine), so it is
-//! integration-tested with in-memory fakes — exercising the real lock, gate, and
-//! merge invariants without a network or the live TS engine.
+//! integration-tested with in-memory fakes — exercising the real lock, gate,
+//! and merge invariants without a network or the live TS engine.
 
-use crate::config::MergePolicy;
-use crate::forge_adapter::{ForgeAdapter, MergeRequest};
-use crate::keys::ItemRef;
-use crate::merge_gate::{DenyReason, GateInputs, evaluate};
-use crate::state_machine::WorkItemState;
-use crate::store::{GitDaemonStateStore, StoreError};
+use crate::{
+	config::MergePolicy,
+	forge_adapter::{ForgeAdapter, MergeRequest},
+	keys::ItemRef,
+	merge_gate::{DenyReason, GateInputs, evaluate},
+	state_machine::WorkItemState,
+	store::{GitDaemonStateStore, StoreError},
+};
 
 /// Outcome of an unattended engine run.
 ///
@@ -20,7 +22,7 @@ use crate::store::{GitDaemonStateStore, StoreError};
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunOutcome {
 	pub succeeded: bool,
-	pub usage: crate::spend_ledger::UsageObservation,
+	pub usage:     crate::spend_ledger::UsageObservation,
 }
 
 /// The unattended engine seen by the orchestrator.
@@ -42,7 +44,8 @@ pub enum DriveOutcome {
 	GateDenied(DenyReason),
 	/// The unattended run did not succeed; escalated, nothing merged.
 	RunFailed,
-	/// The run completed but opened no discoverable PR; escalated, nothing merged.
+	/// The run completed but opened no discoverable PR; escalated, nothing
+	/// merged.
 	NoPrOpened,
 	/// Another worker holds a live lease on this item.
 	LockBusy,
@@ -56,7 +59,8 @@ pub enum DriveOutcome {
 /// Drive one item from lock acquisition through a SHA-bound merge decision.
 ///
 /// The lock is released after settlement regardless of outcome. The merge call
-/// (when allowed) always passes the gate's bound head SHA so a race fails closed.
+/// (when allowed) always passes the gate's bound head SHA so a race fails
+/// closed.
 ///
 /// # Errors
 /// Returns [`StoreError`] on a store failure other than a live-lease conflict
@@ -75,7 +79,8 @@ pub async fn drive_to_merge<F: ForgeAdapter, R: WorkRunner>(
 	now: &str,
 	lease_expires_at: &str,
 ) -> Result<DriveOutcome, StoreError> {
-	let lock = match store.acquire_lock(&item.lock_key(), "git-daemon-worker", now, lease_expires_at) {
+	let lock = match store.acquire_lock(&item.lock_key(), "git-daemon-worker", now, lease_expires_at)
+	{
 		Ok(guard) => guard,
 		Err(StoreError::LeaseConflict) => return Ok(DriveOutcome::LockBusy),
 		Err(e) => return Err(e),
@@ -123,7 +128,10 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 	// pushed the branch but did not open a PR, the DAEMON opens it (PR creation
 	// and merge are the daemon's forge operations, not the agent's). PR/gate
 	// signals are the daemon's GitHub observations, never engine events.
-	let base = policy.allowed_dev_branches.first().map_or("dev", String::as_str);
+	let base = policy
+		.allowed_dev_branches
+		.first()
+		.map_or("dev", String::as_str);
 	let pr = match forge.find_work_pr(work_key).await {
 		Ok(Some(pr)) => pr,
 		Ok(None) => match forge.find_work_branch(work_key).await {
@@ -134,7 +142,7 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 					Ok(pr) => pr,
 					Err(_) => return Ok(DriveOutcome::RefetchFailed),
 				}
-			}
+			},
 			Ok(None) => return Ok(DriveOutcome::NoPrOpened),
 			Err(_) => return Ok(DriveOutcome::RefetchFailed),
 		},
@@ -170,26 +178,45 @@ async fn run_and_merge<F: ForgeAdapter, R: WorkRunner>(
 	// failure denies the merge (fails closed) — we never merge without a record.
 	let reason = decision.reason.map(|r| format!("{r:?}"));
 	if store
-		.persist_merge_evidence(work_key, &decision.head_sha, &decision.base_branch, decision.allow, reason.as_deref(), now)
+		.persist_merge_evidence(
+			work_key,
+			&decision.head_sha,
+			&decision.base_branch,
+			decision.allow,
+			reason.as_deref(),
+			now,
+		)
 		.is_err()
 	{
 		return Ok(DriveOutcome::EvidenceWriteFailed);
 	}
 	if !decision.may_merge() {
-		return Ok(decision.reason.map_or(DriveOutcome::RunFailed, DriveOutcome::GateDenied));
+		return Ok(decision
+			.reason
+			.map_or(DriveOutcome::RunFailed, DriveOutcome::GateDenied));
 	}
-	Ok(match forge.merge_pr(&MergeRequest { pr_id: pr_ref, expected_head_sha: decision.head_sha }).await {
-		Ok(merge_sha) => DriveOutcome::Merged { merge_sha },
-		Err(_) => DriveOutcome::GateDenied(DenyReason::StaleHead),
-	})
+	Ok(
+		match forge
+			.merge_pr(&MergeRequest {
+				pr_id:             pr_ref,
+				expected_head_sha: decision.head_sha,
+			})
+			.await
+		{
+			Ok(merge_sha) => DriveOutcome::Merged { merge_sha },
+			Err(_) => DriveOutcome::GateDenied(DenyReason::StaleHead),
+		},
+	)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::forge_adapter::{FakeForge, ForgePr, MergeSignals};
-	use crate::keys::ItemKind;
-	use crate::spend_ledger::UsageObservation;
+	use crate::{
+		forge_adapter::{FakeForge, ForgePr, MergeSignals},
+		keys::ItemKind,
+		spend_ledger::UsageObservation,
+	};
 
 	struct FakeRunner {
 		outcome: RunOutcome,
@@ -213,14 +240,19 @@ mod tests {
 		MergePolicy { protected_branches: vec![], allowed_dev_branches: vec!["dev".into()] }
 	}
 
-	/// A PR keyed by its number (`FakeForge::get_pr` looks up by the number string
-	/// the orchestrator passes).
+	/// A PR keyed by its number (`FakeForge::get_pr` looks up by the number
+	/// string the orchestrator passes).
 	fn pr(number: u64, head: &str, base: &str) -> ForgePr {
 		ForgePr { id: number.to_string(), number, head_sha: head.into(), base_branch: base.into() }
 	}
 
 	fn good_signals() -> MergeSignals {
-		MergeSignals { ci_green: true, reviews_resolved: true, diff_within_budget: true, diff_in_scope: true }
+		MergeSignals {
+			ci_green:           true,
+			reviews_resolved:   true,
+			diff_within_budget: true,
+			diff_in_scope:      true,
+		}
 	}
 
 	/// Drive with a queued PR (what `find_work_pr` returns), a live PR (what the
@@ -256,8 +288,14 @@ mod tests {
 
 	#[tokio::test]
 	async fn happy_path_merges_to_dev() {
-		let (out, forge) =
-			run_with(pr(7, "sha1", "dev"), pr(7, "sha1", "dev"), good_signals(), outcome(true), &dev_policy()).await;
+		let (out, forge) = run_with(
+			pr(7, "sha1", "dev"),
+			pr(7, "sha1", "dev"),
+			good_signals(),
+			outcome(true),
+			&dev_policy(),
+		)
+		.await;
 		assert_eq!(out, DriveOutcome::Merged { merge_sha: "merge-sha1".into() });
 		assert_eq!(forge.merged(), vec!["7".to_owned()]);
 	}
@@ -273,7 +311,10 @@ mod tests {
 		forge.put_pr(pr(4242, "sha1", "dev")); // the PR create_pr will expose (number 4242)
 		forge.set_merge_signals(good_signals());
 		let runner = FakeRunner { outcome: outcome(true) };
-		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		let out =
+			drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9")
+				.await
+				.unwrap();
 		assert_eq!(out, DriveOutcome::Merged { merge_sha: "merge-sha1".into() });
 		assert_eq!(forge.created_prs(), vec![(branch, "dev".to_owned())]);
 		assert_eq!(forge.merged(), vec!["4242".to_owned()]);
@@ -281,8 +322,14 @@ mod tests {
 
 	#[tokio::test]
 	async fn failed_run_escalates_before_pr_lookup() {
-		let (out, forge) =
-			run_with(pr(7, "sha1", "dev"), pr(7, "sha1", "dev"), good_signals(), outcome(false), &dev_policy()).await;
+		let (out, forge) = run_with(
+			pr(7, "sha1", "dev"),
+			pr(7, "sha1", "dev"),
+			good_signals(),
+			outcome(false),
+			&dev_policy(),
+		)
+		.await;
 		assert_eq!(out, DriveOutcome::RunFailed);
 		assert!(forge.merged().is_empty());
 	}
@@ -292,24 +339,42 @@ mod tests {
 		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
 		let forge = FakeForge::new(); // no work_pr seeded -> find_work_pr returns None
 		let runner = FakeRunner { outcome: outcome(true) };
-		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		let out =
+			drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9")
+				.await
+				.unwrap();
 		assert_eq!(out, DriveOutcome::NoPrOpened);
 		assert!(forge.merged().is_empty());
 	}
 
 	#[tokio::test]
 	async fn protected_base_is_denied_and_never_merged() {
-		let (out, forge) =
-			run_with(pr(7, "sha1", "main"), pr(7, "sha1", "main"), good_signals(), outcome(true), &dev_policy()).await;
+		let (out, forge) = run_with(
+			pr(7, "sha1", "main"),
+			pr(7, "sha1", "main"),
+			good_signals(),
+			outcome(true),
+			&dev_policy(),
+		)
+		.await;
 		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::MainBranchDenied));
 		assert!(forge.merged().is_empty());
 	}
 
 	#[tokio::test]
 	async fn base_retarget_between_queue_and_merge_denies() {
-		let policy = MergePolicy { protected_branches: vec![], allowed_dev_branches: vec!["dev".into(), "dev2".into()] };
-		let (out, forge) =
-			run_with(pr(7, "sha1", "dev"), pr(7, "sha1", "dev2"), good_signals(), outcome(true), &policy).await;
+		let policy = MergePolicy {
+			protected_branches:   vec![],
+			allowed_dev_branches: vec!["dev".into(), "dev2".into()],
+		};
+		let (out, forge) = run_with(
+			pr(7, "sha1", "dev"),
+			pr(7, "sha1", "dev2"),
+			good_signals(),
+			outcome(true),
+			&policy,
+		)
+		.await;
 		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::BaseChanged));
 		assert!(forge.merged().is_empty());
 	}
@@ -317,8 +382,14 @@ mod tests {
 	#[tokio::test]
 	async fn stale_head_between_run_and_refetch_denies() {
 		// Queued head sha1; the pre-merge refetch sees sha2.
-		let (out, forge) =
-			run_with(pr(7, "sha1", "dev"), pr(7, "sha2", "dev"), good_signals(), outcome(true), &dev_policy()).await;
+		let (out, forge) = run_with(
+			pr(7, "sha1", "dev"),
+			pr(7, "sha2", "dev"),
+			good_signals(),
+			outcome(true),
+			&dev_policy(),
+		)
+		.await;
 		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::StaleHead));
 		assert!(forge.merged().is_empty());
 	}
@@ -327,8 +398,14 @@ mod tests {
 	async fn failing_ci_denies_merge() {
 		let mut signals = good_signals();
 		signals.ci_green = false;
-		let (out, forge) =
-			run_with(pr(7, "sha1", "dev"), pr(7, "sha1", "dev"), signals, outcome(true), &dev_policy()).await;
+		let (out, forge) = run_with(
+			pr(7, "sha1", "dev"),
+			pr(7, "sha1", "dev"),
+			signals,
+			outcome(true),
+			&dev_policy(),
+		)
+		.await;
 		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::CiNotGreen));
 		assert!(forge.merged().is_empty());
 	}
@@ -342,7 +419,10 @@ mod tests {
 		forge.set_merge_signals(good_signals());
 		forge.set_protection_unreadable();
 		let runner = FakeRunner { outcome: outcome(true) };
-		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		let out =
+			drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9")
+				.await
+				.unwrap();
 		assert_eq!(out, DriveOutcome::GateDenied(DenyReason::BranchProtectionUnknown));
 		assert!(forge.merged().is_empty());
 	}
@@ -355,9 +435,14 @@ mod tests {
 		forge.put_pr(pr(7, "sha1", "dev"));
 		forge.set_merge_signals(good_signals());
 		// Pre-record evidence for the same (work_key, head) so the write conflicts.
-		store.persist_merge_evidence("wk", "sha1", "dev", true, None, "t0").unwrap();
+		store
+			.persist_merge_evidence("wk", "sha1", "dev", true, None, "t0")
+			.unwrap();
 		let runner = FakeRunner { outcome: outcome(true) };
-		let out = drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9").await.unwrap();
+		let out =
+			drive_to_merge(&mut store, &forge, &runner, &item(), "wk", &dev_policy(), "t0", "t9")
+				.await
+				.unwrap();
 		assert_eq!(out, DriveOutcome::EvidenceWriteFailed);
 		assert!(forge.merged().is_empty(), "must not merge without persisted evidence");
 	}
@@ -374,8 +459,14 @@ mod tests {
 		store.record_work_intent(&wk, "issue", "I_9", "t0").unwrap();
 		assert_eq!(store.list_ready_work(10).unwrap().len(), 1);
 		let runner = FakeRunner { outcome: outcome(true) };
-		let out = drive_to_merge(&mut store, &forge, &runner, &it, wk.as_str(), &dev_policy(), "t0", "t9").await.unwrap();
+		let out =
+			drive_to_merge(&mut store, &forge, &runner, &it, wk.as_str(), &dev_policy(), "t0", "t9")
+				.await
+				.unwrap();
 		assert!(matches!(out, DriveOutcome::Merged { .. }));
-		assert!(store.list_ready_work(10).unwrap().is_empty(), "merged item must leave the ready set");
+		assert!(
+			store.list_ready_work(10).unwrap().is_empty(),
+			"merged item must leave the ready set"
+		);
 	}
 }

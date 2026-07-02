@@ -18,7 +18,8 @@ pub const fn can_start(active: u32, max_concurrency: u32) -> bool {
 	available_slots(active, max_concurrency) > 0
 }
 
-/// Pick the next queued work keys to dispatch (FIFO), up to the available slots.
+/// Pick the next queued work keys to dispatch (FIFO), up to the available
+/// slots.
 ///
 /// Returns borrowed keys in queue order; the caller acquires per-item locks
 /// (a lock conflict simply means that item is skipped this tick).

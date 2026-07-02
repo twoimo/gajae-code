@@ -11,9 +11,11 @@
 //! - the correct `expected_head_sha` merge succeeds (SHA-bound merge to `dev`),
 //! - `post_comment` posts to the PR thread.
 
-use git_daemon::forge_adapter::{ForgeAdapter, ForgeError, MergeRequest};
-use git_daemon::github_forge::GithubForge;
-use git_daemon::reqwest_transport::ReqwestTransport;
+use git_daemon::{
+	forge_adapter::{ForgeAdapter, ForgeError, MergeRequest},
+	github_forge::GithubForge,
+	reqwest_transport::ReqwestTransport,
+};
 
 fn opt(key: &str) -> Option<String> {
 	std::env::var(key).ok().filter(|v| !v.is_empty())
@@ -47,21 +49,30 @@ async fn live_forge_transport_and_sha_bound_merge() {
 	//    and mapped to ShaMismatch — the daemon never merges a moved head.
 	let wrong = forge
 		.merge_pr(&MergeRequest {
-			pr_id: pr.clone(),
+			pr_id:             pr.clone(),
 			expected_head_sha: "0000000000000000000000000000000000000000".to_owned(),
 		})
 		.await;
-	assert!(matches!(wrong, Err(ForgeError::ShaMismatch)), "wrong SHA must fail closed, got {wrong:?}");
+	assert!(
+		matches!(wrong, Err(ForgeError::ShaMismatch)),
+		"wrong SHA must fail closed, got {wrong:?}"
+	);
 	eprintln!("live_forge: wrong-SHA merge correctly denied (ShaMismatch)");
 
 	// 4. SHA-bound merge with the correct expected head merges to dev.
 	let merged = forge
-		.merge_pr(&MergeRequest { pr_id: pr.clone(), expected_head_sha: live.head_sha.clone() })
+		.merge_pr(&MergeRequest {
+			pr_id:             pr.clone(),
+			expected_head_sha: live.head_sha.clone(),
+		})
 		.await;
 	assert!(merged.is_ok(), "expected-head merge to dev should succeed, got {merged:?}");
 	eprintln!("live_forge: SHA-bound merge to dev ok — merge_sha={}", merged.unwrap());
 
 	// 5. Comment surface.
-	forge.post_comment(&pr, "git-daemon live verification: SHA-bound merge gate exercised ✔").await.expect("post_comment");
+	forge
+		.post_comment(&pr, "git-daemon live verification: SHA-bound merge gate exercised ✔")
+		.await
+		.expect("post_comment");
 	eprintln!("live_forge: post_comment ok");
 }

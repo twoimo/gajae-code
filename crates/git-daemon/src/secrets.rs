@@ -62,19 +62,20 @@ impl SecretSource {
 /// A request to resolve a secret for a repo/provider.
 #[derive(Debug, Clone)]
 pub struct SecretRequest {
-	pub kind: SecretKind,
-	pub provider: String,
-	pub repo_id: String,
-	pub repo_full_name: String,
+	pub kind:            SecretKind,
+	pub provider:        String,
+	pub repo_id:         String,
+	pub repo_full_name:  String,
 	pub installation_id: Option<String>,
 }
 
 /// A candidate secret offered to the resolver: the material plus its origin.
 #[derive(Debug, Clone)]
 pub struct SecretCandidate {
-	pub material: String,
-	pub source: SecretSource,
-	/// Optional ISO-8601 expiry the caller already knows (e.g. installation token).
+	pub material:   String,
+	pub source:     SecretSource,
+	/// Optional ISO-8601 expiry the caller already knows (e.g. installation
+	/// token).
 	pub expires_at: Option<String>,
 }
 
@@ -84,7 +85,7 @@ pub struct SecretCandidate {
 pub struct ResolvedSecret {
 	pub fingerprint: String,
 	pub source_kind: &'static str,
-	pub expires_at: Option<String>,
+	pub expires_at:  Option<String>,
 }
 
 /// Why a secret could not be resolved (fail-closed).
@@ -106,7 +107,7 @@ impl core::fmt::Display for SecretError {
 			Self::Missing => write!(f, "secret_missing"),
 			Self::ProjectScopedRejected { source } => {
 				write!(f, "secret_project_scoped_rejected: {source}")
-			}
+			},
 			Self::InvalidFormat => write!(f, "secret_invalid_format"),
 			Self::Expired => write!(f, "secret_expired"),
 		}
@@ -138,7 +139,8 @@ pub fn fingerprint(material: &str) -> String {
 ///
 /// # Errors
 /// - [`SecretError::Missing`] when `candidate` is `None`.
-/// - [`SecretError::ProjectScopedRejected`] when the source is not machine-local.
+/// - [`SecretError::ProjectScopedRejected`] when the source is not
+///   machine-local.
 /// - [`SecretError::InvalidFormat`] when the material is empty.
 /// - [`SecretError::Expired`] when `now` is past the candidate's `expires_at`.
 pub fn resolve_secret(
@@ -162,7 +164,7 @@ pub fn resolve_secret(
 	Ok(ResolvedSecret {
 		fingerprint: fingerprint(&candidate.material),
 		source_kind: candidate.source.label(),
-		expires_at: candidate.expires_at.clone(),
+		expires_at:  candidate.expires_at.clone(),
 	})
 }
 
@@ -172,10 +174,10 @@ mod tests {
 
 	fn request() -> SecretRequest {
 		SecretRequest {
-			kind: SecretKind::WebhookSecret,
-			provider: "github".into(),
-			repo_id: "R_1".into(),
-			repo_full_name: "acme/widget".into(),
+			kind:            SecretKind::WebhookSecret,
+			provider:        "github".into(),
+			repo_id:         "R_1".into(),
+			repo_full_name:  "acme/widget".into(),
 			installation_id: None,
 		}
 	}
@@ -186,18 +188,23 @@ mod tests {
 
 	#[test]
 	fn rejects_project_scoped_sources() {
-		for src in [SecretSource::ProjectGjc, SecretSource::CommittedFile, SecretSource::WorktreeEnv] {
-			let err = resolve_secret(&request(), Some(&candidate("s3cr3t", src)), "2026-01-01T00:00:00Z")
-				.unwrap_err();
+		for src in [SecretSource::ProjectGjc, SecretSource::CommittedFile, SecretSource::WorktreeEnv]
+		{
+			let err =
+				resolve_secret(&request(), Some(&candidate("s3cr3t", src)), "2026-01-01T00:00:00Z")
+					.unwrap_err();
 			assert!(matches!(err, SecretError::ProjectScopedRejected { .. }), "src {src:?}");
 		}
 	}
 
 	#[test]
 	fn accepts_machine_local_and_returns_only_fingerprint() {
-		let resolved =
-			resolve_secret(&request(), Some(&candidate("s3cr3t", SecretSource::Env)), "2026-01-01T00:00:00Z")
-				.unwrap();
+		let resolved = resolve_secret(
+			&request(),
+			Some(&candidate("s3cr3t", SecretSource::Env)),
+			"2026-01-01T00:00:00Z",
+		)
+		.unwrap();
 		assert_eq!(resolved.source_kind, "env");
 		// fingerprint is hex SHA-256 and does not contain the raw material.
 		assert_eq!(resolved.fingerprint.len(), 64);
@@ -212,21 +219,28 @@ mod tests {
 
 	#[test]
 	fn missing_candidate_is_fail_closed() {
-		assert_eq!(resolve_secret(&request(), None, "2026-01-01T00:00:00Z"), Err(SecretError::Missing));
+		assert_eq!(
+			resolve_secret(&request(), None, "2026-01-01T00:00:00Z"),
+			Err(SecretError::Missing)
+		);
 	}
 
 	#[test]
 	fn empty_material_is_invalid() {
-		let err = resolve_secret(&request(), Some(&candidate("  ", SecretSource::Env)), "2026-01-01T00:00:00Z")
-			.unwrap_err();
+		let err = resolve_secret(
+			&request(),
+			Some(&candidate("  ", SecretSource::Env)),
+			"2026-01-01T00:00:00Z",
+		)
+		.unwrap_err();
 		assert_eq!(err, SecretError::InvalidFormat);
 	}
 
 	#[test]
 	fn expired_candidate_is_rejected() {
 		let cand = SecretCandidate {
-			material: "tok".into(),
-			source: SecretSource::OsSecretStore,
+			material:   "tok".into(),
+			source:     SecretSource::OsSecretStore,
 			expires_at: Some("2025-01-01T00:00:00Z".into()),
 		};
 		let err = resolve_secret(&request(), Some(&cand), "2026-01-01T00:00:00Z").unwrap_err();

@@ -24,7 +24,9 @@ pub fn decode_line(line: &str) -> Result<Option<Value>, String> {
 	if trimmed.is_empty() {
 		return Ok(None);
 	}
-	serde_json::from_str(trimmed).map(Some).map_err(|e| e.to_string())
+	serde_json::from_str(trimmed)
+		.map(Some)
+		.map_err(|e| e.to_string())
 }
 
 /// Split a buffer of `\n`-delimited frames into decoded values.
@@ -40,7 +42,11 @@ pub fn decode_frames(buffer: &str) -> Result<(Vec<Value>, String), String> {
 	let mut lines: Vec<&str> = buffer.split('\n').collect();
 	// If the buffer ends with a newline, the final split element is "" (complete);
 	// otherwise the final element is an incomplete partial frame to retain.
-	let leftover = if has_trailing_newline { String::new() } else { lines.pop().unwrap_or("").to_owned() };
+	let leftover = if has_trailing_newline {
+		String::new()
+	} else {
+		lines.pop().unwrap_or("").to_owned()
+	};
 	for line in lines {
 		if let Some(v) = decode_line(line)? {
 			out.push(v);
@@ -51,8 +57,9 @@ pub fn decode_frames(buffer: &str) -> Result<(Vec<Value>, String), String> {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde_json::json;
+
+	use super::*;
 
 	#[test]
 	fn encode_is_compact_with_trailing_newline() {

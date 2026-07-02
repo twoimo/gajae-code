@@ -1,13 +1,16 @@
 //! Live `reqwest` implementation of [`crate::github_forge::HttpTransport`].
 //!
 //! This is intentionally thin: it maps the crate’s transport-neutral
-//! [`HttpRequest`]/[`HttpResponse`] onto `reqwest` and back. All GitHub-specific
-//! logic (URLs, headers, body, status->error mapping) lives in `github_forge`
-//! and is unit-tested there with a fake transport; this adapter only performs
-//! the actual network send, which is verified live (it has no offline test).
+//! [`HttpRequest`]/[`HttpResponse`] onto `reqwest` and back. All
+//! GitHub-specific logic (URLs, headers, body, status->error mapping) lives in
+//! `github_forge` and is unit-tested there with a fake transport; this adapter
+//! only performs the actual network send, which is verified live (it has no
+//! offline test).
 
-use crate::forge_adapter::ForgeError;
-use crate::github_forge::{HttpRequest, HttpResponse, HttpTransport};
+use crate::{
+	forge_adapter::ForgeError,
+	github_forge::{HttpRequest, HttpResponse, HttpTransport},
+};
 
 /// A `reqwest`-backed HTTP transport.
 pub struct ReqwestTransport {
@@ -18,7 +21,8 @@ impl ReqwestTransport {
 	/// Build a transport with a default client.
 	///
 	/// # Errors
-	/// Returns [`ForgeError::Transient`] if the underlying client cannot be built.
+	/// Returns [`ForgeError::Transient`] if the underlying client cannot be
+	/// built.
 	pub fn new() -> Result<Self, ForgeError> {
 		let client = reqwest::Client::builder()
 			.build()
@@ -44,9 +48,15 @@ impl HttpTransport for ReqwestTransport {
 		if let Some(body) = req.body {
 			builder = builder.body(body);
 		}
-		let resp = builder.send().await.map_err(|e| ForgeError::Transient(format!("send: {e}")))?;
+		let resp = builder
+			.send()
+			.await
+			.map_err(|e| ForgeError::Transient(format!("send: {e}")))?;
 		let status = resp.status().as_u16();
-		let body = resp.text().await.map_err(|e| ForgeError::Transient(format!("read body: {e}")))?;
+		let body = resp
+			.text()
+			.await
+			.map_err(|e| ForgeError::Transient(format!("read body: {e}")))?;
 		Ok(HttpResponse { status, body })
 	}
 }

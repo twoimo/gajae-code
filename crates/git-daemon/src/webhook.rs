@@ -62,24 +62,33 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// # Errors
 /// Returns [`WebhookError`] when the secret is empty, the header is absent or
 /// malformed, or the HMAC does not match.
-pub fn verify_github_signature(secret: &str, raw_body: &[u8], signature_header: Option<&str>) -> Result<(), WebhookError> {
+pub fn verify_github_signature(
+	secret: &str,
+	raw_body: &[u8],
+	signature_header: Option<&str>,
+) -> Result<(), WebhookError> {
 	if secret.is_empty() {
 		return Err(WebhookError::EmptySecret);
 	}
 	let header = signature_header.ok_or(WebhookError::MissingSignature)?;
-	let hex = header.strip_prefix("sha256=").ok_or(WebhookError::MalformedSignature)?;
+	let hex = header
+		.strip_prefix("sha256=")
+		.ok_or(WebhookError::MalformedSignature)?;
 	let provided = decode_hex(hex).ok_or(WebhookError::MalformedSignature)?;
 	// `new_from_slice` accepts any key length; the unwrap path is unreachable.
-	let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| WebhookError::EmptySecret)?;
+	let mut mac =
+		HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| WebhookError::EmptySecret)?;
 	mac.update(raw_body);
-	mac.verify_slice(&provided).map_err(|_| WebhookError::SignatureMismatch)
+	mac.verify_slice(&provided)
+		.map_err(|_| WebhookError::SignatureMismatch)
 }
 
 /// Compute the `sha256=<hex>` signature for a body (used by tests and any
 /// outbound relay that must sign a payload).
 #[must_use]
 pub fn sign_github(secret: &str, raw_body: &[u8]) -> String {
-	let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+	let mut mac =
+		HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
 	mac.update(raw_body);
 	let bytes = mac.finalize().into_bytes();
 	let mut hex = String::with_capacity(bytes.len() * 2);

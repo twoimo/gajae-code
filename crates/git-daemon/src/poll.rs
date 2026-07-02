@@ -3,12 +3,14 @@
 //! Polling is the at-least-once safety net behind webhooks: if a webhook is
 //! lost, a periodic sweep re-discovers the item so it is never missed. Re-seen
 //! items dedupe in the store (same synthetic [`crate::keys::EventSource::Poll`]
-//! token), so the overlap window can be generous without causing duplicate work.
+//! token), so the overlap window can be generous without causing duplicate
+//! work.
 
 /// Build the observable state token for a poll-discovered item.
 ///
-/// The token is stable for an unchanged observable state (so re-polling the same
-/// state reproduces the same dedupe key) and changes when the item changes.
+/// The token is stable for an unchanged observable state (so re-polling the
+/// same state reproduces the same dedupe key) and changes when the item
+/// changes.
 #[must_use]
 pub fn poll_state_token(updated_at: &str, state: &str) -> String {
 	format!("{updated_at}:{state}")

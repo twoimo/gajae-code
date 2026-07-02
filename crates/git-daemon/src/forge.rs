@@ -1,7 +1,7 @@
 //! Provider-neutral forge events and the GitHub payload normalizer.
 //!
-//! GitHub-specific JSON shapes are confined to [`normalize_github`]; the rest of
-//! the daemon only ever sees the canonical [`ForgeEvent`]. This is the
+//! GitHub-specific JSON shapes are confined to [`normalize_github`]; the rest
+//! of the daemon only ever sees the canonical [`ForgeEvent`]. This is the
 //! portability boundary that lets a future GitLab/Gitea adapter slot in without
 //! touching ingestion, the state machine, or the merge gate.
 
@@ -13,20 +13,21 @@ use crate::keys::ItemKind;
 /// A canonical, provider-neutral forge event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForgeEvent {
-	pub provider: String,
-	pub repo_node_id: String,
-	pub item_kind: ItemKind,
-	pub item_node_id: String,
+	pub provider:       String,
+	pub repo_node_id:   String,
+	pub item_kind:      ItemKind,
+	pub item_node_id:   String,
 	/// Provider event family (e.g. `issues`, `pull_request`, `issue_comment`).
-	pub event_family: String,
+	pub event_family:   String,
 	/// Normalized action (e.g. `opened`, `edited`, `commented`, `synchronize`).
-	pub action: String,
+	pub action:         String,
 	/// Login of the actor that triggered the event, when present.
-	pub actor_login: Option<String>,
-	/// Observable revision token (`updated_at` or head SHA) — feeds the dedupe key.
+	pub actor_login:    Option<String>,
+	/// Observable revision token (`updated_at` or head SHA) — feeds the dedupe
+	/// key.
 	pub event_revision: String,
 	/// Whether the event warrants (re)engaging work, vs. an ack-only no-op.
-	pub actionable: bool,
+	pub actionable:     bool,
 }
 
 fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -70,7 +71,7 @@ pub fn normalize_github(event_name: &str, payload: &Value) -> Option<ForgeEvent>
 				actor_login,
 				event_revision: str_at(payload, &["issue", "updated_at"])?.to_owned(),
 			})
-		}
+		},
 		"issue_comment" => Some(ForgeEvent {
 			provider,
 			repo_node_id,
@@ -95,7 +96,7 @@ pub fn normalize_github(event_name: &str, payload: &Value) -> Option<ForgeEvent>
 				actor_login,
 				event_revision: str_at(payload, &["pull_request", "head", "sha"])?.to_owned(),
 			})
-		}
+		},
 		"pull_request_review" => Some(ForgeEvent {
 			provider,
 			repo_node_id,
@@ -126,8 +127,9 @@ pub fn normalize_github(event_name: &str, payload: &Value) -> Option<ForgeEvent>
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde_json::json;
+
+	use super::*;
 
 	#[test]
 	fn normalizes_issue_opened_as_actionable() {

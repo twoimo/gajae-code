@@ -7,26 +7,37 @@
 //! through lock -> run -> SHA-bound gate -> merge. The tick is generic over the
 //! forge + runner so it is integration-tested with in-memory fakes.
 
-use crate::config::MergePolicy;
-use crate::forge_adapter::ForgeAdapter;
-use crate::keys::{ItemRef, WorkIntentKey};
-use crate::orchestrator::{DriveOutcome, WorkRunner, drive_to_merge};
-use crate::scheduler::available_slots;
-use crate::store::{GitDaemonStateStore, StoreError};
 use std::time::Duration;
+
 use tokio::sync::watch;
+
+use crate::{
+	config::MergePolicy,
+	forge_adapter::ForgeAdapter,
+	keys::{ItemRef, WorkIntentKey},
+	orchestrator::{DriveOutcome, WorkRunner, drive_to_merge},
+	scheduler::available_slots,
+	store::{GitDaemonStateStore, StoreError},
+};
 
 /// Run one reconciliation tick over the ready queue, bounded by free slots.
 ///
-/// `ready` is the FIFO list of `(item, work_key)` pairs eligible to run. At most
-/// `available_slots(active, max_concurrency)` are driven this tick; the rest wait
-/// for a later tick (single-flight per item is enforced by the store locks).
+/// `ready` is the FIFO list of `(item, work_key)` pairs eligible to run. At
+/// most `available_slots(active, max_concurrency)` are driven this tick; the
+/// rest wait for a later tick (single-flight per item is enforced by the store
+/// locks).
 ///
 /// # Errors
 /// Returns [`StoreError`] if driving an item hits a store failure other than a
 /// lock conflict (which surfaces as [`DriveOutcome::LockBusy`]).
-#[allow(clippy::future_not_send, reason = "driven on the daemon task; no cross-thread Send boundary yet")]
-#[allow(clippy::too_many_arguments, reason = "explicit deps keep the tick pure/testable without a god-struct")]
+#[allow(
+	clippy::future_not_send,
+	reason = "driven on the daemon task; no cross-thread Send boundary yet"
+)]
+#[allow(
+	clippy::too_many_arguments,
+	reason = "explicit deps keep the tick pure/testable without a god-struct"
+)]
 pub async fn run_tick<F: ForgeAdapter, R: WorkRunner>(
 	store: &mut GitDaemonStateStore,
 	forge: &F,
@@ -42,7 +53,8 @@ pub async fn run_tick<F: ForgeAdapter, R: WorkRunner>(
 	let mut outcomes = Vec::new();
 	for (item, work_key) in ready.iter().take(slots) {
 		let outcome =
-			drive_to_merge(store, forge, runner, item, work_key, policy, now, lease_expires_at).await?;
+			drive_to_merge(store, forge, runner, item, work_key, policy, now, lease_expires_at)
+				.await?;
 		outcomes.push((work_key.clone(), outcome));
 	}
 	Ok(outcomes)
@@ -51,15 +63,22 @@ pub async fn run_tick<F: ForgeAdapter, R: WorkRunner>(
 /// Run one reconciliation pass sourced from the store's ready queue.
 ///
 /// Loads up to `limit` ready work items (state `seen`/`queued`, FIFO) from the
-/// store, reconstructs each [`ItemRef`] from its work-intent key, and drives the
-/// batch through [`run_tick`]. Work items whose key fails to parse are skipped
-/// (they cannot be reconstructed into a forge fetch); every other invariant —
-/// single-flight locks, the SHA-bound gate — is enforced downstream.
+/// store, reconstructs each [`ItemRef`] from its work-intent key, and drives
+/// the batch through [`run_tick`]. Work items whose key fails to parse are
+/// skipped (they cannot be reconstructed into a forge fetch); every other
+/// invariant — single-flight locks, the SHA-bound gate — is enforced
+/// downstream.
 ///
 /// # Errors
 /// Returns [`StoreError`] on a store failure while listing or driving work.
-#[allow(clippy::future_not_send, reason = "driven on the daemon task; no cross-thread Send boundary yet")]
-#[allow(clippy::too_many_arguments, reason = "explicit deps keep the pass pure/testable without a god-struct")]
+#[allow(
+	clippy::future_not_send,
+	reason = "driven on the daemon task; no cross-thread Send boundary yet"
+)]
+#[allow(
+	clippy::too_many_arguments,
+	reason = "explicit deps keep the pass pure/testable without a god-struct"
+)]
 pub async fn serve_pass<F: ForgeAdapter, R: WorkRunner>(
 	store: &mut GitDaemonStateStore,
 	forge: &F,
@@ -75,10 +94,13 @@ pub async fn serve_pass<F: ForgeAdapter, R: WorkRunner>(
 		.list_ready_work(limit)?
 		.into_iter()
 		.filter_map(|(work_key, _kind, _node)| {
-			WorkIntentKey(work_key.clone()).parse().map(|(item, _action)| (item, work_key))
+			WorkIntentKey(work_key.clone())
+				.parse()
+				.map(|(item, _action)| (item, work_key))
 		})
 		.collect();
-	run_tick(store, forge, runner, &ready, policy, active, max_concurrency, now, lease_expires_at).await
+	run_tick(store, forge, runner, &ready, policy, active, max_concurrency, now, lease_expires_at)
+		.await
 }
 
 /// Run the always-on reconciliation loop until shutdown is signalled.
@@ -93,7 +115,10 @@ pub async fn serve_pass<F: ForgeAdapter, R: WorkRunner>(
 /// # Errors
 /// Returns [`StoreError`] if a tick hits a store failure.
 #[allow(clippy::future_not_send, reason = "owns the daemon state; driven on a single daemon task")]
-#[allow(clippy::too_many_arguments, reason = "explicit deps keep the loop testable without a god-struct")]
+#[allow(
+	clippy::too_many_arguments,
+	reason = "explicit deps keep the loop testable without a god-struct"
+)]
 pub async fn serve_forever<F: ForgeAdapter, R: WorkRunner>(
 	mut store: GitDaemonStateStore,
 	forge: F,
@@ -134,10 +159,12 @@ pub async fn serve_forever<F: ForgeAdapter, R: WorkRunner>(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::forge_adapter::{FakeForge, ForgePr, MergeSignals};
-	use crate::keys::ItemKind;
-	use crate::orchestrator::RunOutcome;
-	use crate::spend_ledger::UsageObservation;
+	use crate::{
+		forge_adapter::{FakeForge, ForgePr, MergeSignals},
+		keys::ItemKind,
+		orchestrator::RunOutcome,
+		spend_ledger::UsageObservation,
+	};
 
 	struct FakeRunner;
 	impl WorkRunner for FakeRunner {
@@ -162,13 +189,18 @@ mod tests {
 
 	fn forge_with_prs(n: usize) -> FakeForge {
 		let forge = FakeForge::new();
-		let pr = ForgePr { id: "7".into(), number: 7, head_sha: "sha1".into(), base_branch: "dev".into() };
+		let pr = ForgePr {
+			id:          "7".into(),
+			number:      7,
+			head_sha:    "sha1".into(),
+			base_branch: "dev".into(),
+		};
 		forge.set_work_pr(pr.clone());
 		forge.set_merge_signals(MergeSignals {
-			ci_green: true,
-			reviews_resolved: true,
+			ci_green:           true,
+			reviews_resolved:   true,
 			diff_within_budget: true,
-			diff_in_scope: true,
+			diff_in_scope:      true,
 		});
 		// All items share PR #7 in this fake; one merge per driven item is fine for
 		// the concurrency-bound assertion.
@@ -184,9 +216,14 @@ mod tests {
 		let forge = forge_with_prs(1);
 		let ready = ready_items(3);
 		// cap 2, active 0 -> 2 driven this tick.
-		let out = run_tick(&mut store, &forge, &FakeRunner, &ready, &policy(), 0, 2, "t0", "t9").await.unwrap();
+		let out = run_tick(&mut store, &forge, &FakeRunner, &ready, &policy(), 0, 2, "t0", "t9")
+			.await
+			.unwrap();
 		assert_eq!(out.len(), 2);
-		assert!(out.iter().all(|(_, o)| matches!(o, DriveOutcome::Merged { .. })));
+		assert!(
+			out.iter()
+				.all(|(_, o)| matches!(o, DriveOutcome::Merged { .. }))
+		);
 	}
 
 	#[tokio::test]
@@ -195,7 +232,9 @@ mod tests {
 		let forge = forge_with_prs(1);
 		let ready = ready_items(3);
 		// active == cap -> no free slots.
-		let out = run_tick(&mut store, &forge, &FakeRunner, &ready, &policy(), 2, 2, "t0", "t9").await.unwrap();
+		let out = run_tick(&mut store, &forge, &FakeRunner, &ready, &policy(), 2, 2, "t0", "t9")
+			.await
+			.unwrap();
 		assert!(out.is_empty());
 		assert!(forge.merged().is_empty());
 	}
@@ -204,7 +243,9 @@ mod tests {
 	async fn tick_with_empty_queue_is_noop() {
 		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
 		let forge = forge_with_prs(1);
-		let out = run_tick(&mut store, &forge, &FakeRunner, &[], &policy(), 0, 4, "t0", "t9").await.unwrap();
+		let out = run_tick(&mut store, &forge, &FakeRunner, &[], &policy(), 0, 4, "t0", "t9")
+			.await
+			.unwrap();
 		assert!(out.is_empty());
 	}
 
@@ -216,18 +257,27 @@ mod tests {
 		for i in 0..2 {
 			let item = ItemRef::new("github", "R_1", ItemKind::Issue, format!("I_{i}"));
 			let key = item.work_intent_key("resolve");
-			store.record_work_intent(&key, "issue", &format!("I_{i}"), "t0").unwrap();
+			store
+				.record_work_intent(&key, "issue", &format!("I_{i}"), "t0")
+				.unwrap();
 		}
-		let out = serve_pass(&mut store, &forge, &FakeRunner, &policy(), 0, 4, 10, "t0", "t9").await.unwrap();
+		let out = serve_pass(&mut store, &forge, &FakeRunner, &policy(), 0, 4, 10, "t0", "t9")
+			.await
+			.unwrap();
 		assert_eq!(out.len(), 2);
-		assert!(out.iter().all(|(_, o)| matches!(o, DriveOutcome::Merged { .. })));
+		assert!(
+			out.iter()
+				.all(|(_, o)| matches!(o, DriveOutcome::Merged { .. }))
+		);
 	}
 
 	#[tokio::test]
 	async fn serve_pass_with_no_ready_work_is_noop() {
 		let mut store = GitDaemonStateStore::open_in_memory().unwrap();
 		let forge = forge_with_prs(1);
-		let out = serve_pass(&mut store, &forge, &FakeRunner, &policy(), 0, 4, 10, "t0", "t9").await.unwrap();
+		let out = serve_pass(&mut store, &forge, &FakeRunner, &policy(), 0, 4, 10, "t0", "t9")
+			.await
+			.unwrap();
 		assert!(out.is_empty());
 	}
 
@@ -241,7 +291,9 @@ mod tests {
 		// One ready item; once merged it leaves the ready set, so later ticks are
 		// no-ops — we are asserting the loop cadence, not repeated merges.
 		let item = ItemRef::new("github", "R_1", ItemKind::Issue, "I_0");
-		store.record_work_intent(&item.work_intent_key("resolve"), "issue", "I_0", "t0").unwrap();
+		store
+			.record_work_intent(&item.work_intent_key("resolve"), "issue", "I_0", "t0")
+			.unwrap();
 		let forge = forge_with_prs(1);
 
 		let (tx, rx) = watch::channel(false);
@@ -275,10 +327,20 @@ mod tests {
 		let forge = forge_with_prs(0);
 		let (tx, rx) = watch::channel(false);
 		drop(tx); // sender gone -> changed() errors -> loop must exit
-		let ticks =
-			serve_forever(store, forge, FakeRunner, policy(), "R_1".to_owned(), 4, 10, Duration::from_secs(1), rx, fixed_clock)
-				.await
-				.unwrap();
+		let ticks = serve_forever(
+			store,
+			forge,
+			FakeRunner,
+			policy(),
+			"R_1".to_owned(),
+			4,
+			10,
+			Duration::from_secs(1),
+			rx,
+			fixed_clock,
+		)
+		.await
+		.unwrap();
 		// The immediate first interval tick may run before the dropped-sender
 		// branch wins the select; either way the loop terminates.
 		assert!(ticks <= 1, "dropped sender must stop the loop promptly, got {ticks}");

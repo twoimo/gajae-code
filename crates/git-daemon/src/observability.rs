@@ -9,16 +9,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::lifecycle::DaemonStatus;
-use crate::spend_ledger::UsageObservation;
+use crate::{lifecycle::DaemonStatus, spend_ledger::UsageObservation};
 
 /// Headline KPI snapshot over a rolling window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KpiSnapshot {
 	/// Every issue the daemon attempted in the window (the denominator, D2).
-	pub attempts: u64,
+	pub attempts:                u64,
 	/// Attempts that reached an autonomous dev merge (zero human touch).
-	pub dev_merges: u64,
+	pub dev_merges:              u64,
 	/// Median intake-to-dev-merge in seconds, when measurable.
 	pub median_seconds_to_merge: Option<u64>,
 }
@@ -33,7 +32,8 @@ impl KpiSnapshot {
 		}
 		#[allow(
 			clippy::cast_precision_loss,
-			reason = "rate is a display metric; u64->f64 precision loss is irrelevant at these magnitudes"
+			reason = "rate is a display metric; u64->f64 precision loss is irrelevant at these \
+			          magnitudes"
 		)]
 		{
 			self.dev_merges as f64 / self.attempts as f64
@@ -44,31 +44,35 @@ impl KpiSnapshot {
 /// A point-in-time status report for the daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusReport {
-	pub owner_id: String,
-	pub pid: u32,
-	pub repo_full_name: String,
-	pub status: DaemonStatus,
+	pub owner_id:        String,
+	pub pid:             u32,
+	pub repo_full_name:  String,
+	pub status:          DaemonStatus,
 	/// Items queued/awaiting a worker.
-	pub queue_depth: u64,
+	pub queue_depth:     u64,
 	/// Currently held single-flight locks (active runs).
-	pub active_locks: u64,
+	pub active_locks:    u64,
 	/// Duplicate events dropped by dedupe.
 	pub duplicate_drops: u64,
 	/// Gate denials by reason code.
-	pub gate_denials: BTreeMap<String, u64>,
+	pub gate_denials:    BTreeMap<String, u64>,
 	/// Runs whose stream was lost (awaiting recovery).
-	pub stream_gaps: u64,
+	pub stream_gaps:     u64,
 	/// Observed (not enforced) usage (D3).
-	pub spend_observed: UsageObservation,
+	pub spend_observed:  UsageObservation,
 	/// Last human escalation code, if any.
 	pub last_escalation: Option<String>,
-	pub kpi: KpiSnapshot,
+	pub kpi:             KpiSnapshot,
 }
 
 impl StatusReport {
 	/// A bare report for a freshly started daemon.
 	#[must_use]
-	pub fn starting(owner_id: impl Into<String>, pid: u32, repo_full_name: impl Into<String>) -> Self {
+	pub fn starting(
+		owner_id: impl Into<String>,
+		pid: u32,
+		repo_full_name: impl Into<String>,
+	) -> Self {
 		Self {
 			owner_id: owner_id.into(),
 			pid,
@@ -92,7 +96,11 @@ mod tests {
 
 	#[test]
 	fn success_rate_is_over_all_attempts() {
-		let kpi = KpiSnapshot { attempts: 10, dev_merges: 6, median_seconds_to_merge: Some(3600) };
+		let kpi = KpiSnapshot {
+			attempts:                10,
+			dev_merges:              6,
+			median_seconds_to_merge: Some(3600),
+		};
 		assert!((kpi.success_rate() - 0.6).abs() < 1e-9);
 	}
 
@@ -117,8 +125,12 @@ mod tests {
 	#[test]
 	fn gate_denials_tally_by_reason() {
 		let mut r = StatusReport::starting("o", 1, "a/b");
-		*r.gate_denials.entry("gate_ci_not_green".into()).or_insert(0) += 1;
-		*r.gate_denials.entry("gate_ci_not_green".into()).or_insert(0) += 1;
+		*r.gate_denials
+			.entry("gate_ci_not_green".into())
+			.or_insert(0) += 1;
+		*r.gate_denials
+			.entry("gate_ci_not_green".into())
+			.or_insert(0) += 1;
 		*r.gate_denials.entry("gate_main_branch".into()).or_insert(0) += 1;
 		assert_eq!(r.gate_denials["gate_ci_not_green"], 2);
 		assert_eq!(r.gate_denials["gate_main_branch"], 1);

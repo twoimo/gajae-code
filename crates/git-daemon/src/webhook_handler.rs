@@ -3,16 +3,19 @@
 //! This is the full webhook ingestion pipeline as a pure, testable function,
 //! independent of any HTTP server. A live deployment wraps it in an HTTP
 //! listener that hands over the raw body, the `X-Hub-Signature-256` header, and
-//! the `X-GitHub-Event` / `X-GitHub-Delivery` headers; the signature is verified
-//! over the **raw bytes before parsing** (fail-closed), recognized events are
-//! normalized to a canonical [`ForgeEvent`] and ingested (exactly-once across
-//! webhook + poll), and unrecognized events are acknowledged as a no-op.
+//! the `X-GitHub-Event` / `X-GitHub-Delivery` headers; the signature is
+//! verified over the **raw bytes before parsing** (fail-closed), recognized
+//! events are normalized to a canonical [`ForgeEvent`] and ingested
+//! (exactly-once across webhook + poll), and unrecognized events are
+//! acknowledged as a no-op.
 
-use crate::dispatcher::{IngestOutcome, ingest};
-use crate::forge::normalize_github;
-use crate::keys::EventSource;
-use crate::store::{GitDaemonStateStore, StoreError};
-use crate::webhook::{WebhookError, verify_github_signature};
+use crate::{
+	dispatcher::{IngestOutcome, ingest},
+	forge::normalize_github,
+	keys::EventSource,
+	store::{GitDaemonStateStore, StoreError},
+	webhook::{WebhookError, verify_github_signature},
+};
 
 /// Why a webhook request could not be ingested.
 #[derive(Debug)]
@@ -45,8 +48,8 @@ impl core::error::Error for WebhookHandleError {}
 /// (D1: broad intake; the normalizer decides what is actionable).
 ///
 /// # Errors
-/// Returns [`WebhookHandleError`] when the signature is invalid, the body is not
-/// JSON, or the store fails.
+/// Returns [`WebhookHandleError`] when the signature is invalid, the body is
+/// not JSON, or the store fails.
 pub fn handle_github_webhook(
 	secret: &str,
 	raw_body: &[u8],
@@ -56,9 +59,10 @@ pub fn handle_github_webhook(
 	store: &GitDaemonStateStore,
 	now: &str,
 ) -> Result<IngestOutcome, WebhookHandleError> {
-	verify_github_signature(secret, raw_body, signature_header).map_err(WebhookHandleError::Unauthorized)?;
-	let payload: serde_json::Value =
-		serde_json::from_slice(raw_body).map_err(|e| WebhookHandleError::BadPayload(e.to_string()))?;
+	verify_github_signature(secret, raw_body, signature_header)
+		.map_err(WebhookHandleError::Unauthorized)?;
+	let payload: serde_json::Value = serde_json::from_slice(raw_body)
+		.map_err(|e| WebhookHandleError::BadPayload(e.to_string()))?;
 	let Some(event) = normalize_github(event_name, &payload) else {
 		return Ok(IngestOutcome::AckedNoOp);
 	};
@@ -68,9 +72,10 @@ pub fn handle_github_webhook(
 
 #[cfg(test)]
 mod tests {
+	use serde_json::json;
+
 	use super::*;
 	use crate::webhook::sign_github;
-	use serde_json::json;
 
 	const SECRET: &str = "shhh";
 
@@ -98,7 +103,15 @@ mod tests {
 	fn invalid_signature_is_rejected_before_parsing() {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
 		let body = issue_payload();
-		let out = handle_github_webhook(SECRET, &body, Some("sha256=deadbeef"), "issues", "d-1", &store, "t0");
+		let out = handle_github_webhook(
+			SECRET,
+			&body,
+			Some("sha256=deadbeef"),
+			"issues",
+			"d-1",
+			&store,
+			"t0",
+		);
 		assert!(matches!(out, Err(WebhookHandleError::Unauthorized(_))));
 	}
 
@@ -107,10 +120,12 @@ mod tests {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
 		let body = issue_payload();
 		let sig = sign_github(SECRET, &body);
-		let first = handle_github_webhook(SECRET, &body, Some(&sig), "issues", "d-1", &store, "t0").unwrap();
+		let first =
+			handle_github_webhook(SECRET, &body, Some(&sig), "issues", "d-1", &store, "t0").unwrap();
 		assert!(matches!(first, IngestOutcome::WorkCreated { .. }));
 		// Same delivery + same revision -> deduped to one work item.
-		let second = handle_github_webhook(SECRET, &body, Some(&sig), "issues", "d-1", &store, "t1").unwrap();
+		let second =
+			handle_github_webhook(SECRET, &body, Some(&sig), "issues", "d-1", &store, "t1").unwrap();
 		assert_eq!(second, IngestOutcome::Duplicate);
 	}
 
@@ -119,7 +134,8 @@ mod tests {
 		let store = GitDaemonStateStore::open_in_memory().unwrap();
 		let body = serde_json::to_vec(&json!({ "repository": { "node_id": "R_1" } })).unwrap();
 		let sig = sign_github(SECRET, &body);
-		let out = handle_github_webhook(SECRET, &body, Some(&sig), "ping", "d-9", &store, "t0").unwrap();
+		let out =
+			handle_github_webhook(SECRET, &body, Some(&sig), "ping", "d-9", &store, "t0").unwrap();
 		assert_eq!(out, IngestOutcome::AckedNoOp);
 	}
 
