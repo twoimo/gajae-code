@@ -91,6 +91,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		}
 	}
 
+	/// Override the idle timeout (seconds) for the run event stream.
+	#[must_use]
+	pub const fn with_idle_timeout(mut self, secs: u64) -> Self {
+		self.idle_timeout_secs = secs;
+		self
+	}
+
 	/// Negotiate, prompt, and consume the engine event stream into a
 	/// [`RunOutcome`]. A lost stream, an EOF before a terminal event, or a
 	/// transport error yields a failed outcome (never a false success), so the

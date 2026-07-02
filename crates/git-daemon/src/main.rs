@@ -100,14 +100,18 @@ async fn build_runner(
 		 push, and open a pull request targeting the '{dev_branch}' branch. Do not merge it \
 		 yourself; the daemon runs the merge gate. Keep the diff small and in scope."
 	);
-	Ok(SocketWorkRunner::new(
+	let runner = SocketWorkRunner::new(
 		client,
 		"git-daemon",
 		vec!["prompt".to_owned(), "bash".to_owned(), "control".to_owned()],
 		vec!["bash.mutating".to_owned()],
 		prompt,
 		256,
-	))
+	);
+	match std::env::var("GIT_DAEMON_IDLE_SECS").ok().and_then(|s| s.parse::<u64>().ok()) {
+		Some(secs) => Ok(runner.with_idle_timeout(secs)),
+		None => Ok(runner),
+	}
 }
 
 fn build_forge(cfg: &DaemonEnv) -> Result<GithubForge<ReqwestTransport>, String> {
