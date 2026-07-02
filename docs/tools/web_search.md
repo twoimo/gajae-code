@@ -85,7 +85,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
    - `limit`, `recency`, `temperature`, `maxOutputTokens`, `numSearchResults`,
    - `systemPrompt` from `packages/coding-agent/src/prompts/tools/web-search.md`.
 6. On the first successful `SearchResponse`, `formatForLLM()` renders answer/sources/citations/related/search-queries into one text block and returns it with `details.response`.
-7. If a provider throws, `executeSearch()` records the error and tries the next provider. There is no provider-level parallel fan-out; fallback is sequential.
+7. If a provider throws, `executeSearch()` records the error and tries the next provider. Fallback is sequential, with one exception: when DuckDuckGo is a non-primary chain member, `executeSearch()` fires it as a background hedge after `DDG_HEDGE_DELAY_MS` (3s). A successful primary aborts the hedge; a failing primary reuses the (typically already-settled) hedge result, collapsing fallback latency from `t(primary failure) + t(ddg)` to `max(t(primary failure), t(ddg))`.
 8. After all candidates fail, `formatProviderError()` normalizes the last error:
    - Anthropic `404` becomes `Anthropic web search returned 404 (model or endpoint not found).`
    - `401`/`403` become `<Provider> authorization failed ...` except Z.AI, which preserves its raw message.
@@ -143,7 +143,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
     - When a search ran (`web_search_tool_result` / `server_tool_use` / `usage.server_tool_use.web_search_requests`) but only inline citations were emitted, sources are recovered from the answer text via `providers/text-citations.ts`. If no search ran and nothing is grounded, it fails closed (`424`) so the chain falls through to DuckDuckGo.
   - **Gemini** — `packages/coding-agent/src/web/search/providers/gemini.ts`
     - Availability: OAuth credentials in `agent.db` for `google-gemini-cli` or `google-antigravity`.
-    - Querying: SSE `streamGenerateContent` call with Google Search grounding enabled. Antigravity auth tries two fallback endpoints and retries `401/403/400 invalid auth` once after token refresh; `429/5xx` retry with exponential backoff and server-provided retry delay, capped by a `5 * 60 * 1000` ms rate-limit budget.
+    - Querying: SSE `streamGenerateContent` call with Google Search grounding enabled. Antigravity auth tries two fallback endpoints and retries `401/403/400 invalid auth` once after token refresh; `429/5xx` retry with exponential backoff and server-provided retry delay, capped by a `30 * 1000` ms rate-limit budget (the chain always terminates in keyless DuckDuckGo, so a rate-limited Gemini fails through fast instead of parking the chain).
     - `max_tokens` and `temperature` pass through as `generationConfig.maxOutputTokens` / `generationConfig.temperature`.
     - `limit` and `num_search_results` are collapsed together before dispatch.
     - Output may include `answer`, `sources`, `citations`, `searchQueries`, `usage`, `model`.
@@ -197,6 +197,7 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
   - None.
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - Uses a module-global provider-instance cache in `packages/coding-agent/src/web/search/provider.ts`.
+  - Uses a WeakMap-keyed resolved-chain cache (per AuthStorage, 60s TTL) in the same file; `WebSearchTool`'s constructor prewarms it via `prewarmSearchProviders()`.
   - Uses a module-global preferred-provider setting in the same file.
   - `packages/coding-agent/src/tools/index.ts` gates tool availability behind `session.settings.get("web_search.enabled")`.
 - Background work / cancellation
@@ -215,7 +216,10 @@ Streaming: none. `WebSearchTool.execute()` does not forward its `_signal` argume
 - SearXNG result count: default `10`, max `20` (`packages/coding-agent/src/web/search/providers/searxng.ts`).
 - Perplexity API-key mode defaults: `max_tokens = 8192`, `temperature = 0.2`, `num_search_results = 10` (`packages/coding-agent/src/web/search/providers/perplexity.ts`).
 - Anthropic defaults: model `anthropic-model-haiku-4-5`, `DEFAULT_MAX_TOKENS = 4096` when the provider omits `max_tokens` (`packages/coding-agent/src/web/search/providers/anthropic.ts`).
-- Gemini retries: up to `3` retries per endpoint, base delay `1000` ms, rate-limit delay budget `5 * 60 * 1000` ms (`packages/coding-agent/src/web/search/providers/gemini.ts`).
+- Gemini retries: up to `3` retries per endpoint, base delay `1000` ms, rate-limit delay budget `30 * 1000` ms (`packages/coding-agent/src/web/search/providers/gemini.ts`).
+- Hard timeouts are class-based (`packages/coding-agent/src/web/search/providers/utils.ts`): pure search APIs `SEARCH_API_TIMEOUT_MS = 15_000`, LLM-mediated providers `SEARCH_LLM_TIMEOUT_MS = 120_000`, legacy fallback `SEARCH_HARD_TIMEOUT_MS = 300_000` for untagged call sites. A user-configured `web_search.timeout` overrides class defaults.
+- DuckDuckGo hedge delay: `DDG_HEDGE_DELAY_MS = 3_000` (`packages/coding-agent/src/web/search/index.ts`).
+- Resolved provider chains are cached per `AuthStorage` instance for `CHAIN_CACHE_TTL_MS = 60_000`; `setPreferredSearchProvider()` / `setSearchFallbackProviders()` clear the cache (`packages/coding-agent/src/web/search/provider.ts`).
 
 ## Errors
 - There is no "no provider configured" case: DuckDuckGo (keyless) is always appended as the terminal fallback, so the chain is never empty.
