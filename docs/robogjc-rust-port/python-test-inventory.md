@@ -53,3 +53,8 @@ Counts are rough static counts of `test_` functions/methods. Dispositions are Ph
 2. Add worker, queue, sandbox, and proxy tests as those modules move beyond stubs.
 3. Keep Python-era SQLite and JSON webhook/RPC frames as shared fixtures so the Rust port proves compatibility rather than merely matching rewritten assertions.
 4. Do not port tests that exercise unrelated Python package ergonomics unless robogjc takes ownership of that behavior.
+
+## Recorded deviations / dropped compatibility edges
+
+- `python/robogjc/src/db.py` pending-closure `finalize_closure` has no `state = 'claimed'` guard, so a second finalization can overwrite a terminal `closed` row with `cancelled`. Rust intentionally deviates from that bug: `Database::finalize_closure` returns `bool`, only updates claimed rows, and leaves double-finalize, cancel-after-finalize, and requeue-after-finalize as no-ops to preserve the documented `claimed -> terminal` lifecycle.
+- The Rust Python-interpreter compatibility test is not a silent default pass. The committed Python-era SQLite fixture test fails if `artifacts/robogjc/db/python-era-v1.sqlite` is missing, while the live Python interpreter round trip is explicitly `ignored` unless run with `ROBGJC_PY_COMPAT=1` and `--ignored`.
