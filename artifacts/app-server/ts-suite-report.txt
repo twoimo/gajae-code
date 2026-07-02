@@ -1,0 +1,28 @@
+### test/app-server-host.test.ts
+ 3 pass
+ 0 fail
+Ran 3 tests across 1 file. [75.00ms]
+### test/app-server-agent-host.test.ts
+ 3 pass
+ 0 fail
+Ran 3 tests across 1 file. [283.00ms]
+### test/app-server-ws-smoke.test.ts
+ 2 pass
+ 0 fail
+Ran 2 tests across 1 file. [43.00ms]
+### test/notifications-app-server-endpoint.test.ts
+ 6 pass
+ 0 fail
+Ran 6 tests across 1 file. [11.00ms]
+### test/notifications-app-server-integration.test.ts
+ 1 pass
+ 0 fail
+Ran 1 test across 1 file. [180.00ms]
+### test/harness-app-server-adapter.test.ts
+ 4 pass
+ 0 fail
+Ran 4 tests across 1 file. [35.00ms]
+### test/harness-adapter-factory.test.ts
+ 3 pass
+ 0 fail
+Ran 3 tests across 1 file. [14.00ms]
