@@ -1275,7 +1275,7 @@ async function sendTmuxPromptKeys(
 ): Promise<boolean> {
 	const typed = await runner(["tmux", "send-keys", "-t", target, "-l", prompt]);
 	if (typed.exitCode !== 0) return false;
-	const submitted = await runner(["tmux", "send-keys", "-t", target, "C-m"]);
+	const submitted = await runner(["tmux", "send-keys", "-t", target, "Enter"]);
 	return submitted.exitCode === 0;
 }
 
