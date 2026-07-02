@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Retried transient native Windows psmux attach failures after managed `gjc --tmux` session creation before cleaning up the session, covering connection-refused startup races after the psmux server is killed (#1391).
 
 ### Fixed
 

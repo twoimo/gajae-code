@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn, vi } from 
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { VERSION } from "@gajae-code/coding-agent";
 import type { Args } from "@gajae-code/coding-agent/cli/args";
 import {
 	applyGjcTmuxProfile,
@@ -16,6 +15,7 @@ import {
 } from "@gajae-code/coding-agent/gjc-runtime/launch-tmux";
 import { __setBinaryResolverForTests } from "@gajae-code/coding-agent/gjc-runtime/psmux-detect";
 import { sessionRuntimeDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { VERSION } from "@gajae-code/utils/dirs";
 
 function args(overrides: Partial<Args> = {}): Args {
 	return {
@@ -1279,6 +1279,46 @@ describe("default GJC tmux launch", () => {
 		expect(diagnostics).toHaveLength(1);
 		expect(diagnostics[0]).toStartWith("gjc --tmux failed after creating tmux session: attach failed.");
 		expect(diagnostics[0].length).toBeLessThan(320);
+	});
+	it("retries native Windows psmux attach after transient connection refusal", () => {
+		const calls: { command: string; args: string[]; options: TmuxSpawnOptions }[] = [];
+		const diagnostics: string[] = [];
+		const delays: number[] = [];
+		let attachCount = 0;
+		const handled = launchDefaultTmuxIfNeeded({
+			parsed: args({ messages: ["hello world"], tmux: true }),
+			rawArgs: ["--tmux", "hello world"],
+			cwd: "C:\\repo",
+			env: { GJC_TMUX_COMMAND: "psmux", GJC_PSMUX_COMMAND: "psmux" },
+			argv: ["C:\\Program Files\\GJC\\gjc.exe"],
+			execPath: "C:\\Program Files\\GJC\\gjc.exe",
+			platform: "win32",
+			tty: interactiveTty,
+			tmuxAvailable: true,
+			currentBranch: "",
+			existingBranchSessionName: null,
+			diagnosticWriter: message => diagnostics.push(message),
+			sleepSync: milliseconds => delays.push(milliseconds),
+			spawnSync: (command, spawnArgs, options) => {
+				calls.push({ command, args: spawnArgs, options });
+				if (spawnArgs[0] === "attach-session") {
+					attachCount++;
+					if (attachCount === 1) {
+						return {
+							exitCode: 1,
+							stderr: "psmux: 대상 컴퓨터에서 연결을 거부했으므로 연결하지 못했습니다. (os error 10061)",
+						};
+					}
+				}
+				return { exitCode: 0 };
+			},
+		});
+
+		expect(handled).toBe(true);
+		expect(attachCount).toBe(2);
+		expect(delays).toEqual([100]);
+		expect(calls.some(call => call.args[0] === "kill-session")).toBe(false);
+		expect(diagnostics).toEqual([]);
 	});
 
 	it("preserves a newly created managed session when attach reports SSH disconnect EIO", () => {

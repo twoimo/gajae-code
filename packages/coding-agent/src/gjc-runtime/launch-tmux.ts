@@ -38,6 +38,7 @@ export const GJC_LAUNCH_POLICY_ENV = "GJC_LAUNCH_POLICY";
 export const GJC_TMUX_WINDOW_LABEL_MAX_WIDTH = 48;
 export const GJC_PSMUX_PROFILE_FORCE_ENV = "GJC_PSMUX_PROFILE_FORCE";
 const TERMINAL_TITLE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+const GJC_PSMUX_ATTACH_RECOVERY_DELAYS_MS = [100, 250] as const;
 
 type LaunchPolicy = "direct" | "tmux";
 
@@ -58,6 +59,7 @@ export interface TmuxLaunchContext {
 	platform?: NodeJS.Platform;
 	tty?: TtyState;
 	spawnSync?: TmuxSpawnSync;
+	sleepSync?: (milliseconds: number) => void;
 	tmuxAvailable?: boolean;
 	worktreeBranch?: string | null;
 	currentBranch?: string | null;
@@ -107,6 +109,7 @@ export interface TmuxLaunchPlan {
 	project?: string | null;
 	sessionId?: string | null;
 	sessionStateFile?: string | null;
+	isPsmux: boolean;
 }
 
 function explicitTmuxSessionName(env: NodeJS.ProcessEnv): string | undefined {
@@ -351,8 +354,8 @@ function resolveCurrentGjcCommand(context: CommandResolutionContext): string[] {
 function isWindowsPlatform(platform: NodeJS.Platform | undefined): boolean {
 	return platform === "win32";
 }
-function pathModuleForPlatform(platform: NodeJS.Platform | undefined): typeof path.win32 | typeof path {
-	return isWindowsPlatform(platform) ? path.win32 : path;
+function pathModuleForPlatform(platform: NodeJS.Platform | undefined): typeof path.win32 | typeof path.posix {
+	return isWindowsPlatform(platform) ? path.win32 : path.posix;
 }
 
 function buildInnerCommand(context: CommandResolutionContext, rawArgs: string[]): string {
@@ -500,7 +503,7 @@ function renameExistingTmuxWindowIfNeeded(context: TmuxLaunchContext): void {
 	const tty = context.tty ?? { stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY) };
 	if (!isInteractiveRootLaunch(context.parsed, tty)) return;
 
-	const tmuxCommand = resolveGjcTmuxCommand(env);
+	const tmuxCommand = resolveGjcTmuxCommand(env, context.platform ?? process.platform);
 	const tmuxAvailable = context.tmuxAvailable ?? Bun.which(tmuxCommand) !== null;
 	if (!tmuxAvailable) return;
 
@@ -662,6 +665,7 @@ export function buildDefaultTmuxLaunchPlan(context: TmuxLaunchContext): TmuxLaun
 		project,
 		sessionId,
 		sessionStateFile,
+		isPsmux: resolvedBinary.isPsmux,
 		attachSessionName: existingSessionName,
 	};
 }
@@ -695,6 +699,13 @@ function defaultSpawnSync(command: string, args: string[], options: TmuxSpawnOpt
 	}
 	return { exitCode: result.exitCode, signalCode: result.signalCode, stderr: stderrText };
 }
+function defaultSleepSync(milliseconds: number): void {
+	Bun.sleepSync(milliseconds);
+}
+
+function shouldRecoverPsmuxAttach(plan: TmuxLaunchPlan, platform: NodeJS.Platform): boolean {
+	return platform === "win32" && plan.isPsmux;
+}
 
 export function launchDefaultTmuxIfNeeded(context: TmuxLaunchContext): boolean {
 	renameExistingTmuxWindowIfNeeded(context);
@@ -702,7 +713,9 @@ export function launchDefaultTmuxIfNeeded(context: TmuxLaunchContext): boolean {
 	const plan = buildDefaultTmuxLaunchPlan(context);
 	if (!plan) return false;
 	const env = context.env ?? process.env;
+	const platform = context.platform ?? process.platform;
 	const spawnSync = context.spawnSync ?? defaultSpawnSync;
+	const sleepSync = context.sleepSync ?? defaultSleepSync;
 	const options: TmuxSpawnOptions = {
 		cwd: plan.cwd,
 		env,
@@ -742,6 +755,24 @@ export function launchDefaultTmuxIfNeeded(context: TmuxLaunchContext): boolean {
 	const rootTerminalTitle = shouldSetGjcTmuxRootTerminalTitle(context.parsed, env)
 		? buildGjcTmuxRootTerminalTitle(plan.project ?? plan.cwd, plan.branch)
 		: undefined;
+	const buildProfileInputs = (): GjcTmuxProfileContext => ({
+		tmuxCommand: plan.tmuxCommand,
+		target: plan.sessionName,
+		cwd: plan.cwd,
+		env,
+		spawnSync,
+		branch: plan.branch,
+		project: plan.project,
+		sessionId: plan.sessionId ?? null,
+		sessionStateFile: plan.sessionStateFile ?? null,
+		version: VERSION,
+	});
+	const probeHasSession = (): TmuxSpawnResult =>
+		spawnSync(
+			plan.tmuxCommand,
+			["has-session", "-t", buildGjcTmuxExactSessionTarget(plan.sessionName, { env })],
+			probeOptions,
+		);
 
 	if (plan.attachSessionName) {
 		applyGjcTmuxRootTerminalTitleProfile({
@@ -767,24 +798,6 @@ export function launchDefaultTmuxIfNeeded(context: TmuxLaunchContext): boolean {
 		// server first, and if the race fired, retry new-session before
 		// we hand the session to rename-window / applyGjcTmuxProfile so the
 		// profile-tagging path always sees a registered session.
-		const buildProfileInputs = (): GjcTmuxProfileContext => ({
-			tmuxCommand: plan.tmuxCommand,
-			target: plan.sessionName,
-			cwd: plan.cwd,
-			env,
-			spawnSync,
-			branch: plan.branch,
-			project: plan.project,
-			sessionId: plan.sessionId ?? null,
-			sessionStateFile: plan.sessionStateFile ?? null,
-			version: VERSION,
-		});
-		const probeHasSession = (): TmuxSpawnResult =>
-			spawnSync(
-				plan.tmuxCommand,
-				["has-session", "-t", buildGjcTmuxExactSessionTarget(plan.sessionName, { env })],
-				probeOptions,
-			);
 		const probeResult = probeHasSession();
 		if (probeResult.exitCode !== 0) {
 			const retry = spawnSync(plan.tmuxCommand, plan.newSessionArgs, newSessionOptions);
@@ -874,12 +887,53 @@ export function launchDefaultTmuxIfNeeded(context: TmuxLaunchContext): boolean {
 		(context.diagnosticWriter ?? safeStderrWrite)(formatTmuxLaunchDiagnostic("new-session failed", stderr) + suffix);
 		return false;
 	}
+	const attachToManagedSession = (): TmuxSpawnResult =>
+		spawnSync(
+			plan.tmuxCommand,
+			["attach-session", "-t", buildGjcTmuxExactSessionTarget(plan.sessionName, { env })],
+			attachOptions,
+		);
+	const recreateManagedSessionForAttach = (): boolean => {
+		const retry = spawnSync(plan.tmuxCommand, plan.newSessionArgs, newSessionOptions);
+		const retryProbe = probeHasSession();
+		if (retry.exitCode !== 0 || retryProbe.exitCode !== 0) return false;
+		renameTmuxWindow(
+			plan.tmuxCommand,
+			windowTitle,
+			spawnSync,
+			controlOptions,
+			buildGjcTmuxExactSessionTarget(plan.sessionName, { env }),
+		);
+		const retryProfile = applyGjcTmuxProfile(buildProfileInputs());
+		const retryOwnershipFailure = retryProfile.failures.find(item => item.command.args.includes("@gjc-profile"));
+		if (retryOwnershipFailure) return false;
+		applyGjcTmuxRootTerminalTitleProfile({
+			tmuxCommand: plan.tmuxCommand,
+			target: plan.sessionName,
+			title: rootTerminalTitle,
+			spawnSync,
+			options,
+		});
+		return true;
+	};
+	const recoverPsmuxAttach = (): TmuxSpawnResult | undefined => {
+		if (!shouldRecoverPsmuxAttach(plan, platform)) return undefined;
+		let retriedAttach: TmuxSpawnResult | undefined;
+		for (const delayMs of GJC_PSMUX_ATTACH_RECOVERY_DELAYS_MS) {
+			sleepSync(delayMs);
+			const probeResult = probeHasSession();
+			if (probeResult.exitCode !== 0 && !recreateManagedSessionForAttach()) continue;
+			retriedAttach = attachToManagedSession();
+			if (retriedAttach.exitCode === 0 || isTmuxAttachDisconnectError(retriedAttach)) return retriedAttach;
+		}
+		return retriedAttach;
+	};
 	// attach-session needs PTY inherit for the user-facing attach; keep it unchanged.
-	const attached = spawnSync(
-		plan.tmuxCommand,
-		["attach-session", "-t", buildGjcTmuxExactSessionTarget(plan.sessionName, { env })],
-		attachOptions,
-	);
+	let attached = attachToManagedSession();
+	if (attached.exitCode !== 0 && !isTmuxAttachDisconnectError(attached)) {
+		const recoveredAttach = recoverPsmuxAttach();
+		if (recoveredAttach) attached = recoveredAttach;
+	}
 	if (attached.exitCode === 0) return true;
 	if (isTmuxAttachDisconnectError(attached)) {
 		(context.diagnosticWriter ?? safeStderrWrite)(formatTmuxLaunchDiagnostic("attach disconnected", attached.stderr));
