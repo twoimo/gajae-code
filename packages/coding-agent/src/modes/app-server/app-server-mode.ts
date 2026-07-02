@@ -10,12 +10,16 @@ export async function runAppServerMode(): Promise<void> {
 		handle.emitEvent(threadId, generation, eventType, payload);
 	});
 
+	let wsActive = false;
 	if (process.env.GJC_APP_SERVER_WS === "1" || process.env.GJC_APP_SERVER_LISTEN === "ws") {
 		const token = process.env.GJC_APP_SERVER_WS_TOKEN?.trim() || randomBytes(32).toString("base64url");
 		const sessionId = process.env.GJC_SESSION_ID?.trim() || `app-server-${randomUUID()}`;
 		const stateRoot = process.env.GJC_APP_SERVER_STATE_ROOT?.trim() || undefined;
 		const url = await handle.server.listenWs("127.0.0.1", 0, token, sessionId, stateRoot);
-		process.stderr.write(`${JSON.stringify({ type: "app-server-ws", url, token, sessionId, stateRoot })}\n`);
+		process.stderr.write(
+			`${JSON.stringify({ type: "app-server-ws", url, token: "<redacted>", sessionId, stateRoot })}\n`,
+		);
+		wsActive = true;
 	}
 
 	const connectionId = handle.openConnection();
@@ -30,5 +34,12 @@ export async function runAppServerMode(): Promise<void> {
 		}
 	} finally {
 		handle.closeConnection(connectionId);
+	}
+
+	// On stdio EOF the server is done; the native handle's threadsafe callbacks
+	// keep the event loop alive, so exit explicitly. In WS mode the socket keeps
+	// serving, so stay alive.
+	if (!wsActive) {
+		process.exit(0);
 	}
 }

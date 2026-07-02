@@ -33,6 +33,14 @@ export declare class AppServer {
    * number of notifications emitted (0 if rejected as stale/unknown).
    */
   emitBackendEvent(threadId: string, generation: number, eventType: string, payloadJson: string): number
+  /** Return the host tool names registered for a thread. */
+  hostToolNames(threadId: string): Array<string>
+  /** Call a client-registered host tool and resolve to the JSON result payload. */
+  callHostTool(threadId: string, turnId: string | undefined | null, tool: string, argsJson: string): Promise<string>
+  /** Return the currently accepted active turn id for a thread, if any. */
+  activeTurnId(threadId: string): string | null
+  /** Push an opaque `gjc/notifications` frame to connected clients. */
+  pushNotification(frameJson: string): void
   /** The wire protocol schema bundle string. */
   schemaJson(): string
 }

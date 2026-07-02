@@ -1,6 +1,6 @@
-import net from "node:net";
-import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
+import net from "node:net";
 import { AppServer } from "@gajae-code/natives";
 import WebSocket from "ws";
 
@@ -12,7 +12,11 @@ function makeServer(): AppServer {
 	const onCall = (_err: unknown, call: string) => {
 		const parsed = JSON.parse(call) as { callId: string; kind: string };
 		if (parsed.kind === "factory.create") {
-			server.resolveCall(parsed.callId, true, JSON.stringify({ threadId: `thr_ws_${parsed.callId}`, sessionMetadata: {} }));
+			server.resolveCall(
+				parsed.callId,
+				true,
+				JSON.stringify({ threadId: `thr_ws_${parsed.callId}`, sessionMetadata: {} }),
+			);
 			return;
 		}
 		server.resolveCall(parsed.callId, true, "{}");

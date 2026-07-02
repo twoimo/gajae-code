@@ -26,6 +26,9 @@ class FakeHost implements AppServerHost {
 		if (method === "explode") throw new Error("host boom");
 		return {};
 	}
+	async notificationCall(method: string, _params: unknown): Promise<unknown> {
+		return method.endsWith("/subscribe") ? [] : { ok: true };
+	}
 }
 
 async function init(handle: ReturnType<typeof startAppServer>): Promise<string> {
@@ -41,13 +44,24 @@ describe("app-server host routing", () => {
 		const handle = startAppServer(host, { onFrame: () => {} });
 		const conn = await init(handle);
 
-		const start = await handle.dispatch(conn, JSON.stringify({ id: 1, method: "thread/start", params: { cwd: "/repo" } }));
+		const start = await handle.dispatch(
+			conn,
+			JSON.stringify({ id: 1, method: "thread/start", params: { cwd: "/repo" } }),
+		);
 		const threadId = JSON.parse(start as string).result.thread.id as string;
 		expect(threadId).toBe("thr_fake_1");
 
-		const turn = await handle.dispatch(conn, JSON.stringify({ id: 2, method: "turn/start", params: { threadId, input: "hi" } }));
+		const turn = await handle.dispatch(
+			conn,
+			JSON.stringify({ id: 2, method: "turn/start", params: { threadId, input: "hi" } }),
+		);
 		expect(JSON.parse(turn as string).result.turn.status).toBe("inProgress");
-		expect(host.calls.some((c) => c.method === "prompt" && c.threadId === threadId)).toBe(true);
+		// turn/start accepts and returns immediately; the prompt runs in the
+		// background, so wait for the host to receive the prompt call.
+		for (let i = 0; i < 100 && !host.calls.some(c => c.method === "prompt"); i += 1) {
+			await new Promise(r => setTimeout(r, 5));
+		}
+		expect(host.calls.some(c => c.method === "prompt" && c.threadId === threadId)).toBe(true);
 	});
 
 	it("propagates host errors as JSON-RPC errors", async () => {
@@ -61,7 +75,10 @@ describe("app-server host routing", () => {
 		const conn = await init(handle);
 		const start = await handle.dispatch(conn, JSON.stringify({ id: 3, method: "thread/start", params: {} }));
 		const threadId = JSON.parse(start as string).result.thread.id as string;
-		const resp = await handle.dispatch(conn, JSON.stringify({ id: 4, method: "gjc/state/read", params: { threadId } }));
+		const resp = await handle.dispatch(
+			conn,
+			JSON.stringify({ id: 4, method: "gjc/state/read", params: { threadId } }),
+		);
 		const err = JSON.parse(resp as string).error;
 		expect(err).toBeDefined();
 		expect(err.message).toContain("host boom");
@@ -70,17 +87,17 @@ describe("app-server host routing", () => {
 	it("emits mapped frames from backend events", async () => {
 		const host = new FakeHost();
 		const frames: Array<Record<string, unknown>> = [];
-		const handle = startAppServer(host, { onFrame: (f) => frames.push(JSON.parse(f)) });
+		const handle = startAppServer(host, { onFrame: f => frames.push(JSON.parse(f)) });
 		const conn = await init(handle);
 		const start = await handle.dispatch(conn, JSON.stringify({ id: 5, method: "thread/start", params: {} }));
 		const threadId = JSON.parse(start as string).result.thread.id as string;
 
 		handle.emitEvent(threadId, 1, "agent_start", {});
 		handle.emitEvent(threadId, 1, "agent_end", {});
-		await new Promise((r) => setTimeout(r, 50));
+		await new Promise(r => setTimeout(r, 50));
 
-		const methods = frames.map((f) => f.method);
+		const methods = frames.map(f => f.method);
 		expect(methods).toContain("turn/started");
-		expect(methods.filter((m) => m === "turn/completed").length).toBe(1);
+		expect(methods.filter(m => m === "turn/completed").length).toBe(1);
 	});
 });

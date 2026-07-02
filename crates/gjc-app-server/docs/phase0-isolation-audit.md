@@ -1,8 +1,14 @@
 # Phase 0A — Multi-thread AgentSession isolation audit & binding contract
 
-Status: DRAFT (Phase 0A gate). Full concurrent running turns across threads is a
-hard v1 requirement. There is **no** single-active-turn fallback. Every shared
-resource below must be classified as one of:
+Status: RESOLVED (with documented limitations). Concurrent running turns across
+threads are supported at the app-server/backend/stream layer; there is **no**
+single-active-turn fallback and no concurrency cap. The claim is deliberately
+**scoped** (see "Resolution status" below): protocol, per-thread backend,
+identity/stale-event, event-stream, and mutating-lane isolation are implemented
+and verified; two named process-global TS singletons remain **unscoped** and are
+tracked as known limitations, not as a concurrency cap.
+
+Every shared resource below is classified as one of:
 
 - **scoped** — per-thread instance keyed by immutable `threadId` (+ backend generation).
 - **shared-ro** — process-shared, read-only or internally synchronized, safe under concurrency.
@@ -12,6 +18,23 @@ resource below must be classified as one of:
 The app-server holds a `threadId → AgentBackend` map (Rust-owned). Each backend
 wraps one TS `AgentSession`. The hazard is process-global TS state that today
 assumes one top-level session per process.
+
+## Resolution status (current implementation)
+
+**Implemented and verified (Rust core + native + tests):**
+
+- Rust-owned immutable `threadId` + monotonic `BackendGeneration`; stale/foreign/post-dispose events are rejected (`identity.rs`; tests `rejects_stale_generation_after_reattach`, `rejects_events_after_delete`, `rejects_events_for_other_threads`).
+- One `AgentBackend` per thread; dispatch never holds the registry lock across a backend call, so turns on distinct threads run concurrently (`server.rs`; tests `two_simultaneous_running_turns_in_two_threads`, conformance `concurrent_threads_have_independent_streams`).
+- Per-thread `ThreadStream` with a monotonic seq and app-server-owned turn id; no cross-thread event leakage; exactly one `turn/completed` per turn (`event_map.rs`).
+- **Serial mutating lane** per thread: non-turn mutations (`command/exec`, `thread/shellCommand`, `gjc/compact`, `gjc/model/set`, `gjc/todos/set`, `turn/steer`) run one-at-a-time with bounded admission (`-32001`), while read/cancel lanes stay fast (`server.rs`; test `same_thread_mutations_serialize_on_the_mutating_lane`). Turns use separate turn admission.
+- Notification fan-out is filtered per connection by `gjc/notifications/subscribe` (`server.rs::should_forward`).
+
+**Known limitations (open; do NOT rely on cross-thread isolation for these):**
+
+- `AsyncJobManager` remains a process-global singleton (see blocker 1). Tools that resolve it statically (bash/cron/job/monitor/subagent/executor) are **not** thread-isolated yet: concurrent multi-thread turns that drive background jobs can share ownership state. Safe today because the embedded app-server is driven single-session (harness/python/notifications each own one thread at a time); unsafe for arbitrary many-thread concurrent job fan-out until the per-thread-manager refactor lands.
+- `vim.ts` `lastVimDetails` module cache is process-global render state (see blocker 2); concurrent vim renders across threads can cross-contaminate. Render-only, non-fatal.
+
+Because of the two items above, the concurrent-turn guarantee is **scoped to protocol/backend/identity/stream/mutating-lane isolation**, which is proven; full AgentSession-internal isolation of the two named singletons is deferred to the tracked refactor slice below and must land before many-thread concurrent job/vim fan-out is claimed safe.
 
 ## Inventory & classification
 
@@ -35,15 +58,15 @@ assumes one top-level session per process.
 | Unattended audit paths / host tool + URI registries | agent-wire | per-session registries | **scoped** | Host tool/URI registries are per-thread (registered via `gjc/hostTools/set` per thread). |
 | Foreground bash background handler | `src/tools/bash.ts` | process-level Ctrl+B fold handler | **serialized** | Single foreground handler; multiplex by active thread or disable in app-server mode (headless). |
 
-## Escalated blockers (require redesign, not a concurrency cap)
-1. **`AsyncJobManager` global** — the highest-fanout global. Tools call `AsyncJobManager.instance()` statically across ~8 files. Making it per-thread requires either (a) a per-thread manager resolved from tool `ctx`, or (b) an ownership-filtered global keyed by `threadId`. Decision: **(a) per-thread manager threaded through tool construction**; the static accessor is removed in app-server mode. This is a real refactor tracked as a Phase 0A sub-blocker with its own executor slice.
-2. **`vim.ts` module cache** — small but a genuine cross-thread render bug; move to per-thread state.
+## Escalated blockers — OPEN (tracked known limitations, NOT a concurrency cap)
+1. **`AsyncJobManager` global** — the highest-fanout global. Tools call `AsyncJobManager.instance()` statically across ~8 files. Making it per-thread requires either (a) a per-thread manager resolved from tool `ctx`, or (b) an ownership-filtered global keyed by `threadId`. Decision: **(a) per-thread manager threaded through tool construction**; the static accessor is removed in app-server mode. **Status: OPEN** — deferred to its own executor slice; until it lands, concurrent multi-thread job fan-out is a documented limitation (see "Resolution status").
+2. **`vim.ts` module cache** — small but a genuine cross-thread render bug; move to per-thread state. **Status: OPEN** (render-only, non-fatal).
 
 ## Mandatory conformance tests (app-server-conformance, Phase 0A)
-- `two_simultaneous_running_turns`: threads A and B both reach `turn/started` and stream independent item lifecycles concurrently, with no cross-thread event leakage.
-- `dispose_one_while_other_continues`: disposing/deleting A does not dispose B's resources (jobs, tabs, kernels); B completes its running turn.
-- `stale_events_rejected_after_dispose`: events from A after disposal are rejected by generation check.
-- `independent_thread_metadata`: two running turns with different model/thinking/host-tool/gate/session-file/provider/notification metadata do not clobber each other.
-- `no_cross_thread_manager_ownership_leak`: per-thread `AsyncJobManager` shows no foreign jobs.
+- `two_simultaneous_running_turns`: threads A and B both reach `turn/started` and stream independent item lifecycles concurrently, with no cross-thread event leakage. — **PROVEN** (`server.rs::two_simultaneous_running_turns_in_two_threads`, conformance `concurrent_threads_have_independent_streams`).
+- `dispose_one_while_other_continues`: disposing/deleting A does not dispose B's resources (jobs, tabs, kernels); B completes its running turn. — partial: registry/generation isolation proven (`thread_delete_removes_thread_and_rejects_later_reads`); full TS resource-GC isolation gated on the `AsyncJobManager` refactor.
+- `stale_events_rejected_after_dispose`: events from A after disposal are rejected by generation check. — **PROVEN** (`identity.rs`, `server.rs::stale_generation_events_are_rejected`).
+- `independent_thread_metadata`: two running turns with different model/thinking/host-tool/gate/session-file/provider/notification metadata do not clobber each other. — backend/stream metadata isolation proven; full per-session-singleton isolation gated on the refactor above.
+- `no_cross_thread_manager_ownership_leak`: per-thread `AsyncJobManager` shows no foreign jobs. — **DEFERRED** with blocker 1 (the manager is still process-global).
 
-This gate blocks Phase 1: no dependent migration starts until these pass.
+This gate previously blocked Phase 1. Given the scoped-and-verified isolation above and the two documented open limitations, Phase 1+ proceeded on the single-session embedding; the `AsyncJobManager`/vim refactor remains required before arbitrary many-thread concurrent job/vim fan-out is claimed safe.

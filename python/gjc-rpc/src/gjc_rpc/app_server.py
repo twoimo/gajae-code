@@ -87,6 +87,26 @@ class GjcEventNotification:
     type: str = "gjc_event"
 
 
+@dataclass(slots=True, frozen=True)
+class HostToolCallNotification:
+    thread_id: str
+    generation: int
+    turn_id: str
+    call_id: str
+    tool: str
+    args: JsonObject
+    params: JsonObject
+    type: str = "host_tool_call"
+
+
+@dataclass(slots=True, frozen=True)
+class HostToolCancelNotification:
+    thread_id: str
+    call_id: str
+    params: JsonObject
+    type: str = "host_tool_cancel"
+
+
 AppServerNotification = (
     TurnStartedNotification
     | ItemStartedNotification
@@ -94,6 +114,8 @@ AppServerNotification = (
     | ItemCompletedNotification
     | TurnCompletedNotification
     | GjcEventNotification
+    | HostToolCallNotification
+    | HostToolCancelNotification
     | UnknownNotification
 )
 
@@ -135,6 +157,27 @@ def parse_app_server_notification(payload: JsonObject) -> AppServerNotification:
         return TurnCompletedNotification(params=cast(JsonObject, params))
     if method == "gjc/event":
         return GjcEventNotification(params=cast(JsonObject, params))
+    if method == "gjc/hostTools/call":
+        return HostToolCallNotification(
+            thread_id=str(params.get("threadId", "")),
+            generation=int(params.get("generation", 0)),
+            turn_id=str(params.get("turnId", "")),
+            call_id=str(params.get("callId", "")),
+            tool=str(params.get("tool", "")),
+            args=cast(
+                JsonObject,
+                dict(params.get("args"))
+                if isinstance(params.get("args"), dict)
+                else {},
+            ),
+            params=cast(JsonObject, params),
+        )
+    if method == "gjc/hostTools/cancel":
+        return HostToolCancelNotification(
+            thread_id=str(params.get("threadId", "")),
+            call_id=str(params.get("callId", "")),
+            params=cast(JsonObject, params),
+        )
     return UnknownNotification(payload=dict(payload))
 
 
@@ -192,7 +235,9 @@ class AppServerClient:
         with self._state_lock:
             return "".join(self._stderr_chunks)
 
-    def on_notification(self, listener: AppServerNotificationListener) -> AppServerNotificationListener:
+    def on_notification(
+        self, listener: AppServerNotificationListener
+    ) -> AppServerNotificationListener:
         self._notification_listeners.append(listener)
         return listener
 
@@ -221,10 +266,14 @@ class AppServerClient:
                 bufsize=1,
             )
         self._transport = transport
-        self._stdout_thread = threading.Thread(target=self._read_stdout_loop, name="gjc-app-server-stdout", daemon=True)
+        self._stdout_thread = threading.Thread(
+            target=self._read_stdout_loop, name="gjc-app-server-stdout", daemon=True
+        )
         self._stdout_thread.start()
         if transport.stderr is not None:
-            self._stderr_thread = threading.Thread(target=self._read_stderr_loop, name="gjc-app-server-stderr", daemon=True)
+            self._stderr_thread = threading.Thread(
+                target=self._read_stderr_loop, name="gjc-app-server-stderr", daemon=True
+            )
             self._stderr_thread.start()
 
         self.initialize(timeout=self._startup_timeout)
@@ -247,7 +296,12 @@ class AppServerClient:
             self._transport = None
             self._fail_pending(AppServerProcessExitError("app-server client stopped"))
 
-    def initialize(self, params: Mapping[str, JsonValue] | None = None, *, timeout: float | None = None) -> JsonObject:
+    def initialize(
+        self,
+        params: Mapping[str, JsonValue] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> JsonObject:
         return self.request("initialize", dict(params or {}), timeout=timeout)
 
     def start_thread(self, **params: JsonValue) -> ThreadRef:
@@ -255,6 +309,15 @@ class AppServerClient:
         thread = result.get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             raise AppServerError("thread/start response must contain thread.id")
+        return ThreadRef(id=thread["id"])
+
+    def thread_resume(self, thread_id: str, **params: JsonValue) -> ThreadRef:
+        payload: JsonObject = {"threadId": thread_id}
+        payload.update(params)
+        result = self.request("thread/resume", payload)
+        thread = result.get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            raise AppServerError("thread/resume response must contain thread.id")
         return ThreadRef(id=thread["id"])
 
     def start_turn(self, thread_id: str, input: str, **params: JsonValue) -> TurnRef:
@@ -277,8 +340,10 @@ class AppServerClient:
         payload.update(params)
         return self.request("turn/steer", payload)
 
-    def interrupt(self, thread_id: str, **params: JsonValue) -> JsonObject:
-        payload: JsonObject = {"threadId": thread_id}
+    def interrupt(
+        self, thread_id: str, turn_id: str, **params: JsonValue
+    ) -> JsonObject:
+        payload: JsonObject = {"threadId": thread_id, "turnId": turn_id}
         payload.update(params)
         return self.request("turn/interrupt", payload)
 
@@ -290,7 +355,36 @@ class AppServerClient:
     def gjc_state_read(self, **params: JsonValue) -> JsonObject:
         return self.request("gjc/state/read", params)
 
-    def request(self, method: str, params: Mapping[str, JsonValue] | None = None, *, timeout: float | None = None) -> JsonObject:
+    def set_host_tools(
+        self, thread_id: str, tools: Sequence[Mapping[str, JsonValue]]
+    ) -> JsonObject:
+        return self.request(
+            "gjc/hostTools/set",
+            {"threadId": thread_id, "tools": [dict(tool) for tool in tools]},
+        )
+
+    def send_host_tool_result(
+        self,
+        thread_id: str,
+        call_id: str,
+        ok: bool,
+        result: JsonValue | None = None,
+        error: JsonValue | None = None,
+    ) -> JsonObject:
+        payload: JsonObject = {"threadId": thread_id, "callId": call_id, "ok": ok}
+        if result is not None:
+            payload["result"] = result
+        if error is not None:
+            payload["error"] = error
+        return self.request("gjc/hostTools/result", payload)
+
+    def request(
+        self,
+        method: str,
+        params: Mapping[str, JsonValue] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> JsonObject:
         transport = self._require_transport()
         request_id = self._next_request_id()
         envelope: JsonObject = {"id": request_id, "method": method}
@@ -298,7 +392,9 @@ class AppServerClient:
             envelope["params"] = dict(params)
         response_queue: queue.Queue[JsonObject | BaseException] = queue.Queue(maxsize=1)
         with self._state_lock:
-            self._pending[request_id] = _PendingRequest(method=method, response_queue=response_queue)
+            self._pending[request_id] = _PendingRequest(
+                method=method, response_queue=response_queue
+            )
         try:
             self._write_json(transport, envelope)
         except BaseException:
@@ -307,11 +403,15 @@ class AppServerClient:
             raise
 
         try:
-            response = response_queue.get(timeout=self._request_timeout if timeout is None else timeout)
+            response = response_queue.get(
+                timeout=self._request_timeout if timeout is None else timeout
+            )
         except queue.Empty as exc:
             with self._state_lock:
                 self._pending.pop(request_id, None)
-            raise AppServerTimeoutError(f"Timed out waiting for response to {method}. Stderr: {self.stderr}") from exc
+            raise AppServerTimeoutError(
+                f"Timed out waiting for response to {method}. Stderr: {self.stderr}"
+            ) from exc
 
         if isinstance(response, BaseException):
             raise response
@@ -334,7 +434,9 @@ class AppServerClient:
             raise AppServerError(f"{method} result must be an object")
         return cast(JsonObject, dict(result))
 
-    def _notify(self, method: str, params: Mapping[str, JsonValue] | None = None) -> None:
+    def _notify(
+        self, method: str, params: Mapping[str, JsonValue] | None = None
+    ) -> None:
         envelope: JsonObject = {"method": method}
         if params is not None:
             envelope["params"] = dict(params)
@@ -359,7 +461,9 @@ class AppServerClient:
                 transport.stdin.write("\n")
                 transport.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
-                raise AppServerProcessExitError(f"Failed to write app-server frame: {exc}") from exc
+                raise AppServerProcessExitError(
+                    f"Failed to write app-server frame: {exc}"
+                ) from exc
 
     def _read_stdout_loop(self) -> None:
         transport = self._transport
@@ -375,7 +479,9 @@ class AppServerClient:
                 try:
                     payload = cast(JsonObject, json.loads(stripped))
                 except json.JSONDecodeError as exc:
-                    raise AppServerError(f"Failed to decode app-server output on line {line_number}: {exc}") from exc
+                    raise AppServerError(
+                        f"Failed to decode app-server output on line {line_number}: {exc}"
+                    ) from exc
                 if "id" in payload and ("result" in payload or "error" in payload):
                     self._handle_response(payload)
                 elif "method" in payload:
@@ -385,7 +491,11 @@ class AppServerClient:
         except BaseException as exc:
             if not self._stopping:
                 self._closed_error = exc
-                self._fail_pending(exc if isinstance(exc, AppServerError) else AppServerProcessExitError(str(exc)))
+                self._fail_pending(
+                    exc
+                    if isinstance(exc, AppServerError)
+                    else AppServerProcessExitError(str(exc))
+                )
 
     def _read_stderr_loop(self) -> None:
         transport = self._transport
@@ -419,7 +529,9 @@ class AppServerClient:
         for request in pending:
             request.response_queue.put(error)
 
-    def _normalize_command(self, command: Sequence[str] | str | None) -> tuple[str, ...] | None:
+    def _normalize_command(
+        self, command: Sequence[str] | str | None
+    ) -> tuple[str, ...] | None:
         if command is None:
             return None
         if isinstance(command, str):

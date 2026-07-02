@@ -15,6 +15,7 @@ import { AppServer } from "@gajae-code/natives";
 export interface CreatedThread {
 	threadId: string;
 	sessionMetadata?: Record<string, unknown>;
+	resumed?: boolean;
 }
 
 /**
@@ -28,7 +29,11 @@ export interface AppServerHost {
 	resumeThread(params: unknown): Promise<CreatedThread>;
 	forkThread(params: unknown): Promise<CreatedThread>;
 	/** Satisfy one backend method call (e.g. `prompt`, `steer`, `getState`). */
-	backendCall(threadId: string, method: string, params: unknown): Promise<unknown>;
+	backendCall(threadId: string, method: string, params: unknown, generation?: number): Promise<unknown>;
+	/** Satisfy one token-free notifications channel call (e.g. `reply`, `subscribe`). */
+	notificationCall(method: string, params: unknown): Promise<unknown>;
+	/** Provide the native bridge to hosts that need to call back into clients. */
+	setAppServer?(server: AppServer): void;
 }
 
 /** Live handle to a running app-server. */
@@ -39,6 +44,8 @@ export interface AppServerHandle {
 	dispatch(connectionId: string, line: string): Promise<string | null>;
 	/** Push a gjc `AgentEvent` for a thread; returns notifications emitted. */
 	emitEvent(threadId: string, generation: number, eventType: string, payload: unknown): number;
+	/** Push an opaque `gjc/notifications` SDK frame. */
+	pushNotification(frame: unknown): void;
 }
 
 interface IncomingCall {
@@ -46,6 +53,7 @@ interface IncomingCall {
 	kind: string;
 	threadId: string | null;
 	params: unknown;
+	generation?: number;
 }
 
 /** Options for {@link startAppServer}. */
@@ -85,7 +93,10 @@ export function startAppServer(host: AppServerHost, options: StartAppServerOptio
 				resolveOk(call.callId, await host.forkThread(call.params));
 			} else if (call.kind.startsWith("backend.")) {
 				const method = call.kind.slice("backend.".length);
-				resolveOk(call.callId, await host.backendCall(call.threadId ?? "", method, call.params));
+				resolveOk(call.callId, await host.backendCall(call.threadId ?? "", method, call.params, call.generation));
+			} else if (call.kind.startsWith("notifications.")) {
+				const method = call.kind.slice("notifications.".length);
+				resolveOk(call.callId, await host.notificationCall(method, call.params));
 			} else {
 				resolveErr(call.callId, new Error(`unknown call kind: ${call.kind}`));
 			}
@@ -109,6 +120,7 @@ export function startAppServer(host: AppServerHost, options: StartAppServerOptio
 		onCall,
 		options.maxInflightTurnsPerThread,
 	);
+	if (typeof host.setAppServer === "function") host.setAppServer(server);
 
 	return {
 		server,
@@ -117,5 +129,6 @@ export function startAppServer(host: AppServerHost, options: StartAppServerOptio
 		dispatch: (connectionId: string, line: string) => server.dispatch(connectionId, line),
 		emitEvent: (threadId, generation, eventType, payload) =>
 			server.emitBackendEvent(threadId, generation, eventType, JSON.stringify(payload ?? null)),
+		pushNotification: frame => server.pushNotification(JSON.stringify(frame ?? null)),
 	};
 }

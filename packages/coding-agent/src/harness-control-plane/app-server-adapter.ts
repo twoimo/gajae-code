@@ -6,8 +6,8 @@
  * HarnessRpc acceptance contract (ack + post-cursor agent_start/turn started).
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import type { EventEmitter } from "node:events";
 import type { HarnessRpc, RpcStateSnapshot } from "./rpc-adapter";
 
 interface PendingResponse {
@@ -144,7 +144,8 @@ export class GajaeCodeAppServerRpc implements HarnessRpc {
 			this.#notify("initialized", {});
 			const started = asRecord(await this.#request("thread/start", { cwd: opts.cwd ?? process.cwd() }));
 			const thread = asRecord(started.thread);
-			const threadId = typeof thread.id === "string" ? thread.id : typeof thread.threadId === "string" ? thread.threadId : null;
+			const threadId =
+				typeof thread.id === "string" ? thread.id : typeof thread.threadId === "string" ? thread.threadId : null;
 			if (!threadId) throw new Error("app-server thread/start response missing thread id");
 			this.#threadId = threadId;
 			this.#readyResolve();
@@ -257,12 +258,27 @@ export class GajaeCodeAppServerRpc implements HarnessRpc {
 	async getLastAssistantText(): Promise<string | null> {
 		await this.#ready;
 		const result = await this.#request("gjc/messages/get", { threadId: this.#threadId });
-		const messages = Array.isArray(result.messages) ? result.messages : Array.isArray(result.data) ? result.data : [];
+		const messages = Array.isArray(result)
+			? result
+			: Array.isArray(result.messages)
+				? result.messages
+				: Array.isArray(result.data)
+					? result.data
+					: [];
 		for (let i = messages.length - 1; i >= 0; i -= 1) {
 			const message = asRecord(messages[i]);
 			if (message.role !== "assistant") continue;
 			const content = message.content;
 			if (typeof content === "string") return content;
+			if (Array.isArray(content)) {
+				const text = content
+					.map(part => {
+						const record = asRecord(part);
+						return typeof record.text === "string" ? record.text : "";
+					})
+					.join("");
+				if (text.length > 0) return text;
+			}
 		}
 		return null;
 	}

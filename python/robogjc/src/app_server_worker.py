@@ -10,14 +10,14 @@ import asyncio
 import json
 import logging
 import threading
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from gjc_rpc.app_server import AppServerClient, AppServerError, AppServerProcessExitError
 
 from robogjc import persona, worker
 from robogjc.cancellation import register_cancel_hook, unregister_cancel_hook
-from robogjc.db import issue_key
 from robogjc.git_ops import redact_credentials
 from robogjc.host_tools import AbortController, ToolBindings, _git_identity_env
 from robogjc.sandbox import _prepare_slot_runtime_env, _safe_directory_env
@@ -48,7 +48,9 @@ def _write_thread_id(session_dir: Path, thread_id: str) -> None:
     tmp.replace(_metadata_path(session_dir))
 
 
-def _audit_app_server_event(bindings: ToolBindings, name: str, args: Mapping[str, Any], result: Any | None = None) -> None:
+def _audit_app_server_event(
+    bindings: ToolBindings, name: str, args: Mapping[str, Any], result: Any | None = None
+) -> None:
     safe_args = json.loads(json.dumps(args, default=str))
     safe_result = json.loads(json.dumps(result, default=str)) if result is not None else None
     safe_args = _redact_json(safe_args)
@@ -57,7 +59,9 @@ def _audit_app_server_event(bindings: ToolBindings, name: str, args: Mapping[str
         issue_key=bindings.issue_key,
         tool=name,
         args=safe_args if isinstance(safe_args, Mapping) else {"value": safe_args},
-        result=safe_result if isinstance(safe_result, Mapping) else ({"value": safe_result} if safe_result is not None else None),
+        result=safe_result
+        if isinstance(safe_result, Mapping)
+        else ({"value": safe_result} if safe_result is not None else None),
     )
 
 
@@ -110,6 +114,7 @@ def _run_app_server_blocking(
     completed = threading.Event()
     assistant_text: list[str] = []
     completion_payload: dict[str, Any] | None = None
+    active_turn_id: str | None = None
 
     def _on_notification(notification: Any) -> None:
         nonlocal completion_payload
@@ -150,9 +155,9 @@ def _run_app_server_blocking(
 
         def _cancel_hook() -> None:
             thread_id = _read_thread_id(bindings.workspace.session_dir)
-            if thread_id is not None:
+            if thread_id is not None and active_turn_id is not None:
                 try:
-                    client.interrupt(thread_id)
+                    client.interrupt(thread_id, active_turn_id)
                 except AppServerError:
                     pass
             client.stop()
@@ -163,15 +168,23 @@ def _run_app_server_blocking(
         try:
             thread_id = _read_thread_id(bindings.workspace.session_dir)
             resuming = thread_id is not None
+            thread_params = {
+                "cwd": str(bindings.workspace.repo_dir),
+                "sessionDir": str(bindings.workspace.session_dir),
+                "systemPrompt": persona.system_append(repo=inputs.repo, issue=inputs.issue, workspace=inputs.workspace),
+                "model": chosen_model,
+                "provider": settings.provider,
+                "thinking": chosen_thinking if chosen_thinking != "off" else None,
+            }
+            if thread_id is not None:
+                try:
+                    thread = client.thread_resume(thread_id, sessionId=thread_id, **thread_params)
+                    thread_id = thread.id
+                except AppServerError:
+                    resuming = False
+                    thread_id = None
             if thread_id is None:
-                thread = client.start_thread(
-                    cwd=str(bindings.workspace.repo_dir),
-                    sessionDir=str(bindings.workspace.session_dir),
-                    systemPrompt=persona.system_append(repo=inputs.repo, issue=inputs.issue, workspace=inputs.workspace),
-                    model=chosen_model,
-                    provider=settings.provider,
-                    thinking=chosen_thinking if chosen_thinking != "off" else None,
-                )
+                thread = client.start_thread(**thread_params)
                 thread_id = thread.id
                 _write_thread_id(bindings.workspace.session_dir, thread_id)
             log.info(
@@ -184,11 +197,14 @@ def _run_app_server_blocking(
                 {"thread_id": thread_id, "session_dir": str(bindings.workspace.session_dir), "resuming": resuming},
             )
 
-            client.start_turn(thread_id, "", task=task_kind)
+            turn = client.start_turn(thread_id, "", task=task_kind)
+            active_turn_id = turn.id
             client.steer(thread_id, prompt)
             if not completed.wait(settings.task_timeout_seconds):
                 raise TimeoutError("app-server task timed out waiting for turn/completed")
-            _audit_app_server_event(bindings, "app_server_turn_completed", {"thread_id": thread_id}, completion_payload or {})
+            _audit_app_server_event(
+                bindings, "app_server_turn_completed", {"thread_id": thread_id}, completion_payload or {}
+            )
             return "".join(assistant_text) or None
         except AppServerProcessExitError as exc:
             raise RuntimeError(redact_credentials(str(exc))) from exc

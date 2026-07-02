@@ -30,6 +30,7 @@ export const commands: CommandEntry[] = [
 	{ name: "state", load: () => import("./commands/state").then(m => m.default) },
 	{ name: "setup", load: () => import("./commands/setup").then(m => m.default) },
 	{ name: "acp", load: () => import("./commands/acp").then(m => m.default) },
+	{ name: "app-server", load: () => import("./commands/app-server").then(m => m.default) },
 	{ name: "skills", load: () => import("./commands/skills").then(m => m.default) },
 	{ name: "session", load: () => import("./commands/session").then(m => m.default) },
 	{ name: "harness", load: () => import("./commands/harness").then(m => m.default) },
@@ -177,8 +178,8 @@ export class RootHelpCommand extends Command {
 		"append-system-prompt": Flags.string({ description: "Append text or file contents to the system prompt" }),
 		"allow-home": Flags.boolean({ description: "Allow starting in ~ without auto-switching to a temp dir" }),
 		mode: Flags.string({
-			description: "Output mode: text (default), json, rpc, acp, rpc-ui, or bridge",
-			options: ["text", "json", "rpc", "acp", "rpc-ui", "bridge"],
+			description: "Output mode: text (default), json, rpc, acp, rpc-ui, bridge, or app-server",
+			options: ["text", "json", "rpc", "acp", "rpc-ui", "bridge", "app-server"],
 		}),
 		print: Flags.boolean({ char: "p", description: "Non-interactive mode: process prompt and exit" }),
 		continue: Flags.boolean({ char: "c", description: "Continue previous session" }),
