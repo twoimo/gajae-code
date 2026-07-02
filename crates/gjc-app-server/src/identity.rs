@@ -21,7 +21,7 @@ pub enum ThreadStatus {
 }
 
 /// Mutable TS-side session metadata attached to an immutable thread identity.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMetadata {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
