@@ -17,6 +17,7 @@ const nativeBindings = loadNative();
 nativeBindings.initNativeCrashDiagnostics?.();
 // --- generated native exports (do not edit) ---
 // classes
+export const AppServer = nativeBindings.AppServer;
 export const ComputerController = nativeBindings.ComputerController;
 export const MacAppearanceObserver = nativeBindings.MacAppearanceObserver;
 export const MacOSPowerAssertion = nativeBindings.MacOSPowerAssertion;
@@ -29,6 +30,8 @@ export const Shell = nativeBindings.Shell;
 // functions
 export const __piNativesV0_10_0 = nativeBindings.__piNativesV0_10_0;
 export const applyBashFixups = nativeBindings.applyBashFixups;
+export const appServerMethodLane = nativeBindings.appServerMethodLane;
+export const appServerSchemaJson = nativeBindings.appServerSchemaJson;
 export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
 export const computerScreenshot = nativeBindings.computerScreenshot;

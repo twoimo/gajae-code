@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gjc-app-server wire protocol",
+  "description": "Rust-derived JSON Schema for the codex-compatible app-server wire surface.",
+  "definitions": {
+    "Request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Request",
+      "description": "An inbound request: `{ \"id\", \"method\", \"params\"? }`.",
+      "type": "object",
+      "required": [
+        "id",
+        "method"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "definitions": {
+        "RequestId": {
+          "description": "Opaque JSON-RPC request id (string or number), preserved verbatim so responses echo the exact client id.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "Response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Response",
+      "description": "An outbound response: exactly one of `result`/`error` is present.",
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "result": true,
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppServerError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "definitions": {
+        "RequestId": {
+          "description": "Opaque JSON-RPC request id (string or number), preserved verbatim so responses echo the exact client id.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "AppServerError": {
+          "description": "A structured error that maps directly onto a JSON-RPC error object.",
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "message": {
+              "type": "string"
+            },
+            "data": true
+          }
+        }
+      }
+    },
+    "Notification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Notification",
+      "description": "An outbound server notification (no id).",
+      "type": "object",
+      "required": [
+        "method"
+      ],
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      }
+    },
+    "ClientNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ClientNotification",
+      "description": "An inbound client notification (no id): `{ \"method\", \"params\"? }`.",
+      "type": "object",
+      "required": [
+        "method"
+      ],
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      }
+    },
+    "RequestId": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RequestId",
+      "description": "Opaque JSON-RPC request id (string or number), preserved verbatim so responses echo the exact client id.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "AppServerError": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AppServerError",
+      "description": "A structured error that maps directly onto a JSON-RPC error object.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": true
+      }
+    },
+    "ThreadIdentity": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadIdentity",
+      "description": "Immutable identity + mutable metadata + current backend generation.",
+      "type": "object",
+      "required": [
+        "generation",
+        "metadata",
+        "status",
+        "thread_id"
+      ],
+      "properties": {
+        "thread_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadStatus"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "metadata": {
+          "$ref": "#/definitions/SessionMetadata"
+        }
+      },
+      "definitions": {
+        "ThreadStatus": {
+          "description": "Lifecycle status of a thread in the registry.",
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "archived",
+            "deleted"
+          ]
+        },
+        "SessionMetadata": {
+          "description": "Mutable TS-side session metadata attached to an immutable thread identity.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sessionFile": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "forkedFromId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "ThreadStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadStatus",
+      "description": "Lifecycle status of a thread in the registry.",
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "archived",
+        "deleted"
+      ]
+    },
+    "SessionMetadata": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SessionMetadata",
+      "description": "Mutable TS-side session metadata attached to an immutable thread identity.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forkedFromId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ItemState": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ItemState",
+      "description": "Item lifecycle states.",
+      "type": "string",
+      "enum": [
+        "new",
+        "started",
+        "streaming",
+        "completing",
+        "completed",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "TurnState": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnState",
+      "description": "Turn lifecycle states.",
+      "type": "string",
+      "enum": [
+        "idle",
+        "accepted",
+        "started",
+        "completing",
+        "completed",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "TerminalCause": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TerminalCause",
+      "description": "Terminal cause for a turn. Priority: `Failed` > `Interrupted` > `Completed`.",
+      "type": "string",
+      "enum": [
+        "completed",
+        "interrupted",
+        "failed"
+      ]
+    }
+  }
+}

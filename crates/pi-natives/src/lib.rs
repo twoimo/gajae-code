@@ -22,6 +22,7 @@
 #![allow(clippy::trivially_copy_pass_by_ref, reason = "napi env idiom")]
 
 pub mod appearance;
+pub mod app_server;
 pub mod ast;
 pub mod build_info;
 pub mod clipboard;
