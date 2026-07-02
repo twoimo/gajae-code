@@ -1771,3 +1771,115 @@ it("retries new-session when the psmux server has not yet registered the session
 	expect(newSessionCalls.length).toBe(2);
 	expect(calls.filter(call => call.command === "has-session").length).toBeGreaterThanOrEqual(2);
 });
+
+it("retries Windows psmux attach once after transient os error 10061", () => {
+	const calls: Array<{ command: string; args: string[] }> = [];
+	let attachAttempts = 0;
+	const result = launchDefaultTmuxIfNeeded({
+		parsed: args({ messages: ["hello world"], tmux: true }),
+		rawArgs: ["--tmux", "hello world"],
+		cwd: "/repo",
+		env: { GJC_TMUX_COMMAND: "psmux", GJC_PSMUX_COMMAND: "psmux" },
+		argv: ["bun", "packages/coding-agent/src/cli.ts"],
+		execPath: "/bin/bun",
+		platform: "win32",
+		tty: interactiveTty,
+		tmuxAvailable: true,
+		currentBranch: "",
+		existingBranchSessionName: null,
+		diagnosticWriter: () => {},
+		spawnSync: (_command, spawnArgs) => {
+			calls.push({ command: spawnArgs[0], args: spawnArgs });
+			if (spawnArgs[0] === "attach-session") {
+				attachAttempts++;
+				if (attachAttempts === 1) {
+					return {
+						exitCode: 1,
+						stderr: "psmux: 대상 컴퓨터에서 연결을 거부했으므로 연결하지 못했습니다. (os error 10061)",
+					};
+				}
+			}
+			return { exitCode: 0 };
+		},
+	});
+
+	expect(result).toBe(true);
+	expect(calls.filter(call => call.command === "attach-session")).toHaveLength(2);
+	expect(calls.some(call => call.command === "has-session")).toBe(true);
+	expect(calls.some(call => call.command === "kill-session")).toBe(false);
+});
+
+it("recreates a Windows psmux session that disappears after transient attach os error 10061", () => {
+	const calls: Array<{ command: string; args: string[] }> = [];
+	let attachAttempts = 0;
+	let newSessionCount = 0;
+	const result = launchDefaultTmuxIfNeeded({
+		parsed: args({ messages: ["hello world"], tmux: true }),
+		rawArgs: ["--tmux", "hello world"],
+		cwd: "/repo",
+		env: { GJC_TMUX_COMMAND: "psmux", GJC_PSMUX_COMMAND: "psmux" },
+		argv: ["bun", "packages/coding-agent/src/cli.ts"],
+		execPath: "/bin/bun",
+		platform: "win32",
+		tty: interactiveTty,
+		tmuxAvailable: true,
+		currentBranch: "",
+		existingBranchSessionName: null,
+		diagnosticWriter: () => {},
+		spawnSync: (_command, spawnArgs) => {
+			calls.push({ command: spawnArgs[0], args: spawnArgs });
+			if (spawnArgs[0] === "new-session") {
+				newSessionCount++;
+				return { exitCode: 0 };
+			}
+			if (spawnArgs[0] === "has-session" && attachAttempts > 0 && newSessionCount === 1) {
+				return { exitCode: 1, stderr: "psmux: can't find session (no server running)" };
+			}
+			if (spawnArgs[0] === "attach-session") {
+				attachAttempts++;
+				if (attachAttempts === 1) {
+					return {
+						exitCode: 1,
+						stderr: "psmux: 대상 컴퓨터에서 연결을 거부했으므로 연결하지 못했습니다. (os error 10061)",
+					};
+				}
+			}
+			return { exitCode: 0 };
+		},
+	});
+
+	expect(result).toBe(true);
+	expect(calls.filter(call => call.command === "new-session")).toHaveLength(2);
+	expect(calls.filter(call => call.command === "attach-session")).toHaveLength(2);
+	expect(calls.some(call => call.args.includes("@gjc-profile"))).toBe(true);
+	expect(calls.some(call => call.command === "kill-session")).toBe(false);
+});
+
+it("does not retry Windows psmux attach failures without os error 10061", () => {
+	const calls: Array<{ command: string; args: string[] }> = [];
+	const diagnostics: string[] = [];
+	const result = launchDefaultTmuxIfNeeded({
+		parsed: args({ messages: ["hello world"], tmux: true }),
+		rawArgs: ["--tmux", "hello world"],
+		cwd: "/repo",
+		env: { GJC_TMUX_COMMAND: "psmux", GJC_PSMUX_COMMAND: "psmux" },
+		argv: ["bun", "packages/coding-agent/src/cli.ts"],
+		execPath: "/bin/bun",
+		platform: "win32",
+		tty: interactiveTty,
+		tmuxAvailable: true,
+		currentBranch: "",
+		existingBranchSessionName: null,
+		diagnosticWriter: message => diagnostics.push(message),
+		spawnSync: (_command, spawnArgs) => {
+			calls.push({ command: spawnArgs[0], args: spawnArgs });
+			if (spawnArgs[0] === "attach-session") return { exitCode: 1, stderr: "psmux: attach failed" };
+			return { exitCode: 0 };
+		},
+	});
+
+	expect(result).toBe(true);
+	expect(calls.filter(call => call.command === "attach-session")).toHaveLength(1);
+	expect(calls.some(call => call.command === "kill-session")).toBe(true);
+	expect(diagnostics[0]).toStartWith("gjc --tmux failed after creating tmux session: attach failed.");
+});
