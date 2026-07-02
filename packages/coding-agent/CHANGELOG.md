@@ -4,6 +4,7 @@
 ### Fixed
 
 - `/retry` now resumes sessions left with an interrupted user/custom/tool-result tail after a crash or power loss, and recovers unresolved assistant tool-use tails instead of reporting "Nothing to retry".
+- Queued prompt shortcuts now keep working during auto context-full compaction: Tab/Alt+Enter queue text immediately, and Alt+Up restores only the newest queued prompt for editing instead of merging the full queue.
 
 ### Fixed
 
