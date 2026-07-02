@@ -6,9 +6,11 @@ pub mod config;
 pub mod db;
 #[cfg(test)]
 mod fixture_harness;
+pub mod git_ops;
 pub mod github;
 pub mod host_tools;
 pub mod logging;
+pub mod natives_cache;
 pub mod persona;
 pub mod pragmas;
 pub mod proxy;
@@ -16,6 +18,7 @@ pub mod queue;
 pub mod redaction;
 pub mod sandbox;
 pub mod server;
+pub mod slot_pool;
 pub mod worker;
 pub mod workspace_keys;
 
