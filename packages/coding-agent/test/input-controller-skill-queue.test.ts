@@ -245,6 +245,30 @@ describe("InputController #invokeSkillCommand (E1-E3)", () => {
 		expect(ctx.showError).not.toHaveBeenCalled();
 	});
 
+	it("E3c: compaction queue flush replays /skill entries through the skill custom-message path", async () => {
+		const { ctx, prompt, promptCustomMessage } = createStubInputControllerContext({
+			skillCommands,
+			isStreaming: false,
+		});
+		ctx.compactionQueuedMessages.push({ text: "/skill:test-skill from compaction", mode: "followUp" });
+
+		const uiHelpers = new UiHelpers(ctx);
+		await uiHelpers.flushCompactionQueue();
+
+		expect(prompt).not.toHaveBeenCalled();
+		expect(promptCustomMessage).toHaveBeenCalledTimes(1);
+		const firstCall = promptCustomMessage.mock.calls[0];
+		expect(firstCall).toBeDefined();
+		if (!firstCall) {
+			throw new Error("expected promptCustomMessage to be called");
+		}
+		const messageArg = firstCall[0];
+		expect(messageArg.content).toContain("Do the thing.");
+		expect(messageArg.content).toContain("User: from compaction");
+		expect(firstCall[1]).toEqual({ streamingBehavior: "followUp" });
+		expect(ctx.compactionQueuedMessages).toEqual([]);
+	});
+
 	it("E3: not streaming -> enqueueCustomMessageDisplay NOT called and tag absent", async () => {
 		const { ctx, editor, enqueueCustomMessageDisplay, promptCustomMessage } = createStubInputControllerContext({
 			skillCommands,
