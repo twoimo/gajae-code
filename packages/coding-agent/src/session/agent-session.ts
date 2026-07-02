@@ -8932,22 +8932,52 @@ export class AgentSession {
 	setAutoRetryEnabled(enabled: boolean): void {
 		this.settings.set("retry.enabled", enabled);
 	}
+	#isInterruptedRetryTail(message: AgentMessage | undefined): boolean {
+		if (!message) return false;
+		return (
+			message.role === "user" ||
+			message.role === "developer" ||
+			message.role === "toolResult" ||
+			message.role === "fileMention" ||
+			message.role === "custom" ||
+			message.role === "hookMessage"
+		);
+	}
+
+	#isUnresolvedToolUseAssistant(message: AssistantMessage): boolean {
+		return message.stopReason === "toolUse" && message.content.some(content => content.type === "toolCall");
+	}
+
 	/**
-	 * Manually retry the last failed assistant turn.
-	 * Removes the error message from agent state and re-attempts with a fresh retry budget.
-	 * @returns true if retry was initiated, false if no failed turn to retry or agent is busy
+	 * Manually retry the last failed assistant turn, or resume an interrupted tail
+	 * left by a non-graceful process exit after the user/custom/tool-result message
+	 * was persisted but before the agent emitted a terminal assistant response.
+	 * Removes failed/aborted/unresolved tool-use assistant tails before
+	 * re-attempting with a fresh retry budget.
+	 * @returns true if retry/resume was initiated, false if no retryable tail exists or agent is busy
 	 */
 	async retry(): Promise<boolean> {
 		if (this.isStreaming || this.isCompacting || this.isRetrying) return false;
 
 		const messages = this.agent.state.messages;
 		const lastMsg = messages[messages.length - 1];
-		if (lastMsg?.role !== "assistant") return false;
+		if (!lastMsg) return false;
+
+		if (lastMsg.role !== "assistant") {
+			if (!this.#isInterruptedRetryTail(lastMsg)) return false;
+			this.#retryAttempt = 0;
+			this.#scheduleAgentContinue({ delayMs: 1 });
+			return true;
+		}
 
 		const assistantMsg = lastMsg as AssistantMessage;
-		if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "aborted") return false;
+		const shouldDropAssistant =
+			assistantMsg.stopReason === "error" ||
+			assistantMsg.stopReason === "aborted" ||
+			this.#isUnresolvedToolUseAssistant(assistantMsg);
+		if (!shouldDropAssistant) return false;
 
-		// Remove the failed/aborted assistant message (same as auto-retry does before re-attempting)
+		// Remove the failed/aborted/incomplete assistant message before re-attempting.
 		this.agent.replaceMessages(messages.slice(0, -1));
 
 		// Reset retry budget for a fresh attempt

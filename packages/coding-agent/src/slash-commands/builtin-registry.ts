@@ -1045,7 +1045,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "retry",
-		description: "Retry the last failed agent turn",
+		description: "Retry or resume the last interrupted agent turn",
 		handleTui: async (_command, runtime) => {
 			const didRetry = await runtime.ctx.session.retry();
 			if (!didRetry) {
