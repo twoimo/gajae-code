@@ -1,0 +1,5 @@
+pre-state: {"isStreaming":false,"steeringQueueDepth":0,"followupQueueDepth":0}
+sendPrompt ack: {"commandId":"40547d98-6e07-4cd8-ac0d-c10c2e4d5a65","ack":true}
+agent-start: {"cursor":1}
+completed: true assistant_text: "PONG"
+PHASE4_LIVE_OK
