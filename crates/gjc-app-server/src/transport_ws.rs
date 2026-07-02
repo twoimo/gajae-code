@@ -32,9 +32,9 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct WsServerConfig {
-	pub host: String,
-	pub port: u16,
-	pub token: String,
+	pub host:       String,
+	pub port:       u16,
+	pub token:      String,
 	pub session_id: String,
 	pub state_root: PathBuf,
 	pub allowed_origins: Vec<String>,
@@ -42,12 +42,12 @@ pub struct WsServerConfig {
 
 #[derive(Debug)]
 pub struct WsServerHandle {
-	addr: SocketAddr,
-	session_id: String,
-	state_root: PathBuf,
-	cancel: CancellationToken,
+	addr:        SocketAddr,
+	session_id:  String,
+	state_root:  PathBuf,
+	cancel:      CancellationToken,
 	accept_task: JoinHandle<()>,
-	stopped: AtomicBool,
+	stopped:     AtomicBool,
 }
 
 impl WsServerHandle {

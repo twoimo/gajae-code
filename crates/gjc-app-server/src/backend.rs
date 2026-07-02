@@ -23,10 +23,10 @@ use crate::{
 /// Context threaded through every backend call.
 #[derive(Debug, Clone)]
 pub struct BackendCallContext {
-	pub thread_id: ThreadId,
+	pub thread_id:  ThreadId,
 	pub generation: BackendGeneration,
 	pub request_id: Option<crate::jsonrpc::RequestId>,
-	pub lane: Lane,
+	pub lane:       Lane,
 }
 
 /// A normalized event pushed from the backend (TS `AgentEvent` today) up into
@@ -36,20 +36,20 @@ pub struct BackendCallContext {
 /// codex `item/*` lifecycle notifications.
 #[derive(Debug, Clone)]
 pub struct BackendEvent {
-	pub thread_id: ThreadId,
+	pub thread_id:  ThreadId,
 	pub generation: BackendGeneration,
 	/// The gjc `AgentEvent` `type` discriminator (e.g. `agent_start`,
 	/// `text_delta`, `tool_execution_start`, `agent_end`).
 	pub event_type: String,
 	/// The full raw event value (lossless gjc detail).
-	pub payload: serde_json::Value,
+	pub payload:    serde_json::Value,
 }
 
 /// Metadata returned when a thread's backend is created/resumed/forked.
 #[derive(Debug, Clone)]
 pub struct BackendHandleInfo {
-	pub thread_id: ThreadId,
-	pub generation: BackendGeneration,
+	pub thread_id:        ThreadId,
+	pub generation:       BackendGeneration,
 	pub session_metadata: crate::identity::SessionMetadata,
 }
 
@@ -190,10 +190,10 @@ mod tests {
 
 	fn ctx() -> BackendCallContext {
 		BackendCallContext {
-			thread_id: ThreadId("thr_1".into()),
+			thread_id:  ThreadId("thr_1".into()),
 			generation: BackendGeneration::FIRST,
 			request_id: None,
-			lane: Lane::Mutating,
+			lane:       Lane::Mutating,
 		}
 	}
 
@@ -213,10 +213,10 @@ mod tests {
 	#[test]
 	fn backend_event_preserves_raw_payload() {
 		let ev = BackendEvent {
-			thread_id: ThreadId("thr_1".into()),
+			thread_id:  ThreadId("thr_1".into()),
 			generation: BackendGeneration::FIRST,
 			event_type: "text_delta".into(),
-			payload: serde_json::json!({"type": "text_delta", "delta": "hello", "contentIndex": 0}),
+			payload:    serde_json::json!({"type": "text_delta", "delta": "hello", "contentIndex": 0}),
 		};
 		assert_eq!(ev.payload["delta"], "hello");
 	}

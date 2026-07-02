@@ -62,7 +62,7 @@ impl TerminalCause {
 /// arriving before the flush upgrade the recorded cause.
 #[derive(Debug, Default)]
 pub struct TerminalLatch {
-	cause: Option<TerminalCause>,
+	cause:   Option<TerminalCause>,
 	flushed: bool,
 }
 
