@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
-import { GajaeCodeAppServerRpc, type AppServerTransport } from "../src/harness-control-plane/app-server-adapter";
+import { type AppServerTransport, GajaeCodeAppServerRpc } from "../src/harness-control-plane/app-server-adapter";
 import { singleFlightAccept } from "../src/harness-control-plane/rpc-adapter";
 
 class FakeStdout extends EventEmitter {
@@ -58,7 +58,13 @@ class FakeAppServerTransport extends EventEmitter implements AppServerTransport 
 		if (method === "turn/start") {
 			this.send({ jsonrpc: "2.0", id: frame.id, result: { turn: { id: "turn_fake", status: "inProgress" } } });
 			if (this.autoAgentStart) {
-				queueMicrotask(() => this.send({ jsonrpc: "2.0", method: "turn/started", params: { threadId: this.threadId, turnId: "turn_fake" } }));
+				queueMicrotask(() =>
+					this.send({
+						jsonrpc: "2.0",
+						method: "turn/started",
+						params: { threadId: this.threadId, turnId: "turn_fake" },
+					}),
+				);
 			}
 			return;
 		}
@@ -70,7 +76,9 @@ class FakeAppServerTransport extends EventEmitter implements AppServerTransport 
 	}
 }
 
-async function createRpc(fake = new FakeAppServerTransport()): Promise<{ rpc: GajaeCodeAppServerRpc; fake: FakeAppServerTransport }> {
+async function createRpc(
+	fake = new FakeAppServerTransport(),
+): Promise<{ rpc: GajaeCodeAppServerRpc; fake: FakeAppServerTransport }> {
 	const rpc = new GajaeCodeAppServerRpc({ transport: fake, cwd: "/repo" });
 	fake.start();
 	await rpc.ready();

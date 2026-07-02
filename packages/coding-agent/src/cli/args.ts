@@ -8,7 +8,7 @@ import chalk from "chalk";
 import { parseEffort } from "../thinking";
 import { BUILTIN_TOOLS } from "../tools";
 
-export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge";
+export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge" | "app-server";
 
 export interface Args {
 	cwd?: string;
@@ -107,7 +107,8 @@ export function parseArgs(args: string[]): Args {
 				mode === "rpc" ||
 				mode === "acp" ||
 				mode === "rpc-ui" ||
-				mode === "bridge"
+				mode === "bridge" ||
+				mode === "app-server"
 			) {
 				result.mode = mode;
 			}

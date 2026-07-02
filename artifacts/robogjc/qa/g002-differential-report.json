@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "algorithm-boundary-report",
+  "cases": [
+    {"id":"hmac_edge_past","scenario":"timestamp exactly -skew, empty body, unicode path","pythonResult":{"ok":true,"reason":"","signature":"a820c17e3afb0c013aaf0b357c3d9049f542dc95febbc2f64a61c2f881c54add"},"rustResult":{"ok":true,"reason":"","signature":"a820c17e3afb0c013aaf0b357c3d9049f542dc95febbc2f64a61c2f881c54add"},"verdict":"match"},
+    {"id":"hmac_edge_future","scenario":"timestamp exactly +skew, empty body, unicode path","pythonResult":{"ok":true,"reason":"","signature":"3172124bc3c62a56e80e01ec4efcaf9c80706b4e1574d0978a7581854ab26823"},"rustResult":{"ok":true,"reason":"","signature":"3172124bc3c62a56e80e01ec4efcaf9c80706b4e1574d0978a7581854ab26823"},"verdict":"match"},
+    {"id":"hmac_outside","scenario":"timestamp one second outside skew","pythonResult":{"ok":false,"reason":"timestamp outside skew window"},"rustResult":{"ok":false,"reason":"timestamp outside skew window"},"verdict":"match"},
+    {"id":"hmac_wrong_length","scenario":"valid request with one hex char missing","pythonResult":{"ok":false,"reason":"signature mismatch"},"rustResult":{"ok":false,"reason":"signature mismatch"},"verdict":"match"},
+    {"id":"hmac_non_hex","scenario":"64 non-hex signature characters","pythonResult":{"ok":false,"reason":"signature mismatch"},"rustResult":{"ok":false,"reason":"signature mismatch"},"verdict":"match"},
+    {"id":"redaction_url_at_password","scenario":"@ inside password","pythonResult":"https://***@ss@example.com/repo","rustResult":"https://***@ss@example.com/repo","verdict":"match"},
+    {"id":"redaction_multiple_credentials","scenario":"two credentialed URLs on one line","pythonResult":"clone https://***@a/x and https://***@b/y","rustResult":"clone https://***@a/x and https://***@b/y","verdict":"match"},
+    {"id":"redaction_query_credential","scenario":"credential-like query string","pythonResult":"https://example.com/path?token=user:pass@secret","rustResult":"https://example.com/path?token=user:pass@secret","verdict":"match"},
+    {"id":"redaction_ipv6_host","scenario":"credentialed URL with IPv6 host","pythonResult":"https://***@[2001:db8::1]/repo","rustResult":"https://***@[2001:db8::1]/repo","verdict":"match"},
+    {"id":"redaction_ssh_url","scenario":"credentialed ssh URL","pythonResult":"ssh://user:pass@example.com/repo","rustResult":"ssh://user:pass@example.com/repo","verdict":"match"},
+    {"id":"pragmas_duplicate_keys","scenario":"duplicate model pragmas, last-wins accessor","pythonResult":{"cleaned":"body","pragmas":[["model","first"],["model","second"]],"model":"second"},"rustResult":{"cleaned":"body","pragmas":[["model","first"],["model","second"]],"model":"second"},"verdict":"match"},
+    {"id":"pragmas_malformed_mixed_valid","scenario":"malformed command line followed by valid pragma","pythonResult":{"cleaned":"/model first /thinking\nbody","pragmas":[["thinking","low"]]},"rustResult":{"cleaned":"/model first /thinking\nbody","pragmas":[["thinking","low"]]},"verdict":"match"},
+    {"id":"pragmas_pragma_only","scenario":"body contains only pragma lines","pythonResult":{"cleaned":"","pragmas":[["model","gpt"],["thinking","high"]]},"rustResult":{"cleaned":"","pragmas":[["model","gpt"],["thinking","high"]]},"verdict":"match"},
+    {"id":"pragmas_case_sensitivity","scenario":"uppercase key normalizes, value preserved","pythonResult":{"cleaned":"run","pragmas":[["model","GPT"]]},"rustResult":{"cleaned":"run","pragmas":[["model","GPT"]]},"verdict":"match"},
+    {"id":"pragmas_whitespace_variants","scenario":"leading whitespace, tab separator, CRLF","pythonResult":{"cleaned":"body","pragmas":[["model","gpt"]]},"rustResult":{"cleaned":"body","pragmas":[["model","gpt"]]},"verdict":"match"},
+    {"id":"config_non_numeric_int","scenario":"ROBGJC_MAX_CONCURRENCY=nope","pythonResult":{"ok":false,"errType":"ValidationError"},"rustResult":{"ok":false,"errType":"String","errorContains":"ROBGJC_MAX_CONCURRENCY"},"verdict":"advisory_error_message_text_only"},
+    {"id":"config_empty_allowlist_entries","scenario":"allowlist with blank CSV entries","pythonResult":{"ok":true,"allowlist":["other/repo","owner/repo"]},"rustResult":{"ok":true,"allowlist":["other/repo","owner/repo"]},"verdict":"match"},
+    {"id":"config_malformed_repo_names","scenario":"allowlist accepts malformed repo name strings without validation","pythonResult":{"ok":true,"allowlist":["evil//repo","not a repo","owner/repo"]},"rustResult":{"ok":true,"allowlist":["evil//repo","not a repo","owner/repo"]},"verdict":"match"},
+    {"id":"workspace_unicode_title","scenario":"unicode title slug strips non-ascii and hashes utf-8 seed","pythonResult":"farm/6e0cc4f1/fix-caf-bug","rustResult":"farm/6e0cc4f1/fix-caf-bug","verdict":"match"},
+    {"id":"workspace_long_title","scenario":"very long title truncates slug to 40 chars","pythonResult":"farm/5850597f/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rustResult":"farm/5850597f/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"match"},
+    {"id":"workspace_collision_same_seed_a","scenario":"same seed with first title","pythonResult":"farm/925d7ad7/first-title","rustResult":"farm/925d7ad7/first-title","verdict":"match"},
+    {"id":"workspace_collision_same_seed_b","scenario":"same short hash collision seed with different title","pythonResult":"farm/925d7ad7/second-title","rustResult":"farm/925d7ad7/second-title","verdict":"match"}
+  ],
+  "commands": [
+    "/tmp/robogjc-uv/bin/python - <<'PY' ... differential probe ... PY",
+    "cargo test -p robogjc"
+  ],
+  "summary": {"total": 22, "matches": 21, "advisory": 1, "blocking": 0, "notes": ["ssh URLs are intentionally not redacted because Python only redacts http(s).", "Rust config returns String errors while Python returns pydantic ValidationError for invalid ints; behavior is fail/fail."]}
+}

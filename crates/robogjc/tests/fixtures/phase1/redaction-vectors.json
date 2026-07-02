@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "basic",
+      "input": "clone https://user:pass@example.com/repo.git",
+      "expected": "clone https://***@example.com/repo.git"
+    },
+    {
+      "name": "multiple",
+      "input": "https://a:b@one.invalid/x and https://two.invalid/y",
+      "expected": "https://***@one.invalid/x and https://two.invalid/y"
+    },
+    {
+      "name": "truncated-at-at",
+      "input": "https://user:p@ss@example.com/repo.git",
+      "expected": "https://***@ss@example.com/repo.git"
+    }
+  ]
+}

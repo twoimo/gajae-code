@@ -1,0 +1,28 @@
+[package]
+name = "robogjc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+hmac = "0.12"
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1 = "0.10"
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-appender = "0.2"
+toml.workspace = true
+[[bin]]
+name = "robogjc"
+path = "src/main.rs"

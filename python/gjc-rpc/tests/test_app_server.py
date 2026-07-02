@@ -10,6 +10,8 @@ from gjc_rpc.app_server import (
     AgentMessageDeltaNotification,
     AppServerClient,
     GjcEventNotification,
+    HostToolCallNotification,
+    HostToolCancelNotification,
     TurnCompletedNotification,
     TurnStartedNotification,
 )
@@ -78,14 +80,47 @@ class FakeAppServerTransport:
         if method == "initialize":
             self.stdout.push({"id": request_id, "result": {"capabilities": {}}})
         elif method == "thread/start":
-            self.stdout.push({"id": request_id, "result": {"thread": {"id": "thread-1"}}})
+            self.stdout.push(
+                {"id": request_id, "result": {"thread": {"id": "thread-1"}}}
+            )
+        elif method == "thread/resume":
+            params = frame.get("params")
+            thread_id = params.get("threadId") if isinstance(params, dict) else None
+            self.stdout.push(
+                {
+                    "id": request_id,
+                    "result": {"thread": {"id": thread_id or "thread-1"}},
+                }
+            )
         elif method == "turn/start":
-            self.stdout.push({"method": "turn/started", "params": {"threadId": "thread-1", "turnId": "turn-1"}})
-            self.stdout.push({"method": "item/agentMessage/delta", "params": {"itemId": "item-1", "delta": "hello"}})
-            self.stdout.push({"method": "turn/completed", "params": {"threadId": "thread-1", "turnId": "turn-1"}})
-            self.stdout.push({"id": request_id, "result": {"turn": {"id": "turn-1", "status": "completed"}}})
+            self.stdout.push(
+                {
+                    "method": "turn/started",
+                    "params": {"threadId": "thread-1", "turnId": "turn-1"},
+                }
+            )
+            self.stdout.push(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"itemId": "item-1", "delta": "hello"},
+                }
+            )
+            self.stdout.push(
+                {
+                    "method": "turn/completed",
+                    "params": {"threadId": "thread-1", "turnId": "turn-1"},
+                }
+            )
+            self.stdout.push(
+                {
+                    "id": request_id,
+                    "result": {"turn": {"id": "turn-1", "status": "completed"}},
+                }
+            )
         elif method == "gjc/state/read":
-            self.stdout.push({"id": request_id, "result": {"state": {"cwd": "/tmp/project"}}})
+            self.stdout.push(
+                {"id": request_id, "result": {"state": {"cwd": "/tmp/project"}}}
+            )
         elif method == "slow":
             self._held["slow"] = {"id": request_id, "result": {"name": "slow"}}
         elif method == "fast":
@@ -117,7 +152,9 @@ class FakeAppServerTransport:
 class AppServerClientTests(unittest.TestCase):
     def make_client(self) -> tuple[AppServerClient, FakeAppServerTransport]:
         transport = FakeAppServerTransport()
-        client = AppServerClient(transport=transport, request_timeout=1.0, startup_timeout=1.0)
+        client = AppServerClient(
+            transport=transport, request_timeout=1.0, startup_timeout=1.0
+        )
         return client, transport
 
     def test_start_performs_initialize_initialized_handshake(self) -> None:
@@ -125,7 +162,10 @@ class AppServerClientTests(unittest.TestCase):
         client.start()
         try:
             self.assertEqual(
-                [{"id": "req_1", "method": "initialize", "params": {}}, {"method": "initialized", "params": {}}],
+                [
+                    {"id": "req_1", "method": "initialize", "params": {}},
+                    {"method": "initialized", "params": {}},
+                ],
                 transport.frames[:2],
             )
         finally:
@@ -136,8 +176,12 @@ class AppServerClientTests(unittest.TestCase):
         client.start()
         results: dict[str, dict[str, Any]] = {}
         try:
-            slow_thread = threading.Thread(target=lambda: results.update(slow=client.request("slow")))
-            fast_thread = threading.Thread(target=lambda: results.update(fast=client.request("fast")))
+            slow_thread = threading.Thread(
+                target=lambda: results.update(slow=client.request("slow"))
+            )
+            fast_thread = threading.Thread(
+                target=lambda: results.update(fast=client.request("fast"))
+            )
             slow_thread.start()
             fast_thread.start()
             slow_thread.join(timeout=2.0)
@@ -155,10 +199,66 @@ class AppServerClientTests(unittest.TestCase):
         try:
             turn = client.start_turn("thread-1", "hello")
             self.assertEqual("turn-1", turn.id)
-            self.assertTrue(any(isinstance(item, TurnStartedNotification) for item in notifications))
-            delta = next(item for item in notifications if isinstance(item, AgentMessageDeltaNotification))
+            self.assertTrue(
+                any(isinstance(item, TurnStartedNotification) for item in notifications)
+            )
+            delta = next(
+                item
+                for item in notifications
+                if isinstance(item, AgentMessageDeltaNotification)
+            )
             self.assertEqual("hello", delta.params["delta"])
-            self.assertTrue(any(isinstance(item, TurnCompletedNotification) for item in notifications))
+            self.assertTrue(
+                any(
+                    isinstance(item, TurnCompletedNotification)
+                    for item in notifications
+                )
+            )
+        finally:
+            client.stop()
+
+    def test_thread_resume_sends_thread_id_and_metadata(self) -> None:
+        client, transport = self.make_client()
+        client.start()
+        try:
+            thread = client.thread_resume(
+                "thread-old", sessionDir="/tmp/session", sessionId="session-1"
+            )
+
+            self.assertEqual("thread-old", thread.id)
+            self.assertEqual(
+                {
+                    "id": "req_2",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": "thread-old",
+                        "sessionDir": "/tmp/session",
+                        "sessionId": "session-1",
+                    },
+                },
+                transport.frames[2],
+            )
+        finally:
+            client.stop()
+
+    def test_interrupt_sends_thread_id_and_turn_id(self) -> None:
+        client, transport = self.make_client()
+        client.start()
+        try:
+            client.interrupt("thread-1", "turn-1", reason="cancelled")
+
+            self.assertEqual(
+                {
+                    "id": "req_2",
+                    "method": "turn/interrupt",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "reason": "cancelled",
+                    },
+                },
+                transport.frames[2],
+            )
         finally:
             client.stop()
 
@@ -168,7 +268,9 @@ class AppServerClientTests(unittest.TestCase):
         client.on_notification(notifications.append)
         client.start()
         try:
-            transport.push_notification({"method": "gjc/event", "params": {"type": "agent_start", "seq": 1}})
+            transport.push_notification(
+                {"method": "gjc/event", "params": {"type": "agent_start", "seq": 1}}
+            )
             event = self._wait_for(notifications, GjcEventNotification)
             self.assertEqual({"type": "agent_start", "seq": 1}, event.params)
         finally:
@@ -184,6 +286,145 @@ class AppServerClientTests(unittest.TestCase):
             transport.push_notification(payload)
             unknown = self._wait_for(notifications, UnknownNotification)
             self.assertEqual(payload, unknown.payload)
+        finally:
+            client.stop()
+
+    def test_host_tools_set_request_payload_shape(self) -> None:
+        client, transport = self.make_client()
+        client.start()
+        try:
+            result = client.set_host_tools(
+                "thread-1",
+                [
+                    {
+                        "name": "gh_post_comment",
+                        "description": "Post a GitHub comment",
+                        "inputSchema": {"type": "object"},
+                        "resultPolicy": {"mode": "json"},
+                        "redactionHints": {"paths": ["token"]},
+                    }
+                ],
+            )
+
+            self.assertEqual({"method": "gjc/hostTools/set"}, result)
+            self.assertEqual(
+                {
+                    "id": "req_2",
+                    "method": "gjc/hostTools/set",
+                    "params": {
+                        "threadId": "thread-1",
+                        "tools": [
+                            {
+                                "name": "gh_post_comment",
+                                "description": "Post a GitHub comment",
+                                "inputSchema": {"type": "object"},
+                                "resultPolicy": {"mode": "json"},
+                                "redactionHints": {"paths": ["token"]},
+                            }
+                        ],
+                    },
+                },
+                transport.frames[2],
+            )
+        finally:
+            client.stop()
+
+    def test_host_tools_call_notification_parsing(self) -> None:
+        client, transport = self.make_client()
+        notifications: list[object] = []
+        client.on_notification(notifications.append)
+        client.start()
+        try:
+            transport.push_notification(
+                {
+                    "method": "gjc/hostTools/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "generation": 7,
+                        "turnId": "turn-1",
+                        "callId": "call-1",
+                        "tool": "gh_post_comment",
+                        "args": {"body": "hello"},
+                    },
+                }
+            )
+
+            call = self._wait_for(notifications, HostToolCallNotification)
+            self.assertEqual("thread-1", call.thread_id)
+            self.assertEqual(7, call.generation)
+            self.assertEqual("turn-1", call.turn_id)
+            self.assertEqual("call-1", call.call_id)
+            self.assertEqual("gh_post_comment", call.tool)
+            self.assertEqual({"body": "hello"}, call.args)
+        finally:
+            client.stop()
+
+    def test_host_tools_result_payload_shape_ok_variant(self) -> None:
+        client, transport = self.make_client()
+        client.start()
+        try:
+            result = client.send_host_tool_result(
+                "thread-1", "call-1", True, result={"posted": True}
+            )
+
+            self.assertEqual({"method": "gjc/hostTools/result"}, result)
+            self.assertEqual(
+                {
+                    "id": "req_2",
+                    "method": "gjc/hostTools/result",
+                    "params": {
+                        "threadId": "thread-1",
+                        "callId": "call-1",
+                        "ok": True,
+                        "result": {"posted": True},
+                    },
+                },
+                transport.frames[2],
+            )
+        finally:
+            client.stop()
+
+    def test_host_tools_result_payload_shape_error_variant(self) -> None:
+        client, transport = self.make_client()
+        client.start()
+        try:
+            result = client.send_host_tool_result(
+                "thread-1", "call-1", False, error={"message": "boom"}
+            )
+
+            self.assertEqual({"method": "gjc/hostTools/result"}, result)
+            self.assertEqual(
+                {
+                    "id": "req_2",
+                    "method": "gjc/hostTools/result",
+                    "params": {
+                        "threadId": "thread-1",
+                        "callId": "call-1",
+                        "ok": False,
+                        "error": {"message": "boom"},
+                    },
+                },
+                transport.frames[2],
+            )
+        finally:
+            client.stop()
+
+    def test_host_tools_cancel_notification_parsing(self) -> None:
+        client, transport = self.make_client()
+        notifications: list[object] = []
+        client.on_notification(notifications.append)
+        client.start()
+        try:
+            transport.push_notification(
+                {
+                    "method": "gjc/hostTools/cancel",
+                    "params": {"threadId": "thread-1", "callId": "call-1"},
+                }
+            )
+
+            cancel = self._wait_for(notifications, HostToolCancelNotification)
+            self.assertEqual("thread-1", cancel.thread_id)
+            self.assertEqual("call-1", cancel.call_id)
         finally:
             client.stop()
 

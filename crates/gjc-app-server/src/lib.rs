@@ -26,22 +26,30 @@ pub mod discovery;
 pub mod error;
 pub mod event_map;
 pub mod field_policy;
+pub mod host_tools;
 pub mod identity;
 pub mod ids;
 pub mod item_state;
 pub mod jsonrpc;
+pub mod notifications;
 pub mod scheduler;
 pub mod schema;
 pub mod server;
 pub mod transport_ws;
 
-pub use error::{AppServerError, Result};
+pub use backend::{
+	AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo,
+};
 pub use discovery::{DiscoveryRecord, discovery_path};
+pub use error::{AppServerError, Result};
 pub use field_policy::{FieldPolicy, enforce, policy_for};
 pub use identity::{SessionMetadata, ThreadIdentity, ThreadStatus};
 pub use ids::{BackendGeneration, ConnectionId, ItemId, ThreadId, TurnId};
 pub use item_state::{ItemState, SeqCounter, TerminalCause, TerminalLatch, TurnState};
 pub use jsonrpc::{ClientNotification, Inbound, Notification, Request, RequestId, Response};
+pub use notifications::{
+	CALL_KIND_PREFIX, EVENT_METHOD as NOTIFICATIONS_EVENT_METHOD,
+	METHOD_PREFIX as NOTIFICATIONS_METHOD_PREFIX,
+};
 pub use scheduler::{Admission, Lane, classify};
-pub use backend::{AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo};
 pub use server::{AppServer, AppServerConfig};

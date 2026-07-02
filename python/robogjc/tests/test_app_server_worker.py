@@ -8,7 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from gjc_rpc.app_server import AgentMessageDeltaNotification, ThreadRef, TurnCompletedNotification, TurnRef
+from gjc_rpc.app_server import (
+    AgentMessageDeltaNotification,
+    AppServerError,
+    ThreadRef,
+    TurnCompletedNotification,
+    TurnRef,
+)
 
 from robogjc import app_server_worker, worker
 
@@ -31,6 +37,9 @@ class _AuditDb:
 
 class _FakeAppServerClient:
     instances: list[_FakeAppServerClient] = []
+    fail_resume = False
+    cancel_during_steer = False
+    registered_cancel_hook = None
 
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -54,12 +63,20 @@ class _FakeAppServerClient:
         self.calls.append(("thread/start", params))
         return ThreadRef(id="thread-1")
 
+    def thread_resume(self, thread_id: str, **params):
+        self.calls.append(("thread/resume", {"thread_id": thread_id, **params}))
+        if self.fail_resume:
+            raise AppServerError("resume failed")
+        return ThreadRef(id=thread_id)
+
     def start_turn(self, thread_id: str, input: str, **params):
         self.calls.append(("turn/start", {"thread_id": thread_id, "input": input, **params}))
         return TurnRef(id="turn-1", raw={"id": "turn-1"})
 
     def steer(self, thread_id: str, input: str, **params):
         self.calls.append(("turn/steer", {"thread_id": thread_id, "input": input, **params}))
+        if self.cancel_during_steer and _FakeAppServerClient.registered_cancel_hook is not None:
+            _FakeAppServerClient.registered_cancel_hook()
         for listener in self.listeners:
             listener(AgentMessageDeltaNotification(params={"delta": "done"}))
             listener(
@@ -73,8 +90,8 @@ class _FakeAppServerClient:
             )
         return {"ok": True}
 
-    def interrupt(self, thread_id: str, **params):
-        self.calls.append(("turn/interrupt", {"thread_id": thread_id, **params}))
+    def interrupt(self, thread_id: str, turn_id: str, **params):
+        self.calls.append(("turn/interrupt", {"thread_id": thread_id, "turn_id": turn_id, **params}))
         return {"ok": True}
 
     def stop(self) -> None:
@@ -84,6 +101,9 @@ class _FakeAppServerClient:
 class AppServerWorkerTest(unittest.TestCase):
     def setUp(self) -> None:
         _FakeAppServerClient.instances.clear()
+        _FakeAppServerClient.fail_resume = False
+        _FakeAppServerClient.cancel_during_steer = False
+        _FakeAppServerClient.registered_cancel_hook = None
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.session_dir = root / "session"
@@ -124,7 +144,15 @@ class AppServerWorkerTest(unittest.TestCase):
             mock.patch("robogjc.app_server_worker.AppServerClient", _FakeAppServerClient),
             mock.patch("robogjc.app_server_worker.worker._AGENT_HOME_STAGE", root / "missing-agent-home-stage"),
             mock.patch("robogjc.app_server_worker.persona.system_append", return_value="SYS"),
-            mock.patch("robogjc.app_server_worker.worker._build_prompt", return_value="fix https://user:token@example.invalid/repo.git"),
+            mock.patch(
+                "robogjc.app_server_worker.worker._build_prompt",
+                return_value="fix https://user:token@example.invalid/repo.git",
+            ),
+            mock.patch(
+                "robogjc.app_server_worker.register_cancel_hook",
+                side_effect=lambda hook: setattr(_FakeAppServerClient, "registered_cancel_hook", hook),
+            ),
+            mock.patch("robogjc.app_server_worker.unregister_cancel_hook", return_value=None),
         ]
         self._patches = patches
         for patch in patches:
@@ -140,7 +168,9 @@ class AppServerWorkerTest(unittest.TestCase):
 
         self.assertEqual(result, "done")
         client = _FakeAppServerClient.instances[0]
-        self.assertEqual([name for name, _ in client.calls[:4]], ["initialize", "thread/start", "turn/start", "turn/steer"])
+        self.assertEqual(
+            [name for name, _ in client.calls[:4]], ["initialize", "thread/start", "turn/start", "turn/steer"]
+        )
         self.assertEqual(client.calls[1][1]["sessionDir"], str(self.session_dir))
         self.assertEqual(client.calls[2][1]["thread_id"], "thread-1")
         self.assertEqual(client.calls[3][1]["input"], "fix https://user:token@example.invalid/repo.git")
@@ -150,6 +180,46 @@ class AppServerWorkerTest(unittest.TestCase):
         self.assertIn("https://***@example.invalid/repo.git", audit_json)
         self.assertNotIn("user:token@", audit_json)
         self.assertIn(("delivery-1", "test-model"), self.db.models)
+
+    def test_run_task_resumes_persisted_thread(self) -> None:
+        (self.session_dir / "app-server-thread.json").write_text('{"thread_id":"thread-old"}\n', encoding="utf-8")
+
+        result = asyncio.run(app_server_worker.run_task(task_kind="triage_issue", inputs=self.inputs))
+
+        self.assertEqual(result, "done")
+        client = _FakeAppServerClient.instances[0]
+        self.assertEqual(
+            [name for name, _ in client.calls[:4]], ["initialize", "thread/resume", "turn/start", "turn/steer"]
+        )
+        self.assertEqual(client.calls[1][1]["thread_id"], "thread-old")
+        self.assertEqual(client.calls[1][1]["sessionDir"], str(self.session_dir))
+        self.assertEqual(client.calls[1][1]["sessionId"], "thread-old")
+        self.assertEqual(client.calls[2][1]["thread_id"], "thread-old")
+
+    def test_run_task_falls_back_to_start_when_resume_fails(self) -> None:
+        (self.session_dir / "app-server-thread.json").write_text('{"thread_id":"thread-old"}\n', encoding="utf-8")
+        _FakeAppServerClient.fail_resume = True
+
+        result = asyncio.run(app_server_worker.run_task(task_kind="triage_issue", inputs=self.inputs))
+
+        self.assertEqual(result, "done")
+        client = _FakeAppServerClient.instances[0]
+        self.assertEqual(
+            [name for name, _ in client.calls[:5]],
+            ["initialize", "thread/resume", "thread/start", "turn/start", "turn/steer"],
+        )
+        self.assertEqual(client.calls[3][1]["thread_id"], "thread-1")
+        metadata = json.loads((self.session_dir / "app-server-thread.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata, {"thread_id": "thread-1"})
+
+    def test_cancel_interrupt_carries_active_turn_id(self) -> None:
+        _FakeAppServerClient.cancel_during_steer = True
+
+        result = asyncio.run(app_server_worker.run_task(task_kind="triage_issue", inputs=self.inputs))
+
+        self.assertEqual(result, "done")
+        client = _FakeAppServerClient.instances[0]
+        self.assertIn(("turn/interrupt", {"thread_id": "thread-1", "turn_id": "turn-1"}), client.calls)
 
 
 if __name__ == "__main__":

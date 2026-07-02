@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "get_repo_query",
+      "method": "GET",
+      "path": "/gh/v1/repo?repo=octo%2Fwidget",
+      "body": "",
+      "key": "test-hmac-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "timestamp": "1710000000",
+      "expected_timestamp": "1710000000",
+      "expected_signature": "873c384a31a185bfcaecb2e16df6f0a81d2803db17f0e8d86e2cf721c7bcc17c",
+      "verify_ok": true
+    },
+    {
+      "name": "post_json",
+      "method": "post",
+      "path": "/gh/v1/comment",
+      "body": "{\"body\":\"hello\",\"repo\":\"octo/widget\"}",
+      "key": "secret-key",
+      "timestamp": "1710000030",
+      "expected_timestamp": "1710000030",
+      "expected_signature": "0144e9a25b6daee7c4214c5bbc897375c36a409b2183911a2f481525fa518254",
+      "verify_ok": true
+    },
+    {
+      "name": "unicode_body",
+      "method": "PATCH",
+      "path": "/gh/v1/issues/7",
+      "body": "snowman=☃&emoji=🦀",
+      "key": "unicode-key-✓",
+      "timestamp": "1710000060",
+      "expected_timestamp": "1710000060",
+      "expected_signature": "931b27b138d12e4fd0ce1a6632afd0dff4c1e88ae2dfe8038eea8a21b5c7c41d",
+      "verify_ok": true
+    }
+  ]
+}
