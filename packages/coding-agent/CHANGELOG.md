@@ -4,11 +4,8 @@
 ### Fixed
 
 - `/retry` now resumes sessions left with an interrupted user/custom/tool-result tail after a crash or power loss, and recovers unresolved assistant tool-use tails instead of reporting "Nothing to retry".
-- Queued prompt shortcuts now keep working during auto context-full compaction: Tab/Alt+Enter queue text immediately, and Alt+Up restores only the newest queued prompt for editing instead of merging the full queue.
 - Queued prompt shortcuts now keep working during auto context-full compaction: Tab/Alt+Enter queue text immediately, `/skill:*` entries replay through the skill invocation path after compaction, and Alt+Up restores only the newest queued prompt for editing instead of merging the full queue.
-
-### Fixed
-
+- Skill prompt cards now size their collapsed arguments preview to the current terminal width instead of wrapping at a fixed narrow column.
 - `gjc update` now refreshes opted-in on-disk default workflow skill copies (written by `gjc setup defaults` under the agent dir) after a successful update, so they no longer stay stale relative to the embedded defaults; copies that were never installed are left absent.
 - cmux workspace auto-renames now include a `GJC: ` prefix so renamed workspaces remain identifiable as GJC sessions.
 - `gjc --tmux --resume` now reaches the session picker/resume target instead of auto-attaching a same-branch managed tmux session before the inner resume resolver runs.
