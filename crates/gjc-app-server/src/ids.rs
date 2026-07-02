@@ -1,9 +1,9 @@
 //! Stable identity types for the app-server.
 //!
 //! `ThreadId` is the immutable, Rust-owned codex thread identity (see the
-//! Phase 0A identity model). `TurnId`/`ItemId` scope streaming lifecycle events.
-//! `BackendGeneration` is the monotonic attachment counter used to reject stale
-//! backend events after a resume/switch/unload/dispose.
+//! Phase 0A identity model). `TurnId`/`ItemId` scope streaming lifecycle
+//! events. `BackendGeneration` is the monotonic attachment counter used to
+//! reject stale backend events after a resume/switch/unload/dispose.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -1,7 +1,9 @@
 //! Prompt template loading and rendering for robogjc personas.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoInfo {
@@ -80,12 +82,15 @@ impl PromptAssets {
 	pub fn new(root: impl Into<PathBuf>) -> Self {
 		Self { root: root.into() }
 	}
+
 	pub fn path(&self) -> &Path {
 		&self.root
 	}
+
 	pub fn load(&self, name: &str) -> std::io::Result<String> {
 		std::fs::read_to_string(self.root.join(name))
 	}
+
 	pub fn load_toml(&self, name: &str) -> Result<toml::Value, String> {
 		let text = self.load(name).map_err(|e| e.to_string())?;
 		let table: toml::Table = toml::from_str(&text).map_err(|e| e.to_string())?;

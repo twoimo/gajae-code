@@ -1,0 +1,13 @@
+{
+  "association": null,
+  "directive": false,
+  "directive_author": null,
+  "directive_body": null,
+  "directive_pragmas": [],
+  "issue_key": "octo/widget#4",
+  "reason": "issue_comment.created",
+  "repo": "octo/widget",
+  "should_queue": true,
+  "submitter": "alice",
+  "task": "handle_comment"
+}

@@ -1,0 +1,13 @@
+{
+  "association": null,
+  "directive": false,
+  "directive_author": null,
+  "directive_body": null,
+  "directive_pragmas": [],
+  "issue_key": null,
+  "reason": "PR not authored by bot",
+  "repo": "octo/widget",
+  "should_queue": false,
+  "submitter": null,
+  "task": null
+}

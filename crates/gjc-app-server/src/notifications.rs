@@ -4,11 +4,12 @@
 //! extension. The Rust core only routes inbound calls to the host and wraps
 //! outbound frames as JSON-RPC notifications.
 
-use crate::jsonrpc::Notification;
-
 use async_trait::async_trait;
 
-use crate::error::{AppServerError, Result};
+use crate::{
+	error::{AppServerError, Result},
+	jsonrpc::Notification,
+};
 
 pub const METHOD_PREFIX: &str = "gjc/notifications/";
 pub const EVENT_METHOD: &str = "gjc/notifications/event";

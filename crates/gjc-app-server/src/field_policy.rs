@@ -1,7 +1,7 @@
 //! Unknown-field policy (Phase 0A gate).
 //!
-//! Codex-core methods are **lenient**: unknown/unsupported fields are ignored to
-//! maximize codex-client interop. `gjc/*` extension methods are **strict**:
+//! Codex-core methods are **lenient**: unknown/unsupported fields are ignored
+//! to maximize codex-client interop. `gjc/*` extension methods are **strict**:
 //! unknown fields are rejected with `-32602 invalid params`. This keeps GJC
 //! automation deterministic and schema-driven while tolerating forward-compat
 //! fields (environments, selectedCapabilityRoots, realtime, plugin fields, …)

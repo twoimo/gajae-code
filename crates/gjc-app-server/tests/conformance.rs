@@ -9,13 +9,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gjc_app_server::backend::{
-	AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo,
+use gjc_app_server::{
+	backend::{AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo},
+	identity::SessionMetadata,
+	ids::{BackendGeneration, ThreadId, TurnId},
+	jsonrpc::{Notification, parse_inbound},
+	server::{AppServer, AppServerConfig, EventSink},
 };
-use gjc_app_server::identity::SessionMetadata;
-use gjc_app_server::ids::{BackendGeneration, ThreadId, TurnId};
-use gjc_app_server::jsonrpc::{Notification, parse_inbound};
-use gjc_app_server::server::{AppServer, AppServerConfig, EventSink};
 use parking_lot::Mutex;
 
 // ---- test doubles -----------------------------------------------------------
@@ -31,6 +31,7 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<TurnId> {
 		Ok(TurnId::generate())
 	}
+
 	async fn steer(
 		&self,
 		_c: &BackendCallContext,
@@ -38,9 +39,11 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<TurnId> {
 		Ok(TurnId::generate())
 	}
+
 	async fn abort(&self, _c: &BackendCallContext, _t: &TurnId) -> gjc_app_server::Result<()> {
 		Ok(())
 	}
+
 	async fn get_state(
 		&self,
 		_c: &BackendCallContext,
@@ -48,12 +51,14 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({ "status": "idle" }))
 	}
+
 	async fn get_messages(
 		&self,
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!([]))
 	}
+
 	async fn set_model(
 		&self,
 		_c: &BackendCallContext,
@@ -62,6 +67,7 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({ "provider": provider, "modelId": model_id }))
 	}
+
 	async fn compact(
 		&self,
 		_c: &BackendCallContext,
@@ -69,6 +75,7 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({ "compacted": true }))
 	}
+
 	async fn set_todos(
 		&self,
 		_c: &BackendCallContext,
@@ -76,6 +83,7 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<()> {
 		Ok(())
 	}
+
 	async fn exec(
 		&self,
 		_c: &BackendCallContext,
@@ -83,6 +91,7 @@ impl AgentBackend for EchoBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({ "exitCode": 0 }))
 	}
+
 	async fn dispose(&self, _c: &BackendCallContext) -> gjc_app_server::Result<()> {
 		Ok(())
 	}
@@ -90,7 +99,7 @@ impl AgentBackend for EchoBackend {
 
 #[derive(Clone, Default)]
 struct EchoFactory {
-	notification_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+	notification_calls:  Arc<Mutex<Vec<(String, serde_json::Value)>>>,
 	notification_replay: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
@@ -101,18 +110,20 @@ impl BackendFactory for EchoFactory {
 		_p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		let info = BackendHandleInfo {
-			thread_id: ThreadId::generate(),
-			generation: BackendGeneration::FIRST,
+			thread_id:        ThreadId::generate(),
+			generation:       BackendGeneration::FIRST,
 			session_metadata: SessionMetadata::default(),
 		};
 		Ok((info, Arc::new(EchoBackend)))
 	}
+
 	async fn resume_thread(
 		&self,
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.create_thread(p).await
 	}
+
 	async fn fork_thread(
 		&self,
 		p: serde_json::Value,
@@ -373,10 +384,10 @@ async fn notifications_subscribe_routes_to_host_and_returns_ok() {
 	let resp = server.dispatch(&conn, req).await.unwrap();
 
 	assert_eq!(resp.result.unwrap(), serde_json::json!({ "ok": true }));
-	assert_eq!(
-		factory.notification_calls(),
-		vec![("notifications.subscribe".to_string(), serde_json::json!({ "client": "fake" }))]
-	);
+	assert_eq!(factory.notification_calls(), vec![(
+		"notifications.subscribe".to_string(),
+		serde_json::json!({ "client": "fake" })
+	)]);
 	let notes = sink.notes.lock();
 	assert_eq!(notes.len(), 2);
 	assert!(notes.iter().all(|n| n.method == "gjc/notifications/event"));
@@ -410,10 +421,10 @@ async fn notifications_reply_routes_to_host_with_notifications_kind() {
 		resp.result.unwrap(),
 		serde_json::json!({ "ok": true, "kind": "notifications.reply" })
 	);
-	assert_eq!(
-		factory.notification_calls(),
-		vec![("notifications.reply".to_string(), serde_json::json!({ "id": "a1", "answer": "yes" }))]
-	);
+	assert_eq!(factory.notification_calls(), vec![(
+		"notifications.reply".to_string(),
+		serde_json::json!({ "id": "a1", "answer": "yes" })
+	)]);
 }
 
 #[tokio::test]
@@ -485,8 +496,8 @@ async fn host_tools_round_trip() {
 
 #[derive(Clone, Default)]
 struct CapturingFactory {
-	created: Arc<Mutex<Vec<serde_json::Value>>>,
-	resumed: Arc<Mutex<Vec<serde_json::Value>>>,
+	created:          Arc<Mutex<Vec<serde_json::Value>>>,
+	resumed:          Arc<Mutex<Vec<serde_json::Value>>>,
 	resume_thread_id: Arc<Mutex<Option<ThreadId>>>,
 }
 
@@ -499,13 +510,14 @@ impl BackendFactory for CapturingFactory {
 		self.created.lock().push(p.clone());
 		Ok((
 			BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(EchoBackend),
 		))
 	}
+
 	async fn resume_thread(
 		&self,
 		p: serde_json::Value,
@@ -525,6 +537,7 @@ impl BackendFactory for CapturingFactory {
 			Arc::new(EchoBackend),
 		))
 	}
+
 	async fn fork_thread(
 		&self,
 		p: serde_json::Value,
@@ -578,7 +591,11 @@ async fn resume_preserves_host_tool_registry() {
 	let thread = start_thread(&server, &conn).await;
 	let set = parse_inbound(&format!(r#"{{"id":22,"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{{"name":"lookup","description":"Lookup","inputSchema":{{}}}}]}}}}"#, thread.0)).unwrap();
 	assert!(server.dispatch(&conn, set).await.unwrap().error.is_none());
-	let resume = parse_inbound(&format!(r#"{{"id":23,"method":"thread/resume","params":{{"threadId":"{}"}}}}"#, thread.0)).unwrap();
+	let resume = parse_inbound(&format!(
+		r#"{{"id":23,"method":"thread/resume","params":{{"threadId":"{}"}}}}"#,
+		thread.0
+	))
+	.unwrap();
 	let resp = server.dispatch(&conn, resume).await.unwrap();
 	assert!(resp.error.is_none());
 	assert_eq!(resp.result.unwrap()["resumed"], true);
@@ -601,22 +618,26 @@ async fn resume_bumps_generation_rejects_stale() {
 	let (server, _) = build();
 	let conn = initialize(&server).await;
 	let thread = start_thread(&server, &conn).await;
-	let resume = parse_inbound(&format!(r#"{{"id":24,"method":"thread/resume","params":{{"threadId":"{}"}}}}"#, thread.0)).unwrap();
+	let resume = parse_inbound(&format!(
+		r#"{{"id":24,"method":"thread/resume","params":{{"threadId":"{}"}}}}"#,
+		thread.0
+	))
+	.unwrap();
 	let resp = server.dispatch(&conn, resume).await.unwrap();
 	assert!(resp.error.is_none());
 	assert_eq!(resp.result.unwrap()["thread"]["generation"], 2);
 	let stale = BackendEvent {
-		thread_id: thread.clone(),
+		thread_id:  thread.clone(),
 		generation: BackendGeneration::FIRST,
 		event_type: "text_delta".into(),
-		payload: serde_json::json!({"text":"stale"}),
+		payload:    serde_json::json!({"text":"stale"}),
 	};
 	assert_eq!(server.emit_backend_event(&stale), 0);
 	let current = BackendEvent {
-		thread_id: thread,
+		thread_id:  thread,
 		generation: BackendGeneration(2),
 		event_type: "agent_start".into(),
-		payload: serde_json::json!({}),
+		payload:    serde_json::json!({}),
 	};
 	assert!(server.emit_backend_event(&current) > 0);
 }
@@ -681,11 +702,18 @@ async fn host_tools_result_enforces_strict_tagged_union() {
 	let thread = start_thread(&server, &conn).await;
 	for (id, params) in [
 		(42, serde_json::json!({"threadId":thread.0,"callId":"c","ok":true})),
-		(43, serde_json::json!({"threadId":thread.0,"callId":"c","ok":true,"result":{},"error":{"message":"bad"}})),
+		(
+			43,
+			serde_json::json!({"threadId":thread.0,"callId":"c","ok":true,"result":{},"error":{"message":"bad"}}),
+		),
 		(44, serde_json::json!({"threadId":thread.0,"callId":"c","ok":false,"result":{}})),
 		(45, serde_json::json!({"threadId":thread.0,"callId":"c","ok":false,"error":{}})),
 	] {
-		let req = parse_inbound(&format!(r#"{{"id":{},"method":"gjc/hostTools/result","params":{}}}"#, id, params)).unwrap();
+		let req = parse_inbound(&format!(
+			r#"{{"id":{},"method":"gjc/hostTools/result","params":{}}}"#,
+			id, params
+		))
+		.unwrap();
 		let resp = server.dispatch(&conn, req).await.unwrap();
 		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
 	}
@@ -701,7 +729,11 @@ async fn host_tools_set_validates_descriptor_shape() {
 		(47, serde_json::json!({"name":"x","description":7,"inputSchema":{}})),
 		(48, serde_json::json!({"name":"x","description":"x","inputSchema":true})),
 	] {
-		let req = parse_inbound(&format!(r#"{{"id":{},"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{}]}}}}"#, id, thread.0, tool)).unwrap();
+		let req = parse_inbound(&format!(
+			r#"{{"id":{},"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{}]}}}}"#,
+			id, thread.0, tool
+		))
+		.unwrap();
 		let resp = server.dispatch(&conn, req).await.unwrap();
 		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
 	}
@@ -743,12 +775,26 @@ async fn host_tools_update_dispatches_to_pending_call() {
 		.unwrap()
 		.to_string();
 	let update = parse_inbound(&format!(r#"{{"id":491,"method":"gjc/hostTools/update","params":{{"threadId":"{}","callId":"{}","payload":{{"pct":50}}}}}}"#, thread.0, call_id)).unwrap();
-	assert!(server.dispatch(&conn, update).await.unwrap().error.is_none());
+	assert!(
+		server
+			.dispatch(&conn, update)
+			.await
+			.unwrap()
+			.error
+			.is_none()
+	);
 	let unknown = parse_inbound(&format!(r#"{{"id":492,"method":"gjc/hostTools/update","params":{{"threadId":"{}","callId":"missing","payload":{{}}}}}}"#, thread.0)).unwrap();
 	let resp = server.dispatch(&conn, unknown).await.unwrap();
 	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::NOT_FOUND);
 	let result = parse_inbound(&format!(r#"{{"id":493,"method":"gjc/hostTools/result","params":{{"threadId":"{}","callId":"{}","ok":true,"result":{{"done":true}}}}}}"#, thread.0, call_id)).unwrap();
-	assert!(server.dispatch(&conn, result).await.unwrap().error.is_none());
+	assert!(
+		server
+			.dispatch(&conn, result)
+			.await
+			.unwrap()
+			.error
+			.is_none()
+	);
 	assert_eq!(call.await.unwrap().unwrap().result.unwrap()["done"], true);
 }
 
@@ -787,6 +833,7 @@ impl AgentBackend for BlockingBackend {
 		std::future::pending::<()>().await;
 		unreachable!()
 	}
+
 	async fn steer(
 		&self,
 		_c: &BackendCallContext,
@@ -794,9 +841,11 @@ impl AgentBackend for BlockingBackend {
 	) -> gjc_app_server::Result<TurnId> {
 		Ok(TurnId::generate())
 	}
+
 	async fn abort(&self, _c: &BackendCallContext, _t: &TurnId) -> gjc_app_server::Result<()> {
 		Ok(())
 	}
+
 	async fn get_state(
 		&self,
 		_c: &BackendCallContext,
@@ -804,12 +853,14 @@ impl AgentBackend for BlockingBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({}))
 	}
+
 	async fn get_messages(
 		&self,
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!([]))
 	}
+
 	async fn set_model(
 		&self,
 		_c: &BackendCallContext,
@@ -818,6 +869,7 @@ impl AgentBackend for BlockingBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({"provider":provider,"modelId":model_id}))
 	}
+
 	async fn compact(
 		&self,
 		_c: &BackendCallContext,
@@ -825,6 +877,7 @@ impl AgentBackend for BlockingBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({}))
 	}
+
 	async fn set_todos(
 		&self,
 		_c: &BackendCallContext,
@@ -832,6 +885,7 @@ impl AgentBackend for BlockingBackend {
 	) -> gjc_app_server::Result<()> {
 		Ok(())
 	}
+
 	async fn exec(
 		&self,
 		_c: &BackendCallContext,
@@ -839,6 +893,7 @@ impl AgentBackend for BlockingBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({}))
 	}
+
 	async fn dispose(&self, _c: &BackendCallContext) -> gjc_app_server::Result<()> {
 		Ok(())
 	}
@@ -852,19 +907,21 @@ impl BackendFactory for BlockingFactory {
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		Ok((
 			BackendHandleInfo {
-				thread_id: self.thread_id.clone(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        self.thread_id.clone(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(BlockingBackend),
 		))
 	}
+
 	async fn resume_thread(
 		&self,
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.create_thread(p).await
 	}
+
 	async fn fork_thread(
 		&self,
 		p: serde_json::Value,
@@ -965,7 +1022,14 @@ async fn host_tools_result_unknown_and_duplicate_call_ids_are_terminal() {
 		.unwrap();
 	let call_id = note.params.unwrap()["callId"].as_str().unwrap().to_string();
 	let result = parse_inbound(&format!(r#"{{"id":62,"method":"gjc/hostTools/result","params":{{"threadId":"{}","callId":"{}","ok":true,"result":{{"answer":1}}}}}}"#, thread.0, call_id)).unwrap();
-	assert!(server.dispatch(&conn, result).await.unwrap().error.is_none());
+	assert!(
+		server
+			.dispatch(&conn, result)
+			.await
+			.unwrap()
+			.error
+			.is_none()
+	);
 	assert_eq!(call.await.unwrap().unwrap().result.unwrap()["answer"], 1);
 	let duplicate = parse_inbound(&format!(r#"{{"id":63,"method":"gjc/hostTools/result","params":{{"threadId":"{}","callId":"{}","ok":true,"result":{{"answer":2}}}}}}"#, thread.0, call_id)).unwrap();
 	let resp = server.dispatch(&conn, duplicate).await.unwrap();
@@ -986,7 +1050,13 @@ async fn host_tools_late_result_after_cancel_is_rejected_and_waiter_resolves_err
 		let turn = turn.clone();
 		tokio::spawn(async move {
 			server
-				.call_host_tool_with_timeout(&thread, &turn, "lookup", serde_json::json!({}), std::time::Duration::from_secs(5))
+				.call_host_tool_with_timeout(
+					&thread,
+					&turn,
+					"lookup",
+					serde_json::json!({}),
+					std::time::Duration::from_secs(5),
+				)
 				.await
 		})
 	};
@@ -1003,7 +1073,11 @@ async fn host_tools_late_result_after_cancel_is_rejected_and_waiter_resolves_err
 		.as_str()
 		.unwrap()
 		.to_string();
-	let del = parse_inbound(&format!(r#"{{"id":650,"method":"thread/delete","params":{{"threadId":"{}"}}}}"#, thread.0)).unwrap();
+	let del = parse_inbound(&format!(
+		r#"{{"id":650,"method":"thread/delete","params":{{"threadId":"{}"}}}}"#,
+		thread.0
+	))
+	.unwrap();
 	assert!(server.dispatch(&conn, del).await.unwrap().error.is_none());
 	assert!(call.await.unwrap().is_err());
 	assert!(sink.methods().iter().any(|m| m == "gjc/hostTools/cancel"));
@@ -1025,7 +1099,13 @@ async fn host_tools_set_replacement_does_not_cancel_pending_or_leak_to_other_thr
 		let a = a.clone();
 		tokio::spawn(async move {
 			server
-				.call_host_tool_with_timeout(&a, &TurnId("turn_replace".into()), "lookup", serde_json::json!({}), std::time::Duration::from_secs(5))
+				.call_host_tool_with_timeout(
+					&a,
+					&TurnId("turn_replace".into()),
+					"lookup",
+					serde_json::json!({}),
+					std::time::Duration::from_secs(5),
+				)
 				.await
 		})
 	};
@@ -1043,19 +1123,45 @@ async fn host_tools_set_replacement_does_not_cancel_pending_or_leak_to_other_thr
 		.unwrap()
 		.to_string();
 	let replace = parse_inbound(&format!(r#"{{"id":67,"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{{"name":"other","description":"Other","inputSchema":{{}}}}]}}}}"#, a.0)).unwrap();
-	assert!(server.dispatch(&conn, replace).await.unwrap().error.is_none());
+	assert!(
+		server
+			.dispatch(&conn, replace)
+			.await
+			.unwrap()
+			.error
+			.is_none()
+	);
 	let wrong_thread = server
-		.call_host_tool_with_timeout(&b, &TurnId("turn_other_thread".into()), "other", serde_json::json!({}), std::time::Duration::from_millis(1))
+		.call_host_tool_with_timeout(
+			&b,
+			&TurnId("turn_other_thread".into()),
+			"other",
+			serde_json::json!({}),
+			std::time::Duration::from_millis(1),
+		)
 		.await
 		.unwrap_err();
 	assert_eq!(wrong_thread.code, gjc_app_server::error::codes::NOT_FOUND);
 	let old_removed = server
-		.call_host_tool_with_timeout(&a, &TurnId("turn_old_removed".into()), "lookup", serde_json::json!({}), std::time::Duration::from_millis(1))
+		.call_host_tool_with_timeout(
+			&a,
+			&TurnId("turn_old_removed".into()),
+			"lookup",
+			serde_json::json!({}),
+			std::time::Duration::from_millis(1),
+		)
 		.await
 		.unwrap_err();
 	assert_eq!(old_removed.code, gjc_app_server::error::codes::NOT_FOUND);
 	let result = parse_inbound(&format!(r#"{{"id":68,"method":"gjc/hostTools/result","params":{{"threadId":"{}","callId":"{}","ok":true,"result":{{"ok":true}}}}}}"#, a.0, call_id)).unwrap();
-	assert!(server.dispatch(&conn, result).await.unwrap().error.is_none());
+	assert!(
+		server
+			.dispatch(&conn, result)
+			.await
+			.unwrap()
+			.error
+			.is_none()
+	);
 	assert!(pending.await.unwrap().unwrap().ok);
 }
 
@@ -1065,7 +1171,10 @@ async fn thread_resume_unknown_identity_reports_fresh_session_fallback() {
 	*factory.resume_thread_id.lock() = Some(ThreadId("fresh_thread".into()));
 	let (server, _) = build_capturing(factory);
 	let conn = initialize(&server).await;
-	let req = parse_inbound(r#"{"id":69,"method":"thread/resume","params":{"threadId":"missing_thread","cwd":"/repo"}}"#).unwrap();
+	let req = parse_inbound(
+		r#"{"id":69,"method":"thread/resume","params":{"threadId":"missing_thread","cwd":"/repo"}}"#,
+	)
+	.unwrap();
 	let resp = server.dispatch(&conn, req).await.unwrap();
 	assert!(resp.error.is_none());
 	let result = resp.result.unwrap();
@@ -1085,12 +1194,22 @@ async fn thread_delete_with_pending_host_tool_call_cancels_waiter() {
 		let thread = thread.clone();
 		tokio::spawn(async move {
 			server
-				.call_host_tool_with_timeout(&thread, &TurnId("turn_delete".into()), "lookup", serde_json::json!({}), std::time::Duration::from_secs(5))
+				.call_host_tool_with_timeout(
+					&thread,
+					&TurnId("turn_delete".into()),
+					"lookup",
+					serde_json::json!({}),
+					std::time::Duration::from_secs(5),
+				)
 				.await
 		})
 	};
 	tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-	let del = parse_inbound(&format!(r#"{{"id":71,"method":"thread/delete","params":{{"threadId":"{}"}}}}"#, thread.0)).unwrap();
+	let del = parse_inbound(&format!(
+		r#"{{"id":71,"method":"thread/delete","params":{{"threadId":"{}"}}}}"#,
+		thread.0
+	))
+	.unwrap();
 	assert!(server.dispatch(&conn, del).await.unwrap().error.is_none());
 	let err = pending.await.unwrap().unwrap_err();
 	assert_eq!(err.code, gjc_app_server::error::codes::CONFLICT);

@@ -1,0 +1,18 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "nit",
+    "user": {
+      "login": "alice"
+    }
+  },
+  "pull_request": {
+    "number": 9,
+    "user": {
+      "login": "robogjc-bot"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

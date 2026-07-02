@@ -1,0 +1,18 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "hi",
+    "user": {
+      "login": "alice"
+    }
+  },
+  "issue": {
+    "number": 9,
+    "pull_request": {
+      "url": "x"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

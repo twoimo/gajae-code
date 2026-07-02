@@ -1,0 +1,421 @@
+{
+  "schemaVersion": 1,
+  "kind": "black-box-api-receipt",
+  "cases": [
+    {
+      "name": "path-query replay A-to-B",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "name": "timestamp exactly skew edge",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "name": "timestamp expired",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "name": "body exactly cap",
+      "status": 400,
+      "passed": true
+    },
+    {
+      "name": "body cap+1",
+      "status": 413,
+      "passed": true
+    },
+    {
+      "name": "chunked streamed oversize",
+      "statusLine": "HTTP/1.1 413 Payload Too Large",
+      "passed": true
+    },
+    {
+      "name": "unlisted route valid HMAC no PAT injection",
+      "status": 404,
+      "upstreamHitsBefore": 1,
+      "upstreamHitsAfter": 1,
+      "passed": true
+    },
+    {
+      "name": "bad signature \"0\"",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "name": "bad signature \"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "name": "bad signature \"☃\"",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "name": "PAT injection only after accepted HMAC",
+      "status": 200,
+      "authSeenRedacted": [
+        "<present>"
+      ],
+      "passed": true
+    },
+    {
+      "name": "PAT leak hunt strings",
+      "searched": 2,
+      "passed": true
+    },
+    {
+      "name": "event routing differential 10 tricky payloads",
+      "count": 10,
+      "passed": true,
+      "routes": [
+        {
+          "name": "bot-authored comment",
+          "event": "issue_comment",
+          "rust": {
+            "decision": "skip",
+            "task": null,
+            "repo": "octo/widget",
+            "issue_key": null,
+            "reason": "bot/self comment",
+            "submitter": null,
+            "association": null,
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "skip",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": null,
+            "reason": "bot/self comment",
+            "repo": "octo/widget",
+            "submitter": null,
+            "task": null
+          },
+          "passed": true
+        },
+        {
+          "name": "self-comment",
+          "event": "issue_comment",
+          "rust": {
+            "decision": "skip",
+            "task": null,
+            "repo": "octo/widget",
+            "issue_key": null,
+            "reason": "bot/self comment",
+            "submitter": null,
+            "association": null,
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "skip",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": null,
+            "reason": "bot/self comment",
+            "repo": "octo/widget",
+            "submitter": null,
+            "task": null
+          },
+          "passed": true
+        },
+        {
+          "name": "non-allowlisted repo",
+          "event": "issues",
+          "rust": {
+            "decision": "skip",
+            "task": null,
+            "repo": "evil/repo",
+            "issue_key": null,
+            "reason": "repo not on allowlist",
+            "submitter": null,
+            "association": null,
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "skip",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": null,
+            "reason": "repo not on allowlist",
+            "repo": "evil/repo",
+            "submitter": null,
+            "task": null
+          },
+          "passed": true
+        },
+        {
+          "name": "PR review from maintainer",
+          "event": "pull_request_review_comment",
+          "rust": {
+            "decision": "queue",
+            "task": "handle_review",
+            "repo": "octo/widget",
+            "issue_key": "octo/widget#9",
+            "reason": "pull_request_review_comment.created",
+            "submitter": "maint",
+            "association": "MEMBER",
+            "directive": true,
+            "directive_body": "fix",
+            "directive_author": "maint",
+            "directive_pragmas": [
+              [
+                "model",
+                "gpt"
+              ]
+            ]
+          },
+          "python": {
+            "association": "MEMBER",
+            "decision": "queue",
+            "directive": true,
+            "directive_author": "maint",
+            "directive_body": "fix",
+            "directive_pragmas": [
+              [
+                "model",
+                "gpt"
+              ]
+            ],
+            "issue_key": "octo/widget#9",
+            "reason": "pull_request_review_comment.created",
+            "repo": "octo/widget",
+            "submitter": "maint",
+            "task": "handle_review"
+          },
+          "passed": true
+        },
+        {
+          "name": "directive with pragmas",
+          "event": "issue_comment",
+          "rust": {
+            "decision": "queue",
+            "task": "handle_comment",
+            "repo": "octo/widget",
+            "issue_key": "octo/widget#4",
+            "reason": "issue_comment.created",
+            "submitter": "maint",
+            "association": "MEMBER",
+            "directive": true,
+            "directive_body": "do it",
+            "directive_author": "maint",
+            "directive_pragmas": [
+              [
+                "thinking",
+                "low"
+              ]
+            ]
+          },
+          "python": {
+            "association": "MEMBER",
+            "decision": "queue",
+            "directive": true,
+            "directive_author": "maint",
+            "directive_body": "do it",
+            "directive_pragmas": [
+              [
+                "thinking",
+                "low"
+              ]
+            ],
+            "issue_key": "octo/widget#4",
+            "reason": "issue_comment.created",
+            "repo": "octo/widget",
+            "submitter": "maint",
+            "task": "handle_comment"
+          },
+          "passed": true
+        },
+        {
+          "name": "edited ignored",
+          "event": "issue_comment",
+          "rust": {
+            "decision": "skip",
+            "task": null,
+            "repo": "octo/widget",
+            "issue_key": null,
+            "reason": "issue_comment.edited not handled",
+            "submitter": null,
+            "association": null,
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "skip",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": null,
+            "reason": "issue_comment.edited not handled",
+            "repo": "octo/widget",
+            "submitter": null,
+            "task": null
+          },
+          "passed": true
+        },
+        {
+          "name": "created handled",
+          "event": "issue_comment",
+          "rust": {
+            "decision": "queue",
+            "task": "handle_comment",
+            "repo": "octo/widget",
+            "issue_key": "octo/widget#4",
+            "reason": "issue_comment.created",
+            "submitter": "alice",
+            "association": null,
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "queue",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": "octo/widget#4",
+            "reason": "issue_comment.created",
+            "repo": "octo/widget",
+            "submitter": "alice",
+            "task": "handle_comment"
+          },
+          "passed": true
+        },
+        {
+          "name": "reviewer bot directive",
+          "event": "issue_comment",
+          "rust": {
+            "decision": "queue",
+            "task": "handle_pr_conversation",
+            "repo": "octo/widget",
+            "issue_key": "octo/widget#4",
+            "reason": "issue_comment.created on PR #4",
+            "submitter": "reviewbot[bot]",
+            "association": null,
+            "directive": true,
+            "directive_body": "ship",
+            "directive_author": "reviewbot",
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "queue",
+            "directive": true,
+            "directive_author": "reviewbot",
+            "directive_body": "ship",
+            "directive_pragmas": [],
+            "issue_key": "octo/widget#4",
+            "reason": "issue_comment.created on PR #4",
+            "repo": "octo/widget",
+            "submitter": "reviewbot[bot]",
+            "task": "handle_pr_conversation"
+          },
+          "passed": true
+        },
+        {
+          "name": "issue opened",
+          "event": "issues",
+          "rust": {
+            "decision": "queue",
+            "task": "triage_issue",
+            "repo": "octo/widget",
+            "issue_key": "octo/widget#4",
+            "reason": "issues.opened",
+            "submitter": "alice",
+            "association": "FIRST_TIME_CONTRIBUTOR",
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": "FIRST_TIME_CONTRIBUTOR",
+            "decision": "queue",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": "octo/widget#4",
+            "reason": "issues.opened",
+            "repo": "octo/widget",
+            "submitter": "alice",
+            "task": "triage_issue"
+          },
+          "passed": true
+        },
+        {
+          "name": "merged bot PR",
+          "event": "pull_request",
+          "rust": {
+            "decision": "queue",
+            "task": "cleanup_workspace",
+            "repo": "octo/widget",
+            "issue_key": "octo/widget#9",
+            "reason": "pull_request.merged",
+            "submitter": null,
+            "association": null,
+            "directive": false,
+            "directive_body": null,
+            "directive_author": null,
+            "directive_pragmas": []
+          },
+          "python": {
+            "association": null,
+            "decision": "queue",
+            "directive": false,
+            "directive_author": null,
+            "directive_body": null,
+            "directive_pragmas": [],
+            "issue_key": "octo/widget#9",
+            "reason": "pull_request.merged",
+            "repo": "octo/widget",
+            "submitter": null,
+            "task": "cleanup_workspace"
+          },
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "typed-only proxy rejects generic response-header smuggling",
+      "status": 404,
+      "passed": true
+    }
+  ],
+  "commands": [
+    "cargo test -p robogjc --test g004_proxy_redteam -- --nocapture"
+  ],
+  "summary": {
+    "total": 14,
+    "failed": 0,
+    "verdict": "PASS"
+  }
+}

@@ -2,17 +2,17 @@
 //!
 //! Hosts the [`gjc_app_server`] core in-process and connects it to the
 //! TypeScript `AgentSession` using the repo's inverted-control napi pattern
-//! (mirrors [`crate::notifications`]): Rust owns protocol/registry/dispatch, and
-//! backend/factory calls are forwarded to TS via a fire-and-forget
+//! (mirrors [`crate::notifications`]): Rust owns protocol/registry/dispatch,
+//! and backend/factory calls are forwarded to TS via a fire-and-forget
 //! `ThreadsafeFunction`. TS satisfies each call and reports the result back
 //! through [`AppServer::resolve_call`], which completes a tokio `oneshot` the
 //! core is awaiting. Streamed frames are pushed to TS via the `on_frame`
 //! callback.
 //!
 //! Call shape (JSON string on the `on_call` TSFN):
-//! `{ "callId", "kind": "factory.create|factory.resume|factory.fork|backend.<method>",
-//!    "threadId"?, "params" }`. TS resolves with
-//! `resolveCall(callId, ok, json)`.
+//! `{ "callId", "kind":
+//! "factory.create|factory.resume|factory.fork|backend.<method>",    "threadId"
+//! ?, "params" }`. TS resolves with `resolveCall(callId, ok, json)`.
 
 use std::{
 	path::PathBuf,
@@ -20,13 +20,14 @@ use std::{
 };
 
 use dashmap::DashMap;
-use gjc_app_server::backend::{
-	AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo,
+use gjc_app_server::{
+	AppServerError,
+	backend::{AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo},
+	ids::{BackendGeneration, ThreadId, TurnId},
+	jsonrpc,
+	server::{AppServer as CoreAppServer, AppServerConfig, EventSink},
+	transport_ws::{WsServerConfig, WsServerHandle, start_ws},
 };
-use gjc_app_server::ids::{BackendGeneration, ThreadId, TurnId};
-use gjc_app_server::server::{AppServer as CoreAppServer, AppServerConfig, EventSink};
-use gjc_app_server::transport_ws::{WsServerConfig, WsServerHandle, start_ws};
-use gjc_app_server::{AppServerError, jsonrpc};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 use tokio::sync::oneshot;
@@ -52,7 +53,7 @@ pub fn app_server_method_lane(method: String) -> String {
 
 /// Shared bridge state: the outbound call TSFN and the pending-call table.
 struct Bridge {
-	on_call: ThreadsafeFunction<String>,
+	on_call:      ThreadsafeFunction<String>,
 	pending:
 		DashMap<String, oneshot::Sender<std::result::Result<serde_json::Value, AppServerError>>>,
 	next_call_id: std::sync::atomic::AtomicU64,
@@ -113,7 +114,7 @@ impl Bridge {
 /// A backend that routes every method to the TS host through the bridge.
 struct TsBackend {
 	thread_id: ThreadId,
-	bridge: Arc<Bridge>,
+	bridge:    Arc<Bridge>,
 }
 
 impl TsBackend {
@@ -142,9 +143,12 @@ impl AgentBackend for TsBackend {
 			.get("turnId")
 			.and_then(|s| s.as_str())
 			.filter(|s| !s.is_empty())
-			.ok_or_else(|| AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, "host omitted turnId"))?;
+			.ok_or_else(|| {
+				AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, "host omitted turnId")
+			})?;
 		Ok(TurnId(turn_id.to_string()))
 	}
+
 	async fn steer(
 		&self,
 		c: &BackendCallContext,
@@ -155,15 +159,19 @@ impl AgentBackend for TsBackend {
 			.get("turnId")
 			.and_then(|s| s.as_str())
 			.filter(|s| !s.is_empty())
-			.ok_or_else(|| AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, "host omitted turnId"))?;
+			.ok_or_else(|| {
+				AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, "host omitted turnId")
+			})?;
 		Ok(TurnId(turn_id.to_string()))
 	}
+
 	async fn abort(&self, c: &BackendCallContext, turn_id: &TurnId) -> gjc_app_server::Result<()> {
 		self
 			.call(c, "abort", serde_json::json!({ "turnId": turn_id.0 }))
 			.await
 			.map(|_| ())
 	}
+
 	async fn get_state(
 		&self,
 		c: &BackendCallContext,
@@ -173,12 +181,14 @@ impl AgentBackend for TsBackend {
 			.call(c, "getState", serde_json::json!({ "include": include }))
 			.await
 	}
+
 	async fn get_messages(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<serde_json::Value> {
 		self.call(c, "getMessages", serde_json::Value::Null).await
 	}
+
 	async fn set_model(
 		&self,
 		c: &BackendCallContext,
@@ -189,6 +199,7 @@ impl AgentBackend for TsBackend {
 			.call(c, "setModel", serde_json::json!({ "provider": provider, "modelId": model_id }))
 			.await
 	}
+
 	async fn compact(
 		&self,
 		c: &BackendCallContext,
@@ -198,6 +209,7 @@ impl AgentBackend for TsBackend {
 			.call(c, "compact", serde_json::json!({ "customInstructions": custom }))
 			.await
 	}
+
 	async fn set_todos(
 		&self,
 		c: &BackendCallContext,
@@ -205,6 +217,7 @@ impl AgentBackend for TsBackend {
 	) -> gjc_app_server::Result<()> {
 		self.call(c, "setTodos", phases).await.map(|_| ())
 	}
+
 	async fn exec(
 		&self,
 		c: &BackendCallContext,
@@ -212,6 +225,7 @@ impl AgentBackend for TsBackend {
 	) -> gjc_app_server::Result<serde_json::Value> {
 		self.call(c, "exec", params).await
 	}
+
 	async fn dispose(&self, c: &BackendCallContext) -> gjc_app_server::Result<()> {
 		self
 			.call(c, "dispose", serde_json::Value::Null)
@@ -271,12 +285,14 @@ impl BackendFactory for TsFactory {
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.make("factory.create", p).await
 	}
+
 	async fn resume_thread(
 		&self,
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.make("factory.resume", p).await
 	}
+
 	async fn fork_thread(
 		&self,
 		p: serde_json::Value,
@@ -319,8 +335,8 @@ impl EventSink for TsSink {
 /// `AgentSession` through the bridge callbacks.
 #[napi]
 pub struct AppServer {
-	core: Arc<CoreAppServer>,
-	bridge: Arc<Bridge>,
+	core:      Arc<CoreAppServer>,
+	bridge:    Arc<Bridge>,
 	ws_handle: Mutex<Option<WsServerHandle>>,
 }
 
@@ -331,7 +347,8 @@ impl AppServer {
 	/// host must satisfy and resolve via `resolveCall`.
 	#[napi(
 		constructor,
-		ts_args_type = "onFrame: (err: null | Error, frame: string) => void, onCall: (err: null | Error, call: string) => void, maxInflightTurnsPerThread?: number"
+		ts_args_type = "onFrame: (err: null | Error, frame: string) => void, onCall: (err: null | \
+		                Error, call: string) => void, maxInflightTurnsPerThread?: number"
 	)]
 	pub fn new(
 		on_frame: ThreadsafeFunction<String>,
@@ -392,7 +409,8 @@ impl AppServer {
 		resp.and_then(|r| serde_json::to_string(&r).ok())
 	}
 
-	/// Start a loopback WebSocket transport for this app-server; returns the bound ws:// URL.
+	/// Start a loopback WebSocket transport for this app-server; returns the
+	/// bound ws:// URL.
 	#[napi]
 	pub async fn listen_ws(
 		&self,
@@ -418,10 +436,13 @@ impl AppServer {
 				.await
 				.map_err(|err| napi::Error::from_reason(err.to_string()))?;
 		}
-		let handle = start_ws(
-			Arc::clone(&self.core),
-			WsServerConfig { host, port, token, session_id, state_root },
-		)
+		let handle = start_ws(Arc::clone(&self.core), WsServerConfig {
+			host,
+			port,
+			token,
+			session_id,
+			state_root,
+		})
 		.await
 		.map_err(|err| napi::Error::from_reason(err.to_string()))?;
 		let url = handle.url();
@@ -470,8 +491,9 @@ impl AppServer {
 		event_type: String,
 		payload_json: String,
 	) -> napi::Result<u32> {
-		let payload: serde_json::Value = serde_json::from_str(&payload_json)
-			.map_err(|err| napi::Error::from_reason(format!("invalid backend event payload JSON: {err}")))?;
+		let payload: serde_json::Value = serde_json::from_str(&payload_json).map_err(|err| {
+			napi::Error::from_reason(format!("invalid backend event payload JSON: {err}"))
+		})?;
 		let ev = BackendEvent {
 			thread_id: ThreadId(thread_id),
 			generation: BackendGeneration(generation.max(0) as u64),
@@ -490,7 +512,8 @@ impl AppServer {
 			.map_err(|err| napi::Error::from_reason(err.to_string()))
 	}
 
-	/// Call a client-registered host tool and resolve to the JSON result payload.
+	/// Call a client-registered host tool and resolve to the JSON result
+	/// payload.
 	#[napi(js_name = "callHostTool")]
 	pub async fn call_host_tool(
 		&self,
@@ -517,6 +540,7 @@ impl AppServer {
 			Err(napi::Error::from_reason(error.to_string()))
 		}
 	}
+
 	/// Return the currently accepted active turn id for a thread, if any.
 	#[napi(js_name = "activeTurnId")]
 	pub fn active_turn_id(&self, thread_id: String) -> napi::Result<Option<String>> {

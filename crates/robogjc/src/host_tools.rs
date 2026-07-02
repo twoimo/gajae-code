@@ -1,4 +1,5 @@
-//! Host-tool registration, invocation, and result boundary for app-server calls.
+//! Host-tool registration, invocation, and result boundary for app-server
+//! calls.
 
 #[cfg(test)]
 mod tests {

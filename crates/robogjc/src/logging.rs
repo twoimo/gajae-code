@@ -8,18 +8,22 @@
 //! record shape: `ts`, `level`, `logger`, `msg`, optional `exc`, and
 //! non-reserved extra fields only.
 
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level as TracingLevel, Subscriber};
-use tracing_subscriber::Layer;
-use tracing_subscriber::filter::EnvFilter;
-use tracing_subscriber::layer::Context;
-use tracing_subscriber::prelude::*;
+use std::{
+	fs::{File, OpenOptions},
+	io::Write,
+	path::{Path, PathBuf},
+	sync::{
+		Arc, Mutex, OnceLock,
+		atomic::{AtomicBool, Ordering},
+	},
+	time::{SystemTime, UNIX_EPOCH},
+};
+
+use tracing::{
+	Event, Level as TracingLevel, Subscriber,
+	field::{Field, Visit},
+};
+use tracing_subscriber::{Layer, filter::EnvFilter, layer::Context, prelude::*};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static JSON_SINK: OnceLock<Arc<Mutex<Option<RotatingJsonSink>>>> = OnceLock::new();

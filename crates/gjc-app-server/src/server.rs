@@ -4,24 +4,25 @@
 //!
 //! This is transport-agnostic: transports (stdio/ws/unix, in pi-natives) parse
 //! frames and call [`AppServer::dispatch`]/[`AppServer::handle_connection_*`].
-//! Full concurrent running turns are supported — each thread has its own backend
-//! and admission slots, and dispatch does not hold a global lock across backend
-//! calls.
+//! Full concurrent running turns are supported — each thread has its own
+//! backend and admission slots, and dispatch does not hold a global lock across
+//! backend calls.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
 
-use crate::backend::{AgentBackend, BackendCallContext, BackendEvent, BackendFactory};
-use crate::error::{AppServerError, Result};
-use crate::event_map::ThreadStream;
-use crate::host_tools::{HostToolRegistry, HostToolResult, PendingHostToolCall};
-use crate::identity::{ThreadIdentity, ThreadStatus};
-use crate::ids::{ConnectionId, ThreadId, TurnId};
-use crate::jsonrpc::{Inbound, Notification, Response};
-use crate::scheduler::{Admission, Lane};
+use crate::{
+	backend::{AgentBackend, BackendCallContext, BackendEvent, BackendFactory},
+	error::{AppServerError, Result},
+	event_map::ThreadStream,
+	host_tools::{HostToolRegistry, HostToolResult, PendingHostToolCall},
+	identity::{ThreadIdentity, ThreadStatus},
+	ids::{ConnectionId, ThreadId, TurnId},
+	jsonrpc::{Inbound, Notification, Response},
+	scheduler::{Admission, Lane},
+};
 
 /// Where mapped notifications are delivered (transport fan-out to subscribers).
 /// Transports (pi-natives) implement this to push frames to connected clients.
@@ -31,24 +32,24 @@ pub trait EventSink: Send + Sync {
 
 /// Per-thread registry entry: identity + backend + admission + event stream.
 struct ThreadEntry {
-	identity: Mutex<ThreadIdentity>,
-	backend: Arc<dyn AgentBackend>,
-	admission: Mutex<Admission>,
-	stream: Mutex<ThreadStream>,
-	active_turn: Mutex<Option<TurnId>>,
+	identity:      Mutex<ThreadIdentity>,
+	backend:       Arc<dyn AgentBackend>,
+	admission:     Mutex<Admission>,
+	stream:        Mutex<ThreadStream>,
+	active_turn:   Mutex<Option<TurnId>>,
 	/// Serializes non-turn mutating backend calls for this thread (serial
 	/// mutating lane); read/cancel lanes never take it.
 	mutating_lane: Arc<tokio::sync::Mutex<()>>,
-	host_tools: Mutex<HostToolRegistry>,
+	host_tools:    Mutex<HostToolRegistry>,
 }
 
 /// Per-connection handshake state.
 #[derive(Default)]
 struct ConnectionState {
 	/// Set once the `initialize` request has been answered.
-	initialize_seen: bool,
+	initialize_seen:          bool,
 	/// Set once the `initialized` notification acks the handshake.
-	initialized: bool,
+	initialized:              bool,
 	/// Set once this connection subscribes to `gjc/notifications/event` frames.
 	notifications_subscriber: bool,
 }
@@ -56,7 +57,7 @@ struct ConnectionState {
 /// Tunables for admission control.
 #[derive(Debug, Clone, Copy)]
 pub struct AppServerConfig {
-	pub max_inflight_turns_per_thread: usize,
+	pub max_inflight_turns_per_thread:   usize,
 	pub max_queued_mutations_per_thread: usize,
 }
 
@@ -68,15 +69,15 @@ impl Default for AppServerConfig {
 
 /// The app-server core. Cheap to clone-share behind an `Arc`.
 pub struct AppServer {
-	factory: Arc<dyn BackendFactory>,
-	threads: DashMap<ThreadId, ThreadEntry>,
-	connections: DashMap<ConnectionId, Mutex<ConnectionState>>,
-	config: AppServerConfig,
-	sink: Arc<dyn EventSink>,
-	notification_host: Arc<dyn crate::notifications::NotificationHost>,
+	factory:                 Arc<dyn BackendFactory>,
+	threads:                 DashMap<ThreadId, ThreadEntry>,
+	connections:             DashMap<ConnectionId, Mutex<ConnectionState>>,
+	config:                  AppServerConfig,
+	sink:                    Arc<dyn EventSink>,
+	notification_host:       Arc<dyn crate::notifications::NotificationHost>,
 	/// Fan-out of every emitted notification to socket transports (e.g. WS)
 	/// that subscribe per-connection, in addition to the primary `sink`.
-	event_tx: tokio::sync::broadcast::Sender<Notification>,
+	event_tx:                tokio::sync::broadcast::Sender<Notification>,
 	pending_host_tool_calls: DashMap<String, PendingHostToolCall>,
 }
 
@@ -159,6 +160,7 @@ impl AppServer {
 			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
 		Ok(entry.value().active_turn.lock().clone())
 	}
+
 	pub async fn call_host_tool(
 		&self,
 		thread_id: &ThreadId,
@@ -191,17 +193,16 @@ impl AppServer {
 		};
 		let call_id = format!("call_{}", crate::ids::TurnId::generate().0);
 		let (tx, rx) = tokio::sync::oneshot::channel();
-		self.pending_host_tool_calls.insert(
-			call_id.clone(),
-			PendingHostToolCall {
+		self
+			.pending_host_tool_calls
+			.insert(call_id.clone(), PendingHostToolCall {
 				thread_id: thread_id.clone(),
 				generation,
 				turn_id: turn_id.clone(),
 				tool: tool.to_string(),
 				progress: Arc::new(Mutex::new(Vec::new())),
 				tx,
-			},
-		);
+			});
 		self.publish(Notification::new(
 			"gjc/hostTools/call",
 			serde_json::json!({
@@ -292,8 +293,8 @@ impl AppServer {
 
 	/// Whether a socket transport should forward `note` to `conn`. Opaque
 	/// `gjc/notifications/event` frames go only to connections that opted in via
-	/// `gjc/notifications/subscribe`; all other frames (turn/item/gjc events) are
-	/// forwarded to any live connection.
+	/// `gjc/notifications/subscribe`; all other frames (turn/item/gjc events)
+	/// are forwarded to any live connection.
 	#[must_use]
 	pub fn should_forward(&self, conn: &ConnectionId, note: &Notification) -> bool {
 		if note.method != crate::notifications::EVENT_METHOD {
@@ -499,10 +500,10 @@ impl AppServer {
 			Self::check_expected_turn(entry.value(), &params)?;
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Mutating,
+				lane:       Lane::Mutating,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -511,6 +512,7 @@ impl AppServer {
 			.await?;
 		Ok(serde_json::json!({ "turnId": turn_id.0 }))
 	}
+
 	fn check_expected_turn(entry: &ThreadEntry, params: &Option<serde_json::Value>) -> Result<()> {
 		let expected = params
 			.as_ref()
@@ -760,21 +762,18 @@ impl AppServer {
 			.as_ref()
 			.map(|t| t.0.clone());
 		let stream = ThreadStream::new(info.thread_id.clone());
-		self.threads.insert(
-			info.thread_id.clone(),
-			ThreadEntry {
-				identity: Mutex::new(identity),
-				backend,
-				admission: Mutex::new(Admission::new(
-					self.config.max_inflight_turns_per_thread,
-					self.config.max_queued_mutations_per_thread,
-				)),
-				stream: Mutex::new(stream),
-				active_turn: Mutex::new(None),
-				mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
-				host_tools: Mutex::new(HostToolRegistry::default()),
-			},
-		);
+		self.threads.insert(info.thread_id.clone(), ThreadEntry {
+			identity: Mutex::new(identity),
+			backend,
+			admission: Mutex::new(Admission::new(
+				self.config.max_inflight_turns_per_thread,
+				self.config.max_queued_mutations_per_thread,
+			)),
+			stream: Mutex::new(stream),
+			active_turn: Mutex::new(None),
+			mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
+			host_tools: Mutex::new(HostToolRegistry::default()),
+		});
 		let mut thread = serde_json::json!({
 			"id": info.thread_id.0,
 			"status": "idle",
@@ -795,7 +794,15 @@ impl AppServer {
 		let forked_from = self
 			.threads
 			.get(thread_id)
-			.and_then(|entry| entry.value().identity.lock().metadata.forked_from_id.clone())
+			.and_then(|entry| {
+				entry
+					.value()
+					.identity
+					.lock()
+					.metadata
+					.forked_from_id
+					.clone()
+			})
 			.map(|t| t.0);
 		let mut thread = serde_json::json!({
 			"id": thread_id.0,
@@ -823,10 +830,10 @@ impl AppServer {
 			identity.status = ThreadStatus::Deleted;
 			identity.reattach(); // bump generation so late events are stale
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Cancel,
+				lane:       Lane::Cancel,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -889,10 +896,10 @@ impl AppServer {
 			}
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Mutating,
+				lane:       Lane::Mutating,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -926,10 +933,10 @@ impl AppServer {
 				.await;
 			if let Err(err) = &result {
 				this.emit_backend_event(&BackendEvent {
-					thread_id: bg_thread.clone(),
+					thread_id:  bg_thread.clone(),
 					generation: bg_ctx.generation,
 					event_type: "error".to_string(),
-					payload: serde_json::json!({ "message": err.to_string() }),
+					payload:    serde_json::json!({ "message": err.to_string() }),
 				});
 			}
 			if let Some(entry) = this.threads.get(&bg_thread) {
@@ -978,10 +985,10 @@ impl AppServer {
 			}
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Cancel,
+				lane:       Lane::Cancel,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -1026,12 +1033,12 @@ fn extract_str(params: &Option<serde_json::Value>, key: &str) -> Result<String> 
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::backend::BackendHandleInfo;
-	use crate::identity::SessionMetadata;
-	use crate::ids::BackendGeneration;
-	use async_trait::async_trait;
 	use std::time::Duration;
+
+	use async_trait::async_trait;
+
+	use super::*;
+	use crate::{backend::BackendHandleInfo, identity::SessionMetadata, ids::BackendGeneration};
 
 	struct SlowBackend;
 
@@ -1041,12 +1048,15 @@ mod tests {
 			tokio::time::sleep(Duration::from_millis(40)).await;
 			Ok(TurnId::generate())
 		}
+
 		async fn steer(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<TurnId> {
 			Ok(TurnId::generate())
 		}
+
 		async fn abort(&self, _c: &BackendCallContext, _t: &TurnId) -> Result<()> {
 			Ok(())
 		}
+
 		async fn get_state(
 			&self,
 			_c: &BackendCallContext,
@@ -1054,9 +1064,11 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({}))
 		}
+
 		async fn get_messages(&self, _c: &BackendCallContext) -> Result<serde_json::Value> {
 			Ok(serde_json::json!([]))
 		}
+
 		async fn set_model(
 			&self,
 			_c: &BackendCallContext,
@@ -1065,6 +1077,7 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({}))
 		}
+
 		async fn compact(
 			&self,
 			_c: &BackendCallContext,
@@ -1072,9 +1085,11 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({}))
 		}
+
 		async fn set_todos(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<()> {
 			Ok(())
 		}
+
 		async fn exec(
 			&self,
 			c: &BackendCallContext,
@@ -1082,6 +1097,7 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({ "lane": format!("{:?}", c.lane), "params": p }))
 		}
+
 		async fn dispose(&self, _c: &BackendCallContext) -> Result<()> {
 			Ok(())
 		}
@@ -1096,18 +1112,20 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, Arc::new(SlowBackend)))
 		}
+
 		async fn resume_thread(
 			&self,
 			p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			self.create_thread(p).await
 		}
+
 		async fn fork_thread(
 			&self,
 			p: serde_json::Value,
@@ -1120,7 +1138,7 @@ mod tests {
 	/// test can prove same-thread mutations are serialized on the mutating lane.
 	#[derive(Default)]
 	struct GaugeBackend {
-		inflight: std::sync::atomic::AtomicUsize,
+		inflight:     std::sync::atomic::AtomicUsize,
 		max_inflight: std::sync::atomic::AtomicUsize,
 	}
 	#[async_trait]
@@ -1128,12 +1146,15 @@ mod tests {
 		async fn prompt(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<TurnId> {
 			Ok(TurnId::generate())
 		}
+
 		async fn steer(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<TurnId> {
 			Ok(TurnId::generate())
 		}
+
 		async fn abort(&self, _c: &BackendCallContext, _t: &TurnId) -> Result<()> {
 			Ok(())
 		}
+
 		async fn get_state(
 			&self,
 			_c: &BackendCallContext,
@@ -1141,9 +1162,11 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({}))
 		}
+
 		async fn get_messages(&self, _c: &BackendCallContext) -> Result<serde_json::Value> {
 			Ok(serde_json::json!([]))
 		}
+
 		async fn set_model(
 			&self,
 			_c: &BackendCallContext,
@@ -1152,6 +1175,7 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({}))
 		}
+
 		async fn compact(
 			&self,
 			_c: &BackendCallContext,
@@ -1159,9 +1183,11 @@ mod tests {
 		) -> Result<serde_json::Value> {
 			Ok(serde_json::json!({}))
 		}
+
 		async fn set_todos(&self, _c: &BackendCallContext, _p: serde_json::Value) -> Result<()> {
 			Ok(())
 		}
+
 		async fn exec(
 			&self,
 			_c: &BackendCallContext,
@@ -1174,6 +1200,7 @@ mod tests {
 			self.inflight.fetch_sub(1, Ordering::SeqCst);
 			Ok(serde_json::json!({ "ok": true }))
 		}
+
 		async fn dispose(&self, _c: &BackendCallContext) -> Result<()> {
 			Ok(())
 		}
@@ -1187,18 +1214,20 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, self.0.clone()))
 		}
+
 		async fn resume_thread(
 			&self,
 			p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			self.create_thread(p).await
 		}
+
 		async fn fork_thread(
 			&self,
 			p: serde_json::Value,
@@ -1334,10 +1363,10 @@ mod tests {
 		let conn = init_conn(&s).await;
 		let t = start_thread(&s, &conn).await;
 		let ev = |kind: &str| BackendEvent {
-			thread_id: t.clone(),
+			thread_id:  t.clone(),
 			generation: BackendGeneration::FIRST,
 			event_type: kind.into(),
-			payload: serde_json::json!({}),
+			payload:    serde_json::json!({}),
 		};
 		assert!(s.emit_backend_event(&ev("agent_start")) >= 1);
 		assert!(s.emit_backend_event(&ev("agent_end")) >= 1);
@@ -1353,10 +1382,10 @@ mod tests {
 		let t = start_thread(&s, &conn).await;
 		// Generation 2 has never been attached; event must be rejected.
 		let stale = BackendEvent {
-			thread_id: t.clone(),
+			thread_id:  t.clone(),
 			generation: BackendGeneration(2),
 			event_type: "agent_start".into(),
-			payload: serde_json::json!({}),
+			payload:    serde_json::json!({}),
 		};
 		assert_eq!(s.emit_backend_event(&stale), 0, "stale-generation event rejected");
 		assert!(sink.notes.lock().is_empty());
@@ -1367,10 +1396,10 @@ mod tests {
 		let (s, sink) = server_with_sink();
 		let _conn = init_conn(&s).await;
 		let ev = BackendEvent {
-			thread_id: ThreadId("thr_missing".into()),
+			thread_id:  ThreadId("thr_missing".into()),
 			generation: BackendGeneration::FIRST,
 			event_type: "agent_start".into(),
-			payload: serde_json::json!({}),
+			payload:    serde_json::json!({}),
 		};
 		assert_eq!(s.emit_backend_event(&ev), 0);
 		assert!(sink.notes.lock().is_empty());

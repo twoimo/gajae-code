@@ -2,11 +2,11 @@
 //!
 //! This is the deterministic core the full `event_map` builds on: item/turn
 //! state enums, a monotonic per-thread sequence counter, and the terminal
-//! coalescing latch. The coalescing rule guarantees exactly one `turn/completed`
-//! per turn: `message_end`, `turn_end`, `agent_end`, `abort`, and backend errors
-//! all race into one latch, and the highest-priority cause wins
-//! (`Failed` > `Interrupted` > `Completed`) unless a later fatal error arrives
-//! before the terminal flush.
+//! coalescing latch. The coalescing rule guarantees exactly one
+//! `turn/completed` per turn: `message_end`, `turn_end`, `agent_end`, `abort`,
+//! and backend errors all race into one latch, and the highest-priority cause
+//! wins (`Failed` > `Interrupted` > `Completed`) unless a later fatal error
+//! arrives before the terminal flush.
 
 use serde::{Deserialize, Serialize};
 
@@ -62,7 +62,7 @@ impl TerminalCause {
 /// arriving before the flush upgrade the recorded cause.
 #[derive(Debug, Default)]
 pub struct TerminalLatch {
-	cause: Option<TerminalCause>,
+	cause:   Option<TerminalCause>,
 	flushed: bool,
 }
 
