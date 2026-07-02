@@ -1,6 +1,8 @@
 //! Rust scaffold for the robogjc service port.
 
 pub mod app_server_client;
+pub mod autoclose;
+pub mod cancellation;
 pub mod cli;
 pub mod config;
 pub mod db;
@@ -10,6 +12,7 @@ pub mod git_ops;
 pub mod github;
 pub mod host_tools;
 pub mod logging;
+pub mod manual_triage;
 pub mod natives_cache;
 pub mod persona;
 pub mod pragmas;
@@ -19,6 +22,7 @@ pub mod redaction;
 pub mod sandbox;
 pub mod server;
 pub mod slot_pool;
+pub mod tasks;
 pub mod worker;
 pub mod workspace_keys;
 
