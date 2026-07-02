@@ -64,6 +64,7 @@ pub struct SocketWorkRunner<S> {
 	action_allowlist: Vec<String>,
 	prompt: String,
 	replay_window: u64,
+	idle_timeout_secs: u64,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
@@ -86,6 +87,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 			action_allowlist,
 			prompt: prompt.into(),
 			replay_window,
+			idle_timeout_secs: 300,
 		}
 	}
 
@@ -119,8 +121,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 		}
 
 		let mut events: Vec<StreamEvent> = Vec::new();
+		let idle = std::time::Duration::from_secs(self.idle_timeout_secs);
 		loop {
-			match client.next_frame().await {
+			// Fail closed if the engine stalls (no frame within the idle window):
+			// an unattended daemon must not hang forever on a dead/stuck engine.
+			let Ok(next) = tokio::time::timeout(idle, client.next_frame()).await else {
+				return failed_outcome();
+			};
+			match next {
 				Ok(Some(frame)) => {
 					if let Some(event) = parse_stream_event(&frame) {
 						let terminal = matches!(&event, StreamEvent::Lifecycle { event_type, .. } if TERMINAL.contains(&event_type.as_str()));
