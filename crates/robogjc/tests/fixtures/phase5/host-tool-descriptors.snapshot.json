@@ -1,0 +1,152 @@
+[
+  {
+    "description": "robogjc host tool classify_issue",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "classify_issue",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool set_issue_labels",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "set_issue_labels",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool gh_post_comment",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "gh_post_comment",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool gh_push_branch",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "gh_push_branch",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool gh_open_pr",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "gh_open_pr",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool gh_request_review",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "gh_request_review",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool repro_record",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "repro_record",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool mark_unable_to_reproduce",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "mark_unable_to_reproduce",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool abort_task",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "abort_task",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  },
+  {
+    "description": "robogjc host tool fetch_issue_thread",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "fetch_issue_thread",
+    "redactionHints": {
+      "credentials": true
+    },
+    "resultPolicy": {
+      "redactCredentials": true,
+      "type": "text"
+    }
+  }
+]
