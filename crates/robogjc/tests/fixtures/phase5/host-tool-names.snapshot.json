@@ -1,0 +1,15 @@
+{
+  "tools": [
+    "classify_issue",
+    "set_issue_labels",
+    "gh_post_comment",
+    "gh_push_branch",
+    "gh_open_pr",
+    "gh_request_review",
+    "repro_record",
+    "mark_unable_to_reproduce",
+    "abort_task",
+    "fetch_issue_thread"
+  ],
+  "count": 10
+}
