@@ -281,13 +281,13 @@ impl From<KeyStroke> for KeySequence {
 /// Represents a single key press.
 pub struct KeyStroke {
 	/// Alt key was pressed.
-	pub alt:     bool,
+	pub alt: bool,
 	/// Control key was pressed.
 	pub control: bool,
 	/// Shift key was pressed.
-	pub shift:   bool,
+	pub shift: bool,
 	/// Primary key pressed.
-	pub key:     Key,
+	pub key: Key,
 }
 
 impl Display for KeyStroke {

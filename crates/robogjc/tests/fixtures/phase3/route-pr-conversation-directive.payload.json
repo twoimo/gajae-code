@@ -1,0 +1,19 @@
+{
+  "action": "created",
+  "comment": {
+    "author_association": "OWNER",
+    "body": "@robogjc-bot change the indentation in foo.py",
+    "user": {
+      "login": "can1357"
+    }
+  },
+  "issue": {
+    "number": 50,
+    "pull_request": {
+      "url": "x"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

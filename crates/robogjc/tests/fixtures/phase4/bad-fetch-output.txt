@@ -1,0 +1,2 @@
+fatal: bad object refs/heads/farm/deadbeef/broken
+error: refs/remotes/origin/stale does not point to a valid object!

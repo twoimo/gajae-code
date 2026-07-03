@@ -56,19 +56,19 @@ describe("planTasks command shape (issue #622)", () => {
 		expect(build?.cwd).toBe(resolvePackageCwd("python/robogjc/web"));
 	});
 
-	test("python tasks install dev dependencies before invoking pytest and ruff modules", () => {
-		const tasks = planForPaths(["python/robogjc/src/server.py"]);
+	test("python tasks install gjc-rpc dev dependencies before invoking pytest and ruff modules", () => {
+		const tasks = planForPaths(["python/gjc-rpc/src/gjc_rpc/client.py"]);
 		const lint = tasks.find(task => task.key === "python-lint");
 		const runTest = tasks.find(task => task.key === "python-test");
 		expect(lint?.command).toEqual([
 			"bash",
 			"-lc",
-			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc -e 'python/robogjc[dev]' && python3 -m ruff check python && python3 -m ruff format --check python/robogjc",
+			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e 'python/gjc-rpc[dev]' && python3 -m ruff check python/gjc-rpc && python3 -m ruff format --check python/gjc-rpc",
 		]);
 		expect(runTest?.command).toEqual([
 			"bash",
 			"-lc",
-			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc -e 'python/robogjc[dev]' && python3 -m pytest -x --import-mode=importlib python/gjc-rpc/tests python/robogjc/tests",
+			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e 'python/gjc-rpc[dev]' && python3 -m pytest -x --import-mode=importlib python/gjc-rpc/tests",
 		]);
 	});
 });
@@ -425,8 +425,8 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		expect(targeted(["docs/guide.md", "CHANGELOG.md", "packages/coding-agent/README.md"])).toEqual([]);
 	});
 
-	test("robogjc static asset changes plan no Python lint/test shards", () => {
-		expect(targeted(["python/robogjc/assets/icon.png", "python/robogjc/assets/icon.jpg"])).toEqual([]);
+	test("removed robogjc Python package paths fall back to root tooling instead of Python shards", () => {
+		expect(targeted(["python/robogjc/pyproject.toml"]).map(task => task.key)).toEqual(["root-check", "native-linux-x64"]);
 	});
 
 	test("native-consuming test files pull in a single native build task", () => {

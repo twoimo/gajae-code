@@ -64,19 +64,19 @@ impl FunctionEnv {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Registration {
 	/// The parsed definition of the function.
-	definition:  Arc<brush_parser::ast::FunctionDefinition>,
+	definition: Arc<brush_parser::ast::FunctionDefinition>,
 	/// The source info for the function definition.
 	source_info: crate::SourceInfo,
 	/// Whether or not this function definition should be exported to children.
-	exported:    bool,
+	exported: bool,
 }
 
 impl From<brush_parser::ast::FunctionDefinition> for Registration {
 	fn from(definition: brush_parser::ast::FunctionDefinition) -> Self {
 		Self {
-			definition:  Arc::new(definition),
+			definition: Arc::new(definition),
 			source_info: crate::SourceInfo::default(),
-			exported:    false,
+			exported: false,
 		}
 	}
 }
@@ -92,11 +92,7 @@ impl Registration {
 		definition: brush_parser::ast::FunctionDefinition,
 		source_info: &crate::SourceInfo,
 	) -> Self {
-		Self {
-			definition:  Arc::new(definition),
-			source_info: source_info.clone(),
-			exported:    false,
-		}
+		Self { definition: Arc::new(definition), source_info: source_info.clone(), exported: false }
 	}
 
 	/// Returns a reference to the function definition.

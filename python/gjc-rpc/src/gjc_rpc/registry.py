@@ -56,7 +56,11 @@ def _parse_handle(payload: object) -> SessionHandle | None:
         return None
     session_id = payload.get("sessionId")
     pid = payload.get("pid")
-    if not isinstance(session_id, str) or not isinstance(pid, int) or isinstance(pid, bool):
+    if (
+        not isinstance(session_id, str)
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+    ):
         return None
     model = payload.get("model")
     endpoint = payload.get("endpoint")

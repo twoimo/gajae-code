@@ -1,0 +1,19 @@
+{
+  "after": [
+    {
+      "args_json": {
+        "reason": "foreign uid"
+      },
+      "error": null,
+      "issue_key": "octo/widget#1",
+      "result_json": {
+        "reason": "foreign uid"
+      },
+      "tool": "abort_task"
+    }
+  ],
+  "before": [],
+  "case": "abort_task audit diff",
+  "redaction": "result/error strings pass through redact_credentials before returning to app-server clients",
+  "schemaVersion": 1
+}

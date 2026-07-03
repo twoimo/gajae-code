@@ -34,9 +34,9 @@ type RegexWord = Vec<RegexPiece>;
 /// Encapsulates a regular expression usable in the shell.
 #[derive(Clone, Debug)]
 pub struct Regex {
-	pieces:           RegexWord,
+	pieces: RegexWord,
 	case_insensitive: bool,
-	multiline:        bool,
+	multiline: bool,
 }
 
 impl From<RegexWord> for Regex {

@@ -484,13 +484,13 @@ impl builtins::Command for CompGenCommand {
 
 		let completion_context = completion::Context {
 			token_to_complete: unquoted_token.as_str(),
-			preceding_token:   None,
-			command_name:      None,
-			token_index:       0,
-			tokens:            &[&completion::CompletionToken { text: token_to_complete, start: 0 }],
-			input_line:        token_to_complete,
-			cursor_index:      token_to_complete.len(),
-			trigger:           completion::CompletionTrigger::Programmatic,
+			preceding_token: None,
+			command_name: None,
+			token_index: 0,
+			tokens: &[&completion::CompletionToken { text: token_to_complete, start: 0 }],
+			input_line: token_to_complete,
+			cursor_index: token_to_complete.len(),
+			trigger: completion::CompletionTrigger::Programmatic,
 		};
 
 		let result = spec
@@ -535,7 +535,7 @@ pub(crate) struct CompOptCommand {
 
 	/// Enable the specified option for selected completion scenarios.
 	#[arg(short = 'o', value_name = "OPT")]
-	enabled_options:  Vec<CompleteOption>,
+	enabled_options: Vec<CompleteOption>,
 	#[arg(long = concat!("+o"), hide = true)]
 	disabled_options: Vec<CompleteOption>,
 

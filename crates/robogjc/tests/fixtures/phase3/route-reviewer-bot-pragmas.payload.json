@@ -1,0 +1,19 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "/model claude\nLeak in foo()",
+    "user": {
+      "login": "chatgpt-codex-connector",
+      "type": "Bot"
+    }
+  },
+  "issue": {
+    "number": 9,
+    "pull_request": {
+      "url": "x"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

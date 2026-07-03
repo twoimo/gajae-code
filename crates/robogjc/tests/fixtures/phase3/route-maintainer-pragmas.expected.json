@@ -1,0 +1,22 @@
+{
+  "association": "OWNER",
+  "directive": true,
+  "directive_author": "can1357",
+  "directive_body": "refactor X",
+  "directive_pragmas": [
+    [
+      "model",
+      "gpt"
+    ],
+    [
+      "thinking",
+      "low"
+    ]
+  ],
+  "issue_key": "octo/widget#9",
+  "reason": "issue_comment.created",
+  "repo": "octo/widget",
+  "should_queue": true,
+  "submitter": "can1357",
+  "task": "handle_comment"
+}

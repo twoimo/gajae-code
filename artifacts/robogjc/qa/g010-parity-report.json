@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "package-consumer-report",
+  "surfaces": [
+    {
+      "name": "hmac-sign-vectors",
+      "comparedVia": "rust proxy::sign vs phase1 Python-generated fixture",
+      "cases": 3,
+      "diffs": []
+    },
+    {
+      "name": "credential-redaction",
+      "comparedVia": "rust redaction vs phase1 Python-generated fixture",
+      "cases": 3,
+      "diffs": []
+    },
+    {
+      "name": "webhook-event-routing",
+      "comparedVia": "rust github::route vs phase3 expected route fixtures",
+      "cases": 5,
+      "diffs": []
+    },
+    {
+      "name": "host-tool-descriptor-schemas",
+      "comparedVia": "rust descriptors vs phase5 Python-era snapshot",
+      "cases": 10,
+      "diffs": []
+    },
+    {
+      "name": "app-server-worker-transcripts",
+      "comparedVia": "phase7 replay transcript JSON framing validation",
+      "cases": 33,
+      "diffs": []
+    }
+  ],
+  "provenance": {
+    "generatedBy": "crates/robogjc/tests/parity.rs",
+    "pythonInterpreter": "/tmp/robogjc-uv/bin/python",
+    "gitCommit": "cb48b739",
+    "generatedAt": "2026-07-03T03:33:53Z"
+  },
+  "summary": {
+    "totalCases": 54,
+    "unexplainedDiffs": 0
+  }
+}

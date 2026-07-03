@@ -1063,7 +1063,8 @@ export async function runRootCommand(
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
-		const pipedInput = await (deps.readPipedInput ?? readPipedInput)();
+		const pipedInput =
+			parsedArgs.mode === "app-server" ? undefined : await (deps.readPipedInput ?? readPipedInput)();
 		if (parsedArgs.fileArgs.length === 0) {
 			return { pipedInput, fileText: undefined, fileImages: undefined };
 		}
@@ -1272,6 +1273,9 @@ export async function runRootCommand(
 			createSession,
 		});
 		await (deps.runAcpMode ?? (await import("./modes/acp")).runAcpMode)(createAcpSession);
+	} else if (mode === "app-server") {
+		const { runAppServerMode } = await import("./modes/app-server/app-server-mode");
+		await runAppServerMode();
 	} else {
 		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager, eventBus } = await createSession(
 			sessionOptions,

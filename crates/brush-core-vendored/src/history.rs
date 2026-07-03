@@ -18,8 +18,8 @@ type ItemId = i64;
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct History {
-	items:   rpds::VectorSync<ItemId>,
-	id_map:  rpds::HashTrieMapSync<ItemId, Item>,
+	items: rpds::VectorSync<ItemId>,
+	id_map: rpds::HashTrieMapSync<ItemId, Item>,
 	next_id: ItemId,
 }
 
@@ -68,10 +68,10 @@ impl History {
 			}
 
 			let item = Item {
-				id:           history.next_id,
+				id: history.next_id,
 				command_line: line,
-				timestamp:    next_timestamp.take(),
-				dirty:        false,
+				timestamp: next_timestamp.take(),
+				dirty: false,
 			};
 
 			history.add(item)?;
@@ -262,14 +262,14 @@ pub type ItemTimestamp = chrono::DateTime<Utc>;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Item {
 	/// The unique identifier of the history item.
-	pub id:           ItemId,
+	pub id: ItemId,
 	/// The actual command line.
 	pub command_line: String,
 	/// The timestamp when the command was started.
-	pub timestamp:    Option<ItemTimestamp>,
+	pub timestamp: Option<ItemTimestamp>,
 	/// Whether or not the item is dirty, i.e., has not yet been written to
 	/// backing storage.
-	pub dirty:        bool,
+	pub dirty: bool,
 }
 
 impl Item {
@@ -280,10 +280,10 @@ impl Item {
 	/// * `command_line` - The command line of the item.
 	pub fn new(command_line: impl Into<String>) -> Self {
 		Self {
-			id:           0, // NOTE: ID will be assigned when added to the history.
+			id: 0, // NOTE: ID will be assigned when added to the history.
 			command_line: command_line.into(),
-			timestamp:    Some(chrono::Utc::now()),
-			dirty:        true,
+			timestamp: Some(chrono::Utc::now()),
+			dirty: true,
 		}
 	}
 }
@@ -292,19 +292,19 @@ impl Item {
 #[derive(Default)]
 pub struct Query {
 	/// Whether to search forward or backward
-	pub direction:             Direction,
+	pub direction: Direction,
 	/// Optionally, clamp results to items with a timestamp strictly after this.
 	pub not_at_or_before_time: Option<ItemTimestamp>,
 	/// Optionally, clamp results to items with a timestamp strictly before this.
-	pub not_at_or_after_time:  Option<ItemTimestamp>,
+	pub not_at_or_after_time: Option<ItemTimestamp>,
 	/// Optionally, clamp results to items with an ID equal strictly after this.
-	pub not_at_or_before_id:   Option<ItemId>,
+	pub not_at_or_before_id: Option<ItemId>,
 	/// Optionally, clamp results to items with an ID equal strictly before this.
-	pub not_at_or_after_id:    Option<ItemId>,
+	pub not_at_or_after_id: Option<ItemId>,
 	/// Optionally, maximum number of items to retrieve
-	pub max_items:             Option<i64>,
+	pub max_items: Option<i64>,
 	/// Optionally, a string-based filter on command line.
-	pub command_line_filter:   Option<CommandLineFilter>,
+	pub command_line_filter: Option<CommandLineFilter>,
 }
 
 impl Query {
@@ -402,13 +402,13 @@ pub enum CommandLineFilter {
 /// Represents a search operation.
 pub struct Search<'a> {
 	/// The history to search through.
-	history:    &'a History,
+	history: &'a History,
 	/// The query to apply.
-	query:      Query,
+	query: Query,
 	/// The next index in `items`.
 	next_index: Option<usize>,
 	/// Count of items returned so far.
-	count:      usize,
+	count: usize,
 }
 
 impl<'a> Search<'a> {

@@ -52,9 +52,9 @@ impl Drop for TerminalControl {
 #[derive(Default, bon::Builder)]
 pub struct Settings {
 	/// Whether to enable input echoing.
-	pub echo_input:        Option<bool>,
+	pub echo_input: Option<bool>,
 	/// Whether to enable line input (sometimes known as canonical mode).
-	pub line_input:        Option<bool>,
+	pub line_input: Option<bool>,
 	/// Whether to disable interrupt signals and instead yield the control
 	/// characters.
 	pub interrupt_signals: Option<bool>,
@@ -65,7 +65,7 @@ pub struct Settings {
 /// Guard that automatically restores terminal settings on drop.
 pub struct AutoModeGuard {
 	initial: sys::terminal::Config,
-	file:    openfiles::OpenFile,
+	file: openfiles::OpenFile,
 }
 
 impl AutoModeGuard {

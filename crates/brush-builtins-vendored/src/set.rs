@@ -59,7 +59,7 @@ crate::minus_or_plus_flag_arg!(
 #[derive(clap::Parser)]
 pub(crate) struct SetOption {
 	#[arg(short = 'o', name = "setopt_enable", num_args=0..=1, value_name = "OPT")]
-	enable:  Option<Vec<String>>,
+	enable: Option<Vec<String>>,
 	#[arg(long = concat!("+o"), name = "setopt_disable", hide = true, num_args=0..=1)]
 	disable: Option<Vec<String>>,
 }

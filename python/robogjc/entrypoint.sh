@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# robogjc container entrypoint. No per-boot pip installs — everything is baked
-# into the image; we only sanity-check the runtime mount and create state dirs.
+# robogjc container entrypoint for the Rust binary. No Python package is
+# installed; this only prepares shared slot users, runtime state, and caches.
 #
-# Used by both the orchestrator (CMD: `python -m robogjc serve`) and the
-# sibling gh-proxy (compose command: `python -m robogjc.proxy serve`). The
-# proxy role does NOT need a $PI_ROOT pi checkout — it never runs gjc.
+# Used by both the orchestrator (CMD: `robogjc serve`) and the sibling
+# gh-proxy (compose command: `robogjc proxy serve`). The proxy role does NOT
+# need a $PI_ROOT checkout — it never runs gjc.
 set -euo pipefail
 
 # Shared git metadata under /data/workspaces/_pool is intentionally group
@@ -13,12 +13,12 @@ set -euo pipefail
 umask 0002
 
 # Detect the proxy role by inspecting the command. Compose passes `command:`
-# as $@ here (after tini --), so $1=python, $2=-m, $3=robogjc.proxy is the
-# canonical shape; we also accept a single concatenated arg for safety.
+# as $@ here (after tini --), so $1=robogjc, $2=proxy is the canonical shape;
+# accept a direct `proxy ...` command too for wrapper entrypoints.
 is_proxy_role=0
-if [ "${1:-}" = "python" ] && [ "${2:-}" = "-m" ] && [[ "${3:-}" == robogjc.proxy* ]]; then
+if [ "${1:-}" = "robogjc" ] && [ "${2:-}" = "proxy" ]; then
     is_proxy_role=1
-elif [[ "${1:-}" == *"robogjc.proxy"* ]]; then
+elif [ "${1:-}" = "proxy" ]; then
     is_proxy_role=1
 fi
 

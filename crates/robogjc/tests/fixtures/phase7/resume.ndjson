@@ -1,0 +1,5 @@
+{"method":"initialize","params":{}}
+{"method":"initialized","params":{}}
+{"method":"thread/resume","params":{"threadId":"thread-old","cwd":"/repo","sessionId":"s1"}}
+{"method":"turn/start","params":{"threadId":"thread-old","input":"resume"}}
+{"method":"turn/completed","params":{"threadId":"thread-old","turnId":"turn-1","status":"completed"}}

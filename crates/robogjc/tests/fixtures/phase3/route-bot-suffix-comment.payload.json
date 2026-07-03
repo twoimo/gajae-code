@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "ci ran",
+    "user": {
+      "login": "github-actions[bot]",
+      "type": "Bot"
+    }
+  },
+  "issue": {
+    "number": 4
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

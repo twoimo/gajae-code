@@ -123,7 +123,11 @@ MULTI_GATE_SERVER = textwrap.dedent(
 
 
 def make_client(server: str) -> RpcClient:
-    return RpcClient(command=[sys.executable, "-u", "-c", server], startup_timeout=2.0, request_timeout=2.0)
+    return RpcClient(
+        command=[sys.executable, "-u", "-c", server],
+        startup_timeout=2.0,
+        request_timeout=2.0,
+    )
 
 
 class WorkflowGateRedTeamTest(unittest.TestCase):
@@ -150,7 +154,15 @@ class WorkflowGateRedTeamTest(unittest.TestCase):
         try:
             client.respond_gate("wg_no_idem", {"decision": "approve"})
             self.assertTrue(done.wait(timeout=2.0))
-            self.assertEqual(echoes[0], {"id": "req_1", "type": "workflow_gate_response", "gate_id": "wg_no_idem", "answer": {"decision": "approve"}})
+            self.assertEqual(
+                echoes[0],
+                {
+                    "id": "req_1",
+                    "type": "workflow_gate_response",
+                    "gate_id": "wg_no_idem",
+                    "answer": {"decision": "approve"},
+                },
+            )
         finally:
             client.stop()
 
@@ -196,8 +208,13 @@ class WorkflowGateRedTeamTest(unittest.TestCase):
         client.start()
         try:
             self.assertTrue(done.wait(timeout=2.0))
-            self.assertEqual([echo["gate_id"] for echo in echoes], ["wg_multi_1", "wg_multi_2"])
-            self.assertEqual([echo["answer"] for echo in echoes], [{"answered": "wg_multi_1"}, {"answered": "wg_multi_2"}])
+            self.assertEqual(
+                [echo["gate_id"] for echo in echoes], ["wg_multi_1", "wg_multi_2"]
+            )
+            self.assertEqual(
+                [echo["answer"] for echo in echoes],
+                [{"answered": "wg_multi_1"}, {"answered": "wg_multi_2"}],
+            )
         finally:
             client.stop()
 

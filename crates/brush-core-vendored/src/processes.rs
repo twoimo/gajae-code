@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{error, openfiles::OpenFile, sys};
 
 struct CompletionMarker {
-	output:            OpenFile,
+	output: OpenFile,
 	end_marker_prefix: String,
 	end_marker_suffix: String,
 }
@@ -28,11 +28,11 @@ pub struct ChildProcess {
 	/// execution.
 	exec_future: WaitableChildProcess,
 	/// Tracks whether this process has already been reaped.
-	reaped:      bool,
+	reaped: bool,
 	/// If available, the process ID of the child.
-	pid:         Option<sys::process::ProcessId>,
+	pid: Option<sys::process::ProcessId>,
 	/// If available, the process group ID of the child.
-	pgid:        Option<sys::process::ProcessId>,
+	pgid: Option<sys::process::ProcessId>,
 	/// Windows handle duplicated from the child process for safe termination.
 	#[cfg(windows)]
 	kill_handle: Option<OwnedHandle>,
@@ -215,15 +215,7 @@ fn duplicate_handle(handle: RawHandle) -> Option<OwnedHandle> {
 	// `out_handle` is a valid out pointer checked below before ownership is
 	// transferred to OwnedHandle.
 	let ok = unsafe {
-		DuplicateHandle(
-			current,
-			handle,
-			current,
-			&mut out_handle,
-			0,
-			0,
-			DUPLICATE_SAME_ACCESS,
-		)
+		DuplicateHandle(current, handle, current, &mut out_handle, 0, 0, DUPLICATE_SAME_ACCESS)
 	};
 	if ok == 0 || out_handle.is_null() {
 		return None;

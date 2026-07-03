@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "workspace_keys": [
+    {
+      "repo": "oven-sh/bun",
+      "number": 30654,
+      "expected_key": "oven-sh__bun__30654",
+      "branch_title": "JSON.parse crashes on BOM",
+      "branch_seed": "oven-sh/bun#30654",
+      "expected_branch": "farm/cfbc2142/json-parse-crashes-on-bom"
+    },
+    {
+      "repo": "acme/widgets",
+      "number": 1,
+      "expected_key": "acme__widgets__1",
+      "branch_title": "!!!",
+      "branch_seed": "acme/widgets#1",
+      "expected_branch": "farm/efe3ead3/issue"
+    }
+  ],
+  "branch_slug_validation": [
+    {
+      "slug": "fix-bug",
+      "ok": true,
+      "error_contains": ""
+    },
+    {
+      "slug": "a",
+      "ok": true,
+      "error_contains": ""
+    },
+    {
+      "slug": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "ok": true,
+      "error_contains": ""
+    },
+    {
+      "slug": "Bad",
+      "ok": false,
+      "error_contains": "invalid branch slug"
+    },
+    {
+      "slug": "bad--slug",
+      "ok": false,
+      "error_contains": "invalid branch slug"
+    },
+    {
+      "slug": "-bad",
+      "ok": false,
+      "error_contains": "invalid branch slug"
+    },
+    {
+      "slug": "bad-",
+      "ok": false,
+      "error_contains": "invalid branch slug"
+    },
+    {
+      "slug": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "ok": false,
+      "error_contains": "invalid branch slug"
+    },
+    {
+      "slug": "",
+      "ok": false,
+      "error_contains": "invalid branch slug"
+    }
+  ]
+}

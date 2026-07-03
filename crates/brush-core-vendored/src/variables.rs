@@ -17,22 +17,22 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShellVariable {
 	/// The value currently associated with the variable.
-	value:               ShellValue,
+	value: ShellValue,
 	/// Whether or not the variable is marked as exported to child processes.
-	exported:            bool,
+	exported: bool,
 	/// Whether or not the variable is marked as read-only.
-	readonly:            bool,
+	readonly: bool,
 	/// Whether or not the variable should be enumerated in the shell's
 	/// environment.
-	enumerable:          bool,
+	enumerable: bool,
 	/// The transformation to apply to the variable's value when it is updated.
 	transform_on_update: ShellVariableUpdateTransform,
 	/// Whether or not the variable is marked as being traced.
-	trace:               bool,
+	trace: bool,
 	/// Whether or not the variable should be treated as an integer.
-	treat_as_integer:    bool,
+	treat_as_integer: bool,
 	/// Whether or not the variable should be treated as a name reference.
-	treat_as_nameref:    bool,
+	treat_as_nameref: bool,
 }
 
 /// Kind of transformation to apply to a variable's value when it is updated.
@@ -52,14 +52,14 @@ pub enum ShellVariableUpdateTransform {
 impl Default for ShellVariable {
 	fn default() -> Self {
 		Self {
-			value:               ShellValue::String(String::new()),
-			exported:            false,
-			readonly:            false,
-			enumerable:          true,
+			value: ShellValue::String(String::new()),
+			exported: false,
+			readonly: false,
+			enumerable: true,
 			transform_on_update: ShellVariableUpdateTransform::None,
-			trace:               false,
-			treat_as_integer:    false,
-			treat_as_nameref:    false,
+			trace: false,
+			treat_as_integer: false,
+			treat_as_nameref: false,
 		}
 	}
 }

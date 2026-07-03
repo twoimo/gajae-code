@@ -15,7 +15,7 @@ use crate::{functions, traps};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptCall {
 	/// The type of script call.
-	pub call_type:   ScriptCallType,
+	pub call_type: ScriptCallType,
 	/// The source info for the script called.
 	pub source_info: crate::SourceInfo,
 }
@@ -134,7 +134,7 @@ pub struct FunctionCall {
 	/// The name of the function invoked.
 	pub function_name: String,
 	/// The invoked function.
-	pub function:      functions::Registration,
+	pub function: functions::Registration,
 }
 
 impl FunctionCall {
@@ -155,25 +155,25 @@ impl std::fmt::Display for FunctionCall {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Frame {
 	/// The type of frame.
-	pub frame_type:          FrameType,
+	pub frame_type: FrameType,
 	/// The source information for the frame. The locations associated with AST
 	/// nodes executed in this frame should be interpreted as being relative to
 	/// this source info.
-	pub source_info:         crate::SourceInfo,
+	pub source_info: crate::SourceInfo,
 	/// The location of the entry point into this frame, within the frame of
 	/// reference of `source_info`. May be `None` if the entry point is not
 	/// known.
-	pub entry:               Option<Arc<crate::SourcePosition>>,
+	pub entry: Option<Arc<crate::SourcePosition>>,
 	/// Information about the currently executing location. For the topmost frame
 	/// on the stack, this represents the current execution location. For older
 	/// frames, this represents the site from which a control transfer was made
 	/// to the next younger frame. May be `None` if the current location is not
 	/// known. When present, it is relative to the frame of reference of
 	/// `source_info`.
-	pub current:             Option<Arc<crate::SourcePosition>>,
+	pub current: Option<Arc<crate::SourcePosition>>,
 	/// Positional arguments (not including $0). May not be present for all
 	/// frames.
-	pub args:                Vec<String>,
+	pub args: Vec<String>,
 	/// Optionally, indicates an additional line offset within the current source
 	/// context.
 	pub current_line_offset: usize,
@@ -196,8 +196,8 @@ impl Frame {
 		let mut new_start = if let Some(existing_start) = &self.source_info.start {
 			if let Some(current) = pos {
 				Some(Arc::new(crate::SourcePosition {
-					index:  existing_start.index + current.index,
-					line:   existing_start.line + (current.line - 1),
+					index: existing_start.index + current.index,
+					line: existing_start.line + (current.line - 1),
 					column: if current.line <= 1 {
 						existing_start.column + (current.column - 1)
 					} else {
@@ -219,8 +219,8 @@ impl Frame {
 				Some(Arc::new(pos))
 			} else {
 				Some(Arc::new(crate::SourcePosition {
-					index:  0,
-					line:   self.current_line_offset + 1,
+					index: 0,
+					line: self.current_line_offset + 1,
 					column: 1,
 				}))
 			};
@@ -250,7 +250,7 @@ impl Frame {
 #[derive(Default)]
 pub struct FormatOptions {
 	/// Whether or not to show args.
-	pub show_args:         bool,
+	pub show_args: bool,
 	/// Whether or not to show frame entry points.
 	pub show_entry_points: bool,
 }
@@ -260,7 +260,7 @@ pub struct FormatOptions {
 /// This struct implements `Display` and can be used to write a formatted
 /// call stack to any type that implements `io::Write`.
 pub struct FormatCallStack<'a> {
-	stack:   &'a CallStack,
+	stack: &'a CallStack,
 	options: &'a FormatOptions,
 }
 
@@ -456,15 +456,15 @@ impl CallStack {
 		args: impl IntoIterator<Item = String>,
 	) {
 		self.frames.push_front(Frame {
-			frame_type:          FrameType::Script(ScriptCall {
+			frame_type: FrameType::Script(ScriptCall {
 				call_type,
 				source_info: source_info.to_owned(),
 			}),
-			args:                args.into_iter().collect(),
-			source_info:         source_info.to_owned(),
+			args: args.into_iter().collect(),
+			source_info: source_info.to_owned(),
 			current_line_offset: 0,
-			current:             None, // TODO(source-info): fill this out
-			entry:               None, // TODO(source-info): fill this out
+			current: None, // TODO(source-info): fill this out
+			entry: None,   // TODO(source-info): fill this out
 		});
 
 		if matches!(call_type, ScriptCallType::Source) {
@@ -500,36 +500,36 @@ impl CallStack {
 	/// Pushes a new eval frame onto the stack.
 	pub fn push_eval(&mut self) {
 		self.frames.push_front(Frame {
-			frame_type:          FrameType::Eval,
-			args:                vec![],
-			source_info:         crate::SourceInfo::from("eval"), // TODO(source-info): fill this out
+			frame_type: FrameType::Eval,
+			args: vec![],
+			source_info: crate::SourceInfo::from("eval"), // TODO(source-info): fill this out
 			current_line_offset: 0,
-			current:             None, // TODO(source-info): fill this out
-			entry:               None, // TODO(source-info): fill this out
+			current: None, // TODO(source-info): fill this out
+			entry: None,   // TODO(source-info): fill this out
 		});
 	}
 
 	/// Pushes a new command string frame onto the stack.
 	pub fn push_command_string(&mut self) {
 		self.frames.push_front(Frame {
-			frame_type:          FrameType::CommandString,
-			args:                vec![],
-			source_info:         crate::SourceInfo::from("environment"),
+			frame_type: FrameType::CommandString,
+			args: vec![],
+			source_info: crate::SourceInfo::from("environment"),
 			current_line_offset: 0,
-			current:             None, // TODO(source-info): fill this out
-			entry:               None, // TODO(source-info): fill this out
+			current: None, // TODO(source-info): fill this out
+			entry: None,   // TODO(source-info): fill this out
 		});
 	}
 
 	/// Pushes a new interactive session frame onto the stack.
 	pub fn push_interactive_session(&mut self) {
 		self.frames.push_front(Frame {
-			frame_type:          FrameType::InteractiveSession,
-			args:                vec![],
+			frame_type: FrameType::InteractiveSession,
+			args: vec![],
 			current_line_offset: 0,
-			source_info:         crate::SourceInfo::from("main"),
-			current:             None, // TODO(source-info): fill this out
-			entry:               None, // TODO(source-info): fill this out
+			source_info: crate::SourceInfo::from("main"),
+			current: None, // TODO(source-info): fill this out
+			entry: None,   // TODO(source-info): fill this out
 		});
 	}
 
@@ -547,14 +547,14 @@ impl CallStack {
 		args: impl IntoIterator<Item = String>,
 	) {
 		self.frames.push_front(Frame {
-			frame_type:          FrameType::Function(FunctionCall {
+			frame_type: FrameType::Function(FunctionCall {
 				function_name: name.into(),
-				function:      function.to_owned(),
+				function: function.to_owned(),
 			}),
-			args:                args.into_iter().collect(),
-			source_info:         function.source().clone(),
-			entry:               function.definition().location().map(|span| span.start),
-			current:             None, // TODO(source-info): fill this out
+			args: args.into_iter().collect(),
+			source_info: function.source().clone(),
+			entry: function.definition().location().map(|span| span.start),
+			current: None, // TODO(source-info): fill this out
 			current_line_offset: 0,
 		});
 

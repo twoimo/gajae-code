@@ -1,0 +1,19 @@
+{
+  "action": "created",
+  "comment": {
+    "author_association": "OWNER",
+    "body": "@robogjc-bot use a generator here",
+    "user": {
+      "login": "can1357"
+    }
+  },
+  "pull_request": {
+    "number": 50,
+    "user": {
+      "login": "robogjc-bot"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}

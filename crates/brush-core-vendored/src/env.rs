@@ -49,8 +49,8 @@ impl std::fmt::Display for EnvironmentScope {
 /// dropped.
 pub(crate) struct ScopeGuard<'a, SE: extensions::ShellExtensions> {
 	scope_type: EnvironmentScope,
-	shell:      &'a mut crate::Shell<SE>,
-	detached:   bool,
+	shell: &'a mut crate::Shell<SE>,
+	detached: bool,
 }
 
 impl<'a, SE: extensions::ShellExtensions> ScopeGuard<'a, SE> {
@@ -136,7 +136,7 @@ impl ShellEnvironment {
 			Some((actual_scope_type, _)) => Err(
 				error::ErrorKind::UnexpectedScopeType {
 					expected: expected_scope_type,
-					actual:   actual_scope_type,
+					actual: actual_scope_type,
 				}
 				.into(),
 			),

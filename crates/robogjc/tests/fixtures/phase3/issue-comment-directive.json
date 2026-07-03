@@ -1,0 +1,11 @@
+{
+  "action": "created",
+  "repository": { "full_name": "octo/widget" },
+  "issue": { "number": 9 },
+  "comment": {
+    "id": 1001,
+    "user": { "login": "can1357", "type": "User" },
+    "author_association": "OWNER",
+    "body": "@robogjc-bot /model gpt /thinking low\nrefactor X"
+  }
+}

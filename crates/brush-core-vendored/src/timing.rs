@@ -3,10 +3,10 @@
 use crate::error;
 
 struct StopwatchTime {
-	now:             std::time::SystemTime,
-	self_user:       std::time::Duration,
-	self_system:     std::time::Duration,
-	children_user:   std::time::Duration,
+	now: std::time::SystemTime,
+	self_user: std::time::Duration,
+	self_system: std::time::Duration,
+	children_user: std::time::Duration,
 	children_system: std::time::Duration,
 }
 
@@ -32,8 +32,8 @@ impl Stopwatch {
 	}
 }
 pub(crate) struct StopwatchTiming {
-	pub wall:   std::time::Duration,
-	pub user:   std::time::Duration,
+	pub wall: std::time::Duration,
+	pub user: std::time::Duration,
 	pub system: std::time::Duration,
 }
 

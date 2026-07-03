@@ -1,0 +1,13 @@
+{
+  "association": "FIRST_TIME_CONTRIBUTOR",
+  "directive": false,
+  "directive_author": null,
+  "directive_body": null,
+  "directive_pragmas": [],
+  "issue_key": "octo/widget#4",
+  "reason": "issues.opened",
+  "repo": "octo/widget",
+  "should_queue": true,
+  "submitter": "alice",
+  "task": "triage_issue"
+}

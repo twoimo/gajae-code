@@ -1,0 +1,19 @@
+{
+  "action": "created",
+  "comment": {
+    "body": "Found two issues in the diff: ...",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    }
+  },
+  "issue": {
+    "number": 9,
+    "pull_request": {
+      "url": "x"
+    }
+  },
+  "repository": {
+    "full_name": "octo/widget"
+  }
+}
