@@ -31,6 +31,35 @@ pub fn schema_bundle() -> serde_json::Value {
 	defs.insert("ItemState".into(), def::<crate::item_state::ItemState>());
 	defs.insert("TurnState".into(), def::<crate::item_state::TurnState>());
 	defs.insert("TerminalCause".into(), def::<crate::item_state::TerminalCause>());
+	defs.insert("RpcWorkflowGate".into(), def::<crate::workflow_gate::RpcWorkflowGate>());
+	defs.insert(
+		"RpcWorkflowGateResponse".into(),
+		def::<crate::workflow_gate::RpcWorkflowGateResponse>(),
+	);
+	defs.insert(
+		"RpcWorkflowGateResolution".into(),
+		def::<crate::workflow_gate::RpcWorkflowGateResolution>(),
+	);
+	defs.insert(
+		"RpcWorkflowGateValidationError".into(),
+		def::<crate::workflow_gate::RpcWorkflowGateValidationError>(),
+	);
+	defs.insert(
+		"WorkflowGateListParams".into(),
+		def::<crate::workflow_gate::WorkflowGateListParams>(),
+	);
+	defs.insert(
+		"WorkflowGateListResult".into(),
+		def::<crate::workflow_gate::WorkflowGateListResult>(),
+	);
+	defs.insert(
+		"WorkflowGateRespondParams".into(),
+		def::<crate::workflow_gate::WorkflowGateRespondParams>(),
+	);
+	defs.insert(
+		"WorkflowGateOpenedParams".into(),
+		def::<crate::workflow_gate::WorkflowGateOpenedParams>(),
+	);
 
 	serde_json::json!({
 		 "$schema": "https://json-schema.org/draft/2020-12/schema",

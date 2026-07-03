@@ -65,6 +65,7 @@
     },
     {
       "name": "dashboard index sentinel substitution hides replay token",
+      "status": 200,
       "passed": true
     },
     {
