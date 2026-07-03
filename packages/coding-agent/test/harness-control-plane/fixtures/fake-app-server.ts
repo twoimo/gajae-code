@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
+
 /**
  * Minimal app-server JSON-RPC fixture — a TEST FIXTURE (never shipped).
  *
  * It speaks the app-server NDJSON handshake used by GajaeCodeAppServerRpc while
- * also emitting canonical agent-wire event frames so existing owner observation
+ * emitting method-shaped app-server JSON-RPC notifications so owner observation
  * tests exercise the real adapter + owner path without a live model.
  */
-process.stdout.write(`${JSON.stringify({ type: "ready" })}\n`);
 
 let buffer = "";
 const threadId = "fake-app-server-thread";
+const tracePath = process.env.GJC_FAKE_APP_SERVER_TRACE;
 
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
@@ -23,19 +25,23 @@ process.stdin.on("data", (chunk: string) => {
 	}
 });
 
+function trace(direction: "in" | "out", frame: Record<string, unknown>): void {
+	if (!tracePath) return;
+	appendFileSync(tracePath, `${JSON.stringify({ direction, frame })}\n`, "utf8");
+}
+
 function send(frame: Record<string, unknown>): void {
+	trace("out", frame);
 	process.stdout.write(`${JSON.stringify(frame)}\n`);
 }
+send({ type: "ready" });
 
 function respond(id: unknown, result: Record<string, unknown>): void {
 	send({ jsonrpc: "2.0", id, result });
 }
 
-function emitAgentEvent(event: Record<string, unknown>): void {
-	// Kept in canonical event-envelope shape because RuntimeOwner consumes the
-	// shared observeRpcOutboundFrame mapper until app-server notification mapping
-	// is expanded in P4.
-	send({ type: "event", payload: { event_type: event.type, event } });
+function emitAppServerEvent(event: Record<string, unknown>): void {
+	send({ jsonrpc: "2.0", method: "gjc/event", params: { eventType: event.type, event } });
 }
 
 function handle(line: string): void {
@@ -45,6 +51,7 @@ function handle(line: string): void {
 	} catch {
 		return;
 	}
+	trace("in", frame as unknown as Record<string, unknown>);
 	if (!frame.id && frame.method === "initialized") return;
 	switch (frame.method) {
 		case "initialize":
@@ -66,30 +73,56 @@ function handle(line: string): void {
 				method: "turn/started",
 				params: { threadId, turnId: frame.params?.commandId ?? "turn-1" },
 			});
-			emitAgentEvent({ type: "agent_start" });
+			emitAppServerEvent({ type: "agent_start" });
 			if (process.env.GJC_FAKE_APP_SERVER_STORM === "1") {
-				for (let i = 0; i < 200; i++) emitAgentEvent({ type: "message_update", message: { id: "m1" } });
+				for (let i = 0; i < 200; i++) emitAppServerEvent({ type: "message_update", message: { id: "m1" } });
 			}
-			emitAgentEvent({
+			send({
+				jsonrpc: "2.0",
+				method: "item/started",
+				params: { itemId: "item-t1", itemType: "toolCall", toolName: "read" },
+			});
+			send({
+				jsonrpc: "2.0",
+				method: "item/updated",
+				params: { itemId: "item-t1", itemType: "toolCall", status: "running", raw: "SECRET_ITEM_UPDATE" },
+			});
+			send({
+				jsonrpc: "2.0",
+				method: "item/completed",
+				params: {
+					itemId: "item-t1",
+					itemType: "toolCall",
+					toolName: "read",
+					status: "ok",
+					raw: "SECRET_ITEM_DONE",
+				},
+			});
+			emitAppServerEvent({
 				type: "tool_execution_start",
 				toolCallId: "t1",
 				toolName: "bash",
-				args: { command: "echo hi" },
+				args: { command: "echo SECRET_COMMAND" },
 			});
-			emitAgentEvent({
+			emitAppServerEvent({
 				type: "tool_execution_update",
 				toolCallId: "t1",
 				toolName: "bash",
-				args: { command: "echo hi" },
-				partialResult: { status: "running" },
+				args: { command: "echo SECRET_COMMAND" },
+				partialResult: { status: "running", content: "SECRET_PARTIAL" },
 			});
-			emitAgentEvent({
+			emitAppServerEvent({
 				type: "tool_execution_end",
 				toolCallId: "t1",
 				toolName: "bash",
-				result: { content: [{ type: "text", text: "hi" }], details: { status: "ok" } },
+				result: { content: [{ type: "text", text: "SECRET_OUTPUT" }], details: { status: "ok" } },
 			});
-			emitAgentEvent({ type: "agent_end" });
+			emitAppServerEvent({ type: "agent_end" });
+			send({
+				jsonrpc: "2.0",
+				method: "turn/completed",
+				params: { threadId, turnId: frame.params?.commandId ?? "turn-1", status: "completed" },
+			});
 			return;
 		default:
 			if (frame.id) respond(frame.id, {});

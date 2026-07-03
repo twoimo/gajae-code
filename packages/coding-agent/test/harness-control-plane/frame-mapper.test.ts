@@ -174,6 +174,95 @@ describe("mapRpcFrame (canonical observeRpcOutboundFrame)", () => {
 			semantic: true,
 			evidence: { stopReason: "completed" },
 		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "gjc/event",
+				params: { eventType: "agent_start", event: { type: "agent_start", raw: "SECRET_AGENT_START" } },
+			}),
+		).toMatchObject({
+			eventType: "agent_start",
+			kind: "agent_wire_agent_started",
+			signal: "SessionStart",
+			semantic: true,
+		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "item/started",
+				params: { itemId: "item-1", itemType: "toolCall", toolName: "read", raw: "SECRET_ITEM_START" },
+			}),
+		).toMatchObject({
+			frameType: "item/started",
+			kind: "agent_wire_tool_started",
+			signal: "tool-call",
+			semantic: true,
+			evidence: { toolId: "item-1", toolName: "read" },
+		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "item/updated",
+				params: { itemId: "item-1", itemType: "toolCall", status: "running", raw: "SECRET_ITEM_UPDATE" },
+			}),
+		).toMatchObject({
+			frameType: "item/updated",
+			kind: "agent_wire_tool_updated",
+			semantic: false,
+			coalesceKey: "tool:item-1",
+			evidence: { toolId: "item-1", status: "running" },
+		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "item/completed",
+				params: { itemId: "item-1", itemType: "toolCall", toolName: "read", status: "ok", raw: "SECRET_ITEM_DONE" },
+			}),
+		).toMatchObject({
+			frameType: "item/completed",
+			kind: "agent_wire_tool_ended",
+			signal: "tool-call",
+			semantic: true,
+			evidence: { toolId: "item-1", toolName: "read", status: "ok" },
+		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "gjc/event",
+				params: {
+					eventType: "agent_end",
+					event: { type: "agent_end", stopReason: "completed", raw: "SECRET_END" },
+				},
+			}),
+		).toMatchObject({
+			eventType: "agent_end",
+			kind: "agent_wire_agent_completed",
+			signal: "completed",
+			semantic: true,
+		});
+
+		expect(
+			JSON.stringify(
+				mapRpcFrame({
+					jsonrpc: "2.0",
+					method: "gjc/event",
+					params: {
+						eventType: "tool_execution_end",
+						event: {
+							type: "tool_execution_end",
+							toolCallId: "secret-tool",
+							toolName: "bash",
+							result: { content: [{ type: "text", text: "SECRET_OUTPUT" }], details: { status: "ok" } },
+						},
+					},
+				})?.evidence,
+			),
+		).not.toContain("SECRET_OUTPUT");
 	});
 	it("isTestRunnerTool detects common runners", () => {
 		expect(isTestRunnerTool("bash", "bun test x")).toBe(true);
