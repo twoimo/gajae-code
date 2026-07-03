@@ -3,7 +3,7 @@
 The SDK is the in-process integration surface for `@gajae-code/coding-agent`.
 Use it when you want direct access to agent state, event streaming, tool wiring, and session control from your own Bun/Node process.
 
-If you need cross-language/process isolation, use RPC mode instead.
+If you need cross-language/process isolation, use the app-server JSON-RPC surface (`gjc app-server` / `gjc --mode app-server`) or ACP (`gjc --mode acp`) instead.
 
 ## Installation
 

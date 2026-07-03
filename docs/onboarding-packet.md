@@ -41,7 +41,7 @@ Do not add a fifth default skill, fifth public role agent, new command, new conf
 - `packages/utils/` — shared TypeScript utilities, logging, formatting, process helpers, JSON/frontmatter, and sanitization.
 - `packages/stats/` — local observability dashboard and session/model usage aggregation.
 - `packages/typescript-edit-benchmark/` — TypeScript edit benchmark tooling.
-- `python/gjc-rpc/` — Python client for `gjc --mode rpc`.
+- `crates/gjc-app-server/` — Rust-owned app-server JSON-RPC protocol and transports for `gjc app-server` / `gjc --mode app-server`.
 - `crates/robogjc/` — Rust GitHub triage/fix bot; `python/robogjc/web/` is its retained TypeScript dashboard.
 
 ## Build, test, and validation commands
