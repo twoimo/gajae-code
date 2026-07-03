@@ -107,7 +107,7 @@ JSON text frames. Field names are `camelCase`; the `type` discriminator is
   "sessionId": "sess-1", "summary": "finished refactor; awaiting next step" }
 ```
 
-- `kind: "ask"` is answerable in both interactive/TUI and unattended/RPC modes.
+- `kind: "ask"` is answerable in both interactive/TUI and unattended app-server sessions.
   The `id` is the real workflow-gate id.
 - `kind: "idle"` is notify-only and ephemeral (not replayed to clients that
   connect later).
@@ -188,7 +188,7 @@ A remote reply answers a pending ask in **both** modes — RPC is not required:
   remote reply (first valid answer wins). If you tap a button in the client, the
   ask resolves with that option; if you answer locally, the client receives
   `action_resolved` (`resolvedBy: "local"`) and the action becomes non-repliable.
-- **Unattended / RPC mode:** the reply resolves the real workflow-gate, driving
+- **Unattended / app-server session:** the reply resolves the real workflow-gate, driving
   the session the same way a local answer would.
 
 In both modes the first valid reply wins; later replies get `already_answered`.
