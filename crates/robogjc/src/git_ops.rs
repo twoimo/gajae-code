@@ -181,10 +181,12 @@ fn run_real(spec: &CommandSpec) -> Result<CommandOutput, GitCommandError> {
 		unsafe {
 			cmd.pre_exec(move || {
 				// setgroups takes size_t (usize) on Linux and c_int on macOS;
-				// try_into() targets whichever the platform signature expects.
-				if !groups.is_empty()
-					&& libc::setgroups(groups.len().try_into().unwrap(), groups.as_ptr()) != 0
-				{
+				// size targets whichever the platform signature expects.
+				#[cfg(target_os = "linux")]
+				let ngroups = groups.len();
+				#[cfg(not(target_os = "linux"))]
+				let ngroups = libc::c_int::try_from(groups.len()).unwrap();
+				if !groups.is_empty() && libc::setgroups(ngroups, groups.as_ptr()) != 0 {
 					return Err(io::Error::last_os_error());
 				}
 				if let Some(gid) = group

@@ -1,7 +1,5 @@
 //! GitHub proxy client and server boundary for isolated credentials.
 
-#[cfg(all(target_os = "linux", unix))]
-use std::os::unix::process::CommandExt;
 use std::{
 	collections::HashSet,
 	net::SocketAddr,
@@ -671,8 +669,13 @@ impl GitCommandSpec {
 			cmd.env("GIT_CONFIG_COUNT", config_count.to_string());
 		}
 		#[cfg(all(target_os = "linux", unix))]
-		if let Some(uid) = self.slot_uid.filter(|_| unsafe { libc_geteuid() } == 0) {
-			cmd.uid(uid).gid(uid);
+		{
+			// SAFETY: `geteuid` reads the calling process's effective uid. It has
+			// no preconditions, never fails, and cannot cause undefined behavior.
+			let is_root = unsafe { libc_geteuid() } == 0;
+			if let Some(uid) = self.slot_uid.filter(|_| is_root) {
+				cmd.uid(uid).gid(uid);
+			}
 		}
 		cmd
 	}
