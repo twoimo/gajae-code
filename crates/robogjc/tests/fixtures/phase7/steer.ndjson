@@ -1,0 +1,6 @@
+{"method":"initialize","params":{}}
+{"method":"initialized","params":{}}
+{"method":"thread/start","params":{"sessionId":"robogjc"}}
+{"method":"turn/completed","params":{"threadId":"thread-start","turnId":"turn-1","status":"completed"}}
+{"method":"turn/steer","params":{"threadId":"thread-start","reason":"completion_reminder"}}
+{"method":"turn/completed","params":{"threadId":"thread-start","turnId":"turn-1","status":"completed"}}

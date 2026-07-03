@@ -1,0 +1,6 @@
+{"method":"initialize","params":{}}
+{"method":"initialized","params":{}}
+{"method":"thread/start","params":{"cwd":"/repo","sessionId":"s1"}}
+{"method":"gjc/hostTools/set","params":{"threadId":"thread-start"}}
+{"method":"turn/start","params":{"threadId":"thread-start"}}
+{"method":"turn/completed","params":{"threadId":"thread-start","turnId":"turn-1","status":"completed"}}
