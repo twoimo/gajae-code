@@ -2,6 +2,13 @@ import { z } from "zod";
 import type { CustomTool } from "../../extensibility/custom-tools/types";
 import { type CreateAgentSessionOptions, createAgentSession } from "../../sdk";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
+import type { WorkflowGateEmitter } from "../shared/agent-wire/unattended-session";
+import type { OpenGateInput } from "../shared/agent-wire/workflow-gate-broker";
+import type {
+	RpcWorkflowGate,
+	RpcWorkflowGateResolution,
+	RpcWorkflowGateResponse,
+} from "../shared/agent-wire/workflow-gate-types";
 import type { AppServerHost, CreatedThread } from "./host";
 
 interface NativeHostToolBridge {
@@ -9,6 +16,13 @@ interface NativeHostToolBridge {
 	activeTurnId(threadId: string): string | null;
 	callHostTool(threadId: string, turnId: string, tool: string, argsJson: string): Promise<string>;
 }
+
+interface NativeWorkflowGateBridge {
+	openWorkflowGate(threadId: string, inputJson: string): Promise<string>;
+	isWorkflowGateUnattended?(threadId: string): boolean;
+}
+
+type NativeAppServerBridge = NativeHostToolBridge & Partial<NativeWorkflowGateBridge>;
 
 export type AppServerEventEmitter = (
 	threadId: string,
@@ -37,6 +51,7 @@ export interface AppServerSession {
 	getSessionState?: () => unknown;
 	getMessages?: () => unknown;
 	setTodos?: (todos: unknown) => unknown;
+	setWorkflowGateEmitter?: (emitter: WorkflowGateEmitter | undefined) => void;
 }
 
 type AgentSessionLike = AppServerSession;
@@ -44,7 +59,7 @@ type AgentSessionLike = AppServerSession;
 type SessionFactory = (options: CreateAgentSessionOptions) => Promise<{ session: AgentSessionLike }>;
 
 export interface AgentSessionHostOptions {
-	appServer?: NativeHostToolBridge;
+	appServer?: NativeAppServerBridge;
 	emit?: AppServerEventEmitter;
 	sessionFactory?: SessionFactory;
 }
@@ -175,7 +190,7 @@ export class AgentSessionHost implements AppServerHost {
 	#emit: AppServerEventEmitter;
 	#notificationHandler: ((method: string, params: unknown) => unknown) | undefined;
 	readonly #sessionFactory: SessionFactory;
-	#appServer: NativeHostToolBridge | undefined;
+	#appServer: NativeAppServerBridge | undefined;
 
 	constructor(options: AgentSessionHostOptions = {}) {
 		this.#emit = options.emit ?? (() => {});
@@ -187,7 +202,7 @@ export class AgentSessionHost implements AppServerHost {
 		this.#emit = emit;
 	}
 
-	setAppServer(appServer: NativeHostToolBridge): void {
+	setAppServer(appServer: NativeAppServerBridge): void {
 		this.#appServer = appServer;
 	}
 
@@ -232,6 +247,23 @@ export class AgentSessionHost implements AppServerHost {
 		}));
 		const { session } = await this.#sessionFactory(createOptionsFromMetadata(metadata, hostTools));
 		threadId = session.sessionId;
+		if (typeof session.setWorkflowGateEmitter === "function") {
+			const emitter: WorkflowGateEmitter = {
+				isUnattended: () => this.#appServer?.isWorkflowGateUnattended?.(threadId) ?? true,
+				emitGate: async (input: OpenGateInput) => {
+					const bridge = this.#appServer;
+					if (!bridge?.openWorkflowGate) throw new Error("workflow gate bridge is not attached");
+					const answerJson = await bridge.openWorkflowGate(threadId, JSON.stringify(input));
+					return JSON.parse(answerJson);
+				},
+				listPendingGates: () => [],
+				resolveGate: async (_response: RpcWorkflowGateResponse): Promise<RpcWorkflowGateResolution> => {
+					throw new Error("workflow gate resolve is handled by gjc/workflowGate/respond");
+				},
+				onGateEmitted: (_listener: (gate: RpcWorkflowGate) => void) => () => {},
+			};
+			session.setWorkflowGateEmitter(emitter);
+		}
 		const returnedMetadata = normalizeSessionMetadata(metadata, threadId);
 		const thread: ThreadRecord = {
 			session,

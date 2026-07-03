@@ -45,10 +45,6 @@
         "id"
       ],
       "properties": {
-        "id": {
-          "$ref": "#/definitions/RequestId"
-        },
-        "result": true,
         "error": {
           "anyOf": [
             {
@@ -58,21 +54,13 @@
               "type": "null"
             }
           ]
-        }
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "result": true
       },
       "definitions": {
-        "RequestId": {
-          "description": "Opaque JSON-RPC request id (string or number), preserved verbatim so responses echo the exact client id.",
-          "anyOf": [
-            {
-              "type": "integer",
-              "format": "int64"
-            },
-            {
-              "type": "string"
-            }
-          ]
-        },
         "AppServerError": {
           "description": "A structured error that maps directly onto a JSON-RPC error object.",
           "type": "object",
@@ -85,11 +73,23 @@
               "type": "integer",
               "format": "int32"
             },
+            "data": true,
             "message": {
               "type": "string"
-            },
-            "data": true
+            }
           }
+        },
+        "RequestId": {
+          "description": "Opaque JSON-RPC request id (string or number), preserved verbatim so responses echo the exact client id.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64"
+            },
+            {
+              "type": "string"
+            }
+          ]
         }
       }
     },
@@ -151,10 +151,10 @@
           "type": "integer",
           "format": "int32"
         },
+        "data": true,
         "message": {
           "type": "string"
-        },
-        "data": true
+        }
       }
     },
     "ThreadIdentity": {
@@ -169,12 +169,6 @@
         "thread_id"
       ],
       "properties": {
-        "thread_id": {
-          "type": "string"
-        },
-        "status": {
-          "$ref": "#/definitions/ThreadStatus"
-        },
         "generation": {
           "type": "integer",
           "format": "uint64",
@@ -182,24 +176,34 @@
         },
         "metadata": {
           "$ref": "#/definitions/SessionMetadata"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadStatus"
+        },
+        "thread_id": {
+          "type": "string"
         }
       },
       "definitions": {
-        "ThreadStatus": {
-          "description": "Lifecycle status of a thread in the registry.",
-          "type": "string",
-          "enum": [
-            "idle",
-            "running",
-            "archived",
-            "deleted"
-          ]
-        },
         "SessionMetadata": {
           "description": "Mutable TS-side session metadata attached to an immutable thread identity.",
           "type": "object",
           "properties": {
-            "sessionId": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "forkedFromId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": true,
+            "modelConfig": true,
+            "sessionDir": {
               "type": [
                 "string",
                 "null"
@@ -211,25 +215,31 @@
                 "null"
               ]
             },
-            "cwd": {
+            "sessionId": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "model": {
+            "systemPromptAppend": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "forkedFromId": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
+            "thinking": true,
+            "todos": true
           }
+        },
+        "ThreadStatus": {
+          "description": "Lifecycle status of a thread in the registry.",
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "archived",
+            "deleted"
+          ]
         }
       }
     },
@@ -251,7 +261,21 @@
       "description": "Mutable TS-side session metadata attached to an immutable thread identity.",
       "type": "object",
       "properties": {
-        "sessionId": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forkedFromId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": true,
+        "modelConfig": true,
+        "sessionDir": {
           "type": [
             "string",
             "null"
@@ -263,24 +287,20 @@
             "null"
           ]
         },
-        "cwd": {
+        "sessionId": {
           "type": [
             "string",
             "null"
           ]
         },
-        "model": {
+        "systemPromptAppend": {
           "type": [
             "string",
             "null"
           ]
         },
-        "forkedFromId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "thinking": true,
+        "todos": true
       }
     },
     "ItemState": {
@@ -323,6 +343,664 @@
         "interrupted",
         "failed"
       ]
+    },
+    "RpcWorkflowGate": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGate",
+      "type": "object",
+      "required": [
+        "context",
+        "created_at",
+        "gate_id",
+        "kind",
+        "required",
+        "schema",
+        "schema_hash",
+        "stage",
+        "type"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/RpcWorkflowGateContext"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/RpcWorkflowGateKind"
+        },
+        "options": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/RpcWorkflowGateOption"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema": true,
+        "schema_hash": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/definitions/RpcWorkflowStage"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        }
+      }
+    },
+    "RpcWorkflowGateResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateResponse",
+      "type": "object",
+      "required": [
+        "answer",
+        "gate_id"
+      ],
+      "properties": {
+        "answer": true,
+        "gate_id": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcWorkflowGateResolution": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateResolution",
+      "type": "object",
+      "required": [
+        "answer_hash",
+        "gate_id",
+        "resolved_at",
+        "status"
+      ],
+      "properties": {
+        "answer_hash": {
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RpcWorkflowGateValidationError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "resolved_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGateValidationError": {
+          "type": "object",
+          "required": [
+            "code",
+            "errors",
+            "gate_id",
+            "schema_hash"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SchemaValidationIssue"
+              }
+            },
+            "gate_id": {
+              "type": "string"
+            },
+            "schema_hash": {
+              "type": "string"
+            }
+          }
+        },
+        "SchemaValidationIssue": {
+          "type": "object",
+          "required": [
+            "keyword",
+            "message",
+            "path"
+          ],
+          "properties": {
+            "expected": true,
+            "keyword": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "RpcWorkflowGateValidationError": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateValidationError",
+      "type": "object",
+      "required": [
+        "code",
+        "errors",
+        "gate_id",
+        "schema_hash"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SchemaValidationIssue"
+          }
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "schema_hash": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "SchemaValidationIssue": {
+          "type": "object",
+          "required": [
+            "keyword",
+            "message",
+            "path"
+          ],
+          "properties": {
+            "expected": true,
+            "keyword": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "WorkflowGateListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateListParams",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "WorkflowGateListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateListResult",
+      "type": "object",
+      "required": [
+        "gates"
+      ],
+      "properties": {
+        "gates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RpcWorkflowGate"
+          }
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGate": {
+          "type": "object",
+          "required": [
+            "context",
+            "created_at",
+            "gate_id",
+            "kind",
+            "required",
+            "schema",
+            "schema_hash",
+            "stage",
+            "type"
+          ],
+          "properties": {
+            "context": {
+              "$ref": "#/definitions/RpcWorkflowGateContext"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "gate_id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/RpcWorkflowGateKind"
+            },
+            "options": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/definitions/RpcWorkflowGateOption"
+              }
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "schema": true,
+            "schema_hash": {
+              "type": "string"
+            },
+            "stage": {
+              "$ref": "#/definitions/RpcWorkflowStage"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        },
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        }
+      }
+    },
+    "WorkflowGateRespondParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateRespondParams",
+      "type": "object",
+      "required": [
+        "answer",
+        "gate_id",
+        "threadId"
+      ],
+      "properties": {
+        "answer": true,
+        "gate_id": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "WorkflowGateOpenedParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateOpenedParams",
+      "type": "object",
+      "required": [
+        "context",
+        "created_at",
+        "gate_id",
+        "generation",
+        "kind",
+        "required",
+        "schema",
+        "schema_hash",
+        "stage",
+        "threadId",
+        "type"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/RpcWorkflowGateContext"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "kind": {
+          "$ref": "#/definitions/RpcWorkflowGateKind"
+        },
+        "options": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/RpcWorkflowGateOption"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema": true,
+        "schema_hash": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/definitions/RpcWorkflowStage"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        }
+      }
     }
   }
 }

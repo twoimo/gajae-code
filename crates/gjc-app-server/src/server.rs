@@ -33,15 +33,16 @@ pub trait EventSink: Send + Sync {
 
 /// Per-thread registry entry: identity + backend + admission + event stream.
 struct ThreadEntry {
-	identity:      Mutex<ThreadIdentity>,
-	backend:       Arc<dyn AgentBackend>,
-	admission:     Mutex<Admission>,
-	stream:        Mutex<ThreadStream>,
-	active_turn:   Mutex<Option<TurnId>>,
+	identity:       Mutex<ThreadIdentity>,
+	backend:        Arc<dyn AgentBackend>,
+	admission:      Mutex<Admission>,
+	stream:         Mutex<ThreadStream>,
+	active_turn:    Mutex<Option<TurnId>>,
 	/// Serializes non-turn mutating backend calls for this thread (serial
 	/// mutating lane); read/cancel lanes never take it.
-	mutating_lane: Arc<tokio::sync::Mutex<()>>,
-	host_tools:    Mutex<HostToolRegistry>,
+	mutating_lane:  Arc<tokio::sync::Mutex<()>>,
+	host_tools:     Mutex<HostToolRegistry>,
+	workflow_gates: Mutex<crate::workflow_gate::WorkflowGateBroker>,
 }
 
 /// Per-connection handshake state.
@@ -80,6 +81,8 @@ pub struct AppServer {
 	/// that subscribe per-connection, in addition to the primary `sink`.
 	event_tx:                tokio::sync::broadcast::Sender<Notification>,
 	pending_host_tool_calls: DashMap<String, PendingHostToolCall>,
+	pending_workflow_gates:
+		DashMap<String, (ThreadId, tokio::sync::oneshot::Receiver<serde_json::Value>)>,
 }
 
 impl AppServer {
@@ -114,6 +117,7 @@ impl AppServer {
 			notification_host,
 			event_tx,
 			pending_host_tool_calls: DashMap::new(),
+			pending_workflow_gates: DashMap::new(),
 		}
 	}
 
@@ -226,6 +230,42 @@ impl AppServer {
 				))
 			},
 		}
+	}
+
+	pub async fn open_workflow_gate(
+		&self,
+		thread_id: &ThreadId,
+		input: crate::workflow_gate::OpenWorkflowGateInput,
+	) -> Result<serde_json::Value> {
+		let (generation, gate, rx) = {
+			let entry = self
+				.threads
+				.get(thread_id)
+				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+			let generation = entry.value().identity.lock().generation;
+			let (gate, rx) = entry.value().workflow_gates.lock().open(thread_id, input)?;
+			(generation, gate, rx)
+		};
+		let gate_id = gate.gate_id.clone();
+		self
+			.pending_workflow_gates
+			.insert(gate_id.clone(), (thread_id.clone(), rx));
+		let params = crate::workflow_gate::WorkflowGateOpenedParams {
+			thread_id: thread_id.0.clone(),
+			generation: generation.0,
+			gate,
+		};
+		self.publish(Notification::new(
+			"gjc/workflowGate/opened",
+			serde_json::to_value(params).map_err(|err| {
+				AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string())
+			})?,
+		));
+		let Some((_, (_, rx))) = self.pending_workflow_gates.remove(&gate_id) else {
+			return Err(AppServerError::conflict("workflow gate was cancelled"));
+		};
+		rx.await
+			.map_err(|_| AppServerError::conflict("workflow gate was cancelled"))
 	}
 
 	pub fn host_tool_names(&self, thread_id: &ThreadId) -> Result<Vec<String>> {
@@ -437,6 +477,8 @@ impl AppServer {
 			"gjc/hostTools/set" => self.handle_host_tools_set(method, params),
 			"gjc/hostTools/result" => self.handle_host_tools_result(method, params),
 			"gjc/hostTools/update" => self.handle_host_tools_update(method, params),
+			"gjc/workflowGate/list" => self.handle_workflow_gate_list(method, params),
+			"gjc/workflowGate/respond" => self.handle_workflow_gate_respond(method, params),
 			other => Err(AppServerError::method_not_found(other)),
 		}
 	}
@@ -582,6 +624,53 @@ impl AppServer {
 		}
 		pending.progress.lock().push(payload);
 		Ok(serde_json::json!({}))
+	}
+
+	fn handle_workflow_gate_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		let result = crate::workflow_gate::WorkflowGateListResult {
+			gates: entry.value().workflow_gates.lock().list_pending(),
+		};
+		serde_json::to_value(result)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	fn handle_workflow_gate_respond(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"threadId",
+			"gate_id",
+			"answer",
+			"idempotency_key",
+		])?;
+		let parsed: crate::workflow_gate::WorkflowGateRespondParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let thread_id = ThreadId(parsed.thread_id.clone());
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		let response = crate::workflow_gate::RpcWorkflowGateResponse {
+			gate_id:         parsed.gate_id,
+			answer:          parsed.answer,
+			idempotency_key: parsed.idempotency_key,
+		};
+		let resolution = entry.value().workflow_gates.lock().resolve(response)?;
+		serde_json::to_value(resolution)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
 
 	async fn handle_gjc_state_read(
@@ -773,6 +862,7 @@ impl AppServer {
 			active_turn: Mutex::new(None),
 			mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
 			host_tools: Mutex::new(HostToolRegistry::default()),
+			workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
 		});
 		let mut thread = serde_json::json!({
 			"id": info.thread_id.0,

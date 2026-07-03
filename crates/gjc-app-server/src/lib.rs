@@ -37,6 +37,7 @@ pub mod scheduler;
 pub mod schema;
 pub mod server;
 pub mod transport_ws;
+pub mod workflow_gate;
 
 pub use backend::{
 	AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo,

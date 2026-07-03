@@ -547,6 +547,29 @@ impl AppServer {
 			.map_err(|err| napi::Error::from_reason(err.to_string()))
 	}
 
+	#[napi(js_name = "openWorkflowGate")]
+	pub async fn open_workflow_gate(
+		&self,
+		thread_id: String,
+		input_json: String,
+	) -> napi::Result<String> {
+		let input: gjc_app_server::workflow_gate::OpenWorkflowGateInput =
+			serde_json::from_str(&input_json).map_err(|err| {
+				napi::Error::from_reason(format!("invalid workflow gate input JSON: {err}"))
+			})?;
+		let answer = self
+			.core
+			.open_workflow_gate(&ThreadId(thread_id), input)
+			.await
+			.map_err(|err| napi::Error::from_reason(err.to_string()))?;
+		serde_json::to_string(&answer).map_err(|err| napi::Error::from_reason(err.to_string()))
+	}
+
+	#[napi(js_name = "isWorkflowGateUnattended")]
+	pub fn is_workflow_gate_unattended(&self, _thread_id: String) -> bool {
+		true
+	}
+
 	/// Push an opaque `gjc/notifications` frame to connected clients.
 	#[napi(js_name = "pushNotification")]
 	pub fn push_notification(&self, frame_json: String) -> napi::Result<()> {
