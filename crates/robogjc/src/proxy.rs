@@ -10,7 +10,15 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::github::{GitHubClient, GitHubError, OpenPullRequest};
+use crate::{
+	git_ops::GitPushError,
+	github::{
+		CommentInfo, GitHubBackend, GitHubClient, GitHubError, IssueInfo, IssueSummary,
+		OpenPullRequest, PullRequestInfo, PullRequestReviewInfo, ReactionInfo, RepoInfo,
+		ReviewCommentInfo,
+	},
+	sandbox::GitTransport,
+};
 use axum::{
 	Router,
 	body::Body,
@@ -901,6 +909,462 @@ impl GitHubProxyClient {
 			return Err(ProxyClientError(text));
 		}
 		serde_json::from_str(&text).map_err(|err| ProxyClientError(err.to_string()))
+	}
+}
+
+fn proxy_error(err: ProxyClientError) -> GitHubError {
+	GitHubError { status: 502, message: err.to_string(), retry_after: None }
+}
+
+fn proxy_http_error(status: reqwest::StatusCode, body: String) -> GitHubError {
+	GitHubError { status: status.as_u16(), message: body, retry_after: None }
+}
+
+async fn proxy_json<T: for<'de> Deserialize<'de>>(
+	client: &GitHubProxyClient,
+	method: Method,
+	path: &str,
+	params: &[(&str, String)],
+	body: serde_json::Value,
+) -> Result<T, GitHubError> {
+	let bytes = if body.is_null() {
+		Bytes::new()
+	} else {
+		Bytes::from(body.to_string())
+	};
+	let resp = client
+		.request_params(method, path, params, bytes)
+		.await
+		.map_err(proxy_error)?;
+	let status = resp.status();
+	let text = resp.text().await.map_err(|err| GitHubError {
+		status: 502,
+		message: err.to_string(),
+		retry_after: None,
+	})?;
+	if !status.is_success() {
+		return Err(proxy_http_error(status, text));
+	}
+	serde_json::from_str(&text).map_err(|err| GitHubError {
+		status: 502,
+		message: err.to_string(),
+		retry_after: None,
+	})
+}
+
+impl GitHubBackend for GitHubProxyClient {
+	fn get_repo<'a>(
+		&'a self,
+		repo: &'a str,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<RepoInfo, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_json(
+				self,
+				Method::GET,
+				"/gh/v1/repo",
+				&[("repo", repo.to_owned())],
+				serde_json::Value::Null,
+			)
+			.await
+		})
+	}
+	fn get_issue<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<IssueInfo, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_json(
+				self,
+				Method::GET,
+				"/gh/v1/issue",
+				&[("repo", repo.to_owned()), ("number", number.to_string())],
+				serde_json::Value::Null,
+			)
+			.await
+		})
+	}
+	fn list_closing_pull_requests<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<Vec<i64>, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			let v: serde_json::Value = proxy_json(
+				self,
+				Method::GET,
+				"/gh/v1/closing_prs",
+				&[("repo", repo.to_owned()), ("number", number.to_string())],
+				serde_json::Value::Null,
+			)
+			.await?;
+			serde_json::from_value(
+				v.get("pr_numbers")
+					.cloned()
+					.unwrap_or_else(|| serde_json::Value::Array(vec![])),
+			)
+			.map_err(|err| GitHubError {
+				status: 502,
+				message: err.to_string(),
+				retry_after: None,
+			})
+		})
+	}
+	fn get_pull_request<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<PullRequestInfo, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_json(
+				self,
+				Method::GET,
+				"/gh/v1/pull_request",
+				&[("repo", repo.to_owned()), ("number", number.to_string())],
+				serde_json::Value::Null,
+			)
+			.await
+		})
+	}
+	fn list_issues<'a>(
+		&'a self,
+		repo: &'a str,
+		state: &'a str,
+		limit: i64,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<Vec<IssueSummary>, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			let v: serde_json::Value = proxy_json(
+				self,
+				Method::GET,
+				"/gh/v1/issues",
+				&[("repo", repo.to_owned()), ("state", state.to_owned()), ("limit", limit.to_string())],
+				serde_json::Value::Null,
+			)
+			.await?;
+			serde_json::from_value(
+				v.get("items")
+					.cloned()
+					.unwrap_or_else(|| serde_json::Value::Array(vec![])),
+			)
+			.map_err(|err| GitHubError {
+				status: 502,
+				message: err.to_string(),
+				retry_after: None,
+			})
+		})
+	}
+	fn list_comments<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<Vec<CommentInfo>, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_items(
+				self,
+				"/gh/v1/comments",
+				&[("repo", repo.to_owned()), ("number", number.to_string())],
+			)
+			.await
+		})
+	}
+	fn list_review_comments<'a>(
+		&'a self,
+		repo: &'a str,
+		pr_number: i64,
+	) -> std::pin::Pin<
+		Box<
+			dyn std::future::Future<Output = Result<Vec<ReviewCommentInfo>, GitHubError>> + Send + 'a,
+		>,
+	> {
+		Box::pin(async move {
+			proxy_items(
+				self,
+				"/gh/v1/review_comments",
+				&[("repo", repo.to_owned()), ("pr_number", pr_number.to_string())],
+			)
+			.await
+		})
+	}
+	fn list_pr_reviews<'a>(
+		&'a self,
+		repo: &'a str,
+		pr_number: i64,
+	) -> std::pin::Pin<
+		Box<
+			dyn std::future::Future<Output = Result<Vec<PullRequestReviewInfo>, GitHubError>>
+				+ Send
+				+ 'a,
+		>,
+	> {
+		Box::pin(async move {
+			proxy_items(
+				self,
+				"/gh/v1/pr_reviews",
+				&[("repo", repo.to_owned()), ("pr_number", pr_number.to_string())],
+			)
+			.await
+		})
+	}
+	fn get_authenticated_login<'a>(
+		&'a self,
+	) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GitHubError>> + Send + 'a>>
+	{
+		Box::pin(async move {
+			let v: serde_json::Value = proxy_json(
+				self,
+				Method::GET,
+				"/gh/v1/authenticated_login",
+				&[],
+				serde_json::Value::Null,
+			)
+			.await?;
+			Ok(v
+				.get("login")
+				.and_then(serde_json::Value::as_str)
+				.unwrap_or_default()
+				.to_owned())
+		})
+	}
+	fn post_comment<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+		body: &'a str,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<CommentInfo, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_json(
+				self,
+				Method::POST,
+				"/gh/v1/post_comment",
+				&[],
+				json!({"repo":repo,"number":number,"body":body}),
+			)
+			.await
+		})
+	}
+	fn open_pull_request<'a>(
+		&'a self,
+		req: OpenPullRequest<'a>,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<PullRequestInfo, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_json(self, Method::POST, "/gh/v1/open_pull_request", &[], json!({"repo":req.repo,"head":req.head,"base":req.base,"title":req.title,"body":req.body,"draft":req.draft,"maintainer_can_modify":req.maintainer_can_modify})).await
+		})
+	}
+	fn request_reviewers<'a>(
+		&'a self,
+		repo: &'a str,
+		pr_number: i64,
+		reviewers: &'a [String],
+		team_reviewers: &'a [String],
+	) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GitHubError>> + Send + 'a>> {
+		Box::pin(async move {
+			let _: serde_json::Value = proxy_json(self, Method::POST, "/gh/v1/request_reviewers", &[], json!({"repo":repo,"pr_number":pr_number,"reviewers":reviewers,"team_reviewers":team_reviewers})).await?;
+			Ok(())
+		})
+	}
+	fn add_issue_labels<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+		labels: &'a [String],
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<Vec<String>, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			let v: serde_json::Value = proxy_json(
+				self,
+				Method::POST,
+				"/gh/v1/add_issue_labels",
+				&[],
+				json!({"repo":repo,"number":number,"labels":labels}),
+			)
+			.await?;
+			serde_json::from_value(
+				v.get("labels")
+					.cloned()
+					.unwrap_or_else(|| serde_json::Value::Array(vec![])),
+			)
+			.map_err(|err| GitHubError {
+				status: 502,
+				message: err.to_string(),
+				retry_after: None,
+			})
+		})
+	}
+	fn add_assignees<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+		assignees: &'a [String],
+	) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GitHubError>> + Send + 'a>> {
+		Box::pin(async move {
+			let _: serde_json::Value = proxy_json(
+				self,
+				Method::POST,
+				"/gh/v1/add_assignees",
+				&[],
+				json!({"repo":repo,"number":number,"assignees":assignees}),
+			)
+			.await?;
+			Ok(())
+		})
+	}
+	fn list_comment_reactions<'a>(
+		&'a self,
+		repo: &'a str,
+		comment_id: i64,
+	) -> std::pin::Pin<
+		Box<dyn std::future::Future<Output = Result<Vec<ReactionInfo>, GitHubError>> + Send + 'a>,
+	> {
+		Box::pin(async move {
+			proxy_items(
+				self,
+				"/gh/v1/comment_reactions",
+				&[("repo", repo.to_owned()), ("comment_id", comment_id.to_string())],
+			)
+			.await
+		})
+	}
+	fn close_issue<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+		reason: &'a str,
+	) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GitHubError>> + Send + 'a>> {
+		Box::pin(async move {
+			let _: serde_json::Value = proxy_json(
+				self,
+				Method::POST,
+				"/gh/v1/close_issue",
+				&[],
+				json!({"repo":repo,"number":number,"reason":reason}),
+			)
+			.await?;
+			Ok(())
+		})
+	}
+}
+
+async fn proxy_items<T: for<'de> Deserialize<'de>>(
+	client: &GitHubProxyClient,
+	path: &str,
+	params: &[(&str, String)],
+) -> Result<Vec<T>, GitHubError> {
+	let v: serde_json::Value =
+		proxy_json(client, Method::GET, path, params, serde_json::Value::Null).await?;
+	serde_json::from_value(
+		v.get("items")
+			.cloned()
+			.unwrap_or_else(|| serde_json::Value::Array(vec![])),
+	)
+	.map_err(|err| GitHubError { status: 502, message: err.to_string(), retry_after: None })
+}
+
+#[derive(Debug, Clone)]
+pub struct GitHubProxyGitTransport {
+	client: GitHubProxyClient,
+}
+
+impl GitHubProxyGitTransport {
+	pub fn new(base_url: impl Into<String>, hmac_key: impl Into<Vec<u8>>) -> Self {
+		Self { client: GitHubProxyClient::new(base_url, hmac_key) }
+	}
+
+	fn post_git(
+		&self,
+		path: &str,
+		body: serde_json::Value,
+	) -> Result<serde_json::Value, crate::git_ops::GitCommandError> {
+		let rt = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.map_err(|err| crate::git_ops::GitCommandError {
+				cmd: vec!["gh-proxy".into(), path.into()],
+				returncode: 1,
+				stdout: String::new(),
+				stderr: err.to_string(),
+			})?;
+		rt.block_on(async {
+			proxy_json(&self.client, Method::POST, path, &[], body)
+				.await
+				.map_err(|err| crate::git_ops::GitCommandError {
+					cmd: vec!["gh-proxy".into(), path.into()],
+					returncode: err.status as i32,
+					stdout: String::new(),
+					stderr: err.message,
+				})
+		})
+	}
+}
+
+impl GitTransport for GitHubProxyGitTransport {
+	fn clone_pool(
+		&self,
+		repo: &str,
+		clone_url: &str,
+		default_branch: &str,
+		target: &std::path::Path,
+	) -> Result<(), crate::git_ops::GitCommandError> {
+		self.post_git(
+			"/gh/v1/git/clone",
+			json!({"repo":repo,"clone_url":clone_url,"default_branch":default_branch,"target":target}),
+		)?;
+		Ok(())
+	}
+	fn fetch_pool(
+		&self,
+		repo: &str,
+		pool_dir: &std::path::Path,
+	) -> Result<(), crate::git_ops::GitCommandError> {
+		self.post_git("/gh/v1/git/fetch", json!({"repo":repo,"pool_dir":pool_dir}))?;
+		Ok(())
+	}
+	fn fetch_base_ref(
+		&self,
+		repo: &str,
+		pool_dir: &std::path::Path,
+		rf: &str,
+	) -> Result<(), crate::git_ops::GitCommandError> {
+		self.post_git("/gh/v1/git/fetch_ref", json!({"repo":repo,"pool_dir":pool_dir,"ref":rf}))?;
+		Ok(())
+	}
+	fn push_branch(
+		&self,
+		repo: &str,
+		workspace_key: &str,
+		repo_dir: &std::path::Path,
+		branch: &str,
+		expected_head: &str,
+		slot_uid: Option<u32>,
+	) -> Result<crate::git_ops::PushResult, GitPushError> {
+		let v = self.post_git("/gh/v1/git/push", json!({"repo":repo,"workspace_key":workspace_key,"repo_dir":repo_dir,"branch":branch,"expected_head":expected_head,"slot_uid":slot_uid})).map_err(GitPushError::Git)?;
+		let head = v
+			.get("head")
+			.and_then(serde_json::Value::as_str)
+			.unwrap_or(expected_head)
+			.to_owned();
+		let branch = v
+			.get("branch")
+			.and_then(serde_json::Value::as_str)
+			.unwrap_or(branch)
+			.to_owned();
+		Ok(crate::git_ops::PushResult { head, branch })
 	}
 }
 

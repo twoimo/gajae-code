@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::{
 	db::{Database, EventRow, issue_key},
-	github::{GitHubError, IssueInfo, RepoInfo},
+	github::{GitHubBackend, GitHubError, IssueInfo, RepoInfo},
 };
 
 pub const INACTIVE_EVENT_STATES: &[&str] = &["done", "failed", "skipped"];
@@ -57,6 +57,16 @@ pub trait ManualTriageGithub: Send + Sync {
 	fn get_repo<'a>(&'a self, repo: &'a str) -> ManualFuture<'a, RepoInfo>;
 }
 
+impl<T: GitHubBackend + ?Sized> ManualTriageGithub for T {
+	fn get_issue<'a>(&'a self, repo: &'a str, number: i64) -> ManualFuture<'a, IssueInfo> {
+		GitHubBackend::get_issue(self, repo, number)
+	}
+
+	fn get_repo<'a>(&'a self, repo: &'a str) -> ManualFuture<'a, RepoInfo> {
+		GitHubBackend::get_repo(self, repo)
+	}
+}
+
 pub fn parse_issue_ref(input: &str) -> Result<(String, i64), InvalidIssueRef> {
 	let cleaned = input.trim();
 	let short = Regex::new(r"^(?P<owner>[^/\s]+)/(?P<repo>[^#\s]+)#(?P<number>\d+)$").unwrap();
@@ -74,7 +84,7 @@ pub fn manual_delivery_id(repo_full: &str, number: i64) -> String {
 	format!("manual-{}-{number}", repo_full.replace('/', "__"))
 }
 
-pub async fn enqueue_manual_triage<G: ManualTriageGithub>(
+pub async fn enqueue_manual_triage<G: ManualTriageGithub + ?Sized>(
 	db: &Database,
 	github: &G,
 	repo_full: &str,
