@@ -88,7 +88,7 @@ describe("agent-wire event observation", () => {
 
 		it("observes extension, host-tool, host-uri, and workflow-gate frames", () => {
 			expect(observeRpcOutboundFrame({ type: "extension_ui_request", id: "u1", method: "confirm" })?.kind).toBe(
-				"rpc_extension_request",
+				"agent_wire_extension_request",
 			);
 			expect(observeRpcOutboundFrame({ type: "host_tool_call", id: "h1", toolName: "echo" })?.signal).toBe(
 				"tool-call",
