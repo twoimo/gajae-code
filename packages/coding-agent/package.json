@@ -438,10 +438,6 @@
 			"types": "./src/modes/controllers/*.ts",
 			"import": "./src/modes/controllers/*.ts"
 		},
-		"./modes/rpc/*": {
-			"types": "./src/modes/rpc/*.ts",
-			"import": "./src/modes/rpc/*.ts"
-		},
 		"./modes/theme/*": {
 			"types": "./src/modes/theme/*.ts",
 			"import": "./src/modes/theme/*.ts"
