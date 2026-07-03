@@ -52,6 +52,8 @@ export interface AppServerSession {
 	getMessages?: () => unknown;
 	setTodos?: (todos: unknown) => unknown;
 	setWorkflowGateEmitter?: (emitter: WorkflowGateEmitter | undefined) => void;
+	model?: unknown;
+	getSessionStats?: () => unknown;
 }
 
 type AgentSessionLike = AppServerSession;
@@ -344,6 +346,27 @@ export class AgentSessionHost implements AppServerHost {
 					undefined,
 					execOptions(record) as Parameters<AgentSession["executeBash"]>[2],
 				);
+			}
+			case "usageSnapshot": {
+				const stats = typeof session.getSessionStats === "function" ? asRecord(session.getSessionStats()) : {};
+				const tokenCandidates: unknown[] = [
+					stats.tokens,
+					stats.totalTokens,
+					stats.total_tokens,
+					stats.inputTokens,
+					stats.outputTokens,
+				];
+				const tokens = tokenCandidates.reduce<number>(
+					(sum, value) => sum + (typeof value === "number" && Number.isFinite(value) ? value : 0),
+					0,
+				);
+				const cost =
+					typeof stats.cost_usd === "number"
+						? stats.cost_usd
+						: typeof stats.costUsd === "number"
+							? stats.costUsd
+							: 0;
+				return { tokens, cost_usd: cost };
 			}
 			case "dispose":
 				thread.unsubscribe();

@@ -1001,6 +1001,386 @@
           ]
         }
       }
+    },
+    "RpcUnattendedBudget": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedBudget",
+      "type": "object",
+      "required": [
+        "max_cost_usd",
+        "max_tokens",
+        "max_tool_calls",
+        "max_wall_time_ms"
+      ],
+      "properties": {
+        "max_cost_usd": {
+          "type": "number",
+          "format": "double"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_wall_time_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "RpcUnattendedDeclaration": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedDeclaration",
+      "type": "object",
+      "required": [
+        "action_allowlist",
+        "actor",
+        "budget",
+        "scopes"
+      ],
+      "properties": {
+        "action_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actor": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/definitions/RpcUnattendedBudget"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "definitions": {
+        "RpcUnattendedBudget": {
+          "type": "object",
+          "required": [
+            "max_cost_usd",
+            "max_tokens",
+            "max_tool_calls",
+            "max_wall_time_ms"
+          ],
+          "properties": {
+            "max_cost_usd": {
+              "type": "number",
+              "format": "double"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_wall_time_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        }
+      }
+    },
+    "RpcUnattendedAccepted": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedAccepted",
+      "type": "object",
+      "required": [
+        "accepted_at",
+        "action_allowlist",
+        "actor",
+        "budget",
+        "run_id",
+        "scopes"
+      ],
+      "properties": {
+        "accepted_at": {
+          "type": "string"
+        },
+        "action_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actor": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/definitions/RpcUnattendedBudget"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "definitions": {
+        "RpcUnattendedBudget": {
+          "type": "object",
+          "required": [
+            "max_cost_usd",
+            "max_tokens",
+            "max_tool_calls",
+            "max_wall_time_ms"
+          ],
+          "properties": {
+            "max_cost_usd": {
+              "type": "number",
+              "format": "double"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_wall_time_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        }
+      }
+    },
+    "RpcBudgetExceeded": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcBudgetExceeded",
+      "type": "object",
+      "required": [
+        "abort_status",
+        "code",
+        "limit",
+        "metric",
+        "observed",
+        "phase",
+        "run_id"
+      ],
+      "properties": {
+        "abort_status": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "format": "double"
+        },
+        "metric": {
+          "type": "string"
+        },
+        "observed": {
+          "type": "number",
+          "format": "double"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcScopeDenied": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcScopeDenied",
+      "type": "object",
+      "required": [
+        "code",
+        "pre_side_effect",
+        "run_id",
+        "scope"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pre_side_effect": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcActionDenied": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcActionDenied",
+      "type": "object",
+      "required": [
+        "action",
+        "code",
+        "pre_side_effect",
+        "run_id"
+      ],
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pre_side_effect": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcUnattendedRefused": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedRefused",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "UnattendedNegotiateParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UnattendedNegotiateParams",
+      "type": "object",
+      "required": [
+        "declaration",
+        "threadId"
+      ],
+      "properties": {
+        "declaration": {
+          "$ref": "#/definitions/RpcUnattendedDeclaration"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcUnattendedBudget": {
+          "type": "object",
+          "required": [
+            "max_cost_usd",
+            "max_tokens",
+            "max_tool_calls",
+            "max_wall_time_ms"
+          ],
+          "properties": {
+            "max_cost_usd": {
+              "type": "number",
+              "format": "double"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_wall_time_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        },
+        "RpcUnattendedDeclaration": {
+          "type": "object",
+          "required": [
+            "action_allowlist",
+            "actor",
+            "budget",
+            "scopes"
+          ],
+          "properties": {
+            "action_allowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "actor": {
+              "type": "string"
+            },
+            "budget": {
+              "$ref": "#/definitions/RpcUnattendedBudget"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

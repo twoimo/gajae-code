@@ -224,6 +224,22 @@ impl AgentBackend for TsBackend {
 		self.call(c, "exec", params).await
 	}
 
+	async fn usage_snapshot(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<Option<gjc_app_server::unattended::UsageSnapshot>> {
+		let value = self
+			.call(c, "usageSnapshot", serde_json::Value::Null)
+			.await?;
+		if value.is_null() {
+			Ok(None)
+		} else {
+			serde_json::from_value(value).map(Some).map_err(|err| {
+				AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+			})
+		}
+	}
+
 	async fn dispose(&self, c: &BackendCallContext) -> gjc_app_server::Result<()> {
 		self
 			.call(c, "dispose", serde_json::Value::Null)
