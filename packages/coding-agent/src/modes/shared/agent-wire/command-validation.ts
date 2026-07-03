@@ -1,5 +1,6 @@
-import type { RpcCommand } from "../../rpc/rpc-types";
-import { isRpcCommandType } from "./scopes";
+import { type AgentWireCommandType, isRpcCommandType } from "./scopes";
+
+export type AgentWireCommand = { id?: string; type: AgentWireCommandType; [key: string]: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -91,7 +92,7 @@ function unattendedDeclaration(value: unknown): boolean {
 	);
 }
 
-export function isRpcCommand(value: unknown): value is RpcCommand {
+export function isRpcCommand(value: unknown): value is AgentWireCommand {
 	if (!isRecord(value) || !optionalString(value.id) || !isRpcCommandType(value.type)) return false;
 	switch (value.type) {
 		case "prompt":

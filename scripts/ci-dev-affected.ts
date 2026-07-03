@@ -7,8 +7,6 @@ import * as fs from "node:fs/promises";
 const repoRoot = path.join(import.meta.dir, "..");
 const ZERO_SHA = /^0+$/;
 const PACKAGE_SCOPES = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
-const PYTHON_DEV_SETUP =
-	"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e 'python/gjc-rpc[dev]'";
 // The coding-agent package has hundreds of test files; keep dev affected push
 // validation below the 30m shard timeout by splitting its package-wide suite.
 const CODING_AGENT_TEST_SHARDS = 8;
@@ -425,7 +423,6 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	const touchedPackages = findTouchedPackages(paths, packages);
 	const rootPackageReleaseHarnessOnly = isRootPackageReleaseHarnessOnly(paths);
 	const fullWorkspace = paths.some(isFullWorkspacePath) && !rootPackageReleaseHarnessOnly;
-	const pythonChanged = paths.some(isPythonPath);
 	const webChanged = paths.some(changedPath => changedPath.startsWith("python/robogjc/web/"));
 	const rustChanged = paths.some(isRustPath);
 	const installChanged = paths.some(isInstallPath);
@@ -479,10 +476,6 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 		add(tasks, "release-publish-dry-run", "Release publish dry-run", ["bun", "scripts/ci-release-publish.ts", "--dry-run"]);
 	}
 
-	if (pythonChanged) {
-		add(tasks, "python-lint", "Python lint", pythonLintCommand());
-		add(tasks, "python-test", "Python tests", pythonTestCommand());
-	}
 	if (webChanged) {
 		add(tasks, "robogjc-web-typecheck", "robogjc web typecheck", packageScriptCommand("typecheck"), resolvePackageCwd("python/robogjc/web"));
 		add(tasks, "robogjc-web-build", "robogjc web build", packageScriptCommand("build"), resolvePackageCwd("python/robogjc/web"));
@@ -546,11 +539,6 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 		}
 		if (isCiHarnessScriptPath(changedPath)) {
 			needCiSelftest = true;
-			continue;
-		}
-		if (isPythonPath(changedPath)) {
-			add(tasks, "python-lint", "Python lint", pythonLintCommand());
-			add(tasks, "python-test", "Python tests", pythonTestCommand());
 			continue;
 		}
 		if (isWebPath(changedPath)) {
@@ -735,21 +723,6 @@ export function packageScriptCommand(script: string): readonly string[] {
 	return ["bun", "run", script];
 }
 
-function pythonLintCommand(): readonly string[] {
-	return [
-		"bash",
-		"-lc",
-		`${PYTHON_DEV_SETUP} && python3 -m ruff check python/gjc-rpc && python3 -m ruff format --check python/gjc-rpc`,
-	];
-}
-
-function pythonTestCommand(): readonly string[] {
-	return [
-		"bash",
-		"-lc",
-		`${PYTHON_DEV_SETUP} && python3 -m pytest -x --import-mode=importlib python/gjc-rpc/tests`,
-	];
-}
 
 // Resolve a workspace-relative package directory to an absolute path used as
 // the spawned task's process cwd.
@@ -824,9 +797,6 @@ function isReleaseHarnessScriptPath(changedPath: string): boolean {
 	].includes(changedPath);
 }
 
-function isPythonPath(changedPath: string): boolean {
-	return changedPath.startsWith("python/gjc-rpc/");
-}
 
 function isRustPath(changedPath: string): boolean {
 	const fileName = path.basename(changedPath);

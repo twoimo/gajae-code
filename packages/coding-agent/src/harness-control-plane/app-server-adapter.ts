@@ -1,9 +1,8 @@
 /**
  * App-server JSON-transport adapter for the harness control plane.
  *
- * This is intentionally side-by-side with rpc-adapter.ts: it speaks the new
- * `gjc app-server` NDJSON JSON-RPC 2.0 protocol while preserving the same
- * HarnessRpc acceptance contract (ack + post-cursor agent_start/turn started).
+ * It speaks the `gjc app-server` NDJSON JSON-RPC 2.0 protocol while preserving
+ * the harness acceptance contract (ack + post-cursor agent_start/turn started).
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";

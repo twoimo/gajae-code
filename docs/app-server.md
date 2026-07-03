@@ -54,7 +54,7 @@ gjc app-server
 
 Planned transports are:
 
-- **stdio JSONL** as the default subprocess transport. This is the migration path for local embedded clients that currently use `gjc --mode rpc`.
+- **stdio JSONL** as the default subprocess transport for local embedded clients.
 - **Loopback WebSocket** with discovery metadata and an authentication token for local apps that need a socket transport without exposing a remote service.
 - **Unix domain socket** for local platform integrations that prefer filesystem-scoped socket ownership.
 
