@@ -26,6 +26,7 @@ let GajaeCodeAppServerRpc: typeof import("../src/harness-control-plane/app-serve
 
 beforeAll(async () => {
 	mock.module("node:child_process", () => ({
+		execFileSync: mock(() => Buffer.from("")),
 		spawn: mock(() => new FakeProcess()),
 	}));
 	({ createHarnessRpc } = await import("../src/harness-control-plane/adapter-factory"));
@@ -38,14 +39,14 @@ afterEach(() => {
 });
 
 describe("createHarnessRpc", () => {
-	it("returns the legacy RPC adapter by default", () => {
+	it("returns the app-server adapter by default", () => {
 		const rpc = createHarnessRpc({ sessionDir: "/tmp/gjc-session" });
-		expect(rpc).toBeInstanceOf(GajaeCodeRpc);
+		expect(rpc).toBeInstanceOf(GajaeCodeAppServerRpc);
 	});
 
-	it("returns the app-server adapter when options.adapter is app-server", () => {
-		const rpc = createHarnessRpc({ sessionDir: "/tmp/gjc-session", adapter: "app-server" });
-		expect(rpc).toBeInstanceOf(GajaeCodeAppServerRpc);
+	it("returns the legacy RPC adapter when options.adapter is rpc", () => {
+		const rpc = createHarnessRpc({ sessionDir: "/tmp/gjc-session", adapter: "rpc" });
+		expect(rpc).toBeInstanceOf(GajaeCodeRpc);
 	});
 
 	it("returns the app-server adapter when GJC_HARNESS_ADAPTER is app-server", () => {

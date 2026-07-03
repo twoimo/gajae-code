@@ -27,7 +27,7 @@ function state(lifecycle: HarnessLifecycle = "finalizing"): SessionState {
 			base: "main",
 			issueOrPr: null,
 			processHandle: { kind: "runtime-owner", ownerId: null, pid: null },
-			rpcHandle: { kind: "rpc-subprocess", pid: null, sessionDir: "/tmp/s" },
+			appServerHandle: { kind: "app-server-subprocess", pid: null, sessionDir: "/tmp/s" },
 			ownerHandle: { leasePath: "/tmp/s/lease", endpoint: null, heartbeatAt: null },
 			routerHandle: { kind: "default-in-owner", policy: "default", eventsPath: "/tmp/s/events.jsonl" },
 			viewportHandle: { kind: "event-monitor", tmuxSessionName: null, viewOnly: true },

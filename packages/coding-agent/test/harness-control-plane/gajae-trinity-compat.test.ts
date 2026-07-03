@@ -2,7 +2,7 @@
  * Gajae Trinity compatibility tests.
  *
  * The gajae receipt runtime (separate repo) consumes ReceiptEnvelope JSON
- * across a file/process/RPC boundary and recomputes the canonical-JSON sha256
+ * across a file/process/transport boundary and recomputes the canonical-JSON sha256
  * over the envelope minus `sha256`. These tests pin the wire contract: the
  * golden fixtures consumed by gajae's connector tests must always validate
  * against THIS repo's builders/validators, and the hash basis must stay
@@ -75,8 +75,8 @@ describe("gajae trinity wire contract", () => {
 		}
 	});
 
-	it("the recorded RPC exchange is replayable JSONL matching the real wire contract", async () => {
-		const text = await Bun.file(path.join(FIXTURES_DIR, "gajae-trinity-rpc-exchange.jsonl")).text();
+	it("the recorded app-server exchange is replayable JSONL matching the real wire contract", async () => {
+		const text = await Bun.file(path.join(FIXTURES_DIR, "gajae-trinity-app-server-exchange.jsonl")).text();
 		const lines = text.trim().split("\n");
 		const rows = lines.map(line => JSON.parse(line) as { direction: string; frame: Record<string, unknown> });
 		// get_state resolves the session identity from protocol state.
@@ -86,7 +86,7 @@ describe("gajae trinity wire contract", () => {
 			frame: { type: "response", command: "get_state", success: true },
 		});
 		expect((rows[1].frame.data as { sessionId?: string }).sessionId).toBe("gjc-rpc-session-0001");
-		// prompt commands carry `message` (RpcCommand contract) and succeed via response.command.success.
+		// prompt commands carry `message` (transport command contract) and succeed via response.command.success.
 		expect(rows[2]).toMatchObject({ direction: "send", frame: { id: "cmd-0001", type: "prompt" } });
 		expect(typeof rows[2].frame.message).toBe("string");
 		expect(rows[3]).toMatchObject({

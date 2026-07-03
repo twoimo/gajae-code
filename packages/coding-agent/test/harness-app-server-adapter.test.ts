@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
+import { singleFlightAccept } from "../src/harness-control-plane/adapter-contract";
 import { type AppServerTransport, GajaeCodeAppServerRpc } from "../src/harness-control-plane/app-server-adapter";
-import { singleFlightAccept } from "../src/harness-control-plane/rpc-adapter";
 
 class FakeStdout extends EventEmitter {
 	setEncoding(_encoding: BufferEncoding): void {}

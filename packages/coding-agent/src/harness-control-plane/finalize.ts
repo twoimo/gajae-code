@@ -58,7 +58,7 @@ export interface FinalizeOptions {
 	/** Operator/loop-supplied terminal review verdict (closed vocabulary). */
 	verdict?: string | null;
 	/**
-	 * Final assistant text from the live RPC owner, used to extract a closed-vocabulary verdict
+	 * Final assistant text from the live transport owner, used to extract a closed-vocabulary verdict
 	 * for review-only sessions when no explicit {@link verdict} is supplied. Never persisted raw.
 	 */
 	assistantText?: string | null;
@@ -229,7 +229,7 @@ async function runReviewFinalize(opts: FinalizeOptions): Promise<FinalizeResult>
 	};
 
 	// Explicit operator/loop verdict always wins. Only when none is supplied do we fall back to
-	// extracting a closed-vocabulary verdict from the live RPC owner's final assistant text.
+	// extracting a closed-vocabulary verdict from the live transport owner's final assistant text.
 	const explicitProvided = opts.verdict != null;
 	const explicitValid = isReviewVerdict(opts.verdict);
 	const assistantText = typeof opts.assistantText === "string" ? opts.assistantText : null;

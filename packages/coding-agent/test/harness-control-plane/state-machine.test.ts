@@ -60,11 +60,11 @@ describe("harness state machine", () => {
 
 	it("submit is blocked while the owner RPC is not idle", () => {
 		const submit = findAction(
-			nextAllowedActions("observing", true, { submitUnavailableReason: "rpc-not-idle" }),
+			nextAllowedActions("observing", true, { submitUnavailableReason: "transport-not-idle" }),
 			"submit",
 		);
 		expect(submit.available).toBe(false);
-		expect(submit.reason).toBe("rpc-not-idle");
+		expect(submit.reason).toBe("transport-not-idle");
 	});
 
 	it("terminal lifecycles block submit/recover/validate/finalize", () => {

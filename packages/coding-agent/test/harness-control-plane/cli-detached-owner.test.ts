@@ -10,7 +10,7 @@ import { createHarnessCliEnv, type HarnessCliEnv } from "./cli-workspace-env";
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
 const SID = "d";
-const FAKE_RPC = path.join(import.meta.dir, "fixtures", "fake-rpc.ts");
+const FAKE_APP_SERVER = path.join(import.meta.dir, "fixtures", "fake-app-server.ts");
 
 function gitInit(dir: string): void {
 	const run = (args: string[]): void => {
@@ -26,7 +26,7 @@ function gitInit(dir: string): void {
 let root: string;
 let workspace: string;
 let tmuxCommand: string;
-let rpcCommandEnv: string;
+let appServerCommandEnv: string;
 let cliEnv: HarnessCliEnv;
 
 async function createFakeTmuxBin(rootDir: string, options: { skipOwnerLaunch?: boolean } = {}): Promise<string> {
@@ -107,7 +107,7 @@ async function runHarness(
 			...cliEnv.env,
 			GJC_HARNESS_STATE_ROOT: root,
 			// Drive the REAL GajaeCodeRpc against a protocol fixture (no shipped fake seam).
-			GJC_HARNESS_RPC_COMMAND: rpcCommandEnv,
+			GJC_HARNESS_APP_SERVER_COMMAND: appServerCommandEnv,
 			GJC_TMUX_COMMAND: tmuxCommand,
 			...env,
 		},
@@ -133,7 +133,7 @@ beforeEach(async () => {
 	workspace = await mkdtemp(path.join(tmpdir(), "hw"));
 	cliEnv = createHarnessCliEnv(repoRoot);
 	tmuxCommand = await createFakeTmuxBin(root);
-	rpcCommandEnv = JSON.stringify(["bun", FAKE_RPC]);
+	appServerCommandEnv = JSON.stringify(["bun", FAKE_APP_SERVER]);
 });
 
 afterEach(async () => {
@@ -202,7 +202,7 @@ describe.skipIf(process.platform !== "linux")("gjc harness start --detach (detac
 		expect((sub.json?.state as Record<string, unknown>).lifecycle).toBe("observing");
 		await assertOnlyOwnerSocket();
 
-		// AC-9: the detached owner maps the real RPC frame stream -> observe surfaces tool-call -> completed.
+		// AC-9: the detached owner maps the real transport frame stream -> observe surfaces tool-call -> completed.
 		let signals: string[] = [];
 		for (let i = 0; i < 40; i++) {
 			const o = await runHarness(["observe", "--session", SID]);
@@ -277,9 +277,9 @@ describe.skipIf(process.platform !== "linux")("gjc harness start --detach (detac
 	}, 60_000);
 
 	it("reports blocked only after detached owner endpoint remains unavailable", async () => {
-		tmuxCommand = path.join(root, "missing-tmux");
-		const originalRpcCommandEnv = rpcCommandEnv;
-		rpcCommandEnv = "{";
+		tmuxCommand = await createFakeTmuxBin(root, { skipOwnerLaunch: true });
+		const originalAppServerCommandEnv = appServerCommandEnv;
+		appServerCommandEnv = "{";
 		try {
 			const started = await runHarness([
 				"start",
@@ -308,7 +308,7 @@ describe.skipIf(process.platform !== "linux")("gjc harness start --detach (detac
 				reason: "lifecycle-blocked",
 			});
 		} finally {
-			rpcCommandEnv = originalRpcCommandEnv;
+			appServerCommandEnv = originalAppServerCommandEnv;
 		}
 	}, 60_000);
 	it("fails closed without detached fallback when scoped bootstrap fails", async () => {

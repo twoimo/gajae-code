@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/adapter-contract";
 import { callEndpoint } from "../../src/harness-control-plane/control-endpoint";
 import type { FinalizeChecks } from "../../src/harness-control-plane/finalize";
 import { RuntimeOwner } from "../../src/harness-control-plane/owner";
-import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/rpc-adapter";
 import { readEvents, readReceiptIndex, writeSessionState } from "../../src/harness-control-plane/storage";
 import { SESSION_SCHEMA_VERSION, type SessionHandle, type SessionState } from "../../src/harness-control-plane/types";
 
