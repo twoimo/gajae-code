@@ -2,9 +2,8 @@
  * Shared agent-wire protocol primitives for GJC bridge surfaces.
  *
  * The canonical event/frame contract now lives in `event-contract.ts`. This
- * module re-exports it under the historical `Bridge*` names so existing RPC and
- * Bridge code keeps compiling while the adapters migrate to the canonical
- * `AgentWire*` names. See `.gjc/specs/deep-interview-reconcile-rpc-adapters.md`.
+ * module re-exports it under historical compatibility names while callers move
+ * to the canonical `AgentWire*` names.
  */
 import type {
 	AgentWireEventFrame,

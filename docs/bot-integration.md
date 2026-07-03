@@ -1,6 +1,6 @@
 # External controller integration guide
 
-This guide is for authors of bots and orchestrators that want to drive Gajae-Code (`gjc`) without scraping terminal scrollback. Hermes, OpenClaw, GitHub bots, chatops bots, and custom schedulers are examples of external controllers; none of them need bespoke GJC behavior if they can speak the Coordinator MCP or RPC lifecycle below.
+This guide is for authors of bots and orchestrators that want to drive Gajae-Code (`gjc`) without scraping terminal scrollback. Hermes, OpenClaw, GitHub bots, chatops bots, and custom schedulers are examples of external controllers; none of them need bespoke GJC behavior if they can speak the Coordinator MCP or app-server lifecycle below.
 
 GJC is an external runner. Your controller owns queueing, identity, policy, and credentials; GJC owns the coding-agent session, workflows, tools, artifacts, and evidence inside the selected repository or worktree.
 
@@ -12,8 +12,7 @@ Use the smallest surface that fits your bot:
 | --- | --- | --- | --- |
 | Coordinator MCP | Any external controller that can call MCP tools to start/register tmux sessions, send turns, answer questions, and read artifacts. | `gjc mcp-serve coordinator` | Preferred orchestration surface. `gjc mcp-serve hermes` is a compatibility alias, not a separate contract. |
 | Setup adapter | Rendering a portable MCP config and operator instructions for a controller profile. | `gjc setup hermes --root /path/to/repo` | Compatibility-oriented config renderer; does not call an LLM or validate provider credentials. |
-| RPC stdio | A controller that embeds a single `gjc --mode rpc` subprocess and handles JSONL frames directly or through `python/gjc-rpc`. | `gjc --mode rpc` | Best for process-backed, single-session bot workers. |
-| Bridge HTTPS | Experimental remote control for an already-running session. | `gjc --mode bridge` | Session-control endpoints are fail-closed by default; do not use as the default bot lifecycle surface yet. |
+| App-server JSON-RPC | A controller that embeds a `gjc app-server` subprocess and handles JSON-RPC 2.0 frames over stdio or a discovered local socket. | `gjc app-server` | Preferred process-backed protocol surface for single-session bot workers and Codex-compatible clients. |
 | Visible tmux fallback | Human-supervised lanes where an existing visible `gjc --tmux` pane should become coordinator-authoritative. | `gjc --tmux`, then `gjc_coordinator_register_session` | Use when an operator already opened a pane or wants direct terminal visibility. |
 
 ## Recommended architecture
@@ -280,42 +279,24 @@ Use `gjc_coordinator_list_artifacts` to inspect safe roots and `gjc_coordinator_
 
 Artifact paths are canonicalized, symlink escapes are rejected, and output is byte-capped. Use `gjc_coordinator_read_coordination_status` for status reports written through `gjc_coordinator_report_status`.
 
-## RPC stdio integration
+## App-server JSON-RPC integration
 
-Use RPC when your bot owns a single worker subprocess rather than an MCP coordinator. The wire protocol is JSONL over stdio:
+Use app-server when your bot owns a worker subprocess rather than an MCP coordinator. The protocol is JSON-RPC 2.0 over stdio by default:
 
 ```sh
-gjc --mode rpc --provider anthropic --model claude-sonnet-4-5
+gjc app-server --provider anthropic --model claude-sonnet-4-5
 ```
 
-Recommended Python client:
+App-server clients initialize the connection, start or resume a thread, submit a turn, and observe codex-shaped lifecycle notifications (`turn/started`, `item/agentMessage/delta`, `turn/completed`). GJC extension methods provide strict host-tool, host-URI, workflow-gate, state, and notification surfaces for automation that needs more than Codex core interop.
 
-```python
-from gjc_rpc import RpcClient, WorkflowGate
+Key app-server lifecycle facts:
 
-with RpcClient(no_session=True, no_rules=True) as client:
-    client.install_headless_ui()
-
-    def on_gate(gate: WorkflowGate) -> None:
-        if gate.kind == "approval":
-            client.respond_gate(gate.gate_id, {"decision": "approve"})
-
-    client.on_workflow_gate(on_gate)
-    turn = client.prompt_and_wait("Inspect this repo and report the integration contract.")
-    print(turn.require_assistant_text())
-```
-
-RPC hosts can also expose host-owned tools and URI schemes. Use these to give GJC controlled access to your bot's issue tracker, queue, database rows, or artifact store without leaking long-lived credentials into the GJC process.
-
-Key RPC lifecycle facts:
-
-- `{ "type": "ready" }` means the subprocess is ready for commands.
-- `prompt` is acknowledged immediately; completion is observed through `agent_end` or `RpcClient.prompt_and_wait()`.
-- `workflow_gate` frames are answered with `workflow_gate_response`.
-- `extension_ui_request` frames are answered with `extension_ui_response` or a headless policy.
-- Host tool calls and host URI requests are explicit callback frames that must be completed or rejected by the host.
-- `RpcClient` enforces single-flight prompt lifecycle collection; use one client per concurrent worker.
-- `abort` and `abort_and_prompt` are the RPC cancellation commands for subprocess workers; coordinator MCP cancellation is recorded through terminal turn status instead.
+- `initialize`/`initialized` is the connection handshake; no session work is accepted before it.
+- `thread/start` or `thread/resume` creates the durable worker thread.
+- `turn/start` acknowledges admission; completion is observed through `turn/completed`.
+- Workflow gates, host tool calls, host URI requests, and UI requests are explicit JSON-RPC notifications that the host must complete or reject through the matching `gjc/*` method.
+- Use one thread per concurrent worker; the app-server registry isolates simultaneous turns by immutable thread id.
+- Use `turn/interrupt` or the app-server command-exec cancellation methods for subprocess workers; coordinator MCP cancellation is recorded through terminal turn status instead.
 
 ## Error handling playbook
 
@@ -381,7 +362,5 @@ Hermes and OpenClaw can use the same MCP tool contract. Their names here are exa
 ## Related references
 
 - [`docs/hermes-mcp-bridge.md`](./hermes-mcp-bridge.md) — coordinator MCP details and setup adapter behavior.
-- [`docs/rpc.md`](./rpc.md) — JSONL RPC protocol, event frames, workflow gates, host tools, and host URI schemes.
-- [`docs/bridge.md`](./bridge.md) — experimental HTTPS bridge and fail-closed endpoint matrix.
-- [`python/gjc-rpc/README.md`](../python/gjc-rpc/README.md) — typed Python RPC client examples.
+- [`docs/app-server.md`](./app-server.md) — app-server JSON-RPC protocol, transports, and integration notes.
 - `crates/robogjc/` — production self-hosted GitHub bot implemented in Rust over the app-server protocol, with dashboard sources retained under `python/robogjc/web/`.

@@ -6,7 +6,7 @@ import {
 
 /**
  * Wrap an AgentSessionEvent in the canonical agent-wire `event` frame, mirroring
- * what `gjc --mode rpc` now emits on stdout. Non-event frames (ready/response/
+ * what app-server emits on stdout. Non-event frames (ready/response/
  * extension_error/host_*) stay flat and are passed directly.
  */
 function evt(event: Record<string, unknown>): Record<string, unknown> {

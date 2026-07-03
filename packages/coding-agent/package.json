@@ -114,6 +114,10 @@
 		"./modes/components/runtime-mcp-add-wizard": null,
 		"./modes/controllers/runtime-mcp-command-controller": null,
 		"./slash-commands/helpers/mcp": null,
+		"./modes/rpc": null,
+		"./modes/rpc/*": null,
+		"./modes/bridge": null,
+		"./modes/bridge/*": null,
 		"./*": {
 			"types": "./src/*.ts",
 			"import": "./src/*.ts"

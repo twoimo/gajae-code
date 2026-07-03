@@ -420,8 +420,8 @@ export function observeAppServerOutboundFrame(frame: Record<string, unknown>): A
 }
 
 /**
- * Map a single outbound RPC wire frame (docs/rpc.md) to a bounded owner
- * observation, or null when the frame carries no owner-facing signal. Event
+ * Map a single outbound agent-wire frame to a bounded owner observation, or
+ * null when the frame carries no owner-facing signal. Event frames delegate to
  * frames delegate to {@link observeAgentWireEventPayload}; non-event frames are
  * mapped here so owners never re-parse protocol semantics privately.
  */

@@ -106,7 +106,7 @@ async function runHarness(
 		env: {
 			...cliEnv.env,
 			GJC_HARNESS_STATE_ROOT: root,
-			// Drive the REAL GajaeCodeRpc against a protocol fixture (no shipped fake seam).
+			// Drive the real app-server adapter against a protocol fixture (no shipped fake seam).
 			GJC_HARNESS_APP_SERVER_COMMAND: appServerCommandEnv,
 			GJC_TMUX_COMMAND: tmuxCommand,
 			...env,

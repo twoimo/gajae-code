@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcCommand } from "../../src/modes/rpc/rpc-types";
 import {
+	type AgentWireCommandType,
 	type BridgeCommandScope,
 	isRpcCommandAllowed,
 	MANDATORY_FLOOR_COMMAND_SCOPES,
@@ -8,7 +8,7 @@ import {
 	scopeForRpcCommand,
 } from "../../src/modes/shared/agent-wire/scopes";
 
-const EXPECTED_RPC_COMMAND_TYPES: readonly RpcCommand["type"][] = [
+const EXPECTED_RPC_COMMAND_TYPES: readonly AgentWireCommandType[] = [
 	"prompt",
 	"steer",
 	"follow_up",
@@ -51,8 +51,8 @@ const EXPECTED_RPC_COMMAND_TYPES: readonly RpcCommand["type"][] = [
 	"workflow_gate_response",
 ];
 
-describe("agent-wire RPC command scopes", () => {
-	it("enumerates every RpcCommand variant exactly once", () => {
+describe("agent-wire command scopes", () => {
+	it("enumerates every command variant exactly once", () => {
 		expect(new Set(RPC_COMMAND_TYPES)).toEqual(new Set(EXPECTED_RPC_COMMAND_TYPES));
 		expect(RPC_COMMAND_TYPES.length).toBe(EXPECTED_RPC_COMMAND_TYPES.length);
 	});
@@ -67,7 +67,7 @@ describe("agent-wire RPC command scopes", () => {
 
 	it("denies sensitive command groups to a floor token", () => {
 		const floor = new Set<BridgeCommandScope>(MANDATORY_FLOOR_COMMAND_SCOPES);
-		const sensitive: readonly RpcCommand["type"][] = [
+		const sensitive: readonly AgentWireCommandType[] = [
 			"bash",
 			"abort_bash",
 			"export_html",

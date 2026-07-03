@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  *  - hold the {@link SessionLease} (single writer),
- *  - own the {@link HarnessRpc} subprocess (injected; real `GajaeCodeRpc` in prod, fake in tests),
+ *  - own the {@link HarnessRpc} subprocess (app-server in prod, fake in tests),
  *  - serve owner-routed primitives over the {@link ControlServer} endpoint,
  *  - be the SOLE writer of the severity event stream,
  *  - heartbeat the lease.
