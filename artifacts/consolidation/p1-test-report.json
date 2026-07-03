@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "kind": "package-consumer-report",
+  "phase": "P1-relocate-shared-agent-wire-types",
+  "commit": "9322fafe",
+  "surface": "package/api (TS type modules + consumers)",
+  "results": {
+    "focusedFeatureSuites": {"command": "bun test workflow-gate-* deep-interview-workflow-gates unattended-* (14 files)", "pass": 148, "fail": 0, "expectCalls": 614},
+    "packageCheck": {"command": "bun run --cwd packages/coding-agent check", "status": "pass (biome + tsgo --noEmit)"},
+    "unionGate": {"command": "bun run check", "exit": 0},
+    "zeroImportScan": {"contract": "no kept file imports moved shared-domain types from modes/rpc/rpc-types", "status": "clean"},
+    "protectedBoundary": {"command": "git diff --name-only -- modes/acp crates/gjc-notifications src/notifications", "status": "empty (untouched)"}
+  },
+  "adversarial": [
+    {"scenario": "a kept consumer still importing a moved type from the old modes/rpc/rpc-types path", "expected": "zero-import scan flags it", "result": "scan clean — none found"},
+    {"scenario": "acp or notifications accidentally modified", "expected": "protected-boundary diff non-empty", "result": "diff empty — untouched"}
+  ]
+}
