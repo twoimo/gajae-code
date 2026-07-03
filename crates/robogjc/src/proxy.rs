@@ -4,6 +4,7 @@
 use std::os::unix::process::CommandExt;
 use std::{
 	collections::HashSet,
+	net::SocketAddr,
 	path::{Path, PathBuf},
 	process::Stdio,
 	sync::Arc,
@@ -11,6 +12,7 @@ use std::{
 };
 
 use crate::{
+	config::{ProxySettings, load_proxy_settings},
 	git_ops::GitPushError,
 	github::{
 		CommentInfo, GitHubBackend, GitHubClient, GitHubError, IssueInfo, IssueSummary,
@@ -162,6 +164,49 @@ impl ProxyServerConfig {
 	}
 }
 
+#[derive(Debug, Clone)]
+pub struct ProxyServeConfig {
+	pub bind_addr: SocketAddr,
+	pub server: ProxyServerConfig,
+}
+
+impl TryFrom<ProxySettings> for ProxyServeConfig {
+	type Error = Box<dyn std::error::Error + Send + Sync>;
+
+	fn try_from(settings: ProxySettings) -> Result<Self, Self::Error> {
+		let bind_addr = format!("{}:{}", settings.gh_proxy_bind_host, settings.gh_proxy_bind_port)
+			.parse::<SocketAddr>()?;
+		let mut server = ProxyServerConfig::new(
+			settings.github_token.expose().to_owned(),
+			settings.gh_proxy_hmac_key.expose().as_bytes().to_vec(),
+		);
+		server.workspace_root = settings.workspace_root;
+		server.max_body_bytes = settings.gh_proxy_max_body_bytes;
+		server.git_timeout_seconds = settings.gh_proxy_git_timeout_seconds.ceil() as u64;
+		Ok(Self { bind_addr, server })
+	}
+}
+
+pub fn serve_config_from_env() -> Result<ProxyServeConfig, Box<dyn std::error::Error + Send + Sync>>
+{
+	load_proxy_settings()?.try_into()
+}
+
+pub async fn serve_from_settings(
+	settings: ProxySettings,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	serve_from_config(settings.try_into()?).await
+}
+
+pub async fn serve_from_config(
+	config: ProxyServeConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	std::fs::create_dir_all(&config.server.workspace_root)?;
+	let listener = TcpListener::bind(config.bind_addr).await?;
+	serve(listener, config.server).await?;
+	Ok(())
+}
+
 #[derive(Clone)]
 struct ProxyState {
 	cfg: Arc<ProxyServerConfig>,
@@ -196,6 +241,10 @@ pub fn router(config: ProxyServerConfig) -> Router {
 
 pub async fn serve(listener: TcpListener, config: ProxyServerConfig) -> Result<(), std::io::Error> {
 	axum::serve(listener, router(config)).await
+}
+
+pub async fn serve_from_env() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	serve_from_config(serve_config_from_env()?).await
 }
 
 fn request_target(parts: &http::request::Parts) -> String {

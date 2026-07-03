@@ -467,6 +467,10 @@ mod tests {
 		"ROBGJC_THINKING",
 		"ROBGJC_GH_PROXY_BIND_HOST",
 		"ROBGJC_GH_PROXY_BIND_PORT",
+		"ROBGJC_WORKSPACE_ROOT",
+		"ROBGJC_LOG_DIR",
+		"ROBGJC_GH_PROXY_MAX_BODY_BYTES",
+		"ROBGJC_GH_PROXY_GIT_TIMEOUT_SECONDS",
 	];
 
 	fn with_env(f: impl FnOnce()) {
@@ -555,6 +559,45 @@ mod tests {
 				Some("ghp_test_token_value_xxxxxxxxxxxxxxxx")
 			);
 			assert!(cfg.gh_proxy_url.is_none());
+		});
+	}
+	#[test]
+	fn proxy_serve_config_from_env_requires_pat_key_and_builds_bind_addr() {
+		with_env(|| {
+			unsafe {
+				env::set_var("GITHUB_TOKEN", "ghp_proxy_token");
+				env::set_var("ROBGJC_GH_PROXY_HMAC_KEY", "proxy-hmac-key");
+				env::set_var("ROBGJC_GH_PROXY_BIND_HOST", "127.0.0.1");
+				env::set_var("ROBGJC_GH_PROXY_BIND_PORT", "18081");
+				env::set_var("ROBGJC_WORKSPACE_ROOT", "/tmp/robogjc-proxy-workspaces");
+				env::set_var("ROBGJC_GH_PROXY_MAX_BODY_BYTES", "2048");
+				env::set_var("ROBGJC_GH_PROXY_GIT_TIMEOUT_SECONDS", "12.2");
+			}
+			let cfg = crate::proxy::serve_config_from_env().unwrap();
+			assert_eq!(cfg.bind_addr.to_string(), "127.0.0.1:18081");
+			assert_eq!(cfg.server.github_token, "ghp_proxy_token");
+			assert_eq!(cfg.server.hmac_key, b"proxy-hmac-key".to_vec());
+			assert_eq!(cfg.server.max_body_bytes, 2048);
+			assert_eq!(cfg.server.git_timeout_seconds, 13);
+
+			unsafe { env::remove_var("GITHUB_TOKEN") };
+			assert!(
+				crate::proxy::serve_config_from_env()
+					.unwrap_err()
+					.to_string()
+					.contains("GITHUB_TOKEN")
+			);
+
+			unsafe {
+				env::set_var("GITHUB_TOKEN", "ghp_proxy_token");
+				env::remove_var("ROBGJC_GH_PROXY_HMAC_KEY");
+			}
+			assert!(
+				crate::proxy::serve_config_from_env()
+					.unwrap_err()
+					.to_string()
+					.contains("ROBGJC_GH_PROXY_HMAC_KEY")
+			);
 		});
 	}
 	#[test]

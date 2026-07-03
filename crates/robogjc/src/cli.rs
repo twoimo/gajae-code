@@ -5,14 +5,15 @@ use std::{process, sync::Arc, time::Duration};
 use serde_json::json;
 
 use crate::{
-	config::Settings,
+	config::{Settings, load_proxy_settings},
 	db::{Database, issue_key},
 	github::{GitHubBackend, GitHubClient},
+	logging::{Level, configure_logging},
 	manual_triage::{
 		INACTIVE_EVENT_STATES, ManualTriageTimeout, await_terminal_state, enqueue_manual_triage,
 		parse_issue_ref,
 	},
-	proxy::{GitHubProxyClient, GitHubProxyGitTransport},
+	proxy::{self, GitHubProxyClient, GitHubProxyGitTransport},
 	queue::WorkerPool,
 	sandbox::{GitTransport, LocalGitTransport},
 	server::{self, AppState},
@@ -31,11 +32,22 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	let cmd = args.next().unwrap_or_else(|| "help".to_owned());
 	match cmd.as_str() {
 		"serve" => tokio_runtime()?.block_on(async {
-			let (cfg, db, github, mut pool) = build_runtime()?;
+			let cfg = Settings::from_env()?;
+			configure_logging(Some(&cfg.log_dir), Level::Info)?;
+			let (cfg, db, github, mut pool) = build_runtime_from_settings(cfg)?;
 			pool.start().await?;
 			let state = AppState::new(cfg, db, github, Arc::new(pool));
 			server::serve(state).await
 		}),
+		"proxy" => match args.next().as_deref() {
+			Some("serve") => {
+				let settings = load_proxy_settings()?;
+				configure_logging(Some(&settings.log_dir), Level::Info)?;
+				tokio_runtime()?.block_on(proxy::serve_from_settings(settings))
+			},
+			Some(other) => Err(format!("unknown proxy command: {other}").into()),
+			None => Err("proxy requires SUBCOMMAND (serve)".into()),
+		},
 		"triage" => {
 			let (issue, wait_timeout) = parse_target_and_wait_timeout(args, "triage", "ISSUE_REF")?;
 			tokio_runtime()?.block_on(async move {
@@ -121,7 +133,15 @@ fn build_runtime() -> Result<
 	(Settings, Arc<Database>, Arc<dyn GitHubBackend>, WorkerPool<AppServerWorker>),
 	Box<dyn std::error::Error + Send + Sync>,
 > {
-	let cfg = Settings::from_env()?;
+	build_runtime_from_settings(Settings::from_env()?)
+}
+
+fn build_runtime_from_settings(
+	cfg: Settings,
+) -> Result<
+	(Settings, Arc<Database>, Arc<dyn GitHubBackend>, WorkerPool<AppServerWorker>),
+	Box<dyn std::error::Error + Send + Sync>,
+> {
 	cfg.ensure_paths()?;
 	let db = Arc::new(Database::open(&cfg.sqlite_path)?);
 	let (github, git_transport) = build_github_access(&cfg)?;
@@ -250,7 +270,7 @@ fn tokio_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
 
 fn print_help() {
 	println!(
-		"robogjc control surface\n\nUSAGE:\n  robogjc serve\n  robogjc triage owner/repo#NN\n  robogjc replay DELIVERY_ID\n  robogjc status\n  robogjc cleanup owner/repo#NN"
+		"robogjc control surface\n\nUSAGE:\n  robogjc serve\n  robogjc proxy serve\n  robogjc triage owner/repo#NN\n  robogjc replay DELIVERY_ID\n  robogjc status\n  robogjc cleanup owner/repo#NN"
 	);
 }
 
