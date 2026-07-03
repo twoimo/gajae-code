@@ -111,7 +111,7 @@ services:
     image: robogjc:dev
     container_name: gh-proxy
     restart: unless-stopped
-    command: ["python", "-m", "robogjc.proxy", "serve"]
+    command: ["robogjc", "proxy", "serve"]
     environment:
       # PAT: lives ONLY here. The orchestrator's compose block refuses to
       # let this var into its container.
