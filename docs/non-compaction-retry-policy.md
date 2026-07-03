@@ -161,19 +161,14 @@ Programmatic toggles in session:
 - `autoRetryEnabled` reads `retry.enabled`
 - `isRetrying` reports whether retry lifecycle promise is active
 
-### RPC controls
+### App-server controls
 
-RPC command surface:
+App-server management methods expose the same session retry controls:
 
-- `set_auto_retry` → `session.setAutoRetryEnabled(command.enabled)`
-- `abort_retry` → `session.abortRetry()`
+- `gjc/autoRetry/set` → `session.setAutoRetryEnabled(params.enabled)`
+- `gjc/autoRetry/abort` → `session.abortRetry()`
 
-Client helpers:
-
-- `RpcClient.setAutoRetry(enabled)`
-- `RpcClient.abortRetry()`
-
-Both commands return success responses; retry progress/failure details come from streamed session events, not command response payloads.
+Client implementations should treat the command response as an acknowledgement; retry progress/failure details come from streamed session notifications, not the response payload.
 
 ## Event emission and failure surfacing
 

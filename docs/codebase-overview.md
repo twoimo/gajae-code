@@ -102,13 +102,13 @@ Private benchmark package for TypeScript edit tasks.
 
 ## Python packages
 
-### `python/gjc-rpc/`
+### `crates/gjc-app-server/`
 
-Typed Python client for `gjc --mode rpc`.
+Rust-owned app-server protocol and transport crate for embedded GJC workers.
 
-- `python/gjc-rpc/pyproject.toml` packages `gjc-rpc` for Python 3.11+.
-- `python/gjc-rpc/README.md` documents the process-backed stdio client, typed command methods, startup flags, event listeners, todo seeding, host-owned tools, and host-owned URI schemes.
-- `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together coordinator MCP, RPC stdio, bridge limitations, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption.
+- `crates/gjc-app-server/` defines the JSON-RPC protocol, transport helpers, generated schemas, and conformance tests for `gjc app-server` / `gjc --mode app-server`.
+- `docs/app-server.md` documents the process-backed JSON-RPC worker, thread/turn lifecycle, host tools, workflow gates, transports, and integration notes.
+- `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together Coordinator MCP, app-server JSON-RPC, ACP boundaries, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption.
 
 ### `crates/robogjc/` and `python/robogjc/web/`
 

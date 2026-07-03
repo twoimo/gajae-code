@@ -30,7 +30,7 @@ Counts are rough static counts of `test_` functions/methods. Dispositions are Ph
 | `test_worker_pragmas.py` | 9 | Transpose worker-specific pragma application tests. |
 | `test_worker_smoke.py` | 1 | Transpose as a Rust smoke/integration test after the worker path exists. |
 
-## `python/gjc-rpc/tests/` (12 files)
+## App-server client fixture inventory (12 files)
 
 | File | Rough tests | Disposition |
 |---|---:|---|
@@ -41,11 +41,11 @@ Counts are rough static counts of `test_` functions/methods. Dispositions are Ph
 | `test_context_and_unattended.py` | 5 | Shared golden fixture for session state metadata where it overlaps app-server resume metadata. |
 | `test_host_uris.py` | 12 | Drop from robogjc scope unless host URI support becomes a robogjc dependency; currently outside target contract. |
 | `test_protocol.py` | 24 | Shared golden fixture for protocol parsing shapes that intersect app-server notifications and metadata. |
-| `test_real_binary.py` | 5 | Drop from default robogjc port with rationale: live binary RPC e2e belongs to the RPC package acceptance suite. |
+| `test_real_binary.py` | 5 | Drop from default robogjc port with rationale: live binary app-server e2e belongs to the app-server package acceptance suite. |
 | `test_registry.py` | 5 | Drop from robogjc scope unless robogjc owns session registry compatibility later. |
 | `test_user_group.py` | 3 | Transpose only if Rust robogjc directly launches subprocesses with user/group isolation; otherwise covered by sandbox/permissions tests. |
 | `test_workflow_gate.py` | 6 | Drop from robogjc scope: workflow-gate parsing is not a robogjc service requirement. |
-| `test_workflow_gate_redteam.py` | 5 | Drop from robogjc scope: red-team gate client behavior remains in the RPC package. |
+| `test_workflow_gate_redteam.py` | 5 | Drop from robogjc scope: red-team gate client behavior remains in app-server conformance coverage. |
 
 ## Porting priorities
 

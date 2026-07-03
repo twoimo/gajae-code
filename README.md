@@ -52,7 +52,7 @@ The bundled Telegram flow adds a threaded per-session surface with context updat
 
 ## Website
 
-Visit **[gajae-code.com](https://gajae-code.com)** for the Gajae Code landing page, quick-start guide, architecture overview, harness notes, bridge/RPC docs, skills, receipts, remote-control design, and troubleshooting.
+Visit **[gajae-code.com](https://gajae-code.com)** for the Gajae Code landing page, quick-start guide, architecture overview, harness notes, app-server/ACP docs, skills, receipts, remote-control design, and troubleshooting.
 
 ## What is Gajae-Code?
 
@@ -233,9 +233,9 @@ gjc setup defaults --check
 | Claude Code | `gjc --tmux` or `gjc --tmux --worktree <name>` | GJC does not become a Claude Code extension. |
 | OpenCode | `gjc` or `gjc --tmux` | External-runner workflow only today. |
 | Claw Code | `gjc --tmux --worktree <name>` | GJC does not install into or replace Claw Code. |
-| External controller / bot | `gjc --mode rpc` for a subprocess worker, or Bridge/HTTPS surfaces where configured | External controllers drive GJC through generic RPC/bridge contracts, not scrollback scraping. |
+| External controller / bot | `gjc --mode app-server` (JSON-RPC) or `gjc --mode acp` | External controllers drive GJC through the app-server JSON-RPC worker or ACP stdio server, not scrollback scraping. |
 
-For evaluating Aside as an opt-in search/context retrieval sidecar, see [`docs/aside-integration.md`](docs/aside-integration.md). For generic third-party bot setup and provider-independent smokes, see [`docs/bot-integration.md`](docs/bot-integration.md). For the readiness classification across RPC, ACP, and Bridge/HTTPS surfaces, see [`docs/external-control-readiness.md`](docs/external-control-readiness.md). For lower-level protocol details, see [`docs/rpc.md`](docs/rpc.md) and [`docs/bridge.md`](docs/bridge.md).
+For standalone MCP support boundaries, see [`docs/standalone-mcp.md`](docs/standalone-mcp.md). For evaluating Aside as an opt-in search/context retrieval sidecar, see [`docs/aside-integration.md`](docs/aside-integration.md). For generic third-party bot setup and provider-independent smokes, see [`docs/bot-integration.md`](docs/bot-integration.md). For the readiness classification across Coordinator MCP, app-server, and ACP surfaces, see [`docs/external-control-readiness.md`](docs/external-control-readiness.md). For lower-level app-server protocol details, see [`docs/app-server.md`](docs/app-server.md); for Coordinator MCP setup, see [`docs/hermes-mcp-bridge.md`](docs/hermes-mcp-bridge.md).
 
 ## Configuration
 
