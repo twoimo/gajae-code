@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "package-consumer-report",
+  "surfaces": [
+    {
+      "name": "webhook-event-routing",
+      "comparedVia": "rust github::route vs python robogjc.github_events.route",
+      "cases": 5,
+      "diffs": []
+    },
+    {
+      "name": "hmac-sign-verify-vectors",
+      "comparedVia": "rust proxy::sign/verify vs python proxy_hmac sign/verify",
+      "cases": 12,
+      "diffs": []
+    },
+    {
+      "name": "credential-redaction",
+      "comparedVia": "rust redaction vs python robogjc.git_ops.redact_credentials",
+      "cases": 3,
+      "diffs": []
+    },
+    {
+      "name": "db-row-shapes",
+      "comparedVia": "rust seeded sqlite rows vs python seed_python_era.py rows",
+      "cases": 1,
+      "diffs": []
+    },
+    {
+      "name": "host-tool-descriptor-schemas",
+      "comparedVia": "rust host_tools::descriptors vs python robogjc.host_tools.build",
+      "cases": 10,
+      "diffs": []
+    },
+    {
+      "name": "app-server-worker-transcripts",
+      "comparedVia": "phase7 transcript fixtures shared by Rust replay harness; Python app-server worker oracle not exposed as a stable subprocess API",
+      "cases": 33,
+      "diffs": []
+    }
+  ],
+  "provenance": {
+    "generatedBy": "crates/robogjc/tests/parity.rs",
+    "pythonInterpreter": "/tmp/robogjc-uv/bin/python",
+    "gitCommit": "f0dce042",
+    "generatedAt": "2026-07-03T01:23:48Z"
+  },
+  "summary": {
+    "totalCases": 64,
+    "unexplainedDiffs": 0
+  }
+}
