@@ -21,9 +21,7 @@ class Lines implements Component {
 }
 
 async function settle(term: VirtualTerminal): Promise<void> {
-	await new Promise<void>(resolve => process.nextTick(resolve));
-	await Bun.sleep(1);
-	await term.flush();
+	await term.waitForRender();
 }
 
 function visible(term: VirtualTerminal): string[] {
