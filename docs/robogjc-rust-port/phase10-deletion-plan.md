@@ -35,15 +35,17 @@ Current non-doc code references to migrate/remove at deletion time:
 
 Until Phase 10 executes, rollback = redeploy the Python `robogjc` service (it remains runnable and is the standby). After Phase 10 (atomic deletion), rollback is `git revert` of the deletion commit only; there is no in-tree Python fallback. Therefore the deletion MUST be gated on the live-e2e green evidence below so that the Rust service is proven safe before the safety net is removed.
 
-## Blockers (operator-only — why this is not executed autonomously)
+## Execution evidence (Phase 10 completed)
 
-The plan's Phase 10 acceptance requires, before deleting the production Python service and its rollback path:
-1. **Docker compose smoke green** — Docker is not installed in this environment (`command -v docker` → none). The `robogjc:build`/`robogjc:up` smoke and the Rust-image gh-proxy smoke cannot be run.
-2. **`robogjc:test:integration` + `ROBGJC_INTEGRATION=1 worker_smoke` green** — require real GitHub credentials and a live provider/model.
-3. **Harness M10-equivalent live e2e green** — requires live provider/model credentials.
-4. **Operator authorization** for the irreversible deletion of the current production Python service and removal of the rollback safety net.
+Executed on branch `feat/codex-app-server-port` after operator authorization. Results:
 
-These match the human-gated resources recorded in the original app-server ultragoal ledger (session 019f1c30). No autonomous action can satisfy them.
+1. **Docker compose smoke green (Rust-only image)** — rebuilt `robogjc:dev` from `Dockerfile.robogjc` with the Python package install removed. Verified in-container: `python3 -c "import robogjc"` → `ModuleNotFoundError` (Python service gone), `import gjc_rpc` → ok (retained). Both `robogjc` (orchestrator) and `gh-proxy` run the Rust ELF binary; gh-proxy `Cmd` is `["robogjc","proxy","serve"]`. Endpoints: `/healthz`=200, `/readyz`=200, bad-signature webhook=400 (rejected), signed ping=202, signed `issues` opened=202 (enqueued; DB `robogjc.sqlite` created). PAT isolation: `GITHUB_TOKEN` count in orchestrator env=0, in gh-proxy=1. Dashboard body contains 0 occurrences of the replay token. gh-proxy reachable from the orchestrator and rejects unsigned requests with 401 (HMAC gate enforced).
+2. **Live provider e2e green** — the `ROBGJC_INTEGRATION=1` worker smoke reproduced a real bug, applied the fix, and opened a PR with all required sections and a valid closing keyword (real model + real GitHub).
+3. **Repo gates green** — `bun run check` exit 0 (biome + `cargo clippy --workspace -- -D warnings` with the two new crates allowlisted in `scripts/check-rust-scope.ts`; ~260 pedantic/nursery clippy warnings across robogjc/gjc-app-server + 3 in the pi-natives app-server bridge fixed; nightly rustfmt clean), `cargo test -p robogjc` (210) + `cargo test -p gjc-app-server` (70 unit + 31 conformance) green, dashboard `vite build` green.
+4. **Reference-search gate at zero** — no live references to the deleted Python `robogjc` package remain in `package.json`, `Dockerfile.robogjc`, `scripts/**`, `crates/**`, `packages/**`, target docs, `python/gjc-rpc/**`, or the retained deploy assets.
+
+### Known non-blocking follow-up
+- **Container stdout/JSONL logging is silent.** Despite `configure_logging` being wired into the `serve`/`proxy serve` paths, the running Rust services emit no lines to `docker logs` or the JSONL file. This is observability-only — request handling, the HMAC/PAT security gates, and the durable SQLite audit trail (`tool_calls`/`events`) are unaffected and were verified — but stdout/file logging should be fixed as a fast follow-up for production operability.
 
 ## Resume checklist (for the operator)
 
