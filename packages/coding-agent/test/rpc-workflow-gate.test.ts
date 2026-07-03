@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcJsonSchema, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import { isRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-validation";
+import type { RpcJsonSchema, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import { isRpcCommandType, scopeForRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/scopes";
 import {
 	MemoryGateStore,

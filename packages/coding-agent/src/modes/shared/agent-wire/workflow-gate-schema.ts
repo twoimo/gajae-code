@@ -12,7 +12,7 @@
  * swapped in later without changing callers.
  */
 import { createHash } from "node:crypto";
-import type { RpcJsonSchema, RpcWorkflowGateValidationError } from "../../rpc/rpc-types";
+import type { RpcJsonSchema, RpcWorkflowGateValidationError } from "./protocol";
 
 /** Keywords this wrapper understands. Any other keyword is rejected. */
 const SUPPORTED_KEYWORDS = new Set<keyof RpcJsonSchema>([

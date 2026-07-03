@@ -216,7 +216,7 @@ export const toBridgeEventFrame = toAgentWireEventFrame;
  * while `frame_id` + gate_id give idempotency.
  */
 export function toBridgeWorkflowGateFrame(
-	gate: import("../../rpc/rpc-types").RpcWorkflowGate,
+	gate: import("./protocol").RpcWorkflowGate,
 	sequencer: AgentWireFrameSequencer,
 ): import("./protocol").BridgeWorkflowGateFrame {
 	return sequencer.next("workflow_gate", gate, gate.gate_id);

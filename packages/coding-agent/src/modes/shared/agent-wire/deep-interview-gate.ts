@@ -11,7 +11,7 @@
  * the interactive select/editor UI) when an unattended controller + gate broker
  * are attached is wired with the transport in #321 and exercised by #323.
  */
-import type { RpcJsonSchema, RpcWorkflowGateKind, RpcWorkflowStage } from "../../rpc/rpc-types";
+import type { RpcJsonSchema, RpcWorkflowGateKind, RpcWorkflowStage } from "./protocol";
 import type { OpenGateInput } from "./workflow-gate-broker";
 
 /** "Other (type your own)" sentinel, mirroring the interactive ask tool. */

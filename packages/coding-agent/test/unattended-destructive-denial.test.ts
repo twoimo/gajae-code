@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcUnattendedDeclaration } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type { RpcUnattendedDeclaration } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	ActionDeniedError,
 	type UnattendedAuditEvent,

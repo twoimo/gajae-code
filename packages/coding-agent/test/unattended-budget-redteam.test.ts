@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcUnattendedBudget, RpcUnattendedDeclaration } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type {
+	RpcUnattendedBudget,
+	RpcUnattendedDeclaration,
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	type NegotiateContext,
 	type UnattendedAbortHooks,

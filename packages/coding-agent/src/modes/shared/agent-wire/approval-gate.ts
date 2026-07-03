@@ -15,7 +15,7 @@
  * an unattended controller + gate broker are attached is wired with the transport
  * in #321 and exercised end-to-end by #323.
  */
-import type { RpcJsonSchema, RpcWorkflowGateContext } from "../../rpc/rpc-types";
+import type { RpcJsonSchema, RpcWorkflowGateContext } from "./protocol";
 import type { OpenGateInput } from "./workflow-gate-broker";
 
 export type ApprovalDecision = "approve" | "request-changes" | "reject";

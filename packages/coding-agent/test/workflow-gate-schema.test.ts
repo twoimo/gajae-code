@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcJsonSchema } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type { RpcJsonSchema } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	assertSupportedGateSchema,
 	compileGateSchema,

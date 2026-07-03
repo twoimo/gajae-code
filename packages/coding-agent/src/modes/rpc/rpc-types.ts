@@ -4,13 +4,55 @@
  * Commands are sent as JSON lines on stdin.
  * Responses and events are emitted as JSON lines on stdout.
  */
-import type { AgentMessage, AgentToolResult, ResolvedThinkingLevel, ThinkingLevel } from "@gajae-code/agent-core";
+import type { AgentMessage, ResolvedThinkingLevel, ThinkingLevel } from "@gajae-code/agent-core";
 import type { CompactionResult } from "@gajae-code/agent-core/compaction";
 import type { Effort, ImageContent, Model } from "@gajae-code/ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { SessionStats } from "../../session/agent-session";
 import type { TodoPhase } from "../../tools/todo-write";
+import type {
+	RpcHostToolDefinition,
+	RpcHostUriSchemeDefinition,
+	RpcUnattendedAccepted,
+	RpcUnattendedDeclaration,
+	RpcWorkflowGate,
+	RpcWorkflowGateResolution,
+	RpcWorkflowGateResponse,
+} from "../shared/agent-wire/protocol";
+
+export type {
+	RpcActionDenied,
+	RpcBudgetExceeded,
+	RpcBudgetMetric,
+	RpcHostToolCallRequest,
+	RpcHostToolCancelRequest,
+	RpcHostToolDefinition,
+	RpcHostToolResult,
+	RpcHostToolUpdate,
+	RpcHostUriCancelRequest,
+	RpcHostUriOperation,
+	RpcHostUriRequest,
+	RpcHostUriResult,
+	RpcHostUriSchemeDefinition,
+	RpcJsonSchema,
+	RpcScopeDenied,
+	RpcUnattendedAccepted,
+	RpcUnattendedActionClass,
+	RpcUnattendedBudget,
+	RpcUnattendedDeclaration,
+	RpcUnattendedRefusalCode,
+	RpcUnattendedRefused,
+	RpcWorkflowGate,
+	RpcWorkflowGateContext,
+	RpcWorkflowGateKind,
+	RpcWorkflowGateOption,
+	RpcWorkflowGateResolution,
+	RpcWorkflowGateResponse,
+	RpcWorkflowGateValidationError,
+	RpcWorkflowStage,
+} from "../shared/agent-wire/protocol";
+export { RESERVED_WORKFLOW_STAGES } from "../shared/agent-wire/protocol";
 
 export type RpcGetStateInclude = "tools" | "dumpTools" | "systemPrompt";
 export type RpcCapability = "compact_message_update";
@@ -314,104 +356,6 @@ export type RpcExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "open_url"; url: string; instructions?: string };
 
 // ============================================================================
-// Host Tool Frames (bidirectional)
-// ============================================================================
-
-export interface RpcHostToolDefinition {
-	name: string;
-	label?: string;
-	description: string;
-	parameters: Record<string, unknown>;
-	hidden?: boolean;
-}
-
-/** Emitted by the RPC server when it needs the host to execute a registered tool. */
-export interface RpcHostToolCallRequest {
-	type: "host_tool_call";
-	id: string;
-	toolCallId: string;
-	toolName: string;
-	arguments: Record<string, unknown>;
-}
-
-/** Emitted by the RPC server when a pending host tool call should be aborted. */
-export interface RpcHostToolCancelRequest {
-	type: "host_tool_cancel";
-	id: string;
-	targetId: string;
-}
-
-/** Sent by the host to stream partial tool updates back to the RPC server. */
-export interface RpcHostToolUpdate {
-	type: "host_tool_update";
-	id: string;
-	partialResult: AgentToolResult<unknown>;
-}
-
-/** Sent by the host to complete a pending tool call. */
-export interface RpcHostToolResult {
-	type: "host_tool_result";
-	id: string;
-	result: AgentToolResult<unknown>;
-	isError?: boolean;
-}
-
-// ============================================================================
-// Host URI Frames (bidirectional)
-// ============================================================================
-
-export interface RpcHostUriSchemeDefinition {
-	/** URL scheme without trailing `://` (e.g. `db`, `notion`). */
-	scheme: string;
-	/** Optional human-readable description for logs/diagnostics. */
-	description?: string;
-	/** When true, the write tool is allowed to dispatch writes to this scheme. */
-	writable?: boolean;
-	/** When true, downstream callers suppress hashline anchors for resolved content. */
-	immutable?: boolean;
-}
-
-export type RpcHostUriOperation = "read" | "write";
-
-/** Emitted by the RPC server when it needs the host to satisfy a URI operation. */
-export interface RpcHostUriRequest {
-	type: "host_uri_request";
-	id: string;
-	operation: RpcHostUriOperation;
-	url: string;
-	/** Present for write operations. */
-	content?: string;
-}
-
-/** Emitted by the RPC server when a pending URI request should be aborted. */
-export interface RpcHostUriCancelRequest {
-	type: "host_uri_cancel";
-	id: string;
-	targetId: string;
-}
-
-/** Sent by the host to complete a pending URI request. */
-export interface RpcHostUriResult {
-	type: "host_uri_result";
-	id: string;
-	/**
-	 * Required for successful `read` results. Ignored for `write` success.
-	 * Set on errors when a textual explanation accompanies `isError`.
-	 */
-	content?: string;
-	/** Defaults to `text/plain` when omitted. */
-	contentType?: "text/markdown" | "application/json" | "text/plain";
-	/** Optional resolution notes propagated to the read tool. */
-	notes?: string[];
-	/** Overrides the scheme-level `immutable` flag for this single resolution. */
-	immutable?: boolean;
-	/** When true, surface the result content as an error to the caller. */
-	isError?: boolean;
-	/** Optional error message; preferred over `content` for error surfacing. */
-	error?: string;
-}
-
-// ============================================================================
 // Extension UI Commands (stdin)
 // ============================================================================
 
@@ -427,211 +371,3 @@ export type RpcExtensionUIResponse =
 
 export type RpcCommandType = RpcCommand["type"];
 
-// ============================================================================
-// Workflow Gate Contract (#315)
-// ============================================================================
-
-/**
- * Lifecycle stages that emit machine-addressable gates. v1 is single-agent;
- * `team` parallel execution over RPC is deferred, so it is intentionally absent
- * from this union. Gate construction rejects any other stage value.
- */
-export type RpcWorkflowStage = "deep-interview" | "ralplan" | "ultragoal";
-
-/** Reserved stage names that are explicitly not part of the v1 contract. */
-export const RESERVED_WORKFLOW_STAGES: readonly string[] = ["team"];
-
-export type RpcWorkflowGateKind = "question" | "approval" | "execution";
-
-/**
- * The documented JSON Schema 2020-12 subset supported by the gate validator.
- * Schemas containing any keyword outside this shape are rejected at gate
- * construction time so the server never advertises a schema it cannot validate.
- */
-export interface RpcJsonSchema {
-	type?: "string" | "number" | "integer" | "boolean" | "object" | "array" | "null";
-	enum?: unknown[];
-	const?: unknown;
-	properties?: Record<string, RpcJsonSchema>;
-	required?: string[];
-	additionalProperties?: boolean | RpcJsonSchema;
-	items?: RpcJsonSchema;
-	minLength?: number;
-	maxLength?: number;
-	pattern?: string;
-	minItems?: number;
-	maxItems?: number;
-	uniqueItems?: boolean;
-	minimum?: number;
-	maximum?: number;
-	title?: string;
-	description?: string;
-	oneOf?: RpcJsonSchema[];
-	anyOf?: RpcJsonSchema[];
-}
-
-export interface RpcWorkflowGateOption {
-	value: unknown;
-	label: string;
-	description?: string;
-}
-
-export interface RpcWorkflowGateContext {
-	title?: string;
-	plan?: string;
-	source?: string;
-	prompt?: string;
-	summary?: string;
-	stage_state?: Record<string, unknown>;
-	artifact_refs?: Array<{ kind: string; path?: string; sha256?: string }>;
-	language?: string;
-}
-
-/** Outbound event: a machine-addressable workflow gate awaiting an answer. */
-export interface RpcWorkflowGate {
-	type: "workflow_gate";
-	/** Run-scoped, monotonic, stable id (e.g. `wg_<run>_<stage>_000001`). */
-	gate_id: string;
-	stage: RpcWorkflowStage;
-	kind: RpcWorkflowGateKind;
-	schema: RpcJsonSchema;
-	/** Canonical hash of `schema`; advertised hash must equal server validation hash. */
-	schema_hash: string;
-	options?: RpcWorkflowGateOption[];
-	context: RpcWorkflowGateContext;
-	created_at: string;
-	required: true;
-}
-
-/** Inbound: the agent's answer to a workflow gate. */
-export interface RpcWorkflowGateResponse {
-	gate_id: string;
-	answer: unknown;
-	/** Optional idempotency key; same key + body returns the cached resolution. */
-	idempotency_key?: string;
-}
-
-/** Outcome of resolving a gate, surfaced back to the answering client. */
-export interface RpcWorkflowGateResolution {
-	gate_id: string;
-	status: "accepted" | "rejected";
-	answer_hash: string;
-	resolved_at: string;
-	/** Present only when `status === "rejected"`. */
-	error?: RpcWorkflowGateValidationError;
-}
-
-/** Typed error shape for schema validation failures (#315 acceptance). */
-export interface RpcWorkflowGateValidationError {
-	code: "invalid_workflow_gate_answer";
-	gate_id: string;
-	schema_hash: string;
-	errors: Array<{ path: string; keyword: string; message: string; expected?: unknown }>;
-}
-
-// ============================================================================
-// Unattended Declaration Contract (#318/#319 — declared at #315 boundary)
-// ============================================================================
-
-export interface RpcUnattendedBudget {
-	max_tokens: number;
-	max_tool_calls: number;
-	max_wall_time_ms: number;
-	max_cost_usd: number;
-}
-
-export interface RpcUnattendedDeclaration {
-	/** Identity of the operating external agent, recorded in the audit trail. */
-	actor: string;
-	budget: RpcUnattendedBudget;
-	/** Coarse command scopes the agent may use (maps to BridgeCommandScope). */
-	scopes: string[];
-	/** Action classes the agent is allowed to perform (default-deny otherwise). */
-	action_allowlist: string[];
-}
-
-export interface RpcUnattendedAccepted {
-	run_id: string;
-	actor: string;
-	budget: RpcUnattendedBudget;
-	scopes: string[];
-	action_allowlist: string[];
-	accepted_at: string;
-}
-
-export type RpcBudgetMetric = "tokens" | "tool_calls" | "wall_time" | "cost";
-
-/** Typed payload emitted when a declared budget cap is breached (#318). */
-export interface RpcBudgetExceeded {
-	code: "budget_exceeded";
-	metric: RpcBudgetMetric;
-	limit: number;
-	observed: number;
-	/** The accounting phase that detected the breach. */
-	phase: string;
-	run_id: string;
-	session_id?: string;
-	/** `aborting` = breach detected, async abort initiated; settled status follows in audit. */
-	abort_status: "aborting" | "aborted" | "abort_failed";
-}
-
-export type RpcUnattendedRefusalCode =
-	| "unattended_not_negotiated"
-	| "incomplete_budget"
-	| "unsupported_budget_metric"
-	| "invalid_unattended_declaration"
-	| "unattended_aborted";
-
-/** Typed refusal emitted when unattended mode cannot start or continue (fail-closed). */
-export interface RpcUnattendedRefused {
-	code: RpcUnattendedRefusalCode;
-	message: string;
-}
-
-// ============================================================================
-// Unattended Action Authorization Contract (#319)
-// ============================================================================
-
-/** v1 action taxonomy: every authorized operation maps to one of these classes. */
-export type RpcUnattendedActionClass =
-	| "command.prompt"
-	| "command.control"
-	| "command.bash"
-	| "command.export"
-	| "command.session"
-	| "command.model"
-	| "command.message_read"
-	| "command.host_tools"
-	| "command.host_uri"
-	| "command.admin"
-	| "bash.readonly"
-	| "bash.mutating"
-	| "bash.destructive"
-	| "git.force_push"
-	| "file.delete"
-	| "file.write"
-	| "host_tool.invoke"
-	| "host_uri.read"
-	| "host_uri.write"
-	| "auth.login";
-
-/** Typed error when a command's coarse scope is not in the declared allowlist. */
-export interface RpcScopeDenied {
-	code: "scope_denied";
-	scope: string;
-	command?: string;
-	run_id: string;
-	session_id?: string;
-	/** Always true: enforcement happens before the side effect runs. */
-	pre_side_effect: true;
-}
-
-/** Typed error when an action class is not in the declared allowlist (default-deny). */
-export interface RpcActionDenied {
-	code: "action_denied";
-	action: string;
-	command?: string;
-	run_id: string;
-	session_id?: string;
-	pre_side_effect: true;
-}

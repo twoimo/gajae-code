@@ -4,18 +4,15 @@ import { getOAuthProviders } from "@gajae-code/ai/utils/oauth";
 import { Snowflake } from "@gajae-code/utils";
 import type { ExtensionUIContext } from "../../../extensibility/extensions";
 import type { AgentSession } from "../../../session/agent-session";
+import type { RpcCommand, RpcExtensionUIRequest, RpcResponse, RpcSessionState } from "../../rpc/rpc-types";
 import type {
-	RpcCommand,
-	RpcExtensionUIRequest,
 	RpcHostToolDefinition,
 	RpcHostUriSchemeDefinition,
-	RpcResponse,
-	RpcSessionState,
 	RpcUnattendedAccepted,
 	RpcUnattendedDeclaration,
 	RpcWorkflowGateResolution,
 	RpcWorkflowGateResponse,
-} from "../../rpc/rpc-types";
+} from "./protocol";
 import { rpcError, rpcSuccess } from "./responses";
 import {
 	ActionDeniedError,
@@ -46,7 +43,7 @@ export interface RpcUnattendedControlPlane {
 	/** Resolve a pending workflow gate with the agent's answer. */
 	resolveGate(response: RpcWorkflowGateResponse): Promise<RpcWorkflowGateResolution>;
 	/** List unresolved durable workflow gates for reconnect replay. */
-	listPendingGates?(): import("../../rpc/rpc-types").RpcWorkflowGate[];
+	listPendingGates?(): import("./protocol").RpcWorkflowGate[];
 	isUnattended?(): boolean;
 	preflightCommand?(command: RpcCommand): void;
 	reconcileUsage?(phase?: string): void;

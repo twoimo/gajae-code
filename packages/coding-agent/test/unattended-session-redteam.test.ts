@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentToolContext } from "@gajae-code/agent-core";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { RpcUnattendedDeclaration, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import { approvalGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
+import type {
+	RpcUnattendedDeclaration,
+	RpcWorkflowGate,
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	UnattendedSessionControlPlane,
 	type WorkflowGateEmitter,

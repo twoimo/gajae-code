@@ -1,10 +1,10 @@
 import { describe, expect, it, mock } from "bun:test";
+import type { RpcWorkflowGateResponse } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import type { BridgePermissionRequestPayload } from "../../src/modes/bridge/bridge-client-bridge";
 import { createBridgeFetchHandler } from "../../src/modes/bridge/bridge-mode";
 import { BridgeEventStream } from "../../src/modes/bridge/event-stream";
 import { RpcHostToolBridge } from "../../src/modes/rpc/host-tools";
 import { RpcHostUriBridge } from "../../src/modes/rpc/host-uris";
-import type { RpcWorkflowGateResponse } from "../../src/modes/rpc/rpc-types";
 import { BRIDGE_PROTOCOL_VERSION } from "../../src/modes/shared/agent-wire/protocol";
 import { rpcSuccess } from "../../src/modes/shared/agent-wire/responses";
 import { UiRequestBroker } from "../../src/modes/shared/agent-wire/ui-request-broker";
