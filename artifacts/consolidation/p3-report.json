@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1, "kind": "package-consumer-report",
+  "phase": "P3 app-server wire parity (workflow-gate + unattended + host-URI) incl. sign-off blocker fixes",
+  "commits": ["b71ee104","1094fccf","353547e3","e7b802b7"], "surface": "package/api + rust app-server JSON-RPC wire",
+  "results": {
+    "unionCheck": {"command": "bun run check", "exit": 0},
+    "cargoAppServer": {"command": "cargo test -p gjc-app-server", "unit": 72, "conformance": 31, "fail": 0},
+    "cargoRobogjc": {"command": "cargo test -p robogjc", "pass": 212, "fail": 0},
+    "clippy": {"command": "cargo clippy --workspace -D warnings", "status": "clean"},
+    "appServerFeatureTests": {"command": "bun test app-server-workflow-gate + app-server-unattended + app-server-host-uris + agent-wire-host-uris", "pass": "40+54+10-suite assertions; host-uris/unattended/workflow-gate/agent-wire 10 tests/122 expects", "fail": 0},
+    "schemas": {"command": "bun run generate-schemas && bun run check:schemas", "status": "up-to-date"},
+    "protectedBoundary": {"command": "git diff --name-only 9322fafe -- modes/acp crates/gjc-notifications src/notifications", "status": "empty"}
+  },
+  "adversarial": [
+    {"scenario": "workflow-gate invalid answer / idempotency conflict / unknown-already-resolved", "expected": "result-level rejected + structured JSON-RPC errors; audit events", "result": "app-server-workflow-gate.test.ts asserts all"},
+    {"scenario": "unattended denies method before side effects (hostTools/set, exec, host-URI read/write)", "expected": "denied before backend call / registry mutation / request emission", "result": "app-server-unattended.test.ts + host_uri_preflight_denies_before_emitting_requests"},
+    {"scenario": "unattended abort", "expected": "cancels pending host-tool + host-URI requests, terminally rejects workflow gates, emits cancel notifs", "result": "unattended_abort_cancels_pending_host_calls_uris_and_gates test"},
+    {"scenario": "two threads register same host-URI scheme", "expected": "no cross-thread leakage (thread-scoped router)", "result": "app-server-host-uris.test.ts asserts no leakage"},
+    {"scenario": "real host-URI JSON-RPC wire round-trip", "expected": "request->result resolves pending waiter over real dispatch", "result": "real-wire host-uri test passes (requestId-keyed resolution)"}
+  ]
+}
