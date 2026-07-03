@@ -1281,6 +1281,8 @@ async function sendTmuxPromptKeys(
 		await runner(["tmux", "delete-buffer", "-b", bufferName]);
 		return false;
 	}
+	const cancelledAutocomplete = await runner(["tmux", "send-keys", "-t", target, "Escape"]);
+	if (cancelledAutocomplete.exitCode !== 0) return false;
 	const submitted = await runner(["tmux", "send-keys", "-t", target, "Enter"]);
 	return submitted.exitCode === 0;
 }
