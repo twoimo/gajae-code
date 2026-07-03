@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1, "kind": "package-consumer-report",
+  "phase": "P5 remove rpc/rpc-ui/bridge mode wiring + SDK exports (+ blocker fix)", "commits": ["185e313f","9f4c34e6","99fc4d3e"], "surface": "package/api (CLI mode surface + SDK exports + harness factory)",
+  "results": {
+    "unionCheck": {"command": "bun run check", "exit": 0},
+    "cliSuites": {"command": "bun test cli-command-surface + cli-help-load-order + harness-adapter-factory", "pass": "15+ (all green)", "fail": 0},
+    "benchmark": {"command": "bun test typescript-edit-benchmark", "pass": 11, "fail": 0},
+    "publicSurfaceScan": {"contract": "no live --mode rpc/rpc-ui/bridge or runRpcMode/RpcClient/runBridgeMode/rpcListen in cli/main/args/launch/modes-index/SDK", "status": "clean"},
+    "harnessFactory": {"contract": "createHarnessRpc app-server-only; no reachable rpc adapter branch", "status": "verified"},
+    "protectedBoundary": {"command": "git diff --name-only 9322fafe -- modes/acp crates/gjc-notifications src/notifications", "status": "empty"}
+  },
+  "adversarial": [
+    {"scenario": "--mode rpc/rpc-ui/bridge invoked", "expected": "rejected (not in Mode union/validation)", "result": "cli-command-surface asserts rejection"},
+    {"scenario": "GJC_HARNESS_ADAPTER=rpc or adapter:'rpc'", "expected": "no longer selects the dead-command GajaeCodeRpc; app-server used", "result": "adapter-factory app-server-only; harness-adapter-factory test"}
+  ],
+  "p6Obligation": "Close package.json export wildcard reachability for modes/rpc|bridge together with deleting src/modes/rpc + src/modes/bridge dirs + transport tests (architect 122 accepted deferral)."
+}
