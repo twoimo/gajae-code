@@ -21,7 +21,10 @@ RUN bun --cwd=python/robogjc/web run build
 
 FROM ${PI_BASE} AS rust-builder
 WORKDIR /work/pi
-COPY Cargo.toml Cargo.lock ./
+# PI_BASE sets CARGO_TARGET_DIR=/data/cache/cargo-target; pin it back to the
+# workspace target dir so the runtime COPY path is stable and predictable.
+ENV CARGO_TARGET_DIR=/work/pi/target
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ ./crates/
 RUN cargo build --release -p robogjc --bin robogjc
 
@@ -29,7 +32,6 @@ FROM ${PI_BASE} AS runtime
 ENV PI_ROOT=/work/pi
 WORKDIR /app
 
-COPY --from=rust-builder /work/pi/target/release/robogjc /usr/local/bin/robogjc
 COPY --from=web-builder /work/python/robogjc/web/dist/ /app/static/
 # Python robogjc remains installed for rollback and for the gh-proxy sidecar.
 COPY python/robogjc/pyproject.toml ./pyproject.toml
@@ -40,6 +42,12 @@ RUN pip install --no-cache-dir \
         "pydantic>=2.6" "pydantic-settings>=2.2" "python-dotenv>=1.0" \
         "click>=8.1" \
     && pip install --no-cache-dir --no-deps .
+# The Rust binary is the active `robogjc` command (Phase 8 cutover). It MUST be
+# copied AFTER `pip install .`, because the Python package's [project.scripts]
+# console script is also named `robogjc` and would otherwise shadow the Rust
+# binary at /usr/local/bin/robogjc. Python rollback stays reachable via
+# `python -m robogjc serve`; gh-proxy uses `python -m robogjc.proxy serve`.
+COPY --from=rust-builder /work/pi/target/release/robogjc /usr/local/bin/robogjc
 # Keep the Rust dashboard loader compatible with source checkouts and images.
 RUN mkdir -p /work/pi/python/robogjc/src/static \
     && cp -a /app/static/. /work/pi/python/robogjc/src/static/

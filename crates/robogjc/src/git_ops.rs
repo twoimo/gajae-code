@@ -178,8 +178,10 @@ fn run_real(spec: &CommandSpec) -> Result<CommandOutput, GitCommandError> {
 		// (CommandExt::gid/uid would run before pre_exec, so they are not used).
 		unsafe {
 			cmd.pre_exec(move || {
+				// setgroups takes size_t (usize) on Linux and c_int on macOS;
+				// try_into() targets whichever the platform signature expects.
 				if !groups.is_empty()
-					&& libc::setgroups(groups.len() as libc::c_int, groups.as_ptr()) != 0
+					&& libc::setgroups(groups.len().try_into().unwrap(), groups.as_ptr()) != 0
 				{
 					return Err(io::Error::last_os_error());
 				}
