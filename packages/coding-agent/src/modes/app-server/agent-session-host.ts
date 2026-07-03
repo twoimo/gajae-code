@@ -1,5 +1,13 @@
 import { z } from "zod";
 import type { CustomTool } from "../../extensibility/custom-tools/types";
+import { InternalUrlRouter } from "../../internal-urls";
+import type {
+	InternalResource,
+	InternalUrl,
+	ProtocolHandler,
+	ResolveContext,
+	WriteContext,
+} from "../../internal-urls/types";
 import { type CreateAgentSessionOptions, createAgentSession } from "../../sdk";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
 import type { WorkflowGateEmitter } from "../shared/agent-wire/unattended-session";
@@ -22,7 +30,12 @@ interface NativeWorkflowGateBridge {
 	isWorkflowGateUnattended?(threadId: string): boolean;
 }
 
-type NativeAppServerBridge = NativeHostToolBridge & Partial<NativeWorkflowGateBridge>;
+interface NativeHostUriBridge {
+	readHostUri(threadId: string, urlJson: string): Promise<string>;
+	writeHostUri(threadId: string, urlJson: string, content: string): Promise<void>;
+}
+
+type NativeAppServerBridge = NativeHostToolBridge & Partial<NativeWorkflowGateBridge> & Partial<NativeHostUriBridge>;
 
 export type AppServerEventEmitter = (
 	threadId: string,
@@ -72,6 +85,7 @@ interface ThreadRecord {
 	generation: number;
 	cwd: string;
 	metadata: Record<string, unknown>;
+	hostUriSchemes: Map<string, { writable: boolean; immutable: boolean }>;
 }
 
 function hostToolDescriptors(value: unknown): Array<{ name: string; description: string; inputSchema: unknown }> {
@@ -187,12 +201,32 @@ function jsonClone<T>(value: T): T {
 	return JSON.parse(JSON.stringify(value)) as T;
 }
 
+class AppServerHostUriProtocolHandler implements ProtocolHandler {
+	readonly scheme: string;
+	readonly immutable = false;
+	readonly #host: AgentSessionHost;
+
+	constructor(scheme: string, host: AgentSessionHost) {
+		this.scheme = scheme;
+		this.#host = host;
+	}
+
+	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		return this.#host.resolveHostUri(url, context);
+	}
+
+	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
+		return this.#host.writeHostUri(url, content, context);
+	}
+}
+
 export class AgentSessionHost implements AppServerHost {
 	readonly #threads = new Map<string, ThreadRecord>();
 	#emit: AppServerEventEmitter;
 	#notificationHandler: ((method: string, params: unknown) => unknown) | undefined;
 	readonly #sessionFactory: SessionFactory;
 	#appServer: NativeAppServerBridge | undefined;
+	readonly #hostUriRegisteredSchemes = new Set<string>();
 
 	constructor(options: AgentSessionHostOptions = {}) {
 		this.#emit = options.emit ?? (() => {});
@@ -275,6 +309,7 @@ export class AgentSessionHost implements AppServerHost {
 			cwd,
 			metadata: returnedMetadata,
 			unsubscribe: () => {},
+			hostUriSchemes: new Map(),
 		};
 		thread.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			this.#emit(threadId, thread.generation, event.type, jsonClone(event));
@@ -376,5 +411,79 @@ export class AgentSessionHost implements AppServerHost {
 			default:
 				throw new Error(`unknown backend method: ${method}`);
 		}
+	}
+
+	setHostUriSchemes(
+		threadId: string,
+		schemes: Array<{ scheme: string; writable?: boolean; immutable?: boolean }>,
+	): string[] {
+		const thread = this.#threads.get(threadId);
+		if (!thread) throw new Error(`unknown thread: ${threadId}`);
+		thread.hostUriSchemes = new Map(
+			schemes.map(scheme => [
+				scheme.scheme.toLowerCase(),
+				{ writable: scheme.writable === true, immutable: scheme.immutable === true },
+			]),
+		);
+		const activeSchemes = new Set<string>();
+		for (const record of this.#threads.values()) {
+			for (const scheme of record.hostUriSchemes.keys()) activeSchemes.add(scheme);
+		}
+		const router = InternalUrlRouter.instance();
+		for (const scheme of this.#hostUriRegisteredSchemes) {
+			if (!activeSchemes.has(scheme)) {
+				router.unregister(scheme);
+				this.#hostUriRegisteredSchemes.delete(scheme);
+			}
+		}
+		for (const scheme of activeSchemes) {
+			if (!this.#hostUriRegisteredSchemes.has(scheme)) {
+				router.register(new AppServerHostUriProtocolHandler(scheme, this));
+				this.#hostUriRegisteredSchemes.add(scheme);
+			}
+		}
+		return Array.from(thread.hostUriSchemes.keys()).sort();
+	}
+
+	async resolveHostUri(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		const threadId = context?.threadId ?? context?.sessionId;
+		if (!threadId) throw new Error(`Host URI ${url.href} requires a thread-scoped read context`);
+		const thread = this.#threads.get(threadId);
+		if (!thread) throw new Error(`unknown thread for Host URI ${url.href}: ${threadId}`);
+		const scheme = url.protocol.replace(/:$/, "").toLowerCase();
+		const definition = thread.hostUriSchemes.get(scheme);
+		if (!definition) throw new Error(`Host URI scheme is not registered for thread ${threadId}: ${scheme}`);
+		const bridge = this.#appServer;
+		if (!bridge?.readHostUri) throw new Error("host URI bridge is not attached");
+		const resource = JSON.parse(await bridge.readHostUri(threadId, JSON.stringify({ url: url.href })));
+		return {
+			url: typeof resource.url === "string" ? resource.url : url.href,
+			content: typeof resource.content === "string" ? resource.content : "",
+			contentType:
+				resource.contentType === "text/markdown" ||
+				resource.contentType === "application/json" ||
+				resource.contentType === "text/plain"
+					? resource.contentType
+					: "text/plain",
+			size: typeof resource.size === "number" ? resource.size : undefined,
+			notes: Array.isArray(resource.notes)
+				? resource.notes.filter((note: unknown) => typeof note === "string")
+				: undefined,
+			immutable: typeof resource.immutable === "boolean" ? resource.immutable : definition.immutable,
+		};
+	}
+
+	async writeHostUri(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
+		const threadId = context?.threadId ?? context?.sessionId;
+		if (!threadId) throw new Error(`Host URI ${url.href} requires a thread-scoped write context`);
+		const thread = this.#threads.get(threadId);
+		if (!thread) throw new Error(`unknown thread for Host URI ${url.href}: ${threadId}`);
+		const scheme = url.protocol.replace(/:$/, "").toLowerCase();
+		const definition = thread.hostUriSchemes.get(scheme);
+		if (!definition) throw new Error(`Host URI scheme is not registered for thread ${threadId}: ${scheme}`);
+		if (!definition.writable) throw new Error(`Host URI scheme is not writable: ${scheme}`);
+		const bridge = this.#appServer;
+		if (!bridge?.writeHostUri) throw new Error("host URI bridge is not attached");
+		await bridge.writeHostUri(threadId, JSON.stringify({ url: url.href }), content);
 	}
 }

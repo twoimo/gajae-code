@@ -2013,6 +2013,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		// Resolve the internal URL
 		const resource = await internalRouter.resolve(url, {
+			threadId: this.session.getSessionId?.() ?? undefined,
+			sessionId: this.session.getSessionId?.() ?? undefined,
 			cwd: this.session.cwd,
 			getArtifactsDir: this.session.getArtifactsDir,
 			settings: this.session.settings,

@@ -1381,6 +1381,307 @@
           }
         }
       }
+    },
+    "HostUriSchemeDefinition": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriSchemeDefinition",
+      "type": "object",
+      "required": [
+        "scheme"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "immutable": {
+          "default": false,
+          "type": "boolean"
+        },
+        "scheme": {
+          "type": "string"
+        },
+        "writable": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "HostUriSchemesSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriSchemesSetParams",
+      "type": "object",
+      "required": [
+        "schemes",
+        "threadId"
+      ],
+      "properties": {
+        "schemes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostUriSchemeDefinition"
+          }
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "HostUriSchemeDefinition": {
+          "type": "object",
+          "required": [
+            "scheme"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "immutable": {
+              "default": false,
+              "type": "boolean"
+            },
+            "scheme": {
+              "type": "string"
+            },
+            "writable": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "HostUriSchemesSetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriSchemesSetResult",
+      "type": "object",
+      "required": [
+        "schemes"
+      ],
+      "properties": {
+        "schemes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostUriSchemeDefinition"
+          }
+        }
+      },
+      "definitions": {
+        "HostUriSchemeDefinition": {
+          "type": "object",
+          "required": [
+            "scheme"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "immutable": {
+              "default": false,
+              "type": "boolean"
+            },
+            "scheme": {
+              "type": "string"
+            },
+            "writable": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "HostUriOperation": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriOperation",
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "HostUriRequestParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriRequestParams",
+      "type": "object",
+      "required": [
+        "generation",
+        "operation",
+        "requestId",
+        "threadId",
+        "turnId",
+        "url"
+      ],
+      "properties": {
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "operation": {
+          "$ref": "#/definitions/HostUriOperation"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "HostUriOperation": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ]
+        }
+      }
+    },
+    "HostUriCancelParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriCancelParams",
+      "type": "object",
+      "required": [
+        "generation",
+        "requestId",
+        "threadId"
+      ],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "HostUriResultParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriResultParams",
+      "type": "object",
+      "required": [
+        "requestId",
+        "threadId"
+      ],
+      "properties": {
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contentType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "immutable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "isError": {
+          "default": false,
+          "type": "boolean"
+        },
+        "notes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "HostUriResource": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriResource",
+      "type": "object",
+      "required": [
+        "content",
+        "contentType",
+        "size",
+        "url"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "contentType": {
+          "type": "string"
+        },
+        "immutable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "url": {
+          "type": "string"
+        }
+      }
     }
   }
 }

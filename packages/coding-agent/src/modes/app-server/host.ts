@@ -33,6 +33,11 @@ export interface AppServerHost {
 	/** Satisfy one token-free notifications channel call (e.g. `reply`, `subscribe`). */
 	notificationCall(method: string, params: unknown): Promise<unknown>;
 	/** Provide the native bridge to hosts that need to call back into clients. */
+	/** Register host-owned URI schemes into the process-global internal URL router. */
+	setHostUriSchemes?(
+		threadId: string,
+		schemes: Array<{ scheme: string; writable?: boolean; immutable?: boolean }>,
+	): string[];
 	setAppServer?(server: AppServer): void;
 }
 
@@ -97,6 +102,21 @@ export function startAppServer(host: AppServerHost, options: StartAppServerOptio
 			} else if (call.kind.startsWith("notifications.")) {
 				const method = call.kind.slice("notifications.".length);
 				resolveOk(call.callId, await host.notificationCall(method, call.params));
+			} else if (call.kind === "hostUriSchemes.set") {
+				const params = (call.params && typeof call.params === "object" ? call.params : {}) as {
+					threadId?: unknown;
+					schemes?: unknown;
+				};
+				if (typeof params.threadId !== "string" || !Array.isArray(params.schemes)) {
+					throw new Error("hostUriSchemes.set requires threadId and schemes");
+				}
+				if (!host.setHostUriSchemes) throw new Error("host URI scheme registration is not supported by this host");
+				resolveOk(call.callId, {
+					schemes: host.setHostUriSchemes(
+						params.threadId,
+						params.schemes as Array<{ scheme: string; writable?: boolean; immutable?: boolean }>,
+					),
+				});
 			} else {
 				resolveErr(call.callId, new Error(`unknown call kind: ${call.kind}`));
 			}

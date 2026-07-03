@@ -329,6 +329,11 @@ fn policy_for<'a>(method: &str, params: Option<&'a Value>) -> Option<MethodPolic
 			actions:          vec!["command.host_tools"],
 			charge_tool_call: true,
 		}),
+		"gjc/hostUriSchemes/set" | "gjc/hostUris/result" => Some(MethodPolicy {
+			scope:            "command.host_uri",
+			actions:          vec!["command.host_uri"],
+			charge_tool_call: true,
+		}),
 		"gjc/workflowGate/respond" => Some(MethodPolicy {
 			scope:            "command.control",
 			actions:          vec!["command.control"],
