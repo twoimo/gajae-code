@@ -473,23 +473,33 @@ mod tests {
 		"ROBGJC_GH_PROXY_GIT_TIMEOUT_SECONDS",
 	];
 
+	fn set_env(key: &str, value: &str) {
+		// SAFETY: Tests serialize all environment mutations with ENV_LOCK, so no
+		// concurrent test in this module can read or mutate the process environment.
+		unsafe { env::set_var(key, value) };
+	}
+
+	fn remove_env(key: &str) {
+		// SAFETY: Tests serialize all environment mutations with ENV_LOCK, so no
+		// concurrent test in this module can read or mutate the process environment.
+		unsafe { env::remove_var(key) };
+	}
+
 	fn with_env(f: impl FnOnce()) {
 		let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
 		for key in KEYS {
-			unsafe { env::remove_var(key) };
+			remove_env(key);
 		}
-		unsafe {
-			env::set_var("GITHUB_WEBHOOK_SECRET", "secret");
-			env::set_var("ROBGJC_BOT_LOGIN", "robogjc-bot");
-			env::set_var("ROBGJC_GIT_AUTHOR_NAME", "Robo GJC");
-			env::set_var("ROBGJC_GIT_AUTHOR_EMAIL", "bot@example.com");
-			env::set_var("ROBGJC_REPO_ALLOWLIST", "octo/widget");
-			env::set_var("ROBGJC_GH_PROXY_URL", "http://gh-proxy.invalid:8081");
-			env::set_var("ROBGJC_GH_PROXY_HMAC_KEY", "test-hmac-key");
-		}
+		set_env("GITHUB_WEBHOOK_SECRET", "secret");
+		set_env("ROBGJC_BOT_LOGIN", "robogjc-bot");
+		set_env("ROBGJC_GIT_AUTHOR_NAME", "Robo GJC");
+		set_env("ROBGJC_GIT_AUTHOR_EMAIL", "bot@example.com");
+		set_env("ROBGJC_REPO_ALLOWLIST", "octo/widget");
+		set_env("ROBGJC_GH_PROXY_URL", "http://gh-proxy.invalid:8081");
+		set_env("ROBGJC_GH_PROXY_HMAC_KEY", "test-hmac-key");
 		f();
 		for key in KEYS {
-			unsafe { env::remove_var(key) };
+			remove_env(key);
 		}
 	}
 
@@ -506,10 +516,8 @@ mod tests {
 	#[test]
 	fn missing_required_github_access() {
 		with_env(|| {
-			unsafe {
-				env::set_var("ROBGJC_GH_PROXY_URL", "");
-				env::set_var("ROBGJC_GH_PROXY_HMAC_KEY", "");
-			}
+			set_env("ROBGJC_GH_PROXY_URL", "");
+			set_env("ROBGJC_GH_PROXY_HMAC_KEY", "");
 			assert!(
 				Settings::from_env()
 					.unwrap_err()
@@ -534,25 +542,23 @@ mod tests {
 	#[test]
 	fn rejects_token_and_proxy_together() {
 		with_env(|| {
-			unsafe { env::set_var("GITHUB_TOKEN", "x") };
+			set_env("GITHUB_TOKEN", "x");
 			assert!(Settings::from_env().is_err());
 		});
 	}
 	#[test]
 	fn rejects_proxy_url_without_key() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_GH_PROXY_HMAC_KEY", "") };
+			set_env("ROBGJC_GH_PROXY_HMAC_KEY", "");
 			assert!(Settings::from_env().is_err());
 		});
 	}
 	#[test]
 	fn proxy_mode_loads_pat() {
 		with_env(|| {
-			unsafe {
-				env::set_var("GITHUB_TOKEN", "ghp_test_token_value_xxxxxxxxxxxxxxxx");
-				env::remove_var("ROBGJC_GH_PROXY_URL");
-				env::remove_var("ROBGJC_GH_PROXY_HMAC_KEY");
-			}
+			set_env("GITHUB_TOKEN", "ghp_test_token_value_xxxxxxxxxxxxxxxx");
+			remove_env("ROBGJC_GH_PROXY_URL");
+			remove_env("ROBGJC_GH_PROXY_HMAC_KEY");
 			let cfg = Settings::from_env().unwrap();
 			assert_eq!(
 				cfg.github_token.as_ref().map(SecretString::expose),
@@ -564,15 +570,13 @@ mod tests {
 	#[test]
 	fn proxy_serve_config_from_env_requires_pat_key_and_builds_bind_addr() {
 		with_env(|| {
-			unsafe {
-				env::set_var("GITHUB_TOKEN", "ghp_proxy_token");
-				env::set_var("ROBGJC_GH_PROXY_HMAC_KEY", "proxy-hmac-key");
-				env::set_var("ROBGJC_GH_PROXY_BIND_HOST", "127.0.0.1");
-				env::set_var("ROBGJC_GH_PROXY_BIND_PORT", "18081");
-				env::set_var("ROBGJC_WORKSPACE_ROOT", "/tmp/robogjc-proxy-workspaces");
-				env::set_var("ROBGJC_GH_PROXY_MAX_BODY_BYTES", "2048");
-				env::set_var("ROBGJC_GH_PROXY_GIT_TIMEOUT_SECONDS", "12.2");
-			}
+			set_env("GITHUB_TOKEN", "ghp_proxy_token");
+			set_env("ROBGJC_GH_PROXY_HMAC_KEY", "proxy-hmac-key");
+			set_env("ROBGJC_GH_PROXY_BIND_HOST", "127.0.0.1");
+			set_env("ROBGJC_GH_PROXY_BIND_PORT", "18081");
+			set_env("ROBGJC_WORKSPACE_ROOT", "/tmp/robogjc-proxy-workspaces");
+			set_env("ROBGJC_GH_PROXY_MAX_BODY_BYTES", "2048");
+			set_env("ROBGJC_GH_PROXY_GIT_TIMEOUT_SECONDS", "12.2");
 			let cfg = crate::proxy::serve_config_from_env().unwrap();
 			assert_eq!(cfg.bind_addr.to_string(), "127.0.0.1:18081");
 			assert_eq!(cfg.server.github_token, "ghp_proxy_token");
@@ -580,7 +584,7 @@ mod tests {
 			assert_eq!(cfg.server.max_body_bytes, 2048);
 			assert_eq!(cfg.server.git_timeout_seconds, 13);
 
-			unsafe { env::remove_var("GITHUB_TOKEN") };
+			remove_env("GITHUB_TOKEN");
 			assert!(
 				crate::proxy::serve_config_from_env()
 					.unwrap_err()
@@ -588,10 +592,8 @@ mod tests {
 					.contains("GITHUB_TOKEN")
 			);
 
-			unsafe {
-				env::set_var("GITHUB_TOKEN", "ghp_proxy_token");
-				env::remove_var("ROBGJC_GH_PROXY_HMAC_KEY");
-			}
+			set_env("GITHUB_TOKEN", "ghp_proxy_token");
+			remove_env("ROBGJC_GH_PROXY_HMAC_KEY");
 			assert!(
 				crate::proxy::serve_config_from_env()
 					.unwrap_err()
@@ -603,7 +605,7 @@ mod tests {
 	#[test]
 	fn allowlist_csv_parsing() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_REPO_ALLOWLIST", "  alpha/one ,beta/two, ,gamma/three ") };
+			set_env("ROBGJC_REPO_ALLOWLIST", "  alpha/one ,beta/two, ,gamma/three ");
 			let cfg = Settings::from_env().unwrap();
 			assert_eq!(
 				cfg.repo_allowlist(),
@@ -618,9 +620,9 @@ mod tests {
 	#[test]
 	fn replay_token_blank_or_real() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_REPLAY_TOKEN", "   ") };
+			set_env("ROBGJC_REPLAY_TOKEN", "   ");
 			assert!(Settings::from_env().unwrap().replay_token.is_none());
-			unsafe { env::set_var("ROBGJC_REPLAY_TOKEN", "abc") };
+			set_env("ROBGJC_REPLAY_TOKEN", "abc");
 			assert_eq!(
 				Settings::from_env()
 					.unwrap()
@@ -634,7 +636,7 @@ mod tests {
 	#[test]
 	fn blank_bot_login_rejected() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_BOT_LOGIN", "   ") };
+			set_env("ROBGJC_BOT_LOGIN", "   ");
 			assert!(Settings::from_env().is_err());
 		});
 	}
@@ -649,23 +651,22 @@ mod tests {
 	#[test]
 	fn model_pool_csv_parses() {
 		with_env(|| {
-			unsafe {
-				env::set_var(
-					"ROBGJC_MODEL",
-					" codex/gpt-5.4 , anthropic/claude-sonnet-4-6 ,, anthropic/claude-opus-4-7 ",
-				)
-			};
-			let cfg = Settings::from_env().unwrap();
-			assert_eq!(
-				cfg.model_pool(),
-				vec!["codex/gpt-5.4", "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-7"]
+			set_env(
+				"ROBGJC_MODEL",
+				" codex/gpt-5.4 , anthropic/claude-sonnet-4-6 ,, anthropic/claude-opus-4-7 ",
 			);
+			let cfg = Settings::from_env().unwrap();
+			assert_eq!(cfg.model_pool(), vec![
+				"codex/gpt-5.4",
+				"anthropic/claude-sonnet-4-6",
+				"anthropic/claude-opus-4-7"
+			]);
 		});
 	}
 	#[test]
 	fn pick_model_covers_full_pool() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_MODEL", "a,b,c") };
+			set_env("ROBGJC_MODEL", "a,b,c");
 			let cfg = Settings::from_env().unwrap();
 			let seen: BTreeSet<String> = (0..500).map(|_| cfg.pick_model()).collect();
 			assert_eq!(seen, BTreeSet::from(["a".to_owned(), "b".to_owned(), "c".to_owned()]));
@@ -678,7 +679,7 @@ mod tests {
 	#[test]
 	fn task_timeout_hard_grace_env_parses() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_TASK_TIMEOUT_HARD_GRACE_SECONDS", "12.5") };
+			set_env("ROBGJC_TASK_TIMEOUT_HARD_GRACE_SECONDS", "12.5");
 			assert_eq!(
 				Settings::from_env()
 					.unwrap()
@@ -690,7 +691,7 @@ mod tests {
 	#[test]
 	fn differential_invalid_env_values_match_python() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_MAX_CONCURRENCY", "nope") };
+			set_env("ROBGJC_MAX_CONCURRENCY", "nope");
 			assert!(
 				Settings::from_env()
 					.unwrap_err()
@@ -699,7 +700,7 @@ mod tests {
 		});
 
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_REPO_ALLOWLIST", "owner/repo,, other/repo, ") };
+			set_env("ROBGJC_REPO_ALLOWLIST", "owner/repo,, other/repo, ");
 			assert_eq!(
 				Settings::from_env().unwrap().repo_allowlist(),
 				BTreeSet::from(["owner/repo".to_owned(), "other/repo".to_owned()])
@@ -707,7 +708,7 @@ mod tests {
 		});
 
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_REPO_ALLOWLIST", "not a repo,Owner/Repo,evil//repo") };
+			set_env("ROBGJC_REPO_ALLOWLIST", "not a repo,Owner/Repo,evil//repo");
 			assert_eq!(
 				Settings::from_env().unwrap().repo_allowlist(),
 				BTreeSet::from([
@@ -721,12 +722,10 @@ mod tests {
 	#[test]
 	fn secrets_redact_debug_and_display() {
 		with_env(|| {
-			unsafe {
-				env::set_var("GITHUB_TOKEN", "ghp_super_secret");
-				env::remove_var("ROBGJC_GH_PROXY_URL");
-				env::remove_var("ROBGJC_GH_PROXY_HMAC_KEY");
-				env::set_var("ROBGJC_REPLAY_TOKEN", "replay_secret");
-			}
+			set_env("GITHUB_TOKEN", "ghp_super_secret");
+			remove_env("ROBGJC_GH_PROXY_URL");
+			remove_env("ROBGJC_GH_PROXY_HMAC_KEY");
+			set_env("ROBGJC_REPLAY_TOKEN", "replay_secret");
 			let cfg = Settings::from_env().unwrap();
 			let debug = format!("{cfg:?}");
 			assert!(!debug.contains("ghp_super_secret"));
@@ -739,7 +738,7 @@ mod tests {
 	#[test]
 	fn invalid_thinking_rejected() {
 		with_env(|| {
-			unsafe { env::set_var("ROBGJC_THINKING", "maximum") };
+			set_env("ROBGJC_THINKING", "maximum");
 			assert!(
 				Settings::from_env()
 					.unwrap_err()
@@ -751,7 +750,7 @@ mod tests {
 	#[test]
 	fn env_source_loads_dotenv_case_insensitively_and_process_wins() {
 		let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-		unsafe { env::set_var("ROBGJC_BOT_LOGIN", "from-process") };
+		set_env("ROBGJC_BOT_LOGIN", "from-process");
 		let dir = std::env::temp_dir().join(format!("robogjc-env-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		let path = dir.join(".env");
@@ -759,6 +758,6 @@ mod tests {
 		let source = EnvSource::load_from(&path).unwrap();
 		assert_eq!(source.get("ROBGJC_BOT_LOGIN"), Some("from-process"));
 		assert_eq!(source.get("github_token"), Some("file-token"));
-		unsafe { env::remove_var("ROBGJC_BOT_LOGIN") };
+		remove_env("ROBGJC_BOT_LOGIN");
 	}
 }

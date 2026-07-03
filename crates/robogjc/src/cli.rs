@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::{
 	config::{Settings, load_proxy_settings},
-	db::{Database, issue_key},
+	db::Database,
 	github::{GitHubBackend, GitHubClient},
 	logging::{Level, configure_logging},
 	manual_triage::{
@@ -98,9 +98,7 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 					"{:<40} state={:<12} pr={} branch={} updated={}",
 					r.key,
 					r.state,
-					r.pr_number
-						.map(|n| n.to_string())
-						.unwrap_or_else(|| "-".into()),
+					r.pr_number.map_or_else(|| "-".into(), |n| n.to_string()),
 					r.branch.unwrap_or_else(|| "-".into()),
 					r.updated_at
 				);
@@ -115,7 +113,7 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 			let row = db
 				.get_issue(&key)?
 				.ok_or_else(|| format!("unknown issue: {key}"))?;
-			let manager = crate::sandbox::SandboxManager::new(cfg.workspace_root.clone());
+			let manager = crate::sandbox::SandboxManager::new(cfg.workspace_root);
 			manager.remove_workspace(&row.repo, row.number as u64);
 			db.set_issue_state(&key, "abandoned")?;
 			println!("cleaned up {key}");
@@ -129,19 +127,15 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	}
 }
 
-fn build_runtime() -> Result<
-	(Settings, Arc<Database>, Arc<dyn GitHubBackend>, WorkerPool<AppServerWorker>),
-	Box<dyn std::error::Error + Send + Sync>,
-> {
+type DynError = Box<dyn std::error::Error + Send + Sync>;
+type RuntimeBundle = (Settings, Arc<Database>, Arc<dyn GitHubBackend>, WorkerPool<AppServerWorker>);
+type RuntimeResult<T> = Result<T, DynError>;
+
+fn build_runtime() -> RuntimeResult<RuntimeBundle> {
 	build_runtime_from_settings(Settings::from_env()?)
 }
 
-fn build_runtime_from_settings(
-	cfg: Settings,
-) -> Result<
-	(Settings, Arc<Database>, Arc<dyn GitHubBackend>, WorkerPool<AppServerWorker>),
-	Box<dyn std::error::Error + Send + Sync>,
-> {
+fn build_runtime_from_settings(cfg: Settings) -> RuntimeResult<RuntimeBundle> {
 	cfg.ensure_paths()?;
 	let db = Arc::new(Database::open(&cfg.sqlite_path)?);
 	let (github, git_transport) = build_github_access(&cfg)?;
@@ -174,8 +168,7 @@ fn build_runtime_from_settings(
 
 fn build_github_access(
 	cfg: &Settings,
-) -> Result<(Arc<dyn GitHubBackend>, Arc<dyn GitTransport>), Box<dyn std::error::Error + Send + Sync>>
-{
+) -> RuntimeResult<(Arc<dyn GitHubBackend>, Arc<dyn GitTransport>)> {
 	if let (Some(url), Some(key)) = (&cfg.gh_proxy_url, &cfg.gh_proxy_hmac_key) {
 		let key = key.expose().as_bytes().to_vec();
 		let github = Arc::new(GitHubProxyClient::new(url.clone(), key.clone()));
@@ -270,7 +263,9 @@ fn tokio_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
 
 fn print_help() {
 	println!(
-		"robogjc control surface\n\nUSAGE:\n  robogjc serve\n  robogjc proxy serve\n  robogjc triage owner/repo#NN\n  robogjc replay DELIVERY_ID\n  robogjc status\n  robogjc cleanup owner/repo#NN"
+		"robogjc control surface\n\nUSAGE:\n  robogjc serve\n  robogjc proxy serve\n  robogjc \
+		 triage owner/repo#NN\n  robogjc replay DELIVERY_ID\n  robogjc status\n  robogjc cleanup \
+		 owner/repo#NN"
 	);
 }
 

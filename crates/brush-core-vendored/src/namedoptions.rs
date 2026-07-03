@@ -50,7 +50,7 @@ impl ShellOptionDef {
 /// Describes a shell option.
 pub struct ShellOption {
 	/// The name of the option.
-	pub name:       &'static str,
+	pub name: &'static str,
 	/// The definition of the option.
 	pub definition: &'static ShellOptionDef,
 }

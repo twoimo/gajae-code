@@ -529,10 +529,10 @@ mod tests {
 		assert_eq!(
 			key_seq,
 			interfaces::KeySequence::Strokes(vec![interfaces::KeyStroke {
-				alt:     false,
+				alt: false,
 				control: true,
-				shift:   false,
-				key:     interfaces::Key::Character('a'),
+				shift: false,
+				key: interfaces::Key::Character('a'),
 			}])
 		);
 
@@ -550,10 +550,10 @@ mod tests {
 		assert_eq!(
 			key_seq,
 			interfaces::KeySequence::Strokes(vec![interfaces::KeyStroke {
-				alt:     true,
+				alt: true,
 				control: false,
-				shift:   false,
-				key:     interfaces::Key::Character('r'),
+				shift: false,
+				key: interfaces::Key::Character('r'),
 			}])
 		);
 

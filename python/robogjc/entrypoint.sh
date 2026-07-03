@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# robogjc container entrypoint. No per-boot pip installs — everything is baked
-# into the image; we only sanity-check the runtime mount and create state dirs.
+# robogjc container entrypoint for the Rust binary. No Python package is
+# installed; this only prepares shared slot users, runtime state, and caches.
 #
 # Used by both the orchestrator (CMD: `robogjc serve`) and the sibling
 # gh-proxy (compose command: `robogjc proxy serve`). The proxy role does NOT
-# need a $PI_ROOT pi checkout — it never runs gjc.
+# need a $PI_ROOT checkout — it never runs gjc.
 set -euo pipefail
 
 # Shared git metadata under /data/workspaces/_pool is intentionally group

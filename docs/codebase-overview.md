@@ -110,14 +110,14 @@ Typed Python client for `gjc --mode rpc`.
 - `python/gjc-rpc/README.md` documents the process-backed stdio client, typed command methods, startup flags, event listeners, todo seeding, host-owned tools, and host-owned URI schemes.
 - `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together coordinator MCP, RPC stdio, bridge limitations, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption.
 
-### `python/robogjc/`
+### `crates/robogjc/` and `python/robogjc/web/`
 
-Self-hosted GitHub triage/fix bot that drives `gjc --mode rpc`.
+Self-hosted GitHub triage/fix bot implemented in Rust. The Rust crate owns webhook ingress, durable queueing, GitHub/proxy integration, sandbox/worktree management, host tools, app-server worker sessions, CLI commands, and dashboard/static serving.
 
-- `python/robogjc/AGENTS.md` is the authoritative local contract for this subtree.
-- `python/robogjc/pyproject.toml` packages `robogjc` for Python 3.11+ with FastAPI, httpx, pydantic settings, Click, and `gjc-rpc`.
-- `python/robogjc/README.md` documents the webhook-to-worktree-to-gjc flow, GitHub sidecar trust boundary, persistent per-issue sessions, and audit trail.
-- Important modules include `src/server.py`, `src/queue.py`, `src/tasks.py`, `src/worker.py`, `src/host_tools.py`, `src/sandbox.py`, `src/github_client.py`, `src/github_events.py`, `src/db.py`, and `src/config.py`.
+- `crates/robogjc/` contains the service binary and Rust test suite.
+- `Dockerfile.robogjc` builds the Rust `robogjc` binary and uses `robogjc serve` for the orchestrator and `robogjc proxy serve` for the gh-proxy sidecar.
+- `python/robogjc/web/` remains the TypeScript/Vite dashboard source; it is not a Python package.
+- `python/robogjc/docker-compose.yml` and `python/robogjc/entrypoint.sh` remain deployment assets for the Rust service.
 
 ## Runtime flow
 

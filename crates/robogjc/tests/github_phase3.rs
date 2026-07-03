@@ -1,5 +1,6 @@
 use std::{
 	collections::HashSet,
+	fmt::Write as _,
 	net::SocketAddr,
 	sync::{Arc, Mutex},
 };
@@ -20,13 +21,19 @@ use robogjc::github::{
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
+type IssueResolver = dyn Fn(&str, i64) -> Option<String>;
+type RouteCase<'a> =
+	(&'a str, &'a str, Value, HashSet<String>, HashSet<String>, Option<&'a IssueResolver>);
+type MockCall = (Method, String, Value);
+type MockHeaders = Vec<(String, String)>;
+type MockResponse = (StatusCode, Value, MockHeaders);
 fn hs(values: &[&str]) -> HashSet<String> {
 	values.iter().map(|s| s.to_string()).collect()
 }
 fn allow() -> HashSet<String> {
 	hs(&["octo/widget"])
 }
-fn bot() -> &'static str {
+const fn bot() -> &'static str {
 	"robogjc-bot"
 }
 fn base(action: &str, obj: Value) -> Value {
@@ -88,8 +95,10 @@ fn python_github_events_signature_mention_maintainer_and_rate_limit_cases() {
 		.finalize()
 		.into_bytes()
 		.iter()
-		.map(|b| format!("{b:02x}"))
-		.collect::<String>();
+		.fold(String::new(), |mut out, b| {
+			let _ = write!(out, "{b:02x}");
+			out
+		});
 	assert!(verify_signature("shh", body, Some(&format!("sha256={sig}"))));
 	assert!(!verify_signature("shh", b"{}", None));
 	assert!(!verify_signature("shh", b"{}", Some("")));
@@ -133,14 +142,7 @@ fn python_github_events_signature_mention_maintainer_and_rate_limit_cases() {
 
 #[test]
 fn python_github_events_route_cases_match_fixtures() {
-	let cases: Vec<(
-		&str,
-		&str,
-		Value,
-		HashSet<String>,
-		HashSet<String>,
-		Option<&dyn Fn(&str, i64) -> Option<String>>,
-	)> = vec![
+	let cases: Vec<RouteCase<'_>> = vec![
 		(
 			"route-issue-opened",
 			"issues",
@@ -455,8 +457,8 @@ fn python_github_events_route_cases_match_fixtures() {
 
 #[derive(Clone)]
 struct MockState {
-	calls: Arc<Mutex<Vec<(Method, String, Value)>>>,
-	responses: Arc<Mutex<Vec<(StatusCode, Value, Vec<(String, String)>)>>>,
+	calls:     Arc<Mutex<Vec<MockCall>>>,
+	responses: Arc<Mutex<Vec<MockResponse>>>,
 }
 async fn mock_handler(
 	State(state): State<MockState>,
@@ -466,8 +468,7 @@ async fn mock_handler(
 ) -> Response {
 	let path = uri
 		.path_and_query()
-		.map(|pq| pq.as_str())
-		.unwrap_or(uri.path())
+		.map_or_else(|| uri.path(), |pq| pq.as_str())
 		.to_string();
 	let body_json = if body.is_empty() {
 		Value::Null
@@ -484,11 +485,9 @@ async fn mock_handler(
 	}
 	resp
 }
-async fn mock_client(
-	responses: Vec<(StatusCode, Value, Vec<(String, String)>)>,
-) -> (GitHubClient, Arc<Mutex<Vec<(Method, String, Value)>>>) {
+async fn mock_client(responses: Vec<MockResponse>) -> (GitHubClient, Arc<Mutex<Vec<MockCall>>>) {
 	let state = MockState {
-		calls: Arc::new(Mutex::new(Vec::new())),
+		calls:     Arc::new(Mutex::new(Vec::new())),
 		responses: Arc::new(Mutex::new(responses)),
 	};
 	let calls = state.calls.clone();
@@ -522,11 +521,10 @@ async fn python_github_client_rest_cases_against_local_mock_server() {
 	assert_eq!(err.retry_after, Some(42.0));
 
 	let (client, _) = mock_client(vec![
-		(
-			StatusCode::MOVED_PERMANENTLY,
-			Value::Null,
-			vec![("location".into(), "/repositories/12345".into())],
-		),
+		(StatusCode::MOVED_PERMANENTLY, Value::Null, vec![(
+			"location".into(),
+			"/repositories/12345".into(),
+		)]),
 		(StatusCode::GONE, json!({"message":"Gone"}), vec![]),
 	])
 	.await;
@@ -534,11 +532,10 @@ async fn python_github_client_rest_cases_against_local_mock_server() {
 	assert!(matches!(err.status, 301 | 410));
 
 	let (client, calls) = mock_client(vec![
-		(
-			StatusCode::MOVED_PERMANENTLY,
-			Value::Null,
-			vec![("location".into(), "/repos/new/repo".into())],
-		),
+		(StatusCode::MOVED_PERMANENTLY, Value::Null, vec![(
+			"location".into(),
+			"/repos/new/repo".into(),
+		)]),
 		(StatusCode::OK, repo_payload.clone(), vec![]),
 	])
 	.await;
@@ -609,10 +606,10 @@ async fn python_github_client_rest_cases_against_local_mock_server() {
 		.close_issue("octo/widget", 42, "completed")
 		.await
 		.unwrap();
-	let (method, path, body) = &calls.lock().unwrap()[0];
-	assert_eq!(*method, Method::PATCH);
+	let (method, path, body) = calls.lock().unwrap()[0].clone();
+	assert_eq!(method, Method::PATCH);
 	assert_eq!(path, "/repos/octo/widget/issues/42");
-	assert_eq!(*body, json!({"state":"closed","state_reason":"completed"}));
+	assert_eq!(body, json!({"state":"closed","state_reason":"completed"}));
 
 	let (client, _) =
 		mock_client(vec![(StatusCode::NOT_FOUND, json!({"message":"Not Found"}), vec![])]).await;
@@ -640,12 +637,12 @@ async fn python_github_client_rest_cases_against_local_mock_server() {
 	)])
 	.await;
 	let req = OpenPullRequest {
-		repo: "octo/widget",
-		head: "h",
-		base: "b",
-		title: "t",
-		body: "body",
-		draft: false,
+		repo:                  "octo/widget",
+		head:                  "h",
+		base:                  "b",
+		title:                 "t",
+		body:                  "body",
+		draft:                 false,
 		maintainer_can_modify: true,
 	};
 	let _ = GitHubBackend::open_pull_request(&backend, req)

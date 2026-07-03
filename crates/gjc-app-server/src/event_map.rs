@@ -106,13 +106,11 @@ impl ThreadStream {
 	pub fn on_event(&mut self, ev: &BackendEvent) -> Vec<Notification> {
 		let mut out = Vec::new();
 		match ev.event_type.as_str() {
-			"agent_start" | "turn_start" => {
-				if self.active_turn.is_none() {
-					let turn = TurnId::generate();
-					self.active_turn = Some(turn.clone());
-					self.latch = TerminalLatch::new();
-					out.push(self.note("turn/started", serde_json::json!({ "turnId": turn.0 })));
-				}
+			"agent_start" | "turn_start" if self.active_turn.is_none() => {
+				let turn = TurnId::generate();
+				self.active_turn = Some(turn.clone());
+				self.latch = TerminalLatch::new();
+				out.push(self.note("turn/started", serde_json::json!({ "turnId": turn.0 })));
 			},
 			"message_start" => {
 				let item = ItemId::generate();
@@ -152,16 +150,14 @@ impl ThreadStream {
 					.get("redacted")
 					.and_then(|v| v.as_bool())
 					.unwrap_or(false)
-				{
-					if let Some(content) = ev
+					&& let Some(content) = ev
 						.payload
 						.get("content")
 						.or_else(|| ev.payload.get("reasoning"))
 						.or_else(|| ev.payload.get("text"))
 						.cloned()
-					{
-						params["content"] = content;
-					}
+				{
+					params["content"] = content;
 				}
 				out.push(self.note("item/started", params));
 			},
@@ -204,23 +200,17 @@ impl ThreadStream {
 					serde_json::json!({ "itemId": call_id, "itemType": "toolCall" }),
 				));
 			},
-			"agent_end" | "turn_end" => {
-				if self.active_turn.is_some() {
-					self.latch.record(TerminalCause::Completed);
-					self.flush_terminal(&mut out);
-				}
+			"agent_end" | "turn_end" if self.active_turn.is_some() => {
+				self.latch.record(TerminalCause::Completed);
+				self.flush_terminal(&mut out);
 			},
-			"abort" | "turn_aborted" => {
-				if self.active_turn.is_some() {
-					self.latch.record(TerminalCause::Interrupted);
-					self.flush_terminal(&mut out);
-				}
+			"abort" | "turn_aborted" if self.active_turn.is_some() => {
+				self.latch.record(TerminalCause::Interrupted);
+				self.flush_terminal(&mut out);
 			},
-			"error" | "agent_error" => {
-				if self.active_turn.is_some() {
-					self.latch.record(TerminalCause::Failed);
-					self.flush_terminal(&mut out);
-				}
+			"error" | "agent_error" if self.active_turn.is_some() => {
+				self.latch.record(TerminalCause::Failed);
+				self.flush_terminal(&mut out);
 			},
 			_ => { /* unmapped: only the raw passthrough below */ },
 		}
@@ -251,24 +241,25 @@ mod tests {
 
 	#[test]
 	fn happy_path_text_turn() {
-		let mut s = ThreadStream::new(ThreadId("thr_1".into()));
-		let a = s.on_event(&ev("agent_start", serde_json::json!({"type": "agent_start"})));
-		assert_eq!(methods(&a), ["turn/started", "gjc/event"]);
+		let mut stream = ThreadStream::new(ThreadId("thr_1".into()));
+		let started = stream.on_event(&ev("agent_start", serde_json::json!({"type": "agent_start"})));
+		assert_eq!(methods(&started), ["turn/started", "gjc/event"]);
 
-		let b = s.on_event(&ev("message_start", serde_json::json!({"type": "message_start"})));
-		assert_eq!(methods(&b), ["item/started", "gjc/event"]);
+		let message_started =
+			stream.on_event(&ev("message_start", serde_json::json!({"type": "message_start"})));
+		assert_eq!(methods(&message_started), ["item/started", "gjc/event"]);
 
-		let c = s.on_event(&ev(
+		let delta = stream.on_event(&ev(
 			"message_update",
 			serde_json::json!({"assistantMessageEvent": {"type": "text_delta", "delta": "hi"}}),
 		));
-		assert_eq!(methods(&c), ["item/agentMessage/delta", "gjc/event"]);
-		assert_eq!(c[0].params.as_ref().unwrap()["delta"], "hi");
+		assert_eq!(methods(&delta), ["item/agentMessage/delta", "gjc/event"]);
+		assert_eq!(delta[0].params.as_ref().unwrap()["delta"], "hi");
 
-		let d = s.on_event(&ev("agent_end", serde_json::json!({"type": "agent_end"})));
+		let completed = stream.on_event(&ev("agent_end", serde_json::json!({"type": "agent_end"})));
 		// item/completed (message) then exactly one turn/completed, then raw.
-		assert_eq!(methods(&d), ["item/completed", "turn/completed", "gjc/event"]);
-		assert_eq!(d[1].params.as_ref().unwrap()["status"], "completed");
+		assert_eq!(methods(&completed), ["item/completed", "turn/completed", "gjc/event"]);
+		assert_eq!(completed[1].params.as_ref().unwrap()["status"], "completed");
 	}
 
 	#[test]

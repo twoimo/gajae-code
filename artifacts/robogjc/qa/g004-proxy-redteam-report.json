@@ -68,7 +68,7 @@
       "passed": true
     },
     {
-      "name": "event routing differential 10 tricky payloads",
+      "name": "event routing adversarial 10 tricky payloads",
       "count": 10,
       "passed": true,
       "routes": [
@@ -87,21 +87,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "skip",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": null,
-            "reason": "bot/self comment",
-            "repo": "octo/widget",
-            "submitter": null,
-            "task": null
-          },
-          "passed": true
+          }
         },
         {
           "name": "self-comment",
@@ -118,21 +104,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "skip",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": null,
-            "reason": "bot/self comment",
-            "repo": "octo/widget",
-            "submitter": null,
-            "task": null
-          },
-          "passed": true
+          }
         },
         {
           "name": "non-allowlisted repo",
@@ -149,21 +121,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "skip",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": null,
-            "reason": "repo not on allowlist",
-            "repo": "evil/repo",
-            "submitter": null,
-            "task": null
-          },
-          "passed": true
+          }
         },
         {
           "name": "PR review from maintainer",
@@ -185,26 +143,7 @@
                 "gpt"
               ]
             ]
-          },
-          "python": {
-            "association": "MEMBER",
-            "decision": "queue",
-            "directive": true,
-            "directive_author": "maint",
-            "directive_body": "fix",
-            "directive_pragmas": [
-              [
-                "model",
-                "gpt"
-              ]
-            ],
-            "issue_key": "octo/widget#9",
-            "reason": "pull_request_review_comment.created",
-            "repo": "octo/widget",
-            "submitter": "maint",
-            "task": "handle_review"
-          },
-          "passed": true
+          }
         },
         {
           "name": "directive with pragmas",
@@ -226,26 +165,7 @@
                 "low"
               ]
             ]
-          },
-          "python": {
-            "association": "MEMBER",
-            "decision": "queue",
-            "directive": true,
-            "directive_author": "maint",
-            "directive_body": "do it",
-            "directive_pragmas": [
-              [
-                "thinking",
-                "low"
-              ]
-            ],
-            "issue_key": "octo/widget#4",
-            "reason": "issue_comment.created",
-            "repo": "octo/widget",
-            "submitter": "maint",
-            "task": "handle_comment"
-          },
-          "passed": true
+          }
         },
         {
           "name": "edited ignored",
@@ -262,21 +182,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "skip",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": null,
-            "reason": "issue_comment.edited not handled",
-            "repo": "octo/widget",
-            "submitter": null,
-            "task": null
-          },
-          "passed": true
+          }
         },
         {
           "name": "created handled",
@@ -293,21 +199,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "queue",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": "octo/widget#4",
-            "reason": "issue_comment.created",
-            "repo": "octo/widget",
-            "submitter": "alice",
-            "task": "handle_comment"
-          },
-          "passed": true
+          }
         },
         {
           "name": "reviewer bot directive",
@@ -324,21 +216,7 @@
             "directive_body": "ship",
             "directive_author": "reviewbot",
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "queue",
-            "directive": true,
-            "directive_author": "reviewbot",
-            "directive_body": "ship",
-            "directive_pragmas": [],
-            "issue_key": "octo/widget#4",
-            "reason": "issue_comment.created on PR #4",
-            "repo": "octo/widget",
-            "submitter": "reviewbot[bot]",
-            "task": "handle_pr_conversation"
-          },
-          "passed": true
+          }
         },
         {
           "name": "issue opened",
@@ -355,21 +233,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": "FIRST_TIME_CONTRIBUTOR",
-            "decision": "queue",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": "octo/widget#4",
-            "reason": "issues.opened",
-            "repo": "octo/widget",
-            "submitter": "alice",
-            "task": "triage_issue"
-          },
-          "passed": true
+          }
         },
         {
           "name": "merged bot PR",
@@ -386,21 +250,7 @@
             "directive_body": null,
             "directive_author": null,
             "directive_pragmas": []
-          },
-          "python": {
-            "association": null,
-            "decision": "queue",
-            "directive": false,
-            "directive_author": null,
-            "directive_body": null,
-            "directive_pragmas": [],
-            "issue_key": "octo/widget#9",
-            "reason": "pull_request.merged",
-            "repo": "octo/widget",
-            "submitter": null,
-            "task": "cleanup_workspace"
-          },
-          "passed": true
+          }
         }
       ]
     },

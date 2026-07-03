@@ -25,7 +25,7 @@ impl builtins::Command for BreakCommand {
 
 		result.next_control_flow = ExecutionControlFlow::BreakLoop {
 			#[expect(clippy::cast_sign_loss)]
-			levels:                                   (self.which_loop - 1) as usize,
+			levels: (self.which_loop - 1) as usize,
 		};
 
 		Ok(result)

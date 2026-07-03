@@ -17,19 +17,20 @@ const SHARED_GJC_GID: u32 = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
-	pub root: PathBuf,
-	pub repo_dir: PathBuf,
-	pub session_dir: PathBuf,
-	pub context_dir: PathBuf,
-	pub artifacts_dir: PathBuf,
-	pub branch: String,
+	pub root:           PathBuf,
+	pub repo_dir:       PathBuf,
+	pub session_dir:    PathBuf,
+	pub context_dir:    PathBuf,
+	pub artifacts_dir:  PathBuf,
+	pub branch:         String,
 	pub repo_full_name: String,
-	pub issue_number: u64,
+	pub issue_number:   u64,
 }
 impl Workspace {
 	pub fn repro_dir(&self) -> PathBuf {
 		self.context_dir.join("repro")
 	}
+
 	pub fn workspace_key(&self) -> String {
 		workspace_key(&self.repo_full_name, self.issue_number)
 	}
@@ -56,18 +57,18 @@ pub fn rename_workspace_branch(
 	runner: &impl CommandRunner,
 ) -> Result<String, GitCommandError> {
 	validate_branch_slug(new_slug).map_err(|e| GitCommandError {
-		cmd: vec!["git".into(), "branch".into()],
+		cmd:        vec!["git".into(), "branch".into()],
 		returncode: 128,
-		stdout: String::new(),
-		stderr: e,
+		stdout:     String::new(),
+		stderr:     e,
 	})?;
 	let parts: Vec<_> = workspace.branch.splitn(3, '/').collect();
 	if parts.len() != 3 || parts[0] != "farm" || parts[1].is_empty() {
 		return Err(GitCommandError {
-			cmd: vec!["git".into(), "branch".into()],
+			cmd:        vec!["git".into(), "branch".into()],
 			returncode: 128,
-			stdout: String::new(),
-			stderr: format!("refusing to rename non-farm branch {:?}", workspace.branch),
+			stdout:     String::new(),
+			stderr:     format!("refusing to rename non-farm branch {:?}", workspace.branch),
 		});
 	}
 	let new_branch = format!("farm/{}/{new_slug}", parts[1]);
@@ -89,14 +90,14 @@ pub fn rename_workspace_branch(
 	)?;
 	if out.status != 0 {
 		return Err(GitCommandError {
-			cmd: vec!["git".into(), "branch".into(), "-m".into(), old, new_branch],
+			cmd:        vec!["git".into(), "branch".into(), "-m".into(), old, new_branch],
 			returncode: out.status,
-			stdout: out.stdout,
-			stderr: out.stderr,
+			stdout:     out.stdout,
+			stderr:     out.stderr,
 		});
 	}
 	share_git_metadata_with_slots(&workspace.repo_dir, slot_uid);
-	workspace.branch = new_branch.clone();
+	workspace.branch.clone_from(&new_branch);
 	Ok(new_branch)
 }
 
@@ -120,18 +121,13 @@ pub trait GitTransport: Send + Sync {
 		slot_uid: Option<u32>,
 	) -> Result<PushResult, GitPushError>;
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LocalGitTransport {
 	token: Option<String>,
 }
 impl LocalGitTransport {
-	pub fn new(token: Option<String>) -> Self {
+	pub const fn new(token: Option<String>) -> Self {
 		Self { token }
-	}
-}
-impl Default for LocalGitTransport {
-	fn default() -> Self {
-		Self { token: None }
 	}
 }
 impl GitTransport for LocalGitTransport {
@@ -150,13 +146,16 @@ impl GitTransport for LocalGitTransport {
 			&RealCommandRunner,
 		)
 	}
+
 	fn fetch_pool(&self, _: &str, pool_dir: &Path) -> Result<(), GitCommandError> {
 		git_ops::fetch_prune(pool_dir, self.token.as_deref(), &RealCommandRunner)
 	}
+
 	fn fetch_base_ref(&self, _: &str, pool_dir: &Path, rf: &str) -> Result<(), GitCommandError> {
 		git_ops::fetch_ref(pool_dir, rf, self.token.as_deref(), &RealCommandRunner);
 		Ok(())
 	}
+
 	fn push_branch(
 		&self,
 		repo: &str,
@@ -192,7 +191,7 @@ pub fn slot_pids(slot_uid: u32, proc_root: &Path) -> Vec<u32> {
 		let Some(s) = name.to_str() else { continue };
 		if !s.chars().all(|c| c.is_ascii_digit()) {
 			continue;
-		};
+		}
 		let Ok(status) = fs::read_to_string(e.path().join("status")) else {
 			continue;
 		};
@@ -209,10 +208,11 @@ pub fn slot_pids(slot_uid: u32, proc_root: &Path) -> Vec<u32> {
 					.any(|u| u == slot_uid);
 			}
 		}
-		if owns && !zombie {
-			if let Ok(pid) = s.parse() {
-				pids.push(pid)
-			}
+		if owns
+			&& !zombie
+			&& let Ok(pid) = s.parse()
+		{
+			pids.push(pid);
 		}
 	}
 	pids
@@ -222,6 +222,8 @@ pub fn reap_slot(slot_uid: Option<u32>) {
 		return;
 	}
 	for pid in slot_pids(slot_uid.unwrap(), Path::new("/proc")) {
+		// SAFETY: `pid` comes from `/proc` entries owned by the slot uid, and `kill`
+		// only receives the integer pid and SIGKILL to reap stale slot processes.
 		unsafe {
 			libc::kill(pid as i32, libc::SIGKILL);
 		}
@@ -230,10 +232,10 @@ pub fn reap_slot(slot_uid: Option<u32>) {
 
 pub fn prepare_slot_tmpdir(workspace: &Workspace, _slot_uid: Option<u32>) -> io::Result<PathBuf> {
 	let tmp = workspace.root.join(".gjc-tmp");
-	if let Ok(meta) = fs::symlink_metadata(&tmp) {
-		if !meta.file_type().is_dir() {
-			let _ = fs::remove_file(&tmp);
-		}
+	if let Ok(meta) = fs::symlink_metadata(&tmp)
+		&& !meta.file_type().is_dir()
+	{
+		let _ = fs::remove_file(&tmp);
 	}
 	fs::create_dir_all(&tmp)?;
 	Ok(tmp)
@@ -260,10 +262,10 @@ pub fn prepare_slot_runtime_env(
 }
 pub fn provision_runtime_dirs(ws_root: &Path) -> io::Result<()> {
 	let tmp = ws_root.join(".gjc-tmp");
-	if let Ok(meta) = fs::symlink_metadata(&tmp) {
-		if !meta.file_type().is_dir() {
-			let _ = fs::remove_file(&tmp);
-		}
+	if let Ok(meta) = fs::symlink_metadata(&tmp)
+		&& !meta.file_type().is_dir()
+	{
+		let _ = fs::remove_file(&tmp);
 	}
 	fs::create_dir_all(&tmp)?;
 	for sub in ["data", "state", "cache"] {
@@ -276,11 +278,13 @@ pub fn provision_runtime_dirs(ws_root: &Path) -> io::Result<()> {
 fn chown_path(path: &Path, uid: Option<u32>, gid: Option<u32>) {
 	use std::os::unix::ffi::OsStrExt;
 	let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+	// SAFETY: `c` is a NUL-free CString built from `path`; `lchown` does not retain
+	// the pointer, and `!0` is the documented sentinel for unchanged uid/gid.
 	unsafe {
 		libc::lchown(
 			c.as_ptr(),
-			uid.map(|u| u as libc::uid_t).unwrap_or(!0),
-			gid.map(|g| g as libc::gid_t).unwrap_or(!0),
+			uid.map_or(!0, |u| u as libc::uid_t),
+			gid.map_or(!0, |g| g as libc::gid_t),
 		);
 	}
 }
@@ -315,7 +319,7 @@ fn grant_tree(path: &Path, gid: u32, files_group_writable: bool) {
 	for e in rd.flatten() {
 		let p = e.path();
 		if p.is_dir() {
-			grant_tree(&p, gid, files_group_writable)
+			grant_tree(&p, gid, files_group_writable);
 		} else {
 			grant_group_bits(&p, gid, 0o040 | if files_group_writable { 0o020 } else { 0 });
 		}
@@ -333,17 +337,17 @@ pub fn resolve_worktree_git_dirs(repo_dir: &Path) -> Option<(PathBuf, PathBuf)> 
 	} else {
 		repo_dir.join(raw)
 	};
-	let common = fs::read_to_string(git.join("commondir"))
-		.ok()
-		.map(|s| {
+	let common = fs::read_to_string(git.join("commondir")).ok().map_or_else(
+		|| git.clone(),
+		|s| {
 			let r = s.trim().to_string();
 			if Path::new(&r).is_absolute() {
 				PathBuf::from(r)
 			} else {
 				git.join(r)
 			}
-		})
-		.unwrap_or_else(|| git.clone());
+		},
+	);
 	Some((git, common))
 }
 pub fn share_git_metadata_with_slots(repo_dir: &Path, slot_uid: Option<u32>) {
@@ -356,18 +360,27 @@ pub fn share_git_metadata_with_slots(repo_dir: &Path, slot_uid: Option<u32>) {
 	grant_tree(&git, SHARED_GJC_GID, true);
 	grant_group_bits(&common, SHARED_GJC_GID, 0o2770);
 	for (rel, w) in [("objects", false), ("refs", true), ("logs", true), ("worktrees", true)] {
-		grant_tree(&common.join(rel), SHARED_GJC_GID, w)
+		grant_tree(&common.join(rel), SHARED_GJC_GID, w);
 	}
 	for rel in ["config", "packed-refs", "HEAD", "FETCH_HEAD", "ORIG_HEAD"] {
-		grant_tree(&common.join(rel), SHARED_GJC_GID, true)
+		grant_tree(&common.join(rel), SHARED_GJC_GID, true);
 	}
 }
 pub fn chown_workspace(ws_root: &Path, slot_uid: Option<u32>) -> io::Result<()> {
-	if !cfg!(target_os = "linux") || unsafe { libc::geteuid() != 0 } {
+	// SAFETY: `geteuid` takes no pointers and is used only to skip root-only
+	// ownership changes when not privileged.
+	let is_root = unsafe { libc::geteuid() == 0 };
+	if !cfg!(target_os = "linux") || !is_root {
 		return Ok(());
 	}
-	let uid = slot_uid.unwrap_or_else(|| unsafe { libc::geteuid() });
-	let gid = slot_uid.unwrap_or_else(|| unsafe { libc::getegid() });
+	// SAFETY: `geteuid` takes no pointers and returns the current effective uid
+	// used as the default chown target.
+	let current_uid = unsafe { libc::geteuid() };
+	// SAFETY: `getegid` takes no pointers and returns the current effective gid
+	// used as the default chown target.
+	let current_gid = unsafe { libc::getegid() };
+	let uid = slot_uid.unwrap_or(current_uid);
+	let gid = slot_uid.unwrap_or(current_gid);
 	let chown = Command::new("chown")
 		.args(["-R", &format!("{uid}:{gid}"), &ws_root.display().to_string()])
 		.status()?;
@@ -391,10 +404,10 @@ pub fn chown_workspace(ws_root: &Path, slot_uid: Option<u32>) -> io::Result<()> 
 
 fn io_to_git_error(err: io::Error) -> GitCommandError {
 	GitCommandError {
-		cmd: vec!["sandbox".into()],
+		cmd:        vec!["sandbox".into()],
 		returncode: 127,
-		stdout: String::new(),
-		stderr: err.to_string(),
+		stdout:     String::new(),
+		stderr:     err.to_string(),
 	}
 }
 
@@ -402,6 +415,8 @@ fn io_to_git_error(err: io::Error) -> GitCommandError {
 fn chown_natives_for_slot(native_dir: &Path, hit: &CacheHit, slot_uid: u32) {
 	use std::os::unix::ffi::OsStrExt;
 	let c = std::ffi::CString::new(native_dir.as_os_str().as_bytes()).unwrap();
+	// SAFETY: `c` is a NUL-free CString for `native_dir`; `chown` does not retain
+	// the pointer and failures are intentionally best-effort here.
 	unsafe {
 		libc::chown(c.as_ptr(), slot_uid as libc::uid_t, slot_uid as libc::gid_t);
 	}
@@ -420,6 +435,8 @@ fn chown_natives_for_slot(native_dir: &Path, hit: &CacheHit, slot_uid: u32) {
 			continue;
 		}
 		let c = std::ffi::CString::new(e.path().as_os_str().as_bytes()).unwrap();
+		// SAFETY: `c` is a NUL-free CString for this directory entry; `lchown` does not
+		// retain the pointer and failures are intentionally best-effort here.
 		unsafe {
 			libc::lchown(c.as_ptr(), slot_uid as libc::uid_t, slot_uid as libc::gid_t);
 		}
@@ -429,15 +446,16 @@ fn chown_natives_for_slot(native_dir: &Path, hit: &CacheHit, slot_uid: u32) {
 fn chown_natives_for_slot(_native_dir: &Path, _hit: &CacheHit, _slot_uid: u32) {}
 
 pub struct SandboxManager<T: GitTransport = LocalGitTransport> {
-	pub root: PathBuf,
-	pub pool: PathBuf,
-	pub transport: T,
+	pub root:          PathBuf,
+	pub pool:          PathBuf,
+	pub transport:     T,
 	pub natives_cache: Option<NativesCache>,
 }
 impl SandboxManager<LocalGitTransport> {
 	pub fn new(root: PathBuf) -> Self {
 		Self::with_transport(root, LocalGitTransport::default())
 	}
+
 	pub fn with_natives_cache(root: PathBuf, natives_cache: NativesCache) -> Self {
 		Self::with_transport_and_natives_cache(
 			root,
@@ -450,6 +468,7 @@ impl<T: GitTransport> SandboxManager<T> {
 	pub fn with_transport(root: PathBuf, transport: T) -> Self {
 		Self::with_transport_and_natives_cache(root, transport, None)
 	}
+
 	pub fn with_transport_and_natives_cache(
 		root: PathBuf,
 		transport: T,
@@ -459,12 +478,15 @@ impl<T: GitTransport> SandboxManager<T> {
 		fs::create_dir_all(&pool).unwrap();
 		Self { root, pool, transport, natives_cache }
 	}
+
 	pub fn pool_path(&self, repo: &str) -> PathBuf {
 		self.pool.join(repo.replace('/', "__"))
 	}
+
 	pub fn workspace_root(&self, repo: &str, number: u64) -> PathBuf {
 		self.root.join(workspace_key(repo, number))
 	}
+
 	pub fn ensure_clone(
 		&self,
 		repo: &str,
@@ -473,35 +495,42 @@ impl<T: GitTransport> SandboxManager<T> {
 	) -> Result<PathBuf, GitCommandError> {
 		let target = self.pool_path(repo);
 		if target.join(".git").exists() || target.join("HEAD").exists() {
-			self.reset_origin_url(&target, clone_url);
+			Self::reset_origin_url(&target, clone_url);
 			self.transport.fetch_pool(repo, &target)?;
 			return Ok(target);
 		}
 		fs::create_dir_all(&target).map_err(|e| GitCommandError {
-			cmd: vec!["git".into(), "clone".into()],
+			cmd:        vec!["git".into(), "clone".into()],
 			returncode: 127,
-			stdout: String::new(),
-			stderr: e.to_string(),
+			stdout:     String::new(),
+			stderr:     e.to_string(),
 		})?;
 		self
 			.transport
 			.clone_pool(repo, clone_url, default_branch, &target)?;
 		Ok(target)
 	}
-	fn reset_origin_url(&self, repo_dir: &Path, clone_url: &str) {
+
+	fn reset_origin_url(repo_dir: &Path, clone_url: &str) {
 		let out =
 			git_ops::run_git(&["remote", "get-url", "origin"], Some(repo_dir), Default::default());
-		if let Ok(o) = out {
-			if o.status == 0 && o.stdout.trim() != clone_url {
-				let _ = git_ops::run_git(
-					&["remote", "set-url", "origin", clone_url],
-					Some(repo_dir),
-					Default::default(),
-				);
-			}
+		if let Ok(o) = out
+			&& o.status == 0
+			&& o.stdout.trim() != clone_url
+		{
+			let _ = git_ops::run_git(
+				&["remote", "set-url", "origin", clone_url],
+				Some(repo_dir),
+				Default::default(),
+			);
 		}
 	}
-	#[allow(clippy::too_many_arguments)]
+
+	#[allow(
+		clippy::too_many_arguments,
+		reason = "workspace provisioning needs the explicit repo, issue, git, author, and slot \
+		          inputs"
+	)]
 	pub fn ensure_workspace(
 		&self,
 		repo: &str,
@@ -523,15 +552,16 @@ impl<T: GitTransport> SandboxManager<T> {
 		let repro_dir = context_dir.join("repro");
 		for p in [&ws_root, &session_dir, &context_dir, &repro_dir, &artifacts_dir] {
 			fs::create_dir_all(p).map_err(|e| GitCommandError {
-				cmd: vec!["mkdir".into()],
+				cmd:        vec!["mkdir".into()],
 				returncode: 127,
-				stdout: String::new(),
-				stderr: e.to_string(),
+				stdout:     String::new(),
+				stderr:     e.to_string(),
 			})?;
 		}
-		let mut branch = existing_branch
-			.map(str::to_string)
-			.unwrap_or_else(|| make_branch(number, title, Some(&format!("{repo}#{number}"))));
+		let mut branch = existing_branch.map_or_else(
+			|| make_branch(number, title, Some(&format!("{repo}#{number}"))),
+			str::to_string,
+		);
 		let repo_exists = repo_dir.join(".git").exists();
 		let mut prepared = false;
 		let mut slot_opts = git_ops::slot_subprocess_options(slot_uid);
@@ -541,7 +571,18 @@ impl<T: GitTransport> SandboxManager<T> {
 			chown_workspace(&ws_root, slot_uid).map_err(io_to_git_error)?;
 			prepared = true;
 		}
-		if !repo_exists {
+		if repo_exists {
+			slot_opts.extra_env = git_env_for_repo(&repo_dir);
+			let cur = git_ops::run_git_with(
+				&RealCommandRunner,
+				&["symbolic-ref", "--quiet", "--short", "HEAD"],
+				Some(&repo_dir),
+				slot_opts.clone(),
+			)?;
+			if cur.status == 0 && !cur.stdout.trim().is_empty() {
+				branch = cur.stdout.trim().to_string();
+			}
+		} else {
 			self
 				.transport
 				.fetch_base_ref(repo, &pool, existing_branch.unwrap_or(default_branch))?;
@@ -559,10 +600,10 @@ impl<T: GitTransport> SandboxManager<T> {
 				)?;
 				if out.status != 0 {
 					return Err(GitCommandError {
-						cmd: vec!["git".into(), "worktree".into(), "add".into(), r, branch],
+						cmd:        vec!["git".into(), "worktree".into(), "add".into(), r, branch],
 						returncode: out.status,
-						stdout: out.stdout,
-						stderr: out.stderr,
+						stdout:     out.stdout,
+						stderr:     out.stderr,
 					});
 				}
 			} else {
@@ -585,23 +626,12 @@ impl<T: GitTransport> SandboxManager<T> {
 				)?;
 				if out.status != 0 {
 					return Err(GitCommandError {
-						cmd: vec!["git".into(), "worktree".into(), "add".into()],
+						cmd:        vec!["git".into(), "worktree".into(), "add".into()],
 						returncode: out.status,
-						stdout: out.stdout,
-						stderr: out.stderr,
+						stdout:     out.stdout,
+						stderr:     out.stderr,
 					});
 				}
-			}
-		} else {
-			slot_opts.extra_env = git_env_for_repo(&repo_dir);
-			let cur = git_ops::run_git_with(
-				&RealCommandRunner,
-				&["symbolic-ref", "--quiet", "--short", "HEAD"],
-				Some(&repo_dir),
-				slot_opts.clone(),
-			)?;
-			if cur.status == 0 && !cur.stdout.trim().is_empty() {
-				branch = cur.stdout.trim().to_string();
 			}
 		}
 		if !prepared {
@@ -619,10 +649,10 @@ impl<T: GitTransport> SandboxManager<T> {
 			)?;
 			if out.status != 0 {
 				return Err(GitCommandError {
-					cmd: vec!["git".into(), "config".into(), k.into(), v.into()],
+					cmd:        vec!["git".into(), "config".into(), k.into(), v.into()],
 					returncode: out.status,
-					stdout: out.stdout,
-					stderr: out.stderr,
+					stdout:     out.stdout,
+					stderr:     out.stderr,
 				});
 			}
 		}
@@ -640,6 +670,7 @@ impl<T: GitTransport> SandboxManager<T> {
 		self.populate_natives_cache(&workspace, slot_uid);
 		Ok(workspace)
 	}
+
 	fn populate_natives_cache(&self, workspace: &Workspace, slot_uid: Option<u32>) {
 		let Some(cache) = &self.natives_cache else {
 			return;
@@ -661,12 +692,13 @@ impl<T: GitTransport> SandboxManager<T> {
 				return;
 			},
 		};
-		if let (Some(hit), Some(uid)) = (hit, slot_uid) {
-			if slot_permissions_active(slot_uid) {
-				chown_natives_for_slot(&native_dir, &hit, uid);
-			}
+		if let (Some(hit), Some(uid)) = (hit, slot_uid)
+			&& slot_permissions_active(slot_uid)
+		{
+			chown_natives_for_slot(&native_dir, &hit, uid);
 		}
 	}
+
 	pub fn remove_workspace(&self, repo: &str, number: u64) {
 		let ws_root = self.workspace_root(repo, number);
 		let repo_dir = ws_root.join("repo");
@@ -687,11 +719,13 @@ impl<T: GitTransport> SandboxManager<T> {
 	}
 }
 
-pub use crate::redaction::redact_credentials;
-pub use crate::workspace_keys::{
-	make_branch as make_workspace_branch, workspace_key as make_workspace_key,
+pub use crate::{
+	redaction::redact_credentials,
+	workspace_keys::{
+		make_branch as make_workspace_branch, make_branch, workspace_key as make_workspace_key,
+		workspace_key,
+	},
 };
-pub use crate::workspace_keys::{make_branch, workspace_key};
 
 #[cfg(test)]
 mod tests {}

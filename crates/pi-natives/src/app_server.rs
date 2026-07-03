@@ -98,16 +98,14 @@ impl Bridge {
 				"host call could not be enqueued",
 			));
 		}
-		match rx.await {
-			Ok(result) => result,
-			Err(_) => {
-				self.pending.remove(&call_id);
-				Err(AppServerError::new(
-					gjc_app_server::error::codes::INTERNAL_ERROR,
-					"backend call dropped by host",
-				))
-			},
-		}
+		let Ok(result) = rx.await else {
+			self.pending.remove(&call_id);
+			return Err(AppServerError::new(
+				gjc_app_server::error::codes::INTERNAL_ERROR,
+				"backend call dropped by host",
+			));
+		};
+		result
 	}
 }
 
@@ -316,7 +314,7 @@ impl gjc_app_server::notifications::NotificationHost for TsNotificationHost {
 	}
 }
 
-/// EventSink that forwards mapped frames to TS as JSON strings.
+/// `EventSink` that forwards mapped frames to TS as JSON strings.
 struct TsSink {
 	on_frame: ThreadsafeFunction<String>,
 }
@@ -422,9 +420,7 @@ impl AppServer {
 	) -> napi::Result<String> {
 		let port = u16::try_from(port)
 			.map_err(|_| napi::Error::from_reason("port must be between 0 and 65535"))?;
-		let state_root = state_root
-			.map(PathBuf::from)
-			.unwrap_or_else(std::env::temp_dir);
+		let state_root = state_root.map_or_else(std::env::temp_dir, PathBuf::from);
 		let old = self
 			.ws_handle
 			.lock()

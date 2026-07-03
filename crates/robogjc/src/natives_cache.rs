@@ -1,12 +1,14 @@
 //! Content-addressed cache of pre-built `packages/natives/native/` artifacts.
 
-use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+	ffi::OsStr,
+	fs::{self, File, OpenOptions},
+	io::{self, Write},
+	os::unix::io::AsRawFd,
+	path::{Path, PathBuf},
+	process::Command,
+	time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,14 +26,14 @@ const NULL_TREE_HASH: &str = "0000000000000000000000000000000000000000";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheHit {
 	pub cache_dir: PathBuf,
-	pub files: Vec<PathBuf>,
+	pub files:     Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NativesCache {
-	pub root: PathBuf,
+	pub root:             PathBuf,
 	max_entries_per_repo: usize,
-	max_bytes: u64,
+	max_bytes:            u64,
 }
 
 impl NativesCache {
@@ -229,12 +231,12 @@ impl NativesCache {
 
 #[derive(Serialize)]
 struct Manifest<'a> {
-	key: &'a str,
-	target: String,
-	captured_at: f64,
+	key:              &'a str,
+	target:           String,
+	captured_at:      f64,
 	source_workspace: Option<&'a str>,
-	commit: Option<&'a str>,
-	node_files: Vec<String>,
+	commit:           Option<&'a str>,
+	node_files:       Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -243,7 +245,7 @@ struct ManifestForGc {
 }
 
 pub fn compute_key(repo_dir: &Path, target: Option<&str>) -> io::Result<String> {
-	let target = target.map(ToOwned::to_owned).unwrap_or_else(target_triple);
+	let target = target.map_or_else(target_triple, ToOwned::to_owned);
 	let mut child = Command::new("git")
 		.args(["cat-file", "--batch-check"])
 		.current_dir(repo_dir)
@@ -429,11 +431,10 @@ fn mtime_secs(path: &Path) -> io::Result<f64> {
 }
 
 fn tmp_path(dst: &Path) -> PathBuf {
-	let suffix = dst
-		.extension()
-		.and_then(OsStr::to_str)
-		.map(|ext| format!(".{ext}.tmp.{}", std::process::id()))
-		.unwrap_or_else(|| format!(".tmp.{}", std::process::id()));
+	let suffix = dst.extension().and_then(OsStr::to_str).map_or_else(
+		|| format!(".tmp.{}", std::process::id()),
+		|ext| format!(".{ext}.tmp.{}", std::process::id()),
+	);
 	dst.with_extension(suffix.trim_start_matches('.'))
 }
 
@@ -449,6 +450,8 @@ impl FlockGuard {
 			.append(true)
 			.read(true)
 			.open(path)?;
+		// SAFETY: `file.as_raw_fd()` is a valid descriptor owned by `file`; `flock`
+		// does not retain pointers and the guard owns the file for the lock lifetime.
 		let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
 		if rc != 0 {
 			return Err(io::Error::last_os_error());
@@ -459,17 +462,23 @@ impl FlockGuard {
 
 impl Drop for FlockGuard {
 	fn drop(&mut self) {
+		// SAFETY: `self.file.as_raw_fd()` remains valid during `drop`; unlocking is
+		// best-effort because the OS also releases the lock when the file closes.
 		let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use std::os::unix::fs::MetadataExt;
-	use std::sync::{Arc, Barrier, Mutex};
-	use std::thread;
+	use std::{
+		os::unix::fs::MetadataExt,
+		sync::{Arc, Barrier, Mutex},
+		thread,
+	};
+
 	use tempfile::TempDir;
+
+	use super::*;
 
 	const REPO: &str = "octo/widget";
 
@@ -595,10 +604,13 @@ mod tests {
 
 	#[test]
 	fn compute_key_uses_all_documented_paths() {
-		assert_eq!(
-			CACHE_KEY_PATHS,
-			&["crates", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "packages/natives"]
-		);
+		assert_eq!(CACHE_KEY_PATHS, &[
+			"crates",
+			"Cargo.lock",
+			"Cargo.toml",
+			"rust-toolchain.toml",
+			"packages/natives"
+		]);
 	}
 
 	#[test]

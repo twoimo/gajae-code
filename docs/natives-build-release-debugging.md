@@ -218,7 +218,7 @@ bun --cwd=packages/natives run embed:native -- --reset
 
 ## Orchestrator-side content-addressed build cache (robogjc)
 
-When `pi-natives` is built inside the robogjc orchestrator (`python/robogjc/`), workspaces share built artifacts through a content-addressed cache instead of rebuilding from scratch in every per-issue worktree. The cache is **orchestrator-side only** — `bun --cwd=packages/natives run build` itself is unchanged; the cache lives outside the build pipeline and is populated/captured around `ensure_workspace` and post-task success in `python/robogjc/src/natives_cache.py`.
+When `pi-natives` is built inside the Rust robogjc orchestrator (`crates/robogjc`), workspaces share built artifacts through a content-addressed cache instead of rebuilding from scratch in every per-issue worktree. The cache is **orchestrator-side only** — `bun --cwd=packages/natives run build` itself is unchanged; the cache lives outside the build pipeline and is populated/captured around workspace preparation and post-task success in the Rust service.
 
 ### What is cached
 

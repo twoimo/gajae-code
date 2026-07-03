@@ -9,7 +9,7 @@ use crate::{sys, sys::fs::PathExt};
 
 /// Encapsulates the result of a path search.
 pub struct ExecutablePathSearch<PI, N> {
-	paths:    VecDeque<PI>,
+	paths: VecDeque<PI>,
 	filename: N,
 }
 
@@ -40,9 +40,9 @@ where
 }
 
 pub(crate) struct ExecutablePathPrefixSearch<PI> {
-	paths:            VecDeque<PI>,
-	queued_items:     VecDeque<PathBuf>,
-	filename_prefix:  String,
+	paths: VecDeque<PI>,
+	queued_items: VecDeque<PathBuf>,
+	filename_prefix: String,
 	case_insensitive: bool,
 }
 

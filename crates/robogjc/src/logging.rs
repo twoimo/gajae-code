@@ -67,7 +67,7 @@ pub enum Level {
 }
 
 impl Level {
-	pub fn as_str(self) -> &'static str {
+	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::Debug => "DEBUG",
 			Self::Info => "INFO",
@@ -177,10 +177,10 @@ fn json_sink() -> Arc<Mutex<Option<RotatingJsonSink>>> {
 }
 
 struct RotatingJsonSink {
-	path: PathBuf,
+	path:      PathBuf,
 	max_bytes: u64,
-	backups: usize,
-	file: File,
+	backups:   usize,
+	file:      File,
 }
 
 impl RotatingJsonSink {
@@ -226,7 +226,7 @@ impl RotatingJsonSink {
 #[derive(Default)]
 struct JsonFields {
 	message: Option<String>,
-	extras: Vec<(String, serde_json::Value)>,
+	extras:  Vec<(String, serde_json::Value)>,
 }
 
 impl Visit for JsonFields {
@@ -305,10 +305,10 @@ where
 			payload.insert(key, value);
 		}
 		let line = serde_json::Value::Object(payload).to_string();
-		if let Ok(mut guard) = self.sink.lock() {
-			if let Some(sink) = guard.as_mut() {
-				let _ = sink.write_line(&line);
-			}
+		if let Ok(mut guard) = self.sink.lock()
+			&& let Some(sink) = guard.as_mut()
+		{
+			let _ = sink.write_line(&line);
 		}
 	}
 }
@@ -414,12 +414,10 @@ mod tests {
 	}
 	#[test]
 	fn json_record_redacts_message_and_extras() {
-		let out = json_record(
-			"robogjc.test",
-			Level::Info,
-			"https://u:p@host/x",
-			&[("remote", "https://u:p@host/y")],
-		);
+		let out = json_record("robogjc.test", Level::Info, "https://u:p@host/x", &[(
+			"remote",
+			"https://u:p@host/y",
+		)]);
 		assert!(out.contains("***:***@host"));
 		assert!(!out.contains("u:p@"));
 	}
@@ -435,7 +433,7 @@ mod tests {
 	fn configure_logging_stdout_only_first_call_succeeds() {
 		let _guard = log_test_guard();
 		reset_logging_for_tests();
-		assert_eq!(configure_logging(None, Level::Info).unwrap(), true);
+		assert!(configure_logging(None, Level::Info).unwrap());
 		reset_logging_for_tests();
 	}
 	#[test]
@@ -488,13 +486,11 @@ mod tests {
 
 	#[test]
 	fn pretty_record_strips_package_prefix_and_filters_reserved() {
-		let out = pretty_record(
-			"robogjc.worker",
-			Level::Info,
-			"hello",
-			&[("event", "done"), ("msg", "reserved")],
-		);
-		assert!(out.contains("worker"));
+		let out = pretty_record("robogjc.service", Level::Info, "hello", &[
+			("event", "done"),
+			("msg", "reserved"),
+		]);
+		assert!(out.contains("service"));
 		assert!(out.contains("event=done"));
 		assert!(!out.contains("msg=reserved"));
 	}

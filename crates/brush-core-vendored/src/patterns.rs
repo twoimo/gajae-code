@@ -59,19 +59,19 @@ impl PatternExpansionResult {
 /// Encapsulates a shell pattern.
 #[derive(Clone, Debug)]
 pub struct Pattern {
-	pieces:                   PatternWord,
+	pieces: PatternWord,
 	enable_extended_globbing: bool,
-	multiline:                bool,
-	case_insensitive:         bool,
+	multiline: bool,
+	case_insensitive: bool,
 }
 
 impl Default for Pattern {
 	fn default() -> Self {
 		Self {
-			pieces:                   vec![],
+			pieces: vec![],
 			enable_extended_globbing: false,
-			multiline:                true,
-			case_insensitive:         false,
+			multiline: true,
+			case_insensitive: false,
 		}
 	}
 }

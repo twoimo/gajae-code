@@ -14,16 +14,17 @@ const CONFIG_SENTINEL: &str = "__ROBGJC_CONFIG__";
 pub fn static_dir() -> PathBuf {
 	let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	let candidates = [
-		manifest.join("../../../python/robogjc/src/static"),
-		manifest.join("../../python/robogjc/src/static"),
-		PathBuf::from("python/robogjc/src/static"),
+		PathBuf::from("/app/static"),
+		manifest.join("../../../python/robogjc/web/dist"),
+		manifest.join("../../python/robogjc/web/dist"),
+		PathBuf::from("python/robogjc/web/dist"),
 	];
 	for candidate in candidates {
 		if candidate.exists() {
 			return candidate;
 		}
 	}
-	manifest.join("../../../python/robogjc/src/static")
+	manifest.join("../../../python/robogjc/web/dist")
 }
 
 pub fn render_index(replay_enabled: bool) -> Result<String, String> {

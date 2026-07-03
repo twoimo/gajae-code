@@ -13,7 +13,7 @@ pub struct ExecutionResult {
 	/// The control flow transition to apply after execution.
 	pub next_control_flow: ExecutionControlFlow,
 	/// The exit code resulting from execution.
-	pub exit_code:         ExecutionExitCode,
+	pub exit_code: ExecutionExitCode,
 }
 
 impl ExecutionResult {
@@ -39,7 +39,7 @@ impl ExecutionResult {
 	pub const fn success() -> Self {
 		Self {
 			next_control_flow: ExecutionControlFlow::Normal,
-			exit_code:         ExecutionExitCode::Success,
+			exit_code: ExecutionExitCode::Success,
 		}
 	}
 
@@ -47,7 +47,7 @@ impl ExecutionResult {
 	pub const fn general_error() -> Self {
 		Self {
 			next_control_flow: ExecutionControlFlow::Normal,
-			exit_code:         ExecutionExitCode::GeneralError,
+			exit_code: ExecutionExitCode::GeneralError,
 		}
 	}
 

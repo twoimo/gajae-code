@@ -30,6 +30,7 @@ pub struct BackendCallContext {
 }
 
 /// A normalized event pushed from the backend (TS `AgentEvent` today) up into
+///
 /// the item-lifecycle state machine. The `payload` is the raw gjc event value,
 /// preserved so no gjc detail is lost; the state machine classifies it into
 /// codex `item/*` lifecycle notifications.

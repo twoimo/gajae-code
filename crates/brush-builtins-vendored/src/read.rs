@@ -295,9 +295,9 @@ enum ReadResult {
 /// from the higher-level logic of line building and escape processing.
 struct InputReader {
 	/// The input source.
-	input:      brush_core::openfiles::OpenFile,
+	input: brush_core::openfiles::OpenFile,
 	/// Optional deadline for timeout.
-	deadline:   Option<Instant>,
+	deadline: Option<Instant>,
 	/// Single-byte read buffer.
 	///
 	/// TODO(utf-8): This only handles ASCII correctly. Multi-byte UTF-8
@@ -306,7 +306,7 @@ struct InputReader {
 	/// incrementally using `std::str::from_utf8`. Note that bash's `-n` counts
 	/// bytes, not Unicode codepoints, so the fix needs to preserve that
 	/// behavior.
-	buffer:     [u8; 1],
+	buffer: [u8; 1],
 	/// Terminal mode guard - kept alive for RAII cleanup on drop.
 	/// The guard restores original terminal settings when dropped, even though
 	/// we don't access the field directly after construction.
@@ -449,9 +449,9 @@ impl InputReader {
 /// Configuration for line reading behavior.
 struct LineReaderConfig {
 	/// Character that terminates input (None for -N mode).
-	delimiter:       Option<char>,
+	delimiter: Option<char>,
 	/// Maximum characters to read (for -n or -N).
-	char_limit:      Option<usize>,
+	char_limit: Option<usize>,
 	/// Whether to process backslash escapes (false for -r mode).
 	process_escapes: bool,
 }
@@ -856,11 +856,10 @@ mod tests {
 	#[test]
 	fn test_build_array_fields_basic() {
 		let result = build_array_fields(Some("a b c"), " ", false);
-		assert_eq!(result, vec![
-			(None, "a".to_string()),
-			(None, "b".to_string()),
-			(None, "c".to_string())
-		]);
+		assert_eq!(
+			result,
+			vec![(None, "a".to_string()), (None, "b".to_string()), (None, "c".to_string())]
+		);
 	}
 
 	#[test]

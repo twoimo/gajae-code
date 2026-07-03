@@ -2,10 +2,9 @@
 ###############################################################################
 # robogjc — Rust webhook orchestrator image.
 #
-# Phase 8 cutover: the Rust `robogjc serve` binary is the active mutating
-# webhook consumer. The Python package is intentionally kept in the repository
-# and can still be deployed for rollback, but production GitHub webhooks should
-# be subscribed only to this Rust service.
+# Phase 10 cutover: the Rust `robogjc serve` binary is the only in-image
+# webhook consumer. The Python robogjc package has been removed; gh-proxy is
+# served by the Rust `robogjc proxy serve` subcommand.
 ###############################################################################
 
 ARG PI_BASE=gajae-code/pi:dev
@@ -33,24 +32,8 @@ ENV PI_ROOT=/work/pi
 WORKDIR /app
 
 COPY --from=web-builder /work/python/robogjc/web/dist/ /app/static/
-# Python robogjc remains installed for rollback and for the gh-proxy sidecar.
-COPY python/robogjc/pyproject.toml ./pyproject.toml
-COPY python/robogjc/src/ ./src/
-COPY --from=web-builder /work/python/robogjc/web/dist/ ./src/static/
-RUN pip install --no-cache-dir \
-        "fastapi>=0.112" "uvicorn[standard]>=0.30" "httpx>=0.27" \
-        "pydantic>=2.6" "pydantic-settings>=2.2" "python-dotenv>=1.0" \
-        "click>=8.1" \
-    && pip install --no-cache-dir --no-deps .
-# The Rust binary is the active `robogjc` command (Phase 8 cutover). It MUST be
-# copied AFTER `pip install .`, because the Python package's [project.scripts]
-# console script is also named `robogjc` and would otherwise shadow the Rust
-# binary at /usr/local/bin/robogjc. Python rollback stays reachable via
-# `python -m robogjc serve`; gh-proxy uses `python -m robogjc.proxy serve`.
+# The Rust binary provides both `robogjc serve` and `robogjc proxy serve`.
 COPY --from=rust-builder /work/pi/target/release/robogjc /usr/local/bin/robogjc
-# Keep the Rust dashboard loader compatible with source checkouts and images.
-RUN mkdir -p /work/pi/python/robogjc/src/static \
-    && cp -a /app/static/. /work/pi/python/robogjc/src/static/
 
 RUN mkdir -p /srv/agent-home/.agent /srv/agent-home/.gjc/agent \
     && mkdir -p /srv/agent-home-stage/.agent /srv/agent-home-stage/.gjc/agent \

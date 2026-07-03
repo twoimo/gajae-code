@@ -1,7 +1,9 @@
 //! Async slot UID pool for subprocess identity assignment.
 
-use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::{
+	collections::{HashSet, VecDeque},
+	sync::{Arc, Mutex},
+};
 
 use tokio::sync::Notify;
 
@@ -13,13 +15,13 @@ pub struct SlotPool {
 #[derive(Debug)]
 struct Inner {
 	slot_uids: Vec<u32>,
-	state: Mutex<State>,
-	notify: Notify,
+	state:     Mutex<State>,
+	notify:    Notify,
 }
 
 #[derive(Debug)]
 struct State {
-	available: VecDeque<u32>,
+	available:   VecDeque<u32>,
 	checked_out: HashSet<u32>,
 }
 
@@ -33,7 +35,7 @@ impl SlotPool {
 		Ok(Self {
 			inner: Arc::new(Inner {
 				state: Mutex::new(State {
-					available: slot_uids.iter().copied().collect(),
+					available:   slot_uids.iter().copied().collect(),
 					checked_out: HashSet::new(),
 				}),
 				slot_uids,
@@ -98,8 +100,9 @@ impl std::error::Error for SlotPoolError {}
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use tokio::time::{Duration, sleep, timeout};
+
+	use super::*;
 
 	#[tokio::test]
 	async fn empty_pool_is_noop() {

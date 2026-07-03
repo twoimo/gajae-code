@@ -50,7 +50,7 @@ pub(crate) struct HistoryCommand {
 
 struct HistoryConfig {
 	default_history_file_path: Option<PathBuf>,
-	time_format:               Option<String>,
+	time_format: Option<String>,
 }
 
 impl builtins::Command for HistoryCommand {
@@ -63,7 +63,7 @@ impl builtins::Command for HistoryCommand {
 		// Retrieve the shell's history config while we still can.
 		let config = HistoryConfig {
 			default_history_file_path: context.shell.history_file_path(),
-			time_format:               context.shell.history_time_format(),
+			time_format: context.shell.history_time_format(),
 		};
 
 		let stdout = context.stdout();

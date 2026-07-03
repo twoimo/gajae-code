@@ -8,13 +8,15 @@ Known non-blocking follow-up: the containerized Rust services currently emit no 
 
 - `python/robogjc/src/**` — the Python service (server, worker, queue, sandbox, host tools, db, proxy, github, autoclose, manual_triage, cli, persona, pragmas, natives_cache).
 - `python/robogjc/tests/**` — Python behavioral suite (superseded by transposed Rust tests + shared golden fixtures; see `python-test-inventory.md`).
-- `python/robogjc/pyproject.toml`, `entrypoint.sh`, Python Docker entrypoints; the Python service package.
+- `python/robogjc/pyproject.toml`, package metadata/cache directories, Python test/support files, `scripts/`, `assets/`, `.env.example`, `AGENTS.md`, and `README.md`; the Python service package.
 - Root `package.json` scripts that drive the Python service: `robogjc:serve` (python3 -m robogjc serve), `robogjc:install`, `robogjc:test:integration`; and `test:py` narrowed to `python/gjc-rpc/tests` only (gjc-rpc stays — it is a general client, not robogjc).
 - Docs referencing `python/robogjc` as the implementation: update `docs/bot-integration.md`, `docs/codebase-overview.md`, `docs/onboarding-packet.md`, `docs/natives-build-release-debugging.md` to describe the Rust `crates/robogjc` service.
 
 ## What Phase 10 RETAINS (explicit keep rationale)
 
 - `python/robogjc/web/**` — the TS/Vite dashboard **stays** (plan non-goal: do not port the dashboard). The Rust `server.rs`/`dashboard.rs` already serve its built assets. Keep `robogjc:web:build` / `robogjc:web:dev` scripts.
+- `python/robogjc/docker-compose.yml` and `python/robogjc/entrypoint.sh` — retained as Rust deployment assets. The entrypoint only prepares slot users, state directories, and shared caches before execing `robogjc serve` / `robogjc proxy serve`; it no longer installs or assumes the Python robogjc package.
+- `Dockerfile.robogjc` — retained as the Rust image definition; Python robogjc install/copy steps are removed, while dashboard build output and the Rust binary stay.
 - `python/gjc-rpc/**` — general Python app-server client; not part of the robogjc deletion set. Keep `python/gjc-rpc/tests`.
 - `docs/app-server-artifacts/**` — historical planning artifacts for the *separate* app-server port; the `--mode rpc` / `RpcClient` references there belong to that plan, not this one. Keep.
 - `crates/robogjc/**` — the new Rust implementation.
@@ -26,7 +28,7 @@ Targets to re-run to zero (or explicit keep) immediately after deletion:
 
 Current non-doc code references to migrate/remove at deletion time:
 - Root `package.json`: `robogjc:serve`, `robogjc:install`, `robogjc:test:integration`, `test:py` (narrow to gjc-rpc), workspace member `python/robogjc/web` (keep — dashboard).
-- `scripts/ci-dev-affected.ts` + tests: the `python/robogjc/` path-planning rules must be repointed at `crates/robogjc` (Rust) while keeping `python/robogjc/web` web rules.
+- `scripts/ci-dev-affected.ts` + tests: Python rules must be narrowed to `python/gjc-rpc`; `crates/robogjc` remains covered by Rust rules and `python/robogjc/web` by web rules.
 - `packages/coding-agent/src/internal-urls/docs-index.generated.ts`: regenerated after doc edits.
 
 ## Rollback note

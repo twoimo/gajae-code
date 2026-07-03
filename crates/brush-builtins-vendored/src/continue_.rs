@@ -26,7 +26,7 @@ impl builtins::Command for ContinueCommand {
 
 		result.next_control_flow = ExecutionControlFlow::ContinueLoop {
 			#[expect(clippy::cast_sign_loss)]
-			levels:                                   (self.which_loop - 1) as usize,
+			levels: (self.which_loop - 1) as usize,
 		};
 
 		Ok(result)

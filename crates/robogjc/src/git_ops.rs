@@ -1,5 +1,7 @@
 //! Low-level git primitives ported from Python `robogjc.git_ops`.
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::{
 	collections::{BTreeMap, BTreeSet},
 	fs, io,
@@ -8,9 +10,6 @@ use std::{
 	sync::LazyLock,
 	time::Duration,
 };
-
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
 
 use regex::Regex;
 
@@ -27,10 +26,10 @@ static BAD_OBJECT_REF_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCommandError {
-	pub cmd: Vec<String>,
+	pub cmd:        Vec<String>,
 	pub returncode: i32,
-	pub stdout: String,
-	pub stderr: String,
+	pub stdout:     String,
+	pub stderr:     String,
 }
 impl std::fmt::Display for GitCommandError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -70,17 +69,17 @@ impl std::error::Error for GitCommandError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushResult {
-	pub head: String,
+	pub head:   String,
 	pub branch: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirtyState {
 	pub uncommitted: usize,
-	pub unpushed: usize,
-	pub summary: String,
+	pub unpushed:    usize,
+	pub summary:     String,
 }
 impl DirtyState {
-	pub fn is_dirty(&self) -> bool {
+	pub const fn is_dirty(&self) -> bool {
 		self.uncommitted > 0 || self.unpushed > 0
 	}
 }
@@ -120,15 +119,15 @@ impl From<HeadDriftError> for GitPushError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSpec {
-	pub program: String,
-	pub args: Vec<String>,
-	pub cwd: Option<PathBuf>,
-	pub env: BTreeMap<String, String>,
-	pub timeout: Duration,
-	pub user: Option<u32>,
-	pub group: Option<u32>,
+	pub program:      String,
+	pub args:         Vec<String>,
+	pub cwd:          Option<PathBuf>,
+	pub env:          BTreeMap<String, String>,
+	pub timeout:      Duration,
+	pub user:         Option<u32>,
+	pub group:        Option<u32>,
 	pub extra_groups: Vec<u32>,
-	pub umask: Option<u32>,
+	pub umask:        Option<u32>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
@@ -176,6 +175,9 @@ fn run_real(spec: &CommandSpec) -> Result<CommandOutput, GitCommandError> {
 		// hook: setgroups -> setgid -> setuid -> umask. Supplementary groups
 		// must be installed BEFORE the uid drop or setgroups fails with EPERM
 		// (CommandExt::gid/uid would run before pre_exec, so they are not used).
+		// SAFETY: `pre_exec` runs in the forked child immediately before `exec`; the
+		// closure only calls async-signal-safe libc credential/umask operations using
+		// precomputed values and returns any OS error to abort spawning.
 		unsafe {
 			cmd.pre_exec(move || {
 				// setgroups takes size_t (usize) on Linux and c_int on macOS;
@@ -185,15 +187,15 @@ fn run_real(spec: &CommandSpec) -> Result<CommandOutput, GitCommandError> {
 				{
 					return Err(io::Error::last_os_error());
 				}
-				if let Some(gid) = group {
-					if libc::setgid(gid as libc::gid_t) != 0 {
-						return Err(io::Error::last_os_error());
-					}
+				if let Some(gid) = group
+					&& libc::setgid(gid as libc::gid_t) != 0
+				{
+					return Err(io::Error::last_os_error());
 				}
-				if let Some(uid) = user {
-					if libc::setuid(uid as libc::uid_t) != 0 {
-						return Err(io::Error::last_os_error());
-					}
+				if let Some(uid) = user
+					&& libc::setuid(uid as libc::uid_t) != 0
+				{
+					return Err(io::Error::last_os_error());
 				}
 				if let Some(mask) = umask {
 					libc::umask(mask as libc::mode_t);
@@ -284,14 +286,14 @@ fn basic_auth_header(token: &str) -> String {
 
 #[derive(Debug, Clone, Default)]
 pub struct GitRunOptions {
-	pub token: Option<String>,
-	pub extra_env: BTreeMap<String, String>,
+	pub token:          Option<String>,
+	pub extra_env:      BTreeMap<String, String>,
 	pub safe_directory: Option<PathBuf>,
-	pub user: Option<u32>,
-	pub group: Option<u32>,
-	pub extra_groups: Vec<u32>,
-	pub umask: Option<u32>,
-	pub timeout: Option<Duration>,
+	pub user:           Option<u32>,
+	pub group:          Option<u32>,
+	pub extra_groups:   Vec<u32>,
+	pub umask:          Option<u32>,
+	pub timeout:        Option<Duration>,
 }
 
 pub fn append_safe_directory(env: &mut BTreeMap<String, String>, repo_dir: &Path) {
@@ -305,7 +307,10 @@ pub fn append_safe_directory(env: &mut BTreeMap<String, String>, repo_dir: &Path
 }
 
 pub fn slot_permissions_active(slot_uid: Option<u32>) -> bool {
-	slot_uid.is_some() && cfg!(target_os = "linux") && unsafe { libc::geteuid() == 0 }
+	// SAFETY: `geteuid` takes no pointers, has no Rust aliasing requirements, and
+	// is used only to decide whether root-only slot permissions are available.
+	let is_root = unsafe { libc::geteuid() == 0 };
+	slot_uid.is_some() && cfg!(target_os = "linux") && is_root
 }
 pub fn slot_subprocess_options(slot_uid: Option<u32>) -> GitRunOptions {
 	if slot_permissions_active(slot_uid) {
@@ -382,12 +387,10 @@ pub fn clone_pool(
 	let args =
 		["clone", "--filter=blob:none", "--no-tags", "--branch", default_branch, clone_url, &t];
 	check(
-		run_git_with(
-			runner,
-			&args,
-			None,
-			GitRunOptions { token: token.map(str::to_string), ..Default::default() },
-		)?,
+		run_git_with(runner, &args, None, GitRunOptions {
+			token: token.map(str::to_string),
+			..Default::default()
+		})?,
 		std::iter::once("git".into())
 			.chain(args.iter().map(|s| s.to_string()))
 			.collect(),
@@ -395,12 +398,10 @@ pub fn clone_pool(
 	.map(|_| ())
 }
 pub fn fetch_ref(repo_dir: &Path, rf: &str, token: Option<&str>, runner: &impl CommandRunner) {
-	let _ = run_git_with(
-		runner,
-		&["fetch", "origin", rf],
-		Some(repo_dir),
-		GitRunOptions { token: token.map(str::to_string), ..Default::default() },
-	);
+	let _ = run_git_with(runner, &["fetch", "origin", rf], Some(repo_dir), GitRunOptions {
+		token: token.map(str::to_string),
+		..Default::default()
+	});
 }
 pub fn fetch_prune(
 	repo_dir: &Path,
@@ -411,12 +412,10 @@ pub fn fetch_prune(
 	let args = ["fetch", "--prune", "origin"];
 	let mut last = None;
 	for _ in 0..FETCH_PRUNE_REPAIR_ATTEMPTS {
-		let out = run_git_with(
-			runner,
-			&args,
-			Some(repo_dir),
-			GitRunOptions { token: token.map(str::to_string), ..Default::default() },
-		)?;
+		let out = run_git_with(runner, &args, Some(repo_dir), GitRunOptions {
+			token: token.map(str::to_string),
+			..Default::default()
+		})?;
 		if out.status == 0 {
 			return Ok(());
 		}
@@ -435,7 +434,7 @@ fn git_dir(repo_dir: &Path) -> Option<PathBuf> {
 	let dot = repo_dir.join(".git");
 	if dot.is_dir() {
 		return Some(dot);
-	};
+	}
 	if dot.is_file() {
 		let text = fs::read_to_string(dot).ok()?;
 		let raw = text.trim().strip_prefix("gitdir:")?.trim();
@@ -474,9 +473,9 @@ pub fn prune_missing_alternates(repo_dir: &Path) -> bool {
 			continue;
 		}
 		if resolve_alternate(&objects, raw).is_dir() {
-			kept.push(line.to_string())
+			kept.push(line.to_string());
 		} else {
-			changed = true
+			changed = true;
 		}
 	}
 	if !changed {
@@ -502,10 +501,9 @@ pub fn bad_refs_from_fetch_output(output: &str) -> Vec<String> {
 		let r = cap
 			.name("bad")
 			.or_else(|| cap.name("invalid"))
-			.map(|m| m.as_str())
-			.unwrap_or("");
+			.map_or("", |m| m.as_str());
 		if is_safe_ref_name(r) && seen.insert(r.to_string()) {
-			refs.push(r.to_string())
+			refs.push(r.to_string());
 		}
 	}
 	refs
@@ -533,10 +531,10 @@ pub fn worktrees_holding_refs(
 	let mut current = BTreeMap::new();
 	let mut by = BTreeMap::<String, Vec<String>>::new();
 	let mut flush = |cur: &mut BTreeMap<String, String>| {
-		if let (Some(branch), Some(path)) = (cur.get("branch"), cur.get("worktree")) {
-			if set.contains(branch) {
-				by.entry(branch.clone()).or_default().push(path.clone())
-			}
+		if let (Some(branch), Some(path)) = (cur.get("branch"), cur.get("worktree"))
+			&& set.contains(branch)
+		{
+			by.entry(branch.clone()).or_default().push(path.clone());
 		}
 		cur.clear();
 	};
@@ -568,8 +566,7 @@ pub fn delete_bad_refs(repo_dir: &Path, output: &str, runner: &impl CommandRunne
 					Some(repo_dir),
 					GitRunOptions::default(),
 				)
-				.map(|o| o.status == 0)
-				.unwrap_or(false)
+				.is_ok_and(|o| o.status == 0)
 				{
 					changed = true;
 				}
@@ -578,8 +575,7 @@ pub fn delete_bad_refs(repo_dir: &Path, output: &str, runner: &impl CommandRunne
 				run_git_with(runner, &["worktree", "prune"], Some(repo_dir), GitRunOptions::default());
 		}
 		if run_git_with(runner, &["update-ref", "-d", &rf], Some(repo_dir), GitRunOptions::default())
-			.map(|o| o.status == 0)
-			.unwrap_or(false)
+			.is_ok_and(|o| o.status == 0)
 		{
 			changed = true;
 		}
@@ -638,15 +634,14 @@ pub fn inspect_dirty_state(
 			&["log", &max, "--oneline", "HEAD", "--not", "--remotes=origin"],
 			Some(repo_dir),
 			opts,
-		) {
-			if out.status == 0 {
-				logs = out
-					.stdout
-					.lines()
-					.filter(|l| !l.trim().is_empty())
-					.map(str::to_string)
-					.collect();
-			}
+		) && out.status == 0
+		{
+			logs = out
+				.stdout
+				.lines()
+				.filter(|l| !l.trim().is_empty())
+				.map(str::to_string)
+				.collect();
 		}
 	}
 	if uncommitted == 0 && unpushed == 0 {
@@ -691,27 +686,27 @@ pub fn push(
 ) -> Result<PushResult, GitPushError> {
 	let mut opts = slot_subprocess_options(slot_uid);
 	if safe_directory.is_some() {
-		opts.safe_directory = safe_directory.map(Path::to_path_buf)
+		opts.safe_directory = safe_directory.map(Path::to_path_buf);
 	} else if opts.user.is_some() {
-		opts.safe_directory = Some(repo_dir.to_path_buf())
+		opts.safe_directory = Some(repo_dir.to_path_buf());
 	}
 	let head = rev_parse_head(repo_dir, opts.clone(), runner)?;
-	if let Some(exp) = expected_head {
-		if exp != head {
-			return Err(
-				HeadDriftError(git_error(
-					vec!["git".into(), "push".into()],
-					128,
-					"",
-					&format!(
-						"HEAD changed since preflight ({} → {}); aborting push.",
-						&exp[..exp.len().min(12)],
-						&head[..head.len().min(12)]
-					),
-				))
-				.into(),
-			);
-		}
+	if let Some(exp) = expected_head
+		&& exp != head
+	{
+		return Err(
+			HeadDriftError(git_error(
+				vec!["git".into(), "push".into()],
+				128,
+				"",
+				&format!(
+					"HEAD changed since preflight ({} → {}); aborting push.",
+					&exp[..exp.len().min(12)],
+					&head[..head.len().min(12)]
+				),
+			))
+			.into(),
+		);
 	}
 	let probe = run_git_with(
 		runner,

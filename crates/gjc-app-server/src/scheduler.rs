@@ -65,6 +65,7 @@ pub fn classify(method: &str) -> Lane {
 }
 
 /// Per-thread bounded admission control. Turn-accepting requests must pass
+///
 /// [`Admission::try_admit_turn`] before the backend is called; cancel/read
 /// lanes are never rejected for capacity (they must reach in-flight work).
 #[derive(Debug)]

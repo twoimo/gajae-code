@@ -1,7 +1,9 @@
 //! Per-event cancellation registry with pre-arm and late-arm semantics.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::{
+	collections::{HashMap, HashSet},
+	sync::{Arc, Mutex},
+};
 
 pub type CancelHook = Box<dyn FnOnce() + Send + 'static>;
 
@@ -13,7 +15,7 @@ pub struct CancellationRegistry {
 #[derive(Default)]
 struct State {
 	cancelled: HashSet<String>,
-	hooks: HashMap<String, CancelHook>,
+	hooks:     HashMap<String, CancelHook>,
 }
 
 impl std::fmt::Debug for State {
@@ -97,9 +99,12 @@ impl CancellationRegistry {
 
 #[cfg(test)]
 mod cancellation_tests {
+	use std::sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	};
+
 	use super::*;
-	use std::sync::Arc;
-	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	#[test]
 	fn cancellation_pre_arm_cancel_fires_immediately_on_registration() {
