@@ -226,6 +226,42 @@ describe("owner frame -> observability", () => {
 		expect(obs.observedSignals).toContain("idle"); // overlay present, did not evict semantic signals
 	});
 
+	it("maps app-server method-shaped frames and advances transport cursor metadata", async () => {
+		const rpc = new FrameRpc();
+		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const info = await owner.start();
+		rpc.emit({ jsonrpc: "2.0", method: "turn/started", params: { turnId: "turn-1" } });
+		rpc.emit({
+			jsonrpc: "2.0",
+			method: "gjc/event",
+			params: {
+				eventType: "tool_execution_start",
+				event: { toolCallId: "tool-1", toolName: "bash", args: { command: "bun test x" } },
+			},
+		});
+		rpc.emit({ jsonrpc: "2.0", method: "turn/completed", params: { turnId: "turn-1", status: "completed" } });
+		await flush();
+
+		const events = await readEvents(root, SID, 0);
+		expect(events.map(e => e.kind)).toEqual(
+			expect.arrayContaining([
+				"owner_started",
+				"agent_wire_turn_started",
+				"agent_wire_tool_started",
+				"agent_wire_agent_completed",
+			]),
+		);
+		expect(events.every(e => e.writer.ownerId === info.ownerId)).toBe(true);
+		expect(rpc.eventCursor()).toBe(3);
+		const observed = obsOf(
+			(await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>,
+		) as ReturnType<typeof obsOf> & { transportLastFrameAt?: string | null };
+		expect(observed.observedSignals).toContain("prompt-accepted");
+		expect(observed.observedSignals).toContain("test-running");
+		expect(observed.observedSignals).toContain("completed");
+		expect(observed.transportLastFrameAt).toBe(rpc.lastFrameAt());
+	});
+
 	it("transportLive is distinct from ownerLive (transport death does not imply dead owner)", async () => {
 		const rpc = new FrameRpc();
 		owner = new RuntimeOwner({ root, sessionId: SID, rpc });

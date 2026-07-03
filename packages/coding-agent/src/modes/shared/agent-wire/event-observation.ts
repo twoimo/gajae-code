@@ -314,6 +314,111 @@ function ownerFrame(
 	return { frameType, ...partial };
 }
 
+function eventFromAppServerRawEvent(params: Record<string, unknown>): AgentSessionEvent | null {
+	const eventType = str(params.eventType);
+	const event = recordObject(params.event);
+	if (!eventType || !event) return null;
+	return { ...event, type: eventType } as unknown as AgentSessionEvent;
+}
+
+function observeAppServerItemFrame(method: string, params: Record<string, unknown>): AgentWireOwnerObservation | null {
+	const itemType = str(params.itemType);
+	const itemId = str(params.itemId) ?? null;
+	if (method === "item/agentMessage/delta") {
+		return ownerFrame(method, {
+			kind: "agent_wire_message_activity",
+			signal: null,
+			evidence: { phase: method, messageId: itemId },
+			severity: "info",
+			semantic: false,
+			coalesceKey: `message:${itemId ?? "msg"}`,
+		});
+	}
+	if (itemType === "agentMessage") {
+		return ownerFrame(method, {
+			kind: "agent_wire_message_activity",
+			signal: null,
+			evidence: { phase: method, messageId: itemId },
+			severity: "info",
+			semantic: false,
+			coalesceKey: `message:${itemId ?? "msg"}`,
+		});
+	}
+	if (["toolCall", "commandExecution", "fileChange", "mcpToolCall"].includes(itemType ?? "")) {
+		if (method === "item/completed") {
+			return ownerFrame(method, {
+				kind: "agent_wire_tool_ended",
+				signal: "tool-call",
+				evidence: {
+					toolId: itemId,
+					toolName: str(params.toolName) ?? null,
+					status: boundedStatus(params.status) ?? null,
+				},
+				severity: "info",
+				semantic: true,
+				coalesceKey: null,
+			});
+		}
+		if (method === "item/updated") {
+			return ownerFrame(method, {
+				kind: "agent_wire_tool_updated",
+				signal: null,
+				evidence: { toolId: itemId, status: boundedStatus(params.status) ?? null },
+				severity: "info",
+				semantic: false,
+				coalesceKey: `tool:${itemId ?? "tool"}`,
+			});
+		}
+		return ownerFrame(method, {
+			kind: "agent_wire_tool_started",
+			signal: "tool-call",
+			evidence: { toolId: itemId, toolName: str(params.toolName) ?? null },
+			severity: "info",
+			semantic: true,
+			coalesceKey: null,
+		});
+	}
+	return null;
+}
+
+/** Map app-server JSON-RPC notification frames to neutral owner observations. */
+export function observeAppServerOutboundFrame(frame: Record<string, unknown>): AgentWireOwnerObservation | null {
+	const method = str(frame.method);
+	if (!method) return null;
+	const params = recordObject(frame.params) ?? {};
+	switch (method) {
+		case "turn/started":
+			return ownerFrame(method, {
+				kind: "agent_wire_turn_started",
+				signal: "prompt-accepted",
+				evidence: { turnId: str(params.turnId) ?? null },
+				severity: "info",
+				semantic: true,
+				coalesceKey: null,
+			});
+		case "turn/completed":
+			return ownerFrame(method, {
+				kind: "agent_wire_agent_completed",
+				signal: "completed",
+				evidence: { stopReason: str(params.status) ?? "completed" },
+				severity: "info",
+				semantic: true,
+				coalesceKey: null,
+			});
+		case "gjc/event": {
+			const event = eventFromAppServerRawEvent(params);
+			return event ? observeAgentSessionEvent(event) : null;
+		}
+		case "item/started":
+		case "item/updated":
+		case "item/completed":
+		case "item/agentMessage/delta":
+			return observeAppServerItemFrame(method, params);
+		default:
+			return null;
+	}
+}
+
 /**
  * Map a single outbound RPC wire frame (docs/rpc.md) to a bounded owner
  * observation, or null when the frame carries no owner-facing signal. Event
@@ -322,7 +427,8 @@ function ownerFrame(
  */
 export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWireOwnerObservation | null {
 	const type = str(frame.type);
-	if (!type || type === "ready") return null;
+	if (!type) return observeAppServerOutboundFrame(frame);
+	if (type === "ready") return null;
 
 	switch (type) {
 		case "response": {

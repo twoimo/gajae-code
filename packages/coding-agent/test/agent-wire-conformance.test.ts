@@ -100,30 +100,30 @@ describe("agent-wire conformance matrix", () => {
 			[
 				"response fail",
 				{ type: "response", command: "prompt", id: "r1", success: false, error: { code: "scope_denied" } },
-				"rpc_response_failed",
+				"agent_wire_response_failed",
 			],
 			[
 				"extension_ui_request",
 				{ type: "extension_ui_request", id: "u1", method: "confirm" },
-				"rpc_extension_request",
+				"agent_wire_extension_request",
 			],
 			[
 				"extension_error",
 				{ type: "extension_error", extensionPath: "/x", event: "run", error: "boom" },
-				"rpc_extension_error",
+				"agent_wire_extension_error",
 			],
-			["host_tool_call", { type: "host_tool_call", id: "h1", toolName: "echo" }, "rpc_host_tool_call"],
-			["host_tool_cancel", { type: "host_tool_cancel", id: "h1", toolName: "echo" }, "rpc_host_tool_cancel"],
+			["host_tool_call", { type: "host_tool_call", id: "h1", toolName: "echo" }, "agent_wire_host_tool_call"],
+			["host_tool_cancel", { type: "host_tool_cancel", id: "h1", toolName: "echo" }, "agent_wire_host_tool_cancel"],
 			[
 				"host_uri_request",
 				{ type: "host_uri_request", id: "u2", operation: "read", scheme: "db" },
-				"rpc_host_uri_request",
+				"agent_wire_host_uri_request",
 			],
-			["host_uri_cancel", { type: "host_uri_cancel", id: "u2", operation: "read" }, "rpc_host_uri_cancel"],
+			["host_uri_cancel", { type: "host_uri_cancel", id: "u2", operation: "read" }, "agent_wire_host_uri_cancel"],
 			[
 				"workflow_gate",
 				{ type: "workflow_gate", gate_id: "g1", kind: "approval", stage: "pre" },
-				"rpc_workflow_gate",
+				"agent_wire_workflow_gate",
 			],
 		];
 		for (const [name, frame, expectedKind] of cases) {

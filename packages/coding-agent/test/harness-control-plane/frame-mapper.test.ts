@@ -135,6 +135,46 @@ describe("mapRpcFrame (canonical observeRpcOutboundFrame)", () => {
 		expect(e?.evidence).toMatchObject({ extensionPath: "/x", event: "run" });
 	});
 
+	it("maps app-server method-shaped notifications", () => {
+		expect(mapRpcFrame({ jsonrpc: "2.0", method: "turn/started", params: { turnId: "turn-1" } })).toMatchObject({
+			frameType: "turn/started",
+			kind: "agent_wire_turn_started",
+			signal: "prompt-accepted",
+			semantic: true,
+			evidence: { turnId: "turn-1" },
+		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "gjc/event",
+				params: {
+					eventType: "tool_execution_start",
+					event: { toolCallId: "tool-1", toolName: "bash", args: { command: "bun test x" } },
+				},
+			}),
+		).toMatchObject({
+			eventType: "tool_execution_start",
+			kind: "agent_wire_tool_started",
+			signal: "test-running",
+			semantic: true,
+			evidence: { toolId: "tool-1", toolName: "bash" },
+		});
+
+		expect(
+			mapRpcFrame({
+				jsonrpc: "2.0",
+				method: "turn/completed",
+				params: { turnId: "turn-1", status: "completed" },
+			}),
+		).toMatchObject({
+			frameType: "turn/completed",
+			kind: "agent_wire_agent_completed",
+			signal: "completed",
+			semantic: true,
+			evidence: { stopReason: "completed" },
+		});
+	});
 	it("isTestRunnerTool detects common runners", () => {
 		expect(isTestRunnerTool("bash", "bun test x")).toBe(true);
 		expect(isTestRunnerTool("bash", "vitest run")).toBe(true);
