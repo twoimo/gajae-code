@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcUnattendedDeclaration } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import { approvalGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
 import { dispatchRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
+import type { RpcUnattendedDeclaration } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import { UnattendedSessionControlPlane } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-session";
 
 const declaration: RpcUnattendedDeclaration = {

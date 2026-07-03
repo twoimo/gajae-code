@@ -12,7 +12,7 @@ import type {
 	RpcHostUriRequest,
 	RpcHostUriResult,
 	RpcHostUriSchemeDefinition,
-} from "../../rpc/rpc-types";
+} from "./protocol";
 
 const RESERVED_INTERNAL_URI_SCHEMES = new Set(["gjc", "agent", "artifact", "memory", "local", "rule", "issue", "pr"]);
 

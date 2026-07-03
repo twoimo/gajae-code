@@ -2,7 +2,7 @@ import type { ExtensionUIContext } from "../../extensibility/extensions";
 import { workflowGatePath } from "../../gjc-runtime/session-layout";
 import type { AgentSession } from "../../session/agent-session";
 import type { ClientBridgePermissionOutcome } from "../../session/client-bridge";
-import type { RpcCommand, RpcResponse, RpcWorkflowGateResponse } from "../rpc/rpc-types";
+import type { RpcCommand, RpcResponse } from "../rpc/rpc-types";
 import { dispatchRpcCommand } from "../shared/agent-wire/command-dispatch";
 import { isRpcCommand } from "../shared/agent-wire/command-validation";
 import {
@@ -18,7 +18,7 @@ import {
 } from "../shared/agent-wire/handshake";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "../shared/agent-wire/host-tool-bridge";
 import { isRpcHostUriResult, RpcHostUriBridge } from "../shared/agent-wire/host-uri-bridge";
-import type { BridgeFrameType } from "../shared/agent-wire/protocol";
+import type { BridgeFrameType, RpcWorkflowGateResponse } from "../shared/agent-wire/protocol";
 import {
 	BRIDGE_COMMAND_SCOPES,
 	type BridgeCommandScope,

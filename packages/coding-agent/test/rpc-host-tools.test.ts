@@ -10,7 +10,7 @@ import type {
 	RpcHostToolCancelRequest,
 	RpcHostToolUpdate,
 	RpcWorkflowGate,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 
 const tempPaths: string[] = [];
 

@@ -1,4 +1,4 @@
-import type { RpcUnattendedDeclaration } from "../../rpc/rpc-types";
+import type { RpcUnattendedDeclaration } from "./protocol";
 import { BRIDGE_PROTOCOL_VERSION, type BridgeFrameType } from "./protocol";
 import type { BridgeCommandScope } from "./scopes";
 

@@ -3,11 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { RpcClient } from "@gajae-code/coding-agent/modes/rpc/rpc-client";
+import type { RpcExtensionUIRequest } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import type {
-	RpcExtensionUIRequest,
 	RpcUnattendedDeclaration,
 	RpcWorkflowGate,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import { createHarnessCliEnv, type HarnessCliEnv } from "./harness-control-plane/cli-workspace-env";
 import { e2eApiKey } from "./utilities";
 

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcUnattendedActionClass, RpcUnattendedDeclaration } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type {
+	RpcUnattendedActionClass,
+	RpcUnattendedDeclaration,
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	actionClassForScope,
 	classifyBashAction,

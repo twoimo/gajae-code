@@ -19,16 +19,14 @@ export {
 	type RpcEventListener,
 } from "./rpc/rpc-client";
 export { runRpcMode } from "./rpc/rpc-mode";
+export type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc/rpc-types";
 export type {
-	RpcCommand,
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
 	RpcHostToolDefinition,
 	RpcHostToolResult,
 	RpcHostToolUpdate,
-	RpcResponse,
-	RpcSessionState,
-} from "./rpc/rpc-types";
+} from "./shared/agent-wire/protocol";
 
 postmortem.register("terminal-restore", () => {
 	emergencyTerminalRestore();

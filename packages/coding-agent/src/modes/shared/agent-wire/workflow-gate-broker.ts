@@ -23,9 +23,8 @@ import type {
 	RpcWorkflowGateResponse,
 	RpcWorkflowGateValidationError,
 	RpcWorkflowStage,
-} from "../../rpc/rpc-types";
-import { RESERVED_WORKFLOW_STAGES } from "../../rpc/rpc-types";
-import { classifyAskGateDisposition } from "./deep-interview-gate";
+} from "./protocol";
+import { RESERVED_WORKFLOW_STAGES } from "./protocol";
 import { answerHashOf, canonicalJson, compileGateSchema, schemaHash, validateGateAnswer } from "./workflow-gate-schema";
 
 export type PersistedSemanticDisposition = "commit" | "resolve_without_commit";

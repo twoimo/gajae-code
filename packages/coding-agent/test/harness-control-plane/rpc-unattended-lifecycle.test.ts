@@ -5,13 +5,7 @@
  * RPC command transport — not just by calling the broker directly.
  */
 import { describe, expect, it } from "bun:test";
-import type {
-	RpcCommand,
-	RpcUnattendedAccepted,
-	RpcUnattendedDeclaration,
-	RpcWorkflowGate,
-	RpcWorkflowGateResolution,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type { RpcCommand } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import { approvalGate, executionGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
 import {
 	dispatchRpcCommand,
@@ -20,6 +14,12 @@ import {
 } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
 import { isRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-validation";
 import { questionToGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
+import type {
+	RpcUnattendedAccepted,
+	RpcUnattendedDeclaration,
+	RpcWorkflowGate,
+	RpcWorkflowGateResolution,
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import { UnattendedRunController } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-run-controller";
 import {
 	MemoryGateStore,

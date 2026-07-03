@@ -15,6 +15,45 @@ import type {
 } from "./event-contract";
 import { AGENT_WIRE_EVENT_TYPES, AGENT_WIRE_PROTOCOL_VERSION } from "./event-contract";
 
+export type {
+	RpcHostToolCallRequest,
+	RpcHostToolCancelRequest,
+	RpcHostToolDefinition,
+	RpcHostToolResult,
+	RpcHostToolUpdate,
+} from "./host-tool-types";
+export type {
+	RpcHostUriCancelRequest,
+	RpcHostUriOperation,
+	RpcHostUriRequest,
+	RpcHostUriResult,
+	RpcHostUriSchemeDefinition,
+} from "./host-uri-types";
+export type {
+	RpcActionDenied,
+	RpcBudgetExceeded,
+	RpcBudgetMetric,
+	RpcScopeDenied,
+	RpcUnattendedAccepted,
+	RpcUnattendedActionClass,
+	RpcUnattendedBudget,
+	RpcUnattendedDeclaration,
+	RpcUnattendedRefusalCode,
+	RpcUnattendedRefused,
+} from "./unattended-types";
+export type {
+	RpcJsonSchema,
+	RpcWorkflowGate,
+	RpcWorkflowGateContext,
+	RpcWorkflowGateKind,
+	RpcWorkflowGateOption,
+	RpcWorkflowGateResolution,
+	RpcWorkflowGateResponse,
+	RpcWorkflowGateValidationError,
+	RpcWorkflowStage,
+} from "./workflow-gate-types";
+export { RESERVED_WORKFLOW_STAGES } from "./workflow-gate-types";
+
 /** Wire protocol version. Bump on breaking envelope/semantic changes. */
 export const BRIDGE_PROTOCOL_VERSION = AGENT_WIRE_PROTOCOL_VERSION;
 
@@ -42,5 +81,5 @@ export type BridgeEventFrame = AgentWireEventFrame;
 /** A `workflow_gate` event serialized into a versioned wire frame (#321). */
 export type BridgeWorkflowGateFrame = BridgeFrameEnvelope<
 	"workflow_gate",
-	import("../../rpc/rpc-types").RpcWorkflowGate
+	import("./workflow-gate-types").RpcWorkflowGate
 >;

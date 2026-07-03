@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { RpcClient } from "@gajae-code/coding-agent/modes/rpc/rpc-client";
-import type { RpcExtensionUIRequest, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type { RpcExtensionUIRequest } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type { RpcWorkflowGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 
 const gate: RpcWorkflowGate = {
 	type: "workflow_gate",
