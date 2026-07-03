@@ -49,6 +49,16 @@ describe("GJC public CLI command surface", () => {
 		]);
 	});
 
+	it("limits root --mode to retained public modes", () => {
+		expect(parseArgs(["--mode", "text"]).mode).toBe("text");
+		expect(parseArgs(["--mode", "json"]).mode).toBe("json");
+		expect(parseArgs(["--mode", "acp"]).mode).toBe("acp");
+		expect(parseArgs(["--mode", "app-server"]).mode).toBe("app-server");
+		expect(parseArgs(["--mode", "rpc"]).mode).toBeUndefined();
+		expect(parseArgs(["--mode", "rpc-ui"]).mode).toBeUndefined();
+		expect(parseArgs(["--mode", "bridge"]).mode).toBeUndefined();
+	});
+
 	it("exposes the update command help without launching the TUI", () => {
 		const result = Bun.spawnSync(["bun", cliEntry, "update", "--help"], {
 			cwd: repoRoot,
