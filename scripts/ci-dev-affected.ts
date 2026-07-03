@@ -8,7 +8,7 @@ const repoRoot = path.join(import.meta.dir, "..");
 const ZERO_SHA = /^0+$/;
 const PACKAGE_SCOPES = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
 const PYTHON_DEV_SETUP =
-	"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc";
+	"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e 'python/gjc-rpc[dev]'";
 // The coding-agent package has hundreds of test files; keep dev affected push
 // validation below the 30m shard timeout by splitting its package-wide suite.
 const CODING_AGENT_TEST_SHARDS = 8;

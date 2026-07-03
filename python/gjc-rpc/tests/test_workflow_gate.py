@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from gjc_rpc import WorkflowGate, WorkflowGateEvent, WorkflowGateOption, parse_notification
+from gjc_rpc import (
+    WorkflowGate,
+    WorkflowGateEvent,
+    WorkflowGateOption,
+    parse_notification,
+)
 from gjc_rpc.protocol import parse_workflow_gate, parse_workflow_gate_event
 
 
@@ -11,10 +16,18 @@ GATE_PAYLOAD = {
     "gate_id": "wg_4845_ralplan_000001",
     "stage": "ralplan",
     "kind": "approval",
-    "schema": {"type": "object", "properties": {"decision": {"type": "string"}}, "required": ["decision"]},
+    "schema": {
+        "type": "object",
+        "properties": {"decision": {"type": "string"}},
+        "required": ["decision"],
+    },
     "schema_hash": "abc123",
     "options": [
-        {"value": "approve", "label": "Approve execution", "description": "recommended"},
+        {
+            "value": "approve",
+            "label": "Approve execution",
+            "description": "recommended",
+        },
         {"value": "reject", "label": "Reject"},
     ],
     "context": {"title": "Approve plan?", "summary": "PRD v2"},
@@ -56,7 +69,12 @@ class WorkflowGateParseTest(unittest.TestCase):
         self.assertEqual(gate.context, {"title": "Approve plan?", "summary": "PRD v2"})
         assert gate.options is not None
         self.assertEqual(len(gate.options), 2)
-        self.assertEqual(gate.options[0], WorkflowGateOption(value="approve", label="Approve execution", description="recommended"))
+        self.assertEqual(
+            gate.options[0],
+            WorkflowGateOption(
+                value="approve", label="Approve execution", description="recommended"
+            ),
+        )
         self.assertEqual(gate.options[1].description, None)
         self.assertTrue(gate.required)
 

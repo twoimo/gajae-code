@@ -19,7 +19,11 @@ class TestContextUsage(unittest.TestCase):
                 "steeringMode": "all",
                 "followUpMode": "all",
                 "interruptMode": "wait",
-                "contextUsage": {"tokens": 1234, "contextWindow": 200000, "percent": 0.6},
+                "contextUsage": {
+                    "tokens": 1234,
+                    "contextWindow": 200000,
+                    "percent": 0.6,
+                },
             }
         )
         self.assertIsInstance(state.context_usage, ContextUsage)
@@ -36,7 +40,11 @@ class TestContextUsage(unittest.TestCase):
         state = parse_session_state(
             {
                 "sessionId": "s1",
-                "contextUsage": {"tokens": None, "contextWindow": 200000, "percent": None},
+                "contextUsage": {
+                    "tokens": None,
+                    "contextWindow": 200000,
+                    "percent": None,
+                },
             }
         )
         self.assertIsInstance(state.context_usage, ContextUsage)
@@ -74,7 +82,12 @@ class TestUnattendedAccepted(unittest.TestCase):
 class TestLoginProvider(unittest.TestCase):
     def test_parse(self) -> None:
         provider = parse_login_provider(
-            {"id": "anthropic", "name": "Anthropic", "available": True, "authenticated": False}
+            {
+                "id": "anthropic",
+                "name": "Anthropic",
+                "available": True,
+                "authenticated": False,
+            }
         )
         self.assertEqual(provider.id, "anthropic")
         self.assertEqual(provider.name, "Anthropic")

@@ -22,6 +22,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "respx>=0.21",
+  "ruff>=0.13",
+]
+
 [project.urls]
 Homepage = "https://gaebal-gajae.dev/"
 Repository = "https://github.com/can1357/gajae-code"
