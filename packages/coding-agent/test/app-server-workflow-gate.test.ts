@@ -130,6 +130,18 @@ describe("app-server workflow gate wire", () => {
 			idempotency_key: "idem-1",
 		});
 		expect(replay.result).toEqual(accepted.result);
+		const audit = await request(handle, conn, 12, "gjc/unattended/audit", { threadId });
+		expect(audit.result.workflowGateEvents.map((event: { event: string }) => event.event)).toEqual(
+			expect.arrayContaining([
+				"gate_emitted",
+				"gate_response_rejected",
+				"gate_response_accepted",
+				"gate_response_idempotent_replay",
+			]),
+		);
+		expect(
+			audit.result.workflowGateEvents.some((event: { gate_id?: string }) => event.gate_id === gate.gate_id),
+		).toBe(true);
 
 		const conflict = await request(handle, conn, 9, "gjc/workflowGate/respond", {
 			threadId,

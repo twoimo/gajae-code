@@ -237,12 +237,47 @@ impl AppServer {
 		}
 	}
 
+	async fn preflight_host_uri_operation(
+		&self,
+		thread_id: &ThreadId,
+		method: &str,
+	) -> Result<Option<crate::unattended::PreflightOutcome>> {
+		let params = serde_json::json!({ "threadId": thread_id.0 });
+		let Some(entry) = self.threads.get(thread_id) else {
+			return Ok(None);
+		};
+		let preflight = entry
+			.value()
+			.unattended
+			.lock()
+			.preflight(thread_id, method, Some(&params));
+		match preflight {
+			Ok(outcome) => Ok(outcome),
+			Err(err) => {
+				if err
+					.data
+					.as_ref()
+					.and_then(|d| d.get("code"))
+					.and_then(|v| v.as_str())
+					== Some("budget_exceeded")
+				{
+					self.abort_unattended_thread(thread_id, &err).await;
+				}
+				Err(err)
+			},
+		}
+	}
+
 	pub async fn read_host_uri(
 		&self,
 		thread_id: &ThreadId,
 		turn_id: &TurnId,
 		url: &str,
 	) -> Result<crate::host_uris::HostUriResource> {
+		let charged = self
+			.preflight_host_uri_operation(thread_id, "gjc/hostUris/read")
+			.await?
+			.is_some_and(|outcome| outcome.charged);
 		let scheme = extract_url_scheme(url)?;
 		let (generation, definition) = {
 			let entry = self
@@ -265,6 +300,9 @@ impl AppServer {
 				Duration::from_secs(30),
 			)
 			.await?;
+		self
+			.reconcile_host_uri_preflight(thread_id, charged)
+			.await?;
 		crate::host_uris::resource_from_result(url, &definition, result)
 	}
 
@@ -275,6 +313,10 @@ impl AppServer {
 		url: &str,
 		content: String,
 	) -> Result<()> {
+		let charged = self
+			.preflight_host_uri_operation(thread_id, "gjc/hostUris/write")
+			.await?
+			.is_some_and(|outcome| outcome.charged);
 		let scheme = extract_url_scheme(url)?;
 		{
 			let entry = self
@@ -308,6 +350,9 @@ impl AppServer {
 				Duration::from_secs(30),
 			)
 			.await?;
+		self
+			.reconcile_host_uri_preflight(thread_id, charged)
+			.await?;
 		if result.is_error {
 			return Err(AppServerError::new(
 				crate::error::codes::INTERNAL_ERROR,
@@ -316,6 +361,27 @@ impl AppServer {
 					.or(result.content)
 					.unwrap_or_else(|| format!("Host URI write failed for {url}")),
 			));
+		}
+		Ok(())
+	}
+
+	async fn reconcile_host_uri_preflight(&self, thread_id: &ThreadId, charged: bool) -> Result<()> {
+		if !charged {
+			return Ok(());
+		}
+		let usage = if let Ok((backend, ctx)) = self.backend_and_ctx(thread_id, Lane::Read) {
+			backend.usage_snapshot(&ctx).await.ok().flatten()
+		} else {
+			None
+		};
+		let reconcile = if let Some(entry) = self.threads.get(thread_id) {
+			entry.value().unattended.lock().reconcile(usage)
+		} else {
+			Ok(())
+		};
+		if let Err(err) = reconcile {
+			self.abort_unattended_thread(thread_id, &err).await;
+			return Err(err);
 		}
 		Ok(())
 	}
@@ -699,6 +765,7 @@ impl AppServer {
 			.workflow_gates
 			.lock()
 			.reject_pending_for_unattended_abort(run_id);
+		self.cancel_host_tool_calls_for_thread(thread_id);
 		self.cancel_host_uri_requests_for_thread(thread_id);
 		let active_turn = entry.value().active_turn.lock().clone();
 		if let Some(turn_id) = active_turn
@@ -1041,7 +1108,10 @@ impl AppServer {
 			.threads
 			.get(&thread_id)
 			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
-		Ok(serde_json::json!({ "events": entry.value().unattended.lock().audit() }))
+		Ok(serde_json::json!({
+			"events": entry.value().unattended.lock().audit(),
+			"workflowGateEvents": entry.value().workflow_gates.lock().audit(),
+		}))
 	}
 
 	async fn handle_gjc_state_read(
@@ -2196,5 +2266,152 @@ mod tests {
 
 		// The mutating lane must have serialized them: never two in exec at once.
 		assert_eq!(gauge.max_inflight.load(std::sync::atomic::Ordering::SeqCst), 1);
+	}
+	#[tokio::test]
+	async fn host_uri_preflight_denies_before_emitting_requests() {
+		let (s, sink) = server_with_sink();
+		let conn = init_conn(&s).await;
+		let thread = start_thread(&s, &conn).await;
+		let set = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":70,"method":"gjc/hostUriSchemes/set","params":{{"threadId":"{}","schemes":[{{"scheme":"db","writable":true}}]}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, set).await.unwrap().error.is_none());
+		let negotiate = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":71,"method":"gjc/unattended/negotiate","params":{{"threadId":"{}","declaration":{{"actor":"model","budget":{{"max_tokens":100,"max_tool_calls":10,"max_wall_time_ms":10000,"max_cost_usd":1.0}},"scopes":["command.host_uri"],"action_allowlist":["command.host_uri"]}}}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, negotiate).await.unwrap().error.is_none());
+
+		let read = s
+			.read_host_uri(&thread, &TurnId("turn_read".into()), "db://row/1")
+			.await;
+		let write = s
+			.write_host_uri(&thread, &TurnId("turn_write".into()), "db://row/1", "body".into())
+			.await;
+		assert_eq!(read.unwrap_err().message, "action_denied");
+		assert_eq!(write.unwrap_err().message, "action_denied");
+		let methods: Vec<String> = sink
+			.notes
+			.lock()
+			.iter()
+			.map(|note| note.method.clone())
+			.collect();
+		assert!(!methods.contains(&"gjc/hostUris/request".to_string()));
+	}
+
+	#[tokio::test]
+	async fn unattended_abort_cancels_pending_host_calls_uris_and_gates() {
+		let (s, sink) = server_with_sink();
+		let conn = init_conn(&s).await;
+		let thread = start_thread(&s, &conn).await;
+		let turn = TurnId("turn_pending".into());
+		let set_tool = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":80,"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{{"name":"lookup","description":"lookup","inputSchema":{{"type":"object"}}}}]}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, set_tool).await.unwrap().error.is_none());
+		let set_uri = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":81,"method":"gjc/hostUriSchemes/set","params":{{"threadId":"{}","schemes":[{{"scheme":"db","writable":true}}]}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, set_uri).await.unwrap().error.is_none());
+
+		let tool_task = {
+			let s = Arc::clone(&s);
+			let thread = thread.clone();
+			let turn = turn.clone();
+			tokio::spawn(async move {
+				s.call_host_tool(&thread, &turn, "lookup", serde_json::json!({}))
+					.await
+			})
+		};
+		let uri_task = {
+			let s = Arc::clone(&s);
+			let thread = thread.clone();
+			let turn = turn.clone();
+			tokio::spawn(async move { s.read_host_uri(&thread, &turn, "db://row/1").await })
+		};
+		let gate_task = {
+			let s = Arc::clone(&s);
+			let thread = thread.clone();
+			tokio::spawn(async move {
+				s.open_workflow_gate(&thread, crate::workflow_gate::OpenWorkflowGateInput {
+					stage:   crate::workflow_gate::RpcWorkflowStage::Ultragoal,
+					kind:    crate::workflow_gate::RpcWorkflowGateKind::Approval,
+					schema:  serde_json::json!({"type":"object"}),
+					options: None,
+					context: crate::workflow_gate::RpcWorkflowGateContext::default(),
+				})
+				.await
+			})
+		};
+		tokio::time::sleep(Duration::from_millis(10)).await;
+		let gate_id = s
+			.threads
+			.get(&thread)
+			.unwrap()
+			.value()
+			.workflow_gates
+			.lock()
+			.list_pending()
+			.first()
+			.unwrap()
+			.gate_id
+			.clone();
+		let err = AppServerError::new(crate::error::codes::INVALID_REQUEST, "budget_exceeded")
+			.with_data(serde_json::json!({"code":"budget_exceeded","run_id":"run_abort"}));
+		s.abort_unattended_thread(&thread, &err).await;
+
+		assert!(
+			tool_task
+				.await
+				.unwrap()
+				.unwrap_err()
+				.message
+				.contains("cancelled")
+		);
+		assert!(
+			uri_task
+				.await
+				.unwrap()
+				.unwrap_err()
+				.message
+				.contains("cancelled")
+		);
+		assert!(
+			gate_task
+				.await
+				.unwrap()
+				.unwrap_err()
+				.message
+				.contains("cancelled")
+		);
+		let list = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":82,"method":"gjc/workflowGate/list","params":{{"threadId":"{}"}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		let list_resp = s.dispatch(&conn, list).await.unwrap().result.unwrap();
+		assert_eq!(list_resp["gates"].as_array().unwrap().len(), 0);
+		let gate_id = gate_id;
+		let respond = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":83,"method":"gjc/workflowGate/respond","params":{{"threadId":"{}","gate_id":"{}","answer":{{}},"idempotency_key":"after-abort"}}}}"#,
+			thread.0, gate_id
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, respond).await.unwrap().error.is_some());
+		let methods: Vec<String> = sink
+			.notes
+			.lock()
+			.iter()
+			.map(|note| note.method.clone())
+			.collect();
+		assert!(methods.contains(&"gjc/hostTools/cancel".to_string()));
+		assert!(methods.contains(&"gjc/hostUris/cancel".to_string()));
 	}
 }
