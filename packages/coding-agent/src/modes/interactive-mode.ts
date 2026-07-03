@@ -531,6 +531,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		if (!startupQuiet) {
+			const getWelcomeReservedBottomRows = (width: number): number =>
+				[
+					this.statusLine,
+					this.hookWidgetContainerAbove,
+					this.editorContainer,
+					this.hookWidgetContainerBelow,
+				].reduce((rows, component) => rows + component.render(width).length, 0);
+
 			// Add welcome header
 			this.#welcomeComponent = new WelcomeComponent(
 				this.#version,
@@ -539,30 +547,16 @@ export class InteractiveMode implements InteractiveModeContext {
 				recentSessions,
 				this.#getWelcomeLspServers(),
 				welcomeLogoMode,
+				{
+					getViewportRows: () => this.ui.terminal.rows,
+					getReservedBottomRows: getWelcomeReservedBottomRows,
+					changelogMarkdown: this.#changelogMarkdown,
+					collapseChangelog: settings.get("collapseChangelog"),
+				},
 			);
 
-			// Setup UI layout
-			this.ui.addChild(new Spacer(1));
 			this.ui.addChild(this.#welcomeComponent);
-			this.ui.addChild(new Spacer(1));
 			this.#welcomeComponent.playIntro(() => this.ui.requestRender());
-
-			// Add changelog if provided
-			if (this.#changelogMarkdown) {
-				this.ui.addChild(new DynamicBorder());
-				if (settings.get("collapseChangelog")) {
-					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
-					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
-					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-					this.ui.addChild(new Text(condensedText, 1, 0));
-				} else {
-					this.ui.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-					this.ui.addChild(new Spacer(1));
-					this.ui.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
-					this.ui.addChild(new Spacer(1));
-				}
-				this.ui.addChild(new DynamicBorder());
-			}
 		}
 
 		this.ui.addChild(this.chatContainer);

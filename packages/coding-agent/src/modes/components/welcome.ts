@@ -14,6 +14,12 @@ export interface LspServerInfo {
 }
 
 export type WelcomeLogoMode = "unicode" | "square" | "ascii";
+export interface WelcomeComponentOptions {
+	getViewportRows?: () => number | undefined;
+	getReservedBottomRows?: (termWidth: number) => number;
+	changelogMarkdown?: string;
+	collapseChangelog?: boolean;
+}
 
 /**
  * GJC-native launch surface with compact command affordances, project
@@ -30,6 +36,7 @@ export class WelcomeComponent implements Component {
 		private recentSessions: RecentSession[] = [],
 		private lspServers: LspServerInfo[] = [],
 		private readonly logoMode: WelcomeLogoMode = "unicode",
+		private readonly options: WelcomeComponentOptions = {},
 	) {}
 
 	invalidate(): void {}
@@ -74,15 +81,20 @@ export class WelcomeComponent implements Component {
 	}
 
 	render(termWidth: number): string[] {
-		// Box dimensions track the live viewport so wide terminals feel intentionally full-screen.
-		const boxWidth = Math.max(0, termWidth - 2);
+		const boxWidth = Math.max(0, termWidth);
 		if (boxWidth < 4) {
 			return [];
 		}
+
+		const targetRows = this.#targetRows(termWidth);
+		if (targetRows !== undefined && targetRows <= 0) {
+			return [];
+		}
+		const targetContentRows = targetRows === undefined ? undefined : Math.max(0, targetRows - 2);
 		const dualContentWidth = boxWidth - 3; // 3 = │ + │ + │
-		const preferredLeftCol = 36;
-		const minLeftCol = 18; // claw mark plus GJC identity labels
-		const minRightCol = 20;
+		const preferredLeftCol = 40;
+		const minLeftCol = 20; // logo mark plus GJC identity labels
+		const minRightCol = 24;
 		const modelPill = this.#pill(theme.icon.model || "model", this.modelName, "statusLineModel");
 		const providerPill = this.#pill(theme.icon.package || "provider", this.providerName, "statusLinePath");
 		const logoLines = this.#logoLines();
@@ -90,12 +102,12 @@ export class WelcomeComponent implements Component {
 		const leftMinContentWidth = Math.max(
 			minLeftCol,
 			logoMinWidth,
-			visibleWidth("Gajae forge"),
+			visibleWidth("GJC Forge"),
 			visibleWidth("shape · act · prove"),
 			visibleWidth(modelPill),
 			visibleWidth(providerPill),
 		);
-		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35)));
+		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.38)));
 		const dualLeftCol =
 			dualContentWidth >= minRightCol + 1
 				? Math.min(desiredLeftCol, dualContentWidth - minRightCol)
@@ -107,36 +119,36 @@ export class WelcomeComponent implements Component {
 
 		const logoColored = this.#currentLogoFrame(logoLines);
 
-		// Left column - centered content
 		const leftLines = [
 			"",
-			this.#centerText(theme.bold(theme.fg("accent", "Gajae forge")), leftCol),
+			this.#centerText(theme.bold(theme.fg("accent", "GJC Forge")), leftCol),
 			this.#centerText(theme.fg("dim", "shape · act · prove"), leftCol),
 			"",
 			...logoColored.map(l => this.#centerText(l, leftCol)),
 			"",
+			this.#centerText(this.#loadingLine(), leftCol),
 			this.#centerText(modelPill, leftCol),
 			this.#centerText(providerPill, leftCol),
+			"",
 		];
 
-		// Right column separator
-		const separatorWidth = Math.max(0, rightCol - 2); // padding on each side
-		const separator = ` ${theme.fg("dim", theme.boxRound.horizontal.repeat(separatorWidth))}`;
+		const buildSeparator = (columnWidth: number): string =>
+			` ${theme.fg("dim", theme.boxRound.horizontal.repeat(Math.max(0, columnWidth - 2)))}`;
 
-		// Recent sessions content
+		const rightColumnWidth = showRightColumn ? rightCol : leftCol;
+		const separator = buildSeparator(rightColumnWidth);
+		const changelogBudget = Math.max(1, Math.min(6, Math.floor((targetContentRows ?? 18) * 0.3)));
+
 		const sessionLines: string[] = [];
 		if (this.recentSessions.length === 0) {
 			sessionLines.push(` ${theme.fg("dim", "No saved trails")}`);
 		} else {
-			// Reserve width for the bullet prefix (" • ") and the trailing " (timeAgo)"
-			// so the relative time is never the part that gets truncated. The name
-			// absorbs whatever space is left.
 			const bulletPrefix = ` ${theme.md.bullet} `;
 			const prefixWidth = visibleWidth(bulletPrefix);
 			for (const session of this.recentSessions.slice(0, 3)) {
 				const timeSuffixRaw = ` (${session.timeAgo})`;
 				const timeWidth = visibleWidth(timeSuffixRaw);
-				const nameBudget = Math.max(1, rightCol - prefixWidth - timeWidth);
+				const nameBudget = Math.max(1, rightColumnWidth - prefixWidth - timeWidth);
 				const nameVis = visibleWidth(session.name);
 				const name = nameVis > nameBudget ? truncateToWidth(session.name, nameBudget) : session.name;
 				sessionLines.push(
@@ -145,12 +157,11 @@ export class WelcomeComponent implements Component {
 			}
 		}
 
-		// LSP servers content
 		const lspLines: string[] = [];
 		if (this.lspServers.length === 0) {
 			lspLines.push(` ${theme.fg("dim", "No LSP servers")}`);
 		} else {
-			for (const server of this.lspServers) {
+			for (const server of this.lspServers.slice(0, 4)) {
 				const icon =
 					server.status === "ready"
 						? theme.styledSymbol("status.success", "success")
@@ -162,8 +173,11 @@ export class WelcomeComponent implements Component {
 			}
 		}
 
-		// Right column
 		const rightLines = [
+			"",
+			` ${theme.bold(theme.fg("accent", "What's New"))}`,
+			...this.#whatsNewLines(rightColumnWidth, changelogBudget),
+			separator,
 			` ${theme.bold(theme.fg("accent", "Flow keys"))}`,
 			` ${theme.fg("dim", "/")}${theme.fg("muted", " commands")} ${theme.fg("dim", "·")} ${theme.fg(
 				"dim",
@@ -187,7 +201,12 @@ export class WelcomeComponent implements Component {
 			"",
 		];
 
-		// Border characters (dim)
+		const contentRows =
+			targetContentRows ??
+			(showRightColumn ? Math.max(leftLines.length, rightLines.length) : leftLines.length + rightLines.length);
+		const outputRows = targetRows === undefined ? Math.max(3, contentRows + 2) : targetRows;
+		const bodyRows = Math.max(0, outputRows - 2);
+
 		const hChar = theme.boxRound.horizontal;
 		const h = theme.fg("dim", hChar);
 		const v = theme.fg("dim", theme.boxRound.vertical);
@@ -197,9 +216,7 @@ export class WelcomeComponent implements Component {
 		const br = theme.fg("dim", theme.boxRound.bottomRight);
 
 		const lines: string[] = [];
-
-		// Top border with embedded title
-		const title = ` ${APP_NAME} v${this.version} · GJC forge `;
+		const title = ` ${APP_NAME} v${this.version} · GJC Forge `;
 		const titlePrefixRaw = hChar.repeat(3);
 		const titleStyled = theme.fg("dim", titlePrefixRaw) + theme.fg("muted", title);
 		const titleVisLen = visibleWidth(titlePrefixRaw) + visibleWidth(title);
@@ -210,22 +227,32 @@ export class WelcomeComponent implements Component {
 			const afterTitle = titleSpace - titleVisLen;
 			lines.push(tl + titleStyled + theme.fg("dim", hChar.repeat(afterTitle)) + tr);
 		}
-
-		// Content rows
-		const maxRows = showRightColumn ? Math.max(leftLines.length, rightLines.length) : leftLines.length;
-		for (let i = 0; i < maxRows; i++) {
-			const left = this.#fitToWidth(leftLines[i] ?? "", leftCol);
-			if (showRightColumn) {
-				const right = this.#fitToWidth(rightLines[i] ?? "", rightCol);
-				lines.push(v + left + v + right + v);
-			} else {
-				lines.push(v + left + v);
-			}
+		if (outputRows === 1) {
+			return lines;
 		}
-		// Bottom border
+
 		if (showRightColumn) {
+			const leftBlock = this.#fitBlock(leftLines, bodyRows, "center");
+			const rightBlock = this.#fitBlock(rightLines, bodyRows, "top");
+			for (let i = 0; i < bodyRows; i++) {
+				const left = this.#fitToWidth(leftBlock[i] ?? "", leftCol);
+				const right = this.#fitToWidth(rightBlock[i] ?? "", rightCol);
+				lines.push(v + left + v + right + v);
+			}
 			lines.push(bl + h.repeat(leftCol) + theme.fg("dim", theme.boxSharp.teeUp) + h.repeat(rightCol) + br);
 		} else {
+			const compactLeftLines =
+				bodyRows < 14
+					? [
+							this.#centerText(theme.bold(theme.fg("accent", "GJC Forge")), leftCol),
+							this.#centerText(this.#loadingLine(), leftCol),
+							this.#centerText(modelPill, leftCol),
+						]
+					: leftLines;
+			const singleBlock = this.#fitBlock([...compactLeftLines, separator, ...rightLines], bodyRows, "top");
+			for (let i = 0; i < bodyRows; i++) {
+				lines.push(v + this.#fitToWidth(singleBlock[i] ?? "", leftCol) + v);
+			}
 			lines.push(bl + h.repeat(leftCol) + br);
 		}
 
@@ -250,6 +277,110 @@ export class WelcomeComponent implements Component {
 			return truncateToWidth(str, width, null, true);
 		}
 		return str + padding(width - visLen);
+	}
+	#targetRows(termWidth: number): number | undefined {
+		const viewportRows = this.options.getViewportRows?.();
+		if (typeof viewportRows !== "number" || !Number.isFinite(viewportRows) || viewportRows <= 0) {
+			return undefined;
+		}
+		const reservedRows = Math.max(0, Math.floor(this.options.getReservedBottomRows?.(termWidth) ?? 0));
+		return Math.max(0, Math.floor(viewportRows) - reservedRows);
+	}
+
+	#loadingLine(): string {
+		const frames = theme.spinnerFrames;
+		const elapsed = this.#animStart == null ? 0 : performance.now() - this.#animStart;
+		const frame = frames.length > 0 ? (frames[Math.floor(elapsed / 100) % frames.length] ?? "*") : "*";
+		const label = this.#animStart == null ? "ready" : "warming workspace";
+		return `${theme.fg("warning", frame)} ${theme.fg("muted", label)}`;
+	}
+
+	#fitBlock(lines: string[], rows: number, align: "top" | "center"): string[] {
+		if (rows <= 0) return [];
+		const clipped =
+			lines.length > rows
+				? rows === 1
+					? [theme.fg("dim", " …")]
+					: [...lines.slice(0, rows - 1), theme.fg("dim", " …")]
+				: lines;
+		const missingRows = rows - clipped.length;
+		if (missingRows <= 0) return clipped;
+		const topPad = align === "center" ? Math.floor(missingRows / 2) : 0;
+		const bottomPad = missingRows - topPad;
+		return [...Array.from({ length: topPad }, () => ""), ...clipped, ...Array.from({ length: bottomPad }, () => "")];
+	}
+
+	#whatsNewLines(width: number, maxItems: number): string[] {
+		const changelog = this.options.changelogMarkdown?.trim();
+		if (!changelog) {
+			return [` ${theme.fg("dim", "Ready for your next prompt")}`];
+		}
+
+		const version = this.#latestChangelogVersion(changelog);
+		if (this.options.collapseChangelog) {
+			return [
+				` ${theme.fg("muted", `Updated to v${version}`)}`,
+				` ${theme.fg("dim", `Use ${theme.bold("/changelog")} for details`)}`,
+			];
+		}
+
+		const itemLimit = Math.max(1, Math.floor(maxItems));
+		const items = this.#changelogItems(changelog);
+		if (items.length === 0) {
+			return [
+				` ${theme.fg("muted", `Updated to v${version}`)}`,
+				` ${theme.fg("dim", `Use ${theme.bold("/changelog")} for details`)}`,
+			];
+		}
+
+		const prefix = ` ${theme.md.bullet} `;
+		const textWidth = Math.max(1, width - visibleWidth(prefix));
+		const visibleItems = items.slice(0, itemLimit).map(item => {
+			const text = visibleWidth(item) > textWidth ? truncateToWidth(item, textWidth) : item;
+			return `${theme.fg("dim", prefix)}${theme.fg("muted", text)}`;
+		});
+		if (items.length > visibleItems.length) {
+			visibleItems.push(` ${theme.fg("dim", `… ${theme.bold("/changelog")} for full notes`)}`);
+		}
+		return visibleItems;
+	}
+
+	#latestChangelogVersion(markdown: string): string {
+		const versionMatch = markdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
+		return versionMatch?.[1] ?? this.version;
+	}
+
+	#changelogItems(markdown: string): string[] {
+		const items: string[] = [];
+		let inFence = false;
+		for (const rawLine of markdown.split(/\r?\n/)) {
+			const line = rawLine.trim();
+			if (line.startsWith("```")) {
+				inFence = !inFence;
+				continue;
+			}
+			if (inFence || !line || /^#{1,6}\s+/.test(line) || /^-{3,}$/.test(line)) {
+				continue;
+			}
+			const withoutBullet = line
+				.replace(/^[-*]\s+/, "")
+				.replace(/^\d+\.\s+/, "")
+				.replace(/^>\s*/, "");
+			const cleaned = this.#stripMarkdown(withoutBullet);
+			if (cleaned) items.push(cleaned);
+		}
+		return items;
+	}
+
+	#stripMarkdown(text: string): string {
+		return text
+			.replace(/`([^`]+)`/g, "$1")
+			.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+			.replace(/\*\*([^*]+)\*\*/g, "$1")
+			.replace(/__([^_]+)__/g, "$1")
+			.replace(/\*([^*]+)\*/g, "$1")
+			.replace(/[_~]/g, "")
+			.trim();
 	}
 
 	#pill(icon: string, text: string, color: ThemeColor): string {
