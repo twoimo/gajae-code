@@ -12,6 +12,10 @@
 
 - Escape now reliably cancels active context maintenance, handoff generation, retry backoff, and workflow ask dialogs even when transient UI focus or typed drafts would previously consume the key.
 
+### Fixed
+
+- Tab now queues prompt drafts immediately while the agent is streaming or compacting instead of opening/applying forced file autocomplete first.
+
 ## [0.7.11] - 2026-07-03
 ### Fixed
 

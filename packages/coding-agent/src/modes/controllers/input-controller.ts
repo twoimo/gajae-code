@@ -313,6 +313,11 @@ export class InputController {
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
 		this.ctx.editor.setActionKeys("app.message.queue", this.ctx.keybindings.getKeys("app.message.queue"));
 		this.ctx.editor.onQueue = () => void this.handleQueueSubmit();
+		this.ctx.editor.onTab = () => {
+			if (!this.ctx.session.isStreaming && !this.ctx.session.isCompacting) return false;
+			void this.handleQueueSubmit();
+			return true;
+		};
 		this.ctx.editor.onTabDeclined = () => {
 			if (this.ctx.session.isStreaming || this.ctx.session.isCompacting) void this.handleQueueSubmit();
 		};

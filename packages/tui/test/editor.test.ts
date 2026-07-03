@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { CURSOR_MARKER } from "@gajae-code/tui";
-import { CombinedAutocompleteProvider } from "@gajae-code/tui/autocomplete";
+import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@gajae-code/tui/autocomplete";
 import { Editor } from "@gajae-code/tui/components/editor";
 import { visibleWidth } from "@gajae-code/tui/utils";
 import { setDefaultTabWidth } from "@gajae-code/utils";
@@ -351,6 +351,40 @@ describe("Editor component", () => {
 
 			expect(editor.getText()).toBe("/model claude-opus");
 			expect(editor.isShowingAutocomplete()).toBe(false);
+		});
+
+		it("lets app-level Tab handlers consume before force file autocomplete", async () => {
+			const editor = new Editor(defaultEditorTheme);
+			let forceFileSuggestionCalls = 0;
+			const provider = {
+				async getSuggestions() {
+					return null;
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+				async getForceFileSuggestions() {
+					forceFileSuggestionCalls += 1;
+					return { prefix: "", items: [{ label: "src/", value: "src/" }] };
+				},
+			} satisfies AutocompleteProvider & {
+				getForceFileSuggestions(): Promise<{ prefix: string; items: Array<{ label: string; value: string }> }>;
+			};
+			editor.setAutocompleteProvider(provider);
+			editor.setText("draft");
+			const tabTexts: string[] = [];
+			editor.onTab = text => {
+				tabTexts.push(text);
+				return true;
+			};
+
+			editor.handleInput("\t");
+			await Bun.sleep(0);
+
+			expect(tabTexts).toEqual(["draft"]);
+			expect(forceFileSuggestionCalls).toBe(0);
+			expect(editor.isShowingAutocomplete()).toBe(false);
+			expect(editor.getText()).toBe("draft");
 		});
 
 		it("does not show argument completions when command has no argument completer", async () => {

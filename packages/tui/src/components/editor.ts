@@ -450,6 +450,11 @@ export class Editor implements Component, Focusable {
 	onChange?: (text: string) => void;
 	onAutocompleteCancel?: () => void;
 	onTabDeclined?: (text: string) => void;
+	/**
+	 * Called before Tab opens/applies autocomplete. Return true to consume Tab
+	 * for app-level behavior (for example, queueing a draft while a turn runs).
+	 */
+	onTab?: (text: string) => boolean | undefined;
 	disableSubmit: boolean = false;
 
 	// Custom top border (for status line integration)
@@ -1073,6 +1078,10 @@ export class Editor implements Component, Focusable {
 		// Undo
 		if (kb.matches(data, "tui.editor.undo")) {
 			this.#applyUndo();
+			return;
+		}
+
+		if (kb.matches(data, "tui.input.tab") && this.onTab?.(this.getText())) {
 			return;
 		}
 

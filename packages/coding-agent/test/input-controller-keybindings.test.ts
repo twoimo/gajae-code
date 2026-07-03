@@ -27,6 +27,7 @@ type FakeEditor = {
 	onChange?: (text: string) => void;
 	onSubmit?: (text: string) => void | Promise<void>;
 	onTabDeclined?: (text: string) => void;
+	onTab?: (text: string) => boolean | undefined;
 	setText(text: string): void;
 	getText(): string;
 	insertText(text: string): void;
@@ -276,7 +277,40 @@ describe("InputController keybinding setup", () => {
 		});
 	});
 
-	it("queues streaming Tab only after editor tab completion declines", async () => {
+	it("queues streaming Tab before editor file completion can open", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const session = ctx.session as unknown as { isStreaming: boolean };
+		session.isStreaming = true;
+		editor.setText("queue before file completion");
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		expect(editor.onTab?.(editor.getText())).toBe(true);
+		await Bun.sleep(0);
+
+		expect(spies.prompt).toHaveBeenCalledWith("queue before file completion", {
+			streamingBehavior: "followUp",
+		});
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+	});
+	it("queues compaction Tab before editor file completion can open", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const session = ctx.session as unknown as { isCompacting: boolean };
+		session.isCompacting = true;
+		editor.setText("queue while compacting via tab");
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		expect(editor.onTab?.(editor.getText())).toBe(true);
+		await Bun.sleep(0);
+
+		expect(spies.queueCompactionMessage).toHaveBeenCalledWith("queue while compacting via tab", "followUp");
+		expect(spies.prompt).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("");
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps declined Tab completion as a fallback queue path while streaming", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const session = ctx.session as unknown as { isStreaming: boolean };
 		session.isStreaming = true;
@@ -290,23 +324,6 @@ describe("InputController keybinding setup", () => {
 		expect(spies.prompt).toHaveBeenCalledWith("queue after declined tab completion", {
 			streamingBehavior: "followUp",
 		});
-		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
-	});
-	it("queues compaction Tab after editor tab completion declines", async () => {
-		const { InputController, ctx, editor, spies } = await createContext();
-		const session = ctx.session as unknown as { isCompacting: boolean };
-		session.isCompacting = true;
-		editor.setText("queue while compacting via tab");
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-		editor.onTabDeclined?.(editor.getText());
-		await Bun.sleep(0);
-
-		expect(spies.queueCompactionMessage).toHaveBeenCalledWith("queue while compacting via tab", "followUp");
-		expect(spies.prompt).not.toHaveBeenCalled();
-		expect(editor.getText()).toBe("");
-		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 	});
 
 	it("queues explicit message action during compaction", async () => {
