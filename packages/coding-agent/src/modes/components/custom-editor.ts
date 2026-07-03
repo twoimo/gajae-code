@@ -103,6 +103,10 @@ export class CustomEditor extends Editor {
 	onQueue?: () => void;
 	/** Called when Caps Lock is pressed. */
 	onCapsLock?: () => void;
+	/** Called when PageUp/PageDown should scroll the transcript viewport instead of prompt history. */
+	onViewportPageScroll?: (direction: -1 | 1) => void;
+	/** Called before regular composer input should return the transcript viewport to the live bottom. */
+	onViewportFollowLive?: () => void;
 
 	/** Custom key handlers from extensions and non-built-in app actions. */
 	#customKeyHandlers = new Map<KeyId, () => boolean | undefined>();
@@ -242,6 +246,20 @@ export class CustomEditor extends Editor {
 				}
 				return;
 			}
+		}
+		if (!this.isShowingAutocomplete()) {
+			if (matchesKey(data, "pageUp") && this.onViewportPageScroll) {
+				this.onViewportPageScroll(-1);
+				return;
+			}
+			if (matchesKey(data, "pageDown") && this.onViewportPageScroll) {
+				this.onViewportPageScroll(1);
+				return;
+			}
+		}
+
+		if (!matchesKey(data, "pageUp") && !matchesKey(data, "pageDown")) {
+			this.onViewportFollowLive?.();
 		}
 		// Intercept configured image paste (async - fires and handles result)
 		if (this.#matchesAction(data, "app.clipboard.pasteImage") && this.onPasteImage) {

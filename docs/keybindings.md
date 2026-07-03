@@ -52,6 +52,8 @@ Older unqualified action names are migrated when `keybindings.json` is loaded, b
 
 On native Windows terminals, GJC defaults `app.message.queue` to `Alt+Q` because Windows Terminal and PowerShell commonly reserve `Alt+Enter` for fullscreen before GJC can receive it. Users who prefer another chord can remap `app.message.queue` in `~/.gjc/agent/keybindings.json`.
 
+In the main GJC composer, plain `PageUp` / `PageDown` page the visible transcript viewport instead of browsing prompt history; use `Up` / `Down` or `Ctrl+R` for prompt history. Autocomplete and selector surfaces still use `PageUp` / `PageDown` for list paging while they have focus.
+
 ## Auditing default-key collisions
 
 Some default chords are intentionally reused across different UI contexts, where the focused component disambiguates them at dispatch time. For example `Enter` maps to both input submit and selection confirm, and `Ctrl+C` maps to both input copy and selection cancel. These are not conflicts — only one context is active at a time.

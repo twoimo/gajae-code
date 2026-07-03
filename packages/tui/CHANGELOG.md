@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Added manual transcript viewport paging support so applications can repaint older terminal output with PageUp/PageDown without reusing editor history navigation.
+
 - Empty select/settings lists now still honor cancel while preserving populated-list keybinding precedence, and settings lists keep selection indices clamped when items disappear or submenus close after list shrinkage.
 
 ### Fixed

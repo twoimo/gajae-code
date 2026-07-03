@@ -316,6 +316,10 @@ export class InputController {
 		this.ctx.editor.onTabDeclined = () => {
 			if (this.ctx.session.isStreaming || this.ctx.session.isCompacting) void this.handleQueueSubmit();
 		};
+		this.ctx.editor.onViewportPageScroll = direction => this.ctx.ui.scrollViewportPages(direction);
+		this.ctx.editor.onViewportFollowLive = () => {
+			this.ctx.ui.followLiveViewport();
+		};
 
 		this.ctx.editor.clearCustomKeyHandlers();
 		// Wire up extension shortcuts

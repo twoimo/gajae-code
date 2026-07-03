@@ -189,6 +189,60 @@ describe("CustomEditor queue keybinding", () => {
 		expect(onQueue).toHaveBeenCalledTimes(1);
 	});
 });
+describe("CustomEditor viewport paging", () => {
+	it("routes PageUp and PageDown to transcript scrolling instead of prompt history", () => {
+		const editor = createEditor();
+		const onViewportPageScroll = vi.fn((_direction: -1 | 1) => undefined);
+		editor.onViewportPageScroll = onViewportPageScroll;
+		editor.addToHistory("previous prompt");
+
+		editor.handleInput("\x1b[5~");
+		editor.handleInput("\x1b[6~");
+
+		expect(onViewportPageScroll).toHaveBeenNthCalledWith(1, -1);
+		expect(onViewportPageScroll).toHaveBeenNthCalledWith(2, 1);
+		expect(editor.getText()).toBe("");
+	});
+
+	it("keeps PageUp and PageDown available to autocomplete lists", async () => {
+		const editor = createEditor();
+		const onViewportPageScroll = vi.fn((_direction: -1 | 1) => undefined);
+		editor.onViewportPageScroll = onViewportPageScroll;
+		editor.setAutocompleteProvider({
+			async getSuggestions() {
+				return {
+					items: [
+						{ value: "alpha", label: "alpha" },
+						{ value: "beta", label: "beta" },
+					],
+					prefix: "/",
+				};
+			},
+			applyCompletion(lines, cursorLine, cursorCol) {
+				return { lines, cursorLine, cursorCol };
+			},
+		} satisfies AutocompleteProvider);
+
+		editor.handleInput("/");
+		await Bun.sleep(0);
+		editor.handleInput("\x1b[5~");
+		editor.handleInput("\x1b[6~");
+
+		expect(editor.isShowingAutocomplete()).toBe(true);
+		expect(onViewportPageScroll).not.toHaveBeenCalled();
+	});
+
+	it("returns the transcript viewport to live output before regular input", () => {
+		const editor = createEditor();
+		const onViewportFollowLive = vi.fn();
+		editor.onViewportFollowLive = onViewportFollowLive;
+
+		editor.handleInput("a");
+
+		expect(onViewportFollowLive).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("a");
+	});
+});
 
 describe("CustomEditor pasteImage default sourced from KEYBINDINGS", () => {
 	it("intercepts the registry's platform-aware pasteImage default (single source of truth)", () => {
