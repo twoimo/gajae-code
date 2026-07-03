@@ -1,0 +1,4 @@
+{"method":"initialize","params":{}}
+{"method":"initialized","params":{}}
+{"method":"thread/start","params":{"sessionId":"robogjc"}}
+{"method":"turn/interrupt","params":{"threadId":"thread-start","turnId":"turn-1"}}
