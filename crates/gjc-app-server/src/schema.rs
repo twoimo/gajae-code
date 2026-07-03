@@ -74,6 +74,17 @@ pub fn schema_bundle() -> serde_json::Value {
 		"UnattendedNegotiateParams".into(),
 		def::<crate::unattended::UnattendedNegotiateParams>(),
 	);
+	defs
+		.insert("HostUriSchemeDefinition".into(), def::<crate::host_uris::HostUriSchemeDefinition>());
+	defs
+		.insert("HostUriSchemesSetParams".into(), def::<crate::host_uris::HostUriSchemesSetParams>());
+	defs
+		.insert("HostUriSchemesSetResult".into(), def::<crate::host_uris::HostUriSchemesSetResult>());
+	defs.insert("HostUriOperation".into(), def::<crate::host_uris::HostUriOperation>());
+	defs.insert("HostUriRequestParams".into(), def::<crate::host_uris::HostUriRequestParams>());
+	defs.insert("HostUriCancelParams".into(), def::<crate::host_uris::HostUriCancelParams>());
+	defs.insert("HostUriResultParams".into(), def::<crate::host_uris::HostUriResultParams>());
+	defs.insert("HostUriResource".into(), def::<crate::host_uris::HostUriResource>());
 
 	serde_json::json!({
 		 "$schema": "https://json-schema.org/draft/2020-12/schema",
