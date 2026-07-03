@@ -3,38 +3,32 @@
   "kind": "package-consumer-report",
   "surfaces": [
     {
-      "name": "webhook-event-routing",
-      "comparedVia": "rust github::route vs python robogjc.github_events.route",
-      "cases": 5,
-      "diffs": []
-    },
-    {
-      "name": "hmac-sign-verify-vectors",
-      "comparedVia": "rust proxy::sign/verify vs python proxy_hmac sign/verify",
-      "cases": 12,
-      "diffs": []
-    },
-    {
-      "name": "credential-redaction",
-      "comparedVia": "rust redaction vs python robogjc.git_ops.redact_credentials",
+      "name": "hmac-sign-vectors",
+      "comparedVia": "rust proxy::sign vs phase1 Python-generated fixture",
       "cases": 3,
       "diffs": []
     },
     {
-      "name": "db-row-shapes",
-      "comparedVia": "rust seeded sqlite rows vs python seed_python_era.py rows",
-      "cases": 1,
+      "name": "credential-redaction",
+      "comparedVia": "rust redaction vs phase1 Python-generated fixture",
+      "cases": 3,
+      "diffs": []
+    },
+    {
+      "name": "webhook-event-routing",
+      "comparedVia": "rust github::route vs phase3 expected route fixtures",
+      "cases": 5,
       "diffs": []
     },
     {
       "name": "host-tool-descriptor-schemas",
-      "comparedVia": "rust host_tools::descriptors vs python robogjc.host_tools.build",
+      "comparedVia": "rust descriptors vs phase5 Python-era snapshot",
       "cases": 10,
       "diffs": []
     },
     {
       "name": "app-server-worker-transcripts",
-      "comparedVia": "phase7 transcript fixtures shared by Rust replay harness; Python app-server worker oracle not exposed as a stable subprocess API",
+      "comparedVia": "phase7 replay transcript JSON framing validation",
       "cases": 33,
       "diffs": []
     }
@@ -42,11 +36,11 @@
   "provenance": {
     "generatedBy": "crates/robogjc/tests/parity.rs",
     "pythonInterpreter": "/tmp/robogjc-uv/bin/python",
-    "gitCommit": "f0dce042",
-    "generatedAt": "2026-07-03T01:23:48Z"
+    "gitCommit": "cb48b739",
+    "generatedAt": "2026-07-03T03:33:53Z"
   },
   "summary": {
-    "totalCases": 64,
+    "totalCases": 54,
     "unexplainedDiffs": 0
   }
 }

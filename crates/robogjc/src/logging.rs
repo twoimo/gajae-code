@@ -432,6 +432,13 @@ mod tests {
 		reset_logging_for_tests();
 	}
 	#[test]
+	fn configure_logging_stdout_only_first_call_succeeds() {
+		let _guard = log_test_guard();
+		reset_logging_for_tests();
+		assert_eq!(configure_logging(None, Level::Info).unwrap(), true);
+		reset_logging_for_tests();
+	}
+	#[test]
 	fn configure_logging_writes_python_shaped_jsonl() {
 		let _guard = log_test_guard();
 		reset_logging_for_tests();
