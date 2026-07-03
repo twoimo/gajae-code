@@ -60,6 +60,20 @@ pub fn schema_bundle() -> serde_json::Value {
 		"WorkflowGateOpenedParams".into(),
 		def::<crate::workflow_gate::WorkflowGateOpenedParams>(),
 	);
+	defs.insert("RpcUnattendedBudget".into(), def::<crate::unattended::RpcUnattendedBudget>());
+	defs.insert(
+		"RpcUnattendedDeclaration".into(),
+		def::<crate::unattended::RpcUnattendedDeclaration>(),
+	);
+	defs.insert("RpcUnattendedAccepted".into(), def::<crate::unattended::RpcUnattendedAccepted>());
+	defs.insert("RpcBudgetExceeded".into(), def::<crate::unattended::RpcBudgetExceeded>());
+	defs.insert("RpcScopeDenied".into(), def::<crate::unattended::RpcScopeDenied>());
+	defs.insert("RpcActionDenied".into(), def::<crate::unattended::RpcActionDenied>());
+	defs.insert("RpcUnattendedRefused".into(), def::<crate::unattended::RpcUnattendedRefused>());
+	defs.insert(
+		"UnattendedNegotiateParams".into(),
+		def::<crate::unattended::UnattendedNegotiateParams>(),
+	);
 
 	serde_json::json!({
 		 "$schema": "https://json-schema.org/draft/2020-12/schema",

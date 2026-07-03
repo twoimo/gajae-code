@@ -323,6 +323,28 @@ impl WorkflowGateBroker {
 		Ok(resolution)
 	}
 
+	pub fn reject_pending_for_unattended_abort(&self, run_id: &str) {
+		let mut state = self.inner.lock();
+		let pending = state
+			.records
+			.iter()
+			.filter(|(_, r)| r.status == GateStatus::Pending)
+			.map(|(id, _)| id.clone())
+			.collect::<Vec<_>>();
+		for gate_id in pending {
+			if let Some(record) = state.records.get_mut(&gate_id) {
+				if let Some(tx) = record.tx.take() {
+					let _ = tx.send(serde_json::json!({
+						"code": "budget_exceeded",
+						"run_id": run_id,
+						"gate_id": gate_id,
+					}));
+				}
+				state.audit.push(serde_json::json!({"event":"gate_rejected_by_unattended_abort","gate_id":gate_id,"run_id":run_id}));
+			}
+		}
+	}
+
 	pub fn recover(&self) -> Vec<String> {
 		let mut state = self.inner.lock();
 		let mut recovered = Vec::new();

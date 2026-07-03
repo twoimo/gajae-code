@@ -43,6 +43,7 @@ struct ThreadEntry {
 	mutating_lane:  Arc<tokio::sync::Mutex<()>>,
 	host_tools:     Mutex<HostToolRegistry>,
 	workflow_gates: Mutex<crate::workflow_gate::WorkflowGateBroker>,
+	unattended:     Mutex<crate::unattended::UnattendedController>,
 }
 
 /// Per-connection handshake state.
@@ -439,14 +440,94 @@ impl AppServer {
 				Arc::clone(&entry.value().mutating_lane)
 			};
 			let _guard = lane.lock().await;
-			let result = self.dispatch_method(method, params).await;
+			let result = self.dispatch_with_unattended(method, params).await;
 			if let Some(entry) = self.threads.get(&thread_id) {
 				entry.value().admission.lock().dequeue_mutation();
 			}
 			return result;
 		}
 
-		self.dispatch_method(method, params).await
+		self.dispatch_with_unattended(method, params).await
+	}
+
+	async fn dispatch_with_unattended(
+		self: &Arc<Self>,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		if method == "gjc/unattended/negotiate" {
+			return self.handle_unattended_negotiate(method, params);
+		}
+		let thread_id = extract_thread_id(params.as_ref()).ok();
+		let mut charged_thread = None;
+		if let Some(thread_id) = thread_id.as_ref()
+			&& let Some(entry) = self.threads.get(thread_id)
+		{
+			let preflight =
+				entry
+					.value()
+					.unattended
+					.lock()
+					.preflight(thread_id, method, params.as_ref());
+			match preflight {
+				Ok(Some(outcome)) if outcome.charged => charged_thread = Some(thread_id.clone()),
+				Ok(_) => {},
+				Err(err) => {
+					if err
+						.data
+						.as_ref()
+						.and_then(|d| d.get("code"))
+						.and_then(|v| v.as_str())
+						== Some("budget_exceeded")
+					{
+						self.abort_unattended_thread(thread_id, &err).await;
+					}
+					return Err(err);
+				},
+			}
+		}
+		let result = self.dispatch_method(method, params).await;
+		if let Some(thread_id) = charged_thread {
+			let usage = if let Ok((backend, ctx)) = self.backend_and_ctx(&thread_id, Lane::Read) {
+				backend.usage_snapshot(&ctx).await.ok().flatten()
+			} else {
+				None
+			};
+			let reconcile = if let Some(entry) = self.threads.get(&thread_id) {
+				entry.value().unattended.lock().reconcile(usage)
+			} else {
+				Ok(())
+			};
+			if let Err(err) = reconcile {
+				self.abort_unattended_thread(&thread_id, &err).await;
+				return Err(err);
+			}
+		}
+		result
+	}
+
+	async fn abort_unattended_thread(&self, thread_id: &ThreadId, err: &AppServerError) {
+		let Some(entry) = self.threads.get(thread_id) else {
+			return;
+		};
+		let run_id = err
+			.data
+			.as_ref()
+			.and_then(|d| d.get("run_id"))
+			.and_then(|v| v.as_str())
+			.unwrap_or("unattended");
+		entry
+			.value()
+			.workflow_gates
+			.lock()
+			.reject_pending_for_unattended_abort(run_id);
+		let active_turn = entry.value().active_turn.lock().clone();
+		if let Some(turn_id) = active_turn
+			&& let Ok((backend, ctx)) = self.backend_and_ctx(thread_id, Lane::Cancel)
+		{
+			let _ = backend.abort(&ctx, &turn_id).await;
+		}
+		entry.value().unattended.lock().mark_abort_settled();
 	}
 
 	async fn dispatch_method(
@@ -479,6 +560,8 @@ impl AppServer {
 			"gjc/hostTools/update" => self.handle_host_tools_update(method, params),
 			"gjc/workflowGate/list" => self.handle_workflow_gate_list(method, params),
 			"gjc/workflowGate/respond" => self.handle_workflow_gate_respond(method, params),
+			"gjc/unattended/negotiate" => self.handle_unattended_negotiate(method, params),
+			"gjc/unattended/audit" => self.handle_unattended_audit(method, params),
 			other => Err(AppServerError::method_not_found(other)),
 		}
 	}
@@ -673,6 +756,75 @@ impl AppServer {
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
 
+	fn handle_unattended_negotiate(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "declaration"])?;
+		let params_value = params.unwrap_or(serde_json::Value::Null);
+		let declaration = params_value.get("declaration").ok_or_else(|| {
+			crate::unattended::negotiation_refusal(
+				"invalid_unattended_declaration",
+				"declaration is required",
+			)
+		})?;
+		let budget = declaration.get("budget").ok_or_else(|| {
+			crate::unattended::negotiation_refusal("incomplete_budget", "budget is required")
+		})?;
+		if let Some(budget_obj) = budget.as_object() {
+			for key in budget_obj.keys() {
+				if !matches!(
+					key.as_str(),
+					"max_tokens" | "max_tool_calls" | "max_wall_time_ms" | "max_cost_usd"
+				) {
+					return Err(crate::unattended::negotiation_refusal(
+						"unsupported_budget_metric",
+						format!("unsupported budget metric: {key}"),
+					));
+				}
+			}
+		}
+		let parsed: crate::unattended::UnattendedNegotiateParams =
+			serde_json::from_value(params_value).map_err(|err| {
+				let message = err.to_string();
+				let code = if message.contains("missing field `budget`")
+					|| message.contains("missing field `max_")
+				{
+					"incomplete_budget"
+				} else {
+					"invalid_unattended_declaration"
+				};
+				crate::unattended::negotiation_refusal(code, message)
+			})?;
+		let thread_id = ThreadId(parsed.thread_id);
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		let accepted = entry
+			.value()
+			.unattended
+			.lock()
+			.negotiate(&thread_id, parsed.declaration)?;
+		serde_json::to_value(accepted)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	fn handle_unattended_audit(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		Ok(serde_json::json!({ "events": entry.value().unattended.lock().audit() }))
+	}
+
 	async fn handle_gjc_state_read(
 		&self,
 		params: Option<serde_json::Value>,
@@ -863,6 +1015,7 @@ impl AppServer {
 			mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
 			host_tools: Mutex::new(HostToolRegistry::default()),
 			workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
+			unattended: Mutex::new(crate::unattended::UnattendedController::default()),
 		});
 		let mut thread = serde_json::json!({
 			"id": info.thread_id.0,
@@ -1026,6 +1179,15 @@ impl AppServer {
 			let result = backend
 				.prompt(&bg_ctx, params.unwrap_or(serde_json::Value::Null))
 				.await;
+			let usage = backend.usage_snapshot(&bg_ctx).await.ok().flatten();
+			let reconcile = if let Some(entry) = this.threads.get(&bg_thread) {
+				entry.value().unattended.lock().reconcile(usage)
+			} else {
+				Ok(())
+			};
+			if let Err(err) = reconcile {
+				this.abort_unattended_thread(&bg_thread, &err).await;
+			}
 			if let Err(err) = &result {
 				this.emit_backend_event(&BackendEvent {
 					thread_id:  bg_thread.clone(),
