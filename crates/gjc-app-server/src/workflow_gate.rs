@@ -186,6 +186,7 @@ struct GateRecord {
 enum GateStatus {
 	Pending,
 	Accepted,
+	Rejected,
 }
 
 impl WorkflowGateBroker {
@@ -247,6 +248,10 @@ impl WorkflowGateBroker {
 			.collect()
 	}
 
+	pub fn audit(&self) -> Vec<Value> {
+		self.inner.lock().audit.clone()
+	}
+
 	pub fn resolve(&self, response: RpcWorkflowGateResponse) -> Result<RpcWorkflowGateResolution> {
 		let mut state = self.inner.lock();
 		let Some(record) = state.records.get_mut(&response.gate_id) else {
@@ -283,6 +288,12 @@ impl WorkflowGateBroker {
 				serde_json::json!({"event":format!("gate_response_{code}"),"gate_id":response.gate_id}),
 			);
 			return Err(broker_error(code, &response.gate_id));
+		}
+		if record.status == GateStatus::Rejected {
+			state.audit.push(
+				serde_json::json!({"event":"gate_response_already_resolved","gate_id":response.gate_id}),
+			);
+			return Err(broker_error("already_resolved", &response.gate_id));
 		}
 		let answer_hash = sha256_hex(canonical_json(&response.answer).as_bytes());
 		let schema_hash = record.gate.schema_hash.clone();
@@ -333,13 +344,20 @@ impl WorkflowGateBroker {
 			.collect::<Vec<_>>();
 		for gate_id in pending {
 			if let Some(record) = state.records.get_mut(&gate_id) {
-				if let Some(tx) = record.tx.take() {
-					let _ = tx.send(serde_json::json!({
-						"code": "budget_exceeded",
-						"run_id": run_id,
-						"gate_id": gate_id,
-					}));
-				}
+				record.status = GateStatus::Rejected;
+				record.resolution = Some(RpcWorkflowGateResolution {
+					gate_id:     gate_id.clone(),
+					status:      "cancelled".to_string(),
+					answer_hash: String::new(),
+					resolved_at: now_string(),
+					error:       Some(RpcWorkflowGateValidationError {
+						code:        "unattended_aborted".to_string(),
+						gate_id:     gate_id.clone(),
+						schema_hash: record.gate.schema_hash.clone(),
+						errors:      Vec::new(),
+					}),
+				});
+				drop(record.tx.take());
 				state.audit.push(serde_json::json!({"event":"gate_rejected_by_unattended_abort","gate_id":gate_id,"run_id":run_id}));
 			}
 		}

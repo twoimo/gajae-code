@@ -45,6 +45,8 @@ export declare class AppServer {
   callHostTool(threadId: string, turnId: string | undefined | null, tool: string, argsJson: string): Promise<string>
   /** Return the currently accepted active turn id for a thread, if any. */
   activeTurnId(threadId: string): string | null
+  readHostUri(threadId: string, urlJson: string): Promise<string>
+  writeHostUri(threadId: string, urlJson: string, content: string): Promise<void>
   openWorkflowGate(threadId: string, inputJson: string): Promise<string>
   isWorkflowGateUnattended(threadId: string): boolean
   /** Push an opaque `gjc/notifications` frame to connected clients. */
