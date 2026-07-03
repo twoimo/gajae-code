@@ -673,7 +673,7 @@ pub fn parse_issue_payload(payload: &Value) -> Option<(RepoInfo, IssueInfo)> {
 	Some((repo, issue))
 }
 
-pub trait GitHubBackend {
+pub trait GitHubBackend: Send + Sync {
 	fn get_repo<'a>(
 		&'a self,
 		repo: &'a str,

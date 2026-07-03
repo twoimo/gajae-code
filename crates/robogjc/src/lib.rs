@@ -5,6 +5,7 @@ pub mod autoclose;
 pub mod cancellation;
 pub mod cli;
 pub mod config;
+pub mod dashboard;
 pub mod db;
 #[cfg(test)]
 mod fixture_harness;

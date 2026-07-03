@@ -17,12 +17,12 @@ use crate::{
 		Result as ClientResult, StdioTransport,
 	},
 	db::{Database, EventRow},
-	github::{GitHubClient, IssueInfo as GhIssueInfo, RepoInfo as GhRepoInfo},
+	github::{GitHubBackend, IssueInfo as GhIssueInfo, RepoInfo as GhRepoInfo},
 	host_tools,
 	natives_cache::{self, NativesCache},
 	persona,
 	queue::{TaskContext, TaskFuture, TaskWorker},
-	sandbox::{LocalGitTransport, Workspace},
+	sandbox::{GitTransport, Workspace},
 };
 
 pub type HostToolDispatcher =
@@ -32,8 +32,8 @@ type HostToolRuntimeFactory = Arc<dyn Fn(&EventRow) -> AppServerHostToolRuntime 
 #[derive(Clone)]
 pub struct AppServerHostToolRuntime {
 	pub db: Arc<Database>,
-	pub github: Arc<GitHubClient>,
-	pub git_transport: Arc<LocalGitTransport>,
+	pub github: Arc<dyn GitHubBackend>,
+	pub git_transport: Arc<dyn GitTransport>,
 	pub settings: Option<crate::config::Settings>,
 	pub author_name: String,
 	pub author_email: String,
@@ -126,8 +126,8 @@ impl<T: AppServerTransport> AppServerWorker<T> {
 		bindings: host_tools::ToolBindings<G, GT>,
 	) -> HostToolDispatcher
 	where
-		G: crate::github::GitHubBackend + Send + Sync + 'static,
-		GT: crate::sandbox::GitTransport + Send + Sync + 'static,
+		G: crate::github::GitHubBackend + ?Sized + 'static,
+		GT: crate::sandbox::GitTransport + ?Sized + 'static,
 	{
 		let bindings = Arc::new(bindings);
 		Arc::new(move |name, args| {
@@ -1013,6 +1013,7 @@ fn capture_natives_cache(config: &AppServerWorkerConfig, row: &EventRow) -> std:
 mod tests {
 	use super::*;
 	use crate::app_server_client::TransportFuture;
+	use crate::{github::GitHubClient, sandbox::LocalGitTransport};
 	use std::sync::{Arc, Mutex};
 
 	#[derive(Clone, Default)]

@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "kind": "black-box-api-receipt",
+  "cases": [
+    {
+      "name": "webhook missing HMAC rejected",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "webhook bad HMAC rejected",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "webhook stale/replayed-body HMAC rejected",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "valid signed webhook accepted",
+      "status": 202,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "duplicate delivery deduped",
+      "status": 202,
+      "eventsBefore": 1,
+      "eventsAfter": 1,
+      "passed": true
+    },
+    {
+      "name": "manual trigger missing token",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "manual trigger wrong token",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "replay missing token",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "cancel missing token",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "cancel wrong token",
+      "status": 401,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "dashboard index sentinel substitution hides replay token",
+      "passed": true
+    },
+    {
+      "name": "malformed webhook JSON rejected",
+      "status": 400,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "oversize webhook body rejected before enqueue",
+      "status": 413,
+      "passed": true,
+      "secretFree": true
+    },
+    {
+      "name": "unsupported event acknowledged without queued work",
+      "status": 202,
+      "eventsBefore": 1,
+      "eventsAfter": 2,
+      "storedState": "skipped",
+      "passed": true
+    },
+    {
+      "name": "/healthz semantics",
+      "status": 200,
+      "body": {
+        "status": "ok"
+      },
+      "passed": true
+    },
+    {
+      "name": "/readyz semantics",
+      "status": 200,
+      "body": {
+        "status": "ready"
+      },
+      "passed": true
+    },
+    {
+      "name": "log endpoint recovers raw malformed lines",
+      "passed": true
+    },
+    {
+      "name": "static path traversal denied",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "name": "PAT/replay token absent from error bodies and log endpoint",
+      "passed": true
+    }
+  ],
+  "commands": [
+    {
+      "cmd": [
+        "cargo",
+        "test",
+        "-p",
+        "robogjc",
+        "--test",
+        "g009_server_redteam",
+        "--",
+        "--nocapture"
+      ],
+      "purpose": "live 127.0.0.1:0 axum security-route red team"
+    }
+  ],
+  "summary": {
+    "passed": 19,
+    "failed": 0,
+    "pythonComparison": "not_run: Python server fixture was not required to find Rust security-route regressions in these black-box cases"
+  }
+}

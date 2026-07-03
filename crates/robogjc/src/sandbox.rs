@@ -100,7 +100,7 @@ pub fn rename_workspace_branch(
 	Ok(new_branch)
 }
 
-pub trait GitTransport {
+pub trait GitTransport: Send + Sync {
 	fn clone_pool(
 		&self,
 		repo: &str,

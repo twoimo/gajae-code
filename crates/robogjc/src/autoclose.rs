@@ -13,7 +13,7 @@ use std::{
 use crate::{
 	config::Settings,
 	db::{Database, DbResult, PendingClosureRow},
-	github::{GitHubError, ReactionInfo},
+	github::{GitHubBackend, GitHubError, ReactionInfo},
 };
 
 pub type GithubFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, GitHubError>> + Send + 'a>>;
@@ -32,6 +32,24 @@ pub trait AutocloseGithub: Send + Sync + 'static {
 	) -> GithubFuture<'a, ()>;
 }
 
+impl<T: GitHubBackend + ?Sized + 'static> AutocloseGithub for T {
+	fn list_comment_reactions<'a>(
+		&'a self,
+		repo: &'a str,
+		comment_id: i64,
+	) -> GithubFuture<'a, Vec<ReactionInfo>> {
+		GitHubBackend::list_comment_reactions(self, repo, comment_id)
+	}
+	fn close_issue<'a>(
+		&'a self,
+		repo: &'a str,
+		number: i64,
+		reason: &'a str,
+	) -> GithubFuture<'a, ()> {
+		GitHubBackend::close_issue(self, repo, number, reason)
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutocloseCounts {
 	pub closed: usize,
@@ -39,7 +57,7 @@ pub struct AutocloseCounts {
 	pub retried: usize,
 }
 
-pub struct AutocloseScheduler<G: AutocloseGithub> {
+pub struct AutocloseScheduler<G: AutocloseGithub + ?Sized> {
 	settings: Settings,
 	db: Arc<Database>,
 	github: Arc<G>,
@@ -49,7 +67,7 @@ pub struct AutocloseScheduler<G: AutocloseGithub> {
 	now: Arc<dyn Fn() -> String + Send + Sync>,
 }
 
-impl<G: AutocloseGithub> AutocloseScheduler<G> {
+impl<G: AutocloseGithub + ?Sized> AutocloseScheduler<G> {
 	pub fn new(settings: Settings, db: Arc<Database>, github: Arc<G>) -> Self {
 		Self::with_now(settings, db, github, Arc::new(utcnow_iso))
 	}
@@ -113,12 +131,12 @@ impl<G: AutocloseGithub> AutocloseScheduler<G> {
 	}
 }
 
-struct Tick<G: AutocloseGithub> {
+struct Tick<G: AutocloseGithub + ?Sized> {
 	db: Arc<Database>,
 	github: Arc<G>,
 	now: Arc<dyn Fn() -> String + Send + Sync>,
 }
-impl<G: AutocloseGithub> Tick<G> {
+impl<G: AutocloseGithub + ?Sized> Tick<G> {
 	async fn tick(&self) -> DbResult<AutocloseCounts> {
 		let rows = self.db.claim_due_closures(&(self.now)(), 100)?;
 		let mut c = AutocloseCounts { closed: 0, cancelled: 0, retried: 0 };

@@ -28,11 +28,13 @@ services:
     # before SIGKILL. Defaults: 25 + 5 = 30s.
     stop_grace_period: 30s
     restart: unless-stopped
+    command: ["robogjc", "serve"]
     environment:
-      # --- gh-proxy channel ---
-      # The orchestrator NEVER holds GITHUB_TOKEN; it talks to the sibling
-      # gh-proxy container over the internal-only network.
-      ROBGJC_GH_PROXY_URL: http://gh-proxy:8081
+      # --- GitHub auth ---
+      # Phase 8 Rust cutover: this Rust service is the active mutating webhook
+      # consumer, but it must never hold the PAT. All GitHub API and git
+      # transport calls go through the HMAC-protected gh-proxy sidecar.
+      ROBGJC_GH_PROXY_URL: ${ROBGJC_GH_PROXY_URL:-http://gh-proxy:8081}
       ROBGJC_GH_PROXY_HMAC_KEY: ${ROBGJC_GH_PROXY_HMAC_KEY:?ROBGJC_GH_PROXY_HMAC_KEY must be set in .env}
 
       # --- webhook + identity ---
