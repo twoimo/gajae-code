@@ -66,7 +66,11 @@ GATE_SERVER = textwrap.dedent(
 
 class WorkflowGateClientTest(unittest.TestCase):
     def make_client(self, server: str = GATE_SERVER) -> RpcClient:
-        return RpcClient(command=[sys.executable, "-u", "-c", server], startup_timeout=2.0, request_timeout=2.0)
+        return RpcClient(
+            command=[sys.executable, "-u", "-c", server],
+            startup_timeout=2.0,
+            request_timeout=2.0,
+        )
 
     def test_on_workflow_gate_receives_typed_gate(self) -> None:
         client = self.make_client()
@@ -85,7 +89,11 @@ class WorkflowGateClientTest(unittest.TestCase):
         client = self.make_client()
         client.start()
         try:
-            resolution = client.respond_gate("wg_test_ralplan_000001", {"decision": "approve"}, idempotency_key="idem-1")
+            resolution = client.respond_gate(
+                "wg_test_ralplan_000001",
+                {"decision": "approve"},
+                idempotency_key="idem-1",
+            )
             self.assertEqual(resolution["gate_id"], "wg_test_ralplan_000001")
             self.assertEqual(resolution["status"], "accepted")
             self.assertEqual(resolution["answer_hash"], "sha256:test")
@@ -103,7 +111,11 @@ class WorkflowGateClientTest(unittest.TestCase):
             done.set()
 
         client.on_extension_error(on_error)
-        client.run_workflow_gate_policy(lambda gate: {"decision": "approve"} if gate.kind == "approval" else {"selected": []})
+        client.run_workflow_gate_policy(
+            lambda gate: (
+                {"decision": "approve"} if gate.kind == "approval" else {"selected": []}
+            )
+        )
         client.start()
         try:
             self.assertTrue(done.wait(timeout=2.0))

@@ -23,7 +23,6 @@ from gjc_rpc import (
 )
 
 
-
 class ProtocolParsingTests(unittest.TestCase):
     def test_parse_session_state(self) -> None:
         state = parse_session_state(
@@ -104,7 +103,10 @@ class ProtocolParsingTests(unittest.TestCase):
                 "session_id": "s",
                 "seq": 1,
                 "frame_id": "f",
-                "payload": {"event_type": "agent_start", "event": {"type": "agent_start"}},
+                "payload": {
+                    "event_type": "agent_start",
+                    "event": {"type": "agent_start"},
+                },
             }
         )
 
@@ -140,12 +142,21 @@ class ProtocolParsingTests(unittest.TestCase):
             ("turn_start", {"type": "turn_start"}, TurnStartEvent),
             (
                 "auto_compaction_start",
-                {"type": "auto_compaction_start", "reason": "threshold", "action": "context-full"},
+                {
+                    "type": "auto_compaction_start",
+                    "reason": "threshold",
+                    "action": "context-full",
+                },
                 AutoCompactionStartEvent,
             ),
             (
                 "tool_execution_start",
-                {"type": "tool_execution_start", "toolCallId": "tool-2", "toolName": "bash", "args": {}},
+                {
+                    "type": "tool_execution_start",
+                    "toolCallId": "tool-2",
+                    "toolName": "bash",
+                    "args": {},
+                },
                 ToolExecutionStartEvent,
             ),
         ]
@@ -172,7 +183,10 @@ class ProtocolParsingTests(unittest.TestCase):
             "session_id": "s",
             "seq": 3,
             "frame_id": "f-unknown",
-            "payload": {"event_type": "future_event", "event": {"type": "future_event", "extra": True}},
+            "payload": {
+                "event_type": "future_event",
+                "event": {"type": "future_event", "extra": True},
+            },
         }
         notification = parse_notification(payload)
 
@@ -181,7 +195,13 @@ class ProtocolParsingTests(unittest.TestCase):
 
     def test_parse_wrapped_event_missing_payload_event_as_unknown(self) -> None:
         for payload in (
-            {"type": "event", "protocol_version": 2, "session_id": "s", "seq": 4, "frame_id": "f-missing"},
+            {
+                "type": "event",
+                "protocol_version": 2,
+                "session_id": "s",
+                "seq": 4,
+                "frame_id": "f-missing",
+            },
             {
                 "type": "event",
                 "protocol_version": 2,
@@ -236,6 +256,7 @@ class ProtocolParsingTests(unittest.TestCase):
 
         self.assertIsInstance(notification, UnknownNotification)
         self.assertEqual(notification.payload, payload)
+
     def test_parse_wrapped_agent_end_notification(self) -> None:
         notification = parse_notification(
             {
@@ -299,7 +320,6 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertTrue(notification.is_interactive())
         self.assertTrue(notification.requires_response())
         self.assertFalse(notification.is_passive())
-
 
     def test_parse_workflow_gate_event(self) -> None:
         gate = parse_workflow_gate_event(
@@ -421,7 +441,9 @@ class ProtocolParsingTests(unittest.TestCase):
         )
         self.assertEqual(state.system_prompt, ())
 
-    def test_parse_session_state_rejects_non_string_in_system_prompt_array(self) -> None:
+    def test_parse_session_state_rejects_non_string_in_system_prompt_array(
+        self,
+    ) -> None:
         with self.assertRaises(ValueError):
             parse_session_state(
                 {
@@ -447,7 +469,9 @@ class ProtocolParsingTests(unittest.TestCase):
 
     def test_parse_extension_ui_request_rejects_invalid_method(self) -> None:
         with self.assertRaises(ValueError):
-            parse_notification({"type": "extension_ui_request", "id": "ui-1", "method": "launch"})
+            parse_notification(
+                {"type": "extension_ui_request", "id": "ui-1", "method": "launch"}
+            )
 
     def test_parse_message_update_rejects_invalid_assistant_done_reason(self) -> None:
         with self.assertRaises(ValueError):

@@ -63,12 +63,12 @@ describe("planTasks command shape (issue #622)", () => {
 		expect(lint?.command).toEqual([
 			"bash",
 			"-lc",
-			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc && python3 -m ruff check python/gjc-rpc && python3 -m ruff format --check python/gjc-rpc",
+			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e 'python/gjc-rpc[dev]' && python3 -m ruff check python/gjc-rpc && python3 -m ruff format --check python/gjc-rpc",
 		]);
 		expect(runTest?.command).toEqual([
 			"bash",
 			"-lc",
-			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc && python3 -m pytest -x --import-mode=importlib python/gjc-rpc/tests",
+			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e 'python/gjc-rpc[dev]' && python3 -m pytest -x --import-mode=importlib python/gjc-rpc/tests",
 		]);
 	});
 });

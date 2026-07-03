@@ -13,7 +13,9 @@ def _write(directory: Path, name: str, payload: dict[str, object]) -> None:
     (directory / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _record(session_id: str, pid: int, started_at: str, **extra: object) -> dict[str, object]:
+def _record(
+    session_id: str, pid: int, started_at: str, **extra: object
+) -> dict[str, object]:
     return {
         "sessionId": session_id,
         "pid": pid,
@@ -28,7 +30,11 @@ class RegistryTests(unittest.TestCase):
     def test_lists_live_and_reaps_dead(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            _write(directory, "alive", _record("alive", os.getpid(), "2026-01-01T00:00:00Z", model="m"))
+            _write(
+                directory,
+                "alive",
+                _record("alive", os.getpid(), "2026-01-01T00:00:00Z", model="m"),
+            )
             _write(directory, "dead", _record("dead", 2**30, "2026-01-02T00:00:00Z"))
             sessions = list_sessions(sessions_dir=directory)
             self.assertEqual([s.session_id for s in sessions], ["alive"])
@@ -48,8 +54,12 @@ class RegistryTests(unittest.TestCase):
     def test_sorts_by_started_at(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            _write(directory, "b", _record("second", os.getpid(), "2026-02-01T00:00:00Z"))
-            _write(directory, "a", _record("first", os.getpid(), "2026-01-01T00:00:00Z"))
+            _write(
+                directory, "b", _record("second", os.getpid(), "2026-02-01T00:00:00Z")
+            )
+            _write(
+                directory, "a", _record("first", os.getpid(), "2026-01-01T00:00:00Z")
+            )
             sessions = list_sessions(sessions_dir=directory)
             self.assertEqual([s.session_id for s in sessions], ["first", "second"])
 

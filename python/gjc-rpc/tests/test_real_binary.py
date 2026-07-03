@@ -28,7 +28,9 @@ _ENABLED = (
 )
 
 
-@unittest.skipUnless(_ENABLED, "set GJC_RPC_REAL_BINARY=1 with bun on PATH to run the real-binary lane")
+@unittest.skipUnless(
+    _ENABLED, "set GJC_RPC_REAL_BINARY=1 with bun on PATH to run the real-binary lane"
+)
 class RealBinaryRpcTest(unittest.TestCase):
     def _client(self, tmp: str) -> RpcClient:
         env = dict(os.environ)

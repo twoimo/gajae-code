@@ -31,11 +31,13 @@ pub fn render_index(replay_enabled: bool) -> Result<String, String> {
 	let index = static_dir().join("index.html");
 	let template = fs::read_to_string(&index)
 		.map_err(|err| format!("frontend bundle missing at {}: {err}", index.display()))?;
+	substitute_config(&template, replay_enabled)
+		.map_err(|err| format!("frontend bundle at {}: {err}", index.display()))
+}
+
+fn substitute_config(template: &str, replay_enabled: bool) -> Result<String, String> {
 	if !template.contains(CONFIG_SENTINEL) {
-		return Err(format!(
-			"frontend bundle at {} is missing the {CONFIG_SENTINEL} sentinel",
-			index.display()
-		));
+		return Err(format!("missing the {CONFIG_SENTINEL} sentinel"));
 	}
 	let payload = serde_json::to_string(&json!({ "replayEnabled": replay_enabled }))
 		.map_err(|err| err.to_string())?
@@ -119,5 +121,20 @@ mod tests {
 		let rows = tail_jsonl(&path, 10);
 		assert_eq!(rows.len(), 3);
 		assert_eq!(rows[1]["level"], "RAW");
+	}
+
+	#[test]
+	fn substitute_config_replaces_sentinel_without_leaking() {
+		let template = "<script>window.cfg = __ROBGJC_CONFIG__;</script>";
+		let out = substitute_config(template, true).unwrap();
+		assert!(out.contains("\"replayEnabled\":true"));
+		assert!(!out.contains(CONFIG_SENTINEL));
+		let disabled = substitute_config(template, false).unwrap();
+		assert!(disabled.contains("\"replayEnabled\":false"));
+	}
+
+	#[test]
+	fn substitute_config_errors_without_sentinel() {
+		assert!(substitute_config("<html>no sentinel</html>", true).is_err());
 	}
 }
