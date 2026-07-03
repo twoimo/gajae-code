@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "gjc-app-server"
-version = "0.7.9"
+version = "0.7.11"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "robogjc"
-version = "0.7.9"
+version = "0.7.11"
 dependencies = [
  "axum",
  "base64",
