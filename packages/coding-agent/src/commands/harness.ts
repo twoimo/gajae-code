@@ -33,13 +33,13 @@ import {
 	replaceOwnerGenerationSync,
 	type TmuxServerProof,
 } from "../gjc-runtime/tmux-owner-isolation";
+import { createHarnessRpc } from "../harness-control-plane/adapter-factory";
 import { classifyRecovery } from "../harness-control-plane/classifier";
 import { callEndpoint, EndpointUnreachableError } from "../harness-control-plane/control-endpoint";
 import { type ResolvedOwner, RuntimeOwner, resolveOwner, resolveOwnerLive } from "../harness-control-plane/owner";
 import { preserveDirtyWorktree } from "../harness-control-plane/preserve";
 import { RECEIPT_SPOOL_DIR_ENV } from "../harness-control-plane/receipt-spool";
 import { buildReceipt, requiresVanishBeforeAction, type VanishEvidence } from "../harness-control-plane/receipts";
-import { GajaeCodeRpc } from "../harness-control-plane/rpc-adapter";
 import { classifyLeaseStatus, readLease } from "../harness-control-plane/session-lease";
 import { buildResponse, buildStateView, submitUnavailableReason } from "../harness-control-plane/state-machine";
 import {
@@ -262,7 +262,7 @@ interface CompletedTerminalEvent {
 function completedTerminalEvent(events: EventEnvelope[]): CompletedTerminalEvent | null {
 	for (const event of [...events].reverse()) {
 		const signal = (event.evidence as { signal?: unknown } | undefined)?.signal;
-		if (event.kind === "rpc_agent_completed" || signal === "completed") {
+		if (event.kind === "agent_wire_agent_completed" || signal === "completed") {
 			return { cursor: event.cursor, createdAt: event.createdAt, kind: event.kind };
 		}
 	}
@@ -317,8 +317,8 @@ interface OwnerExitEvidence {
 	terminal: boolean;
 	/** True when the owner process is provably alive (live lease + fresh heartbeat) but the endpoint did not route. */
 	transient: boolean;
-	/** ISO timestamp of the most recent non-terminal RPC-derived owner event, if any (observability only). */
-	lastRpcActivityAt: string | null;
+	/** ISO timestamp of the most recent non-terminal transport-derived owner event, if any (observability only). */
+	lastTransportActivityAt: string | null;
 	/**
 	 * True when the owner started (reported live) but died before accepting the first prompt.
 	 * This is a startup blocker, not a healthy live gate: callers must recover before submit.
@@ -353,18 +353,22 @@ async function buildOwnerExitEvidence(root: string, state: SessionState): Promis
 	let lastSignal: string | null = null;
 	let promptAcceptedSeen = false;
 	let completedSeen = false;
-	let lastRpcActivityAt: string | null = null;
+	let lastTransportActivityAt: string | null = null;
 	for (const event of events) {
 		const signal = (event.evidence as { signal?: unknown } | undefined)?.signal;
 		if (typeof signal === "string") lastSignal = signal;
 		if (event.kind === "prompt_accepted" || signal === "prompt-accepted") promptAcceptedSeen = true;
-		if (event.kind === "rpc_agent_completed" || signal === "completed") completedSeen = true;
+		if (event.kind === "agent_wire_agent_completed" || signal === "completed") completedSeen = true;
 		// Terminal completion/failure frames are NOT owner liveness — exclude them from activity.
-		if (event.kind.startsWith("rpc_") && event.kind !== "rpc_agent_completed" && event.kind !== "rpc_agent_failed") {
-			lastRpcActivityAt = event.createdAt;
+		if (
+			event.kind.startsWith("agent_wire_") &&
+			event.kind !== "agent_wire_agent_completed" &&
+			event.kind !== "agent_wire_agent_failed"
+		) {
+			lastTransportActivityAt = event.createdAt;
 		}
 	}
-	// Owner liveness is the lease heartbeat, never RPC frames: a "live" lease means the owner process
+	// Owner liveness is the lease heartbeat, never transport frames: a "live" lease means the owner process
 	// is alive and heartbeating within TTL, so a failed endpoint call is a transient observation gap.
 	// Real owner loss (missing/dead lease) stays terminal and keeps its original reason string so
 	// existing consumers that match on the reason continue to escalate.
@@ -402,7 +406,7 @@ async function buildOwnerExitEvidence(root: string, state: SessionState): Promis
 		completedSeen,
 		terminal,
 		transient,
-		lastRpcActivityAt,
+		lastTransportActivityAt,
 		startupBlocker,
 		recoveryGuidance: ownerExitGuidance(reason, startupBlocker),
 	};
@@ -802,17 +806,14 @@ export default class Harness extends Command {
 	async #runOwner(root: string, input: Record<string, unknown>, flagSession: string | undefined): Promise<void> {
 		const sessionId = requireSessionId(input, flagSession);
 		const sessionDir = sessionPaths(root, sessionId).gjcSessionDir;
-		// Optional rpc command override (tests / non-default hosts); defaults to `gjc --mode rpc`.
-		const override = process.env.GJC_HARNESS_RPC_COMMAND;
-		const command = override ? (JSON.parse(override) as string[]) : undefined;
-		// Mark the RPC owner as a GJC-spawned child (canonical provenance marker)
-		// so `notifications.sessionScope = "primary"` suppresses its notification
-		// endpoint/topic; default `all` preserves historical auto-on behavior.
-		const rpc = new GajaeCodeRpc({
+		// App-server command override (tests / non-default hosts); parsed by the app-server adapter.
+		// Mark the owner as a GJC-spawned child so primary-session notification scope
+		// suppresses its endpoint while preserving the historical all-session default.
+		const rpc = createHarnessRpc({
 			sessionDir,
-			command,
 			env: { ...process.env, [SPAWN_PROVENANCE_ENV]: sessionId },
 		});
+		await rpc.ready?.();
 		const owner = new RuntimeOwner({ root, sessionId, rpc });
 		const info = await owner.start();
 		writeJson({ ok: true, owner: info });
@@ -1008,8 +1009,11 @@ export default class Harness extends Command {
 		];
 		if (process.env[RECEIPT_SPOOL_DIR_ENV])
 			envAssignments.push(`${RECEIPT_SPOOL_DIR_ENV}=${shellQuote(process.env[RECEIPT_SPOOL_DIR_ENV])}`);
-		if (process.env.GJC_HARNESS_RPC_COMMAND)
-			envAssignments.push(`GJC_HARNESS_RPC_COMMAND=${shellQuote(process.env.GJC_HARNESS_RPC_COMMAND)}`);
+		if (process.env.GJC_HARNESS_APP_SERVER_COMMAND) {
+			envAssignments.push(
+				`GJC_HARNESS_APP_SERVER_COMMAND=${shellQuote(process.env.GJC_HARNESS_APP_SERVER_COMMAND)}`,
+			);
+		}
 		if (process.env.GJC_HARNESS_TEST_NODE_MODULES)
 			envAssignments.push(`GJC_HARNESS_TEST_NODE_MODULES=${shellQuote(process.env.GJC_HARNESS_TEST_NODE_MODULES)}`);
 		const shellCommand = `exec env ${envAssignments.join(" ")} ${this.#buildOwnerCommand(sessionId).map(shellQuote).join(" ")}`;
@@ -1213,6 +1217,9 @@ export default class Harness extends Command {
 				...(process.env[RECEIPT_SPOOL_DIR_ENV]
 					? { [RECEIPT_SPOOL_DIR_ENV]: process.env[RECEIPT_SPOOL_DIR_ENV] }
 					: {}),
+				...(process.env.GJC_HARNESS_APP_SERVER_COMMAND
+					? { GJC_HARNESS_APP_SERVER_COMMAND: process.env.GJC_HARNESS_APP_SERVER_COMMAND }
+					: {}),
 				...(process.env.GJC_HARNESS_TEST_NODE_MODULES
 					? { GJC_HARNESS_TEST_NODE_MODULES: process.env.GJC_HARNESS_TEST_NODE_MODULES }
 					: {}),
@@ -1274,7 +1281,11 @@ export default class Harness extends Command {
 			base: typeof input.base === "string" ? input.base : null,
 			issueOrPr: preflight.normalizedIssueOrPr,
 			processHandle: { kind: "runtime-owner", ownerId: null, pid: null },
-			rpcHandle: { kind: "rpc-subprocess", pid: null, sessionDir: `${root}/sessions/${sessionId}/gjc-session` },
+			appServerHandle: {
+				kind: "app-server-subprocess",
+				pid: null,
+				sessionDir: `${root}/sessions/${sessionId}/gjc-session`,
+			},
 			ownerHandle: { leasePath, endpoint: null, heartbeatAt: null },
 			routerHandle: { kind: "default-in-owner", policy: "default-fallback", eventsPath },
 			viewportHandle: { kind: "event-monitor", tmuxSessionName: null, viewOnly: true },

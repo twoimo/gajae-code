@@ -163,7 +163,7 @@ export interface VanishEvidence {
 
 export interface PromptAcceptanceEvidence {
 	promptSha256: string;
-	rpcCommandId: string;
+	transportCommandId: string;
 	preSubmitState: { isStreaming: boolean; steeringQueueDepth: number; followupQueueDepth: number };
 	preSubmitCursor: number;
 	agentStartCursor: number;

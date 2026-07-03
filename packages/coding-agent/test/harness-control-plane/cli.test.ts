@@ -125,7 +125,7 @@ async function appendSignal(sessionId: string, cursor: number, signal: string): 
 		cursor,
 		createdAt: `2026-06-03T00:00:0${cursor}.000Z`,
 		severity: "info",
-		kind: `rpc_${signal.replaceAll("-", "_")}`,
+		kind: `agent_wire_${signal.replaceAll("-", "_")}`,
 		state: { sessionId, lifecycle: "observing", harness: "gajae-code", ownerLive: true, blockers: [] },
 		evidence: { signal },
 		nextAllowedActions: [],
@@ -375,7 +375,7 @@ describe("gjc harness CLI (foundation)", () => {
 			cursor: 1,
 			createdAt: "2026-06-03T00:00:01.000Z",
 			severity: "info",
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 			state: { sessionId, lifecycle: "finalizing", harness: "gajae-code", ownerLive: true, blockers: [] },
 			evidence: { signal: "completed", outcome: "completed" },
 			nextAllowedActions: [],
@@ -393,13 +393,13 @@ describe("gjc harness CLI (foundation)", () => {
 		expect(res.json.evidence.terminalResult).toEqual({
 			cursor: 1,
 			createdAt: "2026-06-03T00:00:01.000Z",
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 		});
 		expect(res.json.evidence.observation.observedSignals).toContain("completed");
 		expect(res.json.evidence.observation.lastActivityAt).toBe("2026-06-03T00:00:01.000Z");
 	});
 
-	it("observe treats terminal rpc_agent_completed kind without completed signal as completed owner exit", async () => {
+	it("observe treats terminal agent_wire_agent_completed kind without completed signal as completed owner exit", async () => {
 		await initCleanGitWorkspace();
 		const started = runHarness(["start", "--input", JSON.stringify({ harness: "gajae-code", workspace })]);
 		const sessionId = started.json.evidence.handle.sessionId as string;
@@ -417,7 +417,7 @@ describe("gjc harness CLI (foundation)", () => {
 			cursor: 4,
 			createdAt: "2026-06-03T00:00:04.000Z",
 			severity: "info",
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 			state: { sessionId, lifecycle: "finalizing", harness: "gajae-code", ownerLive: true, blockers: [] },
 			evidence: { outcome: "completed" },
 			nextAllowedActions: [],
@@ -437,7 +437,7 @@ describe("gjc harness CLI (foundation)", () => {
 		expect(res.json.evidence.terminalResult).toEqual({
 			cursor: 4,
 			createdAt: "2026-06-03T00:00:04.000Z",
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 		});
 		expect(res.json.evidence.observation.observedSignals).toEqual(
 			expect.arrayContaining(["prompt-accepted", "tool-call", "streaming"]),
@@ -465,7 +465,7 @@ describe("gjc harness CLI (foundation)", () => {
 			cursor: 1,
 			createdAt: "2026-06-03T00:00:01.000Z",
 			severity: "info",
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 			state: { sessionId, lifecycle: "finalizing", harness: "gajae-code", ownerLive: true, blockers: [] },
 			evidence: { outcome: "completed" },
 			nextAllowedActions: [],
@@ -579,7 +579,7 @@ describe("gjc harness CLI (foundation)", () => {
 		expect(res.json.evidence.ownerExit).toMatchObject({
 			reason: "owner-exited-after-prompt-acceptance",
 			leaseStatus: "missing",
-			lastEventKind: "rpc_tool_call",
+			lastEventKind: "agent_wire_tool_call",
 			lastSignal: "tool-call",
 			promptAcceptedSeen: true,
 			completedSeen: false,
@@ -635,7 +635,7 @@ describe("gjc harness CLI (foundation)", () => {
 		expect(events.json.evidence.events).toHaveLength(1);
 	});
 
-	it("monitor distinguishes a transient endpoint gap from terminal owner loss when RPC activity continues", async () => {
+	it("monitor distinguishes a transient endpoint gap from terminal owner loss when transport activity continues", async () => {
 		await initCleanGitWorkspace();
 		const started = runHarness(["start", "--input", JSON.stringify({ harness: "gajae-code", workspace })]);
 		const sessionId = started.json.evidence.handle.sessionId as string;
@@ -663,7 +663,7 @@ describe("gjc harness CLI (foundation)", () => {
 			cursor: 1,
 			createdAt: new Date(nowMs).toISOString(),
 			severity: "info",
-			kind: "rpc_activity",
+			kind: "agent_wire_activity",
 			state: { sessionId, lifecycle: "observing", harness: "gajae-code", ownerLive: true, blockers: [] },
 			evidence: { coalescedFrames: 3 },
 			nextAllowedActions: [],
@@ -680,7 +680,7 @@ describe("gjc harness CLI (foundation)", () => {
 			terminal: false,
 			transient: true,
 		});
-		expect(monitored.json.evidence.ownerExit.lastRpcActivityAt).toBeTruthy();
+		expect(monitored.json.evidence.ownerExit.lastTransportActivityAt).toBeTruthy();
 	});
 
 	it("monitor does not treat a terminal completion frame as owner liveness (no transient masking)", async () => {
@@ -697,7 +697,7 @@ describe("gjc harness CLI (foundation)", () => {
 			cursor: 1,
 			createdAt: new Date().toISOString(),
 			severity: "info",
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 			state: { sessionId, lifecycle: "observing", harness: "gajae-code", ownerLive: true, blockers: [] },
 			evidence: { outcome: "completed", signal: "completed" },
 			nextAllowedActions: [],
@@ -709,7 +709,7 @@ describe("gjc harness CLI (foundation)", () => {
 		expect(monitored.json.evidence.ownerExit.terminal).toBe(true);
 		expect(monitored.json.evidence.ownerExit.transient).toBe(false);
 		// Completion frames are excluded from activity, so they cannot fabricate liveness.
-		expect(monitored.json.evidence.ownerExit.lastRpcActivityAt).toBeNull();
+		expect(monitored.json.evidence.ownerExit.lastTransportActivityAt).toBeNull();
 	});
 
 	it("submit is blocked (accepted:false, owner-not-live) and never echoed-as-accepted", () => {

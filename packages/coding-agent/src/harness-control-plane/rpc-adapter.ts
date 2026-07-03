@@ -1,106 +1,17 @@
 /**
- * gajae-code RPC adapter + single-flight acceptance.
+ * gajae-code transport adapter.
  *
  * The gajae-code harness is driven via `gjc --mode rpc` (see docs/rpc.md). Acceptance
  * is a PROTOCOL FACT, not an echo: a prompt is `accepted` only when the RPC command is
  * acked AND the next `agent_start` event arrives after the pre-submit cursor within the
  * timeout, with an idle + empty-queue pre-state. Ack alone never means accepted.
  *
- * The acceptance logic ({@link singleFlightAccept}) is decoupled from the transport via
- * the {@link HarnessRpc} interface so it is unit-testable with a fake, while
- * {@link GajaeCodeRpc} provides the real `gjc --mode rpc` subprocess implementation
- * (exercised by the M10 e2e suite).
+ * The neutral acceptance contract lives in adapter-contract.ts.
+ * {@link GajaeCodeRpc} provides the legacy `gjc --mode rpc` subprocess implementation.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-
-export interface RpcStateSnapshot {
-	isStreaming: boolean;
-	steeringQueueDepth: number;
-	followupQueueDepth: number;
-}
-
-/** Abstract handle to a live gajae-code RPC session. */
-export interface HarnessRpc {
-	getState(): Promise<RpcStateSnapshot>;
-	/** Send a prompt; resolves with the RPC command id and whether it was acked. Does NOT await agent_start. */
-	sendPrompt(prompt: string): Promise<{ commandId: string; ack: boolean }>;
-	/** Monotonic count of events observed so far (the acceptance cursor). */
-	eventCursor(): number;
-	/** Resolve when an `agent_start` event arrives strictly after `afterCursor`, else null on timeout. */
-	waitForAgentStart(afterCursor: number, timeoutMs: number): Promise<{ cursor: number } | null>;
-	close(): Promise<void>;
-	/** Subscribe to parsed event frames (non-ready, non-response), fired AFTER the cursor advances. Returns unsubscribe. */
-	onEventFrame?(listener: (frame: Record<string, unknown>) => void): () => void;
-	/** Whether the underlying RPC subprocess is still alive. */
-	isLive?(): boolean;
-	/** ISO timestamp of the last observed event frame, or null. */
-	lastFrameAt?(): string | null;
-	/** Final assistant text from the live session (for review-verdict extraction); null when unavailable. */
-	getLastAssistantText?(): Promise<string | null>;
-}
-
-export interface AcceptanceResult {
-	accepted: boolean;
-	reason: string;
-	commandId: string | null;
-	preSubmitCursor: number;
-	agentStartCursor: number | null;
-	preSubmitState: RpcStateSnapshot;
-}
-
-/**
- * Single-flight acceptance: idle + empty-queue pre-state, ack, then the NEXT
- * `agent_start` after the pre-submit cursor within `timeoutMs`.
- */
-export async function singleFlightAccept(
-	rpc: HarnessRpc,
-	prompt: string,
-	timeoutMs: number,
-): Promise<AcceptanceResult> {
-	const pre = await rpc.getState();
-	const preSubmitCursor = rpc.eventCursor();
-	if (pre.isStreaming || pre.steeringQueueDepth > 0 || pre.followupQueueDepth > 0) {
-		return {
-			accepted: false,
-			reason: "pre-state-not-idle",
-			commandId: null,
-			preSubmitCursor,
-			agentStartCursor: null,
-			preSubmitState: pre,
-		};
-	}
-	const { commandId, ack } = await rpc.sendPrompt(prompt);
-	if (!ack) {
-		return {
-			accepted: false,
-			reason: "no-ack",
-			commandId,
-			preSubmitCursor,
-			agentStartCursor: null,
-			preSubmitState: pre,
-		};
-	}
-	const started = await rpc.waitForAgentStart(preSubmitCursor, timeoutMs);
-	if (!started) {
-		return {
-			accepted: false,
-			reason: "no-agent-start-within-timeout",
-			commandId,
-			preSubmitCursor,
-			agentStartCursor: null,
-			preSubmitState: pre,
-		};
-	}
-	return {
-		accepted: true,
-		reason: "protocol-ack-single-flight",
-		commandId,
-		preSubmitCursor,
-		agentStartCursor: started.cursor,
-		preSubmitState: pre,
-	};
-}
+import type { HarnessRpc, RpcStateSnapshot } from "./adapter-contract";
 
 interface PendingResponse {
 	resolve: (value: Record<string, unknown>) => void;

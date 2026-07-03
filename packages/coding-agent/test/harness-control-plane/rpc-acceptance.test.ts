@@ -3,7 +3,7 @@ import {
 	type HarnessRpc,
 	type RpcStateSnapshot,
 	singleFlightAccept,
-} from "../../src/harness-control-plane/rpc-adapter";
+} from "../../src/harness-control-plane/adapter-contract";
 
 /** Programmable in-memory RPC for acceptance-logic tests (no real gjc subprocess). */
 class FakeRpc implements HarnessRpc {

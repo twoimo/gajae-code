@@ -25,19 +25,19 @@ describe("mapRpcFrame (canonical observeRpcOutboundFrame)", () => {
 
 	it("maps semantic lifecycle frames with never-drop flag", () => {
 		expect(mapRpcFrame(evt({ type: "agent_start" }))).toMatchObject({
-			kind: "rpc_agent_started",
+			kind: "agent_wire_agent_started",
 			signal: "SessionStart",
 			semantic: true,
 		});
 		// Real agent_end carries no failure field; it always maps to completed.
 		expect(mapRpcFrame(evt({ type: "agent_end", stopReason: "completed", messages: [] }))).toMatchObject({
-			kind: "rpc_agent_completed",
+			kind: "agent_wire_agent_completed",
 			signal: "completed",
 			semantic: true,
 		});
 		// extension_error is a flat non-event control frame.
 		expect(mapRpcFrame({ type: "extension_error", error: "boom", extensionPath: "/x", event: "run" })).toMatchObject({
-			kind: "rpc_extension_error",
+			kind: "agent_wire_extension_error",
 			signal: "error",
 			semantic: true,
 		});
@@ -47,13 +47,13 @@ describe("mapRpcFrame (canonical observeRpcOutboundFrame)", () => {
 		const start = mapRpcFrame(
 			evt({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "bun test foo" } }),
 		);
-		expect(start).toMatchObject({ kind: "rpc_tool_started", signal: "test-running", semantic: true });
+		expect(start).toMatchObject({ kind: "agent_wire_tool_started", signal: "test-running", semantic: true });
 		const plain = mapRpcFrame(evt({ type: "tool_execution_start", toolCallId: "t2", toolName: "read", args: {} }));
 		expect(plain).toMatchObject({ signal: "tool-call", semantic: true });
 		const end = mapRpcFrame(
 			evt({ type: "tool_execution_end", toolCallId: "t2", toolName: "read", result: { details: { status: "ok" } } }),
 		);
-		expect(end).toMatchObject({ kind: "rpc_tool_ended", signal: "tool-call", semantic: true });
+		expect(end).toMatchObject({ kind: "agent_wire_tool_ended", signal: "tool-call", semantic: true });
 		// tool_execution_end has no args field, so test-detection falls back to the
 		// tool name; a failed bash end is tool-call + warn + error status.
 		const failed = mapRpcFrame(
@@ -81,7 +81,7 @@ describe("mapRpcFrame (canonical observeRpcOutboundFrame)", () => {
 			}),
 		);
 		expect(u).toMatchObject({
-			kind: "rpc_tool_updated",
+			kind: "agent_wire_tool_updated",
 			signal: "test-running",
 			evidence: { toolId: "t9", status: "running" },
 			severity: "info",

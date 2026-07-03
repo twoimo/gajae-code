@@ -16,6 +16,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { AgentWireOwnerObservation } from "../modes/shared/agent-wire/event-contract";
 import { observeRpcOutboundFrame } from "../modes/shared/agent-wire/event-observation";
+import { type HarnessRpc, type RpcStateSnapshot, singleFlightAccept } from "./adapter-contract";
 import { classifyRecovery } from "./classifier";
 import { ControlServer, type EndpointRequest } from "./control-endpoint";
 import { defaultFinalizeChecks, type FinalizeChecks, runFinalize, type ValidationCommandSpec } from "./finalize";
@@ -30,7 +31,6 @@ import {
 	type VanishEvidence,
 	validateReceipt,
 } from "./receipts";
-import { type HarnessRpc, type RpcStateSnapshot, singleFlightAccept } from "./rpc-adapter";
 import {
 	acquireLease,
 	canWriteEvents,
@@ -173,7 +173,7 @@ export class RuntimeOwner {
 		return state;
 	}
 
-	/** Map an RPC frame and route it: semantic/signal-bearing -> serial emit; high-frequency progress -> coalesce. */
+	/** Map an transport frame and route it: semantic/signal-bearing -> serial emit; high-frequency progress -> coalesce. */
 	#handleFrame(frame: Record<string, unknown>): void {
 		const mapped = observeRpcOutboundFrame(frame);
 		if (!mapped) return;
@@ -197,11 +197,11 @@ export class RuntimeOwner {
 		if (this.#coalesced.size === 0) return;
 		const coalescedFrames = this.#coalesced.size;
 		this.#coalesced.clear();
-		await this.#emit("info", "rpc_activity", { coalescedFrames });
+		await this.#emit("info", "agent_wire_activity", { coalescedFrames });
 	}
 
 	async #emitMapped(mapped: AgentWireOwnerObservation): Promise<void> {
-		if (mapped.kind === "rpc_agent_completed") {
+		if (mapped.kind === "agent_wire_agent_completed") {
 			const state = await readSessionState(this.#opts.root, this.#opts.sessionId);
 			if (
 				state &&
@@ -237,15 +237,15 @@ export class RuntimeOwner {
 	#eventSubmitGateReason(kind: string, evidence: Record<string, unknown>): string | null {
 		const reason = typeof evidence.reason === "string" ? evidence.reason : null;
 		const signal = typeof evidence.signal === "string" ? evidence.signal : null;
-		const rpcActive =
+		const transportActive =
 			kind === "prompt_accepted" ||
 			reason === "pre-state-not-idle" ||
-			kind.startsWith("rpc_") ||
+			kind.startsWith("agent_wire_") ||
 			signal === "prompt-accepted" ||
 			signal === "streaming" ||
 			signal === "tool-call" ||
 			signal === "test-running";
-		return rpcActive ? "rpc-not-idle" : null;
+		return transportActive ? "transport-not-idle" : null;
 	}
 
 	async #emit(severity: Severity, kind: string, evidence: Record<string, unknown>): Promise<void> {
@@ -291,13 +291,13 @@ export class RuntimeOwner {
 		};
 	}
 
-	#submitGateReason(state: SessionState, rpcState: RpcStateSnapshot | null): string | null {
-		const rpcReason = rpcState
-			? rpcState.isStreaming || rpcState.steeringQueueDepth > 0 || rpcState.followupQueueDepth > 0
-				? "rpc-not-idle"
+	#submitGateReason(state: SessionState, transportState: RpcStateSnapshot | null): string | null {
+		const transportReason = transportState
+			? transportState.isStreaming || transportState.steeringQueueDepth > 0 || transportState.followupQueueDepth > 0
+				? "transport-not-idle"
 				: null
-			: "rpc-not-live";
-		return submitUnavailableReason(state.lifecycle, true, rpcReason);
+			: "transport-not-live";
+		return submitUnavailableReason(state.lifecycle, true, transportReason);
 	}
 
 	async #withReceiptSpoolFromInput<T>(input: Record<string, unknown>, fn: () => Promise<T>): Promise<T> {
@@ -333,10 +333,10 @@ export class RuntimeOwner {
 		const state = await this.#loadState();
 		const workspace = state.handle.workspace;
 		let streaming = false;
-		let rpcState: RpcStateSnapshot | null = null;
+		let transportState: RpcStateSnapshot | null = null;
 		try {
-			rpcState = await this.#opts.rpc.getState();
-			streaming = rpcState.isStreaming;
+			transportState = await this.#opts.rpc.getState();
+			streaming = transportState.isStreaming;
 		} catch {
 			streaming = false;
 		}
@@ -366,17 +366,17 @@ export class RuntimeOwner {
 				gitDelta = "unknown";
 			}
 		}
-		const rpcLive = this.#opts.rpc.isLive ? this.#opts.rpc.isLive() : rpcState !== null;
-		const rpcLastFrameAt = this.#opts.rpc.lastFrameAt ? this.#opts.rpc.lastFrameAt() : null;
+		const transportLive = this.#opts.rpc.isLive ? this.#opts.rpc.isLive() : transportState !== null;
+		const transportLastFrameAt = this.#opts.rpc.lastFrameAt ? this.#opts.rpc.lastFrameAt() : null;
 		// Sticky semantic signals come from the persisted owner event log -> survive polling gaps.
 		const recent = (await readEvents(this.#opts.root, this.#opts.sessionId, 0)).slice(-200);
 		const observedSignals = this.#aggregateSignals(recent).slice(0, 7);
 		observedSignals.push(streaming ? "streaming" : "idle");
-		const stamps = [state.updatedAt, rpcLastFrameAt, recent.at(-1)?.createdAt].filter(
+		const stamps = [state.updatedAt, transportLastFrameAt, recent.at(-1)?.createdAt].filter(
 			(t): t is string => typeof t === "string",
 		);
 		const lastActivityAt = stamps.length > 0 ? (stamps.sort().at(-1) ?? state.updatedAt) : state.updatedAt;
-		const submitGateReason = this.#submitGateReason(state, rpcState);
+		const submitGateReason = this.#submitGateReason(state, transportState);
 		return {
 			lifecycle: state.lifecycle,
 			ownerLive: true,
@@ -386,8 +386,8 @@ export class RuntimeOwner {
 			lastActivityAt,
 			observedSignals,
 			risk: deleted ? "deleted-worktree" : "normal",
-			rpcLive,
-			rpcLastFrameAt,
+			transportLive,
+			transportLastFrameAt,
 			readyForSubmit: submitGateReason === null,
 			submitUnavailableReason: submitGateReason,
 		};
@@ -542,7 +542,7 @@ export class RuntimeOwner {
 		const reviewOnly = state.handle.mode === "review";
 		const inputVerdict = reviewOnly ? (typeof input.verdict === "string" ? input.verdict : null) : undefined;
 		// Review-only finalize with no explicit verdict pulls the final assistant text from the live
-		// RPC owner so the verdict can be extracted deterministically instead of demanded from the operator.
+		// transport owner so the verdict can be extracted deterministically instead of demanded from the operator.
 		let assistantText: string | null = null;
 		if (reviewOnly && inputVerdict == null && this.#opts.rpc.getLastAssistantText) {
 			assistantText = await this.#opts.rpc.getLastAssistantText().catch(() => null);
@@ -607,7 +607,11 @@ export class RuntimeOwner {
 		} else {
 			await this.#emit("warn", "prompt_not_accepted", { reason: result.reason });
 		}
-		const submitGateReason = result.accepted ? null : result.reason === "pre-state-not-idle" ? "rpc-not-idle" : null;
+		const submitGateReason = result.accepted
+			? null
+			: result.reason === "pre-state-not-idle"
+				? "transport-not-idle"
+				: null;
 		return this.#response(
 			state,
 			{

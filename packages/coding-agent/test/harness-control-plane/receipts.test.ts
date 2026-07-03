@@ -109,7 +109,7 @@ describe("receipts: prompt-acceptance / validation / completion validators", () 
 	function accept(over: Partial<PromptAcceptanceEvidence> = {}): PromptAcceptanceEvidence {
 		return {
 			promptSha256: "p",
-			rpcCommandId: "c",
+			transportCommandId: "c",
 			preSubmitState: { isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 },
 			preSubmitCursor: 5,
 			agentStartCursor: 6,
