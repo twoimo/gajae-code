@@ -31,18 +31,18 @@ struct GetOptsResult {
 	variable_value: String,
 	/// The value for OPTARG, if any (option's argument or, on error, the
 	/// offending char).
-	optarg:         Option<String>,
+	optarg: Option<String>,
 	/// The new value for OPTIND after this call.
-	optind:         usize,
+	optind: usize,
 	/// Exit code: success (0) if an option was found, general error (1) when
 	/// done.
-	exit_code:      ExecutionResult,
+	exit_code: ExecutionResult,
 }
 
 /// Parsed representation of the optstring (e.g., `":a:bc"`).
 struct OptionSpec {
 	/// Maps each option character to whether it requires an argument.
-	defs:          HashMap<char, bool>,
+	defs: HashMap<char, bool>,
 	/// True when the optstring has a leading `:`, suppressing error messages
 	/// and reporting errors via `?`/`:` in the variable and OPTARG instead.
 	silent_errors: bool,
@@ -170,10 +170,10 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 	if next_index > args_to_parse.len() {
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
-			optarg:         None,
+			optarg: None,
 			// Normalize OPTIND to one past the last argument.
-			optind:         args_to_parse.len() + 1,
-			exit_code:      ExecutionResult::general_error(),
+			optind: args_to_parse.len() + 1,
+			exit_code: ExecutionResult::general_error(),
 		});
 	}
 
@@ -184,13 +184,13 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		// Not an option. If it was "--", skip past it.
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
-			optarg:         None,
-			optind:         if arg == "--" {
+			optarg: None,
+			optind: if arg == "--" {
 				next_index + 1
 			} else {
 				next_index
 			},
-			exit_code:      ExecutionResult::general_error(),
+			exit_code: ExecutionResult::general_error(),
 		});
 	}
 
@@ -211,9 +211,9 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		// Arg is too short even at default index.
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
-			optarg:         None,
-			optind:         next_index,
-			exit_code:      ExecutionResult::general_error(),
+			optarg: None,
+			optind: next_index,
+			exit_code: ExecutionResult::general_error(),
 		});
 	};
 

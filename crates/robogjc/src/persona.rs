@@ -7,62 +7,62 @@ use std::{
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoInfo {
-	pub full_name: String,
+	pub full_name:      String,
 	pub default_branch: String,
-	pub clone_url: String,
-	pub private: bool,
+	pub clone_url:      String,
+	pub private:        bool,
 }
 #[derive(Debug, Clone, Default)]
 pub struct IssueInfo {
-	pub repo: String,
-	pub number: u64,
-	pub title: String,
-	pub body: String,
-	pub state: String,
-	pub author: String,
-	pub labels: Vec<String>,
+	pub repo:            String,
+	pub number:          u64,
+	pub title:           String,
+	pub body:            String,
+	pub state:           String,
+	pub author:          String,
+	pub labels:          Vec<String>,
 	pub is_pull_request: bool,
 }
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
-	pub branch: String,
+	pub branch:      String,
 	pub session_dir: String,
 	pub context_dir: String,
-	pub repo_dir: String,
+	pub repo_dir:    String,
 }
 #[derive(Debug, Clone, Default)]
 pub struct CommentInfo {
-	pub id: u64,
-	pub author: String,
-	pub body: String,
+	pub id:         u64,
+	pub author:     String,
+	pub body:       String,
 	pub created_at: String,
 }
 #[derive(Debug, Clone, Default)]
 pub struct DirectiveInfo {
-	pub body: String,
+	pub body:   String,
 	pub author: String,
 	pub thread: Vec<ThreadMessage>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct ThreadMessage {
-	pub kind: String,
-	pub author: String,
-	pub body: String,
+	pub kind:       String,
+	pub author:     String,
+	pub body:       String,
 	pub created_at: String,
-	pub path: Option<String>,
-	pub line: Option<u64>,
-	pub state: Option<String>,
+	pub path:       Option<String>,
+	pub line:       Option<u64>,
+	pub state:      Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct DirtyState {
 	pub uncommitted: bool,
-	pub unpushed: bool,
-	pub summary: String,
+	pub unpushed:    bool,
+	pub summary:     String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TodoPhase {
-	pub name: String,
+	pub name:  String,
 	pub tasks: Vec<String>,
 }
 
@@ -73,9 +73,7 @@ pub struct PromptAssets {
 
 impl Default for PromptAssets {
 	fn default() -> Self {
-		Self {
-			root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/robogjc/src/prompts"),
-		}
+		Self { root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("prompts") }
 	}
 }
 impl PromptAssets {
@@ -182,7 +180,8 @@ pub fn render_thread(messages: &[ThreadMessage]) -> String {
 			_ => format!("### @{author} — comment"),
 		};
 		if !m.created_at.is_empty() {
-			header.push_str(&format!(" *({})*", m.created_at));
+			use std::fmt::Write as _;
+			let _ = write!(header, " *({})*", m.created_at);
 		}
 		parts.push(header);
 		parts.push(String::new());
@@ -364,7 +363,7 @@ pub fn finalized_pr_comment() -> std::io::Result<String> {
 		.trim()
 		.to_owned())
 }
-pub fn bare_mention_reply() -> &'static str {
+pub const fn bare_mention_reply() -> &'static str {
 	"What would you like me to do?"
 }
 pub fn question_autoclose_suffix(hours: f64) -> std::io::Result<String> {
@@ -499,17 +498,17 @@ mod tests {
 	}
 	fn ws() -> Workspace {
 		Workspace {
-			branch: "farm/abc/test".into(),
+			branch:      "farm/abc/test".into(),
 			session_dir: "/tmp/session".into(),
 			context_dir: "/tmp/ctx".into(),
-			repo_dir: "/tmp/repo".into(),
+			repo_dir:    "/tmp/repo".into(),
 		}
 	}
 	fn comment(body: &str) -> CommentInfo {
 		CommentInfo {
-			id: 1,
-			author: "can1357".into(),
-			body: body.into(),
+			id:         1,
+			author:     "can1357".into(),
+			body:       body.into(),
 			created_at: "2026-05-14T20:00:00Z".into(),
 		}
 	}
@@ -658,7 +657,8 @@ mod tests {
 				.unwrap()
 				.contains("terminal")
 		);
-		let dirty = DirtyState { uncommitted: true, unpushed: true, summary: "M file.rs".into() };
+		let dirty =
+			DirtyState { uncommitted: true, unpushed: true, summary: "M file.rs".into() };
 		assert!(
 			dirty_state_reminder(&repo, &issue, &ws, &dirty)
 				.unwrap()
@@ -677,7 +677,7 @@ mod tests {
 		assert!(!finalized_issue_comment().unwrap().is_empty());
 		assert!(!finalized_pr_comment().unwrap().is_empty());
 		assert_eq!(bare_mention_reply(), "What would you like me to do?");
-		assert!(question_autoclose_suffix(4.0).unwrap().contains("4"));
+		assert!(question_autoclose_suffix(4.0).unwrap().contains('4'));
 	}
 
 	#[test]

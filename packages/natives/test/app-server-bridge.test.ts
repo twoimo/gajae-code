@@ -152,7 +152,11 @@ describe("app-server N-API bridge", () => {
 			};
 			calls.push({ kind: parsed.kind, threadId: parsed.threadId, generation: parsed.generation });
 			if (parsed.kind.startsWith("factory.")) {
-				server.resolveCall(parsed.callId, true, JSON.stringify({ threadId: `thr_host_${parsed.callId}`, sessionMetadata: {} }));
+				server.resolveCall(
+					parsed.callId,
+					true,
+					JSON.stringify({ threadId: `thr_host_${parsed.callId}`, sessionMetadata: {} }),
+				);
 				return;
 			}
 			if (parsed.kind === "backend.prompt") {
@@ -341,14 +345,20 @@ describe("app-server N-API bridge", () => {
 			(_err: unknown, call: string) => {
 				const { callId, kind } = JSON.parse(call) as { callId: string; kind: string };
 				if (kind.startsWith("factory.")) {
-					server.resolveCall(callId, true, JSON.stringify({ threadId: "thr_bad", sessionMetadata: "not-an-object" }));
+					server.resolveCall(
+						callId,
+						true,
+						JSON.stringify({ threadId: "thr_bad", sessionMetadata: "not-an-object" }),
+					);
 				}
 			},
 		);
 		const conn = await initialize(server);
 		const startResp = await server.dispatch(conn, JSON.stringify({ id: 18, method: "thread/start", params: {} }));
 		expect(JSON.parse(startResp as string).error.message).toContain("sessionMetadata");
-		expect(() => server.emitBackendEvent("thr_bad", 1, "agent_start", "{")).toThrow("invalid backend event payload JSON");
+		expect(() => server.emitBackendEvent("thr_bad", 1, "agent_start", "{")).toThrow(
+			"invalid backend event payload JSON",
+		);
 	});
 
 	it("exposes the Rust-derived schema", () => {

@@ -507,7 +507,7 @@ impl BackendFactory for CapturingFactory {
 		&self,
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
-		self.created.lock().push(p.clone());
+		self.created.lock().push(p);
 		Ok((
 			BackendHandleInfo {
 				thread_id:        ThreadId::generate(),
@@ -522,7 +522,7 @@ impl BackendFactory for CapturingFactory {
 		&self,
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
-		self.resumed.lock().push(p.clone());
+		self.resumed.lock().push(p);
 		let thread_id = self
 			.resume_thread_id
 			.lock()
@@ -559,8 +559,8 @@ async fn thread_metadata_parity() {
 	let (server, _) = build_capturing(factory.clone());
 	let conn = initialize(&server).await;
 	let params = serde_json::json!({"cwd":"/repo","sessionId":"s1","sessionDir":"/tmp/s","systemPromptAppend":"extra","model":{"provider":"p","modelId":"m"},"thinking":{"effort":"high"},"todos":[{"title":"t"}]});
-	let req = parse_inbound(&format!(r#"{{"id":20,"method":"thread/start","params":{}}}"#, params))
-		.unwrap();
+	let req =
+		parse_inbound(&format!(r#"{{"id":20,"method":"thread/start","params":{params}}}"#)).unwrap();
 	let resp = server.dispatch(&conn, req).await.unwrap();
 	assert!(resp.error.is_none());
 	assert_eq!(factory.created.lock()[0], params);
@@ -573,8 +573,8 @@ async fn true_resume_identity() {
 	let conn = initialize(&server).await;
 	let thread = start_thread(&server, &conn).await;
 	let params = serde_json::json!({"threadId":thread.0,"cwd":"/repo","sessionId":"s1","sessionDir":"/tmp/s","systemPromptAppend":"extra","model":{"provider":"p","modelId":"m"},"thinking":{"effort":"high"},"todos":[]});
-	let req = parse_inbound(&format!(r#"{{"id":21,"method":"thread/resume","params":{}}}"#, params))
-		.unwrap();
+	let req =
+		parse_inbound(&format!(r#"{{"id":21,"method":"thread/resume","params":{params}}}"#)).unwrap();
 	let resp = server.dispatch(&conn, req).await.unwrap();
 	assert!(resp.error.is_none());
 	let result = resp.result.unwrap();
@@ -710,8 +710,7 @@ async fn host_tools_result_enforces_strict_tagged_union() {
 		(45, serde_json::json!({"threadId":thread.0,"callId":"c","ok":false,"error":{}})),
 	] {
 		let req = parse_inbound(&format!(
-			r#"{{"id":{},"method":"gjc/hostTools/result","params":{}}}"#,
-			id, params
+			r#"{{"id":{id},"method":"gjc/hostTools/result","params":{params}}}"#
 		))
 		.unwrap();
 		let resp = server.dispatch(&conn, req).await.unwrap();

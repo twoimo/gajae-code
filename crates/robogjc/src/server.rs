@@ -3,7 +3,6 @@
 use std::{
 	collections::{HashMap, HashSet},
 	net::SocketAddr,
-	path::PathBuf,
 	sync::{Arc, Mutex},
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -16,7 +15,7 @@ use axum::{
 	response::{Html, IntoResponse, Response},
 	routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -25,7 +24,7 @@ use crate::{
 	config::Settings,
 	dashboard,
 	db::{Database, issue_key},
-	github::{self, GitHubBackend, GitHubClient, GitHubError, IssueSummary},
+	github::{self, GitHubBackend, GitHubError, IssueSummary},
 	manual_triage::{ManualTriageConflict, enqueue_manual_triage, parse_issue_ref},
 	queue::WorkerPool,
 	worker::AppServerWorker,
@@ -38,11 +37,11 @@ pub type Pool = WorkerPool<AppServerWorker>;
 #[derive(Clone)]
 pub struct AppState {
 	pub settings: Arc<Settings>,
-	pub db: Arc<Database>,
-	pub github: Arc<dyn GitHubBackend>,
-	pub pool: Arc<Pool>,
-	started_at: Instant,
-	issue_cache: Arc<IssueBrowseCache>,
+	pub db:       Arc<Database>,
+	pub github:   Arc<dyn GitHubBackend>,
+	pub pool:     Arc<Pool>,
+	started_at:   Instant,
+	issue_cache:  Arc<IssueBrowseCache>,
 }
 
 impl AppState {
@@ -65,14 +64,15 @@ impl AppState {
 
 #[derive(Clone)]
 struct CacheEntry {
-	repos: Vec<String>,
-	issues: Vec<IssueSummary>,
-	errors: Vec<Value>,
+	repos:      Vec<String>,
+	issues:     Vec<IssueSummary>,
+	errors:     Vec<Value>,
 	fetched_at: f64,
 }
+type IssueBrowseKey = (String, i64, Vec<String>);
 #[derive(Default)]
 struct IssueBrowseCache {
-	entries: Mutex<HashMap<(String, i64, Vec<String>), CacheEntry>>,
+	entries: Mutex<HashMap<IssueBrowseKey, CacheEntry>>,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -152,10 +152,10 @@ async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Bytes) ->
 		&reviewers,
 		Some(&resolver),
 	);
-	if decision.directive {
-		if let Some(obj) = payload.as_object_mut() {
-			obj.insert("_robogjc_directive".into(), json!({"body":decision.directive_body,"author":decision.directive_author,"pragmas":decision.directive_pragmas}));
-		}
+	if decision.directive
+		&& let Some(obj) = payload.as_object_mut()
+	{
+		obj.insert("_robogjc_directive".into(), json!({"body":decision.directive_body,"author":decision.directive_author,"pragmas":decision.directive_pragmas}));
 	}
 	if !decision.should_queue() {
 		let _ = st.db.record_event(
@@ -237,9 +237,8 @@ async fn replay(
 		return resp;
 	}
 	let delivery = q.delivery_id.unwrap_or_default();
-	let row = match st.db.get_event(&delivery).unwrap_or(None) {
-		Some(r) => r,
-		None => return err(StatusCode::NOT_FOUND, "unknown delivery"),
+	let Some(row) = st.db.get_event(&delivery).unwrap_or(None) else {
+		return err(StatusCode::NOT_FOUND, "unknown delivery");
 	};
 	if !st
 		.db
@@ -257,8 +256,8 @@ async fn replay(
 
 #[derive(Deserialize)]
 struct BrowseQuery {
-	state: Option<String>,
-	limit: Option<i64>,
+	state:   Option<String>,
+	limit:   Option<i64>,
 	refresh: Option<bool>,
 }
 async fn api_github_issues(
@@ -285,7 +284,8 @@ async fn api_github_issues(
 	}
 	let key = (state.clone(), limit, repos.clone());
 	if !q.refresh.unwrap_or(false) {
-		if let Some(entry) = st.issue_cache.entries.lock().unwrap().get(&key).cloned() {
+		let cached_entry = st.issue_cache.entries.lock().unwrap().get(&key).cloned();
+		if let Some(entry) = cached_entry {
 			return issue_browse_payload(&st, entry, true).into_response();
 		}
 	}
@@ -310,8 +310,8 @@ async fn api_github_issues(
 
 #[derive(Deserialize)]
 struct TriggerBody {
-	mode: Option<String>,
-	issue: Option<String>,
+	mode:        Option<String>,
+	issue:       Option<String>,
 	delivery_id: Option<String>,
 }
 async fn api_trigger(
@@ -379,9 +379,8 @@ async fn api_trigger(
 			} else {
 				return err(StatusCode::BAD_REQUEST, "retry requires 'delivery_id' or 'issue'");
 			};
-			let event = match st.db.get_event(&target).unwrap_or(None) {
-				Some(e) => e,
-				None => return err(StatusCode::NOT_FOUND, &format!("unknown delivery {target}")),
+			let Some(event) = st.db.get_event(&target).unwrap_or(None) else {
+				return err(StatusCode::NOT_FOUND, &format!("unknown delivery {target}"));
 			};
 			if !st
 				.db
@@ -422,9 +421,8 @@ async fn api_cancel(
 		Some(d) if !d.is_empty() => d,
 		_ => return err(StatusCode::BAD_REQUEST, "cancel requires 'delivery_id'"),
 	};
-	let event = match st.db.get_event(&delivery).unwrap_or(None) {
-		Some(e) => e,
-		None => return err(StatusCode::NOT_FOUND, &format!("unknown delivery {delivery}")),
+	let Some(event) = st.db.get_event(&delivery).unwrap_or(None) else {
+		return err(StatusCode::NOT_FOUND, &format!("unknown delivery {delivery}"));
 	};
 	let fired = st.pool.cancel_event(&delivery);
 	(
@@ -489,6 +487,10 @@ fn err(status: StatusCode, msg: &str) -> Response {
 fn to_hash<T: IntoIterator<Item = String>>(xs: T) -> HashSet<String> {
 	xs.into_iter().collect()
 }
+#[allow(
+	clippy::result_large_err,
+	reason = "Axum handlers in this module use Response as the local error boundary."
+)]
 fn require_token(st: &AppState, headers: &HeaderMap, disabled: &str) -> Result<(), Response> {
 	let Some(token) = &st.settings.replay_token else {
 		return Err(err(StatusCode::NOT_FOUND, disabled));
@@ -515,7 +517,7 @@ fn issue_browse_payload(st: &AppState, entry: CacheEntry, hit: bool) -> Json<Val
 		json!({"issues":entry.issues.into_iter().map(|s| json!({"repo":s.repo,"number":s.number,"title":s.title,"state":s.state,"author":s.author,"labels":s.labels,"comments":s.comments,"updated_at":s.updated_at,"created_at":s.created_at,"html_url":s.html_url,"processed":processed.contains(&issue_key(&s.repo, s.number))})).collect::<Vec<_>>(),"errors":entry.errors,"repos":entry.repos,"cache":{"hit":hit,"fetched_at":entry.fetched_at}}),
 	)
 }
-fn apply_webhook_cache(_st: &AppState, _event: &str, _payload: &Value) {}
+const fn apply_webhook_cache(_st: &AppState, _event: &str, _payload: &Value) {}
 
 #[cfg(test)]
 mod tests {
@@ -530,6 +532,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		config::SecretString,
+		github::GitHubClient,
 		sandbox::LocalGitTransport,
 		worker::{AppServerHostToolRuntime, AppServerWorkerConfig},
 	};
@@ -568,9 +571,9 @@ mod tests {
 			rate_limit_window_seconds: 3600.0,
 			rate_limit_default: 3,
 			rate_limit_contributor: 10,
-			rate_limit_unlimited_raw: "".into(),
-			maintainer_logins_raw: "".into(),
-			reviewer_bots_raw: "".into(),
+			rate_limit_unlimited_raw: String::new(),
+			maintainer_logins_raw: String::new(),
+			reviewer_bots_raw: String::new(),
 			question_autoclose_enabled: false,
 			question_autoclose_hours: 4.0,
 			question_autoclose_scan_seconds: 60.0,
@@ -588,12 +591,12 @@ mod tests {
 		let db = Arc::new(Database::open(&cfg.sqlite_path).unwrap());
 		let github = Arc::new(GitHubClient::with_base_url("token", "http://127.0.0.1:9").unwrap());
 		let runtime = AppServerHostToolRuntime {
-			db: db.clone(),
-			github: github.clone(),
+			db:            db.clone(),
+			github:        github.clone(),
 			git_transport: Arc::new(LocalGitTransport::default()),
-			settings: Some(cfg.clone()),
-			author_name: "bot".into(),
-			author_email: cfg.git_author_email.clone(),
+			settings:      Some(cfg.clone()),
+			author_name:   "bot".into(),
+			author_email:  cfg.git_author_email.clone(),
 		};
 		let worker = Arc::new(AppServerWorker::new(
 			AppServerWorkerConfig { hard_timeout: Duration::from_millis(10), ..Default::default() },
@@ -652,7 +655,7 @@ mod tests {
 	async fn manual_trigger_conflict_returns_409() {
 		let tmp = tempfile::tempdir().unwrap();
 		let app = app(tmp.path());
-		let db = Database::open(&tmp.path().join("db.sqlite")).unwrap();
+		let db = Database::open(tmp.path().join("db.sqlite")).unwrap();
 		db.record_event(
 			"manual-octo__widget-42",
 			"issues",

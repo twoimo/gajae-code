@@ -384,4 +384,4 @@ Hermes and OpenClaw can use the same MCP tool contract. Their names here are exa
 - [`docs/rpc.md`](./rpc.md) — JSONL RPC protocol, event frames, workflow gates, host tools, and host URI schemes.
 - [`docs/bridge.md`](./bridge.md) — experimental HTTPS bridge and fail-closed endpoint matrix.
 - [`python/gjc-rpc/README.md`](../python/gjc-rpc/README.md) — typed Python RPC client examples.
-- [`python/robogjc/README.md`](../python/robogjc/README.md) — example self-hosted GitHub bot using `gjc --mode rpc`.
+- `crates/robogjc/` — production self-hosted GitHub bot implemented in Rust over the app-server protocol, with dashboard sources retained under `python/robogjc/web/`.

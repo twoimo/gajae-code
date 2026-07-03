@@ -4,6 +4,7 @@ use std::{
 	collections::{HashMap, HashSet},
 	fmt,
 	future::Future,
+	hash::BuildHasher,
 	pin::Pin,
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -23,8 +24,8 @@ pub const GITHUB_API_VERSION: &str = "2022-11-28";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GitHubError {
-	pub status: u16,
-	pub message: String,
+	pub status:      u16,
+	pub message:     String,
 	pub retry_after: Option<f64>,
 }
 
@@ -38,87 +39,87 @@ impl std::error::Error for GitHubError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueInfo {
-	pub repo: String,
-	pub number: i64,
-	pub title: String,
-	pub body: String,
-	pub state: String,
-	pub author: String,
-	pub labels: Vec<String>,
+	pub repo:            String,
+	pub number:          i64,
+	pub title:           String,
+	pub body:            String,
+	pub state:           String,
+	pub author:          String,
+	pub labels:          Vec<String>,
 	pub is_pull_request: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentInfo {
-	pub id: i64,
-	pub author: String,
-	pub body: String,
+	pub id:         i64,
+	pub author:     String,
+	pub body:       String,
 	pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoInfo {
-	pub full_name: String,
+	pub full_name:      String,
 	pub default_branch: String,
-	pub clone_url: String,
-	pub private: bool,
+	pub clone_url:      String,
+	pub private:        bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestInfo {
-	pub repo: String,
-	pub number: i64,
-	pub html_url: String,
-	pub head_ref: String,
-	pub base_ref: String,
-	pub state: String,
-	pub author: String,
+	pub repo:      String,
+	pub number:    i64,
+	pub html_url:  String,
+	pub head_ref:  String,
+	pub base_ref:  String,
+	pub state:     String,
+	pub author:    String,
 	pub head_repo: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewCommentInfo {
-	pub id: i64,
-	pub author: String,
-	pub body: String,
-	pub path: String,
-	pub line: Option<i64>,
+	pub id:         i64,
+	pub author:     String,
+	pub body:       String,
+	pub path:       String,
+	pub line:       Option<i64>,
 	pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestReviewInfo {
-	pub id: i64,
-	pub author: String,
-	pub body: String,
-	pub state: String,
+	pub id:           i64,
+	pub author:       String,
+	pub body:         String,
+	pub state:        String,
 	pub submitted_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueSummary {
-	pub repo: String,
-	pub number: i64,
-	pub title: String,
-	pub state: String,
-	pub author: String,
-	pub labels: Vec<String>,
-	pub comments: i64,
+	pub repo:       String,
+	pub number:     i64,
+	pub title:      String,
+	pub state:      String,
+	pub author:     String,
+	pub labels:     Vec<String>,
+	pub comments:   i64,
 	pub updated_at: String,
 	pub created_at: String,
-	pub html_url: String,
+	pub html_url:   String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReactionInfo {
-	pub content: String,
+	pub content:    String,
 	pub user_login: String,
-	pub user_type: String,
+	pub user_type:  String,
 }
 
 #[derive(Clone)]
 pub struct GitHubClient {
-	client: reqwest::Client,
+	client:   reqwest::Client,
 	base_url: String,
 }
 
@@ -164,8 +165,8 @@ impl GitHubClient {
 			req = req.query(p);
 		}
 		let resp = req.send().await.map_err(|e| GitHubError {
-			status: 0,
-			message: e.to_string(),
+			status:      0,
+			message:     e.to_string(),
 			retry_after: None,
 		})?;
 		Self::check(resp).await
@@ -257,7 +258,7 @@ impl GitHubClient {
 		}
 		let mut out: Vec<i64> = linked
 			.into_iter()
-			.filter(|n| states.get(n).map_or(true, |s| s == "open"))
+			.filter(|n| states.get(n).is_none_or(|s| s == "open"))
 			.collect();
 		out.sort_unstable();
 		Ok(out)
@@ -284,8 +285,8 @@ impl GitHubClient {
 	) -> Result<Vec<IssueSummary>, GitHubError> {
 		if !matches!(state, "open" | "closed" | "all") {
 			return Err(GitHubError {
-				status: 0,
-				message: format!("invalid state: {state:?}"),
+				status:      0,
+				message:     format!("invalid state: {state:?}"),
 				retry_after: None,
 			});
 		}
@@ -524,12 +525,12 @@ impl GitHubClient {
 }
 
 pub struct OpenPullRequest<'a> {
-	pub repo: &'a str,
-	pub head: &'a str,
-	pub base: &'a str,
-	pub title: &'a str,
-	pub body: &'a str,
-	pub draft: bool,
+	pub repo:                  &'a str,
+	pub head:                  &'a str,
+	pub base:                  &'a str,
+	pub title:                 &'a str,
+	pub body:                  &'a str,
+	pub draft:                 bool,
 	pub maintainer_can_modify: bool,
 }
 
@@ -573,21 +574,21 @@ fn user_login(v: &Value) -> String {
 }
 fn repo_from_payload(v: &Value) -> RepoInfo {
 	RepoInfo {
-		full_name: str_field(v, "full_name", ""),
+		full_name:      str_field(v, "full_name", ""),
 		default_branch: str_field(v, "default_branch", ""),
-		clone_url: str_field(v, "clone_url", ""),
-		private: v.get("private").and_then(Value::as_bool).unwrap_or(false),
+		clone_url:      str_field(v, "clone_url", ""),
+		private:        v.get("private").and_then(Value::as_bool).unwrap_or(false),
 	}
 }
 fn issue_from_payload(repo: &str, v: &Value) -> IssueInfo {
 	IssueInfo {
-		repo: repo.to_owned(),
-		number: v.get("number").and_then(Value::as_i64).unwrap_or(0),
-		title: str_field(v, "title", ""),
-		body: str_field(v, "body", ""),
-		state: str_field(v, "state", "open"),
-		author: user_login(v),
-		labels: v
+		repo:            repo.to_owned(),
+		number:          v.get("number").and_then(Value::as_i64).unwrap_or(0),
+		title:           str_field(v, "title", ""),
+		body:            str_field(v, "body", ""),
+		state:           str_field(v, "state", "open"),
+		author:          user_login(v),
+		labels:          v
 			.get("labels")
 			.and_then(Value::as_array)
 			.map_or_else(Vec::new, |a| a.iter().map(label_name).collect()),
@@ -598,13 +599,13 @@ fn pr_from_payload(repo: &str, v: &Value) -> PullRequestInfo {
 	let head = v.get("head").unwrap_or(&Value::Null);
 	let base = v.get("base").unwrap_or(&Value::Null);
 	PullRequestInfo {
-		repo: repo.to_owned(),
-		number: v.get("number").and_then(Value::as_i64).unwrap_or(0),
-		html_url: str_field(v, "html_url", ""),
-		head_ref: str_field(head, "ref", ""),
-		base_ref: str_field(base, "ref", ""),
-		state: str_field(v, "state", "open"),
-		author: user_login(v),
+		repo:      repo.to_owned(),
+		number:    v.get("number").and_then(Value::as_i64).unwrap_or(0),
+		html_url:  str_field(v, "html_url", ""),
+		head_ref:  str_field(head, "ref", ""),
+		base_ref:  str_field(base, "ref", ""),
+		state:     str_field(v, "state", "open"),
+		author:    user_login(v),
 		head_repo: head
 			.get("repo")
 			.map_or_else(String::new, |r| str_field(r, "full_name", "")),
@@ -612,19 +613,19 @@ fn pr_from_payload(repo: &str, v: &Value) -> PullRequestInfo {
 }
 fn comment_from_payload(v: &Value) -> CommentInfo {
 	CommentInfo {
-		id: v.get("id").and_then(Value::as_i64).unwrap_or(0),
-		author: user_login(v),
-		body: str_field(v, "body", ""),
+		id:         v.get("id").and_then(Value::as_i64).unwrap_or(0),
+		author:     user_login(v),
+		body:       str_field(v, "body", ""),
 		created_at: str_field(v, "created_at", ""),
 	}
 }
 fn review_comment_from_payload(v: &Value) -> ReviewCommentInfo {
 	ReviewCommentInfo {
-		id: v.get("id").and_then(Value::as_i64).unwrap_or(0),
-		author: user_login(v),
-		body: str_field(v, "body", ""),
-		path: str_field(v, "path", ""),
-		line: v
+		id:         v.get("id").and_then(Value::as_i64).unwrap_or(0),
+		author:     user_login(v),
+		body:       str_field(v, "body", ""),
+		path:       str_field(v, "path", ""),
+		line:       v
 			.get("line")
 			.and_then(Value::as_i64)
 			.or_else(|| v.get("original_line").and_then(Value::as_i64)),
@@ -633,37 +634,44 @@ fn review_comment_from_payload(v: &Value) -> ReviewCommentInfo {
 }
 fn pr_review_from_payload(v: &Value) -> Option<PullRequestReviewInfo> {
 	let body = str_field(v, "body", "").trim().to_owned();
-	(!body.is_empty()).then(|| PullRequestReviewInfo {
+	if body.is_empty() {
+		return None;
+	}
+	let submitted_at = v
+		.get("submitted_at")
+		.and_then(Value::as_str)
+		.map_or_else(|| str_field(v, "created_at", ""), str::to_owned);
+	Some(PullRequestReviewInfo {
 		id: v.get("id").and_then(Value::as_i64).unwrap_or(0),
 		author: user_login(v),
 		body,
 		state: str_field(v, "state", ""),
-		submitted_at: str_field(v, "submitted_at", &str_field(v, "created_at", "")),
+		submitted_at,
 	})
 }
 fn issue_summary_from_payload(repo: &str, v: &Value) -> IssueSummary {
 	IssueSummary {
-		repo: repo.to_owned(),
-		number: v.get("number").and_then(Value::as_i64).unwrap_or(0),
-		title: str_field(v, "title", ""),
-		state: str_field(v, "state", "open"),
-		author: user_login(v),
-		labels: v
+		repo:       repo.to_owned(),
+		number:     v.get("number").and_then(Value::as_i64).unwrap_or(0),
+		title:      str_field(v, "title", ""),
+		state:      str_field(v, "state", "open"),
+		author:     user_login(v),
+		labels:     v
 			.get("labels")
 			.and_then(Value::as_array)
 			.map_or_else(Vec::new, |a| a.iter().map(label_name).collect()),
-		comments: v.get("comments").and_then(Value::as_i64).unwrap_or(0),
+		comments:   v.get("comments").and_then(Value::as_i64).unwrap_or(0),
 		updated_at: str_field(v, "updated_at", ""),
 		created_at: str_field(v, "created_at", ""),
-		html_url: str_field(v, "html_url", ""),
+		html_url:   str_field(v, "html_url", ""),
 	}
 }
 fn reaction_from_payload(v: &Value) -> ReactionInfo {
 	let user = v.get("user").unwrap_or(&Value::Null);
 	ReactionInfo {
-		content: str_field(v, "content", ""),
+		content:    str_field(v, "content", ""),
 		user_login: str_field(user, "login", ""),
-		user_type: str_field(user, "type", ""),
+		user_type:  str_field(user, "type", ""),
 	}
 }
 
@@ -765,6 +773,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<RepoInfo, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.get_repo(repo).await })
 	}
+
 	fn get_issue<'a>(
 		&'a self,
 		repo: &'a str,
@@ -772,6 +781,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<IssueInfo, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.get_issue(repo, number).await })
 	}
+
 	fn list_closing_pull_requests<'a>(
 		&'a self,
 		repo: &'a str,
@@ -779,6 +789,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<Vec<i64>, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.list_closing_pull_requests(repo, number).await })
 	}
+
 	fn get_pull_request<'a>(
 		&'a self,
 		repo: &'a str,
@@ -786,6 +797,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<PullRequestInfo, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.get_pull_request(repo, number).await })
 	}
+
 	fn list_issues<'a>(
 		&'a self,
 		repo: &'a str,
@@ -794,6 +806,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<Vec<IssueSummary>, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.list_issues(repo, state, limit).await })
 	}
+
 	fn list_comments<'a>(
 		&'a self,
 		repo: &'a str,
@@ -801,6 +814,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<Vec<CommentInfo>, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.list_comments(repo, number).await })
 	}
+
 	fn list_review_comments<'a>(
 		&'a self,
 		repo: &'a str,
@@ -808,6 +822,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<Vec<ReviewCommentInfo>, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.list_review_comments(repo, pr_number).await })
 	}
+
 	fn list_pr_reviews<'a>(
 		&'a self,
 		repo: &'a str,
@@ -816,11 +831,13 @@ impl GitHubBackend for GitHubClient {
 	{
 		Box::pin(async move { self.list_pr_reviews(repo, pr_number).await })
 	}
+
 	fn get_authenticated_login<'a>(
 		&'a self,
 	) -> Pin<Box<dyn Future<Output = Result<String, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.get_authenticated_login().await })
 	}
+
 	fn post_comment<'a>(
 		&'a self,
 		repo: &'a str,
@@ -829,12 +846,14 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<CommentInfo, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.post_comment(repo, number, body).await })
 	}
+
 	fn open_pull_request<'a>(
 		&'a self,
 		req: OpenPullRequest<'a>,
 	) -> Pin<Box<dyn Future<Output = Result<PullRequestInfo, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.open_pull_request(req).await })
 	}
+
 	fn request_reviewers<'a>(
 		&'a self,
 		repo: &'a str,
@@ -848,6 +867,7 @@ impl GitHubBackend for GitHubClient {
 				.await
 		})
 	}
+
 	fn add_issue_labels<'a>(
 		&'a self,
 		repo: &'a str,
@@ -856,6 +876,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.add_issue_labels(repo, number, labels).await })
 	}
+
 	fn add_assignees<'a>(
 		&'a self,
 		repo: &'a str,
@@ -864,6 +885,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<(), GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.add_assignees(repo, number, assignees).await })
 	}
+
 	fn list_comment_reactions<'a>(
 		&'a self,
 		repo: &'a str,
@@ -871,6 +893,7 @@ impl GitHubBackend for GitHubClient {
 	) -> Pin<Box<dyn Future<Output = Result<Vec<ReactionInfo>, GitHubError>> + Send + 'a>> {
 		Box::pin(async move { self.list_comment_reactions(repo, comment_id).await })
 	}
+
 	fn close_issue<'a>(
 		&'a self,
 		repo: &'a str,
@@ -889,16 +912,16 @@ pub enum Decision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteDecision {
-	pub decision: Decision,
-	pub task: Option<String>,
-	pub repo: Option<String>,
-	pub issue_key: Option<String>,
-	pub reason: String,
-	pub submitter: Option<String>,
-	pub association: Option<String>,
-	pub directive: bool,
-	pub directive_body: Option<String>,
-	pub directive_author: Option<String>,
+	pub decision:          Decision,
+	pub task:              Option<String>,
+	pub repo:              Option<String>,
+	pub issue_key:         Option<String>,
+	pub reason:            String,
+	pub submitter:         Option<String>,
+	pub association:       Option<String>,
+	pub directive:         bool,
+	pub directive_body:    Option<String>,
+	pub directive_author:  Option<String>,
 	pub directive_pragmas: Vec<(String, String)>,
 }
 impl RouteDecision {
@@ -908,16 +931,16 @@ impl RouteDecision {
 }
 fn queue(task: &str, repo: &str, key: String, reason: &str) -> RouteDecision {
 	RouteDecision {
-		decision: Decision::Queue,
-		task: Some(task.to_owned()),
-		repo: Some(repo.to_owned()),
-		issue_key: Some(key),
-		reason: reason.to_owned(),
-		submitter: None,
-		association: None,
-		directive: false,
-		directive_body: None,
-		directive_author: None,
+		decision:          Decision::Queue,
+		task:              Some(task.to_owned()),
+		repo:              Some(repo.to_owned()),
+		issue_key:         Some(key),
+		reason:            reason.to_owned(),
+		submitter:         None,
+		association:       None,
+		directive:         false,
+		directive_body:    None,
+		directive_author:  None,
 		directive_pragmas: Vec::new(),
 	}
 }
@@ -1021,22 +1044,28 @@ pub fn extract_mention(body: Option<&str>, bot_login: &str) -> Option<String> {
 }
 
 pub const TRUSTED_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR"];
-pub fn is_maintainer(
+pub fn is_maintainer<S>(
 	login: Option<&str>,
 	association: Option<&str>,
-	maintainers: &HashSet<String>,
-) -> bool {
+	maintainers: &HashSet<String, S>,
+) -> bool
+where
+	S: BuildHasher,
+{
 	login.is_some_and(|l| maintainers.contains(&l.to_ascii_lowercase()))
 		|| association
 			.is_some_and(|a| TRUSTED_ASSOCIATIONS.contains(&a.to_ascii_uppercase().as_str()))
 }
-pub fn rate_limit_cap(
+pub fn rate_limit_cap<S>(
 	login: &str,
 	association: Option<&str>,
-	unlimited: &HashSet<String>,
+	unlimited: &HashSet<String, S>,
 	default: i64,
 	contributor: i64,
-) -> Option<i64> {
+) -> Option<i64>
+where
+	S: BuildHasher,
+{
 	if unlimited.contains(&login.to_ascii_lowercase()) {
 		return None;
 	}
@@ -1049,15 +1078,20 @@ pub fn rate_limit_cap(
 
 pub type PrIssueResolver<'a> = Option<&'a dyn Fn(&str, i64) -> Option<String>>;
 
-pub fn route(
+pub fn route<A, M, R>(
 	event_type: &str,
 	payload: &Value,
-	allowlist: &HashSet<String>,
+	allowlist: &HashSet<String, A>,
 	bot_login: &str,
-	maintainers: &HashSet<String>,
-	reviewer_bots: &HashSet<String>,
+	maintainers: &HashSet<String, M>,
+	reviewer_bots: &HashSet<String, R>,
 	resolve_issue_from_pr: PrIssueResolver<'_>,
-) -> RouteDecision {
+) -> RouteDecision
+where
+	A: BuildHasher,
+	M: BuildHasher,
+	R: BuildHasher,
+{
 	let repo = repo_full_name(payload);
 	let Some(repo_s) = repo.as_deref() else {
 		return skip(None, None, "repo not on allowlist");
@@ -1087,10 +1121,12 @@ pub fn route(
 			None
 		}
 	};
+	type DirectiveExtraction = (bool, Option<String>, Option<String>, Vec<(String, String)>);
+
 	let directive = |comment: Option<&Value>,
 	                 login: Option<&String>,
 	                 assoc: Option<&String>|
-	 -> (bool, Option<String>, Option<String>, Vec<(String, String)>) {
+	 -> DirectiveExtraction {
 		let Some(c) = comment else {
 			return (false, None, None, Vec::new());
 		};
@@ -1249,8 +1285,11 @@ mod tests {
 			.finalize()
 			.into_bytes()
 			.iter()
-			.map(|b| format!("{b:02x}"))
-			.collect::<String>();
+			.fold(String::new(), |mut out, b| {
+				use std::fmt::Write as _;
+				let _ = write!(out, "{b:02x}");
+				out
+			});
 		assert!(verify_signature("shh", body, Some(&format!("sha256={sig}"))));
 		assert!(!verify_signature("wrong", body, Some(&format!("sha256={sig}"))));
 		assert!(!verify_signature("shh", body, None));
@@ -1363,10 +1402,10 @@ mod tests {
 		let d = route("issue_comment", &payload, &allow(), bot(), &hs(&[]), &hs(&[]), None);
 		assert!(d.directive);
 		assert_eq!(d.directive_body.as_deref(), Some("refactor X"));
-		assert_eq!(
-			d.directive_pragmas,
-			vec![("model".to_owned(), "gpt".to_owned()), ("thinking".to_owned(), "low".to_owned())]
-		);
+		assert_eq!(d.directive_pragmas, vec![
+			("model".to_owned(), "gpt".to_owned()),
+			("thinking".to_owned(), "low".to_owned())
+		]);
 	}
 	#[test]
 	fn github_reviewer_bot_directive() {

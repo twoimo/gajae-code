@@ -33,6 +33,7 @@ pub struct ItemId(pub String);
 pub struct ConnectionId(pub String);
 
 /// Monotonic backend-attachment generation. Every callback and every
+///
 /// `emitBackendEvent` carries the generation for its thread; a mismatch means
 /// the event is from a superseded backend attachment and must be rejected.
 #[derive(

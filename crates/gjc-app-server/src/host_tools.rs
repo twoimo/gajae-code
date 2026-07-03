@@ -12,7 +12,7 @@ use crate::{
 	ids::{ThreadId, TurnId},
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostToolDescriptor {
 	pub name:            String,
 	pub description:     String,
@@ -21,7 +21,7 @@ pub struct HostToolDescriptor {
 	pub redaction_hints: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostToolResult {
 	pub ok:     bool,
 	pub result: Option<Value>,

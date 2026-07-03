@@ -4,7 +4,7 @@ This packet is a docs-only, public-safe context seed for the `gajae-code` reposi
 
 ## Purpose in one paragraph
 
-Gajae-Code is the `gjc` coding-agent CLI and supporting monorepo. The product centers on a small public workflow loop: clarify with `deep-interview`, plan with `ralplan`, execute and verify through `ultragoal`, and use `team` only when parallel tmux workers are useful. The main product package is `packages/coding-agent/`; supporting packages provide LLM/provider access, agent runtime, TUI rendering, native helpers, stats, utilities, benchmarks, and Python RPC/bot integrations.
+Gajae-Code is the `gjc` coding-agent CLI and supporting monorepo. The product centers on a small public workflow loop: clarify with `deep-interview`, plan with `ralplan`, execute and verify through `ultragoal`, and use `team` only when parallel tmux workers are useful. The main product package is `packages/coding-agent/`; supporting packages provide LLM/provider access, agent runtime, TUI rendering, native helpers, stats, utilities, benchmarks, and Python RPC client and Rust bot integrations.
 
 ## Fixed public surface
 
@@ -42,7 +42,7 @@ Do not add a fifth default skill, fifth public role agent, new command, new conf
 - `packages/stats/` — local observability dashboard and session/model usage aggregation.
 - `packages/typescript-edit-benchmark/` — TypeScript edit benchmark tooling.
 - `python/gjc-rpc/` — Python client for `gjc --mode rpc`.
-- `python/robogjc/` — GitHub triage/fix bot that drives `gjc --mode rpc`; this subtree has its own `AGENTS.md`.
+- `crates/robogjc/` — Rust GitHub triage/fix bot; `python/robogjc/web/` is its retained TypeScript dashboard.
 
 ## Build, test, and validation commands
 
@@ -71,7 +71,7 @@ Repository rule: do not run `tsc` or `npx tsc`; use the Bun scripts above.
 - **TUI/logging:** Avoid `console.log`, `console.warn`, or `console.error` inside `packages/coding-agent/`; use the centralized logger to avoid corrupting TUI rendering.
 - **Secrets/auth/config:** Keep `docs/secrets.md`, auth broker/gateway code, settings, and environment-variable docs public-safe. Do not expose tokens or private infrastructure.
 - **Native/Rust build:** `packages/natives/` and `crates/*` can require platform-specific toolchains and CI artifact behavior.
-- **Python bot subtree:** `python/robogjc/` has its own local instructions and trust boundaries.
+- **Rust bot service:** `crates/robogjc/` owns the robogjc service; deployment assets remain under `Dockerfile.robogjc` and `python/robogjc/`, while `python/robogjc/web/` is dashboard-only.
 - **Generated model data:** Do not edit `packages/ai/src/models.json` directly; update generators/descriptors/resolvers and regenerate with `bun --cwd=packages/ai run generate-models`.
 
 ## Unknowns worth preserving

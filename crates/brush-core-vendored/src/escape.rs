@@ -283,10 +283,10 @@ pub(crate) struct QuoteOptions {
 	/// Whether or not to *always* escape or quote the input; if false, then
 	/// escaping/quoting will only be applied if the input contains characters
 	/// that *require* it.
-	pub always_quote:                 bool,
+	pub always_quote: bool,
 	/// Preferred mode for quoting/escaping. Quoting may be "upgraded" to a more
 	/// expressive format if the input is not expressible otherwise.
-	pub preferred_mode:               QuoteMode,
+	pub preferred_mode: QuoteMode,
 	/// Whether or not to *avoid* using ANSI C quoting just for the benefit of
 	/// newline characters. Default is for newline characters to require
 	/// upgrading the string's quoting to ANSI C quoting.

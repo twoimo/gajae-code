@@ -41,7 +41,7 @@ fn head(repo: &Path) -> String {
 
 #[derive(Default)]
 struct RecordingRunner {
-	specs: RefCell<Vec<CommandSpec>>,
+	specs:   RefCell<Vec<CommandSpec>>,
 	outputs: RefCell<Vec<CommandOutput>>,
 }
 impl CommandRunner for RecordingRunner {
@@ -59,21 +59,16 @@ impl CommandRunner for RecordingRunner {
 fn command_runner_records_safe_directory_identity_timeout_and_token() {
 	let runner = RecordingRunner::default();
 	let repo = PathBuf::from("/tmp/work/repo");
-	git_ops::run_git_with(
-		&runner,
-		&["status"],
-		Some(&repo),
-		GitRunOptions {
-			token: Some("secret".into()),
-			safe_directory: Some(repo.clone()),
-			user: Some(2001),
-			group: Some(2001),
-			extra_groups: vec![2000],
-			umask: Some(0o002),
-			timeout: Some(Duration::from_secs(7)),
-			..Default::default()
-		},
-	)
+	git_ops::run_git_with(&runner, &["status"], Some(&repo), GitRunOptions {
+		token: Some("secret".into()),
+		safe_directory: Some(repo.clone()),
+		user: Some(2001),
+		group: Some(2001),
+		extra_groups: vec![2000],
+		umask: Some(0o002),
+		timeout: Some(Duration::from_secs(7)),
+		..Default::default()
+	})
 	.unwrap();
 	let spec = &runner.specs.borrow()[0];
 	assert_eq!(spec.program, "git");
@@ -98,10 +93,10 @@ fn command_runner_records_safe_directory_identity_timeout_and_token() {
 #[test]
 fn bad_ref_fixture_parses_and_updates_refs_through_runner() {
 	let output = include_str!("fixtures/phase4/bad-fetch-output.txt");
-	assert_eq!(
-		git_ops::bad_refs_from_fetch_output(output),
-		vec!["refs/heads/farm/deadbeef/broken", "refs/remotes/origin/stale"]
-	);
+	assert_eq!(git_ops::bad_refs_from_fetch_output(output), vec![
+		"refs/heads/farm/deadbeef/broken",
+		"refs/remotes/origin/stale"
+	]);
 	let runner = RecordingRunner::default();
 	git_ops::delete_bad_refs(Path::new("/pool"), output, &runner);
 	let specs = runner.specs.borrow();
@@ -198,14 +193,14 @@ fn sandbox_lifecycle_branch_rename_dirty_and_force_with_lease() {
 fn runtime_dirs_and_slot_proc_scan_match_python_contract() {
 	let tmp = tempfile::tempdir().unwrap();
 	let ws = Workspace {
-		root: tmp.path().join("ws"),
-		repo_dir: tmp.path().join("ws/repo"),
-		session_dir: tmp.path().join("ws/.gjc-session"),
-		context_dir: tmp.path().join("ws/context"),
-		artifacts_dir: tmp.path().join("ws/artifacts"),
-		branch: "farm/abc/old".into(),
+		root:           tmp.path().join("ws"),
+		repo_dir:       tmp.path().join("ws/repo"),
+		session_dir:    tmp.path().join("ws/.gjc-session"),
+		context_dir:    tmp.path().join("ws/context"),
+		artifacts_dir:  tmp.path().join("ws/artifacts"),
+		branch:         "farm/abc/old".into(),
 		repo_full_name: "octo/widget".into(),
-		issue_number: 1,
+		issue_number:   1,
 	};
 	let env = sandbox::prepare_slot_runtime_env(&ws, Some(2001)).unwrap();
 	assert!(Path::new(env.get("TMPDIR").unwrap()).is_dir());
@@ -422,15 +417,15 @@ fn safe_directory_env_is_scoped_to_git_commands_only() {
 #[test]
 fn real_command_runner_timeout_is_git_error_124() {
 	let spec = CommandSpec {
-		program: "sh".into(),
-		args: vec!["-c".into(), "sleep 1".into()],
-		cwd: None,
-		env: Default::default(),
-		timeout: Duration::from_millis(20),
-		user: None,
-		group: None,
+		program:      "sh".into(),
+		args:         vec!["-c".into(), "sleep 1".into()],
+		cwd:          None,
+		env:          Default::default(),
+		timeout:      Duration::from_millis(20),
+		user:         None,
+		group:        None,
 		extra_groups: vec![],
-		umask: None,
+		umask:        None,
 	};
 	let err = git_ops::RealCommandRunner.run(&spec).unwrap_err();
 	assert_eq!(err.returncode, 124);
@@ -555,7 +550,10 @@ fn chown_workspace_missing_path_returns_error_when_active() {
 	let tmp = tempfile::tempdir().unwrap();
 	let missing = tmp.path().join("missing");
 	let result = sandbox::chown_workspace(&missing, None);
-	if cfg!(target_os = "linux") && unsafe { libc::geteuid() == 0 } {
+	// SAFETY: `geteuid` is a side-effect-free libc query that does not dereference
+	// pointers.
+	let is_root = unsafe { libc::geteuid() == 0 };
+	if cfg!(target_os = "linux") && is_root {
 		assert!(result.is_err());
 	} else {
 		assert!(result.is_ok());
@@ -565,22 +563,25 @@ fn chown_workspace_missing_path_returns_error_when_active() {
 #[test]
 #[ignore = "requires Linux root and ROBGJC_PERMISSIONS_E2E=1"]
 fn permissions_e2e_real_runner_applies_extra_groups() {
+	// SAFETY: `geteuid` is a side-effect-free libc query that does not dereference
+	// pointers.
+	let is_root = unsafe { libc::geteuid() == 0 };
 	if std::env::var("ROBGJC_PERMISSIONS_E2E").ok().as_deref() != Some("1")
 		|| !cfg!(target_os = "linux")
-		|| unsafe { libc::geteuid() != 0 }
+		|| !is_root
 	{
 		return;
 	}
 	let spec = CommandSpec {
-		program: "id".into(),
-		args: vec!["-G".into()],
-		cwd: None,
-		env: Default::default(),
-		timeout: Duration::from_secs(5),
-		user: Some(2001),
-		group: Some(2001),
+		program:      "id".into(),
+		args:         vec!["-G".into()],
+		cwd:          None,
+		env:          Default::default(),
+		timeout:      Duration::from_secs(5),
+		user:         Some(2001),
+		group:        Some(2001),
 		extra_groups: vec![2000],
-		umask: Some(0o002),
+		umask:        Some(0o002),
 	};
 	let out = git_ops::RealCommandRunner.run(&spec).unwrap();
 	assert_eq!(out.status, 0);

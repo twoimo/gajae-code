@@ -24,30 +24,31 @@ pub type TaskResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>
 pub type TaskFuture<'a> = Pin<Box<dyn Future<Output = TaskResult> + Send + 'a>>;
 
 pub trait TaskWorker: Send + Sync + 'static {
-	fn run_task<'a>(&'a self, row: EventRow, ctx: TaskContext) -> TaskFuture<'a>;
+	fn run_task(&self, row: EventRow, ctx: TaskContext) -> TaskFuture<'_>;
 }
 
 #[derive(Clone)]
 pub struct TaskContext {
-	pub slot_uid: Option<u32>,
+	pub slot_uid:      Option<u32>,
 	pub cancellations: CancellationRegistry,
 }
 
 pub type ReapSlot = Arc<dyn Fn(u32) + Send + Sync>;
+type InflightTasks = Arc<Mutex<HashMap<tokio::task::Id, (String, JoinHandle<()>)>>>;
 
 pub struct WorkerPool<W: TaskWorker> {
-	db: Arc<Database>,
-	worker: Arc<W>,
-	max_concurrency: usize,
-	slot_pool: Option<SlotPool>,
-	reap_slot: ReapSlot,
-	inflight: Arc<Mutex<HashSet<String>>>,
-	inflight_tasks: Arc<Mutex<HashMap<tokio::task::Id, (String, JoinHandle<()>)>>>,
+	db:                 Arc<Database>,
+	worker:             Arc<W>,
+	max_concurrency:    usize,
+	slot_pool:          Option<SlotPool>,
+	reap_slot:          ReapSlot,
+	inflight:           Arc<Mutex<HashSet<String>>>,
+	inflight_tasks:     InflightTasks,
 	shutdown_cancelled: Arc<Mutex<HashSet<String>>>,
-	cancellations: CancellationRegistry,
-	stop: Arc<Notify>,
-	wakeup: Arc<Notify>,
-	dispatcher: Option<JoinHandle<()>>,
+	cancellations:      CancellationRegistry,
+	stop:               Arc<Notify>,
+	wakeup:             Arc<Notify>,
+	dispatcher:         Option<JoinHandle<()>>,
 }
 
 impl<W: TaskWorker> WorkerPool<W> {
@@ -86,9 +87,11 @@ impl<W: TaskWorker> WorkerPool<W> {
 	pub fn cancellations(&self) -> CancellationRegistry {
 		self.cancellations.clone()
 	}
+
 	pub fn wake(&self) {
 		self.wakeup.notify_one();
 	}
+
 	pub fn inflight_snapshot(&self) -> Vec<String> {
 		let mut keys: Vec<_> = self
 			.inflight
@@ -101,6 +104,10 @@ impl<W: TaskWorker> WorkerPool<W> {
 		keys
 	}
 
+	#[allow(
+		clippy::unused_async,
+		reason = "public async API is awaited by server startup call sites"
+	)]
 	pub async fn start(&mut self) -> DbResult<()> {
 		if let Some(pool) = &self.slot_pool {
 			for uid in pool.slot_uids() {
@@ -109,21 +116,21 @@ impl<W: TaskWorker> WorkerPool<W> {
 		}
 		self.db.reset_stuck_running()?;
 		let runner = Runner {
-			db: self.db.clone(),
-			worker: self.worker.clone(),
-			slot_pool: self.slot_pool.clone(),
-			semaphore: if self.slot_pool.is_none() {
+			db:                 self.db.clone(),
+			worker:             self.worker.clone(),
+			slot_pool:          self.slot_pool.clone(),
+			semaphore:          if self.slot_pool.is_none() {
 				Some(Arc::new(Semaphore::new(self.max_concurrency)))
 			} else {
 				None
 			},
-			reap_slot: self.reap_slot.clone(),
-			inflight: self.inflight.clone(),
-			inflight_tasks: self.inflight_tasks.clone(),
+			reap_slot:          self.reap_slot.clone(),
+			inflight:           self.inflight.clone(),
+			inflight_tasks:     self.inflight_tasks.clone(),
 			shutdown_cancelled: self.shutdown_cancelled.clone(),
-			cancellations: self.cancellations.clone(),
-			stop: self.stop.clone(),
-			wakeup: self.wakeup.clone(),
+			cancellations:      self.cancellations.clone(),
+			stop:               self.stop.clone(),
+			wakeup:             self.wakeup.clone(),
 		};
 		self.dispatcher = Some(tokio::spawn(async move {
 			runner.dispatch_loop().await;
@@ -138,14 +145,15 @@ impl<W: TaskWorker> WorkerPool<W> {
 			dispatcher.abort();
 			let _ = dispatcher.await;
 		}
-		let handles: Vec<_> = self
+		let has_handles = self
 			.inflight_tasks
 			.lock()
 			.expect("tasks poisoned")
 			.values()
 			.map(|(_, h)| h.abort_handle())
-			.collect();
-		if handles.is_empty() {
+			.next()
+			.is_some();
+		if !has_handles {
 			return;
 		}
 		let tasks = self.inflight_tasks.clone();
@@ -184,53 +192,55 @@ impl<W: TaskWorker> WorkerPool<W> {
 	pub fn cancel_event(&self, delivery_id: &str) -> bool {
 		self.cancellations.cancel(delivery_id.to_owned())
 	}
+
 	pub async fn run_event_for_test(&self, row: EventRow) {
 		self.runner().run_event(row).await;
 	}
+
 	fn runner(&self) -> Runner<W> {
 		Runner {
-			db: self.db.clone(),
-			worker: self.worker.clone(),
-			slot_pool: self.slot_pool.clone(),
-			semaphore: None,
-			reap_slot: self.reap_slot.clone(),
-			inflight: self.inflight.clone(),
-			inflight_tasks: self.inflight_tasks.clone(),
+			db:                 self.db.clone(),
+			worker:             self.worker.clone(),
+			slot_pool:          self.slot_pool.clone(),
+			semaphore:          None,
+			reap_slot:          self.reap_slot.clone(),
+			inflight:           self.inflight.clone(),
+			inflight_tasks:     self.inflight_tasks.clone(),
 			shutdown_cancelled: self.shutdown_cancelled.clone(),
-			cancellations: self.cancellations.clone(),
-			stop: self.stop.clone(),
-			wakeup: self.wakeup.clone(),
+			cancellations:      self.cancellations.clone(),
+			stop:               self.stop.clone(),
+			wakeup:             self.wakeup.clone(),
 		}
 	}
 }
 
 struct Runner<W: TaskWorker> {
-	db: Arc<Database>,
-	worker: Arc<W>,
-	slot_pool: Option<SlotPool>,
-	semaphore: Option<Arc<Semaphore>>,
-	reap_slot: ReapSlot,
-	inflight: Arc<Mutex<HashSet<String>>>,
-	inflight_tasks: Arc<Mutex<HashMap<tokio::task::Id, (String, JoinHandle<()>)>>>,
+	db:                 Arc<Database>,
+	worker:             Arc<W>,
+	slot_pool:          Option<SlotPool>,
+	semaphore:          Option<Arc<Semaphore>>,
+	reap_slot:          ReapSlot,
+	inflight:           Arc<Mutex<HashSet<String>>>,
+	inflight_tasks:     InflightTasks,
 	shutdown_cancelled: Arc<Mutex<HashSet<String>>>,
-	cancellations: CancellationRegistry,
-	stop: Arc<Notify>,
-	wakeup: Arc<Notify>,
+	cancellations:      CancellationRegistry,
+	stop:               Arc<Notify>,
+	wakeup:             Arc<Notify>,
 }
 
 struct EventGuard {
-	key: String,
-	delivery_id: String,
-	slot: Option<u32>,
-	slot_pool: Option<SlotPool>,
-	reap_slot: ReapSlot,
-	inflight: Arc<Mutex<HashSet<String>>>,
+	key:                String,
+	delivery_id:        String,
+	slot:               Option<u32>,
+	slot_pool:          Option<SlotPool>,
+	reap_slot:          ReapSlot,
+	inflight:           Arc<Mutex<HashSet<String>>>,
 	shutdown_cancelled: Arc<Mutex<HashSet<String>>>,
-	cancellations: CancellationRegistry,
+	cancellations:      CancellationRegistry,
 }
 
 impl EventGuard {
-	fn set_slot(&mut self, slot: Option<u32>) {
+	const fn set_slot(&mut self, slot: Option<u32>) {
 		self.slot = slot;
 	}
 }
@@ -260,17 +270,17 @@ impl Drop for EventGuard {
 impl<W: TaskWorker> Clone for Runner<W> {
 	fn clone(&self) -> Self {
 		Self {
-			db: self.db.clone(),
-			worker: self.worker.clone(),
-			slot_pool: self.slot_pool.clone(),
-			semaphore: self.semaphore.clone(),
-			reap_slot: self.reap_slot.clone(),
-			inflight: self.inflight.clone(),
-			inflight_tasks: self.inflight_tasks.clone(),
+			db:                 self.db.clone(),
+			worker:             self.worker.clone(),
+			slot_pool:          self.slot_pool.clone(),
+			semaphore:          self.semaphore.clone(),
+			reap_slot:          self.reap_slot.clone(),
+			inflight:           self.inflight.clone(),
+			inflight_tasks:     self.inflight_tasks.clone(),
 			shutdown_cancelled: self.shutdown_cancelled.clone(),
-			cancellations: self.cancellations.clone(),
-			stop: self.stop.clone(),
-			wakeup: self.wakeup.clone(),
+			cancellations:      self.cancellations.clone(),
+			stop:               self.stop.clone(),
+			wakeup:             self.wakeup.clone(),
 		}
 	}
 }
@@ -287,8 +297,8 @@ impl<W: TaskWorker> Runner<W> {
 	async fn dispatch_loop(self) {
 		loop {
 			self.prune_completed_tasks();
-			tokio::select! { _ = self.stop.notified() => break, _ = async {} => {} }
-			match self.claim_next_unique().await {
+			tokio::select! { () = self.stop.notified() => break, () = async {} => {} }
+			match self.claim_next_unique() {
 				Ok(Some(row)) => {
 					let delivery = row.delivery_id.clone();
 					let runner = self.clone();
@@ -307,7 +317,7 @@ impl<W: TaskWorker> Runner<W> {
 					self.prune_completed_tasks();
 				},
 				Ok(None) => {
-					tokio::select! { _ = self.stop.notified() => break, _ = self.wakeup.notified() => {}, _ = tokio::time::sleep(Duration::from_millis(25)) => {} }
+					tokio::select! { () = self.stop.notified() => break, () = self.wakeup.notified() => {}, () = tokio::time::sleep(Duration::from_millis(25)) => {} }
 				},
 				Err(e) => {
 					warn!(error=%e, "claim failed");
@@ -317,7 +327,7 @@ impl<W: TaskWorker> Runner<W> {
 		}
 	}
 
-	async fn claim_next_unique(&self) -> DbResult<Option<EventRow>> {
+	fn claim_next_unique(&self) -> DbResult<Option<EventRow>> {
 		let row = self.db.claim_next_event()?;
 		let Some(row) = row else {
 			return Ok(None);
@@ -346,14 +356,14 @@ impl<W: TaskWorker> Runner<W> {
 			.clone()
 			.unwrap_or_else(|| row.delivery_id.clone());
 		let mut guard = EventGuard {
-			key: key.clone(),
-			delivery_id: row.delivery_id.clone(),
-			slot: None,
-			slot_pool: self.slot_pool.clone(),
-			reap_slot: self.reap_slot.clone(),
-			inflight: self.inflight.clone(),
+			key:                key.clone(),
+			delivery_id:        row.delivery_id.clone(),
+			slot:               None,
+			slot_pool:          self.slot_pool.clone(),
+			reap_slot:          self.reap_slot.clone(),
+			inflight:           self.inflight.clone(),
 			shutdown_cancelled: self.shutdown_cancelled.clone(),
-			cancellations: self.cancellations.clone(),
+			cancellations:      self.cancellations.clone(),
 		};
 		let result = async {
 			if let Some(pool) = &self.slot_pool {
@@ -409,20 +419,23 @@ impl<W: TaskWorker> Runner<W> {
 
 #[cfg(test)]
 mod queue_tests {
-	use super::*;
-	use serde_json::json;
 	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	use serde_json::json;
 	use tempfile::tempdir;
 	use tokio::sync::Mutex as AsyncMutex;
 
+	use super::*;
+
+	type FakeWorkerCalls = Arc<AsyncMutex<Vec<(String, Option<u32>)>>>;
 	struct FakeWorker {
-		calls: Arc<AsyncMutex<Vec<(String, Option<u32>)>>>,
-		fail: Option<&'static str>,
-		park: Option<Arc<Notify>>,
+		calls:      FakeWorkerCalls,
+		fail:       Option<&'static str>,
+		park:       Option<Arc<Notify>>,
 		cancel_mid: bool,
 	}
 	impl TaskWorker for FakeWorker {
-		fn run_task<'a>(&'a self, row: EventRow, ctx: TaskContext) -> TaskFuture<'a> {
+		fn run_task(&self, row: EventRow, ctx: TaskContext) -> TaskFuture<'_> {
 			Box::pin(async move {
 				self
 					.calls
@@ -452,14 +465,14 @@ mod queue_tests {
 	fn row(id: &str, key: &str) -> EventRow {
 		EventRow {
 			delivery_id: id.into(),
-			event_type: "issues".into(),
-			repo: Some("octo/widget".into()),
-			issue_key: Some(key.into()),
-			payload: json!({"action":"opened"}),
+			event_type:  "issues".into(),
+			repo:        Some("octo/widget".into()),
+			issue_key:   Some(key.into()),
+			payload:     json!({"action":"opened"}),
 			received_at: "now".into(),
-			state: "running".into(),
-			attempts: 1,
-			last_error: None,
+			state:       "running".into(),
+			attempts:    1,
+			last_error:  None,
 		}
 	}
 
@@ -477,9 +490,9 @@ mod queue_tests {
 		)
 		.unwrap();
 		let worker = Arc::new(FakeWorker {
-			calls: Arc::new(AsyncMutex::new(vec![])),
-			fail: None,
-			park: None,
+			calls:      Arc::new(AsyncMutex::new(vec![])),
+			fail:       None,
+			park:       None,
 			cancel_mid: true,
 		});
 		let pool = WorkerPool::new(db.clone(), worker, 1, None);
@@ -506,9 +519,9 @@ mod queue_tests {
 			.unwrap();
 		}
 		let worker = Arc::new(FakeWorker {
-			calls: Arc::new(AsyncMutex::new(vec![])),
-			fail: Some("boom"),
-			park: None,
+			calls:      Arc::new(AsyncMutex::new(vec![])),
+			fail:       Some("boom"),
+			park:       None,
 			cancel_mid: false,
 		});
 		let pool = WorkerPool::new(db.clone(), worker, 1, None);
@@ -543,9 +556,9 @@ mod queue_tests {
 			.unwrap();
 		}
 		let worker = Arc::new(FakeWorker {
-			calls: calls.clone(),
-			fail: None,
-			park: Some(park.clone()),
+			calls:      calls.clone(),
+			fail:       None,
+			park:       Some(park.clone()),
 			cancel_mid: false,
 		});
 		let mut pool = WorkerPool::new(db.clone(), worker, 3, None);
@@ -578,9 +591,9 @@ mod queue_tests {
 		let order2 = order.clone();
 		let pool_slots = SlotPool::new([2001]).unwrap();
 		let worker = Arc::new(FakeWorker {
-			calls: Arc::new(AsyncMutex::new(vec![])),
-			fail: None,
-			park: None,
+			calls:      Arc::new(AsyncMutex::new(vec![])),
+			fail:       None,
+			park:       None,
 			cancel_mid: false,
 		});
 		let pool = WorkerPool::with_reaper(
@@ -591,10 +604,8 @@ mod queue_tests {
 			Arc::new(move |uid| order2.lock().unwrap().push(("reap", uid))),
 		);
 		pool.run_event_for_test(row("d", "octo/widget#1")).await;
-		order
-			.lock()
-			.unwrap()
-			.push(("acquire_after", pool_slots.acquire().await.unwrap()));
+		let acquired = pool_slots.acquire().await.unwrap();
+		order.lock().unwrap().push(("acquire_after", acquired));
 		assert_eq!(&order.lock().unwrap()[0], &("reap", 2001));
 	}
 
@@ -604,9 +615,9 @@ mod queue_tests {
 		let c = calls.clone();
 		let (_d, db) = db();
 		let worker = Arc::new(FakeWorker {
-			calls: Arc::new(AsyncMutex::new(vec![])),
-			fail: None,
-			park: None,
+			calls:      Arc::new(AsyncMutex::new(vec![])),
+			fail:       None,
+			park:       None,
 			cancel_mid: false,
 		});
 		let rt = tokio::runtime::Runtime::new().unwrap();
@@ -640,9 +651,9 @@ mod queue_tests {
 		)
 		.unwrap();
 		let worker = Arc::new(FakeWorker {
-			calls: Arc::new(AsyncMutex::new(vec![])),
-			fail: None,
-			park: None,
+			calls:      Arc::new(AsyncMutex::new(vec![])),
+			fail:       None,
+			park:       None,
 			cancel_mid: false,
 		});
 		let mut pool = WorkerPool::new(db.clone(), worker, 1, None);
@@ -682,9 +693,9 @@ mod queue_tests {
 		let reaped2 = reaped.clone();
 		let slots = SlotPool::new([2001]).unwrap();
 		let worker = Arc::new(FakeWorker {
-			calls: calls.clone(),
-			fail: None,
-			park: Some(park),
+			calls:      calls.clone(),
+			fail:       None,
+			park:       Some(park),
 			cancel_mid: false,
 		});
 		let mut pool = WorkerPool::with_reaper(

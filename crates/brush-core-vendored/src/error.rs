@@ -100,7 +100,7 @@ pub enum ErrorKind {
 		/// The expected scope type.
 		expected: crate::env::EnvironmentScope,
 		/// The actual scope type.
-		actual:   crate::env::EnvironmentScope,
+		actual: crate::env::EnvironmentScope,
 	},
 
 	/// The given path is not a directory.
@@ -135,13 +135,13 @@ pub enum ErrorKind {
 	#[error("failed to parse '{s}' as a {int_type_name}, base-{radix} integer: {inner}")]
 	IntParseError {
 		/// The string that failed to parse.
-		s:             String,
+		s: String,
 		/// The integer type being parsed.
 		int_type_name: &'static str,
 		/// The radix (base) used for parsing.
-		radix:         u32,
+		radix: u32,
 		/// The underlying parse error.
-		inner:         std::num::ParseIntError,
+		inner: std::num::ParseIntError,
 	},
 
 	/// The given integer could not be converted to the target type.

@@ -58,6 +58,16 @@ const RUST_SCOPE_ALLOWLIST: readonly RustScopeEntry[] = [
 		packageName: "brush-builtins",
 		rationale: "Vendored Rust shell builtin dependency for the native shell boundary.",
 	},
+	{
+		dir: "crates/gjc-app-server",
+		packageName: "gjc-app-server",
+		rationale: "GJC app-server JSON-RPC runtime (host-tool + thread-metadata seam) driving agent sessions; native protocol/transport core for the robogjc service.",
+	},
+	{
+		dir: "crates/robogjc",
+		packageName: "robogjc",
+		rationale: "Autonomous GitHub bot service (webhook server, slot pool, sandboxed worker, host tools, HMAC proxy) rewritten from Python for native process isolation, uid/gid slot identity, and app-server integration.",
+	},
 ] as const;
 
 const ALLOWED_NON_CRATE_RUST_FILES = new Set(["packages/coding-agent/test/fixtures/chunk-edit-indent.rs"]);

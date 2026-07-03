@@ -29,7 +29,7 @@ impl std::error::Error for InvalidIssueRef {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManualTriageConflict {
 	pub delivery_id: String,
-	pub state: String,
+	pub state:       String,
 }
 impl std::fmt::Display for ManualTriageConflict {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,8 +41,8 @@ impl std::error::Error for ManualTriageConflict {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManualTriageTimeout {
 	pub delivery_id: String,
-	pub state: String,
-	pub timeout: Duration,
+	pub state:       String,
+	pub timeout:     Duration,
 }
 impl std::fmt::Display for ManualTriageTimeout {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,13 +91,13 @@ pub async fn enqueue_manual_triage<G: ManualTriageGithub + ?Sized>(
 	number: i64,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
 	let delivery = manual_delivery_id(repo_full, number);
-	if let Some(existing) = db.get_event(&delivery)? {
-		if existing.state == "queued" || existing.state == "running" {
-			return Err(Box::new(ManualTriageConflict {
-				delivery_id: delivery,
-				state: existing.state,
-			}));
-		}
+	if let Some(existing) = db.get_event(&delivery)?
+		&& (existing.state == "queued" || existing.state == "running")
+	{
+		return Err(Box::new(ManualTriageConflict {
+			delivery_id: delivery,
+			state:       existing.state,
+		}));
 	}
 	let issue = github.get_issue(repo_full, number).await?;
 	if issue.is_pull_request {
@@ -117,8 +117,7 @@ pub async fn enqueue_manual_triage<G: ManualTriageGithub + ?Sized>(
 	if !ok {
 		let state = db
 			.get_event(&delivery)?
-			.map(|r| r.state)
-			.unwrap_or_else(|| "active".into());
+			.map_or_else(|| "active".into(), |r| r.state);
 		return Err(Box::new(ManualTriageConflict { delivery_id: delivery, state }));
 	}
 	Ok(delivery)
@@ -139,11 +138,11 @@ pub async fn await_terminal_state(
 				return Ok(Some(r));
 			},
 			Some(r) => {
-				if timeout.is_some_and(|t| start.elapsed() >= t) {
+				if let Some(timeout) = timeout.filter(|t| start.elapsed() >= *t) {
 					return Err(Box::new(ManualTriageTimeout {
 						delivery_id: delivery_id.into(),
 						state: r.state,
-						timeout: timeout.unwrap(),
+						timeout,
 					}));
 				}
 				tokio::time::sleep(poll_interval).await;
@@ -154,8 +153,9 @@ pub async fn await_terminal_state(
 
 #[cfg(test)]
 mod manual_triage_tests {
-	use super::*;
 	use tempfile::tempdir;
+
+	use super::*;
 
 	#[test]
 	fn manual_triage_parse_refs_and_delivery_id() {

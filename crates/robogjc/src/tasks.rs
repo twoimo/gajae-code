@@ -11,21 +11,21 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadMessage {
-	pub kind: String,
-	pub author: String,
-	pub body: String,
+	pub kind:       String,
+	pub author:     String,
+	pub body:       String,
 	pub created_at: String,
-	pub path: Option<String>,
-	pub line: Option<i64>,
-	pub state: Option<String>,
+	pub path:       Option<String>,
+	pub line:       Option<i64>,
+	pub state:      Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectiveInfo {
-	pub body: String,
-	pub author: String,
+	pub body:    String,
+	pub author:  String,
 	pub pragmas: Vec<(String, String)>,
-	pub thread: Vec<ThreadMessage>,
+	pub thread:  Vec<ThreadMessage>,
 }
 
 pub fn directive_from_payload(payload: &Value) -> Option<DirectiveInfo> {
@@ -84,12 +84,13 @@ pub async fn resolve_issue_row_for_pr(
 			db.set_issue_pr(&row.key, pr_number).map_err(db_err)?;
 			repaired = db.get_issue(&row.key).map_err(db_err)?;
 		}
-	} else if let Some(row) = &repaired {
-		if row.branch.is_none() && !pr.head_ref.is_empty() {
-			db.set_issue_branch(&row.key, &pr.head_ref)
-				.map_err(db_err)?;
-			repaired = db.get_issue(&row.key).map_err(db_err)?;
-		}
+	} else if let Some(row) = &repaired
+		&& row.branch.is_none()
+		&& !pr.head_ref.is_empty()
+	{
+		db.set_issue_branch(&row.key, &pr.head_ref)
+			.map_err(db_err)?;
+		repaired = db.get_issue(&row.key).map_err(db_err)?;
 	}
 	Ok((repaired, Some(pr)))
 }
@@ -112,18 +113,19 @@ pub fn cleanup_workspace(
 
 #[cfg(test)]
 mod tasks_tests {
-	use super::*;
 	use serde_json::json;
+
+	use super::*;
 
 	#[test]
 	fn tasks_directive_from_payload_parses_pragmas() {
 		let d = directive_from_payload(&json!({"_robogjc_directive":{"body":"do it","author":"can1357","pragmas":[["model","gpt"],["thinking","low"]]}})).unwrap();
 		assert_eq!(d.body, "do it");
 		assert_eq!(d.author, "can1357");
-		assert_eq!(
-			d.pragmas,
-			vec![("model".into(), "gpt".into()), ("thinking".into(), "low".into())]
-		);
+		assert_eq!(d.pragmas, vec![
+			("model".into(), "gpt".into()),
+			("thinking".into(), "low".into())
+		]);
 	}
 
 	#[test]
@@ -168,9 +170,9 @@ mod tasks_tests {
 			rate_limit_window_seconds: 1.0,
 			rate_limit_default: 1,
 			rate_limit_contributor: 1,
-			rate_limit_unlimited_raw: "".into(),
-			maintainer_logins_raw: "".into(),
-			reviewer_bots_raw: "".into(),
+			rate_limit_unlimited_raw: String::new(),
+			maintainer_logins_raw: String::new(),
+			reviewer_bots_raw: String::new(),
 			question_autoclose_enabled: true,
 			question_autoclose_hours: 4.0,
 			question_autoclose_scan_seconds: 60.0,
@@ -181,17 +183,17 @@ mod tasks_tests {
 			natives_cache_gc_interval_seconds: 0.0,
 		};
 		let pr = PullRequestInfo {
-			repo: "octo/widget".into(),
-			number: 7,
-			html_url: "".into(),
-			head_ref: "robogjc/issue-1".into(),
-			base_ref: "main".into(),
-			state: "open".into(),
-			author: "RoboGJC-Bot".into(),
+			repo:      "octo/widget".into(),
+			number:    7,
+			html_url:  String::new(),
+			head_ref:  "robogjc/issue-1".into(),
+			base_ref:  "main".into(),
+			state:     "open".into(),
+			author:    "RoboGJC-Bot".into(),
 			head_repo: "OCTO/WIDGET".into(),
 		};
 		assert!(can_handle_pr_directly(&settings, "octo/widget", &pr));
-		let mut other = pr.clone();
+		let mut other = pr;
 		other.author = "alice".into();
 		assert!(!can_handle_pr_directly(&settings, "octo/widget", &other));
 	}

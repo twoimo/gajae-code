@@ -60,6 +60,11 @@ impl WsServerHandle {
 		format!("ws://{}:{}", self.addr.ip(), self.addr.port())
 	}
 
+	#[allow(
+		clippy::unused_async,
+		reason = "shutdown is awaited by the N-API server teardown path and kept async for API \
+		          symmetry"
+	)]
 	pub async fn shutdown(&self) -> std::io::Result<()> {
 		if self.stopped.swap(true, Ordering::SeqCst) {
 			return Ok(());

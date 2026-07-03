@@ -1,4 +1,5 @@
 use std::{
+	fmt::Write as _,
 	fs,
 	net::SocketAddr,
 	path::{Path, PathBuf},
@@ -58,7 +59,7 @@ fn test_settings(tmp: &Path) -> Settings {
 		rate_limit_window_seconds: 3600.0,
 		rate_limit_default: 100,
 		rate_limit_contributor: 100,
-		rate_limit_unlimited_raw: "".into(),
+		rate_limit_unlimited_raw: String::new(),
 		maintainer_logins_raw: "maint".into(),
 		reviewer_bots_raw: "reviewbot".into(),
 		question_autoclose_enabled: false,
@@ -80,12 +81,12 @@ fn build_state(tmp: &Path) -> (AppState, Arc<Database>) {
 		GitHubClient::with_base_url("ghp_G009_PAT_MUST_NOT_LEAK", "http://127.0.0.1:9").unwrap(),
 	);
 	let runtime = AppServerHostToolRuntime {
-		db: db.clone(),
-		github: github.clone(),
+		db:            db.clone(),
+		github:        github.clone(),
 		git_transport: Arc::new(LocalGitTransport::default()),
-		settings: Some(cfg.clone()),
-		author_name: "bot".into(),
-		author_email: cfg.git_author_email.clone(),
+		settings:      Some(cfg.clone()),
+		author_name:   "bot".into(),
+		author_email:  cfg.git_author_email.clone(),
 	};
 	let worker = Arc::new(AppServerWorker::new(
 		AppServerWorkerConfig { hard_timeout: Duration::from_millis(10), ..Default::default() },
@@ -105,8 +106,13 @@ async fn spawn_live(app: Router) -> SocketAddr {
 fn signature(body: &[u8]) -> String {
 	let mut mac = HmacSha256::new_from_slice(b"g009-webhook-secret").unwrap();
 	mac.update(body);
-	let bytes = mac.finalize().into_bytes();
-	format!("sha256={}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+	mac.finalize()
+		.into_bytes()
+		.iter()
+		.fold("sha256=".to_string(), |mut out, b| {
+			let _ = write!(out, "{b:02x}");
+			out
+		})
 }
 
 fn issue_comment_body() -> Vec<u8> {

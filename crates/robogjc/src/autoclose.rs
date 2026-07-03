@@ -40,6 +40,7 @@ impl<T: GitHubBackend + ?Sized + 'static> AutocloseGithub for T {
 	) -> GithubFuture<'a, Vec<ReactionInfo>> {
 		GitHubBackend::list_comment_reactions(self, repo, comment_id)
 	}
+
 	fn close_issue<'a>(
 		&'a self,
 		repo: &'a str,
@@ -52,25 +53,26 @@ impl<T: GitHubBackend + ?Sized + 'static> AutocloseGithub for T {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutocloseCounts {
-	pub closed: usize,
+	pub closed:    usize,
 	pub cancelled: usize,
-	pub retried: usize,
+	pub retried:   usize,
 }
 
 pub struct AutocloseScheduler<G: AutocloseGithub + ?Sized> {
 	settings: Settings,
-	db: Arc<Database>,
-	github: Arc<G>,
-	task: Option<tokio::task::JoinHandle<()>>,
-	stop: Arc<AtomicBool>,
-	notify: Arc<tokio::sync::Notify>,
-	now: Arc<dyn Fn() -> String + Send + Sync>,
+	db:       Arc<Database>,
+	github:   Arc<G>,
+	task:     Option<tokio::task::JoinHandle<()>>,
+	stop:     Arc<AtomicBool>,
+	notify:   Arc<tokio::sync::Notify>,
+	now:      Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 impl<G: AutocloseGithub + ?Sized> AutocloseScheduler<G> {
 	pub fn new(settings: Settings, db: Arc<Database>, github: Arc<G>) -> Self {
 		Self::with_now(settings, db, github, Arc::new(utcnow_iso))
 	}
+
 	pub fn with_now(
 		settings: Settings,
 		db: Arc<Database>,
@@ -87,11 +89,17 @@ impl<G: AutocloseGithub + ?Sized> AutocloseScheduler<G> {
 			now,
 		}
 	}
+
 	pub fn enabled(&self) -> bool {
 		self.settings.question_autoclose_enabled
 			&& self.settings.question_autoclose_hours > 0.0
 			&& self.settings.question_autoclose_scan_seconds > 0.0
 	}
+
+	#[allow(
+		clippy::unused_async,
+		reason = "public async API is awaited by server startup call sites"
+	)]
 	pub async fn start(&mut self) {
 		if !self.enabled() || self.task.is_some() {
 			return;
@@ -113,10 +121,11 @@ impl<G: AutocloseGithub + ?Sized> AutocloseScheduler<G> {
 				if stop.load(Ordering::SeqCst) {
 					break;
 				}
-				tokio::select! { _ = notify.notified() => if stop.load(Ordering::SeqCst) { break; }, _ = tokio::time::sleep(delay) => {} }
+				tokio::select! { () = notify.notified() => if stop.load(Ordering::SeqCst) { break; }, () = tokio::time::sleep(delay) => {} }
 			}
 		}));
 	}
+
 	pub async fn stop(&mut self) {
 		self.stop.store(true, Ordering::SeqCst);
 		self.notify.notify_waiters();
@@ -124,6 +133,7 @@ impl<G: AutocloseGithub + ?Sized> AutocloseScheduler<G> {
 			let _ = tokio::time::timeout(Duration::from_secs(5), t).await;
 		}
 	}
+
 	pub async fn tick(&self) -> DbResult<AutocloseCounts> {
 		Tick { db: self.db.clone(), github: self.github.clone(), now: self.now.clone() }
 			.tick()
@@ -132,9 +142,9 @@ impl<G: AutocloseGithub + ?Sized> AutocloseScheduler<G> {
 }
 
 struct Tick<G: AutocloseGithub + ?Sized> {
-	db: Arc<Database>,
+	db:     Arc<Database>,
 	github: Arc<G>,
-	now: Arc<dyn Fn() -> String + Send + Sync>,
+	now:    Arc<dyn Fn() -> String + Send + Sync>,
 }
 impl<G: AutocloseGithub + ?Sized> Tick<G> {
 	async fn tick(&self) -> DbResult<AutocloseCounts> {
@@ -149,17 +159,15 @@ impl<G: AutocloseGithub + ?Sized> Tick<G> {
 		}
 		Ok(c)
 	}
+
 	async fn process(&self, row: PendingClosureRow) -> &'static str {
-		let reactions = match self
+		let Ok(reactions) = self
 			.github
 			.list_comment_reactions(&row.repo, row.comment_id)
 			.await
-		{
-			Ok(r) => r,
-			Err(_) => {
-				let _ = self.db.requeue_claimed_closure(&row.issue_key);
-				return "retried";
-			},
+		else {
+			let _ = self.db.requeue_claimed_closure(&row.issue_key);
+			return "retried";
 		};
 		let author = row.issue_author.to_ascii_lowercase();
 		if reactions
@@ -212,7 +220,7 @@ fn format_unix_utc(secs: i64) -> String {
 	format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.000000Z")
 }
 
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 	let z = days + 719_468;
 	let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
 	let doe = z - era * 146_097;
@@ -222,25 +230,26 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 	let mp = (5 * doy + 2) / 153;
 	let d = doy - (153 * mp + 2) / 5 + 1;
 	let m = mp + if mp < 10 { 3 } else { -9 };
-	(y + if m <= 2 { 1 } else { 0 }, m, d)
+	(y + (m <= 2) as i64, m, d)
 }
 
 #[cfg(test)]
 mod autoclose_tests {
-	use super::*;
-	use crate::{config::SecretString, db::issue_key};
 	use tempfile::tempdir;
 	use tokio::sync::Mutex;
 
+	use super::*;
+	use crate::{config::SecretString, db::issue_key};
+
 	struct FakeGh {
-		reactions: Vec<ReactionInfo>,
+		reactions:      Vec<ReactionInfo>,
 		reaction_error: Option<GitHubError>,
-		close_error: Option<GitHubError>,
-		close_calls: Mutex<Vec<(String, i64, String)>>,
-		list_calls: Mutex<usize>,
+		close_error:    Option<GitHubError>,
+		close_calls:    Mutex<Vec<(String, i64, String)>>,
+		list_calls:     Mutex<usize>,
 		// When set, list_comment_reactions blocks until this Notify fires,
 		// letting tests hold a tick in flight while calling stop().
-		list_gate: Option<Arc<tokio::sync::Notify>>,
+		list_gate:      Option<Arc<tokio::sync::Notify>>,
 	}
 	impl FakeGh {
 		fn ok(reactions: Vec<ReactionInfo>) -> Self {
@@ -272,6 +281,7 @@ mod autoclose_tests {
 				}
 			})
 		}
+
 		fn close_issue<'a>(
 			&'a self,
 			repo: &'a str,
@@ -299,14 +309,14 @@ mod autoclose_tests {
 			bot_login: "bot".into(),
 			git_author_name: None,
 			git_author_email: "b@example.invalid".into(),
-			repo_allowlist_raw: "".into(),
+			repo_allowlist_raw: String::new(),
 			gh_proxy_url: None,
 			gh_proxy_hmac_key: None,
-			gh_proxy_bind_host: "".into(),
+			gh_proxy_bind_host: String::new(),
 			gh_proxy_bind_port: 0,
 			gh_proxy_max_body_bytes: 0,
 			gh_proxy_git_timeout_seconds: 0.0,
-			model: "".into(),
+			model: String::new(),
 			provider: None,
 			thinking_level: "low".into(),
 			max_concurrency: 1,
@@ -320,15 +330,15 @@ mod autoclose_tests {
 			workspace_root: "/tmp".into(),
 			sqlite_path: "/tmp/x".into(),
 			log_dir: "/tmp".into(),
-			bind_host: "".into(),
+			bind_host: String::new(),
 			bind_port: 0,
 			replay_token: None,
 			rate_limit_window_seconds: 0.0,
 			rate_limit_default: 0,
 			rate_limit_contributor: 0,
-			rate_limit_unlimited_raw: "".into(),
-			maintainer_logins_raw: "".into(),
-			reviewer_bots_raw: "".into(),
+			rate_limit_unlimited_raw: String::new(),
+			maintainer_logins_raw: String::new(),
+			reviewer_bots_raw: String::new(),
 			question_autoclose_enabled: enabled,
 			question_autoclose_hours: hours,
 			question_autoclose_scan_seconds: 60.0,
@@ -359,10 +369,11 @@ mod autoclose_tests {
 		let (_d, db) = seeded();
 		let gh = Arc::new(FakeGh::ok(vec![]));
 		let sched = AutocloseScheduler::new(settings(true, 4.0), db.clone(), gh.clone());
-		assert_eq!(
-			sched.tick().await.unwrap(),
-			AutocloseCounts { closed: 1, cancelled: 0, retried: 0 }
-		);
+		assert_eq!(sched.tick().await.unwrap(), AutocloseCounts {
+			closed:    1,
+			cancelled: 0,
+			retried:   0,
+		});
 		assert_eq!(
 			db.get_pending_closure(&issue_key("octo/widget", 42))
 				.unwrap()
@@ -375,15 +386,16 @@ mod autoclose_tests {
 	async fn autoclose_tick_cancels_author_downvote() {
 		let (_d, db) = seeded();
 		let gh = Arc::new(FakeGh::ok(vec![ReactionInfo {
-			content: "-1".into(),
+			content:    "-1".into(),
 			user_login: "Alice".into(),
-			user_type: "User".into(),
+			user_type:  "User".into(),
 		}]));
 		let sched = AutocloseScheduler::new(settings(true, 4.0), db.clone(), gh);
-		assert_eq!(
-			sched.tick().await.unwrap(),
-			AutocloseCounts { closed: 0, cancelled: 1, retried: 0 }
-		);
+		assert_eq!(sched.tick().await.unwrap(), AutocloseCounts {
+			closed:    0,
+			cancelled: 1,
+			retried:   0,
+		});
 		assert_eq!(
 			db.get_pending_closure(&issue_key("octo/widget", 42))
 				.unwrap()
@@ -428,10 +440,11 @@ mod autoclose_tests {
 			gh.clone(),
 			Arc::new(|| "1999-01-01T00:00:00.000000Z".to_owned()),
 		);
-		assert_eq!(
-			sched.tick().await.unwrap(),
-			AutocloseCounts { closed: 0, cancelled: 0, retried: 0 }
-		);
+		assert_eq!(sched.tick().await.unwrap(), AutocloseCounts {
+			closed:    0,
+			cancelled: 0,
+			retried:   0,
+		});
 		assert_eq!(*gh.list_calls.lock().await, 0);
 		assert_eq!(
 			db.get_pending_closure(&issue_key("octo/widget", 42))
@@ -449,10 +462,11 @@ mod autoclose_tests {
 		fake.close_error =
 			Some(GitHubError { status: 404, message: "missing".into(), retry_after: None });
 		let sched = AutocloseScheduler::new(settings(true, 4.0), db.clone(), Arc::new(fake));
-		assert_eq!(
-			sched.tick().await.unwrap(),
-			AutocloseCounts { closed: 0, cancelled: 1, retried: 0 }
-		);
+		assert_eq!(sched.tick().await.unwrap(), AutocloseCounts {
+			closed:    0,
+			cancelled: 1,
+			retried:   0,
+		});
 		let row = db
 			.get_pending_closure(&issue_key("octo/widget", 42))
 			.unwrap()
@@ -465,9 +479,9 @@ mod autoclose_tests {
 	async fn autoclose_non_author_downvote_ignored_and_list_error_retries() {
 		let (_d, db) = seeded();
 		let gh = Arc::new(FakeGh::ok(vec![ReactionInfo {
-			content: "-1".into(),
+			content:    "-1".into(),
 			user_login: "bob".into(),
-			user_type: "User".into(),
+			user_type:  "User".into(),
 		}]));
 		let sched = AutocloseScheduler::new(settings(true, 4.0), db.clone(), gh);
 		assert_eq!(sched.tick().await.unwrap().closed, 1);

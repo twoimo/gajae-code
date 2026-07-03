@@ -10,7 +10,7 @@ pub struct SourceInfo {
 	pub source: String,
 	/// Optionally indicates a starting location after the beginning of the
 	/// source. If `None`, the start is the beginning of the source.
-	pub start:  Option<Arc<crate::SourcePosition>>,
+	pub start: Option<Arc<crate::SourcePosition>>,
 }
 
 impl From<&str> for SourceInfo {

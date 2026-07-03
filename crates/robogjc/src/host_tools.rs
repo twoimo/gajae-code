@@ -1,9 +1,10 @@
-//! Host-tool registration, invocation, and result boundary for app-server calls.
+//! Host-tool registration, invocation, and result boundary for app-server
+//! calls.
 
 use std::{
 	collections::BTreeMap,
 	env, fs,
-	path::{Path, PathBuf},
+	path::Path,
 	process::{Command, Stdio},
 	sync::{Arc, Mutex, RwLock},
 	thread,
@@ -17,7 +18,7 @@ use crate::{
 	config::Settings,
 	db::{Database, iso_seconds_ago, issue_key},
 	git_ops::{GitPushError, append_safe_directory, slot_subprocess_options},
-	github::{CommentInfo, GitHubBackend, GitHubError, IssueInfo, OpenPullRequest, RepoInfo},
+	github::{GitHubBackend, GitHubError, IssueInfo, OpenPullRequest, RepoInfo},
 	persona,
 	redaction::redact_credentials,
 	sandbox::{
@@ -29,21 +30,21 @@ use crate::{
 
 const PRE_PR_FIX_COMMAND: &[&str] = &["bun", "run", "fix"];
 const PRE_PR_CHECK_COMMAND: &[&str] = &["bun", "check"];
-const PRE_PUBLISH_BUN_TIMEOUT: Duration = Duration::from_secs(600);
+const PRE_PUBLISH_BUN_TIMEOUT: Duration = Duration::from_mins(10);
 const PRE_PR_FIX_COMMIT_SUBJECT: &str = "style: bun run fix";
 const PRE_PR_CHECK_MAX_OUTPUT: usize = 12_000;
 const SCRUBBED_ENV_KEYS: &[&str] =
 	&["GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "ROBGJC_REPLAY_TOKEN", "ROBGJC_GH_PROXY_HMAC_KEY"];
 const AGENT_HOME: &str = "/srv/agent-home";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostToolDescriptor {
-	pub name: String,
-	pub description: String,
+	pub name:            String,
+	pub description:     String,
 	#[serde(rename = "inputSchema")]
-	pub input_schema: Value,
+	pub input_schema:    Value,
 	#[serde(rename = "resultPolicy", skip_serializing_if = "Option::is_none")]
-	pub result_policy: Option<Value>,
+	pub result_policy:   Option<Value>,
 	#[serde(rename = "redactionHints", skip_serializing_if = "Option::is_none")]
 	pub redaction_hints: Option<Value>,
 }
@@ -70,16 +71,18 @@ pub struct AbortController {
 #[derive(Default)]
 struct AbortState {
 	triggered: bool,
-	reason: String,
-	stop: Option<Arc<dyn Fn() + Send + Sync>>,
+	reason:    String,
+	stop:      Option<Arc<dyn Fn() + Send + Sync>>,
 }
 impl AbortController {
 	pub fn new() -> Self {
 		Self::default()
 	}
+
 	pub fn set_stop<F: Fn() + Send + Sync + 'static>(&self, stop: F) {
 		self.inner.lock().unwrap().stop = Some(Arc::new(stop));
 	}
+
 	pub fn signal(&self, reason: &str) {
 		let stop = {
 			let mut s = self.inner.lock().unwrap();
@@ -87,16 +90,18 @@ impl AbortController {
 				return;
 			}
 			s.triggered = true;
-			s.reason = reason.to_owned();
+			reason.clone_into(&mut s.reason);
 			s.stop.clone()
 		};
 		if let Some(stop) = stop {
 			stop();
 		}
 	}
+
 	pub fn triggered(&self) -> bool {
 		self.inner.lock().unwrap().triggered
 	}
+
 	pub fn reason(&self) -> String {
 		self.inner.lock().unwrap().reason.clone()
 	}
@@ -104,31 +109,34 @@ impl AbortController {
 
 #[derive(Clone)]
 pub struct ToolBindings<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized> {
-	pub db: Arc<Database>,
-	pub github: Arc<G>,
-	pub git_transport: Arc<T>,
-	pub repo: RepoInfo,
-	pub issue: IssueInfo,
-	pub workspace: Workspace,
-	pub workspace_branch: Arc<RwLock<String>>,
-	pub author_name: String,
-	pub author_email: String,
-	pub settings: Option<Settings>,
+	pub db:                    Arc<Database>,
+	pub github:                Arc<G>,
+	pub git_transport:         Arc<T>,
+	pub repo:                  RepoInfo,
+	pub issue:                 IssueInfo,
+	pub workspace:             Workspace,
+	pub workspace_branch:      Arc<RwLock<String>>,
+	pub author_name:           String,
+	pub author_email:          String,
+	pub settings:              Option<Settings>,
 	pub inbound_thread_number: Option<i64>,
-	pub inbound_is_pr: bool,
-	pub slot_uid: Option<u32>,
-	pub abort: Option<AbortController>,
+	pub inbound_is_pr:         bool,
+	pub slot_uid:              Option<u32>,
+	pub abort:                 Option<AbortController>,
 }
 impl<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized> ToolBindings<G, T> {
 	pub fn issue_key(&self) -> String {
 		issue_key(&self.issue.repo, self.issue.number)
 	}
+
 	pub fn default_comment_number(&self) -> i64 {
 		self.inbound_thread_number.unwrap_or(self.issue.number)
 	}
+
 	pub fn workspace_branch(&self) -> String {
 		self.workspace_branch.read().unwrap().clone()
 	}
+
 	pub fn set_workspace_branch(&self, branch: String) {
 		*self.workspace_branch.write().unwrap() = branch;
 	}
@@ -136,17 +144,17 @@ impl<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized> ToolBindings<G, T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResult {
-	pub ok: bool,
+	pub ok:   bool,
 	pub text: String,
 }
 
 pub struct HostTool<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized> {
 	pub descriptor: HostToolDescriptor,
-	execute: fn(&ToolBindings<G, T>, Value) -> Result<String>,
+	execute:        fn(&ToolBindings<G, T>, Value) -> Result<String>,
 }
 impl<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized> HostTool<G, T> {
 	pub fn call(&self, bindings: &ToolBindings<G, T>, args: Value) -> ToolResult {
-		match (self.execute)(bindings, args.clone()) {
+		match (self.execute)(bindings, args) {
 			Ok(text) => ToolResult { ok: true, text: redact_credentials(Some(&text)) },
 			Err(e) => ToolResult { ok: false, text: redact_credentials(Some(&e.message)) },
 		}
@@ -217,10 +225,10 @@ pub fn build<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		tool(
 			"mark_unable_to_reproduce",
 			mark_unable,
-			schema(
-				json!({"diagnosis":{"type":"string"},"info_needed":{"type":"string"}}),
-				&["diagnosis", "info_needed"],
-			),
+			schema(json!({"diagnosis":{"type":"string"},"info_needed":{"type":"string"}}), &[
+				"diagnosis",
+				"info_needed",
+			]),
 		),
 		tool("abort_task", abort_task, schema(json!({"reason":{"type":"string"}}), &["reason"])),
 		tool("fetch_issue_thread", fetch_issue_thread, schema(json!({}), &[])),
@@ -320,7 +328,7 @@ fn take_fake_repo_command(cmd: &[&str]) -> Option<ProcOut> {
 
 #[derive(Debug, Clone)]
 struct ProcOut {
-	code: i32,
+	code:   i32,
 	stdout: String,
 	stderr: String,
 }
@@ -364,7 +372,7 @@ fn run_repo_command_with_timeout<G: GitHubBackend + ?Sized, T: GitTransport + ?S
 			if child.try_wait()?.is_some() {
 				let out = child.wait_with_output()?;
 				return Ok(ProcOut {
-					code: out.status.code().unwrap_or(-1),
+					code:   out.status.code().unwrap_or(-1),
 					stdout: String::from_utf8_lossy(&out.stdout).into(),
 					stderr: String::from_utf8_lossy(&out.stderr).into(),
 				});
@@ -373,7 +381,7 @@ fn run_repo_command_with_timeout<G: GitHubBackend + ?Sized, T: GitTransport + ?S
 				let _ = child.kill();
 				let out = child.wait_with_output()?;
 				return Ok(ProcOut {
-					code: 124,
+					code:   124,
 					stdout: String::from_utf8_lossy(&out.stdout).into(),
 					stderr: format!(
 						"command timed out after {}s: {}\n{}",
@@ -388,7 +396,7 @@ fn run_repo_command_with_timeout<G: GitHubBackend + ?Sized, T: GitTransport + ?S
 	}
 	let out = child.wait_with_output()?;
 	Ok(ProcOut {
-		code: out.status.code().unwrap_or(-1),
+		code:   out.status.code().unwrap_or(-1),
 		stdout: String::from_utf8_lossy(&out.stdout).into(),
 		stderr: String::from_utf8_lossy(&out.stderr).into(),
 	})
@@ -451,7 +459,8 @@ fn pre_publish_fix<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		Ok(p) => p,
 		Err(e) => {
 			let msg = format!(
-				"refusing to {stage}: `bun run fix` is required before {stage}, but it could not be spawned: {e}"
+				"refusing to {stage}: `bun run fix` is required before {stage}, but it could not be \
+				 spawned: {e}"
 			);
 			audit(b, tool, av, None, Some(&msg));
 			return err(msg);
@@ -479,19 +488,16 @@ fn pre_publish_fix<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		audit(b, tool, av, None, Some(&msg));
 		return err(msg);
 	}
-	let commit = run_repo_command(
-		b,
-		&[
-			"git",
-			"-c",
-			&format!("user.email={}", b.author_email),
-			"-c",
-			&format!("user.name={}", b.author_name),
-			"commit",
-			"-m",
-			PRE_PR_FIX_COMMIT_SUBJECT,
-		],
-	)
+	let commit = run_repo_command(b, &[
+		"git",
+		"-c",
+		&format!("user.email={}", b.author_email),
+		"-c",
+		&format!("user.name={}", b.author_name),
+		"commit",
+		"-m",
+		PRE_PR_FIX_COMMIT_SUBJECT,
+	])
 	.map_err(|e| HostToolError { message: e.to_string() })?;
 	if commit.code != 0 {
 		let msg = format!(
@@ -522,7 +528,8 @@ fn pre_publish_check<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 			Ok(p) => p,
 			Err(e) => {
 				let msg = format!(
-					"refusing to {stage}: `bun check` is required before {stage}, but it could not be spawned: {e}"
+					"refusing to {stage}: `bun check` is required before {stage}, but it could not be \
+					 spawned: {e}"
 				);
 				audit(b, tool, av, None, Some(&msg));
 				return err(msg);
@@ -549,8 +556,8 @@ fn guarded_push<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 	let workspace_branch = b.workspace_branch();
 	if branch != workspace_branch {
 		return err(format!(
-			"refusing to push: branch={branch:?} does not match workspace branch {:?}.",
-			workspace_branch
+			"refusing to push: branch={branch:?} does not match workspace branch \
+			 {workspace_branch:?}."
 		));
 	}
 	let _ = run_repo_command(b, &["git", "config", "user.email", &b.author_email]);
@@ -588,7 +595,8 @@ fn guarded_push<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		.collect();
 	if !bad.is_empty() {
 		let msg = format!(
-			"refusing to push: commit author identity mismatch. Expected `{} <{}>`. Offending commits:\n  {}",
+			"refusing to push: commit author identity mismatch. Expected `{} <{}>`. Offending \
+			 commits:\n  {}",
 			b.author_name,
 			b.author_email,
 			bad.join("\n  ")
@@ -619,7 +627,8 @@ fn guarded_push<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 			Ok(r.head)
 		},
 		Err(GitPushError::HeadDrift(_)) => {
-			let msg = "refusing to push: HEAD changed between preflight and push (another commit landed; rerun the gate by re-issuing the push).";
+			let msg = "refusing to push: HEAD changed between preflight and push (another commit \
+			           landed; rerun the gate by re-issuing the push).";
 			audit(b, tool, av, None, Some(msg));
 			err(msg)
 		},
@@ -643,10 +652,10 @@ fn gh_post_comment<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		.unwrap_or_else(|| b.default_comment_number());
 	let mut body2 = body.to_owned();
 	let mut scheduled_close_at = None;
-	if let Some(h) = should_autoclose(b, n) {
-		if let Ok(s) = persona::question_autoclose_suffix(h) {
-			body2 = format!("{}\n\n{}", body.trim_end(), s);
-		}
+	if let Some(h) = should_autoclose(b, n)
+		&& let Ok(s) = persona::question_autoclose_suffix(h)
+	{
+		body2 = format!("{}\n\n{}", body.trim_end(), s);
 	}
 	let c = block_on(b.github.post_comment(&b.repo.full_name, n, &body2))
 		.map_err(|e| gherr("GitHub rejected comment", e))?;
@@ -700,8 +709,7 @@ fn gh_push_branch<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 	let branch = a
 		.get("branch")
 		.and_then(Value::as_str)
-		.map(str::to_owned)
-		.unwrap_or_else(|| b.workspace_branch());
+		.map_or_else(|| b.workspace_branch(), str::to_owned);
 	let skip = bool_arg(a, "skip_checks");
 	pre_publish_fix(b, &av, "gh_push_branch", "push", skip)?;
 	pre_publish_check(b, &av, "gh_push_branch", "push", skip)?;
@@ -728,7 +736,8 @@ fn gh_open_pr<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 	for r in ["## Repro", "## Cause", "## Fix", "## Verification"] {
 		if !body.contains(r) {
 			return err(format!(
-				"PR body missing required section header {r:?}. Follow the template in the system prompt verbatim."
+				"PR body missing required section header {r:?}. Follow the template in the system \
+				 prompt verbatim."
 			));
 		}
 	}
@@ -738,7 +747,9 @@ fn gh_open_pr<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		.any(|kw| body.contains(&format!("{kw} #{n}")))
 	{
 		return err(format!(
-			"PR body must include `Fixes #{n}` (or `Closes #{n}` / `Resolves #{n}`) so GitHub auto-closes the issue when the PR merges. Put it at the end of the Verification section per the template."
+			"PR body must include `Fixes #{n}` (or `Closes #{n}` / `Resolves #{n}`) so GitHub \
+			 auto-closes the issue when the PR merges. Put it at the end of the Verification section \
+			 per the template."
 		));
 	}
 	let skip = bool_arg(a, "skip_checks");
@@ -835,7 +846,7 @@ fn repro_record<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		.ok_or_else(|| HostToolError {
 			message: "repro_record requires an integer 'exit_code'.".into(),
 		})?;
-	fs::create_dir_all(&b.workspace.repro_dir())
+	fs::create_dir_all(b.workspace.repro_dir())
 		.map_err(|e| HostToolError { message: e.to_string() })?;
 	let slug = title
 		.to_lowercase()
@@ -855,19 +866,29 @@ fn repro_record<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		ts,
 		if slug.is_empty() { "repro" } else { &slug }
 	));
-	fs::write(&target, format!("# {title}\n\n- exit_code: {exit}\n- command:\n\n```\n{command}\n```\n\n## Output\n\n```\n{output}\n```\n")).map_err(|e| HostToolError{message:e.to_string()})?;
+	fs::write(
+		&target,
+		format!(
+			"# {title}\n\n- exit_code: {exit}\n- command:\n\n```\n{command}\n```\n\n## \
+			 Output\n\n```\n{output}\n```\n"
+		),
+	)
+	.map_err(|e| HostToolError { message: e.to_string() })?;
 	#[cfg(unix)]
-	if slot_permissions_active(b.slot_uid) {
-		if let Some(uid) = b.slot_uid {
-			unsafe {
-				libc::chown(
-					std::ffi::CString::new(target.to_string_lossy().as_bytes())
-						.unwrap()
-						.as_ptr(),
-					uid,
-					uid,
-				);
-			}
+	if slot_permissions_active(b.slot_uid)
+		&& let Some(uid) = b.slot_uid
+	{
+		// SAFETY: `target` was just created by this process, the CString is NUL-free
+		// and lives for the duration of the call, and slot uid ownership is only
+		// adjusted when slot permissions are active on Unix.
+		unsafe {
+			libc::chown(
+				std::ffi::CString::new(target.to_string_lossy().as_bytes())
+					.unwrap()
+					.as_ptr(),
+				uid,
+				uid,
+			);
 		}
 	}
 	audit(
@@ -934,19 +955,19 @@ fn fetch_issue_thread<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 				issue.labels.join(", ")
 			}
 		),
-		"".into(),
+		String::new(),
 		"## Body".into(),
 		if issue.body.trim().is_empty() {
 			"(empty)".into()
 		} else {
 			issue.body.trim().into()
 		},
-		"".into(),
+		String::new(),
 		format!("## Comments ({})", comments.len()),
 	];
 	for c in &comments {
 		lines.extend([
-			"".into(),
+			String::new(),
 			format!("### @{} at {}", c.author, c.created_at),
 			c.body.trim().into(),
 		]);
@@ -967,13 +988,16 @@ fn set_issue_labels<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 ) -> Result<String> {
 	if b.inbound_is_pr {
 		audit(b, "set_issue_labels", &av, Some(json!({"skipped":"pr_thread"})), None);
-		return Ok("no-op: set_issue_labels is not applicable on PR threads — PR labels are not used for triage. Proceed with the requested change.".into());
+		return Ok("no-op: set_issue_labels is not applicable on PR threads — PR labels are not \
+		           used for triage. Proceed with the requested change."
+			.into());
 	}
 	let a = args(&av);
 	let labels = str_array(a.get("labels"));
 	if labels.is_empty() {
 		return err(
-			"set_issue_labels requires a non-empty 'labels' array with at least one non-whitespace label.",
+			"set_issue_labels requires a non-empty 'labels' array with at least one non-whitespace \
+			 label.",
 		);
 	}
 	let n = a
@@ -993,7 +1017,9 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 	let existing = b.db.get_issue(&b.issue_key()).ok().flatten();
 	if b.inbound_is_pr {
 		audit(b, "classify_issue", &av, Some(json!({"skipped":"pr_thread"})), None);
-		return Ok("no-op: classify_issue is not applicable on PR threads. Proceed with the requested change (amend the branch and push, or post a comment).".into());
+		return Ok("no-op: classify_issue is not applicable on PR threads. Proceed with the \
+		           requested change (amend the branch and push, or post a comment)."
+			.into());
 	}
 	if existing
 		.as_ref()
@@ -1002,7 +1028,8 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 	{
 		audit(b, "classify_issue", &av, Some(json!({"skipped":"already_classified"})), None);
 		return Ok(format!(
-			"no-op: issue #{} is already classified as {:?}. Continue with that workflow; do not re-classify.",
+			"no-op: issue #{} is already classified as {:?}. Continue with that workflow; do not \
+			 re-classify.",
 			b.issue.number,
 			existing.unwrap().classification.unwrap()
 		));
@@ -1013,15 +1040,15 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		.ok_or_else(|| HostToolError { message: "classify_issue 'primary' is required.".into() })?;
 	if !PRIMARY_TYPES.contains(&primary) {
 		let msg =
-			format!("classify_issue 'primary' must be one of {:?}; got {:?}.", PRIMARY_TYPES, primary);
+			format!("classify_issue 'primary' must be one of {PRIMARY_TYPES:?}; got {primary:?}.");
 		audit(b, "classify_issue", &av, None, Some(&msg));
 		return err(msg);
 	}
 	let rationale = str_req(a, "rationale", "classify_issue")?;
 	let mut priority = a.get("priority").and_then(Value::as_str);
-	if primary == "bug" && !priority.map(|p| PRIORITIES.contains(&p)).unwrap_or(false) {
+	if primary == "bug" && !priority.is_some_and(|p| PRIORITIES.contains(&p)) {
 		let msg =
-			format!("classify_issue requires 'priority' in {:?} when primary=='bug'.", PRIORITIES);
+			format!("classify_issue requires 'priority' in {PRIORITIES:?} when primary=='bug'.");
 		audit(b, "classify_issue", &av, None, Some(&msg));
 		return err(msg);
 	}
@@ -1053,8 +1080,7 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		labels.push(p.into());
 	}
 	labels.push("triaged".into());
-	let mut renamed = None;
-	if let Some(slug) = a
+	let renamed = if let Some(slug) = a
 		.get("branch_slug")
 		.and_then(Value::as_str)
 		.filter(|s| !s.trim().is_empty())
@@ -1066,7 +1092,7 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		ws.branch = b.workspace_branch();
 		let r = rename_workspace_branch(
 			&mut ws,
-			&valid,
+			valid,
 			existing
 				.as_ref()
 				.and_then(|x| x.pr_number)
@@ -1079,8 +1105,10 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 		})?;
 		let _ = b.db.set_issue_branch(&b.issue_key(), &r);
 		b.set_workspace_branch(r.clone());
-		renamed = Some(r);
-	}
+		Some(r)
+	} else {
+		None
+	};
 	let applied = block_on(
 		b.github
 			.add_issue_labels(&b.repo.full_name, b.issue.number, &labels),
@@ -1107,13 +1135,16 @@ fn classify_issue<G: GitHubBackend + ?Sized, T: GitTransport + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+	use std::{future::Future, pin::Pin};
+
+	use rusqlite::Connection;
+	use tempfile::TempDir;
+
 	use super::*;
 	use crate::github::{
-		IssueSummary, PullRequestInfo, PullRequestReviewInfo, ReactionInfo, ReviewCommentInfo,
+		CommentInfo, IssueSummary, PullRequestInfo, PullRequestReviewInfo, ReactionInfo,
+		ReviewCommentInfo,
 	};
-	use rusqlite::Connection;
-	use std::{future::Future, pin::Pin};
-	use tempfile::TempDir;
 	#[derive(Default)]
 	struct FakeGh {
 		posted_bodies: Mutex<Vec<String>>,
@@ -1130,6 +1161,7 @@ mod tests {
 		) -> Pin<Box<dyn Future<Output = std::result::Result<RepoInfo, GitHubError>> + Send + 'a>> {
 			fut!(unimplemented!())
 		}
+
 		fn get_issue<'a>(
 			&'a self,
 			repo: &'a str,
@@ -1147,6 +1179,7 @@ mod tests {
 				is_pull_request: false
 			}))
 		}
+
 		fn list_closing_pull_requests<'a>(
 			&'a self,
 			_: &'a str,
@@ -1154,6 +1187,7 @@ mod tests {
 		) -> Pin<Box<dyn Future<Output = std::result::Result<Vec<i64>, GitHubError>> + Send + 'a>> {
 			fut!(Ok(vec![]))
 		}
+
 		fn get_pull_request<'a>(
 			&'a self,
 			_: &'a str,
@@ -1163,6 +1197,7 @@ mod tests {
 		> {
 			fut!(unimplemented!())
 		}
+
 		fn list_issues<'a>(
 			&'a self,
 			_: &'a str,
@@ -1173,6 +1208,7 @@ mod tests {
 		> {
 			fut!(Ok(vec![]))
 		}
+
 		fn list_comments<'a>(
 			&'a self,
 			_: &'a str,
@@ -1181,12 +1217,13 @@ mod tests {
 			Box<dyn Future<Output = std::result::Result<Vec<CommentInfo>, GitHubError>> + Send + 'a>,
 		> {
 			fut!(Ok(vec![CommentInfo {
-				id: 1,
-				author: "bob".into(),
-				body: "still broken".into(),
-				created_at: "now".into()
+				id:         1,
+				author:     "bob".into(),
+				body:       "still broken".into(),
+				created_at: "now".into(),
 			}]))
 		}
+
 		fn list_review_comments<'a>(
 			&'a self,
 			_: &'a str,
@@ -1200,6 +1237,7 @@ mod tests {
 		> {
 			fut!(Ok(vec![]))
 		}
+
 		fn list_pr_reviews<'a>(
 			&'a self,
 			_: &'a str,
@@ -1213,11 +1251,13 @@ mod tests {
 		> {
 			fut!(Ok(vec![]))
 		}
+
 		fn get_authenticated_login<'a>(
 			&'a self,
 		) -> Pin<Box<dyn Future<Output = std::result::Result<String, GitHubError>> + Send + 'a>> {
 			fut!(Ok("bot".into()))
 		}
+
 		fn post_comment<'a>(
 			&'a self,
 			_: &'a str,
@@ -1227,12 +1267,13 @@ mod tests {
 		{
 			self.posted_bodies.lock().unwrap().push(body.to_owned());
 			fut!(Ok(CommentInfo {
-				id: 42,
-				author: "bot".into(),
-				body: body.into(),
-				created_at: "now".into()
+				id:         42,
+				author:     "bot".into(),
+				body:       body.into(),
+				created_at: "now".into(),
 			}))
 		}
+
 		fn open_pull_request<'a>(
 			&'a self,
 			_: OpenPullRequest<'a>,
@@ -1240,16 +1281,17 @@ mod tests {
 			Box<dyn Future<Output = std::result::Result<PullRequestInfo, GitHubError>> + Send + 'a>,
 		> {
 			fut!(Ok(PullRequestInfo {
-				repo: "octo/widget".into(),
-				number: 7,
-				html_url: "https://x/pr/7".into(),
-				head_ref: "b".into(),
-				base_ref: "main".into(),
-				state: "open".into(),
-				author: "bot".into(),
-				head_repo: "octo/widget".into()
+				repo:      "octo/widget".into(),
+				number:    7,
+				html_url:  "https://x/pr/7".into(),
+				head_ref:  "b".into(),
+				base_ref:  "main".into(),
+				state:     "open".into(),
+				author:    "bot".into(),
+				head_repo: "octo/widget".into(),
 			}))
 		}
+
 		fn request_reviewers<'a>(
 			&'a self,
 			_: &'a str,
@@ -1259,6 +1301,7 @@ mod tests {
 		) -> Pin<Box<dyn Future<Output = std::result::Result<(), GitHubError>> + Send + 'a>> {
 			fut!(Ok(()))
 		}
+
 		fn add_issue_labels<'a>(
 			&'a self,
 			_: &'a str,
@@ -1268,6 +1311,7 @@ mod tests {
 		{
 			fut!(Ok(labels.to_vec()))
 		}
+
 		fn add_assignees<'a>(
 			&'a self,
 			_: &'a str,
@@ -1276,6 +1320,7 @@ mod tests {
 		) -> Pin<Box<dyn Future<Output = std::result::Result<(), GitHubError>> + Send + 'a>> {
 			fut!(Ok(()))
 		}
+
 		fn list_comment_reactions<'a>(
 			&'a self,
 			_: &'a str,
@@ -1285,6 +1330,7 @@ mod tests {
 		> {
 			fut!(Ok(vec![]))
 		}
+
 		fn close_issue<'a>(
 			&'a self,
 			_: &'a str,
@@ -1306,6 +1352,7 @@ mod tests {
 		) -> std::result::Result<(), crate::git_ops::GitCommandError> {
 			Ok(())
 		}
+
 		fn fetch_pool(
 			&self,
 			_: &str,
@@ -1313,6 +1360,7 @@ mod tests {
 		) -> std::result::Result<(), crate::git_ops::GitCommandError> {
 			Ok(())
 		}
+
 		fn fetch_base_ref(
 			&self,
 			_: &str,
@@ -1321,6 +1369,7 @@ mod tests {
 		) -> std::result::Result<(), crate::git_ops::GitCommandError> {
 			Ok(())
 		}
+
 		fn push_branch(
 			&self,
 			_: &str,
@@ -1367,9 +1416,9 @@ mod tests {
 			rate_limit_window_seconds: 3600.0,
 			rate_limit_default: 3,
 			rate_limit_contributor: 10,
-			rate_limit_unlimited_raw: "".into(),
-			maintainer_logins_raw: "".into(),
-			reviewer_bots_raw: "".into(),
+			rate_limit_unlimited_raw: String::new(),
+			maintainer_logins_raw: String::new(),
+			reviewer_bots_raw: String::new(),
 			question_autoclose_enabled: true,
 			question_autoclose_hours: 2.0,
 			question_autoclose_scan_seconds: 60.0,
@@ -1391,30 +1440,30 @@ mod tests {
 			github: Arc::new(FakeGh::default()),
 			git_transport: Arc::new(FakeGit),
 			repo: RepoInfo {
-				full_name: "octo/widget".into(),
+				full_name:      "octo/widget".into(),
 				default_branch: "main".into(),
-				clone_url: "".into(),
-				private: false,
+				clone_url:      String::new(),
+				private:        false,
 			},
 			issue: IssueInfo {
-				repo: "octo/widget".into(),
-				number: 1,
-				title: "t".into(),
-				author: "alice".into(),
-				body: "b".into(),
-				labels: vec![],
-				state: "open".into(),
+				repo:            "octo/widget".into(),
+				number:          1,
+				title:           "t".into(),
+				author:          "alice".into(),
+				body:            "b".into(),
+				labels:          vec![],
+				state:           "open".into(),
 				is_pull_request: false,
 			},
 			workspace: Workspace {
-				root: root.clone(),
-				repo_dir: root.join("repo"),
-				session_dir: root.join("session"),
-				context_dir: root.join("context"),
-				artifacts_dir: root.join("artifacts"),
-				branch: "farm/x".into(),
+				root:           root.clone(),
+				repo_dir:       root.join("repo"),
+				session_dir:    root.join("session"),
+				context_dir:    root.join("context"),
+				artifacts_dir:  root.join("artifacts"),
+				branch:         "farm/x".into(),
 				repo_full_name: "octo/widget".into(),
-				issue_number: 1,
+				issue_number:   1,
 			},
 			workspace_branch: Arc::new(RwLock::new("farm/x".into())),
 			author_name: "gjc-bot".into(),
@@ -1519,7 +1568,7 @@ mod tests {
 			.call(&b, json!({"title":"Bad Thing","command":"bun test","output":"boom","exit_code":1}));
 		assert!(r.ok);
 		assert!(
-			fs::read_dir(&b.workspace.repro_dir())
+			fs::read_dir(b.workspace.repro_dir())
 				.unwrap()
 				.next()
 				.is_some()

@@ -16,7 +16,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 pub const SCHEMA_VERSION: i32 = 1;
 
-const SCHEMA: &str = r#"
+const SCHEMA: &str = r"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
@@ -85,66 +85,66 @@ CREATE TABLE IF NOT EXISTS pending_closures (
 );
 CREATE INDEX IF NOT EXISTS pending_closures_state_close_at
   ON pending_closures(state, close_at);
-"#;
+";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
 	pub delivery_id: String,
-	pub event_type: String,
-	pub repo: Option<String>,
-	pub issue_key: Option<String>,
-	pub payload: Value,
+	pub event_type:  String,
+	pub repo:        Option<String>,
+	pub issue_key:   Option<String>,
+	pub payload:     Value,
 	pub received_at: String,
-	pub state: String,
-	pub attempts: i64,
-	pub last_error: Option<String>,
+	pub state:       String,
+	pub attempts:    i64,
+	pub last_error:  Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueRow {
-	pub key: String,
-	pub repo: String,
-	pub number: i64,
-	pub branch: Option<String>,
-	pub session_dir: Option<String>,
-	pub pr_number: Option<i64>,
-	pub state: String,
-	pub updated_at: String,
+	pub key:            String,
+	pub repo:           String,
+	pub number:         i64,
+	pub branch:         Option<String>,
+	pub session_dir:    Option<String>,
+	pub pr_number:      Option<i64>,
+	pub state:          String,
+	pub updated_at:     String,
 	pub classification: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmissionAdmission {
-	pub accepted: bool,
+	pub accepted:  bool,
 	pub duplicate: bool,
-	pub used: i64,
+	pub used:      i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingClosureRow {
-	pub issue_key: String,
-	pub repo: String,
-	pub number: i64,
-	pub comment_id: i64,
-	pub issue_author: String,
-	pub close_at: String,
-	pub state: String,
+	pub issue_key:     String,
+	pub repo:          String,
+	pub number:        i64,
+	pub comment_id:    i64,
+	pub issue_author:  String,
+	pub close_at:      String,
+	pub state:         String,
 	pub cancel_reason: Option<String>,
-	pub created_at: String,
-	pub updated_at: String,
+	pub created_at:    String,
+	pub updated_at:    String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningEvent {
-	pub delivery_id: String,
-	pub event_type: String,
-	pub repo: Option<String>,
-	pub issue_key: Option<String>,
-	pub received_at: String,
-	pub started_at: Option<String>,
-	pub attempts: i64,
-	pub model: Option<String>,
-	pub last_tool: Option<String>,
+	pub delivery_id:  String,
+	pub event_type:   String,
+	pub repo:         Option<String>,
+	pub issue_key:    Option<String>,
+	pub received_at:  String,
+	pub started_at:   Option<String>,
+	pub attempts:     i64,
+	pub model:        Option<String>,
+	pub last_tool:    Option<String>,
 	pub last_tool_ts: Option<String>,
 }
 
@@ -178,7 +178,7 @@ fn iso_from_unix_micros(micros: i128) -> String {
 	)
 }
 
-fn civil_from_days(z: i128) -> (i128, i128, i128) {
+const fn civil_from_days(z: i128) -> (i128, i128, i128) {
 	let era = (z - 1).div_euclid(146_097);
 	let doe = z - era * 146_097;
 	let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096).div_euclid(365);
@@ -187,7 +187,7 @@ fn civil_from_days(z: i128) -> (i128, i128, i128) {
 	let mp = (5 * doy + 2).div_euclid(153);
 	let d = doy - (153 * mp + 2).div_euclid(5) + 1;
 	let m = mp + if mp < 10 { 3 } else { -9 };
-	(y + if m <= 2 { 1 } else { 0 }, m, d)
+	(y + (m <= 2) as i128, m, d)
 }
 
 pub struct Database {
@@ -230,11 +230,11 @@ impl Database {
 		state: &str,
 		last_error: Option<&str>,
 	) -> DbResult<bool> {
-		let cur = self.conn.lock().unwrap().execute(r#"
+		let cur = self.conn.lock().unwrap().execute(r"
                 INSERT OR IGNORE INTO events
                   (delivery_id, event_type, repo, issue_key, payload_json, received_at, state, last_error)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                "#, params![delivery_id, event_type, repo, issue_key, compact_json(payload), utcnow(), state, last_error])?;
+                ", params![delivery_id, event_type, repo, issue_key, compact_json(payload), utcnow(), state, last_error])?;
 		Ok(cur > 0)
 	}
 
@@ -243,14 +243,14 @@ impl Database {
 		let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 		let row = tx
 			.query_row(
-				r#"
+				r"
                 SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
                        state, attempts, last_error
                 FROM events
                 WHERE state = 'queued'
                 ORDER BY received_at
                 LIMIT 1
-                "#,
+                ",
 				[],
 				event_from_row,
 			)
@@ -306,13 +306,13 @@ impl Database {
 	pub fn list_events(&self, limit: i64) -> DbResult<Vec<EventRow>> {
 		let conn = self.conn.lock().unwrap();
 		let mut st = conn.prepare(
-			r#"
+			r"
                 SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
                        state, attempts, last_error
                 FROM events
                 ORDER BY received_at DESC
                 LIMIT ?
-                "#,
+                ",
 		)?;
 		st.query_map(params![limit], event_from_row)?.collect()
 	}
@@ -342,11 +342,11 @@ impl Database {
 			tx.execute("DELETE FROM events WHERE delivery_id = ?", params![delivery_id])?;
 		}
 		tx.execute(
-			r#"
+			r"
                 INSERT INTO events
                   (delivery_id, event_type, repo, issue_key, payload_json, received_at, state)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                "#,
+                ",
 			params![delivery_id, event_type, repo, issue_key, compact_json(payload), utcnow(), state],
 		)?;
 		tx.commit()?;
@@ -359,7 +359,7 @@ impl Database {
 		include_skipped: bool,
 	) -> DbResult<Option<EventRow>> {
 		let sql = format!(
-			r#"
+			r"
                 SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
                        state, attempts, last_error
                 FROM events
@@ -367,7 +367,7 @@ impl Database {
                   {}
                 ORDER BY received_at DESC, rowid DESC
                 LIMIT 1
-                "#,
+                ",
 			if include_skipped {
 				""
 			} else {
@@ -397,19 +397,19 @@ impl Database {
 		let mut out = HashMap::new();
 		if unique.is_empty() {
 			return Ok(out);
-		};
+		}
 		let conn = self.conn.lock().unwrap();
 		for batch in unique.chunks(500) {
 			let placeholders = vec!["?"; batch.len()].join(",");
 			let sql = format!(
-				r#"
+				r"
                     SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
                            state, attempts, last_error
                     FROM events
                     WHERE issue_key IN ({placeholders})
                       {}
                     ORDER BY issue_key ASC, received_at DESC, rowid DESC
-                    "#,
+                    ",
 				if include_skipped {
 					""
 				} else {
@@ -445,13 +445,13 @@ impl Database {
 		let conn = self.conn.lock().unwrap();
 		let mut seen = HashSet::new();
 		let mut st = conn.prepare(
-			r#"
+			r"
                 SELECT issue_key, state
                 FROM events
                 WHERE issue_key IS NOT NULL
                   AND state <> 'skipped'
                 ORDER BY issue_key ASC, received_at DESC, rowid DESC
-                "#,
+                ",
 		)?;
 		for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
 			let (k, s) = row?;
@@ -465,7 +465,7 @@ impl Database {
 	pub fn list_running_events(&self) -> DbResult<Vec<RunningEvent>> {
 		let conn = self.conn.lock().unwrap();
 		let mut st = conn.prepare(
-			r#"
+			r"
                 SELECT e.delivery_id, e.event_type, e.repo, e.issue_key, e.received_at,
                        e.started_at, e.attempts, e.model,
                        (SELECT tool FROM tool_calls
@@ -477,19 +477,19 @@ impl Database {
                 FROM events e
                 WHERE e.state = 'running'
                 ORDER BY COALESCE(e.started_at, e.received_at)
-                "#,
+                ",
 		)?;
 		st.query_map([], |r| {
 			Ok(RunningEvent {
-				delivery_id: r.get(0)?,
-				event_type: r.get(1)?,
-				repo: r.get(2)?,
-				issue_key: r.get(3)?,
-				received_at: r.get(4)?,
-				started_at: r.get(5)?,
-				attempts: r.get(6)?,
-				model: r.get(7)?,
-				last_tool: r.get(8)?,
+				delivery_id:  r.get(0)?,
+				event_type:   r.get(1)?,
+				repo:         r.get(2)?,
+				issue_key:    r.get(3)?,
+				received_at:  r.get(4)?,
+				started_at:   r.get(5)?,
+				attempts:     r.get(6)?,
+				model:        r.get(7)?,
+				last_tool:    r.get(8)?,
 				last_tool_ts: r.get(9)?,
 			})
 		})?
@@ -502,11 +502,11 @@ impl Database {
 			.lock()
 			.unwrap()
 			.query_row(
-				r#"
+				r"
                 SELECT delivery_id, event_type, repo, issue_key, payload_json, received_at,
                        state, attempts, last_error
                 FROM events WHERE delivery_id = ?
-                "#,
+                ",
 				params![delivery_id],
 				event_from_row,
 			)
@@ -516,10 +516,9 @@ impl Database {
 	pub fn requeue_event(&self, delivery_id: &str, from_states: Option<&[&str]>) -> DbResult<bool> {
 		let conn = self.conn.lock().unwrap();
 		let n = match from_states {
-			None => conn.execute(
-				"UPDATE events SET state='queued' WHERE delivery_id=?",
-				params![delivery_id],
-			)?,
+			None => conn.execute("UPDATE events SET state='queued' WHERE delivery_id=?", params![
+				delivery_id
+			])?,
 			Some([]) => 0,
 			Some(states) => {
 				let placeholders = vec!["?"; states.len()].join(",");
@@ -545,7 +544,7 @@ impl Database {
 		session_dir: Option<&str>,
 		pr_number: Option<i64>,
 	) -> DbResult<IssueRow> {
-		self.conn.lock().unwrap().execute(r#"
+		self.conn.lock().unwrap().execute(r"
                 INSERT INTO issues (key, repo, number, branch, session_dir, pr_number, state, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
@@ -554,7 +553,7 @@ impl Database {
                   pr_number = COALESCE(excluded.pr_number, issues.pr_number),
                   state = excluded.state,
                   updated_at = excluded.updated_at
-                "#, params![key, repo, number, branch, session_dir, pr_number, state, utcnow()])?;
+                ", params![key, repo, number, branch, session_dir, pr_number, state, utcnow()])?;
 		Ok(self.get_issue(key)?.expect("upserted issue missing"))
 	}
 
@@ -619,13 +618,13 @@ impl Database {
 	}
 
 	pub fn find_issue_by_branch(&self, repo: &str, branch: &str) -> DbResult<Option<IssueRow>> {
-		self.conn.lock().unwrap().query_row(r#"
+		self.conn.lock().unwrap().query_row(r"
                 SELECT key, repo, number, branch, session_dir, pr_number, state, classification, updated_at
                 FROM issues
                 WHERE repo=? AND branch=?
                 ORDER BY updated_at DESC
                 LIMIT 1
-                "#, params![repo, branch], issue_from_row).optional()
+                ", params![repo, branch], issue_from_row).optional()
 	}
 
 	pub fn list_issues(&self, limit: i64) -> DbResult<Vec<IssueRow>> {
@@ -648,7 +647,7 @@ impl Database {
 		let mut out = HashSet::new();
 		if unique.is_empty() {
 			return Ok(out);
-		};
+		}
 		let conn = self.conn.lock().unwrap();
 		for batch in unique.chunks(500) {
 			let placeholders = vec!["?"; batch.len()].join(",");
@@ -744,7 +743,7 @@ impl Database {
 	) -> DbResult<()> {
 		let now = utcnow();
 		self.conn.lock().unwrap().execute(
-			r#"
+			r"
                 INSERT INTO pending_closures
                   (issue_key, repo, number, comment_id, issue_author, close_at,
                    state, cancel_reason, created_at, updated_at)
@@ -758,7 +757,7 @@ impl Database {
                   state = 'pending',
                   cancel_reason = NULL,
                   updated_at = excluded.updated_at
-                "#,
+                ",
 			params![
 				issue_key,
 				repo,
@@ -778,7 +777,7 @@ impl Database {
 		let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 		let rows = {
 			let mut st = tx.prepare(
-				r#"
+				r"
                 UPDATE pending_closures
                 SET state = 'claimed', updated_at = ?
                 WHERE issue_key IN (
@@ -789,7 +788,7 @@ impl Database {
                 )
                 RETURNING issue_key, repo, number, comment_id, issue_author,
                           close_at, state, cancel_reason, created_at, updated_at
-                "#,
+                ",
 			)?;
 			st.query_map(params![now, now, limit], pending_from_row)?
 				.collect::<DbResult<Vec<_>>>()?
@@ -810,11 +809,11 @@ impl Database {
 			)));
 		}
 		let n = self.conn.lock().unwrap().execute(
-			r#"
+			r"
                 UPDATE pending_closures
                 SET state = ?, cancel_reason = ?, updated_at = ?
                 WHERE issue_key = ? AND state = 'claimed'
-                "#,
+                ",
 			params![state, reason, utcnow(), issue_key],
 		)?;
 		Ok(n > 0)
@@ -822,11 +821,11 @@ impl Database {
 
 	pub fn requeue_claimed_closure(&self, issue_key: &str) -> DbResult<bool> {
 		let n = self.conn.lock().unwrap().execute(
-			r#"
+			r"
                 UPDATE pending_closures
                 SET state = 'pending', updated_at = ?
                 WHERE issue_key = ? AND state = 'claimed'
-                "#,
+                ",
 			params![utcnow(), issue_key],
 		)?;
 		Ok(n > 0)
@@ -834,11 +833,11 @@ impl Database {
 
 	pub fn cancel_pending_closure(&self, issue_key: &str, reason: &str) -> DbResult<bool> {
 		let n = self.conn.lock().unwrap().execute(
-			r#"
+			r"
                 UPDATE pending_closures
                 SET state = 'cancelled', cancel_reason = ?, updated_at = ?
                 WHERE issue_key = ? AND state = 'pending'
-                "#,
+                ",
 			params![reason, utcnow(), issue_key],
 		)?;
 		Ok(n > 0)
@@ -850,11 +849,11 @@ impl Database {
 			.lock()
 			.unwrap()
 			.query_row(
-				r#"
+				r"
                 SELECT issue_key, repo, number, comment_id, issue_author,
                        close_at, state, cancel_reason, created_at, updated_at
                 FROM pending_closures WHERE issue_key = ?
-                "#,
+                ",
 				params![issue_key],
 				pending_from_row,
 			)
@@ -902,29 +901,29 @@ fn event_from_row(row: &Row<'_>) -> DbResult<EventRow> {
 }
 fn issue_from_row(row: &Row<'_>) -> DbResult<IssueRow> {
 	Ok(IssueRow {
-		key: row.get("key")?,
-		repo: row.get("repo")?,
-		number: row.get("number")?,
-		branch: row.get("branch")?,
-		session_dir: row.get("session_dir")?,
-		pr_number: row.get("pr_number")?,
-		state: row.get("state")?,
+		key:            row.get("key")?,
+		repo:           row.get("repo")?,
+		number:         row.get("number")?,
+		branch:         row.get("branch")?,
+		session_dir:    row.get("session_dir")?,
+		pr_number:      row.get("pr_number")?,
+		state:          row.get("state")?,
 		classification: row.get("classification")?,
-		updated_at: row.get("updated_at")?,
+		updated_at:     row.get("updated_at")?,
 	})
 }
 fn pending_from_row(row: &Row<'_>) -> DbResult<PendingClosureRow> {
 	Ok(PendingClosureRow {
-		issue_key: row.get("issue_key")?,
-		repo: row.get("repo")?,
-		number: row.get("number")?,
-		comment_id: row.get("comment_id")?,
-		issue_author: row.get("issue_author")?,
-		close_at: row.get("close_at")?,
-		state: row.get("state")?,
+		issue_key:     row.get("issue_key")?,
+		repo:          row.get("repo")?,
+		number:        row.get("number")?,
+		comment_id:    row.get("comment_id")?,
+		issue_author:  row.get("issue_author")?,
+		close_at:      row.get("close_at")?,
+		state:         row.get("state")?,
 		cancel_reason: row.get("cancel_reason")?,
-		created_at: row.get("created_at")?,
-		updated_at: row.get("updated_at")?,
+		created_at:    row.get("created_at")?,
+		updated_at:    row.get("updated_at")?,
 	})
 }
 fn state_count_map() -> HashMap<String, i64> {
@@ -945,7 +944,6 @@ fn count_submissions_tx(tx: &rusqlite::Transaction<'_>, login: &str, since: &str
 mod tests {
 	use std::{
 		fs,
-		process::{Command, Stdio},
 		sync::{Arc, Barrier, mpsc},
 		thread,
 		time::Duration as StdDuration,
@@ -1046,7 +1044,7 @@ mod tests {
 		tx.execute("UPDATE events SET last_error = NULL WHERE delivery_id = 'blocked'", [])
 			.unwrap();
 		let (sender, receiver) = mpsc::channel();
-		let claim_path = path.clone();
+		let claim_path = path;
 		let handle = thread::spawn(move || {
 			let claimed = Database::open(claim_path)
 				.unwrap()
@@ -1269,7 +1267,7 @@ mod tests {
 		let (_d, db) = db();
 		assert!(db.processed_issue_keys(&[]).unwrap().is_empty());
 		assert!(
-			db.processed_issue_keys(&["".to_string(), "".to_string()])
+			db.processed_issue_keys(&[String::new(), String::new()])
 				.unwrap()
 				.is_empty()
 		);
@@ -1446,7 +1444,7 @@ mod tests {
 			.into_iter()
 			.map(|h| h.join().unwrap())
 			.collect::<Vec<_>>();
-		accepted.sort();
+		accepted.sort_unstable();
 		assert_eq!(accepted, vec![false, true]);
 		assert_eq!(
 			Database::open(&path)
@@ -1718,376 +1716,5 @@ mod tests {
 				.unwrap(),
 			1
 		);
-	}
-	#[test]
-	#[ignore = "set ROBGJC_PY_COMPAT=1 and run with --ignored to exercise the Python interpreter \
-	            compatibility gate"]
-	fn db_python_rust_compatibility() {
-		assert_eq!(
-			std::env::var("ROBGJC_PY_COMPAT").as_deref(),
-			Ok("1"),
-			"ROBGJC_PY_COMPAT=1 is required for the Python interpreter compatibility gate"
-		);
-		let py = Path::new("/tmp/robogjc-uv/bin/python");
-		assert!(py.exists(), "missing Python compatibility interpreter at {}", py.display());
-		let dir = tempdir().unwrap();
-		let path = dir.path().join("compat.sqlite");
-		let db = Database::open(&path).unwrap();
-		db.record_event(
-			"rust-event",
-			"issues",
-			Some("octo/widget"),
-			Some("octo/widget#808"),
-			&json!({"action":"opened"}),
-			"queued",
-			None,
-		)
-		.unwrap();
-		db.upsert_issue(
-			"octo/widget#808",
-			"octo/widget",
-			808,
-			"opened",
-			Some("farm/rust"),
-			Some("/tmp/rust"),
-			Some(8080),
-		)
-		.unwrap();
-		db.log_tool_call(
-			"octo/widget#808",
-			"rust_tool",
-			&json!({"ok":true}),
-			Some(&json!({"done":true})),
-			None,
-		)
-		.unwrap();
-		let code = "import sys,json; from pathlib import Path; from robogjc.db import Database; \
-		            db=Database(Path(sys.argv[1])); ev=db.get_event('rust-event'); \
-		            issue=db.get_issue('octo/widget#808'); \
-		            print(json.dumps({'delivery_id':ev.delivery_id,'action':ev.payload['action'],'\
-		            pr':issue.pr_number,'branch':issue.branch})); db.close()";
-		let out = Command::new(py)
-			.arg("-c")
-			.arg(code)
-			.arg(&path)
-			.output()
-			.unwrap();
-		assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-		let txt = String::from_utf8(out.stdout).unwrap();
-		assert!(txt.contains("rust-event") && txt.contains("8080") && txt.contains("farm/rust"));
-	}
-	#[test]
-	fn g003_db_differential_red_team_report() {
-		let py = Path::new("/tmp/robogjc-uv/bin/python");
-		if !py.exists() {
-			return;
-		}
-		let dir = tempdir().unwrap();
-		let db_path = dir.path().join("g003.sqlite");
-		let marker = dir.path().join("go");
-		let artifact = Path::new("../../artifacts/robogjc/qa/g003-db-differential-report.json");
-		fs::create_dir_all(artifact.parent().unwrap()).unwrap();
-
-		let mut cases: Vec<Value> = Vec::new();
-		let mut blockers: Vec<Value> = Vec::new();
-		let mut commands: Vec<Value> = Vec::new();
-
-		let seed = r#"
-import sys, json, sqlite3
-from pathlib import Path
-from robogjc.db import Database
-p=Path(sys.argv[1])
-db=Database(p)
-db.record_event(delivery_id='py-seed-queued', event_type='issues', repo='octo/widget', issue_key='octo/widget#1', payload={'msg':'hello 🌈','none':None,'long':'x'*4096})
-db.record_event(delivery_id='py-seed-done', event_type='issues', repo=None, issue_key=None, payload={'ok': True}, state='done')
-db.upsert_issue(key='octo/widget#1', repo='octo/widget', number=1, state='opened', branch='farm/py', session_dir='/tmp/py', pr_number=None)
-db.set_issue_classification('octo/widget#1','bug')
-db.log_tool_call(issue_key='octo/widget#1', tool='py_tool_🛠', args={'a':None,'s':'ß'*1024}, result={'r':'✅'}, error=None)
-db.record_submission(delivery_id='py-sub-old', login='Alice', repo='octo/widget')
-db.upsert_pending_closure(issue_key='octo/widget#2', repo='octo/widget', number=2, comment_id=22, issue_author='Bob', close_at='2000-01-01T00:00:00.000000Z')
-db.close()
-print(json.dumps({'seeded': True}))
-"#;
-		let seed_out = Command::new(py)
-			.arg("-c")
-			.arg(seed)
-			.arg(&db_path)
-			.output()
-			.unwrap();
-		commands.push(json!({"argv":[py.display().to_string(),"-c","<python seed>",db_path.display().to_string()],"status":seed_out.status.code()}));
-		assert!(seed_out.status.success(), "{}", String::from_utf8_lossy(&seed_out.stderr));
-
-		let db = Database::open(&db_path).unwrap();
-		let migrated_once = db.user_version().unwrap();
-		drop(db);
-		let db = Database::open(&db_path).unwrap();
-		let migrated_twice = db.user_version().unwrap();
-		let claimed = db.claim_next_event().unwrap().unwrap();
-		db.mark_event(&claimed.delivery_id, "done", None).unwrap();
-		db.admit_submission(
-			"rust-sub",
-			"Alice",
-			Some("octo/widget"),
-			"2000-01-01T00:00:00.000000Z",
-			Some(10),
-		)
-		.unwrap();
-		db.upsert_pending_closure(
-			&issue_key("octo/widget", 3),
-			"octo/widget",
-			3,
-			33,
-			"Carol",
-			"2000-01-01T00:00:00.000000Z",
-		)
-		.unwrap();
-		let due = db
-			.claim_due_closures("2026-07-02T00:00:00.000000Z", 10)
-			.unwrap();
-		for row in due {
-			db.finalize_closure(&row.issue_key, "closed", None).unwrap();
-		}
-		db.log_tool_call(
-			"octo/widget#1",
-			"rust_tool_🚀",
-			&json!({"null":null,"emoji":"😈","long":"y".repeat(4096)}),
-			Some(&json!({"ok":true})),
-			None,
-		)
-		.unwrap();
-
-		let snapshot = r#"
-import sys, json, sqlite3
-from pathlib import Path
-from robogjc.db import Database
-p=Path(sys.argv[1])
-db=Database(p)
-ev=db.list_events(limit=20)
-issues=db.list_issues(limit=20)
-closures=[]
-for k in ['octo/widget#2','octo/widget#3']:
-    r=db.get_pending_closure(k)
-    closures.append(None if r is None else {'issue_key':r.issue_key,'state':r.state,'author':r.issue_author})
-conn=sqlite3.connect(p)
-conn.row_factory=sqlite3.Row
-counts={t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in ['events','issues','tool_calls','submissions','pending_closures']}
-uv=conn.execute('PRAGMA user_version').fetchone()[0]
-print(json.dumps({'user_version':uv,'counts':counts,'events':[(e.delivery_id,e.state,e.attempts,e.payload) for e in ev], 'issues':[(i.key,i.classification) for i in issues], 'closures':closures}, ensure_ascii=False, sort_keys=True))
-db.close()
-"#;
-		let snap_out = Command::new(py)
-			.arg("-c")
-			.arg(snapshot)
-			.arg(&db_path)
-			.output()
-			.unwrap();
-		commands.push(json!({"argv":[py.display().to_string(),"-c","<python snapshot>",db_path.display().to_string()],"status":snap_out.status.code()}));
-		assert!(snap_out.status.success(), "{}", String::from_utf8_lossy(&snap_out.stderr));
-		let snap: Value = serde_json::from_slice(&snap_out.stdout).unwrap();
-		let round_ok = snap["user_version"] == 1
-			&& snap["counts"]["events"] == 2
-			&& snap["counts"]["tool_calls"] == 2
-			&& snap["counts"]["submissions"] == 2;
-		cases.push(json!({"id":"python-seed-rust-mutate-python-read","status": if round_ok {"pass"} else {"fail"}, "evidence": snap}));
-		cases.push(json!({"id":"migration-idempotence-python-after-rust","status": if migrated_once == 1 && migrated_twice == 1 {"pass"} else {"fail"}, "migratedOnce": migrated_once, "migratedTwice": migrated_twice}));
-
-		let contend = dir.path().join("contend.sqlite");
-		let db = Database::open(&contend).unwrap();
-		db.record_event(
-			"dup-claim",
-			"issues",
-			Some("octo/widget"),
-			Some("octo/widget#9"),
-			&json!({"x":1}),
-			"queued",
-			None,
-		)
-		.unwrap();
-		let p1 = contend.clone();
-		let p2 = contend.clone();
-		let h1 = thread::spawn(move || {
-			Database::open(p1)
-				.unwrap()
-				.claim_next_event()
-				.unwrap()
-				.map(|r| r.delivery_id)
-		});
-		let h2 = thread::spawn(move || {
-			Database::open(p2)
-				.unwrap()
-				.claim_next_event()
-				.unwrap()
-				.map(|r| r.delivery_id)
-		});
-		let rust_winners = [h1.join().unwrap(), h2.join().unwrap()]
-			.into_iter()
-			.flatten()
-			.collect::<Vec<_>>();
-		cases.push(json!({"id":"duplicate-delivery-claim-two-rust-connections","status": if rust_winners.len() == 1 {"pass"} else {"fail"}, "winners": rust_winners}));
-
-		let mixed = dir.path().join("mixed.sqlite");
-		let db = Database::open(&mixed).unwrap();
-		db.record_event(
-			"mixed-claim",
-			"issues",
-			Some("octo/widget"),
-			Some("octo/widget#10"),
-			&json!({"x":1}),
-			"queued",
-			None,
-		)
-		.unwrap();
-		let py_claim = r#"
-import sys, json, time
-from pathlib import Path
-from robogjc.db import Database
-p=Path(sys.argv[1]); marker=Path(sys.argv[2])
-while not marker.exists(): time.sleep(0.005)
-db=Database(p)
-r=db.claim_next_event()
-print(json.dumps({'winner': None if r is None else r.delivery_id}))
-db.close()
-"#;
-		let child = Command::new(py)
-			.arg("-c")
-			.arg(py_claim)
-			.arg(&mixed)
-			.arg(&marker)
-			.stdout(Stdio::piped())
-			.stderr(Stdio::piped())
-			.spawn()
-			.unwrap();
-		fs::write(&marker, b"go").unwrap();
-		let rust_mixed = Database::open(&mixed)
-			.unwrap()
-			.claim_next_event()
-			.unwrap()
-			.map(|r| r.delivery_id);
-		let py_mixed_out = child.wait_with_output().unwrap();
-		commands.push(json!({"argv":[py.display().to_string(),"-c","<python concurrent claim>",mixed.display().to_string(),marker.display().to_string()],"status":py_mixed_out.status.code()}));
-		assert!(py_mixed_out.status.success(), "{}", String::from_utf8_lossy(&py_mixed_out.stderr));
-		let py_mixed: Value = serde_json::from_slice(&py_mixed_out.stdout).unwrap();
-		let mixed_winners = [rust_mixed, py_mixed["winner"].as_str().map(str::to_string)]
-			.into_iter()
-			.flatten()
-			.collect::<Vec<_>>();
-		cases.push(json!({"id":"duplicate-delivery-claim-rust-python-concurrent","status": if mixed_winners.len() == 1 {"pass"} else {"fail"}, "winners": mixed_winners}));
-
-		let crash = dir.path().join("crash.sqlite");
-		let db = Database::open(&crash).unwrap();
-		db.record_event(
-			"rollback-claim",
-			"issues",
-			Some("octo/widget"),
-			Some("octo/widget#11"),
-			&json!({}),
-			"queued",
-			None,
-		)
-		.unwrap();
-		{
-			let mut conn = Connection::open(&crash).unwrap();
-			let tx = conn
-				.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-				.unwrap();
-			tx.execute(
-				"UPDATE events SET state='running', attempts=attempts+1 WHERE \
-				 delivery_id='rollback-claim'",
-				[],
-			)
-			.unwrap();
-		}
-		let after_rollback = Database::open(&crash)
-			.unwrap()
-			.claim_next_event()
-			.unwrap()
-			.map(|r| r.delivery_id);
-		cases.push(json!({"id":"rollback-mid-claim-remains-claimable","status": if after_rollback.as_deref() == Some("rollback-claim") {"pass"} else {"fail"}, "claimedAfterRollback": after_rollback}));
-
-		let edge = dir.path().join("edge.sqlite");
-		let db = Database::open(&edge).unwrap();
-		let conn = Connection::open(&edge).unwrap();
-		for (id, ts) in [
-			("old", "2026-01-01T00:00:00.000000Z"),
-			("exact", "2026-01-02T00:00:00.000000Z"),
-			("new", "2026-01-02T00:00:00.000001Z"),
-		] {
-			conn
-				.execute(
-					"INSERT INTO submissions (delivery_id, login, repo, ts) VALUES (?, 'edge', \
-					 'octo/widget', ?)",
-					params![id, ts],
-				)
-				.unwrap();
-		}
-		let edge_count = db
-			.count_submissions_since("EDGE", "2026-01-02T00:00:00.000000Z")
-			.unwrap();
-		cases.push(json!({"id":"submission-rate-limit-boundary-inclusive","status": if edge_count == 2 {"pass"} else {"fail"}, "countAtBoundary": edge_count}));
-
-		let closures = dir.path().join("closure-race.sqlite");
-		let db = Database::open(&closures).unwrap();
-		db.upsert_pending_closure(
-			"octo/widget#44",
-			"octo/widget",
-			44,
-			44,
-			"Dave",
-			"2000-01-01T00:00:00.000000Z",
-		)
-		.unwrap();
-		let claimed = db
-			.claim_due_closures("2026-01-01T00:00:00.000000Z", 1)
-			.unwrap();
-		let cancel_after_claim = db
-			.cancel_pending_closure("octo/widget#44", "user_replied")
-			.unwrap();
-		let first_finalize = db
-			.finalize_closure(&claimed[0].issue_key, "closed", None)
-			.unwrap();
-		let second_finalize = db
-			.finalize_closure(&claimed[0].issue_key, "cancelled", Some("late_cancel"))
-			.unwrap();
-		let terminal = db.get_pending_closure("octo/widget#44").unwrap().unwrap();
-		let closure_ok =
-			first_finalize && !second_finalize && !cancel_after_claim && terminal.state == "closed";
-		if !closure_ok {
-			blockers.push(json!({"case":"pending-closure-double-finalize","reason":"finalize_closure can overwrite an already-terminal closed row with cancelled, losing closure outcome","observedState":terminal.state,"observedReason":terminal.cancel_reason}));
-		}
-		cases.push(json!({"id":"pending-closure-double-finalize-and-cancel-after-claim","status": if closure_ok {"pass"} else {"fail"}, "firstFinalize": first_finalize, "secondFinalize": second_finalize, "cancelAfterClaim": cancel_after_claim, "terminalState": terminal.state, "terminalReason": terminal.cancel_reason}));
-
-		let wal = dir.path().join("wal.sqlite");
-		let db = Database::open(&wal).unwrap();
-		db.record_event("wal-1", "issues", None, None, &json!({}), "queued", None)
-			.unwrap();
-		let reader = Connection::open(&wal).unwrap();
-		reader.execute("BEGIN", []).unwrap();
-		let before: i64 = reader
-			.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
-			.unwrap();
-		db.record_event("wal-2", "issues", None, None, &json!({}), "queued", None)
-			.unwrap();
-		let during: i64 = reader
-			.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
-			.unwrap();
-		reader.execute("COMMIT", []).unwrap();
-		let after: i64 = Connection::open(&wal)
-			.unwrap()
-			.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
-			.unwrap();
-		cases.push(json!({"id":"wal-reader-consistent-snapshot-during-writer","status": if before == 1 && during == 1 && after == 2 {"pass"} else {"fail"}, "before":before,"during":during,"after":after}));
-
-		let passed = cases.iter().filter(|c| c["status"] == "pass").count();
-		let report = json!({
-			"schemaVersion": 1,
-			"kind": "package-consumer-report",
-			"cases": cases,
-			"commands": commands,
-			"summary": {"passed": passed, "failed": cases.len() - passed, "blockers": blockers.len()},
-			"blockers": blockers,
-		});
-		fs::write(artifact, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-		assert_eq!(blockers.len(), 0, "g003 DB differential blockers: {blockers:#?}");
-		assert_eq!(cases.len() - passed, 0, "g003 DB differential failures: {cases:#?}");
 	}
 }

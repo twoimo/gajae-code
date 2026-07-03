@@ -17,34 +17,34 @@ use crate::{
 /// Options to customize the behavior of the word expander.
 pub(crate) struct ExpanderOptions {
 	/// Whether to perform tilde-expansion.
-	pub tilde_expand:                  bool,
+	pub tilde_expand: bool,
 	/// Whether to perform brace-expansion.
-	pub brace_expand:                  bool,
+	pub brace_expand: bool,
 	/// Whether to perform command substitutions. If disabled, command
 	/// substitutions are replaced with an empty string.
 	pub execute_command_substitutions: bool,
 	/// Whether to perform pathname expansion (globbing). If disabled, glob
 	/// patterns are returned as literal strings.
-	pub pathname_expand:               bool,
+	pub pathname_expand: bool,
 }
 
 impl Default for ExpanderOptions {
 	fn default() -> Self {
 		Self {
-			tilde_expand:                  true,
-			brace_expand:                  true,
+			tilde_expand: true,
+			brace_expand: true,
 			execute_command_substitutions: true,
-			pathname_expand:               true,
+			pathname_expand: true,
 		}
 	}
 }
 
 #[derive(Debug)]
 struct Expansion {
-	fields:      Vec<WordField>,
+	fields: Vec<WordField>,
 	concatenate: bool,
-	from_array:  bool,
-	undefined:   bool,
+	from_array: bool,
+	undefined: bool,
 }
 
 impl Default for Expansion {
@@ -90,10 +90,10 @@ impl Expansion {
 
 	fn undefined() -> Self {
 		Self {
-			fields:      vec![WordField::from(String::new())],
+			fields: vec![WordField::from(String::new())],
 			concatenate: true,
-			undefined:   true,
-			from_array:  false,
+			undefined: true,
+			from_array: false,
 		}
 	}
 
@@ -1352,10 +1352,10 @@ impl<'a, SE: extensions::ShellExtensions> WordExpander<'a, SE> {
 				}
 
 				Ok(Expansion {
-					fields:      transformed_fields,
+					fields: transformed_fields,
 					concatenate: expanded_parameter.concatenate,
-					from_array:  expanded_parameter.from_array,
-					undefined:   expanded_parameter.undefined,
+					from_array: expanded_parameter.from_array,
+					undefined: expanded_parameter.undefined,
 				})
 			},
 			brush_parser::word::ParameterExpr::UppercaseFirstChar { parameter, indirect, pattern } => {
@@ -1685,20 +1685,20 @@ impl<'a, SE: extensions::ShellExtensions> WordExpander<'a, SE> {
 					let values = var.value().element_values(self.shell);
 
 					Ok(Expansion {
-						fields:      values
+						fields: values
 							.into_iter()
 							.map(|value| WordField(vec![ExpansionPiece::Splittable(value)]))
 							.collect(),
 						concatenate: *concatenate,
-						from_array:  true,
-						undefined:   false,
+						from_array: true,
+						undefined: false,
 					})
 				} else {
 					Ok(Expansion {
-						fields:      vec![],
+						fields: vec![],
 						concatenate: *concatenate,
-						from_array:  true,
-						undefined:   false,
+						from_array: true,
+						undefined: false,
 					})
 				}
 			},
@@ -1730,13 +1730,13 @@ impl<'a, SE: extensions::ShellExtensions> WordExpander<'a, SE> {
 				let args = self.shell.current_shell_args().iter();
 
 				Expansion {
-					fields:      args
+					fields: args
 						.into_iter()
 						.map(|param| WordField(vec![ExpansionPiece::Splittable(param.to_owned())]))
 						.collect(),
 					concatenate: *concatenate,
-					from_array:  true,
-					undefined:   false,
+					from_array: true,
+					undefined: false,
 				}
 			},
 			brush_parser::word::SpecialParameter::PositionalParameterCount => {
@@ -1982,10 +1982,10 @@ where
 	}
 
 	Ok(Expansion {
-		fields:      transformed_fields,
+		fields: transformed_fields,
 		concatenate: expansion.concatenate,
-		from_array:  expansion.from_array,
-		undefined:   expansion.undefined,
+		from_array: expansion.from_array,
+		undefined: expansion.undefined,
 	})
 }
 
@@ -2098,10 +2098,13 @@ mod tests {
 
 		let fields = expander.split_fields(expansion);
 
-		assert_eq!(fields, vec![
-			WordField(vec![ExpansionPiece::Unsplittable(String::from("A"))]),
-			WordField(vec![ExpansionPiece::Unsplittable(String::new())])
-		]);
+		assert_eq!(
+			fields,
+			vec![
+				WordField(vec![ExpansionPiece::Unsplittable(String::from("A"))]),
+				WordField(vec![ExpansionPiece::Unsplittable(String::new())])
+			]
+		);
 
 		Ok(())
 	}

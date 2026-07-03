@@ -30,7 +30,7 @@ mod tests {
 
 	#[derive(Debug, Deserialize)]
 	struct RedactionCase {
-		input: Option<String>,
+		input:    Option<String>,
 		expected: String,
 	}
 

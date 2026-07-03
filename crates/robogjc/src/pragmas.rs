@@ -72,9 +72,9 @@ pub fn pragma_value(pragmas: &[(String, String)], key: &str) -> Option<String> {
 	let target = key.to_ascii_lowercase();
 	pragmas
 		.iter()
-		.filter(|(k, _)| k == &target)
+		.rev()
+		.find(|(k, _)| k == &target)
 		.map(|(_, v)| v.clone())
-		.last()
 }
 
 pub fn resolve_model_alias(alias: &str, pool: &[String]) -> Option<String> {

@@ -18,42 +18,42 @@ pub type Result<T> = std::result::Result<T, BoxError>;
 pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 pub trait AppServerTransport: Send + Sync + 'static {
-	fn send<'a>(&'a self, frame: Value) -> TransportFuture<'a, Value>;
-	fn next_notification<'a>(&'a self) -> TransportFuture<'a, Option<Value>>;
-	fn close<'a>(&'a self) -> TransportFuture<'a, ()>;
+	fn send(&self, frame: Value) -> TransportFuture<'_, Value>;
+	fn next_notification(&self) -> TransportFuture<'_, Option<Value>>;
+	fn close(&self) -> TransportFuture<'_, ()>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadRef {
-	pub id: String,
+	pub id:         String,
 	#[serde(default)]
 	pub generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResumeThreadRef {
-	pub thread: ThreadRef,
+	pub thread:  ThreadRef,
 	pub resumed: bool,
 }
 
 pub struct TurnRef {
-	pub id: Option<String>,
+	pub id:  Option<String>,
 	pub raw: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostToolSpec {
-	pub name: String,
-	pub description: String,
+	pub name:            String,
+	pub description:     String,
 	#[serde(rename = "inputSchema")]
-	pub input_schema: Value,
+	pub input_schema:    Value,
 	#[serde(rename = "resultPolicy", skip_serializing_if = "Option::is_none")]
-	pub result_policy: Option<Value>,
+	pub result_policy:   Option<Value>,
 	#[serde(rename = "redactionHints", skip_serializing_if = "Option::is_none")]
 	pub redaction_hints: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppServerNotification {
 	TurnStarted(Value),
 	ItemStarted(Value),
@@ -62,18 +62,18 @@ pub enum AppServerNotification {
 	TurnCompleted(Value),
 	GjcEvent(Value),
 	HostToolCall {
-		thread_id: String,
+		thread_id:  String,
 		generation: u64,
-		turn_id: String,
-		call_id: String,
-		tool: String,
-		args: Value,
+		turn_id:    String,
+		call_id:    String,
+		tool:       String,
+		args:       Value,
 	},
 	HostToolCancel {
-		thread_id: String,
+		thread_id:  String,
 		generation: u64,
-		turn_id: Option<String>,
-		call_id: String,
+		turn_id:    Option<String>,
+		call_id:    String,
 	},
 	Unknown(Value),
 }
@@ -94,27 +94,27 @@ pub fn parse_notification(payload: Value) -> AppServerNotification {
 		"turn/completed" | "turn_completed" => AppServerNotification::TurnCompleted(params),
 		"gjc/event" => AppServerNotification::GjcEvent(params),
 		"gjc/hostTools/call" => AppServerNotification::HostToolCall {
-			thread_id: str_field(&params, "threadId"),
+			thread_id:  str_field(&params, "threadId"),
 			generation: params
 				.get("generation")
 				.and_then(Value::as_u64)
 				.unwrap_or(0),
-			turn_id: str_field(&params, "turnId"),
-			call_id: str_field(&params, "callId"),
-			tool: str_field(&params, "tool"),
-			args: params.get("args").cloned().unwrap_or_else(|| json!({})),
+			turn_id:    str_field(&params, "turnId"),
+			call_id:    str_field(&params, "callId"),
+			tool:       str_field(&params, "tool"),
+			args:       params.get("args").cloned().unwrap_or_else(|| json!({})),
 		},
 		"gjc/hostTools/cancel" => AppServerNotification::HostToolCancel {
-			thread_id: str_field(&params, "threadId"),
+			thread_id:  str_field(&params, "threadId"),
 			generation: params
 				.get("generation")
 				.and_then(Value::as_u64)
 				.unwrap_or(0),
-			turn_id: params
+			turn_id:    params
 				.get("turnId")
 				.and_then(Value::as_str)
 				.map(str::to_owned),
-			call_id: str_field(&params, "callId"),
+			call_id:    str_field(&params, "callId"),
 		},
 		_ => AppServerNotification::Unknown(payload),
 	}
@@ -151,12 +151,12 @@ impl<T: AppServerTransport> Clone for AppServerClient<T> {
 }
 
 impl AppServerClient<StdioTransport> {
-	pub async fn spawn(
+	pub fn spawn(
 		command: &[String],
 		cwd: Option<std::path::PathBuf>,
 		env: BTreeMap<String, String>,
 	) -> Result<Self> {
-		let transport = StdioTransport::spawn(command, cwd, env).await?;
+		let transport = StdioTransport::spawn(command, cwd, env)?;
 		Ok(Self::new(transport))
 	}
 }
@@ -184,12 +184,15 @@ impl<T: AppServerTransport> AppServerClient<T> {
 			.await?;
 		Ok(())
 	}
+
 	pub async fn initialize(&self, params: Value) -> Result<Value> {
 		self.request("initialize", params).await
 	}
+
 	pub async fn start_thread(&self, params: Value) -> Result<ThreadRef> {
 		self.thread_request("thread/start", params).await
 	}
+
 	pub async fn resume_thread(
 		&self,
 		thread_id: &str,
@@ -207,6 +210,7 @@ impl<T: AppServerTransport> AppServerClient<T> {
 			.unwrap_or(true);
 		Ok(ResumeThreadRef { thread, resumed })
 	}
+
 	async fn thread_request(&self, method: &str, params: Value) -> Result<ThreadRef> {
 		let result = self.request(method, params).await?;
 		parse_thread(&result)
@@ -230,6 +234,7 @@ impl<T: AppServerTransport> AppServerClient<T> {
 			.ok_or("turn/start response missing turn")?;
 		Ok(TurnRef { id: turn.get("id").and_then(Value::as_str).map(str::to_owned), raw: turn })
 	}
+
 	pub async fn steer(&self, thread_id: &str, input: &str, mut params: Value) -> Result<Value> {
 		let obj = params
 			.as_object_mut()
@@ -238,16 +243,19 @@ impl<T: AppServerTransport> AppServerClient<T> {
 		obj.insert("input".into(), input.into());
 		self.request("turn/steer", params).await
 	}
+
 	pub async fn interrupt(&self, thread_id: &str, turn_id: &str) -> Result<Value> {
 		self
 			.request("turn/interrupt", json!({"threadId":thread_id,"turnId":turn_id}))
 			.await
 	}
+
 	pub async fn set_host_tools(&self, thread_id: &str, tools: Vec<HostToolSpec>) -> Result<Value> {
 		self
 			.request("gjc/hostTools/set", json!({"threadId":thread_id,"tools":tools}))
 			.await
 	}
+
 	pub async fn send_host_tool_result(
 		&self,
 		thread_id: &str,
@@ -262,11 +270,13 @@ impl<T: AppServerTransport> AppServerClient<T> {
 		};
 		self.request("gjc/hostTools/result", payload).await
 	}
+
 	pub async fn set_todos(&self, thread_id: &str, phases: Value) -> Result<Value> {
 		self
 			.request("gjc/todos/set", json!({"threadId":thread_id,"phases":phases}))
 			.await
 	}
+
 	pub async fn next_notification(&self) -> Result<Option<AppServerNotification>> {
 		Ok(self
 			.transport
@@ -274,22 +284,23 @@ impl<T: AppServerTransport> AppServerClient<T> {
 			.await?
 			.map(parse_notification))
 	}
+
 	pub async fn close(&self) -> Result<()> {
 		self.transport.close().await
 	}
 }
 
 pub struct StdioTransport {
-	writer: AsyncMutex<tokio::process::ChildStdin>,
-	pending: Arc<AsyncMutex<BTreeMap<String, oneshot::Sender<Value>>>>,
+	writer:        AsyncMutex<tokio::process::ChildStdin>,
+	pending:       Arc<AsyncMutex<BTreeMap<String, oneshot::Sender<Value>>>>,
 	notifications: AsyncMutex<mpsc::UnboundedReceiver<Value>>,
-	request_id: AsyncMutex<u64>,
-	child: Arc<AsyncMutex<Child>>,
-	stderr: Arc<AsyncMutex<String>>,
+	request_id:    AsyncMutex<u64>,
+	child:         Arc<AsyncMutex<Child>>,
+	stderr:        Arc<AsyncMutex<String>>,
 }
 
 impl StdioTransport {
-	pub async fn spawn(
+	pub fn spawn(
 		command: &[String],
 		cwd: Option<std::path::PathBuf>,
 		env: BTreeMap<String, String>,
@@ -334,10 +345,13 @@ impl StdioTransport {
 							if payload.get("id").is_some()
 								&& (payload.get("result").is_some() || payload.get("error").is_some()) =>
 						{
-							if let Some(id) = payload.get("id").and_then(Value::as_str) {
-								if let Some(tx) = reader_pending.lock().await.remove(id) {
-									let _ = tx.send(payload);
-								}
+							let tx = if let Some(id) = payload.get("id").and_then(Value::as_str) {
+								reader_pending.lock().await.remove(id)
+							} else {
+								None
+							};
+							if let Some(tx) = tx {
+								let _ = tx.send(payload);
 							}
 						},
 						Ok(payload) => {
@@ -398,7 +412,7 @@ impl StdioTransport {
 }
 
 impl AppServerTransport for StdioTransport {
-	fn send<'a>(&'a self, mut frame: Value) -> TransportFuture<'a, Value> {
+	fn send(&self, mut frame: Value) -> TransportFuture<'_, Value> {
 		Box::pin(async move {
 			let is_notification = frame.get("id").is_none()
 				&& frame.get("method").and_then(Value::as_str) == Some("initialized");
@@ -447,7 +461,8 @@ impl AppServerTransport for StdioTransport {
 			}
 		})
 	}
-	fn next_notification<'a>(&'a self) -> TransportFuture<'a, Option<Value>> {
+
+	fn next_notification(&self) -> TransportFuture<'_, Option<Value>> {
 		Box::pin(async move {
 			match self.notifications.lock().await.recv().await {
 				Some(value) => Ok(Some(value)),
@@ -460,7 +475,8 @@ impl AppServerTransport for StdioTransport {
 			}
 		})
 	}
-	fn close<'a>(&'a self) -> TransportFuture<'a, ()> {
+
+	fn close(&self) -> TransportFuture<'_, ()> {
 		Box::pin(async move {
 			let _ = self.child.lock().await.kill().await;
 			Ok(())
@@ -470,10 +486,13 @@ impl AppServerTransport for StdioTransport {
 impl StdioTransport {
 	async fn with_stderr_status(&self, message: &str) -> String {
 		let stderr = self.stderr.lock().await.trim().to_owned();
-		let status = match self.child.lock().await.try_wait() {
-			Ok(Some(status)) => format!("; exit status: {status}"),
-			Ok(None) => String::new(),
-			Err(err) => format!("; exit status unavailable: {err}"),
+		let status = {
+			let mut child = self.child.lock().await;
+			match child.try_wait() {
+				Ok(Some(status)) => format!("; exit status: {status}"),
+				Ok(None) => String::new(),
+				Err(err) => format!("; exit status unavailable: {err}"),
+			}
 		};
 		if stderr.is_empty() {
 			format!("{message}{status}")
@@ -509,16 +528,17 @@ async fn reader_diagnostic(
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use std::sync::Mutex;
+
+	use super::*;
 
 	#[derive(Default)]
 	struct FakeTransport {
 		frames: Mutex<Vec<Value>>,
-		notes: Mutex<Vec<Value>>,
+		notes:  Mutex<Vec<Value>>,
 	}
 	impl AppServerTransport for FakeTransport {
-		fn send<'a>(&'a self, frame: Value) -> TransportFuture<'a, Value> {
+		fn send(&self, frame: Value) -> TransportFuture<'_, Value> {
 			Box::pin(async move {
 				self.frames.lock().unwrap().push(frame.clone());
 				let method = frame["method"].as_str().unwrap();
@@ -529,10 +549,12 @@ mod tests {
 				})
 			})
 		}
-		fn next_notification<'a>(&'a self) -> TransportFuture<'a, Option<Value>> {
+
+		fn next_notification(&self) -> TransportFuture<'_, Option<Value>> {
 			Box::pin(async move { Ok(self.notes.lock().unwrap().pop()) })
 		}
-		fn close<'a>(&'a self) -> TransportFuture<'a, ()> {
+
+		fn close(&self) -> TransportFuture<'_, ()> {
 			Box::pin(async { Ok(()) })
 		}
 	}
@@ -573,9 +595,7 @@ mod tests {
 			"-c".to_owned(),
 			"printf 'boom\\n' >&2; printf 'not-json\\n'".to_owned(),
 		];
-		let client = AppServerClient::spawn(&command, None, BTreeMap::new())
-			.await
-			.unwrap();
+		let client = AppServerClient::spawn(&command, None, BTreeMap::new()).unwrap();
 		let err = client.initialize(json!({})).await.unwrap_err().to_string();
 		assert!(err.contains("invalid JSON"));
 		assert!(err.contains("stderr: boom"));

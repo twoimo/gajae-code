@@ -31,12 +31,12 @@ type HostToolRuntimeFactory = Arc<dyn Fn(&EventRow) -> AppServerHostToolRuntime 
 
 #[derive(Clone)]
 pub struct AppServerHostToolRuntime {
-	pub db: Arc<Database>,
-	pub github: Arc<dyn GitHubBackend>,
+	pub db:            Arc<Database>,
+	pub github:        Arc<dyn GitHubBackend>,
 	pub git_transport: Arc<dyn GitTransport>,
-	pub settings: Option<crate::config::Settings>,
-	pub author_name: String,
-	pub author_email: String,
+	pub settings:      Option<crate::config::Settings>,
+	pub author_name:   String,
+	pub author_email:  String,
 }
 
 #[derive(Clone)]
@@ -52,11 +52,14 @@ pub struct AppServerWorkerConfig {
 	pub hard_timeout: Duration,
 	pub max_reminders: usize,
 	pub natives_cache_root: Option<PathBuf>,
-	/// Test override for host tools. Production stdio wiring must supply either a runtime or runtime factory instead.
+	/// Test override for host tools. Production stdio wiring must supply either
+	/// a runtime or runtime factory instead.
 	pub host_tool_dispatcher: Option<HostToolDispatcher>,
-	/// Runtime used to build real host-tool bindings for production app-server workers.
+	/// Runtime used to build real host-tool bindings for production app-server
+	/// workers.
 	pub host_tool_runtime: Option<AppServerHostToolRuntime>,
-	/// Late-bound runtime used when per-event workspace data is required to build host-tool bindings.
+	/// Late-bound runtime used when per-event workspace data is required to
+	/// build host-tool bindings.
 	pub host_tool_runtime_factory: Option<HostToolRuntimeFactory>,
 }
 
@@ -71,7 +74,7 @@ impl Default for AppServerWorkerConfig {
 			model_provider: None,
 			model_id: "default".into(),
 			thinking: "high".into(),
-			hard_timeout: Duration::from_secs(1800),
+			hard_timeout: Duration::from_mins(30),
 			max_reminders: 2,
 			natives_cache_root: None,
 			host_tool_dispatcher: None,
@@ -83,10 +86,10 @@ impl Default for AppServerWorkerConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerOutcome {
-	pub thread_id: String,
-	pub turn_id: Option<String>,
-	pub reminders_sent: usize,
-	pub interrupted: bool,
+	pub thread_id:              String,
+	pub turn_id:                Option<String>,
+	pub reminders_sent:         usize,
+	pub interrupted:            bool,
 	pub natives_cache_captured: bool,
 }
 
@@ -111,14 +114,14 @@ impl AppServerWorker<StdioTransport> {
 		config.host_tool_runtime_factory = Some(Arc::new(factory));
 		Self { config, client: None }
 	}
-	async fn stdio_client(&self) -> ClientResult<AppServerClient<StdioTransport>> {
+
+	fn stdio_client(&self) -> ClientResult<AppServerClient<StdioTransport>> {
 		AppServerClient::spawn(&self.config.command, self.config.cwd.clone(), self.config.env.clone())
-			.await
 	}
 }
 
 impl<T: AppServerTransport> AppServerWorker<T> {
-	pub fn with_client(config: AppServerWorkerConfig, client: AppServerClient<T>) -> Self {
+	pub const fn with_client(config: AppServerWorkerConfig, client: AppServerClient<T>) -> Self {
 		Self { config, client: Some(client) }
 	}
 
@@ -158,7 +161,11 @@ impl AppServerWorker<StdioTransport> {
 			&& self.config.host_tool_runtime.is_none()
 			&& self.config.host_tool_runtime_factory.is_none()
 		{
-			return Err("production app-server worker requires host_tool_runtime, host_tool_runtime_factory, or host_tool_dispatcher before advertising host tools".into());
+			return Err(
+				"production app-server worker requires host_tool_runtime, host_tool_runtime_factory, \
+				 or host_tool_dispatcher before advertising host tools"
+					.into(),
+			);
 		}
 		Ok(())
 	}
@@ -169,13 +176,13 @@ impl AppServerWorker<StdioTransport> {
 		ctx: TaskContext,
 	) -> ClientResult<WorkerOutcome> {
 		self.ensure_stdio_host_tool_bindings()?;
-		let client = self.stdio_client().await?;
+		let client = self.stdio_client()?;
 		run_with_client(&self.config, client, row, ctx).await
 	}
 }
 
 impl TaskWorker for AppServerWorker<StdioTransport> {
-	fn run_task<'a>(&'a self, row: EventRow, ctx: TaskContext) -> TaskFuture<'a> {
+	fn run_task(&self, row: EventRow, ctx: TaskContext) -> TaskFuture<'_> {
 		Box::pin(async move {
 			self.run_stdio_app_server_task(row, ctx).await?;
 			Ok(())
@@ -242,7 +249,7 @@ async fn run_with_client<T: AppServerTransport>(
 		let interrupt_client = client.clone();
 		let interrupt_thread = thread.id.clone();
 		let delivery_id = row.delivery_id.clone();
-		ctx.cancellations.arm(delivery_id.clone(), move || {
+		ctx.cancellations.arm(delivery_id, move || {
 			tokio::spawn(async move {
 				let _ = interrupt_client
 					.interrupt(&interrupt_thread, &turn_id)
@@ -270,8 +277,7 @@ async fn run_with_client<T: AppServerTransport>(
 				args,
 				..
 			}))) => {
-				let result =
-					dispatch_host_tool(config, &row, &ctx, &abort_controller, &tool, args).await;
+				let result = dispatch_host_tool(config, &row, &ctx, &abort_controller, &tool, args);
 				match result {
 					Ok(value) => {
 						if matches!(
@@ -327,25 +333,26 @@ async fn run_with_client<T: AppServerTransport>(
 			.await?,
 		);
 	}
-	if !interrupted && reminders_sent < config.max_reminders {
-		if let Some(reminder) = dirty_state_reminder(config, &row, ctx.slot_uid) {
-			client
-				.steer(&thread.id, &reminder, json!({"reason":"dirty_state_reminder"}))
-				.await?;
-			reminders_sent += 1;
-			terminal_status = Some(
-				drain_reminder_turn(
-					config,
-					&client,
-					&row,
-					&ctx,
-					&abort_controller,
-					&mut successful_terminal_tools,
-					"during dirty-state reminder",
-				)
-				.await?,
-			);
-		}
+	if !interrupted
+		&& reminders_sent < config.max_reminders
+		&& let Some(reminder) = dirty_state_reminder(config, &row, ctx.slot_uid)
+	{
+		client
+			.steer(&thread.id, &reminder, json!({"reason":"dirty_state_reminder"}))
+			.await?;
+		reminders_sent += 1;
+		terminal_status = Some(
+			drain_reminder_turn(
+				config,
+				&client,
+				&row,
+				&ctx,
+				&abort_controller,
+				&mut successful_terminal_tools,
+				"during dirty-state reminder",
+			)
+			.await?,
+		);
 	}
 	ctx.cancellations.disarm(&row.delivery_id);
 	let natives_cache_captured = terminal_status.as_deref() == Some("completed")
@@ -398,16 +405,16 @@ fn host_tool_specs() -> Vec<HostToolSpec> {
 	host_tools::descriptors()
 		.into_iter()
 		.map(|d| HostToolSpec {
-			name: d.name,
-			description: d.description,
-			input_schema: d.input_schema,
-			result_policy: d.result_policy,
+			name:            d.name,
+			description:     d.description,
+			input_schema:    d.input_schema,
+			result_policy:   d.result_policy,
 			redaction_hints: d.redaction_hints,
 		})
 		.collect()
 }
 
-async fn dispatch_host_tool(
+fn dispatch_host_tool(
 	config: &AppServerWorkerConfig,
 	row: &EventRow,
 	ctx: &TaskContext,
@@ -419,7 +426,11 @@ async fn dispatch_host_tool(
 		.host_tool_dispatcher
 		.clone()
 		.or_else(|| build_runtime_host_tool_dispatcher(config, row, ctx, abort.clone()).ok())
-		.ok_or_else(|| "host tool bindings are not configured; production app-server worker wiring must supply host_tool_runtime, host_tool_runtime_factory, or host_tool_dispatcher".to_owned())?;
+		.ok_or_else(|| {
+			"host tool bindings are not configured; production app-server worker wiring must supply \
+			 host_tool_runtime, host_tool_runtime_factory, or host_tool_dispatcher"
+				.to_owned()
+		})?;
 	let result = dispatcher(tool, args)?;
 	if result.ok {
 		if tool == "abort_task" {
@@ -444,7 +455,7 @@ async fn drain_reminder_turn<T: AppServerTransport>(
 		match client.next_notification().await? {
 			Some(AppServerNotification::TurnCompleted(params)) => return turn_status(&params),
 			Some(AppServerNotification::HostToolCall { thread_id, call_id, tool, args, .. }) => {
-				let result = dispatch_host_tool(config, row, ctx, abort_controller, &tool, args).await;
+				let result = dispatch_host_tool(config, row, ctx, abort_controller, &tool, args);
 				match result {
 					Ok(value) => {
 						if matches!(
@@ -499,19 +510,19 @@ fn build_runtime_host_tool_dispatcher(
 		github: runtime.github,
 		git_transport: runtime.git_transport,
 		repo: GhRepoInfo {
-			full_name: repo.full_name,
+			full_name:      repo.full_name,
 			default_branch: repo.default_branch,
-			clone_url: repo.clone_url,
-			private: repo.private,
+			clone_url:      repo.clone_url,
+			private:        repo.private,
 		},
 		issue: GhIssueInfo {
-			repo: issue.repo,
-			number: issue.number as i64,
-			title: issue.title,
-			body: issue.body,
-			state: issue.state,
-			author: issue.author,
-			labels: issue.labels,
+			repo:            issue.repo,
+			number:          issue.number as i64,
+			title:           issue.title,
+			body:            issue.body,
+			state:           issue.state,
+			author:          issue.author,
+			labels:          issue.labels,
 			is_pull_request: issue.is_pull_request,
 		},
 		workspace_branch: Arc::new(RwLock::new(workspace.branch.clone())),
@@ -551,26 +562,25 @@ fn runtime_workspace(
 		.payload
 		.pointer("/workspace/root")
 		.and_then(Value::as_str)
-		.map(PathBuf::from)
-		.unwrap_or_else(|| {
-			repo_dir
-				.parent()
-				.map(PathBuf::from)
-				.unwrap_or_else(|| repo_dir.clone())
-		});
+		.map_or_else(
+			|| {
+				repo_dir
+					.parent()
+					.map_or_else(|| repo_dir.clone(), PathBuf::from)
+			},
+			PathBuf::from,
+		);
 	let session_dir = config.session_dir.clone();
 	let context_dir = row
 		.payload
 		.pointer("/workspace/context_dir")
 		.and_then(Value::as_str)
-		.map(PathBuf::from)
-		.unwrap_or_else(|| session_dir.join("context"));
+		.map_or_else(|| session_dir.join("context"), PathBuf::from);
 	let artifacts_dir = row
 		.payload
 		.pointer("/workspace/artifacts_dir")
 		.and_then(Value::as_str)
-		.map(PathBuf::from)
-		.unwrap_or_else(|| context_dir.join("artifacts"));
+		.map_or_else(|| context_dir.join("artifacts"), PathBuf::from);
 	let branch = row
 		.payload
 		.pointer("/workspace/branch")
@@ -642,10 +652,10 @@ fn repo_info(row: &EventRow) -> persona::RepoInfo {
 		})
 		.unwrap_or_default();
 	persona::RepoInfo {
-		full_name: repo.clone(),
+		full_name:      repo,
 		default_branch: str_path(&row.payload, &["repository", "default_branch"]),
-		clone_url: str_path(&row.payload, &["repository", "clone_url"]),
-		private: row
+		clone_url:      str_path(&row.payload, &["repository", "clone_url"]),
+		private:        row
 			.payload
 			.pointer("/repository/private")
 			.and_then(Value::as_bool)
@@ -660,8 +670,8 @@ fn issue_info(row: &EventRow) -> persona::IssueInfo {
 		.or_else(|| row.payload.get("pull_request"))
 		.unwrap_or(&Value::Null);
 	persona::IssueInfo {
-		repo: row.repo.clone().unwrap_or_default(),
-		number: issue
+		repo:            row.repo.clone().unwrap_or_default(),
+		number:          issue
 			.get("number")
 			.and_then(Value::as_u64)
 			.unwrap_or_else(|| {
@@ -671,11 +681,11 @@ fn issue_info(row: &EventRow) -> persona::IssueInfo {
 					.and_then(|n| n.parse().ok())
 					.unwrap_or(0)
 			}),
-		title: str_path(issue, &["title"]),
-		body: str_path(issue, &["body"]),
-		state: str_path(issue, &["state"]),
-		author: str_path(issue, &["user", "login"]),
-		labels: issue
+		title:           str_path(issue, &["title"]),
+		body:            str_path(issue, &["body"]),
+		state:           str_path(issue, &["state"]),
+		author:          str_path(issue, &["user", "login"]),
+		labels:          issue
 			.get("labels")
 			.and_then(Value::as_array)
 			.map(|labels| {
@@ -692,14 +702,13 @@ fn issue_info(row: &EventRow) -> persona::IssueInfo {
 
 fn workspace_info(config: &AppServerWorkerConfig, row: &EventRow) -> persona::Workspace {
 	persona::Workspace {
-		branch: str_path(&row.payload, &["workspace", "branch"]),
+		branch:      str_path(&row.payload, &["workspace", "branch"]),
 		session_dir: config.session_dir.display().to_string(),
 		context_dir: str_path(&row.payload, &["workspace", "context_dir"]),
-		repo_dir: config
-			.cwd
-			.as_ref()
-			.map(|p| p.display().to_string())
-			.unwrap_or_else(|| str_path(&row.payload, &["workspace", "repo_dir"])),
+		repo_dir:    config.cwd.as_ref().map_or_else(
+			|| str_path(&row.payload, &["workspace", "repo_dir"]),
+			|p| p.display().to_string(),
+		),
 	}
 }
 
@@ -711,9 +720,9 @@ fn comment_prompt(
 ) -> Option<String> {
 	let comment = row.payload.get("comment")?;
 	let info = persona::CommentInfo {
-		id: comment.get("id").and_then(Value::as_u64).unwrap_or(0),
-		author: str_path(comment, &["user", "login"]),
-		body: str_path(comment, &["body"]),
+		id:         comment.get("id").and_then(Value::as_u64).unwrap_or(0),
+		author:     str_path(comment, &["user", "login"]),
+		body:       str_path(comment, &["body"]),
 		created_at: str_path(comment, &["created_at"]),
 	};
 	let thread = thread_messages(&row.payload);
@@ -740,9 +749,9 @@ fn directive_comment_prompt(
 ) -> Option<String> {
 	let comment = row.payload.get("comment")?;
 	let info = persona::CommentInfo {
-		id: comment.get("id").and_then(Value::as_u64).unwrap_or(0),
-		author: str_path(comment, &["user", "login"]),
-		body: str_path(comment, &["body"]),
+		id:         comment.get("id").and_then(Value::as_u64).unwrap_or(0),
+		author:     str_path(comment, &["user", "login"]),
+		body:       str_path(comment, &["body"]),
 		created_at: str_path(comment, &["created_at"]),
 	};
 	persona::directive(
@@ -806,13 +815,13 @@ fn thread_messages(payload: &Value) -> Vec<persona::ThreadMessage> {
 			items
 				.iter()
 				.map(|m| persona::ThreadMessage {
-					kind: str_path(m, &["kind"]),
-					author: str_path(m, &["author"]),
-					body: str_path(m, &["body"]),
+					kind:       str_path(m, &["kind"]),
+					author:     str_path(m, &["author"]),
+					body:       str_path(m, &["body"]),
 					created_at: str_path(m, &["created_at"]),
-					path: m.get("path").and_then(Value::as_str).map(str::to_owned),
-					line: m.get("line").and_then(Value::as_u64),
-					state: m.get("state").and_then(Value::as_str).map(str::to_owned),
+					path:       m.get("path").and_then(Value::as_str).map(str::to_owned),
+					line:       m.get("line").and_then(Value::as_u64),
+					state:      m.get("state").and_then(Value::as_str).map(str::to_owned),
 				})
 				.collect()
 		})
@@ -834,7 +843,7 @@ fn directive_info(row: &EventRow) -> Option<persona::DirectiveInfo> {
 		return None;
 	}
 	Some(persona::DirectiveInfo {
-		body: body.to_owned(),
+		body:   body.to_owned(),
 		author: author.to_owned(),
 		thread: thread_messages(&row.payload),
 	})
@@ -948,8 +957,8 @@ fn dirty_state_reminder(
 	}
 	let dirty = persona::DirtyState {
 		uncommitted: dirty.uncommitted > 0,
-		unpushed: dirty.unpushed > 0,
-		summary: dirty.summary,
+		unpushed:    dirty.unpushed > 0,
+		summary:     dirty.summary,
 	};
 	persona::dirty_state_reminder(&repo, &issue, &workspace, &dirty).ok()
 }
@@ -1011,15 +1020,17 @@ fn capture_natives_cache(config: &AppServerWorkerConfig, row: &EventRow) -> std:
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::app_server_client::TransportFuture;
-	use crate::{github::GitHubClient, sandbox::LocalGitTransport};
 	use std::sync::{Arc, Mutex};
+
+	use super::*;
+	use crate::{
+		app_server_client::TransportFuture, github::GitHubClient, sandbox::LocalGitTransport,
+	};
 
 	#[derive(Clone, Default)]
 	struct FakeTransport {
 		frames: Arc<Mutex<Vec<Value>>>,
-		notes: Arc<Mutex<Vec<Value>>>,
+		notes:  Arc<Mutex<Vec<Value>>>,
 	}
 	impl FakeTransport {
 		fn with_notes(notes: Vec<Value>) -> Self {
@@ -1027,7 +1038,7 @@ mod tests {
 		}
 	}
 	impl AppServerTransport for FakeTransport {
-		fn send<'a>(&'a self, frame: Value) -> TransportFuture<'a, Value> {
+		fn send(&self, frame: Value) -> TransportFuture<'_, Value> {
 			Box::pin(async move {
 				self.frames.lock().unwrap().push(frame.clone());
 				Ok(match frame["method"].as_str().unwrap() {
@@ -1040,7 +1051,8 @@ mod tests {
 				})
 			})
 		}
-		fn next_notification<'a>(&'a self) -> TransportFuture<'a, Option<Value>> {
+
+		fn next_notification(&self) -> TransportFuture<'_, Option<Value>> {
 			Box::pin(async move {
 				let note = { self.notes.lock().unwrap().pop() };
 				if note.is_some() {
@@ -1050,7 +1062,8 @@ mod tests {
 				}
 			})
 		}
-		fn close<'a>(&'a self) -> TransportFuture<'a, ()> {
+
+		fn close(&self) -> TransportFuture<'_, ()> {
 			Box::pin(async { Ok(()) })
 		}
 	}
@@ -1075,7 +1088,7 @@ mod tests {
 		Arc::new(|name, args| {
 			if name == "abort_task" {
 				Ok(host_tools::ToolResult {
-					ok: true,
+					ok:   true,
 					text: args
 						.get("reason")
 						.and_then(Value::as_str)
@@ -1282,12 +1295,14 @@ mod tests {
 		]);
 		let seen = fake.clone();
 		let runtime = AppServerHostToolRuntime {
-			db: db.clone(),
-			github: Arc::new(GitHubClient::with_base_url("token", "http://127.0.0.1:9").unwrap()),
+			db:            db.clone(),
+			github:        Arc::new(
+				GitHubClient::with_base_url("token", "http://127.0.0.1:9").unwrap(),
+			),
 			git_transport: Arc::new(LocalGitTransport::default()),
-			settings: None,
-			author_name: "bot".into(),
-			author_email: "bot@example.invalid".into(),
+			settings:      None,
+			author_name:   "bot".into(),
+			author_email:  "bot@example.invalid".into(),
 		};
 		let worker = AppServerWorker::with_client(
 			AppServerWorkerConfig {
@@ -1332,12 +1347,14 @@ mod tests {
 			cwd: Some(repo),
 			session_dir: tmp.path().join("s"),
 			host_tool_runtime_factory: Some(Arc::new(move |_row| AppServerHostToolRuntime {
-				db: db_for_factory.clone(),
-				github: Arc::new(GitHubClient::with_base_url("token", "http://127.0.0.1:9").unwrap()),
+				db:            db_for_factory.clone(),
+				github:        Arc::new(
+					GitHubClient::with_base_url("token", "http://127.0.0.1:9").unwrap(),
+				),
 				git_transport: Arc::new(LocalGitTransport::default()),
-				settings: None,
-				author_name: "bot".into(),
-				author_email: "bot@example.invalid".into(),
+				settings:      None,
+				author_name:   "bot".into(),
+				author_email:  "bot@example.invalid".into(),
 			})),
 			..Default::default()
 		};
@@ -1547,7 +1564,7 @@ mod tests {
 		let notes: Vec<Value> = text
 			.lines()
 			.filter_map(|line| serde_json::from_str::<Value>(line).ok())
-			.filter(|f| is_inbound_note(f))
+			.filter(is_inbound_note)
 			.rev()
 			.collect();
 		let fake = FakeTransport::with_notes(notes);

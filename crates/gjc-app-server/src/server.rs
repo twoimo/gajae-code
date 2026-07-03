@@ -1,4 +1,5 @@
 //! App-server core: connection handshake gate, thread registry, and the
+//!
 //! transport-agnostic request dispatcher that ties together identity,
 //! scheduling/admission, the field policy, and the `AgentBackend` seam.
 //!
@@ -388,7 +389,7 @@ impl AppServer {
 		// Serial mutating lane: non-turn mutations on the same thread run one at
 		// a time with bounded admission, while read/cancel lanes stay fast.
 		if is_serialized_mutation(method) {
-			let thread_id = extract_thread_id(&params)?;
+			let thread_id = extract_thread_id(params.as_ref())?;
 			let lane = {
 				let entry = self
 					.threads
@@ -491,13 +492,13 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = {
 			let entry = self
 				.threads
 				.get(&thread_id)
 				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
-			Self::check_expected_turn(entry.value(), &params)?;
+			Self::check_expected_turn(entry.value(), params.as_ref())?;
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
 				thread_id:  thread_id.clone(),
@@ -513,9 +514,8 @@ impl AppServer {
 		Ok(serde_json::json!({ "turnId": turn_id.0 }))
 	}
 
-	fn check_expected_turn(entry: &ThreadEntry, params: &Option<serde_json::Value>) -> Result<()> {
+	fn check_expected_turn(entry: &ThreadEntry, params: Option<&serde_json::Value>) -> Result<()> {
 		let expected = params
-			.as_ref()
 			.and_then(|p| p.get("expectedTurnId"))
 			.and_then(|v| v.as_str())
 			.map(|s| TurnId(s.to_string()));
@@ -588,7 +588,7 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
 		let include = params
 			.as_ref()
@@ -602,7 +602,7 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
 		backend.get_messages(&ctx).await
 	}
@@ -614,9 +614,9 @@ impl AppServer {
 	) -> Result<serde_json::Value> {
 		// gjc/* is strict: reject unknown fields.
 		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "provider", "modelId"])?;
-		let thread_id = extract_thread_id(&params)?;
-		let provider = extract_str(&params, "provider")?;
-		let model_id = extract_str(&params, "modelId")?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let provider = extract_str(params.as_ref(), "provider")?;
+		let model_id = extract_str(params.as_ref(), "modelId")?;
 		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Mutating)?;
 		backend.set_model(&ctx, &provider, &model_id).await
 	}
@@ -627,7 +627,7 @@ impl AppServer {
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
 		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "phases"])?;
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let phases = params
 			.as_ref()
 			.and_then(|p| p.get("phases"))
@@ -642,7 +642,7 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Mutating)?;
 		backend
 			.exec(&ctx, params.unwrap_or(serde_json::Value::Null))
@@ -653,7 +653,7 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let command = params
 			.as_ref()
 			.and_then(|p| p.get("command"))
@@ -669,7 +669,7 @@ impl AppServer {
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
 		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "customInstructions"])?;
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let custom = params
 			.as_ref()
 			.and_then(|p| p.get("customInstructions"))
@@ -820,7 +820,7 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = {
 			let entry = self
 				.threads
@@ -844,7 +844,7 @@ impl AppServer {
 	}
 
 	fn handle_thread_archive(&self, params: Option<serde_json::Value>) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let entry = self
 			.threads
 			.get(&thread_id)
@@ -858,7 +858,7 @@ impl AppServer {
 	}
 
 	fn handle_thread_read(&self, params: Option<serde_json::Value>) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let entry = self
 			.threads
 			.get(&thread_id)
@@ -877,11 +877,16 @@ impl AppServer {
 		}))
 	}
 
+	#[allow(
+		clippy::unused_async,
+		reason = "turn/start remains async because dispatch awaits all async request handlers \
+		          uniformly"
+	)]
 	async fn handle_turn_start(
 		self: &Arc<Self>,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		// Snapshot backend + context and admit a turn slot without holding the
 		// registry lock across the backend call (enables concurrent turns).
 		let (backend, ctx) = {
@@ -889,7 +894,7 @@ impl AppServer {
 				.threads
 				.get(&thread_id)
 				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
-			Self::check_expected_turn(entry.value(), &params)?;
+			Self::check_expected_turn(entry.value(), params.as_ref())?;
 			{
 				let mut adm = entry.value().admission.lock();
 				adm.try_admit_turn()?; // -32001 before any backend call on overload
@@ -924,7 +929,7 @@ impl AppServer {
 		// state when it ends. A prompt error is surfaced as a terminal failure
 		// event so clients still see a `turn/completed{status:"failed"}`.
 		let this = Arc::clone(self);
-		let bg_ctx = ctx.clone();
+		let bg_ctx = ctx;
 		let bg_turn = turn_id.clone();
 		let bg_thread = thread_id.clone();
 		tokio::spawn(async move {
@@ -967,7 +972,7 @@ impl AppServer {
 		&self,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		let thread_id = extract_thread_id(&params)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
 		let turn_id = params
 			.as_ref()
 			.and_then(|p| p.get("turnId"))
@@ -998,9 +1003,8 @@ impl AppServer {
 	}
 }
 
-fn extract_thread_id(params: &Option<serde_json::Value>) -> Result<ThreadId> {
+fn extract_thread_id(params: Option<&serde_json::Value>) -> Result<ThreadId> {
 	params
-		.as_ref()
 		.and_then(|p| p.get("threadId"))
 		.and_then(|v| v.as_str())
 		.map(|s| ThreadId(s.to_string()))
@@ -1022,9 +1026,8 @@ fn is_serialized_mutation(method: &str) -> bool {
 	)
 }
 
-fn extract_str(params: &Option<serde_json::Value>, key: &str) -> Result<String> {
+fn extract_str(params: Option<&serde_json::Value>, key: &str) -> Result<String> {
 	params
-		.as_ref()
 		.and_then(|p| p.get(key))
 		.and_then(|v| v.as_str())
 		.map(String::from)
@@ -1382,7 +1385,7 @@ mod tests {
 		let t = start_thread(&s, &conn).await;
 		// Generation 2 has never been attached; event must be rejected.
 		let stale = BackendEvent {
-			thread_id:  t.clone(),
+			thread_id:  t,
 			generation: BackendGeneration(2),
 			event_type: "agent_start".into(),
 			payload:    serde_json::json!({}),

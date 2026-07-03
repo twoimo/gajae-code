@@ -1,6 +1,6 @@
 //! Pure workspace key and branch helpers ported from Python `robogjc.sandbox`.
 
-use std::sync::LazyLock;
+use std::{fmt::Write, sync::LazyLock};
 
 use regex::Regex;
 use sha1::{Digest, Sha1};
@@ -25,19 +25,18 @@ pub fn short_hex(seed: &str) -> String {
 	let digest = Sha1::digest(seed.as_bytes());
 	let mut out = String::with_capacity(8);
 	for byte in digest.iter().take(4) {
-		out.push_str(&format!("{byte:02x}"));
+		let _ = write!(out, "{byte:02x}");
 	}
 	out
 }
 
 pub fn make_branch(issue_number: u64, title: &str, seed: Option<&str>) -> String {
 	let fallback_seed;
-	let seed = match seed {
-		Some(seed) => seed,
-		None => {
-			fallback_seed = format!("{issue_number}-{title}");
-			&fallback_seed
-		},
+	let seed = if let Some(seed) = seed {
+		seed
+	} else {
+		fallback_seed = format!("{issue_number}-{title}");
+		&fallback_seed
 	};
 	let fallback_title;
 	let title = if title.is_empty() {
@@ -67,24 +66,24 @@ mod tests {
 
 	#[derive(Debug, Deserialize)]
 	struct WorkspaceFixture {
-		workspace_keys: Vec<WorkspaceCase>,
+		workspace_keys:         Vec<WorkspaceCase>,
 		branch_slug_validation: Vec<BranchSlugCase>,
 	}
 
 	#[derive(Debug, Deserialize)]
 	struct WorkspaceCase {
-		repo: String,
-		number: u64,
-		expected_key: String,
-		branch_title: String,
-		branch_seed: String,
+		repo:            String,
+		number:          u64,
+		expected_key:    String,
+		branch_title:    String,
+		branch_seed:     String,
 		expected_branch: String,
 	}
 
 	#[derive(Debug, Deserialize)]
 	struct BranchSlugCase {
-		slug: String,
-		ok: bool,
+		slug:           String,
+		ok:             bool,
 		error_contains: String,
 	}
 

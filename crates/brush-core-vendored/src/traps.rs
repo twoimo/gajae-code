@@ -172,7 +172,7 @@ impl TryFrom<TrapSignal> for i32 {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrapHandler {
 	/// The source text of the command to invoke.
-	pub command:     String,
+	pub command: String,
 	/// Source information for where the trap handler was defined.
 	pub source_info: crate::SourceInfo,
 }

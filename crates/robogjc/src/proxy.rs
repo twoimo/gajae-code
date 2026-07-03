@@ -11,16 +11,6 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{
-	config::{ProxySettings, load_proxy_settings},
-	git_ops::GitPushError,
-	github::{
-		CommentInfo, GitHubBackend, GitHubClient, GitHubError, IssueInfo, IssueSummary,
-		OpenPullRequest, PullRequestInfo, PullRequestReviewInfo, ReactionInfo, RepoInfo,
-		ReviewCommentInfo,
-	},
-	sandbox::GitTransport,
-};
 use axum::{
 	Router,
 	body::Body,
@@ -36,6 +26,17 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use url::Url;
+
+use crate::{
+	config::{ProxySettings, load_proxy_settings},
+	git_ops::GitPushError,
+	github::{
+		CommentInfo, GitHubBackend, GitHubClient, GitHubError, IssueInfo, IssueSummary,
+		OpenPullRequest, PullRequestInfo, PullRequestReviewInfo, ReactionInfo, RepoInfo,
+		ReviewCommentInfo,
+	},
+	sandbox::GitTransport,
+};
 
 pub const HEADER_TIMESTAMP: &str = "X-Robogjc-Timestamp";
 pub const HEADER_SIGNATURE: &str = "X-Robogjc-Sig";
@@ -79,12 +80,12 @@ pub fn signed_headers(method: &str, path: &str, body: &[u8], key: &[u8]) -> Head
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyResult {
-	pub ok: bool,
+	pub ok:     bool,
 	pub reason: String,
 }
 
 impl VerifyResult {
-	fn ok() -> Self {
+	const fn ok() -> Self {
 		Self { ok: true, reason: String::new() }
 	}
 
@@ -139,26 +140,26 @@ fn now_seconds() -> i64 {
 
 #[derive(Debug, Clone)]
 pub struct ProxyServerConfig {
-	pub github_token: String,
-	pub hmac_key: Vec<u8>,
-	pub upstream_base: String,
-	pub workspace_root: PathBuf,
+	pub github_token:        String,
+	pub hmac_key:            Vec<u8>,
+	pub upstream_base:       String,
+	pub workspace_root:      PathBuf,
 	pub git_timeout_seconds: u64,
-	pub allowed_origins: HashSet<String>,
-	pub max_body_bytes: usize,
-	pub skew_seconds: i64,
+	pub allowed_origins:     HashSet<String>,
+	pub max_body_bytes:      usize,
+	pub skew_seconds:        i64,
 }
 
 impl ProxyServerConfig {
 	pub fn new(github_token: impl Into<String>, hmac_key: impl Into<Vec<u8>>) -> Self {
 		Self {
-			github_token: github_token.into(),
-			hmac_key: hmac_key.into(),
-			upstream_base: GITHUB_API_BASE.to_owned(),
-			allowed_origins: HashSet::from(["api.github.com".to_owned(), "github.com".to_owned()]),
-			max_body_bytes: 1024 * 1024,
-			skew_seconds: DEFAULT_SKEW_SECONDS,
-			workspace_root: PathBuf::from("/data/workspaces"),
+			github_token:        github_token.into(),
+			hmac_key:            hmac_key.into(),
+			upstream_base:       GITHUB_API_BASE.to_owned(),
+			allowed_origins:     HashSet::from(["api.github.com".to_owned(), "github.com".to_owned()]),
+			max_body_bytes:      1024 * 1024,
+			skew_seconds:        DEFAULT_SKEW_SECONDS,
+			workspace_root:      PathBuf::from("/data/workspaces"),
 			git_timeout_seconds: 120,
 		}
 	}
@@ -167,7 +168,7 @@ impl ProxyServerConfig {
 #[derive(Debug, Clone)]
 pub struct ProxyServeConfig {
 	pub bind_addr: SocketAddr,
-	pub server: ProxyServerConfig,
+	pub server:    ProxyServerConfig,
 }
 
 impl TryFrom<ProxySettings> for ProxyServeConfig {
@@ -304,6 +305,10 @@ fn query_value(target: &str, key: &str) -> Option<String> {
 		.map(|(_, v)| v.into_owned())
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "Proxy request helpers return Axum Response directly for local handler composition."
+)]
 fn query_i64(target: &str, key: &str) -> Result<i64, Response> {
 	query_value(target, key)
 		.and_then(|v| v.parse::<i64>().ok())
@@ -315,6 +320,10 @@ fn json_error(exc: GitHubError) -> Response {
 	(status, axum::Json(json!({"error":{"kind":"github","status":exc.status,"message":exc.message,"retry_after":exc.retry_after}}))).into_response()
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "Proxy request helpers return Axum Response directly for local handler composition."
+)]
 fn required_str<'a>(v: &'a serde_json::Value, key: &str) -> Result<&'a str, Response> {
 	v.get(key)
 		.and_then(serde_json::Value::as_str)
@@ -322,6 +331,10 @@ fn required_str<'a>(v: &'a serde_json::Value, key: &str) -> Result<&'a str, Resp
 		.ok_or_else(|| (StatusCode::BAD_REQUEST, format!("missing/invalid '{key}'")).into_response())
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "Proxy request helpers return Axum Response directly for local handler composition."
+)]
 fn required_i64(v: &serde_json::Value, key: &str) -> Result<i64, Response> {
 	v.get(key)
 		.and_then(serde_json::Value::as_i64)
@@ -467,12 +480,12 @@ async fn post_typed_result(
 			.map_err(json_error),
 		"/gh/v1/open_pull_request" => github
 			.open_pull_request(OpenPullRequest {
-				repo: required_str(data, "repo")?,
-				head: required_str(data, "head")?,
-				base: required_str(data, "base")?,
-				title: required_str(data, "title")?,
-				body: required_str(data, "body")?,
-				draft: data
+				repo:                  required_str(data, "repo")?,
+				head:                  required_str(data, "head")?,
+				base:                  required_str(data, "base")?,
+				title:                 required_str(data, "title")?,
+				body:                  required_str(data, "body")?,
+				draft:                 data
 					.get("draft")
 					.and_then(serde_json::Value::as_bool)
 					.unwrap_or(false),
@@ -539,6 +552,10 @@ fn string_vec(value: Option<&serde_json::Value>) -> Vec<String> {
 		.collect()
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "Proxy request helpers return Axum Response directly for local handler composition."
+)]
 fn pool_dir(cfg: &ProxyServerConfig, repo: &str) -> Result<PathBuf, Response> {
 	if !repo.contains('/') || repo.starts_with('/') || repo.split('/').any(|p| p == "..") {
 		return Err((StatusCode::BAD_REQUEST, format!("invalid repo {repo:?}")).into_response());
@@ -549,6 +566,10 @@ fn pool_dir(cfg: &ProxyServerConfig, repo: &str) -> Result<PathBuf, Response> {
 		.join(repo.replace('/', "__")))
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "Proxy request helpers return Axum Response directly for local handler composition."
+)]
 fn workspace_repo_dir(cfg: &ProxyServerConfig, workspace_key: &str) -> Result<PathBuf, Response> {
 	if workspace_key.contains('/') || workspace_key.starts_with('.') || workspace_key.contains("..")
 	{
@@ -585,6 +606,10 @@ fn basic_auth_header(token: &str) -> String {
 	format!("Authorization: Basic {out}")
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "Proxy request helpers return Axum Response directly for local handler composition."
+)]
 fn optional_slot_uid(data: &serde_json::Value) -> Result<Option<u32>, Response> {
 	let Some(value) = data.get("slot_uid") else {
 		return Ok(None);
@@ -600,11 +625,11 @@ fn optional_slot_uid(data: &serde_json::Value) -> Result<Option<u32>, Response> 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GitCommandSpec {
-	args: Vec<String>,
-	cwd: PathBuf,
-	token_header: Option<String>,
+	args:           Vec<String>,
+	cwd:            PathBuf,
+	token_header:   Option<String>,
 	safe_directory: Option<PathBuf>,
-	slot_uid: Option<u32>,
+	slot_uid:       Option<u32>,
 }
 
 impl GitCommandSpec {
@@ -660,6 +685,7 @@ unsafe extern "C" {
 
 #[cfg(all(target_os = "linux", unix))]
 unsafe fn libc_geteuid() -> u32 {
+	// SAFETY: `geteuid` has no preconditions and does not dereference pointers.
 	unsafe { geteuid() }
 }
 
@@ -735,7 +761,10 @@ async fn assert_origin_safe_for_repo(
 	}
 	let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
 	let mut path = parsed.path().trim_matches('/').to_owned();
-	if path.ends_with(".git") {
+	if std::path::Path::new(&path)
+		.extension()
+		.is_some_and(|ext| ext.eq_ignore_ascii_case("git"))
+	{
 		path.truncate(path.len() - 4);
 	}
 	if host != "github.com" || !path.eq_ignore_ascii_case(expected_repo) {
@@ -899,7 +928,7 @@ async fn git_typed(cfg: &ProxyServerConfig, path: &str, body: &[u8]) -> Response
 pub struct GitHubProxyClient {
 	base_url: String,
 	hmac_key: Vec<u8>,
-	client: reqwest::Client,
+	client:   reqwest::Client,
 }
 
 impl GitHubProxyClient {
@@ -907,7 +936,7 @@ impl GitHubProxyClient {
 		Self {
 			base_url: base_url.into().trim_end_matches('/').to_owned(),
 			hmac_key: hmac_key.into(),
-			client: reqwest::Client::new(),
+			client:   reqwest::Client::new(),
 		}
 	}
 
@@ -965,7 +994,7 @@ fn proxy_error(err: ProxyClientError) -> GitHubError {
 	GitHubError { status: 502, message: err.to_string(), retry_after: None }
 }
 
-fn proxy_http_error(status: reqwest::StatusCode, body: String) -> GitHubError {
+const fn proxy_http_error(status: reqwest::StatusCode, body: String) -> GitHubError {
 	GitHubError { status: status.as_u16(), message: body, retry_after: None }
 }
 
@@ -987,16 +1016,16 @@ async fn proxy_json<T: for<'de> Deserialize<'de>>(
 		.map_err(proxy_error)?;
 	let status = resp.status();
 	let text = resp.text().await.map_err(|err| GitHubError {
-		status: 502,
-		message: err.to_string(),
+		status:      502,
+		message:     err.to_string(),
 		retry_after: None,
 	})?;
 	if !status.is_success() {
 		return Err(proxy_http_error(status, text));
 	}
 	serde_json::from_str(&text).map_err(|err| GitHubError {
-		status: 502,
-		message: err.to_string(),
+		status:      502,
+		message:     err.to_string(),
 		retry_after: None,
 	})
 }
@@ -1019,6 +1048,7 @@ impl GitHubBackend for GitHubProxyClient {
 			.await
 		})
 	}
+
 	fn get_issue<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1037,6 +1067,7 @@ impl GitHubBackend for GitHubProxyClient {
 			.await
 		})
 	}
+
 	fn list_closing_pull_requests<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1059,12 +1090,13 @@ impl GitHubBackend for GitHubProxyClient {
 					.unwrap_or_else(|| serde_json::Value::Array(vec![])),
 			)
 			.map_err(|err| GitHubError {
-				status: 502,
-				message: err.to_string(),
+				status:      502,
+				message:     err.to_string(),
 				retry_after: None,
 			})
 		})
 	}
+
 	fn get_pull_request<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1083,6 +1115,7 @@ impl GitHubBackend for GitHubProxyClient {
 			.await
 		})
 	}
+
 	fn list_issues<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1106,12 +1139,13 @@ impl GitHubBackend for GitHubProxyClient {
 					.unwrap_or_else(|| serde_json::Value::Array(vec![])),
 			)
 			.map_err(|err| GitHubError {
-				status: 502,
-				message: err.to_string(),
+				status:      502,
+				message:     err.to_string(),
 				retry_after: None,
 			})
 		})
 	}
+
 	fn list_comments<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1120,14 +1154,14 @@ impl GitHubBackend for GitHubProxyClient {
 		Box<dyn std::future::Future<Output = Result<Vec<CommentInfo>, GitHubError>> + Send + 'a>,
 	> {
 		Box::pin(async move {
-			proxy_items(
-				self,
-				"/gh/v1/comments",
-				&[("repo", repo.to_owned()), ("number", number.to_string())],
-			)
+			proxy_items(self, "/gh/v1/comments", &[
+				("repo", repo.to_owned()),
+				("number", number.to_string()),
+			])
 			.await
 		})
 	}
+
 	fn list_review_comments<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1138,14 +1172,14 @@ impl GitHubBackend for GitHubProxyClient {
 		>,
 	> {
 		Box::pin(async move {
-			proxy_items(
-				self,
-				"/gh/v1/review_comments",
-				&[("repo", repo.to_owned()), ("pr_number", pr_number.to_string())],
-			)
+			proxy_items(self, "/gh/v1/review_comments", &[
+				("repo", repo.to_owned()),
+				("pr_number", pr_number.to_string()),
+			])
 			.await
 		})
 	}
+
 	fn list_pr_reviews<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1158,14 +1192,14 @@ impl GitHubBackend for GitHubProxyClient {
 		>,
 	> {
 		Box::pin(async move {
-			proxy_items(
-				self,
-				"/gh/v1/pr_reviews",
-				&[("repo", repo.to_owned()), ("pr_number", pr_number.to_string())],
-			)
+			proxy_items(self, "/gh/v1/pr_reviews", &[
+				("repo", repo.to_owned()),
+				("pr_number", pr_number.to_string()),
+			])
 			.await
 		})
 	}
+
 	fn get_authenticated_login<'a>(
 		&'a self,
 	) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GitHubError>> + Send + 'a>>
@@ -1186,6 +1220,7 @@ impl GitHubBackend for GitHubProxyClient {
 				.to_owned())
 		})
 	}
+
 	fn post_comment<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1205,6 +1240,7 @@ impl GitHubBackend for GitHubProxyClient {
 			.await
 		})
 	}
+
 	fn open_pull_request<'a>(
 		&'a self,
 		req: OpenPullRequest<'a>,
@@ -1215,6 +1251,7 @@ impl GitHubBackend for GitHubProxyClient {
 			proxy_json(self, Method::POST, "/gh/v1/open_pull_request", &[], json!({"repo":req.repo,"head":req.head,"base":req.base,"title":req.title,"body":req.body,"draft":req.draft,"maintainer_can_modify":req.maintainer_can_modify})).await
 		})
 	}
+
 	fn request_reviewers<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1227,6 +1264,7 @@ impl GitHubBackend for GitHubProxyClient {
 			Ok(())
 		})
 	}
+
 	fn add_issue_labels<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1250,12 +1288,13 @@ impl GitHubBackend for GitHubProxyClient {
 					.unwrap_or_else(|| serde_json::Value::Array(vec![])),
 			)
 			.map_err(|err| GitHubError {
-				status: 502,
-				message: err.to_string(),
+				status:      502,
+				message:     err.to_string(),
 				retry_after: None,
 			})
 		})
 	}
+
 	fn add_assignees<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1274,6 +1313,7 @@ impl GitHubBackend for GitHubProxyClient {
 			Ok(())
 		})
 	}
+
 	fn list_comment_reactions<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1282,14 +1322,14 @@ impl GitHubBackend for GitHubProxyClient {
 		Box<dyn std::future::Future<Output = Result<Vec<ReactionInfo>, GitHubError>> + Send + 'a>,
 	> {
 		Box::pin(async move {
-			proxy_items(
-				self,
-				"/gh/v1/comment_reactions",
-				&[("repo", repo.to_owned()), ("comment_id", comment_id.to_string())],
-			)
+			proxy_items(self, "/gh/v1/comment_reactions", &[
+				("repo", repo.to_owned()),
+				("comment_id", comment_id.to_string()),
+			])
 			.await
 		})
 	}
+
 	fn close_issue<'a>(
 		&'a self,
 		repo: &'a str,
@@ -1322,7 +1362,11 @@ async fn proxy_items<T: for<'de> Deserialize<'de>>(
 			.cloned()
 			.unwrap_or_else(|| serde_json::Value::Array(vec![])),
 	)
-	.map_err(|err| GitHubError { status: 502, message: err.to_string(), retry_after: None })
+	.map_err(|err| GitHubError {
+		status:      502,
+		message:     err.to_string(),
+		retry_after: None,
+	})
 }
 
 #[derive(Debug, Clone)]
@@ -1344,19 +1388,19 @@ impl GitHubProxyGitTransport {
 			.enable_all()
 			.build()
 			.map_err(|err| crate::git_ops::GitCommandError {
-				cmd: vec!["gh-proxy".into(), path.into()],
+				cmd:        vec!["gh-proxy".into(), path.into()],
 				returncode: 1,
-				stdout: String::new(),
-				stderr: err.to_string(),
+				stdout:     String::new(),
+				stderr:     err.to_string(),
 			})?;
 		rt.block_on(async {
 			proxy_json(&self.client, Method::POST, path, &[], body)
 				.await
 				.map_err(|err| crate::git_ops::GitCommandError {
-					cmd: vec!["gh-proxy".into(), path.into()],
+					cmd:        vec!["gh-proxy".into(), path.into()],
 					returncode: err.status as i32,
-					stdout: String::new(),
-					stderr: err.message,
+					stdout:     String::new(),
+					stderr:     err.message,
 				})
 		})
 	}
@@ -1376,6 +1420,7 @@ impl GitTransport for GitHubProxyGitTransport {
 		)?;
 		Ok(())
 	}
+
 	fn fetch_pool(
 		&self,
 		repo: &str,
@@ -1384,6 +1429,7 @@ impl GitTransport for GitHubProxyGitTransport {
 		self.post_git("/gh/v1/git/fetch", json!({"repo":repo,"pool_dir":pool_dir}))?;
 		Ok(())
 	}
+
 	fn fetch_base_ref(
 		&self,
 		repo: &str,
@@ -1393,6 +1439,7 @@ impl GitTransport for GitHubProxyGitTransport {
 		self.post_git("/gh/v1/git/fetch_ref", json!({"repo":repo,"pool_dir":pool_dir,"ref":rf}))?;
 		Ok(())
 	}
+
 	fn push_branch(
 		&self,
 		repo: &str,
@@ -1447,8 +1494,8 @@ impl std::error::Error for ProxyClientError {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitCredentialRequest {
 	pub protocol: String,
-	pub host: String,
-	pub path: Option<String>,
+	pub host:     String,
+	pub path:     Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1488,14 +1535,14 @@ mod tests {
 
 	#[derive(Debug, Deserialize)]
 	struct HmacCase {
-		method: String,
-		path: String,
-		body: String,
-		key: String,
-		timestamp: String,
+		method:             String,
+		path:               String,
+		body:               String,
+		key:                String,
+		timestamp:          String,
 		expected_signature: String,
 		expected_timestamp: String,
-		verify_ok: bool,
+		verify_ok:          bool,
 	}
 
 	#[test]
@@ -1845,21 +1892,18 @@ mod tests {
 
 	#[test]
 	fn proxy_client_canonicalizes_params_like_wire_url() {
-		let target = canonical_target(
-			"/gh/v1/issue",
-			&[
-				("repo", "octo/widget".to_owned()),
-				("q", "has space".to_owned()),
-				("unicode", "✓".to_owned()),
-			],
-		)
+		let target = canonical_target("/gh/v1/issue", &[
+			("repo", "octo/widget".to_owned()),
+			("q", "has space".to_owned()),
+			("unicode", "✓".to_owned()),
+		])
 		.unwrap();
 		assert_eq!(target, "/gh/v1/issue?repo=octo%2Fwidget&q=has+space&unicode=%E2%9C%93");
 
-		let reversed = canonical_target(
-			"/gh/v1/issue",
-			&[("unicode", "✓".to_owned()), ("repo", "octo/widget".to_owned())],
-		)
+		let reversed = canonical_target("/gh/v1/issue", &[
+			("unicode", "✓".to_owned()),
+			("repo", "octo/widget".to_owned()),
+		])
 		.unwrap();
 		assert_eq!(reversed, "/gh/v1/issue?unicode=%E2%9C%93&repo=octo%2Fwidget");
 	}
