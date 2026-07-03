@@ -69,12 +69,13 @@ pi-*.html
 # Secrets. Should never be in the image regardless.
 .env
 
-# Robogjc-only excludes. Natives + wheel + python + bun + rustup all come
-# from PI_BASE; the web-builder stage only needs root manifests + the
-# python/robogjc/web tree; the runtime stage only COPYs python/robogjc/
-# pyproject + src + entrypoint. Everything below is dead weight in the
-# robogjc build context.
-crates/
+# Robogjc-only excludes. The wheel + python + bun + rustup toolchain come
+# from PI_BASE, and the web-builder stage only needs root manifests + the
+# python/robogjc/web tree. But the `rust-builder` stage builds the robogjc
+# binary from source (`cargo build --release -p robogjc`), so `crates/`,
+# `Cargo.toml`, and `Cargo.lock` MUST reach the build context (they are not
+# in PI_BASE, which only compiles pi-natives). Everything below is dead
+# weight in the robogjc build context.
 docs/
 assets/
 scripts/
