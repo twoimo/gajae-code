@@ -77,7 +77,8 @@ describe("InteractiveMode.setEditorComponent", () => {
 	});
 
 	function expectedQueueShortcutHint(): string {
-		return "Alt+Enter: Message Queueing";
+		const shortcut = process.platform === "win32" ? "Alt+q" : "Alt+Enter";
+		return `${shortcut}: Message Queueing`;
 	}
 
 	it("shows busy steering and queueing hints only while work is active", () => {
@@ -103,17 +104,27 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(rendered).not.toContain(expectedQueueShortcutHint());
 	});
 
-	it("renders one visible blank row above the composer without hook widgets", async () => {
+	it("renders the composer directly below the status line without hook widgets", async () => {
 		vi.spyOn(mode.ui, "start").mockImplementation(() => {});
 
 		await mode.init();
 
-		const rendered = mode.ui.render(48).map(stripRenderControls);
-		const composerContentIndex = rendered.findIndex(line => line.includes("Type your message..."));
-		const composerIndex = composerContentIndex - 1;
+		const assertComposerFollowsStatusLine = () => {
+			const rendered = mode.ui.render(48).map(stripRenderControls);
+			const composerContentIndex = rendered.findIndex(line => line.includes("Type your message..."));
+			const composerIndex = composerContentIndex - 1;
+			const statusRows = mode.statusLine.render(48).map(stripRenderControls);
 
-		expect(composerIndex).toBeGreaterThan(0);
-		expect(rendered[composerIndex - 1]).toBe("");
+			expect(composerIndex).toBeGreaterThan(0);
+			expect(rendered.slice(composerIndex - statusRows.length, composerIndex)).toEqual(statusRows);
+		};
+
+		assertComposerFollowsStatusLine();
+
+		mode.setHookWidget("test", ["temporary widget"]);
+		mode.setHookWidget("test", undefined);
+
+		assertComposerFollowsStatusLine();
 	});
 
 	it("keeps closed rounded composer chrome for one-line, multiline, and narrow prompts", () => {

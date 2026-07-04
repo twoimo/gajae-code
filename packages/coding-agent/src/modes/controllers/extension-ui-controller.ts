@@ -299,15 +299,14 @@ export class ExtensionUiController {
 	}
 
 	#rebuildHookWidgets(): void {
-		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerAbove, this.#hookWidgetsAbove, true, true);
-		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerBelow, this.#hookWidgetsBelow, false, false);
+		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerAbove, this.#hookWidgetsAbove, true);
+		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerBelow, this.#hookWidgetsBelow, false);
 		this.ctx.ui.requestRender();
 	}
 
 	#renderHookWidgetContainer(
 		container: Container,
 		widgets: Map<string, ExtensionUiComponent>,
-		spacerWhenEmpty: boolean,
 		leadingSpacer: boolean,
 	): void {
 		// Detach (not dispose): hook widgets are persistent instances owned by the
@@ -317,9 +316,6 @@ export class ExtensionUiController {
 		container.detachAll();
 
 		if (widgets.size === 0) {
-			if (spacerWhenEmpty) {
-				container.addChild(new Spacer(1));
-			}
 			return;
 		}
 
