@@ -50,12 +50,11 @@
 
 .brand-mark {
 	display: block;
-	width: 28px;
-	height: 28px;
+	width: 34px;
+	height: 38px;
 	object-fit: contain;
-	border: 1px solid color-mix(in srgb, var(--gjc-red-claw) 68%, var(--gjc-border));
-	border-radius: var(--gjc-radius-md);
-	background: var(--gjc-code-bg);
+	border: 0;
+	background: transparent;
 }
 
 .primary-action,
@@ -329,7 +328,35 @@ h2 {
 
 .message--user {
 	border-left: 2px solid var(--gjc-red-claw);
-	background: var(--gjc-surface-strong);
+	background: var(--gjc-message-user-bg);
+}
+
+.message--assistant {
+	background: var(--gjc-message-assistant-bg);
+	border-left: 2px solid var(--gjc-red-claw-deep);
+}
+
+.message--assistant header strong {
+	color: var(--gjc-red-claw-strong);
+}
+
+.message--reasoning {
+	border-left: 2px dashed var(--gjc-thinking-border);
+	background: var(--gjc-thinking-bg);
+}
+
+.message--reasoning header strong {
+	color: var(--gjc-thinking-text);
+}
+
+.message--reasoning p {
+	color: var(--gjc-thinking-text);
+	font-style: italic;
+}
+
+.message-status {
+	color: var(--gjc-text-dim);
+	font-style: italic;
 }
 
 .message--assistant.message--running p::after {

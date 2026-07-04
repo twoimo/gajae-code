@@ -5,7 +5,7 @@ import {
 	type JsonValue,
 } from "@gajae-code/app-server-client";
 import { invoke } from "@tauri-apps/api/core";
-import type { FormEvent } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../design-tokens/index.ts";
@@ -165,9 +165,8 @@ function App() {
 		}
 	}
 
-	async function submitPrompt(event: FormEvent) {
-		event.preventDefault();
-		if (!client || !activeThreadId || composer.trim().length === 0) return;
+	async function submitComposer() {
+		if (!client || !activeThreadId || composer.trim().length === 0 || isSubmitting) return;
 		const prompt = composer.trim();
 		setComposer("");
 		setSubmitting(true);
@@ -179,6 +178,22 @@ function App() {
 		} finally {
 			setSubmitting(false);
 		}
+	}
+
+	async function submitPrompt(event: FormEvent) {
+		event.preventDefault();
+		await submitComposer();
+	}
+
+	function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+		if (event.key !== "Enter") return;
+		// Never submit mid-IME-composition.
+		if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+		// Ctrl/Cmd/Shift+Enter inserts a newline (default textarea behavior).
+		if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+		// Plain Enter submits.
+		event.preventDefault();
+		void submitComposer();
 	}
 
 	async function stopTurn() {
@@ -251,7 +266,7 @@ function App() {
 				<header className="chat-header">
 					<div>
 						<p className="eyebrow">Core chat v1</p>
-						<h1>{activeThread ? threadPrimaryLabel(activeThread) : "Connect to GJC app-server"}</h1>
+						<h1>{activeThread ? threadPrimaryLabel(activeThread) : "Connect to gajae app-server"}</h1>
 					</div>
 					<ConnectionBadge connection={connection} modelLabel={transcript.modelLabel} />
 				</header>
@@ -270,14 +285,17 @@ function App() {
 					))}
 				</section>
 				<form className="composer" onSubmit={submitPrompt} aria-busy={isSubmitting}>
-					<label htmlFor="gjc-composer">Message GJC</label>
+					<label htmlFor="gjc-composer">Message gajae</label>
 					<textarea
 						id="gjc-composer"
 						value={composer}
 						onChange={event => setComposer(event.target.value)}
+						onKeyDown={handleComposerKeyDown}
 						disabled={!connected || !activeThreadId || isSubmitting}
 						placeholder={
-							connected ? "Ask GJC to edit, inspect, or explain…" : "Reconnect the sidecar before sending."
+							connected
+								? "Ask gajae to edit, inspect, or explain…  (Enter to send · Ctrl+Enter for newline)"
+								: "Reconnect the sidecar before sending."
 						}
 					/>
 					<footer>
@@ -382,7 +400,7 @@ function EmptyTranscript({ connected }: { connected: boolean }) {
 	return (
 		<section className="empty-state">
 			<p className="eyebrow">Empty transcript</p>
-			<h2>Start a cwd-scoped thread to chat with GJC.</h2>
+			<h2>Start a cwd-scoped thread to chat with gajae.</h2>
 			<p>
 				{connected
 					? "Choose a working directory in the session panel to start. Streaming assistant text, tool calls, results, and approvals appear inline here."
@@ -459,20 +477,26 @@ function SessionSetupPanel({
 }
 
 function TranscriptCard({ item }: { item: TranscriptItem }) {
+	const running = item.status === "running";
+	const isBlock = item.role === "tool" || item.role === "event";
+	const placeholder =
+		item.role === "reasoning" ? "Thinking…" : item.role === "assistant" ? "gajae is responding…" : "Working…";
 	return (
 		<article
 			className={`message message--${item.role} message--${item.status}`}
-			aria-busy={item.status === "running"}
+			aria-busy={running}
 		>
 			<header>
 				<strong>{itemLabel(item)}</strong>
 				<span>{item.status}</span>
 			</header>
-			{item.role === "tool" || item.role === "event" ? (
-				<pre>{item.content || "Awaiting output…"}</pre>
-			) : (
-				<p>{item.content || "Streaming…"}</p>
-			)}
+			{isBlock ? (
+				<pre>{item.content || (running ? "Running…" : "No output")}</pre>
+			) : item.content ? (
+				<p>{item.content}</p>
+			) : running ? (
+				<p className="message-status">{placeholder}</p>
+			) : null}
 		</article>
 	);
 }
@@ -488,7 +512,7 @@ function ApprovalCard({
 		<article className={`approval-gate approval-gate--${approval.status}`}>
 			<p className="eyebrow">Approval gate · {approval.status}</p>
 			<h2>{approval.tool}</h2>
-			<p>GJC requested permission to continue this blocked tool action.</p>
+			<p>gajae requested permission to continue this blocked tool action.</p>
 			<pre>{jsonPreview(approval.args)}</pre>
 			<div className="button-row">
 				<button
@@ -518,8 +542,8 @@ function jsonPreview(value: JsonValue): string {
 
 function itemLabel(item: TranscriptItem): string {
 	if (item.role === "user") return "You";
-	if (item.role === "assistant") return "GJC";
-	if (item.role === "reasoning") return "Reasoning";
+	if (item.role === "assistant") return "gajae";
+	if (item.role === "reasoning") return "Thinking";
 	return item.title ?? (item.role === "tool" ? "Tool" : "Event");
 }
 

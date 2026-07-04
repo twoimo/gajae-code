@@ -8,7 +8,7 @@
 	--gjc-border-strong: #57504a;
 	--gjc-text: #f7f5f0;
 	--gjc-text-muted: #c9c0ad;
-	--gjc-text-dim: #948b80;
+	--gjc-text-dim: #a89f93;
 	--gjc-red-claw: #f05404;
 	--gjc-red-claw-strong: #ff7a2f;
 	--gjc-red-claw-deep: #9f2706;
@@ -26,6 +26,14 @@
 	--gjc-code-add: #79c98d;
 	--gjc-code-remove: #ff7b74;
 	--gjc-focus: var(--gjc-red-claw);
+
+	/* Role message surfaces: user vs gajae must read distinctly. */
+	--gjc-message-assistant-bg: var(--gjc-surface);
+	--gjc-message-user-bg: color-mix(in srgb, var(--gjc-red-claw) 12%, var(--gjc-surface-strong));
+	/* Thinking/reasoning block: dimmed, distinct from reply. */
+	--gjc-thinking-bg: color-mix(in srgb, var(--gjc-blue-crab) 8%, var(--gjc-bg-elevated));
+	--gjc-thinking-text: var(--gjc-blue-crab-soft);
+	--gjc-thinking-border: var(--gjc-blue-crab);
 
 	--gjc-font-ui: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
 	--gjc-font-code: var(--gjc-font-ui);
