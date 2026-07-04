@@ -53,6 +53,7 @@ async fn pick_directory() -> Result<Option<String>, String> {
 
 fn main() {
 	hydrate_login_shell_env();
+	apply_desktop_config_dir_override();
 	let supervisor = Arc::new(SidecarSupervisor::new());
 	let shutdown_supervisor = Arc::clone(&supervisor);
 
@@ -111,4 +112,33 @@ fn hydrate_login_shell_env() {
 		// SAFETY: set once at startup before Tauri spawns threads/children.
 		unsafe { std::env::set_var("PATH", path) };
 	}
+}
+
+/// Desktop-only config-dir override. When `GJC_DESKTOP_CONFIG_DIR` is set
+/// (e.g. `launchctl setenv GJC_DESKTOP_CONFIG_DIR ~/.gjc1/.gjc` during
+/// dogfooding), the bundled sidecar uses it as its `GJC_CONFIG_DIR` — keeping
+/// the default `gjc` CLI on `~/.gjc` while the desktop app runs against a
+/// separate config/auth/sessions dir. Takes precedence over login-shell
+/// recovery; a no-op when unset.
+fn apply_desktop_config_dir_override() {
+	let Some(raw) = std::env::var_os("GJC_DESKTOP_CONFIG_DIR") else {
+		return;
+	};
+	let value = raw.to_string_lossy();
+	let trimmed = value.trim();
+	if trimmed.is_empty() {
+		return;
+	}
+	let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
+		match std::env::var_os("HOME") {
+			Some(home) => std::path::Path::new(&home).join(rest).to_string_lossy().into_owned(),
+			None => trimmed.to_owned(),
+		}
+	} else {
+		trimmed.to_owned()
+	};
+	// SAFETY: set once at startup before Tauri spawns threads/children.
+	unsafe { std::env::set_var("GJC_CONFIG_DIR", &expanded) };
+	// SAFETY: set once at startup before Tauri spawns threads/children.
+	unsafe { std::env::remove_var("PI_CONFIG_DIR") };
 }
