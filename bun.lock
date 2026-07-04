@@ -45,7 +45,6 @@
         "@types/bun": "catalog:",
       },
     },
-
     "packages/coding-agent": {
       "name": "@gajae-code/coding-agent",
       "version": "0.10.0",
@@ -454,7 +453,6 @@
 
     "@gajae-code/app-server-client": ["@gajae-code/app-server-client@workspace:packages/gjc-app-server-client"],
 
-    "@gajae-code/bridge-client": ["@gajae-code/bridge-client@workspace:packages/bridge-client"],
     "@gajae-code/coding-agent": ["@gajae-code/coding-agent@workspace:packages/coding-agent"],
 
     "@gajae-code/gjc-gui": ["@gajae-code/gjc-gui@workspace:packages/gjc-gui"],

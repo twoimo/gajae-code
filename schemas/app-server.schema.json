@@ -1690,6 +1690,1345 @@
           }
         }
       }
+    },
+    "RpcWorkflowGate": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGate",
+      "type": "object",
+      "required": [
+        "context",
+        "created_at",
+        "gate_id",
+        "kind",
+        "required",
+        "schema",
+        "schema_hash",
+        "stage",
+        "type"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/RpcWorkflowGateContext"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/RpcWorkflowGateKind"
+        },
+        "options": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/RpcWorkflowGateOption"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema": true,
+        "schema_hash": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/definitions/RpcWorkflowStage"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        }
+      }
+    },
+    "RpcWorkflowGateResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateResponse",
+      "type": "object",
+      "required": [
+        "answer",
+        "gate_id"
+      ],
+      "properties": {
+        "answer": true,
+        "gate_id": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcWorkflowGateResolution": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateResolution",
+      "type": "object",
+      "required": [
+        "answer_hash",
+        "gate_id",
+        "resolved_at",
+        "status"
+      ],
+      "properties": {
+        "answer_hash": {
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RpcWorkflowGateValidationError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "resolved_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGateValidationError": {
+          "type": "object",
+          "required": [
+            "code",
+            "errors",
+            "gate_id",
+            "schema_hash"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SchemaValidationIssue"
+              }
+            },
+            "gate_id": {
+              "type": "string"
+            },
+            "schema_hash": {
+              "type": "string"
+            }
+          }
+        },
+        "SchemaValidationIssue": {
+          "type": "object",
+          "required": [
+            "keyword",
+            "message",
+            "path"
+          ],
+          "properties": {
+            "expected": true,
+            "keyword": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "RpcWorkflowGateValidationError": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateValidationError",
+      "type": "object",
+      "required": [
+        "code",
+        "errors",
+        "gate_id",
+        "schema_hash"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SchemaValidationIssue"
+          }
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "schema_hash": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "SchemaValidationIssue": {
+          "type": "object",
+          "required": [
+            "keyword",
+            "message",
+            "path"
+          ],
+          "properties": {
+            "expected": true,
+            "keyword": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "WorkflowGateListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateListParams",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "WorkflowGateListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateListResult",
+      "type": "object",
+      "required": [
+        "gates"
+      ],
+      "properties": {
+        "gates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RpcWorkflowGate"
+          }
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGate": {
+          "type": "object",
+          "required": [
+            "context",
+            "created_at",
+            "gate_id",
+            "kind",
+            "required",
+            "schema",
+            "schema_hash",
+            "stage",
+            "type"
+          ],
+          "properties": {
+            "context": {
+              "$ref": "#/definitions/RpcWorkflowGateContext"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "gate_id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/RpcWorkflowGateKind"
+            },
+            "options": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/definitions/RpcWorkflowGateOption"
+              }
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "schema": true,
+            "schema_hash": {
+              "type": "string"
+            },
+            "stage": {
+              "$ref": "#/definitions/RpcWorkflowStage"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        },
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        }
+      }
+    },
+    "WorkflowGateRespondParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateRespondParams",
+      "type": "object",
+      "required": [
+        "answer",
+        "gate_id",
+        "threadId"
+      ],
+      "properties": {
+        "answer": true,
+        "gate_id": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "WorkflowGateOpenedParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "WorkflowGateOpenedParams",
+      "type": "object",
+      "required": [
+        "context",
+        "created_at",
+        "gate_id",
+        "generation",
+        "kind",
+        "required",
+        "schema",
+        "schema_hash",
+        "stage",
+        "threadId",
+        "type"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/RpcWorkflowGateContext"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "kind": {
+          "$ref": "#/definitions/RpcWorkflowGateKind"
+        },
+        "options": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/RpcWorkflowGateOption"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema": true,
+        "schema_hash": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/definitions/RpcWorkflowStage"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        }
+      }
+    },
+    "RpcUnattendedBudget": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedBudget",
+      "type": "object",
+      "required": [
+        "max_cost_usd",
+        "max_tokens",
+        "max_tool_calls",
+        "max_wall_time_ms"
+      ],
+      "properties": {
+        "max_cost_usd": {
+          "type": "number",
+          "format": "double"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_wall_time_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "RpcUnattendedDeclaration": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedDeclaration",
+      "type": "object",
+      "required": [
+        "action_allowlist",
+        "actor",
+        "budget",
+        "scopes"
+      ],
+      "properties": {
+        "action_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actor": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/definitions/RpcUnattendedBudget"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "definitions": {
+        "RpcUnattendedBudget": {
+          "type": "object",
+          "required": [
+            "max_cost_usd",
+            "max_tokens",
+            "max_tool_calls",
+            "max_wall_time_ms"
+          ],
+          "properties": {
+            "max_cost_usd": {
+              "type": "number",
+              "format": "double"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_wall_time_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        }
+      }
+    },
+    "RpcUnattendedAccepted": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedAccepted",
+      "type": "object",
+      "required": [
+        "accepted_at",
+        "action_allowlist",
+        "actor",
+        "budget",
+        "run_id",
+        "scopes"
+      ],
+      "properties": {
+        "accepted_at": {
+          "type": "string"
+        },
+        "action_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actor": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/definitions/RpcUnattendedBudget"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "definitions": {
+        "RpcUnattendedBudget": {
+          "type": "object",
+          "required": [
+            "max_cost_usd",
+            "max_tokens",
+            "max_tool_calls",
+            "max_wall_time_ms"
+          ],
+          "properties": {
+            "max_cost_usd": {
+              "type": "number",
+              "format": "double"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_wall_time_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        }
+      }
+    },
+    "RpcBudgetExceeded": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcBudgetExceeded",
+      "type": "object",
+      "required": [
+        "abort_status",
+        "code",
+        "limit",
+        "metric",
+        "observed",
+        "phase",
+        "run_id"
+      ],
+      "properties": {
+        "abort_status": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "format": "double"
+        },
+        "metric": {
+          "type": "string"
+        },
+        "observed": {
+          "type": "number",
+          "format": "double"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcScopeDenied": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcScopeDenied",
+      "type": "object",
+      "required": [
+        "code",
+        "pre_side_effect",
+        "run_id",
+        "scope"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pre_side_effect": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcActionDenied": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcActionDenied",
+      "type": "object",
+      "required": [
+        "action",
+        "code",
+        "pre_side_effect",
+        "run_id"
+      ],
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pre_side_effect": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "RpcUnattendedRefused": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcUnattendedRefused",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "UnattendedNegotiateParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UnattendedNegotiateParams",
+      "type": "object",
+      "required": [
+        "declaration",
+        "threadId"
+      ],
+      "properties": {
+        "declaration": {
+          "$ref": "#/definitions/RpcUnattendedDeclaration"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "RpcUnattendedBudget": {
+          "type": "object",
+          "required": [
+            "max_cost_usd",
+            "max_tokens",
+            "max_tool_calls",
+            "max_wall_time_ms"
+          ],
+          "properties": {
+            "max_cost_usd": {
+              "type": "number",
+              "format": "double"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max_wall_time_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        },
+        "RpcUnattendedDeclaration": {
+          "type": "object",
+          "required": [
+            "action_allowlist",
+            "actor",
+            "budget",
+            "scopes"
+          ],
+          "properties": {
+            "action_allowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "actor": {
+              "type": "string"
+            },
+            "budget": {
+              "$ref": "#/definitions/RpcUnattendedBudget"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "HostUriSchemeDefinition": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriSchemeDefinition",
+      "type": "object",
+      "required": [
+        "scheme"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "immutable": {
+          "default": false,
+          "type": "boolean"
+        },
+        "scheme": {
+          "type": "string"
+        },
+        "writable": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "HostUriSchemesSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriSchemesSetParams",
+      "type": "object",
+      "required": [
+        "schemes",
+        "threadId"
+      ],
+      "properties": {
+        "schemes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostUriSchemeDefinition"
+          }
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "HostUriSchemeDefinition": {
+          "type": "object",
+          "required": [
+            "scheme"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "immutable": {
+              "default": false,
+              "type": "boolean"
+            },
+            "scheme": {
+              "type": "string"
+            },
+            "writable": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "HostUriSchemesSetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriSchemesSetResult",
+      "type": "object",
+      "required": [
+        "schemes"
+      ],
+      "properties": {
+        "schemes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostUriSchemeDefinition"
+          }
+        }
+      },
+      "definitions": {
+        "HostUriSchemeDefinition": {
+          "type": "object",
+          "required": [
+            "scheme"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "immutable": {
+              "default": false,
+              "type": "boolean"
+            },
+            "scheme": {
+              "type": "string"
+            },
+            "writable": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "HostUriOperation": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriOperation",
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "HostUriRequestParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriRequestParams",
+      "type": "object",
+      "required": [
+        "generation",
+        "operation",
+        "requestId",
+        "threadId",
+        "turnId",
+        "url"
+      ],
+      "properties": {
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "operation": {
+          "$ref": "#/definitions/HostUriOperation"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "definitions": {
+        "HostUriOperation": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ]
+        }
+      }
+    },
+    "HostUriCancelParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriCancelParams",
+      "type": "object",
+      "required": [
+        "generation",
+        "requestId",
+        "threadId"
+      ],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "HostUriResultParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriResultParams",
+      "type": "object",
+      "required": [
+        "requestId",
+        "threadId"
+      ],
+      "properties": {
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contentType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "immutable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "isError": {
+          "default": false,
+          "type": "boolean"
+        },
+        "notes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "HostUriResource": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostUriResource",
+      "type": "object",
+      "required": [
+        "content",
+        "contentType",
+        "size",
+        "url"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "contentType": {
+          "type": "string"
+        },
+        "immutable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "url": {
+          "type": "string"
+        }
+      }
     }
   }
 }
