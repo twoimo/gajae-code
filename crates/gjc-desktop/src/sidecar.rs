@@ -43,7 +43,7 @@ impl SidecarEnv {
 
 #[derive(Debug)]
 pub struct SidecarSupervisor {
-	inner: Mutex<Option<RunningSidecar>>,
+	inner:      Mutex<Option<RunningSidecar>>,
 	/// Serializes spawn/readiness so concurrent `endpoint()` callers (e.g. the
 	/// frontend's cold-start auto-retry loop) await one in-flight cold spawn
 	/// instead of each launching a duplicate sidecar.

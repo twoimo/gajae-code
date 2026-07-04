@@ -2383,13 +2383,13 @@ mod tests {
 			.await;
 		assert_eq!(read.unwrap_err().message, "action_denied");
 		assert_eq!(write.unwrap_err().message, "action_denied");
-		let methods: Vec<String> = sink
-			.notes
-			.lock()
-			.iter()
-			.map(|note| note.method.clone())
-			.collect();
-		assert!(!methods.contains(&"gjc/hostUris/request".to_string()));
+		assert!(
+			!sink
+				.notes
+				.lock()
+				.iter()
+				.any(|note| note.method == "gjc/hostUris/request")
+		);
 	}
 
 	#[tokio::test]
@@ -2488,7 +2488,7 @@ mod tests {
 		.unwrap();
 		let list_resp = s.dispatch(&conn, list).await.unwrap().result.unwrap();
 		assert_eq!(list_resp["gates"].as_array().unwrap().len(), 0);
-		let gate_id = gate_id;
+
 		let respond = crate::jsonrpc::parse_inbound(&format!(
 			r#"{{"id":83,"method":"gjc/workflowGate/respond","params":{{"threadId":"{}","gate_id":"{}","answer":{{}},"idempotency_key":"after-abort"}}}}"#,
 			thread.0, gate_id
