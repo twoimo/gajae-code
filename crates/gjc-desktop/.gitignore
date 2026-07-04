@@ -1,0 +1,5 @@
+# Bundled sidecar binary is copied in at package time from
+# packages/coding-agent/binaries; never commit the multi-hundred-MB blob.
+/binaries/
+# Tauri build output
+/gen/

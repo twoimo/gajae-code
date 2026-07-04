@@ -33,6 +33,7 @@ pub mod ids;
 pub mod item_state;
 pub mod jsonrpc;
 pub mod notifications;
+pub mod protocol;
 pub mod scheduler;
 pub mod schema;
 pub mod server;

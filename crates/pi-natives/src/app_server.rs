@@ -417,6 +417,7 @@ impl AppServer {
 		token: String,
 		session_id: String,
 		state_root: Option<String>,
+		allowed_origins: Option<Vec<String>>,
 	) -> napi::Result<String> {
 		let port = u16::try_from(port)
 			.map_err(|_| napi::Error::from_reason("port must be between 0 and 65535"))?;
@@ -438,6 +439,7 @@ impl AppServer {
 			token,
 			session_id,
 			state_root,
+			allowed_origins: allowed_origins.unwrap_or_default(),
 		})
 		.await
 		.map_err(|err| napi::Error::from_reason(err.to_string()))?;

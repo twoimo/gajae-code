@@ -68,6 +68,11 @@ const RUST_SCOPE_ALLOWLIST: readonly RustScopeEntry[] = [
 		packageName: "robogjc",
 		rationale: "Autonomous GitHub bot service (webhook server, slot pool, sandboxed worker, host tools, HMAC proxy) rewritten from Python for native process isolation, uid/gid slot identity, and app-server integration.",
 	},
+	{
+		dir: "crates/gjc-desktop",
+		packageName: "gjc-desktop",
+		rationale: "Tauri v2 desktop shell: native window/webview host, sidecar process supervision, OS dialogs/keychain integration for the GJC GUI.",
+	},
 ] as const;
 
 const ALLOWED_NON_CRATE_RUST_FILES = new Set(["packages/coding-agent/test/fixtures/chunk-edit-indent.rs"]);

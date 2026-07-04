@@ -20,8 +20,11 @@ export declare class AppServer {
    * string for requests, or `null` for notifications.
    */
   dispatch(connectionId: string, line: string): Promise<string | null>
-  /** Start a loopback WebSocket transport for this app-server; returns the bound ws:// URL. */
-  listenWs(host: string, port: number, token: string, sessionId: string, stateRoot?: string | undefined | null): Promise<string>
+  /**
+   * Start a loopback WebSocket transport for this app-server; returns the
+   * bound ws:// URL.
+   */
+  listenWs(host: string, port: number, token: string, sessionId: string, stateRoot?: string | undefined | null, allowedOrigins?: Array<string> | undefined | null): Promise<string>
   /**
    * Resolve a pending backend/factory call reported through `onCall`.
    * `ok=true` treats `json` as the result value; `ok=false` treats `json` as
@@ -35,7 +38,10 @@ export declare class AppServer {
   emitBackendEvent(threadId: string, generation: number, eventType: string, payloadJson: string): number
   /** Return the host tool names registered for a thread. */
   hostToolNames(threadId: string): Array<string>
-  /** Call a client-registered host tool and resolve to the JSON result payload. */
+  /**
+   * Call a client-registered host tool and resolve to the JSON result
+   * payload.
+   */
   callHostTool(threadId: string, turnId: string | undefined | null, tool: string, argsJson: string): Promise<string>
   /** Return the currently accepted active turn id for a thread, if any. */
   activeTurnId(threadId: string): string | null

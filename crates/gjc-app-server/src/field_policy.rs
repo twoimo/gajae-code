@@ -21,6 +21,15 @@ pub enum FieldPolicy {
 /// The policy for a method is decided purely by namespace: `gjc/*` (and the
 /// `gjc.`-dotted management variants) are strict; everything else in the pinned
 /// codex-core surface is lenient.
+///
+/// **Documented exception:** `gjc/notifications/*` frames are opaque JSON
+/// owned by the TypeScript notifications extension (see
+/// `notifications::METHOD_PREFIX`). They are routed to the `NotificationHost`
+/// before strict dispatch and are deliberately NOT field-policed — the Rust
+/// core cannot know the extension's frame shape. This carve-out is narrow
+/// (prefix-exact), tested in `server.rs`
+/// (`gjc_notifications_methods_are_exempt_from_field_policy`), and does not
+/// weaken any other `gjc/*` method.
 #[must_use]
 pub fn policy_for(method: &str) -> FieldPolicy {
 	if method.starts_with("gjc/") || method.starts_with("gjc.") {

@@ -15,9 +15,13 @@ export async function runAppServerMode(): Promise<void> {
 		const token = process.env.GJC_APP_SERVER_WS_TOKEN?.trim() || randomBytes(32).toString("base64url");
 		const sessionId = process.env.GJC_SESSION_ID?.trim() || `app-server-${randomUUID()}`;
 		const stateRoot = process.env.GJC_APP_SERVER_STATE_ROOT?.trim() || undefined;
-		const url = await handle.server.listenWs("127.0.0.1", 0, token, sessionId, stateRoot);
+		const allowedOrigins = (process.env.GJC_APP_SERVER_ALLOWED_ORIGINS ?? "")
+			.split(",")
+			.map(origin => origin.trim())
+			.filter(origin => origin.length > 0);
+		const url = await handle.server.listenWs("127.0.0.1", 0, token, sessionId, stateRoot, allowedOrigins);
 		process.stderr.write(
-			`${JSON.stringify({ type: "app-server-ws", url, token: "<redacted>", sessionId, stateRoot })}\n`,
+			`${JSON.stringify({ type: "app-server-ws", url, token: "<redacted>", sessionId, stateRoot, allowedOrigins })}\n`,
 		);
 		wsActive = true;
 	}

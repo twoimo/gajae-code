@@ -65,7 +65,8 @@
 			"!**/gen/agent_pb.ts",
 			"!.worktrees/**/*",
 			"!.wt/**/*",
-			"!.gjc/**/*"
+			"!.gjc/**/*",
+			"!packages/gjc-app-server-client/src/generated"
 		]
 	},
 	"assist": {
