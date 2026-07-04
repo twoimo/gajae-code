@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { Agent } from "@gajae-code/agent-core";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { CURSOR_MARKER } from "@gajae-code/tui";
+import { CURSOR_MARKER, Spacer, Text } from "@gajae-code/tui";
 import { TempDir } from "@gajae-code/utils";
 import { ModelRegistry } from "../src/config/model-registry";
 import { CustomEditor } from "../src/modes/components/custom-editor";
@@ -16,6 +16,11 @@ import { SessionManager } from "../src/session/session-manager";
 class TestModalEditor extends CustomEditor {}
 function stripRenderControls(line: string): string {
 	return stripVTControlCharacters(line.replaceAll(CURSOR_MARKER, ""));
+}
+
+function forceTerminalSize(mode: InteractiveMode, columns: number, rows: number): void {
+	Object.defineProperty(mode.ui.terminal, "columns", { configurable: true, get: () => columns });
+	Object.defineProperty(mode.ui.terminal, "rows", { configurable: true, get: () => rows });
 }
 
 describe("InteractiveMode.setEditorComponent", () => {
@@ -132,6 +137,28 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode.setHookWidget("test", undefined);
 
 		assertComposerFollowsStatusLine();
+	});
+
+	it("keeps the welcome splash viewport-bound when /new shows a notification", async () => {
+		const width = 100;
+		const rows = 28;
+		vi.spyOn(mode.ui, "start").mockImplementation(() => {});
+		forceTerminalSize(mode, width, rows);
+
+		await mode.init();
+
+		mode.chatContainer.clear();
+		mode.chatContainer.addChild(new Spacer(1));
+		mode.chatContainer.addChild(
+			new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
+		);
+
+		const rendered = mode.ui.render(width).map(stripRenderControls);
+		const renderedText = rendered.join("\n");
+
+		expect(rendered.length).toBeLessThanOrEqual(rows);
+		expect(renderedText).toContain("GJC Forge");
+		expect(renderedText).toContain("New session started");
 	});
 
 	it("keeps closed rounded composer chrome for one-line, multiline, and narrow prompts", () => {

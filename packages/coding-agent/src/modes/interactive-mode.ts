@@ -119,6 +119,7 @@ import { UiHelpers } from "./utils/ui-helpers";
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
 const COMPOSER_NEWLINE_HINT = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
 const DEFAULT_COMPOSER_PLACEHOLDER = `Type your message... ${COMPOSER_NEWLINE_HINT}: New line · Ctrl+C: Clear`;
+const WELCOME_RESERVED_CONTAINER_CHILD_LIMIT = 8;
 const FRIENDLY_KEY_PARTS: Record<string, string> = {
 	alt: "Alt",
 	cmd: "Command",
@@ -531,13 +532,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		if (!startupQuiet) {
-			const getWelcomeReservedBottomRows = (width: number): number =>
-				[
-					this.statusLine,
-					this.hookWidgetContainerAbove,
-					this.editorContainer,
-					this.hookWidgetContainerBelow,
-				].reduce((rows, component) => rows + component.render(width).length, 0);
+			const getWelcomeReservedBottomRows = (width: number): number => this.#getWelcomeReservedRows(width);
 
 			// Add welcome header
 			this.#welcomeComponent = new WelcomeComponent(
@@ -945,6 +940,32 @@ export class InteractiveMode implements InteractiveModeContext {
 		const queueKey = this.#getMessageQueueShortcut();
 		if (queueKey) parts.push(`${formatShortcutForPlaceholder(queueKey)}: Message Queueing`);
 		return `${DEFAULT_COMPOSER_PLACEHOLDER} · ${parts.join(" · ")}`;
+	}
+
+	#getWelcomeReservedRows(width: number): number {
+		const transientRows = [
+			this.chatContainer,
+			this.pendingMessagesContainer,
+			this.statusContainer,
+			this.todoContainer,
+			this.btwContainer,
+		].reduce((rows, container) => rows + this.#renderShortContainerRowsForWelcomeReservation(width, container), 0);
+
+		const pinnedRows = [
+			this.statusLine,
+			this.hookWidgetContainerAbove,
+			this.editorContainer,
+			this.hookWidgetContainerBelow,
+		].reduce((rows, component) => rows + component.render(width).length, 0);
+
+		return transientRows + pinnedRows;
+	}
+
+	#renderShortContainerRowsForWelcomeReservation(width: number, container: Container): number {
+		if (container.children.length === 0 || container.children.length > WELCOME_RESERVED_CONTAINER_CHILD_LIMIT) {
+			return 0;
+		}
+		return container.render(width).length;
 	}
 
 	updateEditorChrome(): void {
