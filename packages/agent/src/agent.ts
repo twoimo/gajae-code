@@ -960,6 +960,10 @@ export class Agent {
 		return removed;
 	}
 
+	moveSteer(fromIndex: number, toIndex: number): boolean {
+		return this.#moveQueuedMessage(this.#steeringQueue, fromIndex, toIndex);
+	}
+
 	/**
 	 * Remove and return the last follow-up message from the queue (LIFO).
 	 * Used by dequeue keybinding.
@@ -971,6 +975,20 @@ export class Agent {
 		if (index < 0 || index >= this.#followUpQueue.length) return undefined;
 		const [removed] = this.#followUpQueue.splice(index, 1);
 		return removed;
+	}
+
+	moveFollowUp(fromIndex: number, toIndex: number): boolean {
+		return this.#moveQueuedMessage(this.#followUpQueue, fromIndex, toIndex);
+	}
+
+	#moveQueuedMessage<T>(queue: T[], fromIndex: number, toIndex: number): boolean {
+		if (fromIndex < 0 || fromIndex >= queue.length) return false;
+		if (toIndex < 0 || toIndex >= queue.length) return false;
+		if (fromIndex === toIndex) return true;
+		const [item] = queue.splice(fromIndex, 1);
+		if (item === undefined) return false;
+		queue.splice(toIndex, 0, item);
+		return true;
 	}
 
 	/** Remove queued steering+follow-up messages matching `predicate`, preserving order of the rest. */

@@ -19,7 +19,7 @@ import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
 import { generateSessionTitle, setSessionTerminalTitle } from "../../utils/title-generator";
-import { QueuedMessageSelectorComponent } from "../components/queued-message-selector";
+import { type QueuedMessageMoveDirection, QueuedMessageSelectorComponent } from "../components/queued-message-selector";
 
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -621,7 +621,7 @@ export class InputController {
 			);
 			return;
 		}
-		this.#showQueuedMessageSelector(entries);
+		this.#showQueuedMessageSelector(entries, this.#newestQueuedMessageIndex(entries));
 	}
 
 	#compactionQueuedMessageId(index: number): string {
@@ -629,18 +629,36 @@ export class InputController {
 	}
 
 	#getEditableQueuedMessages(): QueuedMessageEditEntry[] {
-		const compactionEntries = this.ctx.compactionQueuedMessages
-			.map((entry, index): QueuedMessageEditEntry => {
-				const label = entry.mode === "steer" ? "Steer" : "Queued";
-				return {
-					id: this.#compactionQueuedMessageId(index),
-					text: entry.text,
-					mode: entry.mode,
-					label,
-				};
-			})
-			.reverse();
+		const compactionEntries = this.ctx.compactionQueuedMessages.map((entry, index): QueuedMessageEditEntry => {
+			const label = entry.mode === "steer" ? "Steer" : "Queued";
+			return {
+				id: this.#compactionQueuedMessageId(index),
+				text: entry.text,
+				mode: entry.mode,
+				label,
+			};
+		});
 		return [...compactionEntries, ...this.ctx.session.getQueuedMessageEntries()];
+	}
+
+	#queuedMessageStableSequence(entry: QueuedMessageEditEntry): number | undefined {
+		const [mode, sequenceText] = entry.id.split(":");
+		if ((mode !== "steer" && mode !== "followUp") || sequenceText === undefined) return undefined;
+		const sequence = Number(sequenceText);
+		return Number.isInteger(sequence) ? sequence : undefined;
+	}
+
+	#newestQueuedMessageIndex(entries: QueuedMessageEditEntry[]): number {
+		let selectedIndex = entries.length - 1;
+		let newestSequence = Number.NEGATIVE_INFINITY;
+		for (let index = 0; index < entries.length; index += 1) {
+			const sequence = this.#queuedMessageStableSequence(entries[index]);
+			if (sequence !== undefined && sequence > newestSequence) {
+				newestSequence = sequence;
+				selectedIndex = index;
+			}
+		}
+		return Math.max(0, selectedIndex);
 	}
 
 	#restoreEditorFocus(): void {
@@ -672,6 +690,23 @@ export class InputController {
 				this.ctx.showStatus(deleted ? "Deleted queued message" : "Queued message is no longer available");
 				this.#showQueuedMessageSelector(nextEntries, Math.min(index, nextEntries.length - 1));
 			},
+			(entry, index, direction) => {
+				const moved = this.#moveQueuedMessage(entry, direction);
+				const nextEntries = this.#getEditableQueuedMessages();
+				if (nextEntries.length === 0) {
+					this.#restoreEditorFocus();
+					this.ctx.showStatus("Queued message is no longer available");
+					this.ctx.ui.requestRender();
+					return;
+				}
+				const nextIndex = direction === "up" ? index - 1 : index + 1;
+				const selectedNextIndex = moved ? nextIndex : index;
+				this.ctx.showStatus(moved ? "Moved queued message" : "Queued message cannot move further");
+				this.#showQueuedMessageSelector(
+					nextEntries,
+					Math.max(0, Math.min(selectedNextIndex, nextEntries.length - 1)),
+				);
+			},
 			() => {
 				this.#restoreEditorFocus();
 				this.ctx.ui.requestRender();
@@ -693,6 +728,37 @@ export class InputController {
 			return entry?.text;
 		}
 		return this.ctx.session.removeQueuedMessageForEditing(id);
+	}
+	#parseCompactionQueuedMessageId(id: string): number | undefined {
+		const compactionPrefix = "compaction:";
+		if (!id.startsWith(compactionPrefix)) return undefined;
+		const index = Number(id.slice(compactionPrefix.length));
+		return Number.isInteger(index) ? index : undefined;
+	}
+
+	#moveCompactionQueuedMessage(index: number, direction: QueuedMessageMoveDirection): boolean {
+		const targetIndex = direction === "up" ? index - 1 : index + 1;
+		if (index < 0 || index >= this.ctx.compactionQueuedMessages.length) return false;
+		if (targetIndex < 0 || targetIndex >= this.ctx.compactionQueuedMessages.length) return false;
+		const current = this.ctx.compactionQueuedMessages[index];
+		const target = this.ctx.compactionQueuedMessages[targetIndex];
+		if (!current || !target) return false;
+		this.ctx.compactionQueuedMessages[index] = target;
+		this.ctx.compactionQueuedMessages[targetIndex] = current;
+		this.ctx.updatePendingMessagesDisplay();
+		return true;
+	}
+
+	#moveQueuedMessage(entry: QueuedMessageEditEntry, direction: QueuedMessageMoveDirection): boolean {
+		const compactionIndex = this.#parseCompactionQueuedMessageId(entry.id);
+		if (compactionIndex !== undefined) {
+			return this.#moveCompactionQueuedMessage(compactionIndex, direction);
+		}
+		const moved = this.ctx.session.moveQueuedMessageForEditing(entry.id, direction);
+		if (moved) {
+			this.ctx.updatePendingMessagesDisplay();
+		}
+		return moved;
 	}
 
 	#deleteQueuedMessage(entry: QueuedMessageEditEntry): boolean {

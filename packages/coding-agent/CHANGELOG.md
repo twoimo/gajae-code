@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Queued message selector entries can now be reordered with `Ctrl+Up` / `Ctrl+Down`, with `Ctrl+Shift+Up` / `Ctrl+Shift+Down` still accepted when the terminal forwards them, while keeping the current draft intact.
 
 ### Fixed
 

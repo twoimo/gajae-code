@@ -905,8 +905,8 @@ function extractPermissionLocations(
  *  `tag` is set only by `enqueueCustomMessageDisplay` (used for skill-prompt
  *  custom messages queued during streaming) and is matched by the custom-role
  *  `message_start` dequeue branch; user-message pushes leave it undefined and
- *  rely on the existing text-equality match. `sequence` preserves cross-queue
- *  insertion order for one-at-a-time dequeue/edit UX. */
+ *  rely on the existing text-equality match. `sequence` gives each queued chip a
+ *  stable edit id while the display arrays preserve delivery order. */
 type QueuedDisplayEntry = { text: string; tag?: string; sequence: number };
 export type QueuedMessageEditMode = "steer" | "followUp";
 
@@ -5736,14 +5736,13 @@ export class AgentSession {
 	}
 
 	getQueuedMessageEntries(): QueuedMessageEditEntry[] {
-		const entries: Array<QueuedMessageEditEntry & { sequence: number }> = [];
+		const entries: QueuedMessageEditEntry[] = [];
 		for (const entry of this.#steeringMessages) {
 			entries.push({
 				id: this.#queuedMessageEditId("steer", entry.sequence),
 				text: entry.text,
 				mode: "steer",
 				label: "Steer",
-				sequence: entry.sequence,
 			});
 		}
 		for (const entry of this.#followUpMessages) {
@@ -5752,12 +5751,9 @@ export class AgentSession {
 				text: entry.text,
 				mode: "followUp",
 				label: "Queued",
-				sequence: entry.sequence,
 			});
 		}
-		return entries
-			.sort((a, b) => b.sequence - a.sequence)
-			.map(({ id, text, mode, label }) => ({ id, text, mode, label }));
+		return entries;
 	}
 
 	removeQueuedMessageForEditing(id: string): string | undefined {
@@ -5777,6 +5773,32 @@ export class AgentSession {
 			this.agent.removeFollowUpAt(index);
 		}
 		return entry?.text;
+	}
+
+	moveQueuedMessageForEditing(id: string, direction: "up" | "down"): boolean {
+		const [mode, sequenceText] = id.split(":");
+		if ((mode !== "steer" && mode !== "followUp") || sequenceText === undefined) return false;
+		const sequence = Number(sequenceText);
+		if (!Number.isInteger(sequence)) return false;
+
+		const queue = mode === "steer" ? this.#steeringMessages : this.#followUpMessages;
+		const fromIndex = queue.findIndex(entry => entry.sequence === sequence);
+		if (fromIndex === -1) return false;
+		const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+		const agentMoved =
+			mode === "steer" ? this.agent.moveSteer(fromIndex, toIndex) : this.agent.moveFollowUp(fromIndex, toIndex);
+		if (!agentMoved) return false;
+		return this.#moveQueuedDisplayEntry(queue, fromIndex, toIndex);
+	}
+
+	#moveQueuedDisplayEntry(queue: QueuedDisplayEntry[], fromIndex: number, toIndex: number): boolean {
+		if (fromIndex < 0 || fromIndex >= queue.length) return false;
+		if (toIndex < 0 || toIndex >= queue.length) return false;
+		if (fromIndex === toIndex) return true;
+		const [entry] = queue.splice(fromIndex, 1);
+		if (!entry) return false;
+		queue.splice(toIndex, 0, entry);
+		return true;
 	}
 
 	/**

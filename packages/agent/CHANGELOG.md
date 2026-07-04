@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Agent queues now expose ordered move helpers for steering and follow-up messages so callers can reorder pending work without removing and re-adding messages.
 
 ## [0.7.7] - 2026-06-28
 
