@@ -154,6 +154,10 @@ function sortSlashCommandSuggestions(
 	return { ...suggestions, items };
 }
 
+function isRootPathSuggestionResult(suggestions: { items: AutocompleteItem[]; prefix: string } | null): boolean {
+	return suggestions?.prefix.startsWith("/") === true && suggestions.items.some(item => item.value.startsWith("/"));
+}
+
 function withoutSkillCommandSuggestions(
 	suggestions: { items: AutocompleteItem[]; prefix: string } | null,
 ): { items: AutocompleteItem[]; prefix: string } | null {
@@ -227,6 +231,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			const baseSuggestions = withoutSkillCommandSuggestions(
 				await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol),
 			);
+			if (isRootPathSuggestionResult(baseSuggestions)) return baseSuggestions;
 			const skillCommandSuggestions = this.#getSkillCommandSuggestions(textBeforeCursor, {
 				includeEmpty: slashPrefix === "/",
 			});

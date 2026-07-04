@@ -411,8 +411,20 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
+		const pathMatch = this.#extractPathPrefix(textBeforeCursor, false);
+		let pathSuggestions: AutocompleteItem[] | null = null;
 		const slashPrefix = this.#extractSlashCommandPrefix(textBeforeCursor);
 		if (slashPrefix) {
+			if (pathMatch === slashPrefix && slashPrefix.startsWith("/")) {
+				pathSuggestions = await this.#getFileSuggestions(pathMatch);
+				if (pathSuggestions.length > 0) {
+					return {
+						items: pathSuggestions,
+						prefix: pathMatch,
+					};
+				}
+			}
+
 			const matches = this.#getInlineSlashCommandNameSuggestions(slashPrefix.slice(1));
 			if (matches.length > 0) {
 				return {
@@ -423,10 +435,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		// Check for file paths - triggered by Tab or if we detect a path pattern
-		const pathMatch = this.#extractPathPrefix(textBeforeCursor, false);
-
 		if (pathMatch !== null) {
-			const suggestions = await this.#getFileSuggestions(pathMatch);
+			const suggestions = pathSuggestions ?? (await this.#getFileSuggestions(pathMatch));
 			if (suggestions.length === 0) return null;
 
 			// Check if we have an exact match that is a directory

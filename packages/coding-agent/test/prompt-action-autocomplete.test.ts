@@ -136,6 +136,16 @@ describe("prompt action autocomplete", () => {
 		expect(suggestions?.items.map(item => item.value)).toContain("help");
 	});
 
+	it("preserves root path suggestions for bare absolute inline slash", async () => {
+		const provider = createNoopProvider([{ name: "model", description: "Switch model" }]);
+		const line = "open /";
+		const suggestions = await provider.getSuggestions([line], 0, line.length);
+
+		expect(suggestions?.prefix).toBe("/");
+		expect(suggestions?.items.some(item => item.value.startsWith("/"))).toBe(true);
+		expect(suggestions?.items.map(item => item.value)).not.toContain("model");
+	});
+
 	it("opens the composer autocomplete list from an adjacent inline slash", async () => {
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider(

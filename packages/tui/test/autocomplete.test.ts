@@ -210,6 +210,20 @@ describe("inline slash command suggestions", () => {
 		expect(result?.items.map(item => item.value) ?? []).not.toContain("template");
 	});
 
+	it("lets bare absolute root paths use file suggestions before slash commands", async () => {
+		const line = "open /";
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "model", description: "Switch model", value: "model" }],
+			"/tmp",
+		);
+		const result = await provider.getSuggestions([line], 0, line.length);
+
+		expect(result).not.toBeNull();
+		expect(result!.prefix).toBe("/");
+		expect(result!.items.some(item => item.value.startsWith("/"))).toBe(true);
+		expect(result!.items.map(item => item.value)).not.toContain("model");
+	});
+
 	it("matches normalized inline slash command prefixes", async () => {
 		const provider = new CombinedAutocompleteProvider(
 			[{ name: "skill:team", description: "Run team workflow", value: "skill:team" }],

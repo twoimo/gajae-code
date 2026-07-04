@@ -149,13 +149,13 @@ class InlineSkillProvider implements AutocompleteProvider {
 	suggestionCalls = 0;
 }
 describe("Editor Enter handler sync slash completion", () => {
-	it("auto-triggers slash command autocomplete from a bare slash after prompt text", async () => {
+	it("auto-triggers slash command autocomplete from an inline slash after prompt text", async () => {
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider(
 			new CombinedAutocompleteProvider([{ name: "model", description: "Switch model", value: "model" }], "/tmp"),
 		);
 
-		editor.handleInput("explain this /");
+		editor.handleInput("explain this/");
 		await Bun.sleep(0);
 
 		expect(editor.isShowingAutocomplete()).toBe(true);
