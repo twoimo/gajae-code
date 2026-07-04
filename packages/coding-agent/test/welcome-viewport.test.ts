@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@gajae-code/tui";
 import { WelcomeComponent } from "../src/modes/components/welcome";
 import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
@@ -9,6 +10,24 @@ beforeAll(async () => {
 	setThemeInstance(theme);
 });
 
+function stripRenderControls(line: string): string {
+	return stripVTControlCharacters(line);
+}
+
+function renderedColumnWidths(lines: string[]): { left: number; right: number } {
+	for (const line of lines.map(stripRenderControls)) {
+		const separators = Array.from(line.matchAll(/│/g), match => match.index ?? -1);
+		if (separators.length >= 3) {
+			const [leftEdge, divider, rightEdge] = separators;
+			return {
+				left: visibleWidth(line.slice(leftEdge + 1, divider)),
+				right: visibleWidth(line.slice(divider + 1, rightEdge)),
+			};
+		}
+	}
+	throw new Error("Expected two-column welcome layout");
+}
+
 describe("WelcomeComponent viewport sizing", () => {
 	it("uses the full terminal width on wide initial forge viewports", () => {
 		const welcome = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii");
@@ -18,6 +37,13 @@ describe("WelcomeComponent viewport sizing", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBe(200);
 		}
+	});
+
+	it("splits the forge and details columns evenly on wide viewports", () => {
+		const welcome = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii");
+		const columns = renderedColumnWidths(welcome.render(140));
+
+		expect(Math.abs(columns.left - columns.right)).toBeLessThanOrEqual(1);
 	});
 
 	it("degrades gracefully on tiny terminal widths", () => {

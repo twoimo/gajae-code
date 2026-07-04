@@ -101,7 +101,6 @@ export class WelcomeComponent implements Component {
 		}
 		const targetContentRows = targetRows === undefined ? undefined : Math.max(0, targetRows - 2);
 		const dualContentWidth = boxWidth - 3; // 3 = │ + │ + │
-		const preferredLeftCol = 40;
 		const minLeftCol = 20; // logo mark plus GJC identity labels
 		const minRightCol = 24;
 		const modelPill = this.#pill(theme.icon.model || "model", this.modelName, "statusLineModel");
@@ -116,10 +115,12 @@ export class WelcomeComponent implements Component {
 			visibleWidth(modelPill),
 			visibleWidth(providerPill),
 		);
-		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.38)));
+		const evenLeftCol = Math.floor(dualContentWidth / 2);
+		const maxLeftColWithRightMinimum = Math.max(1, dualContentWidth - minRightCol);
+		const desiredLeftCol = Math.max(leftMinContentWidth, evenLeftCol);
 		const dualLeftCol =
 			dualContentWidth >= minRightCol + 1
-				? Math.min(desiredLeftCol, dualContentWidth - minRightCol)
+				? Math.min(desiredLeftCol, maxLeftColWithRightMinimum)
 				: Math.max(1, dualContentWidth - 1);
 		const dualRightCol = Math.max(1, dualContentWidth - dualLeftCol);
 		const showRightColumn = dualLeftCol >= leftMinContentWidth && dualRightCol >= minRightCol;

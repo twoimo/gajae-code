@@ -117,7 +117,8 @@ import type { CompactionQueuedMessage, InteractiveModeContext, SubmittedUserInpu
 import { UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
-const DEFAULT_COMPOSER_PLACEHOLDER = "Type your message...";
+const COMPOSER_NEWLINE_HINT = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
+const DEFAULT_COMPOSER_PLACEHOLDER = `Type your message... ${COMPOSER_NEWLINE_HINT}: New line · Ctrl+C: Clear`;
 const FRIENDLY_KEY_PARTS: Record<string, string> = {
 	alt: "Alt",
 	cmd: "Command",
@@ -943,7 +944,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const parts = [`Enter: ${enterAction}`];
 		const queueKey = this.#getMessageQueueShortcut();
 		if (queueKey) parts.push(`${formatShortcutForPlaceholder(queueKey)}: Message Queueing`);
-		return `${DEFAULT_COMPOSER_PLACEHOLDER} ${parts.join(" · ")}`;
+		return `${DEFAULT_COMPOSER_PLACEHOLDER} · ${parts.join(" · ")}`;
 	}
 
 	updateEditorChrome(): void {
