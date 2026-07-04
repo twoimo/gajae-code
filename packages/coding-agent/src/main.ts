@@ -395,30 +395,28 @@ async function getChangelogForDisplay(parsed: Args): Promise<string | undefined>
 		return undefined;
 	}
 
-	const lastVersion = settings.get("lastChangelogVersion");
-	if (lastVersion === VERSION) {
-		// Steady state: user already saw the current version's changelog. Skip the file read + parse.
+	const entries = getDisplayChangelogEntries();
+	if (entries.length === 0) {
 		return undefined;
 	}
 
-	const entries = getDisplayChangelogEntries();
-
+	const lastVersion = settings.get("lastChangelogVersion");
 	if (!lastVersion) {
-		if (entries.length > 0) {
-			settings.set("lastChangelogVersion", VERSION);
-			await flushChangelogVersion();
-			return getInstalledVersionChangelogEntry(entries, VERSION)?.content;
-		}
-	} else {
+		settings.set("lastChangelogVersion", VERSION);
+		await flushChangelogVersion();
+		return getInstalledVersionChangelogEntry(entries, VERSION)?.content;
+	}
+
+	if (lastVersion !== VERSION) {
 		const newEntries = getNewEntries(entries, lastVersion);
+		settings.set("lastChangelogVersion", VERSION);
+		await flushChangelogVersion();
 		if (newEntries.length > 0) {
-			settings.set("lastChangelogVersion", VERSION);
-			await flushChangelogVersion();
 			return newEntries.map(e => e.content).join("\n\n");
 		}
 	}
 
-	return undefined;
+	return getInstalledVersionChangelogEntry(entries, VERSION)?.content;
 }
 
 async function flushChangelogVersion(): Promise<void> {

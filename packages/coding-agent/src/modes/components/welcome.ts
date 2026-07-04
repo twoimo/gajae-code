@@ -21,6 +21,10 @@ export interface WelcomeComponentOptions {
 	collapseChangelog?: boolean;
 }
 
+const WELCOME_FIXED_RIGHT_ROWS_EXCLUDING_DYNAMIC_SECTIONS = 13;
+const DEFAULT_WHATS_NEW_ROWS = 3;
+const MAX_WHATS_NEW_ROWS = 12;
+
 /**
  * GJC-native launch surface with compact command affordances, project
  * signals, and a claw/talon mark without copying another agent shell.
@@ -142,9 +146,6 @@ export class WelcomeComponent implements Component {
 
 		const rightColumnWidth = showRightColumn ? rightCol : leftCol;
 		const separator = buildSeparator(rightColumnWidth);
-		const changelogBudget = Math.max(1, Math.min(6, Math.floor((targetContentRows ?? 18) * 0.3)));
-
-		const changelogLines = this.#whatsNewLines(rightColumnWidth, changelogBudget);
 		const lspLines: string[] = [];
 		if (this.lspServers.length === 0) {
 			lspLines.push(` ${theme.fg("dim", "No LSP servers")}`);
@@ -161,6 +162,8 @@ export class WelcomeComponent implements Component {
 			}
 		}
 
+		const changelogRowLimit = this.#whatsNewRowLimit(targetContentRows, lspLines.length);
+		const changelogLines = this.#whatsNewLines(rightColumnWidth, changelogRowLimit);
 		const sessionLimit = this.#sessionTrailLimit(targetContentRows, changelogLines.length, lspLines.length);
 		const sessionLines = this.#sessionTrailLines(rightColumnWidth, sessionLimit);
 
@@ -301,17 +304,30 @@ export class WelcomeComponent implements Component {
 		return [...Array.from({ length: topPad }, () => ""), ...clipped, ...Array.from({ length: bottomPad }, () => "")];
 	}
 
+	#whatsNewRowLimit(targetContentRows: number | undefined, lspLineCount: number): number {
+		if (targetContentRows === undefined) return 5;
+
+		const sessionBaselineRows = this.recentSessions.length === 0 ? 1 : Math.min(3, this.recentSessions.length);
+		const dynamicRows = Math.max(
+			1,
+			targetContentRows - WELCOME_FIXED_RIGHT_ROWS_EXCLUDING_DYNAMIC_SECTIONS - lspLineCount,
+		);
+		const rowsAfterBaselineSessions = Math.max(1, dynamicRows - sessionBaselineRows);
+		const spareRows = Math.max(0, rowsAfterBaselineSessions - DEFAULT_WHATS_NEW_ROWS);
+		return Math.max(
+			1,
+			Math.min(MAX_WHATS_NEW_ROWS, rowsAfterBaselineSessions, DEFAULT_WHATS_NEW_ROWS + Math.floor(spareRows / 2)),
+		);
+	}
+
 	#sessionTrailLimit(targetContentRows: number | undefined, changelogLineCount: number, lspLineCount: number): number {
 		if (this.recentSessions.length === 0) return 0;
 
 		const defaultLimit = Math.min(3, this.recentSessions.length);
 		if (targetContentRows === undefined) return defaultLimit;
 
-		// Right-column rows that are always present when the session trail is shown:
-		// top/bottom padding, section headers, separators, and the four flow-key hints.
-		const fixedRightRowsExcludingDynamicSections = 13;
 		const rowsWithDefaultTrail =
-			fixedRightRowsExcludingDynamicSections + changelogLineCount + lspLineCount + defaultLimit;
+			WELCOME_FIXED_RIGHT_ROWS_EXCLUDING_DYNAMIC_SECTIONS + changelogLineCount + lspLineCount + defaultLimit;
 		const extraRows = Math.max(0, targetContentRows - rowsWithDefaultTrail);
 		return Math.min(this.recentSessions.length, defaultLimit + extraRows);
 	}
@@ -335,7 +351,8 @@ export class WelcomeComponent implements Component {
 		return lines;
 	}
 
-	#whatsNewLines(width: number, maxItems: number): string[] {
+	#whatsNewLines(width: number, maxRows: number): string[] {
+		const rowLimit = Math.max(1, Math.floor(maxRows));
 		const changelog = this.options.changelogMarkdown?.trim();
 		if (!changelog) {
 			return [` ${theme.fg("dim", "Ready for your next prompt")}`];
@@ -346,25 +363,25 @@ export class WelcomeComponent implements Component {
 			return [
 				` ${theme.fg("muted", `Updated to v${version}`)}`,
 				` ${theme.fg("dim", `Use ${theme.bold("/changelog")} for details`)}`,
-			];
+			].slice(0, rowLimit);
 		}
 
-		const itemLimit = Math.max(1, Math.floor(maxItems));
 		const items = this.#changelogItems(changelog);
 		if (items.length === 0) {
 			return [
 				` ${theme.fg("muted", `Updated to v${version}`)}`,
 				` ${theme.fg("dim", `Use ${theme.bold("/changelog")} for details`)}`,
-			];
+			].slice(0, rowLimit);
 		}
 
 		const prefix = ` ${theme.md.bullet} `;
 		const textWidth = Math.max(1, width - visibleWidth(prefix));
-		const visibleItems = items.slice(0, itemLimit).map(item => {
+		const visibleItemCount = items.length > rowLimit ? Math.max(1, rowLimit - 1) : rowLimit;
+		const visibleItems = items.slice(0, visibleItemCount).map(item => {
 			const text = visibleWidth(item) > textWidth ? truncateToWidth(item, textWidth) : item;
 			return `${theme.fg("dim", prefix)}${theme.fg("muted", text)}`;
 		});
-		if (items.length > visibleItems.length) {
+		if (items.length > visibleItems.length && visibleItems.length < rowLimit) {
 			visibleItems.push(` ${theme.fg("dim", `… ${theme.bold("/changelog")} for full notes`)}`);
 		}
 		return visibleItems;

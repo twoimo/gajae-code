@@ -65,6 +65,33 @@ describe("WelcomeComponent viewport sizing", () => {
 		}
 	});
 
+	it("expands What's New highlights when the viewport has spare rows", () => {
+		const changelogMarkdown = [
+			"## [1.2.3]",
+			"",
+			"### Added",
+			"",
+			...Array.from({ length: 8 }, (_, index) => `- Dynamic changelog item ${index + 1}`),
+		].join("\n");
+		const compact = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
+			getViewportRows: () => 24,
+			getReservedBottomRows: () => 4,
+			changelogMarkdown,
+		});
+		const roomy = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
+			getViewportRows: () => 40,
+			getReservedBottomRows: () => 4,
+			changelogMarkdown,
+		});
+
+		const compactText = compact.render(100).join("\n");
+		const roomyText = roomy.render(100).join("\n");
+
+		expect(compactText).toContain("Dynamic changelog item 1");
+		expect(compactText).not.toContain("Dynamic changelog item 4");
+		expect(roomyText).toContain("Dynamic changelog item 8");
+	});
+
 	it("does not steal rows when the pinned composer already fills the viewport", () => {
 		const hidden = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
 			getViewportRows: () => 5,
