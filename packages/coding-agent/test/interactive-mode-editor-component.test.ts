@@ -87,8 +87,8 @@ describe("InteractiveMode.setEditorComponent", () => {
 	}
 
 	function expectedQueueShortcutHint(): string {
-		const shortcut = process.platform === "win32" ? "Alt+q" : "Alt+Enter";
-		return `${shortcut}: Message Queueing`;
+		const shortcut = process.platform === "win32" ? "Alt+Q" : "Alt+Enter";
+		return `${shortcut}: Queue`;
 	}
 
 	it("shows busy steering and queueing hints only while work is active", () => {
@@ -96,7 +96,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(rendered).toContain("Type your message...");
 		expect(rendered).toContain(expectedNewlineShortcutHint());
 		expect(rendered).toContain("Ctrl+C: Clear");
-		expect(rendered).not.toContain("Enter: Steering");
+		expect(rendered).not.toContain("Enter: Steer");
 		expect(rendered).not.toContain(expectedQueueShortcutHint());
 
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = true;
@@ -104,7 +104,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 
 		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
-		expect(rendered).toContain("Enter: Steering");
+		expect(rendered).toContain("Enter: Steer");
 		expect(rendered).toContain(expectedQueueShortcutHint());
 
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = false;
@@ -112,7 +112,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 
 		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
-		expect(rendered).not.toContain("Enter: Steering");
+		expect(rendered).not.toContain("Enter: Steer");
 		expect(rendered).not.toContain(expectedQueueShortcutHint());
 	});
 
