@@ -189,7 +189,20 @@ function normalizeSlashCommandText(value: string): string {
 		.trim()
 		.replace(/\s+/g, " ");
 }
+const NON_COMMAND_SLASH_PREFIX_PRECEDERS = new Set(["/", "\\", ":", ".", "~"]);
 
+export function extractSlashCommandTokenPrefix(text: string): string | null {
+	const slashIndex = text.lastIndexOf("/");
+	if (slashIndex === -1) return null;
+
+	const token = text.slice(slashIndex);
+	if (/[\s]/.test(token)) return null;
+
+	const charBeforeSlash = text[slashIndex - 1];
+	if (charBeforeSlash && NON_COMMAND_SLASH_PREFIX_PRECEDERS.has(charBeforeSlash)) return null;
+
+	return token;
+}
 export interface AutocompleteItem {
 	value: string;
 	label: string;
@@ -325,8 +338,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	}
 
 	#extractSlashCommandPrefix(text: string): string | null {
-		const match = text.match(/(?:^|\s)(\/[^/\s]*)$/);
-		return match?.[1] ?? null;
+		return extractSlashCommandTokenPrefix(text);
 	}
 
 	#isKnownCommandItem(item: AutocompleteItem): boolean {
@@ -402,12 +414,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const slashPrefix = this.#extractSlashCommandPrefix(textBeforeCursor);
 		if (slashPrefix) {
 			const matches = this.#getInlineSlashCommandNameSuggestions(slashPrefix.slice(1));
-			if (matches.length === 0) return null;
-
-			return {
-				items: matches,
-				prefix: slashPrefix,
-			};
+			if (matches.length > 0) {
+				return {
+					items: matches,
+					prefix: slashPrefix,
+				};
+			}
 		}
 
 		// Check for file paths - triggered by Tab or if we detect a path pattern
@@ -454,7 +466,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const isSlashCommand =
 			prefix.startsWith("/") &&
 			!prefix.slice(1).includes("/") &&
-			(beforePrefix.trim() === "" || (/\s$/.test(beforePrefix) && this.#isKnownCommandItem(item)));
+			(beforePrefix.trim() === "" || this.#isKnownCommandItem(item));
 		if (isSlashCommand) {
 			// This is a command name completion
 			const newLine = `${beforePrefix}/${item.value} ${afterCursor}`;

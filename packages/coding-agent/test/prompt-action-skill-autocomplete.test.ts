@@ -50,11 +50,12 @@ describe("prompt action skill autocomplete", () => {
 		expect(applied.lines[0]).toBe("/skill:deep-interview first /skill:deep-interview ");
 	});
 
-	it("does not offer skill completions from a bare slash token after prompt text", async () => {
+	it("offers slash command completions from a bare slash token after prompt text", async () => {
 		const provider = createProvider();
 		const line = "please use /";
 		const suggestions = await provider.getSuggestions([line], 0, line.length);
-		expect(suggestions).toBeNull();
+		expect(suggestions?.prefix).toBe("/");
+		expect(suggestions?.items.map(item => item.value)).toEqual(expect.arrayContaining(["model", "skill:team"]));
 	});
 
 	it("offers skill completions from an inline /skill token after prompt text", async () => {
