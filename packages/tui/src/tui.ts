@@ -139,9 +139,29 @@ function isTermuxSession(): boolean {
 	return Boolean(process.env.TERMUX_VERSION);
 }
 
+const GJC_TMUX_LAUNCHED_ENV = "GJC_TMUX_LAUNCHED";
+const DISABLED_ENV_VALUES = new Set(["0", "false", "off", "no"]);
+
+function envIsEnabled(value: string | undefined): boolean {
+	const normalized = value?.trim().toLowerCase();
+	return normalized !== undefined && normalized.length > 0 && !DISABLED_ENV_VALUES.has(normalized);
+}
+
+function termLooksMultiplexed(value: string | undefined): boolean {
+	const term = value?.trim().toLowerCase() ?? "";
+	return term.startsWith("tmux") || term.startsWith("screen");
+}
+
 /** Detect terminal multiplexers where scrollback clearing and height-change redraws are hostile. */
 function isMultiplexerSession(): boolean {
-	return Boolean(Bun.env.TMUX || Bun.env.STY || Bun.env.ZELLIJ);
+	return Boolean(
+		envIsEnabled(Bun.env.TMUX) ||
+			envIsEnabled(Bun.env.TMUX_PANE) ||
+			envIsEnabled(Bun.env.STY) ||
+			envIsEnabled(Bun.env.ZELLIJ) ||
+			envIsEnabled(Bun.env[GJC_TMUX_LAUNCHED_ENV]) ||
+			termLooksMultiplexed(Bun.env.TERM),
+	);
 }
 
 function useLegacyMultiplexerFullRender(): boolean {

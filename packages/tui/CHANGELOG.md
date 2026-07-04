@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- GJC-launched psmux panes are now treated as multiplexer sessions even when they do not expose `$TMUX`, so resize and forced redraw paths repaint the live viewport instead of replaying/clearing scrollback and leaving the bottom-pinned composer area above stale blank rows.
 
 ## [0.8.0] - 2026-07-04
 
