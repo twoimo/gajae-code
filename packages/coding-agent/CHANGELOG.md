@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-04
+
 ### Added
 
 - Reduced default initial-context size by shipping only essential tools up front. `tools.discoveryMode` now defaults to `"all"` and the essential resident set grew to `read, bash, edit, write, search, find`; non-essential built-in tools are hidden behind `search_tool_bm25` and discovered on demand. The system prompt gained a `<tool-discovery>` block that documents the discovery tool and lists discoverable tools with one-line summaries, so the model knows what it can activate without carrying every tool schema. This drops a typical initial context from ~63K tokens (tool-schema dominated) to under 20K.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-04
+
 ### Fixed
 
 - Added manual transcript viewport paging support so applications can repaint older terminal output with PageUp/PageDown without reusing editor history navigation.
