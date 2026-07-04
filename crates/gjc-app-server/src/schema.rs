@@ -86,9 +86,17 @@ pub fn schema_bundle() -> serde_json::Value {
 	insert_def!("GjcEventParams", crate::protocol::GjcEventParams);
 	insert_def!("ServerNotificationEnvelope", crate::protocol::ServerNotificationEnvelope);
 	insert_def!("RpcWorkflowGate", crate::workflow_gate::RpcWorkflowGate);
+	insert_def!("RpcWorkflowStage", crate::workflow_gate::RpcWorkflowStage);
+	insert_def!("RpcWorkflowGateKind", crate::workflow_gate::RpcWorkflowGateKind);
+	insert_def!("RpcWorkflowGateOption", crate::workflow_gate::RpcWorkflowGateOption);
+	insert_def!("RpcWorkflowGateContext", crate::workflow_gate::RpcWorkflowGateContext);
+	insert_def!("SchemaValidationIssue", crate::workflow_gate::SchemaValidationIssue);
 	insert_def!("RpcWorkflowGateResponse", crate::workflow_gate::RpcWorkflowGateResponse);
 	insert_def!("RpcWorkflowGateResolution", crate::workflow_gate::RpcWorkflowGateResolution);
-	insert_def!("RpcWorkflowGateValidationError", crate::workflow_gate::RpcWorkflowGateValidationError);
+	insert_def!(
+		"RpcWorkflowGateValidationError",
+		crate::workflow_gate::RpcWorkflowGateValidationError
+	);
 	insert_def!("WorkflowGateListParams", crate::workflow_gate::WorkflowGateListParams);
 	insert_def!("WorkflowGateListResult", crate::workflow_gate::WorkflowGateListResult);
 	insert_def!("WorkflowGateRespondParams", crate::workflow_gate::WorkflowGateRespondParams);

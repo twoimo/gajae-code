@@ -1838,6 +1838,129 @@
         }
       }
     },
+    "RpcWorkflowStage": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowStage",
+      "type": "string",
+      "enum": [
+        "deep-interview",
+        "ralplan",
+        "ultragoal"
+      ]
+    },
+    "RpcWorkflowGateKind": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateKind",
+      "type": "string",
+      "enum": [
+        "question",
+        "approval",
+        "execution"
+      ]
+    },
+    "RpcWorkflowGateOption": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateOption",
+      "type": "object",
+      "required": [
+        "label",
+        "value"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "value": true
+      }
+    },
+    "RpcWorkflowGateContext": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "RpcWorkflowGateContext",
+      "type": "object",
+      "properties": {
+        "artifact_refs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage_state": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SchemaValidationIssue": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SchemaValidationIssue",
+      "type": "object",
+      "required": [
+        "keyword",
+        "message",
+        "path"
+      ],
+      "properties": {
+        "expected": true,
+        "keyword": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
     "RpcWorkflowGateResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "RpcWorkflowGateResponse",
