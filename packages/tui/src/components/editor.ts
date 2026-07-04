@@ -1728,9 +1728,8 @@ export class Editor implements Component, Focusable {
 
 		// Check if we should trigger or update autocomplete
 		if (!this.#autocompleteState) {
-			// Auto-trigger for "/" at the start of a submitted command.
-			// Inline skill autocomplete starts after the token becomes "/skill...".
-			if (char === "/" && this.#isAtStartOfSubmittedMessage()) {
+			// Auto-trigger for slash command tokens.
+			if (char === "/" && (this.#isAtStartOfSubmittedMessage() || this.#isInSlashTokenContext())) {
 				this.#tryTriggerAutocomplete();
 			}
 			// Auto-trigger for "@" file reference (fuzzy search)
@@ -2656,7 +2655,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#isInSlashTokenContext(): boolean {
-		return this.#getSlashTokenBeforeCursor()?.startsWith("/skill") === true;
+		return this.#getSlashTokenBeforeCursor() !== null;
 	}
 
 	#isSlashCommandNameAutocompleteSelection(): boolean {
@@ -2740,7 +2739,10 @@ export class Editor implements Component, Focusable {
 		const beforeCursor = currentLine.slice(0, this.#state.cursorCol);
 
 		// Check if we're in a slash command context
-		if (this.#isInSubmittedSlashCommandContext() && !beforeCursor.trimStart().includes(" ")) {
+		if (
+			(this.#isInSubmittedSlashCommandContext() && !beforeCursor.trimStart().includes(" ")) ||
+			this.#isInSlashTokenContext()
+		) {
 			this.#handleSlashCommandCompletion();
 		} else {
 			this.#forceFileAutocomplete(true);
