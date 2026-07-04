@@ -1,11 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AutocompleteProvider } from "@gajae-code/tui";
 import { defaultEditorTheme } from "../../tui/test/test-themes";
-import { KEYBINDINGS } from "../src/config/keybindings";
+import { defaultMessageQueueKeysForPlatform, KEYBINDINGS } from "../src/config/keybindings";
 import { CustomEditor } from "../src/modes/components/custom-editor";
 
 function ctrl(key: string): string {
 	return String.fromCharCode(key.toLowerCase().charCodeAt(0) & 31);
+}
+
+function inputForKey(key: string): string {
+	switch (key) {
+		case "alt+q":
+			return "\x1bq";
+		case "alt+enter":
+			return "\x1b\r";
+		default:
+			throw new Error(`Unsupported test key: ${key}`);
+	}
 }
 
 function createEditor() {
@@ -95,7 +106,7 @@ describe("CustomEditor queue keybinding", () => {
 		const onQueue = vi.fn();
 		editor.onQueue = onQueue;
 
-		editor.handleInput("\x1b\r");
+		editor.handleInput(inputForKey(defaultMessageQueueKeysForPlatform()));
 
 		expect(onQueue).toHaveBeenCalledTimes(1);
 		expect(editor.getText()).toBe("");
@@ -105,6 +116,7 @@ describe("CustomEditor queue keybinding", () => {
 		const editor = createEditor();
 		const onQueue = vi.fn();
 		editor.onQueue = onQueue;
+		editor.setActionKeys("app.message.queue", ["alt+enter"]);
 
 		editor.handleInput("\x1b\n");
 

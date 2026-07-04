@@ -313,14 +313,7 @@ export class InputController {
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
 		this.ctx.editor.setActionKeys("app.message.queue", this.ctx.keybindings.getKeys("app.message.queue"));
 		this.ctx.editor.onQueue = () => void this.handleQueueSubmit();
-		this.ctx.editor.onTab = () => {
-			if (!this.ctx.session.isStreaming && !this.ctx.session.isCompacting) return false;
-			void this.handleQueueSubmit();
-			return true;
-		};
-		this.ctx.editor.onTabDeclined = () => {
-			if (this.ctx.session.isStreaming || this.ctx.session.isCompacting) void this.handleQueueSubmit();
-		};
+
 		this.ctx.editor.onViewportPageScroll = direction => this.ctx.ui.scrollViewportPages(direction);
 		this.ctx.editor.onViewportFollowLive = () => {
 			this.ctx.ui.followLiveViewport();
@@ -766,7 +759,7 @@ export class InputController {
 		return this.handleFollowUp();
 	}
 
-	restoreLatestQueuedMessageToEditor(options?: { currentText?: string }): number {
+	restoreLatestQueuedMessageToEditor(): number {
 		const compactionQueued = this.ctx.compactionQueuedMessages.pop();
 		const queuedText = compactionQueued?.text ?? this.ctx.session.popLastQueuedMessage();
 		if (!queuedText) {
@@ -775,9 +768,7 @@ export class InputController {
 		}
 
 		this.ctx.locallySubmittedUserSignatures.delete(`${queuedText}\u00000`);
-		const currentText = options?.currentText ?? this.ctx.editor.getText();
-		const combinedText = [queuedText, currentText].filter(t => t.trim()).join("\n\n");
-		this.ctx.editor.setText(combinedText);
+		this.ctx.editor.setText(queuedText);
 		this.ctx.updatePendingMessagesDisplay();
 		return 1;
 	}
