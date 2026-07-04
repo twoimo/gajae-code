@@ -344,497 +344,445 @@
         "failed"
       ]
     },
-    "RpcWorkflowGate": {
+    "EmptyResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGate",
+      "title": "EmptyResult",
+      "description": "Empty object result used by `gjc/todos/set`, `gjc/hostTools/*`, `thread/delete`, and `thread/archive`; see `server.rs` handlers returning `json!({})`.",
+      "type": "object"
+    },
+    "InitializeParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "InitializeParams",
+      "description": "`initialize` params are currently ignored/lenient; see `server.rs::handle_initialize`.",
+      "type": "object"
+    },
+    "InitializeResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "InitializeResult",
+      "description": "`initialize` result emitted by `server.rs::handle_initialize`.",
       "type": "object",
       "required": [
-        "context",
-        "created_at",
-        "gate_id",
-        "kind",
-        "required",
-        "schema",
-        "schema_hash",
-        "stage",
-        "type"
+        "platformFamily",
+        "platformOs",
+        "userAgent"
       ],
       "properties": {
-        "context": {
-          "$ref": "#/definitions/RpcWorkflowGateContext"
-        },
-        "created_at": {
+        "platformFamily": {
           "type": "string"
         },
-        "gate_id": {
+        "platformOs": {
           "type": "string"
         },
-        "kind": {
-          "$ref": "#/definitions/RpcWorkflowGateKind"
-        },
-        "options": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/RpcWorkflowGateOption"
-          }
-        },
-        "required": {
-          "type": "boolean"
-        },
-        "schema": true,
-        "schema_hash": {
+        "userAgent": {
           "type": "string"
-        },
-        "stage": {
-          "$ref": "#/definitions/RpcWorkflowStage"
-        },
-        "type": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "RpcWorkflowGateContext": {
-          "type": "object",
-          "properties": {
-            "artifact_refs": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "object",
-                "additionalProperties": true
-              }
-            },
-            "language": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "plan": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "source": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "stage_state": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": true
-            },
-            "summary": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        },
-        "RpcWorkflowGateKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "approval",
-            "execution"
-          ]
-        },
-        "RpcWorkflowGateOption": {
-          "type": "object",
-          "required": [
-            "label",
-            "value"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "value": true
-          }
-        },
-        "RpcWorkflowStage": {
-          "type": "string",
-          "enum": [
-            "deep-interview",
-            "ralplan",
-            "ultragoal"
-          ]
         }
       }
     },
-    "RpcWorkflowGateResponse": {
+    "InitializedParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateResponse",
+      "title": "InitializedParams",
+      "description": "Client `initialized` notification params; `server.rs::dispatch` only checks the method.",
+      "type": "object"
+    },
+    "ThreadStartParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "ThreadResumeParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadResumeParams",
+      "description": "`thread/resume` params require `threadId` and otherwise pass through to the backend; see `server.rs::handle_thread_resume`.",
       "type": "object",
       "required": [
-        "answer",
-        "gate_id"
+        "threadId"
       ],
       "properties": {
-        "answer": true,
-        "gate_id": {
+        "threadId": {
           "type": "string"
-        },
-        "idempotency_key": {
+        }
+      },
+      "additionalProperties": true
+    },
+    "ThreadForkParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "ThreadIdParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadIdParams",
+      "description": "`thread/read`, `thread/delete`, and `thread/archive` params; see `server.rs::extract_thread_id` call sites.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "ThreadSummary": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadSummary",
+      "description": "Thread object returned by start/resume/fork/read; see `server.rs::register`, `thread_response`, and `handle_thread_read`.",
+      "type": "object",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "forkedFromId": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "generation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadStatus"
+        },
+        "turns": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": true
+        }
+      },
+      "definitions": {
+        "ThreadStatus": {
+          "description": "Lifecycle status of a thread in the registry.",
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "archived",
+            "deleted"
+          ]
         }
       }
     },
-    "RpcWorkflowGateResolution": {
+    "ThreadResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateResolution",
+      "title": "ThreadResult",
+      "description": "`thread/start` and `thread/fork` result; see `server.rs::handle_thread_start`/`handle_thread_fork`.",
       "type": "object",
       "required": [
-        "answer_hash",
-        "gate_id",
-        "resolved_at",
+        "thread"
+      ],
+      "properties": {
+        "thread": {
+          "$ref": "#/definitions/ThreadSummary"
+        }
+      },
+      "definitions": {
+        "ThreadStatus": {
+          "description": "Lifecycle status of a thread in the registry.",
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "archived",
+            "deleted"
+          ]
+        },
+        "ThreadSummary": {
+          "description": "Thread object returned by start/resume/fork/read; see `server.rs::register`, `thread_response`, and `handle_thread_read`.",
+          "type": "object",
+          "required": [
+            "id",
+            "status"
+          ],
+          "properties": {
+            "forkedFromId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generation": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/definitions/ThreadStatus"
+            },
+            "turns": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": true
+            }
+          }
+        }
+      }
+    },
+    "ThreadResumeResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadResumeResult",
+      "description": "`thread/resume` result; see `server.rs::handle_thread_resume`.",
+      "type": "object",
+      "required": [
+        "resumed",
+        "thread"
+      ],
+      "properties": {
+        "resumed": {
+          "type": "boolean"
+        },
+        "thread": {
+          "$ref": "#/definitions/ThreadSummary"
+        }
+      },
+      "definitions": {
+        "ThreadStatus": {
+          "description": "Lifecycle status of a thread in the registry.",
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "archived",
+            "deleted"
+          ]
+        },
+        "ThreadSummary": {
+          "description": "Thread object returned by start/resume/fork/read; see `server.rs::register`, `thread_response`, and `handle_thread_read`.",
+          "type": "object",
+          "required": [
+            "id",
+            "status"
+          ],
+          "properties": {
+            "forkedFromId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generation": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/definitions/ThreadStatus"
+            },
+            "turns": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": true
+            }
+          }
+        }
+      }
+    },
+    "ThreadReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadIdParams",
+      "description": "`thread/read`, `thread/delete`, and `thread/archive` params; see `server.rs::extract_thread_id` call sites.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "ThreadReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadResult",
+      "description": "`thread/start` and `thread/fork` result; see `server.rs::handle_thread_start`/`handle_thread_fork`.",
+      "type": "object",
+      "required": [
+        "thread"
+      ],
+      "properties": {
+        "thread": {
+          "$ref": "#/definitions/ThreadSummary"
+        }
+      },
+      "definitions": {
+        "ThreadStatus": {
+          "description": "Lifecycle status of a thread in the registry.",
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "archived",
+            "deleted"
+          ]
+        },
+        "ThreadSummary": {
+          "description": "Thread object returned by start/resume/fork/read; see `server.rs::register`, `thread_response`, and `handle_thread_read`.",
+          "type": "object",
+          "required": [
+            "id",
+            "status"
+          ],
+          "properties": {
+            "forkedFromId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generation": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/definitions/ThreadStatus"
+            },
+            "turns": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": true
+            }
+          }
+        }
+      }
+    },
+    "ThreadLoadedListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadLoadedListParams",
+      "description": "`thread/loaded/list` params are unused; see `server.rs::dispatch_method`.",
+      "type": "object"
+    },
+    "ThreadLoadedListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadLoadedListResult",
+      "description": "`thread/loaded/list` result; see `server.rs::dispatch_method`.",
+      "type": "object",
+      "required": [
+        "data"
+      ],
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TurnStartParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnStartParams",
+      "description": "`turn/start` params require `threadId`, optionally `expectedTurnId`, and are then forwarded to `AgentBackend::prompt`; see `server.rs::handle_turn_start`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "expectedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "TurnStartResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnStartResult",
+      "description": "`turn/start` result; see `server.rs::handle_turn_start`.",
+      "type": "object",
+      "required": [
+        "turn"
+      ],
+      "properties": {
+        "turn": {
+          "$ref": "#/definitions/TurnSummary"
+        }
+      },
+      "definitions": {
+        "TurnSummary": {
+          "description": "Turn object returned by `turn/start`; see `server.rs::handle_turn_start`.",
+          "type": "object",
+          "required": [
+            "id",
+            "status"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "TurnSummary": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnSummary",
+      "description": "Turn object returned by `turn/start`; see `server.rs::handle_turn_start`.",
+      "type": "object",
+      "required": [
+        "id",
         "status"
       ],
       "properties": {
-        "answer_hash": {
-          "type": "string"
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/RpcWorkflowGateValidationError"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "resolved_at": {
+        "id": {
           "type": "string"
         },
         "status": {
           "type": "string"
         }
-      },
-      "definitions": {
-        "RpcWorkflowGateValidationError": {
-          "type": "object",
-          "required": [
-            "code",
-            "errors",
-            "gate_id",
-            "schema_hash"
-          ],
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "errors": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/SchemaValidationIssue"
-              }
-            },
-            "gate_id": {
-              "type": "string"
-            },
-            "schema_hash": {
-              "type": "string"
-            }
-          }
-        },
-        "SchemaValidationIssue": {
-          "type": "object",
-          "required": [
-            "keyword",
-            "message",
-            "path"
-          ],
-          "properties": {
-            "expected": true,
-            "keyword": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            }
-          }
-        }
       }
     },
-    "RpcWorkflowGateValidationError": {
+    "TurnSteerParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateValidationError",
-      "type": "object",
-      "required": [
-        "code",
-        "errors",
-        "gate_id",
-        "schema_hash"
-      ],
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "errors": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/SchemaValidationIssue"
-          }
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "schema_hash": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "SchemaValidationIssue": {
-          "type": "object",
-          "required": [
-            "keyword",
-            "message",
-            "path"
-          ],
-          "properties": {
-            "expected": true,
-            "keyword": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    },
-    "WorkflowGateListParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateListParams",
+      "title": "TurnStartParams",
+      "description": "`turn/start` params require `threadId`, optionally `expectedTurnId`, and are then forwarded to `AgentBackend::prompt`; see `server.rs::handle_turn_start`.",
       "type": "object",
       "required": [
         "threadId"
       ],
       "properties": {
-        "threadId": {
-          "type": "string"
-        }
-      }
-    },
-    "WorkflowGateListResult": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateListResult",
-      "type": "object",
-      "required": [
-        "gates"
-      ],
-      "properties": {
-        "gates": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/RpcWorkflowGate"
-          }
-        }
-      },
-      "definitions": {
-        "RpcWorkflowGate": {
-          "type": "object",
-          "required": [
-            "context",
-            "created_at",
-            "gate_id",
-            "kind",
-            "required",
-            "schema",
-            "schema_hash",
-            "stage",
-            "type"
-          ],
-          "properties": {
-            "context": {
-              "$ref": "#/definitions/RpcWorkflowGateContext"
-            },
-            "created_at": {
-              "type": "string"
-            },
-            "gate_id": {
-              "type": "string"
-            },
-            "kind": {
-              "$ref": "#/definitions/RpcWorkflowGateKind"
-            },
-            "options": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "$ref": "#/definitions/RpcWorkflowGateOption"
-              }
-            },
-            "required": {
-              "type": "boolean"
-            },
-            "schema": true,
-            "schema_hash": {
-              "type": "string"
-            },
-            "stage": {
-              "$ref": "#/definitions/RpcWorkflowStage"
-            },
-            "type": {
-              "type": "string"
-            }
-          }
-        },
-        "RpcWorkflowGateContext": {
-          "type": "object",
-          "properties": {
-            "artifact_refs": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "object",
-                "additionalProperties": true
-              }
-            },
-            "language": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "plan": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "source": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "stage_state": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": true
-            },
-            "summary": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        },
-        "RpcWorkflowGateKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "approval",
-            "execution"
-          ]
-        },
-        "RpcWorkflowGateOption": {
-          "type": "object",
-          "required": [
-            "label",
-            "value"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "value": true
-          }
-        },
-        "RpcWorkflowStage": {
-          "type": "string",
-          "enum": [
-            "deep-interview",
-            "ralplan",
-            "ultragoal"
-          ]
-        }
-      }
-    },
-    "WorkflowGateRespondParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateRespondParams",
-      "type": "object",
-      "required": [
-        "answer",
-        "gate_id",
-        "threadId"
-      ],
-      "properties": {
-        "answer": true,
-        "gate_id": {
-          "type": "string"
-        },
-        "idempotency_key": {
-          "default": null,
+        "expectedTurnId": {
           "type": [
             "string",
             "null"
@@ -843,737 +791,406 @@
         "threadId": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": true
     },
-    "WorkflowGateOpenedParams": {
+    "TurnSteerResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateOpenedParams",
+      "title": "TurnSteerResult",
+      "description": "`turn/steer` result; see `server.rs::handle_turn_steer`.",
       "type": "object",
       "required": [
-        "context",
-        "created_at",
-        "gate_id",
-        "generation",
-        "kind",
-        "required",
-        "schema",
-        "schema_hash",
-        "stage",
+        "turnId"
+      ],
+      "properties": {
+        "turnId": {
+          "type": "string"
+        }
+      }
+    },
+    "TurnInterruptParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnInterruptParams",
+      "description": "`turn/interrupt` params; see `server.rs::handle_turn_interrupt`.",
+      "type": "object",
+      "required": [
         "threadId",
-        "type"
+        "turnId"
       ],
       "properties": {
-        "context": {
-          "$ref": "#/definitions/RpcWorkflowGateContext"
-        },
-        "created_at": {
-          "type": "string"
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "generation": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "kind": {
-          "$ref": "#/definitions/RpcWorkflowGateKind"
-        },
-        "options": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/RpcWorkflowGateOption"
-          }
-        },
-        "required": {
-          "type": "boolean"
-        },
-        "schema": true,
-        "schema_hash": {
-          "type": "string"
-        },
-        "stage": {
-          "$ref": "#/definitions/RpcWorkflowStage"
-        },
         "threadId": {
           "type": "string"
         },
-        "type": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "RpcWorkflowGateContext": {
-          "type": "object",
-          "properties": {
-            "artifact_refs": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "object",
-                "additionalProperties": true
-              }
-            },
-            "language": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "plan": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "source": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "stage_state": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": true
-            },
-            "summary": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        },
-        "RpcWorkflowGateKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "approval",
-            "execution"
-          ]
-        },
-        "RpcWorkflowGateOption": {
-          "type": "object",
-          "required": [
-            "label",
-            "value"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "value": true
-          }
-        },
-        "RpcWorkflowStage": {
-          "type": "string",
-          "enum": [
-            "deep-interview",
-            "ralplan",
-            "ultragoal"
-          ]
-        }
-      }
-    },
-    "RpcUnattendedBudget": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedBudget",
-      "type": "object",
-      "required": [
-        "max_cost_usd",
-        "max_tokens",
-        "max_tool_calls",
-        "max_wall_time_ms"
-      ],
-      "properties": {
-        "max_cost_usd": {
-          "type": "number",
-          "format": "double"
-        },
-        "max_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "max_tool_calls": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "max_wall_time_ms": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        }
-      }
-    },
-    "RpcUnattendedDeclaration": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedDeclaration",
-      "type": "object",
-      "required": [
-        "action_allowlist",
-        "actor",
-        "budget",
-        "scopes"
-      ],
-      "properties": {
-        "action_allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "actor": {
-          "type": "string"
-        },
-        "budget": {
-          "$ref": "#/definitions/RpcUnattendedBudget"
-        },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "definitions": {
-        "RpcUnattendedBudget": {
-          "type": "object",
-          "required": [
-            "max_cost_usd",
-            "max_tokens",
-            "max_tool_calls",
-            "max_wall_time_ms"
-          ],
-          "properties": {
-            "max_cost_usd": {
-              "type": "number",
-              "format": "double"
-            },
-            "max_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_wall_time_ms": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
-        }
-      }
-    },
-    "RpcUnattendedAccepted": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedAccepted",
-      "type": "object",
-      "required": [
-        "accepted_at",
-        "action_allowlist",
-        "actor",
-        "budget",
-        "run_id",
-        "scopes"
-      ],
-      "properties": {
-        "accepted_at": {
-          "type": "string"
-        },
-        "action_allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "actor": {
-          "type": "string"
-        },
-        "budget": {
-          "$ref": "#/definitions/RpcUnattendedBudget"
-        },
-        "run_id": {
-          "type": "string"
-        },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "definitions": {
-        "RpcUnattendedBudget": {
-          "type": "object",
-          "required": [
-            "max_cost_usd",
-            "max_tokens",
-            "max_tool_calls",
-            "max_wall_time_ms"
-          ],
-          "properties": {
-            "max_cost_usd": {
-              "type": "number",
-              "format": "double"
-            },
-            "max_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_wall_time_ms": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
-        }
-      }
-    },
-    "RpcBudgetExceeded": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcBudgetExceeded",
-      "type": "object",
-      "required": [
-        "abort_status",
-        "code",
-        "limit",
-        "metric",
-        "observed",
-        "phase",
-        "run_id"
-      ],
-      "properties": {
-        "abort_status": {
-          "type": "string"
-        },
-        "code": {
-          "type": "string"
-        },
-        "limit": {
-          "type": "number",
-          "format": "double"
-        },
-        "metric": {
-          "type": "string"
-        },
-        "observed": {
-          "type": "number",
-          "format": "double"
-        },
-        "phase": {
-          "type": "string"
-        },
-        "run_id": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "RpcScopeDenied": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcScopeDenied",
-      "type": "object",
-      "required": [
-        "code",
-        "pre_side_effect",
-        "run_id",
-        "scope"
-      ],
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "command": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "pre_side_effect": {
-          "type": "boolean"
-        },
-        "run_id": {
-          "type": "string"
-        },
-        "scope": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "RpcActionDenied": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcActionDenied",
-      "type": "object",
-      "required": [
-        "action",
-        "code",
-        "pre_side_effect",
-        "run_id"
-      ],
-      "properties": {
-        "action": {
-          "type": "string"
-        },
-        "code": {
-          "type": "string"
-        },
-        "command": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "pre_side_effect": {
-          "type": "boolean"
-        },
-        "run_id": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "RpcUnattendedRefused": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedRefused",
-      "type": "object",
-      "required": [
-        "code",
-        "message"
-      ],
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "message": {
+        "turnId": {
           "type": "string"
         }
       }
     },
-    "UnattendedNegotiateParams": {
+    "TurnInterruptResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "UnattendedNegotiateParams",
+      "title": "EmptyResult",
+      "description": "Empty object result used by `gjc/todos/set`, `gjc/hostTools/*`, `thread/delete`, and `thread/archive`; see `server.rs` handlers returning `json!({})`.",
+      "type": "object"
+    },
+    "GjcStateReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcStateReadParams",
+      "description": "`gjc/state/read` params; strict fields enforced in `server.rs::handle_gjc_state_read`.",
       "type": "object",
       "required": [
-        "declaration",
         "threadId"
       ],
       "properties": {
-        "declaration": {
-          "$ref": "#/definitions/RpcUnattendedDeclaration"
+        "include": true,
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcStateReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "GjcMessagesGetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadIdParams",
+      "description": "`thread/read`, `thread/delete`, and `thread/archive` params; see `server.rs::extract_thread_id` call sites.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcMessagesGetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "GjcModelSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcModelSetParams",
+      "description": "`gjc/model/set` params; strict fields enforced in `server.rs::handle_gjc_model_set`.",
+      "type": "object",
+      "required": [
+        "modelId",
+        "provider",
+        "threadId"
+      ],
+      "properties": {
+        "modelId": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
         },
         "threadId": {
           "type": "string"
         }
-      },
-      "definitions": {
-        "RpcUnattendedBudget": {
-          "type": "object",
-          "required": [
-            "max_cost_usd",
-            "max_tokens",
-            "max_tool_calls",
-            "max_wall_time_ms"
-          ],
-          "properties": {
-            "max_cost_usd": {
-              "type": "number",
-              "format": "double"
-            },
-            "max_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_wall_time_ms": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
-        },
-        "RpcUnattendedDeclaration": {
-          "type": "object",
-          "required": [
-            "action_allowlist",
-            "actor",
-            "budget",
-            "scopes"
-          ],
-          "properties": {
-            "action_allowlist": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "actor": {
-              "type": "string"
-            },
-            "budget": {
-              "$ref": "#/definitions/RpcUnattendedBudget"
-            },
-            "scopes": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
+      }
+    },
+    "GjcModelSetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "GjcTodosSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcTodosSetParams",
+      "description": "`gjc/todos/set` params; strict fields enforced in `server.rs::handle_gjc_todos_set`.",
+      "type": "object",
+      "required": [
+        "phases",
+        "threadId"
+      ],
+      "properties": {
+        "phases": true,
+        "threadId": {
+          "type": "string"
         }
       }
     },
-    "HostUriSchemeDefinition": {
+    "GjcTodosSetResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriSchemeDefinition",
+      "title": "EmptyResult",
+      "description": "Empty object result used by `gjc/todos/set`, `gjc/hostTools/*`, `thread/delete`, and `thread/archive`; see `server.rs` handlers returning `json!({})`.",
+      "type": "object"
+    },
+    "GjcCompactParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcCompactParams",
+      "description": "`gjc/compact` params; strict fields enforced in `server.rs::handle_gjc_compact`.",
       "type": "object",
       "required": [
-        "scheme"
+        "threadId"
+      ],
+      "properties": {
+        "customInstructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcCompactResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "HostToolDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostToolDescriptor",
+      "description": "Host tool descriptor consumed by `gjc/hostTools/set`; see `host_tools.rs::parse_set_params`.",
+      "type": "object",
+      "required": [
+        "description",
+        "inputSchema",
+        "name"
       ],
       "properties": {
         "description": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "immutable": {
-          "default": false,
-          "type": "boolean"
-        },
-        "scheme": {
           "type": "string"
         },
-        "writable": {
-          "default": false,
-          "type": "boolean"
-        }
-      }
-    },
-    "HostUriSchemesSetParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriSchemesSetParams",
-      "type": "object",
-      "required": [
-        "schemes",
-        "threadId"
-      ],
-      "properties": {
-        "schemes": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/HostUriSchemeDefinition"
-          }
-        },
-        "threadId": {
+        "inputSchema": true,
+        "name": {
           "type": "string"
-        }
-      },
-      "definitions": {
-        "HostUriSchemeDefinition": {
-          "type": "object",
-          "required": [
-            "scheme"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "immutable": {
-              "default": false,
-              "type": "boolean"
-            },
-            "scheme": {
-              "type": "string"
-            },
-            "writable": {
-              "default": false,
-              "type": "boolean"
-            }
-          }
-        }
+        },
+        "redactionHints": true,
+        "resultPolicy": true
       }
     },
-    "HostUriSchemesSetResult": {
+    "GjcHostToolsSetParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriSchemesSetResult",
+      "title": "GjcHostToolsSetParams",
+      "description": "`gjc/hostTools/set` params; strict fields enforced in `host_tools.rs::parse_set_params`.",
       "type": "object",
       "required": [
-        "schemes"
-      ],
-      "properties": {
-        "schemes": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/HostUriSchemeDefinition"
-          }
-        }
-      },
-      "definitions": {
-        "HostUriSchemeDefinition": {
-          "type": "object",
-          "required": [
-            "scheme"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "immutable": {
-              "default": false,
-              "type": "boolean"
-            },
-            "scheme": {
-              "type": "string"
-            },
-            "writable": {
-              "default": false,
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    },
-    "HostUriOperation": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriOperation",
-      "type": "string",
-      "enum": [
-        "read",
-        "write"
-      ]
-    },
-    "HostUriRequestParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriRequestParams",
-      "type": "object",
-      "required": [
-        "generation",
-        "operation",
-        "requestId",
         "threadId",
-        "turnId",
-        "url"
+        "tools"
       ],
       "properties": {
-        "content": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "generation": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "operation": {
-          "$ref": "#/definitions/HostUriOperation"
-        },
-        "requestId": {
-          "type": "string"
-        },
         "threadId": {
           "type": "string"
         },
-        "turnId": {
-          "type": "string"
-        },
-        "url": {
-          "type": "string"
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostToolDescriptor"
+          }
         }
       },
       "definitions": {
-        "HostUriOperation": {
-          "type": "string",
-          "enum": [
-            "read",
-            "write"
-          ]
+        "HostToolDescriptor": {
+          "description": "Host tool descriptor consumed by `gjc/hostTools/set`; see `host_tools.rs::parse_set_params`.",
+          "type": "object",
+          "required": [
+            "description",
+            "inputSchema",
+            "name"
+          ],
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "inputSchema": true,
+            "name": {
+              "type": "string"
+            },
+            "redactionHints": true,
+            "resultPolicy": true
+          }
         }
       }
     },
-    "HostUriCancelParams": {
+    "GjcHostToolsSetResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriCancelParams",
+      "title": "EmptyResult",
+      "description": "Empty object result used by `gjc/todos/set`, `gjc/hostTools/*`, `thread/delete`, and `thread/archive`; see `server.rs` handlers returning `json!({})`.",
+      "type": "object"
+    },
+    "GjcHostToolsResultParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcHostToolsResultParams",
+      "description": "`gjc/hostTools/result` params and backend result shape; see `host_tools.rs::parse_result_params`.",
       "type": "object",
       "required": [
-        "generation",
-        "requestId",
+        "callId",
+        "ok",
         "threadId"
       ],
       "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "error": true,
+        "ok": {
+          "type": "boolean"
+        },
+        "result": true,
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcHostToolsResultResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "EmptyResult",
+      "description": "Empty object result used by `gjc/todos/set`, `gjc/hostTools/*`, `thread/delete`, and `thread/archive`; see `server.rs` handlers returning `json!({})`.",
+      "type": "object"
+    },
+    "GjcHostToolsUpdateParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcHostToolsUpdateParams",
+      "description": "`gjc/hostTools/update` params; strict fields enforced in `host_tools.rs::parse_update_params`.",
+      "type": "object",
+      "required": [
+        "callId",
+        "payload",
+        "threadId"
+      ],
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "payload": true,
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcHostToolsUpdateResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "EmptyResult",
+      "description": "Empty object result used by `gjc/todos/set`, `gjc/hostTools/*`, `thread/delete`, and `thread/archive`; see `server.rs` handlers returning `json!({})`.",
+      "type": "object"
+    },
+    "HostToolsCallParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostToolsCallParams",
+      "description": "`gjc/hostTools/call` notification params emitted by `server.rs::host_tool_call`.",
+      "type": "object",
+      "required": [
+        "args",
+        "callId",
+        "generation",
+        "threadId",
+        "tool",
+        "turnId"
+      ],
+      "properties": {
+        "args": true,
+        "callId": {
+          "type": "string"
+        },
         "generation": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0.0
         },
-        "requestId": {
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      }
+    },
+    "HostToolsCancelParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "HostToolsCancelParams",
+      "description": "`gjc/hostTools/cancel` notification params emitted by `server.rs::cancel_host_tool_calls_for_*`.",
+      "type": "object",
+      "required": [
+        "callId",
+        "generation",
+        "threadId",
+        "turnId"
+      ],
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      }
+    },
+    "ThreadEventBase": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadEventBase",
+      "description": "Common thread-scoped notification fields inserted by `event_map.rs::ThreadStream::note`.",
+      "type": "object",
+      "required": [
+        "seq",
+        "threadId"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "TurnStartedParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnStartedParams",
+      "description": "`turn/started` notification params emitted by `event_map.rs::begin_turn`/`on_event`.",
+      "type": "object",
+      "required": [
+        "seq",
+        "threadId",
+        "turnId"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      }
+    },
+    "TurnCompletedParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TurnCompletedParams",
+      "description": "`turn/completed` notification params emitted by `event_map.rs::flush_terminal`.",
+      "type": "object",
+      "required": [
+        "seq",
+        "status",
+        "threadId"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "status": {
           "type": "string"
         },
         "threadId": {
@@ -1587,99 +1204,490 @@
         }
       }
     },
-    "HostUriResultParams": {
+    "ItemStartedParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriResultParams",
+      "title": "ItemStartedParams",
+      "description": "`item/started` notification params emitted by `event_map.rs::on_event` for messages, reasoning, compaction, and tools.",
       "type": "object",
       "required": [
-        "requestId",
+        "itemId",
+        "itemType",
+        "seq",
         "threadId"
       ],
       "properties": {
-        "content": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "contentType": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "error": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "immutable": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "isError": {
-          "default": false,
-          "type": "boolean"
-        },
-        "notes": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "requestId": {
+        "content": true,
+        "itemId": {
           "type": "string"
+        },
+        "itemType": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ItemAgentMessageDeltaParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ItemAgentMessageDeltaParams",
+      "description": "`item/agentMessage/delta` notification params emitted by `event_map.rs::on_event` for text deltas.",
+      "type": "object",
+      "required": [
+        "delta",
+        "itemId",
+        "seq",
+        "threadId"
+      ],
+      "properties": {
+        "delta": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
         },
         "threadId": {
           "type": "string"
         }
       }
     },
-    "HostUriResource": {
+    "ItemCompletedParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriResource",
+      "title": "ItemCompletedParams",
+      "description": "`item/completed` notification params emitted by `event_map.rs::complete_message_item` and tool completion mapping.",
       "type": "object",
       "required": [
-        "content",
-        "contentType",
-        "size",
-        "url"
+        "itemId",
+        "itemType",
+        "seq",
+        "threadId"
       ],
       "properties": {
-        "content": {
+        "itemId": {
           "type": "string"
         },
-        "contentType": {
+        "itemType": {
           "type": "string"
         },
-        "immutable": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "notes": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "size": {
+        "seq": {
           "type": "integer",
-          "format": "uint",
+          "format": "uint64",
           "minimum": 0.0
         },
-        "url": {
+        "threadId": {
           "type": "string"
+        }
+      }
+    },
+    "GjcEventParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcEventParams",
+      "description": "`gjc/event` notification params emitted after every backend event by `event_map.rs::raw`.",
+      "type": "object",
+      "required": [
+        "event",
+        "eventType",
+        "seq",
+        "threadId"
+      ],
+      "properties": {
+        "event": true,
+        "eventType": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "ServerNotificationEnvelope": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ServerNotificationEnvelope",
+      "description": "Method-specific server notification envelopes for GUI-consumed events; see `event_map.rs` and host-tool notification emitters in `server.rs`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "turn/started"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/TurnStartedParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "turn/completed"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/TurnCompletedParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "item/started"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/ItemStartedParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "item/agentMessage/delta"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/ItemAgentMessageDeltaParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "item/completed"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/ItemCompletedParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/event"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/GjcEventParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/hostTools/call"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/HostToolsCallParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/hostTools/cancel"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/HostToolsCancelParams"
+            }
+          }
+        }
+      ],
+      "definitions": {
+        "GjcEventParams": {
+          "description": "`gjc/event` notification params emitted after every backend event by `event_map.rs::raw`.",
+          "type": "object",
+          "required": [
+            "event",
+            "eventType",
+            "seq",
+            "threadId"
+          ],
+          "properties": {
+            "event": true,
+            "eventType": {
+              "type": "string"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            }
+          }
+        },
+        "HostToolsCallParams": {
+          "description": "`gjc/hostTools/call` notification params emitted by `server.rs::host_tool_call`.",
+          "type": "object",
+          "required": [
+            "args",
+            "callId",
+            "generation",
+            "threadId",
+            "tool",
+            "turnId"
+          ],
+          "properties": {
+            "args": true,
+            "callId": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          }
+        },
+        "HostToolsCancelParams": {
+          "description": "`gjc/hostTools/cancel` notification params emitted by `server.rs::cancel_host_tool_calls_for_*`.",
+          "type": "object",
+          "required": [
+            "callId",
+            "generation",
+            "threadId",
+            "turnId"
+          ],
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          }
+        },
+        "ItemAgentMessageDeltaParams": {
+          "description": "`item/agentMessage/delta` notification params emitted by `event_map.rs::on_event` for text deltas.",
+          "type": "object",
+          "required": [
+            "delta",
+            "itemId",
+            "seq",
+            "threadId"
+          ],
+          "properties": {
+            "delta": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            }
+          }
+        },
+        "ItemCompletedParams": {
+          "description": "`item/completed` notification params emitted by `event_map.rs::complete_message_item` and tool completion mapping.",
+          "type": "object",
+          "required": [
+            "itemId",
+            "itemType",
+            "seq",
+            "threadId"
+          ],
+          "properties": {
+            "itemId": {
+              "type": "string"
+            },
+            "itemType": {
+              "type": "string"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            }
+          }
+        },
+        "ItemStartedParams": {
+          "description": "`item/started` notification params emitted by `event_map.rs::on_event` for messages, reasoning, compaction, and tools.",
+          "type": "object",
+          "required": [
+            "itemId",
+            "itemType",
+            "seq",
+            "threadId"
+          ],
+          "properties": {
+            "content": true,
+            "itemId": {
+              "type": "string"
+            },
+            "itemType": {
+              "type": "string"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "toolName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "TurnCompletedParams": {
+          "description": "`turn/completed` notification params emitted by `event_map.rs::flush_terminal`.",
+          "type": "object",
+          "required": [
+            "seq",
+            "status",
+            "threadId"
+          ],
+          "properties": {
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "status": {
+              "type": "string"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "TurnStartedParams": {
+          "description": "`turn/started` notification params emitted by `event_map.rs::begin_turn`/`on_event`.",
+          "type": "object",
+          "required": [
+            "seq",
+            "threadId",
+            "turnId"
+          ],
+          "properties": {
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          }
         }
       }
     }

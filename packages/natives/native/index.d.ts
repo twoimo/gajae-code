@@ -24,7 +24,7 @@ export declare class AppServer {
    * Start a loopback WebSocket transport for this app-server; returns the
    * bound ws:// URL.
    */
-  listenWs(host: string, port: number, token: string, sessionId: string, stateRoot?: string | undefined | null): Promise<string>
+  listenWs(host: string, port: number, token: string, sessionId: string, stateRoot?: string | undefined | null, allowedOrigins?: Array<string> | undefined | null): Promise<string>
   /**
    * Resolve a pending backend/factory call reported through `onCall`.
    * `ok=true` treats `json` as the result value; `ok=false` treats `json` as

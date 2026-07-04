@@ -1,0 +1,110 @@
+:root {
+	color-scheme: dark;
+	--gjc-bg: #2b2622;
+	--gjc-bg-elevated: #302b27;
+	--gjc-surface: #332e2a;
+	--gjc-surface-strong: #3a342f;
+	--gjc-border: #3f3a36;
+	--gjc-border-strong: #57504a;
+	--gjc-text: #f7f5f0;
+	--gjc-text-muted: #c9c0ad;
+	--gjc-text-dim: #948b80;
+	--gjc-red-claw: #f05404;
+	--gjc-red-claw-strong: #ff7a2f;
+	--gjc-red-claw-deep: #9f2706;
+	--gjc-blue-crab: #5ab7d8;
+	--gjc-blue-crab-deep: #12363b;
+	--gjc-blue-crab-soft: #9fd8ea;
+	--gjc-success: #79c98d;
+	--gjc-warning: #d8b76a;
+	--gjc-danger: #ff7b74;
+	--gjc-info: var(--gjc-blue-crab);
+	--gjc-code-bg: #241f1c;
+	--gjc-code-border: var(--gjc-border);
+	--gjc-code-text: #f1ede4;
+	--gjc-code-comment: #a89f93;
+	--gjc-code-add: #79c98d;
+	--gjc-code-remove: #ff7b74;
+	--gjc-focus: var(--gjc-red-claw);
+
+	--gjc-font-ui: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+	--gjc-font-code: var(--gjc-font-ui);
+
+	--gjc-space-2: 2px;
+	--gjc-space-4: 4px;
+	--gjc-space-6: 6px;
+	--gjc-space-8: 8px;
+	--gjc-space-12: 12px;
+	--gjc-space-16: 16px;
+	--gjc-space-20: 20px;
+	--gjc-space-24: 24px;
+	--gjc-space-32: 32px;
+	--gjc-space-40: 40px;
+	--gjc-space-56: 56px;
+	--gjc-space-72: 72px;
+
+	--gjc-radius-xs: 2px;
+	--gjc-radius-sm: 3px;
+	--gjc-radius-md: 4px;
+	--gjc-radius-lg: 4px;
+	--gjc-radius-pill: 4px;
+
+	--gjc-shadow-overlay: none;
+	--gjc-transition: 120ms ease-out;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+	min-height: 100%;
+	margin: 0;
+}
+
+body {
+	background: var(--gjc-bg);
+	color: var(--gjc-text);
+	font-family: var(--gjc-font-ui);
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+button,
+textarea,
+input {
+	font: inherit;
+}
+
+button {
+	cursor: pointer;
+}
+
+button:disabled,
+textarea:disabled,
+input:disabled {
+	cursor: not-allowed;
+	opacity: 0.48;
+}
+
+:focus-visible {
+	outline: 1px solid var(--gjc-focus);
+	outline-offset: 2px;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--gjc-red-claw) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 1ms !important;
+		animation-iteration-count: 1 !important;
+		scroll-behavior: auto !important;
+		transition-duration: 1ms !important;
+	}
+}

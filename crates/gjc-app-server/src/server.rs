@@ -668,6 +668,9 @@ impl AppServer {
 		}
 		self.require_initialized(conn)?;
 		if crate::notifications::is_notifications_method(method) {
+			// Documented exception to the strict gjc/* invariant: notification
+			// frames are opaque JSON owned by the TS notifications extension and
+			// are not field-policed here (see field_policy::policy_for docs).
 			return self.handle_notification_call(conn, method, params).await;
 		}
 
@@ -796,8 +799,8 @@ impl AppServer {
 			"turn/interrupt" => self.handle_turn_interrupt(params).await,
 			"command/exec" => self.handle_command_exec(params).await,
 			"thread/shellCommand" => self.handle_thread_shell_command(params).await,
-			"gjc/state/read" => self.handle_gjc_state_read(params).await,
-			"gjc/messages/get" => self.handle_gjc_messages_get(params).await,
+			"gjc/state/read" => self.handle_gjc_state_read(method, params).await,
+			"gjc/messages/get" => self.handle_gjc_messages_get(method, params).await,
 			"gjc/model/set" => self.handle_gjc_model_set(method, params).await,
 			"gjc/todos/set" => self.handle_gjc_todos_set(method, params).await,
 			"gjc/compact" => self.handle_gjc_compact(method, params).await,
@@ -1116,8 +1119,11 @@ impl AppServer {
 
 	async fn handle_gjc_state_read(
 		&self,
+		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
+		// gjc/* is strict: reject unknown fields.
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "include"])?;
 		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
 		let include = params
@@ -1130,8 +1136,11 @@ impl AppServer {
 
 	async fn handle_gjc_messages_get(
 		&self,
+		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
+		// gjc/* is strict: reject unknown fields.
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
 		let thread_id = extract_thread_id(params.as_ref())?;
 		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
 		backend.get_messages(&ctx).await
@@ -1976,6 +1985,87 @@ mod tests {
 		.unwrap();
 		let resp = s.dispatch(&conn, req).await.unwrap();
 		assert!(resp.error.is_none());
+	}
+	#[tokio::test]
+	async fn gjc_state_read_rejects_unknown_fields_strictly() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":33,"method":"gjc/state/read","params":{{"threadId":"{}","bogus":1}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		let err = resp.error.expect("gjc/* strict: unknown field rejected");
+		assert_eq!(err.code, crate::error::codes::INVALID_PARAMS);
+		assert!(err.message.contains("bogus"));
+	}
+
+	#[tokio::test]
+	async fn gjc_state_read_accepts_include_field() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":34,"method":"gjc/state/read","params":{{"threadId":"{}","include":["model"]}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none());
+	}
+
+	#[tokio::test]
+	async fn gjc_messages_get_rejects_unknown_fields_strictly() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":35,"method":"gjc/messages/get","params":{{"threadId":"{}","bogus":1}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		let err = resp.error.expect("gjc/* strict: unknown field rejected");
+		assert_eq!(err.code, crate::error::codes::INVALID_PARAMS);
+		assert!(err.message.contains("bogus"));
+	}
+
+	#[tokio::test]
+	async fn gjc_messages_get_accepts_thread_id_only() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":36,"method":"gjc/messages/get","params":{{"threadId":"{}"}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none());
+	}
+
+	#[tokio::test]
+	async fn gjc_notifications_methods_are_exempt_from_field_policy() {
+		// Documented exception: gjc/notifications/* frames are opaque JSON owned
+		// by the TS notifications extension (see field_policy::policy_for docs).
+		// Unknown fields must pass through to the NotificationHost untouched.
+		let s = server();
+		let conn = init_conn(&s).await;
+		let req = crate::jsonrpc::parse_inbound(
+			r#"{"id":37,"method":"gjc/notifications/subscribe","params":{"anyOpaqueField":1,"another":{"nested":true}}}"#,
+		)
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		// The Noop host reports method_not_found; what matters is that the
+		// opaque frame was NOT rejected by field policy (-32602 invalid params).
+		let err = resp.error.expect("noop host reports method_not_found");
+		assert_ne!(
+			err.code,
+			crate::error::codes::INVALID_PARAMS,
+			"notifications channel must not field-police opaque frames"
+		);
 	}
 
 	#[tokio::test]
