@@ -926,8 +926,7 @@ export class CommandController {
 		this.ctx.streamingMessage = undefined;
 		this.ctx.pendingTools.clear();
 
-		this.ctx.chatContainer.addChild(new Spacer(1));
-		this.ctx.chatContainer.addChild(new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 1));
+		this.ctx.chatContainer.addChild(new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 0));
 		await this.ctx.reloadTodos();
 		this.ctx.ui.requestRender();
 	}

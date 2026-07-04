@@ -257,9 +257,7 @@ async function collectRelevantTracePaths(
 				const surfaceScore = /deep[-_]?interview|skill|workflow|runtime|state/i.test(relativePath) ? 1 : 0;
 				results.push({ path: relativePath, reason, score: termScore + surfaceScore });
 			}
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 	return results
 		.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))

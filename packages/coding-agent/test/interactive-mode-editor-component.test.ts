@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { Agent } from "@gajae-code/agent-core";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { CURSOR_MARKER, Spacer, Text } from "@gajae-code/tui";
+import { CURSOR_MARKER, Text } from "@gajae-code/tui";
 import { TempDir } from "@gajae-code/utils";
 import { ModelRegistry } from "../src/config/model-registry";
 import { CustomEditor } from "../src/modes/components/custom-editor";
@@ -149,16 +149,17 @@ describe("InteractiveMode.setEditorComponent", () => {
 		await mode.init();
 
 		mode.chatContainer.clear();
-		mode.chatContainer.addChild(new Spacer(1));
 		mode.chatContainer.addChild(
-			new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
+			new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 0),
 		);
 
 		const rendered = mode.ui.render(width).map(stripRenderControls);
 		const renderedText = rendered.join("\n");
-
+		const noticeIndex = rendered.findIndex(line => line.includes("New session started"));
 		expect(rendered.length).toBeLessThanOrEqual(rows);
 		expect(renderedText).toContain("GJC Forge");
+		expect(noticeIndex).toBeGreaterThan(0);
+		expect(rendered[noticeIndex - 1]?.trim()).not.toBe("");
 		expect(renderedText).toContain("New session started");
 	});
 
