@@ -275,7 +275,28 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 	const selectedEmbeddedFile = selectEmbeddedAddonFile(ctx.selectedVariant);
 	if (!selectedEmbeddedFile) return null;
 	const targetPath = path.join(ctx.versionedDir, selectedEmbeddedFile.filename);
-	if (fs.existsSync(targetPath)) return targetPath;
+
+	let buffer;
+	try {
+		buffer = fs.readFileSync(selectedEmbeddedFile.filePath);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		errors.push(`embedded addon read (${selectedEmbeddedFile.filename}): ${message}`);
+		return null;
+	}
+
+	// The version sentinel is version-only, so a stale same-version cache (e.g.
+	// a 0.7.11 addon built before a new N-API class was added) would otherwise
+	// shadow the current embedded addon. Treat the embedded bytes as
+	// authoritative: reuse the cache only when it is byte-identical, else
+	// overwrite it.
+	if (fs.existsSync(targetPath)) {
+		try {
+			if (fs.readFileSync(targetPath).equals(buffer)) return targetPath;
+		} catch {
+			// fall through to rewrite
+		}
+	}
 
 	try {
 		fs.mkdirSync(ctx.versionedDir, { recursive: true });
@@ -286,7 +307,6 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 	}
 
 	try {
-		const buffer = fs.readFileSync(selectedEmbeddedFile.filePath);
 		const tempPath = `${targetPath}.tmp.${process.pid}`;
 		fs.writeFileSync(tempPath, buffer);
 		fs.renameSync(tempPath, targetPath);

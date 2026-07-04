@@ -161,6 +161,22 @@ async function main(): Promise<void> {
 		console.log(`Wrote ${output.path}`);
 	}
 
+	const appServerArgs = ["run", "-p", "gjc-app-server", "--bin", "gjc-app-server-schema"];
+	if (check) appServerArgs.push("--", "--check");
+	const appServer = Bun.spawnSync(["cargo", ...appServerArgs], {
+		cwd: path.join(import.meta.dir, ".."),
+		stdout: "inherit",
+		stderr: "inherit",
+	});
+	if (!appServer.success) process.exit(appServer.exitCode ?? 1);
+
+	const clientGenerate = Bun.spawnSync(["bun", "run", check ? "check:generated" : "generate"], {
+		cwd: path.join(import.meta.dir, "../packages/gjc-app-server-client"),
+		stdout: "inherit",
+		stderr: "inherit",
+	});
+	if (!clientGenerate.success) process.exit(clientGenerate.exitCode ?? 1);
+
 	if (changed.length > 0) {
 		console.error(`Generated JSON Schemas are out of date: ${changed.join(", ")}`);
 		console.error("Run `bun run generate-schemas` and commit the updated files.");
