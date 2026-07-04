@@ -312,6 +312,18 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			.map(({ score: _score, priority: _priority, matchRank: _matchRank, index: _index, ...rest }) => rest);
 	}
 
+	#getInlineSlashCommandNameSuggestions(prefix: string): AutocompleteItem[] {
+		if (prefix.length === 0) return this.#getSlashCommandNameSuggestions(prefix);
+
+		const normalizedPrefix = normalizeSlashCommandText(prefix);
+		return this.#getSlashCommandNameSuggestions(prefix).filter(item => {
+			const lowerValue = item.value.toLowerCase();
+			if (lowerValue.startsWith(prefix.toLowerCase())) return true;
+			if (!normalizedPrefix) return true;
+			return normalizeSlashCommandText(item.value).startsWith(normalizedPrefix);
+		});
+	}
+
 	#extractSlashCommandPrefix(text: string): string | null {
 		const match = text.match(/(?:^|\s)(\/[^/\s]*)$/);
 		return match?.[1] ?? null;
@@ -389,7 +401,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 		const slashPrefix = this.#extractSlashCommandPrefix(textBeforeCursor);
 		if (slashPrefix) {
-			const matches = this.#getSlashCommandNameSuggestions(slashPrefix.slice(1));
+			const matches = this.#getInlineSlashCommandNameSuggestions(slashPrefix.slice(1));
 			if (matches.length === 0) return null;
 
 			return {

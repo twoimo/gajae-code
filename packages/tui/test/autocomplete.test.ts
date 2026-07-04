@@ -183,6 +183,33 @@ describe("inline slash command suggestions", () => {
 		expect(result!.items.map(item => item.value)).toEqual(["model"]);
 	});
 
+	it("lets absolute paths use file suggestions when the inline slash token is not a command prefix", async () => {
+		const line = "open /tmp";
+		const pathOnlyProvider = new CombinedAutocompleteProvider([], "/tmp");
+		const pathOnlyResult = await pathOnlyProvider.getSuggestions([line], 0, line.length);
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "template", description: "Temporary prompt template", value: "template" }],
+			"/tmp",
+		);
+		const result = await provider.getSuggestions([line], 0, line.length);
+
+		expect(result).toEqual(pathOnlyResult);
+		expect(result?.items.map(item => item.value) ?? []).not.toContain("template");
+	});
+
+	it("matches normalized inline slash command prefixes", async () => {
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "skill:team", description: "Run team workflow", value: "skill:team" }],
+			"/tmp",
+		);
+		const line = "explain this /skill-te";
+		const result = await provider.getSuggestions([line], 0, line.length);
+
+		expect(result).not.toBeNull();
+		expect(result!.prefix).toBe("/skill-te");
+		expect(result!.items.map(item => item.value)).toEqual(["skill:team"]);
+	});
+
 	it("applies inline slash command completion without replacing prior text", () => {
 		const provider = new CombinedAutocompleteProvider(
 			[{ name: "model", description: "Switch AI model", value: "model" }],
