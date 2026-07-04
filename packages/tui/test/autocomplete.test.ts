@@ -168,6 +168,33 @@ describe("CombinedAutocompleteProvider", () => {
 		});
 	});
 });
+
+describe("inline slash command suggestions", () => {
+	it("suggests command names for slash tokens after existing prompt text", async () => {
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "model", description: "Switch AI model", value: "model" }],
+			"/tmp",
+		);
+		const line = "explain this /mo";
+		const result = await provider.getSuggestions([line], 0, line.length);
+
+		expect(result).not.toBeNull();
+		expect(result!.prefix).toBe("/mo");
+		expect(result!.items.map(item => item.value)).toEqual(["model"]);
+	});
+
+	it("applies inline slash command completion without replacing prior text", () => {
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "model", description: "Switch AI model", value: "model" }],
+			"/tmp",
+		);
+		const line = "explain this /mo";
+		const result = provider.applyCompletion([line], 0, line.length, { value: "model", label: "model" }, "/mo");
+
+		expect(result.lines[0]).toBe("explain this /model ");
+		expect(result.cursorCol).toBe("explain this /model ".length);
+	});
+});
 describe("trySyncSlashCompletion", () => {
 	it("returns null for bare '/' (no prefix to match)", () => {
 		const provider = new CombinedAutocompleteProvider([], "/tmp");
