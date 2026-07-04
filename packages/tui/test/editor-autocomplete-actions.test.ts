@@ -161,6 +161,18 @@ describe("Editor Enter handler sync slash completion", () => {
 		expect(editor.isShowingAutocomplete()).toBe(true);
 	});
 
+	it("auto-triggers slash command autocomplete from an adjacent slash after prompt text", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "help", description: "Learn commands", value: "help" }], "/tmp"),
+		);
+
+		editor.handleInput("explain this/");
+		await Bun.sleep(0);
+
+		expect(editor.isShowingAutocomplete()).toBe(true);
+	});
+
 	it("auto-triggers inline slash skill autocomplete after prompt text", async () => {
 		const provider = new InlineSkillProvider();
 		const editor = new Editor(defaultEditorTheme);

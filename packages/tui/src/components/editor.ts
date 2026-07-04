@@ -1,5 +1,9 @@
 import { getProjectDir, logger } from "@gajae-code/utils";
-import type { AutocompleteProvider, CombinedAutocompleteProvider } from "../autocomplete";
+import {
+	type AutocompleteProvider,
+	type CombinedAutocompleteProvider,
+	extractSlashCommandTokenPrefix,
+} from "../autocomplete";
 import { BracketedPasteHandler } from "../bracketed-paste";
 import { getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey } from "../keys";
@@ -2650,8 +2654,7 @@ export class Editor implements Component, Focusable {
 	#getSlashTokenBeforeCursor(): string | null {
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 		const beforeCursor = currentLine.slice(0, this.#state.cursorCol);
-		const match = beforeCursor.match(/(?:^|\s)(\/[^\s]*)$/);
-		return match?.[1] ?? null;
+		return extractSlashCommandTokenPrefix(beforeCursor);
 	}
 
 	#isInSlashTokenContext(): boolean {

@@ -183,6 +183,19 @@ describe("inline slash command suggestions", () => {
 		expect(result!.items.map(item => item.value)).toEqual(["model"]);
 	});
 
+	it("suggests command names for slash tokens adjacent to prompt text", async () => {
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "help", description: "Learn commands", value: "help" }],
+			"/tmp",
+		);
+		const line = "explain this/hel";
+		const result = await provider.getSuggestions([line], 0, line.length);
+
+		expect(result).not.toBeNull();
+		expect(result!.prefix).toBe("/hel");
+		expect(result!.items.map(item => item.value)).toEqual(["help"]);
+	});
+
 	it("lets absolute paths use file suggestions when the inline slash token is not a command prefix", async () => {
 		const line = "open /tmp";
 		const pathOnlyProvider = new CombinedAutocompleteProvider([], "/tmp");
@@ -220,6 +233,18 @@ describe("inline slash command suggestions", () => {
 
 		expect(result.lines[0]).toBe("explain this /model ");
 		expect(result.cursorCol).toBe("explain this /model ".length);
+	});
+
+	it("applies adjacent inline slash command completion without replacing prior text", () => {
+		const provider = new CombinedAutocompleteProvider(
+			[{ name: "help", description: "Learn commands", value: "help" }],
+			"/tmp",
+		);
+		const line = "explain this/hel";
+		const result = provider.applyCompletion([line], 0, line.length, { value: "help", label: "help" }, "/hel");
+
+		expect(result.lines[0]).toBe("explain this/help ");
+		expect(result.cursorCol).toBe("explain this/help ".length);
 	});
 });
 describe("trySyncSlashCompletion", () => {
