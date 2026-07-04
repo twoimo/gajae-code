@@ -28,6 +28,7 @@ pub mod error;
 pub mod event_map;
 pub mod field_policy;
 pub mod host_tools;
+pub mod host_uris;
 pub mod identity;
 pub mod ids;
 pub mod item_state;
@@ -38,6 +39,8 @@ pub mod scheduler;
 pub mod schema;
 pub mod server;
 pub mod transport_ws;
+pub mod unattended;
+pub mod workflow_gate;
 
 pub use backend::{
 	AgentBackend, BackendCallContext, BackendEvent, BackendFactory, BackendHandleInfo,

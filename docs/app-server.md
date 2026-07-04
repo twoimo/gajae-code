@@ -1,6 +1,6 @@
 # GJC app-server
 
-The GJC app-server is the in-progress, codex-compatible JSON-RPC 2.0 control surface for embedding and driving `gjc` from external apps. It is intended to hard-replace the existing RPC stdio mode and the notifications SDK once migration is complete: clients should converge on one app-server protocol instead of separately integrating RPC commands, notification events, and GJC-specific extension hooks.
+The GJC app-server is the in-progress, codex-compatible JSON-RPC 2.0 control surface for embedding and driving `gjc` from external apps. It is the replacement path for the deleted legacy external-control surfaces and the notifications SDK once migration is complete: clients should converge on one app-server protocol instead of separately integrating command execution, notification events, and GJC-specific extension hooks.
 
 Status: the Rust protocol core, N-API bridge, TypeScript host seam, JSON Schema generation, and focused conformance tests are implemented. The public `gjc app-server` entrypoint, production transports, and client migrations are still in progress.
 
@@ -40,7 +40,7 @@ The intended complete surface is broader than the currently wired core:
 
 - **Codex-core lifecycle and streaming:** thread, turn, item, and command/exec-style interaction needed by codex-compatible app clients.
 - **GJC extensions:** `gjc/model`, `gjc/compact`, `gjc/state/read`, workflow gate compatibility, host tools, host URI schemes, and notifications parity.
-- **Migration parity:** enough method/event coverage to retire RPC stdio and the notifications SDK without losing host tools, URI reads, workflow gates, UI responses, cancellation, or state/message queries.
+- **Migration parity:** enough method/event coverage to retire legacy control surfaces and the notifications SDK without losing host tools, URI reads, workflow gates, UI responses, cancellation, or state/message queries.
 
 Treat methods listed as implemented above as the current foundation. Treat the remaining command/exec, workflow-gate, host-tool/URI, notifications-parity, and migration coverage as active development until backed by the schema and conformance tests.
 
@@ -54,7 +54,7 @@ gjc app-server
 
 Planned transports are:
 
-- **stdio JSONL** as the default subprocess transport. This is the migration path for local embedded clients that currently use `gjc --mode rpc`.
+- **stdio JSONL** as the default subprocess transport for local embedded clients.
 - **Loopback WebSocket** with discovery metadata and an authentication token for local apps that need a socket transport without exposing a remote service.
 - **Unix domain socket** for local platform integrations that prefer filesystem-scoped socket ownership.
 

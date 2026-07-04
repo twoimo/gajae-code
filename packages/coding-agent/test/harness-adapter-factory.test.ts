@@ -21,15 +21,16 @@ class FakeProcess extends EventEmitter {
 }
 
 let createHarnessRpc: typeof import("../src/harness-control-plane/adapter-factory").createHarnessRpc;
-let GajaeCodeRpc: typeof import("../src/harness-control-plane/rpc-adapter").GajaeCodeRpc;
+
 let GajaeCodeAppServerRpc: typeof import("../src/harness-control-plane/app-server-adapter").GajaeCodeAppServerRpc;
 
 beforeAll(async () => {
 	mock.module("node:child_process", () => ({
+		execFileSync: mock(() => Buffer.from("")),
 		spawn: mock(() => new FakeProcess()),
 	}));
 	({ createHarnessRpc } = await import("../src/harness-control-plane/adapter-factory"));
-	({ GajaeCodeRpc } = await import("../src/harness-control-plane/rpc-adapter"));
+
 	({ GajaeCodeAppServerRpc } = await import("../src/harness-control-plane/app-server-adapter"));
 });
 
@@ -38,13 +39,8 @@ afterEach(() => {
 });
 
 describe("createHarnessRpc", () => {
-	it("returns the legacy RPC adapter by default", () => {
+	it("returns the app-server adapter by default", () => {
 		const rpc = createHarnessRpc({ sessionDir: "/tmp/gjc-session" });
-		expect(rpc).toBeInstanceOf(GajaeCodeRpc);
-	});
-
-	it("returns the app-server adapter when options.adapter is app-server", () => {
-		const rpc = createHarnessRpc({ sessionDir: "/tmp/gjc-session", adapter: "app-server" });
 		expect(rpc).toBeInstanceOf(GajaeCodeAppServerRpc);
 	});
 

@@ -91,6 +91,12 @@ pub trait AgentBackend: Send + Sync {
 		ctx: &BackendCallContext,
 		params: serde_json::Value,
 	) -> Result<serde_json::Value>;
+	async fn usage_snapshot(
+		&self,
+		_ctx: &BackendCallContext,
+	) -> Result<Option<crate::unattended::UsageSnapshot>> {
+		Ok(None)
+	}
 
 	// -- lifecycle --
 	async fn dispose(&self, ctx: &BackendCallContext) -> Result<()>;

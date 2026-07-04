@@ -55,6 +55,10 @@ export interface InternalUrl extends URL {
  * happens to be registered first in the global `AgentRegistry`.
  */
 export interface ResolveContext {
+	/** App-server/caller thread id for thread-scoped host-owned protocols. */
+	threadId?: string;
+	/** Provider/session id for session-scoped host-owned protocols. */
+	sessionId?: string;
 	/** Working directory of the calling session. */
 	cwd?: string;
 	/** Settings of the calling session (used by `issue://`/`pr://` for cache TTLs). */
@@ -73,6 +77,10 @@ export interface ResolveContext {
  * accept the same shape.
  */
 export interface WriteContext {
+	/** App-server/caller thread id for thread-scoped host-owned protocols. */
+	threadId?: string;
+	/** Provider/session id for session-scoped host-owned protocols. */
+	sessionId?: string;
 	/** Working directory of the calling session. */
 	cwd?: string;
 	/** Caller's abort signal. */

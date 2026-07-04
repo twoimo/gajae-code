@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1, "kind": "package-consumer-report",
+  "phase": "P4 app-server owner observability + session-routed M10", "commit": "375663f2", "surface": "package (harness owner) + live app-server owner e2e",
+  "results": {
+    "unionCheck": {"command": "bun run check", "exit": 0},
+    "harnessSuite": {"command": "bun test packages/coding-agent/test/harness-control-plane", "pass": 253, "fail": 0},
+    "m10Deterministic": {"test": "app-server-detached-owner.test.ts", "path": "real CLI owner (harness start detach:true -> createHarnessRpc -> app-server adapter via GJC_HARNESS_APP_SERVER_COMMAND -> fake app-server) session-routed submit/observe/events", "status": "pass"},
+    "m10Live": {"session": "m10-app-server-owner-live-p4", "cursor": 19, "events": ["agent_wire_turn_started","prompt_accepted","agent_wire_agent_started","agent_wire_tool_started","agent_wire_tool_ended","agent_wire_agent_completed"], "transportLastFrameAt": "set", "status": "pass"},
+    "cargoAppServer": {"command": "cargo test -p gjc-app-server", "unit": 72, "conformance": 31, "fail": 0},
+    "protectedBoundary": {"command": "git diff --name-only 9322fafe -- modes/acp crates/gjc-notifications src/notifications", "status": "empty"}
+  },
+  "adversarial": [
+    {"scenario": "app-server raw notifications carry secrets (SECRET_COMMAND/OUTPUT/ITEM)", "expected": "owner observations are bounded and do not persist raw secret payloads", "result": "M10 + frame-mapper assert no leakage"},
+    {"scenario": "owner default is app-server but observations dropped", "expected": "tool + completion observations persist with cursor/transportLastFrameAt advancement", "result": "deterministic + live M10 assert all observations present"}
+  ]
+}

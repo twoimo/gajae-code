@@ -10,6 +10,7 @@
  * unit/e2e-testable with a fake harness.
  */
 import { randomBytes } from "node:crypto";
+import { type HarnessRpc, singleFlightAccept } from "./adapter-contract";
 import { type FinalizeChecks, type FinalizeResult, runFinalize, type ValidationCommandSpec } from "./finalize";
 import { type PreserveResult, preserveDirtyWorktree } from "./preserve";
 import {
@@ -19,7 +20,6 @@ import {
 	type VanishEvidence,
 	validateReceipt,
 } from "./receipts";
-import { type HarnessRpc, singleFlightAccept } from "./rpc-adapter";
 import { writeReceiptImmutable } from "./storage";
 import {
 	DEFAULT_RETRY_BUDGET,
@@ -36,7 +36,7 @@ export interface OperateOptions {
 	workspace: string;
 	branch: string;
 	rpc: HarnessRpc;
-	/** Factory used to (re)create the RPC subprocess on restart recovery. Defaults to reusing `rpc`. */
+	/** Factory used to (re)create the transport subprocess on restart recovery. Defaults to reusing `rpc`. */
 	rpcFactory?: () => HarnessRpc;
 	/** Bounded observation provider (scripted in tests; real = git + rpc state). */
 	observe: () => Promise<Observation>;

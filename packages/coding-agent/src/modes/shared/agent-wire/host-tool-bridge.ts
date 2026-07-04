@@ -2,14 +2,14 @@ import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@gajae
 import type { Static, TSchema } from "@gajae-code/ai";
 import { Snowflake } from "@gajae-code/utils";
 import { applyToolProxy } from "../../../extensibility/tool-proxy";
+import type { Theme } from "../../theme/theme";
 import type {
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
 	RpcHostToolDefinition,
 	RpcHostToolResult,
 	RpcHostToolUpdate,
-} from "../../rpc/rpc-types";
-import type { Theme } from "../../theme/theme";
+} from "./protocol";
 
 type RpcHostToolOutput = (frame: RpcHostToolCallRequest | RpcHostToolCancelRequest) => void;
 

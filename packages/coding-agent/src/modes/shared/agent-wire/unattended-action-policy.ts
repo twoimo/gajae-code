@@ -16,7 +16,7 @@
  *    `bash.mutating`, and clearly destructive forms escalate further, so an
  *    undeclared destructive action is denied rather than silently allowed.
  */
-import type { RpcUnattendedActionClass } from "../../rpc/rpc-types";
+import type { RpcUnattendedActionClass } from "./protocol";
 import type { BridgeCommandScope } from "./scopes";
 
 /** Coarse command scope -> `command.<scope>` action class. */

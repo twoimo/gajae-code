@@ -39,7 +39,7 @@ export function assertTransition(from: HarnessLifecycle, to: HarnessLifecycle): 
 }
 
 export interface NextAllowedActionsOptions {
-	/** Additional live-owner/RPC readiness gate for submit, e.g. rpc-not-idle. */
+	/** Additional live-owner/transport readiness gate for submit, e.g. transport-not-idle. */
 	submitUnavailableReason?: string | null;
 }
 
@@ -80,7 +80,7 @@ export function nextAllowedActions(
 	add("start", false, "session-already-exists");
 
 	// `submit` is owner-routed: it requires a live owner, a submit-ready lifecycle,
-	// and (for owner-observed responses) an idle/routable RPC backend.
+	// and (for owner-observed responses) an idle/routable transport backend.
 	const submitReason = submitUnavailableReason(lifecycle, ownerLive, options.submitUnavailableReason ?? null);
 	add("submit", submitReason === null, submitReason ?? undefined);
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { RpcJsonSchema, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+import type { RpcJsonSchema, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	FileGateStore,
 	type GateAuditEvent,

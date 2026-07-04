@@ -28,14 +28,14 @@ Main `gjc` CLI and product runtime.
 
 - `packages/coding-agent/package.json` exposes the `gjc` binary at `src/cli.ts` and the SDK/barrel entrypoint at `src/index.ts`.
 - `packages/coding-agent/src/cli.ts` is the executable bootstrap. It registers CLI commands such as `setup`, `deep-interview`, `ralplan`, `ultragoal`, `team`, and the default launch path.
-- `packages/coding-agent/src/main.ts` adapts CLI options into session creation and dispatches interactive, print, RPC, RPC-UI, ACP, and Bridge modes.
+- `packages/coding-agent/src/main.ts` adapts CLI options into session creation and dispatches interactive, print, ACP, and app-server modes.
 - `packages/coding-agent/src/sdk.ts` assembles settings, model registry, auth, workspace/context discovery, skills, rules, tools, system prompt, and the underlying `@gajae-code/agent-core` agent.
 - `packages/coding-agent/src/tools/index.ts` is the built-in tool registry for file/code/runtime tools such as read, bash, edit, AST tools, eval, find/search, LSP, browser, task/subagent, recipe, IRC, todo, web search, and write. Memory backends are private integrations, not public coding-harness tools.
 - `packages/coding-agent/src/defaults/gjc-defaults.ts` embeds and installs the default workflow skills.
 - `packages/coding-agent/src/task/agents.ts` embeds bundled task-agent prompts. The public contract is `executor`, `architect`, `planner`, and `critic`; other bundled prompts are internal/runtime utilities.
 - `packages/coding-agent/src/coordinator/contract.ts` defines the transport-neutral third-party coordinator contract used by `gjc mcp-serve coordinator`, `gjc coordinator`, and `gjc setup hermes`.
 - `packages/coding-agent/src/coordinator-mcp/server.ts` implements the outward MCP adapter for bot/coordinator integrations, including session start/register, turn state, question answering, status reports, and artifact reads.
-- `docs/external-control-readiness.md` classifies the public external-control surfaces: Coordinator MCP for multi-session control planes, RPC stdio for subprocess workers, ACP for editor/ACP clients, and Bridge HTTPS as experimental/fail-closed protocol scaffolding.
+- `docs/external-control-readiness.md` classifies the public external-control surfaces: Coordinator MCP for multi-session control planes, app-server JSON-RPC for subprocess workers and app integrations, and ACP for editor/ACP clients.
 
 ### `packages/ai/`
 
@@ -102,13 +102,13 @@ Private benchmark package for TypeScript edit tasks.
 
 ## Python packages
 
-### `python/gjc-rpc/`
+### `crates/gjc-app-server/`
 
-Typed Python client for `gjc --mode rpc`.
+Rust-owned app-server protocol and transport crate for embedded GJC workers.
 
-- `python/gjc-rpc/pyproject.toml` packages `gjc-rpc` for Python 3.11+.
-- `python/gjc-rpc/README.md` documents the process-backed stdio client, typed command methods, startup flags, event listeners, todo seeding, host-owned tools, and host-owned URI schemes.
-- `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together coordinator MCP, RPC stdio, bridge limitations, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption.
+- `crates/gjc-app-server/` defines the JSON-RPC protocol, transport helpers, generated schemas, and conformance tests for `gjc app-server` / `gjc --mode app-server`.
+- `docs/app-server.md` documents the process-backed JSON-RPC worker, thread/turn lifecycle, host tools, workflow gates, transports, and integration notes.
+- `docs/bot-integration.md` is the practical entry guide for generic external controller and bot authors; it ties together Coordinator MCP, app-server JSON-RPC, ACP boundaries, visible tmux fallback, provider-independent smokes, errors, and artifact/report consumption.
 
 ### `crates/robogjc/` and `python/robogjc/web/`
 
@@ -123,7 +123,7 @@ Self-hosted GitHub triage/fix bot implemented in Rust. The Rust crate owns webho
 
 A normal CLI session starts in `packages/coding-agent/src/cli.ts`, routes through command handling, then reaches `packages/coding-agent/src/main.ts`. `main.ts` converts CLI/runtime settings into `CreateAgentSessionOptions` and calls `createAgentSession()` in `packages/coding-agent/src/sdk.ts`.
 
-The SDK builds the session context, loads the default skills, creates built-in tools, resolves model/auth state through `@gajae-code/ai`, constructs the system prompt, and instantiates `@gajae-code/agent-core`. The agent loop streams model events, executes tools, records tool results, and hands state back to the selected mode: interactive TUI, print, RPC, RPC-UI, ACP, or Bridge.
+The SDK builds the session context, loads the default skills, creates built-in tools, resolves model/auth state through `@gajae-code/ai`, constructs the system prompt, and instantiates `@gajae-code/agent-core`. The agent loop streams model events, executes tools, records tool results, and hands state back to the selected mode: interactive TUI, print, ACP, or app-server.
 
 ## Verification and gates
 

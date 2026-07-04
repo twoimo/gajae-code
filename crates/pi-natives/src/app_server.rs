@@ -224,6 +224,22 @@ impl AgentBackend for TsBackend {
 		self.call(c, "exec", params).await
 	}
 
+	async fn usage_snapshot(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<Option<gjc_app_server::unattended::UsageSnapshot>> {
+		let value = self
+			.call(c, "usageSnapshot", serde_json::Value::Null)
+			.await?;
+		if value.is_null() {
+			Ok(None)
+		} else {
+			serde_json::from_value(value).map(Some).map_err(|err| {
+				AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+			})
+		}
+	}
+
 	async fn dispose(&self, c: &BackendCallContext) -> gjc_app_server::Result<()> {
 		self
 			.call(c, "dispose", serde_json::Value::Null)
@@ -393,6 +409,8 @@ impl AppServer {
 	/// string for requests, or `null` for notifications.
 	#[napi]
 	pub async fn dispatch(&self, connection_id: String, line: String) -> Option<String> {
+		let outbound_request: Option<serde_json::Value> =
+			serde_json::from_str::<serde_json::Value>(&line).ok();
 		let conn = gjc_app_server::ids::ConnectionId(connection_id);
 		let inbound = match jsonrpc::parse_inbound(&line) {
 			Ok(inbound) => inbound,
@@ -404,6 +422,16 @@ impl AppServer {
 			},
 		};
 		let resp = self.core.dispatch(&conn, inbound).await;
+		if let Some(request) = outbound_request.as_ref()
+			&& request.get("method").and_then(|m| m.as_str()) == Some("gjc/hostUriSchemes/set")
+			&& resp.as_ref().is_some_and(|r| r.error.is_none())
+			&& let Some(params) = request.get("params")
+		{
+			let _ = self
+				.bridge
+				.call("hostUriSchemes.set", None, None, params.clone())
+				.await;
+		}
 		resp.and_then(|r| serde_json::to_string(&r).ok())
 	}
 
@@ -547,6 +575,79 @@ impl AppServer {
 			.active_turn_id(&ThreadId(thread_id))
 			.map(|turn| turn.map(|t| t.0))
 			.map_err(|err| napi::Error::from_reason(err.to_string()))
+	}
+
+	#[napi(js_name = "readHostUri")]
+	pub async fn read_host_uri(&self, thread_id: String, url_json: String) -> napi::Result<String> {
+		let url_value: serde_json::Value = serde_json::from_str(&url_json)
+			.map_err(|err| napi::Error::from_reason(format!("invalid urlJson: {err}")))?;
+		let url = url_value
+			.get("url")
+			.or_else(|| url_value.get("href"))
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| napi::Error::from_reason("urlJson must include url"))?;
+		let thread = ThreadId(thread_id);
+		let turn = self
+			.core
+			.active_turn_id(&thread)
+			.map_err(|err| napi::Error::from_reason(err.to_string()))?
+			.unwrap_or_else(|| TurnId("host-uri".to_string()));
+		let resource = self
+			.core
+			.read_host_uri(&thread, &turn, url)
+			.await
+			.map_err(|err| napi::Error::from_reason(err.to_string()))?;
+		serde_json::to_string(&resource).map_err(|err| napi::Error::from_reason(err.to_string()))
+	}
+
+	#[napi(js_name = "writeHostUri")]
+	pub async fn write_host_uri(
+		&self,
+		thread_id: String,
+		url_json: String,
+		content: String,
+	) -> napi::Result<()> {
+		let url_value: serde_json::Value = serde_json::from_str(&url_json)
+			.map_err(|err| napi::Error::from_reason(format!("invalid urlJson: {err}")))?;
+		let url = url_value
+			.get("url")
+			.or_else(|| url_value.get("href"))
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| napi::Error::from_reason("urlJson must include url"))?;
+		let thread = ThreadId(thread_id);
+		let turn = self
+			.core
+			.active_turn_id(&thread)
+			.map_err(|err| napi::Error::from_reason(err.to_string()))?
+			.unwrap_or_else(|| TurnId("host-uri".to_string()));
+		self
+			.core
+			.write_host_uri(&thread, &turn, url, content)
+			.await
+			.map_err(|err| napi::Error::from_reason(err.to_string()))
+	}
+
+	#[napi(js_name = "openWorkflowGate")]
+	pub async fn open_workflow_gate(
+		&self,
+		thread_id: String,
+		input_json: String,
+	) -> napi::Result<String> {
+		let input: gjc_app_server::workflow_gate::OpenWorkflowGateInput =
+			serde_json::from_str(&input_json).map_err(|err| {
+				napi::Error::from_reason(format!("invalid workflow gate input JSON: {err}"))
+			})?;
+		let answer = self
+			.core
+			.open_workflow_gate(&ThreadId(thread_id), input)
+			.await
+			.map_err(|err| napi::Error::from_reason(err.to_string()))?;
+		serde_json::to_string(&answer).map_err(|err| napi::Error::from_reason(err.to_string()))
+	}
+
+	#[napi(js_name = "isWorkflowGateUnattended")]
+	pub fn is_workflow_gate_unattended(&self, _thread_id: String) -> bool {
+		true
 	}
 
 	/// Push an opaque `gjc/notifications` frame to connected clients.

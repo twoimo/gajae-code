@@ -93,7 +93,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 	switch (event.type) {
 		case "agent_start":
 			return obs(event, {
-				kind: "rpc_agent_started",
+				kind: "agent_wire_agent_started",
 				signal: "SessionStart",
 				evidence: {},
 				severity: "info",
@@ -102,7 +102,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "turn_start":
 			return obs(event, {
-				kind: "rpc_turn_started",
+				kind: "agent_wire_turn_started",
 				signal: "prompt-accepted",
 				evidence: {},
 				severity: "info",
@@ -111,7 +111,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "turn_end":
 			return obs(event, {
-				kind: "rpc_turn_ended",
+				kind: "agent_wire_turn_ended",
 				signal: null,
 				evidence: {},
 				severity: "info",
@@ -123,7 +123,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "message_end": {
 			const messageId = idOf(event.message);
 			return obs(event, {
-				kind: "rpc_message_activity",
+				kind: "agent_wire_message_activity",
 				signal: null,
 				evidence: { phase: event.type, messageId },
 				severity: "info",
@@ -134,7 +134,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "tool_execution_start": {
 			const test = isTestRunnerTool(event.toolName, toolCommand(event.args));
 			return obs(event, {
-				kind: "rpc_tool_started",
+				kind: "agent_wire_tool_started",
 				signal: test ? "test-running" : "tool-call",
 				evidence: { toolId: str(event.toolCallId) ?? null, toolName: str(event.toolName) ?? null },
 				severity: "info",
@@ -145,7 +145,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "tool_execution_update": {
 			const test = isTestRunnerTool(event.toolName, toolCommand(event.args));
 			return obs(event, {
-				kind: "rpc_tool_updated",
+				kind: "agent_wire_tool_updated",
 				signal: test ? "test-running" : null,
 				evidence: { toolId: str(event.toolCallId) ?? null, status: resultStatus(event.partialResult) ?? null },
 				severity: "info",
@@ -157,7 +157,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			const test = isTestRunnerTool(event.toolName);
 			const status = resultStatus(event.result, event.isError);
 			return obs(event, {
-				kind: "rpc_tool_ended",
+				kind: "agent_wire_tool_ended",
 				signal: test ? "test-running" : "tool-call",
 				evidence: {
 					toolId: str(event.toolCallId) ?? null,
@@ -172,7 +172,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "auto_compaction_start":
 		case "auto_compaction_end":
 			return obs(event, {
-				kind: "rpc_compaction",
+				kind: "agent_wire_compaction",
 				signal: null,
 				evidence: { phase: event.type },
 				severity: "info",
@@ -181,7 +181,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "auto_retry_start":
 			return obs(event, {
-				kind: "rpc_retry",
+				kind: "agent_wire_retry",
 				signal: null,
 				evidence: { phase: event.type, attempt: num(event.attempt) ?? null },
 				severity: "warn",
@@ -190,7 +190,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "auto_retry_end":
 			return obs(event, {
-				kind: "rpc_retry",
+				kind: "agent_wire_retry",
 				signal: null,
 				evidence: { phase: event.type, success: event.success === true },
 				severity: "warn",
@@ -200,7 +200,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "retry_fallback_applied":
 		case "retry_fallback_succeeded":
 			return obs(event, {
-				kind: "rpc_retry_fallback",
+				kind: "agent_wire_retry_fallback",
 				signal: null,
 				evidence: { phase: event.type, role: str(event.role) ?? null },
 				severity: "warn",
@@ -209,7 +209,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "ttsr_triggered":
 			return obs(event, {
-				kind: "rpc_ttsr",
+				kind: "agent_wire_ttsr",
 				signal: "error",
 				evidence: { ruleCount: Array.isArray(event.rules) ? event.rules.length : 0 },
 				severity: "warn",
@@ -219,7 +219,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "todo_reminder":
 		case "todo_auto_clear":
 			return obs(event, {
-				kind: "rpc_todo",
+				kind: "agent_wire_todo",
 				signal: null,
 				evidence: { phase: event.type },
 				severity: "info",
@@ -228,7 +228,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "irc_message":
 			return obs(event, {
-				kind: "rpc_irc",
+				kind: "agent_wire_irc",
 				signal: null,
 				evidence: {},
 				severity: "info",
@@ -238,7 +238,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "subagent_steer_message": {
 			const details = recordObject(event.message.details);
 			return obs(event, {
-				kind: "rpc_subagent_steer",
+				kind: "agent_wire_subagent_steer",
 				signal: null,
 				evidence: {
 					from: str(details?.from) ?? null,
@@ -254,7 +254,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		case "notice": {
 			const level = event.level;
 			return obs(event, {
-				kind: "rpc_notice",
+				kind: "agent_wire_notice",
 				signal: level === "error" ? "error" : null,
 				evidence: { level },
 				severity: level === "info" ? "info" : "warn",
@@ -264,7 +264,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 		}
 		case "thinking_level_changed":
 			return obs(event, {
-				kind: "rpc_thinking",
+				kind: "agent_wire_thinking",
 				signal: null,
 				evidence: { thinkingLevel: str(event.thinkingLevel) ?? null },
 				severity: "info",
@@ -273,7 +273,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "goal_updated":
 			return obs(event, {
-				kind: "rpc_goal",
+				kind: "agent_wire_goal",
 				signal: null,
 				evidence: { hasGoal: event.goal != null },
 				severity: "info",
@@ -282,7 +282,7 @@ export function observeAgentSessionEvent(event: AgentSessionEvent): AgentWireOwn
 			});
 		case "agent_end":
 			return obs(event, {
-				kind: "rpc_agent_completed",
+				kind: "agent_wire_agent_completed",
 				signal: "completed",
 				evidence: { stopReason: str(event.stopReason) ?? "completed" },
 				severity: "info",
@@ -314,22 +314,128 @@ function ownerFrame(
 	return { frameType, ...partial };
 }
 
+function eventFromAppServerRawEvent(params: Record<string, unknown>): AgentSessionEvent | null {
+	const eventType = str(params.eventType);
+	const event = recordObject(params.event);
+	if (!eventType || !event) return null;
+	return { ...event, type: eventType } as unknown as AgentSessionEvent;
+}
+
+function observeAppServerItemFrame(method: string, params: Record<string, unknown>): AgentWireOwnerObservation | null {
+	const itemType = str(params.itemType);
+	const itemId = str(params.itemId) ?? null;
+	if (method === "item/agentMessage/delta") {
+		return ownerFrame(method, {
+			kind: "agent_wire_message_activity",
+			signal: null,
+			evidence: { phase: method, messageId: itemId },
+			severity: "info",
+			semantic: false,
+			coalesceKey: `message:${itemId ?? "msg"}`,
+		});
+	}
+	if (itemType === "agentMessage") {
+		return ownerFrame(method, {
+			kind: "agent_wire_message_activity",
+			signal: null,
+			evidence: { phase: method, messageId: itemId },
+			severity: "info",
+			semantic: false,
+			coalesceKey: `message:${itemId ?? "msg"}`,
+		});
+	}
+	if (["toolCall", "commandExecution", "fileChange", "mcpToolCall"].includes(itemType ?? "")) {
+		if (method === "item/completed") {
+			return ownerFrame(method, {
+				kind: "agent_wire_tool_ended",
+				signal: "tool-call",
+				evidence: {
+					toolId: itemId,
+					toolName: str(params.toolName) ?? null,
+					status: boundedStatus(params.status) ?? null,
+				},
+				severity: "info",
+				semantic: true,
+				coalesceKey: null,
+			});
+		}
+		if (method === "item/updated") {
+			return ownerFrame(method, {
+				kind: "agent_wire_tool_updated",
+				signal: null,
+				evidence: { toolId: itemId, status: boundedStatus(params.status) ?? null },
+				severity: "info",
+				semantic: false,
+				coalesceKey: `tool:${itemId ?? "tool"}`,
+			});
+		}
+		return ownerFrame(method, {
+			kind: "agent_wire_tool_started",
+			signal: "tool-call",
+			evidence: { toolId: itemId, toolName: str(params.toolName) ?? null },
+			severity: "info",
+			semantic: true,
+			coalesceKey: null,
+		});
+	}
+	return null;
+}
+
+/** Map app-server JSON-RPC notification frames to neutral owner observations. */
+export function observeAppServerOutboundFrame(frame: Record<string, unknown>): AgentWireOwnerObservation | null {
+	const method = str(frame.method);
+	if (!method) return null;
+	const params = recordObject(frame.params) ?? {};
+	switch (method) {
+		case "turn/started":
+			return ownerFrame(method, {
+				kind: "agent_wire_turn_started",
+				signal: "prompt-accepted",
+				evidence: { turnId: str(params.turnId) ?? null },
+				severity: "info",
+				semantic: true,
+				coalesceKey: null,
+			});
+		case "turn/completed":
+			return ownerFrame(method, {
+				kind: "agent_wire_agent_completed",
+				signal: "completed",
+				evidence: { stopReason: str(params.status) ?? "completed" },
+				severity: "info",
+				semantic: true,
+				coalesceKey: null,
+			});
+		case "gjc/event": {
+			const event = eventFromAppServerRawEvent(params);
+			return event ? observeAgentSessionEvent(event) : null;
+		}
+		case "item/started":
+		case "item/updated":
+		case "item/completed":
+		case "item/agentMessage/delta":
+			return observeAppServerItemFrame(method, params);
+		default:
+			return null;
+	}
+}
+
 /**
- * Map a single outbound RPC wire frame (docs/rpc.md) to a bounded owner
- * observation, or null when the frame carries no owner-facing signal. Event
+ * Map a single outbound agent-wire frame to a bounded owner observation, or
+ * null when the frame carries no owner-facing signal. Event frames delegate to
  * frames delegate to {@link observeAgentWireEventPayload}; non-event frames are
  * mapped here so owners never re-parse protocol semantics privately.
  */
 export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWireOwnerObservation | null {
 	const type = str(frame.type);
-	if (!type || type === "ready") return null;
+	if (!type) return observeAppServerOutboundFrame(frame);
+	if (type === "ready") return null;
 
 	switch (type) {
 		case "response": {
 			if (frame.success === false) {
 				const error = recordObject(frame.error);
 				return ownerFrame(type, {
-					kind: "rpc_response_failed",
+					kind: "agent_wire_response_failed",
 					signal: "error",
 					evidence: {
 						command: boundedToken(frame.command) ?? null,
@@ -351,7 +457,7 @@ export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWi
 		}
 		case "workflow_gate":
 			return ownerFrame(type, {
-				kind: "rpc_workflow_gate",
+				kind: "agent_wire_workflow_gate",
 				signal: null,
 				evidence: {
 					gate_id: str(frame.gate_id) ?? null,
@@ -364,7 +470,7 @@ export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWi
 			});
 		case "extension_ui_request":
 			return ownerFrame(type, {
-				kind: "rpc_extension_request",
+				kind: "agent_wire_extension_request",
 				signal: "tool-call",
 				evidence: { id: str(frame.id) ?? null, method: str(frame.method) ?? null },
 				severity: "info",
@@ -373,7 +479,7 @@ export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWi
 			});
 		case "extension_error":
 			return ownerFrame(type, {
-				kind: "rpc_extension_error",
+				kind: "agent_wire_extension_error",
 				signal: "error",
 				evidence: {
 					extensionPath: str(frame.extensionPath) ?? null,
@@ -386,7 +492,7 @@ export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWi
 		case "host_tool_call":
 		case "host_tool_cancel":
 			return ownerFrame(type, {
-				kind: type === "host_tool_cancel" ? "rpc_host_tool_cancel" : "rpc_host_tool_call",
+				kind: type === "host_tool_cancel" ? "agent_wire_host_tool_cancel" : "agent_wire_host_tool_call",
 				signal: "tool-call",
 				evidence: { id: str(frame.id) ?? null, toolName: str(frame.toolName) ?? null },
 				severity: "info",
@@ -396,7 +502,7 @@ export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWi
 		case "host_uri_request":
 		case "host_uri_cancel":
 			return ownerFrame(type, {
-				kind: type === "host_uri_cancel" ? "rpc_host_uri_cancel" : "rpc_host_uri_request",
+				kind: type === "host_uri_cancel" ? "agent_wire_host_uri_cancel" : "agent_wire_host_uri_request",
 				signal: "tool-call",
 				evidence: {
 					id: str(frame.id) ?? null,

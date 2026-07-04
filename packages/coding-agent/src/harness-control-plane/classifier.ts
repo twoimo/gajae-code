@@ -7,7 +7,7 @@
  *   - unknown deltas are NEVER destructive; they map to `human-check`.
  *   - a deleted/mismatched worktree maps to `human-check` (never recreate over unknown data).
  * `send-enter` is intentionally never emitted: it is unsupported for the gajae-code
- * RPC adapter in v1 (no blind key injection).
+ * transport adapter in v1 (no blind key injection).
  */
 import type { ClassifyInput, RecoveryDecision } from "./types";
 
@@ -71,7 +71,7 @@ export function classifyRecovery(input: ClassifyInput): RecoveryDecision {
 		};
 	}
 
-	// Owner / RPC vanished — branch on git delta. Every branch requires a `vanish` receipt.
+	// Owner / transport vanished — branch on git delta. Every branch requires a `vanish` receipt.
 	switch (o.gitDelta) {
 		case "dirty":
 			if (budget.dirtyVanishPreserve > 0) {

@@ -13,7 +13,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import * as path from "node:path";
 import { sessionAuditDir } from "../../../gjc-runtime/session-layout";
-import type { RpcBudgetExceeded, RpcWorkflowGateKind, RpcWorkflowStage } from "../../rpc/rpc-types";
+import type { RpcBudgetExceeded, RpcWorkflowGateKind, RpcWorkflowStage } from "./protocol";
 import { answerHashOf } from "./workflow-gate-schema";
 
 export const AUDIT_SCHEMA_VERSION = 1;

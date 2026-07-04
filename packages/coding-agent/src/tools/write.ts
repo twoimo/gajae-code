@@ -666,7 +666,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
 				const handler = internalRouter.getHandler(scheme);
 				if (handler?.write) {
-					await handler.write(parsed, cleanContent, { cwd: this.session.cwd, signal });
+					await handler.write(parsed, cleanContent, {
+						threadId: this.session.getSessionId?.() ?? undefined,
+						sessionId: this.session.getSessionId?.() ?? undefined,
+						cwd: this.session.cwd,
+						signal,
+					});
 					let resultText = `Successfully wrote ${cleanContent.length} bytes to ${path}`;
 					if (stripped) {
 						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;

@@ -85,6 +85,38 @@ pub fn schema_bundle() -> serde_json::Value {
 	insert_def!("ItemCompletedParams", crate::protocol::ItemCompletedParams);
 	insert_def!("GjcEventParams", crate::protocol::GjcEventParams);
 	insert_def!("ServerNotificationEnvelope", crate::protocol::ServerNotificationEnvelope);
+	insert_def!("RpcWorkflowGate", crate::workflow_gate::RpcWorkflowGate);
+	insert_def!("RpcWorkflowStage", crate::workflow_gate::RpcWorkflowStage);
+	insert_def!("RpcWorkflowGateKind", crate::workflow_gate::RpcWorkflowGateKind);
+	insert_def!("RpcWorkflowGateOption", crate::workflow_gate::RpcWorkflowGateOption);
+	insert_def!("RpcWorkflowGateContext", crate::workflow_gate::RpcWorkflowGateContext);
+	insert_def!("SchemaValidationIssue", crate::workflow_gate::SchemaValidationIssue);
+	insert_def!("RpcWorkflowGateResponse", crate::workflow_gate::RpcWorkflowGateResponse);
+	insert_def!("RpcWorkflowGateResolution", crate::workflow_gate::RpcWorkflowGateResolution);
+	insert_def!(
+		"RpcWorkflowGateValidationError",
+		crate::workflow_gate::RpcWorkflowGateValidationError
+	);
+	insert_def!("WorkflowGateListParams", crate::workflow_gate::WorkflowGateListParams);
+	insert_def!("WorkflowGateListResult", crate::workflow_gate::WorkflowGateListResult);
+	insert_def!("WorkflowGateRespondParams", crate::workflow_gate::WorkflowGateRespondParams);
+	insert_def!("WorkflowGateOpenedParams", crate::workflow_gate::WorkflowGateOpenedParams);
+	insert_def!("RpcUnattendedBudget", crate::unattended::RpcUnattendedBudget);
+	insert_def!("RpcUnattendedDeclaration", crate::unattended::RpcUnattendedDeclaration);
+	insert_def!("RpcUnattendedAccepted", crate::unattended::RpcUnattendedAccepted);
+	insert_def!("RpcBudgetExceeded", crate::unattended::RpcBudgetExceeded);
+	insert_def!("RpcScopeDenied", crate::unattended::RpcScopeDenied);
+	insert_def!("RpcActionDenied", crate::unattended::RpcActionDenied);
+	insert_def!("RpcUnattendedRefused", crate::unattended::RpcUnattendedRefused);
+	insert_def!("UnattendedNegotiateParams", crate::unattended::UnattendedNegotiateParams);
+	insert_def!("HostUriSchemeDefinition", crate::host_uris::HostUriSchemeDefinition);
+	insert_def!("HostUriSchemesSetParams", crate::host_uris::HostUriSchemesSetParams);
+	insert_def!("HostUriSchemesSetResult", crate::host_uris::HostUriSchemesSetResult);
+	insert_def!("HostUriOperation", crate::host_uris::HostUriOperation);
+	insert_def!("HostUriRequestParams", crate::host_uris::HostUriRequestParams);
+	insert_def!("HostUriCancelParams", crate::host_uris::HostUriCancelParams);
+	insert_def!("HostUriResultParams", crate::host_uris::HostUriResultParams);
+	insert_def!("HostUriResource", crate::host_uris::HostUriResource);
 
 	serde_json::json!({
 		 "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1, "kind": "package-consumer-report",
+  "phase": "P6 doc cleanup (critic blockers) + final consolidation sign-off", "commits": ["41f05668","6458e84b","cc0faeee"], "surface": "documentation",
+  "results": {
+    "unionCheck": {"command": "bun run check", "exit": 0},
+    "docsIndex": {"command": "generate-docs-index", "docs": 122},
+    "prohibitedRefScan": {"scope": "README + docs/**/*.md excl app-server-artifacts + robogjc-rust-port", "patterns": "RPC stdio/Bridge HTTPS/RPC-UI/RPC mode/Bridge mode/src/modes/rpc|bridge/bridge-client/python-gjc-rpc/rpc-mode|client|types + deleted-doc links + exact symbols", "liveHits": 0},
+    "criticFinal": {"review": "128-FinalCriticRound3", "verdict": "OKAY / APPROVE"}
+  },
+  "adversarial": [
+    {"scenario": "reader follows docs to pick an external-control surface", "expected": "directed to app-server/ACP/Coordinator MCP, not removed RPC/Bridge", "result": "codebase-overview + bot-integration + external-control-readiness updated; verified 0 live RPC/Bridge advertisement"},
+    {"scenario": "engineer clicks a docs link to a deleted transport impl/doc", "expected": "no broken links to docs/rpc.md/docs/bridge.md or src/modes/rpc/*.ts", "result": "deleted-doc-link scan 0 hits"}
+  ]
+}

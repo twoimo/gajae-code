@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/adapter-contract";
 import { callEndpoint } from "../../src/harness-control-plane/control-endpoint";
 import { RuntimeOwner, resolveOwner, resolveOwnerLive } from "../../src/harness-control-plane/owner";
-import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/rpc-adapter";
 import { acquireLease } from "../../src/harness-control-plane/session-lease";
 import {
 	controlSocketPath,
@@ -190,7 +190,7 @@ describe("RuntimeOwner (in-process integration)", () => {
 		expect(rpc.cursor).toBe(0);
 	});
 
-	it("reports rpc-not-idle as not submitted and stops advertising submit", async () => {
+	it("reports transport-not-idle as not submitted and stops advertising submit", async () => {
 		const rpc = new FakeRpc();
 		rpc.state = { isStreaming: true, steeringQueueDepth: 0, followupQueueDepth: 0 };
 		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 100 });
@@ -205,7 +205,7 @@ describe("RuntimeOwner (in-process integration)", () => {
 		expect((res.evidence as Record<string, unknown>).accepted).toBe(false);
 		expect((res.evidence as Record<string, unknown>).submitted).toBe(false);
 		expect((res.evidence as Record<string, unknown>).reason).toBe("pre-state-not-idle");
-		expect(res.nextAllowedActions).toContainEqual({ verb: "submit", available: false, reason: "rpc-not-idle" });
+		expect(res.nextAllowedActions).toContainEqual({ verb: "submit", available: false, reason: "transport-not-idle" });
 		expect(rpc.cursor).toBe(0);
 	});
 

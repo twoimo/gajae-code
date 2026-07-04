@@ -155,7 +155,7 @@ export interface SessionHandle {
 	base: string | null;
 	issueOrPr: string | null;
 	processHandle: { kind: "runtime-owner"; ownerId: string | null; pid: number | null };
-	rpcHandle: { kind: "rpc-subprocess"; pid: number | null; sessionDir: string };
+	appServerHandle: { kind: "app-server-subprocess"; pid: number | null; sessionDir: string };
 	ownerHandle: { leasePath: string; endpoint: string | null; heartbeatAt: string | null };
 	routerHandle: { kind: "default-in-owner"; policy: string; eventsPath: string };
 	viewportHandle: { kind: "event-monitor"; tmuxSessionName: string | null; viewOnly: true };
@@ -206,10 +206,10 @@ export interface Observation {
 	lastActivityAt: string | null;
 	observedSignals: string[];
 	risk: RiskKind;
-	/** RPC subprocess liveness, distinct from owner-process/lease liveness. Optional for back-compat. */
-	rpcLive?: boolean;
-	/** ISO timestamp of the most recent RPC frame the owner observed, if any. */
-	rpcLastFrameAt?: string | null;
+	/** Transport subprocess liveness, distinct from owner-process/lease liveness. Optional for back-compat. */
+	transportLive?: boolean;
+	/** ISO timestamp of the most recent transport frame the owner observed, if any. */
+	transportLastFrameAt?: string | null;
 	/** True only when owner/rpc/lifecycle gates indicate a prompt can be submitted now. */
 	readyForSubmit?: boolean;
 	/** Present when readyForSubmit is false; mirrors submit's nextAllowedActions reason. */

@@ -7,7 +7,7 @@ src/
 ├── cli.ts, main.ts, index.ts, sdk.ts, config.ts
 ├── cli/                 # command-line argument and command adapters
 ├── commands/            # concrete command handlers (launch, shell, ssh, ...)
-├── modes/               # interactive, print, rpc runtimes + UI controllers/components
+├── modes/               # interactive, print, acp, app-server runtimes + UI controllers/components
 ├── session/             # AgentSession, persistence, storage, compaction, artifacts
 ├── tools/               # built-in tool implementations and render/meta helpers
 ├── task/                # subagent/task orchestration, concurrency, output management
@@ -44,7 +44,8 @@ createAgentSession(...)
    │
    ├── runInteractiveMode(...)  -> InteractiveMode
    ├── runPrintMode(...)        -> one-shot output
-   └── runRpcMode(...)          -> JSONL stdin/stdout server
+   ├── runAcpMode(...)          -> Agent Client Protocol stdio server
+   └── runAppServerMode(...)    -> app-server JSON-RPC transport
 ```
 
 ### Runtime layers
@@ -63,14 +64,13 @@ createAgentSession(...)
    - Re-exports mode entrypoints:
      - `InteractiveMode`
      - `runPrintMode`
-     - `runRpcMode`
-     - `RpcClient` (+ RPC types)
+     - `runAcpMode`
    - Registers a postmortem terminal recovery hook:
      - `postmortem.register("terminal-restore", () => emergencyTerminalRestore())`
 
 4. **SDK/programmatic surface layer** (`packages/coding-agent/src/index.ts`)
    - Re-exports SDK/session/mode/theme/tool/types for non-CLI consumers.
-   - Includes direct exports for `main`, `createAgentSession`, `runPrintMode`, `runRpcMode`, `InteractiveMode`, discovery helpers, and extension/custom-tool types.
+   - Includes direct exports for `main`, `createAgentSession`, `runPrintMode`, `InteractiveMode`, discovery helpers, and extension/custom-tool types.
 
 ### Startup flow (CLI path)
 
@@ -84,46 +84,48 @@ createAgentSession(...)
    - Build/open session management (`createSessionManager(...)`, resume handling via `selectSession(...)` when `--resume` has no value).
    - Build options (`buildSessionOptions(...)`) and create runtime session (`createAgentSession(sessionOptions)`).
    - Dispatch mode:
-     - `mode === "rpc"` -> `runRpcMode(session)`
+     - `mode === "acp"` -> `runAcpMode(createSession)`
+     - `mode === "app-server"` -> `runAppServerMode()`
      - interactive -> `runInteractiveMode(...)` (wrapper around `new InteractiveMode(...)` loop)
      - non-interactive text/json stream path -> `runPrintMode(session, ...)`
 
 ### CLI vs programmatic usage
 
 - **CLI path**: starts at `src/cli.ts` (`#!/usr/bin/env bun`), uses command registry + argv normalization, and routes into command handlers.
-- **Programmatic path**: imports from `src/index.ts` directly (for example `createAgentSession`, `runPrintMode`, `runRpcMode`, `InteractiveMode`, `Settings`, `ModelRegistry`) without going through `runCli` or command alias logic.
+- **Programmatic path**: imports from `src/index.ts` directly (for example `createAgentSession`, `runPrintMode`, `InteractiveMode`, `Settings`, `ModelRegistry`) without going through `runCli` or command alias logic.
 
 ### What `index.ts` exposes for SDK consumers
 
 `packages/coding-agent/src/index.ts` acts as the package barrel and includes:
 
 - **Core runtime/session APIs**: `createAgentSession`, `AgentSession`, `SessionManager`, prompt/compaction/session types.
-- **Mode APIs**: `InteractiveMode`, `runPrintMode`, `runRpcMode`, `RpcClient` and RPC event/types.
+- **Mode APIs**: `InteractiveMode`, `runPrintMode`, and `runAcpMode`.
 - **Discovery + tool constructors**: `discoverAuthStorage`, `discoverExtensions`, `discoverMCPServers`, `createTools`, built-in tool classes (`ReadTool`, `WriteTool`, `BashTool`, `EvalTool`, `FindTool`, `GrepTool`, `EditTool`).
 - **Extensibility interfaces**: extension/custom-command/custom-tool/skill/slash-command types and loaders.
 - **UI/theming helpers**: TUI components plus `initTheme`, `Theme`, and code-highlighting/theme utilities.
 - **CLI callable export**: `main` is re-exported for embedding/integration contexts that invoke root behavior explicitly.
 
-## Mode Implementations: Interactive, Print, and RPC
+## Mode Implementations: Interactive, Print, ACP, and app-server
 
 ### ASCII overview
 
 ```text
                     AgentSession
                          │
-        ┌────────────────┼────────────────┐
-        ▼                ▼                ▼
-InteractiveMode      runPrintMode      runRpcMode
-(TUI event loop)     (non-TUI batch)   (JSONL protocol)
-        │                │                │
-controllers/components   stdout text/json  RpcCommand/RpcResponse
+        ┌────────────────┼────────────────┼────────────────┐
+        ▼                ▼                ▼                ▼
+InteractiveMode      runPrintMode      runAcpMode      runAppServerMode
+(TUI event loop)     (non-TUI batch)   (ACP stdio)     (JSON-RPC app-server)
+        │                │                │                │
+controllers/components   stdout text/json  ACP messages    app-server frames
 ```
 
-The coding agent exposes three execution styles in `packages/coding-agent/src/modes/`:
+The coding agent exposes these retained execution styles:
 
 - Interactive TUI mode (`interactive-mode.ts`)
 - One-shot print mode (`print-mode.ts`)
-- Headless RPC mode (`rpc/rpc-mode.ts` + `rpc/rpc-types.ts` + `rpc/rpc-client.ts`)
+- Agent Client Protocol mode (`acp/`)
+- app-server mode (`app-server/`)
 
 ### Interactive mode (`InteractiveMode`)
 
@@ -161,74 +163,6 @@ Additional responsibilities:
 - Supports `initialMessage` + `initialImages`, then additional queued `messages`.
 - Flushes stdout before returning and disposes the session (`await session.dispose()`).
 
-### RPC mode server (`runRpcMode`)
-
-`runRpcMode(session)` in `rpc-mode.ts` is a stdin/stdout JSONL protocol server for embedding.
-
-Transport and framing:
-
-- Input: JSON lines from `readJsonl(Bun.stdin.stream())`.
-- Output: one JSON object per line via `process.stdout.write(JSON.stringify(obj) + "\n")`.
-- Startup handshake: immediately emits `{ "type": "ready" }`.
-
-Command handling:
-
-- Accepts `RpcCommand` unions (defined in `rpc-types.ts`).
-- Responds with `RpcResponse` objects: `type: "response"`, `command`, `success`, optional `data`, optional `error`.
-- Also streams raw `AgentSession` events through stdout via `session.subscribe(...)`.
-
-Extension UI bridge:
-
-- Implements `RpcExtensionUIContext` to translate extension UI calls into `extension_ui_request` output messages.
-- Tracks pending dialog requests by generated `id` and resolves them when matching `extension_ui_response` arrives on stdin.
-- Supports timeout/abort-aware dialog defaults for `select`, `confirm`, and `input`.
-- Fire-and-forget UI notifications (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`) are emitted as requests without expected responses.
-- TUI-specific operations are explicitly unsupported in RPC mode (`setFooter`, `setHeader`, theme switching, custom editor components).
-
-Shutdown behavior:
-
-- Extension `shutdown()` marks a deferred flag.
-- After each command, `checkShutdownRequested()` emits `session_shutdown` (if handlers exist) and exits.
-- EOF on stdin exits cleanly (`process.exit(0)`).
-
-### RPC protocol shape (`rpc-types.ts`)
-
-`RpcCommand` categories in source:
-
-- Prompting: `prompt`, `steer`, `follow_up`, `abort`, `abort_and_prompt`, `new_session`
-- State: `get_state`
-- Model: `set_model`, `cycle_model`, `get_available_models`
-- Thinking: `set_thinking_level`, `cycle_thinking_level`
-- Queue modes: `set_steering_mode`, `set_follow_up_mode`, `set_interrupt_mode`
-- Compaction/retry: `compact`, `set_auto_compaction`, `set_auto_retry`, `abort_retry`
-- Bash/session/messages: `bash`, `abort_bash`, `get_session_stats`, `export_html`, `switch_session`, `branch`, `get_branch_messages`, `get_last_assistant_text`, `set_session_name`, `get_messages`
-
-`RpcSessionState` (returned by `get_state`) includes model/thinking info, streaming/compaction flags, queue mode settings, session identity (`sessionFile`, `sessionId`, `sessionName`), and message queue counts.
-
-`RpcResponse` is a discriminated union:
-
-- Success variants are command-specific (many include typed `data` payloads).
-- Failure variant is generic: `{ type: "response", command: string, success: false, error: string }`.
-
-Extension protocol types:
-
-- Outbound UI requests: `RpcExtensionUIRequest` (`select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`).
-- Inbound UI replies: `RpcExtensionUIResponse` (`value`, `confirmed`, or `cancelled`).
-
-### RPC client wrapper (`RpcClient`)
-
-`RpcClient` in `rpc-client.ts` is a typed process wrapper around `--mode rpc`.
-
-Key behaviors:
-
-- Spawns `bun <cliPath> --mode rpc` (default `dist/cli.js`) with optional provider/model/session args.
-- Waits for server ready signal (`type === "ready"`) with startup timeout (30s) and early-exit error propagation including captured stderr.
-- Sends commands with generated request IDs (`req_<n>`), correlates responses through `#pendingRequests`, and enforces per-request timeout (30s).
-- Exposes typed methods (`prompt`, `steer`, `setModel`, `bash`, `getState`, etc.) that map 1:1 to RPC commands.
-- Emits only `AgentEvent` values through `onEvent()`; `waitForIdle()`/`collectEvents()` resolve on `agent_end`.
-- Provides `stop()` and `[Symbol.dispose]()` for cleanup.
-
-Notable current limitation from implementation: `#handleLine()` handles `RpcResponse` and agent events only; `extension_ui_request` messages are not surfaced by `RpcClient` APIs.
 
 ## Session Lifecycle, Persistence, and Settings Boundaries
 
@@ -1069,7 +1003,7 @@ Only code-backed auth behavior should be assumed:
 
 No explicit rate-limit policy is encoded in these files beyond generic provider failure handling and fallback chaining.
 
-## Local development workflow, tools registry, RPC, and hooks
+## Local development workflow, tools registry, and hooks
 
 ### ASCII overview
 
@@ -1077,7 +1011,6 @@ No explicit rate-limit policy is encoded in these files beyond generic provider 
 Change request
    │
    ├── built-in tool  -> tools/index.ts (imports/exports/BUILTIN_TOOLS)
-   ├── RPC command    -> modes/rpc/rpc-types.ts (+ rpc-mode handler/client)
    └── hook event     -> extensibility/hooks/types.ts (+ emit sites)
 
 Validation loop:
@@ -1085,10 +1018,9 @@ Validation loop:
   bun --cwd=packages/coding-agent run test
 ```
 
-This section covers the day-to-day commands and three common extension paths in `packages/coding-agent`:
+This section covers the day-to-day commands and two common extension paths in `packages/coding-agent`:
 
 - add a built-in tool
-- add an RPC command
 - add a hook event
 
 ### Canonical references
@@ -1096,7 +1028,6 @@ This section covers the day-to-day commands and three common extension paths in 
 - Package scripts: `packages/coding-agent/package.json` (`scripts`)
 - Package-level docs pointer: `packages/coding-agent/README.md`
 - Built-in tool registry: `packages/coding-agent/src/tools/index.ts`
-- RPC protocol types: `packages/coding-agent/src/modes/rpc/rpc-types.ts`
 - Hook event and API types: `packages/coding-agent/src/extensibility/hooks/types.ts`
 
 ### Practical local command workflow
@@ -1140,25 +1071,6 @@ Notes from current behavior:
 - `createTools()` always includes `resolve`. Plan mode uses it (via the agent calling `resolve` with `extra: { title }`) to submit a finalized plan for user approval; preview/apply tools (e.g. `ast_edit`) use it to gate apply/discard.
 - `yield` is force-added when `session.requireYieldTool === true`.
 - Eval availability is mode-driven (`PI_PY`, `eval.py`, `eval.js`); eval falls back to JavaScript when Python is unavailable and JavaScript is enabled. The standalone `bash` tool is always available.
-
-### Playbook: add an RPC command
-
-Primary file: `packages/coding-agent/src/modes/rpc/rpc-types.ts`.
-
-1. Add the new command shape to `RpcCommand` with a unique `type` literal.
-   - Pattern: `| { id?: string; type: "new_command"; ... }`
-2. Add success response variant(s) to `RpcResponse`.
-   - Pattern: `| { id?: string; type: "response"; command: "new_command"; success: true; data?: ... }`
-3. Ensure failure path remains covered by the generic error arm:
-   - `{ id?: string; type: "response"; command: string; success: false; error: string }`
-4. If command changes exposed runtime state, update `RpcSessionState` accordingly.
-5. `RpcCommandType` is derived (`RpcCommand["type"]`), so no separate enum update is needed.
-
-Keep command naming consistent with existing protocol literals such as:
-
-- prompting: `prompt`, `steer`, `follow_up`
-- session: `switch_session`, `branch`, `get_branch_messages`
-- execution: `bash`, `abort_bash`
 
 ### Playbook: add a hook event
 

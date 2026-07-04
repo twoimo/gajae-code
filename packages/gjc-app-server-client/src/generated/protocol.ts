@@ -469,3 +469,216 @@ export interface ServerNotificationMap {
 }
 
 export type ServerNotificationMethod = "turn/started" | "turn/completed" | "item/started" | "item/agentMessage/delta" | "item/completed" | "gjc/event" | "gjc/hostTools/call" | "gjc/hostTools/cancel";
+
+export type RpcWorkflowGate = {
+	"context": RpcWorkflowGateContext;
+	"created_at": string;
+	"gate_id": string;
+	"kind": RpcWorkflowGateKind;
+	"options"?: RpcWorkflowGateOption[] | null;
+	"required": boolean;
+	"schema": JsonValue;
+	"schema_hash": string;
+	"stage": RpcWorkflowStage;
+	"type": string;
+};
+
+export type RpcWorkflowStage = "deep-interview" | "ralplan" | "ultragoal";
+
+export type RpcWorkflowGateKind = "question" | "approval" | "execution";
+
+export type RpcWorkflowGateOption = {
+	"description"?: string | null;
+	"label": string;
+	"value": JsonValue;
+};
+
+export type RpcWorkflowGateContext = {
+	"artifact_refs"?: {
+	[key: string]: JsonValue | undefined;
+}[] | null;
+	"language"?: string | null;
+	"plan"?: string | null;
+	"prompt"?: string | null;
+	"source"?: string | null;
+	"stage_state"?: {
+	[key: string]: JsonValue | undefined;
+} | null;
+	"summary"?: string | null;
+	"title"?: string | null;
+};
+
+export type SchemaValidationIssue = {
+	"expected"?: JsonValue;
+	"keyword": string;
+	"message": string;
+	"path": string;
+};
+
+export type RpcWorkflowGateResponse = {
+	"answer": JsonValue;
+	"gate_id": string;
+	"idempotency_key"?: string | null;
+};
+
+export type RpcWorkflowGateResolution = {
+	"answer_hash": string;
+	"error"?: RpcWorkflowGateValidationError | null;
+	"gate_id": string;
+	"resolved_at": string;
+	"status": string;
+};
+
+export type RpcWorkflowGateValidationError = {
+	"code": string;
+	"errors": SchemaValidationIssue[];
+	"gate_id": string;
+	"schema_hash": string;
+};
+
+export type WorkflowGateListParams = {
+	"threadId": string;
+};
+
+export type WorkflowGateListResult = {
+	"gates": RpcWorkflowGate[];
+};
+
+export type WorkflowGateRespondParams = {
+	"answer": JsonValue;
+	"gate_id": string;
+	"idempotency_key"?: string | null;
+	"threadId": string;
+};
+
+export type WorkflowGateOpenedParams = {
+	"context": RpcWorkflowGateContext;
+	"created_at": string;
+	"gate_id": string;
+	"generation": number;
+	"kind": RpcWorkflowGateKind;
+	"options"?: RpcWorkflowGateOption[] | null;
+	"required": boolean;
+	"schema": JsonValue;
+	"schema_hash": string;
+	"stage": RpcWorkflowStage;
+	"threadId": string;
+	"type": string;
+};
+
+export type RpcUnattendedBudget = {
+	"max_cost_usd": number;
+	"max_tokens": number;
+	"max_tool_calls": number;
+	"max_wall_time_ms": number;
+};
+
+export type RpcUnattendedDeclaration = {
+	"action_allowlist": string[];
+	"actor": string;
+	"budget": RpcUnattendedBudget;
+	"scopes": string[];
+};
+
+export type RpcUnattendedAccepted = {
+	"accepted_at": string;
+	"action_allowlist": string[];
+	"actor": string;
+	"budget": RpcUnattendedBudget;
+	"run_id": string;
+	"scopes": string[];
+};
+
+export type RpcBudgetExceeded = {
+	"abort_status": string;
+	"code": string;
+	"limit": number;
+	"metric": string;
+	"observed": number;
+	"phase": string;
+	"run_id": string;
+	"session_id"?: string | null;
+};
+
+export type RpcScopeDenied = {
+	"code": string;
+	"command"?: string | null;
+	"pre_side_effect": boolean;
+	"run_id": string;
+	"scope": string;
+	"session_id"?: string | null;
+};
+
+export type RpcActionDenied = {
+	"action": string;
+	"code": string;
+	"command"?: string | null;
+	"pre_side_effect": boolean;
+	"run_id": string;
+	"session_id"?: string | null;
+};
+
+export type RpcUnattendedRefused = {
+	"code": string;
+	"message": string;
+};
+
+export type UnattendedNegotiateParams = {
+	"declaration": RpcUnattendedDeclaration;
+	"threadId": string;
+};
+
+export type HostUriSchemeDefinition = {
+	"description"?: string | null;
+	"immutable"?: boolean;
+	"scheme": string;
+	"writable"?: boolean;
+};
+
+export type HostUriSchemesSetParams = {
+	"schemes": HostUriSchemeDefinition[];
+	"threadId": string;
+};
+
+export type HostUriSchemesSetResult = {
+	"schemes": HostUriSchemeDefinition[];
+};
+
+export type HostUriOperation = "read" | "write";
+
+export type HostUriRequestParams = {
+	"content"?: string | null;
+	"generation": number;
+	"operation": HostUriOperation;
+	"requestId": string;
+	"threadId": string;
+	"turnId": string;
+	"url": string;
+};
+
+export type HostUriCancelParams = {
+	"generation": number;
+	"requestId": string;
+	"threadId": string;
+	"turnId"?: string | null;
+};
+
+export type HostUriResultParams = {
+	"content"?: string | null;
+	"contentType"?: string | null;
+	"error"?: string | null;
+	"immutable"?: boolean | null;
+	"isError"?: boolean;
+	"notes"?: string[] | null;
+	"requestId": string;
+	"threadId": string;
+};
+
+export type HostUriResource = {
+	"content": string;
+	"contentType": string;
+	"immutable"?: boolean | null;
+	"notes"?: string[] | null;
+	"size": number;
+	"url": string;
+};

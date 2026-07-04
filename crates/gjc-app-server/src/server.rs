@@ -19,6 +19,7 @@ use crate::{
 	error::{AppServerError, Result},
 	event_map::ThreadStream,
 	host_tools::{HostToolRegistry, HostToolResult, PendingHostToolCall},
+	host_uris::{HostUriRegistry, HostUriResultParams, PendingHostUriRequest},
 	identity::{ThreadIdentity, ThreadStatus},
 	ids::{ConnectionId, ThreadId, TurnId},
 	jsonrpc::{Inbound, Notification, Response},
@@ -33,15 +34,18 @@ pub trait EventSink: Send + Sync {
 
 /// Per-thread registry entry: identity + backend + admission + event stream.
 struct ThreadEntry {
-	identity:      Mutex<ThreadIdentity>,
-	backend:       Arc<dyn AgentBackend>,
-	admission:     Mutex<Admission>,
-	stream:        Mutex<ThreadStream>,
-	active_turn:   Mutex<Option<TurnId>>,
+	identity:       Mutex<ThreadIdentity>,
+	backend:        Arc<dyn AgentBackend>,
+	admission:      Mutex<Admission>,
+	stream:         Mutex<ThreadStream>,
+	active_turn:    Mutex<Option<TurnId>>,
 	/// Serializes non-turn mutating backend calls for this thread (serial
 	/// mutating lane); read/cancel lanes never take it.
-	mutating_lane: Arc<tokio::sync::Mutex<()>>,
-	host_tools:    Mutex<HostToolRegistry>,
+	mutating_lane:  Arc<tokio::sync::Mutex<()>>,
+	host_tools:     Mutex<HostToolRegistry>,
+	workflow_gates: Mutex<crate::workflow_gate::WorkflowGateBroker>,
+	unattended:     Mutex<crate::unattended::UnattendedController>,
+	host_uris:      Mutex<HostUriRegistry>,
 }
 
 /// Per-connection handshake state.
@@ -70,16 +74,19 @@ impl Default for AppServerConfig {
 
 /// The app-server core. Cheap to clone-share behind an `Arc`.
 pub struct AppServer {
-	factory:                 Arc<dyn BackendFactory>,
-	threads:                 DashMap<ThreadId, ThreadEntry>,
-	connections:             DashMap<ConnectionId, Mutex<ConnectionState>>,
-	config:                  AppServerConfig,
-	sink:                    Arc<dyn EventSink>,
-	notification_host:       Arc<dyn crate::notifications::NotificationHost>,
+	factory: Arc<dyn BackendFactory>,
+	threads: DashMap<ThreadId, ThreadEntry>,
+	connections: DashMap<ConnectionId, Mutex<ConnectionState>>,
+	config: AppServerConfig,
+	sink: Arc<dyn EventSink>,
+	notification_host: Arc<dyn crate::notifications::NotificationHost>,
 	/// Fan-out of every emitted notification to socket transports (e.g. WS)
 	/// that subscribe per-connection, in addition to the primary `sink`.
-	event_tx:                tokio::sync::broadcast::Sender<Notification>,
+	event_tx: tokio::sync::broadcast::Sender<Notification>,
 	pending_host_tool_calls: DashMap<String, PendingHostToolCall>,
+	pending_host_uri_requests: DashMap<String, PendingHostUriRequest>,
+	pending_workflow_gates:
+		DashMap<String, (ThreadId, tokio::sync::oneshot::Receiver<serde_json::Value>)>,
 }
 
 impl AppServer {
@@ -114,6 +121,8 @@ impl AppServer {
 			notification_host,
 			event_tx,
 			pending_host_tool_calls: DashMap::new(),
+			pending_workflow_gates: DashMap::new(),
+			pending_host_uri_requests: DashMap::new(),
 		}
 	}
 
@@ -228,6 +237,236 @@ impl AppServer {
 		}
 	}
 
+	async fn preflight_host_uri_operation(
+		&self,
+		thread_id: &ThreadId,
+		method: &str,
+	) -> Result<Option<crate::unattended::PreflightOutcome>> {
+		let params = serde_json::json!({ "threadId": thread_id.0 });
+		let Some(entry) = self.threads.get(thread_id) else {
+			return Ok(None);
+		};
+		let preflight = entry
+			.value()
+			.unattended
+			.lock()
+			.preflight(thread_id, method, Some(&params));
+		match preflight {
+			Ok(outcome) => Ok(outcome),
+			Err(err) => {
+				if err
+					.data
+					.as_ref()
+					.and_then(|d| d.get("code"))
+					.and_then(|v| v.as_str())
+					== Some("budget_exceeded")
+				{
+					self.abort_unattended_thread(thread_id, &err).await;
+				}
+				Err(err)
+			},
+		}
+	}
+
+	pub async fn read_host_uri(
+		&self,
+		thread_id: &ThreadId,
+		turn_id: &TurnId,
+		url: &str,
+	) -> Result<crate::host_uris::HostUriResource> {
+		let charged = self
+			.preflight_host_uri_operation(thread_id, "gjc/hostUris/read")
+			.await?
+			.is_some_and(|outcome| outcome.charged);
+		let scheme = extract_url_scheme(url)?;
+		let (generation, definition) = {
+			let entry = self
+				.threads
+				.get(thread_id)
+				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+			let definition = entry.value().host_uris.lock().get(&scheme).ok_or_else(|| {
+				AppServerError::not_found(format!("host URI scheme not registered: {scheme}"))
+			})?;
+			(entry.value().identity.lock().generation, definition)
+		};
+		let result = self
+			.dispatch_host_uri_request(
+				thread_id,
+				generation,
+				turn_id,
+				"read",
+				url,
+				None,
+				Duration::from_secs(30),
+			)
+			.await?;
+		self
+			.reconcile_host_uri_preflight(thread_id, charged)
+			.await?;
+		crate::host_uris::resource_from_result(url, &definition, result)
+	}
+
+	pub async fn write_host_uri(
+		&self,
+		thread_id: &ThreadId,
+		turn_id: &TurnId,
+		url: &str,
+		content: String,
+	) -> Result<()> {
+		let charged = self
+			.preflight_host_uri_operation(thread_id, "gjc/hostUris/write")
+			.await?
+			.is_some_and(|outcome| outcome.charged);
+		let scheme = extract_url_scheme(url)?;
+		{
+			let entry = self
+				.threads
+				.get(thread_id)
+				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+			let definition = entry.value().host_uris.lock().get(&scheme).ok_or_else(|| {
+				AppServerError::not_found(format!("host URI scheme not registered: {scheme}"))
+			})?;
+			if !definition.writable {
+				return Err(AppServerError::conflict(format!(
+					"host URI scheme is not writable: {scheme}"
+				)));
+			}
+		}
+		let generation = {
+			let entry = self
+				.threads
+				.get(thread_id)
+				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+			entry.value().identity.lock().generation
+		};
+		let result = self
+			.dispatch_host_uri_request(
+				thread_id,
+				generation,
+				turn_id,
+				"write",
+				url,
+				Some(content),
+				Duration::from_secs(30),
+			)
+			.await?;
+		self
+			.reconcile_host_uri_preflight(thread_id, charged)
+			.await?;
+		if result.is_error {
+			return Err(AppServerError::new(
+				crate::error::codes::INTERNAL_ERROR,
+				result
+					.error
+					.or(result.content)
+					.unwrap_or_else(|| format!("Host URI write failed for {url}")),
+			));
+		}
+		Ok(())
+	}
+
+	async fn reconcile_host_uri_preflight(&self, thread_id: &ThreadId, charged: bool) -> Result<()> {
+		if !charged {
+			return Ok(());
+		}
+		let usage = if let Ok((backend, ctx)) = self.backend_and_ctx(thread_id, Lane::Read) {
+			backend.usage_snapshot(&ctx).await.ok().flatten()
+		} else {
+			None
+		};
+		let reconcile = if let Some(entry) = self.threads.get(thread_id) {
+			entry.value().unattended.lock().reconcile(usage)
+		} else {
+			Ok(())
+		};
+		if let Err(err) = reconcile {
+			self.abort_unattended_thread(thread_id, &err).await;
+			return Err(err);
+		}
+		Ok(())
+	}
+
+	async fn dispatch_host_uri_request(
+		&self,
+		thread_id: &ThreadId,
+		generation: crate::ids::BackendGeneration,
+		turn_id: &TurnId,
+		operation: &str,
+		url: &str,
+		content: Option<String>,
+		timeout: Duration,
+	) -> Result<HostUriResultParams> {
+		let request_id = format!("host_uri_{}", crate::ids::TurnId::generate().0);
+		let (tx, rx) = tokio::sync::oneshot::channel();
+		self
+			.pending_host_uri_requests
+			.insert(request_id.clone(), PendingHostUriRequest {
+				thread_id: thread_id.clone(),
+				generation,
+				turn_id: turn_id.clone(),
+				tx,
+			});
+		self.publish(Notification::new(
+			"gjc/hostUris/request",
+			serde_json::json!({
+				"threadId": thread_id.0,
+				"generation": generation.0,
+				"turnId": turn_id.0,
+				"requestId": request_id,
+				"operation": operation,
+				"url": url,
+				"content": content,
+			}),
+		));
+		match tokio::time::timeout(timeout, rx).await {
+			Ok(Ok(result)) => Ok(result),
+			Ok(Err(_)) => Err(AppServerError::conflict("host URI request was cancelled")),
+			Err(_) => {
+				self.pending_host_uri_requests.remove(&request_id);
+				Err(AppServerError::new(
+					crate::error::codes::INTERNAL_ERROR,
+					"host URI request timed out",
+				))
+			},
+		}
+	}
+
+	pub async fn open_workflow_gate(
+		&self,
+		thread_id: &ThreadId,
+		input: crate::workflow_gate::OpenWorkflowGateInput,
+	) -> Result<serde_json::Value> {
+		let (generation, gate, rx) = {
+			let entry = self
+				.threads
+				.get(thread_id)
+				.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+			let generation = entry.value().identity.lock().generation;
+			let (gate, rx) = entry.value().workflow_gates.lock().open(thread_id, input)?;
+			(generation, gate, rx)
+		};
+		let gate_id = gate.gate_id.clone();
+		self
+			.pending_workflow_gates
+			.insert(gate_id.clone(), (thread_id.clone(), rx));
+		let params = crate::workflow_gate::WorkflowGateOpenedParams {
+			thread_id: thread_id.0.clone(),
+			generation: generation.0,
+			gate,
+		};
+		self.publish(Notification::new(
+			"gjc/workflowGate/opened",
+			serde_json::to_value(params).map_err(|err| {
+				AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string())
+			})?,
+		));
+		let Some((_, (_, rx))) = self.pending_workflow_gates.remove(&gate_id) else {
+			return Err(AppServerError::conflict("workflow gate was cancelled"));
+		};
+		rx.await
+			.map_err(|_| AppServerError::conflict("workflow gate was cancelled"))
+	}
+
 	pub fn host_tool_names(&self, thread_id: &ThreadId) -> Result<Vec<String>> {
 		let entry = self
 			.threads
@@ -281,6 +520,52 @@ impl AppServer {
 				));
 				// Dropping `pending.tx` rejects the waiter with a structured
 				// "cancelled" conflict error (see the `Ok(Err(_))` branch above).
+				drop(pending);
+			}
+		}
+	}
+
+	fn cancel_host_uri_requests_for_turn(&self, thread_id: &ThreadId, turn_id: &TurnId) {
+		let request_ids = self
+			.pending_host_uri_requests
+			.iter()
+			.filter(|entry| &entry.value().thread_id == thread_id && &entry.value().turn_id == turn_id)
+			.map(|entry| entry.key().clone())
+			.collect::<Vec<_>>();
+		for request_id in request_ids {
+			if let Some((_, pending)) = self.pending_host_uri_requests.remove(&request_id) {
+				self.publish(Notification::new(
+					"gjc/hostUris/cancel",
+					serde_json::json!({
+						"threadId": thread_id.0,
+						"generation": pending.generation.0,
+						"turnId": pending.turn_id.0,
+						"requestId": request_id,
+					}),
+				));
+				drop(pending);
+			}
+		}
+	}
+
+	fn cancel_host_uri_requests_for_thread(&self, thread_id: &ThreadId) {
+		let request_ids = self
+			.pending_host_uri_requests
+			.iter()
+			.filter(|entry| &entry.value().thread_id == thread_id)
+			.map(|entry| entry.key().clone())
+			.collect::<Vec<_>>();
+		for request_id in request_ids {
+			if let Some((_, pending)) = self.pending_host_uri_requests.remove(&request_id) {
+				self.publish(Notification::new(
+					"gjc/hostUris/cancel",
+					serde_json::json!({
+						"threadId": thread_id.0,
+						"generation": pending.generation.0,
+						"turnId": pending.turn_id.0,
+						"requestId": request_id,
+					}),
+				));
 				drop(pending);
 			}
 		}
@@ -402,14 +687,96 @@ impl AppServer {
 				Arc::clone(&entry.value().mutating_lane)
 			};
 			let _guard = lane.lock().await;
-			let result = self.dispatch_method(method, params).await;
+			let result = self.dispatch_with_unattended(method, params).await;
 			if let Some(entry) = self.threads.get(&thread_id) {
 				entry.value().admission.lock().dequeue_mutation();
 			}
 			return result;
 		}
 
-		self.dispatch_method(method, params).await
+		self.dispatch_with_unattended(method, params).await
+	}
+
+	async fn dispatch_with_unattended(
+		self: &Arc<Self>,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		if method == "gjc/unattended/negotiate" {
+			return self.handle_unattended_negotiate(method, params);
+		}
+		let thread_id = extract_thread_id(params.as_ref()).ok();
+		let mut charged_thread = None;
+		if let Some(thread_id) = thread_id.as_ref()
+			&& let Some(entry) = self.threads.get(thread_id)
+		{
+			let preflight =
+				entry
+					.value()
+					.unattended
+					.lock()
+					.preflight(thread_id, method, params.as_ref());
+			match preflight {
+				Ok(Some(outcome)) if outcome.charged => charged_thread = Some(thread_id.clone()),
+				Ok(_) => {},
+				Err(err) => {
+					if err
+						.data
+						.as_ref()
+						.and_then(|d| d.get("code"))
+						.and_then(|v| v.as_str())
+						== Some("budget_exceeded")
+					{
+						self.abort_unattended_thread(thread_id, &err).await;
+					}
+					return Err(err);
+				},
+			}
+		}
+		let result = self.dispatch_method(method, params).await;
+		if let Some(thread_id) = charged_thread {
+			let usage = if let Ok((backend, ctx)) = self.backend_and_ctx(&thread_id, Lane::Read) {
+				backend.usage_snapshot(&ctx).await.ok().flatten()
+			} else {
+				None
+			};
+			let reconcile = if let Some(entry) = self.threads.get(&thread_id) {
+				entry.value().unattended.lock().reconcile(usage)
+			} else {
+				Ok(())
+			};
+			if let Err(err) = reconcile {
+				self.abort_unattended_thread(&thread_id, &err).await;
+				return Err(err);
+			}
+		}
+		result
+	}
+
+	async fn abort_unattended_thread(&self, thread_id: &ThreadId, err: &AppServerError) {
+		let Some(entry) = self.threads.get(thread_id) else {
+			return;
+		};
+		let run_id = err
+			.data
+			.as_ref()
+			.and_then(|d| d.get("run_id"))
+			.and_then(|v| v.as_str())
+			.unwrap_or("unattended");
+		entry
+			.value()
+			.workflow_gates
+			.lock()
+			.reject_pending_for_unattended_abort(run_id);
+		self.cancel_host_tool_calls_for_thread(thread_id);
+		self.cancel_host_uri_requests_for_thread(thread_id);
+		let active_turn = entry.value().active_turn.lock().clone();
+		if let Some(turn_id) = active_turn
+			&& let Ok((backend, ctx)) = self.backend_and_ctx(thread_id, Lane::Cancel)
+		{
+			let _ = backend.abort(&ctx, &turn_id).await;
+		}
+		entry.value().unattended.lock().mark_abort_settled();
 	}
 
 	async fn dispatch_method(
@@ -440,6 +807,12 @@ impl AppServer {
 			"gjc/hostTools/set" => self.handle_host_tools_set(method, params),
 			"gjc/hostTools/result" => self.handle_host_tools_result(method, params),
 			"gjc/hostTools/update" => self.handle_host_tools_update(method, params),
+			"gjc/hostUriSchemes/set" => self.handle_host_uri_schemes_set(method, params),
+			"gjc/hostUris/result" => self.handle_host_uris_result(method, params),
+			"gjc/workflowGate/list" => self.handle_workflow_gate_list(method, params),
+			"gjc/workflowGate/respond" => self.handle_workflow_gate_respond(method, params),
+			"gjc/unattended/negotiate" => self.handle_unattended_negotiate(method, params),
+			"gjc/unattended/audit" => self.handle_unattended_audit(method, params),
 			other => Err(AppServerError::method_not_found(other)),
 		}
 	}
@@ -585,6 +958,163 @@ impl AppServer {
 		}
 		pending.progress.lock().push(payload);
 		Ok(serde_json::json!({}))
+	}
+
+	fn handle_host_uri_schemes_set(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		let (thread_id, schemes) = crate::host_uris::parse_set_params(method, params.as_ref())?;
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		entry.value().host_uris.lock().replace(schemes.clone());
+		serde_json::to_value(crate::host_uris::HostUriSchemesSetResult { schemes })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	fn handle_host_uris_result(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		let (thread_id, request_id, result) =
+			crate::host_uris::parse_result_params(method, params.as_ref())?;
+		let Some((_, pending)) = self.pending_host_uri_requests.remove(&request_id) else {
+			return Err(AppServerError::not_found("host URI request not found"));
+		};
+		if pending.thread_id != thread_id {
+			self.pending_host_uri_requests.insert(request_id, pending);
+			return Err(AppServerError::conflict(
+				"host URI result threadId does not match pending request",
+			));
+		}
+		pending
+			.tx
+			.send(result)
+			.map_err(|_| AppServerError::conflict("host URI request receiver was dropped"))?;
+		Ok(serde_json::json!({}))
+	}
+
+	fn handle_workflow_gate_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		let result = crate::workflow_gate::WorkflowGateListResult {
+			gates: entry.value().workflow_gates.lock().list_pending(),
+		};
+		serde_json::to_value(result)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	fn handle_workflow_gate_respond(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"threadId",
+			"gate_id",
+			"answer",
+			"idempotency_key",
+		])?;
+		let parsed: crate::workflow_gate::WorkflowGateRespondParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let thread_id = ThreadId(parsed.thread_id.clone());
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		let response = crate::workflow_gate::RpcWorkflowGateResponse {
+			gate_id:         parsed.gate_id,
+			answer:          parsed.answer,
+			idempotency_key: parsed.idempotency_key,
+		};
+		let resolution = entry.value().workflow_gates.lock().resolve(response)?;
+		serde_json::to_value(resolution)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	fn handle_unattended_negotiate(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "declaration"])?;
+		let params_value = params.unwrap_or(serde_json::Value::Null);
+		let declaration = params_value.get("declaration").ok_or_else(|| {
+			crate::unattended::negotiation_refusal(
+				"invalid_unattended_declaration",
+				"declaration is required",
+			)
+		})?;
+		let budget = declaration.get("budget").ok_or_else(|| {
+			crate::unattended::negotiation_refusal("incomplete_budget", "budget is required")
+		})?;
+		if let Some(budget_obj) = budget.as_object() {
+			for key in budget_obj.keys() {
+				if !matches!(
+					key.as_str(),
+					"max_tokens" | "max_tool_calls" | "max_wall_time_ms" | "max_cost_usd"
+				) {
+					return Err(crate::unattended::negotiation_refusal(
+						"unsupported_budget_metric",
+						format!("unsupported budget metric: {key}"),
+					));
+				}
+			}
+		}
+		let parsed: crate::unattended::UnattendedNegotiateParams =
+			serde_json::from_value(params_value).map_err(|err| {
+				let message = err.to_string();
+				let code = if message.contains("missing field `budget`")
+					|| message.contains("missing field `max_")
+				{
+					"incomplete_budget"
+				} else {
+					"invalid_unattended_declaration"
+				};
+				crate::unattended::negotiation_refusal(code, message)
+			})?;
+		let thread_id = ThreadId(parsed.thread_id);
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		let accepted = entry
+			.value()
+			.unattended
+			.lock()
+			.negotiate(&thread_id, parsed.declaration)?;
+		serde_json::to_value(accepted)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	fn handle_unattended_audit(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let entry = self
+			.threads
+			.get(&thread_id)
+			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
+		Ok(serde_json::json!({
+			"events": entry.value().unattended.lock().audit(),
+			"workflowGateEvents": entry.value().workflow_gates.lock().audit(),
+		}))
 	}
 
 	async fn handle_gjc_state_read(
@@ -782,6 +1312,9 @@ impl AppServer {
 			active_turn: Mutex::new(None),
 			mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
 			host_tools: Mutex::new(HostToolRegistry::default()),
+			workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
+			unattended: Mutex::new(crate::unattended::UnattendedController::default()),
+			host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
 		});
 		let mut thread = serde_json::json!({
 			"id": info.thread_id.0,
@@ -848,6 +1381,7 @@ impl AppServer {
 		};
 		backend.dispose(&ctx).await?;
 		self.cancel_host_tool_calls_for_thread(&thread_id);
+		self.cancel_host_uri_requests_for_thread(&thread_id);
 		self.threads.remove(&thread_id);
 		Ok(serde_json::json!({}))
 	}
@@ -945,6 +1479,15 @@ impl AppServer {
 			let result = backend
 				.prompt(&bg_ctx, params.unwrap_or(serde_json::Value::Null))
 				.await;
+			let usage = backend.usage_snapshot(&bg_ctx).await.ok().flatten();
+			let reconcile = if let Some(entry) = this.threads.get(&bg_thread) {
+				entry.value().unattended.lock().reconcile(usage)
+			} else {
+				Ok(())
+			};
+			if let Err(err) = reconcile {
+				this.abort_unattended_thread(&bg_thread, &err).await;
+			}
 			if let Err(err) = &result {
 				this.emit_backend_event(&BackendEvent {
 					thread_id:  bg_thread.clone(),
@@ -1007,6 +1550,7 @@ impl AppServer {
 			(Arc::clone(&entry.value().backend), ctx)
 		};
 		self.cancel_host_tool_calls_for_turn(&thread_id, &turn_id);
+		self.cancel_host_uri_requests_for_turn(&thread_id, &turn_id);
 		backend.abort(&ctx, &turn_id).await?;
 		Ok(serde_json::json!({}))
 	}
@@ -1018,6 +1562,16 @@ fn extract_thread_id(params: Option<&serde_json::Value>) -> Result<ThreadId> {
 		.and_then(|v| v.as_str())
 		.map(|s| ThreadId(s.to_string()))
 		.ok_or_else(|| AppServerError::invalid_params("missing threadId"))
+}
+
+fn extract_url_scheme(url: &str) -> Result<String> {
+	let Some((scheme, _)) = url.split_once("://") else {
+		return Err(AppServerError::invalid_params("host URI url must include a scheme"));
+	};
+	if scheme.is_empty() {
+		return Err(AppServerError::invalid_params("host URI url must include a scheme"));
+	}
+	Ok(scheme.to_ascii_lowercase())
 }
 
 /// Non-turn mutating methods that must run one-at-a-time on a thread's serial
@@ -1032,6 +1586,8 @@ fn is_serialized_mutation(method: &str) -> bool {
 			| "gjc/model/set"
 			| "gjc/todos/set"
 			| "turn/steer"
+			| "gjc/hostUriSchemes/set"
+			| "gjc/hostUris/result"
 	)
 }
 
@@ -1800,5 +2356,152 @@ mod tests {
 
 		// The mutating lane must have serialized them: never two in exec at once.
 		assert_eq!(gauge.max_inflight.load(std::sync::atomic::Ordering::SeqCst), 1);
+	}
+	#[tokio::test]
+	async fn host_uri_preflight_denies_before_emitting_requests() {
+		let (s, sink) = server_with_sink();
+		let conn = init_conn(&s).await;
+		let thread = start_thread(&s, &conn).await;
+		let set = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":70,"method":"gjc/hostUriSchemes/set","params":{{"threadId":"{}","schemes":[{{"scheme":"db","writable":true}}]}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, set).await.unwrap().error.is_none());
+		let negotiate = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":71,"method":"gjc/unattended/negotiate","params":{{"threadId":"{}","declaration":{{"actor":"model","budget":{{"max_tokens":100,"max_tool_calls":10,"max_wall_time_ms":10000,"max_cost_usd":1.0}},"scopes":["command.host_uri"],"action_allowlist":["command.host_uri"]}}}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, negotiate).await.unwrap().error.is_none());
+
+		let read = s
+			.read_host_uri(&thread, &TurnId("turn_read".into()), "db://row/1")
+			.await;
+		let write = s
+			.write_host_uri(&thread, &TurnId("turn_write".into()), "db://row/1", "body".into())
+			.await;
+		assert_eq!(read.unwrap_err().message, "action_denied");
+		assert_eq!(write.unwrap_err().message, "action_denied");
+		assert!(
+			!sink
+				.notes
+				.lock()
+				.iter()
+				.any(|note| note.method == "gjc/hostUris/request")
+		);
+	}
+
+	#[tokio::test]
+	async fn unattended_abort_cancels_pending_host_calls_uris_and_gates() {
+		let (s, sink) = server_with_sink();
+		let conn = init_conn(&s).await;
+		let thread = start_thread(&s, &conn).await;
+		let turn = TurnId("turn_pending".into());
+		let set_tool = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":80,"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{{"name":"lookup","description":"lookup","inputSchema":{{"type":"object"}}}}]}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, set_tool).await.unwrap().error.is_none());
+		let set_uri = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":81,"method":"gjc/hostUriSchemes/set","params":{{"threadId":"{}","schemes":[{{"scheme":"db","writable":true}}]}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, set_uri).await.unwrap().error.is_none());
+
+		let tool_task = {
+			let s = Arc::clone(&s);
+			let thread = thread.clone();
+			let turn = turn.clone();
+			tokio::spawn(async move {
+				s.call_host_tool(&thread, &turn, "lookup", serde_json::json!({}))
+					.await
+			})
+		};
+		let uri_task = {
+			let s = Arc::clone(&s);
+			let thread = thread.clone();
+			let turn = turn.clone();
+			tokio::spawn(async move { s.read_host_uri(&thread, &turn, "db://row/1").await })
+		};
+		let gate_task = {
+			let s = Arc::clone(&s);
+			let thread = thread.clone();
+			tokio::spawn(async move {
+				s.open_workflow_gate(&thread, crate::workflow_gate::OpenWorkflowGateInput {
+					stage:   crate::workflow_gate::RpcWorkflowStage::Ultragoal,
+					kind:    crate::workflow_gate::RpcWorkflowGateKind::Approval,
+					schema:  serde_json::json!({"type":"object"}),
+					options: None,
+					context: crate::workflow_gate::RpcWorkflowGateContext::default(),
+				})
+				.await
+			})
+		};
+		tokio::time::sleep(Duration::from_millis(10)).await;
+		let gate_id = s
+			.threads
+			.get(&thread)
+			.unwrap()
+			.value()
+			.workflow_gates
+			.lock()
+			.list_pending()
+			.first()
+			.unwrap()
+			.gate_id
+			.clone();
+		let err = AppServerError::new(crate::error::codes::INVALID_REQUEST, "budget_exceeded")
+			.with_data(serde_json::json!({"code":"budget_exceeded","run_id":"run_abort"}));
+		s.abort_unattended_thread(&thread, &err).await;
+
+		assert!(
+			tool_task
+				.await
+				.unwrap()
+				.unwrap_err()
+				.message
+				.contains("cancelled")
+		);
+		assert!(
+			uri_task
+				.await
+				.unwrap()
+				.unwrap_err()
+				.message
+				.contains("cancelled")
+		);
+		assert!(
+			gate_task
+				.await
+				.unwrap()
+				.unwrap_err()
+				.message
+				.contains("cancelled")
+		);
+		let list = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":82,"method":"gjc/workflowGate/list","params":{{"threadId":"{}"}}}}"#,
+			thread.0
+		))
+		.unwrap();
+		let list_resp = s.dispatch(&conn, list).await.unwrap().result.unwrap();
+		assert_eq!(list_resp["gates"].as_array().unwrap().len(), 0);
+
+		let respond = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":83,"method":"gjc/workflowGate/respond","params":{{"threadId":"{}","gate_id":"{}","answer":{{}},"idempotency_key":"after-abort"}}}}"#,
+			thread.0, gate_id
+		))
+		.unwrap();
+		assert!(s.dispatch(&conn, respond).await.unwrap().error.is_some());
+		let methods: Vec<String> = sink
+			.notes
+			.lock()
+			.iter()
+			.map(|note| note.method.clone())
+			.collect();
+		assert!(methods.contains(&"gjc/hostTools/cancel".to_string()));
+		assert!(methods.contains(&"gjc/hostUris/cancel".to_string()));
 	}
 }

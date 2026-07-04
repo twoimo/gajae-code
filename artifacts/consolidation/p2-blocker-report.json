@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1, "kind": "package-consumer-report",
+  "phase": "P2-blocker-fix: app-server notification->owner observation mapping + rpc_* rename",
+  "commit": "1d32afa9", "surface": "package/api (harness owner frame mapping)",
+  "results": {
+    "unionCheck": {"command": "bun run check", "exit": 0},
+    "harnessAgentWireSuites": {"command": "bun test agent-wire-conformance + agent-wire/ + harness-control-plane/", "pass": 318, "fail": 0},
+    "focusedFix": {"command": "bun test agent-wire-conformance, event-observation, frame-mapper, owner-frames, observation-redteam", "pass": 68, "fail": 0, "expectCalls": 491},
+    "protectedBoundary": {"command": "git diff --name-only 9322fafe -- modes/acp crates/gjc-notifications src/notifications", "status": "empty"},
+    "rpcKindScan": {"contract": "no rpc_* owner-kind expectations remain", "status": "clean"}
+  },
+  "adversarial": [
+    {"scenario": "app-server method-shaped notification (turn/started, gjc/event carrying tool_start, turn/completed) reaches the owner", "expected": "persisted agent_wire_turn_started/agent_wire_tool_started/agent_wire_agent_completed with cursor + transportLastFrameAt advancement", "result": "owner-frames + frame-mapper tests assert exactly this"},
+    {"scenario": "legacy type-shaped rpc frame", "expected": "still mapped by observeRpcOutboundFrame", "result": "existing legacy tests pass"}
+  ]
+}

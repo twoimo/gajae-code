@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/adapter-contract";
 import { callEndpoint } from "../../src/harness-control-plane/control-endpoint";
 import { RuntimeOwner } from "../../src/harness-control-plane/owner";
-import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/rpc-adapter";
 import { readEvents, writeSessionState } from "../../src/harness-control-plane/storage";
 import { SESSION_SCHEMA_VERSION, type SessionHandle, type SessionState } from "../../src/harness-control-plane/types";
 
@@ -97,7 +97,7 @@ afterEach(async () => {
 });
 
 function obsOf(res: any) {
-	return res.evidence.observation as { observedSignals: string[]; rpcLive?: boolean; lifecycle: string };
+	return res.evidence.observation as { observedSignals: string[]; transportLive?: boolean; lifecycle: string };
 }
 
 describe("owner frame -> observability", () => {
@@ -118,8 +118,8 @@ describe("owner frame -> observability", () => {
 
 		const events = await readEvents(root, SID, 0);
 		const kinds = events.map(e => e.kind);
-		expect(kinds).toContain("rpc_tool_started");
-		expect(kinds).toContain("rpc_agent_completed");
+		expect(kinds).toContain("agent_wire_tool_started");
+		expect(kinds).toContain("agent_wire_agent_completed");
 		// single-writer: every event stamped with the owner's lease identity; cursors strictly increasing.
 		expect(events.every(e => e.writer.ownerId === info.ownerId)).toBe(true);
 		const cursors = events.map(e => e.cursor);
@@ -130,8 +130,8 @@ describe("owner frame -> observability", () => {
 		const obs = obsOf(res);
 		expect(obs.observedSignals).toContain("test-running");
 		expect(obs.observedSignals).toContain("completed");
-		expect(obs.rpcLive).toBe(true);
-		const completed = events.find(e => e.kind === "rpc_agent_completed");
+		expect(obs.transportLive).toBe(true);
+		const completed = events.find(e => e.kind === "agent_wire_agent_completed");
 		expect(completed?.nextAllowedActions).toContainEqual({
 			verb: "submit",
 			available: false,
@@ -168,7 +168,7 @@ describe("owner frame -> observability", () => {
 		await flush();
 
 		const events = await readEvents(root, SID, 0);
-		const ended = events.find(e => e.kind === "rpc_tool_ended");
+		const ended = events.find(e => e.kind === "agent_wire_tool_ended");
 		// tool_execution_end has no args, so test-detection is by tool name -> tool-call.
 		expect(ended).toMatchObject({ severity: "warn", evidence: { status: "error", signal: "tool-call" } });
 		expect(events.every(e => e.writer.ownerId === info.ownerId)).toBe(true);
@@ -194,7 +194,7 @@ describe("owner frame -> observability", () => {
 		await flush();
 
 		const events = await readEvents(root, SID, 0);
-		expect(events.map(e => e.kind)).toContain("rpc_agent_completed");
+		expect(events.map(e => e.kind)).toContain("agent_wire_agent_completed");
 		// 500 message_update frames are coalesced, not emitted 1:1.
 		expect(events.length).toBeLessThan(60);
 		const obs = obsOf(
@@ -226,13 +226,49 @@ describe("owner frame -> observability", () => {
 		expect(obs.observedSignals).toContain("idle"); // overlay present, did not evict semantic signals
 	});
 
-	it("rpcLive is distinct from ownerLive (RPC death does not imply dead owner)", async () => {
+	it("maps app-server method-shaped frames and advances transport cursor metadata", async () => {
 		const rpc = new FrameRpc();
 		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
 		const info = await owner.start();
-		rpc.live = false; // RPC subprocess died; owner endpoint still serving
+		rpc.emit({ jsonrpc: "2.0", method: "turn/started", params: { turnId: "turn-1" } });
+		rpc.emit({
+			jsonrpc: "2.0",
+			method: "gjc/event",
+			params: {
+				eventType: "tool_execution_start",
+				event: { toolCallId: "tool-1", toolName: "bash", args: { command: "bun test x" } },
+			},
+		});
+		rpc.emit({ jsonrpc: "2.0", method: "turn/completed", params: { turnId: "turn-1", status: "completed" } });
+		await flush();
+
+		const events = await readEvents(root, SID, 0);
+		expect(events.map(e => e.kind)).toEqual(
+			expect.arrayContaining([
+				"owner_started",
+				"agent_wire_turn_started",
+				"agent_wire_tool_started",
+				"agent_wire_agent_completed",
+			]),
+		);
+		expect(events.every(e => e.writer.ownerId === info.ownerId)).toBe(true);
+		expect(rpc.eventCursor()).toBe(3);
+		const observed = obsOf(
+			(await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>,
+		) as ReturnType<typeof obsOf> & { transportLastFrameAt?: string | null };
+		expect(observed.observedSignals).toContain("prompt-accepted");
+		expect(observed.observedSignals).toContain("test-running");
+		expect(observed.observedSignals).toContain("completed");
+		expect(observed.transportLastFrameAt).toBe(rpc.lastFrameAt());
+	});
+
+	it("transportLive is distinct from ownerLive (transport death does not imply dead owner)", async () => {
+		const rpc = new FrameRpc();
+		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const info = await owner.start();
+		rpc.live = false; // transport subprocess died; owner endpoint still serving
 		const res = (await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>;
 		expect((res.state as Record<string, unknown>).ownerLive).toBe(true);
-		expect(obsOf(res).rpcLive).toBe(false);
+		expect(obsOf(res).transportLive).toBe(false);
 	});
 });

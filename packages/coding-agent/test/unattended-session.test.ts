@@ -2,9 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { RpcUnattendedDeclaration, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import { approvalGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
 import { questionToGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
+import type {
+	RpcUnattendedDeclaration,
+	RpcWorkflowGate,
+} from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
 import {
 	modelSupportsTokenCostMetrics,
 	UnattendedSessionControlPlane,

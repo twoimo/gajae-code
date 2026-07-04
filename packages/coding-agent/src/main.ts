@@ -86,19 +86,15 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 	}
 }
 
-export type StartupUpdateRoute = "interactive" | "print" | "text" | "json" | "rpc" | "rpc-ui" | "acp" | "bridge";
+export type StartupUpdateRoute = "interactive" | "print" | "text" | "json" | "acp";
 
 export function classifyStartupUpdateRoute(
 	parsed: Pick<Args, "print" | "mode">,
 	autoPrint: boolean,
 ): StartupUpdateRoute {
-	if (!parsed.print && !autoPrint && parsed.mode === undefined) {
-		return "interactive";
-	}
-	if (parsed.print) {
-		return "print";
-	}
-	return parsed.mode ?? "text";
+	if (!parsed.print && !autoPrint && parsed.mode === undefined) return "interactive";
+	if (parsed.print) return "print";
+	return parsed.mode === "acp" ? "acp" : "text";
 }
 
 /** Coordinates the non-blocking update check around the interactive UI lifecycle. */
@@ -115,9 +111,7 @@ export class StartupUpdateOrchestrator {
 	}
 
 	startBeforeInteractiveInitialization(): void {
-		if (this.#route !== "interactive" || !this.#enabled() || this.#versionCheckPromise) {
-			return;
-		}
+		if (this.#route !== "interactive" || !this.#enabled() || this.#versionCheckPromise) return;
 		try {
 			this.#versionCheckPromise = this.#check().catch(() => undefined);
 		} catch {
@@ -126,13 +120,9 @@ export class StartupUpdateOrchestrator {
 	}
 
 	attachAfterInteractiveInitialization(notify: (version: string) => void): void {
-		this.#versionCheckPromise
-			?.then(version => {
-				if (version && this.#enabled()) {
-					notify(version);
-				}
-			})
-			.catch(() => {});
+		this.#versionCheckPromise?.then(version => {
+			if (version && this.#enabled()) notify(version);
+		}).catch(() => {});
 	}
 }
 
@@ -149,7 +139,7 @@ export async function initializeInteractiveModeWithStartupUpdate(
 	startupUpdate.attachAfterInteractiveInitialization(version => mode.showNewVersionNotification(version));
 }
 
-const RPC_DEFAULTED_SETTING_PATHS: SettingPath[] = [
+const ACP_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"todo.enabled",
 	"todo.reminders",
 	"todo.reminders.max",
@@ -167,14 +157,14 @@ const RPC_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"task.maxRecursionDepth",
 	"task.disabledAgents",
 	"task.agentModelOverrides",
-	// Memory subsystems are off-by-default for RPC hosts; embedders that want
+	// Memory subsystems are off-by-default for ACP hosts; embedders that want
 	// memory should opt in explicitly through their own settings layer.
 	"memory.backend",
 	"memories.enabled",
 ];
 
-function applyRpcDefaultSettingOverrides(targetSettings: Settings = settings): void {
-	for (const settingPath of RPC_DEFAULTED_SETTING_PATHS) {
+function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): void {
+	for (const settingPath of ACP_DEFAULTED_SETTING_PATHS) {
 		targetSettings.override(settingPath, getDefault(settingPath));
 	}
 }
@@ -881,15 +871,6 @@ export interface RlmPreset {
 	onSessionCreated?: (session: AgentSession) => void | Promise<void>;
 }
 
-type RunRpcMode = (
-	session: AgentSession,
-	setToolUIContext?: CreateAgentSessionResult["setToolUIContext"],
-	options?: { listen?: string },
-) => Promise<void>;
-type RunBridgeMode = (
-	session: AgentSession,
-	setToolUIContext?: CreateAgentSessionResult["setToolUIContext"],
-) => Promise<void>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
 
 export interface RunRootCommandDependencies {
@@ -904,8 +885,6 @@ export interface RunRootCommandDependencies {
 	readPipedInput?: typeof readPipedInput;
 	runStartupCredentialAutoImportIfNeeded?: typeof runStartupCredentialAutoImportIfNeeded;
 	getChangelogForDisplay?: typeof getChangelogForDisplay;
-	runRpcMode?: RunRpcMode;
-	runBridgeMode?: RunBridgeMode;
 	createInteractiveMode?: CreateInteractiveMode;
 	runPrintMode?: RunPrintMode;
 	isResumePickerTerminal?: ResumePickerTerminalCheck;
@@ -1030,36 +1009,22 @@ export async function runRootCommand(
 		process.exit(0);
 	}
 
-	if (
-		(parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui" || parsedArgs.mode === "bridge") &&
-		parsedArgs.fileArgs.length > 0
-	) {
-		process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC or bridge mode")}\n`);
+	if (parsedArgs.mode === "app-server" && parsedArgs.fileArgs.length > 0) {
+		process.stderr.write(`${chalk.red("Error: @file arguments are not supported in app-server mode")}\n`);
 		process.exit(1);
 	}
 
 	const cwd = getProjectDir();
 	const settingsInstance =
 		deps.settings ?? (await logger.time("settings:init", deps.initializeSettings ?? Settings.init, { cwd }));
-	if (
-		parsedArgs.mode === "rpc" ||
-		parsedArgs.mode === "rpc-ui" ||
-		parsedArgs.mode === "acp" ||
-		parsedArgs.mode === "bridge"
-	) {
-		applyRpcDefaultSettingOverrides(settingsInstance);
+	if (parsedArgs.mode === "acp") {
+		applyAcpDefaultSettingOverrides(settingsInstance);
 	}
 	modelRegistry.applyConfiguredModelBindings(settingsInstance);
-	if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui") {
+	if (parsedArgs.noPty) {
 		Bun.env.PI_NO_PTY = "1";
 	}
-	if (
-		parsedArgs.noTitle ||
-		parsedArgs.mode === "rpc" ||
-		parsedArgs.mode === "rpc-ui" ||
-		parsedArgs.mode === "acp" ||
-		parsedArgs.mode === "bridge"
-	) {
+	if (parsedArgs.noTitle || parsedArgs.mode === "acp") {
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
@@ -1216,7 +1181,7 @@ export async function runRootCommand(
 	};
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
-	sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+	sessionOptions.hasUI = isInteractive;
 	sessionOptions.settings = settingsInstance;
 	const hasRootStartupProfile = Boolean(settingsInstance.get("modelProfile.default") || parsedArgs.mpreset);
 
@@ -1328,26 +1293,7 @@ export async function runRootCommand(
 			process.exit(1);
 		}
 
-		if (mode === "rpc" || mode === "rpc-ui") {
-			const { RpcListenRefusedError, runRpcMode } = await import("./modes/rpc/rpc-mode");
-			const runRpc = deps.runRpcMode ?? runRpcMode;
-			try {
-				await runRpc(session, mode === "rpc-ui" ? setToolUIContext : undefined, {
-					listen: parsedArgs.rpcListen,
-				});
-			} catch (error) {
-				if (!(error instanceof RpcListenRefusedError)) throw error;
-				logger.setTransports({ console: true, file: true });
-				logger.error(error.message);
-				await session.dispose();
-				stopThemeWatcher();
-				await postmortem.quit(1);
-				process.exit(1);
-			}
-		} else if (mode === "bridge") {
-			const runBridge = deps.runBridgeMode ?? (await import("./modes/bridge/bridge-mode")).runBridgeMode;
-			await runBridge(session, setToolUIContext);
-		} else if (isInteractive) {
+		if (isInteractive) {
 			startupUpdate.startBeforeInteractiveInitialization();
 			const changelogMarkdown = await logger.time(
 				"main:getChangelogForDisplay",
