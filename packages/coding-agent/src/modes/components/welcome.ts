@@ -144,24 +144,7 @@ export class WelcomeComponent implements Component {
 		const separator = buildSeparator(rightColumnWidth);
 		const changelogBudget = Math.max(1, Math.min(6, Math.floor((targetContentRows ?? 18) * 0.3)));
 
-		const sessionLines: string[] = [];
-		if (this.recentSessions.length === 0) {
-			sessionLines.push(` ${theme.fg("dim", "No saved trails")}`);
-		} else {
-			const bulletPrefix = ` ${theme.md.bullet} `;
-			const prefixWidth = visibleWidth(bulletPrefix);
-			for (const session of this.recentSessions.slice(0, 3)) {
-				const timeSuffixRaw = ` (${session.timeAgo})`;
-				const timeWidth = visibleWidth(timeSuffixRaw);
-				const nameBudget = Math.max(1, rightColumnWidth - prefixWidth - timeWidth);
-				const nameVis = visibleWidth(session.name);
-				const name = nameVis > nameBudget ? truncateToWidth(session.name, nameBudget) : session.name;
-				sessionLines.push(
-					`${theme.fg("dim", bulletPrefix)}${theme.fg("muted", name)}${theme.fg("dim", timeSuffixRaw)}`,
-				);
-			}
-		}
-
+		const changelogLines = this.#whatsNewLines(rightColumnWidth, changelogBudget);
 		const lspLines: string[] = [];
 		if (this.lspServers.length === 0) {
 			lspLines.push(` ${theme.fg("dim", "No LSP servers")}`);
@@ -178,10 +161,13 @@ export class WelcomeComponent implements Component {
 			}
 		}
 
+		const sessionLimit = this.#sessionTrailLimit(targetContentRows, changelogLines.length, lspLines.length);
+		const sessionLines = this.#sessionTrailLines(rightColumnWidth, sessionLimit);
+
 		const rightLines = [
 			"",
 			` ${theme.bold(theme.fg("accent", "What's New"))}`,
-			...this.#whatsNewLines(rightColumnWidth, changelogBudget),
+			...changelogLines,
 			separator,
 			` ${theme.bold(theme.fg("accent", "Flow keys"))}`,
 			` ${theme.fg("dim", "/")}${theme.fg("muted", " commands")} ${theme.fg("dim", "·")} ${theme.fg(
@@ -313,6 +299,40 @@ export class WelcomeComponent implements Component {
 		const topPad = align === "center" ? Math.floor(missingRows / 2) : 0;
 		const bottomPad = missingRows - topPad;
 		return [...Array.from({ length: topPad }, () => ""), ...clipped, ...Array.from({ length: bottomPad }, () => "")];
+	}
+
+	#sessionTrailLimit(targetContentRows: number | undefined, changelogLineCount: number, lspLineCount: number): number {
+		if (this.recentSessions.length === 0) return 0;
+
+		const defaultLimit = Math.min(3, this.recentSessions.length);
+		if (targetContentRows === undefined) return defaultLimit;
+
+		// Right-column rows that are always present when the session trail is shown:
+		// top/bottom padding, section headers, separators, and the four flow-key hints.
+		const fixedRightRowsExcludingDynamicSections = 13;
+		const rowsWithDefaultTrail =
+			fixedRightRowsExcludingDynamicSections + changelogLineCount + lspLineCount + defaultLimit;
+		const extraRows = Math.max(0, targetContentRows - rowsWithDefaultTrail);
+		return Math.min(this.recentSessions.length, defaultLimit + extraRows);
+	}
+
+	#sessionTrailLines(rightColumnWidth: number, limit: number): string[] {
+		if (this.recentSessions.length === 0) {
+			return [` ${theme.fg("dim", "No saved trails")}`];
+		}
+
+		const bulletPrefix = ` ${theme.md.bullet} `;
+		const prefixWidth = visibleWidth(bulletPrefix);
+		const lines: string[] = [];
+		for (const session of this.recentSessions.slice(0, limit)) {
+			const timeSuffixRaw = ` (${session.timeAgo})`;
+			const timeWidth = visibleWidth(timeSuffixRaw);
+			const nameBudget = Math.max(1, rightColumnWidth - prefixWidth - timeWidth);
+			const nameVis = visibleWidth(session.name);
+			const name = nameVis > nameBudget ? truncateToWidth(session.name, nameBudget) : session.name;
+			lines.push(`${theme.fg("dim", bulletPrefix)}${theme.fg("muted", name)}${theme.fg("dim", timeSuffixRaw)}`);
+		}
+		return lines;
 	}
 
 	#whatsNewLines(width: number, maxItems: number): string[] {

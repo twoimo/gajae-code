@@ -80,4 +80,26 @@ describe("WelcomeComponent viewport sizing", () => {
 		expect(lines).toHaveLength(1);
 		expect(visibleWidth(lines[0] ?? "")).toBeLessThanOrEqual(80);
 	});
+
+	it("expands the session trail when the viewport has spare rows", () => {
+		const recentSessions = Array.from({ length: 8 }, (_, index) => ({
+			name: `trail-session-${index + 1}`,
+			timeAgo: `${index + 1}m ago`,
+		}));
+		const compact = new WelcomeComponent("1.2.3", "test-model", "test-provider", recentSessions, [], "ascii", {
+			getViewportRows: () => 24,
+			getReservedBottomRows: () => 4,
+		});
+		const roomy = new WelcomeComponent("1.2.3", "test-model", "test-provider", recentSessions, [], "ascii", {
+			getViewportRows: () => 40,
+			getReservedBottomRows: () => 4,
+		});
+
+		const compactText = compact.render(100).join("\n");
+		const roomyText = roomy.render(100).join("\n");
+
+		expect(compactText).toContain("trail-session-3");
+		expect(compactText).not.toContain("trail-session-4");
+		expect(roomyText).toContain("trail-session-8");
+	});
 });
