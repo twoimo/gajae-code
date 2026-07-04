@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GJC",
+  "version": "0.7.11",
+  "identifier": "dev.gaebal-gajae.gjc",
+  "build": {
+    "beforeDevCommand": "bun --cwd ../../packages/gjc-gui dev --host 127.0.0.1",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../../packages/gjc-gui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "GJC",
+        "width": 1280,
+        "height": 840
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "externalBin": ["binaries/gjc"]
+  }
+}

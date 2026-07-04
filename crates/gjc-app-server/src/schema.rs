@@ -19,72 +19,96 @@ fn def<T: schemars::JsonSchema>() -> serde_json::Value {
 #[must_use]
 pub fn schema_bundle() -> serde_json::Value {
 	let mut defs = serde_json::Map::new();
-	defs.insert("Request".into(), def::<crate::jsonrpc::Request>());
-	defs.insert("Response".into(), def::<crate::jsonrpc::Response>());
-	defs.insert("Notification".into(), def::<crate::jsonrpc::Notification>());
-	defs.insert("ClientNotification".into(), def::<crate::jsonrpc::ClientNotification>());
-	defs.insert("RequestId".into(), def::<crate::jsonrpc::RequestId>());
-	defs.insert("AppServerError".into(), def::<crate::error::AppServerError>());
-	defs.insert("ThreadIdentity".into(), def::<crate::identity::ThreadIdentity>());
-	defs.insert("ThreadStatus".into(), def::<crate::identity::ThreadStatus>());
-	defs.insert("SessionMetadata".into(), def::<crate::identity::SessionMetadata>());
-	defs.insert("ItemState".into(), def::<crate::item_state::ItemState>());
-	defs.insert("TurnState".into(), def::<crate::item_state::TurnState>());
-	defs.insert("TerminalCause".into(), def::<crate::item_state::TerminalCause>());
-	defs.insert("RpcWorkflowGate".into(), def::<crate::workflow_gate::RpcWorkflowGate>());
-	defs.insert(
-		"RpcWorkflowGateResponse".into(),
-		def::<crate::workflow_gate::RpcWorkflowGateResponse>(),
-	);
-	defs.insert(
-		"RpcWorkflowGateResolution".into(),
-		def::<crate::workflow_gate::RpcWorkflowGateResolution>(),
-	);
-	defs.insert(
-		"RpcWorkflowGateValidationError".into(),
-		def::<crate::workflow_gate::RpcWorkflowGateValidationError>(),
-	);
-	defs.insert(
-		"WorkflowGateListParams".into(),
-		def::<crate::workflow_gate::WorkflowGateListParams>(),
-	);
-	defs.insert(
-		"WorkflowGateListResult".into(),
-		def::<crate::workflow_gate::WorkflowGateListResult>(),
-	);
-	defs.insert(
-		"WorkflowGateRespondParams".into(),
-		def::<crate::workflow_gate::WorkflowGateRespondParams>(),
-	);
-	defs.insert(
-		"WorkflowGateOpenedParams".into(),
-		def::<crate::workflow_gate::WorkflowGateOpenedParams>(),
-	);
-	defs.insert("RpcUnattendedBudget".into(), def::<crate::unattended::RpcUnattendedBudget>());
-	defs.insert(
-		"RpcUnattendedDeclaration".into(),
-		def::<crate::unattended::RpcUnattendedDeclaration>(),
-	);
-	defs.insert("RpcUnattendedAccepted".into(), def::<crate::unattended::RpcUnattendedAccepted>());
-	defs.insert("RpcBudgetExceeded".into(), def::<crate::unattended::RpcBudgetExceeded>());
-	defs.insert("RpcScopeDenied".into(), def::<crate::unattended::RpcScopeDenied>());
-	defs.insert("RpcActionDenied".into(), def::<crate::unattended::RpcActionDenied>());
-	defs.insert("RpcUnattendedRefused".into(), def::<crate::unattended::RpcUnattendedRefused>());
-	defs.insert(
-		"UnattendedNegotiateParams".into(),
-		def::<crate::unattended::UnattendedNegotiateParams>(),
-	);
-	defs
-		.insert("HostUriSchemeDefinition".into(), def::<crate::host_uris::HostUriSchemeDefinition>());
-	defs
-		.insert("HostUriSchemesSetParams".into(), def::<crate::host_uris::HostUriSchemesSetParams>());
-	defs
-		.insert("HostUriSchemesSetResult".into(), def::<crate::host_uris::HostUriSchemesSetResult>());
-	defs.insert("HostUriOperation".into(), def::<crate::host_uris::HostUriOperation>());
-	defs.insert("HostUriRequestParams".into(), def::<crate::host_uris::HostUriRequestParams>());
-	defs.insert("HostUriCancelParams".into(), def::<crate::host_uris::HostUriCancelParams>());
-	defs.insert("HostUriResultParams".into(), def::<crate::host_uris::HostUriResultParams>());
-	defs.insert("HostUriResource".into(), def::<crate::host_uris::HostUriResource>());
+	macro_rules! insert_def {
+		($name:literal, $ty:ty) => {
+			defs.insert($name.into(), def::<$ty>());
+		};
+	}
+	insert_def!("Request", crate::jsonrpc::Request);
+	insert_def!("Response", crate::jsonrpc::Response);
+	insert_def!("Notification", crate::jsonrpc::Notification);
+	insert_def!("ClientNotification", crate::jsonrpc::ClientNotification);
+	insert_def!("RequestId", crate::jsonrpc::RequestId);
+	insert_def!("AppServerError", crate::error::AppServerError);
+	insert_def!("ThreadIdentity", crate::identity::ThreadIdentity);
+	insert_def!("ThreadStatus", crate::identity::ThreadStatus);
+	insert_def!("SessionMetadata", crate::identity::SessionMetadata);
+	insert_def!("ItemState", crate::item_state::ItemState);
+	insert_def!("TurnState", crate::item_state::TurnState);
+	insert_def!("TerminalCause", crate::item_state::TerminalCause);
+	insert_def!("EmptyResult", crate::protocol::EmptyResult);
+	insert_def!("InitializeParams", crate::protocol::InitializeParams);
+	insert_def!("InitializeResult", crate::protocol::InitializeResult);
+	insert_def!("InitializedParams", crate::protocol::InitializedParams);
+	insert_def!("ThreadStartParams", crate::protocol::ThreadStartParams);
+	insert_def!("ThreadResumeParams", crate::protocol::ThreadResumeParams);
+	insert_def!("ThreadForkParams", crate::protocol::ThreadForkParams);
+	insert_def!("ThreadIdParams", crate::protocol::ThreadIdParams);
+	insert_def!("ThreadSummary", crate::protocol::ThreadSummary);
+	insert_def!("ThreadResult", crate::protocol::ThreadResult);
+	insert_def!("ThreadResumeResult", crate::protocol::ThreadResumeResult);
+	insert_def!("ThreadReadParams", crate::protocol::ThreadReadParams);
+	insert_def!("ThreadReadResult", crate::protocol::ThreadReadResult);
+	insert_def!("ThreadLoadedListParams", crate::protocol::ThreadLoadedListParams);
+	insert_def!("ThreadLoadedListResult", crate::protocol::ThreadLoadedListResult);
+	insert_def!("TurnStartParams", crate::protocol::TurnStartParams);
+	insert_def!("TurnStartResult", crate::protocol::TurnStartResult);
+	insert_def!("TurnSummary", crate::protocol::TurnSummary);
+	insert_def!("TurnSteerParams", crate::protocol::TurnSteerParams);
+	insert_def!("TurnSteerResult", crate::protocol::TurnSteerResult);
+	insert_def!("TurnInterruptParams", crate::protocol::TurnInterruptParams);
+	insert_def!("TurnInterruptResult", crate::protocol::TurnInterruptResult);
+	insert_def!("GjcStateReadParams", crate::protocol::GjcStateReadParams);
+	insert_def!("GjcStateReadResult", crate::protocol::GjcStateReadResult);
+	insert_def!("GjcMessagesGetParams", crate::protocol::GjcMessagesGetParams);
+	insert_def!("GjcMessagesGetResult", crate::protocol::GjcMessagesGetResult);
+	insert_def!("GjcModelSetParams", crate::protocol::GjcModelSetParams);
+	insert_def!("GjcModelSetResult", crate::protocol::GjcModelSetResult);
+	insert_def!("GjcTodosSetParams", crate::protocol::GjcTodosSetParams);
+	insert_def!("GjcTodosSetResult", crate::protocol::GjcTodosSetResult);
+	insert_def!("GjcCompactParams", crate::protocol::GjcCompactParams);
+	insert_def!("GjcCompactResult", crate::protocol::GjcCompactResult);
+	insert_def!("HostToolDescriptor", crate::protocol::HostToolDescriptor);
+	insert_def!("GjcHostToolsSetParams", crate::protocol::GjcHostToolsSetParams);
+	insert_def!("GjcHostToolsSetResult", crate::protocol::GjcHostToolsSetResult);
+	insert_def!("GjcHostToolsResultParams", crate::protocol::GjcHostToolsResultParams);
+	insert_def!("GjcHostToolsResultResult", crate::protocol::GjcHostToolsResultResult);
+	insert_def!("GjcHostToolsUpdateParams", crate::protocol::GjcHostToolsUpdateParams);
+	insert_def!("GjcHostToolsUpdateResult", crate::protocol::GjcHostToolsUpdateResult);
+	insert_def!("HostToolsCallParams", crate::protocol::HostToolsCallParams);
+	insert_def!("HostToolsCancelParams", crate::protocol::HostToolsCancelParams);
+	insert_def!("ThreadEventBase", crate::protocol::ThreadEventBase);
+	insert_def!("TurnStartedParams", crate::protocol::TurnStartedParams);
+	insert_def!("TurnCompletedParams", crate::protocol::TurnCompletedParams);
+	insert_def!("ItemStartedParams", crate::protocol::ItemStartedParams);
+	insert_def!("ItemAgentMessageDeltaParams", crate::protocol::ItemAgentMessageDeltaParams);
+	insert_def!("ItemCompletedParams", crate::protocol::ItemCompletedParams);
+	insert_def!("GjcEventParams", crate::protocol::GjcEventParams);
+	insert_def!("ServerNotificationEnvelope", crate::protocol::ServerNotificationEnvelope);
+	insert_def!("RpcWorkflowGate", crate::workflow_gate::RpcWorkflowGate);
+	insert_def!("RpcWorkflowGateResponse", crate::workflow_gate::RpcWorkflowGateResponse);
+	insert_def!("RpcWorkflowGateResolution", crate::workflow_gate::RpcWorkflowGateResolution);
+	insert_def!("RpcWorkflowGateValidationError", crate::workflow_gate::RpcWorkflowGateValidationError);
+	insert_def!("WorkflowGateListParams", crate::workflow_gate::WorkflowGateListParams);
+	insert_def!("WorkflowGateListResult", crate::workflow_gate::WorkflowGateListResult);
+	insert_def!("WorkflowGateRespondParams", crate::workflow_gate::WorkflowGateRespondParams);
+	insert_def!("WorkflowGateOpenedParams", crate::workflow_gate::WorkflowGateOpenedParams);
+	insert_def!("RpcUnattendedBudget", crate::unattended::RpcUnattendedBudget);
+	insert_def!("RpcUnattendedDeclaration", crate::unattended::RpcUnattendedDeclaration);
+	insert_def!("RpcUnattendedAccepted", crate::unattended::RpcUnattendedAccepted);
+	insert_def!("RpcBudgetExceeded", crate::unattended::RpcBudgetExceeded);
+	insert_def!("RpcScopeDenied", crate::unattended::RpcScopeDenied);
+	insert_def!("RpcActionDenied", crate::unattended::RpcActionDenied);
+	insert_def!("RpcUnattendedRefused", crate::unattended::RpcUnattendedRefused);
+	insert_def!("UnattendedNegotiateParams", crate::unattended::UnattendedNegotiateParams);
+	insert_def!("HostUriSchemeDefinition", crate::host_uris::HostUriSchemeDefinition);
+	insert_def!("HostUriSchemesSetParams", crate::host_uris::HostUriSchemesSetParams);
+	insert_def!("HostUriSchemesSetResult", crate::host_uris::HostUriSchemesSetResult);
+	insert_def!("HostUriOperation", crate::host_uris::HostUriOperation);
+	insert_def!("HostUriRequestParams", crate::host_uris::HostUriRequestParams);
+	insert_def!("HostUriCancelParams", crate::host_uris::HostUriCancelParams);
+	insert_def!("HostUriResultParams", crate::host_uris::HostUriResultParams);
+	insert_def!("HostUriResource", crate::host_uris::HostUriResource);
 
 	serde_json::json!({
 		 "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -119,6 +143,13 @@ mod tests {
 			"AppServerError",
 			"ItemState",
 			"TurnState",
+			"InitializeResult",
+			"ThreadResult",
+			"TurnStartParams",
+			"GjcStateReadParams",
+			"GjcHostToolsSetParams",
+			"HostToolsCallParams",
+			"ServerNotificationEnvelope",
 		] {
 			assert!(defs.contains_key(key), "missing schema def: {key}");
 		}

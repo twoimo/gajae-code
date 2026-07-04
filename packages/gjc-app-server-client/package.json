@@ -1,0 +1,44 @@
+{
+	"type": "module",
+	"name": "@gajae-code/app-server-client",
+	"version": "0.7.11",
+	"description": "Typed WebSocket client for the GJC app-server JSON-RPC protocol",
+	"homepage": "https://gaebal-gajae.dev",
+	"author": "Yeachan-Heo",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/gajae-ai/gajae-code.git",
+		"directory": "packages/gjc-app-server-client"
+	},
+	"bugs": {
+		"url": "https://github.com/gajae-ai/gajae-code/issues"
+	},
+	"keywords": [
+		"gjc",
+		"app-server",
+		"json-rpc",
+		"websocket"
+	],
+	"scripts": {
+		"generate": "bun scripts/generate.ts",
+		"check:generated": "bun scripts/generate.ts --check",
+		"check": "tsc -p tsconfig.json --noEmit && bun run check:generated",
+		"test": "bun test"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	},
+	"engines": {
+		"bun": ">=1.3.14"
+	},
+	"files": [
+		"src"
+	],
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"types": "./src/index.ts",
+	"private": true
+}
