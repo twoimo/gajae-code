@@ -649,7 +649,7 @@ export class InputController {
 		this.ctx.ui.setFocus(this.ctx.editor);
 	}
 
-	#showQueuedMessageSelector(entries: QueuedMessageEditEntry[]): void {
+	#showQueuedMessageSelector(entries: QueuedMessageEditEntry[], selectedIndex = 0): void {
 		const selector = new QueuedMessageSelectorComponent(
 			entries,
 			entry => {
@@ -660,10 +660,23 @@ export class InputController {
 				);
 				this.ctx.ui.requestRender();
 			},
+			(entry, index) => {
+				const deleted = this.#deleteQueuedMessage(entry);
+				const nextEntries = this.#getEditableQueuedMessages();
+				if (nextEntries.length === 0) {
+					this.#restoreEditorFocus();
+					this.ctx.showStatus(deleted ? "Deleted queued message" : "Queued message is no longer available");
+					this.ctx.ui.requestRender();
+					return;
+				}
+				this.ctx.showStatus(deleted ? "Deleted queued message" : "Queued message is no longer available");
+				this.#showQueuedMessageSelector(nextEntries, Math.min(index, nextEntries.length - 1));
+			},
 			() => {
 				this.#restoreEditorFocus();
 				this.ctx.ui.requestRender();
 			},
+			{ selectedIndex },
 		);
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(selector);
@@ -680,6 +693,14 @@ export class InputController {
 			return entry?.text;
 		}
 		return this.ctx.session.removeQueuedMessageForEditing(id);
+	}
+
+	#deleteQueuedMessage(entry: QueuedMessageEditEntry): boolean {
+		const queuedText = this.#removeQueuedMessageForEditing(entry.id);
+		this.ctx.updatePendingMessagesDisplay();
+		if (!queuedText) return false;
+		this.ctx.locallySubmittedUserSignatures.delete(`${queuedText}\u00000`);
+		return true;
 	}
 
 	#restoreQueuedMessageToEditor(entry: QueuedMessageEditEntry | undefined): number {
