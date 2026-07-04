@@ -122,9 +122,9 @@ const DEFAULT_COMPOSER_PLACEHOLDER = `Type your message... ${COMPOSER_NEWLINE_HI
 const WELCOME_RESERVED_CONTAINER_CHILD_LIMIT = 8;
 const FRIENDLY_KEY_PARTS: Record<string, string> = {
 	alt: "Alt",
-	cmd: "Command",
-	command: "Command",
-	ctrl: "Control",
+	cmd: "Cmd",
+	command: "Cmd",
+	ctrl: "Ctrl",
 	enter: "Enter",
 	meta: process.platform === "darwin" ? "Command" : "Meta",
 	option: "Option",
@@ -134,7 +134,7 @@ const FRIENDLY_KEY_PARTS: Record<string, string> = {
 function formatShortcutForPlaceholder(key: string): string {
 	return key
 		.split("+")
-		.map(part => FRIENDLY_KEY_PARTS[part.toLowerCase()] ?? part)
+		.map(part => FRIENDLY_KEY_PARTS[part.toLowerCase()] ?? (part.length === 1 ? part.toUpperCase() : part))
 		.join("+");
 }
 
@@ -935,10 +935,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#getComposerPlaceholder(): string {
 		if (!this.#isPromptDeliveryBusy()) return DEFAULT_COMPOSER_PLACEHOLDER;
-		const enterAction = this.settings.get("busyPromptMode") === "steer" ? "Steering" : "Message Queueing";
+		const enterAction = this.settings.get("busyPromptMode") === "steer" ? "Steer" : "Queue";
 		const parts = [`Enter: ${enterAction}`];
 		const queueKey = this.#getMessageQueueShortcut();
-		if (queueKey) parts.push(`${formatShortcutForPlaceholder(queueKey)}: Message Queueing`);
+		if (queueKey) parts.push(`${formatShortcutForPlaceholder(queueKey)}: Queue`);
 		return `${DEFAULT_COMPOSER_PLACEHOLDER} · ${parts.join(" · ")}`;
 	}
 
