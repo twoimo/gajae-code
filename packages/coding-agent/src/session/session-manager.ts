@@ -2254,10 +2254,12 @@ class NdjsonFileWriter {
 	}
 }
 
+const DEFAULT_WELCOME_RECENT_SESSION_LIMIT = 20;
+
 /** Get recent sessions for display in welcome screen */
 export async function getRecentSessions(
 	sessionDir: string,
-	limit = 3,
+	limit = DEFAULT_WELCOME_RECENT_SESSION_LIMIT,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<RecentSessionInfo[]> {
 	const sessions = await getSortedSessions(sessionDir, storage);
