@@ -274,7 +274,43 @@ function foldRawEvent(state: TranscriptState, params: GjcEventParams): Transcrip
 			}
 		}
 	}
+	if (params.eventType === "tool_execution_start") {
+		next = foldToolDetail(next, params.event, "start");
+	}
+	if (params.eventType === "tool_execution_end") {
+		next = foldToolDetail(next, params.event, "end");
+	}
 	return next;
+}
+
+function foldToolDetail(state: TranscriptState, event: JsonValue, phase: "start" | "end"): TranscriptState {
+	if (!event || typeof event !== "object" || Array.isArray(event)) return state;
+	const payload = event as Record<string, JsonValue | undefined>;
+	const callId = typeof payload.toolCallId === "string" ? payload.toolCallId : undefined;
+	if (!callId) return state;
+	const detail =
+		phase === "start"
+			? toolText(payload.args ?? payload.arguments ?? payload.input)
+			: toolText(payload.result ?? payload.output ?? payload.error);
+	if (!detail) return state;
+	const isError = payload.isError === true || payload.error !== undefined;
+	return {
+		...state,
+		items: state.items.map(item =>
+			item.id === callId
+				? {
+						...item,
+						content: phase === "start" ? detail : item.content ? `${item.content}\n${detail}` : detail,
+						status: phase === "end" ? (isError ? "error" : "completed") : item.status,
+					}
+				: item,
+		),
+	};
+}
+
+function toolText(value: JsonValue | undefined): string {
+	if (value === undefined || value === null) return "";
+	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function messageRoleFromEvent(event: JsonValue): string | undefined {
@@ -289,15 +325,30 @@ function roleFromItemType(itemType: string): ChatRole {
 	const normalized = itemType.toLowerCase();
 	if (normalized === "agentmessage" || normalized.includes("agent_message") || normalized.includes("assistant"))
 		return "assistant";
-	if (normalized.includes("tool") || normalized.includes("bash") || normalized.includes("edit")) return "tool";
 	if (normalized.includes("reason") || normalized.includes("thinking")) return "reasoning";
+	// App-server tool item kinds: commandExecution, fileChange, mcpToolCall, toolCall.
+	if (
+		normalized.includes("tool") ||
+		normalized.includes("command") ||
+		normalized.includes("bash") ||
+		normalized.includes("exec") ||
+		normalized.includes("file") ||
+		normalized.includes("edit") ||
+		normalized.includes("mcp")
+	)
+		return "tool";
 	return "event";
 }
 
 function titleFromItemType(itemType: string): string {
 	const normalized = itemType.toLowerCase();
-	if (normalized === "agentmessage" || normalized.includes("agent_message")) return "GJC";
-	if (normalized.includes("reason")) return "Reasoning";
+	if (normalized === "agentmessage" || normalized.includes("agent_message") || normalized.includes("assistant"))
+		return "gajae";
+	if (normalized.includes("reason") || normalized.includes("thinking")) return "Thinking";
+	if (normalized === "commandexecution") return "Shell";
+	if (normalized === "filechange") return "File change";
+	if (normalized === "mcptoolcall") return "MCP tool";
+	if (normalized === "toolcall") return "Tool";
 	return itemType.replaceAll("_", " ");
 }
 
