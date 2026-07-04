@@ -248,6 +248,42 @@ describe("transcript event folding", () => {
 		expect(folded.items.filter(item => item.role === "user").map(item => item.content)).toEqual(["first", "second"]);
 	});
 
+	test("folds tool_execution start/end detail into the tool card by callId", () => {
+		const fixture = [
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-5", seq: 40 } },
+			{
+				method: "item/started",
+				params: { threadId: "thread-1", itemId: "call-9", itemType: "commandExecution", toolName: "bash", seq: 41 },
+			},
+			{
+				method: "gjc/event",
+				params: {
+					threadId: "thread-1",
+					eventType: "tool_execution_start",
+					event: { type: "tool_execution_start", toolCallId: "call-9", toolName: "bash", args: { command: "ls" } },
+					seq: 42,
+				},
+			},
+			{
+				method: "gjc/event",
+				params: {
+					threadId: "thread-1",
+					eventType: "tool_execution_end",
+					event: { type: "tool_execution_end", toolCallId: "call-9", output: "file.txt" },
+					seq: 43,
+				},
+			},
+		] satisfies ServerNotificationEnvelope[];
+
+		const folded = fixture.reduce(foldNotification, emptyTranscriptState());
+		const card = folded.items.find(item => item.id === "call-9");
+		expect(card).toBeDefined();
+		expect(card?.role).toBe("tool");
+		expect(card?.status).toBe("completed");
+		expect(card?.content).toContain("ls");
+		expect(card?.content).toContain("file.txt");
+	});
+
 	test("creates pending approval gate and tool card from host tool call", () => {
 		const state = toolFixture.reduce(foldNotification, emptyTranscriptState());
 
