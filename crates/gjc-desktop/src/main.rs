@@ -52,6 +52,7 @@ async fn pick_directory() -> Result<Option<String>, String> {
 }
 
 fn main() {
+	hydrate_login_shell_env();
 	let supervisor = Arc::new(SidecarSupervisor::new());
 	let shutdown_supervisor = Arc::clone(&supervisor);
 
@@ -72,4 +73,42 @@ fn main() {
 		})
 		.run(tauri::generate_context!())
 		.expect("failed to run GJC desktop shell");
+}
+
+/// Finder/Launchpad-launched macOS apps do not inherit the user's interactive
+/// shell environment, so `GJC_CONFIG_DIR` / `PI_CONFIG_DIR` (and `PATH`) set in
+/// the login shell are missing and the bundled sidecar would fall back to the
+/// default `~/.gjc` instead of the user's configured config dir. Recover them
+/// from the login shell once at startup so the sidecar resolves the same
+/// config/auth/sessions the CLI uses.
+fn hydrate_login_shell_env() {
+	let already_configured =
+		std::env::var_os("GJC_CONFIG_DIR").is_some() || std::env::var_os("PI_CONFIG_DIR").is_some();
+	let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
+	let script = "printf '%s\\n%s\\n%s\\n' \"$GJC_CONFIG_DIR\" \"$PI_CONFIG_DIR\" \"$PATH\"";
+	let Ok(output) = std::process::Command::new(&shell).args(["-lic", script]).output() else {
+		return;
+	};
+	if !output.status.success() {
+		return;
+	}
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	let mut lines = stdout.lines();
+	let gjc_config = lines.next().unwrap_or("").trim();
+	let pi_config = lines.next().unwrap_or("").trim();
+	let path = lines.next().unwrap_or("").trim();
+	if !already_configured {
+		if !gjc_config.is_empty() {
+			// SAFETY: set once at startup before Tauri spawns threads/children.
+			unsafe { std::env::set_var("GJC_CONFIG_DIR", gjc_config) };
+		}
+		if !pi_config.is_empty() {
+			// SAFETY: set once at startup before Tauri spawns threads/children.
+			unsafe { std::env::set_var("PI_CONFIG_DIR", pi_config) };
+		}
+	}
+	if !path.is_empty() {
+		// SAFETY: set once at startup before Tauri spawns threads/children.
+		unsafe { std::env::set_var("PATH", path) };
+	}
 }
