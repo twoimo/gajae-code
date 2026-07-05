@@ -1,10 +1,13 @@
 {
 	"type": "module",
 	"name": "@gajae-code/coding-agent",
-	"version": "0.10.0",
+	"version": "1.0.0-beta",
 	"description": "Gajae Code CLI with read, bash, edit, write tools and session management",
 	"homepage": "https://gajae-code.com",
-	"author": "Yeachan-Heo and Gajae Code Contributors",
+	"author": "Yeachan-Heo",
+	"contributors": [
+		"Mario Zechner"
+	],
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -49,12 +52,12 @@
 		"@agentclientprotocol/sdk": "catalog:",
 		"@babel/parser": "catalog:",
 		"@mozilla/readability": "catalog:",
-		"@gajae-code/stats": "catalog:",
-		"@gajae-code/agent-core": "catalog:",
-		"@gajae-code/ai": "catalog:",
-		"@gajae-code/natives": "catalog:",
-		"@gajae-code/tui": "catalog:",
-		"@gajae-code/utils": "catalog:",
+		"@gajae-code/stats": "^1.0.0-beta",
+		"@gajae-code/agent-core": "^1.0.0-beta",
+		"@gajae-code/ai": "^1.0.0-beta",
+		"@gajae-code/natives": "^1.0.0-beta",
+		"@gajae-code/tui": "^1.0.0-beta",
+		"@gajae-code/utils": "^1.0.0-beta",
 		"@puppeteer/browsers": "catalog:",
 		"@types/turndown": "catalog:",
 		"@xterm/headless": "catalog:",
@@ -84,11 +87,7 @@
 		"examples",
 		"README.md",
 		"CHANGELOG.md",
-		"vendor",
-		"!vendor/insane-search/engine/tests/**",
-		"!src/export/html/template.html",
-		"!src/export/html/template.css",
-		"!src/export/html/template.js"
+		"vendor"
 	],
 	"exports": {
 		"./cli": {

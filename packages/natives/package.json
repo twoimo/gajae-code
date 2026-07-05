@@ -1,6 +1,6 @@
 {
 	"name": "@gajae-code/natives",
-	"version": "0.10.0",
+	"version": "1.0.0-beta",
 	"description": "Native Rust bindings for grep, clipboard, image processing, syntax highlighting, PTY, and shell operations via N-API",
 	"type": "module",
 	"homepage": "https://gajae-code.com",

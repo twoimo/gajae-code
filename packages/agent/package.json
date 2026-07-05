@@ -1,10 +1,13 @@
 {
 	"type": "module",
 	"name": "@gajae-code/agent-core",
-	"version": "0.10.0",
+	"version": "1.0.0-beta",
 	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
 	"homepage": "https://gajae-code.com",
-	"author": "Yeachan-Heo and Gajae Code Contributors",
+	"author": "Yeachan-Heo",
+	"contributors": [
+		"Mario Zechner"
+	],
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -32,9 +35,9 @@
 		"fmt": "biome format --write ."
 	},
 	"dependencies": {
-		"@gajae-code/ai": "catalog:",
-		"@gajae-code/natives": "catalog:",
-		"@gajae-code/utils": "catalog:",
+		"@gajae-code/ai": "^1.0.0-beta",
+		"@gajae-code/natives": "^1.0.0-beta",
+		"@gajae-code/utils": "^1.0.0-beta",
 		"@opentelemetry/api": "catalog:"
 	},
 	"devDependencies": {

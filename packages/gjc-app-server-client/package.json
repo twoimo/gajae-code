@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@gajae-code/app-server-client",
-	"version": "0.7.11",
+	"version": "1.0.0-beta",
 	"description": "Typed WebSocket client for the GJC app-server JSON-RPC protocol",
 	"homepage": "https://gaebal-gajae.dev",
 	"author": "Yeachan-Heo",

@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@gajae-code/gjc-gui",
-	"version": "0.7.11",
+	"version": "1.0.0-beta",
 	"description": "React desktop GUI product screens, showcase, and design-token package for Gajae Code",
 	"homepage": "https://gaebal-gajae.dev",
 	"author": "Yeachan-Heo",

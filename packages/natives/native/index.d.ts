@@ -370,7 +370,7 @@ export declare class Shell {
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV0_10_0(): void
+export declare function __piNativesV1_0_0_beta(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -1073,11 +1073,11 @@ export interface HtmlToMarkdownOptions {
 }
 
 /**
- * An inbound message forwarded to the TypeScript host: a free-text injection,
- * in-thread config command, or deterministic control command.
+ * An inbound message forwarded to the TypeScript host: a free-text injection
+ * (`user_message`) or an in-thread config command (`config_command`).
  */
 export interface InboundEvent {
-  /** Inbound kind (`user_message`, `config_command`, or `control_command`). */
+  /** Either `"user_message"` or `"config_command"`. */
   kind: string
   /** The session this inbound belongs to. */
   sessionId: string
@@ -1091,10 +1091,6 @@ export interface InboundEvent {
   verbosity?: string
   /** Requested redaction state (`config_command` only). */
   redact?: boolean
-  /** Client-generated request id (`control_command` only). */
-  requestId?: string
-  /** JSON-encoded command payload (`control_command` only). */
-  commandJson?: string
   /**
    * Inline image attachments forwarded with the message (`user_message`
    * only).
@@ -1546,8 +1542,6 @@ export interface PtyStartOptions {
    */
   shell?: string
 }
-
-export declare function ptyTimeoutCount(): bigint
 
 /**
  * Read an image from the system clipboard.

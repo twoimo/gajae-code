@@ -1,10 +1,13 @@
 {
 	"type": "module",
 	"name": "@gajae-code/ai",
-	"version": "0.10.0",
+	"version": "1.0.0-beta",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
 	"homepage": "https://gajae-code.com",
-	"author": "Yeachan-Heo and Gajae Code Contributors",
+	"author": "Yeachan-Heo",
+	"contributors": [
+		"Mario Zechner"
+	],
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -40,7 +43,7 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "catalog:",
 		"@bufbuild/protobuf": "catalog:",
-		"@gajae-code/utils": "catalog:",
+		"@gajae-code/utils": "^1.0.0-beta",
 		"openai": "catalog:",
 		"partial-json": "catalog:",
 		"zod": "catalog:"
