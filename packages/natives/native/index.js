@@ -28,7 +28,7 @@ export const PtySession = nativeBindings.PtySession;
 export const Shell = nativeBindings.Shell;
 
 // functions
-export const __piNativesV0_10_0 = nativeBindings.__piNativesV0_10_0;
+export const __piNativesV1_0_0_beta = nativeBindings.__piNativesV1_0_0_beta;
 export const applyBashFixups = nativeBindings.applyBashFixups;
 export const appServerMethodLane = nativeBindings.appServerMethodLane;
 export const appServerSchemaJson = nativeBindings.appServerSchemaJson;

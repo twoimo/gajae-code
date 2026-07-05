@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@gajae-code/stats",
-	"version": "0.10.0",
+	"version": "1.0.0-beta",
 	"description": "Local observability dashboard for pi AI usage statistics",
 	"homepage": "https://gajae-code.com",
 	"author": "Yeachan-Heo",
@@ -37,8 +37,8 @@
 		"fmt": "biome format --write ."
 	},
 	"dependencies": {
-		"@gajae-code/ai": "catalog:",
-		"@gajae-code/utils": "catalog:",
+		"@gajae-code/ai": "^1.0.0-beta",
+		"@gajae-code/utils": "^1.0.0-beta",
 		"@tailwindcss/node": "catalog:",
 		"chart.js": "catalog:",
 		"date-fns": "catalog:",
