@@ -235,11 +235,13 @@ describe("ACP lazy startup", () => {
 				[],
 				{
 					discoverAuthStorage: async () => authStorage,
-					createAgentSession: options =>
-						createAgentSession({
-							...options,
-							extensions: [...(options.extensions ?? []), registerRuntimeProvider],
-						}),
+					createAgentSession: options => {
+						const sessionOptions = options ?? {};
+						return createAgentSession({
+							...sessionOptions,
+							extensions: [...(sessionOptions.extensions ?? []), registerRuntimeProvider],
+						});
+					},
 					settings,
 					runAcpMode: async createAcpSession => {
 						session = await createAcpSession(cwd);
