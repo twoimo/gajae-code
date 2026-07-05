@@ -2011,7 +2011,6 @@ version = "0.7.11"
 dependencies = [
  "anyhow",
  "gjc-app-server",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",

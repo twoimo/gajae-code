@@ -99,7 +99,7 @@ impl AgentBackend for EchoBackend {
 
 #[derive(Clone, Default)]
 struct EchoFactory {
-	notification_calls:  Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+	notification_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
 	notification_replay: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
@@ -110,8 +110,8 @@ impl BackendFactory for EchoFactory {
 		_p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		let info = BackendHandleInfo {
-			thread_id:        ThreadId::generate(),
-			generation:       BackendGeneration::FIRST,
+			thread_id: ThreadId::generate(),
+			generation: BackendGeneration::FIRST,
 			session_metadata: SessionMetadata::default(),
 		};
 		Ok((info, Arc::new(EchoBackend)))
@@ -384,10 +384,10 @@ async fn notifications_subscribe_routes_to_host_and_returns_ok() {
 	let resp = server.dispatch(&conn, req).await.unwrap();
 
 	assert_eq!(resp.result.unwrap(), serde_json::json!({ "ok": true }));
-	assert_eq!(factory.notification_calls(), vec![(
-		"notifications.subscribe".to_string(),
-		serde_json::json!({ "client": "fake" })
-	)]);
+	assert_eq!(
+		factory.notification_calls(),
+		vec![("notifications.subscribe".to_string(), serde_json::json!({ "client": "fake" }))]
+	);
 	let notes = sink.notes.lock();
 	assert_eq!(notes.len(), 2);
 	assert!(notes.iter().all(|n| n.method == "gjc/notifications/event"));
@@ -421,10 +421,10 @@ async fn notifications_reply_routes_to_host_with_notifications_kind() {
 		resp.result.unwrap(),
 		serde_json::json!({ "ok": true, "kind": "notifications.reply" })
 	);
-	assert_eq!(factory.notification_calls(), vec![(
-		"notifications.reply".to_string(),
-		serde_json::json!({ "id": "a1", "answer": "yes" })
-	)]);
+	assert_eq!(
+		factory.notification_calls(),
+		vec![("notifications.reply".to_string(), serde_json::json!({ "id": "a1", "answer": "yes" }))]
+	);
 }
 
 #[tokio::test]
@@ -496,8 +496,8 @@ async fn host_tools_round_trip() {
 
 #[derive(Clone, Default)]
 struct CapturingFactory {
-	created:          Arc<Mutex<Vec<serde_json::Value>>>,
-	resumed:          Arc<Mutex<Vec<serde_json::Value>>>,
+	created: Arc<Mutex<Vec<serde_json::Value>>>,
+	resumed: Arc<Mutex<Vec<serde_json::Value>>>,
 	resume_thread_id: Arc<Mutex<Option<ThreadId>>>,
 }
 
@@ -510,8 +510,8 @@ impl BackendFactory for CapturingFactory {
 		self.created.lock().push(p);
 		Ok((
 			BackendHandleInfo {
-				thread_id:        ThreadId::generate(),
-				generation:       BackendGeneration::FIRST,
+				thread_id: ThreadId::generate(),
+				generation: BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(EchoBackend),
@@ -627,17 +627,17 @@ async fn resume_bumps_generation_rejects_stale() {
 	assert!(resp.error.is_none());
 	assert_eq!(resp.result.unwrap()["thread"]["generation"], 2);
 	let stale = BackendEvent {
-		thread_id:  thread.clone(),
+		thread_id: thread.clone(),
 		generation: BackendGeneration::FIRST,
 		event_type: "text_delta".into(),
-		payload:    serde_json::json!({"text":"stale"}),
+		payload: serde_json::json!({"text":"stale"}),
 	};
 	assert_eq!(server.emit_backend_event(&stale), 0);
 	let current = BackendEvent {
-		thread_id:  thread,
+		thread_id: thread,
 		generation: BackendGeneration(2),
 		event_type: "agent_start".into(),
-		payload:    serde_json::json!({}),
+		payload: serde_json::json!({}),
 	};
 	assert!(server.emit_backend_event(&current) > 0);
 }
@@ -906,8 +906,8 @@ impl BackendFactory for BlockingFactory {
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		Ok((
 			BackendHandleInfo {
-				thread_id:        self.thread_id.clone(),
-				generation:       BackendGeneration::FIRST,
+				thread_id: self.thread_id.clone(),
+				generation: BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(BlockingBackend),

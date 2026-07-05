@@ -23,7 +23,14 @@ type SchemaObject = {
 	items?: Schema;
 };
 
-type RootSchema = { definitions: Record<string, SchemaObject> };
+
+type MethodCatalogEntry = {
+	method: string;
+	paramsDef: string | null;
+	resultDef: string | null;
+	guiWrapper: boolean;
+};
+type RootSchema = { definitions: Record<string, SchemaObject>; methodCatalog?: MethodCatalogEntry[] };
 
 const NAME_OVERRIDES: Record<string, string> = {
 	"gjc/hostTools/call": "HostToolsCall",
@@ -162,6 +169,35 @@ export async function generateProtocolTypes(): Promise<string> {
 	return `${chunks.join("\n").trimEnd()}\n`;
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function requestMapHasKey(clientSource: string, method: string): boolean {
+	if (method === "initialize") return /\n\s*initialize\s*:/.test(clientSource);
+	return new RegExp(`${JSON.stringify(method)}\\s*:`).test(clientSource);
+}
+
+function wrapperRequestsMethod(clientSource: string, method: string): boolean {
+	return new RegExp(`\\brequest\\(${JSON.stringify(escapeRegExp(method))}`).test(clientSource);
+}
+
+export async function checkMethodCatalogDrift(): Promise<string[]> {
+	const root = (await Bun.file(SCHEMA_PATH).json()) as RootSchema;
+	const catalog = root.methodCatalog ?? [];
+	const clientSource = await Bun.file(path.join(import.meta.dir, "../src/client.ts")).text();
+	const errors: string[] = [];
+	for (const entry of catalog) {
+		if (!entry.guiWrapper) continue;
+		if (!requestMapHasKey(clientSource, entry.method))
+			errors.push(`Missing AppServerRequestMap key for ${entry.method}`);
+		if (!wrapperRequestsMethod(clientSource, entry.method))
+			errors.push(`Missing wrapper request call for ${entry.method}`);
+	}
+	return errors;
+}
+
+
 async function main(): Promise<void> {
 	const check = process.argv.includes("--check");
 	const content = await generateProtocolTypes();
@@ -172,6 +208,12 @@ async function main(): Promise<void> {
 		if (existing !== content) {
 			console.error("Generated app-server client protocol types are out of date.");
 			console.error("Run `bun --cwd=packages/gjc-app-server-client run generate` and commit the updated file.");
+			process.exit(1);
+		}
+		const driftErrors = await checkMethodCatalogDrift();
+		if (driftErrors.length > 0) {
+			console.error("App-server client wrapper drift detected:");
+			for (const error of driftErrors) console.error(`- ${error}`);
 			process.exit(1);
 		}
 		return;

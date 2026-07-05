@@ -28,12 +28,15 @@ fn classify_tool_item(tool_name: &str) -> &'static str {
 
 /// Per-thread streaming state machine.
 pub struct ThreadStream {
-	thread_id:    ThreadId,
-	seq:          SeqCounter,
-	active_turn:  Option<TurnId>,
+	thread_id: ThreadId,
+	seq: SeqCounter,
+	active_turn: Option<TurnId>,
 	/// The current assistant-message item, if streaming.
 	message_item: Option<ItemId>,
-	latch:        TerminalLatch,
+	/// The current reasoning (thinking) item, if streaming, kept separate from
+	/// the assistant-message item so thinking is not merged into the reply.
+	reasoning_item: Option<ItemId>,
+	latch: TerminalLatch,
 }
 
 impl ThreadStream {
@@ -44,6 +47,7 @@ impl ThreadStream {
 			seq: SeqCounter::default(),
 			active_turn: None,
 			message_item: None,
+			reasoning_item: None,
 			latch: TerminalLatch::new(),
 		}
 	}
@@ -71,9 +75,34 @@ impl ThreadStream {
 		}
 	}
 
+	/// Finish the active reasoning item if one is open.
+	fn complete_reasoning_item(&mut self, out: &mut Vec<Notification>) {
+		if let Some(item) = self.reasoning_item.take() {
+			out.push(self.note(
+				"item/completed",
+				serde_json::json!({ "itemId": item.0, "itemType": "reasoning" }),
+			));
+		}
+	}
+
+	/// Open the assistant-message item on demand (lazily on first text delta).
+	fn ensure_message_item(&mut self, out: &mut Vec<Notification>) -> ItemId {
+		if let Some(item) = self.message_item.clone() {
+			return item;
+		}
+		let item = ItemId::generate();
+		self.message_item = Some(item.clone());
+		out.push(self.note(
+			"item/started",
+			serde_json::json!({ "itemId": item.0, "itemType": "agentMessage" }),
+		));
+		item
+	}
+
 	/// Emit exactly one `turn/completed` with the coalesced terminal cause.
 	fn flush_terminal(&mut self, out: &mut Vec<Notification>) {
 		if let Some(cause) = self.latch.flush() {
+			self.complete_reasoning_item(out);
 			self.complete_message_item(out);
 			let status = match cause {
 				TerminalCause::Completed => "completed",
@@ -113,31 +142,63 @@ impl ThreadStream {
 				out.push(self.note("turn/started", serde_json::json!({ "turnId": turn.0 })));
 			},
 			"message_start" => {
-				let item = ItemId::generate();
-				self.message_item = Some(item.clone());
-				out.push(self.note(
-					"item/started",
-					serde_json::json!({ "itemId": item.0, "itemType": "agentMessage" }),
-				));
+				// The assistant-message item is opened lazily on the first text
+				// delta so any reasoning (thinking) item created first renders
+				// above the reply.
 			},
 			"message_update" | "text_delta" => {
-				// gjc nests the delta under assistantMessageEvent.delta; accept
-				// either the wrapped or flat shape.
-				let delta = ev
-					.payload
-					.get("assistantMessageEvent")
+				// gjc wraps sub-events under assistantMessageEvent with a `type`
+				// of text_* or thinking_*; route thinking to a separate reasoning
+				// item so it is never merged into the assistant reply.
+				let am = ev.payload.get("assistantMessageEvent");
+				let am_type = am
+					.and_then(|e| e.get("type"))
+					.and_then(|t| t.as_str())
+					.unwrap_or(if ev.event_type == "text_delta" { "text_delta" } else { "" });
+				let delta = am
 					.and_then(|e| e.get("delta"))
 					.or_else(|| ev.payload.get("delta"))
 					.and_then(|d| d.as_str())
 					.unwrap_or("");
-				if let Some(item) = self.message_item.clone() {
-					out.push(self.note(
-						"item/agentMessage/delta",
-						serde_json::json!({ "itemId": item.0, "delta": delta }),
-					));
+				match am_type {
+					"thinking_start" | "thinking_delta" => {
+						if self.reasoning_item.is_none() {
+							let item = ItemId::generate();
+							self.reasoning_item = Some(item.clone());
+							out.push(self.note(
+								"item/started",
+								serde_json::json!({ "itemId": item.0, "itemType": "reasoning" }),
+							));
+						}
+						if !delta.is_empty() && let Some(item) = self.reasoning_item.clone() {
+							out.push(self.note(
+								"item/agentMessage/delta",
+								serde_json::json!({ "itemId": item.0, "delta": delta }),
+							));
+						}
+					},
+					"thinking_end" | "text_start" => {
+						// Thinking is finished once it ends or the reply text begins.
+						self.complete_reasoning_item(&mut out);
+					},
+					_ => {
+						// text_delta (wrapped or flat) and any other delta-bearing
+						// text event goes to the assistant-message item.
+						self.complete_reasoning_item(&mut out);
+						if !delta.is_empty() {
+							let item = self.ensure_message_item(&mut out);
+							out.push(self.note(
+								"item/agentMessage/delta",
+								serde_json::json!({ "itemId": item.0, "delta": delta }),
+							));
+						}
+					},
 				}
 			},
-			"message_end" => self.complete_message_item(&mut out),
+			"message_end" => {
+				self.complete_reasoning_item(&mut out);
+				self.complete_message_item(&mut out);
+			},
 			"thinking_start" | "reasoning" => {
 				let item = ev
 					.payload
@@ -245,16 +306,18 @@ mod tests {
 		let started = stream.on_event(&ev("agent_start", serde_json::json!({"type": "agent_start"})));
 		assert_eq!(methods(&started), ["turn/started", "gjc/event"]);
 
+		// message_start no longer eagerly opens the item; it is opened lazily.
 		let message_started =
 			stream.on_event(&ev("message_start", serde_json::json!({"type": "message_start"})));
-		assert_eq!(methods(&message_started), ["item/started", "gjc/event"]);
+		assert_eq!(methods(&message_started), ["gjc/event"]);
 
 		let delta = stream.on_event(&ev(
 			"message_update",
 			serde_json::json!({"assistantMessageEvent": {"type": "text_delta", "delta": "hi"}}),
 		));
-		assert_eq!(methods(&delta), ["item/agentMessage/delta", "gjc/event"]);
-		assert_eq!(delta[0].params.as_ref().unwrap()["delta"], "hi");
+		// First text delta lazily opens the assistant-message item, then streams.
+		assert_eq!(methods(&delta), ["item/started", "item/agentMessage/delta", "gjc/event"]);
+		assert_eq!(delta[1].params.as_ref().unwrap()["delta"], "hi");
 
 		let completed = stream.on_event(&ev("agent_end", serde_json::json!({"type": "agent_end"})));
 		// item/completed (message) then exactly one turn/completed, then raw.
@@ -262,6 +325,45 @@ mod tests {
 		assert_eq!(completed[1].params.as_ref().unwrap()["status"], "completed");
 	}
 
+	#[test]
+	fn thinking_deltas_route_to_separate_reasoning_item() {
+		let mut s = ThreadStream::new(ThreadId("thr_1".into()));
+		s.on_event(&ev("agent_start", serde_json::json!({})));
+		s.on_event(&ev("message_start", serde_json::json!({})));
+		let ts = s.on_event(&ev(
+			"message_update",
+			serde_json::json!({"assistantMessageEvent": {"type": "thinking_start"}}),
+		));
+		assert_eq!(ts[0].method, "item/started");
+		assert_eq!(ts[0].params.as_ref().unwrap()["itemType"], "reasoning");
+		let reasoning_id = ts[0].params.as_ref().unwrap()["itemId"].as_str().unwrap().to_string();
+
+		let td = s.on_event(&ev(
+			"message_update",
+			serde_json::json!({"assistantMessageEvent": {"type": "thinking_delta", "delta": "let me think"}}),
+		));
+		assert_eq!(td[0].method, "item/agentMessage/delta");
+		assert_eq!(td[0].params.as_ref().unwrap()["itemId"], reasoning_id);
+		assert_eq!(td[0].params.as_ref().unwrap()["delta"], "let me think");
+
+		let txs = s.on_event(&ev(
+			"message_update",
+			serde_json::json!({"assistantMessageEvent": {"type": "text_start"}}),
+		));
+		assert_eq!(txs[0].method, "item/completed");
+		assert_eq!(txs[0].params.as_ref().unwrap()["itemType"], "reasoning");
+
+		let txd = s.on_event(&ev(
+			"message_update",
+			serde_json::json!({"assistantMessageEvent": {"type": "text_delta", "delta": "the answer"}}),
+		));
+		// First text delta lazily opens the message item (index 0), then streams (index 1).
+		assert_eq!(txd[0].method, "item/started");
+		assert_eq!(txd[0].params.as_ref().unwrap()["itemType"], "agentMessage");
+		assert_eq!(txd[1].method, "item/agentMessage/delta");
+		assert_ne!(txd[1].params.as_ref().unwrap()["itemId"], reasoning_id);
+		assert_eq!(txd[1].params.as_ref().unwrap()["delta"], "the answer");
+	}
 	#[test]
 	fn terminal_coalesces_to_single_turn_completed() {
 		let mut s = ThreadStream::new(ThreadId("thr_1".into()));

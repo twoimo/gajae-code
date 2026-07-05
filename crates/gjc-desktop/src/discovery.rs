@@ -3,7 +3,7 @@ use std::{fs, path::Path, time::Duration};
 use anyhow::{Context, Result, bail};
 use gjc_app_server::discovery::{DiscoveryRecord, discovery_path};
 
-pub const DISCOVERY_TTL: Duration = Duration::from_secs(30);
+
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,11 +19,7 @@ pub fn read_record(state_root: &Path, session_id: &str) -> Result<DiscoveryRecor
 	serde_json::from_str(&contents).context("failed to parse discovery record")
 }
 
-pub fn validate_record(
-	record: &DiscoveryRecord,
-	session_id: &str,
-	now_ms: u64,
-) -> Result<AppServerEndpoint> {
+pub fn validate_record(record: &DiscoveryRecord, session_id: &str) -> Result<AppServerEndpoint> {
 	if record.version != 1 {
 		bail!("unsupported discovery version");
 	}
@@ -36,8 +32,11 @@ pub fn validate_record(
 	if record.port == 0 {
 		bail!("discovery port is missing");
 	}
-	if record.stale || now_ms.saturating_sub(record.updated_at_ms) > DISCOVERY_TTL.as_millis() as u64
-	{
+	// Liveness is proven by the `/readyz` probe in `wait_for_ready`, not by a
+	// wall-clock age of the record: a cold sidecar can take longer than any
+	// fixed TTL to become ready, and its record timestamp is written once at
+	// startup. Only honor the explicit stale flag here.
+	if record.stale {
 		bail!("discovery record is stale");
 	}
 	if record.host != "127.0.0.1" && record.host != "localhost" {
@@ -64,14 +63,11 @@ pub async fn wait_for_ready(
 ) -> Result<AppServerEndpoint> {
 	let started = tokio::time::Instant::now();
 	loop {
-		if let Ok(record) = read_record(state_root, session_id) {
-			let endpoint = validate_record(&record, session_id, now_ms())?;
-			let ready_url = format!("http://{}/readyz", endpoint.url.trim_start_matches("ws://"));
-			if let Ok(response) = reqwest::get(&ready_url).await
-				&& response.status().is_success()
-			{
-				return Ok(endpoint);
-			}
+		if let Ok(record) = read_record(state_root, session_id)
+			&& let Ok(endpoint) = validate_record(&record, session_id)
+			&& ws_port_accepting(&record.host, record.port)
+		{
+			return Ok(endpoint);
 		}
 		if started.elapsed() >= timeout {
 			bail!("timed out waiting for app-server readiness");
@@ -80,11 +76,15 @@ pub async fn wait_for_ready(
 	}
 }
 
-fn now_ms() -> u64 {
-	std::time::SystemTime::now()
-		.duration_since(std::time::UNIX_EPOCH)
-		.unwrap_or_default()
-		.as_millis() as u64
+/// The sidecar writes the discovery record right before its WebSocket accept
+/// loop is ready, and the WS server does not answer plain HTTP (no `/readyz`
+/// over GET), so confirm readiness with a short TCP connect to the bound port.
+fn ws_port_accepting(host: &str, port: u16) -> bool {
+	use std::net::{TcpStream, ToSocketAddrs};
+	let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+		return false;
+	};
+	addrs.any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok())
 }
 
 #[cfg(test)]
@@ -100,7 +100,7 @@ mod tests {
 
 	#[test]
 	fn validates_matching_record() {
-		let endpoint = validate_record(&record(), "session", 1_001).unwrap();
+		let endpoint = validate_record(&record(), "session").unwrap();
 		assert_eq!(endpoint.url, "ws://127.0.0.1:44123");
 		assert_eq!(endpoint.token, "secret");
 	}
@@ -110,7 +110,7 @@ mod tests {
 		// The real WS sidecar writes ws:// into the record (transport_ws.rs).
 		let mut record = record();
 		record.url = "ws://127.0.0.1:44123".to_owned();
-		let endpoint = validate_record(&record, "session", 1_001).unwrap();
+		let endpoint = validate_record(&record, "session").unwrap();
 		assert_eq!(endpoint.url, "ws://127.0.0.1:44123");
 	}
 
@@ -118,12 +118,12 @@ mod tests {
 	fn rejects_stale_record() {
 		let mut record = record();
 		record.stale = true;
-		assert!(validate_record(&record, "session", 1_001).is_err());
+		assert!(validate_record(&record, "session").is_err());
 	}
 
 	#[test]
 	fn rejects_mismatched_session() {
-		assert!(validate_record(&record(), "other", 1_001).is_err());
+		assert!(validate_record(&record(), "other").is_err());
 	}
 
 	#[test]
@@ -131,6 +131,6 @@ mod tests {
 		let mut record = record();
 		record.host = "0.0.0.0".to_owned();
 		record.url = "http://0.0.0.0:44123".to_owned();
-		assert!(validate_record(&record, "session", 1_001).is_err());
+		assert!(validate_record(&record, "session").is_err());
 	}
 }

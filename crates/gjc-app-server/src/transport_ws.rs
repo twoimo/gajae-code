@@ -32,22 +32,22 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct WsServerConfig {
-	pub host:            String,
-	pub port:            u16,
-	pub token:           String,
-	pub session_id:      String,
-	pub state_root:      PathBuf,
+	pub host: String,
+	pub port: u16,
+	pub token: String,
+	pub session_id: String,
+	pub state_root: PathBuf,
 	pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug)]
 pub struct WsServerHandle {
-	addr:        SocketAddr,
-	session_id:  String,
-	state_root:  PathBuf,
-	cancel:      CancellationToken,
+	addr: SocketAddr,
+	session_id: String,
+	state_root: PathBuf,
+	cancel: CancellationToken,
 	accept_task: JoinHandle<()>,
-	stopped:     AtomicBool,
+	stopped: AtomicBool,
 }
 
 impl WsServerHandle {
@@ -384,8 +384,8 @@ mod tests {
 
 	fn handle_info() -> BackendHandleInfo {
 		BackendHandleInfo {
-			thread_id:        ThreadId::generate(),
-			generation:       BackendGeneration::FIRST,
+			thread_id: ThreadId::generate(),
+			generation: BackendGeneration::FIRST,
 			session_metadata: SessionMetadata::default(),
 		}
 	}
@@ -412,14 +412,17 @@ mod tests {
 		let session_id = format!("sess-{}", unique_suffix());
 		let state_root = state_root(&session_id);
 		std::fs::create_dir_all(&state_root).unwrap();
-		start_ws(server(), WsServerConfig {
-			host: "127.0.0.1".to_owned(),
-			port: 0,
-			token: "secret".to_owned(),
-			session_id,
-			state_root,
-			allowed_origins,
-		})
+		start_ws(
+			server(),
+			WsServerConfig {
+				host: "127.0.0.1".to_owned(),
+				port: 0,
+				token: "secret".to_owned(),
+				session_id,
+				state_root,
+				allowed_origins,
+			},
+		)
 		.await
 		.unwrap()
 	}

@@ -18,20 +18,20 @@ const VALID_CONTENT_TYPES: &[&str] = &["text/markdown", "application/json", "tex
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostUriSchemeDefinition {
-	pub scheme:      String,
+	pub scheme: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub description: Option<String>,
 	#[serde(default)]
-	pub writable:    bool,
+	pub writable: bool,
 	#[serde(default)]
-	pub immutable:   bool,
+	pub immutable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostUriSchemesSetParams {
 	#[serde(rename = "threadId")]
 	pub thread_id: String,
-	pub schemes:   Vec<HostUriSchemeDefinition>,
+	pub schemes: Vec<HostUriSchemeDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -49,25 +49,25 @@ pub enum HostUriOperation {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostUriRequestParams {
 	#[serde(rename = "threadId")]
-	pub thread_id:  String,
+	pub thread_id: String,
 	pub generation: u64,
 	#[serde(rename = "turnId")]
-	pub turn_id:    String,
+	pub turn_id: String,
 	#[serde(rename = "requestId")]
 	pub request_id: String,
-	pub operation:  HostUriOperation,
-	pub url:        String,
+	pub operation: HostUriOperation,
+	pub url: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub content:    Option<String>,
+	pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostUriCancelParams {
 	#[serde(rename = "threadId")]
-	pub thread_id:  String,
+	pub thread_id: String,
 	pub generation: u64,
 	#[serde(rename = "turnId", skip_serializing_if = "Option::is_none")]
-	pub turn_id:    Option<String>,
+	pub turn_id: Option<String>,
 	#[serde(rename = "requestId")]
 	pub request_id: String,
 }
@@ -75,41 +75,41 @@ pub struct HostUriCancelParams {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostUriResultParams {
 	#[serde(rename = "threadId")]
-	pub thread_id:    String,
+	pub thread_id: String,
 	#[serde(rename = "requestId")]
-	pub request_id:   String,
+	pub request_id: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub content:      Option<String>,
+	pub content: Option<String>,
 	#[serde(rename = "contentType", skip_serializing_if = "Option::is_none")]
 	pub content_type: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub notes:        Option<Vec<String>>,
+	pub notes: Option<Vec<String>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub immutable:    Option<bool>,
+	pub immutable: Option<bool>,
 	#[serde(rename = "isError", default)]
-	pub is_error:     bool,
+	pub is_error: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub error:        Option<String>,
+	pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostUriResource {
-	pub url:          String,
-	pub content:      String,
+	pub url: String,
+	pub content: String,
 	#[serde(rename = "contentType")]
 	pub content_type: String,
-	pub size:         usize,
+	pub size: usize,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub notes:        Option<Vec<String>>,
+	pub notes: Option<Vec<String>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub immutable:    Option<bool>,
+	pub immutable: Option<bool>,
 }
 
 pub struct PendingHostUriRequest {
-	pub thread_id:  ThreadId,
+	pub thread_id: ThreadId,
 	pub generation: BackendGeneration,
-	pub turn_id:    TurnId,
-	pub tx:         oneshot::Sender<HostUriResultParams>,
+	pub turn_id: TurnId,
+	pub tx: oneshot::Sender<HostUriResultParams>,
 }
 
 #[derive(Default)]
@@ -181,16 +181,20 @@ pub fn parse_result_params(
 	method: &str,
 	params: Option<&serde_json::Value>,
 ) -> Result<(ThreadId, String, HostUriResultParams)> {
-	crate::field_policy::enforce(method, params, &[
-		"threadId",
-		"requestId",
-		"content",
-		"contentType",
-		"notes",
-		"immutable",
-		"isError",
-		"error",
-	])?;
+	crate::field_policy::enforce(
+		method,
+		params,
+		&[
+			"threadId",
+			"requestId",
+			"content",
+			"contentType",
+			"notes",
+			"immutable",
+			"isError",
+			"error",
+		],
+	)?;
 	let parsed: HostUriResultParams = serde_json::from_value(params.cloned().unwrap_or_default())
 		.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
 	if parsed.request_id.trim().is_empty() {

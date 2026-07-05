@@ -88,3 +88,6 @@ python/robogjc/src/robogjc/static/
 python/robogjc/web/dist/
 python/robogjc/.env
 .release-040-artifacts/
+
+# QA scratch (screenshots, probe reports)
+artifacts/

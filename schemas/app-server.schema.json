@@ -851,6 +851,692 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "AnyValue"
     },
+    "GjcToolsListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcToolsListParams",
+      "description": "`gjc/tools/list` params; strict fields enforced in `server.rs::handle_gjc_tools_list`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ToolDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ToolDescriptor",
+      "description": "Tool descriptor returned by `gjc/tools/list`.",
+      "type": "object",
+      "required": [
+        "active",
+        "name"
+      ],
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcToolsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcToolsListResult",
+      "description": "`gjc/tools/list` result.",
+      "type": "object",
+      "required": [
+        "tools"
+      ],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ToolDescriptor"
+          }
+        }
+      },
+      "definitions": {
+        "ToolDescriptor": {
+          "description": "Tool descriptor returned by `gjc/tools/list`.",
+          "type": "object",
+          "required": [
+            "active",
+            "name"
+          ],
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcCommandsListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcCommandsListParams",
+      "description": "`gjc/commands/list` params; strict fields enforced in `server.rs::handle_gjc_commands_list`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "includeDisabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommandDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CommandDescriptor",
+      "description": "Command descriptor returned by `gjc/commands/list`.",
+      "type": "object",
+      "required": [
+        "name",
+        "source"
+      ],
+      "properties": {
+        "classification": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcCommandsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcCommandsListResult",
+      "description": "`gjc/commands/list` result.",
+      "type": "object",
+      "required": [
+        "commands"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CommandDescriptor"
+          }
+        }
+      },
+      "definitions": {
+        "CommandDescriptor": {
+          "description": "Command descriptor returned by `gjc/commands/list`.",
+          "type": "object",
+          "required": [
+            "name",
+            "source"
+          ],
+          "properties": {
+            "classification": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcSkillsListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSkillsListParams",
+      "description": "`gjc/skills/list` params; strict fields enforced in `server.rs::handle_gjc_skills_list`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "includeDisabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SkillDescriptor",
+      "description": "Skill descriptor returned by `gjc/skills/list`.",
+      "type": "object",
+      "required": [
+        "name",
+        "source"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSkillsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSkillsListResult",
+      "description": "`gjc/skills/list` result.",
+      "type": "object",
+      "required": [
+        "skills"
+      ],
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SkillDescriptor"
+          }
+        }
+      },
+      "definitions": {
+        "SkillDescriptor": {
+          "description": "Skill descriptor returned by `gjc/skills/list`.",
+          "type": "object",
+          "required": [
+            "name",
+            "source"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enabled": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcExtensionsListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcExtensionsListParams",
+      "description": "`gjc/extensions/list` params; strict fields enforced in `server.rs::handle_gjc_extensions_list`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "includeDisabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExtensionDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ExtensionDescriptor",
+      "description": "Extension descriptor returned by `gjc/extensions/list` and inspect.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcExtensionsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcExtensionsListResult",
+      "description": "`gjc/extensions/list` result.",
+      "type": "object",
+      "required": [
+        "extensions"
+      ],
+      "properties": {
+        "extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ExtensionDescriptor"
+          }
+        }
+      },
+      "definitions": {
+        "ExtensionDescriptor": {
+          "description": "Extension descriptor returned by `gjc/extensions/list` and inspect.",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "source"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcExtensionsInspectParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcExtensionsInspectParams",
+      "description": "`gjc/extensions/inspect` params; strict fields enforced in `server.rs::handle_gjc_extensions_inspect`.",
+      "type": "object",
+      "required": [
+        "extensionId",
+        "threadId"
+      ],
+      "properties": {
+        "extensionId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcExtensionsInspectResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcExtensionsInspectResult",
+      "description": "`gjc/extensions/inspect` result.",
+      "type": "object",
+      "properties": {
+        "extension": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExtensionDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "definitions": {
+        "ExtensionDescriptor": {
+          "description": "Extension descriptor returned by `gjc/extensions/list` and inspect.",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "source"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcPluginsListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsListParams",
+      "description": "`gjc/plugins/list` params; strict fields enforced in `server.rs::handle_gjc_plugins_list`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "includeDisabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PluginDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "PluginDescriptor",
+      "description": "Plugin descriptor returned by `gjc/plugins/list` and inspect.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcPluginsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsListResult",
+      "description": "`gjc/plugins/list` result.",
+      "type": "object",
+      "required": [
+        "plugins"
+      ],
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginDescriptor"
+          }
+        }
+      },
+      "definitions": {
+        "PluginDescriptor": {
+          "description": "Plugin descriptor returned by `gjc/plugins/list` and inspect.",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "source"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "PluginInspection": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "PluginInspection",
+      "description": "Plugin inspection returned by `gjc/plugins/inspect`.",
+      "type": "object",
+      "required": [
+        "plugin"
+      ],
+      "properties": {
+        "manifest": true,
+        "plugin": {
+          "$ref": "#/definitions/PluginDescriptor"
+        },
+        "settings": true
+      },
+      "definitions": {
+        "PluginDescriptor": {
+          "description": "Plugin descriptor returned by `gjc/plugins/list` and inspect.",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "source"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcPluginsInspectParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsInspectParams",
+      "description": "`gjc/plugins/inspect` params; strict fields enforced in `server.rs::handle_gjc_plugins_inspect`.",
+      "type": "object",
+      "required": [
+        "pluginId",
+        "threadId"
+      ],
+      "properties": {
+        "includeSettings": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "pluginId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcPluginsInspectResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsInspectResult",
+      "description": "`gjc/plugins/inspect` result.",
+      "type": "object",
+      "properties": {
+        "plugin": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginInspection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "definitions": {
+        "PluginDescriptor": {
+          "description": "Plugin descriptor returned by `gjc/plugins/list` and inspect.",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "source"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "PluginInspection": {
+          "description": "Plugin inspection returned by `gjc/plugins/inspect`.",
+          "type": "object",
+          "required": [
+            "plugin"
+          ],
+          "properties": {
+            "manifest": true,
+            "plugin": {
+              "$ref": "#/definitions/PluginDescriptor"
+            },
+            "settings": true
+          }
+        }
+      }
+    },
     "GjcMessagesGetParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadIdParams",
@@ -1324,7 +2010,7 @@
     "ServerNotificationEnvelope": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ServerNotificationEnvelope",
-      "description": "Method-specific server notification envelopes for GUI-consumed events; see `event_map.rs` and host-tool notification emitters in `server.rs`.",
+      "description": "Method-specific server notification envelopes for GUI-consumed events; see `event_map.rs`, host-tool, host-URI, and workflow-gate notification emitters in `server.rs`.",
       "oneOf": [
         {
           "type": "object",
@@ -1469,6 +2155,60 @@
               "$ref": "#/definitions/HostToolsCancelParams"
             }
           }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/hostUris/request"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/HostUriRequestParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/hostUris/cancel"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/HostUriCancelParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/workflowGate/opened"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/WorkflowGateOpenedParams"
+            }
+          }
         }
       ],
       "definitions": {
@@ -1550,6 +2290,79 @@
               "type": "string"
             },
             "turnId": {
+              "type": "string"
+            }
+          }
+        },
+        "HostUriCancelParams": {
+          "type": "object",
+          "required": [
+            "generation",
+            "requestId",
+            "threadId"
+          ],
+          "properties": {
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "HostUriOperation": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "HostUriRequestParams": {
+          "type": "object",
+          "required": [
+            "generation",
+            "operation",
+            "requestId",
+            "threadId",
+            "turnId",
+            "url"
+          ],
+          "properties": {
+            "content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "operation": {
+              "$ref": "#/definitions/HostUriOperation"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "url": {
               "type": "string"
             }
           }
@@ -1639,6 +2452,99 @@
             }
           }
         },
+        "RpcWorkflowGateContext": {
+          "type": "object",
+          "properties": {
+            "artifact_refs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stage_state": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "RpcWorkflowGateKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "approval",
+            "execution"
+          ]
+        },
+        "RpcWorkflowGateOption": {
+          "type": "object",
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          }
+        },
+        "RpcWorkflowStage": {
+          "type": "string",
+          "enum": [
+            "deep-interview",
+            "ralplan",
+            "ultragoal"
+          ]
+        },
         "TurnCompletedParams": {
           "description": "`turn/completed` notification params emitted by `event_map.rs::flush_terminal`.",
           "type": "object",
@@ -1685,6 +2591,66 @@
               "type": "string"
             },
             "turnId": {
+              "type": "string"
+            }
+          }
+        },
+        "WorkflowGateOpenedParams": {
+          "type": "object",
+          "required": [
+            "context",
+            "created_at",
+            "gate_id",
+            "generation",
+            "kind",
+            "required",
+            "schema",
+            "schema_hash",
+            "stage",
+            "threadId",
+            "type"
+          ],
+          "properties": {
+            "context": {
+              "$ref": "#/definitions/RpcWorkflowGateContext"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "gate_id": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "kind": {
+              "$ref": "#/definitions/RpcWorkflowGateKind"
+            },
+            "options": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/definitions/RpcWorkflowGateOption"
+              }
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "schema": true,
+            "schema_hash": {
+              "type": "string"
+            },
+            "stage": {
+              "$ref": "#/definitions/RpcWorkflowStage"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "type": {
               "type": "string"
             }
           }
@@ -3153,5 +4119,211 @@
         }
       }
     }
-  }
+  },
+  "methodCatalog": [
+    {
+      "method": "initialize",
+      "paramsDef": "InitializeParams",
+      "resultDef": "InitializeResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/start",
+      "paramsDef": "ThreadStartParams",
+      "resultDef": "ThreadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/resume",
+      "paramsDef": "ThreadResumeParams",
+      "resultDef": "ThreadResumeResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/fork",
+      "paramsDef": "ThreadForkParams",
+      "resultDef": "ThreadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/delete",
+      "paramsDef": "ThreadIdParams",
+      "resultDef": "EmptyResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/archive",
+      "paramsDef": "ThreadIdParams",
+      "resultDef": "EmptyResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/read",
+      "paramsDef": "ThreadReadParams",
+      "resultDef": "ThreadReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "thread/loaded/list",
+      "paramsDef": "ThreadLoadedListParams",
+      "resultDef": "ThreadLoadedListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "turn/start",
+      "paramsDef": "TurnStartParams",
+      "resultDef": "TurnStartResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "turn/steer",
+      "paramsDef": "TurnSteerParams",
+      "resultDef": "TurnSteerResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "turn/interrupt",
+      "paramsDef": "TurnInterruptParams",
+      "resultDef": "TurnInterruptResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "command/exec",
+      "paramsDef": null,
+      "resultDef": null,
+      "guiWrapper": false
+    },
+    {
+      "method": "thread/shellCommand",
+      "paramsDef": null,
+      "resultDef": null,
+      "guiWrapper": false
+    },
+    {
+      "method": "gjc/state/read",
+      "paramsDef": "GjcStateReadParams",
+      "resultDef": "GjcStateReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/tools/list",
+      "paramsDef": "GjcToolsListParams",
+      "resultDef": "GjcToolsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/commands/list",
+      "paramsDef": "GjcCommandsListParams",
+      "resultDef": "GjcCommandsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/skills/list",
+      "paramsDef": "GjcSkillsListParams",
+      "resultDef": "GjcSkillsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/extensions/list",
+      "paramsDef": "GjcExtensionsListParams",
+      "resultDef": "GjcExtensionsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/extensions/inspect",
+      "paramsDef": "GjcExtensionsInspectParams",
+      "resultDef": "GjcExtensionsInspectResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/plugins/list",
+      "paramsDef": "GjcPluginsListParams",
+      "resultDef": "GjcPluginsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/plugins/inspect",
+      "paramsDef": "GjcPluginsInspectParams",
+      "resultDef": "GjcPluginsInspectResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/messages/get",
+      "paramsDef": "GjcMessagesGetParams",
+      "resultDef": "GjcMessagesGetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/model/set",
+      "paramsDef": "GjcModelSetParams",
+      "resultDef": "GjcModelSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/todos/set",
+      "paramsDef": "GjcTodosSetParams",
+      "resultDef": "GjcTodosSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/compact",
+      "paramsDef": "GjcCompactParams",
+      "resultDef": "GjcCompactResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/hostTools/set",
+      "paramsDef": "GjcHostToolsSetParams",
+      "resultDef": "GjcHostToolsSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/hostTools/result",
+      "paramsDef": "GjcHostToolsResultParams",
+      "resultDef": "GjcHostToolsResultResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/hostTools/update",
+      "paramsDef": "GjcHostToolsUpdateParams",
+      "resultDef": "GjcHostToolsUpdateResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/hostUriSchemes/set",
+      "paramsDef": "HostUriSchemesSetParams",
+      "resultDef": "HostUriSchemesSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/hostUris/result",
+      "paramsDef": "HostUriResultParams",
+      "resultDef": "EmptyResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/workflowGate/list",
+      "paramsDef": "WorkflowGateListParams",
+      "resultDef": "WorkflowGateListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/workflowGate/respond",
+      "paramsDef": "WorkflowGateRespondParams",
+      "resultDef": "RpcWorkflowGateResolution",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/unattended/negotiate",
+      "paramsDef": "UnattendedNegotiateParams",
+      "resultDef": null,
+      "guiWrapper": false
+    },
+    {
+      "method": "gjc/unattended/audit",
+      "paramsDef": null,
+      "resultDef": null,
+      "guiWrapper": false
+    }
+  ]
 }
