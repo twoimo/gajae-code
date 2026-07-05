@@ -257,6 +257,171 @@ export type GjcStateReadParams = {
 export type GjcStateReadResult = JsonValue;
 
 /**
+ * `gjc/tools/list` params; strict fields enforced in `server.rs::handle_gjc_tools_list`.
+ */
+export type GjcToolsListParams = {
+	"threadId": string;
+};
+
+/**
+ * Tool descriptor returned by `gjc/tools/list`.
+ */
+export type ToolDescriptor = {
+	"active": boolean;
+	"description"?: string | null;
+	"name": string;
+};
+
+/**
+ * `gjc/tools/list` result.
+ */
+export type GjcToolsListResult = {
+	"tools": ToolDescriptor[];
+};
+
+/**
+ * `gjc/commands/list` params; strict fields enforced in `server.rs::handle_gjc_commands_list`.
+ */
+export type GjcCommandsListParams = {
+	"includeDisabled"?: boolean | null;
+	"threadId": string;
+};
+
+/**
+ * Command descriptor returned by `gjc/commands/list`.
+ */
+export type CommandDescriptor = {
+	"classification"?: string | null;
+	"description"?: string | null;
+	"name": string;
+	"source": string;
+};
+
+/**
+ * `gjc/commands/list` result.
+ */
+export type GjcCommandsListResult = {
+	"commands": CommandDescriptor[];
+};
+
+/**
+ * `gjc/skills/list` params; strict fields enforced in `server.rs::handle_gjc_skills_list`.
+ */
+export type GjcSkillsListParams = {
+	"includeDisabled"?: boolean | null;
+	"threadId": string;
+};
+
+/**
+ * Skill descriptor returned by `gjc/skills/list`.
+ */
+export type SkillDescriptor = {
+	"description"?: string | null;
+	"enabled"?: boolean | null;
+	"name": string;
+	"source": string;
+};
+
+/**
+ * `gjc/skills/list` result.
+ */
+export type GjcSkillsListResult = {
+	"skills": SkillDescriptor[];
+};
+
+/**
+ * `gjc/extensions/list` params; strict fields enforced in `server.rs::handle_gjc_extensions_list`.
+ */
+export type GjcExtensionsListParams = {
+	"includeDisabled"?: boolean | null;
+	"threadId": string;
+};
+
+/**
+ * Extension descriptor returned by `gjc/extensions/list` and inspect.
+ */
+export type ExtensionDescriptor = {
+	"id": string;
+	"kind": string;
+	"name": string;
+	"source": string;
+	"status"?: string | null;
+};
+
+/**
+ * `gjc/extensions/list` result.
+ */
+export type GjcExtensionsListResult = {
+	"extensions": ExtensionDescriptor[];
+};
+
+/**
+ * `gjc/extensions/inspect` params; strict fields enforced in `server.rs::handle_gjc_extensions_inspect`.
+ */
+export type GjcExtensionsInspectParams = {
+	"extensionId": string;
+	"threadId": string;
+};
+
+/**
+ * `gjc/extensions/inspect` result.
+ */
+export type GjcExtensionsInspectResult = {
+	"extension"?: ExtensionDescriptor | null;
+};
+
+/**
+ * `gjc/plugins/list` params; strict fields enforced in `server.rs::handle_gjc_plugins_list`.
+ */
+export type GjcPluginsListParams = {
+	"includeDisabled"?: boolean | null;
+	"threadId": string;
+};
+
+/**
+ * Plugin descriptor returned by `gjc/plugins/list` and inspect.
+ */
+export type PluginDescriptor = {
+	"id": string;
+	"kind": string;
+	"name": string;
+	"source": string;
+	"status"?: string | null;
+};
+
+/**
+ * `gjc/plugins/list` result.
+ */
+export type GjcPluginsListResult = {
+	"plugins": PluginDescriptor[];
+};
+
+/**
+ * Plugin inspection returned by `gjc/plugins/inspect`.
+ */
+export type PluginInspection = {
+	"manifest"?: JsonValue;
+	"plugin": PluginDescriptor;
+	"settings"?: JsonValue;
+};
+
+/**
+ * `gjc/plugins/inspect` params; strict fields enforced in `server.rs::handle_gjc_plugins_inspect`.
+ */
+export type GjcPluginsInspectParams = {
+	"includeSettings"?: boolean | null;
+	"pluginId": string;
+	"threadId": string;
+};
+
+/**
+ * `gjc/plugins/inspect` result.
+ */
+export type GjcPluginsInspectResult = {
+	"plugin"?: PluginInspection | null;
+};
+
+/**
  * `thread/read`, `thread/delete`, and `thread/archive` params; see `server.rs::extract_thread_id` call sites.
  */
 export type GjcMessagesGetParams = {
@@ -445,7 +610,7 @@ export type GjcEventParams = {
 };
 
 /**
- * Method-specific server notification envelopes for GUI-consumed events; see `event_map.rs` and host-tool notification emitters in `server.rs`.
+ * Method-specific server notification envelopes for GUI-consumed events; see `event_map.rs`, host-tool, host-URI, and workflow-gate notification emitters in `server.rs`.
  */
 export type ServerNotificationEnvelope =
 	| { method: "turn/started"; params: TurnStartedParams }
@@ -455,7 +620,10 @@ export type ServerNotificationEnvelope =
 	| { method: "item/completed"; params: ItemCompletedParams }
 	| { method: "gjc/event"; params: GjcEventParams }
 	| { method: "gjc/hostTools/call"; params: HostToolsCallParams }
-	| { method: "gjc/hostTools/cancel"; params: HostToolsCancelParams };
+	| { method: "gjc/hostTools/cancel"; params: HostToolsCancelParams }
+	| { method: "gjc/hostUris/request"; params: HostUriRequestParams }
+	| { method: "gjc/hostUris/cancel"; params: HostUriCancelParams }
+	| { method: "gjc/workflowGate/opened"; params: WorkflowGateOpenedParams };
 
 export interface ServerNotificationMap {
 	"turn/started": TurnStartedParams;
@@ -466,9 +634,12 @@ export interface ServerNotificationMap {
 	"gjc/event": GjcEventParams;
 	"gjc/hostTools/call": HostToolsCallParams;
 	"gjc/hostTools/cancel": HostToolsCancelParams;
+	"gjc/hostUris/request": HostUriRequestParams;
+	"gjc/hostUris/cancel": HostUriCancelParams;
+	"gjc/workflowGate/opened": WorkflowGateOpenedParams;
 }
 
-export type ServerNotificationMethod = "turn/started" | "turn/completed" | "item/started" | "item/agentMessage/delta" | "item/completed" | "gjc/event" | "gjc/hostTools/call" | "gjc/hostTools/cancel";
+export type ServerNotificationMethod = "turn/started" | "turn/completed" | "item/started" | "item/agentMessage/delta" | "item/completed" | "gjc/event" | "gjc/hostTools/call" | "gjc/hostTools/cancel" | "gjc/hostUris/request" | "gjc/hostUris/cancel" | "gjc/workflowGate/opened";
 
 export type RpcWorkflowGate = {
 	"context": RpcWorkflowGateContext;

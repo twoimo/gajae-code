@@ -34,8 +34,8 @@ pub struct InitializeParams {}
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
-	pub user_agent:      String,
-	pub platform_os:     String,
+	pub user_agent: String,
+	pub platform_os: String,
 	pub platform_family: String,
 }
 
@@ -55,7 +55,7 @@ pub type ThreadStartParams = Value;
 pub struct ThreadResumeParams {
 	pub thread_id: ThreadId,
 	#[serde(flatten)]
-	pub extra:     serde_json::Map<String, Value>,
+	pub extra: serde_json::Map<String, Value>,
 }
 
 /// `thread/fork` params are forwarded unchanged to
@@ -75,12 +75,12 @@ pub struct ThreadIdParams {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
-	pub id:             String,
-	pub status:         ThreadStatus,
+	pub id: String,
+	pub status: ThreadStatus,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub generation:     Option<u64>,
+	pub generation: Option<u64>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub turns:          Option<Vec<Value>>,
+	pub turns: Option<Vec<Value>>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub forked_from_id: Option<String>,
 }
@@ -95,7 +95,7 @@ pub struct ThreadResult {
 /// `thread/resume` result; see `server.rs::handle_thread_resume`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadResumeResult {
-	pub thread:  ThreadSummary,
+	pub thread: ThreadSummary,
 	pub resumed: bool,
 }
 
@@ -120,11 +120,11 @@ pub struct ThreadLoadedListResult {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnStartParams {
-	pub thread_id:        ThreadId,
+	pub thread_id: ThreadId,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub expected_turn_id: Option<TurnId>,
 	#[serde(flatten)]
-	pub extra:            serde_json::Map<String, Value>,
+	pub extra: serde_json::Map<String, Value>,
 }
 
 /// `turn/start` result; see `server.rs::handle_turn_start`.
@@ -136,7 +136,7 @@ pub struct TurnStartResult {
 /// Turn object returned by `turn/start`; see `server.rs::handle_turn_start`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TurnSummary {
-	pub id:     String,
+	pub id: String,
 	pub status: String,
 }
 
@@ -156,7 +156,7 @@ pub struct TurnSteerResult {
 #[serde(rename_all = "camelCase")]
 pub struct TurnInterruptParams {
 	pub thread_id: ThreadId,
-	pub turn_id:   TurnId,
+	pub turn_id: TurnId,
 }
 
 /// `turn/interrupt` result; see `server.rs::handle_turn_interrupt`.
@@ -169,12 +169,198 @@ pub type TurnInterruptResult = EmptyResult;
 pub struct GjcStateReadParams {
 	pub thread_id: ThreadId,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub include:   Option<Value>,
+	pub include: Option<Value>,
 }
 
 /// `gjc/state/read` result is backend-owned state JSON; see
 /// `server.rs::handle_gjc_state_read`.
 pub type GjcStateReadResult = Value;
+
+/// `gjc/tools/list` params; strict fields enforced in
+/// `server.rs::handle_gjc_tools_list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcToolsListParams {
+	pub thread_id: ThreadId,
+}
+
+/// Tool descriptor returned by `gjc/tools/list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDescriptor {
+	pub name: String,
+	pub active: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+}
+
+/// `gjc/tools/list` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcToolsListResult {
+	pub tools: Vec<ToolDescriptor>,
+}
+
+/// `gjc/commands/list` params; strict fields enforced in
+/// `server.rs::handle_gjc_commands_list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcCommandsListParams {
+	pub thread_id: ThreadId,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub include_disabled: Option<bool>,
+}
+
+/// Command descriptor returned by `gjc/commands/list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandDescriptor {
+	pub name: String,
+	pub source: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub classification: Option<String>,
+}
+
+/// `gjc/commands/list` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcCommandsListResult {
+	pub commands: Vec<CommandDescriptor>,
+}
+
+/// `gjc/skills/list` params; strict fields enforced in
+/// `server.rs::handle_gjc_skills_list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSkillsListParams {
+	pub thread_id: ThreadId,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub include_disabled: Option<bool>,
+}
+
+/// Skill descriptor returned by `gjc/skills/list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDescriptor {
+	pub name: String,
+	pub source: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub enabled: Option<bool>,
+}
+
+/// `gjc/skills/list` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSkillsListResult {
+	pub skills: Vec<SkillDescriptor>,
+}
+
+/// `gjc/extensions/list` params; strict fields enforced in
+/// `server.rs::handle_gjc_extensions_list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcExtensionsListParams {
+	pub thread_id: ThreadId,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub include_disabled: Option<bool>,
+}
+
+/// Extension descriptor returned by `gjc/extensions/list` and inspect.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionDescriptor {
+	pub id: String,
+	pub name: String,
+	pub kind: String,
+	pub source: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub status: Option<String>,
+}
+
+/// `gjc/extensions/list` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcExtensionsListResult {
+	pub extensions: Vec<ExtensionDescriptor>,
+}
+
+/// `gjc/extensions/inspect` params; strict fields enforced in
+/// `server.rs::handle_gjc_extensions_inspect`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcExtensionsInspectParams {
+	pub thread_id: ThreadId,
+	pub extension_id: String,
+}
+
+/// `gjc/extensions/inspect` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcExtensionsInspectResult {
+	pub extension: Option<ExtensionDescriptor>,
+}
+
+/// `gjc/plugins/list` params; strict fields enforced in
+/// `server.rs::handle_gjc_plugins_list`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcPluginsListParams {
+	pub thread_id: ThreadId,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub include_disabled: Option<bool>,
+}
+
+/// Plugin descriptor returned by `gjc/plugins/list` and inspect.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDescriptor {
+	pub id: String,
+	pub name: String,
+	pub kind: String,
+	pub source: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub status: Option<String>,
+}
+
+/// `gjc/plugins/list` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcPluginsListResult {
+	pub plugins: Vec<PluginDescriptor>,
+}
+
+/// `gjc/plugins/inspect` params; strict fields enforced in
+/// `server.rs::handle_gjc_plugins_inspect`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcPluginsInspectParams {
+	pub thread_id: ThreadId,
+	pub plugin_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub include_settings: Option<bool>,
+}
+
+/// Plugin inspection returned by `gjc/plugins/inspect`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInspection {
+	pub plugin: PluginDescriptor,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub settings: Option<Value>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub manifest: Option<Value>,
+}
+
+/// `gjc/plugins/inspect` result.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcPluginsInspectResult {
+	pub plugin: Option<PluginInspection>,
+}
 
 /// `gjc/messages/get` params; strict fields enforced in
 /// `server.rs::handle_gjc_messages_get`.
@@ -189,8 +375,8 @@ pub type GjcMessagesGetResult = Value;
 #[serde(rename_all = "camelCase")]
 pub struct GjcModelSetParams {
 	pub thread_id: ThreadId,
-	pub provider:  String,
-	pub model_id:  String,
+	pub provider: String,
+	pub model_id: String,
 }
 
 /// `gjc/model/set` result is backend-owned model state JSON; see
@@ -203,7 +389,7 @@ pub type GjcModelSetResult = Value;
 #[serde(rename_all = "camelCase")]
 pub struct GjcTodosSetParams {
 	pub thread_id: ThreadId,
-	pub phases:    Value,
+	pub phases: Value,
 }
 
 /// `gjc/todos/set` result; see `server.rs::handle_gjc_todos_set`.
@@ -214,7 +400,7 @@ pub type GjcTodosSetResult = EmptyResult;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GjcCompactParams {
-	pub thread_id:           ThreadId,
+	pub thread_id: ThreadId,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub custom_instructions: Option<String>,
 }
@@ -228,11 +414,11 @@ pub type GjcCompactResult = Value;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HostToolDescriptor {
-	pub name:            String,
-	pub description:     String,
-	pub input_schema:    Value,
+	pub name: String,
+	pub description: String,
+	pub input_schema: Value,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub result_policy:   Option<Value>,
+	pub result_policy: Option<Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub redaction_hints: Option<Value>,
 }
@@ -243,7 +429,7 @@ pub struct HostToolDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct GjcHostToolsSetParams {
 	pub thread_id: ThreadId,
-	pub tools:     Vec<HostToolDescriptor>,
+	pub tools: Vec<HostToolDescriptor>,
 }
 
 /// `gjc/hostTools/set` result; see `server.rs::handle_host_tools_set`.
@@ -255,12 +441,12 @@ pub type GjcHostToolsSetResult = EmptyResult;
 #[serde(rename_all = "camelCase")]
 pub struct GjcHostToolsResultParams {
 	pub thread_id: ThreadId,
-	pub call_id:   String,
-	pub ok:        bool,
+	pub call_id: String,
+	pub ok: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub result:    Option<Value>,
+	pub result: Option<Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub error:     Option<Value>,
+	pub error: Option<Value>,
 }
 
 /// `gjc/hostTools/result` result; see `server.rs::handle_host_tools_result`.
@@ -272,8 +458,8 @@ pub type GjcHostToolsResultResult = EmptyResult;
 #[serde(rename_all = "camelCase")]
 pub struct GjcHostToolsUpdateParams {
 	pub thread_id: ThreadId,
-	pub call_id:   String,
-	pub payload:   Value,
+	pub call_id: String,
+	pub payload: Value,
 }
 
 /// `gjc/hostTools/update` result; see `server.rs::handle_host_tools_update`.
@@ -284,12 +470,12 @@ pub type GjcHostToolsUpdateResult = EmptyResult;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HostToolsCallParams {
-	pub thread_id:  ThreadId,
+	pub thread_id: ThreadId,
 	pub generation: BackendGeneration,
-	pub turn_id:    TurnId,
-	pub call_id:    String,
-	pub tool:       String,
-	pub args:       Value,
+	pub turn_id: TurnId,
+	pub call_id: String,
+	pub tool: String,
+	pub args: Value,
 }
 
 /// `gjc/hostTools/cancel` notification params emitted by
@@ -297,10 +483,10 @@ pub struct HostToolsCallParams {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HostToolsCancelParams {
-	pub thread_id:  ThreadId,
+	pub thread_id: ThreadId,
 	pub generation: BackendGeneration,
-	pub turn_id:    TurnId,
-	pub call_id:    String,
+	pub turn_id: TurnId,
+	pub call_id: String,
 }
 
 /// Common thread-scoped notification fields inserted by
@@ -309,7 +495,7 @@ pub struct HostToolsCancelParams {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadEventBase {
 	pub thread_id: ThreadId,
-	pub seq:       u64,
+	pub seq: u64,
 }
 
 /// `turn/started` notification params emitted by
@@ -318,8 +504,8 @@ pub struct ThreadEventBase {
 #[serde(rename_all = "camelCase")]
 pub struct TurnStartedParams {
 	pub thread_id: ThreadId,
-	pub seq:       u64,
-	pub turn_id:   TurnId,
+	pub seq: u64,
+	pub turn_id: TurnId,
 }
 
 /// `turn/completed` notification params emitted by
@@ -328,10 +514,10 @@ pub struct TurnStartedParams {
 #[serde(rename_all = "camelCase")]
 pub struct TurnCompletedParams {
 	pub thread_id: ThreadId,
-	pub seq:       u64,
+	pub seq: u64,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub turn_id:   Option<String>,
-	pub status:    String,
+	pub turn_id: Option<String>,
+	pub status: String,
 }
 
 /// `item/started` notification params emitted by `event_map.rs::on_event` for
@@ -340,11 +526,11 @@ pub struct TurnCompletedParams {
 #[serde(rename_all = "camelCase")]
 pub struct ItemStartedParams {
 	pub thread_id: ThreadId,
-	pub seq:       u64,
-	pub item_id:   ItemId,
+	pub seq: u64,
+	pub item_id: ItemId,
 	pub item_type: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub content:   Option<Value>,
+	pub content: Option<Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub tool_name: Option<String>,
 }
@@ -355,9 +541,9 @@ pub struct ItemStartedParams {
 #[serde(rename_all = "camelCase")]
 pub struct ItemAgentMessageDeltaParams {
 	pub thread_id: ThreadId,
-	pub seq:       u64,
-	pub item_id:   ItemId,
-	pub delta:     String,
+	pub seq: u64,
+	pub item_id: ItemId,
+	pub delta: String,
 }
 
 /// `item/completed` notification params emitted by
@@ -366,8 +552,8 @@ pub struct ItemAgentMessageDeltaParams {
 #[serde(rename_all = "camelCase")]
 pub struct ItemCompletedParams {
 	pub thread_id: ThreadId,
-	pub seq:       u64,
-	pub item_id:   ItemId,
+	pub seq: u64,
+	pub item_id: ItemId,
 	pub item_type: String,
 }
 
@@ -376,14 +562,14 @@ pub struct ItemCompletedParams {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GjcEventParams {
-	pub thread_id:  ThreadId,
-	pub seq:        u64,
+	pub thread_id: ThreadId,
+	pub seq: u64,
 	pub event_type: String,
-	pub event:      Value,
+	pub event: Value,
 }
 
 /// Method-specific server notification envelopes for GUI-consumed events; see
-/// `event_map.rs` and host-tool notification emitters in `server.rs`.
+/// `event_map.rs`, host-tool, host-URI, and workflow-gate notification emitters in `server.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "method", content = "params")]
 pub enum ServerNotificationEnvelope {
@@ -403,4 +589,10 @@ pub enum ServerNotificationEnvelope {
 	HostToolsCall(HostToolsCallParams),
 	#[serde(rename = "gjc/hostTools/cancel")]
 	HostToolsCancel(HostToolsCancelParams),
+	#[serde(rename = "gjc/hostUris/request")]
+	HostUriRequest(crate::host_uris::HostUriRequestParams),
+	#[serde(rename = "gjc/hostUris/cancel")]
+	HostUriCancel(crate::host_uris::HostUriCancelParams),
+	#[serde(rename = "gjc/workflowGate/opened")]
+	WorkflowGateOpened(Box<crate::workflow_gate::WorkflowGateOpenedParams>),
 }

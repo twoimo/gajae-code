@@ -34,27 +34,27 @@ pub trait EventSink: Send + Sync {
 
 /// Per-thread registry entry: identity + backend + admission + event stream.
 struct ThreadEntry {
-	identity:       Mutex<ThreadIdentity>,
-	backend:        Arc<dyn AgentBackend>,
-	admission:      Mutex<Admission>,
-	stream:         Mutex<ThreadStream>,
-	active_turn:    Mutex<Option<TurnId>>,
+	identity: Mutex<ThreadIdentity>,
+	backend: Arc<dyn AgentBackend>,
+	admission: Mutex<Admission>,
+	stream: Mutex<ThreadStream>,
+	active_turn: Mutex<Option<TurnId>>,
 	/// Serializes non-turn mutating backend calls for this thread (serial
 	/// mutating lane); read/cancel lanes never take it.
-	mutating_lane:  Arc<tokio::sync::Mutex<()>>,
-	host_tools:     Mutex<HostToolRegistry>,
+	mutating_lane: Arc<tokio::sync::Mutex<()>>,
+	host_tools: Mutex<HostToolRegistry>,
 	workflow_gates: Mutex<crate::workflow_gate::WorkflowGateBroker>,
-	unattended:     Mutex<crate::unattended::UnattendedController>,
-	host_uris:      Mutex<HostUriRegistry>,
+	unattended: Mutex<crate::unattended::UnattendedController>,
+	host_uris: Mutex<HostUriRegistry>,
 }
 
 /// Per-connection handshake state.
 #[derive(Default)]
 struct ConnectionState {
 	/// Set once the `initialize` request has been answered.
-	initialize_seen:          bool,
+	initialize_seen: bool,
 	/// Set once the `initialized` notification acks the handshake.
-	initialized:              bool,
+	initialized: bool,
 	/// Set once this connection subscribes to `gjc/notifications/event` frames.
 	notifications_subscriber: bool,
 }
@@ -62,7 +62,7 @@ struct ConnectionState {
 /// Tunables for admission control.
 #[derive(Debug, Clone, Copy)]
 pub struct AppServerConfig {
-	pub max_inflight_turns_per_thread:   usize,
+	pub max_inflight_turns_per_thread: usize,
 	pub max_queued_mutations_per_thread: usize,
 }
 
@@ -203,16 +203,17 @@ impl AppServer {
 		};
 		let call_id = format!("call_{}", crate::ids::TurnId::generate().0);
 		let (tx, rx) = tokio::sync::oneshot::channel();
-		self
-			.pending_host_tool_calls
-			.insert(call_id.clone(), PendingHostToolCall {
+		self.pending_host_tool_calls.insert(
+			call_id.clone(),
+			PendingHostToolCall {
 				thread_id: thread_id.clone(),
 				generation,
 				turn_id: turn_id.clone(),
 				tool: tool.to_string(),
 				progress: Arc::new(Mutex::new(Vec::new())),
 				tx,
-			});
+			},
+		);
 		self.publish(Notification::new(
 			"gjc/hostTools/call",
 			serde_json::json!({
@@ -398,14 +399,15 @@ impl AppServer {
 	) -> Result<HostUriResultParams> {
 		let request_id = format!("host_uri_{}", crate::ids::TurnId::generate().0);
 		let (tx, rx) = tokio::sync::oneshot::channel();
-		self
-			.pending_host_uri_requests
-			.insert(request_id.clone(), PendingHostUriRequest {
+		self.pending_host_uri_requests.insert(
+			request_id.clone(),
+			PendingHostUriRequest {
 				thread_id: thread_id.clone(),
 				generation,
 				turn_id: turn_id.clone(),
 				tx,
-			});
+			},
+		);
 		self.publish(Notification::new(
 			"gjc/hostUris/request",
 			serde_json::json!({
@@ -800,6 +802,13 @@ impl AppServer {
 			"command/exec" => self.handle_command_exec(params).await,
 			"thread/shellCommand" => self.handle_thread_shell_command(params).await,
 			"gjc/state/read" => self.handle_gjc_state_read(method, params).await,
+			"gjc/tools/list" => self.handle_gjc_tools_list(method, params).await,
+			"gjc/commands/list" => self.handle_gjc_commands_list(method, params).await,
+			"gjc/skills/list" => self.handle_gjc_skills_list(method, params).await,
+			"gjc/extensions/list" => self.handle_gjc_extensions_list(method, params).await,
+			"gjc/extensions/inspect" => self.handle_gjc_extensions_inspect(method, params).await,
+			"gjc/plugins/list" => self.handle_gjc_plugins_list(method, params).await,
+			"gjc/plugins/inspect" => self.handle_gjc_plugins_inspect(method, params).await,
 			"gjc/messages/get" => self.handle_gjc_messages_get(method, params).await,
 			"gjc/model/set" => self.handle_gjc_model_set(method, params).await,
 			"gjc/todos/set" => self.handle_gjc_todos_set(method, params).await,
@@ -877,10 +886,10 @@ impl AppServer {
 			Self::check_expected_turn(entry.value(), params.as_ref())?;
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id:  thread_id.clone(),
+				thread_id: thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane:       Lane::Mutating,
+				lane: Lane::Mutating,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -1021,12 +1030,11 @@ impl AppServer {
 		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		crate::field_policy::enforce(method, params.as_ref(), &[
-			"threadId",
-			"gate_id",
-			"answer",
-			"idempotency_key",
-		])?;
+		crate::field_policy::enforce(
+			method,
+			params.as_ref(),
+			&["threadId", "gate_id", "answer", "idempotency_key"],
+		)?;
 		let parsed: crate::workflow_gate::WorkflowGateRespondParams =
 			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
 				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
@@ -1036,8 +1044,8 @@ impl AppServer {
 			.get(&thread_id)
 			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
 		let response = crate::workflow_gate::RpcWorkflowGateResponse {
-			gate_id:         parsed.gate_id,
-			answer:          parsed.answer,
+			gate_id: parsed.gate_id,
+			answer: parsed.answer,
 			idempotency_key: parsed.idempotency_key,
 		};
 		let resolution = entry.value().workflow_gates.lock().resolve(response)?;
@@ -1132,6 +1140,322 @@ impl AppServer {
 			.cloned()
 			.unwrap_or(serde_json::Value::Null);
 		backend.get_state(&ctx, include).await
+	}
+
+	async fn handle_gjc_tools_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let state = backend
+			.get_state(&ctx, serde_json::json!({ "tools": true }))
+			.await?;
+		let tools = state
+			.get("tools")
+			.and_then(|tools| tools.as_array())
+			.into_iter()
+			.flatten()
+			.filter_map(|tool| {
+				Some(crate::protocol::ToolDescriptor {
+					name: tool.get("name")?.as_str()?.to_string(),
+					active: tool
+						.get("active")
+						.and_then(|active| active.as_bool())
+						.unwrap_or(false),
+					description: tool
+						.get("description")
+						.and_then(|description| description.as_str())
+						.map(str::to_string),
+				})
+			})
+			.collect::<Vec<_>>();
+		serde_json::to_value(crate::protocol::GjcToolsListResult { tools })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_commands_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "includeDisabled"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let include_disabled = params
+			.as_ref()
+			.and_then(|p| p.get("includeDisabled"))
+			.and_then(|v| v.as_bool())
+			.unwrap_or(false);
+		let state = backend
+			.get_state(
+				&ctx,
+				serde_json::json!({ "commands": true, "includeDisabled": include_disabled }),
+			)
+			.await?;
+		let commands = state
+			.get("commands")
+			.and_then(|commands| commands.as_array())
+			.into_iter()
+			.flatten()
+			.filter_map(|command| {
+				Some(crate::protocol::CommandDescriptor {
+					name: command.get("name")?.as_str()?.to_string(),
+					source: command
+						.get("source")
+						.and_then(|source| source.as_str())
+						.unwrap_or("unknown")
+						.to_string(),
+					description: command
+						.get("description")
+						.and_then(|description| description.as_str())
+						.map(str::to_string),
+					classification: command
+						.get("classification")
+						.and_then(|classification| classification.as_str())
+						.map(str::to_string),
+				})
+			})
+			.collect::<Vec<_>>();
+		serde_json::to_value(crate::protocol::GjcCommandsListResult { commands })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_skills_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "includeDisabled"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let include_disabled = include_disabled_param(params.as_ref());
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let state = backend
+			.get_state(
+				&ctx,
+				serde_json::json!({ "skills": true, "includeDisabled": include_disabled }),
+			)
+			.await?;
+		let skills = state
+			.get("skills")
+			.and_then(|skills| skills.as_array())
+			.into_iter()
+			.flatten()
+			.filter_map(|skill| {
+				Some(crate::protocol::SkillDescriptor {
+					name: skill.get("name")?.as_str()?.to_string(),
+					source: skill
+						.get("source")
+						.and_then(|source| source.as_str())
+						.unwrap_or("unknown")
+						.to_string(),
+					description: skill
+						.get("description")
+						.and_then(|description| description.as_str())
+						.map(str::to_string),
+					enabled: skill.get("enabled").and_then(|enabled| enabled.as_bool()),
+				})
+			})
+			.collect::<Vec<_>>();
+		serde_json::to_value(crate::protocol::GjcSkillsListResult { skills })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_extensions_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "includeDisabled"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let include_disabled = include_disabled_param(params.as_ref());
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let extensions = self
+			.extension_descriptors(&*backend, &ctx, include_disabled)
+			.await?;
+		serde_json::to_value(crate::protocol::GjcExtensionsListResult { extensions })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_extensions_inspect(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "extensionId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let extension_id = params
+			.as_ref()
+			.and_then(|p| p.get("extensionId"))
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| AppServerError::invalid_params("missing extensionId"))?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let extension = self
+			.extension_descriptors(&*backend, &ctx, true)
+			.await?
+			.into_iter()
+			.find(|extension| extension.id == extension_id);
+		serde_json::to_value(crate::protocol::GjcExtensionsInspectResult { extension })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn extension_descriptors(
+		&self,
+		backend: &dyn AgentBackend,
+		ctx: &BackendCallContext,
+		include_disabled: bool,
+	) -> Result<Vec<crate::protocol::ExtensionDescriptor>> {
+		let state = backend
+			.get_state(
+				ctx,
+				serde_json::json!({ "extensions": true, "includeDisabled": include_disabled }),
+			)
+			.await?;
+		Ok(state
+			.get("extensions")
+			.and_then(|extensions| extensions.as_array())
+			.into_iter()
+			.flatten()
+			.filter_map(|extension| {
+				Some(crate::protocol::ExtensionDescriptor {
+					id: extension.get("id")?.as_str()?.to_string(),
+					name: extension
+						.get("name")
+						.and_then(|name| name.as_str())
+						.unwrap_or_else(|| {
+							extension
+								.get("id")
+								.and_then(|id| id.as_str())
+								.unwrap_or("unknown")
+						})
+						.to_string(),
+					kind: extension
+						.get("kind")
+						.and_then(|kind| kind.as_str())
+						.unwrap_or("extension")
+						.to_string(),
+					source: extension
+						.get("source")
+						.and_then(|source| source.as_str())
+						.unwrap_or("unknown")
+						.to_string(),
+					status: extension
+						.get("status")
+						.and_then(|status| status.as_str())
+						.map(str::to_string),
+				})
+			})
+			.collect::<Vec<_>>())
+	}
+
+	async fn handle_gjc_plugins_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "includeDisabled"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let include_disabled = include_disabled_param(params.as_ref());
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let plugins = self
+			.plugin_inspections(&*backend, &ctx, include_disabled, true)
+			.await?;
+		let plugins = plugins
+			.into_iter()
+			.map(|inspection| inspection.plugin)
+			.collect::<Vec<_>>();
+		serde_json::to_value(crate::protocol::GjcPluginsListResult { plugins })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_plugins_inspect(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(
+			method,
+			params.as_ref(),
+			&["threadId", "pluginId", "includeSettings"],
+		)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let plugin_id = params
+			.as_ref()
+			.and_then(|p| p.get("pluginId"))
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| AppServerError::invalid_params("missing pluginId"))?;
+		let include_settings = params
+			.as_ref()
+			.and_then(|p| p.get("includeSettings"))
+			.and_then(|v| v.as_bool())
+			.unwrap_or(true);
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		let plugin = self
+			.plugin_inspections(&*backend, &ctx, true, include_settings)
+			.await?
+			.into_iter()
+			.find(|inspection| inspection.plugin.id == plugin_id);
+		serde_json::to_value(crate::protocol::GjcPluginsInspectResult { plugin })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn plugin_inspections(
+		&self,
+		backend: &dyn AgentBackend,
+		ctx: &BackendCallContext,
+		include_disabled: bool,
+		include_settings: bool,
+	) -> Result<Vec<crate::protocol::PluginInspection>> {
+		let state = backend
+			.get_state(
+				ctx,
+				serde_json::json!({ "plugins": true, "includeDisabled": include_disabled, "includeSettings": include_settings }),
+			)
+			.await?;
+		Ok(state
+			.get("plugins")
+			.and_then(|plugins| plugins.as_array())
+			.into_iter()
+			.flatten()
+			.filter_map(|plugin| {
+				let descriptor = crate::protocol::PluginDescriptor {
+					id: plugin.get("id")?.as_str()?.to_string(),
+					name: plugin
+						.get("name")
+						.and_then(|name| name.as_str())
+						.unwrap_or_else(|| {
+							plugin
+								.get("id")
+								.and_then(|id| id.as_str())
+								.unwrap_or("unknown")
+						})
+						.to_string(),
+					kind: plugin
+						.get("kind")
+						.and_then(|kind| kind.as_str())
+						.unwrap_or("plugin")
+						.to_string(),
+					source: plugin
+						.get("source")
+						.and_then(|source| source.as_str())
+						.unwrap_or("unknown")
+						.to_string(),
+					status: plugin
+						.get("status")
+						.and_then(|status| status.as_str())
+						.map(str::to_string),
+				};
+				Some(crate::protocol::PluginInspection {
+					plugin: descriptor,
+					settings: include_settings
+						.then(|| plugin.get("settings").cloned())
+						.flatten(),
+					manifest: plugin.get("manifest").cloned(),
+				})
+			})
+			.collect::<Vec<_>>())
 	}
 
 	async fn handle_gjc_messages_get(
@@ -1301,21 +1625,24 @@ impl AppServer {
 			.as_ref()
 			.map(|t| t.0.clone());
 		let stream = ThreadStream::new(info.thread_id.clone());
-		self.threads.insert(info.thread_id.clone(), ThreadEntry {
-			identity: Mutex::new(identity),
-			backend,
-			admission: Mutex::new(Admission::new(
-				self.config.max_inflight_turns_per_thread,
-				self.config.max_queued_mutations_per_thread,
-			)),
-			stream: Mutex::new(stream),
-			active_turn: Mutex::new(None),
-			mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
-			host_tools: Mutex::new(HostToolRegistry::default()),
-			workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
-			unattended: Mutex::new(crate::unattended::UnattendedController::default()),
-			host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
-		});
+		self.threads.insert(
+			info.thread_id.clone(),
+			ThreadEntry {
+				identity: Mutex::new(identity),
+				backend,
+				admission: Mutex::new(Admission::new(
+					self.config.max_inflight_turns_per_thread,
+					self.config.max_queued_mutations_per_thread,
+				)),
+				stream: Mutex::new(stream),
+				active_turn: Mutex::new(None),
+				mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
+				host_tools: Mutex::new(HostToolRegistry::default()),
+				workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
+				unattended: Mutex::new(crate::unattended::UnattendedController::default()),
+				host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
+			},
+		);
 		let mut thread = serde_json::json!({
 			"id": info.thread_id.0,
 			"status": "idle",
@@ -1372,10 +1699,10 @@ impl AppServer {
 			identity.status = ThreadStatus::Deleted;
 			identity.reattach(); // bump generation so late events are stale
 			let ctx = BackendCallContext {
-				thread_id:  thread_id.clone(),
+				thread_id: thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane:       Lane::Cancel,
+				lane: Lane::Cancel,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -1444,10 +1771,10 @@ impl AppServer {
 			}
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id:  thread_id.clone(),
+				thread_id: thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane:       Lane::Mutating,
+				lane: Lane::Mutating,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -1490,10 +1817,10 @@ impl AppServer {
 			}
 			if let Err(err) = &result {
 				this.emit_backend_event(&BackendEvent {
-					thread_id:  bg_thread.clone(),
+					thread_id: bg_thread.clone(),
 					generation: bg_ctx.generation,
 					event_type: "error".to_string(),
-					payload:    serde_json::json!({ "message": err.to_string() }),
+					payload: serde_json::json!({ "message": err.to_string() }),
 				});
 			}
 			if let Some(entry) = this.threads.get(&bg_thread) {
@@ -1542,10 +1869,10 @@ impl AppServer {
 			}
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id:  thread_id.clone(),
+				thread_id: thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane:       Lane::Cancel,
+				lane: Lane::Cancel,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -1562,6 +1889,13 @@ fn extract_thread_id(params: Option<&serde_json::Value>) -> Result<ThreadId> {
 		.and_then(|v| v.as_str())
 		.map(|s| ThreadId(s.to_string()))
 		.ok_or_else(|| AppServerError::invalid_params("missing threadId"))
+}
+
+fn include_disabled_param(params: Option<&serde_json::Value>) -> bool {
+	params
+		.and_then(|p| p.get("includeDisabled"))
+		.and_then(|v| v.as_bool())
+		.unwrap_or(true)
 }
 
 fn extract_url_scheme(url: &str) -> Result<String> {
@@ -1628,8 +1962,33 @@ mod tests {
 		async fn get_state(
 			&self,
 			_c: &BackendCallContext,
-			_i: serde_json::Value,
+			i: serde_json::Value,
 		) -> Result<serde_json::Value> {
+			if i.get("tools").and_then(|v| v.as_bool()) == Some(true) {
+				return Ok(serde_json::json!({
+					"tools": [{ "name": "read", "active": true, "description": "Read files" }]
+				}));
+			}
+			if i.get("commands").and_then(|v| v.as_bool()) == Some(true) {
+				return Ok(serde_json::json!({
+					"commands": [{ "name": "help", "source": "builtin", "description": "Show help", "classification": "builtin" }]
+				}));
+			}
+			if i.get("skills").and_then(|v| v.as_bool()) == Some(true) {
+				return Ok(serde_json::json!({
+					"skills": [{ "name": "ralplan", "source": "builtin", "description": "Plan", "enabled": true }]
+				}));
+			}
+			if i.get("extensions").and_then(|v| v.as_bool()) == Some(true) {
+				return Ok(serde_json::json!({
+					"extensions": [{ "id": "gemini", "name": "Gemini", "kind": "extension", "source": "project", "status": "available" }]
+				}));
+			}
+			if i.get("plugins").and_then(|v| v.as_bool()) == Some(true) {
+				return Ok(serde_json::json!({
+					"plugins": [{ "id": "pkg", "name": "Pkg", "kind": "plugin", "source": "/tmp/pkg", "status": "enabled", "settings": { "apiKey": "********", "region": "us" }, "manifest": { "settings": { "apiKey": { "secret": true }, "region": { "secret": false } } } }]
+				}));
+			}
 			Ok(serde_json::json!({}))
 		}
 
@@ -1680,8 +2039,8 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id:        ThreadId::generate(),
-				generation:       BackendGeneration::FIRST,
+				thread_id: ThreadId::generate(),
+				generation: BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, Arc::new(SlowBackend)))
@@ -1706,7 +2065,7 @@ mod tests {
 	/// test can prove same-thread mutations are serialized on the mutating lane.
 	#[derive(Default)]
 	struct GaugeBackend {
-		inflight:     std::sync::atomic::AtomicUsize,
+		inflight: std::sync::atomic::AtomicUsize,
 		max_inflight: std::sync::atomic::AtomicUsize,
 	}
 	#[async_trait]
@@ -1782,8 +2141,8 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id:        ThreadId::generate(),
-				generation:       BackendGeneration::FIRST,
+				thread_id: ThreadId::generate(),
+				generation: BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, self.0.clone()))
@@ -1931,10 +2290,10 @@ mod tests {
 		let conn = init_conn(&s).await;
 		let t = start_thread(&s, &conn).await;
 		let ev = |kind: &str| BackendEvent {
-			thread_id:  t.clone(),
+			thread_id: t.clone(),
 			generation: BackendGeneration::FIRST,
 			event_type: kind.into(),
-			payload:    serde_json::json!({}),
+			payload: serde_json::json!({}),
 		};
 		assert!(s.emit_backend_event(&ev("agent_start")) >= 1);
 		assert!(s.emit_backend_event(&ev("agent_end")) >= 1);
@@ -1950,10 +2309,10 @@ mod tests {
 		let t = start_thread(&s, &conn).await;
 		// Generation 2 has never been attached; event must be rejected.
 		let stale = BackendEvent {
-			thread_id:  t,
+			thread_id: t,
 			generation: BackendGeneration(2),
 			event_type: "agent_start".into(),
-			payload:    serde_json::json!({}),
+			payload: serde_json::json!({}),
 		};
 		assert_eq!(s.emit_backend_event(&stale), 0, "stale-generation event rejected");
 		assert!(sink.notes.lock().is_empty());
@@ -1964,10 +2323,10 @@ mod tests {
 		let (s, sink) = server_with_sink();
 		let _conn = init_conn(&s).await;
 		let ev = BackendEvent {
-			thread_id:  ThreadId("thr_missing".into()),
+			thread_id: ThreadId("thr_missing".into()),
 			generation: BackendGeneration::FIRST,
 			event_type: "agent_start".into(),
-			payload:    serde_json::json!({}),
+			payload: serde_json::json!({}),
 		};
 		assert_eq!(s.emit_backend_event(&ev), 0);
 		assert!(sink.notes.lock().is_empty());
@@ -2014,6 +2373,222 @@ mod tests {
 		.unwrap();
 		let resp = s.dispatch(&conn, req).await.unwrap();
 		assert!(resp.error.is_none());
+	}
+
+	#[tokio::test]
+	async fn gjc_tools_list_rejects_unknown_fields_strictly() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":36,"method":"gjc/tools/list","params":{{"threadId":"{}","bogus":1}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		let err = resp.error.expect("gjc/* strict: unknown field rejected");
+		assert_eq!(err.code, crate::error::codes::INVALID_PARAMS);
+		assert!(err.message.contains("bogus"));
+	}
+
+	#[tokio::test]
+	async fn gjc_tools_list_accepts_thread_id_and_shapes_result() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":37,"method":"gjc/tools/list","params":{{"threadId":"{}"}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none());
+		assert_eq!(
+			resp.result.unwrap(),
+			serde_json::json!({ "tools": [{ "name": "read", "active": true, "description": "Read files" }] })
+		);
+	}
+
+	#[tokio::test]
+	async fn gjc_commands_list_rejects_unknown_fields_strictly() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":38,"method":"gjc/commands/list","params":{{"threadId":"{}","bogus":1}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		let err = resp.error.expect("gjc/* strict: unknown field rejected");
+		assert_eq!(err.code, crate::error::codes::INVALID_PARAMS);
+		assert!(err.message.contains("bogus"));
+	}
+
+	#[tokio::test]
+	async fn gjc_commands_list_accepts_allowed_fields_and_shapes_result() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":39,"method":"gjc/commands/list","params":{{"threadId":"{}","includeDisabled":true}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none());
+		assert_eq!(
+			resp.result.unwrap(),
+			serde_json::json!({ "commands": [{ "name": "help", "source": "builtin", "description": "Show help", "classification": "builtin" }] })
+		);
+	}
+
+	#[tokio::test]
+	async fn gjc_reachable_catalogs_reject_unknown_fields_strictly() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		for (id, method, extra) in [
+			(40, "gjc/skills/list", r""),
+			(41, "gjc/extensions/list", r""),
+			(42, "gjc/extensions/inspect", r#", "extensionId":"gemini""#),
+			(43, "gjc/plugins/list", r""),
+			(44, "gjc/plugins/inspect", r#", "pluginId":"pkg""#),
+		] {
+			let req = crate::jsonrpc::parse_inbound(&format!(
+				r#"{{"id":{id},"method":"{method}","params":{{"threadId":"{}"{extra},"bogus":1}}}}"#,
+				t.0
+			))
+			.unwrap();
+			let resp = s.dispatch(&conn, req).await.unwrap();
+			let err = resp.error.expect("gjc/* strict: unknown field rejected");
+			assert_eq!(err.code, crate::error::codes::INVALID_PARAMS);
+			assert!(err.message.contains("bogus"));
+		}
+	}
+
+	#[tokio::test]
+	async fn gjc_catalog_lists_accept_include_disabled_strictly() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		for (id, method) in
+			[(140, "gjc/skills/list"), (141, "gjc/extensions/list"), (142, "gjc/plugins/list")]
+		{
+			let req = crate::jsonrpc::parse_inbound(&format!(
+				r#"{{"id":{id},"method":"{method}","params":{{"threadId":"{}","includeDisabled":false}}}}"#,
+				t.0
+			))
+			.unwrap();
+			let resp = s.dispatch(&conn, req).await.unwrap();
+			assert!(resp.error.is_none(), "{method} should allow includeDisabled");
+		}
+	}
+
+	#[tokio::test]
+	async fn gjc_reachable_catalogs_shape_results() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		for (id, method, params, expected) in [
+			(
+				45,
+				"gjc/skills/list",
+				format!(r#"{{"threadId":"{}"}}"#, t.0),
+				serde_json::json!({ "skills": [{ "name": "ralplan", "source": "builtin", "description": "Plan", "enabled": true }] }),
+			),
+			(
+				46,
+				"gjc/extensions/list",
+				format!(r#"{{"threadId":"{}"}}"#, t.0),
+				serde_json::json!({ "extensions": [{ "id": "gemini", "name": "Gemini", "kind": "extension", "source": "project", "status": "available" }] }),
+			),
+			(
+				47,
+				"gjc/extensions/inspect",
+				format!(r#"{{"threadId":"{}","extensionId":"gemini"}}"#, t.0),
+				serde_json::json!({ "extension": { "id": "gemini", "name": "Gemini", "kind": "extension", "source": "project", "status": "available" } }),
+			),
+			(
+				48,
+				"gjc/plugins/list",
+				format!(r#"{{"threadId":"{}"}}"#, t.0),
+				serde_json::json!({ "plugins": [{ "id": "pkg", "name": "Pkg", "kind": "plugin", "source": "/tmp/pkg", "status": "enabled" }] }),
+			),
+			(
+				49,
+				"gjc/plugins/inspect",
+				format!(r#"{{"threadId":"{}","pluginId":"pkg"}}"#, t.0),
+				serde_json::json!({ "plugin": { "plugin": { "id": "pkg", "name": "Pkg", "kind": "plugin", "source": "/tmp/pkg", "status": "enabled" }, "settings": { "apiKey": "********", "region": "us" }, "manifest": { "settings": { "apiKey": { "secret": true }, "region": { "secret": false } } } } }),
+			),
+		] {
+			let req = crate::jsonrpc::parse_inbound(&format!(
+				r#"{{"id":{id},"method":"{method}","params":{params}}}"#
+			))
+			.unwrap();
+			let resp = s.dispatch(&conn, req).await.unwrap();
+			assert!(resp.error.is_none());
+			assert_eq!(resp.result.unwrap(), expected);
+		}
+	}
+
+	#[tokio::test]
+	async fn gjc_plugins_inspect_returns_masked_settings_without_raw_secret() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":143,"method":"gjc/plugins/inspect","params":{{"threadId":"{}","pluginId":"pkg"}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		let result = resp.result.unwrap();
+		assert_eq!(result["plugin"]["settings"]["apiKey"], "********");
+		assert_eq!(result["plugin"]["settings"]["region"], "us");
+		assert!(!result.to_string().contains("raw-secret"));
+	}
+
+	#[tokio::test]
+	async fn gjc_plugins_inspect_accepts_include_settings_and_stays_strict() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":144,"method":"gjc/plugins/inspect","params":{{"threadId":"{}","pluginId":"pkg","includeSettings":true}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none(), "includeSettings should be an allowed strict field");
+		let result = resp.result.unwrap();
+		assert_eq!(result["plugin"]["settings"]["apiKey"], "********");
+		assert_eq!(result["plugin"]["settings"]["region"], "us");
+		assert!(!result.to_string().contains("raw-secret"));
+
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":145,"method":"gjc/plugins/inspect","params":{{"threadId":"{}","pluginId":"pkg","includeSettings":false}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none(), "includeSettings=false should be an allowed strict field");
+		let result = resp.result.unwrap();
+		assert!(result["plugin"].get("settings").is_none());
+		assert!(result["plugin"].get("manifest").is_some());
+
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":146,"method":"gjc/plugins/inspect","params":{{"threadId":"{}","pluginId":"pkg","includeSettings":true,"bogus":1}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		let err = resp
+			.error
+			.expect("truly unknown field should still be rejected");
+		assert_eq!(err.code, crate::error::codes::INVALID_PARAMS);
+		assert!(err.message.contains("bogus"));
 	}
 
 	#[tokio::test]
@@ -2430,13 +3005,16 @@ mod tests {
 			let s = Arc::clone(&s);
 			let thread = thread.clone();
 			tokio::spawn(async move {
-				s.open_workflow_gate(&thread, crate::workflow_gate::OpenWorkflowGateInput {
-					stage:   crate::workflow_gate::RpcWorkflowStage::Ultragoal,
-					kind:    crate::workflow_gate::RpcWorkflowGateKind::Approval,
-					schema:  serde_json::json!({"type":"object"}),
-					options: None,
-					context: crate::workflow_gate::RpcWorkflowGateContext::default(),
-				})
+				s.open_workflow_gate(
+					&thread,
+					crate::workflow_gate::OpenWorkflowGateInput {
+						stage: crate::workflow_gate::RpcWorkflowStage::Ultragoal,
+						kind: crate::workflow_gate::RpcWorkflowGateKind::Approval,
+						schema: serde_json::json!({"type":"object"}),
+						options: None,
+						context: crate::workflow_gate::RpcWorkflowGateContext::default(),
+					},
+				)
 				.await
 			})
 		};

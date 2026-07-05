@@ -15,84 +15,84 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcUnattendedBudget {
-	pub max_tokens:       u64,
-	pub max_tool_calls:   u64,
+	pub max_tokens: u64,
+	pub max_tool_calls: u64,
 	pub max_wall_time_ms: u64,
-	pub max_cost_usd:     f64,
+	pub max_cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcUnattendedDeclaration {
-	pub actor:            String,
-	pub budget:           RpcUnattendedBudget,
-	pub scopes:           Vec<String>,
+	pub actor: String,
+	pub budget: RpcUnattendedBudget,
+	pub scopes: Vec<String>,
 	pub action_allowlist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcUnattendedAccepted {
-	pub run_id:           String,
-	pub actor:            String,
-	pub budget:           RpcUnattendedBudget,
-	pub scopes:           Vec<String>,
+	pub run_id: String,
+	pub actor: String,
+	pub budget: RpcUnattendedBudget,
+	pub scopes: Vec<String>,
 	pub action_allowlist: Vec<String>,
-	pub accepted_at:      String,
+	pub accepted_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcUnattendedRefused {
-	pub code:    String,
+	pub code: String,
 	pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcBudgetExceeded {
-	pub code:         String,
-	pub metric:       String,
-	pub limit:        f64,
-	pub observed:     f64,
-	pub phase:        String,
-	pub run_id:       String,
+	pub code: String,
+	pub metric: String,
+	pub limit: f64,
+	pub observed: f64,
+	pub phase: String,
+	pub run_id: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub session_id:   Option<String>,
+	pub session_id: Option<String>,
 	pub abort_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcScopeDenied {
-	pub code:            String,
-	pub scope:           String,
+	pub code: String,
+	pub scope: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub command:         Option<String>,
-	pub run_id:          String,
+	pub command: Option<String>,
+	pub run_id: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub session_id:      Option<String>,
+	pub session_id: Option<String>,
 	pub pre_side_effect: bool,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcActionDenied {
-	pub code:            String,
-	pub action:          String,
+	pub code: String,
+	pub action: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub command:         Option<String>,
-	pub run_id:          String,
+	pub command: Option<String>,
+	pub run_id: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub session_id:      Option<String>,
+	pub session_id: Option<String>,
 	pub pre_side_effect: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UnattendedNegotiateParams {
 	#[serde(rename = "threadId")]
-	pub thread_id:   String,
+	pub thread_id: String,
 	pub declaration: RpcUnattendedDeclaration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UsageSnapshot {
 	#[serde(default)]
-	pub tokens:   u64,
+	pub tokens: u64,
 	#[serde(default)]
 	pub cost_usd: f64,
 }
@@ -104,19 +104,19 @@ pub struct PreflightOutcome {
 
 #[derive(Debug, Clone)]
 struct ActiveRun {
-	accepted:            RpcUnattendedAccepted,
-	scopes:              BTreeSet<String>,
-	actions:             BTreeSet<String>,
-	started:             Instant,
+	accepted: RpcUnattendedAccepted,
+	scopes: BTreeSet<String>,
+	actions: BTreeSet<String>,
+	started: Instant,
 	reserved_tool_calls: u64,
-	observed_tokens:     u64,
-	observed_cost_usd:   f64,
-	abort_started:       bool,
+	observed_tokens: u64,
+	observed_cost_usd: f64,
+	abort_started: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct UnattendedController {
-	run:   Option<ActiveRun>,
+	run: Option<ActiveRun>,
 	audit: Vec<Value>,
 }
 
@@ -170,12 +170,12 @@ impl UnattendedController {
 			.cloned()
 			.collect::<BTreeSet<_>>();
 		let accepted = RpcUnattendedAccepted {
-			run_id:           format!("unattended_{}_{}", short(&thread_id.0), epoch_millis()),
-			actor:            declaration.actor,
-			budget:           declaration.budget,
-			scopes:           scopes.iter().cloned().collect(),
+			run_id: format!("unattended_{}_{}", short(&thread_id.0), epoch_millis()),
+			actor: declaration.actor,
+			budget: declaration.budget,
+			scopes: scopes.iter().cloned().collect(),
 			action_allowlist: actions.iter().cloned().collect(),
-			accepted_at:      epoch_millis().to_string(),
+			accepted_at: epoch_millis().to_string(),
 		};
 		self.audit.push(serde_json::json!({"event":"unattended_negotiated","run_id":accepted.run_id,"actor":accepted.actor}));
 		self.run = Some(ActiveRun {
@@ -218,11 +218,11 @@ impl UnattendedController {
 		}
 		if !run.scopes.contains(policy.scope) {
 			let data = RpcScopeDenied {
-				code:            "scope_denied".into(),
-				scope:           policy.scope.into(),
-				command:         Some(method.into()),
-				run_id:          run.accepted.run_id.clone(),
-				session_id:      Some(thread_id.0.clone()),
+				code: "scope_denied".into(),
+				scope: policy.scope.into(),
+				command: Some(method.into()),
+				run_id: run.accepted.run_id.clone(),
+				session_id: Some(thread_id.0.clone()),
 				pre_side_effect: true,
 			};
 			self.audit.push(serde_json::json!({"event":"scope_denied","run_id":run.accepted.run_id,"scope":policy.scope,"command":method}));
@@ -234,11 +234,11 @@ impl UnattendedController {
 		for action in policy.actions {
 			if !run.actions.contains(action) {
 				let data = RpcActionDenied {
-					code:            "action_denied".into(),
-					action:          action.into(),
-					command:         Some(method.into()),
-					run_id:          run.accepted.run_id.clone(),
-					session_id:      Some(thread_id.0.clone()),
+					code: "action_denied".into(),
+					action: action.into(),
+					command: Some(method.into()),
+					run_id: run.accepted.run_id.clone(),
+					session_id: Some(thread_id.0.clone()),
 					pre_side_effect: true,
 				};
 				self.audit.push(serde_json::json!({"event":"action_denied","run_id":run.accepted.run_id,"action":action,"command":method}));
@@ -302,61 +302,61 @@ impl UnattendedController {
 }
 
 struct MethodPolicy<'a> {
-	scope:            &'a str,
-	actions:          Vec<&'a str>,
+	scope: &'a str,
+	actions: Vec<&'a str>,
 	charge_tool_call: bool,
 }
 
 fn policy_for<'a>(method: &str, params: Option<&'a Value>) -> Option<MethodPolicy<'a>> {
 	match method {
 		"turn/start" => Some(MethodPolicy {
-			scope:            "command.prompt",
-			actions:          vec!["command.prompt"],
+			scope: "command.prompt",
+			actions: vec!["command.prompt"],
 			charge_tool_call: true,
 		}),
 		"turn/steer" | "turn/interrupt" => Some(MethodPolicy {
-			scope:            "command.control",
-			actions:          vec!["command.control"],
+			scope: "command.control",
+			actions: vec!["command.control"],
 			charge_tool_call: true,
 		}),
 		"command/exec" | "thread/shellCommand" => Some(MethodPolicy {
-			scope:            "command.bash",
-			actions:          vec!["command.bash", classify_bash(params)],
+			scope: "command.bash",
+			actions: vec!["command.bash", classify_bash(params)],
 			charge_tool_call: true,
 		}),
 		"gjc/hostTools/set" | "gjc/hostTools/result" | "gjc/hostTools/update" => Some(MethodPolicy {
-			scope:            "command.host_tools",
-			actions:          vec!["command.host_tools"],
+			scope: "command.host_tools",
+			actions: vec!["command.host_tools"],
 			charge_tool_call: true,
 		}),
 		"gjc/hostUriSchemes/set" | "gjc/hostUris/result" => Some(MethodPolicy {
-			scope:            "command.host_uri",
-			actions:          vec!["command.host_uri"],
+			scope: "command.host_uri",
+			actions: vec!["command.host_uri"],
 			charge_tool_call: true,
 		}),
 		"gjc/hostUris/read" => Some(MethodPolicy {
-			scope:            "command.host_uri",
-			actions:          vec!["host_uri.read"],
+			scope: "command.host_uri",
+			actions: vec!["host_uri.read"],
 			charge_tool_call: true,
 		}),
 		"gjc/hostUris/write" => Some(MethodPolicy {
-			scope:            "command.host_uri",
-			actions:          vec!["host_uri.write"],
+			scope: "command.host_uri",
+			actions: vec!["host_uri.write"],
 			charge_tool_call: true,
 		}),
 		"gjc/workflowGate/respond" => Some(MethodPolicy {
-			scope:            "command.control",
-			actions:          vec!["command.control"],
+			scope: "command.control",
+			actions: vec!["command.control"],
 			charge_tool_call: true,
 		}),
 		"gjc/model/set" => Some(MethodPolicy {
-			scope:            "command.model",
-			actions:          vec!["command.model"],
+			scope: "command.model",
+			actions: vec!["command.model"],
 			charge_tool_call: true,
 		}),
 		"gjc/todos/set" | "gjc/compact" | "thread/delete" | "thread/archive" => Some(MethodPolicy {
-			scope:            "command.session",
-			actions:          vec!["command.session"],
+			scope: "command.session",
+			actions: vec!["command.session"],
 			charge_tool_call: true,
 		}),
 		_ => None,

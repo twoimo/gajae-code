@@ -89,6 +89,7 @@ impl SidecarSupervisor {
 		for (key, value) in env.env_pairs() {
 			command.env(key, value);
 		}
+		apply_desktop_home_override(&mut command);
 		command.arg("app-server");
 		command.stdin(Stdio::piped());
 		command.stdout(Stdio::piped());
@@ -142,6 +143,42 @@ impl SidecarSupervisor {
 			);
 			let _ = std::fs::remove_file(path);
 		}
+	}
+}
+
+fn apply_desktop_home_override(command: &mut Command) {
+	// Dogfooding knob: mirror the `gjc1` launcher, which runs the agent against
+	// an alternate home (`export HOME=~/.gjc1; unset GJC_CONFIG_DIR …`) so that
+	// config, credentials, auth, and model DBs all resolve under that home. We
+	// apply it to the sidecar child only — never the desktop process, whose HOME
+	// must stay real for the Tauri app-data/discovery paths.
+	let Some(raw) = std::env::var_os("GJC_DESKTOP_HOME") else {
+		return;
+	};
+	let value = raw.to_string_lossy();
+	let trimmed = value.trim();
+	if trimmed.is_empty() {
+		return;
+	}
+	let home = if let Some(rest) = trimmed.strip_prefix("~/") {
+		match std::env::var_os("HOME") {
+			Some(real) => Path::new(&real).join(rest).to_string_lossy().into_owned(),
+			None => trimmed.to_owned(),
+		}
+	} else {
+		trimmed.to_owned()
+	};
+	command.env("HOME", &home);
+	for key in [
+		"GJC_CONFIG_DIR",
+		"PI_CONFIG_DIR",
+		"GJC_CODING_AGENT_DIR",
+		"PI_CODING_AGENT_DIR",
+		"XDG_DATA_HOME",
+		"XDG_STATE_HOME",
+		"XDG_CACHE_HOME",
+	] {
+		command.env_remove(key);
 	}
 }
 

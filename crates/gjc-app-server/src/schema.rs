@@ -1,13 +1,13 @@
 //! Rust-derived JSON Schema for the app-server wire protocol (Phase 0A gate).
 //!
-//! The Rust protocol types are the single source of truth. This module emits a
-//! JSON Schema bundle for the typed wire surface; the `gjc-app-server-schema`
-//! binary writes/checks `schemas/app-server.schema.json`, wired into the repo's
-//! `generate-schemas` / `check:schemas` gate so schema drift fails CI.
+//! The Rust protocol types and dispatch method catalog are the single source of
+//! truth. This module emits a JSON Schema bundle for the typed wire surface;
+//! the `gjc-app-server-schema` binary writes/checks
+//! `schemas/app-server.schema.json`, wired into the repo's `generate-schemas` /
+//! `check:schemas` gate so schema drift fails CI.
 //!
-//! As protocol DTOs are added in later phases (initialize/thread/turn/item
-//! payloads), they are added to [`schema_bundle`] and the committed artifact
-//! grows with them.
+//! As protocol DTOs are added, they are added to [`schema_bundle`] and the
+//! committed artifact grows with them.
 
 use schemars::schema_for;
 
@@ -22,6 +22,16 @@ pub fn schema_bundle() -> serde_json::Value {
 	macro_rules! insert_def {
 		($name:literal, $ty:ty) => {
 			defs.insert($name.into(), def::<$ty>());
+		};
+	}
+	macro_rules! method {
+		($method:literal, $params:expr, $result:expr, $gui_wrapper:literal) => {
+			serde_json::json!({
+				"method": $method,
+				"paramsDef": $params,
+				"resultDef": $result,
+				"guiWrapper": $gui_wrapper,
+			})
 		};
 	}
 	insert_def!("Request", crate::jsonrpc::Request);
@@ -60,6 +70,26 @@ pub fn schema_bundle() -> serde_json::Value {
 	insert_def!("TurnInterruptResult", crate::protocol::TurnInterruptResult);
 	insert_def!("GjcStateReadParams", crate::protocol::GjcStateReadParams);
 	insert_def!("GjcStateReadResult", crate::protocol::GjcStateReadResult);
+	insert_def!("GjcToolsListParams", crate::protocol::GjcToolsListParams);
+	insert_def!("ToolDescriptor", crate::protocol::ToolDescriptor);
+	insert_def!("GjcToolsListResult", crate::protocol::GjcToolsListResult);
+	insert_def!("GjcCommandsListParams", crate::protocol::GjcCommandsListParams);
+	insert_def!("CommandDescriptor", crate::protocol::CommandDescriptor);
+	insert_def!("GjcCommandsListResult", crate::protocol::GjcCommandsListResult);
+	insert_def!("GjcSkillsListParams", crate::protocol::GjcSkillsListParams);
+	insert_def!("SkillDescriptor", crate::protocol::SkillDescriptor);
+	insert_def!("GjcSkillsListResult", crate::protocol::GjcSkillsListResult);
+	insert_def!("GjcExtensionsListParams", crate::protocol::GjcExtensionsListParams);
+	insert_def!("ExtensionDescriptor", crate::protocol::ExtensionDescriptor);
+	insert_def!("GjcExtensionsListResult", crate::protocol::GjcExtensionsListResult);
+	insert_def!("GjcExtensionsInspectParams", crate::protocol::GjcExtensionsInspectParams);
+	insert_def!("GjcExtensionsInspectResult", crate::protocol::GjcExtensionsInspectResult);
+	insert_def!("GjcPluginsListParams", crate::protocol::GjcPluginsListParams);
+	insert_def!("PluginDescriptor", crate::protocol::PluginDescriptor);
+	insert_def!("GjcPluginsListResult", crate::protocol::GjcPluginsListResult);
+	insert_def!("PluginInspection", crate::protocol::PluginInspection);
+	insert_def!("GjcPluginsInspectParams", crate::protocol::GjcPluginsInspectParams);
+	insert_def!("GjcPluginsInspectResult", crate::protocol::GjcPluginsInspectResult);
 	insert_def!("GjcMessagesGetParams", crate::protocol::GjcMessagesGetParams);
 	insert_def!("GjcMessagesGetResult", crate::protocol::GjcMessagesGetResult);
 	insert_def!("GjcModelSetParams", crate::protocol::GjcModelSetParams);
@@ -118,11 +148,104 @@ pub fn schema_bundle() -> serde_json::Value {
 	insert_def!("HostUriResultParams", crate::host_uris::HostUriResultParams);
 	insert_def!("HostUriResource", crate::host_uris::HostUriResource);
 
+	let method_catalog = vec![
+		method!("initialize", Some("InitializeParams"), Some("InitializeResult"), true),
+		method!("thread/start", Some("ThreadStartParams"), Some("ThreadResult"), true),
+		method!("thread/resume", Some("ThreadResumeParams"), Some("ThreadResumeResult"), true),
+		method!("thread/fork", Some("ThreadForkParams"), Some("ThreadResult"), true),
+		method!("thread/delete", Some("ThreadIdParams"), Some("EmptyResult"), true),
+		method!("thread/archive", Some("ThreadIdParams"), Some("EmptyResult"), true),
+		method!("thread/read", Some("ThreadReadParams"), Some("ThreadReadResult"), true),
+		method!(
+			"thread/loaded/list",
+			Some("ThreadLoadedListParams"),
+			Some("ThreadLoadedListResult"),
+			true
+		),
+		method!("turn/start", Some("TurnStartParams"), Some("TurnStartResult"), true),
+		method!("turn/steer", Some("TurnSteerParams"), Some("TurnSteerResult"), true),
+		method!("turn/interrupt", Some("TurnInterruptParams"), Some("TurnInterruptResult"), true),
+		method!("command/exec", None::<&str>, None::<&str>, false),
+		method!("thread/shellCommand", None::<&str>, None::<&str>, false),
+		method!("gjc/state/read", Some("GjcStateReadParams"), Some("GjcStateReadResult"), true),
+		method!("gjc/tools/list", Some("GjcToolsListParams"), Some("GjcToolsListResult"), true),
+		method!(
+			"gjc/commands/list",
+			Some("GjcCommandsListParams"),
+			Some("GjcCommandsListResult"),
+			true
+		),
+		method!("gjc/skills/list", Some("GjcSkillsListParams"), Some("GjcSkillsListResult"), true),
+		method!(
+			"gjc/extensions/list",
+			Some("GjcExtensionsListParams"),
+			Some("GjcExtensionsListResult"),
+			true
+		),
+		method!(
+			"gjc/extensions/inspect",
+			Some("GjcExtensionsInspectParams"),
+			Some("GjcExtensionsInspectResult"),
+			true
+		),
+		method!("gjc/plugins/list", Some("GjcPluginsListParams"), Some("GjcPluginsListResult"), true),
+		method!(
+			"gjc/plugins/inspect",
+			Some("GjcPluginsInspectParams"),
+			Some("GjcPluginsInspectResult"),
+			true
+		),
+		method!("gjc/messages/get", Some("GjcMessagesGetParams"), Some("GjcMessagesGetResult"), true),
+		method!("gjc/model/set", Some("GjcModelSetParams"), Some("GjcModelSetResult"), true),
+		method!("gjc/todos/set", Some("GjcTodosSetParams"), Some("GjcTodosSetResult"), true),
+		method!("gjc/compact", Some("GjcCompactParams"), Some("GjcCompactResult"), true),
+		method!(
+			"gjc/hostTools/set",
+			Some("GjcHostToolsSetParams"),
+			Some("GjcHostToolsSetResult"),
+			true
+		),
+		method!(
+			"gjc/hostTools/result",
+			Some("GjcHostToolsResultParams"),
+			Some("GjcHostToolsResultResult"),
+			true
+		),
+		method!(
+			"gjc/hostTools/update",
+			Some("GjcHostToolsUpdateParams"),
+			Some("GjcHostToolsUpdateResult"),
+			true
+		),
+		method!(
+			"gjc/hostUriSchemes/set",
+			Some("HostUriSchemesSetParams"),
+			Some("HostUriSchemesSetResult"),
+			true
+		),
+		method!("gjc/hostUris/result", Some("HostUriResultParams"), Some("EmptyResult"), true),
+		method!(
+			"gjc/workflowGate/list",
+			Some("WorkflowGateListParams"),
+			Some("WorkflowGateListResult"),
+			true
+		),
+		method!(
+			"gjc/workflowGate/respond",
+			Some("WorkflowGateRespondParams"),
+			Some("RpcWorkflowGateResolution"),
+			true
+		),
+		method!("gjc/unattended/negotiate", Some("UnattendedNegotiateParams"), None::<&str>, false),
+		method!("gjc/unattended/audit", None::<&str>, None::<&str>, false),
+	];
+
 	serde_json::json!({
 		 "$schema": "https://json-schema.org/draft/2020-12/schema",
 		 "title": "gjc-app-server wire protocol",
 		 "description": "Rust-derived JSON Schema for the codex-compatible app-server wire surface.",
 		 "definitions": serde_json::Value::Object(defs),
+		 "methodCatalog": method_catalog,
 	})
 }
 
@@ -155,6 +278,8 @@ mod tests {
 			"ThreadResult",
 			"TurnStartParams",
 			"GjcStateReadParams",
+			"GjcToolsListResult",
+			"GjcCommandsListResult",
 			"GjcHostToolsSetParams",
 			"HostToolsCallParams",
 			"ServerNotificationEnvelope",
@@ -178,5 +303,108 @@ mod tests {
 			.expect("Request has properties");
 		assert!(props.contains_key("method"));
 		assert!(props.contains_key("id"));
+	}
+
+	#[test]
+	fn notification_envelope_serializes_new_wire_methods() {
+		let request = crate::protocol::ServerNotificationEnvelope::HostUriRequest(
+			crate::host_uris::HostUriRequestParams {
+				thread_id: "thread-1".into(),
+				generation: 1,
+				request_id: "request-1".into(),
+				operation: crate::host_uris::HostUriOperation::Read,
+				turn_id: "turn-1".into(),
+				url: "file:///tmp/a".into(),
+				content: None,
+			},
+		);
+		let cancel = crate::protocol::ServerNotificationEnvelope::HostUriCancel(
+			crate::host_uris::HostUriCancelParams {
+				thread_id: "thread-1".into(),
+				generation: 1,
+				turn_id: Some("turn-1".into()),
+				request_id: "request-1".into(),
+			},
+		);
+		let opened = crate::protocol::ServerNotificationEnvelope::WorkflowGateOpened(Box::new(
+			crate::workflow_gate::WorkflowGateOpenedParams {
+				thread_id: "thread-1".into(),
+				generation: 1,
+				gate: crate::workflow_gate::RpcWorkflowGate {
+					frame_type: "workflow-gate".into(),
+					gate_id: "gate-1".into(),
+					stage: crate::workflow_gate::RpcWorkflowStage::Ralplan,
+					kind: crate::workflow_gate::RpcWorkflowGateKind::Approval,
+					schema: serde_json::json!({ "type": "boolean" }),
+					schema_hash: "hash".into(),
+					options: None,
+					context: crate::workflow_gate::RpcWorkflowGateContext::default(),
+					created_at: "2026-07-04T00:00:00Z".into(),
+					required: true,
+				},
+			},
+		));
+
+		for (value, method) in [
+			(request, "gjc/hostUris/request"),
+			(cancel, "gjc/hostUris/cancel"),
+			(opened, "gjc/workflowGate/opened"),
+		] {
+			let serialized = serde_json::to_value(value).unwrap();
+			assert_eq!(serialized["method"], method);
+			let round_tripped: crate::protocol::ServerNotificationEnvelope =
+				serde_json::from_value(serialized).unwrap();
+			assert_eq!(serde_json::to_value(round_tripped).unwrap()["method"], method);
+		}
+	}
+
+	#[test]
+	fn method_catalog_matches_dispatch_surface() {
+		let bundle = schema_bundle();
+		let catalog = bundle["methodCatalog"].as_array().unwrap();
+		let expected = [
+			("initialize", true),
+			("thread/start", true),
+			("thread/resume", true),
+			("thread/fork", true),
+			("thread/delete", true),
+			("thread/archive", true),
+			("thread/read", true),
+			("thread/loaded/list", true),
+			("turn/start", true),
+			("turn/steer", true),
+			("turn/interrupt", true),
+			("command/exec", false),
+			("thread/shellCommand", false),
+			("gjc/state/read", true),
+			("gjc/tools/list", true),
+			("gjc/commands/list", true),
+			("gjc/skills/list", true),
+			("gjc/extensions/list", true),
+			("gjc/extensions/inspect", true),
+			("gjc/plugins/list", true),
+			("gjc/plugins/inspect", true),
+			("gjc/messages/get", true),
+			("gjc/model/set", true),
+			("gjc/todos/set", true),
+			("gjc/compact", true),
+			("gjc/hostTools/set", true),
+			("gjc/hostTools/result", true),
+			("gjc/hostTools/update", true),
+			("gjc/hostUriSchemes/set", true),
+			("gjc/hostUris/result", true),
+			("gjc/workflowGate/list", true),
+			("gjc/workflowGate/respond", true),
+			("gjc/unattended/negotiate", false),
+			("gjc/unattended/audit", false),
+		];
+
+		assert_eq!(catalog.len(), expected.len());
+		let mut seen = std::collections::BTreeSet::new();
+		for (entry, (method, gui_wrapper)) in catalog.iter().zip(expected) {
+			assert!(seen.insert(entry["method"].as_str().unwrap()));
+			assert_eq!(entry["method"], method);
+			assert_eq!(entry["guiWrapper"], gui_wrapper);
+		}
 	}
 }

@@ -2,6 +2,19 @@ import type {
 	AppServerError,
 	GjcCompactParams,
 	GjcCompactResult,
+	EmptyResult,
+	GjcCommandsListParams,
+	GjcCommandsListResult,
+	GjcExtensionsInspectParams,
+	GjcExtensionsInspectResult,
+	GjcExtensionsListParams,
+	GjcExtensionsListResult,
+	GjcPluginsInspectParams,
+	GjcPluginsInspectResult,
+	GjcPluginsListParams,
+	GjcPluginsListResult,
+	GjcSkillsListParams,
+	GjcSkillsListResult,
 	GjcHostToolsResultParams,
 	GjcHostToolsResultResult,
 	GjcHostToolsSetParams,
@@ -10,12 +23,17 @@ import type {
 	GjcHostToolsUpdateResult,
 	GjcMessagesGetParams,
 	GjcMessagesGetResult,
+	GjcToolsListParams,
+	GjcToolsListResult,
 	GjcModelSetParams,
 	GjcModelSetResult,
 	GjcStateReadParams,
 	GjcStateReadResult,
 	GjcTodosSetParams,
 	GjcTodosSetResult,
+	HostUriResultParams,
+	HostUriSchemesSetParams,
+	HostUriSchemesSetResult,
 	InitializedParams,
 	InitializeParams,
 	InitializeResult,
@@ -25,6 +43,10 @@ import type {
 	ServerNotificationEnvelope,
 	ServerNotificationMap,
 	ServerNotificationMethod,
+	ThreadForkParams,
+	ThreadIdParams,
+	ThreadLoadedListParams,
+	ThreadLoadedListResult,
 	ThreadReadParams,
 	ThreadReadResult,
 	ThreadResult,
@@ -37,17 +59,32 @@ import type {
 	TurnStartResult,
 	TurnSteerParams,
 	TurnSteerResult,
+	RpcWorkflowGateResolution,
+	WorkflowGateListParams,
+	WorkflowGateListResult,
+	WorkflowGateRespondParams,
 } from "./generated/protocol";
 
 export type AppServerRequestMap = {
 	initialize: { params: InitializeParams; result: InitializeResult };
 	"thread/start": { params: ThreadStartParams; result: ThreadResult };
 	"thread/resume": { params: ThreadResumeParams; result: ThreadResumeResult };
+	"thread/fork": { params: ThreadForkParams; result: ThreadResult };
+	"thread/delete": { params: ThreadIdParams; result: EmptyResult };
+	"thread/archive": { params: ThreadIdParams; result: EmptyResult };
 	"thread/read": { params: ThreadReadParams; result: ThreadReadResult };
+	"thread/loaded/list": { params: ThreadLoadedListParams; result: ThreadLoadedListResult };
 	"turn/start": { params: TurnStartParams; result: TurnStartResult };
 	"turn/steer": { params: TurnSteerParams; result: TurnSteerResult };
 	"turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResult };
 	"gjc/state/read": { params: GjcStateReadParams; result: GjcStateReadResult };
+	"gjc/tools/list": { params: GjcToolsListParams; result: GjcToolsListResult };
+	"gjc/commands/list": { params: GjcCommandsListParams; result: GjcCommandsListResult };
+	"gjc/skills/list": { params: GjcSkillsListParams; result: GjcSkillsListResult };
+	"gjc/extensions/list": { params: GjcExtensionsListParams; result: GjcExtensionsListResult };
+	"gjc/extensions/inspect": { params: GjcExtensionsInspectParams; result: GjcExtensionsInspectResult };
+	"gjc/plugins/list": { params: GjcPluginsListParams; result: GjcPluginsListResult };
+	"gjc/plugins/inspect": { params: GjcPluginsInspectParams; result: GjcPluginsInspectResult };
 	"gjc/messages/get": { params: GjcMessagesGetParams; result: GjcMessagesGetResult };
 	"gjc/model/set": { params: GjcModelSetParams; result: GjcModelSetResult };
 	"gjc/todos/set": { params: GjcTodosSetParams; result: GjcTodosSetResult };
@@ -55,6 +92,10 @@ export type AppServerRequestMap = {
 	"gjc/hostTools/set": { params: GjcHostToolsSetParams; result: GjcHostToolsSetResult };
 	"gjc/hostTools/result": { params: GjcHostToolsResultParams; result: GjcHostToolsResultResult };
 	"gjc/hostTools/update": { params: GjcHostToolsUpdateParams; result: GjcHostToolsUpdateResult };
+	"gjc/hostUriSchemes/set": { params: HostUriSchemesSetParams; result: HostUriSchemesSetResult };
+	"gjc/hostUris/result": { params: HostUriResultParams; result: EmptyResult };
+	"gjc/workflowGate/list": { params: WorkflowGateListParams; result: WorkflowGateListResult };
+	"gjc/workflowGate/respond": { params: WorkflowGateRespondParams; result: RpcWorkflowGateResolution };
 };
 
 export type AppServerMethod = keyof AppServerRequestMap;
@@ -209,8 +250,24 @@ export class AppServerClient {
 		return this.request("thread/resume", params);
 	}
 
+	threadFork(params: ThreadForkParams): Promise<ThreadResult> {
+		return this.request("thread/fork", params);
+	}
+
+	threadDelete(params: ThreadIdParams): Promise<EmptyResult> {
+		return this.request("thread/delete", params);
+	}
+
+	threadArchive(params: ThreadIdParams): Promise<EmptyResult> {
+		return this.request("thread/archive", params);
+	}
+
 	threadRead(params: ThreadReadParams): Promise<ThreadReadResult> {
 		return this.request("thread/read", params);
+	}
+
+	threadLoadedList(params: ThreadLoadedListParams = {}): Promise<ThreadLoadedListResult> {
+		return this.request("thread/loaded/list", params);
 	}
 
 	turnStart(params: TurnStartParams): Promise<TurnStartResult> {
@@ -227,6 +284,34 @@ export class AppServerClient {
 
 	gjcStateRead(params: GjcStateReadParams): Promise<GjcStateReadResult> {
 		return this.request("gjc/state/read", params);
+	}
+
+	gjcToolsList(params: GjcToolsListParams): Promise<GjcToolsListResult> {
+		return this.request("gjc/tools/list", params);
+	}
+
+	gjcCommandsList(params: GjcCommandsListParams): Promise<GjcCommandsListResult> {
+		return this.request("gjc/commands/list", params);
+	}
+
+	gjcSkillsList(params: GjcSkillsListParams): Promise<GjcSkillsListResult> {
+		return this.request("gjc/skills/list", params);
+	}
+
+	gjcExtensionsList(params: GjcExtensionsListParams): Promise<GjcExtensionsListResult> {
+		return this.request("gjc/extensions/list", params);
+	}
+
+	gjcExtensionsInspect(params: GjcExtensionsInspectParams): Promise<GjcExtensionsInspectResult> {
+		return this.request("gjc/extensions/inspect", params);
+	}
+
+	gjcPluginsList(params: GjcPluginsListParams): Promise<GjcPluginsListResult> {
+		return this.request("gjc/plugins/list", params);
+	}
+
+	gjcPluginsInspect(params: GjcPluginsInspectParams): Promise<GjcPluginsInspectResult> {
+		return this.request("gjc/plugins/inspect", params);
 	}
 
 	gjcMessagesGet(params: GjcMessagesGetParams): Promise<GjcMessagesGetResult> {
@@ -255,6 +340,22 @@ export class AppServerClient {
 
 	gjcHostToolsUpdate(params: GjcHostToolsUpdateParams): Promise<GjcHostToolsUpdateResult> {
 		return this.request("gjc/hostTools/update", params);
+	}
+
+	gjcHostUriSchemesSet(params: HostUriSchemesSetParams): Promise<HostUriSchemesSetResult> {
+		return this.request("gjc/hostUriSchemes/set", params);
+	}
+
+	gjcHostUrisResult(params: HostUriResultParams): Promise<EmptyResult> {
+		return this.request("gjc/hostUris/result", params);
+	}
+
+	gjcWorkflowGateList(params: WorkflowGateListParams): Promise<WorkflowGateListResult> {
+		return this.request("gjc/workflowGate/list", params);
+	}
+
+	gjcWorkflowGateRespond(params: WorkflowGateRespondParams): Promise<RpcWorkflowGateResolution> {
+		return this.request("gjc/workflowGate/respond", params);
 	}
 
 	#handleMessage = (event: { data: unknown }): void => {

@@ -10,6 +10,11 @@ import type {
 } from "../../internal-urls/types";
 import { type CreateAgentSessionOptions, createAgentSession } from "../../sdk";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
+import { BUILTIN_SLASH_COMMANDS, loadSlashCommands } from "../../extensibility/slash-commands";
+import type { Extension, Skill } from "../../discovery";
+import { loadCapability } from "../../discovery";
+import { PluginManager } from "../../extensibility/plugins/manager";
+import type { InstalledPlugin } from "../../extensibility/plugins/types";
 import type { WorkflowGateEmitter } from "../shared/agent-wire/unattended-session";
 import type { OpenGateInput } from "../shared/agent-wire/workflow-gate-broker";
 import type {
@@ -67,6 +72,8 @@ export interface AppServerSession {
 	setWorkflowGateEmitter?: (emitter: WorkflowGateEmitter | undefined) => void;
 	model?: unknown;
 	getSessionStats?: () => unknown;
+	getActiveToolNames?: () => string[];
+	getAllToolNames?: () => string[];
 }
 
 type AgentSessionLike = AppServerSession;
@@ -199,6 +206,149 @@ function execOptions(record: Record<string, unknown>): unknown {
 function jsonClone<T>(value: T): T {
 	if (value === undefined) return value;
 	return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function includeRequests(include: unknown, key: string): boolean {
+	const record = optionalRecord(include);
+	return record?.[key] === true;
+}
+
+function includeDisabled(include: unknown): boolean {
+	const record = optionalRecord(include);
+	return typeof record?.includeDisabled === "boolean" ? record.includeDisabled : true;
+}
+
+function includeSettings(include: unknown): boolean {
+	const record = optionalRecord(include);
+	return typeof record?.includeSettings === "boolean" ? record.includeSettings : true;
+}
+
+type SkillCatalogEntry = { name: string; source: string; description?: string; enabled?: boolean };
+type ExtensionCatalogEntry = { id: string; name: string; kind: string; source: string; status?: string; description?: string };
+type PluginCatalogEntry = {
+	id: string;
+	name: string;
+	kind: string;
+	source: string;
+	status?: string;
+	version?: string;
+	description?: string;
+	enabled?: boolean;
+	enabledFeatures?: string[] | null;
+	manifest?: unknown;
+	settings?: Record<string, unknown>;
+};
+
+function sourceFromItem(item: { level?: string; _source?: { level?: string; provider?: string; providerName?: string } }): string {
+	return optionalString(item._source?.level) ?? optionalString(item.level) ?? optionalString(item._source?.provider) ?? "unknown";
+}
+
+async function skillsCatalog(cwd: string, includeDisabled = true): Promise<SkillCatalogEntry[]> {
+	try {
+		const result = await loadCapability<Skill>("skills", { cwd, includeDisabled });
+		return result.items
+			.map(skill => ({
+				name: skill.name,
+				source: sourceFromItem(skill),
+				description: skill.frontmatter?.description,
+				enabled: true,
+			}))
+			.sort((a, b) => a.name.localeCompare(b.name));
+	} catch {
+		return [];
+	}
+}
+
+async function extensionsCatalog(cwd: string, includeDisabled = true): Promise<ExtensionCatalogEntry[]> {
+	try {
+		const result = await loadCapability<Extension>("extensions", { cwd, includeDisabled });
+		return result.items
+			.map(extension => ({
+				id: extension.name,
+				name: extension.manifest.name ?? extension.name,
+				kind: "extension",
+				source: sourceFromItem(extension),
+				status: "available",
+				description: extension.manifest.description,
+			}))
+			.sort((a, b) => a.id.localeCompare(b.id));
+	} catch {
+		return [];
+	}
+}
+
+function maskPluginSettings(plugin: InstalledPlugin, settings: Record<string, unknown>): Record<string, unknown> {
+	const schemas = plugin.manifest.settings ?? {};
+	const masked: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(settings)) {
+		masked[key] = schemas[key]?.secret === true ? "********" : value;
+	}
+	return masked;
+}
+
+async function pluginEntry(manager: PluginManager, plugin: InstalledPlugin, includePluginSettings = true): Promise<PluginCatalogEntry> {
+	const settings = includePluginSettings ? maskPluginSettings(plugin, await manager.getPluginSettings(plugin.name)) : undefined;
+	const entry: PluginCatalogEntry = {
+		id: plugin.name,
+		name: plugin.manifest.name ?? plugin.name,
+		kind: "plugin",
+		source: plugin.path,
+		status: plugin.enabled ? "enabled" : "disabled",
+		version: plugin.version,
+		description: plugin.manifest.description,
+		enabled: plugin.enabled,
+		enabledFeatures: plugin.enabledFeatures,
+		manifest: plugin.manifest,
+	};
+	if (settings !== undefined) entry.settings = settings;
+	return entry;
+}
+
+async function pluginsCatalog(cwd: string, includeDisabled = true, includePluginSettings = true): Promise<PluginCatalogEntry[]> {
+	try {
+		const manager = new PluginManager(cwd);
+		const plugins = await manager.list();
+		return (await Promise.all(plugins.filter(plugin => includeDisabled || plugin.enabled).map(plugin => pluginEntry(manager, plugin, includePluginSettings)))).sort((a, b) => a.id.localeCompare(b.id));
+	} catch {
+		return [];
+	}
+}
+
+async function toolsCatalog(session: AgentSessionLike): Promise<Array<{ name: string; active: boolean; description?: string }>> {
+	const active = new Set(typeof session.getActiveToolNames === "function" ? session.getActiveToolNames() : []);
+	const all = typeof session.getAllToolNames === "function" ? session.getAllToolNames() : Array.from(active);
+	return Array.from(new Set(all))
+		.filter(name => typeof name === "string" && name.length > 0)
+		.sort((a, b) => a.localeCompare(b))
+		.map(name => ({ name, active: active.has(name) }));
+}
+
+async function commandsCatalog(cwd: string): Promise<Array<{ name: string; source: string; description?: string }>> {
+	const commands: Array<{ name: string; source: string; description?: string }> = [];
+	const seen = new Set<string>();
+	for (const command of BUILTIN_SLASH_COMMANDS) {
+		if (seen.has(command.name)) continue;
+		seen.add(command.name);
+		commands.push({
+			name: command.name,
+			source: "builtin",
+			description: command.description,
+		});
+	}
+	try {
+		for (const command of await loadSlashCommands({ cwd })) {
+			if (seen.has(command.name)) continue;
+			seen.add(command.name);
+			commands.push({
+				name: command.name,
+				source: command.source,
+				description: command.description,
+			});
+		}
+	} catch {
+		// Catalog reads are best-effort: command discovery warnings must not break state reads.
+	}
+	return commands.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 class AppServerHostUriProtocolHandler implements ProtocolHandler {
@@ -356,8 +506,14 @@ export class AgentSessionHost implements AppServerHost {
 			case "abort":
 				await session.abort();
 				return { ok: true };
-			case "getState":
+			case "getState": {
+				if (includeRequests(params, "tools")) return { tools: await toolsCatalog(session) };
+				if (includeRequests(params, "commands")) return { commands: await commandsCatalog(thread.cwd) };
+				if (includeRequests(params, "skills")) return { skills: await skillsCatalog(thread.cwd, includeDisabled(params)) };
+				if (includeRequests(params, "extensions")) return { extensions: await extensionsCatalog(thread.cwd, includeDisabled(params)) };
+				if (includeRequests(params, "plugins")) return { plugins: await pluginsCatalog(thread.cwd, includeDisabled(params), includeSettings(params)) };
 				return typeof session.getSessionState === "function" ? session.getSessionState() : (session.state ?? null);
+			}
 			case "getMessages":
 				return typeof session.getMessages === "function" ? session.getMessages() : (session.messages ?? []);
 			case "setModel": {

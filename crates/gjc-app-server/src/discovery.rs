@@ -18,26 +18,26 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryRecord {
 	/// Schema version.
-	pub version:       u32,
+	pub version: u32,
 	/// The session id this endpoint serves.
-	pub session_id:    String,
+	pub session_id: String,
 	/// The OS process id hosting the server (for dead-PID stale cleanup).
-	pub pid:           u32,
+	pub pid: u32,
 	/// Bind host (always loopback in practice).
-	pub host:          String,
+	pub host: String,
 	/// Bound port.
-	pub port:          u16,
+	pub port: u16,
 	/// The per-session token. Required by clients; never log it raw.
-	pub token:         String,
+	pub token: String,
 	/// Full `http://host:port` URL.
-	pub url:           String,
+	pub url: String,
 	/// Epoch-millis when the server started.
 	pub started_at_ms: u64,
 	/// Epoch-millis of the last update.
 	pub updated_at_ms: u64,
 	/// Set true when the server stopped but the file could not be removed.
 	#[serde(default)]
-	pub stale:         bool,
+	pub stale: bool,
 }
 
 impl DiscoveryRecord {

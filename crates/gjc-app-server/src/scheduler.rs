@@ -51,6 +51,13 @@ pub fn classify(method: &str) -> Lane {
 		| "thread/loaded/list"
 		| "thread/list"
 		| "gjc/state/read"
+		| "gjc/tools/list"
+		| "gjc/commands/list"
+		| "gjc/skills/list"
+		| "gjc/extensions/list"
+		| "gjc/extensions/inspect"
+		| "gjc/plugins/list"
+		| "gjc/plugins/inspect"
 		| "gjc/messages/get"
 		| "gjc/model/list"
 		| "gjc/session/stats"
@@ -70,10 +77,10 @@ pub fn classify(method: &str) -> Lane {
 /// lanes are never rejected for capacity (they must reach in-flight work).
 #[derive(Debug)]
 pub struct Admission {
-	max_inflight_turns:   usize,
-	inflight_turns:       usize,
+	max_inflight_turns: usize,
+	inflight_turns: usize,
 	max_queued_mutations: usize,
-	queued_mutations:     usize,
+	queued_mutations: usize,
 }
 
 impl Admission {
@@ -129,6 +136,11 @@ mod tests {
 		assert_eq!(classify("turn/interrupt"), Lane::Cancel);
 		assert_eq!(classify("thread/read"), Lane::Read);
 		assert_eq!(classify("gjc/state/read"), Lane::Read);
+		assert_eq!(classify("gjc/tools/list"), Lane::Read);
+		assert_eq!(classify("gjc/commands/list"), Lane::Read);
+		assert_eq!(classify("gjc/skills/list"), Lane::Read);
+		assert_eq!(classify("gjc/extensions/list"), Lane::Read);
+		assert_eq!(classify("gjc/plugins/list"), Lane::Read);
 		assert_eq!(classify("gjc/model/set"), Lane::Mutating);
 		// Unknown methods are conservatively treated as ordered mutations.
 		assert_eq!(classify("gjc/some/futureMethod"), Lane::Mutating);

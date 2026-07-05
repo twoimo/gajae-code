@@ -2,15 +2,33 @@ import type { ReactNode } from "react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "../design-tokens/index.ts";
+import { CommandPalette } from "../app/command-palette.tsx";
+import type { PaletteCommand, PaletteTool } from "../app/command-palette-logic";
+import { ModelPanel } from "../app/model-panel.tsx";
+import { ExtensibilityPanel } from "../app/extensibility-panel.tsx";
+import type { Extension, Plugin, Skill } from "../app/extensibility-logic";
+import { ConfirmDialog, SessionActions } from "../app/session-actions.tsx";
+import { DEFERRED_SESSION_ACTIONS } from "../app/session-actions-logic";
+import type { ThreadView } from "../app/transcript";
+import { Markdown } from "../app/markdown.tsx";
+import { cleanAssistantText } from "../app/transcript";
 import "./showcase.css";
 
 type ToolStatus = "running" | "success" | "error";
 type ThreadState = "selected" | "unread" | "error" | "default";
 type MessageTone = "user" | "assistant" | "streaming" | "interrupted";
 type ApprovalState = "pending" | "focused" | "approved" | "rejected";
+type ExecCardState = "pending" | "approved" | "responded" | "cancelled";
 type ComposerState = "idle" | "disabled" | "submitting";
 type ModelState = "connected" | "reconnecting" | "disconnected" | "degraded" | "offline";
 
+const showcaseThread: ThreadView = {
+	id: "thread-showcase-004",
+	title: "Session lifecycle parity",
+	status: "idle",
+	lastActivity: "idle",
+	cwd: "/workspace/gajae-code",
+};
 const threads: Array<{ title: string; meta: string; state: ThreadState }> = [
 	{ title: "Thread 019f27…b61a", meta: "Claude Sonnet · 3 min ago", state: "selected" },
 	{ title: "Origin matrix and token rejection", meta: "Grok Code · unread", state: "unread" },
@@ -24,6 +42,36 @@ src/showcase/main.tsx: message, tool-card, approval-gate, composer, thread-list,
 ✓ no protocol DTOs duplicated
 ✓ design tokens loaded from src/design-tokens
 ✓ responsive showcase route compiled`;
+
+const paletteCommands: PaletteCommand[] = [
+	{ name: "help", source: "core", description: "Show command help in the composer.", classification: "prompt-display-only" },
+	{ name: "hotkeys", source: "core", description: "Display keyboard shortcuts.", classification: "prompt-display-only" },
+	{ name: "skill:ralplan", source: "skill", description: "Insert the planning workflow prompt.", classification: "prompt-display-only" },
+	{ name: "review-pr", source: "extension", description: "Needs a future GUI API before execution.", classification: "deferred-needs-new-api" },
+	{ name: "terminal-attach", source: "terminal", description: "Terminal-only command unavailable in GUI.", classification: "excluded-terminal-only" },
+];
+
+const paletteTools: PaletteTool[] = [
+	{ name: "read", active: true, description: "Inspect files, documents, images, and URLs." },
+	{ name: "edit", active: true, description: "Apply anchored text edits." },
+	{ name: "browser", active: false, description: "Inactive until activated by tool discovery." },
+];
+
+const showcaseSkills: Skill[] = [
+	{ name: "deep-interview", source: "bundled", description: "Socratic requirements gathering and spec capture.", enabled: true },
+	{ name: "ralplan", source: "bundled", description: "Consensus planning with planner/architect/critic lanes.", enabled: true },
+	{ name: "legacy-home-skill", source: "user", description: "Disabled skill remains visible in read-only catalog.", enabled: false },
+];
+
+const showcaseExtensions: Extension[] = [
+	{ id: "ext.review-pr", name: "Review PR", kind: "workflow", source: "project", status: "active" },
+	{ id: "ext.ops", name: "Ops runbook", kind: "prompt", source: "user", status: "disabled" },
+];
+
+const showcasePlugins: Plugin[] = [
+	{ id: "plugin.github", name: "GitHub", kind: "mcp", source: "project", status: "masked" },
+	{ id: "plugin.notify", name: "Notifier", kind: "webhook", source: "user", status: "active" },
+];
 
 function App() {
 	return (
@@ -72,21 +120,22 @@ function App() {
 
 				<div className="showcase-grid">
 					<section className="transcript panel" aria-label="Message states">
-						<Message author="You" tone="user">
-							Make the GUI feel like a terminal-native GJC shell, not a rounded chat app.
+						<Message author="you" tone="user">
+							Make the GUI render markdown with compact terminal-native cards.
 						</Message>
-						<Message author="GJC" tone="assistant">
-							The shell is one continuous frame: sidebar, transcript, and composer divided by warm hairlines.
-							Off-white buttons stay quiet; red-claw appears only as brand and focus signal.
+						<Message author="gajae" tone="assistant" markdown>
+							{"# Render pass\n\n> TUI parity keeps narrow rails, readable code, and transcript rhythm.\n\n---\n\nThe transcript now supports **bold with `code`**, ~~removed text~~, links like [docs](https://gaebal-gajae.dev), and lists:\n\n- clean assistant text\n- compact tool cards\n- fenced code that scrolls\n\n```ts\nconst status = \"tui-parity\";\nconsole.log(status);\n```"}
 						</Message>
-						<Message author="GJC" tone="streaming">
-							Streaming response with a stable line box and live caret. Mixed copy wraps safely: 실행 중인 도구
-							output stays readable with English identifiers like GJC_APP_SERVER_ALLOWED_ORIGINS.
+						<Message author="gajae" tone="streaming" markdown>
+							{"Streaming response keeps a stable line box while `GJC_APP_SERVER_ALLOWED_ORIGINS` and Korean copy wrap safely."}
 						</Message>
-						<Message author="GJC" tone="interrupted">
-							Interrupted stream state: generation stopped after transport closed. Partial output remains visible
-							with a labeled recovery action.
+						<Message author="gajae" tone="interrupted" markdown>
+							{"Interrupted stream state keeps partial **markdown** visible with a quiet recovery label."}
 						</Message>
+						<Message author="gajae" tone="assistant" markdown>
+							{'{"_i":"Calling bash","args":{"command":"pwd"}}'}
+						</Message>
+						<ReasoningCard />
 						<pre className="code-block" aria-label="Long content state">
 							{longOutput}
 						</pre>
@@ -95,23 +144,78 @@ function App() {
 					<section className="panel stack" aria-label="Tool card states">
 						<ToolCard
 							status="running"
-							title="read discovery record"
-							detail="Polling /readyz with token redacted"
+							title="read"
+							detail="running…"
+							args={'{"path":"packages/gjc-gui/src/app/main.tsx"}'}
+							output="Reading…"
 						/>
-						<ToolCard status="success" title="tsc package check" detail="Completed in 1.2s" />
+						<ToolCard status="success" title="bash" detail="" args={'{"command":"bun --cwd packages/gjc-gui test"}'} output={longOutput} />
 						<ToolCard
 							status="error"
 							title="connect websocket"
-							detail="Rejected unknown Origin with valid token"
+							detail="error"
+							args={'{"url":"ws://127.0.0.1:3417"}'}
+							error="JsonRpcError: rejected unknown Origin with valid token"
+						/>
+						<ToolCard
+							status="success"
+							title="apply_patch"
+							detail=""
+							args={'{"path":"packages/gjc-gui/src/app/styles.css"}'}
+							diff={'@@ -1,3 +1,4 @@\n .message {\n-  border-radius: 999px;\n+  border-radius: var(--gjc-radius-sm);\n+  overflow-wrap: anywhere;\n }'}
 						/>
 					</section>
 
+					<section className="panel stack session-actions-showcase" aria-label="Session action lifecycle states">
+						<h2>Session lifecycle actions</h2>
+						<div className="thread-row thread-row--selected">
+							<span className="thread-title">{showcaseThread.title}</span>
+							<span className="thread-meta">{showcaseThread.id} · default actions</span>
+							<SessionActions thread={showcaseThread} onFork={() => undefined} onArchive={() => undefined} onDelete={() => undefined} />
+						</div>
+						<ConfirmDialog state={{ kind: "delete", threadId: showcaseThread.id, title: showcaseThread.title }} onCancel={() => undefined} onConfirm={() => undefined} />
+						<ConfirmDialog state={{ kind: "archive", threadId: showcaseThread.id, title: showcaseThread.title }} onCancel={() => undefined} onConfirm={() => undefined} />
+						<div className="session-actions-deferred-list" aria-label="Deferred session actions disabled list">
+							<strong>More actions disabled until API support lands</strong>
+							<ul>
+								{DEFERRED_SESSION_ACTIONS.map(action => (
+									<li key={action.name}>
+										<button type="button" disabled>
+											{action.name}: {action.rationale}
+										</button>
+									</li>
+								))}
+							</ul>
+						</div>
+					</section>
+
+					<section className="panel stack model-panel-showcase" aria-label="Model panel states">
+						<h2>Model set + deferred surfaces</h2>
+						<ModelPanel currentModel="anthropic/claude-sonnet-4" disabled={false} onApply={() => undefined} />
+						<ModelPanel currentModel="" disabled={false} onApply={() => undefined} />
+						<ModelPanel currentModel="anthropic/" disabled={false} onApply={() => undefined} />
+						<ModelPanel currentModel="grok/grok-code-fast" disabled={false} onApply={() => undefined} />
+					</section>
 					<section className="panel stack" aria-label="Approval and connection states">
 						<ApprovalGate state="pending" />
 						<ApprovalGate state="focused" />
 						<ApprovalGate state="approved" />
 						<ApprovalGate state="rejected" />
 						<ConnectionError />
+					</section>
+
+					<section className="panel stack exec-state-showcase" aria-label="Execution state cards">
+						<h2>Execution state cards</h2>
+						<div className="button-row">
+							<button className="neutral-action" type="button">Compact thread</button>
+						</div>
+						<HostUriCard state="pending" operation="read" url="file:///workspace/notes.md" />
+						<HostUriCard state="approved" operation="write" url="file:///workspace/report.json" />
+						<HostUriCard state="cancelled" operation="read" url="gajae://session/artifact/12" />
+						<WorkflowGateCard state="pending" title="approval · ralplan" />
+						<WorkflowGateCard state="responded" title="question · deep-interview" />
+						<WorkflowGateCard state="cancelled" title="execution · ultragoal" />
+						<DeferredExecStateList />
 					</section>
 
 					<section className="panel stack" aria-label="Empty, loading, focus, and composer states">
@@ -126,36 +230,168 @@ function App() {
 							<button type="button">Reject approval</button>
 						</div>
 					</section>
+
+					<section className="palette-showcase panel" aria-label="Command palette states">
+						<h2>Command palette</h2>
+						<div className="palette-showcase__grid">
+							<CommandPalette
+								open={true}
+								commands={paletteCommands}
+								tools={paletteTools}
+								loading={false}
+								onClose={() => undefined}
+								onInsert={() => undefined}
+							/>
+							<CommandPalette
+								open={true}
+								commands={[]}
+								tools={[]}
+								loading={true}
+								onClose={() => undefined}
+								onInsert={() => undefined}
+							/>
+							<CommandPalette
+								open={true}
+								commands={[]}
+								tools={[]}
+								loading={false}
+								error="Command catalog unavailable: reconnect the app-server."
+								onClose={() => undefined}
+								onInsert={() => undefined}
+							/>
+							<CommandPalette
+								open={true}
+								commands={[]}
+								tools={[]}
+								loading={false}
+								onClose={() => undefined}
+								onInsert={() => undefined}
+							/>
+						</div>
+					</section>
+
+					<section className="extensibility-showcase panel" aria-label="Extensibility catalog states">
+						<h2>Skills, extensions, plugins, appearance deferred</h2>
+						<div className="extensibility-showcase__grid">
+							<ExtensibilityPanel
+								skills={showcaseSkills}
+								extensions={showcaseExtensions}
+								plugins={showcasePlugins}
+								loading={false}
+								onRefresh={() => undefined}
+								onInspectExtension={() => undefined}
+								onInspectPlugin={() => undefined}
+							/>
+							<ExtensibilityPanel
+								skills={[]}
+								extensions={[]}
+								plugins={[]}
+								loading={false}
+								onRefresh={() => undefined}
+								onInspectExtension={() => undefined}
+								onInspectPlugin={() => undefined}
+							/>
+							<ExtensibilityPanel
+								skills={[]}
+								extensions={[]}
+								plugins={[]}
+								loading={true}
+								onRefresh={() => undefined}
+								onInspectExtension={() => undefined}
+								onInspectPlugin={() => undefined}
+							/>
+							<ExtensibilityPanel
+								skills={showcaseSkills.slice(0, 1)}
+								extensions={[]}
+								plugins={[]}
+								loading={false}
+								error="Catalog read failed: reconnect the app-server."
+								onRefresh={() => undefined}
+								onInspectExtension={() => undefined}
+								onInspectPlugin={() => undefined}
+							/>
+						</div>
+					</section>
 				</div>
 			</section>
 		</main>
 	);
 }
 
-function Message({ author, children, tone }: { author: string; children: ReactNode; tone: MessageTone }) {
+function Message({ author, children, markdown, tone }: { author: string; children: ReactNode; markdown?: boolean; tone: MessageTone }) {
+	const text = typeof children === "string" ? cleanAssistantText(children) : undefined;
+	if (markdown && text === "") return null;
 	return (
 		<article className={`message message--${tone}`} aria-live={tone === "streaming" ? "polite" : undefined}>
 			<header>
-				<strong>{author}</strong>
-				<span>{tone === "streaming" ? "streaming" : tone === "interrupted" ? "interrupted" : "now"}</span>
+				<strong className="message__role">{author}</strong>
+				<span>{tone === "streaming" ? "streaming" : tone === "interrupted" ? "interrupted" : ""}</span>
 			</header>
-			<p>{children}</p>
+			{markdown && text !== undefined ? <div className="markdown"><Markdown text={text} /></div> : <p>{children}</p>}
 		</article>
 	);
 }
 
-function ToolCard({ detail, status, title }: { detail: string; status: ToolStatus; title: string }) {
+function ReasoningCard() {
 	return (
-		<article className={`tool-card tool-card--${status}`} aria-busy={status === "running"}>
-			<header>
-				<div>
-					<strong>{title}</strong>
-					<span>{detail}</span>
-				</div>
-				<span className="status-chip">{status}</span>
-			</header>
-			<code>{status === "error" ? "JsonRpcError: forbidden Origin" : "gjc app-server --listen ws"}</code>
-		</article>
+		<details className="message message--reasoning" open>
+			<summary>
+				<span className="message__role">thinking</span>
+				<span className="message__hint">reasoning</span>
+			</summary>
+			<div className="markdown markdown--reasoning">
+				<Markdown text={"I checked the transcript stream, then folded tool args and output into one compact card before rendering."} />
+			</div>
+		</details>
+	);
+}
+
+function ToolCard({ args, detail, diff, error, output, status, title }: { args?: string; detail: string; diff?: string; error?: string; output?: string; status: ToolStatus; title: string }) {
+	return (
+		<details className={`tool-card tool-card--${status}`} aria-busy={status === "running"} open={status === "running"}>
+			<summary>
+				<span className="tool-card__icon" aria-hidden="true" />
+				<strong>{title}</strong>
+				{detail ? <span className="status-chip">{detail}</span> : null}
+			</summary>
+			<div className="tool-card__sections">
+				{args ? <ToolSection label="args" text={args} collapsed /> : null}
+				{diff ? <DiffPreview text={diff} /> : output ? <ToolSection label="output" text={output} /> : null}
+				{error ? <ToolSection label="error" text={error} danger /> : null}
+			</div>
+		</details>
+	);
+}
+
+function ToolSection({ collapsed, danger, label, text }: { collapsed?: boolean; danger?: boolean; label: string; text: string }) {
+	const body = label === "args" ? JSON.stringify(JSON.parse(text), null, 2) : text;
+	return collapsed ? (
+		<details className={`tool-section ${danger ? "tool-section--danger" : ""}`}>
+			<summary><span>{label}</span><code>{body.split("\n")[0]}</code></summary>
+			<pre>{body}</pre>
+		</details>
+	) : (
+		<section className={`tool-section ${danger ? "tool-section--danger" : ""}`}>
+			<header>{label}</header>
+			<pre>{body}</pre>
+		</section>
+	);
+}
+
+function DiffPreview({ text }: { text: string }) {
+	const lines = text.split("\n");
+	const adds = lines.filter(line => line.startsWith("+") && !line.startsWith("+++")).length;
+	const removes = lines.filter(line => line.startsWith("-") && !line.startsWith("---")).length;
+	return (
+		<section className="diff-block">
+			<header>diff <span>+{adds} / -{removes}</span></header>
+			<div className="diff-block__body">
+				{lines.map((line, index) => {
+					const kind = line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : "context";
+					return <div className={`diff-line diff-line--${kind}`} key={`${index}-${line}`}><span>{kind === "add" ? "+" : kind === "remove" ? "-" : " "}</span><code>{line.replace(/^[+-]/, "")}</code></div>;
+				})}
+			</div>
+		</section>
 	);
 }
 
@@ -212,6 +448,53 @@ function ApprovalGate({ state }: { state: ApprovalState }) {
 				</button>
 			</div>
 		</article>
+	);
+}
+
+function HostUriCard({ operation, state, url }: { operation: "read" | "write"; state: ExecCardState; url: string }) {
+	return (
+		<article className={`hosturi-card hosturi-card--${state === "responded" ? "approved" : state}`}>
+			<p className="eyebrow">Host URI · {state}</p>
+			<h2>{operation.toUpperCase()} {url}</h2>
+			<p>Typed gjc/hostUris request rendered inline with explicit approve/reject state.</p>
+			<div className="button-row">
+				<button className="primary-action" type="button" disabled={state !== "pending"}>Approve</button>
+				<button className="neutral-action" type="button" disabled={state !== "pending"}>Reject</button>
+			</div>
+		</article>
+	);
+}
+
+function WorkflowGateCard({ state, title }: { state: ExecCardState; title: string }) {
+	return (
+		<article className={`workflow-gate-card workflow-gate-card--${state === "responded" ? "approved" : state}`}>
+			<p className="eyebrow">Workflow gate · {state}</p>
+			<h2>{title}</h2>
+			<p>Gate answer options stay visible after response/cancel so the transcript remains auditable.</p>
+			<div className="button-row">
+				<button className="primary-action" type="button" disabled={state !== "pending"}>Proceed</button>
+				<button className="neutral-action" type="button" disabled={state !== "pending"}>Revise plan</button>
+			</div>
+		</article>
+	);
+}
+
+function DeferredExecStateList() {
+	const rows = ["todos", "context", "usage", "jobs", "agents", "monitors", "retry"] as const;
+	return (
+		<section className="exec-state-deferred" aria-label="Deferred execution-state list">
+			<strong>Deferred until new API support</strong>
+			<ul>
+				{rows.map(row => (
+					<li key={row}>
+						<button type="button" disabled>
+							<span>{row}</span>
+							<em>{row === "retry" ? "gjc/retry is not on the current seam." : "Needs typed app-server API/notification before GUI rendering."}</em>
+						</button>
+					</li>
+				))}
+			</ul>
+		</section>
 	);
 }
 

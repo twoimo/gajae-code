@@ -1,5 +1,7 @@
 import type {
 	GjcEventParams,
+	HostUriCancelParams,
+	HostUriRequestParams,
 	HostToolsCallParams,
 	HostToolsCancelParams,
 	ItemAgentMessageDeltaParams,
@@ -10,6 +12,7 @@ import type {
 	ThreadSummary,
 	TurnCompletedParams,
 	TurnStartedParams,
+	WorkflowGateOpenedParams,
 } from "@gajae-code/app-server-client";
 
 export type ChatRole = "user" | "assistant" | "reasoning" | "tool" | "event";
@@ -24,17 +27,47 @@ export type TranscriptItem = {
 	title?: string;
 	content: string;
 	raw?: JsonValue;
+	tool?: { name: string; args?: string; output?: string; error?: string };
 };
 
-export type ApprovalGate = {
-	id: string;
-	threadId: string;
-	turnId: string;
-	tool: string;
-	args: JsonValue;
-	status: "pending" | "approved" | "rejected" | "cancelled";
-	generation: number;
-};
+export type ApprovalGateStatus = "pending" | "approved" | "rejected" | "cancelled" | "failed";
+
+export type ApprovalGate =
+	| {
+			kind: "host-tool";
+			id: string;
+			threadId: string;
+			turnId: string;
+			tool: string;
+			args: JsonValue;
+			status: ApprovalGateStatus;
+			generation: number;
+		}
+	| {
+			kind: "host-uri";
+			id: string;
+			threadId: string;
+			turnId: string;
+			operation: HostUriRequestParams["operation"];
+			url: string;
+			content?: string | null;
+			status: ApprovalGateStatus;
+			generation: number;
+		}
+	| {
+			kind: "workflow-gate";
+			id: string;
+			threadId: string;
+			gateKind: WorkflowGateOpenedParams["kind"];
+			stage: WorkflowGateOpenedParams["stage"];
+			required: boolean;
+			schema: JsonValue;
+			options?: WorkflowGateOpenedParams["options"];
+			context: WorkflowGateOpenedParams["context"];
+			status: ApprovalGateStatus;
+			generation: number;
+			error?: string;
+		};
 
 export type ThreadView = {
 	id: string;
@@ -96,6 +129,14 @@ export function appendLocalUserMessage(state: TranscriptState, threadId: string,
 }
 
 export function foldNotification(state: TranscriptState, notification: ServerNotificationEnvelope): TranscriptState {
+	if (
+		notification.method !== "turn/started" &&
+		"params" in notification &&
+		hasThreadId(notification.params) &&
+		!isKnownThread(state, notification.params.threadId)
+	) {
+		return state;
+	}
 	switch (notification.method) {
 		case "turn/started":
 			return foldTurnStarted(state, notification.params);
@@ -111,6 +152,12 @@ export function foldNotification(state: TranscriptState, notification: ServerNot
 			return foldHostToolCall(state, notification.params);
 		case "gjc/hostTools/cancel":
 			return foldHostToolCancel(state, notification.params);
+		case "gjc/hostUris/request":
+			return foldHostUriRequest(state, notification.params);
+		case "gjc/hostUris/cancel":
+			return foldHostUriCancel(state, notification.params);
+		case "gjc/workflowGate/opened":
+			return foldWorkflowGateOpened(state, notification.params);
 		case "gjc/event":
 			return foldRawEvent(state, notification.params);
 		default:
@@ -118,14 +165,90 @@ export function foldNotification(state: TranscriptState, notification: ServerNot
 	}
 }
 
-export function markApproval(state: TranscriptState, callId: string, status: "approved" | "rejected"): TranscriptState {
+export function markApproval(state: TranscriptState, callId: string, status: "approved" | "rejected" | "cancelled"): TranscriptState {
 	return {
 		...state,
 		approvals: state.approvals.map(approval => (approval.id === callId ? { ...approval, status } : approval)),
 	};
 }
 
+function hasThreadId(params: unknown): params is { threadId: string } {
+	return Boolean(params && typeof params === "object" && typeof (params as { threadId?: unknown }).threadId === "string");
+}
+
+function isKnownThread(state: TranscriptState, threadId: string): boolean {
+	return state.activeThreadId === threadId || state.threads.some(thread => thread.id === threadId);
+}
+
+function isKnownInactiveThread(state: TranscriptState, threadId: string): boolean {
+	return state.activeThreadId !== undefined && state.activeThreadId !== threadId && state.threads.some(thread => thread.id === threadId);
+}
+
+function isFinalized(status: ChatItemStatus): boolean {
+	return status !== "running";
+}
+
+export function cleanAssistantText(text: string): string {
+	return stripToolCallJson(text)
+		.replace(/[ \t]+$/gm, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+function stripToolCallJson(text: string): string {
+	let output = "";
+	let index = 0;
+	while (index < text.length) {
+		const start = text.indexOf("{", index);
+		if (start < 0) return output + text.slice(index);
+		output += text.slice(index, start);
+		const end = matchingJsonObjectEnd(text, start);
+		if (end < 0) {
+			output += text.slice(start);
+			return output;
+		}
+		const candidate = text.slice(start, end + 1);
+		if (candidate.includes('"_i"')) {
+			try {
+				const parsed = JSON.parse(candidate) as unknown;
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "_i" in parsed) {
+					index = end + 1;
+					continue;
+				}
+			} catch {
+				// Keep malformed prose intact.
+			}
+		}
+		output += candidate;
+		index = end + 1;
+	}
+	return output;
+}
+
+function matchingJsonObjectEnd(text: string, start: number): number {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let index = start; index < text.length; index += 1) {
+		const char = text[index];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (char === "\\") escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === "{") depth += 1;
+		else if (char === "}") {
+			depth -= 1;
+			if (depth === 0) return index;
+		}
+	}
+	return -1;
+}
+
 function foldTurnStarted(state: TranscriptState, params: TurnStartedParams): TranscriptState {
+	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	return {
 		...state,
 		activeThreadId: params.threadId,
@@ -135,6 +258,7 @@ function foldTurnStarted(state: TranscriptState, params: TurnStartedParams): Tra
 }
 
 function foldTurnCompleted(state: TranscriptState, params: TurnCompletedParams): TranscriptState {
+	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	const status = normalizeStatus(params.status);
 	return {
 		...state,
@@ -151,7 +275,9 @@ function foldTurnCompleted(state: TranscriptState, params: TurnCompletedParams):
 }
 
 function foldItemStarted(state: TranscriptState, params: ItemStartedParams): TranscriptState {
+	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	const existing = state.items.find(item => item.id === params.itemId);
+	if (existing && isFinalized(existing.status)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	const role = roleFromItemType(params.itemType);
 	const initialContent = role === "assistant" && params.content === undefined ? "" : contentFromJson(params.content);
 	const nextItem: TranscriptItem = {
@@ -178,13 +304,16 @@ function foldItemStarted(state: TranscriptState, params: ItemStartedParams): Tra
 }
 
 function foldItemDelta(state: TranscriptState, params: ItemAgentMessageDeltaParams): TranscriptState {
+	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	let found = false;
 	const items = state.items.map(item => {
 		if (item.id !== params.itemId) return item;
 		found = true;
+		if (isFinalized(item.status)) return item;
 		return {
 			...item,
-			role: "assistant" as const,
+			// Preserve the item's role (e.g. reasoning) instead of forcing
+			// assistant — thinking deltas target a separate reasoning item.
 			status: "running" as const,
 			content: `${item.content}${params.delta}`,
 		};
@@ -199,6 +328,7 @@ function foldItemDelta(state: TranscriptState, params: ItemAgentMessageDeltaPara
 					{
 						id: params.itemId,
 						threadId: params.threadId,
+						turnId: state.activeTurnId,
 						role: "assistant",
 						status: "running",
 						content: params.delta,
@@ -208,6 +338,7 @@ function foldItemDelta(state: TranscriptState, params: ItemAgentMessageDeltaPara
 }
 
 function foldItemCompleted(state: TranscriptState, params: ItemCompletedParams): TranscriptState {
+	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	return {
 		...state,
 		seq: Math.max(state.seq, params.seq),
@@ -219,6 +350,7 @@ function foldItemCompleted(state: TranscriptState, params: ItemCompletedParams):
 
 function foldHostToolCall(state: TranscriptState, params: HostToolsCallParams): TranscriptState {
 	const approval: ApprovalGate = {
+		kind: "host-tool",
 		id: params.callId,
 		threadId: params.threadId,
 		turnId: params.turnId,
@@ -227,6 +359,7 @@ function foldHostToolCall(state: TranscriptState, params: HostToolsCallParams): 
 		status: "pending",
 		generation: params.generation,
 	};
+	const args = toolText(params.args);
 	const item: TranscriptItem = {
 		id: `tool-${params.callId}`,
 		threadId: params.threadId,
@@ -234,8 +367,9 @@ function foldHostToolCall(state: TranscriptState, params: HostToolsCallParams): 
 		role: "tool",
 		status: "running",
 		title: params.tool,
-		content: contentFromJson(params.args),
+		content: labeledToolText("args", params.args),
 		raw: params.args,
+		tool: { name: params.tool, args },
 	};
 	return {
 		...state,
@@ -258,20 +392,81 @@ function foldHostToolCancel(state: TranscriptState, params: HostToolsCancelParam
 	};
 }
 
+function foldHostUriRequest(state: TranscriptState, params: HostUriRequestParams): TranscriptState {
+	const existing = state.approvals.find(approval => approval.kind === "host-uri" && approval.id === params.requestId);
+	if (existing && params.generation < existing.generation) return state;
+	const approval: ApprovalGate = {
+		kind: "host-uri",
+		id: params.requestId,
+		threadId: params.threadId,
+		turnId: params.turnId,
+		operation: params.operation,
+		url: params.url,
+		content: params.content,
+		status: "pending",
+		generation: params.generation,
+	};
+	return {
+		...state,
+		approvals: state.approvals.some(existing => existing.id === params.requestId)
+			? state.approvals.map(existing => (existing.id === params.requestId ? approval : existing))
+			: [...state.approvals, approval],
+	};
+}
+
+function foldHostUriCancel(state: TranscriptState, params: HostUriCancelParams): TranscriptState {
+	const existing = state.approvals.find(approval => approval.kind === "host-uri" && approval.id === params.requestId);
+	if (existing && params.generation < existing.generation) return state;
+	return {
+		...state,
+		approvals: state.approvals.map(approval =>
+			approval.kind === "host-uri" && approval.id === params.requestId ? { ...approval, status: "cancelled" } : approval,
+		),
+	};
+}
+
+function foldWorkflowGateOpened(state: TranscriptState, params: WorkflowGateOpenedParams): TranscriptState {
+	const existing = state.approvals.find(approval => approval.kind === "workflow-gate" && approval.id === params.gate_id);
+	if (existing && params.generation < existing.generation) return state;
+	const approval: ApprovalGate = {
+		kind: "workflow-gate",
+		id: params.gate_id,
+		threadId: params.threadId,
+		gateKind: params.kind,
+		stage: params.stage,
+		required: params.required,
+		schema: params.schema,
+		options: params.options,
+		context: params.context,
+		status: "pending",
+		generation: params.generation,
+	};
+	return {
+		...state,
+		approvals: state.approvals.some(existing => existing.id === params.gate_id)
+			? state.approvals.map(existing => (existing.id === params.gate_id ? approval : existing))
+			: [...state.approvals, approval],
+	};
+}
+
 function foldRawEvent(state: TranscriptState, params: GjcEventParams): TranscriptState {
+	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	const modelLabel = modelFromEvent(params.event) ?? state.modelLabel;
 	let next: TranscriptState = { ...state, seq: Math.max(state.seq, params.seq), modelLabel };
 	// The server maps every message_start (user AND assistant) to an
 	// `agentMessage` item. The user's own message is already rendered from the
-	// local echo, so when message_start reveals a user-role message, drop the
-	// most recent empty assistant item that was created for it.
+	// local echo, so when message_start reveals a user-role message, drop only
+	// the matching empty assistant echo in the active/known thread.
 	if (params.eventType === "message_start" && messageRoleFromEvent(params.event) === "user") {
-		for (let index = next.items.length - 1; index >= 0; index--) {
-			const item = next.items[index];
-			if (item && item.threadId === params.threadId && item.role === "assistant" && item.content.length === 0) {
-				next = { ...next, items: next.items.filter((_, i) => i !== index) };
-				break;
-			}
+		const messageText = messageTextFromEvent(params.event);
+		const hasMatchingLocalUser = next.items.some(
+			item => item.threadId === params.threadId && item.role === "user" && item.content === messageText,
+		);
+		if (messageText && hasMatchingLocalUser) {
+			const index = next.items.findIndex(
+				item => item.threadId === params.threadId && item.role === "assistant" && item.content.length === 0,
+			);
+			if (index >= 0) next = { ...next, items: next.items.filter((_, i) => i !== index) };
 		}
 	}
 	if (params.eventType === "tool_execution_start") {
@@ -288,20 +483,27 @@ function foldToolDetail(state: TranscriptState, event: JsonValue, phase: "start"
 	const payload = event as Record<string, JsonValue | undefined>;
 	const callId = typeof payload.toolCallId === "string" ? payload.toolCallId : undefined;
 	if (!callId) return state;
-	const detail =
-		phase === "start"
-			? toolText(payload.args ?? payload.arguments ?? payload.input)
-			: toolText(payload.result ?? payload.output ?? payload.error);
-	if (!detail) return state;
+	const name = typeof payload.toolName === "string" ? payload.toolName : undefined;
+	const args = phase === "start" ? toolText(payload.args ?? payload.arguments ?? payload.input) : undefined;
+	const output = phase === "end" ? toolText(payload.result ?? payload.output) : undefined;
+	const error = phase === "end" ? toolText(payload.error) : undefined;
+	const detail = phase === "start" ? (args ? `args:\n${args}` : "") : toolEndText(payload);
+	if (!detail && !name) return state;
 	const isError = payload.isError === true || payload.error !== undefined;
 	return {
 		...state,
 		items: state.items.map(item =>
-			item.id === callId
+			item.id === callId || item.id === `tool-${callId}`
 				? {
 						...item,
-						content: phase === "start" ? detail : item.content ? `${item.content}\n${detail}` : detail,
+						content: detail ? (phase === "start" ? detail : item.content ? `${item.content}\n${detail}` : detail) : item.content,
 						status: phase === "end" ? (isError ? "error" : "completed") : item.status,
+						tool: {
+							name: item.tool?.name ?? name ?? item.title ?? "tool",
+							args: args ?? item.tool?.args,
+							output: output ?? item.tool?.output,
+							error: error ?? item.tool?.error,
+						},
 					}
 				: item,
 		),
@@ -313,12 +515,42 @@ function toolText(value: JsonValue | undefined): string {
 	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
+function labeledToolText(label: string, value: JsonValue | undefined): string {
+	const text = toolText(value);
+	return text ? `${label}:\n${text}` : "";
+}
+
+
+function toolEndText(payload: Record<string, JsonValue | undefined>): string {
+	const chunks = [
+		labeledToolText("output", payload.result ?? payload.output),
+		labeledToolText("error", payload.error),
+	].filter(chunk => chunk.length > 0);
+	return Array.from(new Set(chunks)).join("\n");
+}
+
 function messageRoleFromEvent(event: JsonValue): string | undefined {
 	if (!event || typeof event !== "object" || Array.isArray(event)) return undefined;
 	const message = (event as Record<string, JsonValue | undefined>).message;
 	if (!message || typeof message !== "object" || Array.isArray(message)) return undefined;
 	const role = (message as Record<string, JsonValue | undefined>).role;
 	return typeof role === "string" ? role : undefined;
+}
+
+function messageTextFromEvent(event: JsonValue): string {
+	if (!event || typeof event !== "object" || Array.isArray(event)) return "";
+	const message = (event as Record<string, JsonValue | undefined>).message;
+	if (!message || typeof message !== "object" || Array.isArray(message)) return "";
+	const content = (message as Record<string, JsonValue | undefined>).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map(part => {
+			if (!part || typeof part !== "object" || Array.isArray(part)) return "";
+			const text = (part as Record<string, JsonValue | undefined>).text;
+			return typeof text === "string" ? text : "";
+		})
+		.join("");
 }
 
 function roleFromItemType(itemType: string): ChatRole {
@@ -367,6 +599,22 @@ function contentFromJson(value: JsonValue | undefined): string {
 function titleFromThread(thread: ThreadSummary): string {
 	const sessionId = metadataString(thread, "sessionId");
 	return sessionId ? `Session ${sessionId}` : `Thread ${thread.id}`;
+}
+
+/**
+ * Derive a compact model label from a `gjc/state/read` result, whose `model`
+ * is an object like `{ id, name, provider, ... }`.
+ */
+export function modelLabelFromStateRead(state: JsonValue): string | undefined {
+	if (!state || typeof state !== "object" || Array.isArray(state)) return undefined;
+	const model = (state as Record<string, JsonValue | undefined>).model;
+	if (typeof model === "string" && model.length > 0) return model;
+	if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
+	const record = model as Record<string, JsonValue | undefined>;
+	const id = record.id ?? record.modelId;
+	if (typeof id === "string" && id.length > 0) return id;
+	const name = record.name;
+	return typeof name === "string" && name.length > 0 ? name : undefined;
 }
 
 function modelLabelFromMetadata(thread: ThreadSummary): string | undefined {
