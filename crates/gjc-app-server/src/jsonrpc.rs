@@ -21,7 +21,7 @@ pub enum RequestId {
 /// An inbound request: `{ "id", "method", "params"? }`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Request {
-	pub id:     RequestId,
+	pub id: RequestId,
 	pub method: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub params: Option<serde_json::Value>,
@@ -53,11 +53,11 @@ impl Notification {
 /// An outbound response: exactly one of `result`/`error` is present.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Response {
-	pub id:     RequestId,
+	pub id: RequestId,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub result: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub error:  Option<crate::error::AppServerError>,
+	pub error: Option<crate::error::AppServerError>,
 }
 
 impl Response {

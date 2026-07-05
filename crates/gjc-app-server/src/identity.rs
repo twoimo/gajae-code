@@ -25,34 +25,34 @@ pub enum ThreadStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SessionMetadata {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub session_id:           Option<String>,
+	pub session_id: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub session_file:         Option<String>,
+	pub session_file: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub cwd:                  Option<String>,
+	pub cwd: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub session_dir:          Option<String>,
+	pub session_dir: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub system_prompt_append: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub model:                Option<serde_json::Value>,
+	pub model: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub model_config:         Option<serde_json::Value>,
+	pub model_config: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub thinking:             Option<serde_json::Value>,
+	pub thinking: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub todos:                Option<serde_json::Value>,
+	pub todos: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub forked_from_id:       Option<ThreadId>,
+	pub forked_from_id: Option<ThreadId>,
 }
 
 /// Immutable identity + mutable metadata + current backend generation.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadIdentity {
-	pub thread_id:  ThreadId,
-	pub status:     ThreadStatus,
+	pub thread_id: ThreadId,
+	pub status: ThreadStatus,
 	pub generation: BackendGeneration,
-	pub metadata:   SessionMetadata,
+	pub metadata: SessionMetadata,
 }
 
 impl ThreadIdentity {
