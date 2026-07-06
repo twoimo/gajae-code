@@ -103,6 +103,7 @@ describe("agent-wire RPC command scopes", () => {
 		expect(scopeForRpcCommand("set_default_model_selection")).toBe("model");
 		expect(scopeForRpcCommand("get_messages")).toBe("message:read");
 		expect(scopeForRpcCommand("set_todos")).toBe("control");
+		expect(scopeForRpcCommand("set_capabilities")).toBe("control");
 		expect(scopeForRpcCommand("workflow_gate_response")).toBe("control");
 		expect(scopeForRpcCommand("set_capabilities")).toBe("control");
 		expect(scopeForRpcCommand("set_host_tools")).toBe("host_tools");
