@@ -1556,7 +1556,7 @@ describe("native GJC ultragoal runtime", () => {
 		expect(diagnostic.state).toBe("active_verified_complete");
 	});
 
-	it("treats receipts as stale after goal-scoped ledger events", async () => {
+	it("keeps receipts fresh after same-goalId final receipt nudge but stales after real mutation", async () => {
 		const root = await tempDir();
 		await createUltragoalPlan({ cwd: root, brief: "Ship the fix" });
 		await startNextUltragoalGoal({ cwd: root });
@@ -1571,17 +1571,33 @@ describe("native GJC ultragoal runtime", () => {
 		await appendTestLedgerEntry(root, {
 			event: "nudge",
 			goalId: "G001",
-			surface: "ask",
-			reason: "goal-scoped post-verification event must invalidate completion freshness",
+			targetKind: "final_aggregate_receipt",
+			surface: "premature_complete",
+			reason: "refusal bookkeeping for stale final aggregate receipt prompt must not invalidate freshness",
 		});
-		const diagnostic = validateCompletionReceipt({
+		const afterRefusalNudge = validateCompletionReceipt({
 			plan,
 			ledger: await readUltragoalLedger(root),
 			goal: plan.goals[0]!,
 			receiptKind: "final-aggregate",
 		});
 
-		expect(diagnostic.state).toBe("active_stale_receipt");
+		expect(afterRefusalNudge.state).toBe("active_verified_complete");
+
+		await appendTestLedgerEntry(root, {
+			event: "goal_checkpointed",
+			goalId: "G001",
+			status: "complete",
+			evidence: "real post-receipt checkpoint mutation must invalidate completion freshness",
+		});
+		const afterMutation = validateCompletionReceipt({
+			plan,
+			ledger: await readUltragoalLedger(root),
+			goal: plan.goals[0]!,
+			receiptKind: "final-aggregate",
+		});
+
+		expect(afterMutation.state).toBe("active_stale_receipt");
 	});
 
 	it("treats receipts as stale after target goal mutation", async () => {
