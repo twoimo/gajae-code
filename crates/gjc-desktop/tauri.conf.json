@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "gajae-code",
-  "version": "0.7.11",
+  "version": "1.0.0-beta",
   "identifier": "dev.gaebal-gajae.gjc",
   "build": {
     "beforeDevCommand": "bun --cwd ../../packages/gjc-gui dev --host 127.0.0.1",
