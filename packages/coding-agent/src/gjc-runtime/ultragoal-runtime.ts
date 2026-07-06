@@ -449,6 +449,10 @@ function ledgerEventId(event: UltragoalLedgerEvent): string | null {
 	return typeof event.eventId === "string" && event.eventId.trim().length > 0 ? event.eventId : null;
 }
 
+function isReceiptFreshnessBookkeepingEvent(event: UltragoalLedgerEvent): boolean {
+	return event.event === "nudge";
+}
+
 function latestRelevantLedgerEventId(
 	ledger: readonly UltragoalLedgerEvent[],
 	relevantGoalIds: readonly string[],
@@ -458,6 +462,7 @@ function latestRelevantLedgerEventId(
 	for (const event of [...ledger].reverse()) {
 		const eventId = ledgerEventId(event);
 		if (eventId && eventId === excludeEventId) continue;
+		if (isReceiptFreshnessBookkeepingEvent(event)) continue;
 		const goalId = typeof event.goalId === "string" ? event.goalId.trim() : "";
 		if (goalId && relevant.has(goalId)) return eventId;
 	}
