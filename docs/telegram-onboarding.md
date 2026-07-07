@@ -43,7 +43,7 @@ gjc notify setup
 
 Current implementation path: `packages/coding-agent/src/cli/notify-cli.ts`.
 
-The wizard does this:
+The wizard does this for the default private-chat pairing path:
 
 1. prompts for `Telegram BotFather token:`;
 2. validates the token with Telegram `getMe`;
@@ -54,17 +54,23 @@ The wizard does this:
 5. polls Telegram `getUpdates` until it sees a private chat message;
 6. writes the paired chat id and enables notifications.
 
-The setup pairing flow is private-chat only. If setup sees a `group`,
+The interactive setup pairing flow is private-chat only. If setup sees a `group`,
 `supergroup`, or `channel`, it rejects that chat and keeps waiting for a private
 DM. This is intentional for safe local discovery: group chats must not receive
-session names, action ids, or pending status by accident.
+session names, action ids, or pending status by accident. Advanced users may pair
+a known forum-enabled supergroup explicitly with
+`gjc notify setup --token <botToken> --chat-id <forumSupergroupId>`; GJC verifies
+that `getChat` reports `type: "supergroup"` and `is_forum: true` before saving it.
 
-Telegram private-chat topics: the managed daemon's per-session delivery uses
-Telegram forum topics (`createForumTopic` + `message_thread_id`). Telegram now
-supports forum topics in **private chats** when the bot owner enables **Threaded
-Mode** for the bot in @BotFather. GJC cannot enable Threaded Mode through the Bot
-API; setup only detects the capability (`getMe.has_topics_enabled`) and guides the
-manual BotFather toggle. A forum-enabled supergroup is no longer required.
+Telegram topics: the managed daemon's per-session delivery uses Telegram forum
+topics (`createForumTopic` + `message_thread_id`). There are two supported
+topic-capable targets:
+
+- private chats, when the bot owner enables **Threaded Mode** for the bot in
+  @BotFather; setup detects this capability with `getMe.has_topics_enabled`;
+- forum-enabled supergroups supplied explicitly with `--chat-id`, where Telegram's
+  normal group forum topics are already enabled and the bot has permission to
+  create/manage topics.
 
 Note: enabling topics in private chats may require an additional Telegram Stars
 purchase fee, per Telegram's Terms of Service for Bot Developers.
@@ -80,17 +86,21 @@ and otherwise deliver notifications flat to the paired private chat with the
 one-time nudge shown below.
 
 Setup verification is capability verification, not a delivery guarantee: even when
-setup reports `threaded=verified`, the first runtime `createForumTopic` for the
-paired chat can still fail if Telegram refuses it. When per-session topics are
-unavailable, the daemon does **not** drop notifications — it routes them to the
-normal (flat) paired chat and posts a one-time nudge: `turn on threaded mode from
-botfather miniapp to receive gjc notification!`. Because pairing is private-only,
-flat delivery lands in your own private DM with the bot.
+setup reports `threaded=verified` or `threaded=forum`, the first runtime
+`createForumTopic` for the paired chat can still fail if Telegram refuses it or the
+bot lacks permissions. When private-chat topics are unavailable, the daemon does
+**not** drop notifications — it routes them to the normal (flat) paired private
+chat and posts a one-time nudge: `turn on threaded mode from botfather miniapp to
+receive gjc notification!`. Because flat fallback is private-only, a forum
+supergroup configuration fails closed instead of leaking session content into the
+shared chat.
 
 The final setup line reports a `threaded=` status:
 
 - `threaded=verified`: the bot has Threaded Mode capability (`has_topics_enabled`
   was true during setup);
+- `threaded=forum`: setup verified an explicitly supplied forum-enabled
+  supergroup chat id; private-chat BotFather Threaded Mode is not required.
 - `threaded=unverified`: Threaded Mode was off and you skipped, or setup ran
   non-interactively; setup is saved, topics are attempted when available, and
   runtime delivery falls back to the paired flat private chat when Telegram

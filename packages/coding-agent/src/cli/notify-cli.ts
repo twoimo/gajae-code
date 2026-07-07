@@ -61,10 +61,12 @@ interface TelegramUser {
 interface TelegramChat {
 	id?: number | string;
 	type?: string;
+	is_forum?: boolean;
 }
 
-type ThreadedModeState = "enabled" | "disabled" | "unknown";
-type ThreadedModeFinalLabel = "verified" | "unverified" | "unknown";
+type SetupChatKind = "private" | "forum";
+type ThreadedModeState = "enabled" | "disabled" | "unknown" | "forum";
+type ThreadedModeFinalLabel = "verified" | "unverified" | "unknown" | "forum";
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
 const DEFAULT_POLL_TIMEOUT_MS = 60_000;
@@ -142,20 +144,30 @@ async function runSetup(deps: NotifyCommandDeps): Promise<void> {
 	}
 
 	const user = await getMe(fetchImpl, apiBase, token);
-	const threadedState = await verifyThreadedMode(fetchImpl, apiBase, token, user, {
-		interactive: resolveSetupInteractive(deps),
-		prompt: deps.threadedModePrompt ?? promptForThreadedMode,
-	});
-	process.stdout.write(
-		"Token validated. Message your bot now from the private Telegram chat to pair notifications.\n",
-	);
 
 	let chatId: string;
+	let threadedState: ThreadedModeState;
 	if (deps.setupChatId?.trim()) {
 		chatId = deps.setupChatId.trim();
-		await verifyPrivateChatId(fetchImpl, apiBase, token, chatId);
-		process.stdout.write(`Using provided chat id ${chatId} (non-interactive).\n`);
+		const chatKind = await verifySetupChatId(fetchImpl, apiBase, token, chatId);
+		threadedState =
+			chatKind === "forum"
+				? "forum"
+				: await verifyThreadedMode(fetchImpl, apiBase, token, user, {
+						interactive: resolveSetupInteractive(deps),
+						prompt: deps.threadedModePrompt ?? promptForThreadedMode,
+					});
+		process.stdout.write(
+			`Using provided ${chatKind === "forum" ? "forum supergroup" : "private"} chat id ${chatId} (non-interactive).\n`,
+		);
 	} else {
+		threadedState = await verifyThreadedMode(fetchImpl, apiBase, token, user, {
+			interactive: resolveSetupInteractive(deps),
+			prompt: deps.threadedModePrompt ?? promptForThreadedMode,
+		});
+		process.stdout.write(
+			"Token validated. Message your bot now from the private Telegram chat to pair notifications.\n",
+		);
 		const stale = await getUpdates(fetchImpl, apiBase, token, { timeout: 0, allowed_updates: ["message"] });
 		const offset = nextOffset(stale);
 		chatId = await waitForPrivateChat(fetchImpl, apiBase, token, {
@@ -289,22 +301,25 @@ async function getMe(fetchImpl: typeof fetch, apiBase: string, token: string): P
 	return user;
 }
 
-async function verifyPrivateChatId(
+async function verifySetupChatId(
 	fetchImpl: typeof fetch,
 	apiBase: string,
 	token: string,
 	chatId: string,
-): Promise<void> {
+): Promise<SetupChatKind> {
 	const chat = (await callTelegram<unknown>(fetchImpl, apiBase, token, "getChat", { chat_id: chatId })) as
 		| TelegramChat
 		| undefined;
 	if (!chat || typeof chat !== "object") {
 		throw new Error("Telegram getChat returned invalid Telegram response: missing valid Chat result.");
 	}
-	if (chat.type !== "private") {
-		const type = typeof chat.type === "string" && chat.type ? chat.type : "unknown";
-		throw new Error(`Provided chat id ${chatId} is a ${type} chat; pairing requires a private Telegram chat.`);
-	}
+	if (chat.type === "private") return "private";
+	if (chat.type === "supergroup" && chat.is_forum === true) return "forum";
+	const type = typeof chat.type === "string" && chat.type ? chat.type : "unknown";
+	const suffix = chat.type === "supergroup" ? " without forum topics enabled" : "";
+	throw new Error(
+		`Provided chat id ${chatId} is a ${type}${suffix} chat; pairing requires a private Telegram chat or forum-enabled supergroup.`,
+	);
 }
 
 function threadedModeState(user: TelegramUser): ThreadedModeState {
@@ -316,6 +331,7 @@ function threadedModeState(user: TelegramUser): ThreadedModeState {
 function threadedLabel(state: ThreadedModeState): ThreadedModeFinalLabel {
 	if (state === "enabled") return "verified";
 	if (state === "disabled") return "unverified";
+	if (state === "forum") return "forum";
 	return "unknown";
 }
 
@@ -490,7 +506,7 @@ ${chalk.bold("Usage:")}
   ${APP_NAME} notify status
 
 ${chalk.bold("Subcommands:")}
-  setup     Pair a Telegram bot token with a private chat and verify Threaded Mode capability
+  setup     Pair a Telegram bot token with a private chat or forum supergroup
   status    Show notification configuration without secrets
 
 ${chalk.bold("Examples:")}
@@ -499,9 +515,10 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} notify status
 
 ${chalk.bold("Threaded Mode:")}
-  GJC uses Telegram private-chat topics for per-session threads. Setup verifies the bot
-  capability via getMe.has_topics_enabled. If it is off, enable Threaded Mode in @BotFather;
-  bots cannot toggle it through the Bot API. If Telegram refuses topic creation at runtime,
-  GJC delivers flat to the paired private chat and nudges you to enable Threaded Mode.
+  GJC uses Telegram topics for per-session threads. Private-chat pairing verifies the bot
+  capability via getMe.has_topics_enabled; forum supergroups supplied with --chat-id use
+  Telegram's existing forum topics instead. If private-chat Threaded Mode is off, enable it
+  in @BotFather; bots cannot toggle it through the Bot API. If Telegram refuses private-topic
+  creation at runtime, GJC delivers flat to the paired private chat and nudges you.
 `);
 }

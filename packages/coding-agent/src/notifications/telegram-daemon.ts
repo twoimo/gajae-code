@@ -57,6 +57,7 @@ import { renderThreadedFrame, type ThreadedSend } from "./threaded-render";
 import { TopicRegistry, type TopicRegistryState } from "./topic-registry";
 
 export type EnsureDaemonResult = "owner_spawned" | "attached" | "disabled" | "blocked";
+type ChatDeliveryMode = "private" | "forum" | "unsupported";
 
 export interface DaemonState {
 	pid: number;
@@ -893,8 +894,8 @@ export class TelegramNotificationDaemon {
 	private threadedFallbackNoticeSent = false;
 	/** Sessions whose identity header was already sent flat (Threaded Mode off). */
 	private readonly flatIdentitySent = new Set<string>();
-	/** Cached result of whether the paired chat is a private chat (flat-fallback gate). */
-	private pairedChatPrivate: boolean | undefined;
+	/** Cached delivery capability for the configured chat. */
+	private chatDeliveryMode: ChatDeliveryMode | undefined;
 	/** Bot username from getMe, cached once at owner startup for group/forum command targeting. */
 	private botUsername: string | undefined;
 	/** Sessions whose agent loop is currently busy (drives the typing indicator). */
@@ -1598,8 +1599,8 @@ export class TelegramNotificationDaemon {
 		await this.flushPool();
 	}
 
-	private async existingTopicForPrivateChat(sessionId: string): Promise<string | undefined> {
-		if (!(await this.pairedChatIsPrivate())) return undefined;
+	private async existingTopicForThreadedChat(sessionId: string): Promise<string | undefined> {
+		if (!(await this.chatSupportsTopics())) return undefined;
 		return this.topics.get(sessionId)?.topicId;
 	}
 
@@ -1619,12 +1620,13 @@ export class TelegramNotificationDaemon {
 
 	/**
 	 * Resolve (creating once via `createForumTopic`) the forum topic for a
-	 * session. On capability failure (e.g. Threaded Mode off) this returns
-	 * `undefined`; callers then flat-deliver to a private paired chat (with a
-	 * one-time nudge) or drop fail-closed for a non-private chat.
+	 * session. Private chats require BotFather Threaded Mode; forum supergroups
+	 * require a forum-enabled chat plus bot permissions. On capability failure
+	 * this returns `undefined`; callers then flat-deliver only to a private paired
+	 * chat (with a one-time nudge) or fail closed for shared chats.
 	 */
 	private async ensureTopic(sessionId: string, name: string): Promise<string | undefined> {
-		if (!(await this.pairedChatIsPrivate())) return undefined;
+		if (!(await this.chatSupportsTopics())) return undefined;
 		const existing = this.topics.get(sessionId);
 		if (existing) return existing.topicId;
 		try {
@@ -1813,8 +1815,12 @@ export class TelegramNotificationDaemon {
 		}
 		for (const item of batch) {
 			const { send, topicId } = item.payload;
-			if (topicId && !(await this.pairedChatIsPrivate())) continue;
-			// Threaded topic when available; otherwise deliver flat to the paired chat.
+			if (topicId) {
+				if (!(await this.chatSupportsTopics())) continue;
+			} else if (!(await this.pairedChatIsPrivate())) {
+				continue;
+			}
+			// Threaded topic when available; otherwise deliver flat to the paired private chat.
 			const threadField = topicId ? { message_thread_id: Number(topicId) } : {};
 			const ckey = send.editable ? item.coalesceKey : undefined;
 			const editKey = ckey !== undefined ? `${item.sessionId}:${ckey}` : undefined;
@@ -1933,23 +1939,39 @@ export class TelegramNotificationDaemon {
 	}
 
 	/**
-	 * Resolve (and cache successful resolution of) whether the paired `chatId` is a
-	 * private chat. Topic and flat delivery are only safe in a private DM; any
-	 * non-private chat fails closed, while a transient `getChat` failure fails closed
-	 * for the current attempt and is retried later.
+	 * Resolve (and cache successful resolution of) whether the configured `chatId`
+	 * supports per-session forum topics. Private chats rely on BotFather Threaded
+	 * Mode and may flat-fallback when topic creation is refused. Forum supergroups
+	 * are shared surfaces, so they may use topics but never flat fallback.
 	 */
-	private async pairedChatIsPrivate(): Promise<boolean> {
-		if (this.pairedChatPrivate !== undefined) return this.pairedChatPrivate;
+	private async telegramChatDeliveryMode(): Promise<ChatDeliveryMode> {
+		if (this.chatDeliveryMode !== undefined) return this.chatDeliveryMode;
 		try {
 			const res = (await this.botApi.call("getChat", { chat_id: this.opts.chatId })) as {
-				result?: { type?: string };
+				result?: { type?: string; is_forum?: boolean };
 			};
-			this.pairedChatPrivate = res.result?.type === "private";
-			return this.pairedChatPrivate;
+			const chat = res.result;
+			if (chat?.type === "private") {
+				this.chatDeliveryMode = "private";
+			} else if (chat?.type === "supergroup" && chat.is_forum === true) {
+				this.chatDeliveryMode = "forum";
+			} else {
+				this.chatDeliveryMode = "unsupported";
+			}
+			return this.chatDeliveryMode;
 		} catch (e) {
-			logger.warn(`notifications: getChat failed while checking Telegram chat privacy: ${String(e)}`);
-			return false;
+			logger.warn(`notifications: getChat failed while checking Telegram chat delivery mode: ${String(e)}`);
+			return "unsupported";
 		}
+	}
+
+	private async chatSupportsTopics(): Promise<boolean> {
+		const mode = await this.telegramChatDeliveryMode();
+		return mode === "private" || mode === "forum";
+	}
+
+	private async pairedChatIsPrivate(): Promise<boolean> {
+		return (await this.telegramChatDeliveryMode()) === "private";
 	}
 
 	/** Tell the user once (per daemon run) how to enable Threaded Mode. */
@@ -1999,7 +2021,7 @@ export class TelegramNotificationDaemon {
 	/** Send a single `typing` chat action into a busy session's topic (best-effort). */
 	private async sendTyping(sessionId: string): Promise<void> {
 		const topicId = this.topics.get(sessionId)?.topicId;
-		if (!topicId || !(await this.pairedChatIsPrivate())) return;
+		if (!topicId || !(await this.chatSupportsTopics())) return;
 		try {
 			await this.botApi.call("sendChatAction", {
 				chat_id: this.opts.chatId,
@@ -2013,7 +2035,7 @@ export class TelegramNotificationDaemon {
 
 	/** Set a native reaction on an inbound thread message (best-effort). */
 	private async setReaction(messageId: number, emoji: string): Promise<void> {
-		if (!(await this.pairedChatIsPrivate())) return;
+		if (!(await this.chatSupportsTopics())) return;
 		try {
 			await this.botApi.call("setMessageReaction", {
 				chat_id: this.opts.chatId,
@@ -2041,7 +2063,7 @@ export class TelegramNotificationDaemon {
 		if (typeof msg?.type === "string" && TelegramNotificationDaemon.THREADED_FRAMES.has(msg.type)) {
 			const send = renderThreadedFrame(msg);
 			if (!send) return;
-			const existingTopic = await this.existingTopicForPrivateChat(session.sessionId);
+			const existingTopic = await this.existingTopicForThreadedChat(session.sessionId);
 			if (!send.identity && !existingTopic && !this.flatIdentitySent.has(session.sessionId)) {
 				this.rememberPendingThreadedFrame(session.sessionId, send, msg as Record<string, unknown>);
 				return;

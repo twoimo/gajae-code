@@ -228,7 +228,9 @@ gjc notify setup
 The wizard validates the bot token with Telegram, verifies private-chat Threaded
 Mode capability via `getMe.has_topics_enabled`, waits for a private DM to the bot,
 and writes canonical global Settings under `config.yml` in the GJC agent
-directory. It enables:
+directory. Non-interactive setup may also pair an explicitly supplied
+forum-enabled supergroup `--chat-id`; the daemon then creates one Telegram forum
+topic per session in that group. It enables:
 
 - `notifications.enabled`
 - `notifications.telegram.botToken`

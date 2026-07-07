@@ -1642,17 +1642,55 @@ test("threaded mode off: image_attachment uploads flat without message_thread_id
 	expect(notice).toHaveLength(1);
 });
 
-test("non-private chat: fails closed before topic creation or flat delivery", async () => {
-	for (const chatType of ["supergroup", "group", "channel"]) {
+test("forum supergroup chat creates per-session topics and never falls back flat", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	bot.call = (async (method: string, body: any) => {
+		bot.calls.push({ method, body });
+		if (method === "createForumTopic") return { ok: true, result: { message_thread_id: 777 } };
+		if (method === "getChat") return { ok: true, result: { type: "supergroup", is_forum: true } };
+		if (method === "sendMessage") return { ok: true, result: { message_id: bot.calls.length } };
+		return { ok: true, result: true };
+	}) as any;
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "-10042",
+		botApi: bot,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "r",
+		branch: "b",
+	});
+	await daemon.handleSessionMessage(session as any, {
+		type: "action_needed",
+		sessionId: "S",
+		id: "ask1",
+		kind: "ask",
+		question: "Proceed?",
+		options: ["Yes"],
+	});
+
+	const creates = bot.calls.filter(c => c.method === "createForumTopic");
+	const messages = bot.calls.filter(c => c.method === "sendMessage");
+	expect(creates).toHaveLength(1);
+	expect(messages.length).toBeGreaterThanOrEqual(2);
+	expect(messages.every(c => c.body.message_thread_id === 777)).toBe(true);
+});
+
+test("unsupported non-private chat: fails closed before topic creation or flat delivery", async () => {
+	for (const chat of [{ type: "supergroup", is_forum: false }, { type: "group" }, { type: "channel" }]) {
 		const agentDir = tempAgentDir();
 		const bot = new FakeBotApi();
-		// Even if the target chat would accept forum topic creation, the paired chat
-		// contract is private-only, so the daemon must fail closed before creating
-		// topics or sending session content into a shared chat.
 		bot.call = (async (method: string, body: any) => {
 			bot.calls.push({ method, body });
 			if (method === "createForumTopic") return { ok: true, result: { message_thread_id: 777 } };
-			if (method === "getChat") return { ok: true, result: { type: chatType } };
+			if (method === "getChat") return { ok: true, result: chat };
 			if (method === "sendMessage") return { ok: true, result: { message_id: bot.calls.length } };
 			return { ok: true, result: true };
 		}) as any;

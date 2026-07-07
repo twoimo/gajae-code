@@ -282,18 +282,38 @@ test("non-interactive setup with --token and --chat-id verifies private chat wit
 	expect(getUpdatesCalls).toBe(0);
 });
 
-test("non-interactive setup rejects non-private chat ids without writing config", async () => {
-	for (const type of ["group", "supergroup", "channel"]) {
+test("non-interactive setup accepts forum supergroup chat ids without private Threaded Mode", async () => {
+	const settings = Settings.isolated({});
+	const { fetchImpl, calls } = makeFetch({
+		getMe: [{ ok: true, result: { id: 1, is_bot: true, has_topics_enabled: false } }],
+		getChat: [{ ok: true, result: { id: -100, type: "supergroup", is_forum: true } }],
+	});
+	const cmd = parseNotifyArgs(["notify", "setup", "--token", "123:abc", "--chat-id", "-100"]);
+
+	const { stdout } = await captureOutput(() =>
+		runNotifyCommand(cmd!, { settings, fetchImpl, setupInteractive: false }),
+	);
+
+	const cfg = getNotificationConfig(settings);
+	expect(cfg.enabled).toBe(true);
+	expect(cfg.chatId).toBe("-100");
+	expect(stdout).toContain("forum supergroup");
+	expect(stdout).toContain("threaded=forum");
+	expect(calls.filter(call => call.method === "getUpdates")).toHaveLength(0);
+});
+
+test("non-interactive setup rejects unsupported non-private chat ids without writing config", async () => {
+	for (const chat of [{ type: "group" }, { type: "supergroup", is_forum: false }, { type: "channel" }]) {
 		const settings = Settings.isolated({});
 		const { fetchImpl, calls } = makeFetch({
 			getMe: [{ ok: true, result: { id: 1, is_bot: true, has_topics_enabled: true } }],
-			getChat: [{ ok: true, result: { id: -100, type } }],
+			getChat: [{ ok: true, result: { id: -100, ...chat } }],
 		});
 		const cmd = parseNotifyArgs(["notify", "setup", "--token", "123:abc", "--chat-id", "-100"]);
 
 		await expect(
 			captureOutput(() => runNotifyCommand(cmd!, { settings, fetchImpl, setupInteractive: false })),
-		).rejects.toThrow(`Provided chat id -100 is a ${type} chat`);
+		).rejects.toThrow("pairing requires a private Telegram chat or forum-enabled supergroup");
 
 		expect(getNotificationConfig(settings).enabled).toBe(false);
 		expect(getNotificationConfig(settings).botToken).toBeUndefined();
