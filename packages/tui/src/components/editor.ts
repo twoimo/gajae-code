@@ -1911,6 +1911,11 @@ export class Editor implements Component, Focusable {
 		this.#historyIndex = -1; // Exit history browsing mode
 		this.#resetKillSequence();
 		this.#recordUndoState();
+		const hadAutocomplete = this.#autocompleteState !== null;
+		this.#cancelAutocomplete();
+		if (hadAutocomplete) {
+			this.onAutocompleteUpdate?.();
+		}
 
 		this.#withUndoSuspended(() => {
 			// Some terminals (e.g. tmux popups with extended-keys-format=csi-u) re-encode
@@ -1938,21 +1943,12 @@ export class Editor implements Component, Focusable {
 			const tabExpandedText = cleanText.replace(/\t/g, "    ");
 
 			// Filter out non-printable characters except newlines
-			let filteredText = tabExpandedText
+			const filteredText = tabExpandedText
 				.split("")
 				.filter(char => char === "\n" || char.charCodeAt(0) >= 32)
 				.join("");
 
-			// If pasting a file path (starts with /, ~, or .) and the character before
-			// the cursor is a word character, prepend a space for better readability
-			if (/^[/~.]/.test(filteredText)) {
-				const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-				const charBeforeCursor = this.#state.cursorCol > 0 ? currentLine[this.#state.cursorCol - 1] : "";
-				if (charBeforeCursor && /\w/.test(charBeforeCursor)) {
-					filteredText = ` ${filteredText}`;
-				}
-			}
-
+			if (filteredText.length === 0) return;
 			// Split into lines
 			const pastedLines = filteredText.split("\n");
 
@@ -1974,15 +1970,10 @@ export class Editor implements Component, Focusable {
 				return;
 			}
 
-			if (pastedLines.length === 1) {
-				// Single line - insert character by character to trigger autocomplete
-				for (const char of filteredText) {
-					this.#insertCharacter(char);
-				}
-				return;
-			}
-
-			// Multi-line paste - use insertTextAtCursor for proper handling
+			// Paste is literal input, not typed input. Insert atomically so leading
+			// trigger characters such as "/", "#", "@", ":", or path-like text do
+			// not open or update autocomplete lists while preserving normal typed
+			// trigger behavior.
 			this.#insertTextAtCursor(filteredText);
 		});
 	}
