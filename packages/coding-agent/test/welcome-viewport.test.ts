@@ -58,6 +58,19 @@ describe("WelcomeComponent viewport sizing", () => {
 			expect(visibleWidth(line)).toBe(200);
 		}
 	});
+	it("can reserve the same trailing gutter as the composer", () => {
+		const welcome = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
+			rightGutterWidth: 1,
+		});
+		const lines = welcome.render(100).map(stripRenderControls);
+
+		expect(lines.length).toBeGreaterThan(0);
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBe(100);
+			expect(line.endsWith(" ")).toBe(true);
+			expect(visibleWidth(line.trimEnd())).toBe(99);
+		}
+	});
 
 	it("splits the forge and details columns evenly on wide viewports", () => {
 		const welcome = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii");

@@ -22,6 +22,22 @@ function forceTerminalSize(mode: InteractiveMode, columns: number, rows: number)
 	Object.defineProperty(mode.ui.terminal, "columns", { configurable: true, get: () => columns });
 	Object.defineProperty(mode.ui.terminal, "rows", { configurable: true, get: () => rows });
 }
+function isBusyFsError(error: unknown): boolean {
+	return typeof error === "object" && error !== null && "code" in error && error.code === "EBUSY";
+}
+
+async function removeTempDirWithRetry(tempDir: TempDir | undefined): Promise<void> {
+	if (!tempDir) return;
+	for (let attempt = 0; attempt < 12; attempt++) {
+		try {
+			tempDir.removeSync();
+			return;
+		} catch (error) {
+			if (!isBusyFsError(error) || attempt === 11) throw error;
+			await Bun.sleep(50 * (attempt + 1));
+		}
+	}
+}
 
 describe("InteractiveMode.setEditorComponent", () => {
 	let tempDir: TempDir;
@@ -65,7 +81,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode?.stop();
 		await session?.dispose();
 		authStorage?.close();
-		tempDir?.removeSync();
+		await removeTempDirWithRetry(tempDir);
 		resetSettingsForTest();
 	});
 
@@ -100,6 +116,26 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(lines.every(line => line.endsWith(" "))).toBe(true);
 		expect(promptLine!.trimEnd()).toEndWith("│");
 		expect(promptLine!).toContain("이전 커밋들");
+	});
+
+	it("aligns the welcome splash border with the composer border gutter", async () => {
+		const width = 100;
+		vi.spyOn(mode.ui, "start").mockImplementation(() => {});
+		forceTerminalSize(mode, width, 28);
+
+		await mode.init();
+
+		const rendered = mode.ui.render(width).map(stripRenderControls);
+		const welcomeTop = rendered.find(line => line.startsWith("╭") && line.includes("GJC Forge"));
+		const composerTop = [...rendered].reverse().find(line => line.startsWith("╭"));
+
+		expect(welcomeTop).toBeDefined();
+		expect(composerTop).toBeDefined();
+		expect(visibleWidth(welcomeTop!)).toBe(width);
+		expect(visibleWidth(composerTop!)).toBe(width);
+		expect(welcomeTop!.endsWith(" ")).toBe(true);
+		expect(composerTop!.endsWith(" ")).toBe(true);
+		expect(visibleWidth(welcomeTop!.trimEnd())).toBe(visibleWidth(composerTop!.trimEnd()));
 	});
 
 	function expectedQueueShortcutHint(): string {
