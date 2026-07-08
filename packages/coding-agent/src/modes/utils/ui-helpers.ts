@@ -619,7 +619,11 @@ export class UiHelpers {
 	}
 
 	queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
-		this.ctx.compactionQueuedMessages.push({ text, mode } as CompactionQueuedMessage);
+		const entry: CompactionQueuedMessage = { text, mode };
+		if (mode === "followUp") {
+			entry.followUpQueuePolicy = "sequential";
+		}
+		this.ctx.compactionQueuedMessages.push(entry);
 		this.ctx.editor.addToHistory(text);
 		this.ctx.editor.setText("");
 		this.ctx.updatePendingMessagesDisplay();
@@ -631,6 +635,11 @@ export class UiHelpers {
 
 	#isCompactionCommandMessage(text: string): boolean {
 		return this.#hasSkillInvocations(text) || this.isKnownSlashCommand(text);
+	}
+
+	#compactionFollowUpQueuePolicy(message: CompactionQueuedMessage): "sequential" | undefined {
+		if (message.mode !== "followUp") return undefined;
+		return message.followUpQueuePolicy ?? "sequential";
 	}
 
 	async #deliverQueuedSkillMessage(message: CompactionQueuedMessage): Promise<boolean> {
@@ -675,6 +684,13 @@ export class UiHelpers {
 				continue;
 			}
 
+			const promptOptions =
+				message.mode === "followUp"
+					? {
+							streamingBehavior: message.mode,
+							followUpQueuePolicy: this.#compactionFollowUpQueuePolicy(message),
+						}
+					: { streamingBehavior: message.mode };
 			await this.ctx.session.promptCustomMessage(
 				{
 					customType: SKILL_PROMPT_MESSAGE_TYPE,
@@ -683,10 +699,7 @@ export class UiHelpers {
 					details,
 					attribution: "user",
 				},
-				{
-					streamingBehavior: message.mode,
-					followUpQueuePolicy: message.mode === "followUp" ? "sequential" : undefined,
-				},
+				promptOptions,
 			);
 		}
 
@@ -706,7 +719,11 @@ export class UiHelpers {
 			return;
 		}
 		await this.ctx.withLocalSubmission(message.text, () =>
-			message.mode === "followUp" ? this.ctx.session.followUp(message.text) : this.ctx.session.steer(message.text),
+			message.mode === "followUp"
+				? this.ctx.session.followUp(message.text, undefined, {
+						followUpQueuePolicy: this.#compactionFollowUpQueuePolicy(message),
+					})
+				: this.ctx.session.steer(message.text),
 		);
 	}
 
@@ -797,14 +814,17 @@ export class UiHelpers {
 			// `restoreQueue` rather than rethrown, so we use the primitive
 			// recordLocalSubmission and dispose manually in the catch.
 			const disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text);
-			const promptPromise = this.ctx.session
-				.prompt(firstPrompt.text, {
-					streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
-				})
-				.catch((error: unknown) => {
-					disposeFirstPrompt();
-					restoreQueue(error);
-				});
+			const firstPromptOptions =
+				firstPrompt.mode === "followUp"
+					? {
+							streamingBehavior: "followUp" as const,
+							followUpQueuePolicy: this.#compactionFollowUpQueuePolicy(firstPrompt),
+						}
+					: { streamingBehavior: "steer" as const };
+			const promptPromise = this.ctx.session.prompt(firstPrompt.text, firstPromptOptions).catch((error: unknown) => {
+				disposeFirstPrompt();
+				restoreQueue(error);
+			});
 
 			for (const message of rest) {
 				await this.#deliverQueuedMessage(message);

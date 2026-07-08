@@ -5790,13 +5790,19 @@ export class AgentSession {
 	/**
 	 * Queue a follow-up message to process after the agent would otherwise stop.
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(
+		text: string,
+		images?: ImageContent[],
+		options?: Pick<PromptOptions, "followUpQueuePolicy">,
+	): Promise<void> {
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
-		await this.#queueFollowUp(expandedText, images);
+		await this.#queueFollowUp(expandedText, images, {
+			forceOneAtATime: options?.followUpQueuePolicy === "sequential",
+		});
 	}
 
 	/**
