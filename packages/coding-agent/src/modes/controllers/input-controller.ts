@@ -520,11 +520,13 @@ export class InputController {
 				// typed since queuing intact. Same protection as #783, applied to
 				// the streaming/queue path.
 				const streamingBehavior = this.#busyStreamingBehavior();
-				await this.ctx.withLocalSubmission(
-					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior, images }),
-					{ imageCount: images?.length ?? 0 },
-				);
+				const promptOptions =
+					streamingBehavior === "followUp"
+						? { streamingBehavior, images, followUpQueuePolicy: "sequential" as const }
+						: { streamingBehavior, images };
+				await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, promptOptions), {
+					imageCount: images?.length ?? 0,
+				});
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 				return;
@@ -869,7 +871,9 @@ export class InputController {
 						details,
 						attribution: "user",
 					},
-					{ streamingBehavior },
+					streamingBehavior === "followUp"
+						? { streamingBehavior, followUpQueuePolicy: "sequential" }
+						: { streamingBehavior },
 				);
 			}
 			if (this.ctx.session.isStreaming) {
@@ -911,7 +915,10 @@ export class InputController {
 			this.ctx.editor.addToHistory(text);
 			this.ctx.editor.setText("");
 			await this.ctx.withLocalSubmission(text, () =>
-				this.ctx.session.prompt(text, { streamingBehavior: "followUp" }),
+				this.ctx.session.prompt(text, {
+					streamingBehavior: "followUp",
+					followUpQueuePolicy: "sequential",
+				}),
 			);
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.ui.requestRender();

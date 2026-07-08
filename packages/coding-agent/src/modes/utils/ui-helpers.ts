@@ -683,7 +683,10 @@ export class UiHelpers {
 					details,
 					attribution: "user",
 				},
-				{ streamingBehavior: message.mode },
+				{
+					streamingBehavior: message.mode,
+					followUpQueuePolicy: message.mode === "followUp" ? "sequential" : undefined,
+				},
 			);
 		}
 

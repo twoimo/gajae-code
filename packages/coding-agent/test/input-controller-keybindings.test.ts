@@ -286,6 +286,7 @@ describe("InputController keybinding setup", () => {
 		expect(ctx.locallySubmittedUserSignatures.has("queue after current response\u00000")).toBe(true);
 		expect(spies.prompt).toHaveBeenCalledWith("queue after current response", {
 			streamingBehavior: "followUp",
+			followUpQueuePolicy: "sequential",
 		});
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 	});
@@ -331,6 +332,7 @@ describe("InputController keybinding setup", () => {
 		await Bun.sleep(0);
 		expect(spies.prompt).toHaveBeenCalledWith("follow up from shortcut", {
 			streamingBehavior: "followUp",
+			followUpQueuePolicy: "sequential",
 		});
 	});
 
@@ -583,6 +585,7 @@ describe("InputController keybinding setup", () => {
 		expect(ctx.locallySubmittedUserSignatures.has("follow up after current response\u00000")).toBe(true);
 		expect(spies.prompt).toHaveBeenCalledWith("follow up after current response", {
 			streamingBehavior: "followUp",
+			followUpQueuePolicy: "sequential",
 		});
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 	});
