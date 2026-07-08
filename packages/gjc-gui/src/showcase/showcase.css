@@ -1215,3 +1215,33 @@ h2 {
 	gap: var(--gjc-space-8);
 	opacity: 0.72;
 }
+
+.exec-state-card {
+	display: grid;
+	gap: var(--gjc-space-3, 4px);
+	border: 1px solid var(--gjc-border);
+	border-radius: var(--gjc-radius-sm);
+	padding: var(--gjc-space-5, 8px);
+	background: transparent;
+	font: 11px var(--gjc-font-code);
+}
+.exec-state-card strong {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--gjc-space-3, 4px);
+	margin: 0;
+}
+.exec-state-card code {
+	white-space: pre-wrap;
+	color: var(--gjc-text-dim);
+}
+.status-dot {
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-radius: 999px;
+	background: var(--gjc-success);
+}
+.exec-state-card--loading .status-dot { background: var(--gjc-warning); }
+.exec-state-card--empty .status-dot { background: var(--gjc-text-muted); }
+.exec-state-card--error .status-dot { background: var(--gjc-danger); }

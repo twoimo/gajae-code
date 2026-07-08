@@ -5,6 +5,32 @@ import type {
 	EmptyResult,
 	GjcCommandsListParams,
 	GjcCommandsListResult,
+	GjcContextReadParams,
+	GjcContextReadResult,
+	GjcGoalReadParams,
+	GjcGoalReadResult,
+	GjcRetryParams,
+	GjcRetryResult,
+	GjcSessionListParams,
+	GjcSessionListResult,
+	GjcSessionRenameParams,
+	GjcSessionRenameResult,
+	GjcSessionOpenParams,
+	GjcSessionOpenResult,
+	GjcSessionDeleteParams,
+	GjcSessionDeleteResult,
+	GjcSessionExportParams,
+	GjcSessionExportResult,
+	GjcSessionSearchParams,
+	GjcSessionSearchResult,
+	GjcSessionTreeParams,
+	GjcSessionTreeResult,
+	GjcSessionNavigateParams,
+	GjcSessionNavigateResult,
+	GjcSessionLabelParams,
+	GjcSessionLabelResult,
+	GjcSessionMoveParams,
+	GjcSessionMoveResult,
 	GjcExtensionsInspectParams,
 	GjcExtensionsInspectResult,
 	GjcExtensionsListParams,
@@ -13,8 +39,16 @@ import type {
 	GjcPluginsInspectResult,
 	GjcPluginsListParams,
 	GjcPluginsListResult,
+	GjcPluginsSetEnabledParams,
+	GjcPluginsSetEnabledResult,
+	GjcPluginsSetFeatureParams,
+	GjcPluginsSetFeatureResult,
+	GjcPluginsSetSettingParams,
+	GjcPluginsSetSettingResult,
 	GjcSkillsListParams,
 	GjcSkillsListResult,
+	GjcSkillsSetEnabledParams,
+	GjcSkillsSetEnabledResult,
 	GjcHostToolsResultParams,
 	GjcHostToolsResultResult,
 	GjcHostToolsSetParams,
@@ -27,10 +61,38 @@ import type {
 	GjcToolsListResult,
 	GjcModelSetParams,
 	GjcModelSetResult,
+	GjcModelAssignParams,
+	GjcModelAssignResult,
+	GjcModelCatalogResult,
+	GjcThinkingReadResult,
+	GjcThinkingSetParams,
+	GjcThinkingSetResult,
+	GjcFastReadResult,
+	GjcFastSetParams,
+	GjcFastSetResult,
+	GjcSettingsSchemaParams,
+	GjcSettingsSchemaResult,
+	GjcSettingsReadParams,
+	GjcSettingsReadResult,
+	GjcSettingsUpdateParams,
+	GjcSettingsUpdateResult,
+	GjcAppearanceThemesListParams,
+	GjcAppearanceThemesListResult,
+	GjcAppearanceReadParams,
+	GjcAppearanceReadResult,
+	GjcAppearanceSetParams,
+	GjcAppearanceSetResult,
 	GjcStateReadParams,
 	GjcStateReadResult,
 	GjcTodosSetParams,
 	GjcTodosSetResult,
+	GjcThreadReadParams,
+	GjcTodosReadResult,
+	GjcUsageReadResult,
+	GjcJobsListResult,
+	GjcAgentsListResult,
+	GjcMonitorsListResult,
+	GjcCompactSummaryResult,
 	HostUriResultParams,
 	HostUriSchemesSetParams,
 	HostUriSchemesSetResult,
@@ -59,6 +121,24 @@ import type {
 	TurnStartResult,
 	TurnSteerParams,
 	TurnSteerResult,
+	GjcProviderListParams,
+	GjcProviderListResult,
+	GjcAuthStatusParams,
+	GjcAuthStatusResult,
+	GjcAuthLogoutParams,
+	GjcAuthLogoutResult,
+	GjcProviderAddParams,
+	GjcProviderAddResult,
+	GjcAuthLoginStartParams,
+	GjcAuthLoginStartResult,
+	GjcAuthLoginPollParams,
+	GjcAuthLoginPollResult,
+	GjcAuthLoginCompleteParams,
+	GjcAuthLoginCompleteResult,
+	GjcAuthLoginCancelParams,
+	GjcAuthLoginCancelResult,
+	GjcExtensionsSetEnabledParams,
+	GjcExtensionsSetEnabledResult,
 	RpcWorkflowGateResolution,
 	WorkflowGateListParams,
 	WorkflowGateListResult,
@@ -77,16 +157,60 @@ export type AppServerRequestMap = {
 	"turn/start": { params: TurnStartParams; result: TurnStartResult };
 	"turn/steer": { params: TurnSteerParams; result: TurnSteerResult };
 	"turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResult };
+	"gjc/retry": { params: GjcRetryParams; result: GjcRetryResult };
 	"gjc/state/read": { params: GjcStateReadParams; result: GjcStateReadResult };
+	"gjc/context/read": { params: GjcContextReadParams; result: GjcContextReadResult };
+	"gjc/goal/read": { params: GjcGoalReadParams; result: GjcGoalReadResult };
+	"gjc/model/catalog": { params: GjcThreadReadParams; result: GjcModelCatalogResult };
+	"gjc/thinking/read": { params: GjcThreadReadParams; result: GjcThinkingReadResult };
+	"gjc/thinking/set": { params: GjcThinkingSetParams; result: GjcThinkingSetResult };
+	"gjc/fast/read": { params: GjcThreadReadParams; result: GjcFastReadResult };
+	"gjc/fast/set": { params: GjcFastSetParams; result: GjcFastSetResult };
+	"gjc/settings/schema": { params: GjcSettingsSchemaParams; result: GjcSettingsSchemaResult };
+	"gjc/settings/read": { params: GjcSettingsReadParams; result: GjcSettingsReadResult };
+	"gjc/settings/update": { params: GjcSettingsUpdateParams; result: GjcSettingsUpdateResult };
+	"gjc/appearance/themes/list": { params: GjcAppearanceThemesListParams; result: GjcAppearanceThemesListResult };
+	"gjc/appearance/read": { params: GjcAppearanceReadParams; result: GjcAppearanceReadResult };
+	"gjc/appearance/set": { params: GjcAppearanceSetParams; result: GjcAppearanceSetResult };
+	"gjc/provider/list": { params: GjcProviderListParams; result: GjcProviderListResult };
+	"gjc/auth/status": { params: GjcAuthStatusParams; result: GjcAuthStatusResult };
+	"gjc/auth/logout": { params: GjcAuthLogoutParams; result: GjcAuthLogoutResult };
+	"gjc/provider/add": { params: GjcProviderAddParams; result: GjcProviderAddResult };
+	"gjc/auth/login/start": { params: GjcAuthLoginStartParams; result: GjcAuthLoginStartResult };
+	"gjc/auth/login/poll": { params: GjcAuthLoginPollParams; result: GjcAuthLoginPollResult };
+	"gjc/auth/login/complete": { params: GjcAuthLoginCompleteParams; result: GjcAuthLoginCompleteResult };
+	"gjc/auth/login/cancel": { params: GjcAuthLoginCancelParams; result: GjcAuthLoginCancelResult };
+	"gjc/todos/read": { params: GjcThreadReadParams; result: GjcTodosReadResult };
+	"gjc/usage/read": { params: GjcThreadReadParams; result: GjcUsageReadResult };
+	"gjc/jobs/list": { params: GjcThreadReadParams; result: GjcJobsListResult };
+	"gjc/agents/list": { params: GjcThreadReadParams; result: GjcAgentsListResult };
+	"gjc/monitors/list": { params: GjcThreadReadParams; result: GjcMonitorsListResult };
+	"gjc/compact/summary": { params: GjcThreadReadParams; result: GjcCompactSummaryResult };
+	"gjc/session/list": { params: GjcSessionListParams; result: GjcSessionListResult };
+	"gjc/session/search": { params: GjcSessionSearchParams; result: GjcSessionSearchResult };
+	"gjc/session/rename": { params: GjcSessionRenameParams; result: GjcSessionRenameResult };
+	"gjc/session/open": { params: GjcSessionOpenParams; result: GjcSessionOpenResult };
+	"gjc/session/delete": { params: GjcSessionDeleteParams; result: GjcSessionDeleteResult };
+	"gjc/session/export": { params: GjcSessionExportParams; result: GjcSessionExportResult };
+	"gjc/session/tree": { params: GjcSessionTreeParams; result: GjcSessionTreeResult };
+	"gjc/session/navigate": { params: GjcSessionNavigateParams; result: GjcSessionNavigateResult };
+	"gjc/session/move": { params: GjcSessionMoveParams; result: GjcSessionMoveResult };
+	"gjc/session/label": { params: GjcSessionLabelParams; result: GjcSessionLabelResult };
 	"gjc/tools/list": { params: GjcToolsListParams; result: GjcToolsListResult };
 	"gjc/commands/list": { params: GjcCommandsListParams; result: GjcCommandsListResult };
 	"gjc/skills/list": { params: GjcSkillsListParams; result: GjcSkillsListResult };
+	"gjc/skills/setEnabled": { params: GjcSkillsSetEnabledParams; result: GjcSkillsSetEnabledResult };
 	"gjc/extensions/list": { params: GjcExtensionsListParams; result: GjcExtensionsListResult };
 	"gjc/extensions/inspect": { params: GjcExtensionsInspectParams; result: GjcExtensionsInspectResult };
+	"gjc/extensions/setEnabled": { params: GjcExtensionsSetEnabledParams; result: GjcExtensionsSetEnabledResult };
 	"gjc/plugins/list": { params: GjcPluginsListParams; result: GjcPluginsListResult };
 	"gjc/plugins/inspect": { params: GjcPluginsInspectParams; result: GjcPluginsInspectResult };
+	"gjc/plugins/setEnabled": { params: GjcPluginsSetEnabledParams; result: GjcPluginsSetEnabledResult };
+	"gjc/plugins/setFeature": { params: GjcPluginsSetFeatureParams; result: GjcPluginsSetFeatureResult };
+	"gjc/plugins/setSetting": { params: GjcPluginsSetSettingParams; result: GjcPluginsSetSettingResult };
 	"gjc/messages/get": { params: GjcMessagesGetParams; result: GjcMessagesGetResult };
 	"gjc/model/set": { params: GjcModelSetParams; result: GjcModelSetResult };
+	"gjc/model/assign": { params: GjcModelAssignParams; result: GjcModelAssignResult };
 	"gjc/todos/set": { params: GjcTodosSetParams; result: GjcTodosSetResult };
 	"gjc/compact": { params: GjcCompactParams; result: GjcCompactResult };
 	"gjc/hostTools/set": { params: GjcHostToolsSetParams; result: GjcHostToolsSetResult };
@@ -282,8 +406,86 @@ export class AppServerClient {
 		return this.request("turn/interrupt", params);
 	}
 
+	gjcRetry(params: GjcRetryParams): Promise<GjcRetryResult> {
+		return this.request("gjc/retry", params);
+	}
+
 	gjcStateRead(params: GjcStateReadParams): Promise<GjcStateReadResult> {
 		return this.request("gjc/state/read", params);
+	}
+
+	gjcContextRead(params: GjcContextReadParams): Promise<GjcContextReadResult> {
+		return this.request("gjc/context/read", params);
+	}
+
+	gjcGoalRead(params: GjcGoalReadParams): Promise<GjcGoalReadResult> {
+		return this.request("gjc/goal/read", params);
+	}
+
+	gjcModelCatalog(params: GjcThreadReadParams): Promise<GjcModelCatalogResult> { return this.request("gjc/model/catalog", params); }
+	gjcThinkingRead(params: GjcThreadReadParams): Promise<GjcThinkingReadResult> { return this.request("gjc/thinking/read", params); }
+	gjcThinkingSet(params: GjcThinkingSetParams): Promise<GjcThinkingSetResult> { return this.request("gjc/thinking/set", params); }
+	gjcFastRead(params: GjcThreadReadParams): Promise<GjcFastReadResult> { return this.request("gjc/fast/read", params); }
+	gjcFastSet(params: GjcFastSetParams): Promise<GjcFastSetResult> { return this.request("gjc/fast/set", params); }
+	gjcSettingsSchema(params: GjcSettingsSchemaParams = {}): Promise<GjcSettingsSchemaResult> { return this.request("gjc/settings/schema", params); }
+	gjcSettingsRead(params: GjcSettingsReadParams = {}): Promise<GjcSettingsReadResult> { return this.request("gjc/settings/read", params); }
+	gjcSettingsUpdate(params: GjcSettingsUpdateParams): Promise<GjcSettingsUpdateResult> { return this.request("gjc/settings/update", params); }
+	gjcAppearanceThemesList(params: GjcAppearanceThemesListParams = {}): Promise<GjcAppearanceThemesListResult> { return this.request("gjc/appearance/themes/list", params); }
+	gjcAppearanceRead(params: GjcAppearanceReadParams = {}): Promise<GjcAppearanceReadResult> { return this.request("gjc/appearance/read", params); }
+	gjcAppearanceSet(params: GjcAppearanceSetParams): Promise<GjcAppearanceSetResult> { return this.request("gjc/appearance/set", params); }
+	gjcProviderList(params: GjcProviderListParams = {}): Promise<GjcProviderListResult> { return this.request("gjc/provider/list", params); }
+	gjcAuthStatus(params: GjcAuthStatusParams = {}): Promise<GjcAuthStatusResult> { return this.request("gjc/auth/status", params); }
+	gjcAuthLogout(params: GjcAuthLogoutParams): Promise<GjcAuthLogoutResult> { return this.request("gjc/auth/logout", params); }
+	gjcProviderAdd(params: GjcProviderAddParams): Promise<GjcProviderAddResult> { return this.request("gjc/provider/add", params); }
+	gjcAuthLoginStart(params: GjcAuthLoginStartParams): Promise<GjcAuthLoginStartResult> { return this.request("gjc/auth/login/start", params); }
+	gjcAuthLoginPoll(params: GjcAuthLoginPollParams): Promise<GjcAuthLoginPollResult> { return this.request("gjc/auth/login/poll", params); }
+	gjcAuthLoginComplete(params: GjcAuthLoginCompleteParams): Promise<GjcAuthLoginCompleteResult> { return this.request("gjc/auth/login/complete", params); }
+	gjcAuthLoginCancel(params: GjcAuthLoginCancelParams): Promise<GjcAuthLoginCancelResult> { return this.request("gjc/auth/login/cancel", params); }
+	gjcTodosRead(params: GjcThreadReadParams): Promise<GjcTodosReadResult> { return this.request("gjc/todos/read", params); }
+	gjcUsageRead(params: GjcThreadReadParams): Promise<GjcUsageReadResult> { return this.request("gjc/usage/read", params); }
+	gjcJobsList(params: GjcThreadReadParams): Promise<GjcJobsListResult> { return this.request("gjc/jobs/list", params); }
+	gjcAgentsList(params: GjcThreadReadParams): Promise<GjcAgentsListResult> { return this.request("gjc/agents/list", params); }
+	gjcMonitorsList(params: GjcThreadReadParams): Promise<GjcMonitorsListResult> { return this.request("gjc/monitors/list", params); }
+	gjcCompactSummary(params: GjcThreadReadParams): Promise<GjcCompactSummaryResult> { return this.request("gjc/compact/summary", params); }
+
+	gjcSessionList(params: GjcSessionListParams = {}): Promise<GjcSessionListResult> {
+		return this.request("gjc/session/list", params);
+	}
+
+	gjcSessionSearch(params: GjcSessionSearchParams): Promise<GjcSessionSearchResult> {
+		return this.request("gjc/session/search", params);
+	}
+
+	gjcSessionRename(params: GjcSessionRenameParams): Promise<GjcSessionRenameResult> {
+		return this.request("gjc/session/rename", params);
+	}
+
+	gjcSessionOpen(params: GjcSessionOpenParams): Promise<GjcSessionOpenResult> {
+		return this.request("gjc/session/open", params);
+	}
+
+	gjcSessionDelete(params: GjcSessionDeleteParams): Promise<GjcSessionDeleteResult> {
+		return this.request("gjc/session/delete", params);
+	}
+
+	gjcSessionExport(params: GjcSessionExportParams): Promise<GjcSessionExportResult> {
+		return this.request("gjc/session/export", params);
+	}
+
+	gjcSessionTree(params: GjcSessionTreeParams): Promise<GjcSessionTreeResult> {
+		return this.request("gjc/session/tree", params);
+	}
+
+	gjcSessionNavigate(params: GjcSessionNavigateParams): Promise<GjcSessionNavigateResult> {
+		return this.request("gjc/session/navigate", params);
+	}
+
+	gjcSessionMove(params: GjcSessionMoveParams): Promise<GjcSessionMoveResult> {
+		return this.request("gjc/session/move", params);
+	}
+
+	gjcSessionLabel(params: GjcSessionLabelParams): Promise<GjcSessionLabelResult> {
+		return this.request("gjc/session/label", params);
 	}
 
 	gjcToolsList(params: GjcToolsListParams): Promise<GjcToolsListResult> {
@@ -298,12 +500,20 @@ export class AppServerClient {
 		return this.request("gjc/skills/list", params);
 	}
 
+	gjcSkillsSetEnabled(params: GjcSkillsSetEnabledParams): Promise<GjcSkillsSetEnabledResult> {
+		return this.request("gjc/skills/setEnabled", params);
+	}
+
 	gjcExtensionsList(params: GjcExtensionsListParams): Promise<GjcExtensionsListResult> {
 		return this.request("gjc/extensions/list", params);
 	}
 
 	gjcExtensionsInspect(params: GjcExtensionsInspectParams): Promise<GjcExtensionsInspectResult> {
 		return this.request("gjc/extensions/inspect", params);
+	}
+
+	gjcExtensionsSetEnabled(params: GjcExtensionsSetEnabledParams): Promise<GjcExtensionsSetEnabledResult> {
+		return this.request("gjc/extensions/setEnabled", params);
 	}
 
 	gjcPluginsList(params: GjcPluginsListParams): Promise<GjcPluginsListResult> {
@@ -314,12 +524,28 @@ export class AppServerClient {
 		return this.request("gjc/plugins/inspect", params);
 	}
 
+	gjcPluginsSetEnabled(params: GjcPluginsSetEnabledParams): Promise<GjcPluginsSetEnabledResult> {
+		return this.request("gjc/plugins/setEnabled", params);
+	}
+
+	gjcPluginsSetFeature(params: GjcPluginsSetFeatureParams): Promise<GjcPluginsSetFeatureResult> {
+		return this.request("gjc/plugins/setFeature", params);
+	}
+
+	gjcPluginsSetSetting(params: GjcPluginsSetSettingParams): Promise<GjcPluginsSetSettingResult> {
+		return this.request("gjc/plugins/setSetting", params);
+	}
+
 	gjcMessagesGet(params: GjcMessagesGetParams): Promise<GjcMessagesGetResult> {
 		return this.request("gjc/messages/get", params);
 	}
 
 	gjcModelSet(params: GjcModelSetParams): Promise<GjcModelSetResult> {
 		return this.request("gjc/model/set", params);
+	}
+
+	gjcModelAssign(params: GjcModelAssignParams): Promise<GjcModelAssignResult> {
+		return this.request("gjc/model/assign", params);
 	}
 
 	gjcTodosSet(params: GjcTodosSetParams): Promise<GjcTodosSetResult> {

@@ -8,8 +8,8 @@ describe("markdown renderer", () => {
 		expect(parseBlocks("# Title\n\nhello\n\n- one\n- two\n\n1. first\n2. second")).toMatchObject([
 			{ kind: "heading", level: 1, text: "Title" },
 			{ kind: "paragraph", text: "hello" },
-			{ kind: "list", ordered: false, items: ["one", "two"] },
-			{ kind: "list", ordered: true, items: ["first", "second"] },
+			{ kind: "list", ordered: false, items: [{ text: "one" }, { text: "two" }] },
+			{ kind: "list", ordered: true, items: [{ text: "first" }, { text: "second" }] },
 		]);
 	});
 
@@ -47,5 +47,22 @@ describe("markdown renderer", () => {
 		expect(html).toContain("&lt;script&gt;x&lt;/script&gt;");
 		expect(html).not.toContain("javascript:");
 		expect(html).not.toContain("<script>");
+	});
+
+	test("renders GFM pipe tables as table markup", () => {
+		const html = renderToStaticMarkup(createElement(Markdown, { text: "| tool | state |\n| --- | --- |\n| read | ok |" }));
+
+		expect(html).toContain('<table class="markdown__table">');
+		expect(html).toContain("<th>tool</th>");
+		expect(html).toContain("<td>ok</td>");
+		expect(html).not.toContain("<p>| tool | state |");
+	});
+
+	test("nests unordered list items by indentation depth", () => {
+		const blocks = parseBlocks("- parent\n  - child\n    - grandchild\n- sibling");
+
+		expect(blocks).toMatchObject([{ kind: "list", items: [{ text: "parent", children: [{ text: "child", children: [{ text: "grandchild" }] }] }, { text: "sibling", children: [] }] }]);
+		const html = renderToStaticMarkup(createElement(Markdown, { text: "- parent\n  - child\n- sibling" }));
+		expect(html).toContain("<li>parent<ul><li>child</li></ul></li>");
 	});
 });

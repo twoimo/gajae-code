@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
 	classifyBadge,
+	commandAction,
+	commandDisabled,
+	commandDisplayText,
 	commandInsertText,
 	fuzzyFilter,
-	resolveClassification,
 	type PaletteCommand,
+	type PaletteCommandAction,
 	type PaletteTool,
 } from "./command-palette-logic";
 
@@ -16,13 +19,14 @@ export type CommandPaletteProps = {
 	error?: string;
 	onClose(): void;
 	onInsert(text: string): void;
+	onAction?(action: PaletteCommandAction, command: PaletteCommand): void;
 };
 
 type PaletteRow =
 	| { kind: "command"; command: PaletteCommand; disabled: boolean }
 	| { kind: "tool"; tool: PaletteTool; disabled: true };
 
-export function CommandPalette({ open, commands, tools, loading, error, onClose, onInsert }: CommandPaletteProps) {
+export function CommandPalette({ open, commands, tools, loading, error, onClose, onInsert, onAction }: CommandPaletteProps) {
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [query, setQuery] = useState("");
 	const [selectedIndex, setSelectedIndex] = useState(0);
@@ -34,7 +38,7 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 			...filteredCommands.map(command => ({
 				kind: "command" as const,
 				command,
-				disabled: classifyBadge(resolveClassification(command)).disabled,
+				disabled: commandDisabled(command),
 			})),
 			...filteredTools.map(tool => ({ kind: "tool" as const, tool, disabled: true as const })),
 		],
@@ -52,17 +56,21 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 		setSelectedIndex(current => Math.min(current, Math.max(rows.length - 1, 0)));
 	}, [rows.length]);
 
+	const hasNoResults = !loading && !error && rows.length === 0;
+	const activeDescendant = rows[selectedIndex] ? `command-palette-row-${selectedIndex}` : undefined;
+
+	useEffect(() => {
+		document.getElementById(activeDescendant ?? "")?.scrollIntoView({ block: "nearest" });
+	}, [activeDescendant]);
+
 	if (!open) return null;
 
-	function moveSelection(delta: number) {
-		if (rows.length === 0) return;
-		setSelectedIndex(current => (current + delta + rows.length) % rows.length);
-	}
 
-	function activateSelection() {
-		const row = rows[selectedIndex];
+	function activateRow(row = rows[selectedIndex]) {
 		if (!row || row.disabled || row.kind !== "command") return;
-		onInsert(commandInsertText(row.command));
+		const action = commandAction(row.command);
+		if (action.kind === "insert-prompt") onInsert(commandInsertText(row.command));
+		else onAction?.(action, row.command);
 		onClose();
 	}
 
@@ -93,23 +101,21 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 		}
 		if (event.key === "ArrowDown") {
 			event.preventDefault();
-			moveSelection(1);
+			if (rows.length > 0) setSelectedIndex(current => (current + 1 + rows.length) % rows.length);
 			return;
 		}
 		if (event.key === "ArrowUp") {
 			event.preventDefault();
-			moveSelection(-1);
+			if (rows.length > 0) setSelectedIndex(current => (current - 1 + rows.length) % rows.length);
 			return;
 		}
 		if (event.key === "Enter") {
 			if (event.nativeEvent.isComposing || event.keyCode === 229) return;
 			event.preventDefault();
-			activateSelection();
+			activateRow();
 		}
 	}
 
-	const hasNoResults = !loading && !error && rows.length === 0;
-	const activeDescendant = rows[selectedIndex] ? `command-palette-row-${selectedIndex}` : undefined;
 
 	return (
 		<div className="command-palette-backdrop" onMouseDown={onClose}>
@@ -146,10 +152,11 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 						<div id="command-palette-rows" role="listbox">
 							<PaletteSection
 								title="Commands"
-								rows={filteredCommands.map(command => ({ kind: "command" as const, command, disabled: classifyBadge(resolveClassification(command)).disabled }))}
+								rows={filteredCommands.map(command => ({ kind: "command" as const, command, disabled: commandDisabled(command) }))}
 								selectedIndex={selectedIndex}
 								startIndex={0}
 								onSelect={setSelectedIndex}
+								onActivate={activateRow}
 							/>
 							<PaletteSection
 								title="Tools"
@@ -157,6 +164,7 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 								selectedIndex={selectedIndex}
 								startIndex={filteredCommands.length}
 								onSelect={setSelectedIndex}
+								onActivate={activateRow}
 							/>
 							{hasNoResults ? <div className="command-palette__state">No commands match</div> : null}
 						</div>
@@ -173,12 +181,14 @@ function PaletteSection({
 	selectedIndex,
 	startIndex,
 	onSelect,
+	onActivate,
 }: {
 	title: string;
 	rows: PaletteRow[];
 	selectedIndex: number;
 	startIndex: number;
 	onSelect(index: number): void;
+	onActivate(row: PaletteRow): void;
 }) {
 	if (rows.length === 0) return null;
 	return (
@@ -187,19 +197,20 @@ function PaletteSection({
 			<div className="command-palette__rows">
 				{rows.map((row, offset) => {
 					const index = startIndex + offset;
-					return <PaletteRowView row={row} selected={index === selectedIndex} onSelect={() => onSelect(index)} id={`command-palette-row-${index}`} key={row.kind === "command" ? `command-${row.command.name}` : `tool-${row.tool.name}`} />;
+					return <PaletteRowView row={row} selected={index === selectedIndex} onSelect={() => onSelect(index)} onActivate={() => onActivate(row)} id={`command-palette-row-${index}`} key={row.kind === "command" ? `command-${row.command.name}` : `tool-${row.tool.name}`} />;
 				})}
 			</div>
 		</section>
 	);
 }
 
-function PaletteRowView({ row, selected, onSelect, id }: { row: PaletteRow; selected: boolean; onSelect(): void; id: string }) {
-	const commandBadge = row.kind === "command" ? classifyBadge(resolveClassification(row.command)) : undefined;
-	const name = row.kind === "command" ? `/${row.command.name}` : row.tool.name;
+function PaletteRowView({ row, selected, onSelect, onActivate, id }: { row: PaletteRow; selected: boolean; onSelect(): void; onActivate(): void; id: string }) {
+	const commandBadge = row.kind === "command" ? classifyBadge(row.command.classification) : undefined;
+	const action = row.kind === "command" ? commandAction(row.command) : undefined;
+	const name = row.kind === "command" ? commandDisplayText(row.command) : row.tool.name;
 	const meta = row.kind === "command" ? row.command.source : row.tool.active ? "active tool" : "inactive tool";
 	const description = row.kind === "command" ? row.command.description : row.tool.description;
-	const badge = row.kind === "command" ? commandBadge?.label : row.tool.active ? "active" : "inactive";
+	const badge = row.kind === "command" ? action?.kind === "disabled" ? action.reason : commandBadge?.label : row.tool.active ? "active" : "inactive";
 
 	return (
 		<div
@@ -209,6 +220,7 @@ function PaletteRowView({ row, selected, onSelect, id }: { row: PaletteRow; sele
 			aria-selected={selected}
 			aria-disabled={row.disabled}
 			onMouseEnter={onSelect}
+			onClick={onActivate}
 		>
 			<div className="command-palette__row-main">
 				<strong>{name}</strong>

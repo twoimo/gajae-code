@@ -3,6 +3,7 @@ import {
 	AppServerClient,
 	AppServerResponseError,
 	type ServerNotificationEnvelope,
+	type GjcMonitorsListResult,
 	type WebSocketLike,
 } from "../src";
 import { checkMethodCatalogDrift } from "../scripts/generate";
@@ -88,9 +89,11 @@ describe("AppServerClient", () => {
 		await client.connect("ws://127.0.0.1:8765?token=test");
 		const gateIds: string[] = [];
 		const hostUriRequests: string[] = [];
+		const jobStatuses: string[] = [];
 
 		client.onNotification("gjc/workflowGate/opened", params => gateIds.push(params.gate_id));
 		client.onNotification("gjc/hostUris/request", params => hostUriRequests.push(params.requestId));
+		client.onNotification("gjc/jobs/changed", params => jobStatuses.push(`${params.kind}:${params.id}:${params.status}`));
 
 		socket.serverMessage({
 			method: "gjc/workflowGate/opened",
@@ -119,9 +122,21 @@ describe("AppServerClient", () => {
 				url: "file:///tmp/a",
 			},
 		});
+		socket.serverMessage({
+			method: "gjc/jobs/changed",
+			params: {
+				threadId: "thread-1",
+				generation: 1,
+				kind: "job",
+				id: "job-1",
+				status: "running",
+				description: "Build",
+			},
+		});
 
 		expect(gateIds).toEqual(["gate-1"]);
 		expect(hostUriRequests).toEqual(["request-1"]);
+		expect(jobStatuses).toEqual(["job:job-1:running"]);
 	});
 
 	test("new GUI wrappers send method params and resolve responses", async () => {
@@ -165,10 +180,182 @@ describe("AppServerClient", () => {
 				result: { tools: [{ name: "read", active: true, description: "Read files" }] },
 			},
 			{
+				call: () => client.gjcRetry({ threadId: "thread-1" }),
+				method: "gjc/retry",
+				params: { threadId: "thread-1" },
+				result: { turnId: "turn-1" },
+			},
+			{
+				call: () => client.gjcContextRead({ threadId: "thread-1" }),
+				method: "gjc/context/read",
+				params: { threadId: "thread-1" },
+				result: { tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 }, contextWindow: 100, percentUsed: 10, source: "AgentSession.getSessionStats", freshness: "live" },
+			},
+			{
+				call: () => client.gjcGoalRead({ threadId: "thread-1" }),
+				method: "gjc/goal/read",
+				params: { threadId: "thread-1" },
+				result: { active: true, objective: "Ship", status: "active", tokensUsed: 12 },
+			},
+			{
+				call: () => client.gjcModelCatalog({ threadId: "thread-1" }),
+				method: "gjc/model/catalog",
+				params: { threadId: "thread-1" },
+				result: { models: [{ provider: "openai", modelId: "gpt-5", label: "GPT-5", available: true }], activeProvider: "openai", activeModelId: "gpt-5" },
+			},
+			{
+				call: () => client.gjcThinkingRead({ threadId: "thread-1" }),
+				method: "gjc/thinking/read",
+				params: { threadId: "thread-1" },
+				result: { level: "medium", levels: ["low", "medium", "high"] },
+			},
+			{
+				call: () => client.gjcThinkingSet({ threadId: "thread-1", level: "high" }),
+				method: "gjc/thinking/set",
+				params: { threadId: "thread-1", level: "high" },
+				result: { level: "high" },
+			},
+			{
+				call: () => client.gjcFastRead({ threadId: "thread-1" }),
+				method: "gjc/fast/read",
+				params: { threadId: "thread-1" },
+				result: { enabled: false, affectedRoles: ["default"] },
+			},
+			{
+				call: () => client.gjcFastSet({ threadId: "thread-1", enabled: true }),
+				method: "gjc/fast/set",
+				params: { threadId: "thread-1", enabled: true },
+				result: { enabled: true, affectedRoles: ["default"] },
+			},
+			{
+				call: () => client.gjcSettingsSchema(),
+				method: "gjc/settings/schema",
+				params: {},
+				result: { settings: [{ key: "autoResume", type: "boolean", default: false }] },
+			},
+			{
+				call: () => client.gjcSettingsRead(),
+				method: "gjc/settings/read",
+				params: {},
+				result: { values: { autoResume: false } },
+			},
+			{
+				call: () => client.gjcSettingsUpdate({ key: "autoResume", value: true }),
+				method: "gjc/settings/update",
+				params: { key: "autoResume", value: true },
+				result: { values: { autoResume: true } },
+			},
+			{
+				call: () => client.gjcAppearanceThemesList(),
+				method: "gjc/appearance/themes/list",
+				params: {},
+				result: { themes: [{ id: "붉은 집게 테마", kind: "dark", builtin: false, semanticPreview: { bg: "#140b0b", bgElevated: "#211111", surface: "#281616", text: "#f7e7df", textMuted: "#b68b7e", accent: "#ff5a3d", border: "#5a2c24", success: "#6dd17c", warning: "#f0b45a", danger: "#ff4f4f" } }] },
+			},
+			{
+				call: () => client.gjcAppearanceRead(),
+				method: "gjc/appearance/read",
+				params: {},
+				result: { dark: "red-claw", light: "warm-day", symbolPreset: "unicode", colorBlindMode: false },
+			},
+			{
+				call: () => client.gjcAppearanceSet({ dark: "붉은 집게 테마", light: "warm-day", symbolPreset: "ascii", colorBlindMode: true }),
+				method: "gjc/appearance/set",
+				params: { dark: "붉은 집게 테마", light: "warm-day", symbolPreset: "ascii", colorBlindMode: true },
+				result: { dark: "붉은 집게 테마", light: "warm-day", symbolPreset: "ascii", colorBlindMode: true },
+			},
+			{
+				call: () => client.gjcSessionList({ scope: "all", limit: 1 }),
+				method: "gjc/session/list",
+				params: { scope: "all", limit: 1 },
+				result: { sessions: [{ id: "s1", cwd: "/tmp/project", path: "/tmp/project/session.jsonl", modifiedAt: "2026-01-01T00:00:00.000Z", firstMessage: "hello", entryCount: 2 }], total: 1 },
+			},
+			{
+				call: () => client.gjcSessionSearch({ query: "hello", scope: "cwd", limit: 5 }),
+				method: "gjc/session/search",
+				params: { query: "hello", scope: "cwd", limit: 5 },
+				result: { sessions: [{ id: "s1", cwd: "/tmp/project", path: "/tmp/project/session.jsonl", modifiedAt: "2026-01-01T00:00:00.000Z", title: "Hello" }], total: 1 },
+			},
+			{
+				call: () => client.gjcSessionTree({ threadId: "thread-1" }),
+				method: "gjc/session/tree",
+				params: { threadId: "thread-1" },
+				result: { nodes: [{ id: "root", type: "message", preview: "hello", timestamp: "2026-01-01T00:00:00.000Z", active: true, children: [] }], activeLeafId: "root" },
+			},
+			{
+				call: () => client.gjcSessionRename({ sessionPath: "/tmp/session.jsonl", title: "Renamed" }),
+				method: "gjc/session/rename",
+				params: { sessionPath: "/tmp/session.jsonl", title: "Renamed" },
+				result: { ok: true, title: "Renamed" },
+			},
+			{
+				call: () => client.gjcSessionOpen({ sessionPath: "/tmp/session.jsonl" }),
+				method: "gjc/session/open",
+				params: { sessionPath: "/tmp/session.jsonl" },
+				result: { threadId: "thread-2", sessionMetadata: { cwd: "/tmp/project" }, resumed: true },
+			},
+			{
+				call: () => client.gjcSessionDelete({ sessionPath: "/tmp/session.jsonl" }),
+				method: "gjc/session/delete",
+				params: { sessionPath: "/tmp/session.jsonl" },
+				result: { ok: true },
+			},
+			{
+				call: () => client.gjcSessionExport({ sessionPath: "/tmp/session.jsonl", format: "json", redact: true }),
+				method: "gjc/session/export",
+				params: { sessionPath: "/tmp/session.jsonl", format: "json", redact: true },
+				result: { content: "{}", format: "json", provenance: { exportedAt: "2026-01-01T00:00:00.000Z", sessionId: "s1", sourcePath: "/tmp/session.jsonl", redacted: true, tool: "gjc-app-server" } },
+			},
+			{
+				call: () => client.gjcSessionNavigate({ threadId: "thread-1", entryId: "entry-1", summarize: true }),
+				method: "gjc/session/navigate",
+				params: { threadId: "thread-1", entryId: "entry-1", summarize: true },
+				result: { ok: true, activeLeafId: "entry-1" },
+			},
+			{
+				call: () => client.gjcSessionLabel({ threadId: "thread-1", entryId: "entry-1", label: "Important" }),
+				method: "gjc/session/label",
+				params: { threadId: "thread-1", entryId: "entry-1", label: "Important" },
+				result: { ok: true },
+			},
+			{
+				call: () => client.gjcSessionMove({ threadId: "thread-1", targetCwd: "/tmp/next", dryRun: true }),
+				method: "gjc/session/move",
+				params: { threadId: "thread-1", targetCwd: "/tmp/next", dryRun: true },
+				result: { dryRun: true, sourceSessionFile: "/tmp/a.jsonl", targetSessionFile: "/tmp/next/a.jsonl", artifactsDirs: [], crossDevice: false, conflicts: [] },
+			},
+			{
+				call: () => client.gjcProviderList(),
+				method: "gjc/provider/list",
+				params: {},
+				result: { providers: [{ id: "anthropic", name: "Anthropic", authKind: "oauth", authenticated: false }] },
+			},
+			{
+				call: () => client.gjcAuthStatus(),
+				method: "gjc/auth/status",
+				params: {},
+				result: { providers: [{ providerId: "anthropic", state: "unauthenticated" }] },
+			},
+			{
+				call: () => client.gjcAuthLogout({ providerId: "anthropic" }),
+				method: "gjc/auth/logout",
+				params: { providerId: "anthropic" },
+				result: { providerId: "anthropic", authenticated: false },
+			},
+			{
+				call: () => client.gjcProviderAdd({ compatibility: "openai", providerId: "local", baseUrl: "http://localhost:1234", apiKeyEnv: "LOCAL_API_KEY", models: ["m"] }),
+				method: "gjc/provider/add",
+				params: { compatibility: "openai", providerId: "local", baseUrl: "http://localhost:1234", apiKeyEnv: "LOCAL_API_KEY", models: ["m"] },
+				result: { ok: true, providerId: "local", models: ["m"] },
+			},
+			{ call: () => client.gjcAuthLoginStart({ providerId: "anthropic" }), method: "gjc/auth/login/start", params: { providerId: "anthropic" }, result: { flowId: "flow-1", state: "pending-browser", authUrl: "https://example.test/auth" } },
+			{ call: () => client.gjcAuthLoginPoll({ flowId: "flow-1" }), method: "gjc/auth/login/poll", params: { flowId: "flow-1" }, result: { state: "needs-input", promptMessage: "Paste redirect URL" } },
+			{ call: () => client.gjcAuthLoginComplete({ flowId: "flow-1", redirectUrl: "http://localhost/callback" }), method: "gjc/auth/login/complete", params: { flowId: "flow-1", redirectUrl: "http://localhost/callback" }, result: { state: "authenticated" } },
+			{ call: () => client.gjcAuthLoginCancel({ flowId: "flow-1" }), method: "gjc/auth/login/cancel", params: { flowId: "flow-1" }, result: { state: "cancelled" } },
+			{
 				call: () => client.gjcCommandsList({ threadId: "thread-1", includeDisabled: true }),
 				method: "gjc/commands/list",
 				params: { threadId: "thread-1", includeDisabled: true },
-				result: { commands: [{ name: "help", source: "builtin", description: "Show help", classification: "builtin" }] },
+				result: { commands: [{ name: "/help", source: "builtin", description: "Show help", classification: "prompt-display-only" }] },
 			},
 			{
 				call: () => client.gjcSkillsList({ threadId: "thread-1" }),
@@ -176,18 +363,20 @@ describe("AppServerClient", () => {
 				params: { threadId: "thread-1" },
 				result: { skills: [{ name: "ralplan", source: "builtin", description: "Plan", enabled: true }] },
 			},
+			{ call: () => client.gjcSkillsSetEnabled({ skillId: "ralplan", enabled: false }), method: "gjc/skills/setEnabled", params: { skillId: "ralplan", enabled: false }, result: { ok: true, enabled: false } },
 			{
 				call: () => client.gjcExtensionsList({ threadId: "thread-1" }),
 				method: "gjc/extensions/list",
 				params: { threadId: "thread-1" },
-				result: { extensions: [{ id: "gemini", name: "Gemini", kind: "extension", source: "project", status: "available" }] },
+				result: { extensions: [{ id: "gemini", name: "Gemini", kind: "extension", source: "project", status: "available", state: "shadowed", disabledReason: "shadowed", shadowedBy: "native:gemini", provider: "gjc" }] },
 			},
 			{
 				call: () => client.gjcExtensionsInspect({ threadId: "thread-1", extensionId: "gemini" }),
 				method: "gjc/extensions/inspect",
 				params: { threadId: "thread-1", extensionId: "gemini" },
-				result: { extension: { id: "gemini", name: "Gemini", kind: "extension", source: "project", status: "available" } },
+				result: { extension: { id: "gemini", name: "Gemini", kind: "extension", source: "project", status: "available", state: "active", provider: "gjc" } },
 			},
+			{ call: () => client.gjcExtensionsSetEnabled({ extensionId: "gemini", enabled: false }), method: "gjc/extensions/setEnabled", params: { extensionId: "gemini", enabled: false }, result: { ok: true, enabled: false } },
 			{
 				call: () => client.gjcPluginsList({ threadId: "thread-1" }),
 				method: "gjc/plugins/list",
@@ -200,6 +389,9 @@ describe("AppServerClient", () => {
 				params: { threadId: "thread-1", pluginId: "pkg" },
 				result: { plugin: { id: "pkg", name: "Pkg", kind: "plugin", source: "/tmp/pkg", status: "enabled" } },
 			},
+			{ call: () => client.gjcPluginsSetEnabled({ pluginId: "pkg", enabled: false }), method: "gjc/plugins/setEnabled", params: { pluginId: "pkg", enabled: false }, result: { ok: true, enabled: false } },
+			{ call: () => client.gjcPluginsSetFeature({ pluginId: "pkg", feature: "f", enabled: true }), method: "gjc/plugins/setFeature", params: { pluginId: "pkg", feature: "f", enabled: true }, result: { ok: true } },
+			{ call: () => client.gjcPluginsSetSetting({ pluginId: "pkg", key: "secretToken", value: "stored" }), method: "gjc/plugins/setSetting", params: { pluginId: "pkg", key: "secretToken", value: "stored" }, result: { ok: true } },
 			{
 				call: () => client.gjcHostUrisResult({ threadId: "thread-1", requestId: "request-1", content: "ok", isError: false }),
 				method: "gjc/hostUris/result",
@@ -218,6 +410,7 @@ describe("AppServerClient", () => {
 				params: { threadId: "thread-1", gate_id: "gate-1", answer: true },
 				result: { gate_id: "gate-1", status: "accepted", answer_hash: "hash" },
 			},
+			{ call: () => client.gjcModelAssign({ threadId: "thr_1", role: "main", provider: "openai", modelId: "gpt-4.1", thinkingLevel: "high" }), method: "gjc/model/assign", params: { threadId: "thr_1", role: "main", provider: "openai", modelId: "gpt-4.1", thinkingLevel: "high" }, result: { ok: true, role: "main", modelId: "gpt-4.1" } },
 		];
 
 		for (const item of cases) {
@@ -268,6 +461,24 @@ async function compileChecks(client: AppServerClient): Promise<void> {
 		const turnId: string = params.turnId;
 		void turnId;
 	});
+	const monitorsResult: GjcMonitorsListResult = {
+		monitors: [{ id: "monitor-1", status: "running", outputTail: "latest line" }],
+		crons: [
+			{
+				id: "cron-1",
+				humanSchedule: "hourly",
+				cronExpression: "0 * * * *",
+				prompt: "ping",
+				recurring: true,
+				nextFireAt: "2026-01-01T01:00:00Z",
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+		],
+	};
+	const outputTail: string | null | undefined = monitorsResult.monitors[0]?.outputTail;
+	const cronPrompt: string | null | undefined = monitorsResult.crons?.[0]?.prompt;
+	void outputTail;
+	void cronPrompt;
 	// @ts-expect-error threadId is required for turn/start.
 	void client.turnStart({ prompt: "missing thread" });
 	// @ts-expect-error modelId is required for gjc/model/set.

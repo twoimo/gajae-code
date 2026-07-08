@@ -154,7 +154,11 @@ impl ThreadStream {
 				let am_type = am
 					.and_then(|e| e.get("type"))
 					.and_then(|t| t.as_str())
-					.unwrap_or(if ev.event_type == "text_delta" { "text_delta" } else { "" });
+					.unwrap_or(if ev.event_type == "text_delta" {
+						"text_delta"
+					} else {
+						""
+					});
 				let delta = am
 					.and_then(|e| e.get("delta"))
 					.or_else(|| ev.payload.get("delta"))
@@ -170,7 +174,9 @@ impl ThreadStream {
 								serde_json::json!({ "itemId": item.0, "itemType": "reasoning" }),
 							));
 						}
-						if !delta.is_empty() && let Some(item) = self.reasoning_item.clone() {
+						if !delta.is_empty()
+							&& let Some(item) = self.reasoning_item.clone()
+						{
 							out.push(self.note(
 								"item/agentMessage/delta",
 								serde_json::json!({ "itemId": item.0, "delta": delta }),
@@ -261,6 +267,23 @@ impl ThreadStream {
 					serde_json::json!({ "itemId": call_id, "itemType": "toolCall" }),
 				));
 			},
+			"jobs_changed" => {
+				let description = ev
+					.payload
+					.get("description")
+					.and_then(|v| v.as_str())
+					.map(String::from);
+				let mut params = serde_json::json!({
+					"generation": ev.generation.0,
+					"kind": ev.payload.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+					"id": ev.payload.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+					"status": ev.payload.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+				});
+				if let Some(description) = description {
+					params["description"] = serde_json::Value::String(description);
+				}
+				out.push(self.note("gjc/jobs/changed", params));
+			},
 			"agent_end" | "turn_end" if self.active_turn.is_some() => {
 				self.latch.record(TerminalCause::Completed);
 				self.flush_terminal(&mut out);
@@ -336,7 +359,10 @@ mod tests {
 		));
 		assert_eq!(ts[0].method, "item/started");
 		assert_eq!(ts[0].params.as_ref().unwrap()["itemType"], "reasoning");
-		let reasoning_id = ts[0].params.as_ref().unwrap()["itemId"].as_str().unwrap().to_string();
+		let reasoning_id = ts[0].params.as_ref().unwrap()["itemId"]
+			.as_str()
+			.unwrap()
+			.to_string();
 
 		let td = s.on_event(&ev(
 			"message_update",
@@ -451,6 +477,65 @@ mod tests {
 		let out = s.on_event(&ev("todo_reminder", serde_json::json!({"todos": []})));
 		assert_eq!(methods(&out), ["gjc/event"]);
 		assert_eq!(out[0].params.as_ref().unwrap()["eventType"], "todo_reminder");
+	}
+
+	#[test]
+	fn jobs_changed_yields_raw_and_typed_notification() {
+		let mut s = ThreadStream::new(ThreadId("thr_1".into()));
+		let out = s.on_event(&ev(
+			"jobs_changed",
+			serde_json::json!({
+				"kind": "job",
+				"id": "job-1",
+				"status": "running",
+				"description": "Build"
+			}),
+		));
+
+		assert_eq!(methods(&out), ["gjc/jobs/changed", "gjc/event"]);
+		let typed = out[0].params.as_ref().unwrap();
+		assert_eq!(typed["threadId"], "thr_1");
+		assert_eq!(typed["generation"], 1);
+		assert_eq!(typed["seq"], 1);
+		assert_eq!(typed["kind"], "job");
+		assert_eq!(typed["id"], "job-1");
+		assert_eq!(typed["status"], "running");
+		assert_eq!(typed["description"], "Build");
+		assert_eq!(out[1].params.as_ref().unwrap()["eventType"], "jobs_changed");
+	}
+
+	#[test]
+	fn jobs_changed_malformed_payload_is_typed_and_raw() {
+		let mut s = ThreadStream::new(ThreadId("thr_1".into()));
+		let out = s.on_event(&ev(
+			"jobs_changed",
+			serde_json::json!({
+				"kind": "bogus",
+				"id": "",
+				"status": 7,
+				"extra": {"kept": true}
+			}),
+		));
+
+		assert_eq!(methods(&out), ["gjc/jobs/changed", "gjc/event"]);
+		let typed = out[0].params.as_ref().unwrap();
+		assert_eq!(typed["threadId"], "thr_1");
+		assert_eq!(typed["generation"], 1);
+		assert_eq!(typed["kind"], "bogus");
+		assert_eq!(typed["id"], "");
+		assert_eq!(typed["status"], "");
+		assert!(typed.get("extra").is_none());
+		let raw = out[1].params.as_ref().unwrap();
+		assert_eq!(raw["eventType"], "jobs_changed");
+		assert_eq!(raw["event"]["extra"]["kept"], true);
+	}
+
+	#[test]
+	fn unknown_event_type_only_yields_raw_passthrough() {
+		let mut s = ThreadStream::new(ThreadId("thr_1".into()));
+		let out = s.on_event(&ev("jobs_changed_but_unknown", serde_json::json!({"id": "j1"})));
+		assert_eq!(methods(&out), ["gjc/event"]);
+		assert_eq!(out[0].params.as_ref().unwrap()["eventType"], "jobs_changed_but_unknown");
 	}
 
 	#[test]

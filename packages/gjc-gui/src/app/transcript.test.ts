@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ServerNotificationEnvelope } from "@gajae-code/app-server-client";
-import { appendLocalUserMessage, cleanAssistantText, emptyTranscriptState, foldNotification, markApproval, upsertThread } from "./transcript";
+import { appendLocalUserMessage, cleanAssistantText, emptyTranscriptState, foldNotification, markApproval, mergeWorkflowGateApprovals, upsertThread } from "./transcript";
 
 const streamingFixture: ServerNotificationEnvelope[] = [
 	{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-1", seq: 1 } },
@@ -174,6 +174,112 @@ describe("transcript event folding", () => {
 		expect(card?.content).toContain("ls");
 		expect(card?.content).toContain("file.txt");
 		expect(card?.tool).toMatchObject({ name: "bash", args: '{\n  "command": "ls"\n}', output: "file.txt" });
+	});
+
+	test("treats tool_execution partialResult content as cumulative snapshots", () => {
+		const folded = [
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-update", seq: 44 } },
+			{ method: "item/started", params: { threadId: "thread-1", itemId: "call-update", itemType: "commandExecution", toolName: "bash", seq: 45 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-update", partialResult: { content: [{ type: "text", text: "a" }] }, status: "running", description: "child agent" }, seq: 46 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-update", partialResult: { content: [{ type: "text", text: "ab" }] }, status: "running" }, seq: 47 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-update", partialResult: { content: [{ type: "text", text: "abc" }] }, status: "running" }, seq: 48 } },
+		] as ServerNotificationEnvelope[];
+
+		const state = folded.reduce(foldNotification, emptyTranscriptState());
+		const card = state.items.find(item => item.id === "call-update");
+		expect(card).toMatchObject({ status: "running" });
+		expect(card?.content).toContain("abc");
+		expect(card?.content).not.toContain("a\nab\nabc");
+		expect(card?.tool?.output).toBe("abc");
+	});
+
+	test("replaces divergent tool_execution snapshots with the newest text", () => {
+		const state = ([
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-diverge", seq: 60 } },
+			{ method: "item/started", params: { threadId: "thread-1", itemId: "call-diverge", itemType: "commandExecution", toolName: "bash", seq: 61 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-diverge", partialResult: { content: [{ type: "text", text: "old snapshot" }] } }, seq: 62 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-diverge", partialResult: { content: [{ type: "text", text: "new" }] } }, seq: 63 } },
+		] as ServerNotificationEnvelope[]).reduce(foldNotification, emptyTranscriptState());
+
+		const card = state.items.find(item => item.id === "call-diverge");
+		expect(card?.tool?.output).toBe("new");
+		expect(card?.content).toContain("new");
+		expect(card?.content).not.toContain("old snapshot");
+	});
+
+	test("legacy incremental tool_execution delta fields still accumulate", () => {
+		const state = ([
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-delta-tool", seq: 64 } },
+			{ method: "item/started", params: { threadId: "thread-1", itemId: "call-delta", itemType: "commandExecution", toolName: "bash", seq: 65 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-delta", delta: "one" }, seq: 66 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-delta", delta: "two" }, seq: 67 } },
+		] as ServerNotificationEnvelope[]).reduce(foldNotification, emptyTranscriptState());
+
+		const card = state.items.find(item => item.id === "call-delta");
+		expect(card?.tool?.output).toBe("one\ntwo");
+		expect(card?.content).toContain("one");
+		expect(card?.content).toContain("two");
+	});
+
+	test("orphan tool_execution_update and malformed lifecycle payloads do not crash or create tool cards", () => {
+		const state = ([
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-orphan", seq: 70 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "missing", partialResult: { content: [{ type: "text", text: "partial" }] } }, seq: 71 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "auto_retry_start", event: "not-an-object", seq: 72 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType: "todo_reminder", event: {}, seq: 73 } },
+		] as ServerNotificationEnvelope[]).reduce(foldNotification, emptyTranscriptState());
+
+		expect(state.items.some(item => item.id === "missing" || item.id === "tool-missing")).toBe(false);
+		expect(state.items.map(item => item.role)).toEqual(["event", "event"]);
+		expect(state.items[1]?.content).toContain("Todo reminder:");
+	});
+
+	test("flooded growing tool_execution snapshots keep one bounded transcript card", () => {
+		const events: ServerNotificationEnvelope[] = [
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-flood", seq: 80 } },
+			{ method: "item/started", params: { threadId: "thread-1", itemId: "call-flood", itemType: "commandExecution", toolName: "bash", seq: 81 } },
+		];
+		for (let i = 0; i < 200; i += 1) {
+			events.push({ method: "gjc/event", params: { threadId: "thread-1", eventType: "tool_execution_update", event: { type: "tool_execution_update", toolCallId: "call-flood", partialResult: { content: [{ type: "text", text: "x".repeat((i + 1) * 100) }] } }, seq: 82 + i } });
+		}
+
+		const state = events.reduce(foldNotification, emptyTranscriptState());
+		const card = state.items.find(item => item.id === "call-flood");
+		expect(state.items.filter(item => item.id === "call-flood")).toHaveLength(1);
+		expect(state.items).toHaveLength(1);
+		expect(card?.tool?.output?.length).toBeLessThanOrEqual(8000);
+		expect(card?.tool?.output).toBe("x".repeat(8000));
+		expect(card?.content.length).toBeLessThanOrEqual(8000);
+	});
+
+	test("gate resync merge is idempotent for duplicate workflow gate ids", () => {
+		const gates = [
+			{ gate_id: "gate-1", kind: "approval", stage: "ralplan", required: true, schema: {}, context: {} },
+			{ gate_id: "gate-1", kind: "approval", stage: "ralplan", required: true, schema: {}, context: {} },
+		];
+		const once = mergeWorkflowGateApprovals([], "thread-1", gates);
+		const twice = mergeWorkflowGateApprovals(once, "thread-1", gates);
+
+		expect(once.filter(gate => gate.id === "gate-1")).toHaveLength(1);
+		expect(twice.filter(gate => gate.id === "gate-1")).toHaveLength(1);
+	});
+
+	test.each([
+		["auto_retry_start", "Retry: retrying (3)"],
+		["auto_retry_end", "Retry: resumed"],
+		["ttsr_triggered", "Recovery: transcript recovery"],
+		["notice", "Notice: pay attention"],
+		["auto_compaction_end", "Compaction: compacted"],
+		["todo_reminder", "Todo reminder: update todos"],
+		["todo_auto_clear", "Todo auto-clear: cleared"],
+	])("folds %s into an inline status event", (eventType, expected) => {
+		const event = eventType === "auto_retry_start" ? { message: "retrying", countdown: 3 } : { message: expected.split(": ")[1] };
+		const state = ([
+			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-event", seq: 47 } },
+			{ method: "gjc/event", params: { threadId: "thread-1", eventType, event, seq: 48 } },
+		] as ServerNotificationEnvelope[]).reduce(foldNotification, emptyTranscriptState());
+
+		expect(state.items.at(-1)).toMatchObject({ role: "event", status: "completed", content: expected });
 	});
 
 	test("delta before start carries active turn id and turn completion finalizes it", () => {
@@ -462,5 +568,10 @@ describe("transcript event folding", () => {
 		const resolved = markApproval(folded, "uri-3", "approved");
 		expect(resolved.approvals[0]).toMatchObject({ kind: "host-uri", id: "uri-3", status: "approved" });
 		expect(folded.approvals[0]?.status).toBe("pending");
+	});
+
+	test("merges pending workflow gates from reconnect list", () => {
+		const merged = mergeWorkflowGateApprovals([], "thread-1", [{ gate_id: "gate-resync", kind: "approval", stage: "ralplan", required: true, schema: { type: "object" }, context: { title: "Approve" }, options: [{ label: "Proceed", value: true }] }]);
+		expect(merged[0]).toMatchObject({ kind: "workflow-gate", id: "gate-resync", threadId: "thread-1", status: "pending", context: { title: "Approve" } });
 	});
 });

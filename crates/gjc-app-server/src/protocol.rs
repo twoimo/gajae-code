@@ -151,6 +151,20 @@ pub struct TurnSteerResult {
 	pub turn_id: TurnId,
 }
 
+/// `gjc/retry` params; strict fields enforced in `server.rs::handle_gjc_retry`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcRetryParams {
+	pub thread_id: ThreadId,
+}
+
+/// `gjc/retry` result; `turnId` mirrors the turn/start family.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcRetryResult {
+	pub turn_id: TurnId,
+}
+
 /// `turn/interrupt` params; see `server.rs::handle_turn_interrupt`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -175,6 +189,761 @@ pub struct GjcStateReadParams {
 /// `gjc/state/read` result is backend-owned state JSON; see
 /// `server.rs::handle_gjc_state_read`.
 pub type GjcStateReadResult = Value;
+
+/// `gjc/context/read` params; strict fields enforced in
+/// `server.rs::handle_gjc_context_read`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcContextReadParams {
+	pub thread_id: ThreadId,
+}
+
+/// Token-safe usage counters returned by `gjc/context/read`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcContextTokens {
+	pub input: u64,
+	pub output: u64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_read: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_write: Option<u64>,
+	pub total: u64,
+}
+
+/// `gjc/context/read` result; token-safe numeric context usage only.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcContextReadResult {
+	pub tokens: GjcContextTokens,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_window: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub percent_used: Option<f64>,
+	pub source: String,
+	pub freshness: GjcContextFreshness,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum GjcContextFreshness {
+	Live,
+	PostTurn,
+}
+
+/// `gjc/goal/read` params; strict fields enforced in `server.rs::handle_gjc_goal_read`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcGoalReadParams {
+	pub thread_id: ThreadId,
+}
+
+/// Read-only active goal-mode snapshot from `AgentSession` goal state.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcGoalReadResult {
+	pub active: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub objective: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub status: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tokens_used: Option<u64>,
+}
+/// Shared strict thread-only params for read-only gjc execution-state methods.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcThreadReadParams {
+	pub thread_id: ThreadId,
+}
+
+/// Token-safe model catalog entry for `gjc/model/catalog`; credentials and URLs are intentionally absent.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcModelCatalogEntry {
+	pub provider: String,
+	pub model_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub name: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_window: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reasoning: Option<bool>,
+	pub available: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcModelCatalogResult {
+	pub models: Vec<GjcModelCatalogEntry>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub active_provider: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub active_model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum GjcProviderAuthKind {
+	#[serde(rename = "oauth")]
+	OAuth,
+	#[serde(rename = "api-key-env")]
+	ApiKeyEnv,
+	#[serde(rename = "none")]
+	None,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcProviderListEntry {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub name: Option<String>,
+	pub auth_kind: GjcProviderAuthKind,
+	pub authenticated: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub env_var: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcProviderListParams {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcProviderListResult {
+	pub providers: Vec<GjcProviderListEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcProviderAddParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub preset: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub compatibility: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub base_url: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub api_key_env: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub models: Option<Vec<String>>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcProviderAddResult {
+	pub ok: bool,
+	pub provider_id: String,
+	pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum GjcAuthLoginFlowState {
+	Idle,
+	PendingBrowser,
+	NeedsInput,
+	Authenticated,
+	Failed,
+	Cancelled,
+	Unsupported,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAuthLoginStartParams { pub provider_id: String }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAuthLoginStartResult {
+	pub flow_id: String,
+	pub state: GjcAuthLoginFlowState,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub auth_url: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub instructions: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAuthLoginPollParams { pub flow_id: String }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAuthLoginPollResult {
+	pub state: GjcAuthLoginFlowState,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prompt_message: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAuthLoginCompleteParams { pub flow_id: String, pub redirect_url: String }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAuthLoginCompleteResult { pub state: GjcAuthLoginFlowState }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAuthLoginCancelParams { pub flow_id: String }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAuthLoginCancelResult { pub state: GjcAuthLoginFlowState }
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum GjcAuthState {
+	#[serde(rename = "authenticated")]
+	Authenticated,
+	#[serde(rename = "unauthenticated")]
+	Unauthenticated,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum GjcAuthMethod {
+	#[serde(rename = "oauth")]
+	OAuth,
+	#[serde(rename = "env")]
+	Env,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAuthStatusEntry {
+	pub provider_id: String,
+	pub state: GjcAuthState,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub method: Option<GjcAuthMethod>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAuthStatusParams {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcAuthStatusResult {
+	pub providers: Vec<GjcAuthStatusEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAuthLogoutParams {
+	pub provider_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAuthLogoutResult {
+	pub provider_id: String,
+	pub authenticated: bool,
+}
+
+pub type GjcThinkingReadParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcThinkingReadResult {
+	pub level: String,
+	pub levels: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcThinkingSetParams {
+	pub thread_id: ThreadId,
+	pub level: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcThinkingSetResult {
+	pub level: String,
+}
+
+pub type GjcFastReadParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcFastReadResult {
+	pub enabled: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub affected_roles: Option<Vec<String>>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcFastSetParams {
+	pub thread_id: ThreadId,
+	pub enabled: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcFastSetResult {
+	pub enabled: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub affected_roles: Option<Vec<String>>,
+}
+
+/// Safe settings schema descriptor for a hard-coded UI/behavior allowlist only:
+///
+/// theme.dark, theme.light, notifications.terminalBell, notifications.bellOnComplete,
+/// notifications.bellOnApproval, notifications.bellOnAsk, autoResume.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSettingDescriptor {
+	pub key: String,
+	pub r#type: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub label: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none", rename = "enum")]
+	pub enum_values: Option<Vec<String>>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub default: Option<Value>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSettingsSchemaParams {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcSettingsSchemaResult {
+	pub settings: Vec<GjcSettingDescriptor>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSettingsReadParams {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcSettingsReadResult {
+	pub values: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSettingsUpdateParams {
+	pub key: String,
+	pub value: Value,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcSettingsUpdateResult {
+	pub values: std::collections::BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAppearanceSemanticPreview {
+	pub bg: String,
+	pub bg_elevated: String,
+	pub surface: String,
+	pub border: String,
+	pub text: String,
+	pub text_muted: String,
+	pub accent: String,
+	pub success: String,
+	pub warning: String,
+	pub danger: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAppearanceThemeEntry {
+	pub id: String,
+	pub kind: GjcAppearanceThemeKind,
+	pub semantic_preview: GjcAppearanceSemanticPreview,
+	pub builtin: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum GjcAppearanceThemeKind {
+	#[serde(rename = "dark")]
+	Dark,
+	#[serde(rename = "light")]
+	Light,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAppearanceThemesListParams {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcAppearanceThemesListResult {
+	pub themes: Vec<GjcAppearanceThemeEntry>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAppearanceReadParams {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAppearanceReadResult {
+	pub dark: String,
+	pub light: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub symbol_preset: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub color_blind_mode: Option<bool>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcAppearanceSetParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub dark: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub light: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub symbol_preset: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub color_blind_mode: Option<bool>,
+}
+pub type GjcAppearanceSetResult = GjcAppearanceReadResult;
+
+pub type GjcTodosReadParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcTodoItem {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
+	pub content: String,
+	pub status: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcTodosReadResult {
+	pub todos: Vec<GjcTodoItem>,
+}
+
+pub type GjcUsageReadParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcModelUsage {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider: Option<String>,
+	pub model_id: String,
+	pub input: u64,
+	pub output: u64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_read: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_write: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cost: Option<f64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcUsageReadResult {
+	pub per_model: Vec<GjcModelUsage>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub total_cost: Option<f64>,
+	pub source: String,
+	pub freshness: GjcContextFreshness,
+}
+
+pub type GjcJobsListParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcJobEntry {
+	pub id: String,
+	pub r#type: String,
+	pub status: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub started_at: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ended_at: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcJobsListResult {
+	pub jobs: Vec<GjcJobEntry>,
+}
+
+pub type GjcAgentsListParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcAgentEntry {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub agent_type: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	pub status: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_ref: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcAgentsListResult {
+	pub agents: Vec<GjcAgentEntry>,
+}
+
+pub type GjcMonitorsListParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcMonitorEntry {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub kind: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	pub status: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub started_at: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_tail: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcCronEntry {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub human_schedule: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cron_expression: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prompt: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub recurring: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub next_fire_at: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub created_at: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcMonitorsListResult {
+	pub monitors: Vec<GjcMonitorEntry>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub crons: Option<Vec<GjcCronEntry>>,
+}
+
+pub type GjcCompactSummaryParams = GjcThreadReadParams;
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcCompactSummaryEntry {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
+	pub summary: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tokens_before: Option<u64>,
+	pub timestamp: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GjcCompactSummaryResult {
+	pub summaries: Vec<GjcCompactSummaryEntry>,
+}
+
+/// `gjc/session/list` params; strict fields enforced in
+/// `server.rs::handle_gjc_session_list`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionListParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub scope: Option<GjcSessionScope>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub offset: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GjcSessionScope {
+	Cwd,
+	All,
+}
+
+/// Token-safe session index row returned by `gjc/session/list` and
+///
+/// `gjc/session/search`. Path fields are local absolute filesystem paths for
+/// the local-only desktop surface and are not exposed over network transports;
+/// title/firstMessage are truncated by the host to 200 characters.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexEntry {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub title: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub first_message: Option<String>,
+	pub cwd: String,
+	pub path: String,
+	pub modified_at: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub entry_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionListResult {
+	pub sessions: Vec<SessionIndexEntry>,
+	pub total: u64,
+}
+
+/// `gjc/session/search` params; strict fields enforced in
+/// `server.rs::handle_gjc_session_search`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionSearchParams {
+	pub query: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub scope: Option<GjcSessionScope>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<u64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cwd: Option<String>,
+}
+
+pub type GjcSessionSearchResult = GjcSessionListResult;
+
+/// `gjc/session/rename` params; strict fields enforced in `server.rs::handle_gjc_session_rename`.
+///
+/// `sessionPath` is a local absolute `.jsonl` path for the desktop-only surface;
+/// the host traversal-checks and verifies the regular file before opening it.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionRenameParams {
+	pub session_path: String,
+	pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionRenameResult {
+	pub ok: bool,
+	pub title: String,
+}
+
+/// `gjc/session/open` params; strict fields enforced in `server.rs::handle_gjc_session_open`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionOpenParams {
+	pub session_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionOpenResult {
+	pub thread_id: String,
+	pub session_metadata: serde_json::Value,
+	pub generation: BackendGeneration,
+	pub resumed: bool,
+}
+
+/// `gjc/session/delete` params; strict fields enforced in `server.rs::handle_gjc_session_delete`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionDeleteParams {
+	pub session_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionDeleteResult {
+	pub ok: bool,
+}
+
+/// `gjc/session/navigate` params; strict fields enforced in `server.rs::handle_gjc_session_navigate`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionNavigateParams {
+	pub thread_id: ThreadId,
+	pub entry_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub summarize: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionNavigateResult {
+	pub ok: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub active_leaf_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionMoveParams {
+	pub thread_id: ThreadId,
+	pub target_cwd: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub dry_run: Option<bool>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionMoveDryRunResult {
+	pub dry_run: bool,
+	pub source_session_file: String,
+	pub target_session_file: String,
+	pub artifacts_dirs: Vec<String>,
+	pub cross_device: bool,
+	pub conflicts: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionMoveMovedResult {
+	pub dry_run: bool,
+	pub moved_to: String,
+	pub session_path: String,
+}
+pub type GjcSessionMoveResult = Value;
+
+
+/// `gjc/session/label` params; strict fields enforced in `server.rs::handle_gjc_session_label`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionLabelParams {
+	pub thread_id: ThreadId,
+	pub entry_id: String,
+	pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionLabelResult {
+	pub ok: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GjcSessionExportFormat {
+	Markdown,
+	Json,
+}
+
+/// `gjc/session/export` params; strict fields enforced in `server.rs::handle_gjc_session_export`.
+///
+/// `sessionPath` is a local absolute `.jsonl` path for the desktop-only surface;
+/// the host traversal-checks and verifies the regular file before opening it. Redaction defaults to true.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionExportParams {
+	pub session_path: String,
+	pub format: GjcSessionExportFormat,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub redact: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionExportProvenance {
+	pub exported_at: String,
+	pub session_id: String,
+	pub source_path: String,
+	pub redacted: bool,
+	pub tool: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionExportResult {
+	pub content: String,
+	pub format: GjcSessionExportFormat,
+	pub provenance: GjcSessionExportProvenance,
+}
+
+/// `gjc/session/tree` params; strict fields enforced in
+/// `server.rs::handle_gjc_session_tree`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSessionTreeParams {
+	pub thread_id: ThreadId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTreeNodeDto {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub parent_id: Option<String>,
+	pub r#type: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub label: Option<String>,
+	pub preview: String,
+	pub timestamp: String,
+	pub active: bool,
+	pub children: Vec<Self>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSessionTreeResult {
+	pub nodes: Vec<SessionTreeNodeDto>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub active_leaf_id: Option<String>,
+}
 
 /// `gjc/tools/list` params; strict fields enforced in
 /// `server.rs::handle_gjc_tools_list`.
@@ -279,6 +1048,14 @@ pub struct ExtensionDescriptor {
 	pub source: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub status: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub state: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub disabled_reason: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub shadowed_by: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider: Option<String>,
 }
 
 /// `gjc/extensions/list` result.
@@ -362,6 +1139,38 @@ pub struct GjcPluginsInspectResult {
 	pub plugin: Option<PluginInspection>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcExtensionsSetEnabledParams { pub extension_id: String, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcExtensionsSetEnabledResult { pub ok: bool, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcSkillsSetEnabledParams { pub skill_id: String, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcSkillsSetEnabledResult { pub ok: bool, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcPluginsSetEnabledParams { pub plugin_id: String, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcPluginsSetEnabledResult { pub ok: bool, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcPluginsSetFeatureParams { pub plugin_id: String, pub feature: String, pub enabled: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcPluginsSetFeatureResult { pub ok: bool }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcPluginsSetSettingParams { pub plugin_id: String, pub key: String, pub value: Value }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcPluginsSetSettingResult { pub ok: bool }
+
+
 /// `gjc/messages/get` params; strict fields enforced in
 /// `server.rs::handle_gjc_messages_get`.
 pub type GjcMessagesGetParams = ThreadIdParams;
@@ -378,6 +1187,20 @@ pub struct GjcModelSetParams {
 	pub provider: String,
 	pub model_id: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GjcModelAssignParams {
+	pub thread_id: ThreadId,
+	pub role: String,
+	pub provider: String,
+	pub model_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub thinking_level: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GjcModelAssignResult { pub ok: bool, pub role: String, pub model_id: String }
 
 /// `gjc/model/set` result is backend-owned model state JSON; see
 /// `server.rs::handle_gjc_model_set`.
@@ -568,6 +1391,22 @@ pub struct GjcEventParams {
 	pub event: Value,
 }
 
+/// `gjc/jobs/changed` notification params emitted when backend job, monitor,
+/// or agent execution state changes.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct JobsChangedParams {
+	pub thread_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub generation: Option<u64>,
+	pub kind: String,
+	pub id: String,
+	pub status: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+}
+
+
 /// Method-specific server notification envelopes for GUI-consumed events; see
 /// `event_map.rs`, host-tool, host-URI, and workflow-gate notification emitters in `server.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -585,6 +1424,8 @@ pub enum ServerNotificationEnvelope {
 	ItemCompleted(ItemCompletedParams),
 	#[serde(rename = "gjc/event")]
 	GjcEvent(GjcEventParams),
+	#[serde(rename = "gjc/jobs/changed")]
+	JobsChanged(JobsChangedParams),
 	#[serde(rename = "gjc/hostTools/call")]
 	HostToolsCall(HostToolsCallParams),
 	#[serde(rename = "gjc/hostTools/cancel")]

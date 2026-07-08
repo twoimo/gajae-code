@@ -3,51 +3,7 @@ import type { GjcCommandsListResult, GjcToolsListResult } from "@gajae-code/app-
 export type PaletteCommand = GjcCommandsListResult["commands"][number];
 export type PaletteTool = GjcToolsListResult["tools"][number];
 
-// Source of truth: docs/gui-tui-parity-matrix.md command palette section.
-export const COMMAND_CLASSIFICATION: Record<string, string> = {
-	settings: "deferred-needs-new-api",
-	fast: "deferred-needs-new-api",
-	goal: "deferred-needs-new-api",
-	jobs: "deferred-needs-new-api",
-	context: "deferred-needs-new-api",
-	usage: "deferred-needs-new-api",
-	agents: "deferred-needs-new-api",
-	monitors: "deferred-needs-new-api",
-	tree: "deferred-needs-new-api",
-	provider: "deferred-needs-new-api",
-	login: "deferred-needs-new-api",
-	logout: "deferred-needs-new-api",
-	rename: "deferred-needs-new-api",
-	move: "deferred-needs-new-api",
-	export: "deferred-needs-new-api",
-	memory: "deferred-needs-new-api",
-	btw: "deferred-needs-new-api",
-	"contribute-pr": "deferred-needs-new-api",
-	background: "excluded-terminal-only",
-	debug: "excluded-terminal-only",
-	ssh: "excluded-terminal-only",
-	exit: "excluded-terminal-only",
-	help: "prompt-display-only",
-	hotkeys: "prompt-display-only",
-	model: "in-scope-existing",
-	session: "in-scope-existing",
-	new: "in-scope-existing",
-	drop: "in-scope-existing",
-	resume: "in-scope-existing",
-	compact: "in-scope-existing",
-	copy: "in-scope-existing",
-	dump: "in-scope-existing",
-	theme: "deferred-needs-new-api",
-	tools: "in-scope-new",
-	retry: "deferred-needs-new-api",
-};
 
-export function resolveClassification(cmd: PaletteCommand): string | undefined {
-	if (cmd.classification) return cmd.classification;
-	const mapped = COMMAND_CLASSIFICATION[cmd.name];
-	if (mapped) return mapped;
-	return cmd.source === "file" || cmd.source === "skill" || cmd.source === "extension" ? "prompt-display-only" : undefined;
-}
 
 type RankedItem<T> = {
 	item: T;
@@ -82,6 +38,59 @@ export function fuzzyFilter<T>(items: T[], query: string, key: (item: T) => stri
 		.map(entry => entry.item);
 }
 
+export type PaletteCommandAction =
+	| { kind: "navigate"; target: "model" | "theme" | "session" | "settings" | "provider" | "tools" | "skills" | "extensions" | "plugins" }
+	| { kind: "invoke"; target: "compact" | "retry" | "new" | "copy" | "dump" | "drop" | "resume" | "move" }
+	| { kind: "local-sheet"; target: "help" | "hotkeys" }
+	| { kind: "insert-prompt" }
+	| { kind: "disabled"; reason: string };
+
+export function normalizeCommandName(raw: string): string {
+	return raw.startsWith("/") ? raw.slice(1) : raw;
+}
+
+const COMMAND_ACTIONS: Record<string, PaletteCommandAction> = {
+	model: { kind: "navigate", target: "model" },
+	theme: { kind: "navigate", target: "theme" },
+	session: { kind: "navigate", target: "session" },
+	settings: { kind: "navigate", target: "settings" },
+	provider: { kind: "navigate", target: "provider" },
+	tools: { kind: "navigate", target: "tools" },
+	skills: { kind: "navigate", target: "skills" },
+	extensions: { kind: "navigate", target: "extensions" },
+	plugins: { kind: "navigate", target: "plugins" },
+	agents: { kind: "navigate", target: "tools" },
+	context: { kind: "navigate", target: "tools" },
+	jobs: { kind: "navigate", target: "tools" },
+	monitors: { kind: "navigate", target: "tools" },
+	usage: { kind: "navigate", target: "tools" },
+	tree: { kind: "navigate", target: "tools" },
+	export: { kind: "navigate", target: "session" },
+	rename: { kind: "navigate", target: "session" },
+	fast: { kind: "navigate", target: "model" },
+	goal: { kind: "navigate", target: "model" },
+	logout: { kind: "navigate", target: "provider" },
+	login: { kind: "navigate", target: "provider" },
+	compact: { kind: "invoke", target: "compact" },
+	retry: { kind: "invoke", target: "retry" },
+	new: { kind: "invoke", target: "new" },
+	copy: { kind: "invoke", target: "copy" },
+	dump: { kind: "invoke", target: "dump" },
+	drop: { kind: "invoke", target: "drop" },
+	resume: { kind: "invoke", target: "resume" },
+	move: { kind: "invoke", target: "move" },
+	help: { kind: "local-sheet", target: "help" },
+	hotkeys: { kind: "local-sheet", target: "hotkeys" },
+};
+
+export function commandAction(command: PaletteCommand): PaletteCommandAction {
+	const name = normalizeCommandName(command.name);
+	const action = COMMAND_ACTIONS[name];
+	if (action) return action;
+	if (name.startsWith("skill:")) return { kind: "disabled", reason: "Skill commands are not expandable in the GUI yet" };
+	if (command.source === "builtin") return { kind: "disabled", reason: "Not available in the GUI yet" };
+	return { kind: "insert-prompt" };
+}
 export function classifyBadge(classification?: string | null): { label: string; disabled: boolean } {
 	switch (classification) {
 		case "in-scope-existing":
@@ -100,8 +109,16 @@ export function classifyBadge(classification?: string | null): { label: string; 
 	}
 }
 
+export function commandDisabled(command: PaletteCommand): boolean {
+	return classifyBadge(command.classification).disabled || commandAction(command).kind === "disabled";
+}
+
+export function commandDisplayText(cmd: PaletteCommand): string {
+	return `/${normalizeCommandName(cmd.name)}`;
+}
+
 export function commandInsertText(cmd: PaletteCommand): string {
-	return `/${cmd.name} `;
+	return `${commandDisplayText(cmd)} `;
 }
 
 function subsequenceMatch(haystack: string, needle: string): { first: number; last: number; gaps: number } | undefined {

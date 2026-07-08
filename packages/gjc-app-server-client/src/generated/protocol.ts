@@ -341,10 +341,14 @@ export type GjcExtensionsListParams = {
  * Extension descriptor returned by `gjc/extensions/list` and inspect.
  */
 export type ExtensionDescriptor = {
+	"disabledReason"?: string | null;
 	"id": string;
 	"kind": string;
 	"name": string;
+	"provider"?: string | null;
+	"shadowedBy"?: string | null;
 	"source": string;
+	"state"?: string | null;
 	"status"?: string | null;
 };
 
@@ -610,6 +614,18 @@ export type GjcEventParams = {
 };
 
 /**
+ * `gjc/jobs/changed` notification params emitted when backend job, monitor, or agent execution state changes.
+ */
+export type JobsChangedParams = {
+	"description"?: string | null;
+	"generation"?: number | null;
+	"id": string;
+	"kind": string;
+	"status": string;
+	"threadId": string;
+};
+
+/**
  * Method-specific server notification envelopes for GUI-consumed events; see `event_map.rs`, host-tool, host-URI, and workflow-gate notification emitters in `server.rs`.
  */
 export type ServerNotificationEnvelope =
@@ -619,6 +635,7 @@ export type ServerNotificationEnvelope =
 	| { method: "item/agentMessage/delta"; params: ItemAgentMessageDeltaParams }
 	| { method: "item/completed"; params: ItemCompletedParams }
 	| { method: "gjc/event"; params: GjcEventParams }
+	| { method: "gjc/jobs/changed"; params: JobsChangedParams }
 	| { method: "gjc/hostTools/call"; params: HostToolsCallParams }
 	| { method: "gjc/hostTools/cancel"; params: HostToolsCancelParams }
 	| { method: "gjc/hostUris/request"; params: HostUriRequestParams }
@@ -632,6 +649,7 @@ export interface ServerNotificationMap {
 	"item/agentMessage/delta": ItemAgentMessageDeltaParams;
 	"item/completed": ItemCompletedParams;
 	"gjc/event": GjcEventParams;
+	"gjc/jobs/changed": JobsChangedParams;
 	"gjc/hostTools/call": HostToolsCallParams;
 	"gjc/hostTools/cancel": HostToolsCancelParams;
 	"gjc/hostUris/request": HostUriRequestParams;
@@ -639,7 +657,7 @@ export interface ServerNotificationMap {
 	"gjc/workflowGate/opened": WorkflowGateOpenedParams;
 }
 
-export type ServerNotificationMethod = "turn/started" | "turn/completed" | "item/started" | "item/agentMessage/delta" | "item/completed" | "gjc/event" | "gjc/hostTools/call" | "gjc/hostTools/cancel" | "gjc/hostUris/request" | "gjc/hostUris/cancel" | "gjc/workflowGate/opened";
+export type ServerNotificationMethod = "turn/started" | "turn/completed" | "item/started" | "item/agentMessage/delta" | "item/completed" | "gjc/event" | "gjc/jobs/changed" | "gjc/hostTools/call" | "gjc/hostTools/cancel" | "gjc/hostUris/request" | "gjc/hostUris/cancel" | "gjc/workflowGate/opened";
 
 export type RpcWorkflowGate = {
 	"context": RpcWorkflowGateContext;
@@ -852,4 +870,644 @@ export type HostUriResource = {
 	"notes"?: string[] | null;
 	"size": number;
 	"url": string;
+};
+
+/**
+ * `gjc/session/list` params; strict fields enforced in `server.rs::handle_gjc_session_list`.
+ */
+export type GjcSessionListParams = {
+	"cwd"?: string | null;
+	"limit"?: number | null;
+	"offset"?: number | null;
+	"scope"?: GjcSessionScope | null;
+};
+
+export type GjcSessionScope = "cwd" | "all";
+
+/**
+ * Token-safe session index row returned by `gjc/session/list` and
+ * 
+ * `gjc/session/search`. Path fields are local absolute filesystem paths for the local-only desktop surface and are not exposed over network transports; title/firstMessage are truncated by the host to 200 characters.
+ */
+export type SessionIndexEntry = {
+	"cwd": string;
+	"entryCount"?: number | null;
+	"firstMessage"?: string | null;
+	"id": string;
+	"modifiedAt": string;
+	"path": string;
+	"title"?: string | null;
+};
+
+export type GjcSessionListResult = {
+	"sessions": SessionIndexEntry[];
+	"total": number;
+};
+
+/**
+ * `gjc/session/search` params; strict fields enforced in `server.rs::handle_gjc_session_search`.
+ */
+export type GjcSessionSearchParams = {
+	"cwd"?: string | null;
+	"limit"?: number | null;
+	"query": string;
+	"scope"?: GjcSessionScope | null;
+};
+
+export type GjcSessionSearchResult = {
+	"sessions": SessionIndexEntry[];
+	"total": number;
+};
+
+/**
+ * `gjc/session/rename` params; strict fields enforced in `server.rs::handle_gjc_session_rename`.
+ * 
+ * `sessionPath` is a local absolute `.jsonl` path for the desktop-only surface; the host traversal-checks and verifies the regular file before opening it.
+ */
+export type GjcSessionRenameParams = {
+	"sessionPath": string;
+	"title": string;
+};
+
+export type GjcSessionRenameResult = {
+	"ok": boolean;
+	"title": string;
+};
+
+/**
+ * `gjc/session/open` params; strict fields enforced in `server.rs::handle_gjc_session_open`.
+ */
+export type GjcSessionOpenParams = {
+	"sessionPath": string;
+};
+
+export type GjcSessionOpenResult = {
+	"generation": number;
+	"resumed": boolean;
+	"sessionMetadata": JsonValue;
+	"threadId": string;
+};
+
+/**
+ * `gjc/session/delete` params; strict fields enforced in `server.rs::handle_gjc_session_delete`.
+ */
+export type GjcSessionDeleteParams = {
+	"sessionPath": string;
+};
+
+export type GjcSessionDeleteResult = {
+	"ok": boolean;
+};
+
+/**
+ * `gjc/session/navigate` params; strict fields enforced in `server.rs::handle_gjc_session_navigate`.
+ */
+export type GjcSessionNavigateParams = {
+	"entryId": string;
+	"summarize"?: boolean | null;
+	"threadId": string;
+};
+
+export type GjcSessionNavigateResult = {
+	"activeLeafId"?: string | null;
+	"ok": boolean;
+};
+
+export type GjcSessionMoveParams = {
+	"dryRun"?: boolean | null;
+	"targetCwd": string;
+	"threadId": string;
+};
+
+export type GjcSessionMoveDryRunResult = {
+	"artifactsDirs": string[];
+	"conflicts": string[];
+	"crossDevice": boolean;
+	"dryRun": boolean;
+	"sourceSessionFile": string;
+	"targetSessionFile": string;
+};
+
+export type GjcSessionMoveMovedResult = {
+	"dryRun": boolean;
+	"movedTo": string;
+	"sessionPath": string;
+};
+
+export type GjcSessionMoveResult = JsonValue;
+
+/**
+ * `gjc/session/label` params; strict fields enforced in `server.rs::handle_gjc_session_label`.
+ */
+export type GjcSessionLabelParams = {
+	"entryId": string;
+	"label": string;
+	"threadId": string;
+};
+
+export type GjcSessionLabelResult = {
+	"ok": boolean;
+};
+
+export type GjcSessionExportFormat = "markdown" | "json";
+
+/**
+ * `gjc/session/export` params; strict fields enforced in `server.rs::handle_gjc_session_export`.
+ * 
+ * `sessionPath` is a local absolute `.jsonl` path for the desktop-only surface; the host traversal-checks and verifies the regular file before opening it. Redaction defaults to true.
+ */
+export type GjcSessionExportParams = {
+	"format": GjcSessionExportFormat;
+	"redact"?: boolean | null;
+	"sessionPath": string;
+};
+
+export type GjcSessionExportProvenance = {
+	"exportedAt": string;
+	"redacted": boolean;
+	"sessionId": string;
+	"sourcePath": string;
+	"tool": string;
+};
+
+export type GjcSessionExportResult = {
+	"content": string;
+	"format": GjcSessionExportFormat;
+	"provenance": GjcSessionExportProvenance;
+};
+
+/**
+ * `gjc/session/tree` params; strict fields enforced in `server.rs::handle_gjc_session_tree`.
+ */
+export type GjcSessionTreeParams = {
+	"threadId": string;
+};
+
+export type SessionTreeNodeDto = {
+	"active": boolean;
+	"children": SessionTreeNodeDto[];
+	"id": string;
+	"label"?: string | null;
+	"parentId"?: string | null;
+	"preview": string;
+	"timestamp": string;
+	"type": string;
+};
+
+export type GjcSessionTreeResult = {
+	"activeLeafId"?: string | null;
+	"nodes": SessionTreeNodeDto[];
+};
+
+/**
+ * `gjc/context/read` params; strict fields enforced in `server.rs::handle_gjc_context_read`.
+ */
+export type GjcContextReadParams = {
+	"threadId": string;
+};
+
+/**
+ * `gjc/context/read` result; token-safe numeric context usage only.
+ */
+export type GjcContextReadResult = {
+	"contextWindow"?: number | null;
+	"freshness": GjcContextFreshness;
+	"percentUsed"?: number | null;
+	"source": string;
+	"tokens": GjcContextTokens;
+};
+
+/**
+ * Token-safe usage counters returned by `gjc/context/read`.
+ */
+export type GjcContextTokens = {
+	"cacheRead"?: number | null;
+	"cacheWrite"?: number | null;
+	"input": number;
+	"output": number;
+	"total": number;
+};
+
+export type GjcContextFreshness = "live" | "post-turn";
+
+/**
+ * `gjc/goal/read` params; strict fields enforced in `server.rs::handle_gjc_goal_read`.
+ */
+export type GjcGoalReadParams = {
+	"threadId": string;
+};
+
+/**
+ * Read-only active goal-mode snapshot from `AgentSession` goal state.
+ */
+export type GjcGoalReadResult = {
+	"active": boolean;
+	"objective"?: string | null;
+	"status"?: string | null;
+	"tokensUsed"?: number | null;
+};
+
+/**
+ * `gjc/retry` params; strict fields enforced in `server.rs::handle_gjc_retry`.
+ */
+export type GjcRetryParams = {
+	"threadId": string;
+};
+
+/**
+ * `gjc/retry` result; `turnId` mirrors the turn/start family.
+ */
+export type GjcRetryResult = {
+	"turnId": string;
+};
+
+/**
+ * Shared strict thread-only params for read-only gjc execution-state methods.
+ */
+export type GjcThreadReadParams = {
+	"threadId": string;
+};
+
+/**
+ * Token-safe model catalog entry for `gjc/model/catalog`; credentials and URLs are intentionally absent.
+ */
+export type GjcModelCatalogEntry = {
+	"available": boolean;
+	"contextWindow"?: number | null;
+	"modelId": string;
+	"name"?: string | null;
+	"provider": string;
+	"reasoning"?: boolean | null;
+};
+
+export type GjcModelCatalogResult = {
+	"activeModelId"?: string | null;
+	"activeProvider"?: string | null;
+	"models": GjcModelCatalogEntry[];
+};
+
+export type GjcProviderAuthKind = "oauth" | "api-key-env" | "none";
+
+export type GjcProviderListEntry = {
+	"authKind": GjcProviderAuthKind;
+	"authenticated": boolean;
+	"envVar"?: string | null;
+	"id": string;
+	"name"?: string | null;
+};
+
+export type GjcProviderListParams = Record<string, never>;
+
+export type GjcProviderListResult = {
+	"providers": GjcProviderListEntry[];
+};
+
+export type GjcAuthState = "authenticated" | "unauthenticated";
+
+export type GjcAuthMethod = "oauth" | "env";
+
+export type GjcAuthStatusEntry = {
+	"method"?: GjcAuthMethod | null;
+	"providerId": string;
+	"state": GjcAuthState;
+};
+
+export type GjcAuthStatusParams = Record<string, never>;
+
+export type GjcAuthStatusResult = {
+	"providers": GjcAuthStatusEntry[];
+};
+
+export type GjcAuthLogoutParams = {
+	"providerId": string;
+};
+
+export type GjcAuthLogoutResult = {
+	"authenticated": boolean;
+	"providerId": string;
+};
+
+export type GjcProviderAddParams = {
+	"apiKeyEnv"?: string | null;
+	"baseUrl"?: string | null;
+	"compatibility"?: string | null;
+	"force"?: boolean | null;
+	"models"?: string[] | null;
+	"preset"?: string | null;
+	"providerId"?: string | null;
+};
+
+export type GjcProviderAddResult = {
+	"models": string[];
+	"ok": boolean;
+	"providerId": string;
+};
+
+export type GjcAuthLoginFlowState = "idle" | "pending-browser" | "needs-input" | "authenticated" | "failed" | "cancelled" | "unsupported";
+
+export type GjcAuthLoginStartParams = {
+	"providerId": string;
+};
+
+export type GjcAuthLoginStartResult = {
+	"authUrl"?: string | null;
+	"flowId": string;
+	"instructions"?: string | null;
+	"state": GjcAuthLoginFlowState;
+};
+
+export type GjcAuthLoginPollParams = {
+	"flowId": string;
+};
+
+export type GjcAuthLoginPollResult = {
+	"promptMessage"?: string | null;
+	"state": GjcAuthLoginFlowState;
+};
+
+export type GjcAuthLoginCompleteParams = {
+	"flowId": string;
+	"redirectUrl": string;
+};
+
+export type GjcAuthLoginCompleteResult = {
+	"state": GjcAuthLoginFlowState;
+};
+
+export type GjcAuthLoginCancelParams = {
+	"flowId": string;
+};
+
+export type GjcAuthLoginCancelResult = {
+	"state": GjcAuthLoginFlowState;
+};
+
+export type GjcThinkingReadResult = {
+	"level": string;
+	"levels": string[];
+};
+
+export type GjcThinkingSetParams = {
+	"level": string;
+	"threadId": string;
+};
+
+export type GjcThinkingSetResult = {
+	"level": string;
+};
+
+export type GjcFastReadResult = {
+	"affectedRoles"?: string[] | null;
+	"enabled": boolean;
+};
+
+export type GjcFastSetParams = {
+	"enabled": boolean;
+	"threadId": string;
+};
+
+export type GjcFastSetResult = {
+	"affectedRoles"?: string[] | null;
+	"enabled": boolean;
+};
+
+export type GjcSettingsSchemaParams = Record<string, never>;
+
+export type GjcSettingsSchemaResult = {
+	"settings": GjcSettingDescriptor[];
+};
+
+/**
+ * Safe settings schema descriptor for a hard-coded UI/behavior allowlist only:
+ * 
+ * theme.dark, theme.light, notifications.terminalBell, notifications.bellOnComplete, notifications.bellOnApproval, notifications.bellOnAsk, autoResume.
+ */
+export type GjcSettingDescriptor = {
+	"default"?: JsonValue;
+	"description"?: string | null;
+	"enum"?: string[] | null;
+	"key": string;
+	"label"?: string | null;
+	"type": string;
+};
+
+export type GjcSettingsReadParams = Record<string, never>;
+
+export type GjcSettingsReadResult = {
+	"values": {
+	[key: string]: JsonValue | undefined;
+};
+};
+
+export type GjcSettingsUpdateParams = {
+	"key": string;
+	"value": JsonValue;
+};
+
+export type GjcSettingsUpdateResult = {
+	"values": {
+	[key: string]: JsonValue | undefined;
+};
+};
+
+export type GjcAppearanceSemanticPreview = {
+	"accent": string;
+	"bg": string;
+	"bgElevated": string;
+	"border": string;
+	"danger": string;
+	"success": string;
+	"surface": string;
+	"text": string;
+	"textMuted": string;
+	"warning": string;
+};
+
+export type GjcAppearanceThemeEntry = {
+	"builtin": boolean;
+	"id": string;
+	"kind": GjcAppearanceThemeKind;
+	"semanticPreview": GjcAppearanceSemanticPreview;
+};
+
+export type GjcAppearanceThemeKind = "dark" | "light";
+
+export type GjcAppearanceThemesListParams = Record<string, never>;
+
+export type GjcAppearanceThemesListResult = {
+	"themes": GjcAppearanceThemeEntry[];
+};
+
+export type GjcAppearanceReadParams = Record<string, never>;
+
+export type GjcAppearanceReadResult = {
+	"colorBlindMode"?: boolean | null;
+	"dark": string;
+	"light": string;
+	"symbolPreset"?: string | null;
+};
+
+export type GjcAppearanceSetParams = {
+	"colorBlindMode"?: boolean | null;
+	"dark"?: string | null;
+	"light"?: string | null;
+	"symbolPreset"?: string | null;
+};
+
+export type GjcAppearanceSetResult = {
+	"colorBlindMode"?: boolean | null;
+	"dark": string;
+	"light": string;
+	"symbolPreset"?: string | null;
+};
+
+export type GjcTodosReadResult = {
+	"todos": GjcTodoItem[];
+};
+
+export type GjcTodoItem = {
+	"content": string;
+	"id"?: string | null;
+	"status": string;
+};
+
+export type GjcUsageReadResult = {
+	"freshness": GjcContextFreshness;
+	"perModel": GjcModelUsage[];
+	"source": string;
+	"totalCost"?: number | null;
+};
+
+export type GjcModelUsage = {
+	"cacheRead"?: number | null;
+	"cacheWrite"?: number | null;
+	"cost"?: number | null;
+	"input": number;
+	"modelId": string;
+	"output": number;
+	"provider"?: string | null;
+};
+
+export type GjcJobsListResult = {
+	"jobs": GjcJobEntry[];
+};
+
+export type GjcJobEntry = {
+	"description"?: string | null;
+	"endedAt"?: string | null;
+	"id": string;
+	"startedAt"?: string | null;
+	"status": string;
+	"type": string;
+};
+
+export type GjcAgentsListResult = {
+	"agents": GjcAgentEntry[];
+};
+
+export type GjcAgentEntry = {
+	"agentType"?: string | null;
+	"description"?: string | null;
+	"id": string;
+	"outputRef"?: string | null;
+	"status": string;
+};
+
+export type GjcMonitorsListResult = {
+	"crons"?: GjcCronEntry[] | null;
+	"monitors": GjcMonitorEntry[];
+};
+
+export type GjcMonitorEntry = {
+	"description"?: string | null;
+	"id": string;
+	"kind"?: string | null;
+	"outputTail"?: string | null;
+	"startedAt"?: string | null;
+	"status": string;
+};
+
+export type GjcCronEntry = {
+	"createdAt"?: string | null;
+	"cronExpression"?: string | null;
+	"humanSchedule"?: string | null;
+	"id": string;
+	"nextFireAt"?: string | null;
+	"prompt"?: string | null;
+	"recurring"?: boolean | null;
+};
+
+export type GjcCompactSummaryResult = {
+	"summaries": GjcCompactSummaryEntry[];
+};
+
+export type GjcCompactSummaryEntry = {
+	"id"?: string | null;
+	"summary": string;
+	"timestamp": string;
+	"tokensBefore"?: number | null;
+};
+
+export type GjcExtensionsSetEnabledParams = {
+	"enabled": boolean;
+	"extensionId": string;
+};
+
+export type GjcExtensionsSetEnabledResult = {
+	"enabled": boolean;
+	"ok": boolean;
+};
+
+export type GjcSkillsSetEnabledParams = {
+	"enabled": boolean;
+	"skillId": string;
+};
+
+export type GjcSkillsSetEnabledResult = {
+	"enabled": boolean;
+	"ok": boolean;
+};
+
+export type GjcPluginsSetEnabledParams = {
+	"enabled": boolean;
+	"pluginId": string;
+};
+
+export type GjcPluginsSetEnabledResult = {
+	"enabled": boolean;
+	"ok": boolean;
+};
+
+export type GjcPluginsSetFeatureParams = {
+	"enabled": boolean;
+	"feature": string;
+	"pluginId": string;
+};
+
+export type GjcPluginsSetFeatureResult = {
+	"ok": boolean;
+};
+
+export type GjcPluginsSetSettingParams = {
+	"key": string;
+	"pluginId": string;
+	"value": JsonValue;
+};
+
+export type GjcPluginsSetSettingResult = {
+	"ok": boolean;
+};
+
+export type GjcModelAssignParams = {
+	"modelId": string;
+	"provider": string;
+	"role": string;
+	"thinkingLevel"?: string | null;
+	"threadId": string;
+};
+
+export type GjcModelAssignResult = {
+	"modelId": string;
+	"ok": boolean;
+	"role": string;
 };

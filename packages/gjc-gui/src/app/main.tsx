@@ -4,6 +4,10 @@ import {
 	AppServerResponseError,
 	type GjcCommandsListResult,
 	type GjcToolsListResult,
+	type GjcExtensionsInspectResult,
+	type GjcSessionListResult,
+	type GjcSessionTreeResult,
+	type GjcGoalReadResult,
 	type JsonValue,
 	type RpcWorkflowGateResolution,
 } from "@gajae-code/app-server-client";
@@ -18,6 +22,7 @@ import {
 	appendLocalUserMessage,
 	emptyTranscriptState,
 	foldNotification,
+	mergeWorkflowGateApprovals,
 	markApproval,
 	modelLabelFromStateRead,
 	type TranscriptItem,
@@ -26,14 +31,17 @@ import {
 } from "./transcript";
 import { Markdown } from "./markdown.tsx";
 import { lastAssistantText, serializeTranscript } from "./transcript-export-logic";
-import { markThreadArchived, removeThread } from "./session-actions-logic";
-import { SessionActions } from "./session-actions.tsx";
+import { buildSessionBrowserParams, clampRovingIndex, composerSubmitMode, deriveUnifiedSessionRows, dryRunSessionMove, escapeAction, executeSessionMove, flattenSessionTree, interleaveApprovals, markThreadArchived, nextRightRailCollapsed, nextRovingIndex, provenanceLabel, removeThread, retryLastTurnAction, sessionDeletePayload, sessionLabelPayload, sessionNavigatePayload, sessionOpenPayload, sessionRowStatusPresentation, validateRenameTitle, validateSessionLabel, type SessionMoveConfirmState, type SessionScope } from "./session-actions-logic";
+import { ConfirmDialog, PromptDialog, type PromptState, SessionActions } from "./session-actions.tsx";
 import { CommandPalette } from "./command-palette.tsx";
-import type { PaletteCommand, PaletteTool } from "./command-palette-logic";
+import type { PaletteCommand, PaletteCommandAction, PaletteTool } from "./command-palette-logic";
 import { ExtensibilityPanel } from "./extensibility-panel.tsx";
-import type { Extension, Plugin, PluginInspection, Skill } from "./extensibility-logic";
+import { commitAppearancePreview, createAppearancePreviewState, pluginFeaturePayload, pluginSettingPayload, restoreAppearancePreview, restoreAppearancePreviewOnConnectionLoss, setEnabledPayload, type AppearancePreviewState, type AppearanceSettings, type AppearanceTheme, type Extension, type Plugin, type PluginInspection, type Skill } from "./extensibility-logic";
+import { HelpSheet, HotkeysSheet, type LocalCommandSheet } from "./local-command-sheets.tsx";
 import { ModelPanel } from "./model-panel.tsx";
+import { cardFromRows, errorCard, mergeExecCards, monitorsCardFromResult, notificationRefreshCause, shouldRefreshOnTurnBoundary, type ExecStateCard } from "./exec-state-logic";
 import "./styles.css";
+import "./session-browser.css";
 import { shouldStickToBottom } from "./scroll-follow-logic";
 
 type EndpointDescriptor = { url: string; token: string };
@@ -60,27 +68,55 @@ type PaletteData = {
 	error?: string;
 };
 
+type SessionBrowserData = {
+	sessions: GjcSessionListResult["sessions"];
+	query: string;
+	loading: boolean;
+	error?: string;
+	tree?: GjcSessionTreeResult;
+	exportStatus?: string;
+};
+
+type SessionBrowserClient = Omit<AppServerClient, "gjcSessionOpen" | "gjcSessionDelete" | "gjcSessionNavigate" | "gjcSessionLabel"> & {
+	gjcSessionOpen(params: { sessionPath: string }): Promise<{ threadId: string; sessionMetadata?: { cwd?: string | null }; resumed: boolean }>;
+	gjcSessionDelete(params: { sessionPath: string }): Promise<{ ok: boolean }>;
+	gjcSessionNavigate(params: { threadId: string; entryId: string; summarize?: boolean }): Promise<{ ok: boolean; activeLeafId?: string }>;
+	gjcSessionLabel(params: { threadId: string; entryId: string; label: string }): Promise<{ ok: boolean }>;
+};
+
+type FrozenContractClient = AppServerClient & {
+	gjcSessionMove(params: { threadId: string; targetCwd: string; dryRun?: boolean }): Promise<unknown>;
+	gjcProviderAdd(params: unknown): Promise<{ ok: true; providerId: string; models: string[] }>;
+	gjcAuthLoginStart(params: { providerId: string }): Promise<{ flowId: string; state: "idle" | "pending-browser" | "needs-input" | "authenticated" | "failed" | "cancelled" | "unsupported"; authUrl?: string; instructions?: string }>;
+	gjcAuthLoginPoll(params: { flowId: string }): Promise<{ state: "idle" | "pending-browser" | "needs-input" | "authenticated" | "failed" | "cancelled" | "unsupported"; promptMessage?: string }>;
+	gjcAuthLoginComplete(params: { flowId: string; redirectUrl: string }): Promise<{ state: "idle" | "pending-browser" | "needs-input" | "authenticated" | "failed" | "cancelled" | "unsupported" }>;
+	gjcAuthLoginCancel(params: { flowId: string }): Promise<{ state: "idle" | "pending-browser" | "needs-input" | "authenticated" | "failed" | "cancelled" | "unsupported" }>;
+	gjcModelAssign(params: { threadId: string; role: string; provider: string; modelId: string; thinkingLevel?: string }): Promise<{ ok: true; role: string; modelId: string }>;
+	gjcSkillsSetEnabled(params: Record<string, string | boolean>): Promise<{ ok: true; enabled: boolean }>;
+	gjcExtensionsSetEnabled(params: Record<string, string | boolean>): Promise<{ ok: true; enabled: boolean }>;
+	gjcPluginsSetEnabled(params: Record<string, string | boolean>): Promise<{ ok: true; enabled: boolean }>;
+	gjcPluginsSetFeature(params: { pluginId: string; feature: string; enabled: boolean }): Promise<{ ok: true }>;
+	gjcPluginsSetSetting(params: { pluginId: string; key: string; value: JsonValue }): Promise<{ ok: true }>;
+};
+type ExtensionInspection = NonNullable<GjcExtensionsInspectResult["extension"]>;
+
 type ExtensibilityData = {
 	skills: Skill[];
 	extensions: Extension[];
 	plugins: Plugin[];
+	extensionInspection?: ExtensionInspection;
 	pluginInspection?: PluginInspection;
+	appearanceThemes: AppearanceTheme[];
+	appearancePreview?: AppearancePreviewState;
 	loading: boolean;
 	error?: string;
 };
 
+type OpenDrawer = "model" | "theme" | "session" | "settings" | "provider" | "tools" | "skills" | "extensions" | "plugins";
+type ExtensibilityTab = "skills" | "extensions" | "plugins" | "appearance";
 type WorkspaceView = "chat" | "extensibility";
 
 const RECENT_DIRECTORIES_KEY = "gjc-gui.recentDirectories";
-const DEFERRED_EXEC_STATE_ROWS = [
-	["todos", "Read surface needs a typed app-server API before GUI rendering."],
-	["context", "Context usage is not exposed on the GUI seam yet."],
-	["usage", "Provider/token usage needs a new typed notification or read API."],
-	["jobs", "Job lifecycle cards need new app-server notifications."],
-	["agents", "Agent roster/state needs a typed GUI API."],
-	["monitors", "Monitor streams need new app-server notifications."],
-	["retry", "gjc/retry is not on the current GUI seam."],
-] as const;
 const MAX_RECENT_DIRECTORIES = 8;
 // Default working directory for a scratch/default session when the user has not
 // picked one, matching the TUI's tmp-rooted default session.
@@ -101,35 +137,76 @@ function App() {
 	const [client, setClient] = useState<AppServerClient>();
 	const [composer, setComposer] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
+	const [localSheet, setLocalSheet] = useState<LocalCommandSheet>();
+	const [openDrawer, setOpenDrawer] = useState<OpenDrawer>();
+	const [extensibilityTab, setExtensibilityTab] = useState<ExtensibilityTab>("skills");
 	const [paletteData, setPaletteData] = useState<PaletteData>({ commands: [], tools: [], loading: false });
-	const [extData, setExtData] = useState<ExtensibilityData>({ skills: [], extensions: [], plugins: [], loading: false });
+	const [extData, setExtData] = useState<ExtensibilityData>({ skills: [], extensions: [], plugins: [], appearanceThemes: [], loading: false });
+	const [sessionBrowser, setSessionBrowser] = useState<SessionBrowserData>({ sessions: [], query: "", loading: false });
+	const [sessionScope, setSessionScope] = useState<SessionScope>("all");
+	const [sessionDeleteConfirm, setSessionDeleteConfirm] = useState<{ kind: "delete"; threadId: string; title: string; sessionPath: string } | null>(null);
+	const [sessionMoveConfirm, setSessionMoveConfirm] = useState<SessionMoveConfirmState>(null);
+	const [labelPrompt, setLabelPrompt] = useState<PromptState>(null);
 	const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
 	const [workingDirectory, setWorkingDirectory] = useState("");
 	const [recentDirectories, setRecentDirectories] = useState<string[]>(() => readRecentDirectories());
 	const [isPickingDirectory, setPickingDirectory] = useState(false);
 	const [isSubmitting, setSubmitting] = useState(false);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
+	const [execCards, setExecCards] = useState<ExecStateCard[]>([]);
+	const [execRefreshNonce, setExecRefreshNonce] = useState(0);
+	const [goalStatus, setGoalStatus] = useState<GjcGoalReadResult | undefined>();
+	const [rightRailCollapsed, setRightRailCollapsed] = useState(() => window.innerWidth < 1180);
+	const [queuedSteer, setQueuedSteer] = useState("");
+	const [sessionRovingIndex, setSessionRovingIndex] = useState(0);
 	const copyStatusTimeoutRef = useRef<number | undefined>(undefined);
 	const stopRef = useRef<(() => void) | undefined>(undefined);
 	const composerRef = useRef<HTMLTextAreaElement>(null);
 	const transcriptRef = useRef<HTMLElement>(null);
 	const transcriptBottomRef = useRef<HTMLDivElement>(null);
+	const sessionRowRefs = useRef<Array<HTMLButtonElement | null>>([]);
 	const stickToBottomRef = useRef(true);
 	const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
+	const lastActiveTurnIdRef = useRef<string | undefined>(undefined);
 	const restoreComposerFocus = useCallback(() => {
 		requestAnimationFrame(() => composerRef.current?.focus());
 	}, []);
+
+	const restoreAppearanceAfterConnectionLoss = useCallback(() => {
+		setExtData(current => ({ ...current, appearancePreview: restoreAppearancePreviewOnConnectionLoss(current.appearancePreview) }));
+	}, []);
+
+
+	useEffect(() => {
+		if (shouldRefreshOnTurnBoundary(lastActiveTurnIdRef.current, transcript.activeTurnId)) {
+			lastActiveTurnIdRef.current = transcript.activeTurnId;
+			setExecRefreshNonce(nonce => nonce + 1);
+		}
+	}, [transcript.activeTurnId]);
 
 	const connect = useCallback(async (): Promise<ConnectionState> => {
 		setConnection(current => ({ kind: current.kind === "connected" ? "reconnecting" : "connecting" }));
 		try {
 			const endpoint = await resolveEndpoint();
 			const wsUrl = websocketUrl(endpoint);
-			const nextClient = new AppServerClient({ webSocketFactory: url => new WebSocket(url) });
+			const nextClient = new AppServerClient({
+				webSocketFactory: url => {
+					const socket = new WebSocket(url);
+					const handleConnectionLoss = () => {
+						restoreAppearanceAfterConnectionLoss();
+						setClient(undefined);
+						setConnection(describeFailure(new Error("App server connection closed")));
+					};
+					socket.addEventListener("close", handleConnectionLoss);
+					socket.addEventListener("error", handleConnectionLoss);
+					return socket;
+				},
+			});
 			await nextClient.connect(wsUrl);
 			const unsubscribe = nextClient.onNotification(notification => {
 				setTranscript(current => foldNotification(current, notification));
+				if (notificationRefreshCause(notification)) setExecRefreshNonce(nonce => nonce + 1);
 			});
 			stopRef.current?.();
 			stopRef.current = () => {
@@ -143,14 +220,17 @@ function App() {
 			setConnection(nextConnection);
 			restoreComposerFocus();
 			void refreshSessions(nextClient);
+			void nextClient.gjcAuthStatus().catch(() => undefined);
+			if (transcript.activeThreadId) void resyncWorkflowGates(nextClient, transcript.activeThreadId, setTranscript);
 			return nextConnection;
 		} catch (error) {
+			restoreAppearanceAfterConnectionLoss();
 			setClient(undefined);
 			const nextConnection = describeFailure(error);
 			setConnection(nextConnection);
 			return nextConnection;
 		}
-	}, [restoreComposerFocus]);
+	}, [restoreAppearanceAfterConnectionLoss, restoreComposerFocus, transcript.activeThreadId]);
 
 	useEffect(() => {
 		// Cold desktop launch spawns a bundled sidecar that can take a few
@@ -181,6 +261,7 @@ function App() {
 	}, [connect]);
 
 
+
 	const handleTranscriptScroll = useCallback(() => {
 		const element = transcriptRef.current;
 		if (!element) return;
@@ -201,6 +282,50 @@ function App() {
 		[transcript.activeThreadId, transcript.threads],
 	);
 	const activeThreadId = activeThread?.id;
+
+	useEffect(() => {
+		if (!client || !activeThreadId) {
+			setExecCards([]);
+			return;
+		}
+		let cancelled = false;
+		const timer = window.setTimeout(() => {
+			setExecCards(current => current.length > 0 ? current : [
+				cardFromRows("todos", "Todos", undefined),
+				cardFromRows("context", "Context", undefined),
+				cardFromRows("usage", "Usage", undefined),
+				cardFromRows("jobs", "Jobs", undefined),
+				cardFromRows("agents", "Agents", undefined),
+				cardFromRows("monitors", "Monitors", undefined),
+				cardFromRows("compact", "Compaction", undefined),
+			]);
+			const params = { threadId: activeThreadId };
+			Promise.allSettled([
+				client.gjcTodosRead(params),
+				client.gjcContextRead(params),
+				client.gjcUsageRead(params),
+				client.gjcJobsList(params),
+				client.gjcAgentsList(params),
+				client.gjcMonitorsList(params),
+				client.gjcCompactSummary(params),
+			]).then(results => {
+				if (cancelled) return;
+				const names = [["todos", "Todos"], ["context", "Context"], ["usage", "Usage"], ["jobs", "Jobs"], ["agents", "Agents"], ["monitors", "Monitors"], ["compact", "Compaction"]] as const;
+				const nextCards = results.map((result, index) => {
+					const [key, title] = names[index];
+					if (result.status === "rejected") return errorCard(key, title, result.reason);
+					const value = result.value as Record<string, unknown>;
+					const rows = key === "context" ? [value] : (value.todos ?? value.perModel ?? value.jobs ?? value.agents ?? value.monitors ?? value.summaries) as unknown[];
+					return key === "monitors" ? monitorsCardFromResult(value) : cardFromRows(key, title, rows);
+				});
+				setExecCards(current => mergeExecCards(current, nextCards));
+			});
+		}, 150);
+		return () => {
+			cancelled = true;
+			window.clearTimeout(timer);
+		};
+	}, [client, activeThreadId, transcript.activeTurnId, execRefreshNonce]);
 	const visibleItems = (activeThreadId ? transcript.items.filter(item => item.threadId === activeThreadId) : transcript.items).filter(
 		item => {
 			if (item.role === "tool") return true;
@@ -224,7 +349,7 @@ function App() {
 	for (const item of visibleItems) {
 		const grouped = item.role === "reasoning" || item.role === "tool" || item.role === "assistant";
 		if (grouped) {
-			if (!currentTurn) {
+			if (!currentTurn || currentTurn.items.at(-1)?.turnId !== item.turnId) {
 				currentTurn = { kind: "turn", key: item.id, items: [] };
 				renderEntries.push(currentTurn);
 			}
@@ -237,6 +362,10 @@ function App() {
 	const visibleApprovals = activeThreadId
 		? transcript.approvals.filter(approval => approval.threadId === activeThreadId)
 		: transcript.approvals;
+	const interleavedTranscript = interleaveApprovals(
+		renderEntries.map(entry => ({ id: entry.kind === "turn" ? entry.key : entry.item.id, turnId: entry.kind === "turn" ? entry.items.at(-1)?.turnId : entry.item.turnId, entry })),
+		visibleApprovals.map(approval => ({ id: approval.id, turnId: "turnId" in approval ? approval.turnId : undefined, approval })),
+	);
 	const lastAssistantCopy = lastAssistantText(visibleItems);
 	const transcriptDump = serializeTranscript(visibleItems);
 	const canCopyAssistant = Boolean(lastAssistantCopy);
@@ -252,6 +381,29 @@ function App() {
 		}
 	}, [visibleItems.length, visibleApprovals.length]);
 	const connected = connection.kind === "connected";
+	const flatTree = sessionBrowser.tree ? flattenSessionTree(sessionBrowser.tree.nodes) : [];
+	const unifiedSessions = deriveUnifiedSessionRows({ threads: transcript.threads, sessions: sessionBrowser.sessions, tree: flatTree, activeThreadId });
+	const sessionScopeCwd = (activeThread?.cwd ?? normalizeDirectoryInput(workingDirectory)) || undefined;
+
+	useEffect(() => {
+		setSessionRovingIndex(current => clampRovingIndex(current, unifiedSessions.length));
+		sessionRowRefs.current.length = unifiedSessions.length;
+	}, [unifiedSessions.length]);
+
+	useEffect(() => {
+		if (sessionRovingIndex < 0) return;
+		const activeElement = document.activeElement;
+		if (activeElement instanceof HTMLElement && activeElement.closest(".thread-list")) {
+			sessionRowRefs.current[sessionRovingIndex]?.focus();
+		}
+	}, [sessionRovingIndex]);
+
+
+	useEffect(() => {
+		if (!client || !connected) return;
+		const timer = window.setTimeout(() => void refreshSessionBrowser(client, sessionBrowser.query, sessionScope), 250);
+		return () => window.clearTimeout(timer);
+	}, [client, connected, sessionBrowser.query, sessionScope, sessionScopeCwd]);
 
 	const loadPaletteData = useCallback(async () => {
 		if (!client || !activeThreadId) return;
@@ -275,27 +427,33 @@ function App() {
 		if (!client || !connected || !activeThreadId) return;
 		setExtData(current => ({ ...current, loading: true, error: undefined }));
 		try {
-			const [skillsResult, extensionsResult, pluginsResult] = await Promise.all([
+			const [skillsResult, extensionsResult, pluginsResult, themesResult, appearanceResult] = await Promise.all([
 				client.gjcSkillsList({ threadId: activeThreadId }),
 				client.gjcExtensionsList({ threadId: activeThreadId }),
 				client.gjcPluginsList({ threadId: activeThreadId }),
+				client.gjcAppearanceThemesList({}),
+				client.gjcAppearanceRead({}),
 			]);
 			setExtData(current => ({
 				...current,
 				skills: skillsResult.skills,
 				extensions: extensionsResult.extensions,
 				plugins: pluginsResult.plugins,
+				appearanceThemes: themesResult.themes,
+				appearancePreview: createAppearancePreviewState(appearanceResult),
 				loading: false,
 			}));
 		} catch (error) {
+			restoreAppearanceAfterConnectionLoss();
 			setExtData(current => ({ ...current, loading: false, error: errorMessage(error) }));
 		}
-	}, [activeThreadId, client, connected]);
+	}, [activeThreadId, client, connected, restoreAppearanceAfterConnectionLoss]);
 
 	const inspectExtension = useCallback(async (extensionId: string) => {
 		if (!client || !connected || !activeThreadId) return;
 		try {
-			await client.gjcExtensionsInspect({ extensionId, threadId: activeThreadId });
+			const result = await client.gjcExtensionsInspect({ extensionId, threadId: activeThreadId });
+			setExtData(current => ({ ...current, extensionInspection: result.extension ?? undefined, error: undefined }));
 		} catch (error) {
 			setExtData(current => ({ ...current, error: errorMessage(error) }));
 		}
@@ -311,23 +469,126 @@ function App() {
 		}
 	}, [activeThreadId, client, connected]);
 
+	const previewAppearanceSettings = useCallback((next: AppearanceSettings) => {
+		setExtData(current => current.appearancePreview ? { ...current, appearancePreview: { ...current.appearancePreview, candidate: next, previewActive: true } } : current);
+	}, []);
+
+	const restoreAppearanceSettings = useCallback(() => {
+		setExtData(current => current.appearancePreview ? { ...current, appearancePreview: restoreAppearancePreview(current.appearancePreview) } : current);
+	}, []);
+
+	const applyAppearanceSettings = useCallback(async (next: AppearanceSettings) => {
+		if (!client) return;
+		try {
+			const applied = await client.gjcAppearanceSet(next);
+			setExtData(current => current.appearancePreview ? { ...current, appearancePreview: commitAppearancePreview(current.appearancePreview, applied), error: undefined } : current);
+		} catch (error) {
+			restoreAppearanceAfterConnectionLoss();
+			setExtData(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}, [client, restoreAppearanceAfterConnectionLoss]);
+
+	const setSkillEnabled = useCallback(async (skillId: string, enabled: boolean) => {
+		if (!client) return;
+		try {
+			await (client as FrozenContractClient).gjcSkillsSetEnabled(setEnabledPayload("skillId", skillId, enabled));
+			setExtData(current => ({ ...current, skills: current.skills.map(skill => ((skill as { id?: string; skillId?: string }).id ?? (skill as { skillId?: string }).skillId ?? skill.name) === skillId ? { ...skill, enabled } : skill), error: undefined }));
+		} catch (error) {
+			setExtData(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}, [client]);
+
+	const setExtensionEnabled = useCallback(async (extensionId: string, enabled: boolean) => {
+		if (!client) return;
+		try {
+			await (client as FrozenContractClient).gjcExtensionsSetEnabled(setEnabledPayload("extensionId", extensionId, enabled));
+			setExtData(current => ({ ...current, extensions: current.extensions.map(extension => extension.id === extensionId ? { ...extension, enabled } : extension), error: undefined }));
+		} catch (error) {
+			setExtData(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}, [client]);
+
+	const setPluginEnabled = useCallback(async (pluginId: string, enabled: boolean) => {
+		if (!client) return;
+		try {
+			await (client as FrozenContractClient).gjcPluginsSetEnabled(setEnabledPayload("pluginId", pluginId, enabled));
+			setExtData(current => ({ ...current, plugins: current.plugins.map(plugin => plugin.id === pluginId ? { ...plugin, enabled } : plugin), error: undefined }));
+		} catch (error) {
+			setExtData(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}, [client]);
+
+	const setPluginFeature = useCallback(async (pluginId: string, feature: string, enabled: boolean) => {
+		if (!client) return;
+		try {
+			await (client as FrozenContractClient).gjcPluginsSetFeature(pluginFeaturePayload(pluginId, feature, enabled));
+			setExtData(current => ({ ...current, error: undefined }));
+		} catch (error) {
+			setExtData(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}, [client]);
+
+	const setPluginSetting = useCallback(async (pluginId: string, key: string, value: unknown) => {
+		if (!client) return;
+		try {
+			const payload = pluginSettingPayload(pluginId, key, value);
+			await (client as FrozenContractClient).gjcPluginsSetSetting({ ...payload, value: payload.value as JsonValue });
+			setExtData(current => ({ ...current, error: undefined }));
+		} catch (error) {
+			setExtData(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}, [client]);
+
 	useEffect(() => {
 		if (workspaceView === "extensibility") void loadExtensibilityData();
 	}, [loadExtensibilityData, workspaceView]);
 
 	useEffect(() => {
 		function handleGlobalKeyDown(event: KeyboardEvent) {
-			if (event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
-			event.preventDefault();
-			setPaletteOpen(current => {
-				const next = !current;
-				if (next) void loadPaletteData();
-				return next;
-			});
+			if (event.key === "Escape") {
+				const action = escapeAction({ overlayOpen: paletteOpen || Boolean(localSheet) || Boolean(labelPrompt) || Boolean(sessionDeleteConfirm) || Boolean(sessionMoveConfirm), transientOpen: showJumpToLatest, queuedText: queuedSteer, running: Boolean(transcript.activeTurnId) });
+				if (action === "none") return;
+				event.preventDefault();
+				if (action === "close-overlay") {
+					setPaletteOpen(false);
+					setLocalSheet(undefined);
+					setLabelPrompt(null);
+					setSessionDeleteConfirm(null);
+					setSessionMoveConfirm(null);
+				} else if (action === "dismiss-transient") {
+					setShowJumpToLatest(false);
+				} else if (action === "clear-queued") {
+					setQueuedSteer("");
+				} else {
+					void stopTurn();
+				}
+				return;
+			}
+			if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
+				event.preventDefault();
+				setPaletteOpen(current => {
+					const next = !current;
+					if (next) void loadPaletteData();
+					return next;
+				});
+				return;
+			}
+			if (event.key.toLowerCase() === "n" && (event.metaKey || event.ctrlKey)) {
+				event.preventDefault();
+				void startNewThreadFromActions();
+			}
 		}
 		window.addEventListener("keydown", handleGlobalKeyDown);
 		return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-	}, [loadPaletteData]);
+	}, [labelPrompt, loadPaletteData, localSheet, paletteOpen, queuedSteer, sessionDeleteConfirm, sessionMoveConfirm, showJumpToLatest, transcript.activeTurnId]);
+
+	useEffect(() => {
+		function handleResize() {
+			setRightRailCollapsed(current => nextRightRailCollapsed(current, window.innerWidth < 1180 ? "collapse" : "expand", window.innerWidth));
+		}
+		window.addEventListener("resize", handleResize);
+		return () => window.removeEventListener("resize", handleResize);
+	}, []);
 
 	const closePalette = useCallback(() => {
 		setPaletteOpen(false);
@@ -338,6 +599,43 @@ function App() {
 		setComposer(current => current + text);
 		restoreComposerFocus();
 	}, []);
+
+	const handlePaletteAction = useCallback((action: PaletteCommandAction, _command: PaletteCommand) => {
+		if (action.kind === "local-sheet") {
+			setLocalSheet(action.target);
+			return;
+		}
+		if (action.kind === "navigate") {
+			setOpenDrawer(action.target);
+			const extensibilityTabs: Partial<Record<OpenDrawer, ExtensibilityTab>> = { theme: "appearance", skills: "skills", extensions: "extensions", plugins: "plugins" };
+			const targetTab = extensibilityTabs[action.target];
+			if (targetTab) {
+				setExtensibilityTab(targetTab);
+				setWorkspaceView("extensibility");
+				void loadExtensibilityData();
+			} else {
+				setWorkspaceView("chat");
+			}
+			return;
+		}
+		if (action.kind !== "invoke") return;
+		const run = async () => {
+			switch (action.target) {
+				case "compact": await compactThread(); break;
+				case "retry": await retryLastTurn(); break;
+				case "new": await startNewThreadFromActions(); break;
+				case "copy": await copyTranscriptText(lastAssistantCopy); break;
+				case "dump": await copyTranscriptText(transcriptDump); break;
+				case "drop":
+					if (activeThreadId && !(await deleteThread(activeThreadId))) break;
+					await startNewThreadFromActions();
+					break;
+				case "resume": await startThread(); break;
+				case "move": if (activeThreadId) await dryRunMoveThread(activeThreadId); break;
+			}
+		};
+		void run();
+	}, [activeThreadId, lastAssistantCopy, loadExtensibilityData, transcriptDump]);
 
 	// Return the active thread id, creating one on demand so the first message
 	// just works. Uses the chosen working directory, or the default scratch
@@ -351,10 +649,20 @@ function App() {
 		setWorkingDirectory(cwd);
 		setTranscript(current => upsertThread(current, result.thread, cwd));
 		void refreshModelLabel(result.thread.id);
+		void refreshGoalStatus(result.thread.id);
 		return result.thread.id;
 	}
 
 	// The active model isn't carried on ThreadSummary; read it from session state.
+	async function refreshGoalStatus(threadId: string): Promise<void> {
+		if (!client) return;
+		try {
+			setGoalStatus(await client.gjcGoalRead({ threadId }));
+		} catch {
+			setGoalStatus(undefined);
+		}
+	}
+
 	async function refreshModelLabel(threadId: string): Promise<void> {
 		if (!client) return;
 		try {
@@ -363,6 +671,28 @@ function App() {
 			if (label) setTranscript(current => ({ ...current, modelLabel: label }));
 		} catch {
 			// Non-fatal: leave the previous label.
+		}
+	}
+
+	async function startNewThreadFromActions() {
+		if (!client) return;
+		try {
+			const cwd = normalizeDirectoryInput(workingDirectory) || DEFAULT_CWD;
+			const result = await client.threadStart({ source: "gjc-gui", cwd });
+			setTranscript(current => upsertThread(current, result.thread, cwd));
+			void refreshModelLabel(result.thread.id);
+			void refreshGoalStatus(result.thread.id);
+		} catch (error) {
+			setConnection(describeFailure(error));
+		}
+	}
+
+	async function retryLastTurn() {
+		if (!client) return;
+		try {
+			await retryLastTurnAction(client, activeThreadId);
+		} catch (error) {
+			setConnection(describeFailure(error));
 		}
 	}
 
@@ -398,8 +728,107 @@ function App() {
 		}
 	}
 
+	async function refreshSessionBrowser(sessionClient = client, query = sessionBrowser.query, scope = sessionScope) {
+		if (!sessionClient) return;
+		setSessionBrowser(current => ({ ...current, loading: true, error: undefined }));
+		try {
+			const params = buildSessionBrowserParams(query, scope, sessionScopeCwd);
+			const result = params.query ? await sessionClient.gjcSessionSearch({ ...params, query: params.query }) : await sessionClient.gjcSessionList(params);
+			setSessionBrowser(current => ({ ...current, sessions: result.sessions, loading: false }));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, loading: false, error: describeFailure(error).detail ?? String(error) }));
+		}
+	}
+
+	async function refreshSessionTree() {
+		if (!activeThreadId) return;
+		await refreshSessionTreeFor(activeThreadId);
+	}
+
+	async function openSession(sessionPath: string) {
+		if (!client) return;
+		try {
+			const result = await (client as unknown as SessionBrowserClient).gjcSessionOpen(sessionOpenPayload(sessionPath));
+			const readResult = await client.threadRead({ threadId: result.threadId });
+			setTranscript(current => upsertThread(current, readResult.thread, result.sessionMetadata?.cwd ?? undefined));
+			void refreshModelLabel(result.threadId);
+			void refreshGoalStatus(result.threadId);
+			await refreshSessionTreeFor(result.threadId);
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: describeFailure(error).detail ?? String(error) }));
+		}
+	}
+
+	async function deleteSession(sessionPath: string) {
+		if (!client) return;
+		try {
+			await (client as unknown as SessionBrowserClient).gjcSessionDelete(sessionDeletePayload(sessionPath));
+			setSessionBrowser(current => ({ ...current, sessions: current.sessions.filter(session => session.path !== sessionPath), error: undefined }));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: describeFailure(error).detail ?? String(error) }));
+		}
+	}
+
+	async function refreshSessionTreeFor(threadId: string) {
+		if (!client) return;
+		try {
+			const tree = await client.gjcSessionTree({ threadId });
+			setSessionBrowser(current => ({ ...current, tree }));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: describeFailure(error).detail ?? String(error) }));
+		}
+	}
+
+	async function navigateSessionTree(entryId: string) {
+		if (!client || !activeThreadId) return;
+		try {
+			await (client as unknown as SessionBrowserClient).gjcSessionNavigate(sessionNavigatePayload(activeThreadId, entryId));
+			await refreshSessionTreeFor(activeThreadId);
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: describeFailure(error).detail ?? String(error) }));
+		}
+	}
+
+	async function labelSessionTree(entryId: string, label: string) {
+		if (!client || !activeThreadId) return;
+		const validation = validateSessionLabel(label);
+		if (validation) {
+			setSessionBrowser(current => ({ ...current, error: validation }));
+			return;
+		}
+		try {
+			await (client as unknown as SessionBrowserClient).gjcSessionLabel(sessionLabelPayload(activeThreadId, entryId, label));
+			await refreshSessionTreeFor(activeThreadId);
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: describeFailure(error).detail ?? String(error) }));
+		}
+	}
+
+	async function renameSession(sessionPath: string, title: string) {
+		if (!client) return;
+		const validation = validateRenameTitle(title);
+		if (validation) {
+			setSessionBrowser(current => ({ ...current, error: validation }));
+			return;
+		}
+		await client.gjcSessionRename({ sessionPath, title: title.trim() });
+		await refreshSessionBrowser(client);
+	}
+
+	async function exportSession(sessionPath: string, format: "markdown" | "json") {
+		if (!client) return;
+		try {
+			const result = await client.gjcSessionExport({ sessionPath, format, redact: true });
+			await navigator.clipboard.writeText(result.content);
+			setSessionBrowser(current => ({ ...current, exportStatus: `Copied ${format} export · ${provenanceLabel(result.provenance)}` }));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, exportStatus: `Export failed: ${describeFailure(error).detail ?? String(error)}` }));
+		}
+	}
+
 	async function refreshSessions(sessionClient = client) {
 		if (!sessionClient) return;
+		void refreshSessionBrowser(sessionClient);
 		try {
 			const result = await sessionClient.threadLoadedList({});
 			for (const threadId of result.data) {
@@ -429,6 +858,32 @@ function App() {
 		}
 	}
 
+	async function dryRunMoveThread(threadId: string) {
+		if (!client) return;
+		const targetCwd = window.prompt("Move session to absolute existing directory", activeThread?.cwd ?? workingDirectory);
+		if (!targetCwd) return;
+		try {
+			const state = await dryRunSessionMove(client as unknown as { gjcSessionMove(params: { threadId: string; targetCwd: string; dryRun: true }): Promise<NonNullable<SessionMoveConfirmState>["plan"]> }, threadId, targetCwd);
+			setSessionMoveConfirm(state);
+		} catch (error) {
+			setConnection(describeFailure(error));
+		}
+	}
+
+	async function confirmMoveThread() {
+		if (!client || !sessionMoveConfirm) return;
+		try {
+			const result = await executeSessionMove(client as unknown as { gjcSessionMove(params: { threadId: string; targetCwd: string; dryRun?: false }): Promise<{ dryRun: false; movedTo: string; sessionPath: string }> }, sessionMoveConfirm);
+			if (result) {
+				setTranscript(current => ({ ...current, threads: current.threads.map(thread => thread.id === sessionMoveConfirm.threadId ? { ...thread, cwd: result.movedTo } : thread) }));
+				await refreshSessions();
+			}
+			setSessionMoveConfirm(null);
+		} catch (error) {
+			setConnection(describeFailure(error));
+		}
+	}
+
 	async function archiveThread(threadId: string) {
 		if (!client) return;
 		try {
@@ -440,8 +895,8 @@ function App() {
 		}
 	}
 
-	async function deleteThread(threadId: string) {
-		if (!client) return;
+	async function deleteThread(threadId: string): Promise<boolean> {
+		if (!client) return false;
 		try {
 			await client.threadDelete({ threadId });
 			setTranscript(current => ({
@@ -451,18 +906,18 @@ function App() {
 				items: current.items.filter(item => item.threadId !== threadId),
 				approvals: current.approvals.filter(approval => approval.threadId !== threadId),
 			}));
+			return true;
 		} catch (error) {
 			setConnection(describeFailure(error));
+			return false;
 		}
 	}
 
 	async function submitComposer() {
-		if (!client || composer.trim().length === 0 || isSubmitting) return;
+		const mode = composerSubmitMode({ connected, busy: isSubmitting || Boolean(transcript.activeTurnId), text: composer });
+		if (!client || mode === "ignore") return;
 		const prompt = composer.trim();
-		setSubmitting(true);
 		try {
-			// ChatGPT-style: auto-create a thread (in the default home dir) on the
-			// first message if none is active.
 			const threadId = activeThreadId ?? (await ensureActiveThread());
 			if (!threadId) {
 				setConnection(describeFailure(new Error("Could not resolve a working directory to start a thread.")));
@@ -470,7 +925,13 @@ function App() {
 			}
 			setComposer("");
 			setTranscript(current => appendLocalUserMessage(current, threadId, prompt));
-			await client.turnStart({ threadId, text: prompt });
+			if (mode === "queue") {
+				setQueuedSteer(prompt);
+				await client.turnSteer({ threadId, text: prompt });
+			} else {
+				setSubmitting(true);
+				await client.turnStart({ threadId, text: prompt });
+			}
 		} catch (error) {
 			setConnection(describeFailure(error));
 		} finally {
@@ -517,6 +978,78 @@ function App() {
 			setConnection(describeFailure(error));
 		}
 	}
+
+	const loadModelCatalog = useCallback(async () => {
+		if (!client || !activeThreadId) return { models: [] };
+		return client.gjcModelCatalog({ threadId: activeThreadId });
+	}, [client, activeThreadId]);
+
+	const loadThinking = useCallback(async () => {
+		if (!client || !activeThreadId) return { level: "off", levels: ["off"] };
+		return client.gjcThinkingRead({ threadId: activeThreadId });
+	}, [client, activeThreadId]);
+
+	const setThinkingLevel = useCallback(async (level: string) => {
+		if (!client || !activeThreadId) return;
+		await client.gjcThinkingSet({ threadId: activeThreadId, level });
+	}, [client, activeThreadId]);
+
+	const loadFastMode = useCallback(async () => {
+		if (!client || !activeThreadId) return { enabled: false };
+		return client.gjcFastRead({ threadId: activeThreadId });
+	}, [client, activeThreadId]);
+
+	const setFastMode = useCallback(async (enabled: boolean) => {
+		if (!client || !activeThreadId) return;
+		await client.gjcFastSet({ threadId: activeThreadId, enabled });
+	}, [client, activeThreadId]);
+
+	const loadSafeSettings = useCallback(async () => {
+		if (!client) return { schema: [], values: {} };
+		const [schema, read] = await Promise.all([client.gjcSettingsSchema(), client.gjcSettingsRead()]);
+		return { schema: schema.settings, values: read.values };
+	}, [client]);
+
+	const updateSafeSetting = useCallback(async (key: string, value: unknown) => {
+		if (!client) return {};
+		const result = await client.gjcSettingsUpdate({ key, value: value as JsonValue });
+		return result.values;
+	}, [client]);
+
+	const loadProviders = useCallback(async () => {
+		if (!client) return { providers: [] };
+		return client.gjcProviderList();
+	}, [client]);
+
+	const logoutProvider = useCallback(async (providerId: string) => {
+		if (!client) return;
+		await client.gjcAuthLogout({ providerId });
+		await client.gjcAuthStatus();
+	}, [client]);
+
+	const providerAdd = useCallback(async (payload: unknown) => {
+		if (!client) return { ok: true as const, providerId: "", models: [] };
+		return (client as FrozenContractClient).gjcProviderAdd(payload);
+	}, [client]);
+
+	const loginClient = useMemo(() => client ? {
+		start: async (providerId: string) => {
+			const result = await (client as FrozenContractClient).gjcAuthLoginStart({ providerId });
+			return { flowId: result.flowId, state: result.state, ...(result.authUrl ? { authUrl: result.authUrl } : {}), ...(result.instructions ? { instructions: result.instructions } : {}) };
+		},
+		poll: async (flowId: string) => {
+			const result = await (client as FrozenContractClient).gjcAuthLoginPoll({ flowId });
+			return { state: result.state, ...(result.promptMessage ? { promptMessage: result.promptMessage } : {}) };
+		},
+		complete: (flowId: string, redirectUrl: string) => (client as FrozenContractClient).gjcAuthLoginComplete({ flowId, redirectUrl }),
+		cancel: (flowId: string) => (client as FrozenContractClient).gjcAuthLoginCancel({ flowId }),
+	} : undefined, [client]);
+
+	const assignModelRole = useCallback(async (payload: { threadId: string; role: string; provider: string; modelId: string; thinkingLevel?: string }) => {
+		if (!client || !activeThreadId || payload.threadId !== activeThreadId) return;
+		await (client as FrozenContractClient).gjcModelAssign(payload);
+	}, [client, activeThreadId]);
+
 
 	async function resolveApproval(approval: ApprovalGate, approved: boolean) {
 		if (!client || approval.kind !== "host-tool") return;
@@ -599,7 +1132,7 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 	}
 
 	return (
-		<main className="app-shell">
+		<main className={`app-shell ${rightRailCollapsed ? "app-shell--rail-collapsed" : ""}`}>
 			<aside className="app-sidebar" aria-label="Threads">
 				<div className="brand-lockup">
 					<img className="brand-mark" src="/icon.png" alt="" aria-hidden="true" />
@@ -617,47 +1150,59 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 					onPickDirectory={() => void pickDirectory()}
 					onStart={() => void startThread()}
 				/>
-				<nav className="workspace-switcher" aria-label="Workspace sections">
-					<button className={workspaceView === "chat" ? "workspace-switcher__button workspace-switcher__button--selected" : "workspace-switcher__button"} type="button" onClick={() => setWorkspaceView("chat")}>
+				<nav className="workspace-switcher" role="tablist" aria-label="Workspace sections">
+					<button role="tab" aria-selected={workspaceView === "chat"} className={workspaceView === "chat" ? "workspace-switcher__button workspace-switcher__button--selected" : "workspace-switcher__button"} type="button" onClick={() => setWorkspaceView("chat")}>
 						Chat
 					</button>
-					<button className={workspaceView === "extensibility" ? "workspace-switcher__button workspace-switcher__button--selected" : "workspace-switcher__button"} type="button" onClick={() => setWorkspaceView("extensibility")} disabled={!connected || !activeThreadId}>
+					<button role="tab" aria-selected={workspaceView === "extensibility"} className={workspaceView === "extensibility" ? "workspace-switcher__button workspace-switcher__button--selected" : "workspace-switcher__button"} type="button" onClick={() => setWorkspaceView("extensibility")} disabled={!connected || !activeThreadId}>
 						Skills & extensions
 					</button>
 				</nav>
-				<nav className="thread-list" aria-label="Thread list">
-					{transcript.threads.length === 0 ? (
-						<div className="empty-inline">No threads yet. Connect, then start a thread.</div>
-					) : (
-						transcript.threads.map(thread => (
-							<div
-								className={`thread-row ${thread.id === activeThreadId ? "thread-row--selected" : ""} ${thread.status === "error" ? "thread-row--error" : ""}`}
-								key={thread.id}
-							>
-								<button className="thread-row__resume" type="button" onClick={() => void resumeThread(thread.id)}>
-									<span className="thread-title">{threadPrimaryLabel(thread)}</span>
-									<span className="thread-meta">
-										{threadSuffix(thread.id)} · {thread.status}
-									</span>
-								</button>
-								<SessionActions
-									thread={thread}
-									disabled={!connected}
-									onFork={id => void forkThread(id)}
-									onArchive={id => void archiveThread(id)}
-									onDelete={id => void deleteThread(id)}
-								/>
-							</div>
-						))
-					)}
-				</nav>
-				<details className="sidebar-drawer">
+				<div className="session-browser session-browser--unified">
+					<div className="session-browser__scope" role="group" aria-label="Session scope">
+						<button className={sessionScope === "cwd" ? "neutral-action session-browser__scope-button--selected" : "neutral-action"} type="button" onClick={() => setSessionScope("cwd")} disabled={!sessionScopeCwd}>This folder</button>
+						<button className={sessionScope === "all" ? "neutral-action session-browser__scope-button--selected" : "neutral-action"} type="button" onClick={() => setSessionScope("all")}>All</button>
+					</div>
+					<input className="session-browser__search" value={sessionBrowser.query} onChange={event => setSessionBrowser(current => ({ ...current, query: event.target.value }))} placeholder="Search sessions" aria-label="Search sessions" />
+					{sessionBrowser.loading ? <div className="skeleton-list" aria-label="Loading sessions"><span /><span /><span /></div> : null}
+					{sessionBrowser.error ? <div className="empty-inline">{sessionBrowser.error}</div> : null}
+					{!sessionBrowser.loading && unifiedSessions.length === 0 ? <div className="empty-inline">No sessions found. Start a thread or change scope.</div> : null}
+					<nav className="thread-list" aria-label="Unified sessions" onKeyDown={event => {
+						const next = nextRovingIndex(sessionRovingIndex, event.key, unifiedSessions.length);
+						if (next !== sessionRovingIndex) {
+							event.preventDefault();
+							setSessionRovingIndex(next);
+							sessionRowRefs.current[next]?.focus();
+						}
+					}}>
+						{unifiedSessions.map((row, index) => {
+							const loadedThread = transcript.threads.find(thread => thread.id === row.id);
+							const status = sessionRowStatusPresentation(row.status);
+							return (
+								<div className={`thread-row thread-row--${row.status} thread-row--${status.tone} ${row.active ? "thread-row--selected" : ""}`} key={row.path ?? row.id} style={{ paddingLeft: `calc(var(--gjc-space-8) + ${row.depth} * var(--gjc-space-12))` }}>
+									<button ref={element => { sessionRowRefs.current[index] = element; }} className="thread-row__resume" type="button" tabIndex={index === sessionRovingIndex ? 0 : -1} onFocus={() => setSessionRovingIndex(index)} onClick={() => row.path ? void openSession(row.path) : void resumeThread(row.id)}>
+										<span className="thread-title">{row.title}</span>
+										<span className="thread-meta"><span className={`status-dot status-dot--${status.tone}`} />{status.label} · {row.meta || threadSuffix(row.id)}</span>
+									</button>
+									<div className="session-browser__actions">
+										<button type="button" className="neutral-action session-actions__button" disabled={!connected} onClick={() => row.path ? void openSession(row.path) : void resumeThread(row.id)}>Resume</button>
+										<button type="button" className="neutral-action session-actions__button" disabled={!connected || !row.loaded} onClick={() => void forkThread(row.id)}>Fork</button>
+										<button type="button" className="neutral-action session-actions__button" disabled={!row.path} onClick={() => row.path ? setLabelPrompt({ title: "Rename session", message: row.path, value: row.title, confirmLabel: "Rename", onConfirm: value => void renameSession(row.path ?? "", value) }) : undefined}>Rename</button>
+										<button type="button" className="neutral-action session-actions__button" disabled={!row.path} onClick={() => row.path ? void exportSession(row.path, "markdown") : undefined}>Export</button>
+										<button type="button" className="neutral-action session-actions__button session-actions__button--danger" disabled={!row.path && !row.loaded} onClick={() => row.path ? setSessionDeleteConfirm({ kind: "delete", threadId: row.id, title: row.title, sessionPath: row.path }) : void deleteThread(row.id)}>Delete</button>
+									</div>
+									{loadedThread ? <SessionActions thread={loadedThread} disabled={!connected} onFork={id => void forkThread(id)} onArchive={id => void archiveThread(id)} onDelete={id => void deleteThread(id)} onMove={id => void dryRunMoveThread(id)} /> : null}
+								</div>
+							);
+						})}
+					</nav>
+					{sessionBrowser.exportStatus ? <div className="empty-inline">{sessionBrowser.exportStatus}</div> : null}
+					<div className="button-row"><button type="button" className="neutral-action" disabled={!activeThreadId} onClick={() => void refreshSessionTree()}>Refresh tree</button></div>
+					{flatTree.length ? <div className="session-browser__tree" role="tree" aria-label="Session tree controls">{flatTree.map((node, index) => <div className="session-browser__tree-row" role="treeitem" aria-selected={node.active} key={node.id}><button className="session-browser__tree-node" type="button" tabIndex={index === 0 ? 0 : -1} onClick={() => void navigateSessionTree(node.id)}><span aria-hidden="true">{"  ".repeat(node.depth)}{node.marker} </span>{node.label ?? (node.preview || node.type)}</button><button className="session-browser__tree-label" type="button" onClick={() => setLabelPrompt({ title: "Label tree node", message: node.text, value: node.label ?? "", confirmLabel: "Save label", onConfirm: value => void labelSessionTree(node.id, value) })}>label</button></div>)}</div> : null}
+				</div>
+				<details className="sidebar-drawer" open={openDrawer === "model" || openDrawer === "settings" || openDrawer === "provider"}>
 					<summary>Model &amp; settings</summary>
-					<ModelPanel currentModel={transcript.modelLabel} disabled={!connected || !activeThreadId} onApply={applyModel} />
-				</details>
-				<details className="sidebar-drawer">
-					<summary>Execution-state (deferred)</summary>
-					<DeferredExecStateList />
+					<ModelPanel currentModel={transcript.modelLabel} activeThreadId={activeThreadId} disabled={!connected || !activeThreadId} onApply={applyModel} loadCatalog={loadModelCatalog} loadThinking={loadThinking} onSetThinking={setThinkingLevel} loadFast={loadFastMode} onSetFast={setFastMode} loadSettings={loadSafeSettings} onUpdateSetting={updateSafeSetting} loadProviders={loadProviders} onLogoutProvider={logoutProvider} onProviderAdd={providerAdd} loginClient={loginClient} onModelAssign={assignModelRole} />
 				</details>
 				<ConnectionBadge connection={connection} modelLabel={transcript.modelLabel} />
 			</aside>
@@ -669,11 +1214,25 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 						extensions={extData.extensions}
 						plugins={extData.plugins}
 						pluginInspection={extData.pluginInspection}
+						extensionInspection={extData.extensionInspection}
+						appearanceThemes={extData.appearanceThemes}
+						appearance={extData.appearancePreview?.candidate}
+						appearancePreviewActive={extData.appearancePreview?.previewActive}
+						activeTab={extensibilityTab}
+						onTabChange={setExtensibilityTab}
 						loading={extData.loading}
 						error={extData.error}
 						onRefresh={() => void loadExtensibilityData()}
 						onInspectExtension={id => void inspectExtension(id)}
 						onInspectPlugin={id => void inspectPlugin(id)}
+						onPreviewAppearance={previewAppearanceSettings}
+						onRestoreAppearance={restoreAppearanceSettings}
+						onApplyAppearance={next => void applyAppearanceSettings(next)}
+						onSkillEnabled={(id, enabled) => void setSkillEnabled(id, enabled)}
+						onExtensionEnabled={(id, enabled) => void setExtensionEnabled(id, enabled)}
+						onPluginEnabled={(id, enabled) => void setPluginEnabled(id, enabled)}
+						onPluginFeature={(id, feature, enabled) => void setPluginFeature(id, feature, enabled)}
+						onPluginSetting={(id, key, value) => void setPluginSetting(id, key, value)}
 					/>
 				</section>
 			) : (
@@ -684,6 +1243,12 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 							<h1>{activeThread ? threadPrimaryLabel(activeThread) : "New chat"}</h1>
 						</div>
 						<div className="header-actions">
+							<button className="neutral-action" type="button" onClick={() => void startNewThreadFromActions()} disabled={!connected}>
+								New thread
+							</button>
+							<button className="neutral-action" type="button" onClick={() => void retryLastTurn()} disabled={!connected || !activeThreadId}>
+								Retry
+							</button>
 							<button className="neutral-action" type="button" disabled={!connected || !activeThreadId} onClick={() => void compactThread()}>
 								Compact
 							</button>
@@ -708,22 +1273,18 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 						{visibleItems.length === 0 && visibleApprovals.length === 0 ? (
 							<EmptyTranscript connected={connected} />
 						) : null}
-						{renderEntries.map(entry =>
-							entry.kind === "turn" ? (
-								<TurnCard items={entry.items} key={entry.key} />
+						{interleavedTranscript.map(entry => {
+							if (entry.kind === "approval") {
+								const approval = entry.approval.approval;
+								return <ApprovalCard approval={approval} key={approval.id} onResolve={resolveApproval} onResolveHostUri={resolveHostUri} onRespondWorkflowGate={respondWorkflowGate} />;
+							}
+							const transcriptEntry = entry.item.entry;
+							return transcriptEntry.kind === "turn" ? (
+								<TurnCard items={transcriptEntry.items} key={transcriptEntry.key} />
 							) : (
-								<TranscriptCard item={entry.item} key={entry.item.id} />
-							),
-						)}
-						{visibleApprovals.map(approval => (
-							<ApprovalCard
-								approval={approval}
-								key={approval.id}
-								onResolve={resolveApproval}
-								onResolveHostUri={resolveHostUri}
-								onRespondWorkflowGate={respondWorkflowGate}
-							/>
-						))}
+								<TranscriptCard item={transcriptEntry.item} key={transcriptEntry.item.id} />
+							);
+						})}
 						<div className="transcript__bottom" ref={transcriptBottomRef} aria-hidden="true" />
 					</section>
 					{showJumpToLatest ? (
@@ -739,10 +1300,10 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 							value={composer}
 							onChange={event => setComposer(event.target.value)}
 							onKeyDown={handleComposerKeyDown}
-							disabled={!connected || isSubmitting}
+							disabled={!connected}
 							placeholder={
 								connected
-									? "Ask gajae to edit, inspect, or explain…  (Enter to send · Ctrl+Enter for newline)"
+									? "Ask gajae to edit, inspect, or explain…  (Enter to send · Shift+Enter for newline)"
 									: "Reconnect to start chatting."
 							}
 						/>
@@ -772,6 +1333,23 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 					</form>
 				</section>
 			)}
+			<aside className={`app-right-rail ${rightRailCollapsed ? "app-right-rail--collapsed" : ""}`} aria-label="Execution state">
+				<button className="right-rail-toggle" type="button" onClick={() => setRightRailCollapsed(current => nextRightRailCollapsed(current, "toggle", window.innerWidth))} aria-expanded={!rightRailCollapsed}>
+					{rightRailCollapsed ? "state" : "collapse state"}
+				</button>
+				{!rightRailCollapsed ? (
+					<div className="right-rail__content">
+						{goalStatus?.active ? (
+							<div className="exec-card" aria-label="Active goal status">
+								<strong>Goal</strong>
+								<span>{goalStatus.objective ?? "Active goal"}</span>
+								<code>{goalStatus.status ?? "active"}</code>
+							</div>
+						) : null}
+						<ExecStateList cards={execCards} />
+					</div>
+				) : null}
+			</aside>
 			<CommandPalette
 				open={paletteOpen}
 				commands={paletteData.commands}
@@ -780,7 +1358,39 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 				error={paletteData.error}
 				onClose={closePalette}
 				onInsert={insertPaletteText}
+				onAction={handlePaletteAction}
 			/>
+			{sessionDeleteConfirm ? (
+				<ConfirmDialog
+					state={sessionDeleteConfirm}
+					onCancel={() => setSessionDeleteConfirm(null)}
+					onConfirm={() => {
+						const sessionPath = sessionDeleteConfirm.sessionPath;
+						setSessionDeleteConfirm(null);
+						void deleteSession(sessionPath);
+					}}
+				/>
+			) : null}
+			{sessionMoveConfirm ? (
+				<ConfirmDialog
+					state={{ kind: "move", threadId: sessionMoveConfirm.threadId, title: sessionMoveConfirm.plan.targetSessionFile }}
+					onCancel={() => setSessionMoveConfirm(null)}
+					onConfirm={() => void confirmMoveThread()}
+					confirmDisabled={sessionMoveConfirm.plan.conflicts.length > 0}
+				>
+					<p>Source: {sessionMoveConfirm.plan.sourceSessionFile}</p>
+					<p>Target: {sessionMoveConfirm.plan.targetSessionFile}</p>
+					<p>Cross device: {sessionMoveConfirm.plan.crossDevice ? "yes" : "no"}</p>
+					<p>Artifacts: {sessionMoveConfirm.plan.artifactsDirs.join(", ") || "none"}</p>
+					{sessionMoveConfirm.plan.conflicts.length ? <p>Conflicts: {sessionMoveConfirm.plan.conflicts.join(", ")}</p> : null}
+				</ConfirmDialog>
+			) : null}
+			{labelPrompt ? <PromptDialog state={labelPrompt} onCancel={() => setLabelPrompt(null)} onConfirm={value => {
+				setLabelPrompt(null);
+				labelPrompt.onConfirm(value);
+			}} /> : null}
+			{localSheet === "help" ? <HelpSheet onClose={() => setLocalSheet(undefined)} /> : null}
+			{localSheet === "hotkeys" ? <HotkeysSheet onClose={() => setLocalSheet(undefined)} /> : null}
 		</main>
 	);
 }
@@ -1206,20 +1816,16 @@ function ApprovalCard({
 	);
 }
 
-function DeferredExecStateList() {
+function ExecStateList({ cards }: { cards: ExecStateCard[] }) {
+	const visible = cards.length ? cards : [cardFromRows("exec", "Execution", [], "Open a thread for live state")];
 	return (
-		<section className="exec-state-deferred" aria-label="Deferred execution-state surfaces">
-			<strong>Execution state coming soon</strong>
-			<ul>
-				{DEFERRED_EXEC_STATE_ROWS.map(([name, rationale]) => (
-					<li key={name}>
-						<button type="button" disabled>
-							<span>{name}</span>
-							<em>{rationale}</em>
-						</button>
-					</li>
-				))}
-			</ul>
+		<section className="exec-state-deferred" aria-label="Live execution-state surfaces">
+			{visible.map(card => (
+				<article className={`exec-state-card exec-state-card--${card.status}`} key={card.key}>
+					<strong><span className="status-dot" />{card.title}</strong>
+					{card.error ? <em>{card.error}</em> : card.lines.map((line, index) => <code key={`${card.key}-${index}`}>{line}</code>)}
+				</article>
+			))}
 		</section>
 	);
 }
@@ -1233,6 +1839,18 @@ function isSupportedWorkflowGate(approval: ApprovalGate): boolean {
 	if (approval.gateKind === "approval" || approval.gateKind === "execution") return schemaHasAnswerProperty(approval.schema, "decision");
 	if (approval.gateKind === "question") return schemaHasAnswerProperty(approval.schema, "selected");
 	return false;
+}
+
+async function resyncWorkflowGates(client: AppServerClient, threadId: string, setTranscript: (updater: (state: TranscriptState) => TranscriptState) => void): Promise<void> {
+	try {
+		const result = await client.gjcWorkflowGateList({ threadId });
+		setTranscript(state => ({
+			...state,
+			approvals: mergeWorkflowGateApprovals(state.approvals, threadId, result.gates as Array<Record<string, JsonValue | undefined>>),
+		}));
+	} catch {
+		// Reconnect should still succeed when a pre-contract server lacks gate listing.
+	}
 }
 
 function workflowGateAnswer(approval: ApprovalGate, selectedValue: JsonValue): JsonValue | undefined {

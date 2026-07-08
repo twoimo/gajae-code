@@ -53,7 +53,7 @@ pub fn app_server_method_lane(method: String) -> String {
 
 /// Shared bridge state: the outbound call TSFN and the pending-call table.
 struct Bridge {
-	on_call:      ThreadsafeFunction<String>,
+	on_call: ThreadsafeFunction<String>,
 	pending:
 		DashMap<String, oneshot::Sender<std::result::Result<serde_json::Value, AppServerError>>>,
 	next_call_id: std::sync::atomic::AtomicU64,
@@ -112,7 +112,7 @@ impl Bridge {
 /// A backend that routes every method to the TS host through the bridge.
 struct TsBackend {
 	thread_id: ThreadId,
-	bridge:    Arc<Bridge>,
+	bridge: Arc<Bridge>,
 }
 
 impl TsBackend {
@@ -126,6 +126,17 @@ impl TsBackend {
 			.bridge
 			.call(&format!("backend.{method}"), Some(&self.thread_id), Some(ctx.generation), params)
 			.await
+	}
+
+	async fn typed_call<T: serde::de::DeserializeOwned>(
+		&self,
+		ctx: &BackendCallContext,
+		method: &str,
+	) -> gjc_app_server::Result<T> {
+		let value = self.call(ctx, method, serde_json::Value::Null).await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
 	}
 }
 
@@ -170,6 +181,18 @@ impl AgentBackend for TsBackend {
 			.map(|_| ())
 	}
 
+	async fn retry(&self, c: &BackendCallContext) -> gjc_app_server::Result<TurnId> {
+		let v = self.call(c, "retry", serde_json::Value::Null).await?;
+		let turn_id = v
+			.get("turnId")
+			.and_then(|s| s.as_str())
+			.filter(|s| !s.is_empty())
+			.ok_or_else(|| {
+				AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, "host omitted turnId")
+			})?;
+		Ok(TurnId(turn_id.to_string()))
+	}
+
 	async fn get_state(
 		&self,
 		c: &BackendCallContext,
@@ -178,6 +201,138 @@ impl AgentBackend for TsBackend {
 		self
 			.call(c, "getState", serde_json::json!({ "include": include }))
 			.await
+	}
+
+	async fn read_context(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcContextReadResult> {
+		let value = self.call(c, "readContext", serde_json::Value::Null).await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn read_goal(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcGoalReadResult> {
+		self.typed_call(c, "readGoal").await
+	}
+
+	async fn model_catalog(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcModelCatalogResult> {
+		self.typed_call(c, "modelCatalog").await
+	}
+	async fn read_thinking(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcThinkingReadResult> {
+		self.typed_call(c, "readThinking").await
+	}
+	async fn set_thinking(
+		&self,
+		c: &BackendCallContext,
+		level: String,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcThinkingSetResult> {
+		let value = self
+			.call(c, "setThinking", serde_json::json!({"level": level}))
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn read_fast(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcFastReadResult> {
+		self.typed_call(c, "readFast").await
+	}
+	async fn set_fast(
+		&self,
+		c: &BackendCallContext,
+		enabled: bool,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcFastSetResult> {
+		let value = self
+			.call(c, "setFast", serde_json::json!({"enabled": enabled}))
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn read_todos(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcTodosReadResult> {
+		self.typed_call(c, "readTodos").await
+	}
+	async fn read_usage(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcUsageReadResult> {
+		self.typed_call(c, "readUsage").await
+	}
+	async fn list_jobs(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcJobsListResult> {
+		self.typed_call(c, "listJobs").await
+	}
+	async fn list_agents(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAgentsListResult> {
+		self.typed_call(c, "listAgents").await
+	}
+	async fn list_monitors(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcMonitorsListResult> {
+		self.typed_call(c, "listMonitors").await
+	}
+	async fn compact_summary(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcCompactSummaryResult> {
+		self.typed_call(c, "compactSummary").await
+	}
+
+	async fn session_tree(
+		&self,
+		c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionTreeResult> {
+		let value = self.call(c, "sessionTree", serde_json::Value::Null).await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn session_navigate(
+		&self,
+		c: &BackendCallContext,
+		params: gjc_app_server::protocol::GjcSessionNavigateParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionNavigateResult> {
+		let value = self
+			.call(c, "sessionNavigate", serde_json::to_value(params).unwrap_or(serde_json::Value::Null))
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn session_move(
+		&self,
+		c: &BackendCallContext,
+		params: gjc_app_server::protocol::GjcSessionMoveParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionMoveResult> {
+		let value = self
+			.call(c, "sessionMove", serde_json::to_value(params).unwrap_or(serde_json::Value::Null))
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
 	}
 
 	async fn get_messages(
@@ -196,6 +351,19 @@ impl AgentBackend for TsBackend {
 		self
 			.call(c, "setModel", serde_json::json!({ "provider": provider, "modelId": model_id }))
 			.await
+	}
+
+	async fn model_assign(
+		&self,
+		c: &BackendCallContext,
+		params: gjc_app_server::protocol::GjcModelAssignParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcModelAssignResult> {
+		let value = self
+			.call(c, "modelAssign", serde_json::to_value(params).unwrap_or(serde_json::Value::Null))
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
 	}
 
 	async fn compact(
@@ -289,6 +457,18 @@ impl TsFactory {
 			Arc::new(TsBackend { thread_id, bridge: Arc::clone(&self.bridge) });
 		Ok((info, backend))
 	}
+
+	async fn typed_call<T: serde::de::DeserializeOwned, P: serde::Serialize>(
+		&self,
+		kind: &str,
+		params: P,
+	) -> gjc_app_server::Result<T> {
+		let params = serde_json::to_value(params).unwrap_or(serde_json::Value::Null);
+		let value = self.bridge.call(kind, None, None, params).await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
 }
 
 #[async_trait::async_trait]
@@ -312,6 +492,283 @@ impl BackendFactory for TsFactory {
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.make("factory.fork", p).await
+	}
+
+	async fn session_open(
+		&self,
+		p: gjc_app_server::protocol::GjcSessionOpenParams,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		let params = serde_json::to_value(p).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		self.make("factory.sessionOpen", params).await
+	}
+
+	async fn session_delete(
+		&self,
+		p: gjc_app_server::protocol::GjcSessionDeleteParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionDeleteResult> {
+		let params = serde_json::to_value(p).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		let value = self
+			.bridge
+			.call("factory.sessionDelete", None, None, params)
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn settings_schema(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsSchemaResult> {
+		let v = self
+			.bridge
+			.call("factory.settingsSchema", None, None, serde_json::Value::Null)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn settings_read(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsReadResult> {
+		let v = self
+			.bridge
+			.call("factory.settingsRead", None, None, serde_json::Value::Null)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn settings_update(
+		&self,
+		params: gjc_app_server::protocol::GjcSettingsUpdateParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsUpdateResult> {
+		let v = self
+			.bridge
+			.call(
+				"factory.settingsUpdate",
+				None,
+				None,
+				serde_json::to_value(params).unwrap_or(serde_json::Value::Null),
+			)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn appearance_themes_list(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceThemesListResult> {
+		let v = self
+			.bridge
+			.call("factory.appearanceThemesList", None, None, serde_json::Value::Null)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn appearance_read(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceReadResult> {
+		let v = self
+			.bridge
+			.call("factory.appearanceRead", None, None, serde_json::Value::Null)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn appearance_set(
+		&self,
+		params: gjc_app_server::protocol::GjcAppearanceSetParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceSetResult> {
+		let v = self
+			.bridge
+			.call(
+				"factory.appearanceSet",
+				None,
+				None,
+				serde_json::to_value(params).unwrap_or(serde_json::Value::Null),
+			)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn provider_add(
+		&self,
+		params: gjc_app_server::protocol::GjcProviderAddParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcProviderAddResult> {
+		self.typed_call("factory.providerAdd", params).await
+	}
+
+	async fn auth_login_start(
+		&self,
+		params: gjc_app_server::protocol::GjcAuthLoginStartParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthLoginStartResult> {
+		self.typed_call("factory.authLoginStart", params).await
+	}
+
+	async fn auth_login_poll(
+		&self,
+		params: gjc_app_server::protocol::GjcAuthLoginPollParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthLoginPollResult> {
+		self.typed_call("factory.authLoginPoll", params).await
+	}
+
+	async fn auth_login_complete(
+		&self,
+		params: gjc_app_server::protocol::GjcAuthLoginCompleteParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthLoginCompleteResult> {
+		self.typed_call("factory.authLoginComplete", params).await
+	}
+
+	async fn auth_login_cancel(
+		&self,
+		params: gjc_app_server::protocol::GjcAuthLoginCancelParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthLoginCancelResult> {
+		self.typed_call("factory.authLoginCancel", params).await
+	}
+	async fn provider_list(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcProviderListResult> {
+		let v = self
+			.bridge
+			.call("factory.providerList", None, None, serde_json::Value::Null)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn auth_status(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthStatusResult> {
+		let v = self
+			.bridge
+			.call("factory.authStatus", None, None, serde_json::Value::Null)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+	async fn auth_logout(
+		&self,
+		params: gjc_app_server::protocol::GjcAuthLogoutParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthLogoutResult> {
+		let v = self
+			.bridge
+			.call(
+				"factory.authLogout",
+				None,
+				None,
+				serde_json::to_value(params).unwrap_or(serde_json::Value::Null),
+			)
+			.await?;
+		serde_json::from_value(v).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn session_list(
+		&self,
+		p: gjc_app_server::protocol::GjcSessionListParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
+		let params = serde_json::to_value(p).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		let value = self
+			.bridge
+			.call("factory.sessionList", None, None, params)
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn session_search(
+		&self,
+		p: gjc_app_server::protocol::GjcSessionSearchParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionSearchResult> {
+		let params = serde_json::to_value(p).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		let value = self
+			.bridge
+			.call("factory.sessionSearch", None, None, params)
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn session_rename(
+		&self,
+		p: gjc_app_server::protocol::GjcSessionRenameParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionRenameResult> {
+		let params = serde_json::to_value(p).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		let value = self
+			.bridge
+			.call("factory.sessionRename", None, None, params)
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn session_export(
+		&self,
+		p: gjc_app_server::protocol::GjcSessionExportParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionExportResult> {
+		let params = serde_json::to_value(p).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		let value = self
+			.bridge
+			.call("factory.sessionExport", None, None, params)
+			.await?;
+		serde_json::from_value(value).map_err(|err| {
+			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
+		})
+	}
+
+	async fn extensions_set_enabled(
+		&self,
+		params: gjc_app_server::protocol::GjcExtensionsSetEnabledParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcExtensionsSetEnabledResult> {
+		self.typed_call("factory.extensionsSetEnabled", params).await
+	}
+
+	async fn skills_set_enabled(
+		&self,
+		params: gjc_app_server::protocol::GjcSkillsSetEnabledParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSkillsSetEnabledResult> {
+		self.typed_call("factory.skillsSetEnabled", params).await
+	}
+
+	async fn plugins_set_enabled(
+		&self,
+		params: gjc_app_server::protocol::GjcPluginsSetEnabledParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcPluginsSetEnabledResult> {
+		self.typed_call("factory.pluginsSetEnabled", params).await
+	}
+
+	async fn plugins_set_feature(
+		&self,
+		params: gjc_app_server::protocol::GjcPluginsSetFeatureParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcPluginsSetFeatureResult> {
+		self.typed_call("factory.pluginsSetFeature", params).await
+	}
+
+	async fn plugins_set_setting(
+		&self,
+		params: gjc_app_server::protocol::GjcPluginsSetSettingParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcPluginsSetSettingResult> {
+		self.typed_call("factory.pluginsSetSetting", params).await
 	}
 }
 
@@ -349,8 +806,8 @@ impl EventSink for TsSink {
 /// `AgentSession` through the bridge callbacks.
 #[napi]
 pub struct AppServer {
-	core:      Arc<CoreAppServer>,
-	bridge:    Arc<Bridge>,
+	core: Arc<CoreAppServer>,
+	bridge: Arc<Bridge>,
 	ws_handle: Mutex<Option<WsServerHandle>>,
 }
 
@@ -461,14 +918,17 @@ impl AppServer {
 				.await
 				.map_err(|err| napi::Error::from_reason(err.to_string()))?;
 		}
-		let handle = start_ws(Arc::clone(&self.core), WsServerConfig {
-			host,
-			port,
-			token,
-			session_id,
-			state_root,
-			allowed_origins: allowed_origins.unwrap_or_default(),
-		})
+		let handle = start_ws(
+			Arc::clone(&self.core),
+			WsServerConfig {
+				host,
+				port,
+				token,
+				session_id,
+				state_root,
+				allowed_origins: allowed_origins.unwrap_or_default(),
+			},
+		)
 		.await
 		.map_err(|err| napi::Error::from_reason(err.to_string()))?;
 		let url = handle.url();

@@ -10,7 +10,10 @@ type Block =
 	| { kind: "blockquote"; text: string }
 	| { kind: "hr" }
 	| { kind: "code"; code: string; lang?: string }
-	| { kind: "list"; ordered: boolean; items: string[] };
+	| { kind: "table"; headers: string[]; rows: string[][] }
+	| { kind: "list"; ordered: boolean; items: ListItem[] };
+
+type ListItem = { text: string; depth: number; children: ListItem[] };
 
 export function parseBlocks(text: string): Block[] {
 	const lines = text.replace(/\r\n?/g, "\n").split("\n");
@@ -18,7 +21,7 @@ export function parseBlocks(text: string): Block[] {
 	let paragraph: string[] = [];
 	let quote: string[] = [];
 	let fence: { lang?: string; lines: string[] } | undefined;
-	let list: { ordered: boolean; items: string[] } | undefined;
+	let list: { ordered: boolean; items: ListItem[] } | undefined;
 
 	const flushParagraph = () => {
 		if (!paragraph.length) return;
@@ -35,13 +38,43 @@ export function parseBlocks(text: string): Block[] {
 		blocks.push({ kind: "list", ordered: list.ordered, items: list.items });
 		list = undefined;
 	};
+	const parseTableRow = (line: string): string[] | undefined => {
+		const trimmed = line.trim();
+		if (!trimmed.includes("|")) return undefined;
+		const body = trimmed.startsWith("|") ? trimmed.slice(1) : trimmed;
+		const cells = (body.endsWith("|") ? body.slice(0, -1) : body).split("|").map(cell => cell.trim());
+		return cells.length > 1 ? cells : undefined;
+	};
+	const isTableSeparator = (line: string, width: number): boolean => {
+		const cells = parseTableRow(line);
+		return Boolean(cells && cells.length === width && cells.every(cell => /^:?-{3,}:?$/.test(cell)));
+	};
+	const parseListItems = (entries: Array<{ depth: number; text: string }>, minDepth = 0): ListItem[] => {
+		const items: ListItem[] = [];
+		while (entries.length > 0) {
+			const entry = entries[0];
+			if (!entry || entry.depth < minDepth) break;
+			if (entry.depth > minDepth) {
+				const parent = items.at(-1);
+				if (!parent) break;
+				parent.children.push(...parseListItems(entries, entry.depth));
+				continue;
+			}
+			entries.shift();
+			const item: ListItem = { text: entry.text, depth: entry.depth, children: [] };
+			while (entries[0] && entries[0].depth > entry.depth) item.children.push(...parseListItems(entries, entries[0].depth));
+			items.push(item);
+		}
+		return items;
+	};
 	const flushFlow = () => {
 		flushParagraph();
 		flushQuote();
 		flushList();
 	};
 
-	for (const line of lines) {
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index] ?? "";
 		const fenceMatch = line.match(/^```\s*([^`]*)\s*$/);
 		if (fence) {
 			if (fenceMatch) {
@@ -59,6 +92,21 @@ export function parseBlocks(text: string): Block[] {
 		}
 		if (!line.trim()) {
 			flushFlow();
+			continue;
+		}
+		const tableHeader = parseTableRow(line);
+		if (tableHeader && isTableSeparator(lines[index + 1] ?? "", tableHeader.length)) {
+			flushFlow();
+			index += 2;
+			const rows: string[][] = [];
+			while (index < lines.length) {
+				const row = parseTableRow(lines[index] ?? "");
+				if (!row || row.length !== tableHeader.length) break;
+				rows.push(row);
+				index += 1;
+			}
+			index -= 1;
+			blocks.push({ kind: "table", headers: tableHeader, rows });
 			continue;
 		}
 		if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
@@ -79,15 +127,16 @@ export function parseBlocks(text: string): Block[] {
 			blocks.push({ kind: "heading", level: heading[1].length, text: heading[2] });
 			continue;
 		}
-		const unordered = line.match(/^\s*-\s+(.+)$/);
-		const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+		const unordered = line.match(/^(\s*)-\s+(.+)$/);
+		const ordered = line.match(/^(\s*)\d+\.\s+(.+)$/);
 		if (unordered || ordered) {
 			flushParagraph();
 			flushQuote();
 			const nextOrdered = Boolean(ordered);
 			if (!list || list.ordered !== nextOrdered) flushList();
 			list ??= { ordered: nextOrdered, items: [] };
-			list.items.push((ordered?.[1] ?? unordered?.[1] ?? "").trim());
+			const entries = [...list.items.flatMap(flattenListItem), { depth: (ordered?.[1] ?? unordered?.[1] ?? "").replace(/\t/g, "    ").length, text: (ordered?.[2] ?? unordered?.[2] ?? "").trim() }];
+			list.items = parseListItems(entries);
 			continue;
 		}
 		flushQuote();
@@ -113,11 +162,22 @@ function renderBlock(block: Block, key: number): ReactNode {
 	}
 	if (block.kind === "list") {
 		const Tag = block.ordered ? "ol" : "ul";
-		return <Tag key={key}>{block.items.map((item, index) => <li key={index}>{renderInline(item)}</li>)}</Tag>;
+		return <Tag key={key}>{block.items.map((item, index) => renderListItem(item, index, Tag))}</Tag>;
+	}
+	if (block.kind === "table") {
+		return <table className="markdown__table" key={key}><thead><tr>{block.headers.map((cell, index) => <th key={index}>{renderInline(cell)}</th>)}</tr></thead><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>)}</tbody></table>;
 	}
 	if (block.kind === "blockquote") return <blockquote key={key}>{renderInline(block.text)}</blockquote>;
 	if (block.kind === "hr") return <hr key={key} />;
 	return <p key={key}>{renderInline(block.text)}</p>;
+}
+
+function flattenListItem(item: ListItem): Array<{ depth: number; text: string }> {
+	return [{ depth: item.depth, text: item.text }, ...item.children.flatMap(child => flattenListItem(child))];
+}
+
+function renderListItem(item: ListItem, key: number, Tag: "ol" | "ul"): ReactNode {
+	return <li key={key}>{renderInline(item.text)}{item.children.length > 0 ? <Tag>{item.children.map((child, index) => renderListItem(child, index, Tag))}</Tag> : null}</li>;
 }
 
 function renderInline(text: string): ReactNode[] {

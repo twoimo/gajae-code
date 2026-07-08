@@ -59,6 +59,145 @@ impl AgentBackend for EchoBackend {
 		Ok(serde_json::json!([]))
 	}
 
+	async fn read_context(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcContextReadResult> {
+		Ok(gjc_app_server::protocol::GjcContextReadResult {
+			tokens: gjc_app_server::protocol::GjcContextTokens {
+				input: 10,
+				output: 5,
+				cache_read: Some(2),
+				cache_write: Some(3),
+				total: 20,
+			},
+			context_window: Some(100),
+			percent_used: Some(20.0),
+			source: "test".into(),
+			freshness: gjc_app_server::protocol::GjcContextFreshness::Live,
+		})
+	}
+
+	async fn session_tree(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionTreeResult> {
+		Ok(gjc_app_server::protocol::GjcSessionTreeResult { nodes: vec![], active_leaf_id: None })
+	}
+
+	async fn session_navigate(
+		&self,
+		_c: &BackendCallContext,
+		_params: gjc_app_server::protocol::GjcSessionNavigateParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionNavigateResult> {
+		Ok(gjc_app_server::protocol::GjcSessionNavigateResult {
+			ok: true,
+			active_leaf_id: Some("leaf-1".into()),
+		})
+	}
+
+	async fn session_label(
+		&self,
+		_c: &BackendCallContext,
+		_params: gjc_app_server::protocol::GjcSessionLabelParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionLabelResult> {
+		Ok(gjc_app_server::protocol::GjcSessionLabelResult { ok: true })
+	}
+
+	async fn read_todos(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcTodosReadResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"todos":[{"id":"t1","content":"ship","status":"pending"}]}),
+		)
+		.unwrap())
+	}
+	async fn read_usage(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcUsageReadResult> {
+		Ok(serde_json::from_value(serde_json::json!({"perModel":[{"modelId":"m","input":1,"output":2,"cost":0.1}],"totalCost":0.1,"source":"test","freshness":"live"})).unwrap())
+	}
+	async fn list_jobs(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcJobsListResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"jobs":[{"id":"j1","type":"monitor","status":"running"}]}),
+		)
+		.unwrap())
+	}
+	async fn list_agents(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAgentsListResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"agents":[{"id":"a1","agentType":"executor","status":"completed"}]}),
+		)
+		.unwrap())
+	}
+	async fn list_monitors(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcMonitorsListResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"monitors":[{"id":"m1","kind":"monitor","status":"running","outputTail":"tail"}],"crons":[{"id":"cron-1","humanSchedule":"hourly","cronExpression":"0 * * * *","prompt":"ping","recurring":true,"nextFireAt":"2026-01-01T01:00:00Z","createdAt":"2026-01-01T00:00:00Z"}]}),
+		)
+		.unwrap())
+	}
+	async fn compact_summary(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcCompactSummaryResult> {
+		Ok(serde_json::from_value(serde_json::json!({"summaries":[{"id":"c1","summary":"sum","tokensBefore":3,"timestamp":"2026-01-01T00:00:00.000Z"}]})).unwrap())
+	}
+
+	async fn model_catalog(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcModelCatalogResult> {
+		Ok(serde_json::from_value(serde_json::json!({"models":[{"provider":"openai","modelId":"gpt-5","label":"GPT-5","available":true}],"activeProvider":"openai","activeModelId":"gpt-5"})).unwrap())
+	}
+
+	async fn read_thinking(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcThinkingReadResult> {
+		Ok(gjc_app_server::protocol::GjcThinkingReadResult {
+			level: "medium".into(),
+			levels: vec!["low".into(), "medium".into(), "high".into()],
+		})
+	}
+
+	async fn set_thinking(
+		&self,
+		_c: &BackendCallContext,
+		level: String,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcThinkingSetResult> {
+		Ok(gjc_app_server::protocol::GjcThinkingSetResult { level })
+	}
+
+	async fn read_fast(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcFastReadResult> {
+		Ok(gjc_app_server::protocol::GjcFastReadResult {
+			enabled: false,
+			affected_roles: Some(vec!["default".into()]),
+		})
+	}
+
+	async fn set_fast(
+		&self,
+		_c: &BackendCallContext,
+		enabled: bool,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcFastSetResult> {
+		Ok(gjc_app_server::protocol::GjcFastSetResult {
+			enabled,
+			affected_roles: Some(vec!["default".into()]),
+		})
+	}
 	async fn set_model(
 		&self,
 		_c: &BackendCallContext,
@@ -66,6 +205,18 @@ impl AgentBackend for EchoBackend {
 		model_id: &str,
 	) -> gjc_app_server::Result<serde_json::Value> {
 		Ok(serde_json::json!({ "provider": provider, "modelId": model_id }))
+	}
+
+	async fn model_assign(
+		&self,
+		_c: &BackendCallContext,
+		params: gjc_app_server::protocol::GjcModelAssignParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcModelAssignResult> {
+		Ok(gjc_app_server::protocol::GjcModelAssignResult {
+			ok: true,
+			role: params.role,
+			model_id: params.model_id,
+		})
 	}
 
 	async fn compact(
@@ -130,6 +281,88 @@ impl BackendFactory for EchoFactory {
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.create_thread(p).await
 	}
+
+	async fn session_list(
+		&self,
+		_params: gjc_app_server::protocol::GjcSessionListParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
+		Ok(gjc_app_server::protocol::GjcSessionListResult {
+			sessions: vec![gjc_app_server::protocol::SessionIndexEntry {
+				id: "s1".into(),
+				title: Some("Title".into()),
+				first_message: Some("First".into()),
+				cwd: "/tmp/project".into(),
+				path: "/tmp/project/session.jsonl".into(),
+				modified_at: "2026-01-01T00:00:00.000Z".into(),
+				entry_count: Some(2),
+			}],
+			total: 1,
+		})
+	}
+
+	async fn session_search(
+		&self,
+		_params: gjc_app_server::protocol::GjcSessionSearchParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionSearchResult> {
+		self
+			.session_list(gjc_app_server::protocol::GjcSessionListParams::default())
+			.await
+	}
+
+	async fn session_open(
+		&self,
+		_p: gjc_app_server::protocol::GjcSessionOpenParams,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		self.create_thread(serde_json::Value::Null).await
+	}
+
+	async fn session_delete(
+		&self,
+		_p: gjc_app_server::protocol::GjcSessionDeleteParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionDeleteResult> {
+		Ok(gjc_app_server::protocol::GjcSessionDeleteResult { ok: true })
+	}
+
+	async fn settings_schema(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsSchemaResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"settings":[{"key":"autoResume","type":"boolean","default":false}]}),
+		)
+		.unwrap())
+	}
+
+	async fn settings_read(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsReadResult> {
+		Ok(serde_json::from_value(serde_json::json!({"values":{"autoResume":false}})).unwrap())
+	}
+
+	async fn settings_update(
+		&self,
+		params: gjc_app_server::protocol::GjcSettingsUpdateParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsUpdateResult> {
+		Ok(serde_json::from_value(serde_json::json!({"values":{params.key:params.value}})).unwrap())
+	}
+
+	async fn appearance_themes_list(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceThemesListResult> {
+		Ok(serde_json::from_value(serde_json::json!({"themes":[{"id":"red-claw","kind":"dark","semanticPreview":{"bg":"#000000","bgElevated":"#111111","surface":"#181818","border":"#333333","text":"#eeeeee","textMuted":"#888888","accent":"#ff5555","success":"#22c55e","warning":"#f59e0b","danger":"#ef4444"},"builtin":true}]})).unwrap())
+	}
+
+	async fn appearance_read(
+		&self,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceReadResult> {
+		Ok(serde_json::from_value(serde_json::json!({"dark":"red-claw","light":"blue-crab","symbolPreset":"unicode","colorBlindMode":false})).unwrap())
+	}
+
+	async fn appearance_set(
+		&self,
+		params: gjc_app_server::protocol::GjcAppearanceSetParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceSetResult> {
+		Ok(serde_json::from_value(serde_json::json!({"dark":params.dark.unwrap_or_else(|| "red-claw".into()),"light":params.light.unwrap_or_else(|| "blue-crab".into()),"symbolPreset":params.symbol_preset.unwrap_or_else(|| "unicode".into()),"colorBlindMode":params.color_blind_mode.unwrap_or(false)})).unwrap())
+	}
 }
 
 #[async_trait]
@@ -165,6 +398,10 @@ impl EventSink for CollectingSink {
 impl CollectingSink {
 	fn methods(&self) -> Vec<String> {
 		self.notes.lock().iter().map(|n| n.method.clone()).collect()
+	}
+
+	fn notes(&self) -> Vec<Notification> {
+		self.notes.lock().clone()
 	}
 }
 
@@ -263,6 +500,37 @@ async fn full_streamed_turn_lifecycle() {
 	assert!(idx("turn/completed").unwrap() > idx("item/agentMessage/delta").unwrap());
 	// Exactly one turn/completed.
 	assert_eq!(methods.iter().filter(|m| *m == "turn/completed").count(), 1);
+}
+
+#[tokio::test]
+async fn jobs_changed_event_emits_raw_and_typed_notifications() {
+	let (server, sink) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+
+	server.emit_backend_event(&ev(
+		&thread,
+		"jobs_changed",
+		serde_json::json!({
+			"kind": "monitor",
+			"id": "monitor-1",
+			"status": "running",
+			"description": "Watch tests"
+		}),
+	));
+
+	let notes = sink.notes();
+	let methods: Vec<_> = notes.iter().map(|n| n.method.as_str()).collect();
+	assert_eq!(methods, ["gjc/jobs/changed", "gjc/event"]);
+
+	let typed = notes[0].params.as_ref().unwrap();
+	assert_eq!(typed["threadId"], thread.0);
+	assert_eq!(typed["generation"], 1);
+	assert_eq!(typed["kind"], "monitor");
+	assert_eq!(typed["id"], "monitor-1");
+	assert_eq!(typed["status"], "running");
+	assert_eq!(typed["description"], "Watch tests");
+	assert_eq!(notes[1].params.as_ref().unwrap()["eventType"], "jobs_changed");
 }
 
 #[tokio::test]
@@ -501,6 +769,16 @@ struct CapturingFactory {
 	resume_thread_id: Arc<Mutex<Option<ThreadId>>>,
 }
 
+impl CapturingFactory {
+	fn thread_id_for_open_or_resume(&self) -> ThreadId {
+		self
+			.resume_thread_id
+			.lock()
+			.clone()
+			.unwrap_or_else(ThreadId::generate)
+	}
+}
+
 #[async_trait]
 impl BackendFactory for CapturingFactory {
 	async fn create_thread(
@@ -523,11 +801,7 @@ impl BackendFactory for CapturingFactory {
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.resumed.lock().push(p);
-		let thread_id = self
-			.resume_thread_id
-			.lock()
-			.clone()
-			.unwrap_or_else(ThreadId::generate);
+		let thread_id = self.thread_id_for_open_or_resume();
 		Ok((
 			BackendHandleInfo {
 				thread_id,
@@ -543,6 +817,47 @@ impl BackendFactory for CapturingFactory {
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.create_thread(p).await
+	}
+
+	async fn session_list(
+		&self,
+		_params: gjc_app_server::protocol::GjcSessionListParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
+		Ok(gjc_app_server::protocol::GjcSessionListResult {
+			sessions: vec![gjc_app_server::protocol::SessionIndexEntry {
+				id: "s1".into(),
+				title: Some("Title".into()),
+				first_message: Some("First".into()),
+				cwd: "/tmp/project".into(),
+				path: "/tmp/project/session.jsonl".into(),
+				modified_at: "2026-01-01T00:00:00.000Z".into(),
+				entry_count: Some(2),
+			}],
+			total: 1,
+		})
+	}
+
+	async fn session_search(
+		&self,
+		_params: gjc_app_server::protocol::GjcSessionSearchParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionSearchResult> {
+		self
+			.session_list(gjc_app_server::protocol::GjcSessionListParams::default())
+			.await
+	}
+
+	async fn session_open(
+		&self,
+		_p: gjc_app_server::protocol::GjcSessionOpenParams,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		Ok((
+			BackendHandleInfo {
+				thread_id: self.thread_id_for_open_or_resume(),
+				generation: BackendGeneration::FIRST,
+				session_metadata: SessionMetadata::default(),
+			},
+			Arc::new(EchoBackend),
+		))
 	}
 }
 
@@ -643,6 +958,342 @@ async fn resume_bumps_generation_rejects_stale() {
 }
 
 #[tokio::test]
+async fn duplicate_session_open_bumps_generation_and_rejects_stale() {
+	let factory = CapturingFactory::default();
+	let (server, sink) = build_capturing(factory.clone());
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	*factory.resume_thread_id.lock() = Some(thread.clone());
+
+	let open = parse_inbound(
+		r#"{"id":25,"method":"gjc/session/open","params":{"sessionPath":"/tmp/a.jsonl"}}"#,
+	)
+	.unwrap();
+	let resp = server.dispatch(&conn, open).await.unwrap();
+	assert!(resp.error.is_none());
+	let result = resp.result.unwrap();
+	assert_eq!(result["threadId"], thread.0);
+	assert_eq!(result["generation"], 2);
+
+	let first_turn = parse_inbound(&format!(
+		r#"{{"id":26,"method":"turn/start","params":{{"threadId":"{}","input":"old"}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let first_turn_resp = server.dispatch(&conn, first_turn).await.unwrap();
+	assert!(first_turn_resp.error.is_none());
+	let first_turn_id = first_turn_resp.result.unwrap()["turn"]["id"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	assert!(sink.notes.lock().iter().any(|n| {
+		n.method == "turn/started" && n.params.as_ref().unwrap()["turnId"] == first_turn_id
+	}));
+
+	let reopen = parse_inbound(
+		r#"{"id":27,"method":"gjc/session/open","params":{"sessionPath":"/tmp/a.jsonl"}}"#,
+	)
+	.unwrap();
+	let reopen_resp = server.dispatch(&conn, reopen).await.unwrap();
+	assert!(reopen_resp.error.is_none());
+	let reopen_result = reopen_resp.result.unwrap();
+	assert_eq!(reopen_result["threadId"], thread.0);
+	assert_eq!(reopen_result["generation"], 3);
+	assert_eq!(server.active_turn_id(&thread).unwrap(), None);
+	assert!(
+		server
+			.dispatch(
+				&conn,
+				parse_inbound(&format!(
+					r#"{{"id":28,"method":"thread/read","params":{{"threadId":"{}"}}}}"#,
+					thread.0
+				))
+				.unwrap(),
+			)
+			.await
+			.unwrap()
+			.result
+			.unwrap()["thread"]["status"]
+			== "idle"
+	);
+	sink.notes.lock().clear();
+
+	let new_turn = parse_inbound(&format!(
+		r#"{{"id":29,"method":"turn/start","params":{{"threadId":"{}","input":"new"}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let new_turn_resp = server.dispatch(&conn, new_turn).await.unwrap();
+	assert!(new_turn_resp.error.is_none());
+	let new_turn_id = new_turn_resp.result.unwrap()["turn"]["id"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	assert_ne!(new_turn_id, first_turn_id);
+	server.emit_backend_event(&BackendEvent {
+		thread_id: thread.clone(),
+		generation: BackendGeneration(3),
+		event_type: "agent_end".into(),
+		payload: serde_json::json!({}),
+	});
+	let notes = sink.notes.lock();
+	assert!(notes.iter().any(|n| {
+		n.method == "turn/started" && n.params.as_ref().unwrap()["turnId"] == new_turn_id
+	}));
+	let completed = notes.iter().find(|n| n.method == "turn/completed").unwrap();
+	assert_eq!(completed.params.as_ref().unwrap()["turnId"], new_turn_id);
+	assert_ne!(completed.params.as_ref().unwrap()["turnId"], first_turn_id);
+	drop(notes);
+	sink.notes.lock().clear();
+	let stale = BackendEvent {
+		thread_id: thread.clone(),
+		generation: BackendGeneration::FIRST,
+		event_type: "agent_start".into(),
+		payload: serde_json::json!({}),
+	};
+	assert_eq!(server.emit_backend_event(&stale), 0);
+	assert!(sink.notes.lock().is_empty());
+
+	let current = BackendEvent {
+		thread_id: thread,
+		generation: BackendGeneration(3),
+		event_type: "agent_start".into(),
+		payload: serde_json::json!({}),
+	};
+	assert!(server.emit_backend_event(&current) > 0);
+}
+
+#[derive(Clone)]
+struct ReleasableFactory {
+	thread_id: ThreadId,
+	releases: Arc<Mutex<Vec<Arc<tokio::sync::Notify>>>>,
+	started: Arc<tokio::sync::Notify>,
+	started_generations: Arc<Mutex<Vec<BackendGeneration>>>,
+}
+
+struct ReleasableBackend {
+	release: Arc<tokio::sync::Notify>,
+	started: Arc<tokio::sync::Notify>,
+	started_generations: Arc<Mutex<Vec<BackendGeneration>>>,
+}
+
+#[async_trait]
+impl AgentBackend for ReleasableBackend {
+	async fn prompt(
+		&self,
+		c: &BackendCallContext,
+		_p: serde_json::Value,
+	) -> gjc_app_server::Result<TurnId> {
+		self.started_generations.lock().push(c.generation);
+		self.started.notify_waiters();
+		self.release.notified().await;
+		Ok(TurnId::generate())
+	}
+
+	async fn steer(
+		&self,
+		_c: &BackendCallContext,
+		_p: serde_json::Value,
+	) -> gjc_app_server::Result<TurnId> {
+		Ok(TurnId::generate())
+	}
+
+	async fn abort(&self, _c: &BackendCallContext, _t: &TurnId) -> gjc_app_server::Result<()> {
+		Ok(())
+	}
+
+	async fn get_state(
+		&self,
+		_c: &BackendCallContext,
+		_i: serde_json::Value,
+	) -> gjc_app_server::Result<serde_json::Value> {
+		Ok(serde_json::json!({ "status": "idle" }))
+	}
+
+	async fn get_messages(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<serde_json::Value> {
+		Ok(serde_json::json!([]))
+	}
+
+	async fn set_model(
+		&self,
+		_c: &BackendCallContext,
+		provider: &str,
+		model_id: &str,
+	) -> gjc_app_server::Result<serde_json::Value> {
+		Ok(serde_json::json!({"provider":provider,"modelId":model_id}))
+	}
+
+	async fn compact(
+		&self,
+		_c: &BackendCallContext,
+		_ci: Option<&str>,
+	) -> gjc_app_server::Result<serde_json::Value> {
+		Ok(serde_json::json!({}))
+	}
+
+	async fn set_todos(
+		&self,
+		_c: &BackendCallContext,
+		_p: serde_json::Value,
+	) -> gjc_app_server::Result<()> {
+		Ok(())
+	}
+
+	async fn exec(
+		&self,
+		_c: &BackendCallContext,
+		_p: serde_json::Value,
+	) -> gjc_app_server::Result<serde_json::Value> {
+		Ok(serde_json::json!({}))
+	}
+
+	async fn dispose(&self, _c: &BackendCallContext) -> gjc_app_server::Result<()> {
+		Ok(())
+	}
+}
+
+#[async_trait]
+impl BackendFactory for ReleasableFactory {
+	async fn create_thread(
+		&self,
+		_p: serde_json::Value,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		let release = Arc::new(tokio::sync::Notify::new());
+		self.releases.lock().push(Arc::clone(&release));
+		Ok((
+			BackendHandleInfo {
+				thread_id: self.thread_id.clone(),
+				generation: BackendGeneration::FIRST,
+				session_metadata: SessionMetadata::default(),
+			},
+			Arc::new(ReleasableBackend {
+				release,
+				started: Arc::clone(&self.started),
+				started_generations: Arc::clone(&self.started_generations),
+			}),
+		))
+	}
+
+	async fn resume_thread(
+		&self,
+		p: serde_json::Value,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		self.create_thread(p).await
+	}
+
+	async fn session_open(
+		&self,
+		_p: gjc_app_server::protocol::GjcSessionOpenParams,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		self.create_thread(serde_json::Value::Null).await
+	}
+
+	async fn fork_thread(
+		&self,
+		p: serde_json::Value,
+	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+		self.create_thread(p).await
+	}
+}
+
+async fn wait_for_prompt_count(factory: &ReleasableFactory, count: usize) {
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+	loop {
+		if factory.started_generations.lock().len() >= count {
+			return;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "timed out waiting for prompt {count}");
+		factory.started.notified().await;
+	}
+}
+
+#[tokio::test]
+async fn stale_turn_completion_after_generation_bump_is_noop() {
+	let sink = Arc::new(CollectingSink::default());
+	let thread = ThreadId("thr_releasable".into());
+	let factory = ReleasableFactory {
+		thread_id: thread.clone(),
+		releases: Arc::new(Mutex::new(Vec::new())),
+		started: Arc::new(tokio::sync::Notify::new()),
+		started_generations: Arc::new(Mutex::new(Vec::new())),
+	};
+	let server = Arc::new(AppServer::new(
+		Arc::new(factory.clone()),
+		AppServerConfig { max_inflight_turns_per_thread: 1, ..AppServerConfig::default() },
+		sink.clone(),
+	));
+	let conn = initialize(&server).await;
+	let started = parse_inbound(
+		r#"{"id":1025,"method":"thread/start","params":{"cwd":"/repo"}}"#,
+	)
+	.unwrap();
+	assert!(server.dispatch(&conn, started).await.unwrap().error.is_none());
+
+	let turn_a = parse_inbound(&format!(
+		r#"{{"id":1026,"method":"turn/start","params":{{"threadId":"{}","input":"old"}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let turn_a_resp = server.dispatch(&conn, turn_a).await.unwrap();
+	assert!(turn_a_resp.error.is_none());
+	let turn_a_id = turn_a_resp.result.unwrap()["turn"]["id"].as_str().unwrap().to_owned();
+	wait_for_prompt_count(&factory, 1).await;
+
+	let reopen = parse_inbound(
+		r#"{"id":1027,"method":"gjc/session/open","params":{"sessionPath":"/tmp/releasable.jsonl"}}"#,
+	)
+	.unwrap();
+	let reopen_resp = server.dispatch(&conn, reopen).await.unwrap();
+	assert!(reopen_resp.error.is_none());
+	assert_eq!(reopen_resp.result.unwrap()["generation"], 2);
+
+	let turn_b = parse_inbound(&format!(
+		r#"{{"id":1028,"method":"turn/start","params":{{"threadId":"{}","input":"new"}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let turn_b_resp = server.dispatch(&conn, turn_b).await.unwrap();
+	assert!(turn_b_resp.error.is_none());
+	let turn_b_id = turn_b_resp.result.unwrap()["turn"]["id"].as_str().unwrap().to_owned();
+	assert_ne!(turn_a_id, turn_b_id);
+	wait_for_prompt_count(&factory, 2).await;
+	sink.notes.lock().clear();
+
+	factory.releases.lock()[0].notify_waiters();
+	tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+	let state = server
+		.dispatch(
+			&conn,
+			parse_inbound(&format!(
+				r#"{{"id":1029,"method":"thread/read","params":{{"threadId":"{}"}}}}"#,
+				thread.0
+			))
+			.unwrap(),
+		)
+		.await
+		.unwrap()
+		.result
+		.unwrap();
+	assert_eq!(state["thread"]["status"], "running");
+	assert_eq!(server.active_turn_id(&thread).unwrap(), Some(TurnId(turn_b_id.clone())));
+	assert!(!sink.notes.lock().iter().any(|n| {
+		n.method == "turn/completed" && n.params.as_ref().unwrap()["turnId"] == turn_a_id
+	}));
+
+	let turn_c = parse_inbound(&format!(
+		r#"{{"id":1030,"method":"turn/start","params":{{"threadId":"{}","input":"extra"}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let turn_c_resp = server.dispatch(&conn, turn_c).await.unwrap();
+	assert_eq!(turn_c_resp.error.unwrap().code, gjc_app_server::error::codes::SERVER_OVERLOADED);
+}
+
+#[tokio::test]
 async fn turn_steer_interrupt_by_turn_id() {
 	let (server, _) = build();
 	let conn = initialize(&server).await;
@@ -684,6 +1335,662 @@ async fn host_tools_set_rejects_unknown_fields() {
 	let req = parse_inbound(&format!(r#"{{"id":40,"method":"gjc/hostTools/set","params":{{"threadId":"{}","tools":[{{"name":"x","description":"x","inputSchema":{{}},"extra":true}}]}}}}"#, thread.0)).unwrap();
 	let resp = server.dispatch(&conn, req).await.unwrap();
 	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+}
+
+#[tokio::test]
+async fn gjc_context_read_is_strict_and_token_safe() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	let bad = parse_inbound(&format!(
+		r#"{{"id":401,"method":"gjc/context/read","params":{{"threadId":"{}","bogus":1}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let resp = server.dispatch(&conn, bad).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+
+	let good = parse_inbound(&format!(
+		r#"{{"id":402,"method":"gjc/context/read","params":{{"threadId":"{}"}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	let resp = server.dispatch(&conn, good).await.unwrap();
+	let result = resp.result.unwrap();
+	assert_eq!(result["tokens"]["input"], 10);
+	assert_eq!(result["tokens"]["total"], 20);
+	assert_eq!(result["freshness"], "live");
+	assert!(result.get("provider").is_none());
+}
+
+#[tokio::test]
+async fn gjc_exec_state_reads_are_strict_registered_and_read_lane() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	let methods = [
+		("gjc/todos/read", "GjcTodosReadResult"),
+		("gjc/usage/read", "GjcUsageReadResult"),
+		("gjc/jobs/list", "GjcJobsListResult"),
+		("gjc/agents/list", "GjcAgentsListResult"),
+		("gjc/monitors/list", "GjcMonitorsListResult"),
+		("gjc/compact/summary", "GjcCompactSummaryResult"),
+	];
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	let monitors_result = definitions["GjcMonitorsListResult"]["properties"].as_object().unwrap();
+	assert!(monitors_result.contains_key("monitors"));
+	assert!(monitors_result.contains_key("crons"));
+	let monitor_entry = definitions["GjcMonitorEntry"]["properties"].as_object().unwrap();
+	assert!(monitor_entry.contains_key("outputTail"));
+	let cron_entry = definitions["GjcCronEntry"]["properties"].as_object().unwrap();
+	for field in [
+		"id",
+		"humanSchedule",
+		"cronExpression",
+		"prompt",
+		"recurring",
+		"nextFireAt",
+		"createdAt",
+	] {
+		assert!(cron_entry.contains_key(field), "missing GjcCronEntry.{field}");
+	}
+	let monitors_bad = parse_inbound(&format!(
+		r#"{{"id":499,"method":"gjc/monitors/list","params":{{"threadId":"{}","bogus":1}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	assert_eq!(
+		server
+			.dispatch(&conn, monitors_bad)
+			.await
+			.unwrap()
+			.error
+			.unwrap()
+			.code,
+		gjc_app_server::error::codes::INVALID_PARAMS
+	);
+	for (idx, (method, result_def)) in methods.iter().enumerate() {
+		assert_eq!(
+			gjc_app_server::scheduler::classify(method),
+			gjc_app_server::scheduler::Lane::Read
+		);
+		assert!(catalog.iter().any(|entry| entry["method"] == *method));
+		assert!(definitions.contains_key(*result_def));
+		let bad = parse_inbound(&format!(
+			r#"{{"id":{},"method":"{}","params":{{"threadId":"{}","bogus":1}}}}"#,
+			500 + idx,
+			method,
+			thread.0
+		))
+		.unwrap();
+		assert_eq!(
+			server
+				.dispatch(&conn, bad)
+				.await
+				.unwrap()
+				.error
+				.unwrap()
+				.code,
+			gjc_app_server::error::codes::INVALID_PARAMS
+		);
+		let good = parse_inbound(&format!(
+			r#"{{"id":{},"method":"{}","params":{{"threadId":"{}"}}}}"#,
+			600 + idx,
+			method,
+			thread.0
+		))
+		.unwrap();
+		assert!(server.dispatch(&conn, good).await.unwrap().error.is_none());
+	}
+}
+
+#[tokio::test]
+async fn gjc_g005_model_controls_are_strict_registered_and_laned() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	let cases = [
+		(
+			"gjc/model/catalog",
+			"GjcThreadReadParams",
+			"GjcModelCatalogResult",
+			gjc_app_server::scheduler::Lane::Read,
+			format!(r#"{{"threadId":"{}"}}"#, thread.0),
+			format!(r#"{{"threadId":"{}","bogus":1}}"#, thread.0),
+		),
+		(
+			"gjc/thinking/read",
+			"GjcThreadReadParams",
+			"GjcThinkingReadResult",
+			gjc_app_server::scheduler::Lane::Read,
+			format!(r#"{{"threadId":"{}"}}"#, thread.0),
+			format!(r#"{{"threadId":"{}","bogus":1}}"#, thread.0),
+		),
+		(
+			"gjc/thinking/set",
+			"GjcThinkingSetParams",
+			"GjcThinkingSetResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+			format!(r#"{{"threadId":"{}","level":"high"}}"#, thread.0),
+			format!(r#"{{"threadId":"{}","level":"high","bogus":1}}"#, thread.0),
+		),
+		(
+			"gjc/fast/read",
+			"GjcThreadReadParams",
+			"GjcFastReadResult",
+			gjc_app_server::scheduler::Lane::Read,
+			format!(r#"{{"threadId":"{}"}}"#, thread.0),
+			format!(r#"{{"threadId":"{}","bogus":1}}"#, thread.0),
+		),
+		(
+			"gjc/fast/set",
+			"GjcFastSetParams",
+			"GjcFastSetResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+			format!(r#"{{"threadId":"{}","enabled":true}}"#, thread.0),
+			format!(r#"{{"threadId":"{}","enabled":true,"bogus":1}}"#, thread.0),
+		),
+		(
+			"gjc/settings/schema",
+			"GjcSettingsSchemaParams",
+			"GjcSettingsSchemaResult",
+			gjc_app_server::scheduler::Lane::Read,
+			r"{}".to_string(),
+			r#"{"bogus":1}"#.to_string(),
+		),
+		(
+			"gjc/settings/read",
+			"GjcSettingsReadParams",
+			"GjcSettingsReadResult",
+			gjc_app_server::scheduler::Lane::Read,
+			r"{}".to_string(),
+			r#"{"bogus":1}"#.to_string(),
+		),
+		(
+			"gjc/settings/update",
+			"GjcSettingsUpdateParams",
+			"GjcSettingsUpdateResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+			r#"{"key":"autoResume","value":true}"#.to_string(),
+			r#"{"key":"autoResume","value":true,"bogus":1}"#.to_string(),
+		),
+		(
+			"gjc/appearance/themes/list",
+			"GjcAppearanceThemesListParams",
+			"GjcAppearanceThemesListResult",
+			gjc_app_server::scheduler::Lane::Read,
+			r"{}".to_string(),
+			r#"{"bogus":1}"#.to_string(),
+		),
+		(
+			"gjc/appearance/read",
+			"GjcAppearanceReadParams",
+			"GjcAppearanceReadResult",
+			gjc_app_server::scheduler::Lane::Read,
+			r"{}".to_string(),
+			r#"{"bogus":1}"#.to_string(),
+		),
+		(
+			"gjc/appearance/set",
+			"GjcAppearanceSetParams",
+			"GjcAppearanceSetResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+			r#"{"dark":"red-claw"}"#.to_string(),
+			r#"{"dark":"red-claw","bogus":1}"#.to_string(),
+		),
+	];
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	for (idx, (method, params_def, result_def, lane, good_params, bad_params)) in
+		cases.iter().enumerate()
+	{
+		assert_eq!(gjc_app_server::scheduler::classify(method), *lane);
+		assert!(catalog.iter().any(|entry| entry["method"] == *method
+			&& entry["paramsDef"] == *params_def
+			&& entry["resultDef"] == *result_def));
+		assert!(definitions.contains_key(*params_def));
+		assert!(definitions.contains_key(*result_def));
+		let bad = parse_inbound(&format!(
+			r#"{{"id":{},"method":"{}","params":{}}}"#,
+			700 + idx,
+			method,
+			bad_params
+		))
+		.unwrap();
+		assert_eq!(
+			server
+				.dispatch(&conn, bad)
+				.await
+				.unwrap()
+				.error
+				.unwrap()
+				.code,
+			gjc_app_server::error::codes::INVALID_PARAMS
+		);
+		let good = parse_inbound(&format!(
+			r#"{{"id":{},"method":"{}","params":{}}}"#,
+			800 + idx,
+			method,
+			good_params
+		))
+		.unwrap();
+		assert!(server.dispatch(&conn, good).await.unwrap().error.is_none());
+	}
+	for (method, params) in [("gjc/settings/schema", "false"), ("gjc/settings/read", "[]")] {
+		let req =
+			parse_inbound(&format!(r#"{{"id":900,"method":"{method}","params":{params}}}"#)).unwrap();
+		assert_eq!(
+			server
+				.dispatch(&conn, req)
+				.await
+				.unwrap()
+				.error
+				.unwrap()
+				.code,
+			gjc_app_server::error::codes::INVALID_PARAMS
+		);
+	}
+}
+
+#[test]
+fn gjc_phase7_catalog_schema_and_lane_are_registered() {
+	assert_eq!(
+		gjc_app_server::scheduler::classify("gjc/context/read"),
+		gjc_app_server::scheduler::Lane::Read
+	);
+	assert_eq!(
+		gjc_app_server::scheduler::classify("gjc/goal/read"),
+		gjc_app_server::scheduler::Lane::Read
+	);
+	assert_eq!(
+		gjc_app_server::scheduler::classify("gjc/retry"),
+		gjc_app_server::scheduler::Lane::Mutating
+	);
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	for (method, params, result) in [
+		("gjc/context/read", "GjcContextReadParams", "GjcContextReadResult"),
+		("gjc/goal/read", "GjcGoalReadParams", "GjcGoalReadResult"),
+		("gjc/retry", "GjcRetryParams", "GjcRetryResult"),
+	] {
+		assert!(catalog.iter().any(|entry| entry["method"] == method));
+		assert!(definitions.contains_key(params));
+		assert!(definitions.contains_key(result));
+	}
+}
+
+#[test]
+fn gjc_command_and_extension_descriptor_schema_depth_is_registered() {
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	let command = definitions["CommandDescriptor"]["properties"].as_object().unwrap();
+	assert!(command.contains_key("classification"));
+	let extension = definitions["ExtensionDescriptor"]["properties"].as_object().unwrap();
+	for field in ["state", "disabledReason", "shadowedBy", "provider"] {
+		assert!(extension.contains_key(field), "missing ExtensionDescriptor.{field}");
+	}
+	let json = serde_json::json!({
+		"id": "slash-command:ship",
+		"name": "ship",
+		"kind": "slash-command",
+		"source": "project",
+		"status": "shadowed",
+		"state": "shadowed",
+		"disabledReason": "shadowed",
+		"shadowedBy": "slash-command:ship",
+		"provider": "gjc"
+	});
+	let descriptor: gjc_app_server::protocol::ExtensionDescriptor = serde_json::from_value(json).unwrap();
+	assert_eq!(descriptor.state.as_deref(), Some("shadowed"));
+	assert_eq!(descriptor.disabled_reason.as_deref(), Some("shadowed"));
+	assert_eq!(descriptor.shadowed_by.as_deref(), Some("slash-command:ship"));
+	assert_eq!(descriptor.provider.as_deref(), Some("gjc"));
+}
+
+#[tokio::test]
+async fn gjc_session_reads_are_strict_and_registered_accept_cwd() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	for (id, method, params) in [
+		(410, "gjc/session/list", r#"{"bogus":1}"#.to_string()),
+		(411, "gjc/session/search", r#"{"query":"x","bogus":1}"#.to_string()),
+		(412, "gjc/session/tree", format!(r#"{{"threadId":"{}","bogus":1}}"#, thread.0)),
+	] {
+		let req =
+			parse_inbound(&format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#)).unwrap();
+		let resp = server.dispatch(&conn, req).await.unwrap();
+		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	}
+	let empty =
+		parse_inbound(r#"{"id":413,"method":"gjc/session/search","params":{"query":""}}"#).unwrap();
+	let resp = server.dispatch(&conn, empty).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	let list =
+		parse_inbound(r#"{"id":414,"method":"gjc/session/list","params":{"scope":"all"}}"#).unwrap();
+	assert_eq!(server.dispatch(&conn, list).await.unwrap().result.unwrap()["total"], 1);
+	let list_cwd = parse_inbound(
+		r#"{"id":417,"method":"gjc/session/list","params":{"scope":"all","cwd":"/tmp/project"}}"#,
+	)
+	.unwrap();
+	assert_eq!(
+		server
+			.dispatch(&conn, list_cwd)
+			.await
+			.unwrap()
+			.result
+			.unwrap()["total"],
+		1
+	);
+	let search_cwd = parse_inbound(
+		r#"{"id":418,"method":"gjc/session/search","params":{"query":"x","cwd":"/tmp/project"}}"#,
+	)
+	.unwrap();
+	assert_eq!(
+		server
+			.dispatch(&conn, search_cwd)
+			.await
+			.unwrap()
+			.result
+			.unwrap()["total"],
+		1
+	);
+}
+
+#[tokio::test]
+async fn gjc_session_rename_export_are_strict() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	for (id, method, params) in [
+		(415, "gjc/session/rename", r#"{"sessionPath":"/tmp/a.jsonl","title":"x","bogus":1}"#),
+		(416, "gjc/session/export", r#"{"sessionPath":"/tmp/a.jsonl","format":"json","bogus":1}"#),
+		(419, "gjc/session/open", r#"{"sessionPath":"/tmp/a.jsonl","bogus":1}"#),
+		(420, "gjc/session/delete", r#"{"sessionPath":"/tmp/a.jsonl","bogus":1}"#),
+	] {
+		let req =
+			parse_inbound(&format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#)).unwrap();
+		let resp = server.dispatch(&conn, req).await.unwrap();
+		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	}
+	let open_empty =
+		parse_inbound(r#"{"id":421,"method":"gjc/session/open","params":{"sessionPath":""}}"#)
+			.unwrap();
+	let resp = server.dispatch(&conn, open_empty).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	let delete_empty =
+		parse_inbound(r#"{"id":422,"method":"gjc/session/delete","params":{"sessionPath":""}}"#)
+			.unwrap();
+	let resp = server.dispatch(&conn, delete_empty).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	let open = parse_inbound(
+		r#"{"id":428,"method":"gjc/session/open","params":{"sessionPath":"/tmp/a.jsonl"}}"#,
+	)
+	.unwrap();
+	let open_result = server.dispatch(&conn, open).await.unwrap().result.unwrap();
+	assert_eq!(open_result["resumed"], true);
+	assert!(open_result["threadId"].as_str().is_some());
+	let delete = parse_inbound(
+		r#"{"id":429,"method":"gjc/session/delete","params":{"sessionPath":"/tmp/a.jsonl"}}"#,
+	)
+	.unwrap();
+	assert_eq!(
+		server
+			.dispatch(&conn, delete)
+			.await
+			.unwrap()
+			.result
+			.unwrap()["ok"],
+		true
+	);
+}
+
+#[tokio::test]
+async fn gjc_session_navigation_label_are_strict_dispatchable_and_validated() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	for (id, method, params) in [
+		(
+			423,
+			"gjc/session/navigate",
+			format!(r#"{{"threadId":"{}","entryId":"e1","bogus":1}}"#, thread.0),
+		),
+		(
+			424,
+			"gjc/session/label",
+			format!(r#"{{"threadId":"{}","entryId":"e1","label":"x","bogus":1}}"#, thread.0),
+		),
+	] {
+		let req =
+			parse_inbound(&format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#)).unwrap();
+		let resp = server.dispatch(&conn, req).await.unwrap();
+		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	}
+	let navigate = parse_inbound(&format!(
+		r#"{{"id":425,"method":"gjc/session/navigate","params":{{"threadId":"{}","entryId":"e1","summarize":true}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	assert_eq!(
+		server
+			.dispatch(&conn, navigate)
+			.await
+			.unwrap()
+			.result
+			.unwrap()["activeLeafId"],
+		"leaf-1"
+	);
+	let label = parse_inbound(&format!(
+		r#"{{"id":426,"method":"gjc/session/label","params":{{"threadId":"{}","entryId":"e1","label":""}}}}"#,
+		thread.0
+	))
+	.unwrap();
+	assert_eq!(server.dispatch(&conn, label).await.unwrap().result.unwrap()["ok"], true);
+	let long_label = "x".repeat(201);
+	let req = parse_inbound(&format!(
+		r#"{{"id":427,"method":"gjc/session/label","params":{{"threadId":"{}","entryId":"e1","label":"{}"}}}}"#,
+		thread.0, long_label
+	))
+	.unwrap();
+	let resp = server.dispatch(&conn, req).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+}
+
+#[test]
+fn gjc_session_rename_export_catalog_schema_and_lane_are_registered() {
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	for (method, params, result, lane) in [
+		(
+			"gjc/session/rename",
+			"GjcSessionRenameParams",
+			"GjcSessionRenameResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+		),
+		(
+			"gjc/session/open",
+			"GjcSessionOpenParams",
+			"GjcSessionOpenResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+		),
+		(
+			"gjc/session/delete",
+			"GjcSessionDeleteParams",
+			"GjcSessionDeleteResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+		),
+		(
+			"gjc/session/export",
+			"GjcSessionExportParams",
+			"GjcSessionExportResult",
+			gjc_app_server::scheduler::Lane::Read,
+		),
+		(
+			"gjc/session/navigate",
+			"GjcSessionNavigateParams",
+			"GjcSessionNavigateResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+		),
+		(
+			"gjc/session/label",
+			"GjcSessionLabelParams",
+			"GjcSessionLabelResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+		),
+	] {
+		assert_eq!(gjc_app_server::scheduler::classify(method), lane);
+		assert!(catalog.iter().any(|entry| entry["method"] == method));
+		assert!(definitions.contains_key(params));
+		assert!(definitions.contains_key(result));
+	}
+}
+
+#[test]
+fn gjc_session_reads_catalog_schema_and_lane_are_registered() {
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	for (method, params, result) in [
+		("gjc/session/list", "GjcSessionListParams", "GjcSessionListResult"),
+		("gjc/session/search", "GjcSessionSearchParams", "GjcSessionSearchResult"),
+		("gjc/session/tree", "GjcSessionTreeParams", "GjcSessionTreeResult"),
+	] {
+		assert_eq!(
+			gjc_app_server::scheduler::classify(method),
+			gjc_app_server::scheduler::Lane::Read
+		);
+		assert!(catalog.iter().any(|entry| entry["method"] == method));
+		assert!(definitions.contains_key(params));
+		assert!(definitions.contains_key(result));
+	}
+	assert!(definitions.contains_key("SessionIndexEntry"));
+	assert!(definitions.contains_key("SessionTreeNodeDto"));
+}
+
+#[tokio::test]
+async fn gjc_provider_auth_methods_are_strict() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	for (id, method, params) in [
+		(430, "gjc/provider/list", r#"{"bogus":1}"#),
+		(431, "gjc/auth/status", r#"{"bogus":1}"#),
+		(432, "gjc/auth/logout", r#"{"providerId":"anthropic","bogus":1}"#),
+	] {
+		let req =
+			parse_inbound(&format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#)).unwrap();
+		let resp = server.dispatch(&conn, req).await.unwrap();
+		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	}
+	let missing = parse_inbound(r#"{"id":433,"method":"gjc/auth/logout","params":{}}"#).unwrap();
+	let resp = server.dispatch(&conn, missing).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+}
+
+#[test]
+fn gjc_provider_auth_catalog_schema_and_lane_are_registered() {
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	for (method, params, result, lane) in [
+		(
+			"gjc/provider/list",
+			"GjcProviderListParams",
+			"GjcProviderListResult",
+			gjc_app_server::scheduler::Lane::Read,
+		),
+		(
+			"gjc/auth/status",
+			"GjcAuthStatusParams",
+			"GjcAuthStatusResult",
+			gjc_app_server::scheduler::Lane::Read,
+		),
+		(
+			"gjc/auth/logout",
+			"GjcAuthLogoutParams",
+			"GjcAuthLogoutResult",
+			gjc_app_server::scheduler::Lane::Mutating,
+		),
+	] {
+		assert_eq!(gjc_app_server::scheduler::classify(method), lane);
+		assert!(catalog.iter().any(|entry| entry["method"] == method
+			&& entry["paramsDef"] == params
+			&& entry["resultDef"] == result));
+		assert!(definitions.contains_key(params));
+		assert!(definitions.contains_key(result));
+	}
+	assert!(definitions.contains_key("GjcProviderListEntry"));
+	assert!(definitions.contains_key("GjcAuthStatusEntry"));
+}
+
+#[tokio::test]
+async fn gjc_stale_deferral_methods_are_strict() {
+	let (server, _) = build();
+	let conn = initialize(&server).await;
+	let thread = start_thread(&server, &conn).await;
+	for (id, method, params) in [
+		(901, "gjc/session/move", format!(r#"{{"threadId":"{}","targetCwd":"/tmp","bogus":1}}"#, thread.0)),
+		(902, "gjc/provider/add", r#"{"preset":"openai","apiKey":"raw"}"#.to_string()),
+		(903, "gjc/auth/login/start", r#"{"providerId":"p","token":"x"}"#.to_string()),
+		(904, "gjc/auth/login/poll", r#"{"flowId":"f","verifier":"x"}"#.to_string()),
+		(905, "gjc/auth/login/complete", r#"{"flowId":"f","redirectUrl":"http://localhost","code":"x"}"#.to_string()),
+		(906, "gjc/auth/login/cancel", r#"{"flowId":"f","fingerprint":"x"}"#.to_string()),
+		(907, "gjc/model/assign", format!(r#"{{"threadId":"{}","role":"main","provider":"p","modelId":"m","bogus":1}}"#, thread.0)),
+		(908, "gjc/extensions/setEnabled", r#"{"extensionId":"e","enabled":true,"bogus":1}"#.to_string()),
+		(909, "gjc/skills/setEnabled", r#"{"skillId":"s","enabled":true,"bogus":1}"#.to_string()),
+		(910, "gjc/plugins/setEnabled", r#"{"pluginId":"p","enabled":true,"bogus":1}"#.to_string()),
+		(911, "gjc/plugins/setFeature", r#"{"pluginId":"p","feature":"f","enabled":true,"bogus":1}"#.to_string()),
+		(912, "gjc/plugins/setSetting", r#"{"pluginId":"p","key":"k","value":1,"bogus":1}"#.to_string()),
+	] {
+		let req = parse_inbound(&format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#)).unwrap();
+		let resp = server.dispatch(&conn, req).await.unwrap();
+		assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+	}
+	let missing_thread = parse_inbound(
+		r#"{"id":913,"method":"gjc/model/assign","params":{"role":"main","provider":"p","modelId":"m"}}"#,
+	)
+	.unwrap();
+	let resp = server.dispatch(&conn, missing_thread).await.unwrap();
+	assert_eq!(resp.error.unwrap().code, gjc_app_server::error::codes::INVALID_PARAMS);
+}
+
+#[test]
+fn gjc_stale_deferral_catalog_schema_lane_and_login_redaction_are_registered() {
+	let bundle = gjc_app_server::schema::schema_bundle();
+	let catalog = bundle["methodCatalog"].as_array().unwrap();
+	let definitions = bundle["definitions"].as_object().unwrap();
+	for (method, params, result) in [
+		("gjc/session/move", "GjcSessionMoveParams", "GjcSessionMoveResult"),
+		("gjc/provider/add", "GjcProviderAddParams", "GjcProviderAddResult"),
+		("gjc/auth/login/start", "GjcAuthLoginStartParams", "GjcAuthLoginStartResult"),
+		("gjc/auth/login/poll", "GjcAuthLoginPollParams", "GjcAuthLoginPollResult"),
+		("gjc/auth/login/complete", "GjcAuthLoginCompleteParams", "GjcAuthLoginCompleteResult"),
+		("gjc/auth/login/cancel", "GjcAuthLoginCancelParams", "GjcAuthLoginCancelResult"),
+		("gjc/model/assign", "GjcModelAssignParams", "GjcModelAssignResult"),
+		("gjc/extensions/setEnabled", "GjcExtensionsSetEnabledParams", "GjcExtensionsSetEnabledResult"),
+		("gjc/skills/setEnabled", "GjcSkillsSetEnabledParams", "GjcSkillsSetEnabledResult"),
+		("gjc/plugins/setEnabled", "GjcPluginsSetEnabledParams", "GjcPluginsSetEnabledResult"),
+		("gjc/plugins/setFeature", "GjcPluginsSetFeatureParams", "GjcPluginsSetFeatureResult"),
+		("gjc/plugins/setSetting", "GjcPluginsSetSettingParams", "GjcPluginsSetSettingResult"),
+	] {
+		assert_eq!(gjc_app_server::scheduler::classify(method), gjc_app_server::scheduler::Lane::Mutating);
+		assert!(catalog.iter().any(|entry| entry["method"] == method && entry["paramsDef"] == params && entry["resultDef"] == result));
+		assert!(definitions.contains_key(params));
+		assert!(definitions.contains_key(result));
+	}
+	let login_defs = serde_json::to_string(&serde_json::json!({
+		"start": definitions.get("GjcAuthLoginStartResult"),
+		"poll": definitions.get("GjcAuthLoginPollResult"),
+		"complete": definitions.get("GjcAuthLoginCompleteResult"),
+		"cancel": definitions.get("GjcAuthLoginCancelResult"),
+	})).unwrap();
+	for forbidden in ["token", "verifier", "fingerprint", "code"] {
+		assert!(!login_defs.contains(forbidden));
+	}
 }
 
 #[tokio::test]
@@ -860,6 +2167,55 @@ impl AgentBackend for BlockingBackend {
 		Ok(serde_json::json!([]))
 	}
 
+	async fn read_todos(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcTodosReadResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"todos":[{"id":"t1","content":"ship","status":"pending"}]}),
+		)
+		.unwrap())
+	}
+	async fn read_usage(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcUsageReadResult> {
+		Ok(serde_json::from_value(serde_json::json!({"perModel":[{"modelId":"m","input":1,"output":2,"cost":0.1}],"totalCost":0.1,"source":"test","freshness":"live"})).unwrap())
+	}
+	async fn list_jobs(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcJobsListResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"jobs":[{"id":"j1","type":"monitor","status":"running"}]}),
+		)
+		.unwrap())
+	}
+	async fn list_agents(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAgentsListResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"agents":[{"id":"a1","agentType":"executor","status":"completed"}]}),
+		)
+		.unwrap())
+	}
+	async fn list_monitors(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcMonitorsListResult> {
+		Ok(serde_json::from_value(
+			serde_json::json!({"monitors":[{"id":"m1","kind":"monitor","status":"running","outputTail":"tail"}],"crons":[{"id":"cron-1","humanSchedule":"hourly","cronExpression":"0 * * * *","prompt":"ping","recurring":true,"nextFireAt":"2026-01-01T01:00:00Z","createdAt":"2026-01-01T00:00:00Z"}]}),
+		)
+		.unwrap())
+	}
+	async fn compact_summary(
+		&self,
+		_c: &BackendCallContext,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcCompactSummaryResult> {
+		Ok(serde_json::from_value(serde_json::json!({"summaries":[{"id":"c1","summary":"sum","tokensBefore":3,"timestamp":"2026-01-01T00:00:00.000Z"}]})).unwrap())
+	}
+
 	async fn set_model(
 		&self,
 		_c: &BackendCallContext,
@@ -926,6 +2282,33 @@ impl BackendFactory for BlockingFactory {
 		p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		self.create_thread(p).await
+	}
+
+	async fn session_list(
+		&self,
+		_params: gjc_app_server::protocol::GjcSessionListParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
+		Ok(gjc_app_server::protocol::GjcSessionListResult {
+			sessions: vec![gjc_app_server::protocol::SessionIndexEntry {
+				id: "s1".into(),
+				title: Some("Title".into()),
+				first_message: Some("First".into()),
+				cwd: "/tmp/project".into(),
+				path: "/tmp/project/session.jsonl".into(),
+				modified_at: "2026-01-01T00:00:00.000Z".into(),
+				entry_count: Some(2),
+			}],
+			total: 1,
+		})
+	}
+
+	async fn session_search(
+		&self,
+		_params: gjc_app_server::protocol::GjcSessionSearchParams,
+	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionSearchResult> {
+		self
+			.session_list(gjc_app_server::protocol::GjcSessionListParams::default())
+			.await
 	}
 }
 

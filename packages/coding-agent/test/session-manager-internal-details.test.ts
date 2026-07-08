@@ -11,6 +11,9 @@
  * fields named in `INTERNAL_DETAILS_FIELDS` are removed; anything else (even
  * `__`-prefixed fields not in the allowlist) is preserved verbatim.
  */
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { type SkillPromptDetails, stripInternalDetailsFields } from "@gajae-code/coding-agent/session/messages";
 import {
@@ -19,6 +22,7 @@ import {
 	SessionManager,
 	transferSessionMessageIdentity,
 } from "@gajae-code/coding-agent/session/session-manager";
+import { getAgentDir, getSessionsDir, setAgentDir } from "@gajae-code/utils";
 
 const SKILL_TYPE = "skill-prompt";
 
@@ -206,6 +210,31 @@ describe("SessionManager lifecycle-preallocated session id", () => {
 			else process.env.GJC_LIFECYCLE_REQUEST_ID = prevReq;
 			if (prevId === undefined) delete process.env.GJC_SESSION_ID;
 			else process.env.GJC_SESSION_ID = prevId;
+		}
+	});
+});
+
+describe("SessionManager.listAll", () => {
+	it("scans the primary sessions root and dedupes legacy roots by realpath", async () => {
+		const previousAgentDir = getAgentDir();
+		const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-list-all-agent-"));
+		try {
+			setAgentDir(agentDir);
+			const primaryRoot = getSessionsDir();
+			const projectRoot = path.join(primaryRoot, "repo-encoded");
+			await fs.mkdir(projectRoot, { recursive: true });
+			const sessionPath = path.join(projectRoot, "session.jsonl");
+			await fs.writeFile(
+				sessionPath,
+				`${JSON.stringify({ type: "session", version: 3, id: "xdg-session", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/xdg-repo" })}\n`,
+			);
+
+			const sessions = await SessionManager.listAll();
+
+			expect(sessions.some(session => session.id === "xdg-session" && session.path === sessionPath)).toBe(true);
+		} finally {
+			setAgentDir(previousAgentDir);
+			await fs.rm(agentDir, { recursive: true, force: true });
 		}
 	});
 });

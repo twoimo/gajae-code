@@ -51,6 +51,27 @@ pub fn classify(method: &str) -> Lane {
 		| "thread/loaded/list"
 		| "thread/list"
 		| "gjc/state/read"
+		| "gjc/context/read"
+		| "gjc/goal/read"
+		| "gjc/model/catalog"
+		| "gjc/thinking/read"
+		| "gjc/fast/read"
+		| "gjc/settings/schema"
+		| "gjc/settings/read"
+		| "gjc/appearance/themes/list"
+		| "gjc/appearance/read"
+		| "gjc/provider/list"
+		| "gjc/auth/status"
+		| "gjc/todos/read"
+		| "gjc/usage/read"
+		| "gjc/jobs/list"
+		| "gjc/agents/list"
+		| "gjc/monitors/list"
+		| "gjc/compact/summary"
+		| "gjc/session/list"
+		| "gjc/session/search"
+		| "gjc/session/tree"
+		| "gjc/session/export"
 		| "gjc/tools/list"
 		| "gjc/commands/list"
 		| "gjc/skills/list"
@@ -136,11 +157,21 @@ mod tests {
 		assert_eq!(classify("turn/interrupt"), Lane::Cancel);
 		assert_eq!(classify("thread/read"), Lane::Read);
 		assert_eq!(classify("gjc/state/read"), Lane::Read);
+		assert_eq!(classify("gjc/session/list"), Lane::Read);
+		assert_eq!(classify("gjc/session/search"), Lane::Read);
+		assert_eq!(classify("gjc/session/tree"), Lane::Read);
 		assert_eq!(classify("gjc/tools/list"), Lane::Read);
 		assert_eq!(classify("gjc/commands/list"), Lane::Read);
 		assert_eq!(classify("gjc/skills/list"), Lane::Read);
 		assert_eq!(classify("gjc/extensions/list"), Lane::Read);
 		assert_eq!(classify("gjc/plugins/list"), Lane::Read);
+		assert_eq!(classify("gjc/provider/list"), Lane::Read);
+		assert_eq!(classify("gjc/auth/status"), Lane::Read);
+		assert_eq!(classify("gjc/auth/logout"), Lane::Mutating);
+		assert_eq!(classify("gjc/session/open"), Lane::Mutating);
+		assert_eq!(classify("gjc/session/delete"), Lane::Mutating);
+		assert_eq!(classify("gjc/session/navigate"), Lane::Mutating);
+		assert_eq!(classify("gjc/session/label"), Lane::Mutating);
 		assert_eq!(classify("gjc/model/set"), Lane::Mutating);
 		// Unknown methods are conservatively treated as ordered mutations.
 		assert_eq!(classify("gjc/some/futureMethod"), Lane::Mutating);

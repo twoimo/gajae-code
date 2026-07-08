@@ -6,12 +6,13 @@ import { CommandPalette } from "../app/command-palette.tsx";
 import type { PaletteCommand, PaletteTool } from "../app/command-palette-logic";
 import { ModelPanel } from "../app/model-panel.tsx";
 import { ExtensibilityPanel } from "../app/extensibility-panel.tsx";
-import type { Extension, Plugin, Skill } from "../app/extensibility-logic";
+import type { AppearanceSettings, AppearanceTheme, Extension, Plugin, Skill } from "../app/extensibility-logic";
 import { ConfirmDialog, SessionActions } from "../app/session-actions.tsx";
 import { DEFERRED_SESSION_ACTIONS } from "../app/session-actions-logic";
 import type { ThreadView } from "../app/transcript";
 import { Markdown } from "../app/markdown.tsx";
 import { cleanAssistantText } from "../app/transcript";
+import "../app/session-browser.css";
 import "./showcase.css";
 
 type ToolStatus = "running" | "success" | "error";
@@ -46,6 +47,7 @@ src/showcase/main.tsx: message, tool-card, approval-gate, composer, thread-list,
 const paletteCommands: PaletteCommand[] = [
 	{ name: "help", source: "core", description: "Show command help in the composer.", classification: "prompt-display-only" },
 	{ name: "hotkeys", source: "core", description: "Display keyboard shortcuts.", classification: "prompt-display-only" },
+	{ name: "theme", source: "core", description: "Opens the Appearance panel for terminal palette preview and restore.", classification: "in-scope-new" },
 	{ name: "skill:ralplan", source: "skill", description: "Insert the planning workflow prompt.", classification: "prompt-display-only" },
 	{ name: "review-pr", source: "extension", description: "Needs a future GUI API before execution.", classification: "deferred-needs-new-api" },
 	{ name: "terminal-attach", source: "terminal", description: "Terminal-only command unavailable in GUI.", classification: "excluded-terminal-only" },
@@ -72,6 +74,15 @@ const showcasePlugins: Plugin[] = [
 	{ id: "plugin.github", name: "GitHub", kind: "mcp", source: "project", status: "masked" },
 	{ id: "plugin.notify", name: "Notifier", kind: "webhook", source: "user", status: "active" },
 ];
+
+const appearanceThemes: AppearanceTheme[] = [
+	{ id: "red-claw", kind: "dark", builtin: true, semanticPreview: { bg: "#140b0b", bgElevated: "#201211", surface: "#271817", text: "#f4e7df", textMuted: "#b99386", accent: "#ff5a3d", border: "#5a2c24", success: "#7bd88f", warning: "#f0b45a", danger: "#ff4f4f" } },
+	{ id: "붉은 집게 테마", kind: "dark", builtin: false, semanticPreview: { bg: "#180707", bgElevated: "#260f0f", surface: "#301414", text: "#ffe8df", textMuted: "#d09a8a", accent: "#ff3f24", border: "#6a241c", success: "#79d27d", warning: "#ffc05a", danger: "#ff5c5c" } },
+	{ id: "warm-day", kind: "light", builtin: true, semanticPreview: { bg: "#f7efe8", bgElevated: "#fff8f2", surface: "#f0dfd3", text: "#2b1a16", textMuted: "#72574d", accent: "#b63f27", border: "#d6b8a8", success: "#3c8a4f", warning: "#a66b00", danger: "#b72d2d" } },
+];
+
+const appearancePreview: AppearanceSettings = { dark: "붉은 집게 테마", light: "warm-day", symbolPreset: "ascii", colorBlindMode: true };
+
 
 function App() {
 	return (
@@ -187,6 +198,24 @@ function App() {
 								))}
 							</ul>
 						</div>
+						<div className="session-browser" aria-label="Session list states">
+							<input className="session-browser__search" value="검색" readOnly aria-label="Search sessions showcase" />
+							<div className="empty-inline">Loading sessions…</div>
+							<div className="empty-inline">No sessions found.</div>
+							<div className="session-browser__row">
+								<div className="session-browser__title">긴 CJK 제목과 mono truncation を確認するセッション</div>
+								<div className="session-browser__meta">2026-07-06T00:00:00.000Z</div>
+								<div className="session-browser__actions">
+									<button type="button" className="neutral-action">Rename</button>
+									<button type="button" className="neutral-action">Export md</button>
+									<button type="button" className="neutral-action">Export json</button>
+								</div>
+							</div>
+							<pre className="session-browser__tree">• root branch{"\n"}  • active child{"\n"}    • deep branch leaf</pre>
+							<div className="empty-inline">Rename error: Title is required.</div>
+							<div className="empty-inline">Copied markdown export · gjc-app-server · redacted · 2026-07-06T00:00:00.000Z</div>
+							<div className="empty-inline">Export failed: session export exceeds 5MB cap</div>
+						</div>
 					</section>
 
 					<section className="panel stack model-panel-showcase" aria-label="Model panel states">
@@ -215,7 +244,7 @@ function App() {
 						<WorkflowGateCard state="pending" title="approval · ralplan" />
 						<WorkflowGateCard state="responded" title="question · deep-interview" />
 						<WorkflowGateCard state="cancelled" title="execution · ultragoal" />
-						<DeferredExecStateList />
+						<ExecStateShowcase />
 					</section>
 
 					<section className="panel stack" aria-label="Empty, loading, focus, and composer states">
@@ -271,13 +300,17 @@ function App() {
 					</section>
 
 					<section className="extensibility-showcase panel" aria-label="Extensibility catalog states">
-						<h2>Skills, extensions, plugins, appearance deferred</h2>
+						<h2>Skills, extensions, plugins, terminal appearance</h2>
 						<div className="extensibility-showcase__grid">
 							<ExtensibilityPanel
 								skills={showcaseSkills}
 								extensions={showcaseExtensions}
 								plugins={showcasePlugins}
 								loading={false}
+								appearanceThemes={appearanceThemes}
+								appearance={appearancePreview}
+								appearancePreviewActive={true}
+								initialTab="appearance"
 								onRefresh={() => undefined}
 								onInspectExtension={() => undefined}
 								onInspectPlugin={() => undefined}
@@ -479,21 +512,21 @@ function WorkflowGateCard({ state, title }: { state: ExecCardState; title: strin
 	);
 }
 
-function DeferredExecStateList() {
-	const rows = ["todos", "context", "usage", "jobs", "agents", "monitors", "retry"] as const;
+function ExecStateShowcase() {
+	const cards = [
+		{ title: "Loading", status: "loading", lines: ["Loading…"] },
+		{ title: "Empty", status: "empty", lines: ["No live items"] },
+		{ title: "Populated", status: "populated", lines: ["● running — executor — 日本語 로그", "● live — grok-code — input:120 output:40"] },
+		{ title: "Error", status: "error", lines: ["method unavailable"] },
+	] as const;
 	return (
-		<section className="exec-state-deferred" aria-label="Deferred execution-state list">
-			<strong>Deferred until new API support</strong>
-			<ul>
-				{rows.map(row => (
-					<li key={row}>
-						<button type="button" disabled>
-							<span>{row}</span>
-							<em>{row === "retry" ? "gjc/retry is not on the current seam." : "Needs typed app-server API/notification before GUI rendering."}</em>
-						</button>
-					</li>
-				))}
-			</ul>
+		<section className="exec-state-deferred" aria-label="Execution-state card states">
+			{cards.map(card => (
+				<article className={`exec-state-card exec-state-card--${card.status}`} key={card.title}>
+					<strong><span className="status-dot" />{card.title}</strong>
+					{card.lines.map(line => <code key={line}>{line}</code>)}
+				</article>
+			))}
 		</section>
 	);
 }

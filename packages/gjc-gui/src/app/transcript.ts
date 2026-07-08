@@ -449,6 +449,30 @@ function foldWorkflowGateOpened(state: TranscriptState, params: WorkflowGateOpen
 	};
 }
 
+export function mergeWorkflowGateApprovals(approvals: ApprovalGate[], threadId: string, gates: Array<Record<string, JsonValue | undefined>>): ApprovalGate[] {
+	let next = approvals;
+	for (const gate of gates) {
+		if (typeof gate.gate_id !== "string") continue;
+		const approval: Extract<ApprovalGate, { kind: "workflow-gate" }> = {
+			kind: "workflow-gate",
+			id: gate.gate_id,
+			threadId,
+			gateKind: gate.kind === "question" || gate.kind === "execution" ? gate.kind : "approval",
+			stage: gate.stage === "deep-interview" || gate.stage === "ultragoal" ? gate.stage : "ralplan",
+			required: gate.required !== false,
+			schema: gate.schema ?? {},
+			options: Array.isArray(gate.options) ? gate.options as Extract<ApprovalGate, { kind: "workflow-gate" }>["options"] : undefined,
+			context: gate.context && typeof gate.context === "object" && !Array.isArray(gate.context) ? gate.context : {},
+			status: "pending",
+			generation: 0,
+		};
+		next = next.some(existing => existing.kind === "workflow-gate" && existing.id === approval.id)
+			? next.map(existing => existing.kind === "workflow-gate" && existing.id === approval.id && existing.status === "pending" ? { ...existing, ...approval, generation: existing.generation } : existing)
+			: [...next, approval];
+	}
+	return next;
+}
+
 function foldRawEvent(state: TranscriptState, params: GjcEventParams): TranscriptState {
 	if (isKnownInactiveThread(state, params.threadId)) return { ...state, seq: Math.max(state.seq, params.seq) };
 	const modelLabel = modelFromEvent(params.event) ?? state.modelLabel;
@@ -472,22 +496,94 @@ function foldRawEvent(state: TranscriptState, params: GjcEventParams): Transcrip
 	if (params.eventType === "tool_execution_start") {
 		next = foldToolDetail(next, params.event, "start");
 	}
+	if (params.eventType === "tool_execution_update") {
+		next = foldToolDetail(next, params.event, "update");
+	}
 	if (params.eventType === "tool_execution_end") {
 		next = foldToolDetail(next, params.event, "end");
+	}
+	const lifecycle = lifecycleStatusText(params.eventType, params.event);
+	if (lifecycle) {
+		next = appendStatusItem(next, params.threadId, params.eventType, lifecycle);
 	}
 	return next;
 }
 
-function foldToolDetail(state: TranscriptState, event: JsonValue, phase: "start" | "end"): TranscriptState {
+function appendStatusItem(state: TranscriptState, threadId: string, eventType: string, content: string): TranscriptState {
+	return {
+		...state,
+		items: [
+			...state.items,
+			{
+				id: `event-${eventType}-${state.seq}`,
+				threadId,
+				turnId: state.activeTurnId,
+				role: "event",
+				status: "completed",
+				title: lifecycleTitle(eventType),
+				content,
+			},
+		],
+	};
+}
+
+function lifecycleTitle(eventType: string): string {
+	switch (eventType) {
+		case "auto_retry_start":
+		case "auto_retry_end":
+			return "Retry";
+		case "ttsr_triggered":
+			return "Recovery";
+		case "notice":
+			return "Notice";
+		case "auto_compaction_end":
+			return "Compaction";
+		case "todo_reminder":
+			return "Todo reminder";
+		case "todo_auto_clear":
+			return "Todo auto-clear";
+		default:
+			return eventType.replaceAll("_", " ");
+	}
+}
+
+function lifecycleStatusText(eventType: string, event: JsonValue): string | undefined {
+	if (!["auto_retry_start", "auto_retry_end", "ttsr_triggered", "notice", "auto_compaction_end", "todo_reminder", "todo_auto_clear"].includes(eventType)) return undefined;
+	const payload = eventRecord(event);
+	const label = lifecycleTitle(eventType);
+	const message = firstEventString(payload, "message", "description", "notice", "reason", "summary", "status") ?? toolText(event);
+	const countdown = firstEventString(payload, "countdown", "delay", "retryIn", "retry_in", "seconds");
+	const suffix = countdown ? `${message} (${countdown})` : message;
+	return `${label}: ${suffix}`;
+}
+
+function firstEventString(payload: Record<string, JsonValue | undefined>, ...keys: string[]): string | undefined {
+	for (const key of keys) {
+		const value = payload[key];
+		if (typeof value === "string" && value.length > 0) return value;
+		if (typeof value === "number" || typeof value === "boolean") return String(value);
+	}
+	return undefined;
+}
+
+function eventRecord(event: JsonValue): Record<string, JsonValue | undefined> {
+	return event && typeof event === "object" && !Array.isArray(event) ? event as Record<string, JsonValue | undefined> : {};
+}
+
+
+const TOOL_OUTPUT_TAIL_CAP = 8000;
+
+function foldToolDetail(state: TranscriptState, event: JsonValue, phase: "start" | "update" | "end"): TranscriptState {
 	if (!event || typeof event !== "object" || Array.isArray(event)) return state;
 	const payload = event as Record<string, JsonValue | undefined>;
 	const callId = typeof payload.toolCallId === "string" ? payload.toolCallId : undefined;
 	if (!callId) return state;
 	const name = typeof payload.toolName === "string" ? payload.toolName : undefined;
 	const args = phase === "start" ? toolText(payload.args ?? payload.arguments ?? payload.input) : undefined;
-	const output = phase === "end" ? toolText(payload.result ?? payload.output) : undefined;
+	const outputMode = isToolResultSnapshot(payload.partialResult) ? "snapshot" : "append";
+	const output = phase !== "start" ? toolResultText(payload.partialResult) || toolText(payload.result ?? payload.output ?? payload.delta ?? payload.content ?? payload.progress) : undefined;
 	const error = phase === "end" ? toolText(payload.error) : undefined;
-	const detail = phase === "start" ? (args ? `args:\n${args}` : "") : toolEndText(payload);
+	const detail = phase === "start" ? (args ? `args:\n${args}` : "") : toolUpdateText(payload, phase);
 	if (!detail && !name) return state;
 	const isError = payload.isError === true || payload.error !== undefined;
 	return {
@@ -496,12 +592,12 @@ function foldToolDetail(state: TranscriptState, event: JsonValue, phase: "start"
 			item.id === callId || item.id === `tool-${callId}`
 				? {
 						...item,
-						content: detail ? (phase === "start" ? detail : item.content ? `${item.content}\n${detail}` : detail) : item.content,
+						content: detail ? mergeToolContent(item.content, detail, phase, outputMode) : item.content,
 						status: phase === "end" ? (isError ? "error" : "completed") : item.status,
 						tool: {
 							name: item.tool?.name ?? name ?? item.title ?? "tool",
 							args: args ?? item.tool?.args,
-							output: output ?? item.tool?.output,
+							output: output ? mergeToolOutput(item.tool?.output, output, outputMode) : item.tool?.output,
 							error: error ?? item.tool?.error,
 						},
 					}
@@ -515,18 +611,70 @@ function toolText(value: JsonValue | undefined): string {
 	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
+function toolResultText(value: JsonValue | undefined): string {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+	const content = (value as Record<string, JsonValue | undefined>).content;
+	if (!Array.isArray(content)) return toolText(value);
+	return content
+		.map(part => {
+			if (!part || typeof part !== "object" || Array.isArray(part)) return "";
+			const record = part as Record<string, JsonValue | undefined>;
+			if (typeof record.text === "string") return record.text;
+			return toolText(part);
+		})
+		.filter(text => text.length > 0)
+		.join("");
+}
+
+function isToolResultSnapshot(value: JsonValue | undefined): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	return Array.isArray((value as Record<string, JsonValue | undefined>).content);
+}
+
+function tailToolOutput(text: string): string {
+	return text.length > TOOL_OUTPUT_TAIL_CAP ? text.slice(-TOOL_OUTPUT_TAIL_CAP) : text;
+}
+
+function mergeToolOutput(existing: string | undefined, next: string, mode: "snapshot" | "append"): string {
+	if (!existing || mode === "snapshot") return tailToolOutput(next);
+	return tailToolOutput(`${existing}\n${next}`);
+}
+
 function labeledToolText(label: string, value: JsonValue | undefined): string {
 	const text = toolText(value);
 	return text ? `${label}:\n${text}` : "";
 }
 
 
-function toolEndText(payload: Record<string, JsonValue | undefined>): string {
+function toolUpdateText(payload: Record<string, JsonValue | undefined>, phase: "update" | "end"): string {
+	const resultText = toolResultText(payload.partialResult) || toolText(payload.result ?? payload.output ?? payload.delta ?? payload.content ?? payload.progress);
 	const chunks = [
-		labeledToolText("output", payload.result ?? payload.output),
-		labeledToolText("error", payload.error),
+		resultText ? `${phase === "update" ? "update" : "output"}:\n${resultText}` : "",
+		labeledToolText("status", payload.status),
+		labeledToolText("subagent", payload.agent ?? payload.subagent ?? payload.description),
+		phase === "end" ? labeledToolText("error", payload.error) : "",
 	].filter(chunk => chunk.length > 0);
 	return Array.from(new Set(chunks)).join("\n");
+}
+
+function mergeToolContent(content: string, detail: string, phase: "start" | "update" | "end", mode: "snapshot" | "append"): string {
+	if (phase === "start") return tailToolOutput(detail);
+	if (!content) return tailToolOutput(detail);
+	if (mode === "snapshot") {
+		const outputIndex = firstToolOutputBlockIndex(content);
+		const prefix = outputIndex === undefined ? "" : content.slice(0, outputIndex).trimEnd();
+		return tailToolOutput(prefix ? `${prefix}\n${detail}` : detail);
+	}
+	return tailToolOutput(`${content}\n${detail}`);
+}
+
+function firstToolOutputBlockIndex(content: string): number | undefined {
+	if (content.startsWith("update:\n") || content.startsWith("output:\n")) return 0;
+	const updateIndex = content.indexOf("\nupdate:\n");
+	const outputIndex = content.indexOf("\noutput:\n");
+	if (updateIndex === -1) return outputIndex === -1 ? undefined : outputIndex;
+	if (outputIndex === -1) return updateIndex;
+	return Math.min(updateIndex, outputIndex);
 }
 
 function messageRoleFromEvent(event: JsonValue): string | undefined {
