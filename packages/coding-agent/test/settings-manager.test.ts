@@ -43,10 +43,31 @@ describe("Settings", () => {
 		return parsed as Record<string, unknown>;
 	};
 
-	afterEach(() => {
-		if (fs.existsSync(testDir)) {
-			fs.rmSync(testDir, { recursive: true });
+	function isBusyFsError(error: unknown): boolean {
+		return (
+			typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			["EBUSY", "ENOTEMPTY", "EPERM"].includes(String(error.code))
+		);
+	}
+
+	async function removeTestDirWithRetry(dir: string): Promise<void> {
+		for (let attempt = 0; attempt < 13; attempt++) {
+			if (!fs.existsSync(dir)) return;
+			try {
+				fs.rmSync(dir, { recursive: true });
+				return;
+			} catch (error) {
+				if (!isBusyFsError(error) || attempt === 12) throw error;
+				await Bun.sleep(50 * (attempt + 1));
+			}
 		}
+	}
+
+	afterEach(async () => {
+		resetSettingsForTest();
+		await removeTestDirWithRetry(testDir);
 	});
 
 	const writeCustomTheme = async (name: string, userMessageBg: string) => {
@@ -58,6 +79,23 @@ describe("Settings", () => {
 		);
 	};
 
+	describe("defaults", () => {
+		it("uses GPT-5.5 with xhigh reasoning for new sessions", () => {
+			const settings = Settings.isolated();
+
+			expect(settings.getModelRole("default")).toBe("openai-codex/gpt-5.5:xhigh");
+			expect(settings.get("defaultThinkingLevel")).toBe(Effort.XHigh);
+		});
+
+		it("keeps the default startup role when saving another role", () => {
+			const settings = Settings.isolated();
+
+			settings.setModelRole("smol", "anthropic/claude-haiku-4-5");
+
+			expect(settings.getModelRole("default")).toBe("openai-codex/gpt-5.5:xhigh");
+			expect(settings.getModelRole("smol")).toBe("anthropic/claude-haiku-4-5");
+		});
+	});
 	// Tests that SettingsManager merges with DB state on save rather than blindly overwriting.
 	// This ensures external edits (via AgentStorage directly) aren't lost when the app saves.
 	describe("preserves externally added settings", () => {

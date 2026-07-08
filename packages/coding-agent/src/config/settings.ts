@@ -374,6 +374,27 @@ export class Settings {
 		}
 	}
 
+	/**
+	 * Flush pending saves and close backing storage handles.
+	 */
+	async dispose(): Promise<void> {
+		await this.flush();
+		this.close();
+	}
+
+	/**
+	 * Close backing storage handles without flushing pending saves.
+	 * Prefer dispose() outside test teardown.
+	 */
+	close(): void {
+		if (this.#saveTimer) {
+			clearTimeout(this.#saveTimer);
+			this.#saveTimer = undefined;
+		}
+		this.#storage?.close();
+		this.#storage = null;
+	}
+
 	async cloneForCwd(cwd: string): Promise<Settings> {
 		const cloned = new Settings({
 			cwd,
@@ -461,7 +482,10 @@ export class Settings {
 	 * Set a model role (helper for modelRoles record).
 	 */
 	setModelRole(role: ModelRole | string, modelId: string): void {
-		const current = shallowStringRecord(getByPath(this.#global, ["modelRoles"]));
+		const current = {
+			...shallowStringRecord(getDefault("modelRoles")),
+			...shallowStringRecord(getByPath(this.#global, ["modelRoles"])),
+		};
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
 		const updateRuntimeOverride =
 			!!runtimeOverrides &&
@@ -968,6 +992,7 @@ export function isSettingsInitialized(): boolean {
  * @internal
  */
 export function resetSettingsForTest(): void {
+	globalInstance?.close();
 	globalInstance = null;
 	globalInstancePromise = null;
 }

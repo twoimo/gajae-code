@@ -114,7 +114,7 @@ export function materializeActiveModelProfileAssignment(options: MaterializeMode
 
 	if (options.role === "default") {
 		nextModelRoles.default = options.selector;
-	} else if (!nextModelRoles.default && options.session.model) {
+	} else if (options.session.model) {
 		nextModelRoles.default = formatModelSelectorValue(
 			`${options.session.model.provider}/${options.session.model.id}`,
 			options.session.thinkingLevel,
@@ -148,7 +148,7 @@ export function materializeActiveModelProfileAssignments(options: MaterializeMod
 	const nextAgentModelOverrides = { ...options.settings.get("task.agentModelOverrides") };
 	const includesDefault = materializedAssignments.some(([role]) => role === "default");
 
-	if (!includesDefault && !nextModelRoles.default && options.session.model) {
+	if (!includesDefault && options.session.model) {
 		nextModelRoles.default = formatModelSelectorValue(
 			`${options.session.model.provider}/${options.session.model.id}`,
 			options.session.thinkingLevel,

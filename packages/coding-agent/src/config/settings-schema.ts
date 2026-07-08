@@ -199,7 +199,7 @@ export interface ModelTagsSettings {
 // Typed defaults for array/record settings — named constants avoid `as` casts
 // under `as const` while still letting SettingValue infer the correct element type.
 const EMPTY_STRING_ARRAY: string[] = [];
-const EMPTY_STRING_RECORD: Record<string, string> = {};
+const DEFAULT_MODEL_ROLES: Record<string, string> = { default: "openai-codex/gpt-5.5:xhigh" };
 const DEFAULT_CYCLE_ORDER: string[] = ["default"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
@@ -375,7 +375,7 @@ export const SETTINGS_SCHEMA = {
 
 	disabledExtensions: { type: "array", default: DEFAULT_DISABLED_EXTENSIONS },
 
-	modelRoles: { type: "record", default: EMPTY_STRING_RECORD },
+	modelRoles: { type: "record", default: DEFAULT_MODEL_ROLES },
 	"modelProfile.default": {
 		type: "string",
 		default: undefined,
@@ -803,7 +803,7 @@ export const SETTINGS_SCHEMA = {
 	defaultThinkingLevel: {
 		type: "enum",
 		values: THINKING_EFFORTS,
-		default: THINKING_EFFORTS[3],
+		default: "xhigh",
 		ui: {
 			tab: "model",
 			label: "Thinking Level",

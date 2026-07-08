@@ -466,7 +466,7 @@ describe("ACP builtin slash commands", () => {
 		expect(result).toEqual({ consumed: true });
 		expect(setModelSpy).toHaveBeenCalledWith(available[0], "default", {
 			selector: "anthropic/claude-3-5-sonnet",
-			thinkingLevel: undefined,
+			thinkingLevel: ThinkingLevel.XHigh,
 		});
 		expect(output[0]).toContain("Default model set to anthropic/claude-3-5-sonnet");
 		expect(titleNotified).toBe(1);
@@ -1111,7 +1111,7 @@ describe("wave 5 — adapters and polish", () => {
 		};
 		const result = await executeAcpBuiltinSlashCommand("/model claude-sonnet-test", runtime);
 		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Default model set to anthropic/claude-sonnet-test.");
+		expect(output[0]).toContain("Default model set to anthropic/claude-sonnet-test:xhigh.");
 		expect(titleChanged).toBe(true);
 	});
 

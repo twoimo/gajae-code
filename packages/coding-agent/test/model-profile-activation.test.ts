@@ -175,7 +175,7 @@ describe("model profile activation", () => {
 
 		expect(session.setModelTemporaryCalls).toHaveLength(1);
 		expect(session.model?.id).toBe("default");
-		expect(settings.get("modelRoles")).toEqual({});
+		expect(settings.getGlobal("modelRoles")).toBeUndefined();
 		expect(settings.get("task.agentModelOverrides")).toEqual({
 			critic: "provider-a/old",
 			executor: "provider-b/executor",

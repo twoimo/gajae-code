@@ -37,6 +37,8 @@ const instances = new Map<string, AgentStorage>();
 export class AgentStorage {
 	#db: Database;
 	#authStore: AuthCredentialStore;
+	#dbPath: string;
+	#closed = false;
 
 	#listSettingsStmt: Statement;
 	#upsertModelUsageStmt: Statement;
@@ -44,6 +46,7 @@ export class AgentStorage {
 	#modelUsageCache: string[] | null = null;
 
 	private constructor(dbPath: string) {
+		this.#dbPath = dbPath;
 		this.#ensureDir(dbPath);
 		try {
 			this.#db = new Database(dbPath);
@@ -237,6 +240,17 @@ FROM model_usage_legacy
 		}
 
 		throw lastError ?? new Error("Failed to open database after retries");
+	}
+
+	close(): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		this.#listSettingsStmt.finalize();
+		this.#upsertModelUsageStmt.finalize();
+		this.#listModelUsageStmt.finalize();
+		this.#authStore.close();
+		this.#modelUsageCache = null;
+		instances.delete(this.#dbPath);
 	}
 
 	/**
