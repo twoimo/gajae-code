@@ -23,6 +23,7 @@
 - Pasting or drag-dropping a path to any existing image file into the interactive editor now attaches the image and inserts an `[image N]` placeholder instead of leaving the raw path in the prompt. Previously this only worked for clipboard temp files (`/tmp/clipboard-*` or `/var/folders/xx/yy/T/clipboard-*`); terminal drag-drop paths — including shell-escaped spaces and the U+202F narrow no-break space in macOS screenshot names — pasted as long raw path text. Quoted paths, `file://` URIs (decoded via Node's `fileURLToPath` semantics, including Windows drive-letter, `file://localhost`, and UNC forms), and `~/` expansion are handled; the whole paste must be a single path to an existing image file whose content carries a supported image signature (PNG/JPEG/GIF/WEBP), so prose containing paths and non-image files with image-looking extensions are inserted unchanged. When attachment still fails (unsupported content, oversized image, load error), the original pasted text is replayed into the editor instead of being consumed.
 
 ### Fixed
+- Composer queue submissions (`Alt+Q` / `app.message.queue`) now force one-at-a-time follow-up delivery for those queued prompts, including replay after compaction, so they do not collapse into one batched model call even when the broader follow-up mode is set to `all`.
 
 - `gjc team` on Windows/psmux now targets the GJC-managed leader session by name instead of trusting the inherited `TMUX_PANE`.
 - Kitty inline images no longer duplicate/stack or paint over transcript text when the diff renderer repaints the image line.
