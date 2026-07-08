@@ -133,7 +133,7 @@ export function ModelPanel({ currentModel, activeThreadId, disabled, onApply, lo
 
 	return (
 		<section className="model-panel" aria-label="Model and settings">
-			<header><p className="eyebrow">Model</p><strong>{currentModel || selectedValue || "model pending"}</strong></header>
+		<header><p className="eyebrow">Model</p><strong>{currentModel || selectedValue || "—"}</strong></header>
 			{error ? <p className="model-panel__hint model-panel__hint--error">{error}</p> : null}
 			{catalog.length > 0 ? <label>Catalog<select value={selectedValue} disabled={disabled} onChange={event => { const next = parseModelLabel(event.target.value); setProvider(next.provider ?? ""); setModelId(next.modelId ?? ""); }}>{Object.entries(grouped).map(([groupProvider, groupModels]) => <optgroup label={groupProvider} key={groupProvider}>{groupModels.map(model => <option key={`${model.provider}/${model.modelId}`} value={`${model.provider}/${model.modelId}`} disabled={!model.available}>{model.name ?? model.modelId}{model.reasoning ? " · thinking" : ""}{model.available ? "" : " · unavailable"}</option>)}</optgroup>)}</select></label> : <p className="empty-inline">No catalog entries loaded.</p>}
 			<form className="model-panel__form" onSubmit={submit} aria-describedby="model-panel-hint">
