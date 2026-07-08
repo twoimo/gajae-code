@@ -2483,6 +2483,15 @@ export class TelegramNotificationDaemon {
 								token: session.token,
 							}),
 						);
+						await this.botApi
+							.call("sendMessage", {
+								chat_id: this.opts.chatId,
+								message_thread_id: Number(inbound.threadId),
+								text: "Received as an answer to the pending ask.",
+							})
+							.catch(error => {
+								logger.warn(`telegram: failed to acknowledge pending ask reply: ${String(error)}`);
+							});
 						await this.rememberSeenUpdateId(inbound.updateId);
 						if (inbound.messageId !== undefined) await this.setReaction(inbound.messageId, QUEUED_REACTION);
 						return;

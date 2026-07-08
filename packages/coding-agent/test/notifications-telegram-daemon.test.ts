@@ -794,6 +794,13 @@ describe("telegram daemon", () => {
 		expect(sent).toContainEqual({ type: "reply", id: "ask1", answer: "my typed answer", token: "ts" });
 		// ...and must NOT be injected as a new user turn.
 		expect(sent.some(frame => frame.type === "user_message")).toBe(false);
+		const ackSend = bot.calls.find(
+			c =>
+				c.method === "sendMessage" &&
+				c.body.message_thread_id === threadId &&
+				c.body.text === "Received as an answer to the pending ask.",
+		);
+		expect(ackSend).toBeDefined();
 	});
 
 	test("no-topic plain text does not answer the only pending ask", async () => {
