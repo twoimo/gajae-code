@@ -27,6 +27,8 @@ interface Expandable {
 }
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
+const IMAGE_PLACEHOLDER_PATTERN = /\[image ([1-9]\d*)\]/g;
+const IMAGE_PLACEHOLDER_PRESENT_PATTERN = /\[image [1-9]\d*\]/;
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
@@ -383,6 +385,7 @@ export class InputController {
 			this.ctx.isBashMode = trimmed.startsWith("!");
 			this.ctx.isBashNoContext = trimmed.startsWith("!!");
 			this.ctx.isPythonMode = trimmed.startsWith("$") && !trimmed.startsWith("${");
+			this.#clearPendingImagesIfPlaceholdersRemoved(text);
 			if (
 				wasBashMode !== this.ctx.isBashMode ||
 				wasBashNoContext !== this.ctx.isBashNoContext ||
@@ -418,7 +421,7 @@ export class InputController {
 			}
 
 			const runner = this.ctx.session.extensionRunner;
-			let inputImages = this.ctx.pendingImages.length > 0 ? [...this.ctx.pendingImages] : undefined;
+			let inputImages = this.#visiblePendingImagesForText(text);
 
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, inputImages, "interactive");
@@ -498,7 +501,7 @@ export class InputController {
 
 			// Queue input during compaction
 			if (this.ctx.session.isCompacting) {
-				if (this.ctx.pendingImages.length > 0) {
+				if ((inputImages?.length ?? 0) > 0) {
 					this.ctx.showStatus("Compaction in progress. Retry after it completes to send images.");
 					return;
 				}
@@ -1102,6 +1105,37 @@ export class InputController {
 
 	#nextImagePlaceholder(): string {
 		return `[image ${this.ctx.pendingImages.length}]`;
+	}
+
+	#visiblePendingImagesForText(text: string): InteractiveModeContext["pendingImages"] | undefined {
+		if (this.ctx.pendingImages.length === 0) {
+			return undefined;
+		}
+
+		const images: InteractiveModeContext["pendingImages"] = [];
+		const seenImageIndexes = new Set<number>();
+		for (const match of text.matchAll(IMAGE_PLACEHOLDER_PATTERN)) {
+			const placeholderNumberText = match[1];
+			if (!placeholderNumberText) continue;
+			const placeholderNumber = Number.parseInt(placeholderNumberText, 10);
+			const imageIndex = placeholderNumber - 1;
+			if (imageIndex < 0 || imageIndex >= this.ctx.pendingImages.length || seenImageIndexes.has(imageIndex)) {
+				continue;
+			}
+			const image = this.ctx.pendingImages[imageIndex];
+			if (!image) continue;
+			images.push(image);
+			seenImageIndexes.add(imageIndex);
+		}
+
+		return images.length > 0 ? images : undefined;
+	}
+
+	#clearPendingImagesIfPlaceholdersRemoved(text: string): void {
+		if (this.ctx.pendingImages.length === 0 || IMAGE_PLACEHOLDER_PRESENT_PATTERN.test(text)) {
+			return;
+		}
+		this.ctx.pendingImages = [];
 	}
 
 	async handleImagePaste(): Promise<boolean> {
