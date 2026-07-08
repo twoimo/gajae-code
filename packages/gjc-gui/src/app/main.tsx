@@ -1262,7 +1262,7 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 								{copyStatus === "copied" ? "Copied" : ""}
 							</span>
 							<span className="model-chip" title="Active model (change under Model & settings in the sidebar)">
-								{transcript.modelLabel || "no model"}
+							{transcript.modelLabel || "—"}
 							</span>
 						</div>
 					</header>
@@ -1293,7 +1293,7 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 						</button>
 					) : null}
 					<form className="composer" onSubmit={submitPrompt} aria-busy={isSubmitting}>
-						<label htmlFor="gjc-composer">Message gajae</label>
+					<label htmlFor="gjc-composer" className="sr-only">Message gajae</label>
 						<textarea
 							id="gjc-composer"
 							ref={composerRef}

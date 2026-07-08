@@ -93,7 +93,7 @@ export const emptyTranscriptState = (): TranscriptState => ({
 	items: [],
 	approvals: [],
 	seq: 0,
-	modelLabel: "model pending",
+	modelLabel: "",
 });
 
 export function upsertThread(state: TranscriptState, thread: ThreadSummary, cwd?: string): TranscriptState {
@@ -755,14 +755,28 @@ function titleFromThread(thread: ThreadSummary): string {
  */
 export function modelLabelFromStateRead(state: JsonValue): string | undefined {
 	if (!state || typeof state !== "object" || Array.isArray(state)) return undefined;
-	const model = (state as Record<string, JsonValue | undefined>).model;
+	const record = state as Record<string, JsonValue | undefined>;
+	const model = record.model;
 	if (typeof model === "string" && model.length > 0) return model;
-	if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
-	const record = model as Record<string, JsonValue | undefined>;
-	const id = record.id ?? record.modelId;
-	if (typeof id === "string" && id.length > 0) return id;
-	const name = record.name;
-	return typeof name === "string" && name.length > 0 ? name : undefined;
+	if (model && typeof model === "object" && !Array.isArray(model)) {
+		const m = model as Record<string, JsonValue | undefined>;
+		const id = m.id ?? m.modelId;
+		const provider = m.provider;
+		if (typeof id === "string" && id.length > 0) {
+			return typeof provider === "string" && provider.length > 0 ? `${provider}/${id}` : id;
+		}
+		const name = m.name;
+		if (typeof name === "string" && name.length > 0) return name;
+	}
+	// Fall back to the catalog-style activeProvider/activeModelId fields.
+	const activeProvider = record.activeProvider;
+	const activeModelId = record.activeModelId;
+	if (typeof activeModelId === "string" && activeModelId.length > 0) {
+		return typeof activeProvider === "string" && activeProvider.length > 0
+			? `${activeProvider}/${activeModelId}`
+			: activeModelId;
+	}
+	return undefined;
 }
 
 function modelLabelFromMetadata(thread: ThreadSummary): string | undefined {
