@@ -12,11 +12,16 @@ import type { SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import eagerTaskDelegationPrompt from "./prompts/system/eager-task-delegation.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
+import ultraTaskDelegationPrompt from "./prompts/system/ultra-task-delegation.md" with { type: "text" };
 import volatileProjectContextTemplate from "./prompts/system/volatile-project-context.md" with { type: "text" };
 import { shortenPath } from "./tools/render-utils";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
+
+export const EAGER_TASK_DELEGATION_PROMPT = eagerTaskDelegationPrompt.trim();
+export const ULTRA_TASK_DELEGATION_PROMPT = ultraTaskDelegationPrompt.trim();
 
 interface AlwaysApplyRule {
 	name: string;
@@ -618,12 +623,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		mcpDiscoveryServerSummaries,
 		toolDiscoveryActive: toolDiscoveryActive && hasHiddenToolDiscoveryTool,
 		discoverableTools,
-		eagerTasks,
 		secretsEnabled,
 		subagent,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
+	if (eagerTasks && toolNames.includes("task")) {
+		systemPrompt.push(EAGER_TASK_DELEGATION_PROMPT);
+	}
 	const projectPrompt = resolvedCustomPrompt ? "" : prompt.render(projectPromptTemplate, data).trim();
 	if (projectPrompt) {
 		systemPrompt.push(projectPrompt);

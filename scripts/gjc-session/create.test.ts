@@ -472,6 +472,7 @@ exit 0
 			reason: string;
 			severity: string;
 			runtimeState: string;
+			tuiReadyObserved: boolean;
 		};
 		expect(vanished).toMatchObject({
 			finalPresent: false,

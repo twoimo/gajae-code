@@ -96,8 +96,10 @@ Important edge behavior from runtime:
 
 ### Thinking
 
-- `{ id?, type: "set_thinking_level", level: ThinkingLevel }`
+- `{ id?, type: "set_thinking_level", level: "inherit" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" }`
 - `{ id?, type: "cycle_thinking_level" }`
+
+`ultra` is an agent-local selector available for `openai-codex/gpt-5.6-sol`; it sends native `max` reasoning to Codex and enables proactive task delegation when the task tool is active. Other models clamp `ultra` to their highest supported native effort.
 
 ### Queue modes
 

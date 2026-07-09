@@ -79,7 +79,6 @@ import type {
 import {
 	calculateRateLimitBackoffMs,
 	clearAnthropicFastModeFallback,
-	getSupportedEfforts,
 	isContextOverflow,
 	isUsageLimitError,
 	modelsAreEqual,
@@ -244,8 +243,17 @@ import {
 } from "../skill-state/active-state";
 import { assertWorkflowMutationAllowed } from "../skill-state/deep-interview-mutation-guard";
 import { invalidateHostMetadata } from "../ssh/connection-manager";
-import { buildVolatileProjectContext } from "../system-prompt";
-import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
+import {
+	buildVolatileProjectContext,
+	EAGER_TASK_DELEGATION_PROMPT,
+	ULTRA_TASK_DELEGATION_PROMPT,
+} from "../system-prompt";
+import {
+	type AgentThinkingEffort,
+	getAvailableThinkingLevelsForModel,
+	resolveThinkingLevelForModel,
+	toReasoningEffort,
+} from "../thinking";
 import {
 	buildDiscoverableToolSearchIndex,
 	collectDiscoverableTools,
@@ -571,7 +579,7 @@ interface ActiveRetryFallbackState {
 	role: string;
 	originalSelector: string;
 	originalThinkingLevel: ThinkingLevel | undefined;
-	lastAppliedFallbackThinkingLevel: ThinkingLevel | undefined;
+	fallbackThinkingLevelRevision: number;
 }
 
 function parseRetryFallbackSelector(selector: string): RetryFallbackSelector | undefined {
@@ -1168,6 +1176,7 @@ export class AgentSession {
 
 	#scopedModels: ScopedModelSelection[];
 	#thinkingLevel: ThinkingLevel | undefined;
+	#thinkingLevelRevision = 0;
 	#activeModelProfile: string | undefined;
 	#promptTemplates: PromptTemplate[];
 	#slashCommands: FileSlashCommand[];
@@ -2730,6 +2739,7 @@ export class AgentSession {
 					if (!options?.skipCompactionCheck) {
 						await this.#checkEstimatedContextBeforePrompt();
 					}
+					this.#syncTaskDelegationPrompt();
 					await this.agent.continue();
 				} catch (error) {
 					logger.warn("agent.continue failed after scheduling", {
@@ -4552,7 +4562,7 @@ export class AgentSession {
 		const activeToolNames = this.getActiveToolNames();
 		const built = await this.#rebuildSystemPrompt(activeToolNames, this.#toolRegistry);
 		this.#baseSystemPrompt = built.systemPrompt;
-		this.agent.setSystemPrompt(this.#baseSystemPrompt);
+		this.agent.setSystemPrompt(this.#reconcileTaskDelegationPrompt(this.#baseSystemPrompt));
 		// Refresh the cached signature so a subsequent `#applyActiveToolsByName` with
 		// the same tool set does not re-rebuild on top of the explicit refresh we
 		// just performed (and conversely, a different set forces a fresh rebuild).
@@ -4562,20 +4572,39 @@ export class AgentSession {
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(activeToolNames, activeTools);
 	}
 
+	#resolveTaskDelegationPrompt(): string | undefined {
+		if (!this.getActiveToolNames().includes("task")) return undefined;
+		if (this.#thinkingLevel === ThinkingLevel.Ultra) return ULTRA_TASK_DELEGATION_PROMPT;
+		return this.settings.get("task.eager") ? EAGER_TASK_DELEGATION_PROMPT : undefined;
+	}
+
+	#reconcileTaskDelegationPrompt(systemPrompt: readonly string[]): string[] {
+		const reconciled = systemPrompt.filter(
+			block => block !== EAGER_TASK_DELEGATION_PROMPT && block !== ULTRA_TASK_DELEGATION_PROMPT,
+		);
+		const delegationPrompt = this.#resolveTaskDelegationPrompt();
+		if (delegationPrompt) reconciled.push(delegationPrompt);
+		return reconciled;
+	}
+
+	#syncTaskDelegationPrompt(): void {
+		this.agent.setSystemPrompt(this.#reconcileTaskDelegationPrompt(this.agent.state.systemPrompt));
+	}
+
 	async #buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
+		const systemPrompt = this.#reconcileTaskDelegationPrompt(this.#baseSystemPrompt);
 		const backend = resolveMemoryBackend(this.settings);
-		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
+		if (!backend.beforeAgentStartPrompt) return systemPrompt;
 
 		try {
 			const injected = await backend.beforeAgentStartPrompt(this, promptText);
-			if (!injected) return this.#baseSystemPrompt;
-			return [...this.#baseSystemPrompt, injected];
+			return injected ? [...systemPrompt, injected] : systemPrompt;
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {
 				backend: backend.id,
 				error: String(err),
 			});
-			return this.#baseSystemPrompt;
+			return systemPrompt;
 		}
 	}
 
@@ -4608,8 +4637,8 @@ export class AgentSession {
 	 *
 	 * Inputs NOT covered: tool input schemas; memory instructions read from disk;
 	 * and SDK-init-time closure constants in `sdk.ts` (`repeatToolDescriptions`,
-	 * `eagerTasks`, `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
-	 * closure-captured ones cannot change at runtime regardless of skip behavior.
+	 * `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The closure-captured
+	 * ones cannot change at runtime regardless of skip behavior.
 	 * For everything else, callers must explicitly call `refreshBaseSystemPrompt()`
 	 * after side-effecting changes; see e.g. the memory hooks and
 	 * `#syncEditToolModeAfterModelChange`.
@@ -7065,7 +7094,9 @@ export class AgentSession {
 		const isChanging = effectiveLevel !== this.#thinkingLevel;
 
 		this.#thinkingLevel = effectiveLevel;
+		this.#thinkingLevelRevision += 1;
 		this.agent.setThinkingLevel(toReasoningEffort(effectiveLevel));
+		this.#syncTaskDelegationPrompt();
 
 		if (persist && effectiveLevel !== undefined) {
 			this.settings.set("defaultThinkingLevel", effectiveLevel);
@@ -7237,9 +7268,8 @@ export class AgentSession {
 	/**
 	 * Get available thinking levels for current model.
 	 */
-	getAvailableThinkingLevels(): ReadonlyArray<Effort> {
-		if (!this.model) return [];
-		return getSupportedEfforts(this.model);
+	getAvailableThinkingLevels(): readonly AgentThinkingEffort[] {
+		return getAvailableThinkingLevelsForModel(this.model);
 	}
 
 	// =========================================================================
@@ -9494,10 +9524,10 @@ export class AgentSession {
 				role,
 				originalSelector: currentSelector,
 				originalThinkingLevel: currentThinkingLevel,
-				lastAppliedFallbackThinkingLevel: nextThinkingLevel,
+				fallbackThinkingLevelRevision: this.#thinkingLevelRevision,
 			};
 		} else {
-			this.#activeRetryFallback.lastAppliedFallbackThinkingLevel = nextThinkingLevel;
+			this.#activeRetryFallback.fallbackThinkingLevelRevision = this.#thinkingLevelRevision;
 		}
 		await this.#emitSessionEvent({
 			type: "retry_fallback_applied",
@@ -9532,7 +9562,7 @@ export class AgentSession {
 		const {
 			originalSelector: originalSelectorRaw,
 			originalThinkingLevel,
-			lastAppliedFallbackThinkingLevel,
+			fallbackThinkingLevelRevision,
 		} = this.#activeRetryFallback;
 		const originalSelector = parseRetryFallbackSelector(originalSelectorRaw);
 		if (!originalSelector) {
@@ -9558,7 +9588,7 @@ export class AgentSession {
 
 		const currentThinkingLevel = this.thinkingLevel;
 		const thinkingToApply =
-			currentThinkingLevel === lastAppliedFallbackThinkingLevel ? originalThinkingLevel : currentThinkingLevel;
+			this.#thinkingLevelRevision === fallbackThinkingLevelRevision ? originalThinkingLevel : currentThinkingLevel;
 		this.#setModelWithProviderSessionReset(primaryModel);
 		this.sessionManager.appendModelChange(`${primaryModel.provider}/${primaryModel.id}`, "temporary");
 		this.settings.getStorage()?.recordModelUsage(`${primaryModel.provider}/${primaryModel.id}`);

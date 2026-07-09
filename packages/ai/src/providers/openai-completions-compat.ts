@@ -1,6 +1,6 @@
 import type { Model, OpenAICompat } from "../types";
 
-type OpenAIReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+type OpenAIReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type ResolvedToolStrictMode = NonNullable<OpenAICompat["toolStrictMode"]> | "mixed";
 
 export type ResolvedOpenAICompat = Required<
@@ -173,16 +173,15 @@ export function detectOpenAICompat(model: Model<"openai-completions">, resolvedB
 					high: "default",
 					xhigh: "default",
 					max: "default",
-					ultra: "default",
 				} satisfies Partial<Record<OpenAIReasoningEffort, string>>)
 			: needsOpenCodeGoKimiEffortMap
 				? ({
 						// Live Go probes (2026-07-06) showed model-specific effort gaps:
 						// kimi-k2.5 rejects "minimal", while kimi-k2.7-code rejects
-						// OpenAI-style "xhigh", "max", and "ultra"; all other Kimi efforts tested
+						// OpenAI-style "xhigh" and "max"; all other Kimi efforts tested
 						// successfully and should pass through unchanged.
 						...(isOpenCodeGoKimi25Reasoning ? { minimal: "low" } : {}),
-						...(isOpenCodeGoKimi27CodeReasoning ? { xhigh: "high", max: "high", ultra: "high" } : {}),
+						...(isOpenCodeGoKimi27CodeReasoning ? { xhigh: "high", max: "high" } : {}),
 					} satisfies Partial<Record<OpenAIReasoningEffort, string>>)
 				: isDeepseekFamily && model.reasoning
 					? ({
@@ -192,7 +191,6 @@ export function detectOpenAICompat(model: Model<"openai-completions">, resolvedB
 							high: "high",
 							xhigh: "max",
 							max: "max",
-							ultra: "max",
 						} satisfies Partial<Record<OpenAIReasoningEffort, string>>)
 					: isFireworks
 						? ({

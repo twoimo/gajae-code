@@ -4,7 +4,6 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { THINKING_EFFORTS } from "@gajae-code/ai";
 import { APP_NAME, setProjectDir } from "@gajae-code/utils";
 import { Args, Command, Flags } from "@gajae-code/utils/cli";
 import { parseArgs } from "../cli/args";
@@ -16,6 +15,7 @@ import {
 } from "../gjc-runtime/session-state-sidecar";
 import { runRootCommand } from "../main";
 import { prepareAcpTerminalAuthArgs } from "../modes/acp/terminal-auth";
+import { AGENT_THINKING_EFFORTS } from "../thinking";
 
 async function persistCoordinatorLaunchFailure(error: unknown, cwd: string): Promise<void> {
 	const stateFile = process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]?.trim();
@@ -141,8 +141,8 @@ export default class Index extends Command {
 			description: "Comma-separated list of tools to enable (default: all)",
 		}),
 		thinking: Flags.string({
-			description: `Set thinking level: ${THINKING_EFFORTS.join(", ")}`,
-			options: [...THINKING_EFFORTS],
+			description: `Set thinking level: ${AGENT_THINKING_EFFORTS.join(", ")}`,
+			options: [...AGENT_THINKING_EFFORTS],
 		}),
 		hook: Flags.string({
 			description: "Load a hook/extension file (can be used multiple times)",

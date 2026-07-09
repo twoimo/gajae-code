@@ -1,5 +1,3 @@
-import { Effort } from "@gajae-code/ai/model-thinking";
-
 /**
  * Agent-local thinking selector.
  *
@@ -8,13 +6,13 @@ import { Effort } from "@gajae-code/ai/model-thinking";
 export const ThinkingLevel = {
 	Inherit: "inherit",
 	Off: "off",
-	Minimal: Effort.Minimal,
-	Low: Effort.Low,
-	Medium: Effort.Medium,
-	High: Effort.High,
-	XHigh: Effort.XHigh,
-	Max: Effort.Max,
-	Ultra: Effort.Ultra,
+	Minimal: "minimal",
+	Low: "low",
+	Medium: "medium",
+	High: "high",
+	XHigh: "xhigh",
+	Max: "max",
+	Ultra: "ultra",
 } as const;
 
 export type ThinkingLevel = (typeof ThinkingLevel)[keyof typeof ThinkingLevel];

@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Retried recursive temporary-directory removal on transient filesystem locks, improving deterministic cleanup on Windows.
 
 ## [0.8.2] - 2026-07-06
 

@@ -1,5 +1,4 @@
 import { ThinkingLevel, type ThinkingLevel as ThinkingLevelValue } from "@gajae-code/agent-core";
-import type { Effort } from "@gajae-code/ai";
 import {
 	Container,
 	Input,
@@ -21,6 +20,7 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
+import type { AgentThinkingEffort } from "../../thinking";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
 import { getTabBarTheme } from "../shared";
@@ -652,7 +652,7 @@ function getSettingsTabs(): Tab[] {
  */
 export interface SettingsRuntimeContext {
 	/** Available thinking levels (from session) */
-	availableThinkingLevels: Effort[];
+	availableThinkingLevels: AgentThinkingEffort[];
 	/** Current thinking level (from session) */
 	thinkingLevel: ThinkingLevelValue | undefined;
 	/** Available themes */

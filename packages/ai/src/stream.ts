@@ -571,7 +571,6 @@ export const ANTHROPIC_THINKING: Record<Effort, number> = {
 	high: 16384,
 	xhigh: 32768,
 	max: 65536,
-	ultra: 65536,
 };
 
 const GOOGLE_THINKING: Record<Effort, number> = {
@@ -581,7 +580,6 @@ const GOOGLE_THINKING: Record<Effort, number> = {
 	high: 16384,
 	xhigh: 24575,
 	max: 24575,
-	ultra: 24575,
 };
 
 const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
@@ -591,7 +589,6 @@ const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
 	high: 16384,
 	xhigh: 16384,
 	max: 32768,
-	ultra: 32768,
 };
 
 function resolveBedrockThinkingBudget(

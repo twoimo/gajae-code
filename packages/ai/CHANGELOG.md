@@ -3,7 +3,8 @@
 ## [Unreleased]
 ### Added
 
-- Added provider-scoped GPT-5.6 Sol, Terra, and Luna reasoning metadata plus the `ultra` effort, with Codex requests translating `ultra` to the backend-compatible `max` wire value.
+- Added provider-scoped GPT-5.6 Sol, Terra, and Luna reasoning metadata with native efforts through `max`; higher-level orchestration modes remain outside the provider API and never send a non-native effort on the wire.
+- Added `closeModelCache()` for deterministic shutdown of the shared SQLite model cache, including Windows test and embedding environments.
 
 ## [0.9.4] - 2026-07-09
 ### Fixed

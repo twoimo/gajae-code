@@ -30,13 +30,18 @@ export class TempDir {
 		if (this.#removePromise) {
 			return this.#removePromise;
 		}
-		const removePromise = fs.promises.rm(this.#path, { recursive: true, force: true });
+		const removePromise = fs.promises.rm(this.#path, {
+			recursive: true,
+			force: true,
+			maxRetries: 5,
+			retryDelay: 20,
+		});
 		this.#removePromise = removePromise;
 		return removePromise;
 	}
 
 	removeSync(): void {
-		fs.rmSync(this.#path, { recursive: true, force: true });
+		fs.rmSync(this.#path, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 		this.#removePromise = Promise.resolve();
 	}
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { Model } from "@gajae-code/ai";
+import { Effort, type Model } from "@gajae-code/ai";
 import {
 	activateModelProfile,
 	applyPreparedModelProfileActivation,
@@ -19,7 +19,7 @@ const model = (provider: string, id: string, thinking?: Model["thinking"]): Mode
 		provider,
 		id,
 		name: id,
-		api: "openai-responses",
+		api: provider === "openai-codex" ? "openai-codex-responses" : "openai-responses",
 		contextWindow: 1000,
 		maxTokens: 1000,
 		thinking,
@@ -60,8 +60,26 @@ function fakeRegistry(options?: { missingProviders?: string[]; profiles?: ModelP
 			model("openai-codex", "gpt-5.2-codex"),
 			model("openai-codex", "gpt-5.5", {
 				mode: "effort",
-				minLevel: ThinkingLevel.Low,
-				maxLevel: ThinkingLevel.XHigh,
+				minLevel: Effort.Low,
+				maxLevel: Effort.XHigh,
+			}),
+			model("openai-codex", "gpt-5.6-luna", {
+				mode: "effort",
+				minLevel: Effort.Low,
+				maxLevel: Effort.Max,
+				defaultLevel: Effort.Medium,
+			}),
+			model("openai-codex", "gpt-5.6-terra", {
+				mode: "effort",
+				minLevel: Effort.Low,
+				maxLevel: Effort.Max,
+				defaultLevel: Effort.Medium,
+			}),
+			model("openai-codex", "gpt-5.6-sol", {
+				mode: "effort",
+				minLevel: Effort.Low,
+				maxLevel: Effort.Max,
+				defaultLevel: Effort.Low,
 			}),
 			model("openai-codex", "gpt-5.3-codex-spark"),
 			model("minimax-code", "minimax-m3"),
@@ -144,10 +162,10 @@ describe("model profile activation", () => {
 			architect: "provider-b/executor",
 		});
 	});
-	test("builtin codex-eco executor selector clamps from catalog minimal to prepared low", async () => {
+	test("builtin codex-eco uses GPT-5.6 Luna role efforts", async () => {
 		const registry = fakeRegistry({ profiles: [...BUILTIN_MODEL_PROFILES] });
 		const catalog = BUILTIN_MODEL_PROFILES.find(profile => profile.name === "codex-eco");
-		expect(catalog?.modelMapping.executor).toBe("openai-codex/gpt-5.5:minimal");
+		expect(catalog?.modelMapping.executor).toBe("openai-codex/gpt-5.6-luna:low");
 
 		const prepared = await prepareModelProfileActivation({
 			session: fakeSession(),
@@ -155,10 +173,10 @@ describe("model profile activation", () => {
 			settings: Settings.isolated(),
 			profileName: "codex-eco",
 		});
-		expect(prepared.agentModelOverrides.executor).toBe("openai-codex/gpt-5.5:low");
-		expect(prepared.agentModelOverrides.architect).toBe("openai-codex/gpt-5.5:high");
-		expect(prepared.agentModelOverrides.planner).toBe("openai-codex/gpt-5.5:low");
-		expect(prepared.agentModelOverrides.critic).toBe("openai-codex/gpt-5.5:medium");
+		expect(prepared.agentModelOverrides.executor).toBe("openai-codex/gpt-5.6-luna:low");
+		expect(prepared.agentModelOverrides.architect).toBe("openai-codex/gpt-5.6-luna:high");
+		expect(prepared.agentModelOverrides.planner).toBe("openai-codex/gpt-5.6-luna:low");
+		expect(prepared.agentModelOverrides.critic).toBe("openai-codex/gpt-5.6-luna:medium");
 	});
 
 	test("session-only changes active model and replaces runtime overrides without persisted sets", async () => {

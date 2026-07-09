@@ -1,11 +1,14 @@
 /**
  * CLI argument parsing and help display
  */
-import { type Effort, THINKING_EFFORTS } from "@gajae-code/ai";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@gajae-code/utils";
 import { CliParseError } from "@gajae-code/utils/cli";
 import chalk from "chalk";
-import { parseEffort } from "../thinking";
+import {
+	AGENT_THINKING_EFFORTS,
+	type AgentThinkingEffort,
+	parseAgentThinkingEffort,
+} from "../thinking";
 import { BUILTIN_TOOLS } from "../tools";
 
 export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge";
@@ -24,7 +27,7 @@ export interface Args {
 	credential?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
-	thinking?: Effort;
+	thinking?: AgentThinkingEffort;
 	continue?: boolean;
 	resume?: string | true;
 	help?: boolean;
@@ -185,13 +188,13 @@ export function parseArgs(args: string[]): Args {
 			result.tools = validTools;
 		} else if (arg === "--thinking" && i + 1 < args.length) {
 			const rawThinking = args[++i];
-			const thinking = parseEffort(rawThinking);
+			const thinking = parseAgentThinkingEffort(rawThinking);
 			if (thinking !== undefined) {
 				result.thinking = thinking;
 			} else {
 				logger.warn("Invalid thinking level passed to --thinking", {
 					level: rawThinking,
-					validThinkingLevels: THINKING_EFFORTS,
+					validThinkingLevels: AGENT_THINKING_EFFORTS,
 				});
 			}
 		} else if (arg === "--print" || arg === "-p") {

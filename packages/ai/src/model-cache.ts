@@ -127,3 +127,9 @@ export function writeModelCache<TApi extends Api>(
 		// Cache writes are best-effort; failures should not break model resolution.
 	}
 }
+
+export function closeModelCache(): void {
+	sharedDb?.close();
+	sharedDb = null;
+	sharedDbPath = null;
+}

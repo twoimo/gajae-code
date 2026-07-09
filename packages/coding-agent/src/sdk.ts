@@ -1836,7 +1836,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 
 		const repeatToolDescriptions = settings.get("repeatToolDescriptions");
-		const eagerTasks = settings.get("task.eager") || thinkingLevel === "ultra";
 		const intentTracingEnabled = resolveIntentTracingEnabled(
 			settings.get("tools.intentTracing"),
 			options.hasUI ?? false,
@@ -1918,7 +1917,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				discoverableTools: [...discoverableBuiltinTools, ...discoverableMCPTools]
 					.map(tool => ({ name: tool.name, summary: tool.summary }))
 					.sort((a, b) => a.name.localeCompare(b.name)),
-				eagerTasks,
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,
 				subagent: options.parentTaskPrefix !== undefined,

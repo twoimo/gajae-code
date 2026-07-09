@@ -44,8 +44,7 @@ function isReasoningEffort(value: unknown): value is NonNullable<ParsedRequest["
 		value === "medium" ||
 		value === "high" ||
 		value === "xhigh" ||
-		value === "max" ||
-		value === "ultra"
+		value === "max"
 	);
 }
 

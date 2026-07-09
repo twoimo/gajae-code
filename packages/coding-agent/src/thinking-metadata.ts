@@ -44,7 +44,7 @@ const THINKING_LEVEL_METADATA: Record<ThinkingLevelValue, ThinkingLevelMetadata>
 	ultra: {
 		value: "ultra",
 		label: "ultra",
-		description: "Coordinates four agents in parallel by default",
+		description: "Max reasoning with proactive parallel task delegation",
 	},
 };
 

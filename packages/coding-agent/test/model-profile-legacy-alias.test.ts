@@ -1,26 +1,40 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { Model } from "@gajae-code/ai";
+import { Effort, type Model } from "@gajae-code/ai";
 import { activateModelProfile, prepareModelProfileActivation } from "../src/config/model-profile-activation";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { BUILTIN_MODEL_PROFILES } from "../src/config/model-profiles";
 import { Settings } from "../src/config/settings";
 
 const codexModel = {
-	id: "gpt-5.5",
-	name: "gpt-5.5",
+	id: "gpt-5.6-terra",
+	name: "gpt-5.6-terra",
 	api: "openai-codex-responses",
 	provider: "openai-codex",
 	baseUrl: "https://codex.example.test",
 	reasoning: true,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 272_000,
+	contextWindow: 372_000,
 	maxTokens: 128_000,
 	thinking: {
 		mode: "effort",
-		minLevel: ThinkingLevel.Low,
-		maxLevel: ThinkingLevel.XHigh,
+		minLevel: Effort.Low,
+		maxLevel: Effort.Max,
+		defaultLevel: Effort.Medium,
+	},
+} satisfies Model<"openai-codex-responses">;
+
+const legacyCodexModel = {
+	...codexModel,
+	id: "gpt-5.5",
+	name: "gpt-5.5",
+	contextWindow: 272_000,
+	thinking: {
+		mode: "effort",
+		minLevel: Effort.Low,
+		maxLevel: Effort.XHigh,
+		defaultLevel: Effort.XHigh,
 	},
 } satisfies Model<"openai-codex-responses">;
 
@@ -43,7 +57,7 @@ function fakeRegistry(extraProfiles: ModelProfileDefinition[] = []) {
 		getModelProfiles: () => new Map(profiles),
 		getAvailableModelProfileNames: () => [...profiles.keys()].sort(),
 		getApiKeyForProvider: async () => "key-openai-codex",
-		getAll: () => [codexModel],
+		getAll: () => [codexModel, legacyCodexModel],
 		resolveCanonicalModel: () => undefined,
 		getCanonicalVariants: () => [],
 		getCanonicalId: () => undefined,

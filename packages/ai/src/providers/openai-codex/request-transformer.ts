@@ -1,4 +1,5 @@
-import { Effort, requireSupportedEffort } from "../../model-thinking";
+import type { Effort } from "../../model-thinking";
+import { requireSupportedEffort } from "../../model-thinking";
 import type { Api, Model } from "../../types";
 import { sanitizeJsonStrings } from "../../utils";
 
@@ -8,7 +9,7 @@ export interface ReasoningConfig {
 }
 
 export interface CodexRequestOptions {
-	reasoningEffort?: ReasoningConfig["effort"] | "ultra";
+	reasoningEffort?: ReasoningConfig["effort"];
 	reasoningSummary?: ReasoningConfig["summary"] | null;
 	textVerbosity?: "low" | "medium" | "high";
 	include?: string[];
@@ -53,10 +54,9 @@ export interface RequestBody {
 }
 
 function getReasoningConfig(model: Model<Api>, options: CodexRequestOptions): ReasoningConfig {
-	const effort =
-		options.reasoningEffort === "none" ? "none" : requireSupportedEffort(model, options.reasoningEffort as Effort);
 	const config: ReasoningConfig = {
-		effort: effort === Effort.Ultra ? "max" : effort,
+		effort:
+			options.reasoningEffort === "none" ? "none" : requireSupportedEffort(model, options.reasoningEffort as Effort),
 	};
 	if (options.reasoningSummary !== null) {
 		config.summary = options.reasoningSummary ?? "detailed";

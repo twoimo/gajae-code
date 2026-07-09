@@ -3,8 +3,9 @@
 ## [Unreleased]
 ### Changed
 
-- Updated the Codex Eco, Medium, and Pro presets to GPT-5.6 Luna, Terra, and Sol with tier-appropriate reasoning efforts; Codex Pro now uses `ultra` for its main session, enables proactive task delegation, and assigns `max` to critic and architect roles.
-- Exposed the `ultra` effort across `/effort`, settings, model selectors, agent-wire commands, status rendering, and Telegram reasoning controls.
+- Updated the Codex Eco, Medium, and Pro presets to GPT-5.6 Luna, Terra, and Sol with tier-appropriate reasoning efforts; Codex Pro uses GJC-local `ultra` orchestration for its main session and assigns native `max` reasoning to critic and architect roles.
+- Added `ultra` as a Codex Sol session mode across `/effort`, settings, model selectors, agent-wire commands, status rendering, and Telegram controls. It dynamically combines native `max` reasoning with proactive delegation to at most four task agents without exposing `ultra` as a provider wire effort.
+- Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
 
 ## [0.9.4] - 2026-07-09
 ### Fixed

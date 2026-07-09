@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Added the agent-local `ultra` thinking selector so coding-agent orchestration can distinguish it from provider-native reasoning efforts.
 
 ## [0.9.2] - 2026-07-09
 

@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
-import { Agent } from "@gajae-code/agent-core";
-import { type AssistantMessage, Effort, getBundledModel, type Model, writeModelCache } from "@gajae-code/ai";
+import { Agent, ThinkingLevel } from "@gajae-code/agent-core";
+import {
+	type AssistantMessage,
+	closeModelCache,
+	Effort,
+	getBundledModel,
+	type Model,
+	writeModelCache,
+} from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
@@ -115,7 +122,10 @@ describe("AgentSession retry fallback", () => {
 			session = undefined;
 		}
 		authStorage.close();
-		tempDir.removeSync();
+		closeModelCache();
+		Bun.gc(true);
+		await Bun.sleep(50);
+		await tempDir.remove();
 		vi.restoreAllMocks();
 	});
 
@@ -847,6 +857,52 @@ describe("AgentSession retry fallback", () => {
 		]);
 		expect(session.model?.provider).toBe(primaryModel.provider);
 		expect(session.model?.id).toBe(primaryModel.id);
+	});
+	it("restores Ultra after a fallback selector is clamped to max", async () => {
+		const primaryModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+		const fallbackModel = getBundledModel("openai-codex", "gpt-5.6-terra");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled GPT-5.6 Codex models to exist");
+		}
+		authStorage.setRuntimeApiKey("openai-codex", "codex-test-key");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}:ultra`],
+			},
+			"retry.fallbackRevertPolicy": "cooldown-expiry",
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}:ultra`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			thinkingLevel: ThinkingLevel.Ultra,
+		});
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("First prompt triggers a clamped fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+		expect(session.thinkingLevel).toBe(ThinkingLevel.Max);
+
+		now += 240;
+		await session.prompt("Second prompt restores the primary Ultra session");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(session.model?.id).toBe(primaryModel.id);
+		expect(session.thinkingLevel).toBe(ThinkingLevel.Ultra);
 	});
 
 	it("preserves thinking on bare fallback selectors and does not overwrite user thinking on restore", async () => {

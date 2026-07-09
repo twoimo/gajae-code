@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { Model } from "@gajae-code/ai";
+import { Effort, type Model } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
@@ -118,7 +118,7 @@ test("explicit CLI --model/--thinking are reapplied after --mpreset activation",
 				source: "user",
 			},
 		]) as never,
-		parsedArgs: { mpreset: "profile-a", model: "cli-provider/explicit", thinking: ThinkingLevel.Low },
+		parsedArgs: { mpreset: "profile-a", model: "cli-provider/explicit", thinking: Effort.Low },
 		startupModel: model("cli-provider", "explicit"),
 		startupThinkingLevel: ThinkingLevel.Low,
 	});

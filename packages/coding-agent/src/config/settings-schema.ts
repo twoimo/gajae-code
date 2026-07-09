@@ -1,10 +1,9 @@
-import type { Effort } from "@gajae-code/ai/model-thinking";
 import { TASK_SIMPLE_MODES } from "../task/simple-mode";
 import { getThinkingLevelMetadata } from "../thinking-metadata";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { CONFIGURABLE_SEARCH_PROVIDER_IDS } from "../web/search/types";
 
-const THINKING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as readonly Effort[];
+const THINKING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const DEFAULT_THINKING_LEVELS = ["off", ...THINKING_EFFORTS] as const;
 
 import {

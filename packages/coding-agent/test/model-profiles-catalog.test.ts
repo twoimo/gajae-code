@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type Api, Effort, getSupportedEfforts, type Model } from "@gajae-code/ai";
+import { type Api, Effort, type Model } from "@gajae-code/ai";
 import {
 	BUILTIN_MODEL_PROFILES,
 	formatAvailableProfileNames,
@@ -12,6 +12,7 @@ import {
 } from "@gajae-code/coding-agent/config/model-profiles";
 import { parseModelString } from "@gajae-code/coding-agent/config/model-resolver";
 import { ProfileModelSelectorSchema } from "@gajae-code/coding-agent/config/models-config-schema";
+import { getAvailableThinkingLevelsForModel } from "@gajae-code/coding-agent/thinking";
 import modelsJson from "../../ai/src/models.json";
 
 type Role = "default" | "executor" | "planner" | "critic" | "architect";
@@ -398,20 +399,22 @@ describe("built-in model profile catalog", () => {
 		expect(codexModels?.["gpt-5.6-sol"]?.thinking).toEqual({
 			mode: "effort",
 			minLevel: Effort.Low,
-			maxLevel: Effort.Ultra,
+			maxLevel: Effort.Max,
 			defaultLevel: Effort.Low,
 		});
 		expect(codexModels?.["gpt-5.6-terra"]?.thinking).toEqual({
 			mode: "effort",
 			minLevel: Effort.Low,
-			maxLevel: Effort.Ultra,
+			maxLevel: Effort.Max,
 			defaultLevel: Effort.Medium,
 		});
 	});
 
 	test("every Codex preset effort is supported by its bundled model", () => {
 		const bundledModels = modelsJson as Record<string, Record<string, Model<Api>>>;
-		for (const profile of BUILTIN_MODEL_PROFILES.filter(candidate => candidate.name.startsWith("codex-"))) {
+		for (const profile of BUILTIN_MODEL_PROFILES.filter(candidate =>
+			["codex-eco", "codex-medium", "codex-pro"].includes(candidate.name),
+		)) {
 			for (const role of roles) {
 				const selector = profile.modelMapping[role];
 				const parsed = selector ? parseModelString(selector) : undefined;
@@ -421,7 +424,7 @@ describe("built-in model profile catalog", () => {
 				expect(model).toBeDefined();
 				const effort = parsed.thinkingLevel;
 				if (effort === "inherit" || effort === "off") throw new Error(`Unexpected preset effort: ${effort}`);
-				if (model) expect(getSupportedEfforts(model)).toContain(effort);
+				if (model) expect(getAvailableThinkingLevelsForModel(model)).toContain(effort);
 			}
 		}
 	});

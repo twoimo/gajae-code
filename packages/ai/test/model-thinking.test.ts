@@ -63,7 +63,7 @@ describe("model thinking metadata", () => {
 		expect(requireSupportedEffort(model, Effort.XHigh)).toBe(Effort.XHigh);
 	});
 
-	it("stores Codex GPT-5.6 Sol/Terra/Luna supported efforts and defaults", () => {
+	it("stores native Codex GPT-5.6 efforts and defaults", () => {
 		const sol = createModel({
 			id: "gpt-5.6-sol",
 			api: "openai-codex-responses",
@@ -83,13 +83,13 @@ describe("model thinking metadata", () => {
 		expect(sol.thinking).toEqual({
 			mode: "effort",
 			minLevel: Effort.Low,
-			maxLevel: Effort.Ultra,
+			maxLevel: Effort.Max,
 			defaultLevel: Effort.Low,
 		});
 		expect(terra.thinking).toEqual({
 			mode: "effort",
 			minLevel: Effort.Low,
-			maxLevel: Effort.Ultra,
+			maxLevel: Effort.Max,
 			defaultLevel: Effort.Medium,
 		});
 		expect(luna.thinking).toEqual({
@@ -98,15 +98,12 @@ describe("model thinking metadata", () => {
 			maxLevel: Effort.Max,
 			defaultLevel: Effort.Medium,
 		});
-		expect(requireSupportedEffort(sol, Effort.Ultra)).toBe(Effort.Ultra);
-		expect(requireSupportedEffort(terra, Effort.Ultra)).toBe(Effort.Ultra);
+		expect(requireSupportedEffort(sol, Effort.Max)).toBe(Effort.Max);
+		expect(requireSupportedEffort(terra, Effort.Max)).toBe(Effort.Max);
 		expect(requireSupportedEffort(luna, Effort.Max)).toBe(Effort.Max);
-		expect(() => requireSupportedEffort(luna, Effort.Ultra)).toThrow(
-			/Supported efforts: low, medium, high, xhigh, max/,
-		);
 	});
 
-	it("does not expose Ultra for non-Codex GPT-5.6 Sol", () => {
+	it("keeps non-Codex GPT-5.6 Sol capped at xhigh", () => {
 		const model = createModel({
 			id: "gpt-5.6-sol",
 			api: "openai-responses",
@@ -118,7 +115,7 @@ describe("model thinking metadata", () => {
 			minLevel: Effort.Low,
 			maxLevel: Effort.XHigh,
 		});
-		expect(() => requireSupportedEffort(model, Effort.Ultra)).toThrow(/Supported efforts: low, medium, high, xhigh/);
+		expect(() => requireSupportedEffort(model, Effort.Max)).toThrow(/Supported efforts: low, medium, high, xhigh/);
 	});
 
 	it("maps Gemini 3 Pro only for supported levels", () => {

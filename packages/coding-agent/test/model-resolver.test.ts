@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ThinkingLevel } from "@gajae-code/agent-core";
 import { Effort, type Model } from "@gajae-code/ai";
 import {
 	expandRoleAlias,
@@ -275,7 +276,7 @@ describe("parseModelPattern", () => {
 				Effort.High,
 				Effort.XHigh,
 				Effort.Max,
-				Effort.Ultra,
+				ThinkingLevel.Ultra,
 			] as const;
 			for (const level of levels) {
 				const result = parseModelPattern(`sonnet:${level}`, allModels);

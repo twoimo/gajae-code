@@ -10,7 +10,6 @@ export const enum Effort {
 	High = "high",
 	XHigh = "xhigh",
 	Max = "max",
-	Ultra = "ultra",
 }
 
 export const THINKING_EFFORTS: readonly Effort[] = [
@@ -20,7 +19,6 @@ export const THINKING_EFFORTS: readonly Effort[] = [
 	Effort.High,
 	Effort.XHigh,
 	Effort.Max,
-	Effort.Ultra,
 ];
 
 const DEFAULT_REASONING_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
@@ -49,15 +47,13 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH_AND_MAX: readonly Effort[] = [
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
 const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
-const GPT_5_6_SOL_TERRA_EFFORTS: readonly Effort[] = [
+const GPT_5_6_CODEX_EFFORTS: readonly Effort[] = [
 	Effort.Low,
 	Effort.Medium,
 	Effort.High,
 	Effort.XHigh,
 	Effort.Max,
-	Effort.Ultra,
 ];
-const GPT_5_6_LUNA_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
 const GPT_5_5_DEFAULT_EFFORT = Effort.XHigh;
 
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
@@ -324,7 +320,6 @@ export function mapEffortToGoogleThinkingLevel<TApi extends Api>(
 		case Effort.High:
 		case Effort.XHigh:
 		case Effort.Max:
-		case Effort.Ultra:
 			return "HIGH";
 	}
 }
@@ -344,7 +339,6 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 			return "high";
 		case Effort.XHigh:
 		case Effort.Max:
-		case Effort.Ultra:
 			return effort === Effort.XHigh ? "xhigh" : "max";
 	}
 }
@@ -613,7 +607,7 @@ function inferOpenAISupportedEfforts<TApi extends Api>(
 		return GPT_5_1_CODEX_MINI_EFFORTS;
 	}
 	if (isCodexGpt56NamedVariant(model, parsedModel)) {
-		return parsedModel.variant === "luna" ? GPT_5_6_LUNA_EFFORTS : GPT_5_6_SOL_TERRA_EFFORTS;
+		return GPT_5_6_CODEX_EFFORTS;
 	}
 	if (semverGte(parsedModel.version, "5.2")) {
 		return GPT_5_2_PLUS_EFFORTS;

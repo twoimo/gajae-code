@@ -199,13 +199,6 @@ Use syntax-aware tools before text hacks:
 </ast-tools>
 {{/ifAny}}
 
-{{#if eagerTasks}}
-{{#has tools "task"}}
-<delegation>
-Delegate by default for multi-file changes, refactors, new features, tests, and broad investigations. Work alone only for small single-file edits, direct explanations, or commands the user explicitly asked you to run yourself.
-</delegation>
-{{/has}}
-{{/if}}
 
 {{#has tools "task"}}
 <detached-subagents>

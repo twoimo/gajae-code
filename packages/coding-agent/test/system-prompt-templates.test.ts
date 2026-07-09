@@ -345,7 +345,7 @@ describe("system Handlebars prompt templates", () => {
 			const volatile = buildVolatileProjectContext({ cwd: dir, workspaceTree });
 			expect(volatile).toContain("<workspace-tree>");
 			expect(volatile).toContain("Today is ");
-			expect(volatile).toContain(`current working directory is '${dir}'.`);
+			expect(volatile).toContain(`current working directory is '${dir.replace(/\\/g, "/")}'.`);
 			expect(volatile.indexOf("</workspace-tree>")).toBeLessThan(volatile.indexOf("Today is "));
 		});
 	});
