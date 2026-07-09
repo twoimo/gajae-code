@@ -7,6 +7,15 @@
 - Added `ultra` as a Codex Sol session mode across `/effort`, settings, model selectors, agent-wire commands, status rendering, and Telegram controls. It dynamically combines native `max` reasoning with proactive delegation to at most four task agents without exposing `ultra` as a provider wire effort.
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
 
+### Fixed
+
+- ACP permission prompts now honor `clientCapabilities._meta.gjc.permissionHandling` and the `GJC_ACP_PERMISSION_MODE` fallback, so `auto` and `always-allow` no longer emit `session/request_permission` calls while invalid values fail safely to `prompt`.
+- Model selector batch assignments ("Set for all role agents" / "Set for all targets") now open the reasoning-effort menu whenever any batch target requires an explicit choice (e.g. Anthropic reasoning models like `claude-fable-5`), and the chosen effort plus the full batch survive the menu. Previously the menu never appeared for Anthropic models (silently persisting `:off` selectors for every role agent), and for OpenAI/Codex models picking an effort collapsed the batch to a DEFAULT-only assignment.
+
+### Added
+
+- ACP clients now receive GJC automatic-compaction start/end state through additive `session_info_update` metadata, including the compaction action, trigger, retry/abort/error outcome, and busy-to-idle phase transitions.
+
 ## [0.9.4] - 2026-07-09
 ### Fixed
 

@@ -3,8 +3,8 @@
 ## [Unreleased]
 ### Added
 
-- Added provider-scoped GPT-5.6 Sol, Terra, and Luna reasoning metadata with native efforts through `max`; higher-level orchestration modes remain outside the provider API and never send a non-native effort on the wire.
 - Added `closeModelCache()` for deterministic shutdown of the shared SQLite model cache, including Windows test and embedding environments.
+- Added GPT-5.6 Sol, Terra, and Luna catalog/parser support for OpenAI and OpenAI code transports, including `low` through canonical `max` reasoning efforts, verified pricing/limits, and GPT-5.6 cache-write pricing (#1925; OmX #3103).
 
 ## [0.9.4] - 2026-07-09
 ### Fixed

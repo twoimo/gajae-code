@@ -47,13 +47,7 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH_AND_MAX: readonly Effort[] = [
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
 const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
-const GPT_5_6_CODEX_EFFORTS: readonly Effort[] = [
-	Effort.Low,
-	Effort.Medium,
-	Effort.High,
-	Effort.XHigh,
-	Effort.Max,
-];
+const GPT_5_6_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
 const GPT_5_5_DEFAULT_EFFORT = Effort.XHigh;
 
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
@@ -73,12 +67,12 @@ type OpenAIVariant =
 	| "codex-max"
 	| "codex-mini"
 	| "codex-spark"
+	| "luna"
 	| "mini"
 	| "max"
 	| "nano"
 	| "sol"
-	| "terra"
-	| "luna";
+	| "terra";
 
 const CODEX_GPT_5_4_PRIORITY_BY_VARIANT: Partial<Record<OpenAIVariant, number>> = {
 	base: 0,
@@ -483,9 +477,22 @@ function applyGpt55ContextWindow(model: ApiModel<Api>, parsedModel: OpenAIModel)
 	}
 	return false;
 }
+const GPT_5_6_TIER_VARIANTS: ReadonlySet<OpenAIVariant> = new Set(["base", "sol", "terra", "luna"]);
+
+function applyGpt56ContextWindow(model: ApiModel<Api>, parsedModel: OpenAIModel): boolean {
+	if (!semverGte(parsedModel.version, "5.6") || !GPT_5_6_TIER_VARIANTS.has(parsedModel.variant)) {
+		return false;
+	}
+	model.contextWindow =
+		model.provider === "openai-codex" || model.api === "openai-codex-responses" ? 272_000 : 1_050_000;
+	return true;
+}
 
 function applyOpenAICatalogPolicy(model: ApiModel<Api>, parsedModel: OpenAIModel): void {
 	if (applyGpt55ContextWindow(model, parsedModel)) {
+		return;
+	}
+	if (applyGpt56ContextWindow(model, parsedModel)) {
 		return;
 	}
 	// OpenAI code backend models: 400K figure includes output budget; input window is 272K.
@@ -509,9 +516,6 @@ function applyOpenAICatalogPolicy(model: ApiModel<Api>, parsedModel: OpenAIModel
 }
 
 function inferDefaultEffort<TApi extends Api>(model: ApiModel<TApi>, parsedModel: ParsedModel): Effort | undefined {
-	if (parsedModel.family === "openai" && isCodexGpt56NamedVariant(model, parsedModel)) {
-		return parsedModel.variant === "sol" ? Effort.Low : Effort.Medium;
-	}
 	if (
 		parsedModel.family === "openai" &&
 		model.provider === "openai-codex" &&
@@ -589,7 +593,7 @@ function expandEffortRange(thinking: ThinkingConfig): readonly Effort[] {
 function inferSupportedEfforts<TApi extends Api>(parsedModel: ParsedModel, model: ApiModel<TApi>): readonly Effort[] {
 	switch (parsedModel.family) {
 		case "openai":
-			return inferOpenAISupportedEfforts(parsedModel, model);
+			return inferOpenAISupportedEfforts(parsedModel);
 		case "gemini":
 			return inferGeminiSupportedEfforts(parsedModel);
 		case "anthropic":
@@ -599,30 +603,17 @@ function inferSupportedEfforts<TApi extends Api>(parsedModel: ParsedModel, model
 	}
 }
 
-function inferOpenAISupportedEfforts<TApi extends Api>(
-	parsedModel: OpenAIModel,
-	model: ApiModel<TApi>,
-): readonly Effort[] {
-	if (parsedModel.variant === "codex-mini" && semverEqual(parsedModel.version, "5.1")) {
+function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
+	if (model.variant === "codex-mini" && semverEqual(model.version, "5.1")) {
 		return GPT_5_1_CODEX_MINI_EFFORTS;
 	}
-	if (isCodexGpt56NamedVariant(model, parsedModel)) {
-		return GPT_5_6_CODEX_EFFORTS;
+	if (semverGte(model.version, "5.6")) {
+		return GPT_5_6_PLUS_EFFORTS;
 	}
-	if (semverGte(parsedModel.version, "5.2")) {
+	if (semverGte(model.version, "5.2")) {
 		return GPT_5_2_PLUS_EFFORTS;
 	}
 	return DEFAULT_REASONING_EFFORTS;
-}
-
-function isCodexGpt56NamedVariant<TApi extends Api>(model: ApiModel<TApi>, parsedModel: OpenAIModel): boolean {
-	if (model.provider !== "openai-codex" || model.api !== "openai-codex-responses") {
-		return false;
-	}
-	if (parsedModel.variant !== "sol" && parsedModel.variant !== "terra" && parsedModel.variant !== "luna") {
-		return false;
-	}
-	return semverEqual(parsedModel.version, "5.6") && model.id === `gpt-5.6-${parsedModel.variant}`;
 }
 
 function inferGeminiSupportedEfforts(model: GeminiModel): readonly Effort[] {
@@ -752,7 +743,7 @@ function parseAnthropicModel(modelId: string): AnthropicModel | null {
 
 function parseOpenAIModel(modelId: string): OpenAIModel | null {
 	const match =
-		/gpt-(\d+(?:\.\d+){0,2})(?:-(codex-spark|codex-mini|codex-max|codex|mini|max|nano|sol|terra|luna))?$/.exec(
+		/gpt-(\d+(?:\.\d+){0,2})(?:-(codex-spark|codex-mini|codex-max|codex|luna|mini|max|nano|sol|terra))?$/.exec(
 			modelId,
 		);
 	if (!match) {
