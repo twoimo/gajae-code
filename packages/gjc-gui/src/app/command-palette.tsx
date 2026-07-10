@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
 	classifyBadge,
 	commandInsertText,
 	fuzzyFilter,
-	resolveClassification,
 	type PaletteCommand,
 	type PaletteTool,
+	resolveClassification,
 } from "./command-palette-logic";
 
 export type CommandPaletteProps = {
@@ -73,9 +73,9 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 			return;
 		}
 		if (event.key === "Tab") {
-			const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input, button, [href], [tabindex]:not([tabindex="-1"])')).filter(
-				element => !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true",
-			);
+			const focusable = Array.from(
+				event.currentTarget.querySelectorAll<HTMLElement>('input, button, [href], [tabindex]:not([tabindex="-1"])'),
+			).filter(element => !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true");
 			if (focusable.length > 0) {
 				const first = focusable[0];
 				const last = focusable[focusable.length - 1];
@@ -146,7 +146,11 @@ export function CommandPalette({ open, commands, tools, loading, error, onClose,
 						<div id="command-palette-rows" role="listbox">
 							<PaletteSection
 								title="Commands"
-								rows={filteredCommands.map(command => ({ kind: "command" as const, command, disabled: classifyBadge(resolveClassification(command)).disabled }))}
+								rows={filteredCommands.map(command => ({
+									kind: "command" as const,
+									command,
+									disabled: classifyBadge(resolveClassification(command)).disabled,
+								}))}
 								selectedIndex={selectedIndex}
 								startIndex={0}
 								onSelect={setSelectedIndex}
@@ -187,14 +191,32 @@ function PaletteSection({
 			<div className="command-palette__rows">
 				{rows.map((row, offset) => {
 					const index = startIndex + offset;
-					return <PaletteRowView row={row} selected={index === selectedIndex} onSelect={() => onSelect(index)} id={`command-palette-row-${index}`} key={row.kind === "command" ? `command-${row.command.name}` : `tool-${row.tool.name}`} />;
+					return (
+						<PaletteRowView
+							row={row}
+							selected={index === selectedIndex}
+							onSelect={() => onSelect(index)}
+							id={`command-palette-row-${index}`}
+							key={row.kind === "command" ? `command-${row.command.name}` : `tool-${row.tool.name}`}
+						/>
+					);
 				})}
 			</div>
 		</section>
 	);
 }
 
-function PaletteRowView({ row, selected, onSelect, id }: { row: PaletteRow; selected: boolean; onSelect(): void; id: string }) {
+function PaletteRowView({
+	row,
+	selected,
+	onSelect,
+	id,
+}: {
+	row: PaletteRow;
+	selected: boolean;
+	onSelect(): void;
+	id: string;
+}) {
 	const commandBadge = row.kind === "command" ? classifyBadge(resolveClassification(row.command)) : undefined;
 	const name = row.kind === "command" ? `/${row.command.name}` : row.tool.name;
 	const meta = row.kind === "command" ? row.command.source : row.tool.active ? "active tool" : "inactive tool";

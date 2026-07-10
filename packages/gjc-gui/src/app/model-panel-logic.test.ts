@@ -16,9 +16,15 @@ describe("model panel helpers", () => {
 	test("parseModelLabel best-effort splits provider/model", () => {
 		expect(parseModelLabel()).toEqual({});
 		expect(parseModelLabel("   ")).toEqual({});
-		expect(parseModelLabel("anthropic/claude-sonnet-4")).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4" });
+		expect(parseModelLabel("anthropic/claude-sonnet-4")).toEqual({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4",
+		});
 		expect(parseModelLabel("grok-code-fast")).toEqual({ modelId: "grok-code-fast" });
-		expect(parseModelLabel(" provider / model/with/slash ")).toEqual({ provider: "provider", modelId: "model/with/slash" });
+		expect(parseModelLabel(" provider / model/with/slash ")).toEqual({
+			provider: "provider",
+			modelId: "model/with/slash",
+		});
 	});
 
 	test("deferred surfaces include provider-auth with a no-secret unblock note", () => {

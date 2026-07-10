@@ -1,9 +1,9 @@
 import type {
 	GjcEventParams,
-	HostUriCancelParams,
-	HostUriRequestParams,
 	HostToolsCallParams,
 	HostToolsCancelParams,
+	HostUriCancelParams,
+	HostUriRequestParams,
 	ItemAgentMessageDeltaParams,
 	ItemCompletedParams,
 	ItemStartedParams,
@@ -42,7 +42,7 @@ export type ApprovalGate =
 			args: JsonValue;
 			status: ApprovalGateStatus;
 			generation: number;
-		}
+	  }
 	| {
 			kind: "host-uri";
 			id: string;
@@ -51,9 +51,10 @@ export type ApprovalGate =
 			operation: HostUriRequestParams["operation"];
 			url: string;
 			content?: string | null;
+			contentPreview?: string | null;
 			status: ApprovalGateStatus;
 			generation: number;
-		}
+	  }
 	| {
 			kind: "workflow-gate";
 			id: string;
@@ -67,7 +68,7 @@ export type ApprovalGate =
 			status: ApprovalGateStatus;
 			generation: number;
 			error?: string;
-		};
+	  };
 
 export type ThreadView = {
 	id: string;
@@ -165,7 +166,11 @@ export function foldNotification(state: TranscriptState, notification: ServerNot
 	}
 }
 
-export function markApproval(state: TranscriptState, callId: string, status: "approved" | "rejected" | "cancelled"): TranscriptState {
+export function markApproval(
+	state: TranscriptState,
+	callId: string,
+	status: "approved" | "rejected" | "cancelled",
+): TranscriptState {
 	return {
 		...state,
 		approvals: state.approvals.map(approval => (approval.id === callId ? { ...approval, status } : approval)),
@@ -173,7 +178,9 @@ export function markApproval(state: TranscriptState, callId: string, status: "ap
 }
 
 function hasThreadId(params: unknown): params is { threadId: string } {
-	return Boolean(params && typeof params === "object" && typeof (params as { threadId?: unknown }).threadId === "string");
+	return Boolean(
+		params && typeof params === "object" && typeof (params as { threadId?: unknown }).threadId === "string",
+	);
 }
 
 function isKnownThread(state: TranscriptState, threadId: string): boolean {
@@ -181,7 +188,11 @@ function isKnownThread(state: TranscriptState, threadId: string): boolean {
 }
 
 function isKnownInactiveThread(state: TranscriptState, threadId: string): boolean {
-	return state.activeThreadId !== undefined && state.activeThreadId !== threadId && state.threads.some(thread => thread.id === threadId);
+	return (
+		state.activeThreadId !== undefined &&
+		state.activeThreadId !== threadId &&
+		state.threads.some(thread => thread.id === threadId)
+	);
 }
 
 function isFinalized(status: ChatItemStatus): boolean {
@@ -420,13 +431,17 @@ function foldHostUriCancel(state: TranscriptState, params: HostUriCancelParams):
 	return {
 		...state,
 		approvals: state.approvals.map(approval =>
-			approval.kind === "host-uri" && approval.id === params.requestId ? { ...approval, status: "cancelled" } : approval,
+			approval.kind === "host-uri" && approval.id === params.requestId
+				? { ...approval, status: "cancelled" }
+				: approval,
 		),
 	};
 }
 
 function foldWorkflowGateOpened(state: TranscriptState, params: WorkflowGateOpenedParams): TranscriptState {
-	const existing = state.approvals.find(approval => approval.kind === "workflow-gate" && approval.id === params.gate_id);
+	const existing = state.approvals.find(
+		approval => approval.kind === "workflow-gate" && approval.id === params.gate_id,
+	);
 	if (existing && params.generation < existing.generation) return state;
 	const approval: ApprovalGate = {
 		kind: "workflow-gate",
@@ -496,7 +511,13 @@ function foldToolDetail(state: TranscriptState, event: JsonValue, phase: "start"
 			item.id === callId || item.id === `tool-${callId}`
 				? {
 						...item,
-						content: detail ? (phase === "start" ? detail : item.content ? `${item.content}\n${detail}` : detail) : item.content,
+						content: detail
+							? phase === "start"
+								? detail
+								: item.content
+									? `${item.content}\n${detail}`
+									: detail
+							: item.content,
 						status: phase === "end" ? (isError ? "error" : "completed") : item.status,
 						tool: {
 							name: item.tool?.name ?? name ?? item.title ?? "tool",
@@ -519,7 +540,6 @@ function labeledToolText(label: string, value: JsonValue | undefined): string {
 	const text = toolText(value);
 	return text ? `${label}:\n${text}` : "";
 }
-
 
 function toolEndText(payload: Record<string, JsonValue | undefined>): string {
 	const chunks = [

@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { ThreadView } from "./transcript";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
+	type ConfirmState,
 	cancelConfirm,
 	confirmSessionAction,
 	DEFERRED_SESSION_ACTIONS,
 	openConfirm,
-	type ConfirmState,
 } from "./session-actions-logic";
+import type { ThreadView } from "./transcript";
 
 type SessionActionsProps = {
 	thread: ThreadView;
@@ -23,7 +23,12 @@ export function SessionActions({ thread, onFork, onArchive, onDelete, disabled =
 	return (
 		<div className="session-actions" aria-label={`Session actions for ${thread.title}`}>
 			<div className="session-actions__row">
-				<button className="neutral-action session-actions__button" type="button" disabled={disabled} onClick={() => onFork(thread.id)}>
+				<button
+					className="neutral-action session-actions__button"
+					type="button"
+					disabled={disabled}
+					onClick={() => onFork(thread.id)}
+				>
 					Fork
 				</button>
 				<button
@@ -73,7 +78,15 @@ export function SessionActions({ thread, onFork, onArchive, onDelete, disabled =
 	);
 }
 
-export function ConfirmDialog({ state, onCancel, onConfirm }: { state: Exclude<ConfirmState, null>; onCancel(): void; onConfirm(): void }) {
+export function ConfirmDialog({
+	state,
+	onCancel,
+	onConfirm,
+}: {
+	state: Exclude<ConfirmState, null>;
+	onCancel(): void;
+	onConfirm(): void;
+}) {
 	const cancelRef = useRef<HTMLButtonElement>(null);
 	const confirmRef = useRef<HTMLButtonElement>(null);
 	const action = state.kind === "delete" ? "Delete" : "Archive";
@@ -119,7 +132,12 @@ export function ConfirmDialog({ state, onCancel, onConfirm }: { state: Exclude<C
 					<button className="neutral-action" type="button" ref={cancelRef} onClick={onCancel}>
 						Cancel
 					</button>
-					<button className="neutral-action session-actions__button--danger" type="button" ref={confirmRef} onClick={onConfirm}>
+					<button
+						className="neutral-action session-actions__button--danger"
+						type="button"
+						ref={confirmRef}
+						onClick={onConfirm}
+					>
 						Confirm {action}
 					</button>
 				</div>

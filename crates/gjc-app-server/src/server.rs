@@ -799,18 +799,167 @@ impl AppServer {
 			"turn/start" => self.handle_turn_start(params).await,
 			"turn/steer" => self.handle_turn_steer(params).await,
 			"turn/interrupt" => self.handle_turn_interrupt(params).await,
+			"gjc/retry" => self.handle_gjc_retry("gjc/retry", params).await,
 			"command/exec" => self.handle_command_exec(params).await,
 			"thread/shellCommand" => self.handle_thread_shell_command(params).await,
 			"gjc/state/read" => self.handle_gjc_state_read(method, params).await,
+			"gjc/context/read" => self.handle_gjc_context_read(method, params).await,
+			"gjc/goal/read" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.read_goal(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/model/catalog" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.model_catalog(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/thinking/read" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.read_thinking(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/fast/read" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.read_fast(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/thinking/set" => self.handle_gjc_thinking_set(method, params).await,
+			"gjc/fast/set" => self.handle_gjc_fast_set(method, params).await,
+			"gjc/settings/schema" => self.handle_gjc_settings_schema(method, params).await,
+			"gjc/settings/read" => self.handle_gjc_settings_read(method, params).await,
+			"gjc/settings/update" => self.handle_gjc_settings_update(method, params).await,
+			"gjc/appearance/themes/list" => {
+				self.handle_gjc_appearance_themes_list(method, params).await
+			},
+			"gjc/appearance/read" => self.handle_gjc_appearance_read(method, params).await,
+			"gjc/appearance/set" => self.handle_gjc_appearance_set(method, params).await,
+			"gjc/provider/list" => self.handle_gjc_provider_list(method, params).await,
+
+			"gjc/provider/add" => self.handle_gjc_provider_add(method, params).await,
+			"gjc/auth/login/start" => self.handle_gjc_auth_login_start(method, params).await,
+			"gjc/auth/login/poll" => self.handle_gjc_auth_login_poll(method, params).await,
+			"gjc/auth/login/complete" => self.handle_gjc_auth_login_complete(method, params).await,
+			"gjc/auth/login/cancel" => self.handle_gjc_auth_login_cancel(method, params).await,
+			"gjc/auth/status" => self.handle_gjc_auth_status(method, params).await,
+			"gjc/auth/logout" => self.handle_gjc_auth_logout(method, params).await,
+			"gjc/todos/read" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.read_todos(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/usage/read" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.read_usage(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/jobs/list" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.list_jobs(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/agents/list" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.list_agents(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/monitors/list" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.list_monitors(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/compact/summary" => {
+				self
+					.handle_thread_read_method(method, params, |b, c| {
+						Box::pin(async move {
+							serde_json::to_value(b.compact_summary(c).await?).map_err(|e| {
+								AppServerError::new(crate::error::codes::INTERNAL_ERROR, e.to_string())
+							})
+						})
+					})
+					.await
+			},
+			"gjc/session/list" => self.handle_gjc_session_list(method, params).await,
+			"gjc/session/search" => self.handle_gjc_session_search(method, params).await,
+			"gjc/session/open" => self.handle_gjc_session_open(method, params).await,
+			"gjc/session/delete" => self.handle_gjc_session_delete(method, params).await,
+			"gjc/session/rename" => self.handle_gjc_session_rename(method, params).await,
+			"gjc/session/export" => self.handle_gjc_session_export(method, params).await,
+			"gjc/session/tree" => self.handle_gjc_session_tree(method, params).await,
+			"gjc/session/navigate" => self.handle_gjc_session_navigate(method, params).await,
+			"gjc/session/move" => self.handle_gjc_session_move(method, params).await,
+			"gjc/session/label" => self.handle_gjc_session_label(method, params).await,
 			"gjc/tools/list" => self.handle_gjc_tools_list(method, params).await,
 			"gjc/commands/list" => self.handle_gjc_commands_list(method, params).await,
 			"gjc/skills/list" => self.handle_gjc_skills_list(method, params).await,
+			"gjc/skills/setEnabled" => self.handle_gjc_skills_set_enabled(method, params).await,
 			"gjc/extensions/list" => self.handle_gjc_extensions_list(method, params).await,
 			"gjc/extensions/inspect" => self.handle_gjc_extensions_inspect(method, params).await,
+			"gjc/extensions/setEnabled" => {
+				self.handle_gjc_extensions_set_enabled(method, params).await
+			},
 			"gjc/plugins/list" => self.handle_gjc_plugins_list(method, params).await,
 			"gjc/plugins/inspect" => self.handle_gjc_plugins_inspect(method, params).await,
+			"gjc/plugins/setEnabled" => self.handle_gjc_plugins_set_enabled(method, params).await,
+			"gjc/plugins/setFeature" => self.handle_gjc_plugins_set_feature(method, params).await,
+			"gjc/plugins/setSetting" => self.handle_gjc_plugins_set_setting(method, params).await,
 			"gjc/messages/get" => self.handle_gjc_messages_get(method, params).await,
 			"gjc/model/set" => self.handle_gjc_model_set(method, params).await,
+			"gjc/model/assign" => self.handle_gjc_model_assign(method, params).await,
 			"gjc/todos/set" => self.handle_gjc_todos_set(method, params).await,
 			"gjc/compact" => self.handle_gjc_compact(method, params).await,
 			"gjc/hostTools/set" => self.handle_host_tools_set(method, params),
@@ -873,6 +1022,86 @@ impl AppServer {
 		Ok((Arc::clone(&entry.value().backend), ctx))
 	}
 
+	fn begin_registered_turn(&self, thread_id: &ThreadId) -> Result<(TurnId, Vec<Notification>)> {
+		let Some(entry) = self.threads.get(thread_id) else {
+			return Err(AppServerError::not_found("thread not found"));
+		};
+		let turn_id = TurnId::generate();
+		*entry.value().active_turn.lock() = Some(turn_id.clone());
+		entry.value().identity.lock().status = ThreadStatus::Running;
+		let started = entry.value().stream.lock().begin_turn(turn_id.clone());
+		Ok((turn_id, started))
+	}
+
+	fn complete_registered_turn(
+		&self,
+		thread_id: &ThreadId,
+		turn_id: &TurnId,
+		generation: crate::ids::BackendGeneration,
+	) {
+		if let Some(entry) = self.threads.get(thread_id) {
+			if entry.value().identity.lock().generation != generation {
+				return;
+			}
+			let remaining = {
+				let mut adm = entry.value().admission.lock();
+				adm.complete_turn();
+				adm.inflight_turns()
+			};
+			{
+				let mut active = entry.value().active_turn.lock();
+				if active.as_ref() == Some(turn_id) {
+					*active = None;
+				}
+			}
+			if remaining == 0 {
+				let mut identity = entry.value().identity.lock();
+				if matches!(identity.status, ThreadStatus::Running) {
+					identity.status = ThreadStatus::Idle;
+				}
+			}
+		}
+	}
+
+	#[allow(clippy::unused_async, reason = "handler shape matches async dispatch arms")]
+	async fn handle_gjc_retry(
+		self: &Arc<Self>,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let parsed: crate::protocol::GjcRetryParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let (backend, ctx) = self.backend_and_ctx(&parsed.thread_id, Lane::Mutating)?;
+		{
+			let Some(entry) = self.threads.get(&parsed.thread_id) else {
+				return Err(AppServerError::not_found("thread not found"));
+			};
+			entry.value().admission.lock().try_admit_turn()?;
+		}
+		let (turn_id, started) = self.begin_registered_turn(&parsed.thread_id)?;
+		for note in started {
+			self.publish(note);
+		}
+		let this = Arc::clone(self);
+		let bg_thread = parsed.thread_id.clone();
+		let bg_turn = turn_id.clone();
+		tokio::spawn(async move {
+			let result = backend.retry(&ctx).await;
+			if let Err(err) = &result {
+				this.emit_backend_event(&BackendEvent {
+					thread_id: bg_thread.clone(),
+					generation: ctx.generation,
+					event_type: "error".to_string(),
+					payload: serde_json::json!({ "message": err.to_string() }),
+				});
+			}
+			this.complete_registered_turn(&bg_thread, &bg_turn, ctx.generation);
+		});
+		serde_json::to_value(crate::protocol::GjcRetryResult { turn_id })
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
 	async fn handle_turn_steer(
 		&self,
 		params: Option<serde_json::Value>,
@@ -1142,6 +1371,451 @@ impl AppServer {
 		backend.get_state(&ctx, include).await
 	}
 
+	async fn handle_gjc_context_read(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		serde_json::to_value(backend.read_context(&ctx).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_thread_read_method<F>(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+		f: F,
+	) -> Result<serde_json::Value>
+	where
+		F: for<'a> FnOnce(
+			&'a Arc<dyn AgentBackend>,
+			&'a BackendCallContext,
+		) -> std::pin::Pin<
+			Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + 'a>,
+		>,
+	{
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		f(&backend, &ctx).await
+	}
+
+	async fn handle_gjc_thinking_set(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "level"])?;
+		let parsed: crate::protocol::GjcThinkingSetParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let (backend, ctx) = self.backend_and_ctx(&parsed.thread_id, Lane::Mutating)?;
+		serde_json::to_value(backend.set_thinking(&ctx, parsed.level).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_fast_set(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "enabled"])?;
+		let parsed: crate::protocol::GjcFastSetParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let (backend, ctx) = self.backend_and_ctx(&parsed.thread_id, Lane::Mutating)?;
+		serde_json::to_value(backend.set_fast(&ctx, parsed.enabled).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_settings_schema(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[])?;
+		if matches!(params, Some(ref value) if !value.is_object()) {
+			return Err(AppServerError::invalid_params("params must be an object"));
+		}
+		let _: crate::protocol::GjcSettingsSchemaParams =
+			serde_json::from_value(params.unwrap_or_else(|| serde_json::json!({})))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.settings_schema().await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_settings_read(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[])?;
+		if matches!(params, Some(ref value) if !value.is_object()) {
+			return Err(AppServerError::invalid_params("params must be an object"));
+		}
+		let _: crate::protocol::GjcSettingsReadParams =
+			serde_json::from_value(params.unwrap_or_else(|| serde_json::json!({})))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.settings_read().await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_settings_update(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["key", "value"])?;
+		let parsed: crate::protocol::GjcSettingsUpdateParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.settings_update(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_appearance_themes_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[])?;
+		if matches!(params, Some(ref value) if !value.is_object()) {
+			return Err(AppServerError::invalid_params("params must be an object"));
+		}
+		let _: crate::protocol::GjcAppearanceThemesListParams =
+			serde_json::from_value(params.unwrap_or_else(|| serde_json::json!({})))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.appearance_themes_list().await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_appearance_read(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[])?;
+		if matches!(params, Some(ref value) if !value.is_object()) {
+			return Err(AppServerError::invalid_params("params must be an object"));
+		}
+		let _: crate::protocol::GjcAppearanceReadParams =
+			serde_json::from_value(params.unwrap_or_else(|| serde_json::json!({})))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.appearance_read().await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_appearance_set(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(
+			method,
+			params.as_ref(),
+			&["dark", "light", "symbolPreset", "colorBlindMode"],
+		)?;
+		let parsed: crate::protocol::GjcAppearanceSetParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.dark.is_none()
+			&& parsed.light.is_none()
+			&& parsed.symbol_preset.is_none()
+			&& parsed.color_blind_mode.is_none()
+		{
+			return Err(AppServerError::invalid_params("at least one appearance field is required"));
+		}
+		serde_json::to_value(self.factory.appearance_set(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_provider_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[])?;
+		if matches!(params, Some(ref value) if !value.is_object()) {
+			return Err(AppServerError::invalid_params("params must be an object"));
+		}
+		let _: crate::protocol::GjcProviderListParams =
+			serde_json::from_value(params.unwrap_or_else(|| serde_json::json!({})))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.provider_list().await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_provider_add(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(
+			method,
+			params.as_ref(),
+			&["preset", "compatibility", "providerId", "baseUrl", "apiKeyEnv", "models", "force"],
+		)?;
+		let parsed: crate::protocol::GjcProviderAddParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.provider_add(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_auth_login_start(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["providerId"])?;
+		let parsed: crate::protocol::GjcAuthLoginStartParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.auth_login_start(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_auth_login_poll(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["flowId"])?;
+		let parsed: crate::protocol::GjcAuthLoginPollParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.auth_login_poll(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_auth_login_complete(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["flowId", "redirectUrl"])?;
+		let parsed: crate::protocol::GjcAuthLoginCompleteParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.auth_login_complete(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_auth_login_cancel(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["flowId"])?;
+		let parsed: crate::protocol::GjcAuthLoginCancelParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.auth_login_cancel(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_auth_status(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &[])?;
+		if matches!(params, Some(ref value) if !value.is_object()) {
+			return Err(AppServerError::invalid_params("params must be an object"));
+		}
+		let _: crate::protocol::GjcAuthStatusParams =
+			serde_json::from_value(params.unwrap_or_else(|| serde_json::json!({})))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.auth_status().await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_auth_logout(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["providerId"])?;
+		let parsed: crate::protocol::GjcAuthLogoutParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.auth_logout(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_list(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["scope", "limit", "offset", "cwd"])?;
+		let parsed: crate::protocol::GjcSessionListParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.session_list(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_search(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["query", "scope", "limit", "cwd"])?;
+		let parsed: crate::protocol::GjcSessionSearchParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.query.trim().is_empty() {
+			return Err(AppServerError::invalid_params("query must not be empty"));
+		}
+		serde_json::to_value(self.factory.session_search(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_rename(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["sessionPath", "title"])?;
+		let parsed: crate::protocol::GjcSessionRenameParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let title = parsed.title.trim();
+		if title.is_empty() || title.chars().count() > 200 {
+			return Err(AppServerError::invalid_params("title must be 1..200 characters after trim"));
+		}
+		serde_json::to_value(self.factory.session_rename(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_open(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["sessionPath"])?;
+		let parsed: crate::protocol::GjcSessionOpenParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.session_path.trim().is_empty() {
+			return Err(AppServerError::invalid_params("sessionPath must not be empty"));
+		}
+		let (info, backend) = self.factory.session_open(parsed).await?;
+		let thread_id = info.thread_id.0.clone();
+		let session_metadata = serde_json::to_value(&info.session_metadata).map_err(|err| {
+			AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string())
+		})?;
+		let thread = self.register(info, backend);
+		let generation = thread
+			.get("generation")
+			.and_then(serde_json::Value::as_u64)
+			.map_or(crate::ids::BackendGeneration::FIRST, crate::ids::BackendGeneration);
+		let (backend, ctx) =
+			self.backend_and_ctx(&crate::ids::ThreadId(thread_id.clone()), Lane::Read)?;
+		let _ = backend.get_state(&ctx, serde_json::Value::Null).await?;
+		serde_json::to_value(crate::protocol::GjcSessionOpenResult {
+			thread_id,
+			session_metadata,
+			generation,
+			resumed: true,
+		})
+		.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_delete(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["sessionPath"])?;
+		let parsed: crate::protocol::GjcSessionDeleteParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.session_path.trim().is_empty() {
+			return Err(AppServerError::invalid_params("sessionPath must not be empty"));
+		}
+		serde_json::to_value(self.factory.session_delete(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_export(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["sessionPath", "format", "redact"])?;
+		let parsed: crate::protocol::GjcSessionExportParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.session_path.trim().is_empty() {
+			return Err(AppServerError::invalid_params("sessionPath must not be empty"));
+		}
+		serde_json::to_value(self.factory.session_export(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_tree(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId"])?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Read)?;
+		serde_json::to_value(backend.session_tree(&ctx).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_navigate(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "entryId", "summarize"])?;
+		let parsed: crate::protocol::GjcSessionNavigateParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.entry_id.trim().is_empty() {
+			return Err(AppServerError::invalid_params("entryId must not be empty"));
+		}
+		let (backend, ctx) = self.backend_and_ctx(&parsed.thread_id, Lane::Mutating)?;
+		serde_json::to_value(backend.session_navigate(&ctx, parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_move(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "targetCwd", "dryRun"])?;
+		let parsed: crate::protocol::GjcSessionMoveParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let (backend, ctx) = self.backend_and_ctx(&parsed.thread_id, Lane::Mutating)?;
+		serde_json::to_value(backend.session_move(&ctx, parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+
+	async fn handle_gjc_session_label(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["threadId", "entryId", "label"])?;
+		let parsed: crate::protocol::GjcSessionLabelParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		if parsed.entry_id.trim().is_empty() {
+			return Err(AppServerError::invalid_params("entryId must not be empty"));
+		}
+		if parsed.label.trim().chars().count() > 200 {
+			return Err(AppServerError::invalid_params("label must be 0..200 characters after trim"));
+		}
+		let (backend, ctx) = self.backend_and_ctx(&parsed.thread_id, Lane::Mutating)?;
+		serde_json::to_value(backend.session_label(&ctx, parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
 	async fn handle_gjc_tools_list(
 		&self,
 		method: &str,
@@ -1345,6 +2019,22 @@ impl AppServer {
 						.get("status")
 						.and_then(|status| status.as_str())
 						.map(str::to_string),
+					state: extension
+						.get("state")
+						.and_then(|state| state.as_str())
+						.map(str::to_string),
+					disabled_reason: extension
+						.get("disabledReason")
+						.and_then(|disabled_reason| disabled_reason.as_str())
+						.map(str::to_string),
+					shadowed_by: extension
+						.get("shadowedBy")
+						.and_then(|shadowed_by| shadowed_by.as_str())
+						.map(str::to_string),
+					provider: extension
+						.get("provider")
+						.and_then(|provider| provider.as_str())
+						.map(str::to_string),
 				})
 			})
 			.collect::<Vec<_>>())
@@ -1458,6 +2148,66 @@ impl AppServer {
 			.collect::<Vec<_>>())
 	}
 
+	async fn handle_gjc_extensions_set_enabled(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["extensionId", "enabled"])?;
+		let parsed: crate::protocol::GjcExtensionsSetEnabledParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.extensions_set_enabled(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_skills_set_enabled(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["skillId", "enabled"])?;
+		let parsed: crate::protocol::GjcSkillsSetEnabledParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.skills_set_enabled(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_plugins_set_enabled(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["pluginId", "enabled"])?;
+		let parsed: crate::protocol::GjcPluginsSetEnabledParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.plugins_set_enabled(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_plugins_set_feature(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["pluginId", "feature", "enabled"])?;
+		let parsed: crate::protocol::GjcPluginsSetFeatureParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.plugins_set_feature(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
+	async fn handle_gjc_plugins_set_setting(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(method, params.as_ref(), &["pluginId", "key", "value"])?;
+		let parsed: crate::protocol::GjcPluginsSetSettingParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		serde_json::to_value(self.factory.plugins_set_setting(parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
 	async fn handle_gjc_messages_get(
 		&self,
 		method: &str,
@@ -1484,6 +2234,24 @@ impl AppServer {
 		backend.set_model(&ctx, &provider, &model_id).await
 	}
 
+	async fn handle_gjc_model_assign(
+		&self,
+		method: &str,
+		params: Option<serde_json::Value>,
+	) -> Result<serde_json::Value> {
+		crate::field_policy::enforce(
+			method,
+			params.as_ref(),
+			&["threadId", "role", "provider", "modelId", "thinkingLevel"],
+		)?;
+		let thread_id = extract_thread_id(params.as_ref())?;
+		let parsed: crate::protocol::GjcModelAssignParams =
+			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
+				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
+		let (backend, ctx) = self.backend_and_ctx(&thread_id, Lane::Mutating)?;
+		serde_json::to_value(backend.model_assign(&ctx, parsed).await?)
+			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
+	}
 	async fn handle_gjc_todos_set(
 		&self,
 		method: &str,
@@ -1617,32 +2385,49 @@ impl AppServer {
 		info: crate::backend::BackendHandleInfo,
 		backend: Arc<dyn AgentBackend>,
 	) -> serde_json::Value {
-		let identity = ThreadIdentity::new(info.thread_id.clone(), info.session_metadata.clone());
-		let generation = identity.generation;
-		let forked_from = identity
-			.metadata
+		let forked_from = info
+			.session_metadata
 			.forked_from_id
 			.as_ref()
 			.map(|t| t.0.clone());
-		let stream = ThreadStream::new(info.thread_id.clone());
-		self.threads.insert(
-			info.thread_id.clone(),
-			ThreadEntry {
-				identity: Mutex::new(identity),
-				backend,
-				admission: Mutex::new(Admission::new(
-					self.config.max_inflight_turns_per_thread,
-					self.config.max_queued_mutations_per_thread,
-				)),
-				stream: Mutex::new(stream),
-				active_turn: Mutex::new(None),
-				mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
-				host_tools: Mutex::new(HostToolRegistry::default()),
-				workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
-				unattended: Mutex::new(crate::unattended::UnattendedController::default()),
-				host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
-			},
-		);
+		let generation = if let Some(mut entry) = self.threads.get_mut(&info.thread_id) {
+			let mut identity = entry.identity.lock();
+			identity.metadata = info.session_metadata.clone();
+			let generation = identity.reattach();
+			identity.status = ThreadStatus::Idle;
+			drop(identity);
+			entry.backend = backend;
+			*entry.admission.lock() = Admission::new(
+				self.config.max_inflight_turns_per_thread,
+				self.config.max_queued_mutations_per_thread,
+			);
+			*entry.stream.lock() = ThreadStream::new(info.thread_id.clone());
+			*entry.active_turn.lock() = None;
+			generation
+		} else {
+			let identity = ThreadIdentity::new(info.thread_id.clone(), info.session_metadata.clone());
+			let generation = identity.generation;
+			let stream = ThreadStream::new(info.thread_id.clone());
+			self.threads.insert(
+				info.thread_id.clone(),
+				ThreadEntry {
+					identity: Mutex::new(identity),
+					backend,
+					admission: Mutex::new(Admission::new(
+						self.config.max_inflight_turns_per_thread,
+						self.config.max_queued_mutations_per_thread,
+					)),
+					stream: Mutex::new(stream),
+					active_turn: Mutex::new(None),
+					mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
+					host_tools: Mutex::new(HostToolRegistry::default()),
+					workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
+					unattended: Mutex::new(crate::unattended::UnattendedController::default()),
+					host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
+				},
+			);
+			generation
+		};
 		let mut thread = serde_json::json!({
 			"id": info.thread_id.0,
 			"status": "idle",
@@ -1782,15 +2567,7 @@ impl AppServer {
 		// Accept the turn now: mint a Rust-owned turn id, record it as active,
 		// seed the event mapper so `turn/started` reuses it, and set Running —
 		// all BEFORE the long-running prompt so the response precedes streaming.
-		let turn_id = TurnId::generate();
-		let started = {
-			let Some(entry) = self.threads.get(&thread_id) else {
-				return Err(AppServerError::not_found("thread not found"));
-			};
-			*entry.value().active_turn.lock() = Some(turn_id.clone());
-			entry.value().identity.lock().status = ThreadStatus::Running;
-			entry.value().stream.lock().begin_turn(turn_id.clone())
-		};
+		let (turn_id, started) = self.begin_registered_turn(&thread_id)?;
 		for note in started {
 			self.publish(note);
 		}
@@ -1823,25 +2600,7 @@ impl AppServer {
 					payload: serde_json::json!({ "message": err.to_string() }),
 				});
 			}
-			if let Some(entry) = this.threads.get(&bg_thread) {
-				let remaining = {
-					let mut adm = entry.value().admission.lock();
-					adm.complete_turn();
-					adm.inflight_turns()
-				};
-				{
-					let mut active = entry.value().active_turn.lock();
-					if active.as_ref() == Some(&bg_turn) {
-						*active = None;
-					}
-				}
-				if remaining == 0 {
-					let mut identity = entry.value().identity.lock();
-					if matches!(identity.status, ThreadStatus::Running) {
-						identity.status = ThreadStatus::Idle;
-					}
-				}
-			}
+			this.complete_registered_turn(&bg_thread, &bg_turn, bg_ctx.generation);
 		});
 
 		Ok(serde_json::json!({ "turn": { "id": turn_id.0, "status": "inProgress" } }))
@@ -1918,10 +2677,14 @@ fn is_serialized_mutation(method: &str) -> bool {
 			| "thread/shellCommand"
 			| "gjc/compact"
 			| "gjc/model/set"
+			| "gjc/model/assign"
 			| "gjc/todos/set"
 			| "turn/steer"
 			| "gjc/hostUriSchemes/set"
 			| "gjc/hostUris/result"
+			| "gjc/session/navigate"
+			| "gjc/session/move"
+			| "gjc/session/label"
 	)
 }
 
@@ -1942,7 +2705,9 @@ mod tests {
 	use super::*;
 	use crate::{backend::BackendHandleInfo, identity::SessionMetadata, ids::BackendGeneration};
 
-	struct SlowBackend;
+	struct SlowBackend {
+		retry_fails: bool,
+	}
 
 	#[async_trait]
 	impl AgentBackend for SlowBackend {
@@ -1959,6 +2724,13 @@ mod tests {
 			Ok(())
 		}
 
+		async fn retry(&self, _c: &BackendCallContext) -> Result<TurnId> {
+			if self.retry_fails {
+				return Err(AppServerError::new(crate::error::codes::INTERNAL_ERROR, "retry failed"));
+			}
+			tokio::time::sleep(Duration::from_millis(40)).await;
+			Ok(TurnId::generate())
+		}
 		async fn get_state(
 			&self,
 			_c: &BackendCallContext,
@@ -2043,7 +2815,38 @@ mod tests {
 				generation: BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
-			Ok((info, Arc::new(SlowBackend)))
+			Ok((info, Arc::new(SlowBackend { retry_fails: false })))
+		}
+
+		async fn resume_thread(
+			&self,
+			p: serde_json::Value,
+		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+			self.create_thread(p).await
+		}
+
+		async fn fork_thread(
+			&self,
+			p: serde_json::Value,
+		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+			self.create_thread(p).await
+		}
+	}
+
+	struct ErrorRetryFactory;
+
+	#[async_trait]
+	impl BackendFactory for ErrorRetryFactory {
+		async fn create_thread(
+			&self,
+			_p: serde_json::Value,
+		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
+			let info = BackendHandleInfo {
+				thread_id: ThreadId::generate(),
+				generation: BackendGeneration::FIRST,
+				session_metadata: SessionMetadata::default(),
+			};
+			Ok((info, Arc::new(SlowBackend { retry_fails: true })))
 		}
 
 		async fn resume_thread(
@@ -2188,6 +2991,13 @@ mod tests {
 		(s, sink)
 	}
 
+	fn server_with_retry_error() -> Arc<AppServer> {
+		Arc::new(AppServer::new(
+			Arc::new(ErrorRetryFactory),
+			AppServerConfig::default(),
+			Arc::new(CollectingSink::default()),
+		))
+	}
 	async fn init_conn(s: &Arc<AppServer>) -> ConnectionId {
 		let conn = s.open_connection();
 		let init = crate::jsonrpc::parse_inbound(
@@ -2779,6 +3589,52 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn gjc_retry_records_active_turn_and_allows_interrupt() {
+		let s = server();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":134,"method":"gjc/retry","params":{{"threadId":"{}"}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none());
+		let turn_id = resp.result.unwrap()["turnId"].as_str().unwrap().to_string();
+
+		let entry = s.threads.get(&t).unwrap();
+		assert_eq!(*entry.value().active_turn.lock(), Some(TurnId(turn_id.clone())));
+		assert_eq!(entry.value().identity.lock().status, ThreadStatus::Running);
+
+		let interrupt = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":135,"method":"turn/interrupt","params":{{"threadId":"{}","turnId":"{}"}}}}"#,
+			t.0, turn_id
+		))
+		.unwrap();
+		let interrupt_resp = s.dispatch(&conn, interrupt).await.unwrap();
+		assert!(interrupt_resp.error.is_none());
+	}
+
+	#[tokio::test]
+	async fn gjc_retry_error_path_releases_turn_state() {
+		let s = server_with_retry_error();
+		let conn = init_conn(&s).await;
+		let t = start_thread(&s, &conn).await;
+		let req = crate::jsonrpc::parse_inbound(&format!(
+			r#"{{"id":136,"method":"gjc/retry","params":{{"threadId":"{}"}}}}"#,
+			t.0
+		))
+		.unwrap();
+		let resp = s.dispatch(&conn, req).await.unwrap();
+		assert!(resp.error.is_none());
+		tokio::time::sleep(Duration::from_millis(10)).await;
+
+		let entry = s.threads.get(&t).unwrap();
+		assert_eq!(*entry.value().active_turn.lock(), None);
+		assert_eq!(entry.value().identity.lock().status, ThreadStatus::Idle);
+	}
+
+	#[tokio::test]
 	async fn turn_start_rejects_mismatched_expected_turn_id() {
 		let s = server();
 		let conn = init_conn(&s).await;
@@ -2931,6 +3787,12 @@ mod tests {
 
 		// The mutating lane must have serialized them: never two in exec at once.
 		assert_eq!(gauge.max_inflight.load(std::sync::atomic::Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn gjc_session_navigate_and_label_are_serialized_mutations() {
+		assert!(is_serialized_mutation("gjc/session/navigate"));
+		assert!(is_serialized_mutation("gjc/session/label"));
 	}
 	#[tokio::test]
 	async fn host_uri_preflight_denies_before_emitting_requests() {

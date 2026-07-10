@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { classifyBadge, commandInsertText, fuzzyFilter, resolveClassification, type PaletteCommand } from "./command-palette-logic";
+import {
+	classifyBadge,
+	commandInsertText,
+	fuzzyFilter,
+	type PaletteCommand,
+	resolveClassification,
+} from "./command-palette-logic";
 
 describe("command palette logic", () => {
 	test("fuzzyFilter matches case-insensitive subsequences and ranks compact matches before names", () => {
@@ -22,11 +28,17 @@ describe("command palette logic", () => {
 	});
 
 	test("theme command is deferred until appearance API exists", () => {
-		expect(classifyBadge(resolveClassification({ name: "theme", source: "builtin" }))).toEqual({ label: "soon", disabled: true });
+		expect(classifyBadge(resolveClassification({ name: "theme", source: "builtin" }))).toEqual({
+			label: "soon",
+			disabled: true,
+		});
 	});
 
 	test("retry command is deferred until a retry seam exists", () => {
-		expect(classifyBadge(resolveClassification({ name: "retry", source: "builtin" }))).toEqual({ label: "soon", disabled: true });
+		expect(classifyBadge(resolveClassification({ name: "retry", source: "builtin" }))).toEqual({
+			label: "soon",
+			disabled: true,
+		});
 	});
 
 	test("commandInsertText formats slash command prompts", () => {
@@ -35,7 +47,10 @@ describe("command palette logic", () => {
 
 	test("selecting a command inserts prompt text without a backend call", () => {
 		const calls: string[] = [];
-		const backend = { gjcCommandsList: () => calls.push("gjcCommandsList"), turnStart: () => calls.push("turnStart") };
+		const backend = {
+			gjcCommandsList: () => calls.push("gjcCommandsList"),
+			turnStart: () => calls.push("turnStart"),
+		};
 		const command: PaletteCommand = { name: "help", source: "core", classification: "prompt-display-only" };
 		let inserted = "";
 

@@ -65,3 +65,19 @@ These production transports and migrations are in progress. The implemented foun
 The protocol schema is generated from Rust with `schemars`. The `gjc-app-server-schema` binary writes the committed bundle at `schemas/app-server.schema.json`, and the repository `generate-schemas` / `check:schemas` tasks include that binary so schema drift fails the normal schema gate.
 
 The Rust DTOs are the schema source of truth. New protocol methods and events should land in the Rust types first, update `schemas/app-server.schema.json`, and add focused conformance coverage before being documented as implemented.
+
+## Adding a new strict `gjc/*` method
+
+Use `gjc/context/read` as the template for deferred GUI rows that need a new backend API:
+
+1. Define Rust DTOs first in `crates/gjc-app-server/src/protocol.rs`; params use `#[serde(rename_all = "camelCase", deny_unknown_fields)]` and contain only capability-specific fields such as `threadId`.
+2. Register every DTO plus a `methodCatalog` row in `crates/gjc-app-server/src/schema.rs`; `schemas/app-server.schema.json` is generated only.
+3. Add a dispatch arm and strict handler in `crates/gjc-app-server/src/server.rs`; call `field_policy::enforce`, resolve `BackendCallContext`, and return typed DTOs.
+4. Add a capability-specific method to `AgentBackend` in `crates/gjc-app-server/src/backend.rs`; do not route new features through generic command execution, raw request strings, or TUI-handler replay.
+5. Classify admission in `crates/gjc-app-server/src/scheduler.rs`; read-only snapshots such as `gjc/context/read` use `Lane::Read`, not the turn/mutating lane.
+6. Bridge the backend call in `crates/pi-natives/src/app_server.rs` with a named call such as `readContext` and deserialize into the Rust DTO.
+7. Implement the TypeScript host in `packages/coding-agent/src/modes/app-server/agent-session-host.ts` against real `AgentSession` state owners; expose only token-safe/status-safe values and never provider keys, API keys, prompts, or raw logs.
+8. Regenerate schema (`cargo run -p gjc-app-server --bin gjc-app-server-schema` or the repo schema task) and regenerate the client (`bun --cwd=packages/gjc-app-server-client run generate`).
+9. Update `packages/gjc-app-server-client/src/client.ts` with the request-map entry and wrapper if the generator does not emit wrappers.
+10. Add focused tests: Rust conformance for unknown-field rejection, lane classification, catalog/schema registration; client wrapper/drift coverage; and a TypeScript host test with a fake session.
+11. Update the parity matrix row with method name, DTO owner, wrapper status, tests, and evidence after the checks pass.

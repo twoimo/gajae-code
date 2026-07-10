@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ServerNotificationEnvelope } from "@gajae-code/app-server-client";
-import { appendLocalUserMessage, cleanAssistantText, emptyTranscriptState, foldNotification, markApproval, upsertThread } from "./transcript";
+import {
+	appendLocalUserMessage,
+	cleanAssistantText,
+	emptyTranscriptState,
+	foldNotification,
+	markApproval,
+	type TranscriptState,
+	upsertThread,
+} from "./transcript";
 
 const streamingFixture: ServerNotificationEnvelope[] = [
 	{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-1", seq: 1 } },
@@ -25,7 +33,6 @@ const toolFixture: ServerNotificationEnvelope[] = [
 		},
 	},
 ];
-
 
 describe("assistant text cleanup", () => {
 	test("strips inline nested tool JSON carrying the _i marker", () => {
@@ -179,12 +186,23 @@ describe("transcript event folding", () => {
 	test("delta before start carries active turn id and turn completion finalizes it", () => {
 		const folded = [
 			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-delta", seq: 50 } },
-			{ method: "item/agentMessage/delta", params: { threadId: "thread-1", itemId: "late-start", delta: "early", seq: 51 } },
-			{ method: "turn/completed", params: { threadId: "thread-1", turnId: "turn-delta", status: "completed", seq: 52 } },
+			{
+				method: "item/agentMessage/delta",
+				params: { threadId: "thread-1", itemId: "late-start", delta: "early", seq: 51 },
+			},
+			{
+				method: "turn/completed",
+				params: { threadId: "thread-1", turnId: "turn-delta", status: "completed", seq: 52 },
+			},
 		] satisfies ServerNotificationEnvelope[];
 
 		const state = folded.reduce(foldNotification, emptyTranscriptState());
-		expect(state.items[0]).toMatchObject({ id: "late-start", turnId: "turn-delta", status: "completed", content: "early" });
+		expect(state.items[0]).toMatchObject({
+			id: "late-start",
+			turnId: "turn-delta",
+			status: "completed",
+			content: "early",
+		});
 	});
 
 	test("raw tool end attaches to host tool card id by callId", () => {
@@ -192,7 +210,14 @@ describe("transcript event folding", () => {
 			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-tool", seq: 60 } },
 			{
 				method: "gjc/hostTools/call",
-				params: { threadId: "thread-1", turnId: "turn-tool", callId: "call-raw", generation: 1, tool: "bash", args: { command: "pwd" } },
+				params: {
+					threadId: "thread-1",
+					turnId: "turn-tool",
+					callId: "call-raw",
+					generation: 1,
+					tool: "bash",
+					args: { command: "pwd" },
+				},
 			},
 			{
 				method: "gjc/event",
@@ -216,7 +241,10 @@ describe("transcript event folding", () => {
 	test("stale unknown-thread item event is ignored", () => {
 		const state = [
 			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-known", seq: 70 } },
-			{ method: "item/started", params: { threadId: "ghost", itemId: "ghost-item", itemType: "agentMessage", seq: 71 } },
+			{
+				method: "item/started",
+				params: { threadId: "ghost", itemId: "ghost-item", itemType: "agentMessage", seq: 71 },
+			},
 		] satisfies ServerNotificationEnvelope[];
 
 		const folded = state.reduce(foldNotification, emptyTranscriptState());
@@ -226,7 +254,10 @@ describe("transcript event folding", () => {
 	test("user echo dedup matches by role and content within active thread", () => {
 		const fixture = [
 			{ method: "turn/started", params: { threadId: "thread-1", turnId: "turn-echo", seq: 80 } },
-			{ method: "item/started", params: { threadId: "thread-1", itemId: "echo-a", itemType: "agentMessage", seq: 81 } },
+			{
+				method: "item/started",
+				params: { threadId: "thread-1", itemId: "echo-a", itemType: "agentMessage", seq: 81 },
+			},
 			{
 				method: "gjc/event",
 				params: {
@@ -273,9 +304,9 @@ describe("transcript event folding", () => {
 					seq: 43,
 				},
 			},
-		] satisfies ServerNotificationEnvelope[];
+		] as unknown as ServerNotificationEnvelope[];
 
-		const folded = fixture.reduce(foldNotification, emptyTranscriptState());
+		const folded = fixture.reduce<TranscriptState>(foldNotification, emptyTranscriptState());
 		const card = folded.items.find(item => item.id === "call-9");
 		expect(card).toBeDefined();
 		expect(card?.role).toBe("tool");
@@ -355,7 +386,10 @@ describe("transcript event folding", () => {
 					content: "hello",
 				},
 			},
-			{ method: "gjc/hostUris/cancel", params: { threadId: "thread-1", turnId: "turn-host-uri", requestId: "uri-2", generation: 2 } },
+			{
+				method: "gjc/hostUris/cancel",
+				params: { threadId: "thread-1", turnId: "turn-host-uri", requestId: "uri-2", generation: 2 },
+			},
 		] satisfies ServerNotificationEnvelope[];
 
 		const folded = state.reduce(foldNotification, emptyTranscriptState());
@@ -439,16 +473,22 @@ describe("transcript event folding", () => {
 	});
 
 	test("known inactive thread events do not mutate the active thread turn or items", () => {
-		const known = upsertThread(
-			upsertThread(emptyTranscriptState(), { id: "thread-1", status: "running" }),
-			{ id: "thread-2", status: "running" },
-		);
+		const known = upsertThread(upsertThread(emptyTranscriptState(), { id: "thread-1", status: "running" }), {
+			id: "thread-2",
+			status: "running",
+		});
 		const active = upsertThread(known, { id: "thread-1", status: "running" });
 		const folded = [
 			{ method: "turn/started", params: { threadId: "thread-1", turnId: "active-turn", seq: 100 } },
 			{ method: "turn/started", params: { threadId: "thread-2", turnId: "inactive-turn", seq: 101 } },
-			{ method: "item/agentMessage/delta", params: { threadId: "thread-2", itemId: "inactive-item", delta: "background", seq: 102 } },
-			{ method: "turn/completed", params: { threadId: "thread-2", turnId: "inactive-turn", status: "completed", seq: 103 } },
+			{
+				method: "item/agentMessage/delta",
+				params: { threadId: "thread-2", itemId: "inactive-item", delta: "background", seq: 102 },
+			},
+			{
+				method: "turn/completed",
+				params: { threadId: "thread-2", turnId: "inactive-turn", status: "completed", seq: 103 },
+			},
 		] satisfies ServerNotificationEnvelope[];
 
 		const state = folded.reduce(foldNotification, active);
@@ -471,11 +511,19 @@ describe("transcript event folding", () => {
 					url: "file:///tmp/new.txt",
 				},
 			},
-			{ method: "gjc/hostUris/cancel", params: { threadId: "thread-1", turnId: "turn-host-uri", requestId: "uri-newer", generation: 3 } },
+			{
+				method: "gjc/hostUris/cancel",
+				params: { threadId: "thread-1", turnId: "turn-host-uri", requestId: "uri-newer", generation: 3 },
+			},
 		] satisfies ServerNotificationEnvelope[];
 
 		const folded = fixture.reduce(foldNotification, emptyTranscriptState());
-		expect(folded.approvals[0]).toMatchObject({ kind: "host-uri", id: "uri-newer", generation: 4, status: "pending" });
+		expect(folded.approvals[0]).toMatchObject({
+			kind: "host-uri",
+			id: "uri-newer",
+			generation: 4,
+			status: "pending",
+		});
 	});
 
 	test("optimistically marks host URI resolution", () => {

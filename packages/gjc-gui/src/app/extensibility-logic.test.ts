@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { APPEARANCE_DEFERRED, EXTENSIBILITY_MUTATION_PATHS, fuzzyFilter, groupCounts, type Extension, type Plugin, type Skill } from "./extensibility-logic";
+import {
+	APPEARANCE_DEFERRED,
+	EXTENSIBILITY_MUTATION_PATHS,
+	type Extension,
+	fuzzyFilter,
+	groupCounts,
+	type Plugin,
+	type Skill,
+} from "./extensibility-logic";
 
 const skills: Skill[] = [
 	{ name: "ralplan", source: "bundled", description: "Consensus planning", enabled: true },
@@ -20,7 +28,9 @@ describe("extensibility logic", () => {
 		expect(fuzzyFilter(skills, "rp", skill => skill.name).map(skill => skill.name)).toEqual(["ralplan"]);
 		// Subsequence match ranks the contiguous "git" in plugin.git first; other
 		// subsequence hits may follow, so assert ranking rather than exclusion.
-		expect(fuzzyFilter(plugins, "git", plugin => `${plugin.name} ${plugin.id}`).map(plugin => plugin.id)[0]).toBe("plugin.git");
+		expect(fuzzyFilter(plugins, "git", plugin => `${plugin.name} ${plugin.id}`).map(plugin => plugin.id)[0]).toBe(
+			"plugin.git",
+		);
 		expect(fuzzyFilter(extensions, "missing", extension => extension.name)).toEqual([]);
 	});
 
@@ -33,7 +43,14 @@ describe("extensibility logic", () => {
 		expect(groupCounts({ skills, extensions, plugins })).toEqual({ skills: 2, extensions: 1, plugins: 2, total: 5 });
 	});
 
-	test("pure logic exposes no mutation path", () => {
-		expect(EXTENSIBILITY_MUTATION_PATHS).toEqual([]);
+	test("mutation paths match the frozen contract", () => {
+		expect(EXTENSIBILITY_MUTATION_PATHS).toEqual([
+			"gjc/appearance/set",
+			"gjc/skills/setEnabled",
+			"gjc/extensions/setEnabled",
+			"gjc/plugins/setEnabled",
+			"gjc/plugins/setFeature",
+			"gjc/plugins/setSetting",
+		]);
 	});
 });

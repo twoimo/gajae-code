@@ -1,0 +1,88 @@
+.session-browser {
+	display: grid;
+	gap: var(--gjc-space-8);
+	font-family: var(--gjc-font-ui);
+}
+
+.session-browser__scope {
+	display: flex;
+	gap: var(--gjc-space-6);
+}
+
+.session-browser__scope-button--selected {
+	border-color: var(--gjc-red-claw);
+}
+
+.session-browser__search,
+.session-prompt__input {
+	width: 100%;
+	box-sizing: border-box;
+	border: 1px solid var(--gjc-border);
+	background: var(--gjc-bg);
+	color: var(--gjc-text);
+	font: inherit;
+	padding: var(--gjc-space-6) var(--gjc-space-8);
+}
+
+.session-browser__row {
+	border: 1px solid var(--gjc-border);
+	border-left: 2px solid var(--gjc-red-claw);
+	padding: var(--gjc-space-8);
+}
+
+.session-browser__title {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.session-browser__meta {
+	color: var(--gjc-text-dim);
+	font-size: 11px;
+}
+
+.session-browser__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--gjc-space-6);
+	margin-top: var(--gjc-space-6);
+}
+
+.session-browser__tree {
+	margin: 0;
+	padding: var(--gjc-space-8);
+	border: 1px solid var(--gjc-border);
+	background: var(--gjc-bg);
+	color: var(--gjc-text);
+	font: inherit;
+}
+
+.session-browser__tree-row {
+	display: flex;
+	align-items: center;
+	gap: var(--gjc-space-6);
+	min-height: 32px;
+}
+
+.session-browser__tree-node,
+.session-browser__tree-label {
+	min-height: 32px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+}
+
+.session-browser__tree-node {
+	flex: 1;
+	text-align: left;
+	white-space: pre;
+}
+
+.session-browser__tree-row[aria-selected="true"] .session-browser__tree-node {
+	border-color: var(--gjc-red-claw);
+}
+
+.session-browser__tree-label {
+	color: var(--gjc-text-dim);
+}

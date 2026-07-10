@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { DEFERRED_MODEL_SURFACES, parseModelLabel, validateModelInput } from "./model-panel-logic";
 
 type ModelPanelProps = {
@@ -53,7 +53,9 @@ export function ModelPanel({ currentModel, disabled, onApply }: ModelPanelProps)
 					placeholder="claude-sonnet-4"
 				/>
 				<p id="model-panel-hint" className={`model-panel__hint ${validation.ok ? "" : "model-panel__hint--error"}`}>
-					{disabled ? "Connect and select a thread before setting a model." : validation.error ?? "Calls existing gjc/model/set only."}
+					{disabled
+						? "Connect and select a thread before setting a model."
+						: (validation.error ?? "Calls existing gjc/model/set only.")}
 				</p>
 				<button className="primary-action" type="submit" disabled={!canApply}>
 					Apply

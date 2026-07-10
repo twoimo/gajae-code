@@ -28,6 +28,31 @@ export interface AppServerHost {
 	createThread(params: unknown): Promise<CreatedThread>;
 	resumeThread(params: unknown): Promise<CreatedThread>;
 	forkThread(params: unknown): Promise<CreatedThread>;
+	settingsSchema?(): Promise<unknown>;
+	settingsRead?(): Promise<unknown>;
+	settingsUpdate?(params: unknown): Promise<unknown>;
+	appearanceThemesList?(): Promise<unknown>;
+	appearanceRead?(): Promise<unknown>;
+	appearanceSet?(params: unknown): Promise<unknown>;
+	providerList?(): Promise<unknown>;
+	providerAdd?(params: unknown): Promise<unknown>;
+	authStatus?(): Promise<unknown>;
+	authLogout?(params: unknown): Promise<unknown>;
+	authLoginStart?(params: unknown): Promise<unknown>;
+	authLoginPoll?(params: unknown): Promise<unknown>;
+	authLoginComplete?(params: unknown): Promise<unknown>;
+	authLoginCancel?(params: unknown): Promise<unknown>;
+	sessionList?(params: unknown): Promise<unknown>;
+	sessionSearch?(params: unknown): Promise<unknown>;
+	sessionRename?(params: unknown): Promise<unknown>;
+	sessionOpen?(params: unknown): Promise<unknown>;
+	sessionDelete?(params: unknown): Promise<unknown>;
+	sessionExport?(params: unknown): Promise<unknown>;
+	extensionsSetEnabled?(params: unknown): Promise<unknown>;
+	skillsSetEnabled?(params: unknown): Promise<unknown>;
+	pluginsSetEnabled?(params: unknown): Promise<unknown>;
+	pluginsSetFeature?(params: unknown): Promise<unknown>;
+	pluginsSetSetting?(params: unknown): Promise<unknown>;
 	/** Satisfy one backend method call (e.g. `prompt`, `steer`, `getState`). */
 	backendCall(threadId: string, method: string, params: unknown, generation?: number): Promise<unknown>;
 	/** Satisfy one token-free notifications channel call (e.g. `reply`, `subscribe`). */
@@ -96,6 +121,81 @@ export function startAppServer(host: AppServerHost, options: StartAppServerOptio
 				resolveOk(call.callId, await host.resumeThread(call.params));
 			} else if (call.kind === "factory.fork") {
 				resolveOk(call.callId, await host.forkThread(call.params));
+			} else if (call.kind === "factory.settingsSchema") {
+				if (!host.settingsSchema) throw new Error("settings schema is not supported by this host");
+				resolveOk(call.callId, await host.settingsSchema());
+			} else if (call.kind === "factory.settingsRead") {
+				if (!host.settingsRead) throw new Error("settings read is not supported by this host");
+				resolveOk(call.callId, await host.settingsRead());
+			} else if (call.kind === "factory.settingsUpdate") {
+				if (!host.settingsUpdate) throw new Error("settings update is not supported by this host");
+				resolveOk(call.callId, await host.settingsUpdate(call.params));
+			} else if (call.kind === "factory.appearanceThemesList") {
+				if (!host.appearanceThemesList) throw new Error("appearance theme list is not supported by this host");
+				resolveOk(call.callId, await host.appearanceThemesList());
+			} else if (call.kind === "factory.appearanceRead") {
+				if (!host.appearanceRead) throw new Error("appearance read is not supported by this host");
+				resolveOk(call.callId, await host.appearanceRead());
+			} else if (call.kind === "factory.appearanceSet") {
+				if (!host.appearanceSet) throw new Error("appearance set is not supported by this host");
+				resolveOk(call.callId, await host.appearanceSet(call.params));
+			} else if (call.kind === "factory.providerList") {
+				if (!host.providerList) throw new Error("provider list is not supported by this host");
+				resolveOk(call.callId, await host.providerList());
+			} else if (call.kind === "factory.providerAdd") {
+				if (!host.providerAdd) throw new Error("provider add is not supported by this host");
+				resolveOk(call.callId, await host.providerAdd(call.params));
+			} else if (call.kind === "factory.authStatus") {
+				if (!host.authStatus) throw new Error("auth status is not supported by this host");
+				resolveOk(call.callId, await host.authStatus());
+			} else if (call.kind === "factory.authLogout") {
+				if (!host.authLogout) throw new Error("auth logout is not supported by this host");
+				resolveOk(call.callId, await host.authLogout(call.params));
+			} else if (call.kind === "factory.authLoginStart") {
+				if (!host.authLoginStart) throw new Error("auth login start is not supported by this host");
+				resolveOk(call.callId, await host.authLoginStart(call.params));
+			} else if (call.kind === "factory.authLoginPoll") {
+				if (!host.authLoginPoll) throw new Error("auth login poll is not supported by this host");
+				resolveOk(call.callId, await host.authLoginPoll(call.params));
+			} else if (call.kind === "factory.authLoginComplete") {
+				if (!host.authLoginComplete) throw new Error("auth login complete is not supported by this host");
+				resolveOk(call.callId, await host.authLoginComplete(call.params));
+			} else if (call.kind === "factory.authLoginCancel") {
+				if (!host.authLoginCancel) throw new Error("auth login cancel is not supported by this host");
+				resolveOk(call.callId, await host.authLoginCancel(call.params));
+			} else if (call.kind === "factory.sessionList") {
+				if (!host.sessionList) throw new Error("session list is not supported by this host");
+				resolveOk(call.callId, await host.sessionList(call.params));
+			} else if (call.kind === "factory.sessionSearch") {
+				if (!host.sessionSearch) throw new Error("session search is not supported by this host");
+				resolveOk(call.callId, await host.sessionSearch(call.params));
+			} else if (call.kind === "factory.sessionOpen") {
+				if (!host.sessionOpen) throw new Error("session open is not supported by this host");
+				resolveOk(call.callId, await host.sessionOpen(call.params));
+			} else if (call.kind === "factory.sessionRename") {
+				if (!host.sessionRename) throw new Error("session rename is not supported by this host");
+				resolveOk(call.callId, await host.sessionRename(call.params));
+			} else if (call.kind === "factory.sessionDelete") {
+				if (!host.sessionDelete) throw new Error("session delete is not supported by this host");
+				resolveOk(call.callId, await host.sessionDelete(call.params));
+			} else if (call.kind === "factory.sessionExport") {
+				if (!host.sessionExport) throw new Error("session export is not supported by this host");
+				resolveOk(call.callId, await host.sessionExport(call.params));
+			} else if (call.kind === "factory.extensionsSetEnabled") {
+				if (!host.extensionsSetEnabled) throw new Error("extensions set enabled is not supported by this host");
+				resolveOk(call.callId, await host.extensionsSetEnabled(call.params));
+			} else if (call.kind === "factory.skillsSetEnabled") {
+				if (!host.skillsSetEnabled) throw new Error("skills set enabled is not supported by this host");
+				resolveOk(call.callId, await host.skillsSetEnabled(call.params));
+			} else if (call.kind === "factory.pluginsSetEnabled") {
+				if (!host.pluginsSetEnabled) throw new Error("plugins set enabled is not supported by this host");
+				resolveOk(call.callId, await host.pluginsSetEnabled(call.params));
+			} else if (call.kind === "factory.pluginsSetFeature") {
+				if (!host.pluginsSetFeature) throw new Error("plugins set feature is not supported by this host");
+				resolveOk(call.callId, await host.pluginsSetFeature(call.params));
+			} else if (call.kind === "factory.pluginsSetSetting") {
+				if (!host.pluginsSetSetting) throw new Error("plugins set setting is not supported by this host");
+				resolveOk(call.callId, await host.pluginsSetSetting(call.params));
 			} else if (call.kind.startsWith("backend.")) {
 				const method = call.kind.slice("backend.".length);
 				resolveOk(call.callId, await host.backendCall(call.threadId ?? "", method, call.params, call.generation));

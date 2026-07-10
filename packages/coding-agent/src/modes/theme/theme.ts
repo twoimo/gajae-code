@@ -1606,6 +1606,55 @@ export async function getAvailableThemesWithPaths(): Promise<ThemeInfo[]> {
 	return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export type AppearanceSemanticPreview = {
+	bg: string;
+	bgElevated: string;
+	surface: string;
+	border: string;
+	text: string;
+	textMuted: string;
+	accent: string;
+	success: string;
+	warning: string;
+	danger: string;
+};
+
+export type AppearanceThemeCatalogEntry = {
+	id: string;
+	kind: "dark" | "light";
+	semanticPreview: AppearanceSemanticPreview;
+	builtin: boolean;
+};
+
+function semanticPreviewFromResolved(colors: Record<string, string>): AppearanceSemanticPreview {
+	return {
+		bg: colors.userMessageBg ?? colors.toolBg ?? "#000000",
+		bgElevated: colors.assistantMessageBg ?? colors.toolBg ?? colors.userMessageBg ?? "#111111",
+		surface: colors.toolBg ?? colors.userMessageBg ?? "#111111",
+		border: colors.border ?? "#444444",
+		text: colors.text ?? "#e5e5e7",
+		textMuted: colors.muted ?? colors.dim ?? "#888888",
+		accent: colors.accent ?? "#7aa2f7",
+		success: colors.success ?? colors.toolDiffAdded ?? "#22c55e",
+		warning: colors.warning ?? "#f59e0b",
+		danger: colors.error ?? colors.toolDiffRemoved ?? "#ef4444",
+	};
+}
+
+export async function getAppearanceThemeCatalog(): Promise<AppearanceThemeCatalogEntry[]> {
+	const infos = await getAvailableThemesWithPaths();
+	return Promise.all(infos.map(async info => {
+		const themeJson = await loadThemeJson(info.name);
+		const semanticPreview = semanticPreviewFromResolved(await getResolvedThemeColors(info.name));
+		return {
+			id: info.name,
+			kind: isThemeJsonLight(themeJson) ? "light" : "dark",
+			semanticPreview,
+			builtin: info.path === undefined,
+		};
+	}));
+}
+
 async function loadThemeJson(name: string): Promise<ThemeJson> {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {

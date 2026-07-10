@@ -113,7 +113,13 @@ function renderBlock(block: Block, key: number): ReactNode {
 	}
 	if (block.kind === "list") {
 		const Tag = block.ordered ? "ol" : "ul";
-		return <Tag key={key}>{block.items.map((item, index) => <li key={index}>{renderInline(item)}</li>)}</Tag>;
+		return (
+			<Tag key={key}>
+				{block.items.map((item, index) => (
+					<li key={index}>{renderInline(item)}</li>
+				))}
+			</Tag>
+		);
 	}
 	if (block.kind === "blockquote") return <blockquote key={key}>{renderInline(block.text)}</blockquote>;
 	if (block.kind === "hr") return <hr key={key} />;
@@ -124,7 +130,12 @@ function renderInline(text: string): ReactNode[] {
 	return renderInlineRange(text, 0, text.length, 0).nodes;
 }
 
-function renderInlineRange(text: string, start: number, end: number, seed: number): { nodes: ReactNode[]; key: number } {
+function renderInlineRange(
+	text: string,
+	start: number,
+	end: number,
+	seed: number,
+): { nodes: ReactNode[]; key: number } {
 	const nodes: ReactNode[] = [];
 	let index = start;
 	let key = seed;
@@ -136,10 +147,16 @@ function renderInlineRange(text: string, start: number, end: number, seed: numbe
 		}
 		if (marker.start > index) nodes.push(text.slice(index, marker.start));
 		const currentKey = key++;
-		if (marker.kind === "code") nodes.push(<code key={currentKey}>{text.slice(marker.start + 1, marker.end - 1)}</code>);
-		else if (marker.kind === "strong") nodes.push(<strong key={currentKey}>{renderInlineRange(text, marker.start + 2, marker.end - 2, key).nodes}</strong>);
-		else if (marker.kind === "strike") nodes.push(<del key={currentKey}>{renderInlineRange(text, marker.start + 2, marker.end - 2, key).nodes}</del>);
-		else if (marker.kind === "em") nodes.push(<em key={currentKey}>{renderInlineRange(text, marker.start + 1, marker.end - 1, key).nodes}</em>);
+		if (marker.kind === "code")
+			nodes.push(<code key={currentKey}>{text.slice(marker.start + 1, marker.end - 1)}</code>);
+		else if (marker.kind === "strong")
+			nodes.push(
+				<strong key={currentKey}>{renderInlineRange(text, marker.start + 2, marker.end - 2, key).nodes}</strong>,
+			);
+		else if (marker.kind === "strike")
+			nodes.push(<del key={currentKey}>{renderInlineRange(text, marker.start + 2, marker.end - 2, key).nodes}</del>);
+		else if (marker.kind === "em")
+			nodes.push(<em key={currentKey}>{renderInlineRange(text, marker.start + 1, marker.end - 1, key).nodes}</em>);
 		else nodes.push(renderLink(text.slice(marker.start, marker.end), currentKey));
 		index = marker.end;
 	}
@@ -170,7 +187,8 @@ function nextInlineMarker(text: string, start: number, end: number): InlineMarke
 		if (char === "[") {
 			const labelEnd = text.indexOf("](", index + 1);
 			const hrefEnd = labelEnd >= 0 ? text.indexOf(")", labelEnd + 2) : -1;
-			if (labelEnd > index + 1 && hrefEnd > labelEnd + 2 && hrefEnd < end) return { kind: "link", start: index, end: hrefEnd + 1 };
+			if (labelEnd > index + 1 && hrefEnd > labelEnd + 2 && hrefEnd < end)
+				return { kind: "link", start: index, end: hrefEnd + 1 };
 		}
 	}
 	return undefined;

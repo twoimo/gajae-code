@@ -46,7 +46,9 @@ export function resolveClassification(cmd: PaletteCommand): string | undefined {
 	if (cmd.classification) return cmd.classification;
 	const mapped = COMMAND_CLASSIFICATION[cmd.name];
 	if (mapped) return mapped;
-	return cmd.source === "file" || cmd.source === "skill" || cmd.source === "extension" ? "prompt-display-only" : undefined;
+	return cmd.source === "file" || cmd.source === "skill" || cmd.source === "extension"
+		? "prompt-display-only"
+		: undefined;
 }
 
 type RankedItem<T> = {

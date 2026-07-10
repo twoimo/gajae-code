@@ -22,7 +22,9 @@ describe("markdown renderer", () => {
 
 	test("renders inline bold, italic, code, links, and fenced code", () => {
 		const html = renderToStaticMarkup(
-			createElement(Markdown, { text: '**bold** *ital* `code` [site](https://example.com)\n\n```ts\nconst x = 1;\n```' }),
+			createElement(Markdown, {
+				text: "**bold** *ital* `code` [site](https://example.com)\n\n```ts\nconst x = 1;\n```",
+			}),
 		);
 
 		expect(html).toContain("<strong>bold</strong>");
@@ -34,7 +36,9 @@ describe("markdown renderer", () => {
 	});
 
 	test("renders blockquote, hr, strikethrough, and nested inline", () => {
-		const html = renderToStaticMarkup(createElement(Markdown, { text: "> **quoted `code`**\n\n---\n\n~~old **bold**~~" }));
+		const html = renderToStaticMarkup(
+			createElement(Markdown, { text: "> **quoted `code`**\n\n---\n\n~~old **bold**~~" }),
+		);
 
 		expect(html).toContain("<blockquote><strong>quoted <code>code</code></strong></blockquote>");
 		expect(html).toContain("<hr/>");
@@ -42,7 +46,9 @@ describe("markdown renderer", () => {
 	});
 
 	test("escapes HTML and refuses unsafe links", () => {
-		const html = renderToStaticMarkup(createElement(Markdown, { text: '<script>x</script> [bad](javascript:alert(1))' }));
+		const html = renderToStaticMarkup(
+			createElement(Markdown, { text: "<script>x</script> [bad](javascript:alert(1))" }),
+		);
 
 		expect(html).toContain("&lt;script&gt;x&lt;/script&gt;");
 		expect(html).not.toContain("javascript:");

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ThreadView } from "./transcript";
 import {
 	cancelConfirm,
 	confirmSessionAction,
@@ -8,6 +7,7 @@ import {
 	openConfirm,
 	removeThread,
 } from "./session-actions-logic";
+import type { ThreadView } from "./transcript";
 
 const threads: ThreadView[] = [
 	{ id: "thread-a", title: "Alpha", status: "idle", lastActivity: "idle" },
@@ -61,7 +61,13 @@ describe("session action helpers", () => {
 	});
 
 	test("deferred session actions list unavailable API-backed features", () => {
-		expect(DEFERRED_SESSION_ACTIONS.map(action => action.name)).toEqual(["Rename", "Move", "Export", "Tree", "Search"]);
+		expect(DEFERRED_SESSION_ACTIONS.map(action => action.name)).toEqual([
+			"Rename",
+			"Move",
+			"Export",
+			"Tree",
+			"Search",
+		]);
 		expect(DEFERRED_SESSION_ACTIONS.every(action => action.rationale.length > 0)).toBe(true);
 	});
 });

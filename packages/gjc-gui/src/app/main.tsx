@@ -12,10 +12,18 @@ import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../design-tokens/index.ts";
+import { CommandPalette } from "./command-palette.tsx";
+import type { PaletteCommand, PaletteTool } from "./command-palette-logic";
+import type { Extension, Plugin, PluginInspection, Skill } from "./extensibility-logic";
+import { ExtensibilityPanel } from "./extensibility-panel.tsx";
+import { Markdown } from "./markdown.tsx";
+import { ModelPanel } from "./model-panel.tsx";
+import { SessionActions } from "./session-actions.tsx";
+import { markThreadArchived, removeThread } from "./session-actions-logic";
 import {
-	cleanAssistantText,
 	type ApprovalGate,
 	appendLocalUserMessage,
+	cleanAssistantText,
 	emptyTranscriptState,
 	foldNotification,
 	markApproval,
@@ -24,19 +32,11 @@ import {
 	type TranscriptState,
 	upsertThread,
 } from "./transcript";
-import { Markdown } from "./markdown.tsx";
 import { lastAssistantText, serializeTranscript } from "./transcript-export-logic";
-import { markThreadArchived, removeThread } from "./session-actions-logic";
-import { SessionActions } from "./session-actions.tsx";
-import { CommandPalette } from "./command-palette.tsx";
-import type { PaletteCommand, PaletteTool } from "./command-palette-logic";
-import { ExtensibilityPanel } from "./extensibility-panel.tsx";
-import type { Extension, Plugin, PluginInspection, Skill } from "./extensibility-logic";
-import { ModelPanel } from "./model-panel.tsx";
 import "./styles.css";
 import { shouldStickToBottom } from "./scroll-follow-logic";
 
-type EndpointDescriptor = { url: string; token: string };
+export type EndpointDescriptor = { url: string; token: string };
 type ConnectionKind = "booting" | "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 type FailureKind =
 	| "origin-rejected"
@@ -46,7 +46,7 @@ type FailureKind =
 	| "server-unavailable"
 	| "unknown";
 
-type ConnectionState = {
+export type ConnectionState = {
 	kind: ConnectionKind;
 	failure?: FailureKind;
 	detail?: string;
@@ -69,7 +69,45 @@ type ExtensibilityData = {
 	error?: string;
 };
 
-type WorkspaceView = "chat" | "extensibility";
+export type WorkspaceView = "chat" | "extensibility";
+
+export type AppHostDeps = {
+	resolveEndpoint(): Promise<EndpointDescriptor>;
+	createClient(options: { webSocketFactory(url: string): WebSocket }): AppServerClient;
+	createWebSocket(url: string): WebSocket;
+	pickDirectory(): Promise<string | null>;
+	clipboard: Pick<Clipboard, "writeText">;
+	storage: Pick<Storage, "getItem" | "setItem">;
+	timers: Pick<typeof globalThis, "setTimeout" | "clearTimeout" | "requestAnimationFrame">;
+};
+
+export type AppInitialState = {
+	connection?: ConnectionState;
+	transcript?: TranscriptState;
+	workspaceView?: WorkspaceView;
+	recentDirectories?: string[];
+	helpOpen?: boolean;
+	workingDirectory?: string;
+};
+
+export function createAppHostDeps(overrides: Partial<AppHostDeps> = {}): AppHostDeps {
+	return {
+		resolveEndpoint,
+		createClient: ({ webSocketFactory }) => new AppServerClient({ webSocketFactory }),
+		createWebSocket: url => new WebSocket(url),
+		pickDirectory: () => invoke<string | null>("pick_directory"),
+		clipboard: navigator.clipboard,
+		storage: localStorage,
+		timers: globalThis,
+		...overrides,
+	};
+}
+
+export function createApp(
+	_options: { deps?: AppHostDeps; autoConnect?: boolean; initialState?: AppInitialState } = {},
+) {
+	return <App />;
+}
 
 const RECENT_DIRECTORIES_KEY = "gjc-gui.recentDirectories";
 const DEFERRED_EXEC_STATE_ROWS = [
@@ -86,14 +124,13 @@ const MAX_RECENT_DIRECTORIES = 8;
 // picked one, matching the TUI's tmp-rooted default session.
 const DEFAULT_CWD = "/tmp";
 
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing #root element");
-
-createRoot(root).render(
-	<StrictMode>
-		<App />
-	</StrictMode>,
-);
+const root = typeof document === "undefined" ? null : document.getElementById("root");
+if (root)
+	createRoot(root).render(
+		<StrictMode>
+			<App />
+		</StrictMode>,
+	);
 
 function App() {
 	const [connection, setConnection] = useState<ConnectionState>({ kind: "booting" });
@@ -102,7 +139,12 @@ function App() {
 	const [composer, setComposer] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [paletteData, setPaletteData] = useState<PaletteData>({ commands: [], tools: [], loading: false });
-	const [extData, setExtData] = useState<ExtensibilityData>({ skills: [], extensions: [], plugins: [], loading: false });
+	const [extData, setExtData] = useState<ExtensibilityData>({
+		skills: [],
+		extensions: [],
+		plugins: [],
+		loading: false,
+	});
 	const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
 	const [workingDirectory, setWorkingDirectory] = useState("");
 	const [recentDirectories, setRecentDirectories] = useState<string[]>(() => readRecentDirectories());
@@ -180,7 +222,6 @@ function App() {
 		};
 	}, [connect]);
 
-
 	const handleTranscriptScroll = useCallback(() => {
 		const element = transcriptRef.current;
 		if (!element) return;
@@ -201,17 +242,17 @@ function App() {
 		[transcript.activeThreadId, transcript.threads],
 	);
 	const activeThreadId = activeThread?.id;
-	const visibleItems = (activeThreadId ? transcript.items.filter(item => item.threadId === activeThreadId) : transcript.items).filter(
-		item => {
-			if (item.role === "tool") return true;
-			if (item.status === "running") return true;
-			const text =
-				item.role === "assistant" || item.role === "reasoning"
-					? cleanAssistantText(item.content ?? "")
-					: (item.content ?? "").trim();
-			return text.length > 0;
-		},
-	);
+	const visibleItems = (
+		activeThreadId ? transcript.items.filter(item => item.threadId === activeThreadId) : transcript.items
+	).filter(item => {
+		if (item.role === "tool") return true;
+		if (item.status === "running") return true;
+		const text =
+			item.role === "assistant" || item.role === "reasoning"
+				? cleanAssistantText(item.content ?? "")
+				: (item.content ?? "").trim();
+		return text.length > 0;
+	});
 	// Group each response into one card: all consecutive thinking / tool /
 	// assistant items (which may span several internal agent turns per user
 	// message) collapse into a single card, with thinking and tools as nested
@@ -292,24 +333,30 @@ function App() {
 		}
 	}, [activeThreadId, client, connected]);
 
-	const inspectExtension = useCallback(async (extensionId: string) => {
-		if (!client || !connected || !activeThreadId) return;
-		try {
-			await client.gjcExtensionsInspect({ extensionId, threadId: activeThreadId });
-		} catch (error) {
-			setExtData(current => ({ ...current, error: errorMessage(error) }));
-		}
-	}, [activeThreadId, client, connected]);
+	const inspectExtension = useCallback(
+		async (extensionId: string) => {
+			if (!client || !connected || !activeThreadId) return;
+			try {
+				await client.gjcExtensionsInspect({ extensionId, threadId: activeThreadId });
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[activeThreadId, client, connected],
+	);
 
-	const inspectPlugin = useCallback(async (pluginId: string) => {
-		if (!client || !connected || !activeThreadId) return;
-		try {
-			const result = await client.gjcPluginsInspect({ pluginId, threadId: activeThreadId });
-			setExtData(current => ({ ...current, pluginInspection: result.plugin ?? undefined, error: undefined }));
-		} catch (error) {
-			setExtData(current => ({ ...current, error: errorMessage(error) }));
-		}
-	}, [activeThreadId, client, connected]);
+	const inspectPlugin = useCallback(
+		async (pluginId: string) => {
+			if (!client || !connected || !activeThreadId) return;
+			try {
+				const result = await client.gjcPluginsInspect({ pluginId, threadId: activeThreadId });
+				setExtData(current => ({ ...current, pluginInspection: result.plugin ?? undefined, error: undefined }));
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[activeThreadId, client, connected],
+	);
 
 	useEffect(() => {
 		if (workspaceView === "extensibility") void loadExtensibilityData();
@@ -406,7 +453,11 @@ function App() {
 				if (transcript.threads.some(thread => thread.id === threadId)) continue;
 				try {
 					const readResult = await sessionClient.threadRead({ threadId });
-					setTranscript(current => (current.threads.some(thread => thread.id === threadId) ? current : upsertThread(current, readResult.thread)));
+					setTranscript(current =>
+						current.threads.some(thread => thread.id === threadId)
+							? current
+							: upsertThread(current, readResult.thread),
+					);
 				} catch (readError) {
 					// Do NOT fabricate a placeholder row on a read/hydration failure — that
 					// would hide a real contract failure. Skip the id (it can be resumed
@@ -511,7 +562,9 @@ function App() {
 			setTranscript(current => ({
 				...current,
 				modelLabel: `${provider}/${modelId}`,
-				threads: current.threads.map(thread => (thread.id === activeThreadId ? { ...thread, modelLabel: `${provider}/${modelId}` } : thread)),
+				threads: current.threads.map(thread =>
+					thread.id === activeThreadId ? { ...thread, modelLabel: `${provider}/${modelId}` } : thread,
+				),
 			}));
 		} catch (error) {
 			setConnection(describeFailure(error));
@@ -535,49 +588,60 @@ function App() {
 		restoreComposerFocus();
 	}
 
-async function resolveHostUri(approval: ApprovalGate, ok: boolean, payload?: { content?: string; contentType?: string }) {
-	if (!client || approval.kind !== "host-uri") return;
-	try {
-		await client.gjcHostUrisResult({
-			threadId: approval.threadId,
-			requestId: approval.id,
-			content: ok ? (payload?.content ?? approval.content ?? "") : undefined,
-			contentType: ok ? (payload?.contentType ?? "text/plain") : undefined,
-			error: ok ? undefined : "Rejected in GJC GUI",
-			isError: ok ? undefined : true,
-		});
-		setTranscript(current => markApproval(current, approval.id, ok ? "approved" : "rejected"));
-	} catch (error) {
-		setConnection(describeFailure(error));
-	}
-	restoreComposerFocus();
-}
-
-
-async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonValue) {
-	if (!client || approval.kind !== "workflow-gate") return;
-	const answer = workflowGateAnswer(approval, selectedValue);
-	if (!answer) {
-		setTranscript(current => markWorkflowGateFailed(current, approval.id, "Unsupported workflow gate schema; answer manually outside the GUI."));
-		return;
-	}
-	try {
-		const resolution = await client.gjcWorkflowGateRespond({
-			threadId: approval.threadId,
-			gate_id: approval.id,
-			answer,
-		});
-		if (resolution.status === "accepted") {
-			setTranscript(current => markApproval(current, approval.id, "approved"));
-		} else {
-			setTranscript(current => markWorkflowGateFailed(current, approval.id, workflowGateResolutionError(resolution)));
+	async function resolveHostUri(
+		approval: ApprovalGate,
+		ok: boolean,
+		payload?: { content?: string; contentType?: string },
+	) {
+		if (!client || approval.kind !== "host-uri") return;
+		try {
+			await client.gjcHostUrisResult({
+				threadId: approval.threadId,
+				requestId: approval.id,
+				content: ok ? (payload?.content ?? approval.content ?? "") : undefined,
+				contentType: ok ? (payload?.contentType ?? "text/plain") : undefined,
+				error: ok ? undefined : "Rejected in GJC GUI",
+				isError: ok ? undefined : true,
+			});
+			setTranscript(current => markApproval(current, approval.id, ok ? "approved" : "rejected"));
+		} catch (error) {
+			setConnection(describeFailure(error));
 		}
-	} catch (error) {
-		setTranscript(current => markWorkflowGateFailed(current, approval.id, errorMessage(error)));
-		setConnection(describeFailure(error));
+		restoreComposerFocus();
 	}
-	restoreComposerFocus();
-}
+
+	async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonValue) {
+		if (!client || approval.kind !== "workflow-gate") return;
+		const answer = workflowGateAnswer(approval, selectedValue);
+		if (!answer) {
+			setTranscript(current =>
+				markWorkflowGateFailed(
+					current,
+					approval.id,
+					"Unsupported workflow gate schema; answer manually outside the GUI.",
+				),
+			);
+			return;
+		}
+		try {
+			const resolution = await client.gjcWorkflowGateRespond({
+				threadId: approval.threadId,
+				gate_id: approval.id,
+				answer,
+			});
+			if (resolution.status === "accepted") {
+				setTranscript(current => markApproval(current, approval.id, "approved"));
+			} else {
+				setTranscript(current =>
+					markWorkflowGateFailed(current, approval.id, workflowGateResolutionError(resolution)),
+				);
+			}
+		} catch (error) {
+			setTranscript(current => markWorkflowGateFailed(current, approval.id, errorMessage(error)));
+			setConnection(describeFailure(error));
+		}
+		restoreComposerFocus();
+	}
 
 	async function compactThread() {
 		if (!client || !activeThreadId) return;
@@ -618,10 +682,27 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 					onStart={() => void startThread()}
 				/>
 				<nav className="workspace-switcher" aria-label="Workspace sections">
-					<button className={workspaceView === "chat" ? "workspace-switcher__button workspace-switcher__button--selected" : "workspace-switcher__button"} type="button" onClick={() => setWorkspaceView("chat")}>
+					<button
+						className={
+							workspaceView === "chat"
+								? "workspace-switcher__button workspace-switcher__button--selected"
+								: "workspace-switcher__button"
+						}
+						type="button"
+						onClick={() => setWorkspaceView("chat")}
+					>
 						Chat
 					</button>
-					<button className={workspaceView === "extensibility" ? "workspace-switcher__button workspace-switcher__button--selected" : "workspace-switcher__button"} type="button" onClick={() => setWorkspaceView("extensibility")} disabled={!connected || !activeThreadId}>
+					<button
+						className={
+							workspaceView === "extensibility"
+								? "workspace-switcher__button workspace-switcher__button--selected"
+								: "workspace-switcher__button"
+						}
+						type="button"
+						onClick={() => setWorkspaceView("extensibility")}
+						disabled={!connected || !activeThreadId}
+					>
 						Skills & extensions
 					</button>
 				</nav>
@@ -634,7 +715,11 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 								className={`thread-row ${thread.id === activeThreadId ? "thread-row--selected" : ""} ${thread.status === "error" ? "thread-row--error" : ""}`}
 								key={thread.id}
 							>
-								<button className="thread-row__resume" type="button" onClick={() => void resumeThread(thread.id)}>
+								<button
+									className="thread-row__resume"
+									type="button"
+									onClick={() => void resumeThread(thread.id)}
+								>
 									<span className="thread-title">{threadPrimaryLabel(thread)}</span>
 									<span className="thread-meta">
 										{threadSuffix(thread.id)} · {thread.status}
@@ -653,7 +738,11 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 				</nav>
 				<details className="sidebar-drawer">
 					<summary>Model &amp; settings</summary>
-					<ModelPanel currentModel={transcript.modelLabel} disabled={!connected || !activeThreadId} onApply={applyModel} />
+					<ModelPanel
+						currentModel={transcript.modelLabel}
+						disabled={!connected || !activeThreadId}
+						onApply={applyModel}
+					/>
 				</details>
 				<details className="sidebar-drawer">
 					<summary>Execution-state (deferred)</summary>
@@ -684,13 +773,28 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 							<h1>{activeThread ? threadPrimaryLabel(activeThread) : "New chat"}</h1>
 						</div>
 						<div className="header-actions">
-							<button className="neutral-action" type="button" disabled={!connected || !activeThreadId} onClick={() => void compactThread()}>
+							<button
+								className="neutral-action"
+								type="button"
+								disabled={!connected || !activeThreadId}
+								onClick={() => void compactThread()}
+							>
 								Compact
 							</button>
-							<button className="neutral-action" type="button" disabled={!canCopyAssistant} onClick={() => void copyTranscriptText(lastAssistantCopy)}>
+							<button
+								className="neutral-action"
+								type="button"
+								disabled={!canCopyAssistant}
+								onClick={() => void copyTranscriptText(lastAssistantCopy)}
+							>
 								Copy
 							</button>
-							<button className="neutral-action" type="button" disabled={!canDumpTranscript} onClick={() => void copyTranscriptText(transcriptDump)}>
+							<button
+								className="neutral-action"
+								type="button"
+								disabled={!canDumpTranscript}
+								onClick={() => void copyTranscriptText(transcriptDump)}
+							>
 								Dump
 							</button>
 							<span className="copy-status" role="status" aria-live="polite">
@@ -747,9 +851,7 @@ async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonVa
 							}
 						/>
 						<footer>
-							<span className="composer-status">
-								{connected ? "" : failureCopy(connection.failure)}
-							</span>
+							<span className="composer-status">{connected ? "" : failureCopy(connection.failure)}</span>
 							{isSubmitting || transcript.activeTurnId ? (
 								<button
 									className="neutral-action"
@@ -956,12 +1058,17 @@ function ReasoningDetails({ item, nested }: { item: TranscriptItem; nested?: boo
 	const running = item.status === "running";
 	const reasoning = cleanAssistantText(item.content ?? "");
 	return (
-		<details className={`message--reasoning message--${item.status}${nested ? " message__reasoning" : " message"}`} open={running}>
+		<details
+			className={`message--reasoning message--${item.status}${nested ? " message__reasoning" : " message"}`}
+			open={running}
+		>
 			<summary>
 				<span className="message__role">{itemLabel(item)}</span>
 				<span className="message__hint">{running ? "thinking…" : "reasoning"}</span>
 			</summary>
-			<div className="markdown markdown--reasoning">{reasoning ? <Markdown text={reasoning} /> : running ? "Thinking…" : "No reasoning captured."}</div>
+			<div className="markdown markdown--reasoning">
+				{reasoning ? <Markdown text={reasoning} /> : running ? "Thinking…" : "No reasoning captured."}
+			</div>
 		</details>
 	);
 }
@@ -983,7 +1090,13 @@ function TranscriptCard({ item }: { item: TranscriptItem }) {
 				<span className="message__role">{itemLabel(item)}</span>
 				{pill ? <span className="message__pill">{pill}</span> : null}
 			</header>
-			{text ? <div className="markdown"><Markdown text={text} /></div> : running ? <p className="message-status">{placeholder}</p> : null}
+			{text ? (
+				<div className="markdown">
+					<Markdown text={text} />
+				</div>
+			) : running ? (
+				<p className="message-status">{placeholder}</p>
+			) : null}
 		</article>
 	);
 }
@@ -1002,7 +1115,10 @@ function TurnCard({ items }: { items: TranscriptItem[] }) {
 			? "interrupted"
 			: undefined;
 	return (
-		<article className={`message message--assistant message--${running ? "running" : "completed"}`} aria-busy={running}>
+		<article
+			className={`message message--assistant message--${running ? "running" : "completed"}`}
+			aria-busy={running}
+		>
 			<header>
 				<span className="message__role">gajae</span>
 				{pill ? <span className="message__pill">{pill}</span> : null}
@@ -1011,7 +1127,11 @@ function TurnCard({ items }: { items: TranscriptItem[] }) {
 				if (entry.role === "reasoning") return <ReasoningDetails item={entry} nested key={entry.id} />;
 				if (entry.role === "tool") return <ToolCard item={entry} nested key={entry.id} />;
 				const text = cleanAssistantText(entry.content ?? "");
-				return text ? <div className="markdown" key={entry.id}><Markdown text={text} /></div> : null;
+				return text ? (
+					<div className="markdown" key={entry.id}>
+						<Markdown text={text} />
+					</div>
+				) : null;
 			})}
 			{running && !hasVisibleText ? <p className="message-status">gajae is responding…</p> : null}
 		</article>
@@ -1024,7 +1144,10 @@ function ToolCard({ item, nested }: { item: TranscriptItem; nested?: boolean }) 
 	const tool = item.tool ?? { name: item.title || itemLabel(item), output: (item.content ?? "").trim() };
 	const diff = isEditTool(tool.name, item.title) ? parseDiff(tool.output ?? item.content ?? "") : undefined;
 	return (
-		<details className={`message message--${item.role} message--${item.status} tool-card${nested ? " tool-card--nested" : ""}`} open={running}>
+		<details
+			className={`message message--${item.role} message--${item.status} tool-card${nested ? " tool-card--nested" : ""}`}
+			open={running}
+		>
 			<summary>
 				<span className="tool-card__icon" aria-hidden="true" />
 				<span className="tool-card__title">{tool.name}</span>
@@ -1032,21 +1155,40 @@ function ToolCard({ item, nested }: { item: TranscriptItem; nested?: boolean }) 
 			</summary>
 			<div className="tool-card__sections">
 				{tool.args ? <ToolSection label="args" text={tool.args} collapsed /> : null}
-				{diff && diff.lines.length > 0 ? <DiffBlock diff={diff} /> : tool.output ? <ToolSection label="output" text={tool.output} /> : null}
+				{diff && diff.lines.length > 0 ? (
+					<DiffBlock diff={diff} />
+				) : tool.output ? (
+					<ToolSection label="output" text={tool.output} />
+				) : null}
 				{tool.error ? <ToolSection label="error" text={tool.error} tone="danger" /> : null}
-				{!tool.args && !tool.output && !tool.error ? <p className="message-status">{running ? "Running…" : "No output"}</p> : null}
+				{!tool.args && !tool.output && !tool.error ? (
+					<p className="message-status">{running ? "Running…" : "No output"}</p>
+				) : null}
 			</div>
 		</details>
 	);
 }
 
-function ToolSection({ collapsed, label, text, tone }: { collapsed?: boolean; label: string; text: string; tone?: "danger" }) {
+function ToolSection({
+	collapsed,
+	label,
+	text,
+	tone,
+}: {
+	collapsed?: boolean;
+	label: string;
+	text: string;
+	tone?: "danger";
+}) {
 	const pretty = prettyToolText(text);
 	const summary = pretty.split("\n")[0] || label;
 	if (collapsed) {
 		return (
 			<details className={`tool-section ${tone === "danger" ? "tool-section--danger" : ""}`}>
-				<summary><span>{label}</span><code>{summary}</code></summary>
+				<summary>
+					<span>{label}</span>
+					<code>{summary}</code>
+				</summary>
 				<pre>{pretty}</pre>
 			</details>
 		);
@@ -1075,14 +1217,28 @@ function DiffBlock({ diff }: { diff: ParsedDiff }) {
 	);
 	return (
 		<section className="diff-block">
-			<header>diff <span>+{diff.adds} / -{diff.removes}</span></header>
-			{diff.truncated ? <details><summary>Show {diff.lines.length} diff lines</summary>{body}</details> : body}
+			<header>
+				diff{" "}
+				<span>
+					+{diff.adds} / -{diff.removes}
+				</span>
+			</header>
+			{diff.truncated ? (
+				<details>
+					<summary>Show {diff.lines.length} diff lines</summary>
+					{body}
+				</details>
+			) : (
+				body
+			)}
 		</section>
 	);
 }
 
 function isEditTool(name?: string, title?: string): boolean {
-	return /(?:^|[-_\s])(edit|write|apply_patch|filechange|file-change)(?:$|[-_\s])/i.test(`${name ?? ""} ${title ?? ""}`);
+	return /(?:^|[-_\s])(edit|write|apply_patch|filechange|file-change)(?:$|[-_\s])/i.test(
+		`${name ?? ""} ${title ?? ""}`,
+	);
 }
 
 function parseDiff(text: string): ParsedDiff | undefined {
@@ -1091,7 +1247,8 @@ function parseDiff(text: string): ParsedDiff | undefined {
 	let adds = 0;
 	let removes = 0;
 	const lines = raw.map(line => {
-		if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) return { kind: "context" as const, text: line };
+		if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@"))
+			return { kind: "context" as const, text: line };
 		if (/^\+\d+\|/.test(line)) {
 			adds += 1;
 			return { kind: "add" as const, text: line.replace(/^\+\d+\|/, "") };
@@ -1129,21 +1286,37 @@ function ApprovalCard({
 }: {
 	approval: ApprovalGate;
 	onResolve(approval: ApprovalGate, approved: boolean): Promise<void>;
-	onResolveHostUri(approval: ApprovalGate, ok: boolean, payload?: { content?: string; contentType?: string }): Promise<void>;
+	onResolveHostUri(
+		approval: ApprovalGate,
+		ok: boolean,
+		payload?: { content?: string; contentType?: string },
+	): Promise<void>;
 	onRespondWorkflowGate(approval: ApprovalGate, answer: JsonValue): Promise<void>;
 }) {
 	if (approval.kind === "host-uri") {
 		return (
 			<article className={`hosturi-card hosturi-card--${approval.status}`}>
 				<p className="eyebrow">Host URI · {approval.status}</p>
-				<h2>{approval.operation.toUpperCase()} {approval.url}</h2>
+				<h2>
+					{approval.operation.toUpperCase()} {approval.url}
+				</h2>
 				<p>gajae requested host access to this URI.</p>
 				{approval.content ? <pre>{approval.content}</pre> : null}
 				<div className="button-row">
-					<button className="primary-action" type="button" disabled={approval.status !== "pending"} onClick={() => void onResolveHostUri(approval, true)}>
+					<button
+						className="primary-action"
+						type="button"
+						disabled={approval.status !== "pending"}
+						onClick={() => void onResolveHostUri(approval, true)}
+					>
 						Approve
 					</button>
-					<button className="neutral-action" type="button" disabled={approval.status !== "pending"} onClick={() => void onResolveHostUri(approval, false)}>
+					<button
+						className="neutral-action"
+						type="button"
+						disabled={approval.status !== "pending"}
+						onClick={() => void onResolveHostUri(approval, false)}
+					>
 						Reject
 					</button>
 				</div>
@@ -1158,20 +1331,31 @@ function ApprovalCard({
 		return (
 			<article className={`workflow-gate-card workflow-gate-card--${supported ? approval.status : "unsupported"}`}>
 				<p className="eyebrow">Workflow gate · {supported ? approval.status : "manual/unsupported"}</p>
-				<h2>{approval.gateKind} · {approval.stage}</h2>
+				<h2>
+					{approval.gateKind} · {approval.stage}
+				</h2>
 				<p>{approval.required ? "Required" : "Optional"} gate awaiting an answer.</p>
 				{question ? <p>{question}</p> : null}
 				{approval.error ? <p className="message-status">{approval.error}</p> : null}
 				{supported && options ? (
 					<div className="button-row">
 						{options.map(option => (
-							<button className="neutral-action" type="button" key={option.label} disabled={approval.status !== "pending"} onClick={() => void onRespondWorkflowGate(approval, option.value)}>
+							<button
+								className="neutral-action"
+								type="button"
+								key={option.label}
+								disabled={approval.status !== "pending"}
+								onClick={() => void onRespondWorkflowGate(approval, option.value)}
+							>
 								{option.label}
 							</button>
 						))}
 					</div>
 				) : (
-					<p className="message-status">This workflow gate schema is not one of the GUI-supported answer shapes. Answer it manually outside the GUI.</p>
+					<p className="message-status">
+						This workflow gate schema is not one of the GUI-supported answer shapes. Answer it manually outside
+						the GUI.
+					</p>
 				)}
 				<pre>{jsonPreview(approval.schema)}</pre>
 			</article>
@@ -1230,7 +1414,8 @@ function jsonPreview(value: JsonValue): string {
 
 function isSupportedWorkflowGate(approval: ApprovalGate): boolean {
 	if (approval.kind !== "workflow-gate" || !approval.options?.length) return false;
-	if (approval.gateKind === "approval" || approval.gateKind === "execution") return schemaHasAnswerProperty(approval.schema, "decision");
+	if (approval.gateKind === "approval" || approval.gateKind === "execution")
+		return schemaHasAnswerProperty(approval.schema, "decision");
 	if (approval.gateKind === "question") return schemaHasAnswerProperty(approval.schema, "selected");
 	return false;
 }
@@ -1251,7 +1436,9 @@ function markWorkflowGateFailed(state: TranscriptState, gateId: string, error: s
 	return {
 		...state,
 		approvals: state.approvals.map(approval =>
-			approval.kind === "workflow-gate" && approval.id === gateId ? { ...approval, status: "failed", error } : approval,
+			approval.kind === "workflow-gate" && approval.id === gateId
+				? { ...approval, status: "failed", error }
+				: approval,
 		),
 	};
 }
@@ -1260,7 +1447,8 @@ function schemaHasAnswerProperty(schema: JsonValue, property: "decision" | "sele
 	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
 	const record = schema as Record<string, JsonValue | undefined>;
 	const properties = record.properties;
-	if (properties && typeof properties === "object" && !Array.isArray(properties) && property in properties) return true;
+	if (properties && typeof properties === "object" && !Array.isArray(properties) && property in properties)
+		return true;
 	for (const key of ["oneOf", "anyOf", "allOf"] as const) {
 		const variants = record[key];
 		if (Array.isArray(variants) && variants.some(variant => schemaHasAnswerProperty(variant, property))) return true;

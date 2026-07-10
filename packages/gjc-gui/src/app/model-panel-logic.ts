@@ -28,7 +28,8 @@ export const DEFERRED_MODEL_SURFACES: DeferredModelSurface[] = [
 	{
 		name: "provider-auth",
 		rationale: "needs a token-safe gjc/provider+auth API; no secret may be displayed",
-		unblock: "Add token-safe provider/auth APIs with no secret display before enabling onboarding, login, logout, or credentials.",
+		unblock:
+			"Add token-safe provider/auth APIs with no secret display before enabling onboarding, login, logout, or credentials.",
 	},
 ];
 

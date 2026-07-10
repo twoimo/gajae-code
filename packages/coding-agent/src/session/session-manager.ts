@@ -2830,6 +2830,7 @@ function extractTextFromContent(content: Message["content"]): string {
 
 const SESSION_LIST_PREFIX_BYTES = 4096;
 const SESSION_LIST_PARALLEL_THRESHOLD = 64;
+const SESSION_DEEP_CONTENT_MAX_BYTES = 4 * 1024 * 1024;
 const SESSION_LIST_MAX_WORKERS = 16;
 const sessionListPrefixDecoder = new TextDecoder("utf-8", { fatal: false });
 let residentCacheInstanceCounter = 0;
@@ -2983,9 +2984,12 @@ async function collectSessionFromFile(
 	file: string,
 	storage: SessionStorage,
 	buffer: Buffer,
+	options: { deepContent?: boolean } = {},
 ): Promise<SessionInfo | undefined> {
 	try {
-		const content = await readSessionListPrefix(file, storage, buffer);
+		const stats = storage.statSync(file);
+		const deepContent = options.deepContent && stats.size <= SESSION_DEEP_CONTENT_MAX_BYTES;
+		const content = deepContent ? await storage.readText(file) : await readSessionListPrefix(file, storage, buffer);
 		const entries = parseJsonlLenient<Record<string, unknown>>(content);
 		const header = parseSessionListHeader(content, entries);
 		if (!header) return undefined;
@@ -3021,7 +3025,6 @@ async function collectSessionFromFile(
 
 		firstMessage ||= extractFirstUserMessageFromPrefix(content) ?? "";
 		const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
-		const stats = storage.statSync(file);
 		return {
 			path: file,
 			id: header.id,
@@ -3045,27 +3048,32 @@ async function collectSessionsFromFileStride(
 	storage: SessionStorage,
 	startIndex: number,
 	stride: number,
+	options: { deepContent?: boolean } = {},
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
 	const buffer = Buffer.allocUnsafe(SESSION_LIST_PREFIX_BYTES);
 
 	for (let i = startIndex; i < files.length; i += stride) {
-		const session = await collectSessionFromFile(files[i], storage, buffer);
+		const session = await collectSessionFromFile(files[i], storage, buffer, options);
 		if (session) sessions.push(session);
 	}
 
 	return sessions;
 }
 
-async function collectSessionsFromFiles(files: string[], storage: SessionStorage): Promise<SessionInfo[]> {
+async function collectSessionsFromFiles(
+	files: string[],
+	storage: SessionStorage,
+	options: { deepContent?: boolean } = {},
+): Promise<SessionInfo[]> {
 	const workerCount = getSessionListWorkerCount(files.length);
 	const sessions =
 		workerCount === 1
-			? await collectSessionsFromFileStride(files, storage, 0, 1)
+			? await collectSessionsFromFileStride(files, storage, 0, 1, options)
 			: (
 					await Promise.all(
 						Array.from({ length: workerCount }, (_, workerIndex) =>
-							collectSessionsFromFileStride(files, storage, workerIndex, workerCount),
+							collectSessionsFromFileStride(files, storage, workerIndex, workerCount, options),
 						),
 					)
 				).flat();
@@ -5610,12 +5618,13 @@ export class SessionManager {
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
+		options: { deepContent?: boolean } = {},
 	): Promise<SessionInfo[]> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		try {
 			await recoverOrphanedBackups(dir, storage);
 			const files = storage.listFilesSync(dir, "*.jsonl");
-			return await collectSessionsFromFiles(files, storage);
+			return await collectSessionsFromFiles(files, storage, options);
 		} catch {
 			return [];
 		}
@@ -5624,13 +5633,28 @@ export class SessionManager {
 	/**
 	 * List all sessions across all project directories.
 	 */
-	static async listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
-		const sessionsRoot = path.join(getDefaultAgentDir(), "sessions");
+	static async listAll(
+		storage: SessionStorage = new FileSessionStorage(),
+		options: { deepContent?: boolean } = {},
+	): Promise<SessionInfo[]> {
+		const candidates = [getSessionsDir(), path.join(getDefaultAgentDir(), "sessions")];
+		const roots = new Map<string, string>();
+		for (const candidate of candidates) {
+			try {
+				roots.set(await fs.promises.realpath(candidate), candidate);
+			} catch (error) {
+				if (!isEnoent(error)) throw error;
+			}
+		}
 		try {
-			const files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
-				path.join(sessionsRoot, name),
-			);
-			return await collectSessionsFromFiles(files, storage);
+			const files = (
+				await Promise.all(
+					[...roots.values()].map(root =>
+						Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(root), name => path.join(root, name)),
+					),
+				)
+			).flat();
+			return await collectSessionsFromFiles(files, storage, options);
 		} catch {
 			return [];
 		}

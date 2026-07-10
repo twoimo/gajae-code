@@ -114,6 +114,7 @@ pub fn schema_bundle() -> serde_json::Value {
 	insert_def!("ItemAgentMessageDeltaParams", crate::protocol::ItemAgentMessageDeltaParams);
 	insert_def!("ItemCompletedParams", crate::protocol::ItemCompletedParams);
 	insert_def!("GjcEventParams", crate::protocol::GjcEventParams);
+	insert_def!("JobsChangedParams", crate::protocol::JobsChangedParams);
 	insert_def!("ServerNotificationEnvelope", crate::protocol::ServerNotificationEnvelope);
 	insert_def!("RpcWorkflowGate", crate::workflow_gate::RpcWorkflowGate);
 	insert_def!("RpcWorkflowStage", crate::workflow_gate::RpcWorkflowStage);
@@ -148,6 +149,113 @@ pub fn schema_bundle() -> serde_json::Value {
 	insert_def!("HostUriResultParams", crate::host_uris::HostUriResultParams);
 	insert_def!("HostUriResource", crate::host_uris::HostUriResource);
 
+	insert_def!("GjcSessionListParams", crate::protocol::GjcSessionListParams);
+	insert_def!("GjcSessionScope", crate::protocol::GjcSessionScope);
+	insert_def!("SessionIndexEntry", crate::protocol::SessionIndexEntry);
+	insert_def!("GjcSessionListResult", crate::protocol::GjcSessionListResult);
+	insert_def!("GjcSessionSearchParams", crate::protocol::GjcSessionSearchParams);
+	insert_def!("GjcSessionSearchResult", crate::protocol::GjcSessionSearchResult);
+	insert_def!("GjcSessionRenameParams", crate::protocol::GjcSessionRenameParams);
+	insert_def!("GjcSessionRenameResult", crate::protocol::GjcSessionRenameResult);
+	insert_def!("GjcSessionOpenParams", crate::protocol::GjcSessionOpenParams);
+	insert_def!("GjcSessionOpenResult", crate::protocol::GjcSessionOpenResult);
+	insert_def!("GjcSessionDeleteParams", crate::protocol::GjcSessionDeleteParams);
+	insert_def!("GjcSessionDeleteResult", crate::protocol::GjcSessionDeleteResult);
+	insert_def!("GjcSessionNavigateParams", crate::protocol::GjcSessionNavigateParams);
+	insert_def!("GjcSessionNavigateResult", crate::protocol::GjcSessionNavigateResult);
+	insert_def!("GjcSessionMoveParams", crate::protocol::GjcSessionMoveParams);
+	insert_def!("GjcSessionMoveDryRunResult", crate::protocol::GjcSessionMoveDryRunResult);
+	insert_def!("GjcSessionMoveMovedResult", crate::protocol::GjcSessionMoveMovedResult);
+	insert_def!("GjcSessionMoveResult", crate::protocol::GjcSessionMoveResult);
+	insert_def!("GjcSessionLabelParams", crate::protocol::GjcSessionLabelParams);
+	insert_def!("GjcSessionLabelResult", crate::protocol::GjcSessionLabelResult);
+	insert_def!("GjcSessionExportFormat", crate::protocol::GjcSessionExportFormat);
+	insert_def!("GjcSessionExportParams", crate::protocol::GjcSessionExportParams);
+	insert_def!("GjcSessionExportProvenance", crate::protocol::GjcSessionExportProvenance);
+	insert_def!("GjcSessionExportResult", crate::protocol::GjcSessionExportResult);
+	insert_def!("GjcSessionTreeParams", crate::protocol::GjcSessionTreeParams);
+	insert_def!("SessionTreeNodeDto", crate::protocol::SessionTreeNodeDto);
+	insert_def!("GjcSessionTreeResult", crate::protocol::GjcSessionTreeResult);
+	insert_def!("GjcContextReadParams", crate::protocol::GjcContextReadParams);
+	insert_def!("GjcContextReadResult", crate::protocol::GjcContextReadResult);
+	insert_def!("GjcContextTokens", crate::protocol::GjcContextTokens);
+	insert_def!("GjcContextFreshness", crate::protocol::GjcContextFreshness);
+	insert_def!("GjcGoalReadParams", crate::protocol::GjcGoalReadParams);
+	insert_def!("GjcGoalReadResult", crate::protocol::GjcGoalReadResult);
+	insert_def!("GjcRetryParams", crate::protocol::GjcRetryParams);
+	insert_def!("GjcRetryResult", crate::protocol::GjcRetryResult);
+	insert_def!("GjcThreadReadParams", crate::protocol::GjcThreadReadParams);
+	insert_def!("GjcModelCatalogEntry", crate::protocol::GjcModelCatalogEntry);
+	insert_def!("GjcModelCatalogResult", crate::protocol::GjcModelCatalogResult);
+	insert_def!("GjcProviderAuthKind", crate::protocol::GjcProviderAuthKind);
+	insert_def!("GjcProviderListEntry", crate::protocol::GjcProviderListEntry);
+	insert_def!("GjcProviderListParams", crate::protocol::GjcProviderListParams);
+	insert_def!("GjcProviderListResult", crate::protocol::GjcProviderListResult);
+	insert_def!("GjcAuthState", crate::protocol::GjcAuthState);
+	insert_def!("GjcAuthMethod", crate::protocol::GjcAuthMethod);
+	insert_def!("GjcAuthStatusEntry", crate::protocol::GjcAuthStatusEntry);
+	insert_def!("GjcAuthStatusParams", crate::protocol::GjcAuthStatusParams);
+	insert_def!("GjcAuthStatusResult", crate::protocol::GjcAuthStatusResult);
+	insert_def!("GjcAuthLogoutParams", crate::protocol::GjcAuthLogoutParams);
+	insert_def!("GjcAuthLogoutResult", crate::protocol::GjcAuthLogoutResult);
+	insert_def!("GjcProviderAddParams", crate::protocol::GjcProviderAddParams);
+	insert_def!("GjcProviderAddResult", crate::protocol::GjcProviderAddResult);
+	insert_def!("GjcAuthLoginFlowState", crate::protocol::GjcAuthLoginFlowState);
+	insert_def!("GjcAuthLoginStartParams", crate::protocol::GjcAuthLoginStartParams);
+	insert_def!("GjcAuthLoginStartResult", crate::protocol::GjcAuthLoginStartResult);
+	insert_def!("GjcAuthLoginPollParams", crate::protocol::GjcAuthLoginPollParams);
+	insert_def!("GjcAuthLoginPollResult", crate::protocol::GjcAuthLoginPollResult);
+	insert_def!("GjcAuthLoginCompleteParams", crate::protocol::GjcAuthLoginCompleteParams);
+	insert_def!("GjcAuthLoginCompleteResult", crate::protocol::GjcAuthLoginCompleteResult);
+	insert_def!("GjcAuthLoginCancelParams", crate::protocol::GjcAuthLoginCancelParams);
+	insert_def!("GjcAuthLoginCancelResult", crate::protocol::GjcAuthLoginCancelResult);
+	insert_def!("GjcThinkingReadResult", crate::protocol::GjcThinkingReadResult);
+	insert_def!("GjcThinkingSetParams", crate::protocol::GjcThinkingSetParams);
+	insert_def!("GjcThinkingSetResult", crate::protocol::GjcThinkingSetResult);
+	insert_def!("GjcFastReadResult", crate::protocol::GjcFastReadResult);
+	insert_def!("GjcFastSetParams", crate::protocol::GjcFastSetParams);
+	insert_def!("GjcFastSetResult", crate::protocol::GjcFastSetResult);
+	insert_def!("GjcSettingsSchemaParams", crate::protocol::GjcSettingsSchemaParams);
+	insert_def!("GjcSettingsSchemaResult", crate::protocol::GjcSettingsSchemaResult);
+	insert_def!("GjcSettingDescriptor", crate::protocol::GjcSettingDescriptor);
+	insert_def!("GjcSettingsReadParams", crate::protocol::GjcSettingsReadParams);
+	insert_def!("GjcSettingsReadResult", crate::protocol::GjcSettingsReadResult);
+	insert_def!("GjcSettingsUpdateParams", crate::protocol::GjcSettingsUpdateParams);
+	insert_def!("GjcSettingsUpdateResult", crate::protocol::GjcSettingsUpdateResult);
+	insert_def!("GjcAppearanceSemanticPreview", crate::protocol::GjcAppearanceSemanticPreview);
+	insert_def!("GjcAppearanceThemeEntry", crate::protocol::GjcAppearanceThemeEntry);
+	insert_def!("GjcAppearanceThemeKind", crate::protocol::GjcAppearanceThemeKind);
+	insert_def!("GjcAppearanceThemesListParams", crate::protocol::GjcAppearanceThemesListParams);
+	insert_def!("GjcAppearanceThemesListResult", crate::protocol::GjcAppearanceThemesListResult);
+	insert_def!("GjcAppearanceReadParams", crate::protocol::GjcAppearanceReadParams);
+	insert_def!("GjcAppearanceReadResult", crate::protocol::GjcAppearanceReadResult);
+	insert_def!("GjcAppearanceSetParams", crate::protocol::GjcAppearanceSetParams);
+	insert_def!("GjcAppearanceSetResult", crate::protocol::GjcAppearanceSetResult);
+	insert_def!("GjcTodosReadResult", crate::protocol::GjcTodosReadResult);
+	insert_def!("GjcTodoItem", crate::protocol::GjcTodoItem);
+	insert_def!("GjcUsageReadResult", crate::protocol::GjcUsageReadResult);
+	insert_def!("GjcModelUsage", crate::protocol::GjcModelUsage);
+	insert_def!("GjcJobsListResult", crate::protocol::GjcJobsListResult);
+	insert_def!("GjcJobEntry", crate::protocol::GjcJobEntry);
+	insert_def!("GjcAgentsListResult", crate::protocol::GjcAgentsListResult);
+	insert_def!("GjcAgentEntry", crate::protocol::GjcAgentEntry);
+	insert_def!("GjcMonitorsListResult", crate::protocol::GjcMonitorsListResult);
+	insert_def!("GjcMonitorEntry", crate::protocol::GjcMonitorEntry);
+	insert_def!("GjcCronEntry", crate::protocol::GjcCronEntry);
+	insert_def!("GjcCompactSummaryResult", crate::protocol::GjcCompactSummaryResult);
+	insert_def!("GjcCompactSummaryEntry", crate::protocol::GjcCompactSummaryEntry);
+	insert_def!("GjcExtensionsSetEnabledParams", crate::protocol::GjcExtensionsSetEnabledParams);
+	insert_def!("GjcExtensionsSetEnabledResult", crate::protocol::GjcExtensionsSetEnabledResult);
+	insert_def!("GjcSkillsSetEnabledParams", crate::protocol::GjcSkillsSetEnabledParams);
+	insert_def!("GjcSkillsSetEnabledResult", crate::protocol::GjcSkillsSetEnabledResult);
+	insert_def!("GjcPluginsSetEnabledParams", crate::protocol::GjcPluginsSetEnabledParams);
+	insert_def!("GjcPluginsSetEnabledResult", crate::protocol::GjcPluginsSetEnabledResult);
+	insert_def!("GjcPluginsSetFeatureParams", crate::protocol::GjcPluginsSetFeatureParams);
+	insert_def!("GjcPluginsSetFeatureResult", crate::protocol::GjcPluginsSetFeatureResult);
+	insert_def!("GjcPluginsSetSettingParams", crate::protocol::GjcPluginsSetSettingParams);
+	insert_def!("GjcPluginsSetSettingResult", crate::protocol::GjcPluginsSetSettingResult);
+	insert_def!("GjcModelAssignParams", crate::protocol::GjcModelAssignParams);
+	insert_def!("GjcModelAssignResult", crate::protocol::GjcModelAssignResult);
 	let method_catalog = vec![
 		method!("initialize", Some("InitializeParams"), Some("InitializeResult"), true),
 		method!("thread/start", Some("ThreadStartParams"), Some("ThreadResult"), true),
@@ -165,9 +273,152 @@ pub fn schema_bundle() -> serde_json::Value {
 		method!("turn/start", Some("TurnStartParams"), Some("TurnStartResult"), true),
 		method!("turn/steer", Some("TurnSteerParams"), Some("TurnSteerResult"), true),
 		method!("turn/interrupt", Some("TurnInterruptParams"), Some("TurnInterruptResult"), true),
+		method!("gjc/retry", Some("GjcRetryParams"), Some("GjcRetryResult"), true),
 		method!("command/exec", None::<&str>, None::<&str>, false),
 		method!("thread/shellCommand", None::<&str>, None::<&str>, false),
 		method!("gjc/state/read", Some("GjcStateReadParams"), Some("GjcStateReadResult"), true),
+		method!("gjc/context/read", Some("GjcContextReadParams"), Some("GjcContextReadResult"), true),
+		method!("gjc/goal/read", Some("GjcGoalReadParams"), Some("GjcGoalReadResult"), true),
+		method!(
+			"gjc/model/catalog",
+			Some("GjcThreadReadParams"),
+			Some("GjcModelCatalogResult"),
+			true
+		),
+		method!(
+			"gjc/thinking/read",
+			Some("GjcThreadReadParams"),
+			Some("GjcThinkingReadResult"),
+			true
+		),
+		method!("gjc/thinking/set", Some("GjcThinkingSetParams"), Some("GjcThinkingSetResult"), true),
+		method!("gjc/fast/read", Some("GjcThreadReadParams"), Some("GjcFastReadResult"), true),
+		method!("gjc/fast/set", Some("GjcFastSetParams"), Some("GjcFastSetResult"), true),
+		method!(
+			"gjc/settings/schema",
+			Some("GjcSettingsSchemaParams"),
+			Some("GjcSettingsSchemaResult"),
+			true
+		),
+		method!(
+			"gjc/settings/read",
+			Some("GjcSettingsReadParams"),
+			Some("GjcSettingsReadResult"),
+			true
+		),
+		method!(
+			"gjc/settings/update",
+			Some("GjcSettingsUpdateParams"),
+			Some("GjcSettingsUpdateResult"),
+			true
+		),
+		method!(
+			"gjc/appearance/themes/list",
+			Some("GjcAppearanceThemesListParams"),
+			Some("GjcAppearanceThemesListResult"),
+			true
+		),
+		method!(
+			"gjc/appearance/read",
+			Some("GjcAppearanceReadParams"),
+			Some("GjcAppearanceReadResult"),
+			true
+		),
+		method!(
+			"gjc/appearance/set",
+			Some("GjcAppearanceSetParams"),
+			Some("GjcAppearanceSetResult"),
+			true
+		),
+		method!(
+			"gjc/provider/list",
+			Some("GjcProviderListParams"),
+			Some("GjcProviderListResult"),
+			true
+		),
+		method!("gjc/auth/status", Some("GjcAuthStatusParams"), Some("GjcAuthStatusResult"), true),
+		method!("gjc/auth/logout", Some("GjcAuthLogoutParams"), Some("GjcAuthLogoutResult"), true),
+		method!("gjc/provider/add", Some("GjcProviderAddParams"), Some("GjcProviderAddResult"), true),
+		method!(
+			"gjc/auth/login/start",
+			Some("GjcAuthLoginStartParams"),
+			Some("GjcAuthLoginStartResult"),
+			true
+		),
+		method!(
+			"gjc/auth/login/poll",
+			Some("GjcAuthLoginPollParams"),
+			Some("GjcAuthLoginPollResult"),
+			true
+		),
+		method!(
+			"gjc/auth/login/complete",
+			Some("GjcAuthLoginCompleteParams"),
+			Some("GjcAuthLoginCompleteResult"),
+			true
+		),
+		method!(
+			"gjc/auth/login/cancel",
+			Some("GjcAuthLoginCancelParams"),
+			Some("GjcAuthLoginCancelResult"),
+			true
+		),
+		method!("gjc/todos/read", Some("GjcThreadReadParams"), Some("GjcTodosReadResult"), true),
+		method!("gjc/usage/read", Some("GjcThreadReadParams"), Some("GjcUsageReadResult"), true),
+		method!("gjc/jobs/list", Some("GjcThreadReadParams"), Some("GjcJobsListResult"), true),
+		method!("gjc/agents/list", Some("GjcThreadReadParams"), Some("GjcAgentsListResult"), true),
+		method!(
+			"gjc/monitors/list",
+			Some("GjcThreadReadParams"),
+			Some("GjcMonitorsListResult"),
+			true
+		),
+		method!(
+			"gjc/compact/summary",
+			Some("GjcThreadReadParams"),
+			Some("GjcCompactSummaryResult"),
+			true
+		),
+		method!("gjc/session/list", Some("GjcSessionListParams"), Some("GjcSessionListResult"), true),
+		method!(
+			"gjc/session/search",
+			Some("GjcSessionSearchParams"),
+			Some("GjcSessionSearchResult"),
+			true
+		),
+		method!(
+			"gjc/session/rename",
+			Some("GjcSessionRenameParams"),
+			Some("GjcSessionRenameResult"),
+			true
+		),
+		method!("gjc/session/open", Some("GjcSessionOpenParams"), Some("GjcSessionOpenResult"), true),
+		method!(
+			"gjc/session/delete",
+			Some("GjcSessionDeleteParams"),
+			Some("GjcSessionDeleteResult"),
+			true
+		),
+		method!(
+			"gjc/session/export",
+			Some("GjcSessionExportParams"),
+			Some("GjcSessionExportResult"),
+			true
+		),
+		method!("gjc/session/tree", Some("GjcSessionTreeParams"), Some("GjcSessionTreeResult"), true),
+		method!(
+			"gjc/session/navigate",
+			Some("GjcSessionNavigateParams"),
+			Some("GjcSessionNavigateResult"),
+			true
+		),
+		method!("gjc/session/move", Some("GjcSessionMoveParams"), Some("GjcSessionMoveResult"), true),
+		method!(
+			"gjc/session/label",
+			Some("GjcSessionLabelParams"),
+			Some("GjcSessionLabelResult"),
+			true
+		),
 		method!("gjc/tools/list", Some("GjcToolsListParams"), Some("GjcToolsListResult"), true),
 		method!(
 			"gjc/commands/list",
@@ -176,6 +427,12 @@ pub fn schema_bundle() -> serde_json::Value {
 			true
 		),
 		method!("gjc/skills/list", Some("GjcSkillsListParams"), Some("GjcSkillsListResult"), true),
+		method!(
+			"gjc/skills/setEnabled",
+			Some("GjcSkillsSetEnabledParams"),
+			Some("GjcSkillsSetEnabledResult"),
+			true
+		),
 		method!(
 			"gjc/extensions/list",
 			Some("GjcExtensionsListParams"),
@@ -188,6 +445,12 @@ pub fn schema_bundle() -> serde_json::Value {
 			Some("GjcExtensionsInspectResult"),
 			true
 		),
+		method!(
+			"gjc/extensions/setEnabled",
+			Some("GjcExtensionsSetEnabledParams"),
+			Some("GjcExtensionsSetEnabledResult"),
+			true
+		),
 		method!("gjc/plugins/list", Some("GjcPluginsListParams"), Some("GjcPluginsListResult"), true),
 		method!(
 			"gjc/plugins/inspect",
@@ -195,8 +458,27 @@ pub fn schema_bundle() -> serde_json::Value {
 			Some("GjcPluginsInspectResult"),
 			true
 		),
+		method!(
+			"gjc/plugins/setEnabled",
+			Some("GjcPluginsSetEnabledParams"),
+			Some("GjcPluginsSetEnabledResult"),
+			true
+		),
+		method!(
+			"gjc/plugins/setFeature",
+			Some("GjcPluginsSetFeatureParams"),
+			Some("GjcPluginsSetFeatureResult"),
+			true
+		),
+		method!(
+			"gjc/plugins/setSetting",
+			Some("GjcPluginsSetSettingParams"),
+			Some("GjcPluginsSetSettingResult"),
+			true
+		),
 		method!("gjc/messages/get", Some("GjcMessagesGetParams"), Some("GjcMessagesGetResult"), true),
 		method!("gjc/model/set", Some("GjcModelSetParams"), Some("GjcModelSetResult"), true),
+		method!("gjc/model/assign", Some("GjcModelAssignParams"), Some("GjcModelAssignResult"), true),
 		method!("gjc/todos/set", Some("GjcTodosSetParams"), Some("GjcTodosSetResult"), true),
 		method!("gjc/compact", Some("GjcCompactParams"), Some("GjcCompactResult"), true),
 		method!(
@@ -344,11 +626,22 @@ mod tests {
 				},
 			},
 		));
+		let jobs_changed = crate::protocol::ServerNotificationEnvelope::JobsChanged(
+			crate::protocol::JobsChangedParams {
+				thread_id: "thread-1".into(),
+				generation: Some(1),
+				kind: "job".into(),
+				id: "job-1".into(),
+				status: "running".into(),
+				description: Some("Build".into()),
+			},
+		);
 
 		for (value, method) in [
 			(request, "gjc/hostUris/request"),
 			(cancel, "gjc/hostUris/cancel"),
 			(opened, "gjc/workflowGate/opened"),
+			(jobs_changed, "gjc/jobs/changed"),
 		] {
 			let serialized = serde_json::to_value(value).unwrap();
 			assert_eq!(serialized["method"], method);
@@ -374,18 +667,62 @@ mod tests {
 			("turn/start", true),
 			("turn/steer", true),
 			("turn/interrupt", true),
+			("gjc/retry", true),
 			("command/exec", false),
 			("thread/shellCommand", false),
 			("gjc/state/read", true),
+			("gjc/context/read", true),
+			("gjc/goal/read", true),
+			("gjc/model/catalog", true),
+			("gjc/thinking/read", true),
+			("gjc/thinking/set", true),
+			("gjc/fast/read", true),
+			("gjc/fast/set", true),
+			("gjc/settings/schema", true),
+			("gjc/settings/read", true),
+			("gjc/settings/update", true),
+			("gjc/appearance/themes/list", true),
+			("gjc/appearance/read", true),
+			("gjc/appearance/set", true),
+			("gjc/provider/list", true),
+			("gjc/auth/status", true),
+			("gjc/auth/logout", true),
+			("gjc/provider/add", true),
+			("gjc/auth/login/start", true),
+			("gjc/auth/login/poll", true),
+			("gjc/auth/login/complete", true),
+			("gjc/auth/login/cancel", true),
+			("gjc/todos/read", true),
+			("gjc/usage/read", true),
+			("gjc/jobs/list", true),
+			("gjc/agents/list", true),
+			("gjc/monitors/list", true),
+			("gjc/compact/summary", true),
+			("gjc/session/list", true),
+			("gjc/session/search", true),
+			("gjc/session/rename", true),
+			("gjc/session/open", true),
+			("gjc/session/delete", true),
+			("gjc/session/export", true),
+			("gjc/session/tree", true),
+			("gjc/session/navigate", true),
+			("gjc/session/move", true),
+			("gjc/session/label", true),
 			("gjc/tools/list", true),
 			("gjc/commands/list", true),
 			("gjc/skills/list", true),
+			("gjc/skills/setEnabled", true),
 			("gjc/extensions/list", true),
 			("gjc/extensions/inspect", true),
+			("gjc/extensions/setEnabled", true),
 			("gjc/plugins/list", true),
 			("gjc/plugins/inspect", true),
+			("gjc/plugins/setEnabled", true),
+			("gjc/plugins/setFeature", true),
+			("gjc/plugins/setSetting", true),
 			("gjc/messages/get", true),
 			("gjc/model/set", true),
+			("gjc/model/assign", true),
 			("gjc/todos/set", true),
 			("gjc/compact", true),
 			("gjc/hostTools/set", true),
