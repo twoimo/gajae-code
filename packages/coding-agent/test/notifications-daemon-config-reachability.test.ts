@@ -52,6 +52,26 @@ describe("notifications daemon config reachability (rich)", () => {
 	});
 });
 
+describe("notifications daemon config reachability (topic template)", () => {
+	test("reads a configured topic template from raw YAML config", () => {
+		const settings = createLightweightDaemonSettings({
+			agentDir: "/tmp/gjc-topic-template-config",
+			rawConfig: {
+				notifications: { telegram: { topics: { nameTemplate: "{title} · {repo}/{branch}" } } },
+			},
+		});
+		expect(settings.get("notifications.telegram.topics.nameTemplate")).toBe("{title} · {repo}/{branch}");
+	});
+
+	test("defaults a missing topic template to the legacy composition", () => {
+		const settings = createLightweightDaemonSettings({
+			agentDir: "/tmp/gjc-topic-template-config",
+			rawConfig: {},
+		});
+		expect(settings.get("notifications.telegram.topics.nameTemplate")).toBe("{repo}/{branch} - {title}");
+	});
+});
+
 describe("lightweight daemon settings set() persists via lock + partial merge", () => {
 	test("flips rich.enabled and preserves unrelated keys, including a concurrent write", async () => {
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-rich-set-"));

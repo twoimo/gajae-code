@@ -2,7 +2,10 @@
 
 import * as path from "node:path";
 import { zodToWireSchema } from "../packages/ai/src/utils/schema/wire";
-import { SETTINGS_SCHEMA } from "../packages/coding-agent/src/config/settings-schema";
+import {
+	SETTINGS_SCHEMA,
+	TELEGRAM_TOPIC_NAME_TEMPLATE_PATTERN,
+} from "../packages/coding-agent/src/config/settings-schema";
 import { ModelsConfigSchema } from "../packages/coding-agent/src/config/models-config-schema";
 
 type JsonSchema = boolean | JsonSchemaObject;
@@ -100,6 +103,9 @@ function settingDefinitionToJsonSchema(settingPath: string, definition: SettingD
 	if (settingPath === "gjc.deepInterview.ambiguityThreshold") {
 		schema.exclusiveMinimum = 0;
 		schema.maximum = 1;
+	}
+	if (settingPath === "notifications.telegram.topics.nameTemplate") {
+		schema.pattern = TELEGRAM_TOPIC_NAME_TEMPLATE_PATTERN;
 	}
 	return schema;
 }

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
 import { runConfigCommand } from "../src/cli/config-cli";
 import { resetSettingsForTest } from "../src/config/settings";
+import { isValidTelegramTopicNameTemplate } from "../src/config/settings-schema";
 
 let testAgentDir = "";
 const originalAgentDir = process.env.GJC_CODING_AGENT_DIR;
@@ -93,6 +94,30 @@ describe("config CLI schema coverage", () => {
 			key: "gjc.deepInterview.ambiguityThreshold",
 			type: "number",
 			value: 0.2,
+		});
+	});
+
+	it("validates Telegram topic name templates before persisting them", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		expect(isValidTelegramTopicNameTemplate("{title} · {unknown}")).toBe(false);
+		expect(isValidTelegramTopicNameTemplate("{title")).toBe(false);
+		expect(isValidTelegramTopicNameTemplate("static name")).toBe(false);
+		expect(isValidTelegramTopicNameTemplate("{title} · {repo}/{branch}")).toBe(true);
+		await runConfigCommand({
+			action: "set",
+			key: "notifications.telegram.topics.nameTemplate",
+			value: "{title} · {repo}/{branch}",
+			flags: { json: true },
+		});
+		await runConfigCommand({
+			action: "get",
+			key: "notifications.telegram.topics.nameTemplate",
+			flags: { json: true },
+		});
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
+			key: "notifications.telegram.topics.nameTemplate",
+			type: "string",
+			value: "{title} · {repo}/{branch}",
 		});
 	});
 	it("sets numeric idle compaction settings from CLI values", async () => {

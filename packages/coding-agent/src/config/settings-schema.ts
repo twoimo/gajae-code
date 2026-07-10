@@ -147,6 +147,8 @@ interface StringDef {
 	type: "string";
 	default: string | undefined;
 	ui?: UiString;
+	validate?: (value: string) => boolean;
+	description?: string;
 }
 
 interface NumberDef {
@@ -187,6 +189,14 @@ type SettingDef =
 // ═══════════════════════════════════════════════════════════════════════════
 // Schema Definition
 // ═══════════════════════════════════════════════════════════════════════════
+
+export const DEFAULT_TELEGRAM_TOPIC_NAME_TEMPLATE = "{repo}/{branch} - {title}";
+export const TELEGRAM_TOPIC_NAME_TEMPLATE_PATTERN = String.raw`^(?:[^{}]|\{(?:repo|branch|title)\})*\{(?:repo|branch|title)\}(?:[^{}]|\{(?:repo|branch|title)\})*$`;
+const TELEGRAM_TOPIC_NAME_TEMPLATE_REGEX = new RegExp(TELEGRAM_TOPIC_NAME_TEMPLATE_PATTERN);
+
+export function isValidTelegramTopicNameTemplate(value: string): boolean {
+	return TELEGRAM_TOPIC_NAME_TEMPLATE_REGEX.test(value);
+}
 
 export interface ModelTagDef {
 	name: string;
@@ -259,6 +269,13 @@ export const SETTINGS_SCHEMA = {
 	"notifications.enabled": { type: "boolean", default: false },
 	"notifications.telegram.botToken": { type: "string", default: undefined },
 	"notifications.telegram.chatId": { type: "string", default: undefined },
+	"notifications.telegram.topics.nameTemplate": {
+		type: "string",
+		default: DEFAULT_TELEGRAM_TOPIC_NAME_TEMPLATE,
+		validate: isValidTelegramTopicNameTemplate,
+		description:
+			"Telegram forum-topic name template. Supports {repo}, {branch}, and {title}; invalid templates and missing referenced values use the legacy topic-name fallback.",
+	},
 	"notifications.telegram.rich.enabled": { type: "boolean", default: true },
 	"notifications.telegram.richDraft.enabled": { type: "boolean", default: false },
 	"notifications.discord.botToken": { type: "string", default: undefined },
@@ -3411,6 +3428,9 @@ export interface NotificationsSettings {
 	telegram: {
 		botToken: string | undefined;
 		chatId: string | undefined;
+		topics: {
+			nameTemplate: string;
+		};
 		rich: {
 			enabled: boolean;
 		};

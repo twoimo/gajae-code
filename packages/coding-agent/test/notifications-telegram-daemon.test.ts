@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
+import type { SettingPath } from "../src/config/settings-schema";
 import {
 	markdownToTelegramHtml,
 	splitTelegramHtml,
@@ -23,7 +24,11 @@ import {
 	TelegramNotificationDaemon,
 	TelegramUpdatePoller,
 } from "../src/notifications/telegram-daemon";
-import { runDaemonInternal, runDaemonSmoke } from "../src/notifications/telegram-daemon-cli";
+import {
+	createLightweightDaemonSettings,
+	runDaemonInternal,
+	runDaemonSmoke,
+} from "../src/notifications/telegram-daemon-cli";
 
 const THREADED_FALLBACK_NOTICE =
 	"Flat Telegram private chat supports outbound notifications and inline ask buttons only. Enable Threaded Mode in @BotFather > Bot Settings > Threads Settings for free-text replies and session commands.";
@@ -32,7 +37,7 @@ function tempAgentDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "gjc-telegram-daemon-test-"));
 }
 
-function settings(agentDir: string): Settings {
+function settings(agentDir: string, overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
 	// Isolate getAgentDir() to the temp dir so daemon persistence (aliases,
 	// topics, lock/state/roots) never writes into the real global ~/.gjc/agent.
 	return setPrivateAgentDir(
@@ -41,6 +46,7 @@ function settings(agentDir: string): Settings {
 			"notifications.telegram.botToken": "123456:secret-token",
 			"notifications.telegram.chatId": "42",
 			"notifications.daemon.idleTimeoutMs": 20,
+			...overrides,
 		}) as Settings,
 		agentDir,
 	);
@@ -1621,7 +1627,9 @@ test("transient topic rename failure is retried on the next identity header", as
 	const agentDir = tempAgentDir();
 	const bot = new RetryRenameBotApi();
 	const daemon = new TelegramNotificationDaemon({
-		settings: settings(agentDir),
+		settings: settings(agentDir, {
+			"notifications.telegram.topics.nameTemplate": "{title} · {repo}/{branch}",
+		}),
 		ownerId: "owner",
 		botToken: "tok",
 		chatId: "42",
@@ -1655,7 +1663,7 @@ test("transient topic rename failure is retried on the next identity header", as
 
 	const edits = bot.calls.filter(c => c.method === "editForumTopic");
 	expect(edits).toHaveLength(2);
-	expect(edits.map(c => c.body.name)).toEqual(["gajae-code/dev - Readable title", "gajae-code/dev - Readable title"]);
+	expect(edits.map(c => c.body.name)).toEqual(["Readable title · gajae-code/dev", "Readable title · gajae-code/dev"]);
 });
 
 test("live sessions with the same repo branch create distinct topics", async () => {
@@ -1769,6 +1777,106 @@ test("stale identity after loadTopics reuses the persisted repo branch owner", a
 	const threadedSends = bot.calls.filter(c => c.method === "sendMessage").map(c => c.body.message_thread_id);
 	expect(threadedSends).toHaveLength(1);
 	expect(Number(threadedSends[0])).toBeGreaterThan(0);
+});
+
+test("custom topic templates preserve persisted repo branch ownership after loadTopics", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const topicSettings = {
+		"notifications.telegram.topics.nameTemplate": "{title} · {repo}/{branch}",
+	} satisfies Partial<Record<SettingPath, unknown>>;
+	const firstDaemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, topicSettings),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const live = { sessionId: "LIVE", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+	await firstDaemon.handleSessionMessage(live as any, {
+		type: "identity_header",
+		sessionId: "LIVE",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "Readable title",
+	});
+
+	const restartedDaemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, topicSettings),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	await restartedDaemon.loadTopics();
+	const stale = { sessionId: "DEAD", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+	await restartedDaemon.handleSessionMessage(stale as any, {
+		type: "identity_header",
+		sessionId: "DEAD",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "Readable title",
+	});
+
+	expect(bot.calls.filter(c => c.method === "createForumTopic").map(c => c.body.name)).toEqual([
+		"Readable title · gajae-code/dev",
+	]);
+	expect(bot.calls.filter(c => c.method === "sendMessage")).toHaveLength(1);
+});
+
+test("topic identity is persisted before a failed first identity send", async () => {
+	class FailingIdentitySendBotApi extends FakeBotApi {
+		override async call(method: string, body: unknown): Promise<unknown> {
+			if (method === "sendMessage") {
+				this.calls.push({ method, body });
+				throw new Error("identity send failed");
+			}
+			return super.call(method, body);
+		}
+	}
+
+	const agentDir = tempAgentDir();
+	const topicSettings = {
+		"notifications.telegram.topics.nameTemplate": "{title} · {repo}/{branch}",
+	} satisfies Partial<Record<SettingPath, unknown>>;
+	const failingBot = new FailingIdentitySendBotApi();
+	const firstDaemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, topicSettings),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: failingBot,
+	});
+	const live = { sessionId: "LIVE", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+	await firstDaemon.handleSessionMessage(live as any, {
+		type: "identity_header",
+		sessionId: "LIVE",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "Readable title",
+	});
+	expect(failingBot.calls.some(c => c.method === "sendMessage")).toBe(true);
+
+	const restartedBot = new FakeBotApi();
+	const restartedDaemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, topicSettings),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: restartedBot,
+	});
+	await restartedDaemon.loadTopics();
+	const stale = { sessionId: "DEAD", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+	await restartedDaemon.handleSessionMessage(stale as any, {
+		type: "identity_header",
+		sessionId: "DEAD",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "Readable title",
+	});
+
+	expect(restartedBot.calls.filter(c => c.method === "createForumTopic")).toHaveLength(0);
+	expect(restartedBot.calls.filter(c => c.method === "sendMessage")).toHaveLength(0);
 });
 
 test("threaded mode off: frames fall back to the flat paired chat with a one-time notice", async () => {
@@ -2014,6 +2122,140 @@ test("identity_header with repo/branch and a title composes repo/branch - title"
 	const createTopic = bot.calls.find(c => c.method === "createForumTopic");
 	expect(createTopic).toBeTruthy();
 	expect(createTopic!.body.name).toBe("gajae-code/dev - Rebuild notifications");
+});
+
+test("custom topic template puts the title first and follows title renames", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, {
+			"notifications.telegram.topics.nameTemplate": "{title} · {repo}/{branch}",
+		}),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "First title",
+	});
+	expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("First title · gajae-code/dev");
+
+	bot.calls = [];
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "Renamed title",
+	});
+	expect(bot.calls.find(c => c.method === "editForumTopic")!.body.name).toBe("Renamed title · gajae-code/dev");
+});
+
+test("custom topic template uses legacy naming when a referenced value is missing", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, {
+			"notifications.telegram.topics.nameTemplate": "{title} · {repo}/{branch}",
+		}),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "gajae-code",
+		branch: "dev",
+	});
+	expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("gajae-code/dev");
+});
+
+test("malformed topic templates fall back to the legacy topic name", async () => {
+	for (const [index, template] of ["{title} · {unknown}", "{title", "static name"].entries()) {
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: settings(agentDir, { "notifications.telegram.topics.nameTemplate": template }),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+		});
+		const sessionId = `S${index}`;
+		const session = { sessionId, token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+		await daemon.handleSessionMessage(session as any, {
+			type: "identity_header",
+			sessionId,
+			repo: "gajae-code",
+			branch: "dev",
+			title: "Readable title",
+		});
+		expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("gajae-code/dev - Readable title");
+	}
+});
+
+test("malformed lightweight daemon topic templates fall back at runtime", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const lightweightSettings = createLightweightDaemonSettings({
+		agentDir,
+		rawConfig: {
+			notifications: {
+				telegram: {
+					topics: { nameTemplate: "{title} · {unknown}" },
+				},
+			},
+		},
+	}) as Settings;
+	const daemon = new TelegramNotificationDaemon({
+		settings: lightweightSettings,
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "gajae-code",
+		branch: "dev",
+		title: "Readable title",
+	});
+	expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("gajae-code/dev - Readable title");
+});
+
+test("subset templates render independently available placeholders", async () => {
+	const agentDir = tempAgentDir();
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir, { "notifications.telegram.topics.nameTemplate": "{branch}" }),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+
+	await daemon.handleSessionMessage(session as any, {
+		type: "identity_header",
+		sessionId: "S",
+		branch: "dev",
+	});
+	expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("dev");
 });
 
 test("identity_header without title or repo falls back to the GJC session label", async () => {

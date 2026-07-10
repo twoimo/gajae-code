@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { YAML } from "bun";
 import { withFileLock } from "../config/file-lock";
 import type { Settings } from "../config/settings";
+import { DEFAULT_TELEGRAM_TOPIC_NAME_TEMPLATE } from "../config/settings-schema";
 import { getNotificationConfig, isTelegramConfigured } from "./config";
 import { daemonPaths } from "./daemon-paths";
 import type { TelegramDaemonOptions } from "./telegram-daemon";
@@ -78,6 +79,8 @@ export function createLightweightDaemonSettings(input: {
 				case "notifications.slack.botToken":
 				case "notifications.slack.channelId":
 					return asString(value);
+				case "notifications.telegram.topics.nameTemplate":
+					return asString(value) ?? DEFAULT_TELEGRAM_TOPIC_NAME_TEMPLATE;
 				case "notifications.telegram.rich.enabled":
 					return asBoolean(value, true);
 				case "notifications.telegram.richDraft.enabled":

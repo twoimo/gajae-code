@@ -23,6 +23,8 @@ export interface TopicRecord {
 	createdAt: number;
 	/** Last applied topic title (for rename detection). */
 	name?: string;
+	/** Stable repo/branch identity used when topic names are customized. */
+	identityKey?: string;
 }
 
 /** Serialisable shape persisted to disk. */
@@ -112,6 +114,14 @@ export class TopicRegistry {
 	markIdentitySent(sessionId: string): void {
 		const record = this.topics.get(sessionId);
 		if (record) record.identitySent = true;
+	}
+
+	/** Remember the stable repo/branch identity independently of the rendered topic name. */
+	markIdentityKey(sessionId: string, identityKey: string): boolean {
+		const record = this.topics.get(sessionId);
+		if (!record || record.identityKey === identityKey) return false;
+		record.identityKey = identityKey;
+		return true;
 	}
 
 	/** Whether the identity header still needs sending for this session. */

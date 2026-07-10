@@ -42,6 +42,18 @@
 						"chatId": {
 							"type": "string"
 						},
+						"topics": {
+							"type": "object",
+							"properties": {
+								"nameTemplate": {
+									"type": "string",
+									"description": "Telegram forum-topic name template. Supports {repo}, {branch}, and {title}; invalid templates and missing referenced values use the legacy topic-name fallback.",
+									"default": "{repo}/{branch} - {title}",
+									"pattern": "^(?:[^{}]|\\{(?:repo|branch|title)\\})*\\{(?:repo|branch|title)\\}(?:[^{}]|\\{(?:repo|branch|title)\\})*$"
+								}
+							},
+							"additionalProperties": false
+						},
 						"rich": {
 							"type": "object",
 							"properties": {

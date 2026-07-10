@@ -198,6 +198,24 @@ against the paired `notifications.telegram.chatId`. If BotFather does not show
 after setup reported `threaded=verified`, the daemon routes notifications to the
 normal (flat) paired private chat and posts a one-time nudge to enable Threaded
 Mode rather than dropping them.
+
+Topic names default to the existing `{repo}/{branch} - {title}` composition. The
+legacy fallbacks remain unchanged when a title or repository identity is not yet
+available. To put the session title first, set a custom template in `config.yml`:
+
+```yaml
+notifications:
+  telegram:
+    topics:
+      nameTemplate: "{title} · {repo}/{branch}"
+```
+
+Templates may use `{repo}`, `{branch}`, and `{title}`. A template must contain at
+least one supported placeholder and cannot contain unknown or unbalanced brace
+tokens. Invalid templates, and valid templates whose referenced values are not
+yet available, safely use the legacy topic-name composition instead. Existing
+installations therefore keep byte-for-byte topic naming unless this setting is
+changed.
 Flat private chat is notification-only plus inline ask buttons. It is not a
 free-text chat surface: replies typed as normal messages and session commands such
 as `/verbose`, `/lean`, `/verbosity`, and `/redact` require Threaded Mode/topic

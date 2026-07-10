@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { logger } from "@gajae-code/utils";
 import { withFileLock } from "../config/file-lock";
 import type { Settings } from "../config/settings";
+import { DEFAULT_TELEGRAM_TOPIC_NAME_TEMPLATE, isValidTelegramTopicNameTemplate } from "../config/settings-schema";
 import type { DaemonRuntimeInfo } from "../daemon/control-types";
 import { resolveGjcRuntimeSpawnInfo } from "../daemon/runtime";
 import { getNotificationConfig, isTelegramConfigured, tokenFingerprint } from "./config";
@@ -1588,12 +1589,25 @@ export class TelegramNotificationDaemon {
 		const repo = typeof msg?.repo === "string" && msg.repo ? msg.repo : undefined;
 		const branch = typeof msg?.branch === "string" && msg.branch ? msg.branch : undefined;
 		const title = typeof msg?.title === "string" && msg.title ? msg.title : undefined;
-		// Name the topic "{repo}/{branch}" before a session title exists, then
-		// "{repo}/{branch} - {title}" once it does. Fall back to the session id
-		// only when no repo identity is available.
-		const base = repo ? (branch ? `${repo}/${branch}` : repo) : undefined;
-		if (base) return title ? `${base} - ${title}` : base;
-		if (title) return title;
+		const fallback = this.legacyTopicNameFor(sessionId, { repo, branch, title });
+		const configuredTemplate = this.opts.settings.get("notifications.telegram.topics.nameTemplate");
+		const template =
+			typeof configuredTemplate === "string" ? configuredTemplate : DEFAULT_TELEGRAM_TOPIC_NAME_TEMPLATE;
+		if (!isValidTelegramTopicNameTemplate(template)) return fallback;
+		const values = { repo, branch, title };
+		for (const placeholder of ["repo", "branch", "title"] as const) {
+			if (template.includes(`{${placeholder}}`) && !values[placeholder]) return fallback;
+		}
+		return template.replace(
+			/\{(repo|branch|title)\}/g,
+			(_match, placeholder: string) => values[placeholder as keyof typeof values] ?? "",
+		);
+	}
+
+	private legacyTopicNameFor(sessionId: string, values: { title?: string; repo?: string; branch?: string }): string {
+		const base = values.repo ? (values.branch ? `${values.repo}/${values.branch}` : values.repo) : undefined;
+		if (base) return values.title ? `${base} - ${values.title}` : base;
+		if (values.title) return values.title;
 		return `GJC ${sessionId.slice(-6)}`;
 	}
 
@@ -1615,11 +1629,13 @@ export class TelegramNotificationDaemon {
 		const identityKey = this.topicIdentityKey(msg);
 		const remembered = identityKey ? this.topicOwnerByIdentity.get(identityKey) : undefined;
 		if (remembered && this.topics.get(remembered)) return remembered;
+		if (!identityKey) return undefined;
 		const base = this.topicIdentityBase(msg);
-		if (!identityKey || !base) return undefined;
 		for (const sessionId of this.topics.sessionIds()) {
-			const name = this.topics.get(sessionId)?.name;
-			if (name === base || name?.startsWith(`${base} - `)) {
+			const topic = this.topics.get(sessionId);
+			const nameMatchesLegacyIdentity =
+				base !== undefined && (topic?.name === base || topic?.name?.startsWith(`${base} - `));
+			if (topic?.identityKey === identityKey || nameMatchesLegacyIdentity) {
 				this.topicOwnerByIdentity.set(identityKey, sessionId);
 				return sessionId;
 			}
@@ -2257,7 +2273,10 @@ export class TelegramNotificationDaemon {
 			}
 			if (send.identity) {
 				const identityKey = this.topicIdentityKey(msg);
-				if (identityKey) this.topicOwnerByIdentity.set(identityKey, session.sessionId);
+				if (identityKey) {
+					this.topicOwnerByIdentity.set(identityKey, session.sessionId);
+					if (this.topics.markIdentityKey(session.sessionId, identityKey)) await this.persistTopics();
+				}
 				// Rename the topic if the title changed (e.g. the session title was
 				// auto-generated after the topic was first created). This runs on
 				// every identity frame, but does NOT re-send the bulleted message.

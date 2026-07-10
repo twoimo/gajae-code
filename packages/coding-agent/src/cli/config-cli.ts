@@ -223,6 +223,17 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			else throw new Error(`Invalid boolean value: ${rawValue}. Use true/false, yes/no, on/off, or 1/0`);
 			break;
 		}
+		case "string": {
+			parsedValue = trimmed;
+			const validate =
+				"validate" in SETTINGS_SCHEMA[path]
+					? (SETTINGS_SCHEMA[path].validate as ((value: string) => boolean) | undefined)
+					: undefined;
+			if (validate?.(parsedValue as string) === false) {
+				throw new Error(`Invalid value for ${path}: ${rawValue}`);
+			}
+			break;
+		}
 		case "number": {
 			parsedValue = Number(trimmed);
 			if (!Number.isFinite(parsedValue)) throw new Error(`Invalid number: ${rawValue}`);

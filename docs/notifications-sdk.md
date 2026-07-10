@@ -247,6 +247,14 @@ session creates a fresh topic before sending again. The bot must be allowed to
 delete messages in that chat; without that permission, deletion is best-effort and
 delivery continues.
 
+Forum-topic names use the backward-compatible
+`notifications.telegram.topics.nameTemplate` setting. Its default is
+`{repo}/{branch} - {title}`; for a title-first sidebar use
+`{title} · {repo}/{branch}`. The only supported placeholders are `{repo}`,
+`{branch}`, and `{title}`. Malformed templates or templates that reference a
+value not yet available fall back to the legacy repo/branch, title-only, or
+`GJC <session>` naming rules.
+
 ### Singleton poller and trust model
 
 Telegram `getUpdates` allows only one active long-poll owner per bot token. The
