@@ -315,12 +315,14 @@ export class SessionSelectorComponent extends Container {
 	#showDeleteConfirmation(session: SessionInfo): void {
 		if (this.#state.kind !== "browsing" || this.#confirmationDialog) return;
 		const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
+		let deleting = false;
 		const dialog = new HookSelectorComponent(
 			`Delete selected session transcript and artifacts?\n${displayName}\nThis cannot be undone. Other sessions and topic/history metadata are not deleted.`,
 			["Yes", "No"],
 			async option => {
-				if (this.#confirmationDialog !== dialog) return;
+				if (this.#confirmationDialog !== dialog || deleting) return;
 				if (option === "Yes" && this.onDelete) {
+					deleting = true;
 					this.#clearError();
 					try {
 						if (await this.onDelete(session)) this.#sessionList.removeSession(session.path);
@@ -333,7 +335,7 @@ export class SessionSelectorComponent extends Container {
 				this.#requestRender();
 			},
 			() => {
-				if (this.#confirmationDialog !== dialog) return;
+				if (this.#confirmationDialog !== dialog || deleting) return;
 				this.removeChild(dialog);
 				this.#confirmationDialog = null;
 				this.#requestRender();

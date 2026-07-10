@@ -96,6 +96,25 @@ describe("SessionSelectorComponent delete confirmation", () => {
 		expect(rendered).not.toContain("Alpha");
 		expect(rendered).toContain("Beta");
 	});
+
+	it("runs an accepted delete at most once while it is pending", async () => {
+		const pending = Promise.withResolvers<boolean>();
+		const onDelete = vi.fn(() => pending.promise);
+		const selector = createSelector(onDelete);
+
+		selector.handleInput("\x1b[3~");
+		selector.handleInput("\n");
+		selector.handleInput("\n");
+		selector.handleInput("\x1b");
+		expect(onDelete).toHaveBeenCalledTimes(1);
+		expect(renderText(selector)).toContain("Delete selected session transcript and artifacts?");
+
+		pending.resolve(true);
+		await pending.promise;
+		await Bun.sleep(0);
+		expect(renderText(selector)).not.toContain("Alpha");
+		expect(renderText(selector)).not.toContain("Delete selected session transcript and artifacts?");
+	});
 	it("keeps selection valid after navigating empty search results", async () => {
 		const onSelect = vi.fn();
 		const selector = createSelector(async () => false, onSelect);
