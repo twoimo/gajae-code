@@ -391,6 +391,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#welcomeComponent?: WelcomeComponent;
 	#ircSplitView: IrcSplitViewComponent;
+	#ircSidebarAvailable = false;
+	#ircSidebarRequestedVisible = false;
 
 	constructor(
 		session: AgentSession,
@@ -568,6 +570,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		this.ui.addChild(this.#ircSplitView);
+		this.ui.setViewportAnchorComponent(this.#ircSplitView);
+
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);
@@ -2315,6 +2319,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#uiHelpers.findLastAssistantMessage();
 	}
 
+	getAssistantViewportAnchorId(message: AssistantMessage): string {
+		return this.#uiHelpers.assistantViewportAnchorId(message);
+	}
+
 	extractAssistantText(message: AssistantMessage): string {
 		return this.#uiHelpers.extractAssistantText(message);
 	}
@@ -2681,15 +2689,21 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	toggleIrcSidebar(): void {
-		if (this.settings.get("irc.enabled") !== true || this.settings.get("irc.sidebar.enabled") !== true) return;
-		this.#ircSplitView.setVisible(!this.#ircSplitView.visible);
+		if (
+			!this.#ircSidebarAvailable ||
+			this.settings.get("irc.enabled") !== true ||
+			this.settings.get("irc.sidebar.enabled") !== true
+		)
+			return;
+		this.#ircSidebarRequestedVisible = !this.#ircSidebarRequestedVisible;
+		this.#ircSplitView.setVisible(this.#ircSidebarRequestedVisible);
 		this.#invalidateIrcSidebarRender();
 		this.ui.requestRender();
 	}
 
 	applyIrcSidebarAvailability(enabled: boolean): void {
-		if (enabled) return;
-		this.#ircSplitView.setVisible(false);
+		this.#ircSidebarAvailable = enabled;
+		this.#ircSplitView.setVisible(enabled && this.#ircSidebarRequestedVisible);
 		this.#invalidateIrcSidebarRender();
 		this.ui.requestRender();
 	}
@@ -2697,6 +2711,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	resetIrcSidebarSession(): void {
 		this.ircLedger.reset();
 		this.#eventController.resetIrcObservations();
+		this.#ircSidebarAvailable = false;
+		this.#ircSidebarRequestedVisible = false;
 		this.#ircSplitView.setVisible(false);
 		this.#invalidateIrcSidebarRender();
 		this.ui.requestRender();

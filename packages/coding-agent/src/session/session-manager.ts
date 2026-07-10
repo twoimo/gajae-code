@@ -145,6 +145,39 @@ export interface SessionMessageEntry extends SessionEntryBase {
 	evictedContent?: EvictedContentMarker;
 }
 
+const sessionMessageEntryIds = new WeakMap<object, string>();
+const sessionMessageViewportAnchorIds = new WeakMap<object, string>();
+
+export function associateSessionMessageEntryId(message: AgentMessage, entryId: string): void {
+	sessionMessageEntryIds.set(message, entryId);
+}
+
+export function getSessionMessageEntryId(message: AgentMessage): string | undefined {
+	return sessionMessageEntryIds.get(message);
+}
+
+export function associateSessionMessageViewportAnchorId(message: AgentMessage, anchorId: string): void {
+	sessionMessageViewportAnchorIds.set(message, anchorId);
+}
+
+export function getSessionMessageViewportAnchorId(message: AgentMessage): string | undefined {
+	return sessionMessageViewportAnchorIds.get(message);
+}
+
+export function transferSessionMessageIdentity(source: AgentMessage[], target: AgentMessage[]): void {
+	if (source.length !== target.length) {
+		throw new Error(
+			`Cannot transfer session message identity across ${source.length} source and ${target.length} target messages`,
+		);
+	}
+	for (let index = 0; index < source.length; index++) {
+		const entryId = getSessionMessageEntryId(source[index]);
+		if (entryId) associateSessionMessageEntryId(target[index], entryId);
+		const anchorId = getSessionMessageViewportAnchorId(source[index]);
+		if (anchorId) associateSessionMessageViewportAnchorId(target[index], anchorId);
+	}
+}
+
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	type: "thinking_level_change";
 	thinkingLevel?: string | null;
@@ -747,6 +780,7 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
+			associateSessionMessageEntryId(entry.message, entry.id);
 			messages.push(entry.message);
 		} else if (entry.type === "custom_message") {
 			messages.push(
@@ -836,9 +870,11 @@ export function buildSessionContext(
 }
 
 function cloneSessionContext(context: SessionContext): SessionContext {
+	const messages = cloneJsonSemantic(context.messages);
+	transferSessionMessageIdentity(context.messages, messages);
 	return {
 		...context,
-		messages: cloneJsonSemantic(context.messages),
+		messages,
 		models: { ...context.models },
 		injectedTtsrRules: [...context.injectedTtsrRules],
 		injectedTtsrRuleRecords: context.injectedTtsrRuleRecords?.map(record => ({ ...record })),
@@ -1605,11 +1641,13 @@ function cloneJsonSemantic<T>(value: T): T {
 }
 
 function cloneAgentMessage<T extends AgentMessage>(message: T): T {
-	return {
+	const cloned = {
 		...message,
 		...("content" in message ? { content: cloneJsonSemantic(message.content) } : {}),
 		...("providerPayload" in message ? { providerPayload: cloneJsonSemantic(message.providerPayload) } : {}),
-	};
+	} as T;
+	transferSessionMessageIdentity([message], [cloned]);
+	return cloned;
 }
 
 function cloneSessionEntry(entry: SessionEntry): SessionEntry {
@@ -3874,7 +3912,10 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			message,
 		};
+		associateSessionMessageEntryId(message, entry.id);
 		this.#appendEntry(entry);
+		const residentEntry = this.#byId.get(entry.id);
+		if (residentEntry?.type === "message") transferSessionMessageIdentity([message], [residentEntry.message]);
 		return entry.id;
 	}
 
@@ -4546,6 +4587,9 @@ export class SessionManager {
 			this.#residentBlobStoresForColdRehydrate(),
 		);
 		if (rehydrated !== materialized) this.#coldSpillReadCount += this.#countColdSpillPayloads(entry);
+		if (entry.type === "message" && rehydrated.type === "message") {
+			transferSessionMessageIdentity([entry.message], [rehydrated.message]);
+		}
 		return rehydrated;
 	}
 

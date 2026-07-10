@@ -21,6 +21,7 @@ import { summaryFromMessage } from "../../notifications/helpers";
 import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { type CustomMessage, isSilentAbort, readPendingDisplayTag } from "../../session/messages";
+import { transferSessionMessageIdentity } from "../../session/session-manager";
 import type { ResolveToolDetails } from "../../tools/resolve";
 import type { IrcObservationRecord } from "../irc-observation-ledger";
 import { interruptHint } from "../shared";
@@ -345,8 +346,11 @@ export class EventController {
 			this.#resetReadGroup();
 			this.#toolIntentCache.clear();
 			this.#thinkingContentIndices.clear();
-			this.ctx.streamingComponent = new AssistantMessageComponent(undefined, this.ctx.hideThinkingBlock, () =>
-				this.ctx.ui.requestRender(),
+			this.ctx.streamingComponent = new AssistantMessageComponent(
+				undefined,
+				this.ctx.hideThinkingBlock,
+				() => this.ctx.ui.requestRender(),
+				this.ctx.getAssistantViewportAnchorId?.(event.message),
 			);
 			this.ctx.streamingMessage = event.message;
 			addChatChild(this.ctx, this.ctx.streamingComponent);
@@ -474,6 +478,9 @@ export class EventController {
 
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
+			if (this.ctx.streamingMessage?.role === "assistant") {
+				transferSessionMessageIdentity([this.ctx.streamingMessage], [event.message]);
+			}
 			this.ctx.streamingMessage = event.message;
 			this.ctx.streamingComponent.updateContent(this.ctx.streamingMessage, { streaming: true });
 			const contentIndex = event.assistantMessageEvent?.contentIndex;
@@ -577,6 +584,9 @@ export class EventController {
 	async #handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): Promise<void> {
 		if (event.message.role === "user") return;
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
+			if (this.ctx.streamingMessage?.role === "assistant") {
+				transferSessionMessageIdentity([this.ctx.streamingMessage], [event.message]);
+			}
 			this.ctx.streamingMessage = event.message;
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";

@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { type IrcSidebarTheme, IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { type Component, Image, ImageProtocol, isTerminalGraphicsFallbackActive, TERMINAL } from "@gajae-code/tui";
+import {
+	type Component,
+	Container,
+	Image,
+	ImageProtocol,
+	isTerminalGraphicsFallbackActive,
+	TERMINAL,
+	Text,
+} from "@gajae-code/tui";
 
 const sidebarTheme = {
 	fg: (_color: "dim", text: string) => text,
@@ -49,6 +57,43 @@ describe("IrcSplitViewComponent", () => {
 
 		expect(split.render(80)).toEqual(["transcript"]);
 		expect(pane.widths).toEqual([80]);
+	});
+
+	it("preserves transcript metadata while excluding inline and right-only IRC rows", () => {
+		const left = new Container();
+		const semantic = new Text("semantic transcript row", 0, 0);
+		const inlineIrc = new Text("inline IRC row", 0, 0);
+		left.addChild(semantic);
+		left.setViewportAnchorSource(semantic, { id: "message-1" });
+		left.addChild(inlineIrc);
+		const ledger = new IrcObservationLedger();
+		addRecord(ledger, "right one\nright two\nright three\nright four");
+		const split = new IrcSplitViewComponent(left, ledger, sidebarTheme);
+
+		const hidden = split.renderWithViewportAnchors(80);
+		const hiddenPlain = hidden.lines.map(line => Bun.stripANSI(line));
+		const hiddenSemantic = hiddenPlain.findIndex(line => line.includes("semantic transcript row"));
+		const hiddenInline = hiddenPlain.findIndex(line => line.includes("inline IRC row"));
+		expect(hidden.anchors[hiddenSemantic]?.id).toBe("message-1");
+		expect(hidden.anchors[hiddenInline]).toBeNull();
+
+		split.setVisible(true);
+		const visible = split.renderWithViewportAnchors(80);
+		const visiblePlain = visible.lines.map(line => Bun.stripANSI(line));
+		const visibleSemantic = visiblePlain.findIndex(line => line.includes("semantic transcript row"));
+		const visibleInline = visiblePlain.findIndex(line => line.includes("inline IRC row"));
+		expect(visible.anchors[visibleSemantic]?.id).toBe("message-1");
+		expect(visible.anchors[visibleInline]).toBeNull();
+		const rightOnlyRows = visiblePlain.flatMap((line, index) =>
+			line.includes("right ") && !line.includes("semantic transcript row") && !line.includes("inline IRC row")
+				? [index]
+				: [],
+		);
+		expect(rightOnlyRows.length).toBeGreaterThan(0);
+		for (const row of rightOnlyRows) expect(visible.anchors[row]).toBeNull();
+
+		split.setVisible(false);
+		expect(split.renderWithViewportAnchors(80).anchors.some(anchor => anchor?.id === "message-1")).toBe(true);
 	});
 
 	it("renders all ledger records with UTC metadata and indented continuations", () => {

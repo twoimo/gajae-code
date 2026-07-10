@@ -1,9 +1,12 @@
 import {
 	type Component,
 	padding,
+	renderComponentWithViewportAnchors,
 	replaceTabs,
 	TERMINAL,
 	truncateToWidth,
+	type ViewportAnchorProvider,
+	type ViewportAnchorRender,
 	visibleWidth,
 	withTerminalGraphicsFallback,
 	wrapTextWithAnsi,
@@ -41,7 +44,7 @@ export interface IrcSidebarTheme {
 export type IrcSidebarThemeSource = IrcSidebarTheme | (() => IrcSidebarTheme);
 
 /** Read-only IRC history alongside the active transcript. */
-export class IrcSplitViewComponent implements Component {
+export class IrcSplitViewComponent implements ViewportAnchorProvider {
 	#visible = false;
 
 	constructor(
@@ -61,7 +64,11 @@ export class IrcSplitViewComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		if (!this.#visible) return this.leftPane.render(width);
+		return this.renderWithViewportAnchors(width).lines;
+	}
+
+	renderWithViewportAnchors(width: number): ViewportAnchorRender {
+		if (!this.#visible) return renderComponentWithViewportAnchors(this.leftPane, width);
 
 		const componentTheme = typeof this.componentTheme === "function" ? this.componentTheme() : this.componentTheme;
 		const leftWidth = Math.floor(width * 0.5);
@@ -69,32 +76,30 @@ export class IrcSplitViewComponent implements Component {
 		const separatorWidth = width - leftWidth > 3 ? visibleWidth(separatorText) : 0;
 		const separator = separatorWidth > 0 ? separatorText : "";
 		const rightWidth = Math.max(0, width - leftWidth - separatorWidth);
-		// Cursor-neutral (kitty) image placements are safe inside the split:
-		// the escape anchors to its cell without moving the cursor, so the
-		// right column still composes correctly. Cursor-advancing protocols
-		// (iTerm2/SIXEL) remain suppressed by the fallback scope.
-		const leftLines = withTerminalGraphicsFallback(() => this.leftPane.render(leftWidth), {
-			allowCursorNeutralImages: true,
-		});
+		const leftRender = withTerminalGraphicsFallback(
+			() => renderComponentWithViewportAnchors(this.leftPane, leftWidth),
+			{ allowCursorNeutralImages: true },
+		);
 		const rightLines = renderSidebarRecords(this.ledger, rightWidth);
-		const lineCount = Math.max(leftLines.length, rightLines.length);
-		const output: string[] = [];
+		const lineCount = Math.max(leftRender.lines.length, rightLines.length);
+		const lines: string[] = [];
+		const anchors: ViewportAnchorRender["anchors"] = [];
 
-		const leftOffset = lineCount - leftLines.length;
+		const leftOffset = lineCount - leftRender.lines.length;
 		const rightOffset = lineCount - rightLines.length;
 		for (let index = 0; index < lineCount; index++) {
-			const leftRaw = leftLines[index - leftOffset] ?? "";
+			const leftIndex = index - leftOffset;
+			const leftRaw = leftRender.lines[leftIndex] ?? "";
 			const right = truncateToWidth(rightLines[index - rightOffset] ?? "", rightWidth);
 			if (TERMINAL.isImageLine(leftRaw)) {
-				// Never truncate/measure an image escape: it renders zero visible
-				// columns, so pad the full left width after it.
-				output.push(leftRaw + padding(leftWidth) + separator + right);
-				continue;
+				lines.push(leftRaw + padding(leftWidth) + separator + right);
+			} else {
+				const left = truncateToWidth(leftRaw, leftWidth);
+				lines.push(left + padding(Math.max(0, leftWidth - visibleWidth(left))) + separator + right);
 			}
-			const left = truncateToWidth(leftRaw, leftWidth);
-			output.push(left + padding(Math.max(0, leftWidth - visibleWidth(left))) + separator + right);
+			anchors.push(leftRender.anchors[leftIndex] ?? null);
 		}
-		return output;
+		return { lines, anchors };
 	}
 
 	invalidate(): void {

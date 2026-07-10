@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { Agent } from "@gajae-code/agent-core";
+import type { AssistantMessage } from "@gajae-code/ai";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
 import { CURSOR_MARKER, Text, visibleWidth } from "@gajae-code/tui";
@@ -11,7 +12,7 @@ import { CustomEditor } from "../src/modes/components/custom-editor";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
-import { SessionManager } from "../src/session/session-manager";
+import { associateSessionMessageEntryId, type SessionContext, SessionManager } from "../src/session/session-manager";
 
 class TestModalEditor extends CustomEditor {}
 function stripRenderControls(line: string): string {
@@ -83,6 +84,191 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(lines.join("\n")).not.toContain("›");
 	});
 
+	it("keeps transcript anchoring registered across live IRC sidebar settings", () => {
+		const setViewportAnchor = vi.spyOn(mode.ui, "setViewportAnchorComponent");
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		mode.toggleIrcSidebar();
+		mode.settings.set("irc.sidebar.enabled", false);
+		mode.applyIrcSidebarAvailability(false);
+		expect(setViewportAnchor).not.toHaveBeenCalled();
+	});
+
+	it("marks only durable transcript messages as viewport-anchor eligible", async () => {
+		await mode.init();
+		mode.addMessageToChat({ role: "user", content: "durable semantic user", timestamp: 1 });
+		mode.addMessageToChat({ role: "user", content: "synthetic replay row", synthetic: true, timestamp: 2 });
+		mode.showStatus("ephemeral status row");
+
+		const rendered = mode.chatContainer.renderWithViewportAnchors(48);
+		const plainLines = rendered.lines.map(line => Bun.stripANSI(line));
+		const durableRow = plainLines.findIndex(line => line.includes("durable semantic user"));
+		const syntheticRow = plainLines.findIndex(line => line.includes("synthetic replay row"));
+		const statusRow = plainLines.findIndex(line => line.includes("ephemeral status row"));
+		expect(durableRow).toBeGreaterThanOrEqual(0);
+		expect(rendered.anchors[durableRow]).not.toBeNull();
+		const durableId = rendered.anchors[durableRow]?.id;
+		expect(durableId).toBeDefined();
+		const userLabelRow = plainLines.findIndex(line => line.trim() === "user");
+		expect(userLabelRow).toBeGreaterThanOrEqual(0);
+		expect(rendered.anchors[userLabelRow]).toBeNull();
+		expect(rendered.lines.join("")).toContain("\x1b]133;A\x07");
+		expect(rendered.lines.join("")).toContain("\x1b]133;B\x07\x1b]133;C\x07");
+		expect(syntheticRow).toBeGreaterThanOrEqual(0);
+		expect(rendered.anchors[syntheticRow]).toBeNull();
+		expect(statusRow).toBeGreaterThanOrEqual(0);
+		expect(rendered.anchors[statusRow]).toBeNull();
+
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		mode.toggleIrcSidebar();
+		const visibleSplit = mode.ui.renderWithViewportAnchors(80);
+		const visibleDurable = visibleSplit.anchors.findIndex(anchor => anchor?.id === durableId);
+		expect(visibleDurable).toBeGreaterThanOrEqual(0);
+		expect(visibleSplit.anchors[visibleDurable]).not.toBeNull();
+
+		mode.applyIrcSidebarAvailability(false);
+		const temporarilyUnavailable = mode.ui.renderWithViewportAnchors(80);
+		const temporaryRow = temporarilyUnavailable.anchors.findIndex(anchor => anchor?.id === durableId);
+		expect(temporaryRow).toBeGreaterThanOrEqual(0);
+		expect(temporarilyUnavailable.anchors[temporaryRow]).not.toBeNull();
+		mode.applyIrcSidebarAvailability(true);
+		const restoredVisible = mode.ui.renderWithViewportAnchors(80);
+		const restoredRow = restoredVisible.anchors.findIndex(anchor => anchor?.id === durableId);
+		expect(restoredRow).toBeGreaterThanOrEqual(0);
+		expect(restoredVisible.anchors[restoredRow]).not.toBeNull();
+
+		mode.settings.set("irc.sidebar.enabled", false);
+		mode.applyIrcSidebarAvailability(false);
+		const hiddenSplit = mode.ui.renderWithViewportAnchors(80);
+		const hiddenDurable = hiddenSplit.anchors.findIndex(anchor => anchor?.id === durableId);
+		expect(hiddenDurable).toBeGreaterThanOrEqual(0);
+		expect(hiddenSplit.anchors[hiddenDurable]).not.toBeNull();
+
+		mode.settings.set("irc.enabled", false);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(false);
+		const unavailable = mode.ui.renderWithViewportAnchors(80);
+		const unavailableRow = unavailable.anchors.findIndex(anchor => anchor?.id === durableId);
+		expect(unavailableRow).toBeGreaterThanOrEqual(0);
+		expect(unavailable.anchors[unavailableRow]).not.toBeNull();
+	});
+
+	it("keeps duplicate transcript occurrences distinct and stable across rebuild", () => {
+		const userMessages = [
+			{ role: "user" as const, content: "identical user", timestamp: 42 },
+			{ role: "user" as const, content: "identical user", timestamp: 42 },
+		];
+		const assistantMessage = (): AssistantMessage => ({
+			role: "assistant",
+			content: [{ type: "text", text: "identical assistant" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "same-model",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 42,
+		});
+		const assistantMessages = [assistantMessage(), assistantMessage()];
+		associateSessionMessageEntryId(userMessages[0], "user-a");
+		associateSessionMessageEntryId(userMessages[1], "user-b");
+		associateSessionMessageEntryId(assistantMessages[0], "assistant-a");
+		associateSessionMessageEntryId(assistantMessages[1], "assistant-b");
+		for (const message of [...userMessages, ...assistantMessages]) mode.addMessageToChat(message);
+		const orderedOccurrenceIds = (anchors: ReadonlyArray<{ id: string } | null>, prefix: string): string[] => {
+			const ids: string[] = [];
+			const seen = new Set<string>();
+			for (const anchor of anchors) {
+				if (anchor === null || !anchor.id.startsWith(prefix) || seen.has(anchor.id)) continue;
+				seen.add(anchor.id);
+				ids.push(anchor.id);
+			}
+			return ids;
+		};
+		const initial = mode.chatContainer.renderWithViewportAnchors(80).anchors;
+		const initialUserIds = orderedOccurrenceIds(initial, "user:");
+		const initialAssistantIds = orderedOccurrenceIds(initial, "assistant:");
+		expect(initialUserIds).toHaveLength(2);
+		expect(initialAssistantIds).toHaveLength(2);
+
+		mode.chatContainer.clear();
+		const insertedUser = { ...userMessages[0] };
+		const rebuiltUserA = { ...userMessages[0] };
+		const rebuiltUserB = { ...userMessages[1] };
+		const rebuiltAssistantA = assistantMessage();
+		const rebuiltAssistantB = assistantMessage();
+		associateSessionMessageEntryId(insertedUser, "user-inserted");
+		associateSessionMessageEntryId(rebuiltUserA, "user-a");
+		associateSessionMessageEntryId(rebuiltUserB, "user-b");
+		associateSessionMessageEntryId(rebuiltAssistantA, "assistant-a");
+		associateSessionMessageEntryId(rebuiltAssistantB, "assistant-b");
+		mode.renderSessionContext({
+			messages: [insertedUser, rebuiltUserA, rebuiltUserB, rebuiltAssistantA, rebuiltAssistantB],
+		} as unknown as SessionContext);
+		const inserted = mode.chatContainer.renderWithViewportAnchors(80).anchors;
+		expect(orderedOccurrenceIds(inserted, "user:")).toEqual(["user:entry:user-inserted", ...initialUserIds]);
+		expect(orderedOccurrenceIds(inserted, "assistant:")).toEqual(initialAssistantIds);
+
+		mode.chatContainer.clear();
+		mode.renderSessionContext({
+			messages: [rebuiltUserA, rebuiltUserB, rebuiltAssistantA, rebuiltAssistantB],
+		} as unknown as SessionContext);
+		const afterDeletion = mode.chatContainer.renderWithViewportAnchors(80).anchors;
+		expect(orderedOccurrenceIds(afterDeletion, "user:")).toEqual(initialUserIds);
+		expect(orderedOccurrenceIds(afterDeletion, "assistant:")).toEqual(initialAssistantIds);
+	});
+
+	it("preserves a live assistant anchor ID after persistence and transcript rebuild", () => {
+		const liveMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "live then persisted" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "same-model",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 77,
+		};
+		const liveId = mode.getAssistantViewportAnchorId(liveMessage);
+		expect(liveId).toContain(":occurrence:");
+		mode.addMessageToChat(liveMessage);
+		expect(
+			mode.chatContainer
+				.renderWithViewportAnchors(80)
+				.anchors.some(anchor => anchor?.id === `${liveId}:content:0:text`),
+		).toBe(true);
+
+		session.sessionManager.appendMessage(liveMessage);
+		const rebuiltContext = session.sessionManager.buildSessionContext();
+		const rebuiltMessage = rebuiltContext.messages.find(message => message.role === "assistant");
+		if (rebuiltMessage?.role !== "assistant") throw new Error("Expected rebuilt assistant message");
+		expect(rebuiltMessage).not.toBe(liveMessage);
+		expect(mode.getAssistantViewportAnchorId(rebuiltMessage)).toBe(liveId);
+
+		mode.chatContainer.clear();
+		mode.renderSessionContext(rebuiltContext);
+		expect(
+			mode.chatContainer
+				.renderWithViewportAnchors(80)
+				.anchors.some(anchor => anchor?.id === `${liveId}:content:0:text`),
+		).toBe(true);
+	});
 	function expectedNewlineShortcutHint(): string {
 		const shortcut = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
 		return `${shortcut}: New line`;

@@ -194,6 +194,7 @@ export interface InteractiveModeContext {
 	): void;
 	renderInitialMessages(prebuiltContext?: SessionContext, options?: { preserveExistingChat?: boolean }): void;
 	getUserMessageText(message: Message): string;
+	getAssistantViewportAnchorId?(message: AssistantMessage): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
 	updateEditorTopBorder(): void;
