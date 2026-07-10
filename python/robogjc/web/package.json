@@ -6,6 +6,7 @@
   "description": "Glassmorphic SolidJS dashboard bundled by Vite and served by robogjc's FastAPI app.",
   "scripts": {
     "dev": "vite",
+    "check": "bun run typecheck",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
@@ -17,7 +18,7 @@
     "@tailwindcss/vite": "catalog:",
     "@types/bun": "catalog:",
     "tailwindcss": "catalog:",
-    "typescript": "^5.7.3",
+    "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-solid": "catalog:"
   }
