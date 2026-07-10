@@ -260,6 +260,22 @@ async function runSmokeTest(): Promise<void> {
 	process.stdout.write("smoke-test: ok\n");
 }
 
+/** Normalize the sole `gjc resume` alias into the value-less launch intent. */
+export function normalizeResumeAlias(argv: readonly string[]): string[] {
+	return argv.length === 1 && argv[0] === "resume" ? ["--resume"] : [...argv];
+}
+
+/** Apply the same default-launch routing used by runCli after root fast paths. */
+export function routeRootArgv(argv: readonly string[]): string[] {
+	const normalizedArgv = normalizeResumeAlias(argv);
+	const first = normalizedArgv[0];
+	return first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help"
+		? normalizedArgv
+		: isSubcommand(first)
+			? normalizedArgv
+			: ["launch", ...normalizedArgv];
+}
+
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
 	if (isNotifyDaemonInternalFastPath(argv)) {
@@ -302,13 +318,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	await installRuntimeGlobals();
 	// --help and --version are handled by run() directly, don't rewrite those.
 	// Everything else that isn't a known subcommand routes to "launch".
-	const first = argv[0];
-	const runArgv =
-		first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help"
-			? argv
-			: isSubcommand(first)
-				? argv
-				: ["launch", ...argv];
+	const runArgv = routeRootArgv(argv);
 	return run({ bin: APP_NAME, version: VERSION, argv: runArgv, commands, help: showHelp });
 }
 
