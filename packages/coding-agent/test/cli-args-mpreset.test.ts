@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { Model } from "@gajae-code/ai";
+import { type Model, THINKING_EFFORTS } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
+import { RootHelpCommand } from "../src/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { Settings } from "../src/config/settings";
@@ -73,6 +74,13 @@ describe("CLI model profile args", () => {
 
 	test("rejects --default without --mpreset", () => {
 		expect(() => parseArgs(["--default"])).toThrow("--default requires --mpreset <name>");
+	});
+});
+
+describe("root CLI thinking choices", () => {
+	test("exposes only canonical provider effort values", () => {
+		expect(RootHelpCommand.flags.thinking.options).toEqual([...THINKING_EFFORTS]);
+		expect(RootHelpCommand.flags.thinking.description).toBe(`Set thinking level: ${THINKING_EFFORTS.join(", ")}`);
 	});
 });
 

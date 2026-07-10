@@ -4,6 +4,7 @@
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
+import { THINKING_EFFORTS } from "@gajae-code/ai";
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
@@ -186,8 +187,8 @@ export class RootHelpCommand extends Command {
 		tmux: Flags.boolean({ description: "Launch interactive startup inside tmux" }),
 		tools: Flags.string({ description: "Comma-separated list of tools to enable (default: all)" }),
 		thinking: Flags.string({
-			description: "Set thinking level: ultra, high, medium, low",
-			options: ["ultra", "high", "medium", "low"],
+			description: `Set thinking level: ${THINKING_EFFORTS.join(", ")}`,
+			options: [...THINKING_EFFORTS],
 		}),
 		hook: Flags.string({ description: "Load a hook/extension file (can be used multiple times)", multiple: true }),
 		extension: Flags.string({

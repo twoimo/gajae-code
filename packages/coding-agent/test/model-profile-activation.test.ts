@@ -177,6 +177,24 @@ describe("model profile activation", () => {
 		expect(prepared.agentModelOverrides.critic).toBe("openai-codex/gpt-5.6-luna:medium");
 	});
 
+	test("builtin codex-pro resolves native max review agents without enabling multi-agent ultra", async () => {
+		const prepared = await prepareModelProfileActivation({
+			session: fakeSession(),
+			modelRegistry: fakeRegistry({ profiles: [...BUILTIN_MODEL_PROFILES] }),
+			settings: Settings.isolated(),
+			profileName: "codex-pro",
+		});
+
+		expect(prepared.defaultModel?.id).toBe("gpt-5.6-sol");
+		expect(prepared.defaultThinkingLevel).toBe(ThinkingLevel.XHigh);
+		expect(prepared.agentModelOverrides).toMatchObject({
+			executor: "openai-codex/gpt-5.6-terra:medium",
+			planner: "openai-codex/gpt-5.6-sol:high",
+			critic: "openai-codex/gpt-5.6-sol:max",
+			architect: "openai-codex/gpt-5.6-sol:max",
+		});
+	});
+
 	test("session-only changes active model and replaces runtime overrides without persisted sets", async () => {
 		const session = fakeSession();
 		const settings = Settings.isolated({ "task.agentModelOverrides": { critic: "provider-a/old" } });

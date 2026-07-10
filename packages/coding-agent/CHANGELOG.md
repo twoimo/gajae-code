@@ -4,8 +4,11 @@
 ### Changed
 
 - Moved the `codex-eco`/`codex-medium`/`codex-pro` presets and the `opus-codex`/`codex-opencodego`/`fable-opus-codex` combo presets from `gpt-5.5` onto the GPT-5.6 tier family: Sol drives `default` and `architect` on every codex preset (eco `sol:medium`, medium `sol:high`, pro `sol:xhigh`/`sol:max`), with Luna/Terra covering the lighter executor/planner/critic roles by tier.
+- Raised Codex Pro's critic to GPT-5.6 Sol `max`, matching its architect, while keeping the main session on the cost-controlled native `xhigh` effort.
 
 ### Fixed
+
+- Aligned the root `--thinking` choices with the canonical provider efforts (`minimal` through `max`), removing the unsupported `ultra` alias instead of silently mapping it to a different tier.
 
 - Fixed v0.9.3–v0.9.6 compiled release binaries crashing at first real launch with `Cannot find module '/$bunfs/root/node_modules/handlebars/lib/index.js'` while `--version`/`--help` still worked (#1939). `--minify` silently dropped the handlebars bunfs extra entrypoint; handlebars is now bundled through a statically-traceable `require("handlebars")` in `@gajae-code/utils` prompt rendering (still lazy at runtime), and the fragile extra entrypoint is gone from both release and dev compile args. `--minify` and its startup-RSS win are retained.
 
