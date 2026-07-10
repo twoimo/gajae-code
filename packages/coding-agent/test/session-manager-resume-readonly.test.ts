@@ -10,9 +10,11 @@ import {
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
+	type SessionStorageSnapshot,
 	type SessionStorageStat,
 	type SessionStorageWriter,
 } from "@gajae-code/coding-agent/session/session-storage";
+import { getSessionsDir } from "@gajae-code/utils";
 
 const tempDirs: string[] = [];
 
@@ -56,13 +58,22 @@ class UnstableReadStorage extends WriteTrackingStorage {
 		const stat = super.statSync(filePath);
 		if (!this.unstable) return stat;
 		this.#statCalls++;
-		return { ...stat, mtimeMs: stat.mtimeMs + this.#statCalls, mtime: new Date(stat.mtimeMs + this.#statCalls) };
+		return {
+			...stat,
+			mtimeMs: stat.mtimeMs + this.#statCalls,
+			mtimeNs: stat.mtimeNs + BigInt(this.#statCalls),
+			mtime: new Date(stat.mtimeMs + this.#statCalls),
+		};
 	}
 }
 
 class FixedMtimeStorage extends WriteTrackingStorage {
 	override statSync(filePath: string): SessionStorageStat {
-		return { ...super.statSync(filePath), mtimeMs: 1, mtime: new Date(1) };
+		return { ...super.statSync(filePath), mtimeMs: 1, mtimeNs: 1_000_000n, mtime: new Date(1) };
+	}
+
+	override readSnapshotSync(filePath: string): SessionStorageSnapshot {
+		return { ...super.readSnapshotSync(filePath), stat: this.statSync(filePath) };
 	}
 }
 
@@ -73,11 +84,11 @@ class HandoffMutationStorage extends MemorySessionStorage {
 		super();
 	}
 
-	override readBytesSync(filePath: string): Uint8Array {
-		const bytes = super.readBytesSync(filePath);
+	override readSnapshotSync(filePath: string): SessionStorageSnapshot {
+		const snapshot = super.readSnapshotSync(filePath);
 		this.reads++;
 		if (this.reads === 2) queueMicrotask(() => super.writeTextSync(filePath, this.replacement));
-		return bytes;
+		return snapshot;
 	}
 }
 
@@ -88,7 +99,7 @@ class NonRegularStorage extends WriteTrackingStorage {
 		return { ...super.statSync(filePath), isFile: false };
 	}
 
-	override readBytesSync(filePath: string): Uint8Array {
+	override readSnapshotSync(filePath: string): SessionStorageSnapshot {
 		this.reads++;
 		throw new Error(`Non-regular path must be rejected before read: ${filePath}`);
 	}
@@ -100,6 +111,39 @@ class FifoReadTrackingStorage extends FileSessionStorage {
 	override readBytesSync(filePath: string): Uint8Array {
 		this.reads++;
 		throw new Error(`FIFO must be rejected before read: ${filePath}`);
+	}
+}
+
+class ReplaceAfterSnapshotStorage extends FileSessionStorage {
+	armed = false;
+	writes = 0;
+
+	constructor(private readonly replacementPath: string) {
+		super();
+	}
+
+	override writeTextSync(filePath: string, content: string): void {
+		this.writes++;
+		super.writeTextSync(filePath, content);
+	}
+
+	override async writeText(filePath: string, content: string): Promise<void> {
+		this.writes++;
+		await super.writeText(filePath, content);
+	}
+
+	override openWriter(
+		filePath: string,
+		options?: { flags?: "a" | "w"; onError?: (error: Error) => void },
+	): SessionStorageWriter {
+		this.writes++;
+		return super.openWriter(filePath, options);
+	}
+
+	override readSnapshotSync(filePath: string): SessionStorageSnapshot {
+		const snapshot = super.readSnapshotSync(filePath);
+		if (this.armed) fs.renameSync(this.replacementPath, filePath);
+		return snapshot;
 	}
 }
 
@@ -148,6 +192,43 @@ describe("SessionManager read-only resume", () => {
 		expect(opened.kind).toBe("opened");
 		if (opened.kind === "error") throw new Error("Expected strict open success");
 		expect(opened.manager.getSessionId()).toBe("session-a");
+	});
+
+	it("exposes descriptor-bound device and inode identity", async () => {
+		const storage = new MemorySessionStorage();
+		const filePath = "/sessions/identity.jsonl";
+		storage.writeTextSync(filePath, sessionText("session-a"));
+
+		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
+		if (inspection.kind === "error") throw new Error("Expected inspection identity");
+		expect(inspection.identity).toMatchObject({
+			dev: storage.statSync(filePath).dev,
+			ino: storage.statSync(filePath).ino,
+			size: storage.statSync(filePath).size,
+			mtimeMs: storage.statSync(filePath).mtimeMs,
+			mtimeNs: storage.statSync(filePath).mtimeNs,
+		});
+	});
+
+	it("rejects a same-size same-mtime pathname replacement after descriptor snapshot", async () => {
+		const root = makeTempDir();
+		const filePath = path.join(root, "resume.jsonl");
+		const replacementPath = path.join(root, "replacement.jsonl");
+		const original = sessionText("session-a");
+		const replacement = original.replace("resume", "resumf");
+		fs.writeFileSync(filePath, original);
+		fs.writeFileSync(replacementPath, replacement);
+		const mtime = new Date(1_000);
+		fs.utimesSync(filePath, mtime, mtime);
+		fs.utimesSync(replacementPath, mtime, mtime);
+		const storage = new ReplaceAfterSnapshotStorage(replacementPath);
+		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
+		if (inspection.kind === "error") throw new Error("Expected inspection identity");
+
+		storage.armed = true;
+		expectStrictFailure(await SessionManager.openExistingStrict(inspection.identity, root, storage), "unstable");
+		expect(storage.writes).toBe(0);
+		expect(fs.readFileSync(filePath, "utf-8")).toBe(replacement);
 	});
 
 	it("fails closed with typed reasons for replacement, malformed, deletion, and unstable reads", async () => {
@@ -234,11 +315,15 @@ describe("SessionManager read-only resume", () => {
 		};
 		const invalidEntry = { type: "ttsr_injection", id: "bad", parentId: null, timestamp: new Date(0).toISOString() };
 		storage.writeTextSync(filePath, `${JSON.stringify(header)}\n${JSON.stringify(invalidEntry)}\n`);
+		const stat = storage.statSync(filePath);
 		const identity: ResumeSessionIdentity = {
 			canonicalPath: filePath,
 			sessionId: "schema-invalid",
-			size: storage.statSync(filePath).size,
-			mtimeMs: storage.statSync(filePath).mtimeMs,
+			dev: stat.dev,
+			ino: stat.ino,
+			size: stat.size,
+			mtimeMs: stat.mtimeMs,
+			mtimeNs: stat.mtimeNs,
 			sha256: "ignored",
 		};
 
@@ -388,5 +473,45 @@ describe("SessionManager read-only resume", () => {
 		expect(fs.readFileSync(draftPath)).toEqual(beforeDraft);
 		expect(fs.statSync(transcriptPath).mtimeMs).toBe(beforeTranscriptStat.mtimeMs);
 		expect(fs.statSync(draftPath).mtimeMs).toBe(beforeDraftStat.mtimeMs);
+	});
+	it.skipIf(process.platform === "win32")("binds symlink inspection to its original real target", async () => {
+		const root = makeTempDir();
+		const targetA = path.join(root, "target-a.jsonl");
+		const targetB = path.join(root, "target-b.jsonl");
+		const linkPath = path.join(root, "selected.jsonl");
+		fs.writeFileSync(targetA, sessionText("session-a"));
+		fs.writeFileSync(targetB, sessionText("session-b"));
+		fs.symlinkSync(targetA, linkPath);
+
+		const inspection = await SessionManager.inspectSessionTailReadOnly(linkPath);
+		if (inspection.kind === "error") throw new Error("Expected symlink inspection");
+		expect(inspection.identity.canonicalPath).toBe(fs.realpathSync(targetA));
+		fs.unlinkSync(linkPath);
+		fs.symlinkSync(targetB, linkPath);
+
+		const opened = await SessionManager.openExistingStrict(inspection.identity, root);
+		expect(opened.kind).toBe("opened");
+		if (opened.kind === "error") throw new Error("Expected strict open");
+		expect(opened.manager.getSessionId()).toBe("session-a");
+		await opened.manager.close();
+	});
+
+	it("finds legacy default inventory without writes and excludes it for explicit directories", async () => {
+		const storage = new WriteTrackingStorage();
+		const cwd = path.join(os.tmpdir(), "gjc-resume-readonly-legacy");
+		const legacyName = `--${path
+			.resolve(cwd)
+			.replace(/^[/\\]/, "")
+			.replace(/[/\\:]/g, "-")}--`;
+		const legacyPath = path.join(getSessionsDir(), legacyName, "legacy.jsonl");
+		const explicitPath = "/explicit/current.jsonl";
+		storage.writeTextSync(legacyPath, sessionText("legacy"));
+		storage.writeTextSync(explicitPath, sessionText("explicit"));
+		storage.writes = 0;
+
+		const defaults = await SessionManager.listForResumePickerReadOnly(cwd, undefined, storage);
+		expect(defaults.map(session => session.id)).toEqual(["legacy"]);
+		expect(await SessionManager.listForResumePickerReadOnly(cwd, "/explicit", storage)).toHaveLength(1);
+		expect(storage.writes).toBe(0);
 	});
 });

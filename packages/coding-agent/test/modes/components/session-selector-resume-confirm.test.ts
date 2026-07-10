@@ -22,7 +22,16 @@ function session(id: string): SessionInfo {
 }
 
 function identity(id: string): ResumeSessionIdentity {
-	return { canonicalPath: `/tmp/${id}.jsonl`, sessionId: id, size: 0, mtimeMs: 0, sha256: id };
+	return {
+		canonicalPath: `/tmp/${id}.jsonl`,
+		sessionId: id,
+		dev: 1n,
+		ino: 1n,
+		size: 0,
+		mtimeMs: 0,
+		mtimeNs: 0n,
+		sha256: id,
+	};
 }
 
 function inspection(id: string, kind: "resumable" | "terminal"): ResumeTailInspection {

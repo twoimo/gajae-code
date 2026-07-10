@@ -16,8 +16,11 @@ import type { ResumeSessionIdentity, SessionInfo } from "../src/session/session-
 const identity: ResumeSessionIdentity = {
 	canonicalPath: "/sessions/selected.jsonl",
 	sessionId: "selected",
+	dev: 1n,
+	ino: 1n,
 	size: 1,
 	mtimeMs: 1,
+	mtimeNs: 1_000_000n,
 	sha256: "hash",
 };
 

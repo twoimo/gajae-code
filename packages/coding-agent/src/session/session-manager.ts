@@ -338,8 +338,11 @@ export interface SessionContext {
 export interface ResumeSessionIdentity {
 	canonicalPath: string;
 	sessionId: string;
+	dev: bigint;
+	ino: bigint;
 	size: number;
 	mtimeMs: number;
+	mtimeNs: bigint;
 	sha256: string;
 }
 
@@ -556,6 +559,17 @@ function getDefaultSessionDirName(cwd: string): { encodedDirName: string; resolv
 			? encodeRelativeSessionDirName("-tmp", tempRoot, canonicalCwd)
 			: encodeLegacyAbsoluteSessionDirName(canonicalCwd);
 	return { encodedDirName, resolvedCwd };
+}
+
+/** Default and legacy directory candidates for maintenance-free resume discovery. */
+function getReadOnlyDefaultSessionDirs(cwd: string, sessionsRoot: string = getSessionsDir()): string[] {
+	const { encodedDirName, resolvedCwd } = getDefaultSessionDirName(cwd);
+	const canonicalCwd = resolveEquivalentPath(resolvedCwd);
+	return [
+		path.join(sessionsRoot, encodedDirName),
+		path.join(sessionsRoot, encodeLegacyAbsoluteSessionDirName(canonicalCwd)),
+		path.join(sessionsRoot, encodeLegacyAbsoluteSessionDirName(resolvedCwd)),
+	].filter((dir, index, dirs) => dirs.indexOf(dir) === index);
 }
 
 /**
@@ -1015,9 +1029,24 @@ function sameResumeIdentity(left: ResumeSessionIdentity, right: ResumeSessionIde
 	return (
 		left.canonicalPath === right.canonicalPath &&
 		left.sessionId === right.sessionId &&
+		left.dev === right.dev &&
+		left.ino === right.ino &&
 		left.size === right.size &&
 		left.mtimeMs === right.mtimeMs &&
+		left.mtimeNs === right.mtimeNs &&
 		left.sha256 === right.sha256
+	);
+}
+
+function sameResumeStat(left: SessionStorageStat, right: SessionStorageStat): boolean {
+	return (
+		left.isFile &&
+		right.isFile &&
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.mtimeNs === right.mtimeNs
 	);
 }
 
@@ -1148,22 +1177,22 @@ function inspectResumeSessionFile(
 	} catch (error) {
 		return resumeReadFailure(error, storage, canonicalPath);
 	}
-	if (!before.isFile || !storage.readBytesSync) {
+	if (!before.isFile || !storage.readSnapshotSync) {
 		return { kind: "error", reason: "read-failed" };
 	}
 
 	let bytes: Uint8Array;
+	let snapshot: SessionStorageStat;
 	let after: SessionStorageStat;
 	try {
-		bytes = storage.readBytesSync(canonicalPath);
+		const readSnapshot = storage.readSnapshotSync(canonicalPath);
+		bytes = readSnapshot.bytes;
+		snapshot = readSnapshot.stat;
 		after = storage.statSync(canonicalPath);
 	} catch (error) {
 		return resumeReadFailure(error, storage, canonicalPath);
 	}
-	if (!after.isFile) {
-		return { kind: "error", reason: "read-failed" };
-	}
-	if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+	if (!sameResumeStat(before, snapshot) || !sameResumeStat(snapshot, after)) {
 		return { kind: "error", reason: "unstable" };
 	}
 
@@ -1184,8 +1213,11 @@ function inspectResumeSessionFile(
 		const identity: ResumeSessionIdentity = {
 			canonicalPath,
 			sessionId: header.id,
-			size: after.size,
-			mtimeMs: after.mtimeMs,
+			dev: snapshot.dev,
+			ino: snapshot.ino,
+			size: snapshot.size,
+			mtimeMs: snapshot.mtimeMs,
+			mtimeNs: snapshot.mtimeNs,
 			sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
 		};
 		return { identity, entries, context, migrationApplied };
@@ -5189,9 +5221,13 @@ export class SessionManager {
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionInfo[]> {
-		const dir = sessionDir ?? path.join(getSessionsDir(), getDefaultSessionDirName(cwd).encodedDirName);
+		const dirs = sessionDir ? [sessionDir] : getReadOnlyDefaultSessionDirs(cwd);
 		try {
-			return await collectSessionsFromFiles(storage.listFilesSync(dir, "*.jsonl"), storage);
+			const files = new Set<string>();
+			for (const dir of dirs) {
+				for (const filePath of storage.listFilesSync(dir, "*.jsonl")) files.add(filePath);
+			}
+			return await collectSessionsFromFiles([...files], storage);
 		} catch {
 			return [];
 		}

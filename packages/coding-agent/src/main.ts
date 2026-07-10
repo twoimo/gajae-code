@@ -407,7 +407,12 @@ export const BARE_RESUME_INTERACTIVE_ERROR = "--resume requires an interactive t
 export const BARE_RESUME_OPEN_ERROR = "Could not open the selected session. Use --resume <id>.";
 
 function isBareResume(parsed: Args): boolean {
-	return parsed.resume === true;
+	return (
+		parsed.resume === true &&
+		parsed.version !== true &&
+		parsed.listModels === undefined &&
+		parsed.export === undefined
+	);
 }
 
 function hasBareResumeConflict(parsed: Args): boolean {
@@ -572,7 +577,7 @@ export async function createSessionManager(
 	cwd: string,
 	activeSettings: Settings = settings,
 ): Promise<SessionManager | undefined> {
-	if (isBareResume(parsed)) {
+	if (parsed.resume === true) {
 		return undefined;
 	}
 	if (parsed.fork) {

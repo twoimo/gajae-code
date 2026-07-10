@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 type ResumeProcess = Bun.Subprocess<"pipe", "pipe", "pipe">;
@@ -66,5 +68,31 @@ describe("headless bare resume", () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.stderr).toBe(headlessResumeError);
 		expect(result.stdout).toBe("");
+	}, 10_000);
+
+	it("preserves version and help fast paths when resume is also present", async () => {
+		const version = await runHeadlessBareResume(["--resume", "--version"]);
+		expect(version.exitCode).toBe(0);
+		expect(version.stdout).toMatch(/^gjc\/\d+\.\d+\.\d+\n$/);
+		expect(version.stderr).toBe("");
+
+		const help = await runHeadlessBareResume(["--resume", "--help"]);
+		expect(help.exitCode).toBe(0);
+		expect(help.stdout).toContain("USAGE");
+		expect(help.stderr).toBe("");
+	}, 15_000);
+
+	it("preserves export routing instead of opening the resume picker", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-resume-export-"));
+		const missing = path.join(root, "missing.jsonl");
+		const output = path.join(root, "export.html");
+		try {
+			const result = await runHeadlessBareResume(["--resume", "--export", missing, output]);
+			expect(result.exitCode).toBe(0);
+			expect(result.stderr).not.toContain(headlessResumeError.trim());
+			expect(result.stdout).toContain(`Exported to: ${output}`);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	}, 10_000);
 });

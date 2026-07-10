@@ -6,10 +6,33 @@ import { isEnoent, peekFile, toError } from "@gajae-code/utils";
 const utf8Decoder = new TextDecoder("utf-8");
 
 export interface SessionStorageStat {
+	dev: bigint;
+	ino: bigint;
+
 	size: number;
 	mtimeMs: number;
+	mtimeNs: bigint;
 	mtime: Date;
 	isFile: boolean;
+}
+
+/** Exact bytes and identity captured from one opened regular-file descriptor. */
+export interface SessionStorageSnapshot {
+	bytes: Uint8Array;
+	stat: SessionStorageStat;
+}
+
+function statFromNode(stats: fs.BigIntStats): SessionStorageStat {
+	return {
+		dev: stats.dev,
+		ino: stats.ino,
+
+		size: Number(stats.size),
+		mtimeMs: Number(stats.mtimeMs),
+		mtimeNs: stats.mtimeNs,
+		mtime: stats.mtime,
+		isFile: stats.isFile(),
+	};
 }
 
 export interface SessionStorageWriter {
@@ -35,6 +58,8 @@ export interface SessionStorage {
 	readTextSync(path: string): string;
 	/** Exact on-disk bytes for strict read-only session inspection. */
 	readBytesSync?(path: string): Uint8Array;
+	/** Exact bytes and descriptor-bound identity captured from one opened regular file. */
+	readSnapshotSync?(path: string): SessionStorageSnapshot;
 	statSync(path: string): SessionStorageStat;
 	listFilesSync(dir: string, pattern: string): string[];
 
@@ -161,19 +186,24 @@ export class FileSessionStorage implements SessionStorage {
 	}
 
 	readBytesSync(fpath: string): Uint8Array {
+		return this.readSnapshotSync(fpath).bytes;
+	}
+
+	readSnapshotSync(fpath: string): SessionStorageSnapshot {
 		const flags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW ?? 0);
 		const fd = fs.openSync(fpath, flags);
 		try {
-			if (!fs.fstatSync(fd).isFile()) throw new Error(`Not a regular file: ${fpath}`);
-			return fs.readFileSync(fd);
+			const stat = statFromNode(fs.fstatSync(fd, { bigint: true }));
+
+			if (!stat.isFile) throw new Error(`Not a regular file: ${fpath}`);
+			return { bytes: fs.readFileSync(fd), stat };
 		} finally {
 			fs.closeSync(fd);
 		}
 	}
 
 	statSync(path: string): SessionStorageStat {
-		const stats = fs.statSync(path);
-		return { size: stats.size, mtimeMs: stats.mtimeMs, mtime: stats.mtime, isFile: stats.isFile() };
+		return statFromNode(fs.statSync(path, { bigint: true }));
 	}
 
 	listFilesSync(dir: string, pattern: string): string[] {
@@ -331,7 +361,20 @@ class MemorySessionStorageWriter implements SessionStorageWriter {
 }
 
 export class MemorySessionStorage implements SessionStorage {
-	#files = new Map<string, { content: Buffer; mtimeMs: number }>();
+	#files = new Map<string, { content: Buffer; mtimeMs: number; ino: bigint }>();
+	#nextInode = 1n;
+
+	#statFor(entry: { content: Buffer; mtimeMs: number; ino: bigint }): SessionStorageStat {
+		return {
+			dev: 0n,
+			ino: entry.ino,
+			size: entry.content.byteLength,
+			mtimeMs: entry.mtimeMs,
+			mtimeNs: BigInt(entry.mtimeMs) * 1_000_000n,
+			mtime: new Date(entry.mtimeMs),
+			isFile: true,
+		};
+	}
 
 	ensureDirSync(_dir: string): void {
 		// No-op for in-memory storage.
@@ -342,7 +385,12 @@ export class MemorySessionStorage implements SessionStorage {
 	}
 
 	writeTextSync(path: string, content: string): void {
-		this.#files.set(path, { content: Buffer.from(content, "utf-8"), mtimeMs: Date.now() });
+		const existing = this.#files.get(path);
+		this.#files.set(path, {
+			content: Buffer.from(content, "utf-8"),
+			mtimeMs: Date.now(),
+			ino: existing?.ino ?? this.#nextInode++,
+		});
 	}
 
 	readTextSync(path: string): string {
@@ -352,20 +400,19 @@ export class MemorySessionStorage implements SessionStorage {
 	}
 
 	readBytesSync(path: string): Uint8Array {
+		return this.readSnapshotSync(path).bytes;
+	}
+
+	readSnapshotSync(path: string): SessionStorageSnapshot {
 		const entry = this.#files.get(path);
 		if (!entry) throw new Error(`File not found: ${path}`);
-		return Buffer.from(entry.content);
+		return { bytes: Buffer.from(entry.content), stat: this.#statFor(entry) };
 	}
 
 	statSync(path: string): SessionStorageStat {
 		const entry = this.#files.get(path);
 		if (!entry) throw new Error(`File not found: ${path}`);
-		return {
-			size: entry.content.byteLength,
-			mtimeMs: entry.mtimeMs,
-			mtime: new Date(entry.mtimeMs),
-			isFile: true,
-		};
+		return this.#statFor(entry);
 	}
 
 	listFilesSync(dir: string, pattern: string): string[] {
