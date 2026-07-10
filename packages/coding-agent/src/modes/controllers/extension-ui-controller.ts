@@ -27,6 +27,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
 import { applyInjectedUserSubmission } from "../utils/injected-user-submission";
 import { classifyHookSelectorBellEvent, ringTerminalBell } from "../utils/terminal-bell";
+import { prepareTranscriptRebuild } from "../utils/ui-helpers";
 
 const MAX_WIDGET_LINES = 10;
 const HOOK_SELECTOR_CHROME_ROWS = 7;
@@ -153,7 +154,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
+				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -190,7 +191,7 @@ export class ExtensionUiController {
 				this.ctx.ui.requestRender();
 
 				// Clear UI state
-				this.ctx.ui.resetViewportAnchorIntent();
+				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 				this.ctx.chatContainer.clear();
 				this.ctx.pendingMessagesContainer.clear();
 				this.ctx.compactionQueuedMessages = [];
@@ -214,7 +215,7 @@ export class ExtensionUiController {
 				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
-				this.ctx.ui.resetViewportAnchorIntent();
+				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -230,7 +231,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
+				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -255,7 +256,9 @@ export class ExtensionUiController {
 				}
 				if (switchingToDifferentSession) {
 					this.ctx.resetIrcSidebarSession();
-					this.ctx.ui.resetViewportAnchorIntent();
+					prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
+				} else {
+					prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				}
 
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
@@ -412,7 +415,7 @@ export class ExtensionUiController {
 					return;
 				}
 				await this.ctx.session.reload();
-				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
+				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -444,7 +447,7 @@ export class ExtensionUiController {
 				}
 
 				// Clear UI state
-				this.ctx.ui.resetViewportAnchorIntent();
+				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 				this.ctx.chatContainer.clear();
 				this.ctx.pendingMessagesContainer.clear();
 				this.ctx.compactionQueuedMessages = [];
@@ -471,7 +474,7 @@ export class ExtensionUiController {
 				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
-				this.ctx.ui.resetViewportAnchorIntent();
+				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -490,7 +493,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
+				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -518,7 +521,9 @@ export class ExtensionUiController {
 				}
 				if (switchingToDifferentSession) {
 					this.ctx.resetIrcSidebarSession();
-					this.ctx.ui.resetViewportAnchorIntent();
+					prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
+				} else {
+					prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				}
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();

@@ -49,6 +49,7 @@ import { getDisplayChangelogEntries } from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { prepareTranscriptRebuild } from "../utils/ui-helpers";
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
 	ctx.chatContainer.addChild(new Spacer(1));
@@ -941,7 +942,7 @@ export class CommandController {
 		this.ctx.updateEditorBorderColor();
 		this.ctx.ui.requestRender();
 
-		this.ctx.ui.resetViewportAnchorIntent();
+		prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 		this.ctx.chatContainer.clear();
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.compactionQueuedMessages = [];
@@ -980,7 +981,7 @@ export class CommandController {
 		this.ctx.updateEditorBorderColor();
 		this.ctx.ui.requestRender();
 
-		this.ctx.ui.resetViewportAnchorIntent();
+		prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 		this.ctx.chatContainer.clear();
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.compactionQueuedMessages = [];
@@ -1243,7 +1244,7 @@ export class CommandController {
 					: undefined;
 			await this.ctx.session.compact(instructions, options);
 
-			this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
+			prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 			this.ctx.rebuildChatFromMessages();
 
 			this.ctx.statusLine.invalidate();
@@ -1307,7 +1308,7 @@ export class CommandController {
 			this.ctx.resetIrcSidebarSession();
 
 			// Rebuild chat from the new session (which now contains the handoff document)
-			this.ctx.ui.resetViewportAnchorIntent();
+			prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 			this.ctx.rebuildChatFromMessages();
 
 			this.ctx.statusLine.invalidate();

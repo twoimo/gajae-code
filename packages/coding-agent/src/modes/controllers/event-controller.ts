@@ -30,7 +30,7 @@ import { consumeInjectedOptimisticSignature } from "../utils/injected-user-submi
 import { parseIrcMessage } from "../utils/irc-message";
 import { ringTerminalBell } from "../utils/terminal-bell";
 
-import { addChatChild, argsWithPartialJson } from "../utils/ui-helpers";
+import { addChatChild, argsWithPartialJson, prepareTranscriptRebuild } from "../utils/ui-helpers";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
@@ -839,7 +839,7 @@ export class EventController {
 		if (event.aborted) {
 			this.ctx.showStatus(isHandoffAction ? "Auto-handoff cancelled" : "Auto context-full maintenance cancelled");
 		} else if (event.result) {
-			this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
+			prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorTopBorder();
@@ -854,7 +854,7 @@ export class EventController {
 			// Reset BEFORE rebuild so the new session's transcript is not replayed
 			// from the old ledger and then cleared out from under its timers.
 			this.ctx.resetIrcSidebarSession();
-			this.ctx.ui.resetViewportAnchorIntent();
+			prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 			this.ctx.chatContainer.clear();
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();

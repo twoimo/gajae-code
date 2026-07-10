@@ -117,7 +117,7 @@ import {
 	theme,
 } from "./theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, SubmittedUserInput, TodoItem, TodoPhase } from "./types";
-import { addChatChild, UiHelpers } from "./utils/ui-helpers";
+import { addChatChild, prepareTranscriptRebuild, UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
 const COMPOSER_NEWLINE_HINT = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
@@ -884,6 +884,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (!submission.customType) {
 			this.pendingImages = submission.images ? [...submission.images] : [];
+			prepareTranscriptRebuild(this.ui, "reconcile-same-transcript");
 			this.rebuildChatFromMessages();
 			this.editor.setText(submission.text);
 		}

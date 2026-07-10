@@ -67,6 +67,9 @@ function createContext(currentSessionFile: string): {
 			resetViewportAnchorIntent: vi.fn(() => {
 				calls.push("ui.resetViewportAnchorIntent");
 			}),
+			prepareViewportAnchorForTranscriptRebuild: vi.fn(() => {
+				calls.push("ui.prepareViewportAnchorForTranscriptRebuild");
+			}),
 			terminal: { columns: 120 },
 		},
 		session: {
@@ -175,6 +178,20 @@ describe("SelectorController session deletion", () => {
 		expect(calls).toContain("ui.resetViewportAnchorIntent");
 		expect(calls.indexOf("ui.resetViewportAnchorIntent")).toBeLessThan(calls.indexOf("chatContainer.clear"));
 		expect(calls.indexOf("chatContainer.clear")).toBeLessThan(calls.indexOf("renderInitialMessages"));
+	});
+
+	it("reconciles manual viewport intent before reloading the same session path", async () => {
+		const sessionPath = "/tmp/project/sessions/a.jsonl";
+		const { ctx, calls } = createContext(sessionPath);
+		const controller = new SelectorController(ctx);
+
+		await controller.handleResumeSession(sessionPath);
+
+		expect(calls).toContain("ui.prepareViewportAnchorForTranscriptRebuild");
+		expect(calls).not.toContain("ui.resetViewportAnchorIntent");
+		expect(calls.indexOf("ui.prepareViewportAnchorForTranscriptRebuild")).toBeLessThan(
+			calls.indexOf("chatContainer.clear"),
+		);
 	});
 
 	it("detaches the active session before selector deletion removes it", async () => {

@@ -96,6 +96,7 @@ import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
 import type { JobsObserver } from "../jobs-observer";
 import type { SessionObserverRegistry } from "../session-observer-registry";
+import { prepareTranscriptRebuild } from "../utils/ui-helpers";
 
 const CALLBACK_SERVER_PROVIDERS = new Set<string>([
 	"anthropic",
@@ -717,6 +718,7 @@ export class SelectorController {
 						child.setHideThinkingBlock(value as boolean);
 					}
 				}
+				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 				this.ctx.chatContainer.clear();
 				this.ctx.rebuildChatFromMessages();
 				break;
@@ -1183,6 +1185,7 @@ export class SelectorController {
 					}
 					this.ctx.resetIrcSidebarSession();
 
+					prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 					this.ctx.chatContainer.clear();
 					this.ctx.renderInitialMessages();
 					this.ctx.editor.setText(result.selectedText);
@@ -1294,6 +1297,7 @@ export class SelectorController {
 						}
 
 						// Update UI — pass the context built by navigateTree to skip a second O(N) walk.
+						prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 						this.ctx.chatContainer.clear();
 						this.ctx.renderInitialMessages(result.sessionContext);
 						await this.ctx.reloadTodos();
@@ -1400,7 +1404,7 @@ export class SelectorController {
 
 		this.#refreshSessionTerminalTitle();
 
-		this.ctx.ui.resetViewportAnchorIntent();
+		prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 		this.#clearTransientSessionUi();
 		this.ctx.statusLine.invalidate();
 		this.ctx.statusLine.setSessionStartTime(Date.now());
@@ -1423,7 +1427,9 @@ export class SelectorController {
 		if (!(await this.ctx.session.switchSession(sessionPath))) return;
 		if (switchingToDifferentSession) {
 			this.ctx.resetIrcSidebarSession();
-			this.ctx.ui.resetViewportAnchorIntent();
+			prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
+		} else {
+			prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
 		}
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();

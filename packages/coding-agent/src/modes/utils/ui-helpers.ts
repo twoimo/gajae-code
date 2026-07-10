@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@gajae-code/agent-core";
 import type { AssistantMessage, ImageContent, Message } from "@gajae-code/ai";
-import { type Component, Spacer, Text, TruncatedText } from "@gajae-code/tui";
+import { type Component, Spacer, Text, TruncatedText, type TUI } from "@gajae-code/tui";
 import { settings } from "../../config/settings";
 import { resolveSubskillActivationForSkillInvocation } from "../../extensibility/gjc-plugins";
 import { buildSkillPromptMessage, parseSkillInvocations } from "../../extensibility/skills";
@@ -37,6 +37,12 @@ import { formatBytes, formatDuration } from "../../tools/render-utils";
 import { buildAbortDisplayMessage } from "./abort-message";
 import { isIrcCustomType, type ParsedIrcMessage, parseIrcMessage } from "./irc-message";
 
+export type TranscriptRebuildPolicy = "replace-identity" | "reconcile-same-transcript";
+
+export function prepareTranscriptRebuild(ui: TUI, policy: TranscriptRebuildPolicy): void {
+	if (policy === "replace-identity") ui.resetViewportAnchorIntent();
+	else ui.prepareViewportAnchorForTranscriptRebuild();
+}
 type TextBlock = { type: "text"; text: string };
 interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
