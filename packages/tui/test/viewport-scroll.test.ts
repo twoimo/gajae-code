@@ -711,6 +711,59 @@ describe("registered viewport anchor", () => {
 			tui.stop();
 		}
 	});
+	it("resets stale manual intent when the transcript identity changes", async () => {
+		const term = new VirtualTerminal(30, 6);
+		const tui = new TUI(term);
+		const transcriptA = new AnchoredTranscript();
+		for (let index = 0; index < 20; index++) transcriptA.addRow(`session-a-${index}`, `session-a-${index}`);
+		tui.addChild(transcriptA);
+		tui.setViewportAnchorComponent(transcriptA);
+		try {
+			tui.start();
+			await settle(term);
+			expect(tui.scrollViewportPages(-1)).toBe(true);
+			await term.flush();
+			expect(visible(term).some(line => line.includes("session-a-"))).toBe(true);
+
+			const transcriptB = new AnchoredTranscript();
+			for (let index = 0; index < 8; index++) transcriptB.addRow(`session-b-${index}`, `session-b-${index}`);
+			tui.resetViewportAnchorIntent();
+			tui.detachChild(transcriptA);
+			tui.addChild(transcriptB);
+			tui.setViewportAnchorComponent(transcriptB);
+			tui.requestRender();
+			await settle(term);
+			expect(visible(term).some(line => line.includes("session-b-"))).toBe(true);
+			expect(visible(term).some(line => line.includes("session-a-"))).toBe(false);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("reconciles an evicted anchor to a surviving semantic neighbor after rebuild", async () => {
+		const term = new VirtualTerminal(30, 6);
+		const tui = new TUI(term);
+		const transcript = new AnchoredTranscript();
+		for (let index = 0; index < 20; index++) transcript.addRow(`history-${index}`, `history-${index}`);
+		tui.addChild(transcript);
+		tui.setViewportAnchorComponent(transcript);
+		try {
+			tui.start();
+			await settle(term);
+			expect(tui.scrollViewportPages(-1)).toBe(true);
+			await term.flush();
+			expect(visible(term)[0]).toBe("history-9");
+
+			tui.prepareViewportAnchorForTranscriptRebuild();
+			transcript.removeFirst(10);
+			tui.requestRender();
+			await settle(term);
+			expect(visible(term).some(line => line === "history-10")).toBe(true);
+			expect(visible(term).some(line => line === "history-9")).toBe(false);
+		} finally {
+			tui.stop();
+		}
+	});
 
 	it("surfaces anchor render failures while retaining intent for recovery", async () => {
 		const term = new VirtualTerminal(30, 6);

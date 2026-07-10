@@ -839,6 +839,7 @@ export class EventController {
 		if (event.aborted) {
 			this.ctx.showStatus(isHandoffAction ? "Auto-handoff cancelled" : "Auto context-full maintenance cancelled");
 		} else if (event.result) {
+			this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorTopBorder();
@@ -853,6 +854,7 @@ export class EventController {
 			// Reset BEFORE rebuild so the new session's transcript is not replayed
 			// from the old ledger and then cleared out from under its timers.
 			this.ctx.resetIrcSidebarSession();
+			this.ctx.ui.resetViewportAnchorIntent();
 			this.ctx.chatContainer.clear();
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();

@@ -153,6 +153,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
+				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -189,6 +190,7 @@ export class ExtensionUiController {
 				this.ctx.ui.requestRender();
 
 				// Clear UI state
+				this.ctx.ui.resetViewportAnchorIntent();
 				this.ctx.chatContainer.clear();
 				this.ctx.pendingMessagesContainer.clear();
 				this.ctx.compactionQueuedMessages = [];
@@ -212,6 +214,7 @@ export class ExtensionUiController {
 				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
+				this.ctx.ui.resetViewportAnchorIntent();
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -227,6 +230,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
+				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -251,6 +255,7 @@ export class ExtensionUiController {
 				}
 				if (switchingToDifferentSession) {
 					this.ctx.resetIrcSidebarSession();
+					this.ctx.ui.resetViewportAnchorIntent();
 				}
 
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
@@ -407,6 +412,7 @@ export class ExtensionUiController {
 					return;
 				}
 				await this.ctx.session.reload();
+				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -438,6 +444,7 @@ export class ExtensionUiController {
 				}
 
 				// Clear UI state
+				this.ctx.ui.resetViewportAnchorIntent();
 				this.ctx.chatContainer.clear();
 				this.ctx.pendingMessagesContainer.clear();
 				this.ctx.compactionQueuedMessages = [];
@@ -464,6 +471,7 @@ export class ExtensionUiController {
 				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
+				this.ctx.ui.resetViewportAnchorIntent();
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -482,6 +490,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
+				this.ctx.ui.prepareViewportAnchorForTranscriptRebuild();
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
@@ -509,6 +518,7 @@ export class ExtensionUiController {
 				}
 				if (switchingToDifferentSession) {
 					this.ctx.resetIrcSidebarSession();
+					this.ctx.ui.resetViewportAnchorIntent();
 				}
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();

@@ -15,6 +15,7 @@ type AutoCompactionFixture = {
 	loaderStop: Mock<() => void>;
 	statusContainerClear: Mock<() => void>;
 	rebuildChatFromMessages: Mock<() => void>;
+	prepareViewportAnchorForTranscriptRebuild: Mock<() => void>;
 };
 
 function createFixture(): AutoCompactionFixture {
@@ -36,6 +37,9 @@ function createFixture(): AutoCompactionFixture {
 	});
 	const rebuildChatFromMessages = vi.fn(() => {
 		order.push("rebuildChatFromMessages");
+	});
+	const prepareViewportAnchorForTranscriptRebuild = vi.fn(() => {
+		order.push("prepareViewportAnchorForTranscriptRebuild");
 	});
 
 	const ctx = {
@@ -60,6 +64,8 @@ function createFixture(): AutoCompactionFixture {
 			requestRender: vi.fn(() => {
 				order.push("ui.requestRender");
 			}),
+			prepareViewportAnchorForTranscriptRebuild,
+			resetViewportAnchorIntent: vi.fn(),
 		},
 		showStatus,
 		showWarning,
@@ -80,6 +86,7 @@ function createFixture(): AutoCompactionFixture {
 		loaderStop,
 		statusContainerClear,
 		rebuildChatFromMessages,
+		prepareViewportAnchorForTranscriptRebuild,
 	};
 }
 
@@ -113,6 +120,10 @@ describe("EventController auto-compaction overflow status", () => {
 		expect(fixture.showStatus).toHaveBeenCalledWith("Context overflow maintenance completed");
 		expect(fixture.showWarning).not.toHaveBeenCalled();
 		expect(fixture.order.indexOf("loader.stop")).toBeLessThan(fixture.order.indexOf("showStatus"));
+		expect(fixture.prepareViewportAnchorForTranscriptRebuild).toHaveBeenCalledTimes(1);
+		expect(fixture.order.indexOf("prepareViewportAnchorForTranscriptRebuild")).toBeLessThan(
+			fixture.order.indexOf("rebuildChatFromMessages"),
+		);
 		expect(fixture.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: true });
 	});
 

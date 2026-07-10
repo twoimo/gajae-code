@@ -1400,6 +1400,7 @@ export class SelectorController {
 
 		this.#refreshSessionTerminalTitle();
 
+		this.ctx.ui.resetViewportAnchorIntent();
 		this.#clearTransientSessionUi();
 		this.ctx.statusLine.invalidate();
 		this.ctx.statusLine.setSessionStartTime(Date.now());
@@ -1422,6 +1423,7 @@ export class SelectorController {
 		if (!(await this.ctx.session.switchSession(sessionPath))) return;
 		if (switchingToDifferentSession) {
 			this.ctx.resetIrcSidebarSession();
+			this.ctx.ui.resetViewportAnchorIntent();
 		}
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();

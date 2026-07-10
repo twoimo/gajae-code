@@ -64,6 +64,9 @@ function createContext(currentSessionFile: string): {
 			requestRender: vi.fn(() => {
 				calls.push("ui.requestRender");
 			}),
+			resetViewportAnchorIntent: vi.fn(() => {
+				calls.push("ui.resetViewportAnchorIntent");
+			}),
 			terminal: { columns: 120 },
 		},
 		session: {
@@ -74,6 +77,11 @@ function createContext(currentSessionFile: string): {
 			getCwd: () => "/tmp/project",
 			getSessionDir: () => "/tmp/project/sessions",
 			getSessionFile: () => sessionFile,
+		},
+		chatContainer: {
+			clear: vi.fn(() => {
+				calls.push("chatContainer.clear");
+			}),
 		},
 		statusContainer: {
 			clear: vi.fn(() => {
@@ -158,6 +166,17 @@ describe("SelectorController session deletion", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("resets manual viewport intent before rendering a different session", async () => {
+		const { ctx, calls } = createContext("/tmp/project/sessions/a.jsonl");
+		const controller = new SelectorController(ctx);
+
+		await controller.handleResumeSession("/tmp/project/sessions/b.jsonl");
+
+		expect(calls).toContain("ui.resetViewportAnchorIntent");
+		expect(calls.indexOf("ui.resetViewportAnchorIntent")).toBeLessThan(calls.indexOf("chatContainer.clear"));
+		expect(calls.indexOf("chatContainer.clear")).toBeLessThan(calls.indexOf("renderInitialMessages"));
+	});
+
 	it("detaches the active session before selector deletion removes it", async () => {
 		const activeSession = makeSessionInfo("/tmp/project/sessions/active.jsonl");
 		const { ctx, calls } = createContext(activeSession.path);
@@ -189,6 +208,7 @@ describe("SelectorController session deletion", () => {
 			"ui.requestRender",
 			"session.newSession",
 			"resetIrcSidebarSession",
+			"ui.resetViewportAnchorIntent",
 			"loadingAnimation.stop",
 			"statusContainer.clear",
 			"pendingMessagesContainer.clear",
@@ -263,6 +283,7 @@ describe("SelectorController session deletion", () => {
 		expect(calls).toEqual([
 			"session.newSession",
 			"resetIrcSidebarSession",
+			"ui.resetViewportAnchorIntent",
 			"loadingAnimation.stop",
 			"statusContainer.clear",
 			"pendingMessagesContainer.clear",

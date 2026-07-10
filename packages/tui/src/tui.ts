@@ -574,6 +574,8 @@ export class TUI extends Container {
 	#viewportAnchorComponent: Component | null = null;
 	#viewportAnchorFrame: ViewportAnchorFrame | null = null;
 	#manualViewportAnchor: ManualViewportAnchor | null = null;
+	#manualViewportFallbackAnchors: ManualViewportAnchor[] = [];
+	#reconcileMissingViewportAnchor = false;
 	#lastCursorPosition: { row: number; col: number } | null = null;
 	#sixelProbePendingDa = false;
 	#sixelProbePendingGraphics = false;
@@ -722,6 +724,20 @@ export class TUI extends Container {
 		this.#viewportAnchorFrame = null;
 	}
 
+	/** Clear manual viewport ownership before replacing the transcript identity namespace. */
+	resetViewportAnchorIntent(): void {
+		this.#manualViewportTop = undefined;
+		this.#manualViewportAnchor = null;
+		this.#manualViewportFallbackAnchors = [];
+		this.#reconcileMissingViewportAnchor = false;
+		this.#viewportAnchorFrame = null;
+	}
+
+	/** Allow one semantic-neighbor reconciliation after a definitive same-transcript rebuild. */
+	prepareViewportAnchorForTranscriptRebuild(): void {
+		if (this.#manualViewportAnchor !== null) this.#reconcileMissingViewportAnchor = true;
+	}
+
 	scrollViewportPages(direction: -1 | 1): boolean {
 		const height = this.terminal.rows;
 		const width = this.terminal.columns;
@@ -771,6 +787,24 @@ export class TUI extends Container {
 							: Math.max(selected.anchor.cellStart, selected.anchor.cellEnd - 1),
 					desiredScreenRow: selected.row + frame.startRow - targetViewportTop,
 				};
+				const fallbacks: ManualViewportAnchor[] = [];
+				for (let row = firstCandidateRow; row < lastCandidateRow; row++) {
+					const anchor = frame.anchors[row];
+					if (anchor === null || row === selected.row) continue;
+					fallbacks.push({
+						id: anchor.id,
+						graphemeIndex:
+							direction < 0 ? anchor.graphemeStart : Math.max(anchor.graphemeStart, anchor.graphemeEnd - 1),
+						cellOffset: direction < 0 ? anchor.cellStart : Math.max(anchor.cellStart, anchor.cellEnd - 1),
+						desiredScreenRow: row + frame.startRow - targetViewportTop,
+					});
+				}
+				fallbacks.sort(
+					(a, b) =>
+						Math.abs(a.desiredScreenRow - this.#manualViewportAnchor!.desiredScreenRow) -
+						Math.abs(b.desiredScreenRow - this.#manualViewportAnchor!.desiredScreenRow),
+				);
+				this.#manualViewportFallbackAnchors = fallbacks;
 			}
 		}
 		this.#manualViewportTop = targetViewportTop;
@@ -792,6 +826,8 @@ export class TUI extends Container {
 		const liveViewportTop = Math.max(0, this.#previousLines.length - height);
 		this.#manualViewportTop = undefined;
 		this.#manualViewportAnchor = null;
+		this.#manualViewportFallbackAnchors = [];
+		this.#reconcileMissingViewportAnchor = false;
 		return this.#repaintViewportFromLines(
 			this.#previousLines,
 			width,
@@ -1801,6 +1837,40 @@ export class TUI extends Container {
 		return row < 0 ? null : Math.max(0, frame.startRow + row - anchor.desiredScreenRow);
 	}
 
+	#resolvePreparedManualAnchor(frame: ViewportAnchorFrame): number | null {
+		const previous = this.#manualViewportAnchor;
+		for (const fallback of this.#manualViewportFallbackAnchors) {
+			this.#manualViewportAnchor = fallback;
+			const resolved = this.#resolveManualAnchor(frame);
+			if (resolved !== null) return resolved;
+		}
+		const targetRow = Math.max(
+			0,
+			Math.min(
+				frame.anchors.length - 1,
+				(this.#manualViewportTop ?? 0) + (previous?.desiredScreenRow ?? 0) - frame.startRow,
+			),
+		);
+		let selectedRow = -1;
+		for (let distance = 0; distance < frame.anchors.length; distance++) {
+			for (const row of [targetRow - distance, targetRow + distance]) {
+				if (row < 0 || row >= frame.anchors.length || frame.anchors[row] === null) continue;
+				selectedRow = row;
+				break;
+			}
+			if (selectedRow >= 0) break;
+		}
+		const selected = selectedRow >= 0 ? frame.anchors[selectedRow] : null;
+		if (selected === null) return null;
+		this.#manualViewportAnchor = {
+			id: selected.id,
+			graphemeIndex: selected.graphemeStart,
+			cellOffset: selected.cellStart,
+			desiredScreenRow: previous?.desiredScreenRow ?? 0,
+		};
+		return this.#resolveManualAnchor(frame);
+	}
+
 	#repaintViewportFromLines(
 		lines: string[],
 		width: number,
@@ -1966,7 +2036,19 @@ export class TUI extends Container {
 		}
 
 		if (this.#manualViewportTop !== undefined) {
-			const resolvedAnchorTop = anchorFrame === null ? null : this.#resolveManualAnchor(anchorFrame);
+			let resolvedAnchorTop = anchorFrame === null ? null : this.#resolveManualAnchor(anchorFrame);
+			if (
+				this.#manualViewportAnchor !== null &&
+				resolvedAnchorTop === null &&
+				this.#reconcileMissingViewportAnchor
+			) {
+				resolvedAnchorTop = anchorFrame === null ? null : this.#resolvePreparedManualAnchor(anchorFrame);
+				this.#reconcileMissingViewportAnchor = false;
+				if (resolvedAnchorTop === null) {
+					this.#manualViewportAnchor = null;
+					this.#manualViewportFallbackAnchors = [];
+				}
+			}
 			if (this.#manualViewportAnchor !== null && resolvedAnchorTop === null) {
 				if (anchorRenderFailed) {
 					// Keep semantic intent armed for recovery, but render the diagnostic frame
@@ -2013,6 +2095,7 @@ export class TUI extends Container {
 				return;
 			}
 			this.#manualViewportTop = nextViewportTop;
+			this.#reconcileMissingViewportAnchor = false;
 			if (
 				this.#repaintViewportFromLines(
 					newLines,
