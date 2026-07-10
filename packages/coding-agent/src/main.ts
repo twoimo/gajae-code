@@ -34,6 +34,7 @@ import { BUNDLED_GROK_BUILD_EXTENSION_ID, getBundledGrokBuildExtensionFactory } 
 import { initializeWithSettings } from "./discovery";
 import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
+import type { SessionSelectionResult } from "./modes/components/session-selector";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
@@ -49,7 +50,13 @@ import {
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
-import { resolveResumableSession, type SessionInfo, SessionManager } from "./session/session-manager";
+import {
+	type ResumeSessionIdentity,
+	resolveResumableSession,
+	type SessionInfo,
+	SessionManager,
+	type StrictSessionOpenResult,
+} from "./session/session-manager";
 import { runStartupCredentialAutoImportIfNeeded } from "./setup/credential-auto-import";
 import { formatModelOnboardingGuidance } from "./setup/model-onboarding-guidance";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
@@ -386,6 +393,35 @@ interface InteractiveModeFactoryOptions {
 
 type CreateInteractiveMode = (options: InteractiveModeFactoryOptions) => InteractiveMode;
 
+type ResumePickerTerminalCheck = () => boolean;
+type ListForResumePickerReadOnly = (cwd: string, sessionDir?: string) => Promise<SessionInfo[]>;
+type SelectResumeSession = (sessions: SessionInfo[]) => Promise<SessionSelectionResult>;
+type OpenExistingSessionStrict = (
+	identity: ResumeSessionIdentity,
+	sessionDir?: string,
+) => Promise<StrictSessionOpenResult>;
+
+export const BARE_RESUME_CONFLICT_ERROR =
+	"--resume without a session cannot be combined with --continue, --fork, or --no-session.";
+export const BARE_RESUME_INTERACTIVE_ERROR = "--resume requires an interactive terminal; use --resume <id>.";
+export const BARE_RESUME_OPEN_ERROR = "Could not open the selected session. Use --resume <id>.";
+
+function isBareResume(parsed: Args): boolean {
+	return parsed.resume === true;
+}
+
+function hasBareResumeConflict(parsed: Args): boolean {
+	return parsed.continue === true || parsed.fork !== undefined || parsed.noSession === true;
+}
+
+function isNormalLocalInteractiveRoute(parsed: Args): boolean {
+	return parsed.mode === undefined && parsed.print !== true;
+}
+
+function hasResumePickerTerminal(): boolean {
+	return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
 export async function runInteractiveMode(
 	session: AgentSession,
 	version: string,
@@ -400,6 +436,7 @@ export async function runInteractiveMode(
 	initialMessage?: string,
 	initialImages?: ImageContent[],
 	createInteractiveMode?: CreateInteractiveMode,
+	resumeAction?: "continue-tail" | "open-idle",
 ): Promise<void> {
 	const mode = createInteractiveMode
 		? createInteractiveMode({
@@ -435,6 +472,16 @@ export async function runInteractiveMode(
 			mode.showError(notify.message);
 		} else if (notify.kind === "info") {
 			mode.showStatus(notify.message);
+		}
+	}
+
+	const hasStartupInput = initialMessage !== undefined || initialMessages.length > 0;
+	if (!hasStartupInput && resumeAction === "continue-tail") {
+		try {
+			await session.continuePersistedHistory();
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+			mode.showError(errorMessage);
 		}
 	}
 
@@ -525,6 +572,9 @@ export async function createSessionManager(
 	cwd: string,
 	activeSettings: Settings = settings,
 ): Promise<SessionManager | undefined> {
+	if (isBareResume(parsed)) {
+		return undefined;
+	}
 	if (parsed.fork) {
 		if (parsed.noSession) {
 			throw new Error("--fork requires session persistence");
@@ -845,6 +895,11 @@ export interface RunRootCommandDependencies {
 	runBridgeMode?: RunBridgeMode;
 	createInteractiveMode?: CreateInteractiveMode;
 	runPrintMode?: RunPrintMode;
+	isResumePickerTerminal?: ResumePickerTerminalCheck;
+	listForResumePickerReadOnly?: ListForResumePickerReadOnly;
+	selectResumeSession?: SelectResumeSession;
+	openExistingSessionStrict?: OpenExistingSessionStrict;
+	initializeSettings?: typeof Settings.init;
 }
 
 export async function runRootCommand(
@@ -852,14 +907,73 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = {},
 ): Promise<void> {
-	logger.startTiming();
-
-	// Initialize theme early with defaults (CLI commands need symbols)
-	// Will be re-initialized with user preferences later
-	await logger.time("initTheme:initial", deps.initTheme ?? initTheme);
-
 	const parsedArgs = parsed;
-	await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
+	let initialThemeInitialized = false;
+	let autoChdirApplied = false;
+	let bareResumeSessionManager: SessionManager | undefined;
+	let bareResumeAction: "continue-tail" | "open-idle" | undefined;
+
+	if (isBareResume(parsedArgs)) {
+		if (hasBareResumeConflict(parsedArgs)) {
+			process.stderr.write(`${BARE_RESUME_CONFLICT_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+		if (!isNormalLocalInteractiveRoute(parsedArgs) || !(deps.isResumePickerTerminal ?? hasResumePickerTerminal)()) {
+			process.stderr.write(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+
+		logger.startTiming();
+		await logger.time("initTheme:initial", deps.initTheme ?? initTheme);
+		initialThemeInitialized = true;
+
+		await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
+		autoChdirApplied = true;
+		const resumeCwd = getProjectDir();
+		const sessions = await (deps.listForResumePickerReadOnly ?? SessionManager.listForResumePickerReadOnly)(
+			resumeCwd,
+			parsedArgs.sessionDir,
+		);
+		if (sessions.length === 0) {
+			process.stdout.write(`${chalk.dim("No sessions found")}\n`);
+			return;
+		}
+		const selection = await (deps.selectResumeSession ?? selectSession)(sessions);
+		if (selection.kind === "cancelled") {
+			return;
+		}
+		let opened: StrictSessionOpenResult;
+		try {
+			opened = await (deps.openExistingSessionStrict ?? SessionManager.openExistingStrict)(
+				selection.identity,
+				parsedArgs.sessionDir,
+			);
+		} catch {
+			process.stderr.write(`${BARE_RESUME_OPEN_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+		if (opened.kind === "error") {
+			process.stderr.write(`${BARE_RESUME_OPEN_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+		bareResumeSessionManager = opened.manager;
+		bareResumeAction = selection.action;
+	}
+
+	if (!initialThemeInitialized) {
+		logger.startTiming();
+		// Initialize theme early with defaults (CLI commands need symbols).
+		// It is re-initialized with user preferences later.
+		await logger.time("initTheme:initial", deps.initTheme ?? initTheme);
+	}
+
+	if (!autoChdirApplied) {
+		await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
+	}
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
 
@@ -912,7 +1026,8 @@ export async function runRootCommand(
 	}
 
 	const cwd = getProjectDir();
-	const settingsInstance = deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd }));
+	const settingsInstance =
+		deps.settings ?? (await logger.time("settings:init", deps.initializeSettings ?? Settings.init, { cwd }));
 	if (
 		parsedArgs.mode === "rpc" ||
 		parsedArgs.mode === "rpc-ui" ||
@@ -1012,29 +1127,11 @@ export async function runRootCommand(
 		);
 	}
 
-	// Create session manager based on CLI flags
-	let sessionManager = await logger.time(
-		"createSessionManager",
-		createSessionManager,
-		parsedArgs,
-		cwd,
-		settingsInstance,
-	);
-
-	// Handle --resume (no value): show session picker
-	if (parsedArgs.resume === true && !parsedArgs.fork) {
-		const sessions = await logger.time("SessionManager.list", SessionManager.list, cwd, parsedArgs.sessionDir);
-		if (sessions.length === 0) {
-			process.stdout.write(`${chalk.dim("No sessions found")}\n`);
-			return;
-		}
-		const selectedPath = await logger.time("selectSession", selectSession, sessions);
-		if (!selectedPath) {
-			process.stdout.write(`${chalk.dim("No session selected")}\n`);
-			return;
-		}
-		sessionManager = await SessionManager.open(selectedPath);
-	}
+	// Create session manager based on CLI flags. A bare resume was strictly opened
+	// before startup discovery, so it never reaches create-or-open behavior here.
+	const sessionManager =
+		bareResumeSessionManager ??
+		(await logger.time("createSessionManager", createSessionManager, parsedArgs, cwd, settingsInstance));
 
 	// Restore the resumed session's working directory so the HUD branch, the
 	// project path, and the agent's tools all match where the session was
@@ -1274,6 +1371,7 @@ export async function runRootCommand(
 				initialMessage,
 				initialImages,
 				deps.createInteractiveMode,
+				bareResumeAction,
 			);
 		} else {
 			const runPrint = deps.runPrintMode ?? (await import("./modes/print-mode")).runPrintMode;

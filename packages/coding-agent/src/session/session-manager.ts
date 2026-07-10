@@ -1,7 +1,9 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@gajae-code/agent-core";
+import { type AgentMessage, canContinuePersistedHistory } from "@gajae-code/agent-core";
 import type {
 	ImageContent,
 	Message,
@@ -61,7 +63,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
-import type { SessionStorage, SessionStorageWriter } from "./session-storage";
+import type { SessionStorage, SessionStorageStat, SessionStorageWriter } from "./session-storage";
 import { FileSessionStorage, MemorySessionStorage } from "./session-storage";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -331,6 +333,45 @@ export interface SessionContext {
 	/** Mode-specific data from the last mode_change entry */
 	modeData?: Record<string, unknown>;
 }
+
+/** Immutable fingerprint captured during read-only resume inspection. */
+export interface ResumeSessionIdentity {
+	canonicalPath: string;
+	sessionId: string;
+	size: number;
+	mtimeMs: number;
+	sha256: string;
+}
+
+export interface ResumeTailResumable {
+	kind: "resumable";
+	identity: ResumeSessionIdentity;
+}
+
+export interface ResumeTailTerminal {
+	kind: "terminal";
+	identity: ResumeSessionIdentity;
+}
+
+export interface ResumeTailError {
+	kind: "error";
+	reason: "missing" | "malformed" | "unstable" | "read-failed";
+}
+
+export type ResumeTailInspection = ResumeTailResumable | ResumeTailTerminal | ResumeTailError;
+
+export interface StrictSessionOpenSuccess {
+	kind: "opened";
+	manager: SessionManager;
+}
+
+export interface StrictSessionOpenFailure {
+	kind: "error";
+	reason: ResumeTailError["reason"] | "identity-mismatch";
+}
+
+/** Result of opening an inspected session without create-or-rewrite fallback. */
+export type StrictSessionOpenResult = StrictSessionOpenSuccess | StrictSessionOpenFailure;
 
 export interface SessionInfo {
 	path: string;
@@ -968,6 +1009,189 @@ export async function loadEntriesFromFile(
 	}
 
 	return entries;
+}
+
+function sameResumeIdentity(left: ResumeSessionIdentity, right: ResumeSessionIdentity): boolean {
+	return (
+		left.canonicalPath === right.canonicalPath &&
+		left.sessionId === right.sessionId &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.sha256 === right.sha256
+	);
+}
+
+interface ResumeInspectionSnapshot {
+	identity: ResumeSessionIdentity;
+	entries: FileEntry[];
+	context: SessionContext;
+	migrationApplied: boolean;
+}
+
+function resumeReadFailure(error: unknown, storage: SessionStorage, path: string): ResumeTailError {
+	let missing = isEnoent(error);
+	if (!missing) {
+		try {
+			missing = !storage.existsSync(path);
+		} catch {
+			// Preserve the primary read/stat failure when existence cannot be checked.
+		}
+	}
+	return { kind: "error", reason: missing ? "missing" : "read-failed" };
+}
+
+function hasStrictSessionSchema(entries: FileEntry[]): boolean {
+	for (const entry of entries) {
+		const value = entry as unknown as Record<string, unknown>;
+		if (typeof value.type !== "string") return false;
+		if (value.type === "session") {
+			if (typeof value.id !== "string" || typeof value.cwd !== "string" || typeof value.timestamp !== "string")
+				return false;
+			continue;
+		}
+		if (
+			typeof value.id !== "string" ||
+			(value.parentId !== null && typeof value.parentId !== "string") ||
+			typeof value.timestamp !== "string"
+		) {
+			return false;
+		}
+		switch (value.type) {
+			case "message": {
+				if (typeof value.message !== "object" || value.message === null) return false;
+				const message = value.message as Record<string, unknown>;
+				if (typeof message.role !== "string") return false;
+				break;
+			}
+			case "model_change":
+				if (
+					typeof value.model !== "string" &&
+					!(typeof value.provider === "string" && typeof value.modelId === "string")
+				)
+					return false;
+				break;
+			case "compaction":
+				if (
+					typeof value.summary !== "string" ||
+					typeof value.firstKeptEntryId !== "string" ||
+					typeof value.tokensBefore !== "number"
+				)
+					return false;
+				break;
+			case "branch_summary":
+				if (typeof value.fromId !== "string" || typeof value.summary !== "string") return false;
+				break;
+			case "custom":
+				if (typeof value.customType !== "string") return false;
+				break;
+			case "custom_message":
+				if (
+					typeof value.customType !== "string" ||
+					(typeof value.content !== "string" && !Array.isArray(value.content)) ||
+					typeof value.display !== "boolean"
+				)
+					return false;
+				break;
+			case "label":
+				if (typeof value.targetId !== "string" || (value.label !== undefined && typeof value.label !== "string"))
+					return false;
+				break;
+			case "ttsr_injection":
+				if (!Array.isArray(value.injectedRules) || !value.injectedRules.every(rule => typeof rule === "string"))
+					return false;
+				break;
+			case "mcp_tool_selection":
+				if (
+					!Array.isArray(value.selectedToolNames) ||
+					!value.selectedToolNames.every(name => typeof name === "string")
+				)
+					return false;
+				break;
+			case "session_init":
+				if (
+					typeof value.systemPrompt !== "string" ||
+					typeof value.task !== "string" ||
+					!Array.isArray(value.tools) ||
+					!value.tools.every(tool => typeof tool === "string")
+				)
+					return false;
+				break;
+			case "mode_change":
+				if (typeof value.mode !== "string") return false;
+				break;
+			case "thinking_level_change":
+				if (
+					value.thinkingLevel !== undefined &&
+					value.thinkingLevel !== null &&
+					typeof value.thinkingLevel !== "string"
+				)
+					return false;
+				break;
+			case "service_tier_change":
+				if (value.serviceTier !== null && typeof value.serviceTier !== "string") return false;
+				break;
+			default:
+				return false;
+		}
+	}
+	return true;
+}
+
+function inspectResumeSessionFile(
+	filePath: string,
+	storage: SessionStorage,
+): ResumeInspectionSnapshot | ResumeTailError {
+	const canonicalPath = resolveEquivalentPath(path.resolve(filePath));
+	let before: SessionStorageStat;
+	try {
+		before = storage.statSync(canonicalPath);
+	} catch (error) {
+		return resumeReadFailure(error, storage, canonicalPath);
+	}
+	if (!before.isFile || !storage.readBytesSync) {
+		return { kind: "error", reason: "read-failed" };
+	}
+
+	let bytes: Uint8Array;
+	let after: SessionStorageStat;
+	try {
+		bytes = storage.readBytesSync(canonicalPath);
+		after = storage.statSync(canonicalPath);
+	} catch (error) {
+		return resumeReadFailure(error, storage, canonicalPath);
+	}
+	if (!after.isFile) {
+		return { kind: "error", reason: "read-failed" };
+	}
+	if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+		return { kind: "error", reason: "unstable" };
+	}
+
+	try {
+		const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		for (const line of content.split(/\r?\n/)) {
+			if (line.length === 0) continue;
+			JSON.parse(line);
+		}
+		const entries = parseSessionEntries(content);
+		const header = entries[0] as SessionHeader | undefined;
+		if (header?.type !== "session" || typeof header.id !== "string") {
+			return { kind: "error", reason: "malformed" };
+		}
+		const migrationApplied = migrateToCurrentVersion(entries);
+		if (!hasStrictSessionSchema(entries)) return { kind: "error", reason: "malformed" };
+		const context = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session"));
+		const identity: ResumeSessionIdentity = {
+			canonicalPath,
+			sessionId: header.id,
+			size: after.size,
+			mtimeMs: after.mtimeMs,
+			sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+		};
+		return { identity, entries, context, migrationApplied };
+	} catch {
+		return { kind: "error", reason: "malformed" };
+	}
 }
 
 /**
@@ -2919,6 +3143,26 @@ export class SessionManager {
 	/** Initialize with a specific session file (used by factory methods) */
 	async #initSessionFile(sessionFile: string): Promise<void> {
 		await this.setSessionFile(sessionFile);
+	}
+
+	async #hydrateExistingSession(sessionFile: string, entries: FileEntry[], migrationApplied: boolean): Promise<void> {
+		const header = entries[0] as SessionHeader;
+		this.#sessionFile = path.resolve(sessionFile);
+		this.#sessionId = header.id;
+		this.#sessionName = header.title;
+		this.#titleSource = header.titleSource;
+		this.#needsFullRewriteOnNextPersist = migrationApplied;
+		await resolveBlobRefsInEntries(entries, this.#blobStore);
+		this.#fileEntries = entries;
+		this.#resetResidentTextBlobStore();
+		this.#fileEntries = this.#fileEntries.map(entry =>
+			prepareEntryForResidentSync(entry, this.#residentBlobStores()),
+		);
+		this.sanitizeLoadedOpenAIResponsesReplayMetadata();
+		this.#buildIndex();
+		this.#bumpAllRevisions();
+		this.#flushed = true;
+		this.#ensuredOnDisk = true;
 	}
 
 	/** Initialize with a new session (used by factory methods) */
@@ -4935,6 +5179,58 @@ export class SessionManager {
 		const manager = new SessionManager(cwd, dir, true, storage);
 		await manager.#initSessionFile(filePath);
 		return manager;
+	}
+
+	/**
+	 * List sessions for the resume picker without recovery or other maintenance writes.
+	 */
+	static async listForResumePickerReadOnly(
+		cwd: string,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<SessionInfo[]> {
+		const dir = sessionDir ?? path.join(getSessionsDir(), getDefaultSessionDirName(cwd).encodedDirName);
+		try {
+			return await collectSessionsFromFiles(storage.listFilesSync(dir, "*.jsonl"), storage);
+		} catch {
+			return [];
+		}
+	}
+
+	/** Inspect a selected session without acquiring write-capable ownership. */
+	static async inspectSessionTailReadOnly(
+		filePath: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<ResumeTailInspection> {
+		const inspected = inspectResumeSessionFile(filePath, storage);
+		if ("kind" in inspected) return inspected;
+		return canContinuePersistedHistory(inspected.context.messages)
+			? { kind: "resumable", identity: inspected.identity }
+			: { kind: "terminal", identity: inspected.identity };
+	}
+
+	/**
+	 * Main startup code MUST retain the consented inspection identity and branch on
+	 * the returned discriminant; an error result never creates, rewrites, or adopts
+	 * the selected path. Breadcrumb ownership begins only after `kind: "opened"`.
+	 */
+	static async openExistingStrict(
+		identity: ResumeSessionIdentity,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<StrictSessionOpenResult> {
+		const inspected = inspectResumeSessionFile(identity.canonicalPath, storage);
+		if ("kind" in inspected) return inspected;
+		if (!sameResumeIdentity(identity, inspected.identity)) {
+			return { kind: "error", reason: "identity-mismatch" };
+		}
+		const entries = structuredClone(inspected.entries) as FileEntry[];
+		const header = entries[0] as SessionHeader;
+		const dir = sessionDir ?? path.resolve(identity.canonicalPath, "..");
+		const manager = new SessionManager(header.cwd || getProjectDir(), dir, true, storage);
+		await manager.#hydrateExistingSession(identity.canonicalPath, entries, inspected.migrationApplied);
+		writeTerminalBreadcrumb(manager.cwd, identity.canonicalPath);
+		return { kind: "opened", manager };
 	}
 
 	/**

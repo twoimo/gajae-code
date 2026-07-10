@@ -96,7 +96,7 @@ describe("SessionSelectorComponent delete confirmation", () => {
 		expect(rendered).not.toContain("Alpha");
 		expect(rendered).toContain("Beta");
 	});
-	it("keeps selection valid after navigating empty search results", () => {
+	it("keeps selection valid after navigating empty search results", async () => {
 		const onSelect = vi.fn();
 		const selector = createSelector(async () => false, onSelect);
 
@@ -112,6 +112,7 @@ describe("SessionSelectorComponent delete confirmation", () => {
 		expect(rendered).toContain("❯ Alpha");
 
 		selector.handleInput("\n");
+		await Bun.sleep(0);
 
 		expect(onSelect).toHaveBeenCalledWith("/tmp/session-a.jsonl");
 	});

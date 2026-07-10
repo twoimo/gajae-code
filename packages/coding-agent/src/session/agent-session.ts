@@ -27,6 +27,7 @@ import {
 	type AgentState,
 	type AgentTool,
 	assertImagePlaceholdersHavePayload,
+	canContinuePersistedHistory,
 	resolveTelemetry,
 	type StablePrefixSnapshot,
 	ThinkingLevel,
@@ -2771,8 +2772,7 @@ export class AgentSession {
 	}
 
 	#isResumableAgentTail(): boolean {
-		const lastMsg = this.agent.state.messages.at(-1);
-		return lastMsg !== undefined && lastMsg.role !== "assistant";
+		return canContinuePersistedHistory(this.agent.state.messages);
 	}
 
 	#stripOverflowFailedTurnForRetry(): void {
@@ -4903,6 +4903,14 @@ export class AgentSession {
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
 		return this.agent.state.messages;
+	}
+
+	/** Main startup calls this exactly once, after a strict open returned `kind: "opened"`. */
+	async continuePersistedHistory(): Promise<void> {
+		if (!canContinuePersistedHistory(this.agent.state.messages)) {
+			throw new Error("Cannot continue from persisted message history");
+		}
+		await this.agent.continue();
 	}
 
 	buildDisplaySessionContext(): SessionContext {

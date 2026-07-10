@@ -9,6 +9,7 @@ export interface SessionStorageStat {
 	size: number;
 	mtimeMs: number;
 	mtime: Date;
+	isFile: boolean;
 }
 
 export interface SessionStorageWriter {
@@ -32,6 +33,8 @@ export interface SessionStorage {
 	existsSync(path: string): boolean;
 	writeTextSync(path: string, content: string): void;
 	readTextSync(path: string): string;
+	/** Exact on-disk bytes for strict read-only session inspection. */
+	readBytesSync?(path: string): Uint8Array;
 	statSync(path: string): SessionStorageStat;
 	listFilesSync(dir: string, pattern: string): string[];
 
@@ -157,9 +160,20 @@ export class FileSessionStorage implements SessionStorage {
 		return fs.readFileSync(fpath, "utf-8");
 	}
 
+	readBytesSync(fpath: string): Uint8Array {
+		const flags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW ?? 0);
+		const fd = fs.openSync(fpath, flags);
+		try {
+			if (!fs.fstatSync(fd).isFile()) throw new Error(`Not a regular file: ${fpath}`);
+			return fs.readFileSync(fd);
+		} finally {
+			fs.closeSync(fd);
+		}
+	}
+
 	statSync(path: string): SessionStorageStat {
 		const stats = fs.statSync(path);
-		return { size: stats.size, mtimeMs: stats.mtimeMs, mtime: stats.mtime };
+		return { size: stats.size, mtimeMs: stats.mtimeMs, mtime: stats.mtime, isFile: stats.isFile() };
 	}
 
 	listFilesSync(dir: string, pattern: string): string[] {
@@ -317,7 +331,7 @@ class MemorySessionStorageWriter implements SessionStorageWriter {
 }
 
 export class MemorySessionStorage implements SessionStorage {
-	#files = new Map<string, { content: string; mtimeMs: number }>();
+	#files = new Map<string, { content: Buffer; mtimeMs: number }>();
 
 	ensureDirSync(_dir: string): void {
 		// No-op for in-memory storage.
@@ -328,22 +342,29 @@ export class MemorySessionStorage implements SessionStorage {
 	}
 
 	writeTextSync(path: string, content: string): void {
-		this.#files.set(path, { content, mtimeMs: Date.now() });
+		this.#files.set(path, { content: Buffer.from(content, "utf-8"), mtimeMs: Date.now() });
 	}
 
 	readTextSync(path: string): string {
 		const entry = this.#files.get(path);
 		if (!entry) throw new Error(`File not found: ${path}`);
-		return entry.content;
+		return entry.content.toString("utf-8");
+	}
+
+	readBytesSync(path: string): Uint8Array {
+		const entry = this.#files.get(path);
+		if (!entry) throw new Error(`File not found: ${path}`);
+		return Buffer.from(entry.content);
 	}
 
 	statSync(path: string): SessionStorageStat {
 		const entry = this.#files.get(path);
 		if (!entry) throw new Error(`File not found: ${path}`);
 		return {
-			size: entry.content.length,
+			size: entry.content.byteLength,
 			mtimeMs: entry.mtimeMs,
 			mtime: new Date(entry.mtimeMs),
+			isFile: true,
 		};
 	}
 
@@ -367,13 +388,13 @@ export class MemorySessionStorage implements SessionStorage {
 	readText(path: string): Promise<string> {
 		const entry = this.#files.get(path);
 		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
-		return Promise.resolve(entry.content);
+		return Promise.resolve(entry.content.toString("utf-8"));
 	}
 
 	readTextPrefix(path: string, maxBytes: number): Promise<string> {
 		const entry = this.#files.get(path);
 		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
-		return Promise.resolve(entry.content.slice(0, maxBytes));
+		return Promise.resolve(entry.content.subarray(0, maxBytes).toString("utf-8"));
 	}
 
 	writeText(path: string, content: string): Promise<void> {
