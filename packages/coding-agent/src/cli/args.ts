@@ -183,17 +183,20 @@ export function parseArgs(args: string[]): Args {
 				}
 			}
 			result.tools = validTools;
-		} else if (arg === "--thinking" && i + 1 < args.length) {
-			const rawThinking = args[++i];
-			const thinking = parseEffort(rawThinking);
-			if (thinking !== undefined) {
-				result.thinking = thinking;
-			} else {
-				logger.warn("Invalid thinking level passed to --thinking", {
-					level: rawThinking,
-					validThinkingLevels: THINKING_EFFORTS,
-				});
+		} else if (arg === "--thinking") {
+			const rawThinking = args[i + 1];
+			if (!rawThinking || rawThinking.startsWith("-")) {
+				throw new CliParseError("--thinking requires <effort>");
 			}
+
+			const thinking = parseEffort(rawThinking);
+			if (thinking === undefined) {
+				throw new CliParseError(
+					`Invalid --thinking effort "${rawThinking}". Valid values: ${THINKING_EFFORTS.join(", ")}`,
+				);
+			}
+			i++;
+			result.thinking = thinking;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--export" && i + 1 < args.length) {

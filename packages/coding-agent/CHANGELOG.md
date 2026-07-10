@@ -8,11 +8,8 @@
 
 ### Fixed
 
-- Aligned the root `--thinking` choices with the canonical provider efforts (`minimal` through `max`), removing the unsupported `ultra` alias instead of silently mapping it to a different tier.
+- Aligned the root `--thinking` parser with canonical provider efforts (`minimal` through `max`), rejecting missing or unsupported values before launch and removing the unsupported `ultra` alias.
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
-
-### Fixed
-
 - Preserved explicit Telegram forum-topic renames as durable user-owned names, immediately re-asserting delayed edits while retaining restart and rename-race recovery (#1910).
 
 ## [0.9.6] - 2026-07-10

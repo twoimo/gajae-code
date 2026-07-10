@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import { type Model, THINKING_EFFORTS } from "@gajae-code/ai";
+import { Effort, type Model, THINKING_EFFORTS } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
 import { RootHelpCommand } from "../src/cli";
 import { parseArgs } from "../src/cli/args";
@@ -108,6 +108,35 @@ describe("CLI credential selector args", () => {
 
 	test("rejects malformed credential selector", () => {
 		expect(() => parseCliCredentialSelector("openai-codex/nope")).toThrow("Invalid --credential selector");
+	});
+});
+describe("CLI thinking args", () => {
+	test("parses --thinking with separate and equals values", () => {
+		expect(parseArgs(["--thinking", "max"]).thinking).toBe(Effort.Max);
+		expect(parseArgs(["--thinking=max"]).thinking).toBe(Effort.Max);
+	});
+
+	test("rejects unsupported --thinking values", () => {
+		expect(() => parseArgs(["--thinking", "ultra"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking", "ultra"])).toThrow('Invalid --thinking effort "ultra"');
+		expect(() => parseArgs(["--thinking=ultra"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking=ultra"])).toThrow('Invalid --thinking effort "ultra"');
+		expect(() => parseArgs(["--thinking", "invalid-effort"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking", "invalid-effort"])).toThrow('Invalid --thinking effort "invalid-effort"');
+		expect(() => parseArgs(["--thinking=invalid-effort"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking=invalid-effort"])).toThrow('Invalid --thinking effort "invalid-effort"');
+	});
+
+	test("rejects --thinking without a value", () => {
+		expect(() => parseArgs(["--thinking"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking"])).toThrow("--thinking requires <effort>");
+		expect(() => parseArgs(["--thinking="])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking="])).toThrow("--thinking requires <effort>");
+	});
+
+	test("rejects --thinking followed by another flag", () => {
+		expect(() => parseArgs(["--thinking", "--model", "gpt-5"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking", "--model", "gpt-5"])).toThrow("--thinking requires <effort>");
 	});
 });
 
