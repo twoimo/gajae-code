@@ -62,6 +62,56 @@ describe("app-server session export redaction", () => {
 		expect(raw.content).toContain("raw-upper");
 		expect(raw.content).toContain("raw-auth-header");
 	});
+	it("keeps redacted JSON parseable and scrubs secrets from values, keys, and toolCall names", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-session-jsonsafe-"));
+		const sessionPath = path.join(dir, "session.jsonl");
+		const header = { type: "session", version: 3, id: "jsonsafe-session", timestamp: new Date().toISOString(), cwd: dir };
+		const user = messageEntry({ role: "user", content: "connect ws://x?token=abc" }, "m1");
+		const assistant = messageEntry({
+			role: "assistant",
+			provider: "test",
+			model: "test",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+			content: [
+				{ type: "toolCall", id: "tc1", name: "run-token=tool-name-secret", arguments: { url: "ws://x?token=abc", next: 1 } },
+			],
+		}, "m2");
+		const toolResult = messageEntry({
+			role: "toolResult",
+			toolCallId: "tc1",
+			content: [{ type: "text", text: "ok" }],
+			details: { "sk-keyaaaa12345678": "first-benign", "sk-keybbbb87654321": "second-benign", plain: "kept" },
+		}, "m3");
+		await fs.writeFile(sessionPath, `${JSON.stringify(header)}\n${JSON.stringify(user)}\n${JSON.stringify(assistant)}\n${JSON.stringify(toolResult)}\n`);
+		const host = new AgentSessionHost();
+		const redacted = await host.sessionExport({ sessionPath, format: "json" }) as { content: string };
+		const parsed = JSON.parse(redacted.content) as { messages: unknown[] };
+		expect(parsed.messages).toHaveLength(3);
+		const serialized = JSON.stringify(parsed);
+		for (const sentinel of ["token=abc", "tool-name-secret", "sk-keyaaaa12345678", "sk-keybbbb87654321"]) {
+			expect(redacted.content).not.toContain(sentinel);
+			expect(serialized).not.toContain(sentinel);
+		}
+		expect(redacted.content).toContain("[REDACTED]");
+		const details = (parsed.messages[2] as { details: Record<string, string> }).details;
+		expect(details["[REDACTED]"]).toBe("first-benign");
+		expect(details["[REDACTED]#2"]).toBe("second-benign");
+		expect(details.plain).toBe("kept");
+		const toolCall = ((parsed.messages[1] as { content: Array<Record<string, unknown>> }).content)[0];
+		expect(toolCall.name).toBe("run-token=[REDACTED]");
+		expect(String(toolCall.preview)).toContain('"next":1');
+		expect(String(toolCall.preview)).not.toContain("token=abc");
+		const markdown = await host.sessionExport({ sessionPath, format: "markdown" }) as { content: string };
+		expect(markdown.content).toContain("[REDACTED]");
+		expect(markdown.content).not.toContain("token=abc");
+		expect(markdown.content).not.toContain("tool-name-secret");
+		const raw = await host.sessionExport({ sessionPath, format: "json", redact: false }) as { content: string };
+		const rawParsed = JSON.parse(raw.content) as { messages: unknown[] };
+		expect(rawParsed.messages).toHaveLength(3);
+		expect(raw.content).toContain("token=abc");
+		expect(raw.content).toContain("sk-keyaaaa12345678");
+	});
+
 	it("renames a valid absolute tmp .jsonl session", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-session-rename-"));
 		const sessionPath = path.join(dir, "session.jsonl");
