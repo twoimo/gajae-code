@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import type { Args } from "../src/cli/args";
 import { parseArgs } from "../src/cli/args";
 import {
@@ -68,6 +69,7 @@ async function captureStderr(operation: () => Promise<void>): Promise<string> {
 }
 
 async function expectEarlyBareResumeRejection(args: Args, isResumePickerTerminal: boolean): Promise<string> {
+	const originalExitCode = process.exitCode;
 	let authDiscoveries = 0;
 	let settingsInitializations = 0;
 	let stdinReads = 0;
@@ -99,7 +101,7 @@ async function expectEarlyBareResumeRejection(args: Args, isResumePickerTerminal
 	expect(settingsInitializations).toBe(0);
 	expect(stdinReads).toBe(0);
 	expect(pickerLists).toBe(0);
-	expect(process.exitCode).toBeUndefined();
+	expect(process.exitCode).toBe(originalExitCode);
 	return stderr;
 }
 
@@ -128,6 +130,22 @@ describe("bare resume startup gating", () => {
 	it("rejects TTY-backed RPC and print routes before startup work", async () => {
 		for (const args of [bareArgs({ mode: "rpc" }), bareArgs({ print: true })]) {
 			expect(await expectEarlyBareResumeRejection(args, true)).toBe(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
+		}
+	});
+
+	it("preserves undefined, zero, and nonzero exit codes in isolated route probes", async () => {
+		for (const exitCode of ["undefined", "0", "7"]) {
+			const probe = Bun.spawn(
+				[process.execPath, path.join(import.meta.dir, "fixtures/resume-exit-code-probe.ts"), exitCode],
+				{
+					cwd: path.join(import.meta.dir, ".."),
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			const [status, stderr] = await Promise.all([probe.exited, new Response(probe.stderr).text()]);
+			expect(status).toBe(0);
+			expect(stderr).toBe(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
 		}
 	});
 
