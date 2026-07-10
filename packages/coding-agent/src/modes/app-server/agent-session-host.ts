@@ -1352,7 +1352,7 @@ function redactExportValue(value: unknown, keyName?: string): unknown {
 	if (record.type === "toolCall")
 		return {
 			type: "toolCall",
-			name: typeof record.name === "string" ? scrubSecrets(record.name) : record.name,
+			name: typeof record.name === "string" ? scrubSecrets(record.name) : redactExportValue(record.name),
 			preview: previewValue(redactObjectEntries(asRecord(record.arguments))),
 		};
 	const next: Record<string, unknown> = {};

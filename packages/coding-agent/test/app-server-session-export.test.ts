@@ -112,6 +112,28 @@ describe("app-server session export redaction", () => {
 		expect(raw.content).toContain("sk-keyaaaa12345678");
 	});
 
+	it("structurally redacts object-valued toolCall names", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-session-objname-"));
+		const sessionPath = path.join(dir, "session.jsonl");
+		const header = { type: "session", version: 3, id: "objname-session", timestamp: new Date().toISOString(), cwd: dir };
+		const assistant = messageEntry({
+			role: "assistant",
+			provider: "test",
+			model: "test",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+			content: [
+				{ type: "toolCall", id: "tc1", name: { "sk-objnamekey1234567": "Bearer objname-raw-value" }, arguments: {} },
+			],
+		}, "m1");
+		await fs.writeFile(sessionPath, `${JSON.stringify(header)}\n${JSON.stringify(assistant)}\n`);
+		const host = new AgentSessionHost();
+		const redacted = await host.sessionExport({ sessionPath, format: "json" }) as { content: string };
+		const parsed = JSON.parse(redacted.content) as { messages: unknown[] };
+		expect(parsed.messages).toHaveLength(1);
+		expect(redacted.content).not.toContain("sk-objnamekey1234567");
+		expect(redacted.content).not.toContain("objname-raw-value");
+	});
+
 	it("renames a valid absolute tmp .jsonl session", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-session-rename-"));
 		const sessionPath = path.join(dir, "session.jsonl");
