@@ -116,3 +116,16 @@
 - The main UI may show IRC relays for conversations it was not part of, but those relay records are explicitly display-only.
 - Because reply generation snapshots in-flight assistant text, a recipient can answer based on partially streamed context.
 - Direct self-messaging is rejected by resolving the target as unavailable.
+
+## Sidebar
+
+- `irc.sidebar.enabled` defaults to `false`. When it and `irc.enabled` are enabled, `app.irc.sidebar.toggle` (default `Alt+I`, remappable) shows or hides a read-only IRC sidebar.
+- The sidebar retains the active runtime UI session's IRC observations only. It is not written to disk or restored into another session. Observations first seen while the sidebar setting is off remain inline; observations first seen while it is on use a fixed 10-second deadline from their observation time.
+- While the sidebar is visible, Kitty terminals keep rendering real images in the transcript (Kitty placements are cursor-neutral and compose safely with the split). Cursor-advancing protocols — iTerm2 inline images and raw SIXEL sequences — are represented by compact text placeholders so they cannot corrupt the split. Hiding the sidebar restores normal rendering for every protocol.
+- A successful `/fork` starts a new logical UI session: it clears the sidebar ledger, hides the panel, and resets roster-delivery state. Failed or cancelled forks preserve the current runtime sidebar state.
+
+## Hidden peer roster reminders
+
+When the live peer roster changes, an eligible model turn receives one hidden single-line reminder listing stable agent ids and roster labels. The initial empty roster produces no reminder; a later transition to empty does. Running/idle status changes alone do not count as a roster change.
+
+Normal turns, IRC auto-replies, and `/btw` ephemeral turns share one atomic roster claim. At most one concurrent turn receives a changed roster; successful completion commits that delivery, while failed or aborted turns release it for a later retry. These reminders are context-only and never appear in the transcript or persisted history.

@@ -2165,6 +2165,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"irc.sidebar.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			label: "IRC Sidebar",
+			description: "Enable the read-only IRC message sidebar",
+		},
+	},
+
 	// Optional tools
 
 	"renderMermaid.enabled": {

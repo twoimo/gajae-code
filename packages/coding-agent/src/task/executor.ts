@@ -87,8 +87,8 @@ function normalizeModelPatterns(value: string | string[] | undefined): string[] 
 		.filter(Boolean);
 }
 
-function renderIrcPeerRoster(selfId: string): string {
-	const peers = AgentRegistry.global()
+function renderIrcPeerRoster(agentRegistry: AgentRegistry, selfId: string): string {
+	const peers = agentRegistry
 		.list()
 		.filter(ref => ref.id !== selfId && (ref.status === "running" || ref.status === "idle"));
 	if (peers.length === 0) return "- (no other live agents)";
@@ -152,6 +152,8 @@ export interface ExecutorOptions {
 	authStorage?: AuthStorage;
 	modelRegistry?: ModelRegistry;
 	settings?: Settings;
+	/** Parent session's registry; shared by child sessions for IRC routing and roster visibility. */
+	agentRegistry?: AgentRegistry;
 	/**
 	 * Live service-tier intent of the parent session (`AgentSession.serviceTier`),
 	 * used as the inherited tier when `task.serviceTier === "inherit"`. Passing the
@@ -706,6 +708,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				: agent.spawns.join(",");
 
 	const lspEnabled = enableLsp ?? true;
+	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const ircEnabled = options.ircAvailable === true;
 	const contextFileForPrompt = ircEnabled ? undefined : options.contextFile;
 	const skipPythonPreflight = Array.isArray(toolNames) && !toolNames.includes("eval");
@@ -1385,7 +1388,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							worktree: worktree ?? "",
 							outputSchema: normalizedOutputSchema,
 							contextFile: contextFileForPrompt,
-							ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
+							ircPeers: ircEnabled ? renderIrcPeerRoster(agentRegistry, id) : "",
 							ircSelfId: ircEnabled ? id : "",
 							forkContext: forkContextNotice,
 						});
@@ -1414,6 +1417,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					parentTaskPrefix: id,
 					agentId: id,
 					agentDisplayName: agent.name,
+					agentRosterLabel: options.description,
 					bashAllowedPrefixes: agent.bashAllowedPrefixes,
 					enableLsp: lspEnabled,
 					skipPythonPreflight,
@@ -1421,6 +1425,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
 					forkContextSeed: options.forkContextSeed,
+					agentRegistry,
 					shouldPause: () => pauseRequested,
 				}),
 			);

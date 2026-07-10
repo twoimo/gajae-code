@@ -242,6 +242,28 @@ function buildMcpNotificationBatchMessage(entries: McpNotificationEntry[]): Agen
 	};
 }
 
+function sanitizeRosterLabel(value: string): string {
+	const normalized = value
+		.replace(/[\p{Cc}]/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
+}
+
+function humanizeAgentTaskId(id: string): string {
+	return id
+		.replace(/([a-z\d])([A-Z])/g, "$1 $2")
+		.replace(/[-_]+/g, " ")
+		.trim();
+}
+
+function resolveAgentRosterLabel(label: string | undefined, agentId: string, displayName: string): string {
+	return (
+		sanitizeRosterLabel(label ?? "") ||
+		sanitizeRosterLabel(humanizeAgentTaskId(agentId)) ||
+		sanitizeRosterLabel(displayName)
+	);
+}
 // Types
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: getProjectDir() */
@@ -334,6 +356,8 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Compact task label for hidden IRC roster reminders. */
+	agentRosterLabel?: string;
 	/** Optional restricted bash command prefixes for read-only role agents. */
 	bashAllowedPrefixes?: string[];
 	/** Restriction policy paired with bashAllowedPrefixes. */
@@ -1271,6 +1295,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
 	const isSubSession = taskDepth > 0 || Boolean(options.parentTaskPrefix) || Boolean(options.currentAgentType);
 	const resolvedAgentDisplayName = options.agentDisplayName ?? (isSubSession ? "sub" : "main");
+	const resolvedAgentRosterLabel = resolveAgentRosterLabel(
+		options.agentRosterLabel,
+		resolvedAgentId,
+		resolvedAgentDisplayName,
+	);
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
 	let disposeLocalProtocolOverride: (() => void) | undefined;
 	let localProtocolOverrideReleased = false;
@@ -2045,6 +2074,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agentRegistry.register({
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
+			rosterLabel: resolvedAgentRosterLabel,
 			kind: isSubSession ? "sub" : "main",
 			parentId: options.parentTaskPrefix,
 			session: null,

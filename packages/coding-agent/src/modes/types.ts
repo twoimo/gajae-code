@@ -28,9 +28,9 @@ import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent } from "./components/hook-selector";
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
+import type { IrcObservationLedger } from "./irc-observation-ledger";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
-
 export type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
@@ -84,6 +84,7 @@ export interface InteractiveModeContext {
 	mcpManager?: MCPManager;
 	lspServers?: LspStartupServerInfo[];
 
+	readonly ircLedger: IrcObservationLedger;
 	// State
 	isInitialized: boolean;
 	isBackgrounded: boolean;
@@ -202,6 +203,10 @@ export interface InteractiveModeContext {
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;
 
+	// IRC sidebar
+	toggleIrcSidebar(): void;
+	applyIrcSidebarAvailability(enabled: boolean): void;
+	resetIrcSidebarSession(): void;
 	// Command handling
 	handleExportCommand(text: string): Promise<void>;
 	handleShareCommand(): Promise<void>;

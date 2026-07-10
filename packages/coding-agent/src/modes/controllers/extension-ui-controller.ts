@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 import type { Component, OverlayHandle, TUI } from "@gajae-code/tui";
 import { Container, Spacer, Text } from "@gajae-code/tui";
 import { logger } from "@gajae-code/utils";
@@ -171,6 +173,8 @@ export class ExtensionUiController {
 				if (!success) {
 					return { cancelled: true };
 				}
+				this.ctx.resetIrcSidebarSession();
+
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
 				// Call setup callback if provided
@@ -205,6 +209,7 @@ export class ExtensionUiController {
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
+				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
 				this.ctx.chatContainer.clear();
@@ -234,11 +239,20 @@ export class ExtensionUiController {
 			},
 			compact: async instructionsOrOptions => this.#handleInteractiveCompact(instructionsOrOptions),
 			switchSession: async sessionPath => {
+				const previousSessionFile = this.ctx.sessionManager.getSessionFile();
+				const switchingToDifferentSession = previousSessionFile
+					? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
+					: true;
+
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
 				if (!result) {
 					return { cancelled: true };
 				}
+				if (switchingToDifferentSession) {
+					this.ctx.resetIrcSidebarSession();
+				}
+
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
@@ -416,6 +430,7 @@ export class ExtensionUiController {
 				if (!success) {
 					return { cancelled: true };
 				}
+				this.ctx.resetIrcSidebarSession();
 
 				// Call setup callback if provided
 				if (options?.setup) {
@@ -446,6 +461,7 @@ export class ExtensionUiController {
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
+				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
 				this.ctx.chatContainer.clear();
@@ -481,10 +497,18 @@ export class ExtensionUiController {
 				if (this.ctx.isBackgrounded) {
 					return { cancelled: true };
 				}
+				const previousSessionFile = this.ctx.sessionManager.getSessionFile();
+				const switchingToDifferentSession = previousSessionFile
+					? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
+					: true;
+
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
 				if (!result) {
 					return { cancelled: true };
+				}
+				if (switchingToDifferentSession) {
+					this.ctx.resetIrcSidebarSession();
 				}
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();

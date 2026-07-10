@@ -930,6 +930,8 @@ export class CommandController {
 			}
 		}
 		if (!(await this.ctx.session.newSession(options))) return;
+		this.ctx.resetIrcSidebarSession();
+
 		this.ctx.resetObserverRegistry();
 		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
@@ -1015,6 +1017,7 @@ export class CommandController {
 			this.ctx.showError("Fork failed (session not persisted or cancelled)");
 			return;
 		}
+		this.ctx.resetIrcSidebarSession();
 
 		this.ctx.statusLine.invalidate();
 		this.ctx.updateEditorTopBorder();
@@ -1298,6 +1301,7 @@ export class CommandController {
 				this.ctx.showError("Handoff cancelled");
 				return;
 			}
+			this.ctx.resetIrcSidebarSession();
 
 			// Rebuild chat from the new session (which now contains the handoff document)
 			this.ctx.rebuildChatFromMessages();

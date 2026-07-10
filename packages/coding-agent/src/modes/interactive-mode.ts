@@ -84,6 +84,7 @@ import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent } from "./components/hook-selector";
+import { IrcSplitViewComponent } from "./components/irc-sidebar";
 import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import {
@@ -99,6 +100,7 @@ import { InputController } from "./controllers/input-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
+import { IrcObservationLedger } from "./irc-observation-ledger";
 import { JobsObserver } from "./jobs-observer";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { SessionObserverRegistry } from "./session-observer-registry";
@@ -280,6 +282,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	keybindings: KeybindingsManager;
 	agent: Agent;
 	historyStorage?: HistoryStorage;
+	readonly ircLedger = new IrcObservationLedger();
 
 	ui: TUI;
 	chatContainer: Container;
@@ -387,6 +390,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#welcomeComponent?: WelcomeComponent;
+	#ircSplitView: IrcSplitViewComponent;
 
 	constructor(
 		session: AgentSession,
@@ -423,6 +427,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setClearOnShrink(settings.get("clearOnShrink"));
 		this.chatContainer = new Container();
+		this.#ircSplitView = new IrcSplitViewComponent(this.chatContainer, this.ircLedger, () => theme);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.todoContainer = new Container();
@@ -442,6 +447,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncEditorMaxHeight();
 			this.updateEditorChrome();
 			this.editor.invalidate();
+			this.#invalidateIrcSidebarRender();
 			this.ui.requestResizeRender();
 		};
 		process.stdout.on("resize", this.#resizeHandler);
@@ -561,7 +567,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#welcomeComponent.playIntro(() => this.ui.requestRender());
 		}
 
-		this.ui.addChild(this.chatContainer);
+		this.ui.addChild(this.#ircSplitView);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);
@@ -950,8 +956,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#getWelcomeReservedRows(width: number): number {
+		const transcriptRows =
+			this.chatContainer.children.length === 0 ||
+			this.chatContainer.children.length > WELCOME_RESERVED_CONTAINER_CHILD_LIMIT
+				? 0
+				: this.#ircSplitView.render(width).length;
+
 		const transientRows = [
-			this.chatContainer,
 			this.pendingMessagesContainer,
 			this.statusContainer,
 			this.todoContainer,
@@ -965,7 +976,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.hookWidgetContainerBelow,
 		].reduce((rows, component) => rows + component.render(width).length, 0);
 
-		return transientRows + pinnedRows;
+		return transcriptRows + transientRows + pinnedRows;
 	}
 
 	#renderShortContainerRowsForWelcomeReservation(width: number, container: Container): number {
@@ -2289,6 +2300,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
 	): void {
 		this.#uiHelpers.renderSessionContext(sessionContext, options);
+		this.#eventController.reconcileIrcExpiryTimers(this.#uiHelpers.getRenderedIrcInlineComponents());
 	}
 
 	renderInitialMessages(prebuiltContext?: SessionContext, options?: { preserveExistingChat?: boolean }): void {
@@ -2666,6 +2678,33 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	setToolsExpanded(expanded: boolean): void {
 		this.#inputController.setToolsExpanded(expanded);
+	}
+
+	toggleIrcSidebar(): void {
+		if (this.settings.get("irc.enabled") !== true || this.settings.get("irc.sidebar.enabled") !== true) return;
+		this.#ircSplitView.setVisible(!this.#ircSplitView.visible);
+		this.#invalidateIrcSidebarRender();
+		this.ui.requestRender();
+	}
+
+	applyIrcSidebarAvailability(enabled: boolean): void {
+		if (enabled) return;
+		this.#ircSplitView.setVisible(false);
+		this.#invalidateIrcSidebarRender();
+		this.ui.requestRender();
+	}
+
+	resetIrcSidebarSession(): void {
+		this.ircLedger.reset();
+		this.#eventController.resetIrcObservations();
+		this.#ircSplitView.setVisible(false);
+		this.#invalidateIrcSidebarRender();
+		this.ui.requestRender();
+	}
+
+	#invalidateIrcSidebarRender(): void {
+		clearRenderCache();
+		this.#ircSplitView.invalidate();
 	}
 
 	toggleThinkingBlockVisibility(): void {

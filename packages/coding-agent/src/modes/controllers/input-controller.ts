@@ -331,6 +331,13 @@ export class InputController {
 		// Wire up extension shortcuts
 		this.registerExtensionShortcuts();
 
+		for (const key of this.ctx.keybindings.getKeys("app.irc.sidebar.toggle")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => {
+				this.ctx.toggleIrcSidebar();
+				return true;
+			});
+		}
+
 		const planModeKeys = this.ctx.keybindings.getKeys("app.plan.toggle");
 		for (const key of planModeKeys) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handlePlanModeCommand());

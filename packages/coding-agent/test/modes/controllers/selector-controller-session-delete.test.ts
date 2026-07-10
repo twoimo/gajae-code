@@ -122,6 +122,10 @@ function createContext(currentSessionFile: string): {
 			calls.push(`showStatus:${message}`);
 		}),
 		showError: vi.fn(),
+		resetIrcSidebarSession: vi.fn(() => {
+			calls.push("resetIrcSidebarSession");
+		}),
+
 		showHookConfirm,
 		shutdown: vi.fn(async () => undefined),
 	} as unknown as TestContext;
@@ -184,6 +188,7 @@ describe("SelectorController session deletion", () => {
 			"editorContainer.addChild",
 			"ui.requestRender",
 			"session.newSession",
+			"resetIrcSidebarSession",
 			"loadingAnimation.stop",
 			"statusContainer.clear",
 			"pendingMessagesContainer.clear",
@@ -257,6 +262,7 @@ describe("SelectorController session deletion", () => {
 		expect(deleteSessionWithArtifacts).toHaveBeenCalledWith(activeSessionPath);
 		expect(calls).toEqual([
 			"session.newSession",
+			"resetIrcSidebarSession",
 			"loadingAnimation.stop",
 			"statusContainer.clear",
 			"pendingMessagesContainer.clear",

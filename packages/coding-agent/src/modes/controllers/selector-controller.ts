@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import { getOAuthProviders } from "@gajae-code/ai/utils/oauth";
 import type { OAuthProvider } from "@gajae-code/ai/utils/oauth/types";
@@ -800,6 +802,12 @@ export class SelectorController {
 				this.ctx.ui.requestRender();
 				break;
 			}
+			case "irc.enabled":
+			case "irc.sidebar.enabled":
+				this.ctx.applyIrcSidebarAvailability(
+					this.ctx.settings.get("irc.enabled") === true && this.ctx.settings.get("irc.sidebar.enabled") === true,
+				);
+				break;
 
 			// Provider settings - update runtime preferences
 			case "providers.webSearch":
@@ -1173,6 +1181,7 @@ export class SelectorController {
 						this.ctx.ui.requestRender();
 						return;
 					}
+					this.ctx.resetIrcSidebarSession();
 
 					this.ctx.chatContainer.clear();
 					this.ctx.renderInitialMessages();
@@ -1387,6 +1396,8 @@ export class SelectorController {
 		if (!detached) {
 			return false;
 		}
+		this.ctx.resetIrcSidebarSession();
+
 		this.#refreshSessionTerminalTitle();
 
 		this.#clearTransientSessionUi();
@@ -1401,10 +1412,17 @@ export class SelectorController {
 	}
 
 	async handleResumeSession(sessionPath: string): Promise<void> {
+		const previousSessionFile = this.ctx.sessionManager.getSessionFile();
+		const switchingToDifferentSession = previousSessionFile
+			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
+			: true;
 		this.#clearTransientSessionUi();
 
 		// Switch session via AgentSession (emits hook and tool session events)
-		await this.ctx.session.switchSession(sessionPath);
+		if (!(await this.ctx.session.switchSession(sessionPath))) return;
+		if (switchingToDifferentSession) {
+			this.ctx.resetIrcSidebarSession();
+		}
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
