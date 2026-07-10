@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Aligned root, explicit launch, and ACP `--thinking` parsing with canonical provider efforts (`minimal` through `max`), rejecting missing or unsupported values before fast-path or runtime initialization, preserving positional help/version precedence and equals-form diagnostics, and stopping launch preprocessing at `--` and startup provider payload boundaries.
+- Aligned root, explicit launch, and ACP `--thinking` parsing with canonical provider efforts (`minimal` through `max`), rejecting missing or unsupported values before fast-path or runtime initialization, preserving positional help/version precedence and equals-form diagnostics, and retaining option/value ownership across `--`, startup provider payloads, worktree setup, and ACP terminal authentication.
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
 - Preserved explicit Telegram forum-topic renames as durable user-owned names, immediately re-asserting delayed edits while retaining restart and rename-race recovery (#1910).
 

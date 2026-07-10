@@ -11,6 +11,7 @@ import type { AgentSideConnection, InitializeRequest } from "@agentclientprotoco
 import { zInitializeResponse } from "@agentclientprotocol/sdk/dist/schema/zod.gen.js";
 import type { Model } from "@gajae-code/ai";
 import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
+import { parseArgs } from "../src/cli/args";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
 import { ACP_TERMINAL_AUTH_FLAG, prepareAcpTerminalAuthArgs } from "../src/modes/acp/terminal-auth";
 import type { AgentSession } from "../src/session/agent-session";
@@ -199,15 +200,16 @@ describe("ACP initialize conformance", () => {
 		void second;
 	});
 
-	it("uses a terminal auth arg that removes ACP mode before launching the interactive setup flow", () => {
-		const result = prepareAcpTerminalAuthArgs(["--mode", "acp", "--no-extensions", ACP_TERMINAL_AUTH_FLAG]);
-
-		expect(result).toEqual({
-			args: ["--no-extensions"],
+	it("detects terminal auth without rewriting ACP launch argv", () => {
+		const modeArgs = ["--mode", "acp", "--no-extensions", ACP_TERMINAL_AUTH_FLAG];
+		expect(prepareAcpTerminalAuthArgs(modeArgs)).toEqual({
+			args: modeArgs,
 			terminalAuth: true,
 		});
-		expect(prepareAcpTerminalAuthArgs(["--mode=acp", ACP_TERMINAL_AUTH_FLAG])).toEqual({
-			args: [],
+
+		const equalsArgs = ["--mode=acp", ACP_TERMINAL_AUTH_FLAG];
+		expect(prepareAcpTerminalAuthArgs(equalsArgs)).toEqual({
+			args: equalsArgs,
 			terminalAuth: true,
 		});
 	});
@@ -217,18 +219,9 @@ describe("ACP initialize conformance", () => {
 			args: ["--", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"],
 			terminalAuth: false,
 		});
-		expect(
-			prepareAcpTerminalAuthArgs([
-				ACP_TERMINAL_AUTH_FLAG,
-				"--mode",
-				"acp",
-				"--",
-				ACP_TERMINAL_AUTH_FLAG,
-				"--mode",
-				"foo",
-			]),
-		).toEqual({
-			args: ["--", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"],
+		const delimitedArgs = [ACP_TERMINAL_AUTH_FLAG, "--mode", "acp", "--", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"];
+		expect(prepareAcpTerminalAuthArgs(delimitedArgs)).toEqual({
+			args: delimitedArgs,
 			terminalAuth: true,
 		});
 		expect(prepareAcpTerminalAuthArgs(["/provider", "add", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"])).toEqual({
@@ -244,12 +237,31 @@ describe("ACP initialize conformance", () => {
 			args: ["--mode", ACP_TERMINAL_AUTH_FLAG],
 			terminalAuth: false,
 		});
-		expect(
-			prepareAcpTerminalAuthArgs([ACP_TERMINAL_AUTH_FLAG, "--mode", "acp", "--model", "--mode", "payload"]),
-		).toEqual({
-			args: ["--model", "--mode", "payload"],
+		const ownedModeArgs = [ACP_TERMINAL_AUTH_FLAG, "--mode", "acp", "--model", "--mode", "payload"];
+		expect(prepareAcpTerminalAuthArgs(ownedModeArgs)).toEqual({
+			args: ownedModeArgs,
 			terminalAuth: true,
 		});
+	});
+
+	it("preserves resume and startup payload ownership around terminal auth", () => {
+		const promptArgs = ["--resume", ACP_TERMINAL_AUTH_FLAG, "prompt"];
+		expect(prepareAcpTerminalAuthArgs(promptArgs)).toEqual({
+			args: promptArgs,
+			terminalAuth: true,
+		});
+		const promptParsed = parseArgs(promptArgs);
+		expect(promptParsed.resume).toBe(true);
+		expect(promptParsed.messages).toEqual(["prompt"]);
+
+		const providerArgs = ["--resume", ACP_TERMINAL_AUTH_FLAG, "/provider", "add"];
+		expect(prepareAcpTerminalAuthArgs(providerArgs)).toEqual({
+			args: providerArgs,
+			terminalAuth: true,
+		});
+		const providerParsed = parseArgs(providerArgs);
+		expect(providerParsed.resume).toBe(true);
+		expect(providerParsed.messages).toEqual(["/provider add"]);
 	});
 
 	it("declares agentInfo.version that matches the published package version", async () => {

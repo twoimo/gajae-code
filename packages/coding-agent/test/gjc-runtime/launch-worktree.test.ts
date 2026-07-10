@@ -3,7 +3,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Args } from "@gajae-code/coding-agent/cli/args";
+import { type Args, parseArgs } from "@gajae-code/coding-agent/cli/args";
 import { buildDefaultTmuxLaunchPlan } from "@gajae-code/coding-agent/gjc-runtime/launch-tmux";
 import {
 	ensureLaunchWorktree,
@@ -63,14 +63,14 @@ afterEach(async () => {
 });
 
 describe("default launch worktrees", () => {
-	it("parses and strips launch worktree flags", () => {
+	it("parses worktree mode without rewriting launch argv", () => {
 		expect(parseLaunchWorktreeMode(["--worktree", "feature/demo", "hello"])).toEqual({
 			mode: { enabled: true, detached: false, name: "feature/demo" },
-			remainingArgs: ["hello"],
+			remainingArgs: ["--worktree", "feature/demo", "hello"],
 		});
 		expect(parseLaunchWorktreeMode(["--worktree", "--", "hello"])).toEqual({
 			mode: { enabled: true, detached: true, name: null },
-			remainingArgs: ["--", "hello"],
+			remainingArgs: ["--worktree", "--", "hello"],
 		});
 		expect(parseLaunchWorktreeMode(["--worktree", "--model", "opus"]).mode).toEqual({
 			enabled: true,
@@ -79,23 +79,19 @@ describe("default launch worktrees", () => {
 		});
 		expect(parseLaunchWorktreeMode(["--worktree=feature/demo", "hello"])).toEqual({
 			mode: { enabled: true, detached: false, name: "feature/demo" },
-			remainingArgs: ["hello"],
+			remainingArgs: ["--worktree=feature/demo", "hello"],
 		});
 		expect(parseLaunchWorktreeMode(["-w", "feature/demo", "hello"])).toEqual({
 			mode: { enabled: true, detached: false, name: "feature/demo" },
-			remainingArgs: ["hello"],
-		});
-		expect(parseLaunchWorktreeMode(["-w", "--", "hello"])).toEqual({
-			mode: { enabled: true, detached: true, name: null },
-			remainingArgs: ["--", "hello"],
+			remainingArgs: ["-w", "feature/demo", "hello"],
 		});
 		expect(parseLaunchWorktreeMode(["-w=feature/demo", "hello"])).toEqual({
 			mode: { enabled: true, detached: false, name: "feature/demo" },
-			remainingArgs: ["hello"],
+			remainingArgs: ["-w=feature/demo", "hello"],
 		});
 		expect(parseLaunchWorktreeMode(["--worktree", "--", "--thinking", "ultra"])).toEqual({
 			mode: { enabled: true, detached: true, name: null },
-			remainingArgs: ["--", "--thinking", "ultra"],
+			remainingArgs: ["--worktree", "--", "--thinking", "ultra"],
 		});
 		expect(parseLaunchWorktreeMode(["/provider", "add", "--worktree", "feature"])).toEqual({
 			mode: { enabled: false },
@@ -107,6 +103,44 @@ describe("default launch worktrees", () => {
 		});
 	});
 
+	it("preserves resume and startup payload ownership around worktree options", () => {
+		const promptArgs = ["--resume", "--worktree", "feature", "prompt"];
+		const promptWorktree = parseLaunchWorktreeMode(promptArgs);
+		expect(promptWorktree.remainingArgs).toEqual(promptArgs);
+		const promptParsed = parseArgs(promptWorktree.remainingArgs);
+		expect(promptParsed.resume).toBe(true);
+		expect(promptParsed.messages).toEqual(["prompt"]);
+
+		const providerArgs = ["--resume", "--worktree", "feature", "/provider", "add"];
+		const providerWorktree = parseLaunchWorktreeMode(providerArgs);
+		expect(providerWorktree.remainingArgs).toEqual(providerArgs);
+		const providerParsed = parseArgs(providerWorktree.remainingArgs);
+		expect(providerParsed.resume).toBe(true);
+		expect(providerParsed.messages).toEqual(["/provider add"]);
+	});
+
+	it("treats split worktree names as owned launch values", () => {
+		const parsed = parseArgs(["--worktree", "help"]);
+		expect(parsed.help).toBeUndefined();
+		expect(parsed.messages).toEqual([]);
+		expect(parseLaunchWorktreeMode(["--worktree", "help"]).mode).toEqual({
+			enabled: true,
+			detached: false,
+			name: "help",
+		});
+
+		for (const name of ["help", "--help", "/provider"]) {
+			const inlineParsed = parseArgs([`--worktree=${name}`]);
+			expect(inlineParsed.help).toBeUndefined();
+			expect(inlineParsed.messages).toEqual([]);
+			expect(parseLaunchWorktreeMode([`--worktree=${name}`]).mode).toEqual({
+				enabled: true,
+				detached: false,
+				name,
+			});
+		}
+	});
+
 	it("creates and reuses a detached launch worktree beside the source repo", async () => {
 		const repo = await createRepo("gjc-launch-worktree-");
 		await fs.mkdir(path.join(repo, "node_modules"));
@@ -116,7 +150,7 @@ describe("default launch worktrees", () => {
 		const expectedPath = path.join(path.dirname(repo), `${path.basename(repo)}.gajae-code-worktrees`, branchSlug);
 
 		expect(await fs.realpath(first.cwd)).toBe(await fs.realpath(expectedPath));
-		expect(first.args).toEqual(["--", "hello"]);
+		expect(first.args).toEqual(["--worktree", "--", "hello"]);
 		expect(first.worktree.enabled && first.worktree.created).toBe(true);
 		expect(first.worktree.enabled && first.worktree.detached).toBe(true);
 		expect(await Bun.file(path.join(expectedPath, ".git")).exists()).toBe(true);

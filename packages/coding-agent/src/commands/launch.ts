@@ -194,8 +194,9 @@ export default class Index extends Command {
 	static strict = false;
 
 	async run(): Promise<void> {
-		const { args } = prepareAcpTerminalAuthArgs(this.argv);
+		const { args, terminalAuth } = prepareAcpTerminalAuthArgs(this.argv);
 		const parsed = parseArgs([...args]);
+		if (terminalAuth) delete parsed.mode;
 		if (parsed.help || parsed.version) {
 			await runRootCommand(parsed, args);
 			return;
@@ -213,6 +214,7 @@ export default class Index extends Command {
 			setProjectDir(launch.cwd);
 		}
 		const launchParsed = parseArgs(launch.args);
+		if (terminalAuth) delete launchParsed.mode;
 		if (
 			launchDefaultTmuxIfNeeded({
 				parsed: launchParsed,

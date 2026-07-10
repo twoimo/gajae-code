@@ -98,7 +98,7 @@ describe("lifecycle control runtime", () => {
 		});
 		const { mode, remainingArgs } = parseLaunchWorktreeMode(args);
 		expect(mode).toEqual({ enabled: true, detached: false, name: "feat/y" });
-		expect(remainingArgs).toEqual([]);
+		expect(remainingArgs).toEqual(args);
 	});
 
 	it("a flag-shaped branch stays a named worktree (no detached/stray-flag mis-parse)", () => {
@@ -110,7 +110,7 @@ describe("lifecycle control runtime", () => {
 		expect(args).toEqual(["--worktree=-x"]);
 		const { mode, remainingArgs } = parseLaunchWorktreeMode(args);
 		expect(mode).toEqual({ enabled: true, detached: false, name: "-x" });
-		expect(remainingArgs).toEqual([]);
+		expect(remainingArgs).toEqual(args);
 	});
 
 	it("buildCreateArgv emits root-parser-compatible --mpreset argv when modelPreset is set", () => {
@@ -125,7 +125,7 @@ describe("lifecycle control runtime", () => {
 		expect(worktreeLaunch).toEqual({ cwd: "/r", args: ["--worktree=feat/y", "--mpreset", "claude-opus"] });
 		const { mode, remainingArgs } = parseLaunchWorktreeMode(worktreeLaunch.args);
 		expect(mode).toEqual({ enabled: true, detached: false, name: "feat/y" });
-		expect(remainingArgs).toEqual(["--mpreset", "claude-opus"]);
+		expect(remainingArgs).toEqual(worktreeLaunch.args);
 	});
 
 	it("buildCreateArgv omits --mpreset when modelPreset is undefined", () => {

@@ -386,8 +386,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		argv: runArgv,
 		commands,
 		help: showHelp,
-		commandHelpArguments: (commandId, commandArgv) =>
-			commandId === "launch" || commandId === "acp" ? getLaunchOptionArguments(commandArgv) : undefined,
+		commandHelpArguments: commandId => (commandId === "launch" || commandId === "acp" ? [] : undefined),
 	});
 }
 

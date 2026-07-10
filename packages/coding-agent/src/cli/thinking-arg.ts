@@ -25,6 +25,7 @@ const REQUIRED_VALUE_FLAGS: ReadonlySet<string> = new Set([
 	"--export",
 ]);
 const OPTIONAL_VALUE_FLAGS: ReadonlySet<string> = new Set(["--resume", "-r", "--session", "--list-models"]);
+const WORKTREE_VALUE_FLAGS: ReadonlySet<string> = new Set(["--worktree", "-w"]);
 
 export interface ParsedThinkingArgument {
 	effort: Effort;
@@ -77,6 +78,9 @@ export function findLaunchArgumentEndIndex(args: readonly string[], index: numbe
 	}
 	if (arg && REQUIRED_VALUE_FLAGS.has(arg)) {
 		return next === undefined ? index : index + 1;
+	}
+	if (arg && WORKTREE_VALUE_FLAGS.has(arg) && next && !next.startsWith("-") && !isStartupSlashCommandArg(next)) {
+		return index + 1;
 	}
 	if (arg && OPTIONAL_VALUE_FLAGS.has(arg) && next && !next.startsWith("-")) {
 		if (arg !== "--list-models" || !next.startsWith("@")) return index + 1;

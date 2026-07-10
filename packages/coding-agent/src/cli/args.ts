@@ -72,6 +72,7 @@ export function parseArgs(rawArgs: string[]): Args {
 
 	for (let i = 0; i < args.length; i++) {
 		let arg = args[i];
+		let hasInlineValue = false;
 
 		const thinkingArgument = parseThinkingArgumentAt(args, i);
 		if (thinkingArgument) {
@@ -91,6 +92,7 @@ export function parseArgs(rawArgs: string[]): Args {
 			const eqIdx = arg.indexOf("=");
 			const value = arg.slice(eqIdx + 1);
 			arg = arg.slice(0, eqIdx);
+			hasInlineValue = true;
 			// Insert the value so the existing "args[++i]" logic picks it up
 			args.splice(i + 1, 0, value);
 		}
@@ -103,6 +105,13 @@ export function parseArgs(rawArgs: string[]): Args {
 			break;
 		} else if (arg === "--allow-home") {
 			result.allowHome = true;
+		} else if (arg === "--worktree" || arg === "-w") {
+			const next = args[i + 1];
+			if (hasInlineValue || (next !== undefined && !next.startsWith("-") && !isStartupSlashCommandArg(next))) {
+				i++;
+			}
+		} else if (arg.startsWith("-w=") || (arg.startsWith("-w") && arg.length > 2)) {
+			// Worktree shorthand is a launch option, not an initial message.
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
 			if (

@@ -124,6 +124,12 @@ describe("public CLI thinking validation", () => {
 			expect(versionFirst.stdout).not.toContain("USAGE");
 			expect(versionFirst.stdout).toContain(`${runtimeMarker}=false`);
 			expect(versionFirst.stderr).toBe("");
+
+			const worktreeName = runRoute(route, ["--worktree", "help", "--version"]);
+			expect(worktreeName.exitCode, `${worktreeName.stdout}\n${worktreeName.stderr}`).toBe(0);
+			expect(worktreeName.stdout).toMatch(/^gjc\/\d+\.\d+\.\d+/);
+			expect(worktreeName.stdout).not.toContain("USAGE");
+			expect(worktreeName.stderr).toBe("");
 		});
 	}
 

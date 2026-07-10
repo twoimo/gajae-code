@@ -16,7 +16,9 @@ export default class Acp extends Command {
 	async run(): Promise<void> {
 		const { args, terminalAuth } = prepareAcpTerminalAuthArgs(this.argv);
 		const parsed = parseArgs(args);
-		if (!terminalAuth) {
+		if (terminalAuth) {
+			delete parsed.mode;
+		} else {
 			parsed.mode = "acp";
 		}
 		await runRootCommand(parsed, args);

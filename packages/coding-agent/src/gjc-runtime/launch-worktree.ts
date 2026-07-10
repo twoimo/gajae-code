@@ -11,6 +11,7 @@ export type GjcLaunchWorktreeMode =
 
 export interface ParsedLaunchWorktreeMode {
 	mode: GjcLaunchWorktreeMode;
+	/** Original argv retained so later parsing preserves option/value ownership. */
 	remainingArgs: string[];
 }
 
@@ -180,13 +181,10 @@ function resolveOptionalWorktreeName(args: string[], index: number): { name: str
 
 export function parseLaunchWorktreeMode(args: string[]): ParsedLaunchWorktreeMode {
 	let mode: GjcLaunchWorktreeMode = { enabled: false };
-	const remainingArgs: string[] = [];
 	const delimiter = splitArgvAtDelimiter(args);
 	const slashCommandIndex = findStartupSlashCommandIndex(delimiter.beforeDelimiter);
 	const optionEnd = slashCommandIndex ?? delimiter.beforeDelimiter.length;
 	const optionArgs = delimiter.beforeDelimiter.slice(0, optionEnd);
-	const payloadArgs = delimiter.beforeDelimiter.slice(optionEnd);
-	if (delimiter.hasDelimiter) payloadArgs.push("--", ...delimiter.afterDelimiter);
 
 	for (let index = 0; index < optionArgs.length; index += 1) {
 		const arg = optionArgs[index] ?? "";
@@ -208,13 +206,12 @@ export function parseLaunchWorktreeMode(args: string[]): ParsedLaunchWorktreeMod
 			mode = name ? { enabled: true, detached: false, name } : { enabled: true, detached: true, name: null };
 			continue;
 		}
-		const endIndex = findLaunchArgumentEndIndex(optionArgs, index);
-		remainingArgs.push(...optionArgs.slice(index, endIndex + 1));
-		index = endIndex;
+		index = findLaunchArgumentEndIndex(optionArgs, index);
 	}
-	remainingArgs.push(...payloadArgs);
 
-	return { mode, remainingArgs };
+	// Keep argv intact so removing a worktree span cannot make neighboring
+	// launch options acquire new values when parseArgs() runs later.
+	return { mode, remainingArgs: [...args] };
 }
 
 export function planLaunchWorktree(
