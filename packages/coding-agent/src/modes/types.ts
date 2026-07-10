@@ -203,7 +203,6 @@ export interface InteractiveModeContext {
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;
 
-
 	// IRC sidebar
 	toggleIrcSidebar(): void;
 	applyIrcSidebarAvailability(enabled: boolean): void;

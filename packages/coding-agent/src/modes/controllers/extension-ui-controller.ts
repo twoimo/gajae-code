@@ -211,7 +211,6 @@ export class ExtensionUiController {
 				}
 				this.ctx.resetIrcSidebarSession();
 
-
 				// Update UI
 				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages();
@@ -433,7 +432,6 @@ export class ExtensionUiController {
 				}
 				this.ctx.resetIrcSidebarSession();
 
-
 				// Call setup callback if provided
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
@@ -464,7 +462,6 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				this.ctx.resetIrcSidebarSession();
-
 
 				// Update UI
 				this.ctx.chatContainer.clear();

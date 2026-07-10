@@ -243,7 +243,10 @@ function buildMcpNotificationBatchMessage(entries: McpNotificationEntry[]): Agen
 }
 
 function sanitizeRosterLabel(value: string): string {
-	const normalized = value.replace(/[\p{Cc}]/gu, " ").replace(/\s+/g, " ").trim();
+	const normalized = value
+		.replace(/[\p{Cc}]/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
 	return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
 }
 
@@ -255,7 +258,11 @@ function humanizeAgentTaskId(id: string): string {
 }
 
 function resolveAgentRosterLabel(label: string | undefined, agentId: string, displayName: string): string {
-	return sanitizeRosterLabel(label ?? "") || sanitizeRosterLabel(humanizeAgentTaskId(agentId)) || sanitizeRosterLabel(displayName);
+	return (
+		sanitizeRosterLabel(label ?? "") ||
+		sanitizeRosterLabel(humanizeAgentTaskId(agentId)) ||
+		sanitizeRosterLabel(displayName)
+	);
 }
 // Types
 export interface CreateAgentSessionOptions {

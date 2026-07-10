@@ -3,12 +3,12 @@ import { AgentBusyError, type AgentTelemetryConfig, type Tracer } from "@gajae-c
 import { type AssistantMessage, Effort, type Model } from "@gajae-code/ai";
 import { Settings } from "../../src/config/settings";
 import type { ExtensionActions, LoadExtensionsResult } from "../../src/extensibility/extensions/types";
+import { AgentRegistry } from "../../src/registry/agent-registry";
 import type { CreateAgentSessionResult } from "../../src/sdk";
 import * as sdkModule from "../../src/sdk";
 import type { AgentSession, AgentSessionEvent, ForkContextSeed, PromptOptions } from "../../src/session/agent-session";
 import type { AuthStorage } from "../../src/session/auth-storage";
 import { runSubprocess, SUBAGENT_WARNING_MISSING_YIELD } from "../../src/task/executor";
-import { AgentRegistry } from "../../src/registry/agent-registry";
 
 import type { AgentDefinition } from "../../src/task/types";
 import { EventBus } from "../../src/utils/event-bus";
@@ -321,7 +321,10 @@ describe("runSubprocess yield reminders", () => {
 				type: "tool_execution_end",
 				toolCallId: "tool-registry",
 				toolName: "yield",
-				result: { content: [{ type: "text", text: "Result submitted." }], details: { status: "success", data: {} } },
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: {} },
+				},
 				isError: false,
 			});
 		});

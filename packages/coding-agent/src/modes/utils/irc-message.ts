@@ -1,7 +1,6 @@
 import type { AgentMessage } from "@gajae-code/agent-core";
 import { sanitizeText } from "@gajae-code/utils";
 
-
 export type IrcMessageKind = "incoming" | "autoreply" | "relay";
 
 export type ParsedIrcMessage = {
@@ -33,7 +32,8 @@ export function parseIrcMessage(message: IrcCustomMessage): ParsedIrcMessage | u
 	if (!isIrcCustomType(message.customType)) return undefined;
 
 	const kind = message.customType.slice(4) as IrcMessageKind;
-	const timestamp = typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : Date.now();
+	const timestamp =
+		typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : Date.now();
 	const from = sanitizeText(kind === "autoreply" ? "you" : stringDetail(message.details, "from") || "?");
 	const to = sanitizeText(kind === "incoming" ? "you" : stringDetail(message.details, "to") || "?");
 	const text = sanitizeText(

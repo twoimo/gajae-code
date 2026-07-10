@@ -2,9 +2,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { parseIrcMessage } from "@gajae-code/coding-agent/modes/utils/irc-message";
-
 import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
+import { parseIrcMessage } from "@gajae-code/coding-agent/modes/utils/irc-message";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
 import type { CustomMessage } from "@gajae-code/coding-agent/session/messages";
 import { Container } from "@gajae-code/tui";

@@ -1183,7 +1183,6 @@ export class SelectorController {
 					}
 					this.ctx.resetIrcSidebarSession();
 
-
 					this.ctx.chatContainer.clear();
 					this.ctx.renderInitialMessages();
 					this.ctx.editor.setText(result.selectedText);

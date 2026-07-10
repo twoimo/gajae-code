@@ -21,8 +21,6 @@ import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { theme } from "../../modes/theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext } from "../../modes/types";
-import { isIrcCustomType, parseIrcMessage, type ParsedIrcMessage } from "./irc-message";
-
 import {
 	type CustomMessage,
 	isSilentAbort,
@@ -32,6 +30,7 @@ import {
 import type { SessionContext } from "../../session/session-manager";
 import { formatBytes, formatDuration } from "../../tools/render-utils";
 import { buildAbortDisplayMessage } from "./abort-message";
+import { isIrcCustomType, type ParsedIrcMessage, parseIrcMessage } from "./irc-message";
 
 type TextBlock = { type: "text"; text: string };
 interface RenderInitialMessagesOptions {
@@ -215,7 +214,6 @@ export class UiHelpers {
 		}
 		return components;
 	}
-
 
 	/** Extract text content from a user message */
 	getUserMessageText(message: Message): string {
@@ -621,7 +619,6 @@ export class UiHelpers {
 		for (const record of this.ctx.ircLedger.getInlineProjection(Date.now())) {
 			this.#renderedIrcInlineComponents.set(record.observationId, this.addIrcObservationToChat(record));
 		}
-
 
 		this.ctx.pendingTools.clear();
 		this.ctx.ui.requestRender();

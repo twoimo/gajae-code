@@ -59,7 +59,6 @@ describe("/handoff command", () => {
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 			resetIrcSidebarSession: vi.fn(),
-
 		} as unknown as InteractiveModeContext;
 		const controller = new CommandController(ctx);
 

@@ -87,7 +87,6 @@ import type { HookSelectorComponent } from "./components/hook-selector";
 import { IrcSplitViewComponent } from "./components/irc-sidebar";
 import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
-import { IrcObservationLedger } from "./irc-observation-ledger";
 import {
 	WelcomeComponent,
 	type WelcomeLogoMode,
@@ -101,6 +100,7 @@ import { InputController } from "./controllers/input-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
+import { IrcObservationLedger } from "./irc-observation-ledger";
 import { JobsObserver } from "./jobs-observer";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { SessionObserverRegistry } from "./session-observer-registry";
@@ -427,7 +427,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setClearOnShrink(settings.get("clearOnShrink"));
 		this.chatContainer = new Container();
-		this.#ircSplitView = new IrcSplitViewComponent(this.chatContainer, this.ircLedger);
+		this.#ircSplitView = new IrcSplitViewComponent(this.chatContainer, this.ircLedger, () => theme);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.todoContainer = new Container();
@@ -957,7 +957,8 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#getWelcomeReservedRows(width: number): number {
 		const transcriptRows =
-			this.chatContainer.children.length === 0 || this.chatContainer.children.length > WELCOME_RESERVED_CONTAINER_CHILD_LIMIT
+			this.chatContainer.children.length === 0 ||
+			this.chatContainer.children.length > WELCOME_RESERVED_CONTAINER_CHILD_LIMIT
 				? 0
 				: this.#ircSplitView.render(width).length;
 

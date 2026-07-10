@@ -20,20 +20,18 @@ import { completionNotifyDisabledByEnv } from "../../notifications/config";
 import { summaryFromMessage } from "../../notifications/helpers";
 import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { isSilentAbort, readPendingDisplayTag, type CustomMessage } from "../../session/messages";
+import { type CustomMessage, isSilentAbort, readPendingDisplayTag } from "../../session/messages";
 import type { ResolveToolDetails } from "../../tools/resolve";
+import type { IrcObservationRecord } from "../irc-observation-ledger";
 import { interruptHint } from "../shared";
 import { buildAbortDisplayMessage } from "../utils/abort-message";
 import { consumeInjectedOptimisticSignature } from "../utils/injected-user-submission";
-import { ringTerminalBell } from "../utils/terminal-bell";
 import { parseIrcMessage } from "../utils/irc-message";
-import type { IrcObservationRecord } from "../irc-observation-ledger";
-
+import { ringTerminalBell } from "../utils/terminal-bell";
 
 import { addChatChild, argsWithPartialJson } from "../utils/ui-helpers";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
-
 
 /** Test-only performance counters for advisory baseline tests. */
 export const __eventControllerPerfCounters = {
@@ -394,11 +392,9 @@ export class EventController {
 		}
 	}
 
-	#scheduleIrcExpiry(
-		record: IrcObservationRecord,
-		components: readonly Component[],
-	): void {
-		if (record.mode !== "ephemeral" || components.length === 0 || this.#ircExpiryTimers.has(record.observationId)) return;
+	#scheduleIrcExpiry(record: IrcObservationRecord, components: readonly Component[]): void {
+		if (record.mode !== "ephemeral" || components.length === 0 || this.#ircExpiryTimers.has(record.observationId))
+			return;
 		const remainingMs = record.expiresAt! - Date.now();
 		if (remainingMs <= 0) return;
 		const timer = setTimeout(() => {

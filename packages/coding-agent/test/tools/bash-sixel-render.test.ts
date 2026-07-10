@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RenderResultOptions } from "@gajae-code/agent-core";
+import { type IrcSidebarTheme, IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
+import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
 import { bashToolRenderer } from "@gajae-code/coding-agent/tools/bash";
 import { ImageProtocol, TERMINAL } from "@gajae-code/tui";
-import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import { sanitizeText } from "@gajae-code/utils";
 
 type MutableTerminalInfo = {
@@ -14,6 +14,11 @@ type MutableTerminalInfo = {
 };
 
 const terminal = TERMINAL as unknown as MutableTerminalInfo;
+
+const sidebarTheme = {
+	fg: (_color: "dim", text: string) => text,
+	boxSharp: { vertical: "|" },
+} satisfies IrcSidebarTheme;
 
 describe("bashToolRenderer", () => {
 	const originalProtocol = TERMINAL.imageProtocol;
@@ -118,7 +123,6 @@ describe("bashToolRenderer", () => {
 
 		expect(lines.filter(line => line === sixel)).toHaveLength(1);
 		expect(lines.some(line => line.includes("ctrl+o to expand"))).toBe(false);
-
 	});
 	it("replaces SIXEL output with bordered text while rendered through the visible IRC split", async () => {
 		terminal.imageProtocol = ImageProtocol.Sixel;
@@ -131,7 +135,7 @@ describe("bashToolRenderer", () => {
 			theme!,
 			{ command: "echo sixel" },
 		);
-		const split = new IrcSplitViewComponent(component, new IrcObservationLedger());
+		const split = new IrcSplitViewComponent(component, new IrcObservationLedger(), sidebarTheme);
 
 		expect(split.render(160).join("\n")).toContain(sixel);
 		split.setVisible(true);

@@ -5,6 +5,7 @@ import {
 	encodeKittyTransmit,
 	getCellDimensions,
 	ImageProtocol,
+	isTerminalGraphicsFallbackActive,
 	isWindowsTerminalPreviewSixelSupported,
 	kittyImageId,
 	renderImage,
@@ -12,7 +13,6 @@ import {
 	setCellDimensions,
 	setKittyTransmitWriter,
 	TERMINAL,
-	isTerminalGraphicsFallbackActive,
 	withTerminalGraphicsFallback,
 } from "@gajae-code/tui/terminal-capabilities";
 

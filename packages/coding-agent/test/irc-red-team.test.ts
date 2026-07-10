@@ -1,23 +1,23 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
-import { Agent } from "@gajae-code/agent-core";
-import { createMockModel, registerMockApi, type MockModel } from "@gajae-code/ai/providers/mock";
 import * as path from "node:path";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
+import { Agent } from "@gajae-code/agent-core";
+import { createMockModel, type MockModel, registerMockApi } from "@gajae-code/ai/providers/mock";
+import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { BashExecutionComponent } from "@gajae-code/coding-agent/modes/components/bash-execution";
 import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
+import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { initTheme, getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme, setThemeInstance, theme } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import type { CustomMessage } from "@gajae-code/coding-agent/session/messages";
-import { Container, ImageProtocol, TERMINAL, type TUI } from "@gajae-code/tui";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
 import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
+import type { CustomMessage } from "@gajae-code/coding-agent/session/messages";
 import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { Container, ImageProtocol, TERMINAL, type TUI } from "@gajae-code/tui";
 
 const SIXEL_START = "\x1bPq";
 const SIXEL_END = "\x1b\\";
@@ -64,7 +64,14 @@ function createRosterHarness(model: MockModel, sessionManager = SessionManager.i
 		},
 	});
 	rosterSessions.push(session);
-	registry.register({ id: "1-Worker", displayName: "Worker", rosterLabel: "red-team", kind: "sub", session: null, status: "running" });
+	registry.register({
+		id: "1-Worker",
+		displayName: "Worker",
+		rosterLabel: "red-team",
+		kind: "sub",
+		session: null,
+		status: "running",
+	});
 	return { session, registry, snapshots };
 }
 
@@ -124,7 +131,7 @@ function eventContext(setting: { enabled: boolean }) {
 }
 
 function visibleSplit(component: BashExecutionComponent): IrcSplitViewComponent {
-	const split = new IrcSplitViewComponent(component, new IrcObservationLedger());
+	const split = new IrcSplitViewComponent(component, new IrcObservationLedger(), theme);
 	split.setVisible(true);
 	return split;
 }
@@ -150,7 +157,7 @@ describe("IRC visualization red-team", () => {
 		const setting = { enabled: false };
 		const { ctx, chatContainer, ledger } = eventContext(setting);
 		const controller = new EventController(ctx);
-		const split = new IrcSplitViewComponent(chatContainer, ledger);
+		const split = new IrcSplitViewComponent(chatContainer, ledger, theme);
 		split.setVisible(true);
 		const resetIrcSidebarSession = () => {
 			ledger.reset();
@@ -169,7 +176,6 @@ describe("IRC visualization red-team", () => {
 		expect(chatContainer.children).toHaveLength(2);
 		expect(ledger.getSidebarRecords().map(record => record.text)).toEqual(["after reset"]);
 	});
-
 
 	it("captures immutable event-time policy across a live setting flip", async () => {
 		vi.useFakeTimers({ now: 0 });
@@ -216,7 +222,7 @@ describe("IRC visualization red-team", () => {
 		const ui = { requestRender: () => {} } as unknown as TUI;
 		const component = new BashExecutionComponent("emit sixel", ui, false);
 		component.setComplete(0, false, { output: `${SIXEL_START}cached${SIXEL_END}` });
-		const split = new IrcSplitViewComponent(component, new IrcObservationLedger());
+		const split = new IrcSplitViewComponent(component, new IrcObservationLedger(), theme);
 		const frames: string[] = [];
 		for (let index = 0; index < 20; index++) {
 			split.setVisible(true);
@@ -232,13 +238,15 @@ describe("IRC visualization red-team", () => {
 	it("allows one normal-or-ephemeral roster carrier, retries a failed claim, and rejects a late reset claimant", async () => {
 		const release = Promise.withResolvers<void>();
 		let calls = 0;
-		const concurrent = createRosterHarness(createMockModel({
-			handler: async () => {
-				calls += 1;
-				if (calls === 1) await release.promise;
-				return { content: ["ok"] };
-			},
-		}));
+		const concurrent = createRosterHarness(
+			createMockModel({
+				handler: async () => {
+					calls += 1;
+					if (calls === 1) await release.promise;
+					return { content: ["ok"] };
+				},
+			}),
+		);
 		const normal = concurrent.session.prompt("normal");
 		await Bun.sleep(0);
 		const ephemeral = concurrent.session.runEphemeralTurn({ promptText: "ephemeral" });
@@ -247,14 +255,23 @@ describe("IRC visualization red-team", () => {
 		expect(rosterDeliveries(concurrent)).toHaveLength(1);
 
 		let fail = true;
-		const retry = createRosterHarness(createMockModel({ handler: () => fail ? { throw: "temporary failure" } : { content: ["ok"] } }));
+		const retry = createRosterHarness(
+			createMockModel({ handler: () => (fail ? { throw: "temporary failure" } : { content: ["ok"] }) }),
+		);
 		await expect(retry.session.runEphemeralTurn({ promptText: "fails" })).rejects.toThrow("temporary failure");
 		fail = false;
 		await retry.session.runEphemeralTurn({ promptText: "retry" });
 		expect(rosterDeliveries(retry)).toHaveLength(2);
 
 		const lateRelease = Promise.withResolvers<void>();
-		const reset = createRosterHarness(createMockModel({ handler: async () => (await lateRelease.promise, { content: ["ok"] }) }));
+		const reset = createRosterHarness(
+			createMockModel({
+				handler: async () => {
+					await lateRelease.promise;
+					return { content: ["ok"] };
+				},
+			}),
+		);
 		const pending = reset.session.runEphemeralTurn({ promptText: "pending" });
 		await Bun.sleep(0);
 		await reset.session.newSession();
@@ -266,7 +283,10 @@ describe("IRC visualization red-team", () => {
 
 	it("preserves a delivered roster across same-session reload", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-irc-red-team-reload-"));
-		const harness = createRosterHarness(createMockModel({ handler: () => ({ content: ["ok"] }) }), SessionManager.create(directory, directory));
+		const harness = createRosterHarness(
+			createMockModel({ handler: () => ({ content: ["ok"] }) }),
+			SessionManager.create(directory, directory),
+		);
 		await harness.session.prompt("before reload");
 		await harness.session.reload();
 		await harness.session.prompt("after reload");
@@ -275,10 +295,20 @@ describe("IRC visualization red-team", () => {
 
 	it("reloads a delivered roster then sends exactly one changed roster", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-irc-red-team-reload-change-"));
-		const harness = createRosterHarness(createMockModel({ handler: () => ({ content: ["ok"] }) }), SessionManager.create(directory, directory));
+		const harness = createRosterHarness(
+			createMockModel({ handler: () => ({ content: ["ok"] }) }),
+			SessionManager.create(directory, directory),
+		);
 		await harness.session.prompt("before reload");
 		await harness.session.reload();
-		harness.registry.register({ id: "2-Worker", displayName: "Worker Two", rosterLabel: "changed", kind: "sub", session: null, status: "running" });
+		harness.registry.register({
+			id: "2-Worker",
+			displayName: "Worker Two",
+			rosterLabel: "changed",
+			kind: "sub",
+			session: null,
+			status: "running",
+		});
 		await harness.session.prompt("after roster change");
 
 		const deliveries = rosterDeliveries(harness);
@@ -289,7 +319,17 @@ describe("IRC visualization red-team", () => {
 	it("keeps an unbounded append-only ledger and fork failure leaves the caller-owned ledger untouched", async () => {
 		const ledger = new IrcObservationLedger();
 		for (let index = 0; index < 1_001; index++) {
-			ledger.observe({ observationId: `record-${index}`, kind: "incoming", from: "peer", to: "main", text: String(index), timestamp: index }, false);
+			ledger.observe(
+				{
+					observationId: `record-${index}`,
+					kind: "incoming",
+					from: "peer",
+					to: "main",
+					text: String(index),
+					timestamp: index,
+				},
+				false,
+			);
 		}
 		expect(ledger.getSidebarRecords()).toHaveLength(1_001);
 		expect(ledger.getSidebarRecords().at(-1)?.text).toBe("1000");

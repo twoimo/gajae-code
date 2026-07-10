@@ -1000,7 +1000,6 @@ export class CommandController {
 		}
 		this.ctx.resetIrcSidebarSession();
 
-
 		this.ctx.statusLine.invalidate();
 		this.ctx.updateEditorTopBorder();
 

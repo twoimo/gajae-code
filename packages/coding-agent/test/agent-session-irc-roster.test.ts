@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
-import { createMockModel, registerMockApi, type MockModel } from "@gajae-code/ai/providers/mock";
+import { createMockModel, type MockModel, registerMockApi } from "@gajae-code/ai/providers/mock";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
 import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
@@ -60,7 +60,14 @@ function createHarness(options: { sessionManager?: SessionManager; model?: MockM
 }
 
 function addPeer(registry: AgentRegistry, id = "1-Worker", status: "running" | "idle" = "running"): void {
-	registry.register({ id, displayName: `${id} display`, rosterLabel: `${id} label`, kind: "sub", session: null, status });
+	registry.register({
+		id,
+		displayName: `${id} display`,
+		rosterLabel: `${id} label`,
+		kind: "sub",
+		session: null,
+		status,
+	});
 }
 
 function deliveredRosters(harness: Harness): string[] {
@@ -156,10 +163,10 @@ describe("AgentSession IRC roster delivery", () => {
 		let calls = 0;
 		const model = createMockModel({
 			handler: async () => {
-			calls += 1;
-			if (calls === 1) await release.promise;
-			return { content: ["ok"] };
-		},
+				calls += 1;
+				if (calls === 1) await release.promise;
+				return { content: ["ok"] };
+			},
 		});
 		const harness = createHarness({ model });
 		addPeer(harness.registry);
@@ -192,7 +199,12 @@ describe("AgentSession IRC roster delivery", () => {
 
 	it("delivers the newest roster signature after the outstanding claim completes", async () => {
 		const release = Promise.withResolvers<void>();
-		const model = createMockModel({ handler: async () => (await release.promise, { content: ["ok"] }) });
+		const model = createMockModel({
+			handler: async () => {
+				await release.promise;
+				return { content: ["ok"] };
+			},
+		});
 		const harness = createHarness({ model });
 		addPeer(harness.registry, "1-Worker");
 
@@ -210,7 +222,12 @@ describe("AgentSession IRC roster delivery", () => {
 
 	it("invalidates a late ephemeral commit when roster delivery state resets", async () => {
 		const release = Promise.withResolvers<void>();
-		const model = createMockModel({ handler: async () => (await release.promise, { content: ["ok"] }) });
+		const model = createMockModel({
+			handler: async () => {
+				await release.promise;
+				return { content: ["ok"] };
+			},
+		});
 		const harness = createHarness({ model });
 		addPeer(harness.registry);
 
@@ -252,6 +269,8 @@ describe("AgentSession IRC roster delivery", () => {
 		await prompt(harness);
 
 		expect(findRosterMessage(harness)).toBeUndefined();
-		expect(harness.sessionManager.getBranch().some(entry => entry.type === "custom" && entry.customType === ROSTER_TYPE)).toBe(false);
+		expect(
+			harness.sessionManager.getBranch().some(entry => entry.type === "custom" && entry.customType === ROSTER_TYPE),
+		).toBe(false);
 	});
 });

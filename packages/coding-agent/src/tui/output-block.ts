@@ -1,7 +1,14 @@
 /**
  * Bordered output container with optional header and sections.
  */
-import { ImageProtocol, isTerminalGraphicsFallbackActive, padding, TERMINAL, visibleWidth, wrapTextWithAnsi } from "@gajae-code/tui";
+import {
+	ImageProtocol,
+	isTerminalGraphicsFallbackActive,
+	padding,
+	TERMINAL,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@gajae-code/tui";
 import type { Theme } from "../modes/theme/theme";
 import { containsSixelSequence, getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
