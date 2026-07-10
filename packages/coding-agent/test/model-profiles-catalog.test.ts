@@ -24,22 +24,22 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		name: "codex-eco",
 		requiredProviders: ["openai-codex"],
 		mapping: {
-			default: "openai-codex/gpt-5.6-luna:low",
+			default: "openai-codex/gpt-5.6-sol:medium",
 			executor: "openai-codex/gpt-5.6-luna:low",
-			planner: "openai-codex/gpt-5.6-luna:low",
+			planner: "openai-codex/gpt-5.6-luna:medium",
 			critic: "openai-codex/gpt-5.6-luna:medium",
-			architect: "openai-codex/gpt-5.6-luna:high",
+			architect: "openai-codex/gpt-5.6-sol:medium",
 		},
 	},
 	{
 		name: "codex-medium",
 		requiredProviders: ["openai-codex"],
 		mapping: {
-			default: "openai-codex/gpt-5.6-terra:medium",
-			executor: "openai-codex/gpt-5.6-terra:low",
+			default: "openai-codex/gpt-5.6-sol:high",
+			executor: "openai-codex/gpt-5.6-luna:medium",
 			planner: "openai-codex/gpt-5.6-terra:medium",
 			critic: "openai-codex/gpt-5.6-terra:high",
-			architect: "openai-codex/gpt-5.6-terra:xhigh",
+			architect: "openai-codex/gpt-5.6-sol:high",
 		},
 	},
 	{
@@ -47,7 +47,7 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		requiredProviders: ["openai-codex"],
 		mapping: {
 			default: "openai-codex/gpt-5.6-sol:ultra",
-			executor: "openai-codex/gpt-5.6-sol:medium",
+			executor: "openai-codex/gpt-5.6-terra:medium",
 			planner: "openai-codex/gpt-5.6-sol:high",
 			critic: "openai-codex/gpt-5.6-sol:max",
 			architect: "openai-codex/gpt-5.6-sol:max",
@@ -300,21 +300,21 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		requiredProviders: ["anthropic", "openai-codex"],
 		mapping: {
 			default: "anthropic/claude-opus-4-8:xhigh",
-			executor: "openai-codex/gpt-5.5:low",
-			planner: "openai-codex/gpt-5.5:medium",
-			critic: "openai-codex/gpt-5.5:high",
-			architect: "openai-codex/gpt-5.5:xhigh",
+			executor: "openai-codex/gpt-5.6-terra:low",
+			planner: "openai-codex/gpt-5.6-terra:medium",
+			critic: "openai-codex/gpt-5.6-terra:high",
+			architect: "openai-codex/gpt-5.6-sol:xhigh",
 		},
 	},
 	{
 		name: "codex-opencodego",
 		requiredProviders: ["openai-codex", "opencode-go"],
 		mapping: {
-			default: "openai-codex/gpt-5.5:medium",
+			default: "openai-codex/gpt-5.6-sol:medium",
 			executor: "opencode-go/deepseek-v4-pro",
 			planner: "opencode-go/kimi-k2.6",
 			critic: "opencode-go/mimo-v2.5-pro",
-			architect: "openai-codex/gpt-5.5:xhigh",
+			architect: "openai-codex/gpt-5.6-sol:xhigh",
 		},
 	},
 	{
@@ -322,10 +322,10 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		requiredProviders: ["anthropic", "openai-codex"],
 		mapping: {
 			default: "anthropic/claude-fable-5:high",
-			executor: "openai-codex/gpt-5.5:high",
+			executor: "openai-codex/gpt-5.6-terra:high",
 			planner: "anthropic/claude-opus-4-8:medium",
 			critic: "anthropic/claude-opus-4-8:high",
-			architect: "openai-codex/gpt-5.5:xhigh",
+			architect: "openai-codex/gpt-5.6-sol:xhigh",
 		},
 	},
 ];

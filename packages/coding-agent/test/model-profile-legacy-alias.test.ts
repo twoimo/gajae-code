@@ -38,6 +38,25 @@ const legacyCodexModel = {
 	},
 } satisfies Model<"openai-codex-responses">;
 
+const codexSolModel = {
+	...codexModel,
+	id: "gpt-5.6-sol",
+	name: "gpt-5.6-sol",
+	contextWindow: 373_000,
+} satisfies Model<"openai-codex-responses">;
+
+const codexTerraModel = {
+	...codexSolModel,
+	id: "gpt-5.6-terra",
+	name: "gpt-5.6-terra",
+} satisfies Model<"openai-codex-responses">;
+
+const codexLunaModel = {
+	...codexSolModel,
+	id: "gpt-5.6-luna",
+	name: "gpt-5.6-luna",
+} satisfies Model<"openai-codex-responses">;
+
 interface TestSession {
 	model: Model | undefined;
 	thinkingLevel: ThinkingLevel | undefined;
@@ -57,7 +76,7 @@ function fakeRegistry(extraProfiles: ModelProfileDefinition[] = []) {
 		getModelProfiles: () => new Map(profiles),
 		getAvailableModelProfileNames: () => [...profiles.keys()].sort(),
 		getApiKeyForProvider: async () => "key-openai-codex",
-		getAll: () => [codexModel, legacyCodexModel],
+		getAll: () => [codexModel, legacyCodexModel, codexSolModel, codexTerraModel, codexLunaModel],
 		resolveCanonicalModel: () => undefined,
 		getCanonicalVariants: () => [],
 		getCanonicalId: () => undefined,
@@ -99,7 +118,7 @@ describe("legacy model profile aliases", () => {
 		});
 
 		expect(session.getActiveModelProfile()).toBe("codex-medium");
-		expect(session.setModelTemporaryCalls).toEqual([{ model: codexModel, thinkingLevel: ThinkingLevel.Medium }]);
+		expect(session.setModelTemporaryCalls).toEqual([{ model: codexSolModel, thinkingLevel: ThinkingLevel.High }]);
 		expect(settings.get("modelProfile.default")).toBe("codex-standard");
 	});
 
@@ -114,7 +133,7 @@ describe("legacy model profile aliases", () => {
 
 		expect(session.getActiveModelProfile()).toBe("codex-medium");
 		expect(settings.get("modelProfile.default")).toBe("codex-medium");
-		expect(settings.get("defaultThinkingLevel")).toBe(ThinkingLevel.Medium);
+		expect(settings.get("defaultThinkingLevel")).toBe(ThinkingLevel.High);
 	});
 
 	test("preparation exposes the canonical replacement profile name", async () => {
@@ -126,7 +145,7 @@ describe("legacy model profile aliases", () => {
 		});
 
 		expect(prepared.profileName).toBe("codex-medium");
-		expect(prepared.defaultThinkingLevel).toBe(ThinkingLevel.Medium);
+		expect(prepared.defaultThinkingLevel).toBe(ThinkingLevel.High);
 	});
 
 	test("does not remap codex-standard when a user-defined profile shadows it", async () => {

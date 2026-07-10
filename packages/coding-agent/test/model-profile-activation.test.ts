@@ -162,7 +162,7 @@ describe("model profile activation", () => {
 			architect: "provider-b/executor",
 		});
 	});
-	test("builtin codex-eco uses GPT-5.6 Luna role efforts", async () => {
+	test("builtin codex-eco uses the released GPT-5.6 tier matrix without clamping supported efforts", async () => {
 		const registry = fakeRegistry({ profiles: [...BUILTIN_MODEL_PROFILES] });
 		const catalog = BUILTIN_MODEL_PROFILES.find(profile => profile.name === "codex-eco");
 		expect(catalog?.modelMapping.executor).toBe("openai-codex/gpt-5.6-luna:low");
@@ -174,8 +174,8 @@ describe("model profile activation", () => {
 			profileName: "codex-eco",
 		});
 		expect(prepared.agentModelOverrides.executor).toBe("openai-codex/gpt-5.6-luna:low");
-		expect(prepared.agentModelOverrides.architect).toBe("openai-codex/gpt-5.6-luna:high");
-		expect(prepared.agentModelOverrides.planner).toBe("openai-codex/gpt-5.6-luna:low");
+		expect(prepared.agentModelOverrides.architect).toBe("openai-codex/gpt-5.6-sol:medium");
+		expect(prepared.agentModelOverrides.planner).toBe("openai-codex/gpt-5.6-luna:medium");
 		expect(prepared.agentModelOverrides.critic).toBe("openai-codex/gpt-5.6-luna:medium");
 	});
 

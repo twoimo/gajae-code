@@ -410,7 +410,7 @@ describe("generated model policies", () => {
 		}
 	});
 
-	it("normalizes GPT-5.6 tier context windows by OpenAI transport", () => {
+	it("normalizes GPT-5.6 tier context windows to the 373K prompt budget", () => {
 		const models: Model<Api>[] = [
 			{
 				...createModel({
@@ -434,8 +434,8 @@ describe("generated model policies", () => {
 
 		applyGeneratedModelPolicies(models);
 
-		expect(models[0]?.contextWindow).toBe(272_000);
-		expect(models[1]?.contextWindow).toBe(1_050_000);
+		expect(models[0]?.contextWindow).toBe(373_000);
+		expect(models[1]?.contextWindow).toBe(373_000);
 		expect(models[0]?.applyPatchToolType).toBe("freeform");
 		expect(models[1]?.applyPatchToolType).toBe("freeform");
 	});

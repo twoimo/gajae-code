@@ -206,9 +206,9 @@ profiles:
 
 Built-in profiles are grouped by provider mix and tier:
 
-- `codex-eco` — GPT-5.6 Luna for every role: `low` for the main session, executor, and planner; `medium` for critic; `high` for architect
-- `codex-medium` — GPT-5.6 Terra for every role: `medium` for the main session and planner, `low` for executor, `high` for critic, and `xhigh` for architect
-- `codex-pro` — GPT-5.6 Sol for every role: local `ultra` orchestration for the main session, `medium` for executor, `high` for planner, and `max` for critic and architect
+- `codex-eco` — GPT-5.6 Sol `medium` for the main session and architect, with Luna `low` for executor and `medium` for planner and critic
+- `codex-medium` — GPT-5.6 Sol `high` for the main session and architect, Luna `medium` for executor, and Terra `medium` for planner and `high` for critic
+- `codex-pro` — GPT-5.6 Sol local `ultra` orchestration for the main session, `high` for planner, and `max` for critic and architect, with Terra `medium` for executor
 - `opencodego` — single OpenCode Go preset (Kimi default, DeepSeek executor/architect, Qwen planner, MiMo critic)
 - `claude-opus` — Anthropic OAuth preset centered on `claude-opus-4-8`
 - Single-provider tiers: `glm-{eco,medium,pro}`, `kimi-coding-plan-{eco,medium,pro}`, `mimo-{eco,medium,pro}`, `grok-{eco,medium,pro}`, `cursor-{eco,medium,pro}`, `minimax-{eco,medium,pro}`

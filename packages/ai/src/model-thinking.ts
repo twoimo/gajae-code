@@ -483,8 +483,9 @@ function applyGpt56ContextWindow(model: ApiModel<Api>, parsedModel: OpenAIModel)
 	if (!semverGte(parsedModel.version, "5.6") || !GPT_5_6_TIER_VARIANTS.has(parsedModel.variant)) {
 		return false;
 	}
-	model.contextWindow =
-		model.provider === "openai-codex" || model.api === "openai-codex-responses" ? 272_000 : 1_050_000;
+	// GPT-5.6 tiers enforce a ~373K usable prompt budget on both transports
+	// (matches the openai-codex live catalog), despite the 1M+ marketing window.
+	model.contextWindow = 373_000;
 	return true;
 }
 

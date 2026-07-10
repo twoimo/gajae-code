@@ -3,10 +3,17 @@
 ## [Unreleased]
 ### Changed
 
-- Updated the Codex Eco, Medium, and Pro presets to GPT-5.6 Luna, Terra, and Sol with tier-appropriate reasoning efforts; Codex Pro uses GJC-local `ultra` orchestration for its main session and assigns native `max` reasoning to critic and architect roles.
+- Preserved the released GPT-5.6 Sol/Terra/Luna role allocation across Codex Eco and Medium while upgrading Codex Pro to GJC-local `ultra` orchestration for its main session and native `max` reasoning for both critic and architect.
 - Added `ultra` as a Codex Sol session mode across `/effort`, settings, model selectors, agent-wire commands, status rendering, and Telegram controls. It dynamically combines native `max` reasoning with proactive delegation to at most four task agents without exposing `ultra` as a provider wire effort.
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
 
+- Moved the `codex-eco`/`codex-medium`/`codex-pro` presets and the `opus-codex`/`codex-opencodego`/`fable-opus-codex` combo presets from `gpt-5.5` onto the GPT-5.6 tier family: Sol drives `default` and `architect` on every codex preset (eco `sol:medium`, medium `sol:high`, pro `sol:xhigh`/`sol:max`), with Luna/Terra covering the lighter executor/planner/critic roles by tier.
+
+### Fixed
+
+- Fixed v0.9.3–v0.9.6 compiled release binaries crashing at first real launch with `Cannot find module '/$bunfs/root/node_modules/handlebars/lib/index.js'` while `--version`/`--help` still worked (#1939). `--minify` silently dropped the handlebars bunfs extra entrypoint; handlebars is now bundled through a statically-traceable `require("handlebars")` in `@gajae-code/utils` prompt rendering (still lazy at runtime), and the fragile extra entrypoint is gone from both release and dev compile args. `--minify` and its startup-RSS win are retained.
+
+## [0.9.5] - 2026-07-09
 ### Fixed
 
 - ACP permission prompts now honor `clientCapabilities._meta.gjc.permissionHandling` and the `GJC_ACP_PERMISSION_MODE` fallback, so `auto` and `always-allow` no longer emit `session/request_permission` calls while invalid values fail safely to `prompt`.
