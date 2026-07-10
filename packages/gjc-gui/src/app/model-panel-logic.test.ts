@@ -27,9 +27,7 @@ describe("model panel helpers", () => {
 		});
 	});
 
-	test("deferred surfaces include provider-auth with a no-secret unblock note", () => {
-		const providerAuth = DEFERRED_MODEL_SURFACES.find(surface => surface.name === "provider-auth");
-		expect(providerAuth).toBeDefined();
-		expect(providerAuth?.unblock.toLowerCase()).toContain("no secret display");
+	test("deferred surfaces exclude provider auth now that token-safe provider APIs are live", () => {
+		expect(DEFERRED_MODEL_SURFACES.map(surface => surface.name)).not.toContain("provider-auth");
 	});
 });

@@ -15,6 +15,15 @@ describe("live session action logic", () => {
 		]);
 	});
 
+	it("skips self-referential and mutually cyclic nodes", () => {
+		const self = { id: "self", type: "message", preview: "self", active: false, children: [] as never[] };
+		self.children.push(self as never);
+		const first = { id: "first", type: "message", preview: "first", active: false, children: [] as never[] };
+		const second = { id: "second", type: "message", preview: "second", active: false, children: [first] };
+		first.children.push(second as never);
+		expect(flattenSessionTree([self, first] as never).map(node => node.id)).toEqual(["self", "first", "second"]);
+	});
+
 	it("validates rename titles after trim", () => {
 		expect(validateRenameTitle("  Project title  ")).toBeNull();
 		expect(validateRenameTitle("   ")).toBe("Title is required.");

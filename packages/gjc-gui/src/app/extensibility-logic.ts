@@ -71,12 +71,6 @@ export function commitAppearancePreview(
 
 export { fuzzyFilter };
 
-export const APPEARANCE_DEFERRED = {
-	reason: "Theme/appearance runtime is not exposed by the app-server; deferred until an appearance seam exists.",
-	unblock:
-		"Expose a read/write appearance runtime seam through the app-server before enabling theme selection or appearance mutation in the GUI.",
-} as const;
-
 export type ExtensibilityCounts = {
 	skills: number;
 	extensions: number;

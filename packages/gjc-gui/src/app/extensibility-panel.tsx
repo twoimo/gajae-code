@@ -1,17 +1,43 @@
 import { Fragment, type ReactNode, useMemo, useState } from "react";
 import {
-	APPEARANCE_DEFERRED,
 	type AppearanceSemanticPreview,
 	type AppearanceSettings,
 	type AppearanceTheme,
 	type Extension,
 	fuzzyFilter,
 	groupCounts,
+	isSecretSettingKey,
+	maskSecretValue,
 	type Plugin,
 	type PluginInspection,
 	previewAppearance,
 	type Skill,
 } from "./extensibility-logic";
+
+function record(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function extensionEnabled(extension: Extension): boolean {
+	return extension.state !== "disabled";
+}
+
+function pluginEnabled(plugin: Plugin): boolean {
+	return plugin.status !== "disabled";
+}
+
+function manifestSettingSchema(manifest: unknown, key: string): Record<string, unknown> | undefined {
+	return record(record(record(manifest)?.settings)?.[key]);
+}
+
+function settingInputType(
+	schema: Record<string, unknown> | undefined,
+	key: string,
+): "checkbox" | "number" | "password" | "text" {
+	if (schema?.type === "boolean") return "checkbox";
+	if (schema?.type === "number") return "number";
+	return schema?.secret === true || isSecretSettingKey(key) ? "password" : "text";
+}
 
 export type ExtensibilityPanelProps = {
 	skills: Skill[];
@@ -23,6 +49,12 @@ export type ExtensibilityPanelProps = {
 	activeTab?: Tab;
 	onTabChange?(tab: Tab): void;
 	onPreviewAppearance?(next: AppearanceSettings): void;
+	onRestoreAppearance?(): void;
+	onApplyAppearance?(next: AppearanceSettings): void;
+	onSkillEnabled?(skillId: string, enabled: boolean): void;
+	onExtensionEnabled?(extensionId: string, enabled: boolean): void;
+	onPluginEnabled?(pluginId: string, enabled: boolean): void;
+	onPluginSetting?(pluginId: string, key: string, value: unknown): void;
 	loading: boolean;
 	error?: string;
 	onRefresh(): void;
@@ -42,6 +74,12 @@ export function ExtensibilityPanel({
 	activeTab,
 	onTabChange,
 	onPreviewAppearance,
+	onRestoreAppearance,
+	onApplyAppearance,
+	onSkillEnabled,
+	onExtensionEnabled,
+	onPluginEnabled,
+	onPluginSetting,
 	loading,
 	error,
 	onRefresh,
@@ -79,20 +117,18 @@ export function ExtensibilityPanel({
 			),
 		[plugins, query],
 	);
-
 	return (
 		<section className="extensibility-panel" aria-label="Skills, extensions, plugins, and appearance">
 			<header className="extensibility-panel__header">
 				<div>
-					<p className="eyebrow">Read-only catalogs</p>
+					<p className="eyebrow">Catalog controls</p>
 					<h2>Skills & extensions</h2>
-					<p>{counts.total} catalog entries · mutations deferred</p>
+					<p>{counts.total} catalog entries · appearance uses terminal theme settings only</p>
 				</div>
 				<button className="neutral-action" type="button" onClick={onRefresh} disabled={loading}>
 					{loading ? "Refreshing…" : "Refresh"}
 				</button>
 			</header>
-
 			<div className="extensibility-panel__tabs" role="tablist" aria-label="Catalog sections">
 				<TabButton id="skills" selected={tab === "skills"} onSelect={setTab}>
 					Skills ({counts.skills})
@@ -107,7 +143,6 @@ export function ExtensibilityPanel({
 					Appearance
 				</TabButton>
 			</div>
-
 			<label className="extensibility-panel__search">
 				<span>Search catalogs</span>
 				<input
@@ -116,20 +151,18 @@ export function ExtensibilityPanel({
 					placeholder="Filter by name, source, status…"
 				/>
 			</label>
-
 			{error ? <div className="extensibility-panel__state extensibility-panel__state--error">{error}</div> : null}
 			{loading ? (
 				<div className="extensibility-panel__state" aria-busy="true">
 					Loading catalogs…
 				</div>
 			) : null}
-
 			{tab === "skills" ? (
 				<CatalogList
 					title="Skills"
 					empty="No skills match."
 					items={filteredSkills}
-					render={skill => <SkillRow skill={skill} />}
+					render={skill => <SkillRow skill={skill} onToggle={onSkillEnabled} />}
 				/>
 			) : null}
 			{tab === "extensions" ? (
@@ -137,7 +170,9 @@ export function ExtensibilityPanel({
 					title="Extensions"
 					empty="No extensions match."
 					items={filteredExtensions}
-					render={extension => <ExtensionRow extension={extension} onInspect={onInspectExtension} />}
+					render={extension => (
+						<ExtensionRow extension={extension} onInspect={onInspectExtension} onToggle={onExtensionEnabled} />
+					)}
 				/>
 			) : null}
 			{tab === "plugins" ? (
@@ -150,21 +185,24 @@ export function ExtensibilityPanel({
 							plugin={plugin}
 							inspection={pluginInspection?.plugin.id === plugin.id ? pluginInspection : undefined}
 							onInspect={onInspectPlugin}
+							onToggle={onPluginEnabled}
+							onSetting={onPluginSetting}
 						/>
 					)}
 				/>
 			) : null}
 			{tab === "appearance" ? (
-				appearance ? (
-					<AppearancePanel themes={appearanceThemes} appearance={appearance} onPreview={onPreviewAppearance} />
-				) : (
-					<AppearanceDeferred />
-				)
+				<AppearancePanel
+					themes={appearanceThemes}
+					appearance={appearance}
+					onPreview={onPreviewAppearance}
+					onRestore={onRestoreAppearance}
+					onApply={onApplyAppearance}
+				/>
 			) : null}
 		</section>
 	);
 }
-
 function TabButton({
 	id,
 	selected,
@@ -190,7 +228,6 @@ function TabButton({
 		</button>
 	);
 }
-
 function CatalogList<T>({
 	title,
 	empty,
@@ -212,65 +249,170 @@ function CatalogList<T>({
 		</section>
 	);
 }
-
-function SkillRow({ skill }: { skill: Skill }) {
+function SkillRow({ skill, onToggle }: { skill: Skill; onToggle?(id: string, enabled: boolean): void }) {
+	const enabled = skill.enabled !== false;
+	const id =
+		(skill as Skill & { id?: string; skillId?: string }).id ??
+		(skill as Skill & { skillId?: string }).skillId ??
+		skill.name;
 	return (
 		<article className="extensibility-card">
-			<RowHeader title={skill.name} meta={skill.source} badge={skill.enabled === false ? "disabled" : "enabled"} />
+			<RowHeader title={skill.name} meta={skill.source} badge={enabled ? "enabled" : "disabled"} />
 			{skill.description ? <p>{skill.description}</p> : null}
-			<button type="button" disabled>
-				manage (soon)
+			<button type="button" onClick={() => onToggle?.(id, !enabled)}>
+				{enabled ? "Disable" : "Enable"}
 			</button>
 		</article>
 	);
 }
-
-function ExtensionRow({ extension, onInspect }: { extension: Extension; onInspect(id: string): void }) {
+function ExtensionRow({
+	extension,
+	onInspect,
+	onToggle,
+}: {
+	extension: Extension;
+	onInspect(id: string): void;
+	onToggle?(id: string, enabled: boolean): void;
+}) {
+	const enabled = extensionEnabled(extension);
 	return (
 		<article className="extensibility-card">
-			<RowHeader title={extension.name} meta={`${extension.kind} · ${extension.source}`} badge={extension.status} />
+			<RowHeader
+				title={extension.name}
+				meta={`${extension.kind} · ${extension.source}`}
+				badge={enabled ? "enabled" : extension.status}
+			/>
 			<p>{extension.id}</p>
 			<div className="extensibility-card__actions">
 				<button type="button" onClick={() => onInspect(extension.id)}>
 					Inspect
 				</button>
-				<button type="button" disabled>
-					manage (soon)
+				<button type="button" onClick={() => onToggle?.(extension.id, !enabled)}>
+					{enabled ? "Disable" : "Enable"}
 				</button>
 			</div>
 		</article>
 	);
 }
-
 function PluginRow({
 	plugin,
 	inspection,
 	onInspect,
+	onToggle,
+	onSetting,
 }: {
 	plugin: Plugin;
 	inspection?: PluginInspection;
 	onInspect(id: string): void;
+	onToggle?(id: string, enabled: boolean): void;
+	onSetting?(id: string, key: string, value: unknown): void;
 }) {
+	const enabled = pluginEnabled(plugin);
+	const [settingErrors, setSettingErrors] = useState<Record<string, string | undefined>>({});
+	const settings = Object.entries(record(inspection?.settings) ?? {});
 	return (
 		<article className="extensibility-card">
-			<RowHeader title={plugin.name} meta={`${plugin.kind} · ${plugin.source}`} badge={plugin.status} />
+			<RowHeader
+				title={plugin.name}
+				meta={`${plugin.kind} · ${plugin.source}`}
+				badge={enabled ? "enabled" : plugin.status}
+			/>
 			<p>{plugin.id}</p>
 			<div className="extensibility-card__actions">
 				<button type="button" onClick={() => onInspect(plugin.id)}>
 					Inspect masked settings
 				</button>
-				<button type="button" disabled>
-					manage (soon)
+				<button type="button" onClick={() => onToggle?.(plugin.id, !enabled)}>
+					{enabled ? "Disable" : "Enable"}
 				</button>
 			</div>
-			{inspection?.settings && Object.keys(inspection.settings).length > 0 ? (
+			{settings.length ? (
 				<details className="extensibility-card__details" open>
 					<summary>Masked settings</summary>
 					<dl>
-						{Object.entries(inspection.settings).map(([key, value]) => (
+						{settings.map(([key, value]) => (
 							<Fragment key={key}>
 								<dt>{key}</dt>
-								<dd>{formatSettingValue(value)}</dd>
+								<dd>{maskSecretValue(value, key)}</dd>
+								<dd>
+									{(() => {
+										const schema = manifestSettingSchema(inspection?.manifest, key);
+										const type = settingInputType(schema, key);
+										const error = settingErrors[key];
+										const submitNumber = (raw: string) => {
+											const number = Number(raw);
+											const min = typeof schema?.min === "number" ? schema.min : undefined;
+											const max = typeof schema?.max === "number" ? schema.max : undefined;
+											const step = typeof schema?.step === "number" ? schema.step : undefined;
+											const stepBase = min ?? 0;
+											const stepMismatch =
+												step !== undefined &&
+												step > 0 &&
+												Math.abs((number - stepBase) / step - Math.round((number - stepBase) / step)) >
+													1e-9;
+											if (
+												raw.trim() === "" ||
+												!Number.isFinite(number) ||
+												(min !== undefined && number < min) ||
+												(max !== undefined && number > max) ||
+												stepMismatch
+											) {
+												setSettingErrors(current => ({
+													...current,
+													[key]: "Enter a finite value within the allowed range and step.",
+												}));
+												return;
+											}
+											setSettingErrors(current => ({ ...current, [key]: undefined }));
+											onSetting?.(plugin.id, key, number);
+										};
+										if (schema?.type === "enum")
+											return (
+												<select
+													defaultValue={typeof value === "string" ? value : undefined}
+													onChange={event => onSetting?.(plugin.id, key, event.currentTarget.value)}
+												>
+													{Array.isArray(schema.values) &&
+														schema.values
+															.filter((entry): entry is string => typeof entry === "string")
+															.map(entry => (
+																<option key={entry} value={entry}>
+																	{entry}
+																</option>
+															))}
+												</select>
+											);
+										return (
+											<>
+												<input
+													type={type}
+													min={
+														type === "number" && typeof schema?.min === "number" ? schema.min : undefined
+													}
+													max={
+														type === "number" && typeof schema?.max === "number" ? schema.max : undefined
+													}
+													step={
+														type === "number" && typeof schema?.step === "number"
+															? schema.step
+															: undefined
+													}
+													checked={type === "checkbox" ? value === true : undefined}
+													onChange={event => {
+														if (type === "checkbox")
+															onSetting?.(plugin.id, key, event.currentTarget.checked);
+													}}
+													onBlur={event => {
+														if (type === "number") submitNumber(event.currentTarget.value);
+														else if (type !== "checkbox")
+															onSetting?.(plugin.id, key, event.currentTarget.value);
+													}}
+												/>
+												{error ? <span role="alert">{error}</span> : null}
+											</>
+										);
+									})()}
+								</dd>
 							</Fragment>
 						))}
 					</dl>
@@ -279,33 +421,26 @@ function PluginRow({
 		</article>
 	);
 }
-
-function RowHeader({ title, meta, badge }: { title: string; meta?: string; badge?: string | null }) {
-	return (
-		<header>
-			<div>
-				<strong>{title}</strong>
-				{meta ? <span>{meta}</span> : null}
-			</div>
-			{badge ? <em>{badge}</em> : null}
-		</header>
-	);
-}
-
-function formatSettingValue(value: unknown): string {
-	if (typeof value === "string") return value;
-	return JSON.stringify(value);
-}
-
 function AppearancePanel({
 	themes,
 	appearance,
 	onPreview,
+	onRestore,
+	onApply,
 }: {
 	themes: AppearanceTheme[];
-	appearance: AppearanceSettings;
+	appearance?: AppearanceSettings;
 	onPreview?(next: AppearanceSettings): void;
+	onRestore?(): void;
+	onApply?(next: AppearanceSettings): void;
 }) {
+	if (!appearance)
+		return (
+			<section className="extensibility-panel__appearance">
+				<h3>Appearance</h3>
+				<p>Appearance settings are loading.</p>
+			</section>
+		);
 	const preview = (patch: Partial<AppearanceSettings>) =>
 		onPreview?.(
 			previewAppearance({ baseline: appearance, candidate: appearance, previewActive: false }, patch).candidate,
@@ -326,10 +461,17 @@ function AppearancePanel({
 					<ThemeSample semantic={theme.semanticPreview} />
 				</button>
 			))}
+			<div className="extensibility-card__actions">
+				<button type="button" onClick={() => onApply?.(appearance)}>
+					Apply terminal appearance
+				</button>
+				<button type="button" onClick={() => onRestore?.()}>
+					Cancel preview
+				</button>
+			</div>
 		</section>
 	);
 }
-
 function ThemeSample({ semantic }: { semantic: AppearanceSemanticPreview }) {
 	return (
 		<div
@@ -344,15 +486,14 @@ function ThemeSample({ semantic }: { semantic: AppearanceSemanticPreview }) {
 		</div>
 	);
 }
-function AppearanceDeferred() {
+function RowHeader({ title, meta, badge }: { title: string; meta?: string; badge?: string | null }) {
 	return (
-		<section className="extensibility-panel__appearance" aria-disabled="true" aria-label="Appearance deferred">
-			<h3>Appearance</h3>
-			<p>{APPEARANCE_DEFERRED.reason}</p>
-			<p>{APPEARANCE_DEFERRED.unblock}</p>
-			<button type="button" disabled>
-				theme controls (soon)
-			</button>
-		</section>
+		<header>
+			<div>
+				<strong>{title}</strong>
+				{meta ? <span>{meta}</span> : null}
+			</div>
+			{badge ? <em>{badge}</em> : null}
+		</header>
 	);
 }

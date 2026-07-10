@@ -1,11 +1,5 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import {
-	type ConfirmState,
-	cancelConfirm,
-	confirmSessionAction,
-	DEFERRED_SESSION_ACTIONS,
-	openConfirm,
-} from "./session-actions-logic";
+import { type ConfirmState, cancelConfirm, confirmSessionAction, openConfirm } from "./session-actions-logic";
 import type { ThreadView } from "./transcript";
 
 type SessionActionsProps = {
@@ -13,13 +7,12 @@ type SessionActionsProps = {
 	onFork(id: string): void;
 	onArchive(id: string): void;
 	onDelete(id: string): void;
+	onMove?(id: string): void;
 	disabled?: boolean;
 };
 
-export function SessionActions({ thread, onFork, onArchive, onDelete, disabled = false }: SessionActionsProps) {
+export function SessionActions({ thread, onFork, onArchive, onDelete, onMove, disabled = false }: SessionActionsProps) {
 	const [confirm, setConfirm] = useState<ConfirmState>(null);
-	const deferredLabel = DEFERRED_SESSION_ACTIONS.map(action => action.name.toLowerCase()).join("/");
-
 	return (
 		<div className="session-actions" aria-label={`Session actions for ${thread.title}`}>
 			<div className="session-actions__row">
@@ -30,6 +23,14 @@ export function SessionActions({ thread, onFork, onArchive, onDelete, disabled =
 					onClick={() => onFork(thread.id)}
 				>
 					Fork
+				</button>
+				<button
+					className="neutral-action session-actions__button"
+					type="button"
+					disabled={disabled || !onMove}
+					onClick={() => onMove?.(thread.id)}
+				>
+					Move
 				</button>
 				<button
 					className="neutral-action session-actions__button session-actions__button--danger"
@@ -48,30 +49,11 @@ export function SessionActions({ thread, onFork, onArchive, onDelete, disabled =
 					Delete
 				</button>
 			</div>
-			<details className="session-actions__deferred">
-				<summary aria-disabled="true">More: {deferredLabel} (soon)</summary>
-				<ul>
-					{DEFERRED_SESSION_ACTIONS.map(action => (
-						<li key={action.name}>
-							<button type="button" disabled title={action.rationale}>
-								{action.name}: {action.rationale}
-							</button>
-						</li>
-					))}
-				</ul>
-			</details>
 			{confirm ? (
 				<ConfirmDialog
 					state={confirm}
 					onCancel={() => setConfirm(cancelConfirm())}
-					onConfirm={() =>
-						setConfirm(
-							confirmSessionAction(confirm, {
-								onArchive,
-								onDelete,
-							}),
-						)
-					}
+					onConfirm={() => setConfirm(confirmSessionAction(confirm, { onArchive, onDelete }))}
 				/>
 			) : null}
 		</div>

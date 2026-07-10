@@ -9,7 +9,6 @@ import { ExtensibilityPanel } from "../app/extensibility-panel.tsx";
 import { Markdown } from "../app/markdown.tsx";
 import { ModelPanel } from "../app/model-panel.tsx";
 import { ConfirmDialog, SessionActions } from "../app/session-actions.tsx";
-import { DEFERRED_SESSION_ACTIONS } from "../app/session-actions-logic";
 import type { ThreadView } from "../app/transcript";
 import { cleanAssistantText } from "../app/transcript";
 import "./showcase.css";
@@ -104,8 +103,8 @@ const showcaseSkills: Skill[] = [
 ];
 
 const showcaseExtensions: Extension[] = [
-	{ id: "ext.review-pr", name: "Review PR", kind: "workflow", source: "project", status: "active" },
-	{ id: "ext.ops", name: "Ops runbook", kind: "prompt", source: "user", status: "disabled" },
+	{ id: "ext.review-pr", name: "Review PR", kind: "workflow", source: "project", status: "active", state: "active" },
+	{ id: "ext.ops", name: "Ops runbook", kind: "prompt", source: "user", status: "disabled", state: "disabled" },
 ];
 
 const showcasePlugins: Plugin[] = [
@@ -240,18 +239,6 @@ function App() {
 							onCancel={() => undefined}
 							onConfirm={() => undefined}
 						/>
-						<div className="session-actions-deferred-list" aria-label="Deferred session actions disabled list">
-							<strong>More actions disabled until API support lands</strong>
-							<ul>
-								{DEFERRED_SESSION_ACTIONS.map(action => (
-									<li key={action.name}>
-										<button type="button" disabled>
-											{action.name}: {action.rationale}
-										</button>
-									</li>
-								))}
-							</ul>
-						</div>
 					</section>
 
 					<section className="panel stack model-panel-showcase" aria-label="Model panel states">
@@ -338,7 +325,7 @@ function App() {
 					</section>
 
 					<section className="extensibility-showcase panel" aria-label="Extensibility catalog states">
-						<h2>Skills, extensions, plugins, appearance deferred</h2>
+						<h2>Skills, extensions, plugins, and terminal appearance</h2>
 						<div className="extensibility-showcase__grid">
 							<ExtensibilityPanel
 								skills={showcaseSkills}

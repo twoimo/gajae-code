@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-	APPEARANCE_DEFERRED,
 	EXTENSIBILITY_MUTATION_PATHS,
 	type Extension,
 	fuzzyFilter,
@@ -32,11 +31,6 @@ describe("extensibility logic", () => {
 			"plugin.git",
 		);
 		expect(fuzzyFilter(extensions, "missing", extension => extension.name)).toEqual([]);
-	});
-
-	test("APPEARANCE_DEFERRED exposes reason and unblock guidance", () => {
-		expect(APPEARANCE_DEFERRED.reason).toContain("Theme/appearance runtime is not exposed");
-		expect(APPEARANCE_DEFERRED.unblock.toLowerCase()).toContain("appearance runtime seam");
 	});
 
 	test("groupCounts returns per-catalog and total counts", () => {

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
 	cancelConfirm,
 	confirmSessionAction,
-	DEFERRED_SESSION_ACTIONS,
 	markThreadArchived,
 	openConfirm,
 	removeThread,
@@ -58,16 +57,5 @@ describe("session action helpers", () => {
 			}),
 		).toBeNull();
 		expect(calls).toEqual(["archive:thread-b"]);
-	});
-
-	test("deferred session actions list unavailable API-backed features", () => {
-		expect(DEFERRED_SESSION_ACTIONS.map(action => action.name)).toEqual([
-			"Rename",
-			"Move",
-			"Export",
-			"Tree",
-			"Search",
-		]);
-		expect(DEFERRED_SESSION_ACTIONS.every(action => action.rationale.length > 0)).toBe(true);
 	});
 });

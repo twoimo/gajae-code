@@ -55,6 +55,62 @@ describe("ExtensibilityPanel tabs", () => {
 	});
 });
 
+describe("ExtensibilityPanel protocol-backed toggles", () => {
+	test("uses disabled extension state and plugin status to request enable", () => {
+		const { document, Event } = parseHTML('<main id="root"></main>');
+		globalThis.document = document;
+		globalThis.window = document.defaultView ?? globalThis.window;
+		globalThis.Event = Event;
+		Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+		const container = document.getElementById("root");
+		if (!container) throw new Error("Missing test root");
+		mountedRoot = createRoot(container);
+		const extensionCalls: boolean[] = [];
+		const pluginCalls: boolean[] = [];
+		act(() =>
+			mountedRoot?.render(
+				<ExtensibilityPanel
+					skills={[]}
+					extensions={[{ ...extensions[0], state: "disabled" }]}
+					plugins={[{ ...plugins[0], status: "disabled" }]}
+					activeTab="extensions"
+					loading={false}
+					onRefresh={() => undefined}
+					onInspectExtension={() => undefined}
+					onInspectPlugin={() => undefined}
+					onExtensionEnabled={(_, enabled) => extensionCalls.push(enabled)}
+					onPluginEnabled={(_, enabled) => pluginCalls.push(enabled)}
+				/>,
+			),
+		);
+		const click = (label: string) => {
+			const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent === label);
+			if (!button) throw new Error(`Missing ${label} button`);
+			act(() => button.dispatchEvent(new Event("click", { bubbles: true })));
+		};
+		click("Enable");
+		act(() =>
+			mountedRoot?.render(
+				<ExtensibilityPanel
+					skills={[]}
+					extensions={[{ ...extensions[0], state: "disabled" }]}
+					plugins={[{ ...plugins[0], status: "disabled" }]}
+					activeTab="plugins"
+					loading={false}
+					onRefresh={() => undefined}
+					onInspectExtension={() => undefined}
+					onInspectPlugin={() => undefined}
+					onExtensionEnabled={(_, enabled) => extensionCalls.push(enabled)}
+					onPluginEnabled={(_, enabled) => pluginCalls.push(enabled)}
+				/>,
+			),
+		);
+		click("Enable");
+		expect(extensionCalls).toEqual([true]);
+		expect(pluginCalls).toEqual([true]);
+	});
+});
+
 describe("ExtensibilityPanel appearance preview", () => {
 	test("sets preview candidate only on activation, not hover or focus", () => {
 		const { document, Event } = parseHTML("<main id=\"root\"></main>");
@@ -95,5 +151,63 @@ describe("ExtensibilityPanel appearance preview", () => {
 		expect(sample?.textContent).toContain("read DESIGN.md");
 		expect(sample?.getAttribute("style")).toContain("background-color:#000000");
 		expect(sample?.getAttribute("style")).toContain("border-color:#333333");
+	});
+});
+
+describe("ExtensibilityPanel plugin settings", () => {
+	test("renders canonical setting schemas without feature mutation controls", () => {
+		const { document, Event } = parseHTML('<main id="root"></main>');
+		globalThis.document = document;
+		globalThis.window = document.defaultView ?? globalThis.window;
+		globalThis.Event = Event;
+		Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+		const container = document.getElementById("root");
+		if (!container) throw new Error("Missing test root");
+		mountedRoot = createRoot(container);
+		const settingCalls: Array<[string, unknown]> = [];
+		act(() =>
+			mountedRoot?.render(
+				<ExtensibilityPanel
+					skills={[]}
+					extensions={[]}
+					plugins={plugins}
+					activeTab="plugins"
+					pluginInspection={
+						{
+							plugin: plugins[0],
+							manifest: {
+								features: { unsupported: true },
+								settings: {
+									mode: { type: "enum", values: ["safe", "fast"] },
+									retries: { type: "number", min: 1, max: 3, step: 1 },
+									enabled: { type: "boolean" },
+									token: { type: "string", secret: true },
+								},
+							},
+							settings: { mode: "safe", retries: 2, enabled: true, token: "masked" },
+						} as never
+					}
+					loading={false}
+					onRefresh={() => undefined}
+					onInspectExtension={() => undefined}
+					onInspectPlugin={() => undefined}
+					onPluginSetting={(_, key, value) => settingCalls.push([key, value])}
+				/>,
+			),
+		);
+		expect(container.textContent).not.toContain("Features");
+		const select = container.querySelector("select");
+		if (!(select instanceof window.HTMLSelectElement)) throw new Error("Missing enum setting");
+		expect(Array.from(select.options, option => option.value)).toEqual(["safe", "fast"]);
+		const number = container.querySelector('input[type="number"]');
+		if (!(number instanceof window.HTMLInputElement)) throw new Error("Missing number setting");
+		expect(number.getAttribute("min")).toBe("1");
+		expect(number.getAttribute("max")).toBe("3");
+		act(() => {
+			number.value = "NaN";
+			number.dispatchEvent(new Event("focusout", { bubbles: true }));
+		});
+		expect(container.textContent).toContain("Enter a finite value within the allowed range and step.");
+		expect(settingCalls).toEqual([]);
 	});
 });

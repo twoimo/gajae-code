@@ -1,5 +1,5 @@
 export type DeferredModelSurface = {
-	name: "model-catalog" | "thinking" | "fast" | "settings" | "provider-auth";
+	name: "model-catalog" | "thinking" | "fast" | "settings";
 	rationale: string;
 	unblock: string;
 };
@@ -24,12 +24,6 @@ export const DEFERRED_MODEL_SURFACES: DeferredModelSurface[] = [
 		name: "settings",
 		rationale: "needs gjc/settings schema/read/update API",
 		unblock: "Add settings schema/read/update API support before enabling controls.",
-	},
-	{
-		name: "provider-auth",
-		rationale: "needs a token-safe gjc/provider+auth API; no secret may be displayed",
-		unblock:
-			"Add token-safe provider/auth APIs with no secret display before enabling onboarding, login, logout, or credentials.",
 	},
 ];
 

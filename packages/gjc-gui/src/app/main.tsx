@@ -3,6 +3,10 @@ import {
 	AppServerConnectionError,
 	AppServerResponseError,
 	type GjcCommandsListResult,
+	type GjcProviderAddParams,
+	type GjcProviderListResult,
+	type GjcSessionListResult,
+	type GjcSessionTreeResult,
 	type GjcToolsListResult,
 	type JsonValue,
 	type RpcWorkflowGateResolution,
@@ -14,12 +18,33 @@ import { createRoot } from "react-dom/client";
 import "../design-tokens/index.ts";
 import { CommandPalette } from "./command-palette.tsx";
 import type { PaletteCommand, PaletteTool } from "./command-palette-logic";
-import type { Extension, Plugin, PluginInspection, Skill } from "./extensibility-logic";
+import {
+	type AppearancePreviewState,
+	type AppearanceSettings,
+	type AppearanceTheme,
+	commitAppearancePreview,
+	createAppearancePreviewState,
+	type Extension,
+	type Plugin,
+	type PluginInspection,
+	pluginFeaturePayload,
+	pluginSettingPayload,
+	restoreAppearancePreview,
+	type Skill,
+	setEnabledPayload,
+} from "./extensibility-logic";
 import { ExtensibilityPanel } from "./extensibility-panel.tsx";
+import { LoginFlowSheet } from "./login-flow-sheet.tsx";
 import { Markdown } from "./markdown.tsx";
 import { ModelPanel } from "./model-panel.tsx";
 import { SessionActions } from "./session-actions.tsx";
-import { markThreadArchived, removeThread } from "./session-actions-logic";
+import {
+	flattenSessionTree,
+	markThreadArchived,
+	provenanceLabel,
+	removeThread,
+	validateRenameTitle,
+} from "./session-actions-logic";
 import {
 	type ApprovalGate,
 	appendLocalUserMessage,
@@ -33,6 +58,7 @@ import {
 	upsertThread,
 } from "./transcript";
 import { lastAssistantText, serializeTranscript } from "./transcript-export-logic";
+import "./session-browser.css";
 import "./styles.css";
 import { shouldStickToBottom } from "./scroll-follow-logic";
 
@@ -65,6 +91,22 @@ type ExtensibilityData = {
 	extensions: Extension[];
 	plugins: Plugin[];
 	pluginInspection?: PluginInspection;
+	appearance?: AppearancePreviewState;
+	themes: AppearanceTheme[];
+	loading: boolean;
+	error?: string;
+};
+type SessionBrowserData = {
+	sessions: GjcSessionListResult["sessions"];
+	query: string;
+	loading: boolean;
+	tree?: GjcSessionTreeResult;
+	error?: string;
+	exportStatus?: string;
+};
+
+type ProviderData = {
+	providers: GjcProviderListResult["providers"];
 	loading: boolean;
 	error?: string;
 };
@@ -79,6 +121,7 @@ export type AppHostDeps = {
 	clipboard: Pick<Clipboard, "writeText">;
 	storage: Pick<Storage, "getItem" | "setItem">;
 	timers: Pick<typeof globalThis, "setTimeout" | "clearTimeout" | "requestAnimationFrame">;
+	openExternal?(url: string): void;
 };
 
 export type AppInitialState = {
@@ -96,17 +139,16 @@ export function createAppHostDeps(overrides: Partial<AppHostDeps> = {}): AppHost
 		createClient: ({ webSocketFactory }) => new AppServerClient({ webSocketFactory }),
 		createWebSocket: url => new WebSocket(url),
 		pickDirectory: () => invoke<string | null>("pick_directory"),
-		clipboard: navigator.clipboard,
-		storage: localStorage,
+		clipboard: typeof navigator === "undefined" ? { writeText: async () => undefined } : navigator.clipboard,
+		storage: typeof localStorage === "undefined" ? { getItem: () => null, setItem: () => undefined } : localStorage,
 		timers: globalThis,
+		openExternal: url => window.open(url, "_blank", "noopener,noreferrer"),
 		...overrides,
 	};
 }
 
-export function createApp(
-	_options: { deps?: AppHostDeps; autoConnect?: boolean; initialState?: AppInitialState } = {},
-) {
-	return <App />;
+export function createApp(options: { deps?: AppHostDeps; autoConnect?: boolean; initialState?: AppInitialState } = {}) {
+	return <App deps={options.deps} autoConnect={options.autoConnect} initialState={options.initialState} />;
 }
 
 const RECENT_DIRECTORIES_KEY = "gjc-gui.recentDirectories";
@@ -132,9 +174,20 @@ if (root)
 		</StrictMode>,
 	);
 
-function App() {
-	const [connection, setConnection] = useState<ConnectionState>({ kind: "booting" });
-	const [transcript, setTranscript] = useState<TranscriptState>(() => emptyTranscriptState());
+function App({
+	deps,
+	autoConnect = true,
+	initialState,
+}: {
+	deps?: AppHostDeps;
+	autoConnect?: boolean;
+	initialState?: AppInitialState;
+}) {
+	const host = useMemo(() => createAppHostDeps(deps), [deps]);
+	const [connection, setConnection] = useState<ConnectionState>(initialState?.connection ?? { kind: "booting" });
+	const [transcript, setTranscript] = useState<TranscriptState>(
+		() => initialState?.transcript ?? emptyTranscriptState(),
+	);
 	const [client, setClient] = useState<AppServerClient>();
 	const [composer, setComposer] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
@@ -143,16 +196,32 @@ function App() {
 		skills: [],
 		extensions: [],
 		plugins: [],
+		themes: [],
 		loading: false,
 	});
-	const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
-	const [workingDirectory, setWorkingDirectory] = useState("");
-	const [recentDirectories, setRecentDirectories] = useState<string[]>(() => readRecentDirectories());
+	const [sessionBrowser, setSessionBrowser] = useState<SessionBrowserData>({
+		sessions: [],
+		query: "",
+		loading: false,
+	});
+	const [providerData, setProviderData] = useState<ProviderData>({ providers: [], loading: false });
+	const [providerAddOpen, setProviderAddOpen] = useState(false);
+	const [loginProviderId, setLoginProviderId] = useState<string>();
+	const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(initialState?.workspaceView ?? "chat");
+	const [workingDirectory, setWorkingDirectory] = useState(initialState?.workingDirectory ?? "");
+	const [recentDirectories, setRecentDirectories] = useState<string[]>(
+		() => initialState?.recentDirectories ?? readRecentDirectories(host.storage),
+	);
 	const [isPickingDirectory, setPickingDirectory] = useState(false);
 	const [isSubmitting, setSubmitting] = useState(false);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 	const copyStatusTimeoutRef = useRef<number | undefined>(undefined);
 	const stopRef = useRef<(() => void) | undefined>(undefined);
+	const connectionGenerationRef = useRef(0);
+	const sessionRequestGenerationRef = useRef(0);
+	const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const mountedRef = useRef(true);
 	const composerRef = useRef<HTMLTextAreaElement>(null);
 	const transcriptRef = useRef<HTMLElement>(null);
 	const transcriptBottomRef = useRef<HTMLDivElement>(null);
@@ -160,25 +229,35 @@ function App() {
 	const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
 	const restoreComposerFocus = useCallback(() => {
-		requestAnimationFrame(() => composerRef.current?.focus());
-	}, []);
+		host.timers.requestAnimationFrame(() => composerRef.current?.focus());
+	}, [host.timers]);
 
 	const connect = useCallback(async (): Promise<ConnectionState> => {
+		const generation = ++connectionGenerationRef.current;
 		setConnection(current => ({ kind: current.kind === "connected" ? "reconnecting" : "connecting" }));
 		try {
-			const endpoint = await resolveEndpoint();
-			const wsUrl = websocketUrl(endpoint);
-			const nextClient = new AppServerClient({ webSocketFactory: url => new WebSocket(url) });
-			await nextClient.connect(wsUrl);
+			const endpoint = await host.resolveEndpoint();
+			const nextClient = host.createClient({ webSocketFactory: host.createWebSocket });
+			await nextClient.connect(websocketUrl(endpoint));
+			if (generation !== connectionGenerationRef.current || !mountedRef.current) {
+				nextClient.close(1000, "GJC GUI stale reconnect");
+				return { kind: "disconnected" };
+			}
 			const unsubscribe = nextClient.onNotification(notification => {
-				setTranscript(current => foldNotification(current, notification));
+				if (generation === connectionGenerationRef.current && mountedRef.current)
+					setTranscript(current => foldNotification(current, notification));
 			});
+			await nextClient.initialize();
+			if (generation !== connectionGenerationRef.current || !mountedRef.current) {
+				unsubscribe();
+				nextClient.close(1000, "GJC GUI stale reconnect");
+				return { kind: "disconnected" };
+			}
 			stopRef.current?.();
 			stopRef.current = () => {
 				unsubscribe();
 				nextClient.close(1000, "GJC GUI reconnect");
 			};
-			await nextClient.initialize();
 			nextClient.notify("initialized", {});
 			setClient(nextClient);
 			const nextConnection: ConnectionState = { kind: "connected", endpointUrl: endpoint.url };
@@ -187,14 +266,16 @@ function App() {
 			void refreshSessions(nextClient);
 			return nextConnection;
 		} catch (error) {
+			if (generation !== connectionGenerationRef.current || !mountedRef.current) return { kind: "disconnected" };
 			setClient(undefined);
 			const nextConnection = describeFailure(error);
 			setConnection(nextConnection);
 			return nextConnection;
 		}
-	}, [restoreComposerFocus]);
+	}, [host, restoreComposerFocus]);
 
 	useEffect(() => {
+		if (!autoConnect) return;
 		// Cold desktop launch spawns a bundled sidecar that can take a few
 		// seconds to pass readiness; auto-retry a bounded number of times before
 		// surfacing a manual Reconnect so the happy path connects unattended.
@@ -212,12 +293,16 @@ function App() {
 					state.failure === "server-unavailable" ||
 					state.failure === "sidecar-crash";
 				if (!retriable) return;
-				await new Promise(resolve => setTimeout(resolve, 1500));
+				await new Promise<void>(resolve => {
+					retryTimeoutRef.current = host.timers.setTimeout(resolve, 1500);
+				});
 			}
 		};
 		void run();
 		return () => {
 			cancelled = true;
+			connectionGenerationRef.current += 1;
+			host.timers.clearTimeout(retryTimeoutRef.current);
 			stopRef.current?.();
 		};
 	}, [connect]);
@@ -284,8 +369,14 @@ function App() {
 	const canDumpTranscript = transcriptDump.length > 0;
 
 	useEffect(() => {
-		return () => window.clearTimeout(copyStatusTimeoutRef.current);
-	}, []);
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+			host.timers.clearTimeout(copyStatusTimeoutRef.current);
+			host.timers.clearTimeout(searchDebounceRef.current);
+			sessionRequestGenerationRef.current++;
+		};
+	}, [host.timers]);
 
 	useEffect(() => {
 		if (stickToBottomRef.current) {
@@ -316,20 +407,29 @@ function App() {
 		if (!client || !connected || !activeThreadId) return;
 		setExtData(current => ({ ...current, loading: true, error: undefined }));
 		try {
-			const [skillsResult, extensionsResult, pluginsResult] = await Promise.all([
+			const [skillsResult, extensionsResult, pluginsResult, themesResult, appearanceResult] = await Promise.all([
 				client.gjcSkillsList({ threadId: activeThreadId }),
 				client.gjcExtensionsList({ threadId: activeThreadId }),
 				client.gjcPluginsList({ threadId: activeThreadId }),
+				client.gjcAppearanceThemesList({}),
+				client.gjcAppearanceRead({}),
 			]);
 			setExtData(current => ({
 				...current,
 				skills: skillsResult.skills,
 				extensions: extensionsResult.extensions,
 				plugins: pluginsResult.plugins,
+				themes: themesResult.themes,
+				appearance: createAppearancePreviewState(normalizeAppearanceSettings(appearanceResult)),
 				loading: false,
 			}));
 		} catch (error) {
-			setExtData(current => ({ ...current, loading: false, error: errorMessage(error) }));
+			setExtData(current => ({
+				...current,
+				appearance: current.appearance ? restoreAppearancePreview(current.appearance) : undefined,
+				loading: false,
+				error: errorMessage(error),
+			}));
 		}
 	}, [activeThreadId, client, connected]);
 
@@ -357,6 +457,188 @@ function App() {
 		},
 		[activeThreadId, client, connected],
 	);
+	const previewAppearanceSettings = useCallback((next: AppearanceSettings) => {
+		setExtData(current =>
+			current.appearance
+				? { ...current, appearance: { ...current.appearance, candidate: next, previewActive: true } }
+				: current,
+		);
+	}, []);
+	const restoreAppearanceSettings = useCallback(() => {
+		setExtData(current =>
+			current.appearance ? { ...current, appearance: restoreAppearancePreview(current.appearance) } : current,
+		);
+	}, []);
+	const applyAppearanceSettings = useCallback(
+		async (next: AppearanceSettings) => {
+			if (!client) return;
+			try {
+				const applied = await client.gjcAppearanceSet(next);
+				setExtData(current =>
+					current.appearance
+						? {
+								...current,
+								appearance: commitAppearancePreview(current.appearance, normalizeAppearanceSettings(applied)),
+								error: undefined,
+							}
+						: current,
+				);
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client],
+	);
+	const setSkillEnabled = useCallback(
+		async (skillId: string, enabled: boolean) => {
+			if (!client) return;
+			try {
+				await client.gjcSkillsSetEnabled(
+					setEnabledPayload("skillId", skillId, enabled) as { skillId: string; enabled: boolean },
+				);
+				setExtData(current => ({
+					...current,
+					skills: current.skills.map(skill =>
+						((skill as Skill & { id?: string; skillId?: string }).id ??
+							(skill as Skill & { skillId?: string }).skillId ??
+							skill.name) === skillId
+							? { ...skill, enabled }
+							: skill,
+					),
+					error: undefined,
+				}));
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client],
+	);
+	const setExtensionEnabled = useCallback(
+		async (extensionId: string, enabled: boolean) => {
+			if (!client) return;
+			try {
+				await client.gjcExtensionsSetEnabled(
+					setEnabledPayload("extensionId", extensionId, enabled) as { extensionId: string; enabled: boolean },
+				);
+				await loadExtensibilityData();
+				setExtData(current => ({ ...current, error: undefined }));
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client, loadExtensibilityData],
+	);
+	const setPluginEnabled = useCallback(
+		async (pluginId: string, enabled: boolean) => {
+			if (!client) return;
+			try {
+				await client.gjcPluginsSetEnabled(
+					setEnabledPayload("pluginId", pluginId, enabled) as { pluginId: string; enabled: boolean },
+				);
+				await loadExtensibilityData();
+				setExtData(current => ({ ...current, error: undefined }));
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client, loadExtensibilityData],
+	);
+	const setPluginFeature = useCallback(
+		async (pluginId: string, feature: string, enabled: boolean) => {
+			if (!client) return;
+			try {
+				await client.gjcPluginsSetFeature(pluginFeaturePayload(pluginId, feature, enabled));
+				await inspectPlugin(pluginId);
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client, inspectPlugin],
+	);
+	void setPluginFeature;
+	const setPluginSetting = useCallback(
+		async (pluginId: string, key: string, value: unknown) => {
+			if (!client) return;
+			try {
+				await client.gjcPluginsSetSetting(
+					pluginSettingPayload(pluginId, key, value) as { pluginId: string; key: string; value: JsonValue },
+				);
+				await inspectPlugin(pluginId);
+			} catch (error) {
+				setExtData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client, inspectPlugin],
+	);
+	const loadProviders = useCallback(async () => {
+		if (!client) return;
+		setProviderData(current => ({ ...current, loading: true, error: undefined }));
+		try {
+			const [providers, status] = await Promise.all([client.gjcProviderList({}), client.gjcAuthStatus({})]);
+			const states = new Map(status.providers.map(entry => [entry.providerId, entry.state]));
+			setProviderData({
+				providers: providers.providers.map(provider => ({
+					...provider,
+					authenticated: states.get(provider.id) === "authenticated",
+				})),
+				loading: false,
+			});
+		} catch (error) {
+			setProviderData(current => ({ ...current, loading: false, error: errorMessage(error) }));
+		}
+	}, [client]);
+	const logoutProvider = useCallback(
+		async (providerId: string) => {
+			if (!client) return;
+			try {
+				await client.gjcAuthLogout({ providerId });
+				await loadProviders();
+			} catch (error) {
+				setProviderData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client, loadProviders],
+	);
+	const addProvider = useCallback(
+		async (params: GjcProviderAddParams) => {
+			if (!client) return;
+			try {
+				await client.gjcProviderAdd(params);
+				setProviderAddOpen(false);
+				await loadProviders();
+			} catch (error) {
+				setProviderData(current => ({ ...current, error: errorMessage(error) }));
+			}
+		},
+		[client, loadProviders],
+	);
+	const loginClient = useMemo(
+		() =>
+			client
+				? {
+						start: async (providerId: string) => {
+							const result = await client.gjcAuthLoginStart({ providerId });
+							return {
+								flowId: result.flowId,
+								state: result.state,
+								authUrl: result.authUrl ?? undefined,
+								instructions: result.instructions ?? undefined,
+							};
+						},
+						poll: async (flowId: string) => {
+							const result = await client.gjcAuthLoginPoll({ flowId });
+							return { state: result.state, promptMessage: result.promptMessage ?? undefined };
+						},
+						complete: (flowId: string, redirectUrl: string) =>
+							client.gjcAuthLoginComplete({ flowId, redirectUrl }),
+						cancel: (flowId: string) => client.gjcAuthLoginCancel({ flowId }),
+					}
+				: undefined,
+		[client],
+	);
+	useEffect(() => {
+		if (client && connected) void loadProviders();
+	}, [client, connected, loadProviders]);
 
 	useEffect(() => {
 		if (workspaceView === "extensibility") void loadExtensibilityData();
@@ -394,7 +676,7 @@ function App() {
 		if (!client) return undefined;
 		const cwd = normalizeDirectoryInput(workingDirectory) || DEFAULT_CWD;
 		const result = await client.threadStart({ source: "gjc-gui", cwd });
-		rememberDirectory(cwd, setRecentDirectories);
+		rememberDirectory(cwd, setRecentDirectories, host.storage);
 		setWorkingDirectory(cwd);
 		setTranscript(current => upsertThread(current, result.thread, cwd));
 		void refreshModelLabel(result.thread.id);
@@ -425,7 +707,7 @@ function App() {
 	async function pickDirectory() {
 		setPickingDirectory(true);
 		try {
-			const selected = await invoke<string | null>("pick_directory");
+			const selected = await host.pickDirectory();
 			if (selected) setWorkingDirectory(selected);
 		} catch (error) {
 			setConnection(describeFailure(error));
@@ -444,13 +726,129 @@ function App() {
 			setConnection(describeFailure(error));
 		}
 	}
+	async function refreshSessionBrowser(sessionClient = client, query = sessionBrowser.query) {
+		if (!sessionClient) return;
+		const generation = ++sessionRequestGenerationRef.current;
+		setSessionBrowser(current => ({ ...current, loading: true, error: undefined }));
+		try {
+			const params = { scope: "all" as const, limit: 100 };
+			const result = query.trim()
+				? await sessionClient.gjcSessionSearch({ ...params, query: query.trim() })
+				: await sessionClient.gjcSessionList(params);
+			if (generation !== sessionRequestGenerationRef.current || !mountedRef.current) return;
+			setSessionBrowser(current => ({ ...current, sessions: result.sessions, loading: false }));
+		} catch (error) {
+			if (generation !== sessionRequestGenerationRef.current || !mountedRef.current) return;
+			setSessionBrowser(current => ({ ...current, loading: false, error: errorMessage(error) }));
+		}
+	}
+	async function openSession(sessionPath: string) {
+		if (!client) return;
+		try {
+			const result = await client.gjcSessionOpen({ sessionPath });
+			const readResult = await client.threadRead({ threadId: result.threadId });
+			setTranscript(current => upsertThread(current, readResult.thread));
+			await refreshSessionTree(result.threadId);
+			void refreshModelLabel(result.threadId);
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}
+	async function renameSession(sessionPath: string) {
+		const title = window.prompt("Rename session") ?? "";
+		const validation = validateRenameTitle(title);
+		if (validation) {
+			setSessionBrowser(current => ({ ...current, error: validation }));
+			return;
+		}
+		if (!client) return;
+		try {
+			await client.gjcSessionRename({ sessionPath, title: title.trim() });
+			await refreshSessionBrowser();
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}
+	async function exportSession(sessionPath: string) {
+		if (!client) return;
+		try {
+			const result = await client.gjcSessionExport({ sessionPath, format: "markdown", redact: true });
+			await host.clipboard.writeText(result.content);
+			setSessionBrowser(current => ({
+				...current,
+				exportStatus: `Copied markdown export · ${provenanceLabel(result.provenance)}`,
+			}));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, exportStatus: `Export failed: ${errorMessage(error)}` }));
+		}
+	}
+	async function deleteSession(sessionPath: string) {
+		if (!client || !window.confirm("Delete this persisted session?")) return;
+		try {
+			await client.gjcSessionDelete({ sessionPath });
+			setSessionBrowser(current => ({
+				...current,
+				sessions: current.sessions.filter(session => session.path !== sessionPath),
+			}));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}
+	async function refreshSessionTree(threadId = activeThreadId) {
+		if (!client || !threadId) return;
+		try {
+			const tree = await client.gjcSessionTree({ threadId });
+			setSessionBrowser(current => ({ ...current, tree }));
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+		}
+	}
+	async function moveThread(threadId: string) {
+		const targetCwd = window.prompt("Move session to absolute directory");
+		if (!client || !targetCwd) return;
+		try {
+			await client.gjcSessionMove({ threadId, targetCwd });
+			let canonicalThread: object | undefined;
+			try {
+				canonicalThread = (await client.threadRead({ threadId })).thread;
+			} catch {
+				// The move succeeded; retain the locally known thread with its new directory when a canonical read is unavailable.
+			}
+			setTranscript(current => ({
+				...current,
+				threads: current.threads.map(thread =>
+					thread.id === threadId
+						? canonicalThread
+							? { ...thread, ...canonicalThread }
+							: { ...thread, cwd: targetCwd }
+						: thread,
+				),
+			}));
+			await refreshSessionBrowser(client);
+			await refreshSessions(client, threadId);
+		} catch (error) {
+			setSessionBrowser(current => ({ ...current, error: `Move failed: ${errorMessage(error)}` }));
+		}
+	}
+	useEffect(() => {
+		const query = sessionBrowser.query;
+		sessionRequestGenerationRef.current++;
+		if (!client || !connected) return;
+		host.timers.clearTimeout(searchDebounceRef.current);
+		sessionRequestGenerationRef.current++;
+		searchDebounceRef.current = host.timers.setTimeout(() => void refreshSessionBrowser(client, query), 200);
+		return () => {
+			host.timers.clearTimeout(searchDebounceRef.current);
+			sessionRequestGenerationRef.current++;
+		};
+	}, [client, connected, host.timers, sessionBrowser.query]);
 
-	async function refreshSessions(sessionClient = client) {
+	async function refreshSessions(sessionClient = client, forceThreadId?: string) {
 		if (!sessionClient) return;
 		try {
 			const result = await sessionClient.threadLoadedList({});
 			for (const threadId of result.data) {
-				if (transcript.threads.some(thread => thread.id === threadId)) continue;
+				if (threadId !== forceThreadId && transcript.threads.some(thread => thread.id === threadId)) continue;
 				try {
 					const readResult = await sessionClient.threadRead({ threadId });
 					setTranscript(current =>
@@ -655,10 +1053,10 @@ function App() {
 
 	async function copyTranscriptText(text: string | undefined) {
 		if (!text) return;
-		await navigator.clipboard.writeText(text);
+		await host.clipboard.writeText(text);
 		setCopyStatus("copied");
-		window.clearTimeout(copyStatusTimeoutRef.current);
-		copyStatusTimeoutRef.current = window.setTimeout(() => setCopyStatus("idle"), 1400);
+		host.timers.clearTimeout(copyStatusTimeoutRef.current);
+		copyStatusTimeoutRef.current = host.timers.setTimeout(() => setCopyStatus("idle"), 1400) as unknown as number;
 		restoreComposerFocus();
 	}
 
@@ -706,6 +1104,81 @@ function App() {
 						Skills & extensions
 					</button>
 				</nav>
+				<section className="session-browser" aria-label="Persisted sessions">
+					<input
+						className="session-browser__search"
+						value={sessionBrowser.query}
+						onChange={event => setSessionBrowser(current => ({ ...current, query: event.target.value }))}
+						placeholder="Search sessions"
+						aria-label="Search sessions"
+					/>
+					{sessionBrowser.loading ? <div className="empty-inline">Loading sessions…</div> : null}
+					{sessionBrowser.error ? <div className="empty-inline">{sessionBrowser.error}</div> : null}
+					{sessionBrowser.sessions.map(session => (
+						<article className="session-browser__row" key={session.path}>
+							<strong className="session-browser__title">
+								{session.title || session.firstMessage || session.id}
+							</strong>
+							<span className="session-browser__meta">
+								{session.cwd} · {session.modifiedAt}
+							</span>
+							<div className="session-browser__actions">
+								<button
+									type="button"
+									className="neutral-action"
+									onClick={() => void openSession(session.path)}
+									disabled={!connected}
+								>
+									Open
+								</button>
+								<button
+									type="button"
+									className="neutral-action"
+									onClick={() => void renameSession(session.path)}
+								>
+									Rename
+								</button>
+								<button
+									type="button"
+									className="neutral-action"
+									onClick={() => void exportSession(session.path)}
+								>
+									Export
+								</button>
+								<button
+									type="button"
+									className="neutral-action session-actions__button--danger"
+									onClick={() => void deleteSession(session.path)}
+								>
+									Delete
+								</button>
+							</div>
+						</article>
+					))}
+					{sessionBrowser.exportStatus ? <div className="empty-inline">{sessionBrowser.exportStatus}</div> : null}
+					<button
+						type="button"
+						className="neutral-action"
+						disabled={!activeThreadId}
+						onClick={() => void refreshSessionTree()}
+					>
+						Refresh session tree
+					</button>
+					{sessionBrowser.tree ? (
+						<div className="session-browser__tree" role="tree">
+							{flattenSessionTree(sessionBrowser.tree.nodes).map(node => (
+								<div
+									className="session-browser__tree-row"
+									role="treeitem"
+									aria-selected={node.active}
+									key={node.id}
+								>
+									<span className="session-browser__tree-node">{node.text}</span>
+								</div>
+							))}
+						</div>
+					) : null}
+				</section>
 				<nav className="thread-list" aria-label="Thread list">
 					{transcript.threads.length === 0 ? (
 						<div className="empty-inline">No threads yet. Connect, then start a thread.</div>
@@ -729,6 +1202,7 @@ function App() {
 									thread={thread}
 									disabled={!connected}
 									onFork={id => void forkThread(id)}
+									onMove={id => void moveThread(id)}
 									onArchive={id => void archiveThread(id)}
 									onDelete={id => void deleteThread(id)}
 								/>
@@ -745,6 +1219,41 @@ function App() {
 					/>
 				</details>
 				<details className="sidebar-drawer">
+					<summary>Providers</summary>
+					<button
+						type="button"
+						className="neutral-action"
+						onClick={() => void loadProviders()}
+						disabled={providerData.loading}
+					>
+						Refresh providers
+					</button>
+					<button type="button" className="neutral-action" onClick={() => setProviderAddOpen(current => !current)}>
+						{providerAddOpen ? "Cancel provider" : "Add provider"}
+					</button>
+					{providerAddOpen ? <ProviderAddForm onSubmit={addProvider} /> : null}
+					{providerData.error ? (
+						<p className="model-panel__hint model-panel__hint--error">{providerData.error}</p>
+					) : null}
+					{providerData.providers.map(provider => (
+						<div key={provider.id} className="session-browser__actions">
+							<span>
+								{provider.name} · {provider.authenticated ? "authenticated" : "unauthenticated"}
+							</span>
+							{provider.authKind === "oauth" && !provider.authenticated ? (
+								<button type="button" onClick={() => setLoginProviderId(provider.id)}>
+									Log in
+								</button>
+							) : null}
+							{provider.authenticated ? (
+								<button type="button" onClick={() => void logoutProvider(provider.id)}>
+									Log out
+								</button>
+							) : null}
+						</div>
+					))}
+				</details>
+				<details className="sidebar-drawer">
 					<summary>Execution-state (deferred)</summary>
 					<DeferredExecStateList />
 				</details>
@@ -758,11 +1267,20 @@ function App() {
 						extensions={extData.extensions}
 						plugins={extData.plugins}
 						pluginInspection={extData.pluginInspection}
+						appearanceThemes={extData.themes}
+						appearance={extData.appearance?.candidate}
 						loading={extData.loading}
 						error={extData.error}
 						onRefresh={() => void loadExtensibilityData()}
 						onInspectExtension={id => void inspectExtension(id)}
 						onInspectPlugin={id => void inspectPlugin(id)}
+						onPreviewAppearance={previewAppearanceSettings}
+						onRestoreAppearance={restoreAppearanceSettings}
+						onApplyAppearance={next => void applyAppearanceSettings(next)}
+						onSkillEnabled={(id, enabled) => void setSkillEnabled(id, enabled)}
+						onExtensionEnabled={(id, enabled) => void setExtensionEnabled(id, enabled)}
+						onPluginEnabled={(id, enabled) => void setPluginEnabled(id, enabled)}
+						onPluginSetting={(id, key, value) => void setPluginSetting(id, key, value)}
 					/>
 				</section>
 			) : (
@@ -883,8 +1401,135 @@ function App() {
 				onClose={closePalette}
 				onInsert={insertPaletteText}
 			/>
+			{loginProviderId && loginClient ? (
+				<LoginFlowSheet
+					providerId={loginProviderId}
+					client={loginClient}
+					openExternal={host.openExternal}
+					onClose={() => {
+						setLoginProviderId(undefined);
+						void loadProviders();
+					}}
+				/>
+			) : null}
 		</main>
 	);
+}
+
+function ProviderAddForm({ onSubmit }: { onSubmit(params: GjcProviderAddParams): Promise<void> }) {
+	const [mode, setMode] = useState<"preset" | "custom">("preset");
+	const [preset, setPreset] = useState("");
+	const [compatibility, setCompatibility] = useState("");
+	const [providerId, setProviderId] = useState("");
+	const [baseUrl, setBaseUrl] = useState("");
+	const [apiKeyEnv, setApiKeyEnv] = useState("");
+	const [models, setModels] = useState("");
+	const [force, setForce] = useState(false);
+	const [error, setError] = useState("");
+	const submit = async (event: FormEvent) => {
+		event.preventDefault();
+		const modelList = models
+			.split(",")
+			.map(model => model.trim())
+			.filter(Boolean);
+		const params: GjcProviderAddParams =
+			mode === "preset"
+				? { preset: preset.trim(), ...(force ? { force } : {}) }
+				: {
+						compatibility: compatibility.trim(),
+						providerId: providerId.trim(),
+						baseUrl: baseUrl.trim(),
+						apiKeyEnv: apiKeyEnv.trim(),
+						models: modelList,
+						...(force ? { force } : {}),
+					};
+		if (
+			(mode === "preset" && !params.preset) ||
+			(mode === "custom" &&
+				(!params.compatibility ||
+					!params.providerId ||
+					!params.baseUrl ||
+					!params.apiKeyEnv ||
+					!params.models?.length))
+		) {
+			setError(
+				mode === "preset"
+					? "Preset is required."
+					: "Compatibility, provider ID, base URL, API key environment variable, and at least one model are required.",
+			);
+			return;
+		}
+		setError("");
+		await onSubmit(params);
+	};
+	return (
+		<form className="model-panel" onSubmit={submit}>
+			<label>
+				Mode
+				<select value={mode} onChange={event => setMode(event.currentTarget.value as "preset" | "custom")}>
+					<option value="preset">Preset</option>
+					<option value="custom">Custom compatible provider</option>
+				</select>
+			</label>
+			{mode === "preset" ? (
+				<label>
+					Preset
+					<input value={preset} onChange={event => setPreset(event.currentTarget.value)} />
+				</label>
+			) : (
+				<>
+					<label>
+						Compatibility
+						<input value={compatibility} onChange={event => setCompatibility(event.currentTarget.value)} />
+					</label>
+					<label>
+						Provider ID
+						<input value={providerId} onChange={event => setProviderId(event.currentTarget.value)} />
+					</label>
+					<label>
+						Base URL
+						<input type="url" value={baseUrl} onChange={event => setBaseUrl(event.currentTarget.value)} />
+					</label>
+					<label>
+						API key environment variable
+						<input
+							value={apiKeyEnv}
+							onChange={event => setApiKeyEnv(event.currentTarget.value)}
+							placeholder="OPENAI_API_KEY"
+						/>
+					</label>
+					<label>
+						Models (comma-separated)
+						<input value={models} onChange={event => setModels(event.currentTarget.value)} />
+					</label>
+				</>
+			)}
+			<label>
+				<input type="checkbox" checked={force} onChange={event => setForce(event.currentTarget.checked)} /> Replace
+				existing provider
+			</label>
+			{error ? <p className="model-panel__hint model-panel__hint--error">{error}</p> : null}
+			<button type="submit" className="primary-action">
+				Add provider
+			</button>
+		</form>
+	);
+}
+
+function normalizeAppearanceSettings(value: {
+	dark: string;
+	light: string;
+	symbolPreset?: string | null;
+	colorBlindMode?: boolean | null;
+}): AppearanceSettings {
+	return {
+		dark: value.dark,
+		light: value.light,
+		...(value.symbolPreset === null || value.symbolPreset === undefined ? {} : { symbolPreset: value.symbolPreset }),
+		...(value.colorBlindMode === null || value.colorBlindMode === undefined
+			? {}
+			: { colorBlindMode: value.colorBlindMode }),
+	};
 }
 
 async function resolveEndpoint(): Promise<EndpointDescriptor> {
@@ -1482,9 +2127,9 @@ function basename(path: string): string {
 	return normalized.split(/[\\/]/).pop() || normalized || path;
 }
 
-function readRecentDirectories(): string[] {
+function readRecentDirectories(storage: Pick<Storage, "getItem">): string[] {
 	try {
-		const parsed = JSON.parse(localStorage.getItem(RECENT_DIRECTORIES_KEY) ?? "[]");
+		const parsed = JSON.parse(storage.getItem(RECENT_DIRECTORIES_KEY) ?? "[]");
 		return Array.isArray(parsed)
 			? parsed.filter((value): value is string => typeof value === "string").slice(0, MAX_RECENT_DIRECTORIES)
 			: [];
@@ -1493,12 +2138,16 @@ function readRecentDirectories(): string[] {
 	}
 }
 
-function rememberDirectory(directory: string, setRecentDirectories: (directories: string[]) => void): void {
-	const next = [directory, ...readRecentDirectories().filter(existing => existing !== directory)].slice(
+function rememberDirectory(
+	directory: string,
+	setRecentDirectories: (directories: string[]) => void,
+	storage: Pick<Storage, "getItem" | "setItem">,
+): void {
+	const next = [directory, ...readRecentDirectories(storage).filter(existing => existing !== directory)].slice(
 		0,
 		MAX_RECENT_DIRECTORIES,
 	);
-	localStorage.setItem(RECENT_DIRECTORIES_KEY, JSON.stringify(next));
+	storage.setItem(RECENT_DIRECTORIES_KEY, JSON.stringify(next));
 	setRecentDirectories(next);
 }
 
