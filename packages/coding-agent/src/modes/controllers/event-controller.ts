@@ -419,10 +419,7 @@ export class EventController {
 	 * {@link #renderedIrcComponents} here, and the caller must drop its own
 	 * bookkeeping entry. Persistent records always return true (no timer).
 	 */
-	#scheduleIrcExpiry(
-		record: IrcObservationRecord,
-		components: readonly Component[],
-	): boolean {
+	#scheduleIrcExpiry(record: IrcObservationRecord, components: readonly Component[]): boolean {
 		if (record.mode !== "ephemeral" || components.length === 0 || this.#ircExpiryTimers.has(record.observationId)) {
 			return true;
 		}

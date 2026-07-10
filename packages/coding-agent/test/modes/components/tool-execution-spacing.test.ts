@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { type IrcSidebarTheme, IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import { ToolExecutionComponent } from "@gajae-code/coding-agent/modes/components/tool-execution";
+import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import * as themeModule from "@gajae-code/coding-agent/modes/theme/theme";
 import { ImageProtocol, TERMINAL, type TUI } from "@gajae-code/tui";
 
@@ -66,20 +66,20 @@ describe("ToolExecutionComponent spacing", () => {
 	});
 });
 
-	it("replaces generic SIXEL output while the IRC sidebar is visible and restores passthrough when hidden", () => {
-		terminal.imageProtocol = ImageProtocol.Sixel;
-		Bun.env.PI_FORCE_IMAGE_PROTOCOL = "sixel";
-		Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH = "1";
-		const sixel = "\x1bPqcustom-image\x1b\\";
-		const component = new ToolExecutionComponent("custom", {}, {}, undefined, uiStub);
-		component.updateResult({ content: [{ type: "text", text: `before\n${sixel}\nafter` }], isError: false }, false);
-		const split = new IrcSplitViewComponent(component, new IrcObservationLedger(), sidebarTheme);
+it("replaces generic SIXEL output while the IRC sidebar is visible and restores passthrough when hidden", () => {
+	terminal.imageProtocol = ImageProtocol.Sixel;
+	Bun.env.PI_FORCE_IMAGE_PROTOCOL = "sixel";
+	Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH = "1";
+	const sixel = "\x1bPqcustom-image\x1b\\";
+	const component = new ToolExecutionComponent("custom", {}, {}, undefined, uiStub);
+	component.updateResult({ content: [{ type: "text", text: `before\n${sixel}\nafter` }], isError: false }, false);
+	const split = new IrcSplitViewComponent(component, new IrcObservationLedger(), sidebarTheme);
 
-		expect(split.render(120).join("\n")).toContain(sixel);
-		split.setVisible(true);
-		const visible = split.render(120).join("\n");
-		expect(visible).not.toContain("\x1bP");
-		expect(Bun.stripANSI(visible).split("[SIXEL image hidden while IRC sidebar is visible]").length - 1).toBe(1);
-		split.setVisible(false);
-		expect(split.render(120).join("\n")).toContain(sixel);
-	});
+	expect(split.render(120).join("\n")).toContain(sixel);
+	split.setVisible(true);
+	const visible = split.render(120).join("\n");
+	expect(visible).not.toContain("\x1bP");
+	expect(Bun.stripANSI(visible).split("[SIXEL image hidden while IRC sidebar is visible]").length - 1).toBe(1);
+	split.setVisible(false);
+	expect(split.render(120).join("\n")).toContain(sixel);
+});

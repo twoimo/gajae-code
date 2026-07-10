@@ -158,7 +158,8 @@ export class BashExecutionComponent extends Container {
 				? getSixelLineMask(availableLines)
 				: undefined;
 		const hasSixelOutput = sixelLineMask?.some(Boolean) ?? false;
-		const selectedLines = this.#expanded || (hasSixelOutput && !fallbackActive) ? availableLines : availableLines.slice(-PREVIEW_LINES);
+		const selectedLines =
+			this.#expanded || (hasSixelOutput && !fallbackActive) ? availableLines : availableLines.slice(-PREVIEW_LINES);
 		const hiddenLineCount = availableLines.length - selectedLines.length;
 
 		// Rebuild content container
