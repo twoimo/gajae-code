@@ -5,9 +5,25 @@
  * lightweight CLI runner from pi-utils.
  */
 import { THINKING_EFFORTS } from "@gajae-code/ai/model-thinking";
-import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
+import {
+	Args,
+	type CliConfig,
+	CliParseError,
+	Command,
+	type CommandEntry,
+	Flags,
+	renderCommandHelp,
+	run,
+	splitArgvAtDelimiter,
+} from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
+import {
+	findLaunchArgumentEndIndex,
+	findLaunchFlagIndex,
+	getLaunchOptionArguments,
+	validateThinkingArguments,
+} from "./cli/thinking-arg";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -22,6 +38,7 @@ if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 
 process.title = APP_NAME;
 const rootHelpFlags = ["--help", "-h", "help"];
+const commandHelpFlags = ["--help", "-h"];
 const versionFlags = ["--version", "-v"];
 
 export const commands: CommandEntry[] = [
@@ -89,7 +106,9 @@ async function installRuntimeGlobals(): Promise<void> {
 }
 
 function isStatsHelpFastPath(argv: string[]): boolean {
-	return argv[0] === "stats" && (argv.includes("--help") || argv.includes("-h"));
+	if (argv[0] !== "stats") return false;
+	const args = splitArgvAtDelimiter(argv.slice(1)).beforeDelimiter;
+	return args.includes("--help") || args.includes("-h");
 }
 
 function showStatsFastHelp(): void {
@@ -119,30 +138,16 @@ async function runNotifyDaemonInternalFastPath(argv: string[]): Promise<void> {
 }
 
 function rootFixtureArg(argv: string[]): { present: boolean; id: string | undefined } {
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
+	const options = getLaunchOptionArguments(argv);
+	for (let index = 0; index < options.length; index++) {
+		const arg = options[index];
 		// Stop at the first subcommand token so a `--fixture` flag belonging to a
 		// subcommand never hijacks the root fast-path into fixture-report mode.
 		if (isSubcommand(arg)) return { present: false, id: undefined };
-		if (arg === "--fixture") return { present: true, id: argv[i + 1] };
+		if (arg === "--fixture") return { present: true, id: options[index + 1] };
+		index = findLaunchArgumentEndIndex(options, index);
 	}
 	return { present: false, id: undefined };
-}
-
-function hasRootFastFlag(argv: string[], flags: readonly string[]): boolean {
-	for (const arg of argv) {
-		if (isSubcommand(arg)) return false;
-		if (flags.includes(arg)) return true;
-	}
-	return false;
-}
-
-function hasRootHelpFlag(argv: string[]): boolean {
-	return hasRootFastFlag(argv, rootHelpFlags);
-}
-
-function hasRootVersionFlag(argv: string[]): boolean {
-	return hasRootFastFlag(argv, versionFlags);
 }
 
 export class RootHelpCommand extends Command {
@@ -261,6 +266,65 @@ async function runSmokeTest(): Promise<void> {
 	process.stdout.write("smoke-test: ok\n");
 }
 
+type LaunchFastFlagKind = "help" | "version";
+
+interface LaunchFastFlag {
+	index: number;
+	kind: LaunchFastFlagKind;
+}
+
+interface LaunchThinkingContext {
+	args: readonly string[];
+	commandId: "launch" | "acp";
+	explicit: boolean;
+	fastFlag?: LaunchFastFlag;
+}
+
+function findFirstLaunchFastFlag(args: readonly string[], helpFlags: readonly string[]): LaunchFastFlag | undefined {
+	const helpIndex = findLaunchFlagIndex(args, helpFlags);
+	const versionIndex = findLaunchFlagIndex(args, versionFlags);
+	if (helpIndex !== undefined && (versionIndex === undefined || helpIndex <= versionIndex)) {
+		return { index: helpIndex, kind: "help" };
+	}
+	return versionIndex === undefined ? undefined : { index: versionIndex, kind: "version" };
+}
+
+function resolveLaunchThinkingContext(argv: string[]): LaunchThinkingContext | undefined {
+	const first = argv[0];
+	if (first === "launch" || first === "acp") {
+		const args = argv.slice(1);
+		const fastFlag = findFirstLaunchFastFlag(args, commandHelpFlags);
+		return {
+			args: fastFlag ? args.slice(0, fastFlag.index) : args,
+			commandId: first,
+			explicit: true,
+			...(fastFlag ? { fastFlag } : {}),
+		};
+	}
+	if (isSubcommand(first)) return undefined;
+	const fastFlag = findFirstLaunchFastFlag(argv, rootHelpFlags);
+	return {
+		args: fastFlag ? argv.slice(0, fastFlag.index) : argv,
+		commandId: "launch",
+		explicit: false,
+		...(fastFlag ? { fastFlag } : {}),
+	};
+}
+
+function validateRootLaunchThinkingArguments(context: LaunchThinkingContext | undefined): boolean {
+	if (!context) return true;
+	try {
+		validateThinkingArguments(context.args);
+		return true;
+	} catch (error) {
+		if (!(error instanceof CliParseError)) throw error;
+		process.stderr.write(`${error.message}\n\n`);
+		renderCommandHelp(APP_NAME, context.commandId, RootHelpCommand);
+		process.exitCode = 2;
+		return false;
+	}
+}
+
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
 	if (isNotifyDaemonInternalFastPath(argv)) {
@@ -286,22 +350,28 @@ export async function runCli(argv: string[]): Promise<void> {
 		showStatsFastHelp();
 		return;
 	}
-	if (hasRootHelpFlag(argv)) {
-		const { renderRootHelp } = await import("@gajae-code/utils/cli");
-		const { getExtraHelpText } = await import("./cli/fast-help");
-		renderRootHelp({ bin: APP_NAME, version: VERSION, commands: new Map([["launch", RootHelpCommand]]) });
-		const extra = getExtraHelpText();
-		if (extra.trim().length > 0) {
-			process.stdout.write(`\n${extra}\n`);
+	const launchThinkingContext = resolveLaunchThinkingContext(argv);
+	if (!validateRootLaunchThinkingArguments(launchThinkingContext)) return;
+	if (launchThinkingContext?.fastFlag?.kind === "help") {
+		if (launchThinkingContext.explicit) {
+			renderCommandHelp(APP_NAME, launchThinkingContext.commandId, RootHelpCommand);
+		} else {
+			const { renderRootHelp } = await import("@gajae-code/utils/cli");
+			const { getExtraHelpText } = await import("./cli/fast-help");
+			renderRootHelp({ bin: APP_NAME, version: VERSION, commands: new Map([["launch", RootHelpCommand]]) });
+			const extra = getExtraHelpText();
+			if (extra.trim().length > 0) {
+				process.stdout.write(`\n${extra}\n`);
+			}
 		}
 		return;
 	}
-	if (hasRootVersionFlag(argv)) {
+	if (launchThinkingContext?.fastFlag?.kind === "version") {
 		process.stdout.write(`${APP_NAME}/${VERSION}\n`);
 		return;
 	}
 	await installRuntimeGlobals();
-	// --help and --version are handled by run() directly, don't rewrite those.
+	// Non-launch subcommand help and version flags are handled by run().
 	// Everything else that isn't a known subcommand routes to "launch".
 	const first = argv[0];
 	const runArgv =
@@ -310,7 +380,15 @@ export async function runCli(argv: string[]): Promise<void> {
 			: isSubcommand(first)
 				? argv
 				: ["launch", ...argv];
-	return run({ bin: APP_NAME, version: VERSION, argv: runArgv, commands, help: showHelp });
+	return run({
+		bin: APP_NAME,
+		version: VERSION,
+		argv: runArgv,
+		commands,
+		help: showHelp,
+		commandHelpArguments: (commandId, commandArgv) =>
+			commandId === "launch" || commandId === "acp" ? getLaunchOptionArguments(commandArgv) : undefined,
+	});
 }
 
 if (import.meta.main) {

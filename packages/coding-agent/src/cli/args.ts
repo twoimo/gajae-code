@@ -1,12 +1,12 @@
 /**
  * CLI argument parsing and help display
  */
-import { type Effort, THINKING_EFFORTS } from "@gajae-code/ai";
+import type { Effort } from "@gajae-code/ai/model-thinking";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@gajae-code/utils";
-import { CliParseError } from "@gajae-code/utils/cli";
+import { CliParseError, splitArgvAtDelimiter } from "@gajae-code/utils/cli";
 import chalk from "chalk";
-import { parseEffort } from "../thinking";
 import { BUILTIN_TOOLS } from "../tools";
+import { isStartupSlashCommandArg, parseThinkingArgumentAt } from "./thinking-arg";
 
 export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge";
 
@@ -60,16 +60,10 @@ export interface Args {
 	unknownFlags: Map<string, boolean | string>;
 }
 
-function isStartupSlashCommandArg(arg: string | undefined): boolean {
-	return (
-		arg === "/provider" ||
-		arg?.startsWith("/provider:") === true ||
-		arg === "/provicer" ||
-		arg?.startsWith("/provicer:") === true
-	);
-}
-
-export function parseArgs(args: string[]): Args {
+export function parseArgs(rawArgs: string[]): Args {
+	const delimiter = splitArgvAtDelimiter(rawArgs);
+	const args = delimiter.beforeDelimiter;
+	let startupSlashPayload = false;
 	const result: Args = {
 		messages: [],
 		fileArgs: [],
@@ -79,8 +73,16 @@ export function parseArgs(args: string[]): Args {
 	for (let i = 0; i < args.length; i++) {
 		let arg = args[i];
 
+		const thinkingArgument = parseThinkingArgumentAt(args, i);
+		if (thinkingArgument) {
+			result.thinking = thinkingArgument.effort;
+			i = thinkingArgument.nextIndex;
+			continue;
+		}
+
 		if (isStartupSlashCommandArg(arg)) {
-			result.messages.push(args.slice(i).join(" "));
+			result.messages.push([...args.slice(i), ...delimiter.afterDelimiter].join(" "));
+			startupSlashPayload = true;
 			break;
 		}
 
@@ -95,8 +97,10 @@ export function parseArgs(args: string[]): Args {
 
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
+			break;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
+			break;
 		} else if (arg === "--allow-home") {
 			result.allowHome = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
@@ -183,20 +187,6 @@ export function parseArgs(args: string[]): Args {
 				}
 			}
 			result.tools = validTools;
-		} else if (arg === "--thinking") {
-			const rawThinking = args[i + 1];
-			if (!rawThinking || rawThinking.startsWith("-")) {
-				throw new CliParseError("--thinking requires <effort>");
-			}
-
-			const thinking = parseEffort(rawThinking);
-			if (thinking === undefined) {
-				throw new CliParseError(
-					`Invalid --thinking effort "${rawThinking}". Valid values: ${THINKING_EFFORTS.join(", ")}`,
-				);
-			}
-			i++;
-			result.thinking = thinking;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--export" && i + 1 < args.length) {
@@ -217,6 +207,9 @@ export function parseArgs(args: string[]): Args {
 		} else if (!arg.startsWith("-")) {
 			result.messages.push(arg);
 		}
+	}
+	if (!startupSlashPayload && delimiter.hasDelimiter) {
+		result.messages.push(...delimiter.afterDelimiter);
 	}
 
 	if (result.default && !result.mpreset) {

@@ -126,6 +126,12 @@ describe("CLI thinking args", () => {
 		expect(() => parseArgs(["--thinking=invalid-effort"])).toThrow(CliParseError);
 		expect(() => parseArgs(["--thinking=invalid-effort"])).toThrow('Invalid --thinking effort "invalid-effort"');
 	});
+	test("reports equals-form flag-like values as invalid supplied efforts", () => {
+		expect(() => parseArgs(["--thinking=--help"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking=--help"])).toThrow('Invalid --thinking effort "--help"');
+		expect(() => parseArgs(["--thinking=--version"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking=--version"])).toThrow('Invalid --thinking effort "--version"');
+	});
 
 	test("rejects --thinking without a value", () => {
 		expect(() => parseArgs(["--thinking"])).toThrow(CliParseError);
@@ -137,6 +143,22 @@ describe("CLI thinking args", () => {
 	test("rejects --thinking followed by another flag", () => {
 		expect(() => parseArgs(["--thinking", "--model", "gpt-5"])).toThrow(CliParseError);
 		expect(() => parseArgs(["--thinking", "--model", "gpt-5"])).toThrow("--thinking requires <effort>");
+	});
+
+	test("stops option parsing at the standalone delimiter", () => {
+		const parsed = parseArgs(["--thinking", "high", "--", "--thinking", "ultra", "--help"]);
+
+		expect(parsed.thinking).toBe(Effort.High);
+		expect(parsed.help).toBeUndefined();
+		expect(parsed.messages).toEqual(["--thinking", "ultra", "--help"]);
+	});
+
+	test("keeps thinking-like flags inside startup provider payloads", () => {
+		const parsed = parseArgs(["/provider", "add", "--thinking", "ultra", "--help"]);
+
+		expect(parsed.thinking).toBeUndefined();
+		expect(parsed.help).toBeUndefined();
+		expect(parsed.messages).toEqual(["/provider add --thinking ultra --help"]);
 	});
 });
 

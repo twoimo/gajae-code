@@ -1,5 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { Args, type CliConfig, CliParseError, Command, type CommandEntry, Flags, run } from "../src/cli";
+import {
+	Args,
+	type CliConfig,
+	CliParseError,
+	Command,
+	type CommandEntry,
+	Flags,
+	type RunOptions,
+	run,
+	splitArgvAtDelimiter,
+} from "../src/cli";
 
 const CFG: CliConfig = { bin: "gjc", version: "1.0.0", commands: new Map() };
 
@@ -53,17 +63,26 @@ class Tokened extends Command {
 	}
 }
 
+class Payload extends Command {
+	static strict = false;
+	async run(): Promise<void> {
+		sideEffect.ran = true;
+	}
+}
+
 const sideEffect: { ran: boolean; action?: string } = { ran: false };
 const commands: CommandEntry[] = [
 	{ name: "demo", load: async () => Demo },
 	{ name: "boom", load: async () => Boom },
 	{ name: "verbed", load: async () => Verbed },
 	{ name: "tokened", load: async () => Tokened },
+	{ name: "payload", load: async () => Payload },
 ];
 
 /** Run the CLI while capturing stdout/stderr and isolating process.exitCode. */
 async function runCapturing(
 	argv: string[],
+	commandHelpArguments?: RunOptions["commandHelpArguments"],
 ): Promise<{ out: string; err: string; exitCode: number | string | undefined }> {
 	const origOut = process.stdout.write.bind(process.stdout);
 	const origErr = process.stderr.write.bind(process.stderr);
@@ -81,7 +100,13 @@ async function runCapturing(
 	};
 	try {
 		process.exitCode = 0; // clean baseline so "left unset by run()" reads back as 0
-		await run({ bin: "gjc", version: "1.0.0", argv, commands });
+		await run({
+			bin: "gjc",
+			version: "1.0.0",
+			argv,
+			commands,
+			...(commandHelpArguments ? { commandHelpArguments } : {}),
+		});
 		return { out, err, exitCode: process.exitCode };
 	} finally {
 		process.stdout.write = origOut;
@@ -130,6 +155,38 @@ describe("cli parse — CliParseError for invalid input", () => {
 		const cmd = new Demo(["build"], CFG);
 		const { args } = await cmd.parse(Demo);
 		expect(args.action).toBe("build");
+	});
+});
+
+describe("cli argv boundaries", () => {
+	it("splits at only the first standalone delimiter", () => {
+		expect(splitArgvAtDelimiter(["--model=x", "--", "--help", "--"])).toEqual({
+			beforeDelimiter: ["--model=x"],
+			afterDelimiter: ["--help", "--"],
+			hasDelimiter: true,
+		});
+	});
+
+	it("does not intercept command help after the standalone delimiter", async () => {
+		sideEffect.ran = false;
+		const { out, err, exitCode } = await runCapturing(["demo", "build", "--", "--help"]);
+
+		expect(sideEffect.ran).toBe(true);
+		expect(out).toBe("");
+		expect(err).toBe("");
+		expect(exitCode).toBe(0);
+	});
+
+	it("supports command-specific help ownership boundaries", async () => {
+		sideEffect.ran = false;
+		const { out, err, exitCode } = await runCapturing(["payload", "/provider", "--help"], (_commandId, argv) =>
+			argv.slice(0, argv.indexOf("/provider")),
+		);
+
+		expect(sideEffect.ran).toBe(true);
+		expect(out).toBe("");
+		expect(err).toBe("");
+		expect(exitCode).toBe(0);
 	});
 });
 

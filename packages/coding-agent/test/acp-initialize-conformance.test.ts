@@ -212,6 +212,46 @@ describe("ACP initialize conformance", () => {
 		});
 	});
 
+	it("preserves terminal-auth-like payload after delimiter and startup slash boundaries", () => {
+		expect(prepareAcpTerminalAuthArgs(["--", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"])).toEqual({
+			args: ["--", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"],
+			terminalAuth: false,
+		});
+		expect(
+			prepareAcpTerminalAuthArgs([
+				ACP_TERMINAL_AUTH_FLAG,
+				"--mode",
+				"acp",
+				"--",
+				ACP_TERMINAL_AUTH_FLAG,
+				"--mode",
+				"foo",
+			]),
+		).toEqual({
+			args: ["--", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"],
+			terminalAuth: true,
+		});
+		expect(prepareAcpTerminalAuthArgs(["/provider", "add", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"])).toEqual({
+			args: ["/provider", "add", ACP_TERMINAL_AUTH_FLAG, "--mode", "foo"],
+			terminalAuth: false,
+		});
+
+		expect(prepareAcpTerminalAuthArgs(["--model", ACP_TERMINAL_AUTH_FLAG, "payload"])).toEqual({
+			args: ["--model", ACP_TERMINAL_AUTH_FLAG, "payload"],
+			terminalAuth: false,
+		});
+		expect(prepareAcpTerminalAuthArgs(["--mode", ACP_TERMINAL_AUTH_FLAG])).toEqual({
+			args: ["--mode", ACP_TERMINAL_AUTH_FLAG],
+			terminalAuth: false,
+		});
+		expect(
+			prepareAcpTerminalAuthArgs([ACP_TERMINAL_AUTH_FLAG, "--mode", "acp", "--model", "--mode", "payload"]),
+		).toEqual({
+			args: ["--model", "--mode", "payload"],
+			terminalAuth: true,
+		});
+	});
+
 	it("declares agentInfo.version that matches the published package version", async () => {
 		const agent = await createAgent();
 		const response = await agent.initialize(buildInitializeRequest());

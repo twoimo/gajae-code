@@ -79,6 +79,24 @@ export class CliParseError extends Error {
 		this.name = "CliParseError";
 	}
 }
+export interface ArgvDelimiterSplit {
+	beforeDelimiter: string[];
+	afterDelimiter: string[];
+	hasDelimiter: boolean;
+}
+
+/** Split argv at the first standalone `--`; the delimiter itself is omitted. */
+export function splitArgvAtDelimiter(argv: readonly string[]): ArgvDelimiterSplit {
+	const delimiterIndex = argv.indexOf("--");
+	if (delimiterIndex === -1) {
+		return { beforeDelimiter: [...argv], afterDelimiter: [], hasDelimiter: false };
+	}
+	return {
+		beforeDelimiter: argv.slice(0, delimiterIndex),
+		afterDelimiter: argv.slice(delimiterIndex + 1),
+		hasDelimiter: true,
+	};
+}
 
 // ---------------------------------------------------------------------------
 // Parse result types — mirrors oclif's typed output from this.parse()
@@ -383,6 +401,8 @@ export interface RunOptions {
 	commands: CommandEntry[];
 	/** Custom help renderer. Receives fully-populated config. */
 	help?: (config: CliConfig) => Promise<void> | void;
+	/** Optionally narrow the argv inspected by generic per-command help detection. */
+	commandHelpArguments?: (commandId: string, argv: readonly string[]) => readonly string[] | undefined;
 }
 
 /** Find a command entry by exact name or alias. */
@@ -401,6 +421,8 @@ export async function run(opts: RunOptions): Promise<void> {
 
 	const commandId = argv[0] ?? "";
 	const commandArgv = argv.slice(1);
+	const defaultHelpArguments = splitArgvAtDelimiter(commandArgv).beforeDelimiter;
+	const commandHelpArguments = opts.commandHelpArguments?.(commandId, commandArgv) ?? defaultHelpArguments;
 
 	// Top-level help
 	if (commandId === "--help" || commandId === "-h" || commandId === "help" || commandId === "") {
@@ -421,7 +443,7 @@ export async function run(opts: RunOptions): Promise<void> {
 
 	// Per-command help. Commands with nested subcommands can opt into receiving
 	// help flags themselves so `cmd subcommand --help` can render subcommand help.
-	if (commandArgv.includes("--help") || commandArgv.includes("-h")) {
+	if (commandHelpArguments.includes("--help") || commandHelpArguments.includes("-h")) {
 		const entry = findEntry(opts.commands, commandId);
 		if (!entry) {
 			process.stderr.write(`Unknown command: ${commandId}\n`);

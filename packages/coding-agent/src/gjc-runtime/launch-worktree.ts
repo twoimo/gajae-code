@@ -1,6 +1,8 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { splitArgvAtDelimiter } from "@gajae-code/utils/cli";
+import { findLaunchArgumentEndIndex, findStartupSlashCommandIndex } from "../cli/thinking-arg";
 
 export type GjcLaunchWorktreeMode =
 	| { enabled: false }
@@ -172,7 +174,6 @@ function isWorktreeDirty(worktreePath: string): boolean {
 function resolveOptionalWorktreeName(args: string[], index: number): { name: string | null; nextIndex: number } {
 	const next = args[index + 1];
 	if (!next) return { name: null, nextIndex: index };
-	if (next === "--") return { name: null, nextIndex: index + 1 };
 	if (next.startsWith("-")) return { name: null, nextIndex: index };
 	return { name: next.trim() || null, nextIndex: index + 1 };
 }
@@ -180,11 +181,17 @@ function resolveOptionalWorktreeName(args: string[], index: number): { name: str
 export function parseLaunchWorktreeMode(args: string[]): ParsedLaunchWorktreeMode {
 	let mode: GjcLaunchWorktreeMode = { enabled: false };
 	const remainingArgs: string[] = [];
+	const delimiter = splitArgvAtDelimiter(args);
+	const slashCommandIndex = findStartupSlashCommandIndex(delimiter.beforeDelimiter);
+	const optionEnd = slashCommandIndex ?? delimiter.beforeDelimiter.length;
+	const optionArgs = delimiter.beforeDelimiter.slice(0, optionEnd);
+	const payloadArgs = delimiter.beforeDelimiter.slice(optionEnd);
+	if (delimiter.hasDelimiter) payloadArgs.push("--", ...delimiter.afterDelimiter);
 
-	for (let index = 0; index < args.length; index += 1) {
-		const arg = args[index] ?? "";
+	for (let index = 0; index < optionArgs.length; index += 1) {
+		const arg = optionArgs[index] ?? "";
 		if (arg === "--worktree" || arg === "-w") {
-			const parsed = resolveOptionalWorktreeName(args, index);
+			const parsed = resolveOptionalWorktreeName(optionArgs, index);
 			mode = parsed.name
 				? { enabled: true, detached: false, name: parsed.name }
 				: { enabled: true, detached: true, name: null };
@@ -201,8 +208,11 @@ export function parseLaunchWorktreeMode(args: string[]): ParsedLaunchWorktreeMod
 			mode = name ? { enabled: true, detached: false, name } : { enabled: true, detached: true, name: null };
 			continue;
 		}
-		remainingArgs.push(arg);
+		const endIndex = findLaunchArgumentEndIndex(optionArgs, index);
+		remainingArgs.push(...optionArgs.slice(index, endIndex + 1));
+		index = endIndex;
 	}
+	remainingArgs.push(...payloadArgs);
 
 	return { mode, remainingArgs };
 }

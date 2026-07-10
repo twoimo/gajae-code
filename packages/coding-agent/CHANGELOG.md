@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Aligned the root `--thinking` parser with canonical provider efforts (`minimal` through `max`), rejecting missing or unsupported values before launch and removing the unsupported `ultra` alias.
+- Aligned root, explicit launch, and ACP `--thinking` parsing with canonical provider efforts (`minimal` through `max`), rejecting missing or unsupported values before fast-path or runtime initialization, preserving positional help/version precedence and equals-form diagnostics, and stopping launch preprocessing at `--` and startup provider payload boundaries.
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
 - Preserved explicit Telegram forum-topic renames as durable user-owned names, immediately re-asserting delayed edits while retaining restart and rename-race recovery (#1910).
 
