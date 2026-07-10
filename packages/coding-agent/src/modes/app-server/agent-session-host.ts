@@ -1331,7 +1331,17 @@ function scrubSecrets(text: string): string {
 }
 
 function previewValue(value: unknown): string {
-	return scrubSecrets((typeof value === "string" ? value : (JSON.stringify(value ?? null) ?? "null")).slice(0, 200));
+	// Callers pass structurally redacted values; scrubbing serialized JSON here
+	// would be delimiter-unaware and can swallow neighboring fields.
+	return (typeof value === "string" ? scrubSecrets(value) : (JSON.stringify(value ?? null) ?? "null")).slice(0, 200);
+}
+
+function sanitizedKeyFor(key: string, used: Set<string>): string {
+	const base = scrubSecrets(key);
+	let candidate = base;
+	for (let suffix = 2; used.has(candidate); suffix++) candidate = `${base}#${suffix}`;
+	used.add(candidate);
+	return candidate;
 }
 
 function redactExportValue(value: unknown, keyName?: string): unknown {
@@ -1342,12 +1352,13 @@ function redactExportValue(value: unknown, keyName?: string): unknown {
 	if (record.type === "toolCall")
 		return {
 			type: "toolCall",
-			name: record.name,
+			name: typeof record.name === "string" ? scrubSecrets(record.name) : record.name,
 			preview: previewValue(redactObjectEntries(asRecord(record.arguments))),
 		};
 	const next: Record<string, unknown> = {};
+	const usedKeys = new Set<string>();
 	for (const [key, item] of Object.entries(record)) {
-		next[key] =
+		next[sanitizedKeyFor(key, usedKeys)] =
 			record.role === "toolResult" && key === "content"
 				? previewValue(redactExportValue(item))
 				: redactExportValue(item, key);
@@ -1357,7 +1368,8 @@ function redactExportValue(value: unknown, keyName?: string): unknown {
 
 function redactObjectEntries(record: Record<string, unknown>): Record<string, unknown> {
 	const next: Record<string, unknown> = {};
-	for (const [key, item] of Object.entries(record)) next[key] = redactExportValue(item, key);
+	const usedKeys = new Set<string>();
+	for (const [key, item] of Object.entries(record)) next[sanitizedKeyFor(key, usedKeys)] = redactExportValue(item, key);
 	return next;
 }
 
@@ -1420,7 +1432,10 @@ async function sessionExportModel(params: unknown): Promise<Record<string, unkno
 		format === "json"
 			? JSON.stringify({ messages }, null, 2)
 			: formatSessionDumpText({ messages: messages as Parameters<typeof formatSessionDumpText>[0]["messages"] });
-	if (redact) content = scrubSecrets(content);
+	// Structured redaction already ran before serialization; regex-scrubbing
+	// serialized JSON can consume delimiters and corrupt syntax, so the final
+	// text scrub applies to markdown only.
+	if (redact && format === "markdown") content = scrubSecrets(content);
 	if (new TextEncoder().encode(content).byteLength > EXPORT_MAX_BYTES)
 		throw new Error("session export exceeds 5MB cap");
 	return {
