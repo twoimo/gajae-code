@@ -66,6 +66,21 @@ class FixedMtimeStorage extends WriteTrackingStorage {
 	}
 }
 
+class HandoffMutationStorage extends MemorySessionStorage {
+	reads = 0;
+
+	constructor(private readonly replacement: string) {
+		super();
+	}
+
+	override readBytesSync(filePath: string): Uint8Array {
+		const bytes = super.readBytesSync(filePath);
+		this.reads++;
+		if (this.reads === 2) queueMicrotask(() => super.writeTextSync(filePath, this.replacement));
+		return bytes;
+	}
+}
+
 class NonRegularStorage extends WriteTrackingStorage {
 	reads = 0;
 
@@ -177,6 +192,21 @@ describe("SessionManager read-only resume", () => {
 			"identity-mismatch",
 		);
 		expect(storage.writes).toBe(0);
+	});
+
+	it("revalidates identity after async hydration before ownership", async () => {
+		const filePath = "/sessions/handoff.jsonl";
+		const storage = new HandoffMutationStorage(sessionText("session-a", "assistant"));
+		storage.writeTextSync(filePath, sessionText("session-a"));
+		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
+		if (inspection.kind === "error") throw new Error("Expected inspection identity");
+
+		expectStrictFailure(
+			await SessionManager.openExistingStrict(inspection.identity, "/sessions", storage),
+			"identity-mismatch",
+		);
+		expect(storage.reads).toBe(3);
+		expect(storage.readTextSync(filePath)).toContain('"role":"assistant"');
 	});
 
 	it("fails closed on invalid UTF-8 instead of parsing replacement text", async () => {

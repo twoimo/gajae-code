@@ -5229,6 +5229,15 @@ export class SessionManager {
 		const dir = sessionDir ?? path.resolve(identity.canonicalPath, "..");
 		const manager = new SessionManager(header.cwd || getProjectDir(), dir, true, storage);
 		await manager.#hydrateExistingSession(identity.canonicalPath, entries, inspected.migrationApplied);
+		const ownershipInspection = inspectResumeSessionFile(identity.canonicalPath, storage);
+		if ("kind" in ownershipInspection) {
+			await manager.close();
+			return ownershipInspection;
+		}
+		if (!sameResumeIdentity(identity, ownershipInspection.identity)) {
+			await manager.close();
+			return { kind: "error", reason: "identity-mismatch" };
+		}
 		writeTerminalBreadcrumb(manager.cwd, identity.canonicalPath);
 		return { kind: "opened", manager };
 	}
