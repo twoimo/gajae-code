@@ -22,6 +22,10 @@ const REQUIRED_VALUE_FLAGS: ReadonlySet<string> = new Set([
 	"--listen",
 	"--models",
 	"--tools",
+	"--hook",
+	"--extension",
+	"-e",
+	"--skills",
 	"--export",
 ]);
 const OPTIONAL_VALUE_FLAGS: ReadonlySet<string> = new Set(["--resume", "-r", "--session", "--list-models"]);

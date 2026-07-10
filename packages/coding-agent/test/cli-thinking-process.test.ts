@@ -6,6 +6,7 @@ import * as path from "node:path";
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const sourceEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
 const wrapperEntry = path.join(repoRoot, "packages", "coding-agent", "bin", "gjc.js");
+const publicWrapperEntry = path.join(repoRoot, "packages", "gajae-code", "bin", "gjc.js");
 const runtimeMarker = "GJC_TEST_H2_FETCH_INSTALLED";
 
 let tempRoot: string;
@@ -31,6 +32,14 @@ const routes: readonly CliRoute[] = [
 	{ name: "wrapper default route", entry: wrapperEntry, prefix: [], usageCommand: "launch" },
 	{ name: "wrapper explicit launch route", entry: wrapperEntry, prefix: ["launch"], usageCommand: "launch" },
 	{ name: "wrapper explicit ACP route", entry: wrapperEntry, prefix: ["acp"], usageCommand: "acp" },
+	{ name: "public wrapper default route", entry: publicWrapperEntry, prefix: [], usageCommand: "launch" },
+	{
+		name: "public wrapper explicit launch route",
+		entry: publicWrapperEntry,
+		prefix: ["launch"],
+		usageCommand: "launch",
+	},
+	{ name: "public wrapper explicit ACP route", entry: publicWrapperEntry, prefix: ["acp"], usageCommand: "acp" },
 ];
 
 beforeAll(async () => {
@@ -98,6 +107,22 @@ describe("public CLI thinking validation", () => {
 					expect(result.stdout).toContain(`${runtimeMarker}=false`);
 				}
 			});
+
+			it("keeps advertised string option values owned by their flags", () => {
+				const cases = [
+					["--hook", "--help", "--thinking", "ultra"],
+					["--extension", "--version", "--thinking", "ultra"],
+					["-e", "--help", "--thinking", "ultra"],
+					["--skills", "--help", "--thinking", "ultra"],
+				] as const;
+				for (const args of cases) {
+					const result = runRoute(route, args);
+					expect(result.exitCode, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`).toBe(2);
+					expect(result.stderr.split(/\r?\n/, 1)[0]).toStartWith("Invalid --thinking effort");
+					expect(result.stdout).toContain(`$ gjc ${route.usageCommand}`);
+					expect(result.stdout).toContain(`${runtimeMarker}=false`);
+				}
+			});
 		});
 	}
 
@@ -133,9 +158,8 @@ describe("public CLI thinking validation", () => {
 		});
 	}
 
-	for (const entry of [sourceEntry, wrapperEntry]) {
-		it(`preserves launch option value ownership for ${path.basename(entry)}`, () => {
-			const route = { name: entry, entry, prefix: [], usageCommand: "launch" } satisfies CliRoute;
+	for (const route of routes.filter(route => route.prefix.length === 0)) {
+		it(`preserves launch option value ownership for ${route.name}`, () => {
 			const consumedValue = runRoute(route, ["--model", "--thinking", "--version"]);
 			expect(consumedValue.exitCode, `${consumedValue.stdout}\n${consumedValue.stderr}`).toBe(0);
 			expect(consumedValue.stdout).toMatch(/^gjc\/\d+\.\d+\.\d+/);
