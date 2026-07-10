@@ -298,7 +298,7 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		requiredProviders: ["anthropic", "openai-codex"],
 		mapping: {
 			default: "anthropic/claude-opus-4-8:xhigh",
-			executor: "openai-codex/gpt-5.6-luna:low",
+			executor: "openai-codex/gpt-5.6-terra:low",
 			planner: "openai-codex/gpt-5.6-terra:medium",
 			critic: "openai-codex/gpt-5.6-terra:high",
 			architect: "openai-codex/gpt-5.6-sol:xhigh",
