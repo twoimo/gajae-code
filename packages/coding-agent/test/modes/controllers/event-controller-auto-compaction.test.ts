@@ -15,7 +15,6 @@ type AutoCompactionFixture = {
 	loaderStop: Mock<() => void>;
 	statusContainerClear: Mock<() => void>;
 	rebuildChatFromMessages: Mock<(policy: "replace-identity" | "reconcile-same-transcript") => void>;
-	prepareViewportAnchorForTranscriptRebuild: Mock<() => void>;
 };
 
 function createFixture(): AutoCompactionFixture {
@@ -35,12 +34,9 @@ function createFixture(): AutoCompactionFixture {
 	const flushCompactionQueue = vi.fn(async () => {
 		order.push("flushCompactionQueue");
 	});
-	const prepareViewportAnchorForTranscriptRebuild = vi.fn(() => {
-		order.push("prepareViewportAnchorForTranscriptRebuild");
-	});
+	const prepareViewportAnchorForTranscriptRebuild = vi.fn();
 	const rebuildChatFromMessages = vi.fn((policy: "replace-identity" | "reconcile-same-transcript") => {
-		if (policy === "reconcile-same-transcript") prepareViewportAnchorForTranscriptRebuild();
-		order.push("rebuildChatFromMessages");
+		order.push(`rebuildChatFromMessages:${policy}`);
 	});
 
 	const ctx = {
@@ -87,7 +83,6 @@ function createFixture(): AutoCompactionFixture {
 		loaderStop,
 		statusContainerClear,
 		rebuildChatFromMessages,
-		prepareViewportAnchorForTranscriptRebuild,
 	};
 }
 
@@ -121,10 +116,7 @@ describe("EventController auto-compaction overflow status", () => {
 		expect(fixture.showStatus).toHaveBeenCalledWith("Context overflow maintenance completed");
 		expect(fixture.showWarning).not.toHaveBeenCalled();
 		expect(fixture.order.indexOf("loader.stop")).toBeLessThan(fixture.order.indexOf("showStatus"));
-		expect(fixture.prepareViewportAnchorForTranscriptRebuild).toHaveBeenCalledTimes(1);
-		expect(fixture.order.indexOf("prepareViewportAnchorForTranscriptRebuild")).toBeLessThan(
-			fixture.order.indexOf("rebuildChatFromMessages"),
-		);
+		expect(fixture.rebuildChatFromMessages).toHaveBeenCalledWith("reconcile-same-transcript");
 		expect(fixture.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: true });
 	});
 

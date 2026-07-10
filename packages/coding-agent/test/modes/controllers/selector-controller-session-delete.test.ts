@@ -134,12 +134,7 @@ function createContext(currentSessionFile: string): {
 			calls.push("updateEditorBorderColor");
 		}),
 		rebuildInitialMessages: vi.fn((policy: "replace-identity" | "reconcile-same-transcript") => {
-			calls.push(
-				policy === "replace-identity"
-					? "ui.resetViewportAnchorIntent"
-					: "ui.prepareViewportAnchorForTranscriptRebuild",
-			);
-			calls.push("chatContainer.clear", "renderInitialMessages");
+			calls.push(`rebuildInitialMessages:${policy}`, "chatContainer.clear", "renderInitialMessages");
 		}),
 		reloadTodos: vi.fn(async () => {
 			calls.push("reloadTodos");
@@ -194,8 +189,10 @@ describe("SelectorController session deletion", () => {
 
 		await controller.handleResumeSession("/tmp/project/sessions/b.jsonl");
 
-		expect(calls).toContain("ui.resetViewportAnchorIntent");
-		expect(calls.indexOf("ui.resetViewportAnchorIntent")).toBeLessThan(calls.indexOf("chatContainer.clear"));
+		expect(calls).toContain("rebuildInitialMessages:replace-identity");
+		expect(calls.indexOf("rebuildInitialMessages:replace-identity")).toBeLessThan(
+			calls.indexOf("chatContainer.clear"),
+		);
 		expect(calls.indexOf("chatContainer.clear")).toBeLessThan(calls.indexOf("renderInitialMessages"));
 	});
 
@@ -206,11 +203,8 @@ describe("SelectorController session deletion", () => {
 
 		await controller.handleResumeSession(sessionPath);
 
-		expect(calls).toContain("ui.prepareViewportAnchorForTranscriptRebuild");
-		expect(calls).not.toContain("ui.resetViewportAnchorIntent");
-		expect(calls.indexOf("ui.prepareViewportAnchorForTranscriptRebuild")).toBeLessThan(
-			calls.indexOf("chatContainer.clear"),
-		);
+		expect(calls).toContain("rebuildInitialMessages:reconcile-same-transcript");
+		expect(calls).not.toContain("rebuildInitialMessages:replace-identity");
 	});
 
 	it("resets viewport intent when the same path loads a different session identity", async () => {
@@ -224,8 +218,8 @@ describe("SelectorController session deletion", () => {
 
 		await controller.handleResumeSession(sessionPath);
 
-		expect(calls).toContain("ui.resetViewportAnchorIntent");
-		expect(calls).not.toContain("ui.prepareViewportAnchorForTranscriptRebuild");
+		expect(calls).toContain("rebuildInitialMessages:replace-identity");
+		expect(calls).not.toContain("rebuildInitialMessages:reconcile-same-transcript");
 	});
 
 	it("detaches the active session before selector deletion removes it", async () => {
@@ -267,7 +261,7 @@ describe("SelectorController session deletion", () => {
 			"statusLine.setSessionStartTime",
 			"updateEditorTopBorder",
 			"updateEditorBorderColor",
-			"ui.resetViewportAnchorIntent",
+			"rebuildInitialMessages:replace-identity",
 			"chatContainer.clear",
 			"renderInitialMessages",
 			"reloadTodos",
@@ -343,7 +337,7 @@ describe("SelectorController session deletion", () => {
 			"statusLine.setSessionStartTime",
 			"updateEditorTopBorder",
 			"updateEditorBorderColor",
-			"ui.resetViewportAnchorIntent",
+			"rebuildInitialMessages:replace-identity",
 			"chatContainer.clear",
 			"renderInitialMessages",
 			"reloadTodos",

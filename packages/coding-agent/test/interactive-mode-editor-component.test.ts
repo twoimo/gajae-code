@@ -8,7 +8,14 @@ import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
 import { CURSOR_MARKER, Text, visibleWidth } from "@gajae-code/tui";
 import { TempDir } from "@gajae-code/utils";
 import { ModelRegistry } from "../src/config/model-registry";
+import type {
+	ExtensionActions,
+	ExtensionCommandContextActions,
+	ExtensionContextActions,
+	ExtensionUIContext,
+} from "../src/extensibility/extensions";
 import { CustomEditor } from "../src/modes/components/custom-editor";
+import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
@@ -68,6 +75,56 @@ describe("InteractiveMode.setEditorComponent", () => {
 		authStorage?.close();
 		tempDir?.removeSync();
 		resetSettingsForTest();
+	});
+
+	it("applies viewport policy inside the real destructive rebuild methods", () => {
+		const reset = vi.spyOn(mode.ui, "resetViewportAnchorIntent");
+		const reconcile = vi.spyOn(mode.ui, "prepareViewportAnchorForTranscriptRebuild");
+		vi.spyOn(mode, "renderSessionContext").mockImplementation(() => undefined);
+
+		mode.rebuildChatFromMessages("replace-identity");
+		expect(reset).toHaveBeenCalledTimes(1);
+		expect(reconcile).not.toHaveBeenCalled();
+
+		mode.rebuildInitialMessages("reconcile-same-transcript", {
+			messages: [],
+			thinkingLevel: "off",
+			serviceTier: undefined,
+			models: {},
+			injectedTtsrRules: [],
+			selectedMCPToolNames: [],
+			hasPersistedMCPToolSelection: false,
+			mode: "none",
+		});
+		expect(reconcile).toHaveBeenCalledTimes(1);
+	});
+
+	it("renders an idle extension custom message through the real rebuild boundary", async () => {
+		let actions: ExtensionActions | undefined;
+		const extensionRunner = {
+			initialize(
+				capturedActions: ExtensionActions,
+				_contextActions: ExtensionContextActions,
+				_commandContextActions?: ExtensionCommandContextActions,
+				_uiContext?: ExtensionUIContext,
+			): void {
+				actions = capturedActions;
+			},
+			getMessageRenderer: () => undefined,
+		};
+		Object.defineProperty(session, "extensionRunner", {
+			configurable: true,
+			value: extensionRunner as unknown as AgentSession["extensionRunner"],
+		});
+		const reconcile = vi.spyOn(mode.ui, "prepareViewportAnchorForTranscriptRebuild");
+		new ExtensionUiController(mode).initializeHookRunner({} as ExtensionUIContext, false);
+		if (!actions) throw new Error("Extension actions were not initialized");
+
+		actions.sendMessage({ customType: "test", content: "visible extension message", display: true });
+		await Bun.sleep(0);
+
+		expect(reconcile).toHaveBeenCalledTimes(1);
+		expect(mode.chatContainer.render(80).join("\n")).toContain("visible extension message");
 	});
 
 	it("renders the default composer as a closed rounded input box", () => {

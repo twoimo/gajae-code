@@ -51,6 +51,9 @@ function createFixture(initialSessionId = "session-a"): Fixture {
 				sessionId = nextSessionId;
 				return true;
 			}),
+			reload: vi.fn(async () => {
+				sessionId = nextSessionId;
+			}),
 		},
 		sessionManager: {
 			getSessionId: () => sessionId,
@@ -70,6 +73,7 @@ function createFixture(initialSessionId = "session-a"): Fixture {
 		rebuildChatFromMessages,
 		resetIrcSidebarSession,
 		reloadTodos: vi.fn(async () => undefined),
+		showStatus: vi.fn(),
 		showError: vi.fn(),
 	} as unknown as InteractiveModeContext;
 	const controller = new ExtensionUiController(ctx);
@@ -110,6 +114,26 @@ describe("ExtensionUiController transcript rebuild policy", () => {
 		await fixture.controller.initHooksAndCustomTools();
 
 		await fixture.getCommandActions().switchSession("/tmp/project/session.jsonl");
+
+		expect(fixture.resetIrcSidebarSession).not.toHaveBeenCalled();
+		expect(fixture.rebuildInitialMessages).toHaveBeenCalledWith("reconcile-same-transcript");
+	});
+	it("resets identity when hook-runner reload replaces the logical session", async () => {
+		const fixture = createFixture();
+		fixture.setNextSessionId("session-b");
+		fixture.controller.initializeHookRunner({} as ExtensionUIContext, false);
+
+		await fixture.getCommandActions().reload();
+
+		expect(fixture.resetIrcSidebarSession).toHaveBeenCalledTimes(1);
+		expect(fixture.rebuildInitialMessages).toHaveBeenCalledWith("replace-identity");
+	});
+
+	it("reconciles reload when the foreground extension keeps the same logical session", async () => {
+		const fixture = createFixture();
+		await fixture.controller.initHooksAndCustomTools();
+
+		await fixture.getCommandActions().reload();
 
 		expect(fixture.resetIrcSidebarSession).not.toHaveBeenCalled();
 		expect(fixture.rebuildInitialMessages).toHaveBeenCalledWith("reconcile-same-transcript");

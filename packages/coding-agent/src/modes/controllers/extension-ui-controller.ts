@@ -151,8 +151,11 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
+				const previousSessionId = this.ctx.sessionManager.getSessionId();
 				await this.ctx.session.reload();
-				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
+				const sessionIdentityChanged = previousSessionId !== this.ctx.sessionManager.getSessionId();
+				if (sessionIdentityChanged) this.ctx.resetIrcSidebarSession();
+				this.ctx.rebuildInitialMessages(sessionIdentityChanged ? "replace-identity" : "reconcile-same-transcript");
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -400,8 +403,11 @@ export class ExtensionUiController {
 				if (this.ctx.isBackgrounded) {
 					return;
 				}
+				const previousSessionId = this.ctx.sessionManager.getSessionId();
 				await this.ctx.session.reload();
-				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
+				const sessionIdentityChanged = previousSessionId !== this.ctx.sessionManager.getSessionId();
+				if (sessionIdentityChanged) this.ctx.resetIrcSidebarSession();
+				this.ctx.rebuildInitialMessages(sessionIdentityChanged ? "replace-identity" : "reconcile-same-transcript");
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
