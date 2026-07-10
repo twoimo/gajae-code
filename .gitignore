@@ -80,6 +80,8 @@ python/gjc-rpc/src/gjc_rpc.egg-info/
 .wt/
 CPU*.md
 packages/coding-agent/binaries/
+# tauri sidecar binaries (regenerate: bun scripts/build-desktop-sidecar.ts)
+crates/gjc-desktop/binaries/
 
 # robogjc runtime state
 python/robogjc/data/

@@ -2,57 +2,15 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { type BinaryTarget, releaseTargets } from "./lib/release-targets";
+
 import { buildReleaseCompileArgs } from "../packages/coding-agent/scripts/compile-args";
 
-interface BinaryTarget {
-	id: string;
-	platform: string;
-	arch: string;
-	target: string;
-	outfile: string;
-}
 
 const repoRoot = path.join(import.meta.dir, "..");
 const binariesDir = path.join(repoRoot, "packages", "coding-agent", "binaries");
 
 const isDryRun = process.argv.includes("--dry-run");
-const targets: BinaryTarget[] = [
-	{
-		id: "darwin-arm64",
-		platform: "darwin",
-		arch: "arm64",
-		target: "bun-darwin-arm64",
-		outfile: "packages/coding-agent/binaries/gjc-darwin-arm64",
-	},
-	{
-		id: "darwin-x64",
-		platform: "darwin",
-		arch: "x64",
-		target: "bun-darwin-x64-baseline",
-		outfile: "packages/coding-agent/binaries/gjc-darwin-x64",
-	},
-	{
-		id: "linux-x64",
-		platform: "linux",
-		arch: "x64",
-		target: "bun-linux-x64-baseline",
-		outfile: "packages/coding-agent/binaries/gjc-linux-x64",
-	},
-	{
-		id: "linux-arm64",
-		platform: "linux",
-		arch: "arm64",
-		target: "bun-linux-arm64",
-		outfile: "packages/coding-agent/binaries/gjc-linux-arm64",
-	},
-	{
-		id: "win32-x64",
-		platform: "win32",
-		arch: "x64",
-		target: "bun-windows-x64-modern",
-		outfile: "packages/coding-agent/binaries/gjc-windows-x64.exe",
-	},
-];
 
 function parseRequestedTargets(): Set<string> | null {
 	const flagIndex = process.argv.findIndex(arg => arg === "--targets");
@@ -80,7 +38,7 @@ function hostDefaultTargets(): BinaryTarget[] {
 	// cross-arch addons are produced per-runner in CI. Default to the host
 	// target instead of every release target so we never demand native addons
 	// for architectures this machine cannot produce.
-	return targets.filter(target => target.platform === process.platform && target.arch === process.arch);
+	return releaseTargets.filter(target => target.platform === process.platform && target.arch === process.arch);
 }
 
 function shouldAdhocSignDarwinBinary(target: BinaryTarget): boolean {
@@ -157,12 +115,12 @@ async function resetArtifacts(): Promise<void> {
 async function main(): Promise<void> {
 	const requestedTargets = parseRequestedTargets();
 	const selectedTargets = requestedTargets
-		? targets.filter(target => requestedTargets.has(target.id))
+		? releaseTargets.filter(target => requestedTargets.has(target.id))
 		: hostDefaultTargets();
 
 	if (requestedTargets) {
 		const unknownTargets = [...requestedTargets].filter(
-			requestedTarget => !targets.some(target => target.id === requestedTarget),
+			requestedTarget => !releaseTargets.some(target => target.id === requestedTarget),
 		);
 		if (unknownTargets.length > 0) {
 			throw new Error(`Unknown release target(s): ${unknownTargets.join(", ")}`);

@@ -1160,6 +1160,12 @@
         "source"
       ],
       "properties": {
+        "disabledReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
@@ -1169,8 +1175,26 @@
         "name": {
           "type": "string"
         },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shadowedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "type": "string"
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "status": {
           "type": [
@@ -1207,6 +1231,12 @@
             "source"
           ],
           "properties": {
+            "disabledReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },
@@ -1216,8 +1246,26 @@
             "name": {
               "type": "string"
             },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "shadowedBy": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "source": {
               "type": "string"
+            },
+            "state": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "type": [
@@ -1276,6 +1324,12 @@
             "source"
           ],
           "properties": {
+            "disabledReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },
@@ -1285,8 +1339,26 @@
             "name": {
               "type": "string"
             },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "shadowedBy": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "source": {
               "type": "string"
+            },
+            "state": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "type": [
@@ -2007,6 +2079,46 @@
         }
       }
     },
+    "JobsChangedParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "JobsChangedParams",
+      "description": "`gjc/jobs/changed` notification params emitted when backend job, monitor, or agent execution state changes.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "threadId"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
     "ServerNotificationEnvelope": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ServerNotificationEnvelope",
@@ -2117,6 +2229,24 @@
             },
             "params": {
               "$ref": "#/definitions/GjcEventParams"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "method",
+            "params"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "gjc/jobs/changed"
+              ]
+            },
+            "params": {
+              "$ref": "#/definitions/JobsChangedParams"
             }
           }
         },
@@ -2449,6 +2579,44 @@
                 "string",
                 "null"
               ]
+            }
+          }
+        },
+        "JobsChangedParams": {
+          "description": "`gjc/jobs/changed` notification params emitted when backend job, monitor, or agent execution state changes.",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "status",
+            "threadId"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generation": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "threadId": {
+              "type": "string"
             }
           }
         },
@@ -4119,78 +4287,2832 @@
         }
       }
     },
-    "RpcWorkflowGate": {
+    "GjcSessionListParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGate",
+      "title": "GjcSessionListParams",
+      "description": "`gjc/session/list` params; strict fields enforced in `server.rs::handle_gjc_session_list`.",
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GjcSessionScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "definitions": {
+        "GjcSessionScope": {
+          "type": "string",
+          "enum": [
+            "cwd",
+            "all"
+          ]
+        }
+      }
+    },
+    "GjcSessionScope": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionScope",
+      "type": "string",
+      "enum": [
+        "cwd",
+        "all"
+      ]
+    },
+    "SessionIndexEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SessionIndexEntry",
+      "description": "Token-safe session index row returned by `gjc/session/list` and\n\n`gjc/session/search`. Path fields are local absolute filesystem paths for the local-only desktop surface and are not exposed over network transports; title/firstMessage are truncated by the host to 200 characters.",
       "type": "object",
       "required": [
-        "context",
-        "created_at",
-        "gate_id",
-        "kind",
-        "required",
-        "schema",
-        "schema_hash",
-        "stage",
+        "cwd",
+        "id",
+        "modifiedAt",
+        "path"
+      ],
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "entryCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "firstMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "modifiedAt": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcSessionListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionListResult",
+      "type": "object",
+      "required": [
+        "sessions",
+        "total"
+      ],
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionIndexEntry"
+          }
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "definitions": {
+        "SessionIndexEntry": {
+          "description": "Token-safe session index row returned by `gjc/session/list` and\n\n`gjc/session/search`. Path fields are local absolute filesystem paths for the local-only desktop surface and are not exposed over network transports; title/firstMessage are truncated by the host to 200 characters.",
+          "type": "object",
+          "required": [
+            "cwd",
+            "id",
+            "modifiedAt",
+            "path"
+          ],
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "entryCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "firstMessage": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "modifiedAt": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcSessionSearchParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionSearchParams",
+      "description": "`gjc/session/search` params; strict fields enforced in `server.rs::handle_gjc_session_search`.",
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "query": {
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GjcSessionScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "definitions": {
+        "GjcSessionScope": {
+          "type": "string",
+          "enum": [
+            "cwd",
+            "all"
+          ]
+        }
+      }
+    },
+    "GjcSessionSearchResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionListResult",
+      "type": "object",
+      "required": [
+        "sessions",
+        "total"
+      ],
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionIndexEntry"
+          }
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "definitions": {
+        "SessionIndexEntry": {
+          "description": "Token-safe session index row returned by `gjc/session/list` and\n\n`gjc/session/search`. Path fields are local absolute filesystem paths for the local-only desktop surface and are not exposed over network transports; title/firstMessage are truncated by the host to 200 characters.",
+          "type": "object",
+          "required": [
+            "cwd",
+            "id",
+            "modifiedAt",
+            "path"
+          ],
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "entryCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "firstMessage": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "modifiedAt": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcSessionRenameParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionRenameParams",
+      "description": "`gjc/session/rename` params; strict fields enforced in `server.rs::handle_gjc_session_rename`.\n\n`sessionPath` is a local absolute `.jsonl` path for the desktop-only surface; the host traversal-checks and verifies the regular file before opening it.",
+      "type": "object",
+      "required": [
+        "sessionPath",
+        "title"
+      ],
+      "properties": {
+        "sessionPath": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSessionRenameResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionRenameResult",
+      "type": "object",
+      "required": [
+        "ok",
+        "title"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSessionOpenParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionOpenParams",
+      "description": "`gjc/session/open` params; strict fields enforced in `server.rs::handle_gjc_session_open`.",
+      "type": "object",
+      "required": [
+        "sessionPath"
+      ],
+      "properties": {
+        "sessionPath": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSessionOpenResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionOpenResult",
+      "type": "object",
+      "required": [
+        "generation",
+        "resumed",
+        "sessionMetadata",
+        "threadId"
+      ],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "resumed": {
+          "type": "boolean"
+        },
+        "sessionMetadata": true,
+        "threadId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSessionDeleteParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionDeleteParams",
+      "description": "`gjc/session/delete` params; strict fields enforced in `server.rs::handle_gjc_session_delete`.",
+      "type": "object",
+      "required": [
+        "sessionPath"
+      ],
+      "properties": {
+        "sessionPath": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSessionDeleteResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionDeleteResult",
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcSessionNavigateParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionNavigateParams",
+      "description": "`gjc/session/navigate` params; strict fields enforced in `server.rs::handle_gjc_session_navigate`.",
+      "type": "object",
+      "required": [
+        "entryId",
+        "threadId"
+      ],
+      "properties": {
+        "entryId": {
+          "type": "string"
+        },
+        "summarize": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSessionNavigateResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionNavigateResult",
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "activeLeafId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcSessionMoveParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionMoveParams",
+      "type": "object",
+      "required": [
+        "targetCwd",
+        "threadId"
+      ],
+      "properties": {
+        "dryRun": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "targetCwd": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSessionMoveDryRunResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionMoveDryRunResult",
+      "type": "object",
+      "required": [
+        "artifactsDirs",
+        "conflicts",
+        "crossDevice",
+        "dryRun",
+        "sourceSessionFile",
+        "targetSessionFile"
+      ],
+      "properties": {
+        "artifactsDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "crossDevice": {
+          "type": "boolean"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "sourceSessionFile": {
+          "type": "string"
+        },
+        "targetSessionFile": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSessionMoveMovedResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionMoveMovedResult",
+      "type": "object",
+      "required": [
+        "dryRun",
+        "movedTo",
+        "sessionPath"
+      ],
+      "properties": {
+        "dryRun": {
+          "type": "boolean"
+        },
+        "movedTo": {
+          "type": "string"
+        },
+        "sessionPath": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSessionMoveResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AnyValue"
+    },
+    "GjcSessionLabelParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionLabelParams",
+      "description": "`gjc/session/label` params; strict fields enforced in `server.rs::handle_gjc_session_label`.",
+      "type": "object",
+      "required": [
+        "entryId",
+        "label",
+        "threadId"
+      ],
+      "properties": {
+        "entryId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSessionLabelResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionLabelResult",
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcSessionExportFormat": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionExportFormat",
+      "type": "string",
+      "enum": [
+        "markdown",
+        "json"
+      ]
+    },
+    "GjcSessionExportParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionExportParams",
+      "description": "`gjc/session/export` params; strict fields enforced in `server.rs::handle_gjc_session_export`.\n\n`sessionPath` is a local absolute `.jsonl` path for the desktop-only surface; the host traversal-checks and verifies the regular file before opening it. Redaction defaults to true.",
+      "type": "object",
+      "required": [
+        "format",
+        "sessionPath"
+      ],
+      "properties": {
+        "format": {
+          "$ref": "#/definitions/GjcSessionExportFormat"
+        },
+        "redact": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sessionPath": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "definitions": {
+        "GjcSessionExportFormat": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "json"
+          ]
+        }
+      }
+    },
+    "GjcSessionExportProvenance": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionExportProvenance",
+      "type": "object",
+      "required": [
+        "exportedAt",
+        "redacted",
+        "sessionId",
+        "sourcePath",
+        "tool"
+      ],
+      "properties": {
+        "exportedAt": {
+          "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "sourcePath": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSessionExportResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionExportResult",
+      "type": "object",
+      "required": [
+        "content",
+        "format",
+        "provenance"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "format": {
+          "$ref": "#/definitions/GjcSessionExportFormat"
+        },
+        "provenance": {
+          "$ref": "#/definitions/GjcSessionExportProvenance"
+        }
+      },
+      "definitions": {
+        "GjcSessionExportFormat": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "json"
+          ]
+        },
+        "GjcSessionExportProvenance": {
+          "type": "object",
+          "required": [
+            "exportedAt",
+            "redacted",
+            "sessionId",
+            "sourcePath",
+            "tool"
+          ],
+          "properties": {
+            "exportedAt": {
+              "type": "string"
+            },
+            "redacted": {
+              "type": "boolean"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "sourcePath": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcSessionTreeParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionTreeParams",
+      "description": "`gjc/session/tree` params; strict fields enforced in `server.rs::handle_gjc_session_tree`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SessionTreeNodeDto": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "SessionTreeNodeDto",
+      "type": "object",
+      "required": [
+        "active",
+        "children",
+        "id",
+        "preview",
+        "timestamp",
         "type"
       ],
       "properties": {
-        "context": {
-          "$ref": "#/definitions/RpcWorkflowGateContext"
-        },
-        "created_at": {
-          "type": "string"
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "kind": {
-          "$ref": "#/definitions/RpcWorkflowGateKind"
-        },
-        "options": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/RpcWorkflowGateOption"
-          }
-        },
-        "required": {
+        "active": {
           "type": "boolean"
         },
-        "schema": true,
-        "schema_hash": {
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionTreeNodeDto"
+          }
+        },
+        "id": {
           "type": "string"
         },
-        "stage": {
-          "$ref": "#/definitions/RpcWorkflowStage"
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
         },
         "type": {
           "type": "string"
         }
       },
       "definitions": {
-        "RpcWorkflowGateContext": {
+        "SessionTreeNodeDto": {
           "type": "object",
+          "required": [
+            "active",
+            "children",
+            "id",
+            "preview",
+            "timestamp",
+            "type"
+          ],
           "properties": {
-            "artifact_refs": {
-              "type": [
-                "array",
-                "null"
-              ],
+            "active": {
+              "type": "boolean"
+            },
+            "children": {
+              "type": "array",
               "items": {
-                "type": "object",
-                "additionalProperties": true
+                "$ref": "#/definitions/SessionTreeNodeDto"
               }
             },
-            "language": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "plan": {
+            "parentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "preview": {
+              "type": "string"
+            },
+            "timestamp": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcSessionTreeResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSessionTreeResult",
+      "type": "object",
+      "required": [
+        "nodes"
+      ],
+      "properties": {
+        "activeLeafId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionTreeNodeDto"
+          }
+        }
+      },
+      "definitions": {
+        "SessionTreeNodeDto": {
+          "type": "object",
+          "required": [
+            "active",
+            "children",
+            "id",
+            "preview",
+            "timestamp",
+            "type"
+          ],
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SessionTreeNodeDto"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "parentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "preview": {
+              "type": "string"
+            },
+            "timestamp": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcContextReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcContextReadParams",
+      "description": "`gjc/context/read` params; strict fields enforced in `server.rs::handle_gjc_context_read`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcContextReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcContextReadResult",
+      "description": "`gjc/context/read` result; token-safe numeric context usage only.",
+      "type": "object",
+      "required": [
+        "freshness",
+        "source",
+        "tokens"
+      ],
+      "properties": {
+        "contextWindow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "freshness": {
+          "$ref": "#/definitions/GjcContextFreshness"
+        },
+        "percentUsed": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "source": {
+          "type": "string"
+        },
+        "tokens": {
+          "$ref": "#/definitions/GjcContextTokens"
+        }
+      },
+      "definitions": {
+        "GjcContextFreshness": {
+          "type": "string",
+          "enum": [
+            "live",
+            "post-turn"
+          ]
+        },
+        "GjcContextTokens": {
+          "description": "Token-safe usage counters returned by `gjc/context/read`.",
+          "type": "object",
+          "required": [
+            "input",
+            "output",
+            "total"
+          ],
+          "properties": {
+            "cacheRead": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "cacheWrite": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "input": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "output": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "total": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        }
+      }
+    },
+    "GjcContextTokens": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcContextTokens",
+      "description": "Token-safe usage counters returned by `gjc/context/read`.",
+      "type": "object",
+      "required": [
+        "input",
+        "output",
+        "total"
+      ],
+      "properties": {
+        "cacheRead": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "cacheWrite": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "input": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "output": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "GjcContextFreshness": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcContextFreshness",
+      "type": "string",
+      "enum": [
+        "live",
+        "post-turn"
+      ]
+    },
+    "GjcGoalReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcGoalReadParams",
+      "description": "`gjc/goal/read` params; strict fields enforced in `server.rs::handle_gjc_goal_read`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcGoalReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcGoalReadResult",
+      "description": "Read-only active goal-mode snapshot from `AgentSession` goal state.",
+      "type": "object",
+      "required": [
+        "active"
+      ],
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "objective": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tokensUsed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "GjcRetryParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcRetryParams",
+      "description": "`gjc/retry` params; strict fields enforced in `server.rs::handle_gjc_retry`.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcRetryResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcRetryResult",
+      "description": "`gjc/retry` result; `turnId` mirrors the turn/start family.",
+      "type": "object",
+      "required": [
+        "turnId"
+      ],
+      "properties": {
+        "turnId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcThreadReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcThreadReadParams",
+      "description": "Shared strict thread-only params for read-only gjc execution-state methods.",
+      "type": "object",
+      "required": [
+        "threadId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcModelCatalogEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcModelCatalogEntry",
+      "description": "Token-safe model catalog entry for `gjc/model/catalog`; credentials and URLs are intentionally absent.",
+      "type": "object",
+      "required": [
+        "available",
+        "modelId",
+        "provider"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "contextWindow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "reasoning": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcModelCatalogResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcModelCatalogResult",
+      "type": "object",
+      "required": [
+        "models"
+      ],
+      "properties": {
+        "activeModelId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activeProvider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcModelCatalogEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcModelCatalogEntry": {
+          "description": "Token-safe model catalog entry for `gjc/model/catalog`; credentials and URLs are intentionally absent.",
+          "type": "object",
+          "required": [
+            "available",
+            "modelId",
+            "provider"
+          ],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "contextWindow": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "modelId": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            },
+            "reasoning": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcProviderAuthKind": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcProviderAuthKind",
+      "type": "string",
+      "enum": [
+        "oauth",
+        "api-key-env",
+        "none"
+      ]
+    },
+    "GjcProviderListEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcProviderListEntry",
+      "type": "object",
+      "required": [
+        "authKind",
+        "authenticated",
+        "id"
+      ],
+      "properties": {
+        "authKind": {
+          "$ref": "#/definitions/GjcProviderAuthKind"
+        },
+        "authenticated": {
+          "type": "boolean"
+        },
+        "envVar": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "definitions": {
+        "GjcProviderAuthKind": {
+          "type": "string",
+          "enum": [
+            "oauth",
+            "api-key-env",
+            "none"
+          ]
+        }
+      }
+    },
+    "GjcProviderListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcProviderListParams",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GjcProviderListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcProviderListResult",
+      "type": "object",
+      "required": [
+        "providers"
+      ],
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcProviderListEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcProviderAuthKind": {
+          "type": "string",
+          "enum": [
+            "oauth",
+            "api-key-env",
+            "none"
+          ]
+        },
+        "GjcProviderListEntry": {
+          "type": "object",
+          "required": [
+            "authKind",
+            "authenticated",
+            "id"
+          ],
+          "properties": {
+            "authKind": {
+              "$ref": "#/definitions/GjcProviderAuthKind"
+            },
+            "authenticated": {
+              "type": "boolean"
+            },
+            "envVar": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcAuthState": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthState",
+      "type": "string",
+      "enum": [
+        "authenticated",
+        "unauthenticated"
+      ]
+    },
+    "GjcAuthMethod": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthMethod",
+      "type": "string",
+      "enum": [
+        "oauth",
+        "env"
+      ]
+    },
+    "GjcAuthStatusEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthStatusEntry",
+      "type": "object",
+      "required": [
+        "providerId",
+        "state"
+      ],
+      "properties": {
+        "method": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GjcAuthMethod"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/GjcAuthState"
+        }
+      },
+      "definitions": {
+        "GjcAuthMethod": {
+          "type": "string",
+          "enum": [
+            "oauth",
+            "env"
+          ]
+        },
+        "GjcAuthState": {
+          "type": "string",
+          "enum": [
+            "authenticated",
+            "unauthenticated"
+          ]
+        }
+      }
+    },
+    "GjcAuthStatusParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthStatusParams",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GjcAuthStatusResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthStatusResult",
+      "type": "object",
+      "required": [
+        "providers"
+      ],
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcAuthStatusEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcAuthMethod": {
+          "type": "string",
+          "enum": [
+            "oauth",
+            "env"
+          ]
+        },
+        "GjcAuthState": {
+          "type": "string",
+          "enum": [
+            "authenticated",
+            "unauthenticated"
+          ]
+        },
+        "GjcAuthStatusEntry": {
+          "type": "object",
+          "required": [
+            "providerId",
+            "state"
+          ],
+          "properties": {
+            "method": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GjcAuthMethod"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "providerId": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/definitions/GjcAuthState"
+            }
+          }
+        }
+      }
+    },
+    "GjcAuthLogoutParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLogoutParams",
+      "type": "object",
+      "required": [
+        "providerId"
+      ],
+      "properties": {
+        "providerId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcAuthLogoutResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLogoutResult",
+      "type": "object",
+      "required": [
+        "authenticated",
+        "providerId"
+      ],
+      "properties": {
+        "authenticated": {
+          "type": "boolean"
+        },
+        "providerId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcProviderAddParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcProviderAddParams",
+      "type": "object",
+      "properties": {
+        "apiKeyEnv": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compatibility": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "models": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcProviderAddResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcProviderAddResult",
+      "type": "object",
+      "required": [
+        "models",
+        "ok",
+        "providerId"
+      ],
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "providerId": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcAuthLoginFlowState": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginFlowState",
+      "type": "string",
+      "enum": [
+        "idle",
+        "pending-browser",
+        "needs-input",
+        "authenticated",
+        "failed",
+        "cancelled",
+        "unsupported"
+      ]
+    },
+    "GjcAuthLoginStartParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginStartParams",
+      "type": "object",
+      "required": [
+        "providerId"
+      ],
+      "properties": {
+        "providerId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcAuthLoginStartResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginStartResult",
+      "type": "object",
+      "required": [
+        "flowId",
+        "state"
+      ],
+      "properties": {
+        "authUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flowId": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/GjcAuthLoginFlowState"
+        }
+      },
+      "definitions": {
+        "GjcAuthLoginFlowState": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "pending-browser",
+            "needs-input",
+            "authenticated",
+            "failed",
+            "cancelled",
+            "unsupported"
+          ]
+        }
+      }
+    },
+    "GjcAuthLoginPollParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginPollParams",
+      "type": "object",
+      "required": [
+        "flowId"
+      ],
+      "properties": {
+        "flowId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcAuthLoginPollResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginPollResult",
+      "type": "object",
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "promptMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/GjcAuthLoginFlowState"
+        }
+      },
+      "definitions": {
+        "GjcAuthLoginFlowState": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "pending-browser",
+            "needs-input",
+            "authenticated",
+            "failed",
+            "cancelled",
+            "unsupported"
+          ]
+        }
+      }
+    },
+    "GjcAuthLoginCompleteParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginCompleteParams",
+      "type": "object",
+      "required": [
+        "flowId",
+        "redirectUrl"
+      ],
+      "properties": {
+        "flowId": {
+          "type": "string"
+        },
+        "redirectUrl": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcAuthLoginCompleteResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginCompleteResult",
+      "type": "object",
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/GjcAuthLoginFlowState"
+        }
+      },
+      "definitions": {
+        "GjcAuthLoginFlowState": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "pending-browser",
+            "needs-input",
+            "authenticated",
+            "failed",
+            "cancelled",
+            "unsupported"
+          ]
+        }
+      }
+    },
+    "GjcAuthLoginCancelParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginCancelParams",
+      "type": "object",
+      "required": [
+        "flowId"
+      ],
+      "properties": {
+        "flowId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcAuthLoginCancelResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAuthLoginCancelResult",
+      "type": "object",
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/GjcAuthLoginFlowState"
+        }
+      },
+      "definitions": {
+        "GjcAuthLoginFlowState": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "pending-browser",
+            "needs-input",
+            "authenticated",
+            "failed",
+            "cancelled",
+            "unsupported"
+          ]
+        }
+      }
+    },
+    "GjcThinkingReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcThinkingReadResult",
+      "type": "object",
+      "required": [
+        "level",
+        "levels"
+      ],
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "GjcThinkingSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcThinkingSetParams",
+      "type": "object",
+      "required": [
+        "level",
+        "threadId"
+      ],
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcThinkingSetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcThinkingSetResult",
+      "type": "object",
+      "required": [
+        "level"
+      ],
+      "properties": {
+        "level": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcFastReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcFastReadResult",
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "affectedRoles": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcFastSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcFastSetParams",
+      "type": "object",
+      "required": [
+        "enabled",
+        "threadId"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcFastSetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcFastSetResult",
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "affectedRoles": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcSettingsSchemaParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingsSchemaParams",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GjcSettingsSchemaResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingsSchemaResult",
+      "type": "object",
+      "required": [
+        "settings"
+      ],
+      "properties": {
+        "settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcSettingDescriptor"
+          }
+        }
+      },
+      "definitions": {
+        "GjcSettingDescriptor": {
+          "description": "Safe settings schema descriptor for a hard-coded UI/behavior allowlist only:\n\ntheme.dark, theme.light, notifications.terminalBell, notifications.bellOnComplete, notifications.bellOnApproval, notifications.bellOnAsk, autoResume.",
+          "type": "object",
+          "required": [
+            "key",
+            "type"
+          ],
+          "properties": {
+            "default": true,
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enum": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "key": {
+              "type": "string"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcSettingDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingDescriptor",
+      "description": "Safe settings schema descriptor for a hard-coded UI/behavior allowlist only:\n\ntheme.dark, theme.light, notifications.terminalBell, notifications.bellOnComplete, notifications.bellOnApproval, notifications.bellOnAsk, autoResume.",
+      "type": "object",
+      "required": [
+        "key",
+        "type"
+      ],
+      "properties": {
+        "default": true,
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcSettingsReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingsReadParams",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GjcSettingsReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingsReadResult",
+      "type": "object",
+      "required": [
+        "values"
+      ],
+      "properties": {
+        "values": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "GjcSettingsUpdateParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingsUpdateParams",
+      "type": "object",
+      "required": [
+        "key",
+        "value"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "additionalProperties": false
+    },
+    "GjcSettingsUpdateResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSettingsUpdateResult",
+      "type": "object",
+      "required": [
+        "values"
+      ],
+      "properties": {
+        "values": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "GjcAppearanceSemanticPreview": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceSemanticPreview",
+      "type": "object",
+      "required": [
+        "accent",
+        "bg",
+        "bgElevated",
+        "border",
+        "danger",
+        "success",
+        "surface",
+        "text",
+        "textMuted",
+        "warning"
+      ],
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "bg": {
+          "type": "string"
+        },
+        "bgElevated": {
+          "type": "string"
+        },
+        "border": {
+          "type": "string"
+        },
+        "danger": {
+          "type": "string"
+        },
+        "success": {
+          "type": "string"
+        },
+        "surface": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "textMuted": {
+          "type": "string"
+        },
+        "warning": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcAppearanceThemeEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceThemeEntry",
+      "type": "object",
+      "required": [
+        "builtin",
+        "id",
+        "kind",
+        "semanticPreview"
+      ],
+      "properties": {
+        "builtin": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/GjcAppearanceThemeKind"
+        },
+        "semanticPreview": {
+          "$ref": "#/definitions/GjcAppearanceSemanticPreview"
+        }
+      },
+      "definitions": {
+        "GjcAppearanceSemanticPreview": {
+          "type": "object",
+          "required": [
+            "accent",
+            "bg",
+            "bgElevated",
+            "border",
+            "danger",
+            "success",
+            "surface",
+            "text",
+            "textMuted",
+            "warning"
+          ],
+          "properties": {
+            "accent": {
+              "type": "string"
+            },
+            "bg": {
+              "type": "string"
+            },
+            "bgElevated": {
+              "type": "string"
+            },
+            "border": {
+              "type": "string"
+            },
+            "danger": {
+              "type": "string"
+            },
+            "success": {
+              "type": "string"
+            },
+            "surface": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "textMuted": {
+              "type": "string"
+            },
+            "warning": {
+              "type": "string"
+            }
+          }
+        },
+        "GjcAppearanceThemeKind": {
+          "type": "string",
+          "enum": [
+            "dark",
+            "light"
+          ]
+        }
+      }
+    },
+    "GjcAppearanceThemeKind": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceThemeKind",
+      "type": "string",
+      "enum": [
+        "dark",
+        "light"
+      ]
+    },
+    "GjcAppearanceThemesListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceThemesListParams",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GjcAppearanceThemesListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceThemesListResult",
+      "type": "object",
+      "required": [
+        "themes"
+      ],
+      "properties": {
+        "themes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcAppearanceThemeEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcAppearanceSemanticPreview": {
+          "type": "object",
+          "required": [
+            "accent",
+            "bg",
+            "bgElevated",
+            "border",
+            "danger",
+            "success",
+            "surface",
+            "text",
+            "textMuted",
+            "warning"
+          ],
+          "properties": {
+            "accent": {
+              "type": "string"
+            },
+            "bg": {
+              "type": "string"
+            },
+            "bgElevated": {
+              "type": "string"
+            },
+            "border": {
+              "type": "string"
+            },
+            "danger": {
+              "type": "string"
+            },
+            "success": {
+              "type": "string"
+            },
+            "surface": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "textMuted": {
+              "type": "string"
+            },
+            "warning": {
+              "type": "string"
+            }
+          }
+        },
+        "GjcAppearanceThemeEntry": {
+          "type": "object",
+          "required": [
+            "builtin",
+            "id",
+            "kind",
+            "semanticPreview"
+          ],
+          "properties": {
+            "builtin": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/GjcAppearanceThemeKind"
+            },
+            "semanticPreview": {
+              "$ref": "#/definitions/GjcAppearanceSemanticPreview"
+            }
+          }
+        },
+        "GjcAppearanceThemeKind": {
+          "type": "string",
+          "enum": [
+            "dark",
+            "light"
+          ]
+        }
+      }
+    },
+    "GjcAppearanceReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceReadParams",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GjcAppearanceReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceReadResult",
+      "type": "object",
+      "required": [
+        "dark",
+        "light"
+      ],
+      "properties": {
+        "colorBlindMode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dark": {
+          "type": "string"
+        },
+        "light": {
+          "type": "string"
+        },
+        "symbolPreset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcAppearanceSetParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceSetParams",
+      "type": "object",
+      "properties": {
+        "colorBlindMode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dark": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "light": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbolPreset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcAppearanceSetResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAppearanceReadResult",
+      "type": "object",
+      "required": [
+        "dark",
+        "light"
+      ],
+      "properties": {
+        "colorBlindMode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dark": {
+          "type": "string"
+        },
+        "light": {
+          "type": "string"
+        },
+        "symbolPreset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcTodosReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcTodosReadResult",
+      "type": "object",
+      "required": [
+        "todos"
+      ],
+      "properties": {
+        "todos": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcTodoItem"
+          }
+        }
+      },
+      "definitions": {
+        "GjcTodoItem": {
+          "type": "object",
+          "required": [
+            "content",
+            "status"
+          ],
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcTodoItem": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcTodoItem",
+      "type": "object",
+      "required": [
+        "content",
+        "status"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcUsageReadResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcUsageReadResult",
+      "type": "object",
+      "required": [
+        "freshness",
+        "perModel",
+        "source"
+      ],
+      "properties": {
+        "freshness": {
+          "$ref": "#/definitions/GjcContextFreshness"
+        },
+        "perModel": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcModelUsage"
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "totalCost": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "definitions": {
+        "GjcContextFreshness": {
+          "type": "string",
+          "enum": [
+            "live",
+            "post-turn"
+          ]
+        },
+        "GjcModelUsage": {
+          "type": "object",
+          "required": [
+            "input",
+            "modelId",
+            "output"
+          ],
+          "properties": {
+            "cacheRead": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "cacheWrite": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "cost": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "input": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "modelId": {
+              "type": "string"
+            },
+            "output": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GjcModelUsage": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcModelUsage",
+      "type": "object",
+      "required": [
+        "input",
+        "modelId",
+        "output"
+      ],
+      "properties": {
+        "cacheRead": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "cacheWrite": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "cost": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "input": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "output": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcJobsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcJobsListResult",
+      "type": "object",
+      "required": [
+        "jobs"
+      ],
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcJobEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcJobEntry": {
+          "type": "object",
+          "required": [
+            "id",
+            "status",
+            "type"
+          ],
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "endedAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcJobEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcJobEntry",
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "type"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcAgentsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAgentsListResult",
+      "type": "object",
+      "required": [
+        "agents"
+      ],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcAgentEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcAgentEntry": {
+          "type": "object",
+          "required": [
+            "id",
+            "status"
+          ],
+          "properties": {
+            "agentType": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "outputRef": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GjcAgentEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcAgentEntry",
+      "type": "object",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "agentType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "outputRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcMonitorsListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcMonitorsListResult",
+      "type": "object",
+      "required": [
+        "monitors"
+      ],
+      "properties": {
+        "crons": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/GjcCronEntry"
+          }
+        },
+        "monitors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcMonitorEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcCronEntry": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "createdAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cronExpression": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "humanSchedule": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "nextFireAt": {
               "type": [
                 "string",
                 "null"
@@ -4202,46 +7124,19 @@
                 "null"
               ]
             },
-            "source": {
+            "recurring": {
               "type": [
-                "string",
-                "null"
-              ]
-            },
-            "stage_state": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": true
-            },
-            "summary": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
+                "boolean",
                 "null"
               ]
             }
           }
         },
-        "RpcWorkflowGateKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "approval",
-            "execution"
-          ]
-        },
-        "RpcWorkflowGateOption": {
+        "GjcMonitorEntry": {
           "type": "object",
           "required": [
-            "label",
-            "value"
+            "id",
+            "status"
           ],
           "properties": {
             "description": {
@@ -4250,49 +7145,41 @@
                 "null"
               ]
             },
-            "label": {
+            "id": {
               "type": "string"
             },
-            "value": true
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "outputTail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "startedAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            }
           }
-        },
-        "RpcWorkflowStage": {
-          "type": "string",
-          "enum": [
-            "deep-interview",
-            "ralplan",
-            "ultragoal"
-          ]
         }
       }
     },
-    "RpcWorkflowStage": {
+    "GjcMonitorEntry": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowStage",
-      "type": "string",
-      "enum": [
-        "deep-interview",
-        "ralplan",
-        "ultragoal"
-      ]
-    },
-    "RpcWorkflowGateKind": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateKind",
-      "type": "string",
-      "enum": [
-        "question",
-        "approval",
-        "execution"
-      ]
-    },
-    "RpcWorkflowGateOption": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateOption",
+      "title": "GjcMonitorEntry",
       "type": "object",
       "required": [
-        "label",
-        "value"
+        "id",
+        "status"
       ],
       "properties": {
         "description": {
@@ -4301,34 +7188,62 @@
             "null"
           ]
         },
-        "label": {
+        "id": {
           "type": "string"
         },
-        "value": true
-      }
-    },
-    "RpcWorkflowGateContext": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateContext",
-      "type": "object",
-      "properties": {
-        "artifact_refs": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "object",
-            "additionalProperties": true
-          }
-        },
-        "language": {
+        "kind": {
           "type": [
             "string",
             "null"
           ]
         },
-        "plan": {
+        "outputTail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "GjcCronEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcCronEntry",
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "createdAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cronExpression": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "humanSchedule": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "nextFireAt": {
           "type": [
             "string",
             "null"
@@ -4340,1243 +7255,314 @@
             "null"
           ]
         },
-        "source": {
+        "recurring": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "GjcCompactSummaryResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcCompactSummaryResult",
+      "type": "object",
+      "required": [
+        "summaries"
+      ],
+      "properties": {
+        "summaries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GjcCompactSummaryEntry"
+          }
+        }
+      },
+      "definitions": {
+        "GjcCompactSummaryEntry": {
+          "type": "object",
+          "required": [
+            "summary",
+            "timestamp"
+          ],
+          "properties": {
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": "string"
+            },
+            "timestamp": {
+              "type": "string"
+            },
+            "tokensBefore": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            }
+          }
+        }
+      }
+    },
+    "GjcCompactSummaryEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcCompactSummaryEntry",
+      "type": "object",
+      "required": [
+        "summary",
+        "timestamp"
+      ],
+      "properties": {
+        "id": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "stage_state": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": true
         },
         "summary": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "tokensBefore": {
           "type": [
-            "string",
-            "null"
-          ]
-        },
-        "title": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "SchemaValidationIssue": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "SchemaValidationIssue",
-      "type": "object",
-      "required": [
-        "keyword",
-        "message",
-        "path"
-      ],
-      "properties": {
-        "expected": true,
-        "keyword": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      }
-    },
-    "RpcWorkflowGateResponse": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateResponse",
-      "type": "object",
-      "required": [
-        "answer",
-        "gate_id"
-      ],
-      "properties": {
-        "answer": true,
-        "gate_id": {
-          "type": "string"
-        },
-        "idempotency_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "RpcWorkflowGateResolution": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateResolution",
-      "type": "object",
-      "required": [
-        "answer_hash",
-        "gate_id",
-        "resolved_at",
-        "status"
-      ],
-      "properties": {
-        "answer_hash": {
-          "type": "string"
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/RpcWorkflowGateValidationError"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "resolved_at": {
-          "type": "string"
-        },
-        "status": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "RpcWorkflowGateValidationError": {
-          "type": "object",
-          "required": [
-            "code",
-            "errors",
-            "gate_id",
-            "schema_hash"
-          ],
-          "properties": {
-            "code": {
-              "type": "string"
-            },
-            "errors": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/SchemaValidationIssue"
-              }
-            },
-            "gate_id": {
-              "type": "string"
-            },
-            "schema_hash": {
-              "type": "string"
-            }
-          }
-        },
-        "SchemaValidationIssue": {
-          "type": "object",
-          "required": [
-            "keyword",
-            "message",
-            "path"
-          ],
-          "properties": {
-            "expected": true,
-            "keyword": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    },
-    "RpcWorkflowGateValidationError": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcWorkflowGateValidationError",
-      "type": "object",
-      "required": [
-        "code",
-        "errors",
-        "gate_id",
-        "schema_hash"
-      ],
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "errors": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/SchemaValidationIssue"
-          }
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "schema_hash": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "SchemaValidationIssue": {
-          "type": "object",
-          "required": [
-            "keyword",
-            "message",
-            "path"
-          ],
-          "properties": {
-            "expected": true,
-            "keyword": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    },
-    "WorkflowGateListParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateListParams",
-      "type": "object",
-      "required": [
-        "threadId"
-      ],
-      "properties": {
-        "threadId": {
-          "type": "string"
-        }
-      }
-    },
-    "WorkflowGateListResult": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateListResult",
-      "type": "object",
-      "required": [
-        "gates"
-      ],
-      "properties": {
-        "gates": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/RpcWorkflowGate"
-          }
-        }
-      },
-      "definitions": {
-        "RpcWorkflowGate": {
-          "type": "object",
-          "required": [
-            "context",
-            "created_at",
-            "gate_id",
-            "kind",
-            "required",
-            "schema",
-            "schema_hash",
-            "stage",
-            "type"
-          ],
-          "properties": {
-            "context": {
-              "$ref": "#/definitions/RpcWorkflowGateContext"
-            },
-            "created_at": {
-              "type": "string"
-            },
-            "gate_id": {
-              "type": "string"
-            },
-            "kind": {
-              "$ref": "#/definitions/RpcWorkflowGateKind"
-            },
-            "options": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "$ref": "#/definitions/RpcWorkflowGateOption"
-              }
-            },
-            "required": {
-              "type": "boolean"
-            },
-            "schema": true,
-            "schema_hash": {
-              "type": "string"
-            },
-            "stage": {
-              "$ref": "#/definitions/RpcWorkflowStage"
-            },
-            "type": {
-              "type": "string"
-            }
-          }
-        },
-        "RpcWorkflowGateContext": {
-          "type": "object",
-          "properties": {
-            "artifact_refs": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "object",
-                "additionalProperties": true
-              }
-            },
-            "language": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "plan": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "source": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "stage_state": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": true
-            },
-            "summary": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        },
-        "RpcWorkflowGateKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "approval",
-            "execution"
-          ]
-        },
-        "RpcWorkflowGateOption": {
-          "type": "object",
-          "required": [
-            "label",
-            "value"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "value": true
-          }
-        },
-        "RpcWorkflowStage": {
-          "type": "string",
-          "enum": [
-            "deep-interview",
-            "ralplan",
-            "ultragoal"
-          ]
-        }
-      }
-    },
-    "WorkflowGateRespondParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateRespondParams",
-      "type": "object",
-      "required": [
-        "answer",
-        "gate_id",
-        "threadId"
-      ],
-      "properties": {
-        "answer": true,
-        "gate_id": {
-          "type": "string"
-        },
-        "idempotency_key": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": "string"
-        }
-      }
-    },
-    "WorkflowGateOpenedParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "WorkflowGateOpenedParams",
-      "type": "object",
-      "required": [
-        "context",
-        "created_at",
-        "gate_id",
-        "generation",
-        "kind",
-        "required",
-        "schema",
-        "schema_hash",
-        "stage",
-        "threadId",
-        "type"
-      ],
-      "properties": {
-        "context": {
-          "$ref": "#/definitions/RpcWorkflowGateContext"
-        },
-        "created_at": {
-          "type": "string"
-        },
-        "gate_id": {
-          "type": "string"
-        },
-        "generation": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "kind": {
-          "$ref": "#/definitions/RpcWorkflowGateKind"
-        },
-        "options": {
-          "type": [
-            "array",
+            "integer",
             "null"
           ],
-          "items": {
-            "$ref": "#/definitions/RpcWorkflowGateOption"
-          }
-        },
-        "required": {
-          "type": "boolean"
-        },
-        "schema": true,
-        "schema_hash": {
-          "type": "string"
-        },
-        "stage": {
-          "$ref": "#/definitions/RpcWorkflowStage"
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "type": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "RpcWorkflowGateContext": {
-          "type": "object",
-          "properties": {
-            "artifact_refs": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "object",
-                "additionalProperties": true
-              }
-            },
-            "language": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "plan": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "source": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "stage_state": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": true
-            },
-            "summary": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        },
-        "RpcWorkflowGateKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "approval",
-            "execution"
-          ]
-        },
-        "RpcWorkflowGateOption": {
-          "type": "object",
-          "required": [
-            "label",
-            "value"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "value": true
-          }
-        },
-        "RpcWorkflowStage": {
-          "type": "string",
-          "enum": [
-            "deep-interview",
-            "ralplan",
-            "ultragoal"
-          ]
-        }
-      }
-    },
-    "RpcUnattendedBudget": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedBudget",
-      "type": "object",
-      "required": [
-        "max_cost_usd",
-        "max_tokens",
-        "max_tool_calls",
-        "max_wall_time_ms"
-      ],
-      "properties": {
-        "max_cost_usd": {
-          "type": "number",
-          "format": "double"
-        },
-        "max_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "max_tool_calls": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "max_wall_time_ms": {
-          "type": "integer",
           "format": "uint64",
           "minimum": 0.0
         }
       }
     },
-    "RpcUnattendedDeclaration": {
+    "GjcExtensionsSetEnabledParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedDeclaration",
+      "title": "GjcExtensionsSetEnabledParams",
       "type": "object",
       "required": [
-        "action_allowlist",
-        "actor",
-        "budget",
-        "scopes"
+        "enabled",
+        "extensionId"
       ],
       "properties": {
-        "action_allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "actor": {
-          "type": "string"
-        },
-        "budget": {
-          "$ref": "#/definitions/RpcUnattendedBudget"
-        },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "definitions": {
-        "RpcUnattendedBudget": {
-          "type": "object",
-          "required": [
-            "max_cost_usd",
-            "max_tokens",
-            "max_tool_calls",
-            "max_wall_time_ms"
-          ],
-          "properties": {
-            "max_cost_usd": {
-              "type": "number",
-              "format": "double"
-            },
-            "max_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_wall_time_ms": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
-        }
-      }
-    },
-    "RpcUnattendedAccepted": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedAccepted",
-      "type": "object",
-      "required": [
-        "accepted_at",
-        "action_allowlist",
-        "actor",
-        "budget",
-        "run_id",
-        "scopes"
-      ],
-      "properties": {
-        "accepted_at": {
-          "type": "string"
-        },
-        "action_allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "actor": {
-          "type": "string"
-        },
-        "budget": {
-          "$ref": "#/definitions/RpcUnattendedBudget"
-        },
-        "run_id": {
-          "type": "string"
-        },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "definitions": {
-        "RpcUnattendedBudget": {
-          "type": "object",
-          "required": [
-            "max_cost_usd",
-            "max_tokens",
-            "max_tool_calls",
-            "max_wall_time_ms"
-          ],
-          "properties": {
-            "max_cost_usd": {
-              "type": "number",
-              "format": "double"
-            },
-            "max_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_wall_time_ms": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
-        }
-      }
-    },
-    "RpcBudgetExceeded": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcBudgetExceeded",
-      "type": "object",
-      "required": [
-        "abort_status",
-        "code",
-        "limit",
-        "metric",
-        "observed",
-        "phase",
-        "run_id"
-      ],
-      "properties": {
-        "abort_status": {
-          "type": "string"
-        },
-        "code": {
-          "type": "string"
-        },
-        "limit": {
-          "type": "number",
-          "format": "double"
-        },
-        "metric": {
-          "type": "string"
-        },
-        "observed": {
-          "type": "number",
-          "format": "double"
-        },
-        "phase": {
-          "type": "string"
-        },
-        "run_id": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "RpcScopeDenied": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcScopeDenied",
-      "type": "object",
-      "required": [
-        "code",
-        "pre_side_effect",
-        "run_id",
-        "scope"
-      ],
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "command": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "pre_side_effect": {
+        "enabled": {
           "type": "boolean"
         },
-        "run_id": {
+        "extensionId": {
           "type": "string"
-        },
-        "scope": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
-      }
+      },
+      "additionalProperties": false
     },
-    "RpcActionDenied": {
+    "GjcExtensionsSetEnabledResult": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcActionDenied",
+      "title": "GjcExtensionsSetEnabledResult",
       "type": "object",
       "required": [
-        "action",
-        "code",
-        "pre_side_effect",
-        "run_id"
+        "enabled",
+        "ok"
       ],
       "properties": {
-        "action": {
-          "type": "string"
-        },
-        "code": {
-          "type": "string"
-        },
-        "command": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "pre_side_effect": {
+        "enabled": {
           "type": "boolean"
         },
-        "run_id": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
+        "ok": {
+          "type": "boolean"
         }
       }
     },
-    "RpcUnattendedRefused": {
+    "GjcSkillsSetEnabledParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "RpcUnattendedRefused",
+      "title": "GjcSkillsSetEnabledParams",
       "type": "object",
       "required": [
-        "code",
-        "message"
+        "enabled",
+        "skillId"
       ],
       "properties": {
-        "code": {
-          "type": "string"
+        "enabled": {
+          "type": "boolean"
         },
-        "message": {
+        "skillId": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcSkillsSetEnabledResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcSkillsSetEnabledResult",
+      "type": "object",
+      "required": [
+        "enabled",
+        "ok"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ok": {
+          "type": "boolean"
         }
       }
     },
-    "UnattendedNegotiateParams": {
+    "GjcPluginsSetEnabledParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "UnattendedNegotiateParams",
+      "title": "GjcPluginsSetEnabledParams",
       "type": "object",
       "required": [
-        "declaration",
+        "enabled",
+        "pluginId"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "pluginId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcPluginsSetEnabledResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsSetEnabledResult",
+      "type": "object",
+      "required": [
+        "enabled",
+        "ok"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcPluginsSetFeatureParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsSetFeatureParams",
+      "type": "object",
+      "required": [
+        "enabled",
+        "feature",
+        "pluginId"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "feature": {
+          "type": "string"
+        },
+        "pluginId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcPluginsSetFeatureResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsSetFeatureResult",
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcPluginsSetSettingParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsSetSettingParams",
+      "type": "object",
+      "required": [
+        "key",
+        "pluginId",
+        "value"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "pluginId": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "additionalProperties": false
+    },
+    "GjcPluginsSetSettingResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcPluginsSetSettingResult",
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GjcModelAssignParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcModelAssignParams",
+      "type": "object",
+      "required": [
+        "modelId",
+        "provider",
+        "role",
         "threadId"
       ],
       "properties": {
-        "declaration": {
-          "$ref": "#/definitions/RpcUnattendedDeclaration"
-        },
-        "threadId": {
+        "modelId": {
           "type": "string"
-        }
-      },
-      "definitions": {
-        "RpcUnattendedBudget": {
-          "type": "object",
-          "required": [
-            "max_cost_usd",
-            "max_tokens",
-            "max_tool_calls",
-            "max_wall_time_ms"
-          ],
-          "properties": {
-            "max_cost_usd": {
-              "type": "number",
-              "format": "double"
-            },
-            "max_tokens": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            },
-            "max_wall_time_ms": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
         },
-        "RpcUnattendedDeclaration": {
-          "type": "object",
-          "required": [
-            "action_allowlist",
-            "actor",
-            "budget",
-            "scopes"
-          ],
-          "properties": {
-            "action_allowlist": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "actor": {
-              "type": "string"
-            },
-            "budget": {
-              "$ref": "#/definitions/RpcUnattendedBudget"
-            },
-            "scopes": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
-        }
-      }
-    },
-    "HostUriSchemeDefinition": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriSchemeDefinition",
-      "type": "object",
-      "required": [
-        "scheme"
-      ],
-      "properties": {
-        "description": {
+        "provider": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "thinkingLevel": {
           "type": [
             "string",
             "null"
           ]
         },
-        "immutable": {
-          "default": false,
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GjcModelAssignResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GjcModelAssignResult",
+      "type": "object",
+      "required": [
+        "modelId",
+        "ok",
+        "role"
+      ],
+      "properties": {
+        "modelId": {
+          "type": "string"
+        },
+        "ok": {
           "type": "boolean"
         },
-        "scheme": {
-          "type": "string"
-        },
-        "writable": {
-          "default": false,
-          "type": "boolean"
-        }
-      }
-    },
-    "HostUriSchemesSetParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriSchemesSetParams",
-      "type": "object",
-      "required": [
-        "schemes",
-        "threadId"
-      ],
-      "properties": {
-        "schemes": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/HostUriSchemeDefinition"
-          }
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "HostUriSchemeDefinition": {
-          "type": "object",
-          "required": [
-            "scheme"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "immutable": {
-              "default": false,
-              "type": "boolean"
-            },
-            "scheme": {
-              "type": "string"
-            },
-            "writable": {
-              "default": false,
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    },
-    "HostUriSchemesSetResult": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriSchemesSetResult",
-      "type": "object",
-      "required": [
-        "schemes"
-      ],
-      "properties": {
-        "schemes": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/HostUriSchemeDefinition"
-          }
-        }
-      },
-      "definitions": {
-        "HostUriSchemeDefinition": {
-          "type": "object",
-          "required": [
-            "scheme"
-          ],
-          "properties": {
-            "description": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "immutable": {
-              "default": false,
-              "type": "boolean"
-            },
-            "scheme": {
-              "type": "string"
-            },
-            "writable": {
-              "default": false,
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    },
-    "HostUriOperation": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriOperation",
-      "type": "string",
-      "enum": [
-        "read",
-        "write"
-      ]
-    },
-    "HostUriRequestParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriRequestParams",
-      "type": "object",
-      "required": [
-        "generation",
-        "operation",
-        "requestId",
-        "threadId",
-        "turnId",
-        "url"
-      ],
-      "properties": {
-        "content": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "generation": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "operation": {
-          "$ref": "#/definitions/HostUriOperation"
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "turnId": {
-          "type": "string"
-        },
-        "url": {
-          "type": "string"
-        }
-      },
-      "definitions": {
-        "HostUriOperation": {
-          "type": "string",
-          "enum": [
-            "read",
-            "write"
-          ]
-        }
-      }
-    },
-    "HostUriCancelParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriCancelParams",
-      "type": "object",
-      "required": [
-        "generation",
-        "requestId",
-        "threadId"
-      ],
-      "properties": {
-        "generation": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "turnId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "HostUriResultParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriResultParams",
-      "type": "object",
-      "required": [
-        "requestId",
-        "threadId"
-      ],
-      "properties": {
-        "content": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "contentType": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "error": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "immutable": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "isError": {
-          "default": false,
-          "type": "boolean"
-        },
-        "notes": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      }
-    },
-    "HostUriResource": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "HostUriResource",
-      "type": "object",
-      "required": [
-        "content",
-        "contentType",
-        "size",
-        "url"
-      ],
-      "properties": {
-        "content": {
-          "type": "string"
-        },
-        "contentType": {
-          "type": "string"
-        },
-        "immutable": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "notes": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "size": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0.0
-        },
-        "url": {
+        "role": {
           "type": "string"
         }
       }
@@ -5650,6 +7636,12 @@
       "guiWrapper": true
     },
     {
+      "method": "gjc/retry",
+      "paramsDef": "GjcRetryParams",
+      "resultDef": "GjcRetryResult",
+      "guiWrapper": true
+    },
+    {
       "method": "command/exec",
       "paramsDef": null,
       "resultDef": null,
@@ -5665,6 +7657,228 @@
       "method": "gjc/state/read",
       "paramsDef": "GjcStateReadParams",
       "resultDef": "GjcStateReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/context/read",
+      "paramsDef": "GjcContextReadParams",
+      "resultDef": "GjcContextReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/goal/read",
+      "paramsDef": "GjcGoalReadParams",
+      "resultDef": "GjcGoalReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/model/catalog",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcModelCatalogResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/thinking/read",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcThinkingReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/thinking/set",
+      "paramsDef": "GjcThinkingSetParams",
+      "resultDef": "GjcThinkingSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/fast/read",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcFastReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/fast/set",
+      "paramsDef": "GjcFastSetParams",
+      "resultDef": "GjcFastSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/settings/schema",
+      "paramsDef": "GjcSettingsSchemaParams",
+      "resultDef": "GjcSettingsSchemaResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/settings/read",
+      "paramsDef": "GjcSettingsReadParams",
+      "resultDef": "GjcSettingsReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/settings/update",
+      "paramsDef": "GjcSettingsUpdateParams",
+      "resultDef": "GjcSettingsUpdateResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/appearance/themes/list",
+      "paramsDef": "GjcAppearanceThemesListParams",
+      "resultDef": "GjcAppearanceThemesListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/appearance/read",
+      "paramsDef": "GjcAppearanceReadParams",
+      "resultDef": "GjcAppearanceReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/appearance/set",
+      "paramsDef": "GjcAppearanceSetParams",
+      "resultDef": "GjcAppearanceSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/provider/list",
+      "paramsDef": "GjcProviderListParams",
+      "resultDef": "GjcProviderListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/auth/status",
+      "paramsDef": "GjcAuthStatusParams",
+      "resultDef": "GjcAuthStatusResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/auth/logout",
+      "paramsDef": "GjcAuthLogoutParams",
+      "resultDef": "GjcAuthLogoutResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/provider/add",
+      "paramsDef": "GjcProviderAddParams",
+      "resultDef": "GjcProviderAddResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/auth/login/start",
+      "paramsDef": "GjcAuthLoginStartParams",
+      "resultDef": "GjcAuthLoginStartResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/auth/login/poll",
+      "paramsDef": "GjcAuthLoginPollParams",
+      "resultDef": "GjcAuthLoginPollResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/auth/login/complete",
+      "paramsDef": "GjcAuthLoginCompleteParams",
+      "resultDef": "GjcAuthLoginCompleteResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/auth/login/cancel",
+      "paramsDef": "GjcAuthLoginCancelParams",
+      "resultDef": "GjcAuthLoginCancelResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/todos/read",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcTodosReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/usage/read",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcUsageReadResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/jobs/list",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcJobsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/agents/list",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcAgentsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/monitors/list",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcMonitorsListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/compact/summary",
+      "paramsDef": "GjcThreadReadParams",
+      "resultDef": "GjcCompactSummaryResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/list",
+      "paramsDef": "GjcSessionListParams",
+      "resultDef": "GjcSessionListResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/search",
+      "paramsDef": "GjcSessionSearchParams",
+      "resultDef": "GjcSessionSearchResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/rename",
+      "paramsDef": "GjcSessionRenameParams",
+      "resultDef": "GjcSessionRenameResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/open",
+      "paramsDef": "GjcSessionOpenParams",
+      "resultDef": "GjcSessionOpenResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/delete",
+      "paramsDef": "GjcSessionDeleteParams",
+      "resultDef": "GjcSessionDeleteResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/export",
+      "paramsDef": "GjcSessionExportParams",
+      "resultDef": "GjcSessionExportResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/tree",
+      "paramsDef": "GjcSessionTreeParams",
+      "resultDef": "GjcSessionTreeResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/navigate",
+      "paramsDef": "GjcSessionNavigateParams",
+      "resultDef": "GjcSessionNavigateResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/move",
+      "paramsDef": "GjcSessionMoveParams",
+      "resultDef": "GjcSessionMoveResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/session/label",
+      "paramsDef": "GjcSessionLabelParams",
+      "resultDef": "GjcSessionLabelResult",
       "guiWrapper": true
     },
     {
@@ -5686,6 +7900,12 @@
       "guiWrapper": true
     },
     {
+      "method": "gjc/skills/setEnabled",
+      "paramsDef": "GjcSkillsSetEnabledParams",
+      "resultDef": "GjcSkillsSetEnabledResult",
+      "guiWrapper": true
+    },
+    {
       "method": "gjc/extensions/list",
       "paramsDef": "GjcExtensionsListParams",
       "resultDef": "GjcExtensionsListResult",
@@ -5695,6 +7915,12 @@
       "method": "gjc/extensions/inspect",
       "paramsDef": "GjcExtensionsInspectParams",
       "resultDef": "GjcExtensionsInspectResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/extensions/setEnabled",
+      "paramsDef": "GjcExtensionsSetEnabledParams",
+      "resultDef": "GjcExtensionsSetEnabledResult",
       "guiWrapper": true
     },
     {
@@ -5710,6 +7936,24 @@
       "guiWrapper": true
     },
     {
+      "method": "gjc/plugins/setEnabled",
+      "paramsDef": "GjcPluginsSetEnabledParams",
+      "resultDef": "GjcPluginsSetEnabledResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/plugins/setFeature",
+      "paramsDef": "GjcPluginsSetFeatureParams",
+      "resultDef": "GjcPluginsSetFeatureResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/plugins/setSetting",
+      "paramsDef": "GjcPluginsSetSettingParams",
+      "resultDef": "GjcPluginsSetSettingResult",
+      "guiWrapper": true
+    },
+    {
       "method": "gjc/messages/get",
       "paramsDef": "GjcMessagesGetParams",
       "resultDef": "GjcMessagesGetResult",
@@ -5719,6 +7963,12 @@
       "method": "gjc/model/set",
       "paramsDef": "GjcModelSetParams",
       "resultDef": "GjcModelSetResult",
+      "guiWrapper": true
+    },
+    {
+      "method": "gjc/model/assign",
+      "paramsDef": "GjcModelAssignParams",
+      "resultDef": "GjcModelAssignResult",
       "guiWrapper": true
     },
     {
