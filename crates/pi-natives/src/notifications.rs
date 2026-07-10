@@ -42,11 +42,56 @@ pub struct NotificationEndpoint {
 #[napi(object)]
 pub struct ReplyEvent {
 	/// The action id being answered (the real broker `gate_id` for asks).
-	pub id:              String,
+	pub id:               String,
 	/// JSON-encoded `ReplyAnswer` (number, string, or `{selected,custom}`).
-	pub answer_json:     String,
+	pub answer_json:      String,
 	/// Optional idempotency key supplied by the client.
-	pub idempotency_key: Option<String>,
+	pub idempotency_key:  Option<String>,
+	/// One-shot receipt binding this callback to the atomically claimed reply.
+	pub reply_receipt_id: String,
+}
+
+/// Typed terminal acknowledgement result returned by acknowledgement promises.
+#[napi(object)]
+pub struct AskSelectedAckOutcomeEvent {
+	pub status:     String,
+	pub message_id: Option<i64>,
+	pub reason:     Option<String>,
+}
+
+impl From<gjc_notifications::protocol::AskSelectedAckOutcome> for AskSelectedAckOutcomeEvent {
+	fn from(outcome: gjc_notifications::protocol::AskSelectedAckOutcome) -> Self {
+		use gjc_notifications::protocol::AskSelectedAckOutcome;
+		match outcome {
+			AskSelectedAckOutcome::Delivered { message_id } => Self {
+				status:     "delivered".to_owned(),
+				message_id: Some(message_id),
+				reason:     None,
+			},
+			AskSelectedAckOutcome::Failed { reason } => Self {
+				status:     "failed".to_owned(),
+				message_id: None,
+				reason:     Some(
+					serde_json::to_value(reason)
+						.expect("ack reason serializes")
+						.as_str()
+						.unwrap_or_default()
+						.to_owned(),
+				),
+			},
+			AskSelectedAckOutcome::Unknown { reason } => Self {
+				status:     "unknown".to_owned(),
+				message_id: None,
+				reason:     Some(
+					serde_json::to_value(reason)
+						.expect("ack reason serializes")
+						.as_str()
+						.unwrap_or_default()
+						.to_owned(),
+				),
+			},
+		}
+	}
 }
 
 /// An inbound message forwarded to the TypeScript host: a free-text injection,
@@ -141,11 +186,14 @@ impl NotificationServer {
 	/// Fails if already started or the loopback socket cannot be bound.
 	#[napi]
 	pub async fn start(&self) -> Result<NotificationEndpoint> {
-		let config = self
+		let mut config = self
 			.config
 			.lock()
 			.take()
 			.ok_or_else(|| Error::from_reason("notification server already started"))?;
+		if self.on_reply.lock().is_none() {
+			config.resolver_available = false;
+		}
 		let session_id = config.session_id.clone();
 		let handle = gjc_notifications::start(config)
 			.await
@@ -159,16 +207,19 @@ impl NotificationServer {
 		};
 
 		// Pump forwarded replies to the TS callback (we are inside the runtime).
-		let tsfn = self.on_reply.lock().take();
-		let reply_rx = handle.take_reply_receiver();
-		if let (Some(tsfn), Some(mut rx)) = (tsfn, reply_rx) {
+		let reply_tsfn = self.on_reply.lock().take();
+		if let Some(tsfn) = reply_tsfn {
+			let mut rx = handle
+				.take_reply_receiver()
+				.ok_or_else(|| Error::from_reason("notification reply receiver unavailable"))?;
 			napi::tokio::spawn(async move {
 				while let Some(reply) = rx.recv().await {
 					let event = ReplyEvent {
-						id:              reply.id,
-						answer_json:     serde_json::to_string(&reply.answer)
+						id:               reply.reply.id,
+						answer_json:      serde_json::to_string(&reply.reply.answer)
 							.unwrap_or_else(|_| "null".to_owned()),
-						idempotency_key: reply.idempotency_key,
+						idempotency_key:  reply.reply.idempotency_key,
+						reply_receipt_id: reply.reply_receipt_id,
 					};
 					tsfn.call(Ok(event), ThreadsafeFunctionCallMode::NonBlocking);
 				}
@@ -306,11 +357,11 @@ impl NotificationServer {
 		self.with_handle(|h| h.resolve_local(&id, answer))
 	}
 
-	/// Resolve an action answered by a remote client, after TS resolved the real
-	/// gate. `answer_json` is an optional JSON `ReplyAnswer`.
+	/// Resolve an unclaimed legacy action. Forward-mode replies are
+	/// receipt-bound and must use `resolveClaim` instead.
 	///
 	/// # Errors
-	/// Fails if not started or `answer_json` is invalid.
+	/// Fails if not started, `answer_json` is invalid, or the action is claimed.
 	#[napi]
 	pub fn resolve_client(
 		&self,
@@ -319,18 +370,134 @@ impl NotificationServer {
 		idempotency_key: Option<String>,
 	) -> Result<()> {
 		let answer = parse_answer(answer_json.as_deref())?;
-		self.with_handle(|h| h.resolve_client(&id, answer, idempotency_key))
+		if !self.with_handle(|h| h.resolve_client(&id, answer, idempotency_key))? {
+			return Err(Error::from_reason("claimed action requires resolveClaim with its receipt"));
+		}
+		Ok(())
 	}
 
-	/// Reject a forwarded reply after TS failed to resolve its gate. `reason` is
-	/// one of the protocol reject reasons (default `invalid_answer`).
+	/// Resolve a reply claim after durable semantic settlement.
+	#[napi]
+	pub fn resolve_claim(
+		&self,
+		reply_receipt_id: String,
+		answer_json: Option<String>,
+		idempotency_key: Option<String>,
+	) -> Result<()> {
+		let answer = parse_answer(answer_json.as_deref())?;
+		if !self.with_handle(|h| h.resolve_claim(&reply_receipt_id, answer, idempotency_key))? {
+			return Err(Error::from_reason("claim receipt did not match a pending reply"));
+		}
+		Ok(())
+	}
+
+	/// Close an invalid claim terminally. Retrying must use a fresh action id.
+	#[napi]
+	pub fn close_claim_invalid(&self, reply_receipt_id: String, _reason: String) -> Result<()> {
+		if !self.with_handle(|h| h.close_claim_invalid(&reply_receipt_id))? {
+			return Err(Error::from_reason("claim receipt did not match a pending reply"));
+		}
+		Ok(())
+	}
+
+	/// Cancel a claim as part of abort or shutdown cleanup.
+	#[napi]
+	pub fn cancel_claim(&self, reply_receipt_id: String, _reason: String) -> Result<()> {
+		if !self.with_handle(|h| h.cancel_claim(&reply_receipt_id))? {
+			return Err(Error::from_reason("claim receipt did not match a pending reply"));
+		}
+		Ok(())
+	}
+
+	/// Unicast an origin-bound live acknowledgement and resolve with its exact
+	/// correlated terminal outcome (or native timeout evidence).
+	#[napi]
+	pub async fn request_ask_selected_ack(
+		&self,
+		reply_receipt_id: String,
+		request_json: String,
+	) -> Result<AskSelectedAckOutcomeEvent> {
+		let request: gjc_notifications::protocol::AskSelectedAckRequest =
+			serde_json::from_str(&request_json).map_err(|e| {
+				Error::from_reason(format!("invalid live acknowledgement request: {e}"))
+			})?;
+		if !matches!(request, gjc_notifications::protocol::AskSelectedAckRequest::Live { .. }) {
+			return Err(Error::from_reason("requestAskSelectedAck requires mode=live"));
+		}
+		let handle = self
+			.handle
+			.lock()
+			.as_ref()
+			.cloned()
+			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		Ok(handle
+			.request_ask_selected_ack(&reply_receipt_id, request)
+			.await
+			.into())
+	}
+
+	/// Select one current capable participant for a recovery acknowledgement and
+	/// resolve with its exact terminal outcome.
+	#[napi]
+	pub async fn request_recovered_ask_selected_ack(
+		&self,
+		request_json: String,
+	) -> Result<AskSelectedAckOutcomeEvent> {
+		let request: gjc_notifications::protocol::AskSelectedAckRequest =
+			serde_json::from_str(&request_json).map_err(|e| {
+				Error::from_reason(format!("invalid recovery acknowledgement request: {e}"))
+			})?;
+		if !matches!(request, gjc_notifications::protocol::AskSelectedAckRequest::Recovery { .. }) {
+			return Err(Error::from_reason("requestRecoveredAskSelectedAck requires mode=recovery"));
+		}
+		let handle = self
+			.handle
+			.lock()
+			.as_ref()
+			.cloned()
+			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		Ok(handle
+			.request_recovered_ask_selected_ack(request)
+			.await
+			.into())
+	}
+
+	/// Correlate and terminalize an acknowledgement request.
+	#[napi]
+	pub fn cancel_ask_selected_ack(
+		&self,
+		request_id: String,
+		commit_key: String,
+		reason: String,
+	) -> Result<AskSelectedAckOutcomeEvent> {
+		let reason = serde_json::from_value(serde_json::Value::String(reason)).map_err(|e| {
+			Error::from_reason(format!("invalid acknowledgement cancellation reason: {e}"))
+		})?;
+		let cancel =
+			gjc_notifications::protocol::AskSelectedAckCancel { request_id, commit_key, reason };
+		let handle = self
+			.handle
+			.lock()
+			.as_ref()
+			.cloned()
+			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		Ok(handle.cancel_ask_selected_ack(cancel).into())
+	}
+
+	/// Reject an unclaimed legacy reply. Claimed forward-mode replies must use
+	/// `closeClaimInvalid` with the exact receipt.
 	///
 	/// # Errors
-	/// Fails if not started.
+	/// Fails if not started or the action is claimed.
 	#[napi]
 	pub fn reject(&self, id: String, reason: Option<String>) -> Result<()> {
 		let reason = parse_reason(reason.as_deref());
-		self.with_handle(|h| h.reject(&id, reason))
+		if !self.with_handle(|h| h.reject(&id, reason))? {
+			return Err(Error::from_reason(
+				"claimed action requires closeClaimInvalid with its receipt",
+			));
+		}
+		Ok(())
 	}
 
 	/// Update whether the unattended gate resolver is currently available.
@@ -361,13 +528,12 @@ impl NotificationServer {
 		}
 	}
 
-	fn with_handle<F: FnOnce(&ServerHandle)>(&self, f: F) -> Result<()> {
+	fn with_handle<T, F: FnOnce(&ServerHandle) -> T>(&self, f: F) -> Result<T> {
 		let guard = self.handle.lock();
 		let handle = guard
 			.as_ref()
 			.ok_or_else(|| Error::from_reason("notification server not started"))?;
-		f(handle);
-		Ok(())
+		Ok(f(handle))
 	}
 }
 

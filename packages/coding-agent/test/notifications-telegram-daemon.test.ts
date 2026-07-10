@@ -385,6 +385,22 @@ describe("telegram daemon", () => {
 		expect(requests[1].init.body).toBeInstanceOf(FormData);
 	});
 
+	test("TelegramBotTransport noRetry performs one application request", async () => {
+		let attempts = 0;
+		const transport = new TelegramBotTransport({
+			botToken: "tok",
+			apiBase: "https://telegram.test",
+			fetchImpl: (async () => {
+				attempts++;
+				throw new Error("connection reset after write");
+			}) as unknown as typeof fetch,
+		});
+		await expect(
+			transport.call("sendMessage", { chat_id: "42", text: "Selected!" }, { noRetry: true }),
+		).rejects.toThrow("connection reset");
+		expect(attempts).toBe(1);
+	});
+
 	test("TelegramEventDispatchState groups dispatch state without changing maps", () => {
 		const state = new TelegramEventDispatchState();
 		state.busy.add("S");
@@ -919,16 +935,13 @@ describe("telegram daemon", () => {
 		expect(sent).toContainEqual({ type: "reply", id: "ask1", answer: "my typed answer", token: "ts" });
 		// ...and must NOT be injected as a new user turn.
 		expect(sent.some(frame => frame.type === "user_message")).toBe(false);
-		const ackSend = bot.calls.find(
-			c =>
-				c.method === "sendMessage" &&
-				c.body.message_thread_id === threadId &&
-				c.body.text === "Received as an answer to the pending ask.",
+		const visibleReceipt = bot.calls.find(
+			c => c.method === "sendMessage" && c.body.message_thread_id === threadId && c.body.text === "Selected!",
 		);
-		expect(ackSend).toBeDefined();
+		expect(visibleReceipt).toBeUndefined();
 	});
 
-	test("marks pending ask text seen before awaiting Telegram acknowledgement", async () => {
+	test("deduplicates pending ask text before semantic acknowledgement completes", async () => {
 		FakeWs.instances = [];
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
@@ -942,10 +955,7 @@ describe("telegram daemon", () => {
 		});
 		class BlockingAckBotApi extends FakeBotApi {
 			override async call(method: string, body: unknown): Promise<unknown> {
-				if (
-					method === "sendMessage" &&
-					(body as { text?: unknown }).text === "Received as an answer to the pending ask."
-				) {
+				if (method === "sendMessage" && (body as { text?: unknown }).text === "Selected!") {
 					this.calls.push({ method, body });
 					markAckStarted();
 					return ackGate;
@@ -976,17 +986,501 @@ describe("telegram daemon", () => {
 			update_id: 1,
 			message: { chat: { id: 42 }, message_thread_id: threadId, text: "my typed answer", message_id: 99 },
 		};
-		const first = daemon.handleTelegramUpdate(update);
+		await daemon.handleTelegramUpdate(update);
+		const acknowledgement = daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-1",
+			commitKey: "commit-1",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
 		await ackStarted;
-		const duplicate = daemon.handleTelegramUpdate(update);
-		await Promise.resolve();
+		await daemon.handleTelegramUpdate(update);
 		const repliesBeforeAck = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame)).filter(
 			frame => frame.type === "reply" && frame.id === "ask1",
 		);
 		expect(repliesBeforeAck).toHaveLength(1);
 		releaseAck();
+		await acknowledgement;
+		expect(FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-1",
+			commitKey: "commit-1",
+			outcome: { status: "delivered", messageId: 999 },
+		});
+	});
+
+	test("deduplicates a semantic acknowledgement and sends Selected without HTML or retry metadata", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes", "no"],
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-1",
+			commitKey: "commit-1",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-2",
+			commitKey: "commit-1",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		const selectedCalls = bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!");
+		expect(selectedCalls).toHaveLength(1);
+		expect(selectedCalls[0]?.body.parse_mode).toBeUndefined();
+		const results = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame)).filter(
+			frame => frame.type === "ask_selected_ack_result",
+		);
+		expect(results).toEqual([
+			{
+				type: "ask_selected_ack_result",
+				requestId: "ack-1",
+				commitKey: "commit-1",
+				outcome: { status: "delivered", messageId: selectedCalls[0] ? bot.calls.indexOf(selectedCalls[0]) + 1 : 0 },
+			},
+			{
+				type: "ask_selected_ack_result",
+				requestId: "ack-2",
+				commitKey: "commit-1",
+				outcome: { status: "delivered", messageId: selectedCalls[0] ? bot.calls.indexOf(selectedCalls[0]) + 1 : 0 },
+			},
+		]);
+	});
+
+	test("reports an ambiguous Selected send failure after one application attempt", async () => {
+		FakeWs.instances = [];
+		class FailingSelectedBotApi extends FakeBotApi {
+			override async call(method: string, body: unknown): Promise<unknown> {
+				if (method === "sendMessage" && (body as { text?: unknown }).text === "Selected!") {
+					this.calls.push({ method, body });
+					throw new Error("connection reset after write");
+				}
+				return super.call(method, body);
+			}
+		}
+		const agentDir = tempAgentDir();
+		const bot = new FailingSelectedBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-1",
+			commitKey: "commit-1",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-2",
+			commitKey: "commit-1",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		expect(bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!")).toHaveLength(1);
+		expect(FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-1",
+			commitKey: "commit-1",
+			outcome: { status: "unknown", reason: "transport_ambiguous" },
+		});
+		expect(FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-2",
+			commitKey: "commit-1",
+			outcome: { status: "unknown", reason: "transport_ambiguous" },
+		});
+	});
+
+	test("rejects an expired acknowledgement without a Telegram send", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-expired",
+			commitKey: "commit-expired",
+			actionId: "ask1",
+			deadlineAt: Date.now() - 1,
+		});
+
+		expect(bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!")).toHaveLength(0);
+		expect(FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-expired",
+			commitKey: "commit-expired",
+			outcome: { status: "failed", reason: "expired" },
+		});
+	});
+
+	test("sends a live acknowledgement in flat private chat without a topic", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		(daemon as unknown as { topics: Map<string, unknown> }).topics.delete("S");
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-flat",
+			commitKey: "commit-flat",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+
+		const selected = bot.calls.find(call => call.method === "sendMessage" && call.body.text === "Selected!");
+		expect(selected?.body).toEqual({ chat_id: "42", text: "Selected!" });
+		expect(FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-flat",
+			commitKey: "commit-flat",
+			outcome: expect.objectContaining({ status: "delivered" }),
+		});
+	});
+
+	test("uses persisted topic authority for recovery without reopening an accepted ask", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		await daemon.handleSessionMessage(session, { type: "action_resolved", id: "ask1" });
+		expect(session.pending.has("ask1")).toBe(false);
+		const restarted = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner-restarted",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		await restarted.loadTopics();
+		restarted.connectSession("S", "ws://s-restarted", "ts-restarted");
+		const recoveredSession = restarted.sessions.get("S")!;
+		await restarted.handleSessionMessage(recoveredSession, {
+			type: "ask_selected_ack_request",
+			mode: "recovery",
+			requestId: "recovery-1",
+			commitKey: "commit-recovery",
+			sessionId: "S",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		expect(recoveredSession.pending.has("ask1")).toBe(false);
+		expect(bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!")).toHaveLength(1);
+		const sendsBeforeWrongSession = bot.calls.length;
+		await restarted.handleSessionMessage(recoveredSession, {
+			type: "ask_selected_ack_request",
+			mode: "recovery",
+			requestId: "recovery-2",
+			commitKey: "commit-wrong-session",
+			sessionId: "other",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		expect(bot.calls).toHaveLength(sendsBeforeWrongSession);
+		expect(FakeWs.instances[1]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "recovery-2",
+			commitKey: "commit-wrong-session",
+			outcome: { status: "failed", reason: "route_missing" },
+		});
+	});
+
+	test("coalesces overlapping acknowledgement requests for the same commit", async () => {
+		FakeWs.instances = [];
+		const selectedStarted = Promise.withResolvers<void>();
+		const releaseSelected = Promise.withResolvers<unknown>();
+		class BlockingSelectedBotApi extends FakeBotApi {
+			override async call(method: string, body: unknown): Promise<unknown> {
+				if (method === "sendMessage" && (body as { text?: unknown }).text === "Selected!") {
+					this.calls.push({ method, body });
+					selectedStarted.resolve();
+					return releaseSelected.promise;
+				}
+				return super.call(method, body);
+			}
+		}
+		const agentDir = tempAgentDir();
+		const bot = new BlockingSelectedBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		const first = daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-1",
+			commitKey: "same-commit",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		await selectedStarted.promise;
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-2",
+			commitKey: "same-commit",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_cancel",
+			requestId: "ack-1",
+			commitKey: "same-commit",
+		});
+		expect(bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!")).toHaveLength(1);
+		releaseSelected.resolve({ ok: true, result: { message_id: 88 } });
 		await first;
-		await duplicate;
+		const results = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame)).filter(
+			frame => frame.type === "ask_selected_ack_result",
+		);
+		expect(results).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-1",
+			commitKey: "same-commit",
+			outcome: { status: "failed", reason: "cancelled" },
+		});
+		expect(results).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-2",
+			commitKey: "same-commit",
+			outcome: { status: "delivered", messageId: 88 },
+		});
+	});
+
+	test("endpoint replacement reuses the in-flight acknowledgement tombstone without a second POST", async () => {
+		FakeWs.instances = [];
+		const selectedStarted = Promise.withResolvers<void>();
+		const releaseSelected = Promise.withResolvers<unknown>();
+		class BlockingSelectedBotApi extends FakeBotApi {
+			override async call(method: string, body: unknown): Promise<unknown> {
+				if (method === "sendMessage" && (body as { text?: unknown }).text === "Selected!") {
+					this.calls.push({ method, body });
+					selectedStarted.resolve();
+					return releaseSelected.promise;
+				}
+				return super.call(method, body);
+			}
+		}
+		const agentDir = tempAgentDir();
+		const bot = new BlockingSelectedBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as never,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		const request = daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-drop",
+			commitKey: "commit-drop",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		await selectedStarted.promise;
+		(daemon as unknown as { dropSession(session: unknown, reason: string): void }).dropSession(
+			session,
+			"session_closed",
+		);
+		daemon.connectSession("S", "ws://replacement", "replacement-token");
+		const replacement = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(replacement, {
+			type: "ask_selected_ack_request",
+			mode: "recovery",
+			requestId: "ack-replacement",
+			commitKey: "commit-drop",
+			sessionId: "S",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		expect(bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!")).toHaveLength(1);
+		expect(FakeWs.instances[1]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-replacement",
+			commitKey: "commit-drop",
+			outcome: { status: "unknown", reason: "transport_ambiguous" },
+		});
+		releaseSelected.resolve({ ok: true, result: { message_id: 88 } });
+		await request;
+		const results = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame)).filter(
+			frame => frame.type === "ask_selected_ack_result" && frame.requestId === "ack-drop",
+		);
+		expect(results).toEqual([
+			{
+				type: "ask_selected_ack_result",
+				requestId: "ack-drop",
+				commitKey: "commit-drop",
+				outcome: { status: "unknown", reason: "transport_ambiguous" },
+			},
+		]);
+	});
+
+	test("cancels a drained acknowledgement before the Telegram application attempt", async () => {
+		FakeWs.instances = [];
+		const routeCheckStarted = Promise.withResolvers<void>();
+		const releaseRouteCheck = Promise.withResolvers<void>();
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Proceed?",
+			options: ["yes"],
+		});
+		const routeCheckedDaemon = daemon as unknown as { pairedChatIsPrivate(): Promise<boolean> };
+		routeCheckedDaemon.pairedChatIsPrivate = async () => {
+			routeCheckStarted.resolve();
+			await releaseRouteCheck.promise;
+			return true;
+		};
+		const request = daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_request",
+			mode: "live",
+			requestId: "ack-cancel",
+			commitKey: "commit-cancel",
+			actionId: "ask1",
+			deadlineAt: Date.now() + 8_000,
+		});
+		await routeCheckStarted.promise;
+		await daemon.handleSessionMessage(session, {
+			type: "ask_selected_ack_cancel",
+			requestId: "ack-cancel",
+			commitKey: "commit-cancel",
+		});
+		releaseRouteCheck.resolve();
+		await request;
+		expect(bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "Selected!")).toHaveLength(0);
+		expect(FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame))).toContainEqual({
+			type: "ask_selected_ack_result",
+			requestId: "ack-cancel",
+			commitKey: "commit-cancel",
+			outcome: { status: "failed", reason: "cancelled" },
+		});
 	});
 
 	test("no-topic plain text does not answer the only pending ask", async () => {

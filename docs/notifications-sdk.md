@@ -171,6 +171,18 @@ A remote reply answers a pending ask in **both** modes — RPC is not required:
 In both modes the first valid reply wins; later replies get `already_answered`.
 Idle pings are notify-only.
 
+### Protocol v3 semantic acknowledgement
+
+Protocol v3 adds optional `ask_controls_v1` and `ask_selected_ack_v1` capabilities. Controls are typed data (`{id:"navigation_forward", kind:"navigation", label:"Next"|"Done", enabled:boolean}`); clients must render and return `{"controlId":"navigation_forward"}` and must never infer a control from an option label.
+
+A remote reply is first **claimed** by the native server. The host retains the raw reply JSON, idempotency key, and reply receipt id, then resolves or closes that claim only after ask/gate semantic settlement. Invalid input terminally closes that interaction; a retry is a fresh action id, never a reopened claim.
+
+Managed Telegram clients may receive `ask_selected_ack_request` and return one correlated `ask_selected_ack_result`. Requests are `mode:"live"` (the current pending action on the authenticated session connection) or `mode:"recovery"` (the persisted session topic only). Recovery neither recreates an ask, keyboard, alias, nor reply route; a missing persisted topic is `failed/route_missing`. `ask_selected_ack_cancel` removes an exact queued request or aborts an in-flight attempt. The request/result/cancel correlation is `requestId` plus `commitKey` and is authorized by the authenticated WebSocket connection and endpoint generation; acknowledgement frames carry no second token.
+
+The managed daemon sends the literal `Selected!` at most once per generation/commit key, on its `ask` rate-limit lane, with an absolute 8-second deadline and no application retry. A response is `delivered` only with Telegram `{ok:true,result.message_id:number}`; explicit rejection is `failed`, and timeout/network/in-flight abort uncertainty is `unknown`. Callback-query acknowledgement remains independent. The durable workflow answer is exactly-once; visible Telegram delivery is not.
+
+Every accepted workflow-gate origin, including generic RPC/bridge winners, invokes canonical gate-presentation cleanup before continuation. Generic origins have no Telegram acknowledgement policy. Cancellation, shutdown, and endpoint replacement cancel retained interactions and acknowledgement work. A connection loss before dispatch is definitive `failed/session_closed`; after successful request-frame dispatch but before a correlated result it is `unknown/origin_disconnected`—the host does not infer whether Telegram was called.
+
 ## Minimal client example
 
 ```js

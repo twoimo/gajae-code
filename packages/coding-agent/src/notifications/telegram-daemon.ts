@@ -108,7 +108,10 @@ export const DAEMON_VERSION = 1;
 /** Capability token advertised when the server supports app-level ping/pong. */
 export const CLIENT_PING_PONG_CAPABILITY = "client_ping_pong";
 /** Protocol version the daemon advertises in its ClientHello. */
-export const NOTIFICATION_PROTOCOL_VERSION = 2;
+export const NOTIFICATION_PROTOCOL_VERSION = 3;
+/** Capability required for typed controls and semantic Selected acknowledgement frames. */
+export const ASK_SELECTED_ACK_CAPABILITY = "ask_selected_ack_v1";
+export const ASK_CONTROLS_CAPABILITY = "ask_controls_v1";
 
 const nodeFs: TelegramDaemonFs = fs.promises as unknown as TelegramDaemonFs;
 
@@ -676,7 +679,7 @@ export async function ensureTelegramDaemonRunning(
 }
 
 export interface BotApi {
-	call(method: string, body: unknown, opts?: { signal?: AbortSignal }): Promise<unknown>;
+	call(method: string, body: unknown, opts?: { signal?: AbortSignal; noRetry?: boolean }): Promise<unknown>;
 }
 
 export interface TelegramTransportOptions {
@@ -694,7 +697,7 @@ export class TelegramBotTransport implements BotApi {
 		this.#opts = opts;
 	}
 
-	async call(method: string, body: unknown, opts?: { signal?: AbortSignal }): Promise<unknown> {
+	async call(method: string, body: unknown, opts?: { signal?: AbortSignal; noRetry?: boolean }): Promise<unknown> {
 		const apiBase = this.#opts.apiBase ?? "https://api.telegram.org";
 		const url = `${apiBase}/bot${this.#opts.botToken}/${method}`;
 		const fetchImpl = this.#opts.fetchImpl ?? fetch;
@@ -718,7 +721,13 @@ export class TelegramBotTransport implements BotApi {
 			if (b.caption) form.set("caption", b.caption);
 			if (b.parse_mode) form.set("parse_mode", String(b.parse_mode));
 			form.set("photo", new Blob([Buffer.from(b.photo, "base64")], { type: b.mime ?? "image/png" }), "image");
-			const res = await fetchWithRetry(fetchImpl, url, { method: "POST", body: form, signal: opts?.signal }, sleep);
+			const res = await fetchWithRetry(
+				fetchImpl,
+				url,
+				{ method: "POST", body: form, signal: opts?.signal },
+				sleep,
+				opts?.noRetry ? 1 : undefined,
+			);
 			return res.json();
 		}
 		const docBody = body as { document?: unknown } | null;
@@ -742,7 +751,13 @@ export class TelegramBotTransport implements BotApi {
 				new Blob([Buffer.from(b.document, "base64")], { type: b.mime ?? "application/octet-stream" }),
 				b.fileName ?? "file",
 			);
-			const res = await fetchWithRetry(fetchImpl, url, { method: "POST", body: form, signal: opts?.signal }, sleep);
+			const res = await fetchWithRetry(
+				fetchImpl,
+				url,
+				{ method: "POST", body: form, signal: opts?.signal },
+				sleep,
+				opts?.noRetry ? 1 : undefined,
+			);
 			return res.json();
 		}
 		const res = await fetchWithRetry(
@@ -755,6 +770,7 @@ export class TelegramBotTransport implements BotApi {
 				signal: opts?.signal,
 			},
 			sleep,
+			opts?.noRetry ? 1 : undefined,
 		);
 		return res.json();
 	}
@@ -903,6 +919,29 @@ interface PendingThreadedFrame {
 	msg: Record<string, unknown>;
 }
 
+type SelectedAckOutcome =
+	| { status: "delivered"; messageId: number }
+	| { status: "failed"; reason: "route_missing" | "expired" | "cancelled" | "telegram_rejected" }
+	| { status: "unknown"; reason: "transport_ambiguous" | "shutdown" };
+
+interface SelectedAckQueueItem {
+	pendingKey: string;
+	cacheKey: string;
+	itemId: string;
+	requestId: string;
+	commitKey: string;
+	session: SessionSocket;
+	state: "queued" | "dispatching" | "sending";
+	controller?: AbortController;
+	followers: Array<{ pendingKey: string; requestId: string; commitKey: string }>;
+}
+
+interface TelegramQueuePayload {
+	send: ThreadedSend;
+	topicId?: string;
+	selectedAck?: SelectedAckQueueItem;
+}
+
 export class TelegramNotificationDaemon {
 	readonly aliasTable: AliasTable;
 	readonly messageRoutes = new Map<string | number, CallbackRoute | Omit<CallbackRoute, "answer">>();
@@ -921,7 +960,8 @@ export class TelegramNotificationDaemon {
 	private topicsPersistQueue: Promise<void> = Promise.resolve();
 	/** Daemon edit attempts that can race an accepted user service message. */
 	private readonly daemonRenameAttempts = new Map<string, number>();
-	private readonly pool: RateLimitPool<{ send: ThreadedSend; topicId?: string }>;
+	private readonly selectedAckPending = new Map<string, SelectedAckQueueItem>();
+	private readonly pool: RateLimitPool<TelegramQueuePayload>;
 	private readonly poller: TelegramUpdatePoller;
 	private readonly dispatchState = new TelegramEventDispatchState();
 	/** Original markdown of rich messages we sent (chat+message_id), for restoring reply context on inbound replies. */
@@ -969,6 +1009,33 @@ export class TelegramNotificationDaemon {
 	>();
 	/** Monotonic counter for unique lifecycle request ids. */
 	private lifecycleSeq = 0;
+	/** Attempt tombstones live for the daemon lifetime so a commit key can never send twice. */
+	private readonly selectedAckCache = new Map<string, SelectedAckOutcome>();
+	private cacheSelectedAck(cacheKey: string, outcome: SelectedAckOutcome): void {
+		this.selectedAckCache.set(cacheKey, outcome);
+	}
+
+	private getCachedSelectedAck(cacheKey: string): SelectedAckOutcome | undefined {
+		return this.selectedAckCache.get(cacheKey);
+	}
+	private finishSelectedAck(item: SelectedAckQueueItem, outcome: SelectedAckOutcome): void {
+		if (this.selectedAckPending.get(item.pendingKey) !== item) return;
+		this.selectedAckPending.delete(item.pendingKey);
+		for (const follower of item.followers) this.selectedAckPending.delete(follower.pendingKey);
+		this.cacheSelectedAck(item.cacheKey, outcome);
+		if (item.session.ws.readyState === WebSocket.OPEN) {
+			for (const result of [{ requestId: item.requestId, commitKey: item.commitKey }, ...item.followers]) {
+				item.session.ws.send(
+					JSON.stringify({
+						type: "ask_selected_ack_result",
+						requestId: result.requestId,
+						commitKey: result.commitKey,
+						outcome,
+					}),
+				);
+			}
+		}
+	}
 
 	/**
 	 * Cooperatively stop the daemon: set the stop flag and abort the in-flight
@@ -976,6 +1043,11 @@ export class TelegramNotificationDaemon {
 	 * ~25s getUpdates timeout. Safe to call from a signal handler.
 	 */
 	requestStop(_reason?: "reload" | "stop" | "signal"): void {
+		for (const item of new Set(this.selectedAckPending.values())) {
+			if (item.state === "queued") this.pool.removeById(item.itemId);
+			else item.controller?.abort();
+			this.finishSelectedAck(item, { status: "unknown", reason: "shutdown" });
+		}
 		this.runtime.requestStop();
 		this.running = false;
 	}
@@ -1329,6 +1401,134 @@ export class TelegramNotificationDaemon {
 				},
 			})
 			.add({
+				name: "ask-selected-ack",
+				matches: msg => msg.type === "ask_selected_ack_request",
+				handle: async (session, msg) => {
+					const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+					const commitKey = typeof msg.commitKey === "string" ? msg.commitKey : undefined;
+					const mode = msg.mode === "live" || msg.mode === "recovery" ? msg.mode : undefined;
+					const deadlineAt = typeof msg.deadlineAt === "number" ? msg.deadlineAt : undefined;
+					if (!requestId || !commitKey || !mode || !deadlineAt) return;
+					const cacheKey = `${session.sessionId}\0${commitKey}`;
+					const cached = this.getCachedSelectedAck(cacheKey);
+					if (cached) {
+						session.ws.send(
+							JSON.stringify({ type: "ask_selected_ack_result", requestId, commitKey, outcome: cached }),
+						);
+						return;
+					}
+					const finishImmediately = (outcome: SelectedAckOutcome): void => {
+						this.cacheSelectedAck(cacheKey, outcome);
+						if (session.ws.readyState === WebSocket.OPEN) {
+							session.ws.send(
+								JSON.stringify({ type: "ask_selected_ack_result", requestId, commitKey, outcome }),
+							);
+						}
+					};
+					if (deadlineAt <= this.runtime.now()) {
+						finishImmediately({ status: "failed", reason: "expired" });
+						return;
+					}
+					if (mode === "live" && (typeof msg.actionId !== "string" || !session.pending.has(msg.actionId))) {
+						finishImmediately({ status: "failed", reason: "route_missing" });
+						return;
+					}
+					const topicId = this.topics.get(session.sessionId)?.topicId;
+					if (mode === "recovery" && (!topicId || msg.sessionId !== session.sessionId)) {
+						finishImmediately({ status: "failed", reason: "route_missing" });
+						return;
+					}
+					const existing = [...new Set(this.selectedAckPending.values())].find(item => item.cacheKey === cacheKey);
+					if (existing) {
+						if (
+							existing.requestId === requestId ||
+							existing.followers.some(follower => follower.requestId === requestId)
+						)
+							return;
+						const pendingKey = `${session.endpointKey}\0${requestId}`;
+						existing.followers.push({ pendingKey, requestId, commitKey });
+						this.selectedAckPending.set(pendingKey, existing);
+						return;
+					}
+					const pendingKey = `${session.endpointKey}\0${requestId}`;
+					if (this.selectedAckPending.has(pendingKey)) return;
+					const item: SelectedAckQueueItem = {
+						pendingKey,
+						cacheKey,
+						itemId: `selected-ack:${session.endpointKey}:${requestId}`,
+						requestId,
+						commitKey,
+						session,
+						state: "queued",
+						followers: [],
+					};
+					this.selectedAckPending.set(pendingKey, item);
+					this.pool.submit({
+						sessionId: session.sessionId,
+						lane: "ask",
+						itemId: item.itemId,
+						deadlineAt,
+						payload: {
+							send: { method: "sendMessage", lane: "ask", text: "Selected!" },
+							topicId,
+							selectedAck: item,
+						},
+					});
+					await this.flushPool();
+				},
+			})
+			.add({
+				name: "ask-selected-ack-cancel",
+				matches: msg => msg.type === "ask_selected_ack_cancel",
+				handle: (session, msg) => {
+					const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+					const commitKey = typeof msg.commitKey === "string" ? msg.commitKey : undefined;
+					if (!requestId || !commitKey) return;
+					const item = this.selectedAckPending.get(`${session.endpointKey}\0${requestId}`);
+					if (!item || item.commitKey !== commitKey) return;
+					if (item.requestId !== requestId) {
+						item.followers = item.followers.filter(follower => follower.requestId !== requestId);
+						this.selectedAckPending.delete(`${session.endpointKey}\0${requestId}`);
+						if (session.ws.readyState === WebSocket.OPEN) {
+							session.ws.send(
+								JSON.stringify({
+									type: "ask_selected_ack_result",
+									requestId,
+									commitKey,
+									outcome: { status: "failed", reason: "cancelled" },
+								}),
+							);
+						}
+						return;
+					}
+					if (item.followers.length > 0) {
+						const promoted = item.followers.shift()!;
+						this.selectedAckPending.delete(item.pendingKey);
+						item.pendingKey = promoted.pendingKey;
+						item.requestId = promoted.requestId;
+						item.commitKey = promoted.commitKey;
+						if (session.ws.readyState === WebSocket.OPEN) {
+							session.ws.send(
+								JSON.stringify({
+									type: "ask_selected_ack_result",
+									requestId,
+									commitKey,
+									outcome: { status: "failed", reason: "cancelled" },
+								}),
+							);
+						}
+						return;
+					}
+					if (item.state !== "sending") {
+						this.pool.removeById(item.itemId);
+						this.finishSelectedAck(item, { status: "failed", reason: "cancelled" });
+						return;
+					}
+					item.controller?.abort();
+					this.finishSelectedAck(item, { status: "unknown", reason: "transport_ambiguous" });
+				},
+			})
+			.add({
 				name: "pong",
 				matches: msg => msg.type === "pong",
 				handle: (session, msg) => {
@@ -1501,7 +1701,7 @@ export class TelegramNotificationDaemon {
 						JSON.stringify({
 							type: "hello",
 							protocolVersion: NOTIFICATION_PROTOCOL_VERSION,
-							capabilities: [CLIENT_PING_PONG_CAPABILITY],
+							capabilities: [CLIENT_PING_PONG_CAPABILITY, ASK_CONTROLS_CAPABILITY, ASK_SELECTED_ACK_CAPABILITY],
 						}),
 					);
 				} catch {}
@@ -1575,6 +1775,12 @@ export class TelegramNotificationDaemon {
 		}
 		if (isCurrentSession) {
 			this.sessions.delete(session.sessionId);
+		}
+		for (const item of new Set(this.selectedAckPending.values())) {
+			if (item.session !== session) continue;
+			if (item.state === "queued") this.pool.removeById(item.itemId);
+			else item.controller?.abort();
+			this.finishSelectedAck(item, { status: "unknown", reason: "transport_ambiguous" });
 		}
 		if (session.ws.readyState !== WebSocket.CLOSED) {
 			try {
@@ -1766,7 +1972,11 @@ export class TelegramNotificationDaemon {
 		try {
 			// Drop queued sends for this session before deleting the topic; otherwise
 			// rate-limited frames can flush later into a deleted topic or across resume.
-			this.pool.removeWhere(item => item.sessionId === sessionId);
+			const removed = this.pool.removeWhere(item => item.sessionId === sessionId);
+			for (const item of removed) {
+				if (item.payload.selectedAck)
+					this.finishSelectedAck(item.payload.selectedAck, { status: "failed", reason: "cancelled" });
+			}
 			await this.flushPool();
 			const res = (await this.botApi.call("deleteForumTopic", {
 				chat_id: this.opts.chatId,
@@ -1925,7 +2135,12 @@ export class TelegramNotificationDaemon {
 
 	/** Drain the shared rate-limit pool and deliver each granted send to its topic. */
 	private async flushPoolInner(): Promise<void> {
-		const batch = this.pool.drain();
+		const { granted: batch, expired } = this.pool.drainWithExpired();
+		for (const expiredItem of expired) {
+			if (expiredItem.payload.selectedAck) {
+				this.finishSelectedAck(expiredItem.payload.selectedAck, { status: "failed", reason: "expired" });
+			}
+		}
 		// Within a batch a finalized frame supersedes any still-queued live frame for
 		// the same streamed message (finalized outranks live), so drop the stale live
 		// edit — otherwise the authoritative final text could be overwritten by an
@@ -1948,6 +2163,51 @@ export class TelegramNotificationDaemon {
 			);
 		}
 		for (const item of batch) {
+			const selectedAck = item.payload.selectedAck;
+			if (selectedAck) {
+				const { topicId } = item.payload;
+				selectedAck.state = "dispatching";
+				const controller = new AbortController();
+				selectedAck.controller = controller;
+				const routeAvailable = !topicId || (await this.pairedChatIsPrivate());
+				if (this.selectedAckPending.get(selectedAck.pendingKey) !== selectedAck) continue;
+				if (!routeAvailable) {
+					this.finishSelectedAck(selectedAck, { status: "failed", reason: "route_missing" });
+					continue;
+				}
+				if (item.deadlineAt !== undefined && item.deadlineAt <= this.runtime.now()) {
+					this.finishSelectedAck(selectedAck, { status: "failed", reason: "expired" });
+					continue;
+				}
+				selectedAck.state = "sending";
+				const remaining = Math.max(0, (item.deadlineAt ?? this.runtime.now()) - this.runtime.now());
+				const timer = (this.opts.setTimeoutImpl ?? setTimeout)(
+					() => controller.abort(),
+					Math.min(8_000, remaining),
+				);
+				try {
+					const response = (await this.botApi.call(
+						"sendMessage",
+						{
+							chat_id: this.opts.chatId,
+							...(topicId ? { message_thread_id: Number(topicId) } : {}),
+							text: "Selected!",
+						},
+						{ signal: controller.signal, noRetry: true },
+					)) as { ok?: unknown; result?: { message_id?: unknown } };
+					this.finishSelectedAck(
+						selectedAck,
+						response.ok === true && typeof response.result?.message_id === "number"
+							? { status: "delivered", messageId: response.result.message_id }
+							: { status: "failed", reason: "telegram_rejected" },
+					);
+				} catch {
+					this.finishSelectedAck(selectedAck, { status: "unknown", reason: "transport_ambiguous" });
+				} finally {
+					(this.opts.clearTimeoutImpl ?? clearTimeout)(timer);
+				}
+				continue;
+			}
 			const { send, topicId } = item.payload;
 			if (topicId && !(await this.pairedChatIsPrivate())) continue;
 			// Threaded topic when available; otherwise deliver flat to the paired chat.
@@ -2383,19 +2643,54 @@ export class TelegramNotificationDaemon {
 				await this.notifyThreadedFallback();
 			}
 			const threadField = topicId ? { message_thread_id: Number(topicId) } : {};
+			const controls: Array<{
+				id: "navigation_forward";
+				kind: "navigation";
+				label: "Next" | "Done";
+				enabled: boolean;
+			}> = Array.isArray(msg.controls)
+				? msg.controls.filter(
+						(
+							control: unknown,
+						): control is {
+							id: "navigation_forward";
+							kind: "navigation";
+							label: "Next" | "Done";
+							enabled: boolean;
+						} =>
+							!!control &&
+							typeof control === "object" &&
+							(control as { id?: unknown }).id === "navigation_forward" &&
+							(control as { kind?: unknown }).kind === "navigation" &&
+							((control as { label?: unknown }).label === "Next" ||
+								(control as { label?: unknown }).label === "Done") &&
+							(control as { enabled?: unknown }).enabled === true,
+					)
+				: [];
 			const rendered = buildActionMessage({
 				kind: msg.kind ?? "ask",
 				id: msg.id,
 				question: msg.question,
 				options: msg.options,
+				controls,
 				summary: msg.summary,
 			});
 			const options = Array.isArray(msg.options) ? msg.options : [];
-			// Daemon keyboards use alias callback data with compact one-based tap targets;
-			// full option text is rendered in the message body by buildActionMessage/buildActionMarkdown.
-			const inline_keyboard = buildCompactChoiceGrid(options, (i: number) =>
-				this.aliasTable.put({ sessionId: session.sessionId, actionId: msg.id, answer: i }),
-			);
+			const inline_keyboard = [
+				...buildCompactChoiceGrid(options, (i: number) =>
+					this.aliasTable.put({ sessionId: session.sessionId, actionId: msg.id, answer: i }),
+				),
+				...controls.map(control => [
+					{
+						text: control.label,
+						callback_data: this.aliasTable.put({
+							sessionId: session.sessionId,
+							actionId: msg.id,
+							answer: { controlId: control.id },
+						}),
+					},
+				]),
+			];
 			// HTML delivery: one sendMessage per chunk, keyboard on the last chunk;
 			// returns the last chunk's message_id (the reply-routable message).
 			const sendHtmlChunks = async (): Promise<number | undefined> => {
@@ -2734,15 +3029,6 @@ export class TelegramNotificationDaemon {
 							}),
 						);
 						await this.rememberSeenUpdateId(inbound.updateId);
-						await this.botApi
-							.call("sendMessage", {
-								chat_id: this.opts.chatId,
-								message_thread_id: Number(inbound.threadId),
-								text: "Received as an answer to the pending ask.",
-							})
-							.catch(error => {
-								logger.warn(`telegram: failed to acknowledge pending ask reply: ${String(error)}`);
-							});
 						if (inbound.messageId !== undefined) await this.setReaction(inbound.messageId, QUEUED_REACTION);
 						return;
 					}

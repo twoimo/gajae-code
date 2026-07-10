@@ -256,7 +256,10 @@ import {
 } from "../tool-discovery/tool-index";
 import type { AskAnswerSource, ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
-import { getAskAnswerSource as getAskAnswerSourceFromRegistry } from "../tools/ask-answer-registry";
+import {
+	getAskAnswerSource as getAskAnswerSourceFromRegistry,
+	notifyWorkflowGateEmitterChanged,
+} from "../tools/ask-answer-registry";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -3786,6 +3789,8 @@ export class AgentSession {
 		} catch (error) {
 			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
 		}
+		this.#workflowGateEmitter = undefined;
+		notifyWorkflowGateEmitterChanged(this.sessionId, undefined);
 		await this.#flushWorkerIntegrationAttempt();
 		await this.#cancelPostPromptTasks();
 		// Cancel jobs this agent registered so a subagent's teardown doesn't
@@ -5058,6 +5063,7 @@ export class AgentSession {
 
 	setWorkflowGateEmitter(emitter: WorkflowGateEmitter | undefined): void {
 		this.#workflowGateEmitter = emitter;
+		notifyWorkflowGateEmitterChanged(this.sessionId, emitter);
 		if (emitter) {
 			this.#ensureWorkflowGateAskTool();
 		}
