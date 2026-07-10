@@ -62,7 +62,6 @@ import {
 import type {
 	AssistantMessage,
 	Context,
-	Effort,
 	ImageContent,
 	Message,
 	MessageAttribution,

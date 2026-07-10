@@ -73,7 +73,7 @@
       "tailwindcss": "^4.2.4",
       "turndown": "7.2.4",
       "turndown-plugin-gfm": "1.0.2",
-      "typescript": "^7.0.2",
+      "typescript": "7.0.2",
       "vite": "^5.4.14",
       "vite-plugin-solid": "^2.11.6",
       "winston": "^3.19.0",

@@ -394,19 +394,16 @@ describe("built-in model profile catalog", () => {
 			mode: "effort",
 			minLevel: Effort.Low,
 			maxLevel: Effort.Max,
-			defaultLevel: Effort.Medium,
 		});
 		expect(codexModels?.["gpt-5.6-sol"]?.thinking).toEqual({
 			mode: "effort",
 			minLevel: Effort.Low,
 			maxLevel: Effort.Max,
-			defaultLevel: Effort.Low,
 		});
 		expect(codexModels?.["gpt-5.6-terra"]?.thinking).toEqual({
 			mode: "effort",
 			minLevel: Effort.Low,
 			maxLevel: Effort.Max,
-			defaultLevel: Effort.Medium,
 		});
 	});
 

@@ -317,6 +317,9 @@ async function main(): Promise<void> {
 		await checkTypeDeclarations();
 		return;
 	}
+	if (!isDryRun) {
+		await checkTypeDeclarations();
+	}
 	for (const pkg of packages) {
 		await publishPackage(pkg);
 	}

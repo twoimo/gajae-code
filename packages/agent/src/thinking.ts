@@ -1,17 +1,20 @@
+import { Effort } from "@gajae-code/ai/model-thinking";
 /**
  * Agent-local thinking selector.
  *
  * `off` disables reasoning, while `inherit` defers to a higher-level selector.
+ *
+ * Provider-native levels reuse `Effort`; `ultra` remains a local orchestration selector.
  */
 export const ThinkingLevel = {
 	Inherit: "inherit",
 	Off: "off",
-	Minimal: "minimal",
-	Low: "low",
-	Medium: "medium",
-	High: "high",
-	XHigh: "xhigh",
-	Max: "max",
+	Minimal: Effort.Minimal,
+	Low: Effort.Low,
+	Medium: Effort.Medium,
+	High: Effort.High,
+	XHigh: Effort.XHigh,
+	Max: Effort.Max,
 	Ultra: "ultra",
 } as const;
 

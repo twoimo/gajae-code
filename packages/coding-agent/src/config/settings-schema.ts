@@ -1,10 +1,20 @@
+import type { ResolvedThinkingLevel } from "@gajae-code/agent-core";
 import { TASK_SIMPLE_MODES } from "../task/simple-mode";
+import type { AgentThinkingEffort } from "../thinking";
 import { getThinkingLevelMetadata } from "../thinking-metadata";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { CONFIGURABLE_SEARCH_PROVIDER_IDS } from "../web/search/types";
 
-const THINKING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
-const DEFAULT_THINKING_LEVELS = ["off", ...THINKING_EFFORTS] as const;
+const THINKING_EFFORTS = [
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as readonly AgentThinkingEffort[];
+const DEFAULT_THINKING_LEVELS = ["off", ...THINKING_EFFORTS] as readonly ResolvedThinkingLevel[];
 
 import {
 	DEFAULT_DISABLED_EXTENSIONS,

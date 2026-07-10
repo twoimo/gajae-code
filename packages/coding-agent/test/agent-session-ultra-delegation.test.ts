@@ -6,10 +6,7 @@ import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
 import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import {
-	EAGER_TASK_DELEGATION_PROMPT,
-	ULTRA_TASK_DELEGATION_PROMPT,
-} from "@gajae-code/coding-agent/system-prompt";
+import { EAGER_TASK_DELEGATION_PROMPT, ULTRA_TASK_DELEGATION_PROMPT } from "@gajae-code/coding-agent/system-prompt";
 import * as z from "zod/v4";
 
 function fakeTaskTool(): AgentTool {

@@ -40,11 +40,7 @@ const THINKING_LEVEL_BY_NATIVE_EFFORT: Record<Effort, NativeThinkingEffort> = {
 	[Effort.Max]: ThinkingLevel.Max,
 };
 
-const THINKING_LEVELS = new Set<string>([
-	ThinkingLevel.Inherit,
-	ThinkingLevel.Off,
-	...AGENT_THINKING_EFFORTS,
-]);
+const THINKING_LEVELS = new Set<string>([ThinkingLevel.Inherit, ThinkingLevel.Off, ...AGENT_THINKING_EFFORTS]);
 const AGENT_EFFORT_LEVELS = new Set<string>(AGENT_THINKING_EFFORTS);
 const EFFORT_LEVELS = new Set<string>(THINKING_EFFORTS);
 
@@ -76,11 +72,7 @@ export function parseThinkingLevel(value: string | null | undefined): ThinkingLe
  * runs at max while GJC encourages parallel task delegation.
  */
 export function supportsUltraThinking(model: Model | undefined): boolean {
-	return (
-		model?.provider === "openai-codex" &&
-		model.api === "openai-codex-responses" &&
-		model.id === "gpt-5.6-sol"
-	);
+	return model?.provider === "openai-codex" && model.api === "openai-codex-responses" && model.id === "gpt-5.6-sol";
 }
 
 /**

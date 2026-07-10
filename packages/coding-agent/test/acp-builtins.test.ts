@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import * as path from "node:path";
 import { type AgentMessage, ThinkingLevel } from "@gajae-code/agent-core";
 import { Settings } from "../src/config/settings";
 import { getThemeByName, setThemeInstance, theme } from "../src/modes/theme/theme";
@@ -891,11 +892,12 @@ describe("session lifecycle commands", () => {
 		runtime.notifyTitleChanged = async () => {
 			notified = true;
 		};
+		const requestedPath = path.resolve("/tmp");
 		const result = await executeAcpBuiltinSlashCommand("/move /tmp", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(fakeSessionManager._flushed).toBe(true);
-		expect(fakeSessionManager._movedTo).toBe("/tmp");
-		expect(output[0]).toContain("/tmp");
+		expect(fakeSessionManager._movedTo).toBe(requestedPath);
+		expect(output[0]).toContain(requestedPath);
 		expect(notified).toBe(true);
 	});
 

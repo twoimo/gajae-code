@@ -4,11 +4,7 @@
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@gajae-code/utils";
 import { CliParseError } from "@gajae-code/utils/cli";
 import chalk from "chalk";
-import {
-	AGENT_THINKING_EFFORTS,
-	type AgentThinkingEffort,
-	parseAgentThinkingEffort,
-} from "../thinking";
+import { AGENT_THINKING_EFFORTS, type AgentThinkingEffort, parseAgentThinkingEffort } from "../thinking";
 import { BUILTIN_TOOLS } from "../tools";
 
 export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge";
