@@ -254,10 +254,9 @@ describe("terminal image rendering", () => {
 			SQUARE_DIMENSIONS,
 		);
 
-		const lines = withTerminalGraphicsFallback(
-			() => withTerminalGraphicsFallback(() => image.render(20)),
-			{ allowCursorNeutralImages: true },
-		);
+		const lines = withTerminalGraphicsFallback(() => withTerminalGraphicsFallback(() => image.render(20)), {
+			allowCursorNeutralImages: true,
+		});
 		expect(lines.join("\n")).toContain("[image/png");
 		expect(lines.join("\n")).not.toContain("\x1b_G");
 	});

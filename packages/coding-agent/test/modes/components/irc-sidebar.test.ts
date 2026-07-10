@@ -1,13 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { type IrcSidebarTheme, IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import {
-	type Component,
-	Image,
-	ImageProtocol,
-	isTerminalGraphicsFallbackActive,
-	TERMINAL,
-} from "@gajae-code/tui";
+import { type Component, Image, ImageProtocol, isTerminalGraphicsFallbackActive, TERMINAL } from "@gajae-code/tui";
 
 const sidebarTheme = {
 	fg: (_color: "dim", text: string) => text,
@@ -189,6 +183,6 @@ describe("IrcSplitViewComponent", () => {
 			fg: (_color, text) => `\x1b[32m${text}\x1b[0m`,
 			boxSharp: { vertical: "║" },
 		};
-		expect(split.render(80).join("\n")).toContain("\x1b[32m ║ \x1b[0m")
+		expect(split.render(80).join("\n")).toContain("\x1b[32m ║ \x1b[0m");
 	});
 });
