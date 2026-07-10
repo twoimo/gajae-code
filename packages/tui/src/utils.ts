@@ -5,6 +5,7 @@ import {
 	sliceWithWidth as nativeSliceWithWidth,
 	truncateLinesToWidth as nativeTruncateLinesToWidth,
 	truncateToWidth as nativeTruncateToWidth,
+	visibleWidth as nativeVisibleWidth,
 	visibleWidths as nativeVisibleWidths,
 	wrapTextWithAnsi as nativeWrapTextWithAnsi,
 	type SliceResult,
@@ -279,6 +280,22 @@ function normalizeForWidth(str: string): string {
 	const normalized = str.normalize("NFC");
 	return normalized === str ? str : normalized;
 }
+
+function hasUnpairedSurrogate(str: string): boolean {
+	for (let index = 0; index < str.length; index++) {
+		const code = str.charCodeAt(index);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = str.charCodeAt(index + 1);
+			if (next >= 0xdc00 && next <= 0xdfff) {
+				index += 1;
+				continue;
+			}
+			return true;
+		}
+		if (code >= 0xdc00 && code <= 0xdfff) return true;
+	}
+	return false;
+}
 export function visibleWidthRaw(str: string): number {
 	if (!str) {
 		return 0;
@@ -303,8 +320,8 @@ export function visibleWidthRaw(str: string): number {
 		return str.length + tabCount * (getCachedTabWidth() - 1);
 	}
 	const normalized = normalizeForWidth(str);
-	if (tabCount === 0) return Bun.stringWidth(normalized);
-	return Bun.stringWidth(normalized.replaceAll("\t", " ".repeat(getCachedTabWidth())));
+	const text = tabCount === 0 ? normalized : normalized.replaceAll("\t", " ".repeat(getCachedTabWidth()));
+	return nativeVisibleWidth(text, getCachedTabWidth());
 }
 
 /**
@@ -317,15 +334,18 @@ export function visibleWidth(str: string): number {
 
 export function visibleWidthsNative(lines: readonly string[]): number[] {
 	__textHelperPerfCounters.visibleWidthsCalls += 1;
-	return nativeVisibleWidths(
-		lines.map(line => (typeof line === "string" ? line : String(line ?? ""))),
-		getCachedTabWidth(),
-	);
+	const safeLines = lines.map(line => (typeof line === "string" ? line : String(line ?? "")));
+	const widths = nativeVisibleWidths(safeLines, getCachedTabWidth());
+	for (let index = 0; index < safeLines.length; index++) {
+		const line = safeLines[index]!;
+		if (hasUnpairedSurrogate(line)) widths[index] = visibleWidthRaw(line);
+	}
+	return widths;
 }
 
 export function visibleWidths(lines: readonly string[]): number[] {
-	void visibleWidthsNative(lines);
-	return lines.map(line => visibleWidth(typeof line === "string" ? line : String(line ?? "")));
+	if (!renderMetrics.enabled) return visibleWidthsNative(lines);
+	return recordTextHelper("text.visibleWidths", () => visibleWidthsNative(lines));
 }
 
 const THAI_LAO_AM_REGEX = /[\u0e33\u0eb3]/;

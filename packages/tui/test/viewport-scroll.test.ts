@@ -423,17 +423,18 @@ describe("registered viewport anchor", () => {
 		}
 	});
 
-	it("emits authoritative grapheme and cell spans from production Text wrapping", () => {
+	it("emits authoritative emoji grapheme and cell spans from production Text wrapping", () => {
 		const container = new Container();
-		const text = new Text("\x1b[31m가가🙂e\u0301가\x1b[0m", 0, 0);
+		const text = new Text("\x1b[31m가가❤️👍🏽🙂e\u0301가\x1b[0m", 0, 0);
 		container.addChild(text);
 		container.setViewportAnchorSource(text, { id: "semantic-text" });
 		const rendered = container.renderWithViewportAnchors(4);
 		expect(rendered.lines.join("")).not.toContain("GJC_ANCHOR");
 		expect(rendered.anchors).toEqual([
 			{ id: "semantic-text", graphemeStart: 0, graphemeEnd: 2, cellStart: 0, cellEnd: 4 },
-			{ id: "semantic-text", graphemeStart: 2, graphemeEnd: 4, cellStart: 4, cellEnd: 7 },
-			{ id: "semantic-text", graphemeStart: 4, graphemeEnd: 5, cellStart: 7, cellEnd: 9 },
+			{ id: "semantic-text", graphemeStart: 2, graphemeEnd: 4, cellStart: 4, cellEnd: 8 },
+			{ id: "semantic-text", graphemeStart: 4, graphemeEnd: 6, cellStart: 8, cellEnd: 11 },
+			{ id: "semantic-text", graphemeStart: 6, graphemeEnd: 7, cellStart: 11, cellEnd: 13 },
 		]);
 		expect(rendered.lines).toEqual(text.render(4));
 	});
