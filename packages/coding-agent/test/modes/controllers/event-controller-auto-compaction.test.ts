@@ -14,7 +14,7 @@ type AutoCompactionFixture = {
 	flushCompactionQueue: Mock<(options: { willRetry: boolean }) => Promise<void>>;
 	loaderStop: Mock<() => void>;
 	statusContainerClear: Mock<() => void>;
-	rebuildChatFromMessages: Mock<() => void>;
+	rebuildChatFromMessages: Mock<(policy: "replace-identity" | "reconcile-same-transcript") => void>;
 	prepareViewportAnchorForTranscriptRebuild: Mock<() => void>;
 };
 
@@ -35,11 +35,12 @@ function createFixture(): AutoCompactionFixture {
 	const flushCompactionQueue = vi.fn(async () => {
 		order.push("flushCompactionQueue");
 	});
-	const rebuildChatFromMessages = vi.fn(() => {
-		order.push("rebuildChatFromMessages");
-	});
 	const prepareViewportAnchorForTranscriptRebuild = vi.fn(() => {
 		order.push("prepareViewportAnchorForTranscriptRebuild");
+	});
+	const rebuildChatFromMessages = vi.fn((policy: "replace-identity" | "reconcile-same-transcript") => {
+		if (policy === "reconcile-same-transcript") prepareViewportAnchorForTranscriptRebuild();
+		order.push("rebuildChatFromMessages");
 	});
 
 	const ctx = {
@@ -158,6 +159,7 @@ describe("EventController auto-compaction overflow status", () => {
 		expect(fixture.loaderStop).toHaveBeenCalledTimes(1);
 		expect(fixture.ctx.autoCompactionLoader).toBeUndefined();
 		expect(fixture.rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(fixture.rebuildChatFromMessages).toHaveBeenCalledWith("reconcile-same-transcript");
 		expect(fixture.showStatus).toHaveBeenCalledWith(
 			"Context overflow recovery skipped: auto_continue_disabled_non_resumable_tail",
 		);

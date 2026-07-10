@@ -20,7 +20,7 @@ import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { theme } from "../../modes/theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext } from "../../modes/types";
+import type { CompactionQueuedMessage, InteractiveModeContext, TranscriptRebuildPolicy } from "../../modes/types";
 import {
 	type CustomMessage,
 	isSilentAbort,
@@ -37,7 +37,7 @@ import { formatBytes, formatDuration } from "../../tools/render-utils";
 import { buildAbortDisplayMessage } from "./abort-message";
 import { isIrcCustomType, type ParsedIrcMessage, parseIrcMessage } from "./irc-message";
 
-export type TranscriptRebuildPolicy = "replace-identity" | "reconcile-same-transcript";
+export type { TranscriptRebuildPolicy } from "../../modes/types";
 
 export function prepareTranscriptRebuild(ui: TUI, policy: TranscriptRebuildPolicy): void {
 	if (policy === "replace-identity") ui.resetViewportAnchorIntent();

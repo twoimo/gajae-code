@@ -1244,8 +1244,7 @@ export class CommandController {
 					: undefined;
 			await this.ctx.session.compact(instructions, options);
 
-			prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-			this.ctx.rebuildChatFromMessages();
+			this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorTopBorder();
@@ -1308,8 +1307,7 @@ export class CommandController {
 			this.ctx.resetIrcSidebarSession();
 
 			// Rebuild chat from the new session (which now contains the handoff document)
-			prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
-			this.ctx.rebuildChatFromMessages();
+			this.ctx.rebuildChatFromMessages("replace-identity");
 
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorTopBorder();

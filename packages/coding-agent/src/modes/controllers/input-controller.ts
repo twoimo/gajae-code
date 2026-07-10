@@ -21,7 +21,6 @@ import { resizeImage } from "../../utils/image-resize";
 import { formatPastedImageReference, resolvePastedImagePath } from "../../utils/pasted-image-path";
 import { generateSessionTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 import { type QueuedMessageMoveDirection, QueuedMessageSelectorComponent } from "../components/queued-message-selector";
-import { prepareTranscriptRebuild } from "../utils/ui-helpers";
 
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -1352,9 +1351,7 @@ export class InputController {
 		if (this.ctx.streamingComponent) {
 			this.ctx.chatContainer.detachChild(this.ctx.streamingComponent);
 		}
-		prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-		this.ctx.chatContainer.clear();
-		this.ctx.rebuildChatFromMessages();
+		this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 
 		// If streaming, re-add the streaming component with updated visibility and re-render
 		if (this.ctx.streamingComponent && this.ctx.streamingMessage) {

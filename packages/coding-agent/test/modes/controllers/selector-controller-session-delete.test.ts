@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import { SessionSelectorComponent } from "@gajae-code/coding-agent/modes/components/session-selector";
 import { SelectorController } from "@gajae-code/coding-agent/modes/controllers/selector-controller";
 import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
@@ -34,11 +34,14 @@ function createContext(currentSessionFile: string): {
 	ctx: TestContext;
 	calls: string[];
 	setCurrentSessionFile: (path: string) => void;
+	setCurrentSessionId: (id: string) => void;
 	showHookConfirm: (title: string, message: string) => Promise<boolean>;
 	newSession: () => Promise<boolean>;
+	switchSession: Mock<(targetPath: string) => Promise<boolean>>;
 } {
 	const calls: string[] = [];
 	let sessionFile = currentSessionFile;
+	let sessionId = currentSessionFile;
 	const editorContainer = {
 		children: [] as unknown[],
 		clear() {
@@ -54,6 +57,12 @@ function createContext(currentSessionFile: string): {
 	const newSession = vi.fn(async () => {
 		calls.push("session.newSession");
 		sessionFile = "/tmp/project/sessions/detached.jsonl";
+		sessionId = "detached-session";
+		return true;
+	});
+	const switchSession = vi.fn(async (targetPath: string) => {
+		sessionFile = targetPath;
+		sessionId = targetPath;
 		return true;
 	});
 	const ctx = {
@@ -74,12 +83,13 @@ function createContext(currentSessionFile: string): {
 		},
 		session: {
 			newSession,
-			switchSession: vi.fn(async () => true),
+			switchSession,
 		},
 		sessionManager: {
 			getCwd: () => "/tmp/project",
 			getSessionDir: () => "/tmp/project/sessions",
 			getSessionFile: () => sessionFile,
+			getSessionId: () => sessionId,
 		},
 		chatContainer: {
 			clear: vi.fn(() => {
@@ -123,8 +133,13 @@ function createContext(currentSessionFile: string): {
 		updateEditorBorderColor: vi.fn(() => {
 			calls.push("updateEditorBorderColor");
 		}),
-		renderInitialMessages: vi.fn(() => {
-			calls.push("renderInitialMessages");
+		rebuildInitialMessages: vi.fn((policy: "replace-identity" | "reconcile-same-transcript") => {
+			calls.push(
+				policy === "replace-identity"
+					? "ui.resetViewportAnchorIntent"
+					: "ui.prepareViewportAnchorForTranscriptRebuild",
+			);
+			calls.push("chatContainer.clear", "renderInitialMessages");
 		}),
 		reloadTodos: vi.fn(async () => {
 			calls.push("reloadTodos");
@@ -147,8 +162,12 @@ function createContext(currentSessionFile: string): {
 		setCurrentSessionFile(path: string) {
 			sessionFile = path;
 		},
+		setCurrentSessionId(id: string) {
+			sessionId = id;
+		},
 		showHookConfirm,
 		newSession,
+		switchSession,
 	};
 }
 
@@ -194,6 +213,21 @@ describe("SelectorController session deletion", () => {
 		);
 	});
 
+	it("resets viewport intent when the same path loads a different session identity", async () => {
+		const sessionPath = "/tmp/project/sessions/a.jsonl";
+		const { ctx, calls, setCurrentSessionId, switchSession } = createContext(sessionPath);
+		switchSession.mockImplementation(async () => {
+			setCurrentSessionId("replacement-session-id");
+			return true;
+		});
+		const controller = new SelectorController(ctx);
+
+		await controller.handleResumeSession(sessionPath);
+
+		expect(calls).toContain("ui.resetViewportAnchorIntent");
+		expect(calls).not.toContain("ui.prepareViewportAnchorForTranscriptRebuild");
+	});
+
 	it("detaches the active session before selector deletion removes it", async () => {
 		const activeSession = makeSessionInfo("/tmp/project/sessions/active.jsonl");
 		const { ctx, calls } = createContext(activeSession.path);
@@ -225,7 +259,6 @@ describe("SelectorController session deletion", () => {
 			"ui.requestRender",
 			"session.newSession",
 			"resetIrcSidebarSession",
-			"ui.resetViewportAnchorIntent",
 			"loadingAnimation.stop",
 			"statusContainer.clear",
 			"pendingMessagesContainer.clear",
@@ -234,6 +267,8 @@ describe("SelectorController session deletion", () => {
 			"statusLine.setSessionStartTime",
 			"updateEditorTopBorder",
 			"updateEditorBorderColor",
+			"ui.resetViewportAnchorIntent",
+			"chatContainer.clear",
 			"renderInitialMessages",
 			"reloadTodos",
 			"ui.requestRender",
@@ -300,7 +335,6 @@ describe("SelectorController session deletion", () => {
 		expect(calls).toEqual([
 			"session.newSession",
 			"resetIrcSidebarSession",
-			"ui.resetViewportAnchorIntent",
 			"loadingAnimation.stop",
 			"statusContainer.clear",
 			"pendingMessagesContainer.clear",
@@ -309,6 +343,8 @@ describe("SelectorController session deletion", () => {
 			"statusLine.setSessionStartTime",
 			"updateEditorTopBorder",
 			"updateEditorBorderColor",
+			"ui.resetViewportAnchorIntent",
+			"chatContainer.clear",
 			"renderInitialMessages",
 			"reloadTodos",
 			"ui.requestRender",

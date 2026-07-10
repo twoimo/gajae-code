@@ -1,5 +1,3 @@
-import * as path from "node:path";
-
 import type { Component, OverlayHandle, TUI } from "@gajae-code/tui";
 import { Container, Spacer, Text } from "@gajae-code/tui";
 import { logger } from "@gajae-code/utils";
@@ -154,9 +152,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -215,9 +211,7 @@ export class ExtensionUiController {
 				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
-				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages("replace-identity");
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setText(result.selectedText);
 				this.ctx.showStatus("Branched to new session");
@@ -231,9 +225,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
@@ -244,26 +236,20 @@ export class ExtensionUiController {
 			},
 			compact: async instructionsOrOptions => this.#handleInteractiveCompact(instructionsOrOptions),
 			switchSession: async sessionPath => {
-				const previousSessionFile = this.ctx.sessionManager.getSessionFile();
-				const switchingToDifferentSession = previousSessionFile
-					? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
-					: true;
+				const previousSessionId = this.ctx.sessionManager.getSessionId();
 
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
 				if (!result) {
 					return { cancelled: true };
 				}
-				if (switchingToDifferentSession) {
-					this.ctx.resetIrcSidebarSession();
-					prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
-				} else {
-					prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-				}
+				const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
+				if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
 
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages(
+					switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript",
+				);
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -415,9 +401,7 @@ export class ExtensionUiController {
 					return;
 				}
 				await this.ctx.session.reload();
-				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -474,9 +458,7 @@ export class ExtensionUiController {
 				this.ctx.resetIrcSidebarSession();
 
 				// Update UI
-				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages("replace-identity");
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setText(result.selectedText);
 				this.ctx.showStatus("Branched to new session");
@@ -493,9 +475,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
@@ -509,24 +489,18 @@ export class ExtensionUiController {
 				if (this.ctx.isBackgrounded) {
 					return { cancelled: true };
 				}
-				const previousSessionFile = this.ctx.sessionManager.getSessionFile();
-				const switchingToDifferentSession = previousSessionFile
-					? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
-					: true;
+				const previousSessionId = this.ctx.sessionManager.getSessionId();
 
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
 				if (!result) {
 					return { cancelled: true };
 				}
-				if (switchingToDifferentSession) {
-					this.ctx.resetIrcSidebarSession();
-					prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
-				} else {
-					prepareTranscriptRebuild(this.ctx.ui, "reconcile-same-transcript");
-				}
-				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages();
+				const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
+				if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
+				this.ctx.rebuildInitialMessages(
+					switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript",
+				);
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -1009,7 +983,7 @@ export class ExtensionUiController {
 		// For non-streaming cases with display=true, update UI
 		// (streaming cases update via message_end event)
 		if (!this.ctx.isBackgrounded && !wasStreaming && shouldDisplay) {
-			this.ctx.rebuildChatFromMessages();
+			this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 		}
 	}
 

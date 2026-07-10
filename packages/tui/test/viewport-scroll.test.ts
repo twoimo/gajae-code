@@ -659,6 +659,33 @@ describe("registered viewport anchor", () => {
 		}
 	});
 
+	it("follows the latest transcript after an unresolved anchor", async () => {
+		const term = new VirtualTerminal(30, 6);
+		const tui = new TUI(term);
+		const transcript = new AnchoredTranscript();
+		for (let index = 0; index < 20; index++) transcript.addRow(`history-${index}`, `history-${index}`);
+		tui.addChild(transcript);
+		tui.setViewportAnchorComponent(transcript);
+		try {
+			tui.start();
+			await settle(term);
+			expect(tui.scrollViewportPages(-1)).toBe(true);
+			await term.flush();
+			expect(visible(term)[0]).toBe("history-9");
+
+			transcript.removeFirst(10);
+			tui.requestRender();
+			await settle(term);
+			expect(visible(term)[0]).toBe("history-9");
+
+			expect(tui.followLiveViewport()).toBe(true);
+			await term.flush();
+			expect(visible(term).at(-1)).toBe("history-19");
+			expect(visible(term).some(line => line === "history-9")).toBe(false);
+		} finally {
+			tui.stop();
+		}
+	});
 	it("retains unresolved intent through provider removal and resolves a replacement", async () => {
 		const term = new VirtualTerminal(30, 6);
 		const tui = new TUI(term);

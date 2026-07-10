@@ -116,7 +116,14 @@ import {
 	onThemeChange,
 	theme,
 } from "./theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext, SubmittedUserInput, TodoItem, TodoPhase } from "./types";
+import type {
+	CompactionQueuedMessage,
+	InteractiveModeContext,
+	SubmittedUserInput,
+	TodoItem,
+	TodoPhase,
+	TranscriptRebuildPolicy,
+} from "./types";
 import { addChatChild, prepareTranscriptRebuild, UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
@@ -884,8 +891,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (!submission.customType) {
 			this.pendingImages = submission.images ? [...submission.images] : [];
-			prepareTranscriptRebuild(this.ui, "reconcile-same-transcript");
-			this.rebuildChatFromMessages();
+			this.rebuildChatFromMessages("reconcile-same-transcript");
 			this.editor.setText(submission.text);
 		}
 		this.updateEditorChrome();
@@ -1033,7 +1039,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setTopBorder(undefined);
 	}
 
-	rebuildChatFromMessages(): void {
+	rebuildChatFromMessages(policy: TranscriptRebuildPolicy): void {
+		prepareTranscriptRebuild(this.ui, policy);
 		this.chatContainer.clear();
 		const context = this.session.buildDisplaySessionContext();
 		this.renderSessionContext(context);
@@ -2308,6 +2315,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventController.reconcileIrcExpiryTimers(this.#uiHelpers.getRenderedIrcInlineComponents());
 	}
 
+	rebuildInitialMessages(
+		policy: TranscriptRebuildPolicy,
+		prebuiltContext?: SessionContext,
+		options?: { preserveExistingChat?: boolean },
+	): void {
+		prepareTranscriptRebuild(this.ui, policy);
+		this.#uiHelpers.renderInitialMessages(prebuiltContext, options);
+	}
 	renderInitialMessages(prebuiltContext?: SessionContext, options?: { preserveExistingChat?: boolean }): void {
 		this.#uiHelpers.renderInitialMessages(prebuiltContext, options);
 	}

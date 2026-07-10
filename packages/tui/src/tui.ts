@@ -539,6 +539,7 @@ type TuiRenderCounterSnapshot = {
 export class TUI extends Container {
 	terminal: Terminal;
 	#previousLines: string[] = [];
+	#latestRenderedLines: string[] = [];
 	/**
 	 * Raw (pre-normalization) lines from the previous frame, kept only when the
 	 * virtual-viewport flag is on. Used to detect whether the off-screen prefix is
@@ -823,19 +824,22 @@ export class TUI extends Container {
 		if (this.#manualViewportTop === undefined) return false;
 		const height = this.terminal.rows;
 		const width = this.terminal.columns;
-		const liveViewportTop = Math.max(0, this.#previousLines.length - height);
+		const liveLines = this.#latestRenderedLines;
+		const liveViewportTop = Math.max(0, liveLines.length - height);
 		this.#manualViewportTop = undefined;
 		this.#manualViewportAnchor = null;
 		this.#manualViewportFallbackAnchors = [];
 		this.#reconcileMissingViewportAnchor = false;
-		return this.#repaintViewportFromLines(
-			this.#previousLines,
+		const repainted = this.#repaintViewportFromLines(
+			liveLines,
 			width,
 			height,
 			liveViewportTop,
 			this.#lastCursorPosition,
 			"manual viewport follow live",
 		);
+		if (repainted) this.#previousLines = liveLines;
+		return repainted;
 	}
 
 	/**
@@ -1173,6 +1177,7 @@ export class TUI extends Container {
 		// focus/listener state is intentionally preserved so input routing survives
 		// a resume.
 		this.#previousLines = [];
+		this.#latestRenderedLines = [];
 		this.#previousRaw = [];
 		this.#lineNormalizationCache.clear();
 		this.#lineTruncationCache.clear();
@@ -1209,6 +1214,7 @@ export class TUI extends Container {
 			// A forced full redraw supersedes any queued input-priority render.
 			this.#inputRenderPending = false;
 			this.#previousLines = [];
+			this.#latestRenderedLines = [];
 			this.#previousRaw = [];
 			this.#lineNormalizationCache.clear();
 			this.#lineTruncationCache.clear();
@@ -2034,6 +2040,7 @@ export class TUI extends Container {
 			renderMetrics.recordLineCount("measured", total - diffStart);
 			if (usedWindowNormalize) renderMetrics.recordLineCount("offscreenScan", diffStart);
 		}
+		this.#latestRenderedLines = newLines;
 
 		if (this.#manualViewportTop !== undefined) {
 			let resolvedAnchorTop = anchorFrame === null ? null : this.#resolveManualAnchor(anchorFrame);
