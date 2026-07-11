@@ -626,6 +626,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorChrome();
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
+		this.#syncIrcSidebarAvailabilityFromSettings();
 		this.ui.requestRender(true);
 
 		// GitHub star reminder (interactive-only). Register the decline-driven
@@ -2724,14 +2725,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
+	#syncIrcSidebarAvailabilityFromSettings(): void {
+		this.applyIrcSidebarAvailability(
+			this.settings.get("irc.enabled") === true && this.settings.get("irc.sidebar.enabled") === true,
+		);
+	}
+
 	resetIrcSidebarSession(): void {
 		this.ircLedger.reset();
 		this.#eventController.resetIrcObservations();
-		this.#ircSidebarAvailable = false;
 		this.#ircSidebarRequestedVisible = false;
 		this.#ircSplitView.setVisible(false);
-		this.#invalidateIrcSidebarRender();
-		this.ui.requestRender();
+		this.#syncIrcSidebarAvailabilityFromSettings();
 	}
 
 	#invalidateIrcSidebarRender(): void {
