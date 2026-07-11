@@ -56,6 +56,21 @@ describe("verifyExpectedFiles", () => {
 		}
 	});
 
+	it("ignores GJC runtime metadata created inside the benchmark workspace", async () => {
+		const { expectedDir, actualDir, cleanup } = await createTempDirs();
+		try {
+			await Bun.write(path.join(expectedDir, "index.ts"), "export const value = 1;\n");
+			await Bun.write(path.join(actualDir, "index.ts"), "export const value = 1;\n");
+			await Bun.write(path.join(actualDir, ".gjc", "state", "runtime-state.json"), "{}\n");
+
+			const result = await verifyExpectedFiles(expectedDir, actualDir);
+
+			expect(result.success).toBe(true);
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("fails with diff output when formatted content differs", async () => {
 		const { expectedDir, actualDir, cleanup } = await createTempDirs();
 		try {

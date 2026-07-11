@@ -5,6 +5,7 @@
 ### Changed
 
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
+- Rebalanced GPT-5.6 Codex and combo presets around published family tiers, reasoning-effort curves, and repeated local edit benchmarks: Luna handles Eco high-volume execution, Terra xhigh handles technically difficult Medium/Pro/combo execution and criticism, while Sol drives the Medium and Pro defaults plus architecture-critical reasoning.
 
 ### Fixed
 
