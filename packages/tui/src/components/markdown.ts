@@ -4,9 +4,7 @@ import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
 import type { Component } from "../tui";
 import {
-	annotateViewportAnchorGraphemes,
 	applyBackgroundToLine,
-	extractViewportAnchorRows,
 	padding,
 	replaceTabs,
 	type ViewportAnchorSpan,
@@ -58,6 +56,16 @@ const PARSE_CACHE_MAX = 128;
 const parseCache = new LRUCache<string, { source: string; tokens: Token[] }>({ max: PARSE_CACHE_MAX });
 const MARKDOWN_STREAM_THROTTLE_MS = 64;
 let markdownNow = (): number => performance.now();
+
+// Viewport anchor offsets are numbered over each top-level token's width-invariant
+// source-text span (scaled to leave room for content rows) instead of the
+// width-dependent rendered glyph stream. HR fill length, per-row blockquote
+// prefixes, and boxed/raw table topology all change the rendered glyph count with
+// width; source-text spans do not, so anchors resolve to the same content after a
+// topology-changing reflow (#2031). The scale guarantees each content row a
+// positive, non-overlapping sub-span even when a token wraps into more rows than
+// its source has characters.
+const ANCHOR_SOURCE_SCALE = 1 << 16;
 
 /** Test-only clock seam for streaming throttle tests. */
 export function __setMarkdownNowForTest(now: (() => number) | undefined): void {
@@ -463,41 +471,67 @@ export class Markdown implements Component {
 			parseCache.set(contentKey, { source: normalizedText, tokens });
 		}
 
-		// Convert tokens to styled terminal output
+		// Convert tokens to styled terminal output. When anchoring, record each
+		// top-level token's rendered-line range plus a width-invariant source-text
+		// span (cumulative marked-token `raw` lengths) so viewport anchors are
+		// numbered over stable source identities instead of the rendered glyph
+		// stream (#2031).
 		const renderedLines: string[] = [];
+		const tokenBoundaries: Array<{ start: number; end: number; srcLo: number; srcHi: number }> = [];
+		let srcOffset = 0;
 
 		for (let i = 0; i < tokens.length; i++) {
 			const token = tokens[i];
 			const nextToken = tokens[i + 1];
+			const tokenStart = renderedLines.length;
 			const tokenLines = this.#renderToken(token, contentWidth, nextToken?.type);
 			renderedLines.push(...tokenLines);
+			if (includeAnchors) {
+				const rawLength = "raw" in token && typeof token.raw === "string" ? token.raw.length : 0;
+				const srcLo = srcOffset;
+				srcOffset += Math.max(1, rawLength);
+				tokenBoundaries.push({ start: tokenStart, end: renderedLines.length, srcLo, srcHi: srcOffset });
+			}
 		}
 
 		let wrappedLines: string[];
 		let wrappedSpans: Array<ViewportAnchorSpan | null> | undefined;
 		if (includeAnchors) {
-			const markedRenderedLines: string[] = [];
-			const markerToken = crypto.randomUUID();
-			let nextGrapheme = 0;
-			let nextCell = 0;
-			for (const line of renderedLines) {
-				if (TERMINAL.isImageLine(line)) {
-					markedRenderedLines.push(line);
-					continue;
+			wrappedLines = [];
+			const spans: Array<ViewportAnchorSpan | null> = [];
+			for (const boundary of tokenBoundaries) {
+				// Wrap this token's rendered lines exactly as the plain path does, so
+				// the emitted `lines` stay byte-identical to render().
+				const tokenWrapped: string[] = [];
+				for (let r = boundary.start; r < boundary.end; r++) {
+					const line = renderedLines[r];
+					if (TERMINAL.isImageLine(line)) tokenWrapped.push(line);
+					else tokenWrapped.push(...wrapTextIfNeeded(line, contentWidth));
 				}
-				const marked = annotateViewportAnchorGraphemes(line, nextGrapheme, nextCell, markerToken);
-				markedRenderedLines.push(marked.text);
-				nextGrapheme = marked.nextGrapheme;
-				nextCell = marked.nextCell;
+				// Distribute the token's width-invariant source-text band across its
+				// content rows. A content row's anchor identifies the same source
+				// position at any width, so the row survives topology-changing reflow.
+				// Blank, decoration-only whitespace, and image rows carry no anchor.
+				const contentRows: number[] = [];
+				for (let r = 0; r < tokenWrapped.length; r++) {
+					const line = tokenWrapped[r];
+					if (!TERMINAL.isImageLine(line) && Bun.stripANSI(line).trim().length > 0) contentRows.push(r);
+				}
+				const lo = boundary.srcLo * ANCHOR_SOURCE_SCALE;
+				const hi = boundary.srcHi * ANCHOR_SOURCE_SCALE;
+				const rowSpans: Array<ViewportAnchorSpan | null> = new Array(tokenWrapped.length).fill(null);
+				const count = contentRows.length;
+				for (let c = 0; c < count; c++) {
+					const start = lo + Math.floor((c * (hi - lo)) / count);
+					const end = c === count - 1 ? hi : lo + Math.floor(((c + 1) * (hi - lo)) / count);
+					rowSpans[contentRows[c]] = { graphemeStart: start, graphemeEnd: end, cellStart: start, cellEnd: end };
+				}
+				for (let r = 0; r < tokenWrapped.length; r++) {
+					wrappedLines.push(tokenWrapped[r]);
+					spans.push(rowSpans[r]);
+				}
 			}
-			const markedWrappedLines: string[] = [];
-			for (const line of markedRenderedLines) {
-				if (TERMINAL.isImageLine(line)) markedWrappedLines.push(line);
-				else markedWrappedLines.push(...wrapTextIfNeeded(line, contentWidth));
-			}
-			const extracted = extractViewportAnchorRows(markedWrappedLines, markerToken);
-			wrappedLines = extracted.lines;
-			wrappedSpans = extracted.spans;
+			wrappedSpans = spans;
 		} else {
 			wrappedLines = [];
 			for (const line of renderedLines) {
