@@ -121,19 +121,23 @@ export async function reexecWithScrubbedMallocEnv(): Promise<number | null> {
 		return null;
 	}
 
-	// The controlling TTY delivers SIGINT (Ctrl-C) to the whole foreground
-	// process group, so the child already receives it; the wrapper must keep a
-	// SIGINT listener so it stays alive to reap the child and propagate its exit
-	// code instead of dying first. SIGTERM is targeted (not group-delivered), so
-	// forward it to the child explicitly.
-	const onSigint = () => {};
-	const onSigterm = () => {
+	// Keep the wrapper alive on SIGINT/SIGTERM so it reaps the child and
+	// propagates its exit code instead of dying first, and forward the signal so
+	// the scrubbed child terminates too. Interactive Ctrl-C is delivered to the
+	// whole foreground process group (and the TUI's raw mode turns it into a 0x03
+	// byte, not a signal, anyway), so re-forwarding is a harmless no-op once the
+	// child is already handling or exiting. Targeted delivery — `kill -INT <pid>`
+	// or a supervisor's `child.kill("SIGINT")` — reaches only the wrapper, so
+	// without forwarding the launch would be uncancellable outside a terminal.
+	const forwardSignal = (signal: NodeJS.Signals) => () => {
 		try {
-			child.kill("SIGTERM");
+			child.kill(signal);
 		} catch {
 			// Child already gone; nothing to forward.
 		}
 	};
+	const onSigint = forwardSignal("SIGINT");
+	const onSigterm = forwardSignal("SIGTERM");
 	process.on("SIGINT", onSigint);
 	process.on("SIGTERM", onSigterm);
 	try {
