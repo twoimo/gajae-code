@@ -28,7 +28,7 @@ function formatFileList(files: string[]): string {
 }
 
 function isBenchmarkRuntimeFile(file: string): boolean {
-	return file === ".gjc" || file.startsWith(".gjc/");
+	return /^\.gjc\/_session-[^/]+\//.test(file.replaceAll("\\", "/"));
 }
 
 function createCompactDiff(expected: string, actual: string, contextLines = 3): string {

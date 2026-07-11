@@ -1,18 +1,18 @@
 # GPT-5.6 Codex preset benchmark
 
-This report records the local benchmark evidence used to assign GPT-5.6 Sol, Terra, and Luna to GJC's built-in Codex-related model profiles.
+This report records descriptive local exact-edit evidence and the product judgments used to assign GPT-5.6 Sol, Terra, and Luna to GJC's built-in Codex-related model profiles.
 
 ## Decision summary
 
-The benchmark supports this role split:
+Built-in role assignments are product judgments. The selected TypeScript edit evidence below directly compares only bounded executor-style edits; it does not establish superiority, statistical significance, production reliability, or stability for any role.
 
-- **Luna high**: economical, bounded execution in `codex-eco`.
-- **Terra high**: economical planning and lower-stakes criticism.
-- **Terra xhigh**: technically difficult execution and criticism in Medium, Pro, and combo profiles.
-- **Sol medium**: general orchestration for the `codex-medium` default agent.
-- **Sol high/xhigh/max**: architecture, high-stakes criticism, and Pro orchestration.
+- **Luna high**: assigned to bounded execution in `codex-eco`.
+- **Terra high**: assigned to planning and lower-stakes criticism.
+- **Terra xhigh**: assigned to technically difficult execution and criticism in Medium, Pro, and combo profiles.
+- **Sol medium**: assigned to general orchestration for the `codex-medium` default agent.
+- **Sol high/xhigh/max**: assigned to architecture, high-stakes criticism, and Pro orchestration.
 
-The edit benchmark does not measure every responsibility of the default agent. In particular, Sol medium's weak surgical-edit score does not directly measure its broader interpretation, orchestration, explanation, and routing work.
+The edit benchmark does not measure default-agent interpretation, orchestration, explanation, or routing, and it does not measure planner, architect, or critic work. Those non-executor assignments are product judgments, not benchmark findings.
 
 ## Environment
 
@@ -25,7 +25,7 @@ The edit benchmark does not measure every responsibility of the default agent. I
 - Guided edits: disabled
 - Attempts: one per sample
 
-The local provider records zero cost. Cost figures below estimate OpenAI list pricing:
+The local provider recorded zero cost. The amounts below are non-billing list-price estimates calculated from the listed rates; they are not provider charges or production-cost predictions.
 
 | Model | Input / 1M | Output / 1M |
 |---|---:|---:|
@@ -54,11 +54,11 @@ The first pass used eight mutation tasks with one run per task:
 | Terra xhigh | 8/8 | 50.9s | 820K | 5.9K | $2.14 |
 | Sol medium | 6/8 | 30.1s | 376K | 4.3K | $2.01 |
 
-This sample showed that Terra xhigh was the only setup to complete all eight tasks. It also suggested unusually strong Luna xhigh economics, but one run per task was insufficient to establish stability.
+In this eight-task, one-attempt-per-task sample, Terra xhigh recorded 8/8 verified edits. Luna xhigh recorded 7/8; one run per task does not establish stability.
 
-## Repeated confirmation sample
+## Repeated selected-task sample
 
-The confirmation pass selected the four most discriminating tasks and ran each three times, producing 12 attempted samples per setup:
+The selected pass ran four discriminating TypeScript edit tasks three times each, scheduling 12 samples per setup:
 
 1. Remove the intended early return from a file containing several similar returns.
 2. Swap the intended `if`/`else` branches without changing nearby equivalent logic.
@@ -81,7 +81,7 @@ bun --cwd=packages/typescript-edit-benchmark run start \
   --format json
 ```
 
-| Setup | Verified | Rate | Avg time | Input tokens | Output tokens | Est. cost | Cost/success |
+| Setup | Verified edits / recorded runs | Rate | Avg time | Input tokens | Output tokens | Est. list-price cost | Est. cost / verified edit |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Luna high | 8/12 | 66.7% | 75.2s | 3.61M | 18.9K | $3.73 | $0.47 |
 | Luna xhigh | 9/12 | 75.0% | 80.5s | 6.60M | 25.0K | $6.75 | $0.75 |
@@ -89,29 +89,29 @@ bun --cwd=packages/typescript-edit-benchmark run start \
 | Terra xhigh | 9/12 | 75.0% | 57.3s | 1.86M | 14.2K | $4.86 | $0.54 |
 | Sol medium | 4/12 | 33.3% | 46.3s | 558K | 10.1K | $3.09 | $0.77 |
 
-Terra high had one transport/ghost failure, leaving 11 recorded runs.
+Terra high had one transport/ghost failure, so it has 11 recorded runs rather than 12 scheduled samples; its rate and cost per verified edit use those recorded results.
 
 ## Findings
 
-### Terra xhigh is the preferred difficult-edit executor
+### Terra xhigh's selected-task executor result
 
-Terra xhigh tied Luna xhigh on verified accuracy while using 72% fewer input tokens, 43% fewer output tokens, 29% less estimated cost, and 29% less time. It is therefore assigned to technically difficult executor roles in Medium, Pro, and Codex combo profiles.
+Across these four selected TypeScript edit tasks under the documented local setup, Terra xhigh and Luna xhigh each recorded 9/12 verified edits. Terra xhigh's reported totals were 72% fewer input tokens, 43% fewer output tokens, 28% less estimated list-price cost, and 29% less time than Luna xhigh. These descriptive results inform, but do not prove, the Terra xhigh executor assignment.
 
 ### Luna remains useful, but not as the premium executor
 
-Luna xhigh performed well in the broad sample but became read-heavy and expensive on the repeated ambiguous structural tasks. Luna high remains the Eco executor because that preset intentionally favors the lowest-priced family member and accepts a lower capability ceiling.
+Luna xhigh recorded 7/8 in the broad sample and 9/12 in the selected-task sample. Luna high remains the Eco executor as a product judgment for that preset's lower-priced-family-member trade-off; these local runs do not establish a capability ceiling or production behavior.
 
-### Terra high is suitable for cheaper specialist reasoning
+### Terra high's product assignment
 
-Terra high was inexpensive but less exact. It remains useful for planning and lower-stakes criticism, where the work is less dependent on making one exact surgical mutation.
+Terra high recorded 6/11 verified edits after one transport/ghost failure in the selected-task sample. Its planning and lower-stakes critic assignments are product judgments; this edit benchmark does not measure those roles.
 
-### Sol medium remains a default-agent choice, not an executor choice
+### Sol medium's product assignment
 
-Sol medium was fast and token-efficient but frequently made semantically plausible, over-broad edits. The default agent has a wider job than this benchmark measures, so Sol medium remains the `codex-medium` orchestrator. Sol is reserved for default and architecture roles rather than bounded execution.
+Sol medium recorded 4/12 verified edits in the selected-task sample and was faster with fewer reported input tokens than the other listed xhigh setups. Its `codex-medium` default-agent and architecture assignments are product judgments because the benchmark does not measure those broader roles.
 
 ### Higher effort is not automatically cheaper
 
-The benchmark supports the claim that high-effort Terra can be economical, but it rejects a universal rule that xhigh is always cheaper. On ambiguous tasks, Luna xhigh spent substantially more tokens than Luna high. Effort should be selected together with model tier and role shape.
+The selected-task data show that Luna xhigh used more reported tokens than Luna high in this local setup. They do not establish a general cost rule for thinking effort; effort selection remains a product decision informed by model tier and role shape.
 
 ## Resulting built-in profiles
 
@@ -126,11 +126,11 @@ The benchmark supports the claim that high-effort Terra can be economical, but i
 
 ## Limitations
 
-- The benchmark measures precise TypeScript source mutations, not full-session planning quality or architecture quality.
-- The task corpus is small and intentionally adversarial.
+- The benchmark measures four selected precise TypeScript source mutations in the repeated sample, not full-session planning, architecture, criticism, or default-agent quality.
+- The corpus is small and intentionally adversarial; the results are descriptive, not statistically significant or a proof of general superiority, production reliability, or stability.
 - Samples used a local OpenAI-compatible provider rather than OpenAI's production endpoint.
-- Provider retries and one ghost run affected the Terra high sample.
-- Token accounting reflects the local transport and benchmark context construction; list-cost estimates are comparative rather than billing predictions.
+- Terra high has 11 recorded runs because one of 12 scheduled samples ended in a transport/ghost failure.
+- Token accounting reflects the local transport and benchmark context construction. The provider recorded zero cost; displayed costs are rounded list-price estimates, not billing predictions.
 - Model behavior can change as provider snapshots are updated.
 
-The raw JSON reports and conversation dumps were generated under `runs/gpt-5.6-local-2026-07-11/` and `runs/gpt-5.6-confirmation-2026-07-11/`. Those runtime artifacts are intentionally not committed.
+The raw JSON reports and conversation dumps were generated under `runs/gpt-5.6-local-2026-07-11/` and `runs/gpt-5.6-confirmation-2026-07-11/`, but are not committed. The committed tables support the displayed denominators and rounded comparisons, not reconstruction of unrounded token totals or list-price estimates.
