@@ -1264,7 +1264,7 @@ describe("Coordinator MCP server protocol", () => {
 		expect(response.result.isError).toBe(false);
 		expect(JSON.parse(response.result.content[0].text).session.session_id).toBe("gjc-demo");
 		expect(calls).toEqual([
-			{ cwd: root, prompt: "hello", namespace: { profile: "local", repo: "repo" }, worktree: true },
+			{ cwd: root, prompt: "hello", namespace: { profile: "local", repo: "repo" }, worktree: true, mpreset: null },
 		]);
 	});
 	it("uses portable process incarnation evidence and rejects replacement or unavailable proof", async () => {

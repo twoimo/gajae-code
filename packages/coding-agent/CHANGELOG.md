@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Coordinator MCP `gjc_coordinator_start_session` and the `gjc_delegate_plan`/`gjc_delegate_execute`/`gjc_delegate_team` tools now accept an optional `mpreset` argument that authoritatively activates a GJC model profile for a fresh session, with the same semantics as `gjc --mpreset <profile>` (#2003). The name is resolved through the merged built-in/custom profile registry before launch (so custom profiles keep working) and injected into the child startup command so the profile's default and per-role models apply from the first turn; unknown names are rejected with the available-profile listing and never reach a spawned command. The effective profile is recorded on the session and surfaced in coordinator status/readback, reusing a session with a conflicting `mpreset` fails with a stable `mpreset_conflict` reason, and calls that omit `mpreset` keep their current behavior. The existing advisory `model` prompt hint is unchanged.
+
 ### Changed
 
 - Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
