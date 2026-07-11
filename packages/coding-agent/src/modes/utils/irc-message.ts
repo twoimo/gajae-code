@@ -20,6 +20,14 @@ export interface IrcMessageBlock {
 	readonly bodyLines: readonly string[];
 }
 
+/** Normalizes untrusted IRC identity fields without altering visible grapheme composition. */
+export function normalizeIrcIdentity(identity: string): string {
+	return sanitizeText(identity.replace(/[\r\n\t\u2028\u2029]+/g, " ")).replace(
+		/[\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/g,
+		"",
+	);
+}
+
 /** Formats IRC observations into display-neutral semantic blocks for both IRC surfaces. */
 export function formatIrcMessageBlock(message: ParsedIrcMessage & { timestamp: number }): IrcMessageBlock {
 	const date = new Date(message.timestamp);
@@ -29,8 +37,8 @@ export function formatIrcMessageBlock(message: ParsedIrcMessage & { timestamp: n
 		: "--:--";
 	const bodyLines = message.text === "" ? [] : message.text.replaceAll("\t", "    ").split("\n");
 	return {
-		sender: message.from.replaceAll("\t", "    "),
-		recipient: message.to.replaceAll("\t", "    "),
+		sender: normalizeIrcIdentity(message.from),
+		recipient: normalizeIrcIdentity(message.to),
 		kind: message.kind === "relay" ? "outgoing" : message.kind,
 		time,
 		bodyLines,
@@ -59,8 +67,8 @@ export function parseIrcMessage(message: IrcCustomMessage): ParsedIrcMessage | u
 	const kind = message.customType.slice(4) as IrcMessageKind;
 	const timestamp =
 		typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : Date.now();
-	const from = sanitizeText(kind === "autoreply" ? "you" : stringDetail(message.details, "from") || "?");
-	const to = sanitizeText(kind === "incoming" ? "you" : stringDetail(message.details, "to") || "?");
+	const from = normalizeIrcIdentity(kind === "autoreply" ? "you" : stringDetail(message.details, "from") || "?");
+	const to = normalizeIrcIdentity(kind === "incoming" ? "you" : stringDetail(message.details, "to") || "?");
 	const text = sanitizeText(
 		kind === "incoming"
 			? stringDetail(message.details, "message")

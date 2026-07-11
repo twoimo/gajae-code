@@ -215,6 +215,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 			},
 			arrival.panelVisible,
 		);
+		if (!record) throw new Error("Expected yielded-panel observation to be retained");
 		expect(record.mode).toBe("persistent");
 
 		const components = mode.addLiveIrcObservationToChat(

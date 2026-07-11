@@ -37,7 +37,12 @@ const incoming = {
 	timestamp: 0,
 };
 
-const eligibleArrival = { panelVisible: false, panelRequestedVisible: false, sidebarAvailable: true, resolvedToggleKey: "Ctrl+I" };
+const eligibleArrival = {
+	panelVisible: false,
+	panelRequestedVisible: false,
+	sidebarAvailable: true,
+	resolvedToggleKey: "Ctrl+I",
+};
 
 it("renders rebuilt IRC observations as one header and one multiline body without consuming the live hint", () => {
 	const { helpers, chatContainer } = makeContext();
@@ -59,10 +64,13 @@ it("renders rebuilt IRC observations as one header and one multiline body withou
 it("does not consume the hint for visible or unavailable live arrivals", () => {
 	const { helpers, chatContainer } = makeContext();
 	helpers.addLiveIrcObservationToChat(incoming, { ...eligibleArrival, panelVisible: true });
-	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "unavailable" }, {
-		...eligibleArrival,
-		sidebarAvailable: false,
-	});
+	helpers.addLiveIrcObservationToChat(
+		{ ...incoming, observationId: "unavailable" },
+		{
+			...eligibleArrival,
+			sidebarAvailable: false,
+		},
+	);
 	chatContainer.clear();
 
 	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "eligible" }, eligibleArrival);
@@ -75,7 +83,10 @@ it("suppresses the sidebar hint for an unbound toggle without consuming a later 
 	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).not.toContain("opens sidebar");
 
 	chatContainer.clear();
-	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "empty" }, { ...eligibleArrival, resolvedToggleKey: "" });
+	helpers.addLiveIrcObservationToChat(
+		{ ...incoming, observationId: "empty" },
+		{ ...eligibleArrival, resolvedToggleKey: "" },
+	);
 	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).not.toContain("opens sidebar");
 
 	chatContainer.clear();

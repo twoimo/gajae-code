@@ -26,7 +26,10 @@ export function computeIrcSplitWidths(width: number): {
 	const normalizedWidth = Math.max(0, Math.floor(width));
 	const transcriptFloor = Math.floor(normalizedWidth * 0.5);
 	const preferredSidebar = Math.max(IRC_SIDEBAR_MIN_WIDTH, Math.floor(normalizedWidth * IRC_SIDEBAR_WIDTH_RATIO));
-	const sidebarWidth = Math.max(0, Math.min(preferredSidebar, normalizedWidth - IRC_SEPARATOR_WIDTH - transcriptFloor));
+	const sidebarWidth = Math.max(
+		0,
+		Math.min(preferredSidebar, normalizedWidth - IRC_SEPARATOR_WIDTH - transcriptFloor),
+	);
 
 	// The sidebar yields entirely rather than rendering below its readable minimum.
 	if (sidebarWidth < IRC_SIDEBAR_MIN_WIDTH) {

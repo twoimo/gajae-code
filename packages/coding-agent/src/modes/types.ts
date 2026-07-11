@@ -30,9 +30,9 @@ import type { HookSelectorComponent } from "./components/hook-selector";
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { IrcObservationLedger } from "./irc-observation-ledger";
-import type { ParsedIrcMessage } from "./utils/irc-message";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
+import type { ParsedIrcMessage } from "./utils/irc-message";
 
 export type TranscriptRebuildPolicy = "replace-identity" | "reconcile-same-transcript";
 export type CompactionQueuedMessage = {
@@ -206,6 +206,8 @@ export interface InteractiveModeContext {
 	isKnownSlashCommand(text: string): boolean;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): Component[];
 	addLiveIrcObservationToChat(message: ParsedIrcMessage, arrival: IrcArrivalSnapshot): Component[];
+	removeRenderedIrcInlineComponents(observationId: string): readonly Component[] | undefined;
+	resetRenderedIrcInlineComponents(): readonly (readonly Component[])[];
 	renderSessionContext(
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },

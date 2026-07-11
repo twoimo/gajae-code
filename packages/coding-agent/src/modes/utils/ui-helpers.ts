@@ -266,6 +266,18 @@ export class UiHelpers {
 		return this.#renderedIrcInlineComponents;
 	}
 
+	removeRenderedIrcInlineComponents(observationId: string): readonly Component[] | undefined {
+		const components = this.#renderedIrcInlineComponents.get(observationId);
+		this.#renderedIrcInlineComponents.delete(observationId);
+		return components;
+	}
+
+	resetRenderedIrcInlineComponents(): readonly (readonly Component[])[] {
+		const components = [...this.#renderedIrcInlineComponents.values()];
+		this.#renderedIrcInlineComponents.clear();
+		return components;
+	}
+
 	#addIrcObservationToChat(message: ParsedIrcMessage, sidebarHint?: string): Component[] {
 		const block = formatIrcMessageBlock(message);
 		const components: Component[] = [];
@@ -572,7 +584,10 @@ export class UiHelpers {
 						(record.mode === "persistent" || now < record.expiresAt!) &&
 						!this.#renderedIrcInlineComponents.has(record.observationId)
 					) {
-						this.#renderedIrcInlineComponents.set(record.observationId, this.addRebuiltIrcObservationToChat(record));
+						this.#renderedIrcInlineComponents.set(
+							record.observationId,
+							this.addRebuiltIrcObservationToChat(record),
+						);
 					}
 				}
 				continue;

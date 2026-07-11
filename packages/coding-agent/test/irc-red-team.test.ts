@@ -133,7 +133,9 @@ function eventContext(setting: { enabled: boolean }) {
 	const helpers = new UiHelpers(ctx);
 	const addMessageToChat = vi.fn((message: CustomMessage) => helpers.addMessageToChat(message));
 	ctx.addMessageToChat = addMessageToChat;
-	const addLiveIrcObservationToChat = vi.fn((message, arrival) => helpers.addLiveIrcObservationToChat(message, arrival));
+	const addLiveIrcObservationToChat = vi.fn((message, arrival) =>
+		helpers.addLiveIrcObservationToChat(message, arrival),
+	);
 	ctx.addLiveIrcObservationToChat = addLiveIrcObservationToChat;
 	return { ctx, chatContainer, ledger, addMessageToChat, addLiveIrcObservationToChat };
 }

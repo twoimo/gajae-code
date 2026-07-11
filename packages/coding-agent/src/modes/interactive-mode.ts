@@ -102,7 +102,6 @@ import { SelectorController } from "./controllers/selector-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
 import { IrcObservationLedger } from "./irc-observation-ledger";
-import type { ParsedIrcMessage } from "./utils/irc-message";
 import { JobsObserver } from "./jobs-observer";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { SessionObserverRegistry } from "./session-observer-registry";
@@ -127,12 +126,27 @@ import type {
 	TodoPhase,
 	TranscriptRebuildPolicy,
 } from "./types";
+import type { ParsedIrcMessage } from "./utils/irc-message";
 import { addChatChild, prepareTranscriptRebuild, UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
 const COMPOSER_NEWLINE_HINT = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
 export const DEFAULT_COMPOSER_PLACEHOLDER = `Type your message... ${COMPOSER_NEWLINE_HINT}: New line · Ctrl+C: Clear · Ctrl+R: Search history · Shift+Tab: Reasoning`;
 const WELCOME_RESERVED_CONTAINER_CHILD_LIMIT = 8;
+
+const IRC_SIDEBAR_TOGGLE_SHADOWING_ACTIONS: readonly AppKeybinding[] = [
+	"app.plan.toggle",
+	"app.session.new",
+	"app.session.tree",
+	"app.session.fork",
+	"app.session.resume",
+	"app.message.followUp",
+	"app.stt.toggle",
+	"app.clipboard.copyLine",
+	"app.session.observe",
+	"app.jobs.open",
+	"app.tool.backgroundFold",
+];
 
 export function getWelcomeTranscriptReservedRows(chatContainer: Container, width: number): number {
 	return chatContainer.children.length === 0 || chatContainer.children.length > WELCOME_RESERVED_CONTAINER_CHILD_LIMIT
@@ -2363,6 +2377,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	addLiveIrcObservationToChat(message: ParsedIrcMessage, arrival: IrcArrivalSnapshot): Component[] {
 		return this.#uiHelpers.addLiveIrcObservationToChat(message, arrival);
 	}
+	removeRenderedIrcInlineComponents(observationId: string): readonly Component[] | undefined {
+		return this.#uiHelpers.removeRenderedIrcInlineComponents(observationId);
+	}
+	resetRenderedIrcInlineComponents(): readonly (readonly Component[])[] {
+		return this.#uiHelpers.resetRenderedIrcInlineComponents();
+	}
 
 	renderSessionContext(
 		sessionContext: SessionContext,
@@ -2765,12 +2785,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#inputController.setToolsExpanded(expanded);
 	}
 
+	#resolveEffectiveIrcSidebarToggleKey(): string | null {
+		for (const key of this.keybindings.getKeys("app.irc.sidebar.toggle")) {
+			const shadowed = IRC_SIDEBAR_TOGGLE_SHADOWING_ACTIONS.some(action =>
+				this.keybindings.getKeys(action).includes(key),
+			);
+			if (!shadowed) return key;
+		}
+		return null;
+	}
+
 	captureIrcArrivalSnapshot(): IrcArrivalSnapshot {
 		return {
 			panelVisible: this.#ircSplitView.effectiveSidebarVisible(this.ui.terminal.columns),
 			panelRequestedVisible: this.#ircSidebarRequestedVisible,
 			sidebarAvailable: this.#ircSidebarAvailable,
-			resolvedToggleKey: this.keybindings.getKeys("app.irc.sidebar.toggle")[0] ?? null,
+			resolvedToggleKey: this.#resolveEffectiveIrcSidebarToggleKey(),
 		};
 	}
 	toggleIrcSidebar(): void {

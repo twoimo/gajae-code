@@ -9,14 +9,33 @@ import {
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { InteractiveModeContext, IrcArrivalSnapshot } from "@gajae-code/coding-agent/modes/types";
-import { formatIrcMessageBlock, parseIrcMessage, type ParsedIrcMessage } from "@gajae-code/coding-agent/modes/utils/irc-message";
+import {
+	formatIrcMessageBlock,
+	type ParsedIrcMessage,
+	parseIrcMessage,
+} from "@gajae-code/coding-agent/modes/utils/irc-message";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import { Container, type Component, TUI, visibleWidth } from "@gajae-code/tui";
+import { type Component, Container, TUI, visibleWidth } from "@gajae-code/tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 const artifactDirectory = path.resolve(import.meta.dir, "../artifacts");
-const widths = [1, 29, 30, 39, 40, 63, 64, 65, 66, 79, 80, 103, 104, 200, 500];
-const cases: Array<{ id: string; scenario: string; expected: string; verdict: "pass" | "fail" }> = [];
+const widths = Array.from({ length: 500 }, (_, index) => index + 1);
+const expectedCaseInventory = [
+	"width-boundaries",
+	"hostile-bodies",
+	"hostile-identities",
+	"lifetime-immutability",
+	"hint-one-shot",
+	"timestamp-extremes",
+] as const;
+type CaseId = (typeof expectedCaseInventory)[number];
+type RedTeamCase = { id: CaseId; scenario: string; expected: string; verdict: "pass" | "fail" };
+const cases: RedTeamCase[] = expectedCaseInventory.map(id => ({
+	id,
+	scenario: "Case did not complete.",
+	expected: "The test must run and explicitly report a passing verdict.",
+	verdict: "fail",
+}));
 
 const plainTheme = {
 	fg: (_color: "dim" | "accent", text: string) => text,
@@ -32,8 +51,12 @@ class Lines implements Component {
 	invalidate(): void {}
 }
 
-function pass(id: string, scenario: string, expected: string): void {
-	cases.push({ id, scenario, expected, verdict: "pass" });
+function pass(id: CaseId, scenario: string, expected: string): void {
+	const testCase = cases.find(candidate => candidate.id === id);
+	if (!testCase) throw new Error(`Unregistered red-team case: ${id}`);
+	testCase.scenario = scenario;
+	testCase.expected = expected;
+	testCase.verdict = "pass";
 }
 
 function parsed(observationId: string, text: string, timestamp = 0): ParsedIrcMessage {
@@ -80,6 +103,7 @@ afterAll(async () => {
 		`${JSON.stringify({ schemaVersion: 1, kind: "tui-red-team-test-report", cases, summary }, null, 2)}\n`,
 	);
 	const widthResults = widths.map(width => ({ width, ...computeIrcSplitWidths(width) }));
+	const widthCasePassed = cases.find(testCase => testCase.id === "width-boundaries")?.verdict === "pass";
 	await fs.writeFile(
 		path.join(artifactDirectory, "g001-irc-chatroom-boundary-report.json"),
 		`${JSON.stringify(
@@ -92,8 +116,9 @@ afterAll(async () => {
 					"sidebar is absent or at least 30 columns",
 					"visible split preserves at least floor(width * 0.5) transcript columns",
 					"no width is negative",
+					"final rendered rows fit their requested visible-cell width",
 				],
-				verdict: "pass",
+				verdict: widthCasePassed ? "pass" : "fail",
 			},
 			null,
 			2,
@@ -102,7 +127,7 @@ afterAll(async () => {
 });
 
 describe("G001 IRC chat-room adversarial QA", () => {
-	it("holds separator-inclusive split arithmetic at hostile boundaries", () => {
+	it("holds separator-inclusive split arithmetic and final visible-cell widths from 1 through 500", () => {
 		for (const width of widths) {
 			const result = computeIrcSplitWidths(width);
 			const normalized = Math.max(0, Math.floor(width));
@@ -111,15 +136,23 @@ describe("G001 IRC chat-room adversarial QA", () => {
 			expect(result.rightWidth).toBeGreaterThanOrEqual(0);
 			expect(result.leftWidth + result.separatorWidth + result.rightWidth).toBe(normalized);
 			expect(result.rightWidth === 0 || result.rightWidth >= 30).toBe(true);
-			if (result.rightWidth > 0) expect(result.leftWidth).toBeGreaterThanOrEqual(Math.floor(normalized * 0.5));
+			expect(result.rightWidth === 0).toBe(width < 65);
+			expect(result.leftWidth).toBeGreaterThanOrEqual(Math.floor(normalized * 0.5));
+			const split = new IrcSplitViewComponent(new Lines(["x"]), new IrcObservationLedger(), plainTheme);
+			split.setVisible(true);
+			expect(split.render(width).every(row => visibleWidth(row) <= width)).toBe(true);
 		}
-		pass("width-boundaries", "Widths 1 through 500 including arbitration edges", "No negative widths; valid split arithmetic");
+		pass(
+			"width-boundaries",
+			"Every integer width from 1 through 500",
+			"No negative widths; exact arithmetic, yield threshold, and visible-cell bounds hold",
+		);
 	});
 
 	it("contains hostile bodies in a visible split, including a real VirtualTerminal render", async () => {
 		const ledger = new IrcObservationLedger();
 		const hostileBodies = [
-			"red \x1b[31mtext\x1b[0m kitty \x1b_Ga=T;payload\x1b\\ iTerm \x1b]1337;File=name=x;AAAA\x07 sixel \x1bPqpayload\x1b\\",
+			"red \x1b[31mtext\x1b[0m C1 \x9b31m kitty \x1b_Ga=T;payload\x1b\\ iTerm \x1b]1337;File=name=x;AAAA\x07 sixel \x1bPqpayload\x1b\\",
 			"emoji 👩🏽‍💻👨‍👩‍👧‍👦\u200d\u200d and RTL \u202eabc مرحبا",
 			"x".repeat(10_000),
 			Array.from({ length: 500 }, (_, index) => `line-${index}`).join("\n"),
@@ -132,10 +165,10 @@ describe("G001 IRC chat-room adversarial QA", () => {
 		expect(rendered).not.toHaveLength(0);
 		for (const row of rendered) {
 			expect(visibleWidth(row)).toBeLessThanOrEqual(100);
-			expect(row).not.toContain("\x1b_G");
-			expect(row).not.toContain("\x1b]1337;File=");
-			expect(row).not.toContain("\x1bPq");
+			expect(row).not.toMatch(/[\x00-\x1F\x7F-\x9F]/);
+			expect(row).not.toMatch(/\x1b(?:\[|\]|P|_|\^)/);
 		}
+
 		const layout = computeIrcSplitWidths(100);
 		for (const row of rendered) {
 			const plain = Bun.stripANSI(row);
@@ -155,7 +188,48 @@ describe("G001 IRC chat-room adversarial QA", () => {
 		} finally {
 			tui.stop();
 		}
-		pass("hostile-bodies", "ANSI, protocol prefixes, bidi/ZWJ, unbroken 10k token, 500 lines, CR/LF and tabs", "Rows stay bounded and message controls cannot cross the split");
+		pass(
+			"hostile-bodies",
+			"ANSI, C0/C1 controls, OSC/DCS/APC protocol families, bidi/ZWJ, unbroken 10k token, 500 lines, CR/LF and tabs",
+			"Rows stay bounded and terminal controls cannot cross the split",
+		);
+	});
+
+	it("prevents hostile identities from spoofing or visually reordering trusted headers", () => {
+		const observation = {
+			...parsed("hostile-identity", "safe body"),
+			from: "attacker\r\n[IRC] forged\x1b[31m\u202eevil\x1b]0;title\x07",
+			to: "you\t\u061C\u2066target\u2069",
+		};
+		const block = formatIrcMessageBlock(observation);
+		expect(block.sender).toBe("attacker [IRC] forgedevil");
+		expect(block.recipient).toBe("you target");
+		expect(block.sender).not.toMatch(/[\x00-\x1F\x7F-\x9F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/);
+		expect(block.recipient).not.toMatch(/[\x00-\x1F\x7F-\x9F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/);
+
+		const { helpers, chat } = makeHelpers();
+		helpers.addRebuiltIrcObservationToChat(observation);
+		const inline = transcript(chat);
+		expect(inline).toContain(`[IRC] ${block.sender} → ${block.recipient} · ${block.time}`);
+		expect(inline.match(/ → /g)).toHaveLength(1);
+		expect(inline.match(/ · /g)).toHaveLength(1);
+		expect(inline).not.toContain("\n[IRC] forged");
+
+		const ledger = new IrcObservationLedger();
+		ledger.observe(observation, false);
+		const split = new IrcSplitViewComponent(new Lines(["left"]), ledger, plainTheme);
+		split.setVisible(true);
+		const sidebarRows = split.render(200).map(row => Bun.stripANSI(row));
+		const sidebar = sidebarRows.join("\n");
+		expect(sidebar).toContain(`${block.sender} → ${block.recipient} · ${block.time}`);
+		for (const row of sidebarRows) {
+			expect(row).not.toMatch(/[\x00-\x1F\x7F-\x9F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/);
+		}
+		pass(
+			"hostile-identities",
+			"CR/LF/tab, ANSI/OSC, C0/C1, and bidi formatting in sender and recipient fields",
+			"One ordered trusted header remains on inline and sidebar surfaces",
+		);
 	});
 
 	it("keeps observation lifetime immutable and deduplicates a flipped re-observation", () => {
@@ -163,6 +237,7 @@ describe("G001 IRC chat-room adversarial QA", () => {
 		const visible = ledger.observe(parsed("visible-first", "visible"), true);
 		const closed = ledger.observe(parsed("closed-first", "closed"), false);
 		const duplicate = ledger.observe(parsed("visible-first", "changed"), false);
+		if (!visible || !closed) throw new Error("Expected lifetime fixtures to be retained");
 		expect(visible.mode).toBe("ephemeral");
 		expect(visible.expiresAt).toBe(visible.observedAt + 10_000);
 		expect(closed.mode).toBe("persistent");
@@ -170,15 +245,24 @@ describe("G001 IRC chat-room adversarial QA", () => {
 		expect(duplicate).toBe(visible);
 		expect(ledger.getRecord("visible-first")?.mode).toBe("ephemeral");
 		expect(ledger.getRecord("closed-first")?.mode).toBe("persistent");
-		pass("lifetime-immutability", "Toggle/resize state changes and duplicate observation IDs after arrival", "First immutable decision wins");
+		pass(
+			"lifetime-immutability",
+			"Toggle/resize state changes and duplicate observation IDs after arrival",
+			"First immutable decision wins",
+		);
 	});
 
 	it("enforces live-only one-shot hint semantics including unbound keys", () => {
 		const { helpers, chat } = makeHelpers();
-		const eligible: IrcArrivalSnapshot = { panelVisible: false, panelRequestedVisible: false, sidebarAvailable: true, resolvedToggleKey: "Ctrl+I" };
+		const eligible: IrcArrivalSnapshot = {
+			panelVisible: false,
+			panelRequestedVisible: false,
+			sidebarAvailable: true,
+			resolvedToggleKey: "Ctrl+I",
+		};
 		helpers.addLiveIrcObservationToChat(parsed("hint-first", "one"), eligible);
 		helpers.addLiveIrcObservationToChat(parsed("hint-second", "two"), eligible);
-		expect((transcript(chat).match(/opens sidebar/g) ?? [])).toHaveLength(1);
+		expect(transcript(chat).match(/opens sidebar/g) ?? []).toHaveLength(1);
 		const carriedHintMessage = parsed("hint-carried", "carried");
 		chat.clear();
 		helpers.addRebuiltIrcObservationToChat(carriedHintMessage);
@@ -194,7 +278,11 @@ describe("G001 IRC chat-room adversarial QA", () => {
 		chat.clear();
 		helpers.addLiveIrcObservationToChat(parsed("hint-bound-after-unbound", "bound"), eligible);
 		expect(transcript(chat)).toContain("Ctrl+I opens sidebar");
-		pass("hint-one-shot", "Rapid arrivals, reset, rebuild replay, and unbound then bound snapshots", "Only eligible live arrivals consume the session hint");
+		pass(
+			"hint-one-shot",
+			"Rapid arrivals, reset, rebuild replay, and unbound then bound snapshots",
+			"Only eligible live arrivals consume the session hint",
+		);
 	});
 
 	it("formats timestamp extremes without NaN headers", () => {
@@ -204,6 +292,10 @@ describe("G001 IRC chat-room adversarial QA", () => {
 			if (timestamp === Number.MAX_VALUE || timestamp === 8.64e15 + 1) expect(time).toBe("--:--");
 			else expect(time).toMatch(/^\d{2}:\d{2}$/);
 		}
-		pass("timestamp-extremes", "Number.MAX_VALUE, negative, epoch, maximum valid and first invalid dates", "Valid dates are HH:mm; invalid dates are --:--");
+		pass(
+			"timestamp-extremes",
+			"Number.MAX_VALUE, negative, epoch, maximum valid and first invalid dates",
+			"Valid dates are HH:mm; invalid dates are --:--",
+		);
 	});
 });

@@ -1,36 +1,69 @@
-import { beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 
 import { CommandController } from "@gajae-code/coding-agent/modes/controllers/command-controller";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
+import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
 import { getWelcomeTranscriptReservedRows } from "@gajae-code/coding-agent/modes/interactive-mode";
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
+import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
 import { Container, Text } from "@gajae-code/tui";
 
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-
 function createForkContext(fork: () => Promise<boolean>) {
 	const chatContainer = new Container();
+	const ledger = new IrcObservationLedger();
+	let sidebarRequestedVisible = true;
+	const panelVisible = true;
+
 	const ctx = {
 		session: {
 			isStreaming: false,
 			fork,
 			sessionFile: "/tmp/sessions/fork.jsonl",
 		},
+		isInitialized: true,
 		loadingAnimation: undefined,
 		statusContainer: { clear: vi.fn() },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		chatContainer,
+		pendingTools: new Map<string, never>(),
+
+		ircLedger: ledger,
 		ui: { requestRender: vi.fn() },
 		showError: vi.fn(),
 		showWarning: vi.fn(),
+		captureIrcArrivalSnapshot: () => ({
+			panelVisible,
+
+			panelRequestedVisible: sidebarRequestedVisible,
+			sidebarAvailable: true,
+			resolvedToggleKey: "Ctrl+I",
+		}),
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
-	const resetIrcSidebarSession = vi.fn(() => helpers.resetIrcSidebarHint());
-	ctx.resetIrcSidebarSession = resetIrcSidebarSession;
-	return { ctx, helpers, chatContainer, resetIrcSidebarSession };
+	ctx.addLiveIrcObservationToChat = (message, arrival) => helpers.addLiveIrcObservationToChat(message, arrival);
+	ctx.removeRenderedIrcInlineComponents = observationId => helpers.removeRenderedIrcInlineComponents(observationId);
+	ctx.resetRenderedIrcInlineComponents = () => helpers.resetRenderedIrcInlineComponents();
+	let controller: EventController;
+	ctx.resetIrcSidebarSession = () => {
+		ledger.reset();
+		controller.resetIrcObservations();
+		sidebarRequestedVisible = false;
+		helpers.resetIrcSidebarHint();
+	};
+	controller = new EventController(ctx);
+	return {
+		ctx,
+		helpers,
+		chatContainer,
+		ledger,
+		controller,
+		isSidebarRequestedVisible: () => sidebarRequestedVisible,
+	};
 }
+
+afterEach(() => vi.useRealTimers());
 
 beforeAll(async () => {
 	const theme = await getThemeByName("red-claw");
@@ -46,31 +79,172 @@ const incoming = {
 	text: "hello",
 	timestamp: 0,
 };
-const eligibleArrival = { panelVisible: false, panelRequestedVisible: false, sidebarAvailable: true, resolvedToggleKey: "Ctrl+I" };
+const eligibleArrival = {
+	panelVisible: false,
+	panelRequestedVisible: false,
+	sidebarAvailable: true,
+	resolvedToggleKey: "Ctrl+I",
+};
 
 function transcriptIncludesHint(chatContainer: Container): boolean {
 	return Bun.stripANSI(chatContainer.render(100).join("\n")).includes("opens sidebar");
 }
 
 describe("IRC lifecycle resets", () => {
-	it("resets the IRC sidebar only after a successful fork", async () => {
-		const { ctx, resetIrcSidebarSession } = createForkContext(async () => true);
+	it("releases real IRC owners after a successful fork and rejects its delayed replay", async () => {
+		vi.useFakeTimers({ now: 0 });
+		const fixture = createForkContext(async () => true);
+		const message = {
+			role: "custom" as const,
+			customType: "irc:incoming" as const,
+			content: "before fork",
+			display: true,
+			attribution: "agent" as const,
+			timestamp: 0,
+			details: { observationId: "before-fork", from: "peer", to: "you", message: "before fork" },
+		};
 
-		await new CommandController(ctx).handleForkCommand();
+		await fixture.controller.handleEvent({ type: "irc_message", message });
+		expect(fixture.ledger.getSidebarRecords()).toHaveLength(1);
+		expect(fixture.chatContainer.children).toHaveLength(2);
+		fixture.chatContainer.clear();
+		fixture.helpers.renderSessionContext({ messages: [] } as never);
+		fixture.controller.reconcileIrcExpiryTimers(fixture.helpers.getRenderedIrcInlineComponents());
+		expect(fixture.helpers.getRenderedIrcInlineComponents().has("before-fork")).toBe(true);
 
-		expect(resetIrcSidebarSession).toHaveBeenCalledTimes(1);
-		expect(ctx.showError).not.toHaveBeenCalled();
+		await new CommandController(fixture.ctx).handleForkCommand();
+		expect(fixture.ledger.getSidebarRecords()).toEqual([]);
+		expect(Bun.stripANSI(fixture.chatContainer.render(100).join("\n"))).not.toContain("before fork");
+		expect(fixture.helpers.getRenderedIrcInlineComponents()).toEqual(new Map());
+		expect(fixture.isSidebarRequestedVisible()).toBe(false);
+		const postForkChildCount = fixture.chatContainer.children.length;
+
+		await fixture.controller.handleEvent({ type: "irc_message", message });
+		expect(fixture.ledger.getSidebarRecords()).toEqual([]);
+		expect(fixture.chatContainer.children).toHaveLength(postForkChildCount);
+		expect(Bun.stripANSI(fixture.chatContainer.render(100).join("\n"))).not.toContain("before fork");
 	});
 
-	it("preserves IRC sidebar state when a fork is cancelled or fails", async () => {
+	it("preserves real IRC ownership when a fork is cancelled or fails", async () => {
+		const message = {
+			role: "custom" as const,
+			customType: "irc:incoming" as const,
+			content: "still here",
+			display: true,
+			attribution: "agent" as const,
+			timestamp: 0,
+			details: { observationId: "still-here", from: "peer", to: "you", message: "still here" },
+		};
 		const cancelled = createForkContext(async () => false);
+		await cancelled.controller.handleEvent({ type: "irc_message", message });
 		await new CommandController(cancelled.ctx).handleForkCommand();
-		expect(cancelled.resetIrcSidebarSession).not.toHaveBeenCalled();
+		expect(cancelled.ledger.getSidebarRecords()).toHaveLength(1);
+		expect(cancelled.chatContainer.children).toHaveLength(2);
+		expect(cancelled.isSidebarRequestedVisible()).toBe(true);
 
 		const failed = createForkContext(async () => Promise.reject(new Error("disk failure")));
+		await failed.controller.handleEvent({
+			type: "irc_message",
+			message: { ...message, details: { ...message.details, observationId: "failed" } },
+		});
 		await expect(new CommandController(failed.ctx).handleForkCommand()).rejects.toThrow("disk failure");
-		expect(failed.resetIrcSidebarSession).not.toHaveBeenCalled();
+		expect(failed.ledger.getSidebarRecords()).toHaveLength(1);
+		expect(failed.chatContainer.children).toHaveLength(2);
+		expect(failed.isSidebarRequestedVisible()).toBe(true);
 	});
+
+	it("expires only ephemeral inline owners while retaining the sidebar observation and dedup identity", async () => {
+		vi.useFakeTimers({ now: 0 });
+		const fixture = createForkContext(async () => true);
+		const message = {
+			role: "custom" as const,
+			customType: "irc:incoming" as const,
+			content: "visible arrival",
+			display: true,
+			attribution: "agent" as const,
+			timestamp: 0,
+			details: { observationId: "expires-inline-only", from: "peer", to: "you", message: "visible arrival" },
+		};
+		await fixture.controller.handleEvent({ type: "irc_message", message });
+		fixture.chatContainer.clear();
+		fixture.helpers.renderSessionContext({ messages: [] } as never);
+		fixture.controller.reconcileIrcExpiryTimers(fixture.helpers.getRenderedIrcInlineComponents());
+
+		vi.advanceTimersByTime(10_000);
+		expect(fixture.ledger.getSidebarRecords().map(record => record.observationId)).toEqual(["expires-inline-only"]);
+		expect(fixture.helpers.getRenderedIrcInlineComponents().has("expires-inline-only")).toBe(false);
+		expect(fixture.chatContainer.children).toHaveLength(0);
+
+		await fixture.controller.handleEvent({ type: "irc_message", message });
+		expect(fixture.chatContainer.children).toHaveLength(0);
+		expect(fixture.ledger.getSidebarRecords()).toHaveLength(1);
+	});
+
+	it("bounds the ledger by count with deterministic oldest-first eviction and insertion order", () => {
+		const ledger = new IrcObservationLedger();
+		for (let index = 0; index <= 10_000; index++) {
+			ledger.observe(
+				{ observationId: `count-${index}`, kind: "incoming", from: "peer", to: "you", text: "x", timestamp: index },
+				false,
+			);
+		}
+
+		const records = ledger.getSidebarRecords();
+		expect(records).toHaveLength(10_000);
+		expect(records[0]?.observationId).toBe("count-1");
+		expect(records.at(-1)?.observationId).toBe("count-10000");
+		expect(ledger.drainEvictedObservationIds()).toEqual(["count-0"]);
+	});
+
+	it("bounds the ledger by retained UTF-8 payload bytes with deterministic eviction", () => {
+		const ledger = new IrcObservationLedger();
+		const payload = "b".repeat(9 * 1024 * 1024);
+		ledger.observe(
+			{ observationId: "bytes-first", kind: "incoming", from: "peer", to: "you", text: payload, timestamp: 0 },
+			false,
+		);
+		ledger.observe(
+			{ observationId: "bytes-second", kind: "incoming", from: "peer", to: "you", text: payload, timestamp: 1 },
+			false,
+		);
+
+		expect(ledger.getSidebarRecords().map(record => record.observationId)).toEqual(["bytes-second"]);
+		expect(ledger.drainEvictedObservationIds()).toEqual(["bytes-first"]);
+	});
+
+	it("rejects oversized payloads without retaining their bytes and preserves first-arrival duplicates", () => {
+		const ledger = new IrcObservationLedger();
+		const oversizedText = "oversized-original-payload".repeat(1024 * 1024);
+		expect(
+			ledger.observe(
+				{
+					observationId: "oversized",
+					kind: "incoming",
+					from: "peer",
+					to: "you",
+					text: oversizedText,
+					timestamp: 0,
+				},
+				false,
+			),
+		).toBeUndefined();
+		expect(ledger.getSidebarRecords()).toEqual([]);
+		expect(JSON.stringify(ledger.getSidebarRecords())).not.toContain("oversized-original-payload");
+
+		const first = ledger.observe(
+			{ observationId: "duplicate", kind: "incoming", from: "first", to: "you", text: "first", timestamp: 1 },
+			false,
+		);
+		const duplicate = ledger.observe(
+			{ observationId: "duplicate", kind: "incoming", from: "second", to: "you", text: "second", timestamp: 2 },
+			true,
+		);
+		expect(duplicate).toBe(first);
+		expect(ledger.getSidebarRecords().map(record => [record.observationId, record.from, record.text])).toEqual([
+			["duplicate", "first", "first"],
+		]);
+	});
+
 	it("re-arms the live-only sidebar hint after a successful fork reset", async () => {
 		const { ctx, helpers, chatContainer } = createForkContext(async () => true);
 		helpers.addLiveIrcObservationToChat(incoming, eligibleArrival);
@@ -82,22 +256,6 @@ describe("IRC lifecycle resets", () => {
 		expect(transcriptIncludesHint(chatContainer)).toBe(true);
 	});
 
-	it("preserves consumed hint state when a fork is cancelled or fails", async () => {
-		const cancelled = createForkContext(async () => false);
-		cancelled.helpers.addLiveIrcObservationToChat(incoming, eligibleArrival);
-		await new CommandController(cancelled.ctx).handleForkCommand();
-		cancelled.chatContainer.clear();
-		cancelled.helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "cancelled" }, eligibleArrival);
-		expect(transcriptIncludesHint(cancelled.chatContainer)).toBe(false);
-
-		const failed = createForkContext(async () => Promise.reject(new Error("disk failure")));
-		failed.helpers.addLiveIrcObservationToChat(incoming, eligibleArrival);
-		await expect(new CommandController(failed.ctx).handleForkCommand()).rejects.toThrow("disk failure");
-		failed.chatContainer.clear();
-		failed.helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "failed" }, eligibleArrival);
-		expect(transcriptIncludesHint(failed.chatContainer)).toBe(false);
-	});
-
 	it("reserves welcome rows from the transcript alone despite a large IRC ledger", () => {
 		const transcript = new Container();
 		transcript.addChild(new Text("transcript\nrow"));
@@ -105,7 +263,14 @@ describe("IRC lifecycle resets", () => {
 		const ledger = new IrcObservationLedger();
 		for (let index = 0; index < 50; index++) {
 			ledger.observe(
-				{ observationId: `backlog-${index}`, kind: "incoming", from: "peer", to: "you", text: "one\ntwo", timestamp: index },
+				{
+					observationId: `backlog-${index}`,
+					kind: "incoming",
+					from: "peer",
+					to: "you",
+					text: "one\ntwo",
+					timestamp: index,
+				},
 				false,
 			);
 		}

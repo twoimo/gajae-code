@@ -103,6 +103,11 @@ type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
 
+type IrcInlineComponentOwner = {
+	removeRenderedIrcInlineComponents?(observationId: string): readonly Component[] | undefined;
+	resetRenderedIrcInlineComponents?(): readonly (readonly Component[])[];
+};
+
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	#lastThinkingCount = 0;
@@ -268,14 +273,52 @@ export class EventController {
 		if (!parsed) return;
 		const arrival = this.ctx.captureIrcArrivalSnapshot();
 		const record = this.ctx.ircLedger.observe(parsed, arrival.panelVisible);
+		this.#cleanupEvictedIrcObservations();
+		if (!record) return;
 		const signature = `irc:${record.observationId}`;
 		if (this.#renderedCustomMessages.has(signature)) return;
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
-		const components = this.ctx.addLiveIrcObservationToChat(parsed, arrival);
+		const components = this.ctx.addLiveIrcObservationToChat(record, arrival);
 		this.#renderedIrcComponents.set(record.observationId, components);
 		this.#scheduleIrcExpiry(record, components);
 		this.ctx.ui.requestRender();
+	}
+
+	#cleanupIrcObservationIds(observationIds: readonly string[]): void {
+		const removedComponents = new Set<Component>();
+		for (const observationId of observationIds) {
+			const timer = this.#ircExpiryTimers.get(observationId);
+			if (timer) clearTimeout(timer);
+			this.#ircExpiryTimers.delete(observationId);
+			for (const component of this.#renderedIrcComponents.get(observationId) ?? []) {
+				removedComponents.add(component);
+			}
+			this.#renderedIrcComponents.delete(observationId);
+			for (const component of (
+				this.ctx as InteractiveModeContext & IrcInlineComponentOwner
+			).removeRenderedIrcInlineComponents?.(observationId) ?? []) {
+				removedComponents.add(component);
+			}
+
+			this.#renderedCustomMessages.delete(`irc:${observationId}`);
+		}
+		for (const component of removedComponents) this.ctx.chatContainer.removeChild(component);
+	}
+
+	#cleanupEvictedIrcObservations(): void {
+		this.#cleanupIrcObservationIds(this.ctx.ircLedger.drainEvictedObservationIds());
+	}
+
+	#cleanupExpiredIrcInlineComponents(observationId: string): void {
+		const removedComponents = new Set<Component>(this.#renderedIrcComponents.get(observationId));
+		this.#renderedIrcComponents.delete(observationId);
+		for (const component of (
+			this.ctx as InteractiveModeContext & IrcInlineComponentOwner
+		).removeRenderedIrcInlineComponents?.(observationId) ?? []) {
+			removedComponents.add(component);
+		}
+		for (const component of removedComponents) this.ctx.chatContainer.removeChild(component);
 	}
 
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
@@ -373,10 +416,13 @@ export class EventController {
 
 	resetIrcObservations(): void {
 		this.clearIrcExpiryTimers();
-		for (const components of this.#renderedIrcComponents.values()) {
-			for (const component of components) {
-				this.ctx.chatContainer.removeChild(component);
-			}
+		const observationIds = new Set<string>(this.#renderedIrcComponents.keys());
+		for (const observationId of this.ctx.ircLedger.drainEvictedObservationIds()) observationIds.add(observationId);
+		this.#cleanupIrcObservationIds([...observationIds]);
+		for (const components of (
+			this.ctx as InteractiveModeContext & IrcInlineComponentOwner
+		).resetRenderedIrcInlineComponents?.() ?? []) {
+			for (const component of components) this.ctx.chatContainer.removeChild(component);
 		}
 		this.#renderedIrcComponents.clear();
 		for (const signature of this.#renderedCustomMessages) {
@@ -389,6 +435,8 @@ export class EventController {
 		this.#renderedIrcComponents.clear();
 		const now = Date.now();
 		const inlineProjection = this.ctx.ircLedger.getInlineProjection(now);
+
+		this.#cleanupEvictedIrcObservations();
 		const projectedObservationIds = new Set(inlineProjection.map(record => record.observationId));
 		for (const [observationId, components] of componentsByObservationId) {
 			const record = this.ctx.ircLedger.getRecord(observationId);
@@ -430,18 +478,12 @@ export class EventController {
 		}
 		const remainingMs = record.expiresAt! - Date.now();
 		if (remainingMs <= 0) {
-			this.#renderedIrcComponents.delete(record.observationId);
-			for (const component of components) {
-				this.ctx.chatContainer.removeChild(component);
-			}
+			this.#cleanupExpiredIrcInlineComponents(record.observationId);
 			return false;
 		}
 		const timer = setTimeout(() => {
 			this.#ircExpiryTimers.delete(record.observationId);
-			this.#renderedIrcComponents.delete(record.observationId);
-			for (const component of components) {
-				this.ctx.chatContainer.removeChild(component);
-			}
+			this.#cleanupExpiredIrcInlineComponents(record.observationId);
 			this.ctx.ui.requestRender();
 		}, remainingMs);
 		timer.unref?.();

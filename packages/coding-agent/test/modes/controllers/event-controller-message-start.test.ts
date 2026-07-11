@@ -237,7 +237,12 @@ function createIrcContext() {
 		ui: { requestRender },
 		chatContainer,
 		settings: { get: () => true },
-		captureIrcArrivalSnapshot: () => ({ panelVisible: true, panelRequestedVisible: true, sidebarAvailable: true, resolvedToggleKey: "Alt+I" }),
+		captureIrcArrivalSnapshot: () => ({
+			panelVisible: true,
+			panelRequestedVisible: true,
+			sidebarAvailable: true,
+			resolvedToggleKey: "Alt+I",
+		}),
 		ircLedger: new IrcObservationLedger(),
 		session: {},
 	} as unknown as InteractiveModeContext;
@@ -246,8 +251,8 @@ function createIrcContext() {
 		helpers.addMessageToChat(message, options),
 	);
 	ctx.addMessageToChat = addMessageToChat;
-	const addLiveIrcObservationToChat: InteractiveModeContext["addLiveIrcObservationToChat"] = vi.fn((message, arrival) =>
-		helpers.addLiveIrcObservationToChat(message, arrival),
+	const addLiveIrcObservationToChat: InteractiveModeContext["addLiveIrcObservationToChat"] = vi.fn(
+		(message, arrival) => helpers.addLiveIrcObservationToChat(message, arrival),
 	);
 	ctx.addLiveIrcObservationToChat = addLiveIrcObservationToChat;
 	return { ctx, chatContainer, requestRender, addMessageToChat, addLiveIrcObservationToChat };

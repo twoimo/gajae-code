@@ -13,8 +13,10 @@ import {
 	isTerminalGraphicsFallbackActive,
 	TERMINAL,
 	Text,
+	TUI,
 	visibleWidth,
 } from "@gajae-code/tui";
+import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
 
 const sidebarTheme = {
 	fg: (_color: "dim" | "accent", text: string) => text,
@@ -30,6 +32,11 @@ const originalProtocol = TERMINAL.imageProtocol;
 afterEach(() => {
 	mutableTerminal.imageProtocol = originalProtocol;
 });
+
+function localTime(timestamp: number): string {
+	const date = new Date(timestamp);
+	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
 class TestPane implements Component {
 	widths: number[] = [];
@@ -67,20 +74,17 @@ function image(): Image {
 }
 
 describe("computeIrcSplitWidths", () => {
-	it.each([
-		[40, { leftWidth: 40, separatorWidth: 0, rightWidth: 0 }],
-		[64, { leftWidth: 64, separatorWidth: 0, rightWidth: 0 }],
-		[65, { leftWidth: 32, separatorWidth: 3, rightWidth: 30 }],
-		[80, { leftWidth: 47, separatorWidth: 3, rightWidth: 30 }],
-		[103, { leftWidth: 70, separatorWidth: 3, rightWidth: 30 }],
-		[104, { leftWidth: 70, separatorWidth: 3, rightWidth: 31 }],
-		[120, { leftWidth: 81, separatorWidth: 3, rightWidth: 36 }],
-	])("keeps the transcript floor at width %i", (width, expected) => {
-		const result = computeIrcSplitWidths(width);
-		expect(result).toEqual(expected);
-		expect(result.leftWidth + result.separatorWidth + result.rightWidth).toBe(width);
-		expect(result.rightWidth === 0 || result.rightWidth >= 30).toBe(true);
-		expect(result.leftWidth).toBeGreaterThanOrEqual(Math.floor(width * 0.5));
+	it("keeps exact split invariants for every width from 1 through 500", () => {
+		for (let width = 1; width <= 500; width++) {
+			const result = computeIrcSplitWidths(width);
+			expect(result.leftWidth).toBeGreaterThanOrEqual(0);
+			expect(result.separatorWidth).toBeGreaterThanOrEqual(0);
+			expect(result.rightWidth).toBeGreaterThanOrEqual(0);
+			expect(result.leftWidth + result.separatorWidth + result.rightWidth).toBe(width);
+			expect(result.rightWidth === 0 || result.rightWidth >= 30).toBe(true);
+			expect(result.rightWidth === 0).toBe(width < 65);
+			expect(result.leftWidth).toBeGreaterThanOrEqual(Math.floor(width * 0.5));
+		}
 	});
 });
 
@@ -156,7 +160,7 @@ describe("IrcSplitViewComponent", () => {
 
 		const lines = split.render(80).map(line => Bun.stripANSI(line));
 		const sidebarRows = lines.map(line => line.slice(computeIrcSplitWidths(80).leftWidth + 3));
-		expect(sidebarRows).toContain("alice → bob · 03:04");
+		expect(sidebarRows).toContain(`alice → bob · ${localTime(Date.parse("2026-01-02T03:04:05.000Z"))}`);
 		expect(sidebarRows).toContain("  first line");
 		expect(sidebarRows).toContain("  second line");
 		const firstBody = sidebarRows.indexOf("  second line");
@@ -166,7 +170,7 @@ describe("IrcSplitViewComponent", () => {
 
 	it("renders uncapped CJK and emoji bodies within the sidebar width", () => {
 		const ledger = new IrcObservationLedger();
-		const body = "안녕하세요 👩🏽‍💻 e\u0301 " .repeat(20);
+		const body = "안녕하세요 👩🏽‍💻 e\u0301 ".repeat(20);
 		addRecord(ledger, body);
 		const split = new IrcSplitViewComponent(new TestPane("left"), ledger, sidebarTheme);
 		split.setVisible(true);
@@ -177,6 +181,38 @@ describe("IrcSplitViewComponent", () => {
 		const bodyRows = rendered.map(line => Bun.stripANSI(line).slice(widths.leftWidth + widths.separatorWidth));
 		expect(bodyRows.filter(line => line.startsWith("  ")).length).toBeGreaterThan(1);
 		expect(bodyRows.every(line => visibleWidth(line) <= widths.rightWidth)).toBe(true);
+	});
+
+	it("preserves grapheme boundaries and composes text deterministically in a process-style virtual terminal", async () => {
+		const ledger = new IrcObservationLedger();
+		addRecord(ledger, "👩🏽‍💻👨‍👩‍👧‍👦 e\u0301 ".repeat(12));
+		const split = new IrcSplitViewComponent(new TestPane("left transcript"), ledger, sidebarTheme);
+		split.setVisible(true);
+		const layout = computeIrcSplitWidths(80);
+		const sidebarRows = split
+			.render(80)
+			.map(line => Bun.stripANSI(line).slice(layout.leftWidth + layout.separatorWidth))
+			.filter(line => line.startsWith("  "));
+		expect(sidebarRows.length).toBeGreaterThan(1);
+		for (const row of sidebarRows) {
+			expect(row).not.toMatch(/^\s*\u200d|\u200d\s*$/);
+			expect(visibleWidth(row)).toBeLessThanOrEqual(layout.rightWidth);
+		}
+
+		const terminal = new VirtualTerminal(80, 24, { isProcessTerminal: true });
+		const tui = new TUI(terminal);
+		tui.start();
+		try {
+			tui.addChild(split);
+			await terminal.waitForRender();
+			const viewport = terminal.getViewport();
+			expect(viewport.some(line => line.includes("left transcript"))).toBe(true);
+			expect(viewport.some(line => line.includes("👩🏽‍💻"))).toBe(true);
+			expect(viewport.every(line => visibleWidth(line) <= 80)).toBe(true);
+			expect(terminal.getWriteLog()).toContain("\x1b[?25l");
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("renders every line of a long message without a cap", () => {
