@@ -1675,8 +1675,8 @@
 					"properties": {
 						"enabled": {
 							"type": "boolean",
-							"description": "Enable the read-only IRC message sidebar",
-							"default": false
+							"description": "Enable the IRC message sidebar (opens with the toggle key; starts closed)",
+							"default": true
 						}
 					},
 					"additionalProperties": false

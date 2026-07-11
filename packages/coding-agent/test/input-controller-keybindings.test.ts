@@ -328,6 +328,13 @@ describe("InputController keybinding setup", () => {
 		expect(editor.setCustomKeyHandler).not.toHaveBeenCalledWith("alt+i", expect.any(Function));
 	});
 
+	it("does not register a sidebar handler when its binding is explicitly empty", async () => {
+		const { InputController, ctx, editor } = await createContext({ ircSidebarToggleKeys: [] });
+		new InputController(ctx).setupKeyHandlers();
+
+		expect(editor.setCustomKeyHandler).not.toHaveBeenCalledWith("alt+i", expect.any(Function));
+	});
+
 	it("registers an explicit queue action separately from immediate submit", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const session = ctx.session as unknown as { isStreaming: boolean };

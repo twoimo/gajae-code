@@ -28,6 +28,73 @@ function makeContext() {
 
 const emptyContext = { messages: [] } as unknown as SessionContext;
 
+const incoming = {
+	observationId: "inline",
+	kind: "incoming" as const,
+	from: "peer",
+	to: "you",
+	text: "first line\nsecond line",
+	timestamp: 0,
+};
+
+const eligibleArrival = { panelVisible: false, panelRequestedVisible: false, sidebarAvailable: true, resolvedToggleKey: "Ctrl+I" };
+
+it("renders rebuilt IRC observations as one header and one multiline body without consuming the live hint", () => {
+	const { helpers, chatContainer } = makeContext();
+	const rebuilt = vi.spyOn(helpers, "addRebuiltIrcObservationToChat");
+	const live = vi.spyOn(helpers, "addLiveIrcObservationToChat");
+
+	const rebuiltComponents = helpers.addRebuiltIrcObservationToChat(incoming);
+	expect(rebuiltComponents).toHaveLength(2);
+	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).not.toContain("opens sidebar");
+
+	chatContainer.clear();
+	const liveComponents = helpers.addLiveIrcObservationToChat(incoming, eligibleArrival);
+	expect(liveComponents).toHaveLength(2);
+	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Ctrl+I opens sidebar");
+	expect(rebuilt).toHaveBeenCalledTimes(1);
+	expect(live).toHaveBeenCalledTimes(1);
+});
+
+it("does not consume the hint for visible or unavailable live arrivals", () => {
+	const { helpers, chatContainer } = makeContext();
+	helpers.addLiveIrcObservationToChat(incoming, { ...eligibleArrival, panelVisible: true });
+	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "unavailable" }, {
+		...eligibleArrival,
+		sidebarAvailable: false,
+	});
+	chatContainer.clear();
+
+	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "eligible" }, eligibleArrival);
+	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Ctrl+I opens sidebar");
+});
+
+it("suppresses the sidebar hint for an unbound toggle without consuming a later eligible hint", () => {
+	const { helpers, chatContainer } = makeContext();
+	helpers.addLiveIrcObservationToChat(incoming, { ...eligibleArrival, resolvedToggleKey: null });
+	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).not.toContain("opens sidebar");
+
+	chatContainer.clear();
+	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "empty" }, { ...eligibleArrival, resolvedToggleKey: "" });
+	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).not.toContain("opens sidebar");
+
+	chatContainer.clear();
+	helpers.addLiveIrcObservationToChat({ ...incoming, observationId: "bound" }, eligibleArrival);
+	expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Ctrl+I opens sidebar");
+});
+
+it("uses the rebuild-only API for ledger projection", () => {
+	const { ledger, helpers } = makeContext();
+	ledger.observe(incoming, false);
+	const rebuilt = vi.spyOn(helpers, "addRebuiltIrcObservationToChat");
+	const live = vi.spyOn(helpers, "addLiveIrcObservationToChat");
+
+	helpers.renderSessionContext(emptyContext);
+
+	expect(rebuilt).toHaveBeenCalledWith(expect.objectContaining({ observationId: "inline" }));
+	expect(live).not.toHaveBeenCalled();
+});
+
 describe("IRC rebuild projection", () => {
 	it("keeps the remaining absolute TTL when a rebuild reconciles its timer", () => {
 		vi.useFakeTimers({ now: 0 });

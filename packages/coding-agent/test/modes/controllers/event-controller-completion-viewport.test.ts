@@ -115,7 +115,8 @@ describe("EventController completion viewport", () => {
 					associateSessionMessageViewportAnchorId(startMessage, anchorId);
 					const streamingComponent = new AssistantMessageComponent(startMessage, false, undefined, anchorId);
 					const split = new IrcSplitViewComponent(chatContainer, new IrcObservationLedger(), {
-						fg: (_color, text) => text,
+						fg: (_color: "dim" | "accent", text: string) => text,
+						bold: (text: string) => text,
 						boxSharp: { vertical: "│" },
 					});
 					const pendingMessagesContainer = new Container();

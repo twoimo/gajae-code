@@ -266,12 +266,13 @@ export class EventController {
 	#observeIrcMessage(message: CustomMessage): void {
 		const parsed = parseIrcMessage(message);
 		if (!parsed) return;
-		const record = this.ctx.ircLedger.observe(parsed, this.ctx.settings.get("irc.sidebar.enabled") === true);
+		const arrival = this.ctx.captureIrcArrivalSnapshot();
+		const record = this.ctx.ircLedger.observe(parsed, arrival.panelVisible);
 		const signature = `irc:${record.observationId}`;
 		if (this.#renderedCustomMessages.has(signature)) return;
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
-		const components = this.ctx.addMessageToChat(message);
+		const components = this.ctx.addLiveIrcObservationToChat(parsed, arrival);
 		this.#renderedIrcComponents.set(record.observationId, components);
 		this.#scheduleIrcExpiry(record, components);
 		this.ctx.ui.requestRender();

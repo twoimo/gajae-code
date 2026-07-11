@@ -20,7 +20,12 @@ import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { theme } from "../../modes/theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext, TranscriptRebuildPolicy } from "../../modes/types";
+import type {
+	CompactionQueuedMessage,
+	InteractiveModeContext,
+	IrcArrivalSnapshot,
+	TranscriptRebuildPolicy,
+} from "../../modes/types";
 import {
 	type CustomMessage,
 	isSilentAbort,
@@ -35,7 +40,7 @@ import {
 } from "../../session/session-manager";
 import { formatBytes, formatDuration } from "../../tools/render-utils";
 import { buildAbortDisplayMessage } from "./abort-message";
-import { isIrcCustomType, type ParsedIrcMessage, parseIrcMessage } from "./irc-message";
+import { formatIrcMessageBlock, isIrcCustomType, type ParsedIrcMessage, parseIrcMessage } from "./irc-message";
 
 export type { TranscriptRebuildPolicy } from "../../modes/types";
 
@@ -212,6 +217,7 @@ export class UiHelpers {
 	#viewportAnchorOccurrences = new WeakMap<object, { base: string; epoch: number; id: string }>();
 	#nextViewportAnchorOccurrence = new Map<string, number>();
 	#viewportAnchorOccurrenceEpoch = 0;
+	#ircSidebarHintShown = false;
 
 	constructor(private ctx: InteractiveModeContext) {}
 
@@ -260,25 +266,43 @@ export class UiHelpers {
 		return this.#renderedIrcInlineComponents;
 	}
 
-	addIrcObservationToChat(message: ParsedIrcMessage): Component[] {
-		const arrow =
-			message.kind === "incoming"
-				? `⇦ ${message.from}`
-				: message.kind === "autoreply"
-					? `⇨ ${message.to}`
-					: `${message.from} ⇨ ${message.to}`;
+	#addIrcObservationToChat(message: ParsedIrcMessage, sidebarHint?: string): Component[] {
+		const block = formatIrcMessageBlock(message);
 		const components: Component[] = [];
-		const headerComponent = new Text(theme.fg("accent", `[IRC] ${arrow}`), 1, 0);
+		const header = `${theme.fg("accent", `[IRC] ${block.sender} → ${block.recipient} · ${block.time}`)}${sidebarHint ? theme.fg("dim", sidebarHint) : ""}`;
+		const headerComponent = new Text(header, 1, 0);
 		addChatChild(this.ctx, headerComponent);
 		components.push(headerComponent);
-		if (message.text) {
-			for (const line of message.text.split("\n")) {
-				const lineComponent = new Text(theme.fg("muted", `  ${line}`), 0, 0);
-				addChatChild(this.ctx, lineComponent);
-				components.push(lineComponent);
-			}
+		if (block.bodyLines.length > 0) {
+			const bodyComponent = new Text(theme.fg("muted", `  ${block.bodyLines.join("\n  ")}`), 0, 0);
+			addChatChild(this.ctx, bodyComponent);
+			components.push(bodyComponent);
 		}
 		return components;
+	}
+
+	addLiveIrcObservationToChat(message: ParsedIrcMessage, arrival: IrcArrivalSnapshot): Component[] {
+		// Requested-open panels that merely yielded at narrow widths must not
+		// advertise the toggle key: pressing it would close the pending request.
+		const showSidebarHint =
+			!arrival.panelVisible &&
+			!arrival.panelRequestedVisible &&
+			arrival.sidebarAvailable &&
+			Boolean(arrival.resolvedToggleKey) &&
+			!this.#ircSidebarHintShown;
+		if (showSidebarHint) this.#ircSidebarHintShown = true;
+		return this.#addIrcObservationToChat(
+			message,
+			showSidebarHint ? ` · ${arrival.resolvedToggleKey} opens sidebar` : undefined,
+		);
+	}
+
+	addRebuiltIrcObservationToChat(message: ParsedIrcMessage): Component[] {
+		return this.#addIrcObservationToChat(message);
+	}
+
+	resetIrcSidebarHint(): void {
+		this.#ircSidebarHintShown = false;
 	}
 
 	/** Extract text content from a user message */
@@ -399,7 +423,7 @@ export class UiHelpers {
 					}
 					if (message.role === "custom" && isIrcCustomType(message.customType)) {
 						const parsed = parseIrcMessage(message);
-						if (parsed) return this.addIrcObservationToChat(parsed);
+						if (parsed) return this.addRebuiltIrcObservationToChat(parsed);
 					}
 					if (message.customType === "subagent:steer" || message.customType === "subagent:steer:relay") {
 						const details = (
@@ -548,7 +572,7 @@ export class UiHelpers {
 						(record.mode === "persistent" || now < record.expiresAt!) &&
 						!this.#renderedIrcInlineComponents.has(record.observationId)
 					) {
-						this.#renderedIrcInlineComponents.set(record.observationId, this.addIrcObservationToChat(record));
+						this.#renderedIrcInlineComponents.set(record.observationId, this.addRebuiltIrcObservationToChat(record));
 					}
 				}
 				continue;
@@ -711,7 +735,7 @@ export class UiHelpers {
 			) {
 				continue;
 			}
-			this.#renderedIrcInlineComponents.set(record.observationId, this.addIrcObservationToChat(record));
+			this.#renderedIrcInlineComponents.set(record.observationId, this.addRebuiltIrcObservationToChat(record));
 		}
 
 		this.ctx.pendingTools.clear();

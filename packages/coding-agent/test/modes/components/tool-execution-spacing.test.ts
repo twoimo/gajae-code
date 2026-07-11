@@ -15,7 +15,8 @@ beforeAll(async () => {
 const uiStub = { requestRender() {} } as unknown as TUI;
 
 const sidebarTheme = {
-	fg: (_color: "dim", text: string) => text,
+	fg: (_color: "dim" | "accent", text: string) => text,
+	bold: (text: string) => text,
 	boxSharp: { vertical: "|" },
 } satisfies IrcSidebarTheme;
 

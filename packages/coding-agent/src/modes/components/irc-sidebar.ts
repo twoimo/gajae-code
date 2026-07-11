@@ -2,7 +2,6 @@ import {
 	type Component,
 	padding,
 	renderComponentWithViewportAnchors,
-	replaceTabs,
 	TERMINAL,
 	truncateToWidth,
 	type ViewportAnchorProvider,
@@ -12,32 +11,63 @@ import {
 	wrapTextWithAnsi,
 } from "@gajae-code/tui";
 import type { IrcObservationLedger } from "../irc-observation-ledger";
+import { formatIrcMessageBlock } from "../utils/irc-message";
 
-function formatTimestamp(timestamp: number): string {
-	return new Date(timestamp).toISOString().slice(11, 19);
+export const IRC_SIDEBAR_WIDTH_RATIO = 0.3;
+const IRC_SIDEBAR_MIN_WIDTH = 30;
+const IRC_SEPARATOR_WIDTH = 3;
+
+/** Computes transcript/sidebar widths while preserving at least half the terminal for the transcript. */
+export function computeIrcSplitWidths(width: number): {
+	leftWidth: number;
+	separatorWidth: number;
+	rightWidth: number;
+} {
+	const normalizedWidth = Math.max(0, Math.floor(width));
+	const transcriptFloor = Math.floor(normalizedWidth * 0.5);
+	const preferredSidebar = Math.max(IRC_SIDEBAR_MIN_WIDTH, Math.floor(normalizedWidth * IRC_SIDEBAR_WIDTH_RATIO));
+	const sidebarWidth = Math.max(0, Math.min(preferredSidebar, normalizedWidth - IRC_SEPARATOR_WIDTH - transcriptFloor));
+
+	// The sidebar yields entirely rather than rendering below its readable minimum.
+	if (sidebarWidth < IRC_SIDEBAR_MIN_WIDTH) {
+		return { leftWidth: normalizedWidth, separatorWidth: 0, rightWidth: 0 };
+	}
+
+	return {
+		leftWidth: normalizedWidth - IRC_SEPARATOR_WIDTH - sidebarWidth,
+		separatorWidth: IRC_SEPARATOR_WIDTH,
+		rightWidth: sidebarWidth,
+	};
 }
 
-function renderSidebarRecords(ledger: IrcObservationLedger, width: number): string[] {
+function styleSender(componentTheme: IrcSidebarTheme, sender: string): string {
+	return componentTheme.fg("accent", componentTheme.bold(sender));
+}
+
+function renderSidebarRecords(ledger: IrcObservationLedger, width: number, componentTheme: IrcSidebarTheme): string[] {
 	if (width <= 0) return [];
 
 	const lines: string[] = [];
-	for (const record of ledger.getSidebarRecords()) {
-		const from = replaceTabs(record.from);
-		const to = replaceTabs(record.to);
-		const prefix = `[${formatTimestamp(record.timestamp)}] ${from}→${to} `;
-		const prefixWidth = visibleWidth(prefix);
-		const textWidth = Math.max(1, width - prefixWidth);
-		const textLines = wrapTextWithAnsi(replaceTabs(record.text || ""), textWidth);
-		for (const [index, text] of textLines.entries()) {
-			const line = index === 0 ? prefix + text : padding(prefixWidth) + text;
-			lines.push(truncateToWidth(line, width));
+	for (const [recordIndex, record] of ledger.getSidebarRecords().entries()) {
+		if (recordIndex > 0) lines.push("");
+
+		const block = formatIrcMessageBlock(record);
+		const sender = styleSender(componentTheme, block.sender);
+		const time = componentTheme.fg("dim", block.time);
+		lines.push(truncateToWidth(`${sender} → ${block.recipient} · ${time}`, width));
+
+		for (const bodyLine of block.bodyLines) {
+			for (const wrappedLine of wrapTextWithAnsi(bodyLine, Math.max(1, width - 2))) {
+				lines.push(truncateToWidth(`  ${wrappedLine}`, width));
+			}
 		}
 	}
 	return lines;
 }
 
 export interface IrcSidebarTheme {
-	fg(color: "dim", text: string): string;
+	fg(color: "dim" | "accent", text: string): string;
+	bold(text: string): string;
 	readonly boxSharp: { readonly vertical: string };
 }
 
@@ -57,6 +87,10 @@ export class IrcSplitViewComponent implements ViewportAnchorProvider {
 		return this.#visible;
 	}
 
+	effectiveSidebarVisible(width = process.stdout.columns ?? 0): boolean {
+		return this.#visible && computeIrcSplitWidths(width).rightWidth > 0;
+	}
+
 	setVisible(visible: boolean): void {
 		if (this.#visible === visible) return;
 		this.#visible = visible;
@@ -71,16 +105,16 @@ export class IrcSplitViewComponent implements ViewportAnchorProvider {
 		if (!this.#visible) return renderComponentWithViewportAnchors(this.leftPane, width);
 
 		const componentTheme = typeof this.componentTheme === "function" ? this.componentTheme() : this.componentTheme;
-		const leftWidth = Math.floor(width * 0.5);
+		const { leftWidth, separatorWidth, rightWidth } = computeIrcSplitWidths(width);
+		if (rightWidth === 0) return renderComponentWithViewportAnchors(this.leftPane, width);
+
 		const separatorText = componentTheme.fg("dim", ` ${componentTheme.boxSharp.vertical} `);
-		const separatorWidth = width - leftWidth > 3 ? visibleWidth(separatorText) : 0;
 		const separator = separatorWidth > 0 ? separatorText : "";
-		const rightWidth = Math.max(0, width - leftWidth - separatorWidth);
 		const leftRender = withTerminalGraphicsFallback(
 			() => renderComponentWithViewportAnchors(this.leftPane, leftWidth),
 			{ allowCursorNeutralImages: true },
 		);
-		const rightLines = renderSidebarRecords(this.ledger, rightWidth);
+		const rightLines = renderSidebarRecords(this.ledger, rightWidth, componentTheme);
 		const lineCount = Math.max(leftRender.lines.length, rightLines.length);
 		const lines: string[] = [];
 		const anchors: ViewportAnchorRender["anchors"] = [];

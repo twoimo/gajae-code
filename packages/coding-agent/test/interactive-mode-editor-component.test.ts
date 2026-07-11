@@ -152,6 +152,86 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(setViewportAnchor).not.toHaveBeenCalled();
 	});
 
+	it("captures a null resolved toggle key from an explicitly empty binding and suppresses the live hint", () => {
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		vi.spyOn(mode.keybindings, "getKeys").mockImplementation(action =>
+			action === "app.irc.sidebar.toggle" ? [] : [],
+		);
+
+		const arrival = mode.captureIrcArrivalSnapshot();
+		expect(arrival.resolvedToggleKey).toBeNull();
+
+		const components = mode.addLiveIrcObservationToChat(
+			{
+				observationId: "unbound-key-arrival",
+				kind: "incoming",
+				from: "worker",
+				to: "you",
+				text: "hint must be suppressed",
+				timestamp: 1,
+			},
+			arrival,
+		);
+		const rendered = components.flatMap(component => component.render(120)).map(line => Bun.stripANSI(line));
+		expect(rendered.join("\n")).not.toContain("opens sidebar");
+	});
+
+	it("converts requested-visible state to a closed arrival snapshot below the sidebar width floor", () => {
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		mode.toggleIrcSidebar();
+
+		forceTerminalSize(mode, 64, 24);
+		const narrow = mode.captureIrcArrivalSnapshot();
+		expect(narrow.panelVisible).toBe(false);
+
+		forceTerminalSize(mode, 65, 24);
+		const wideEnough = mode.captureIrcArrivalSnapshot();
+		expect(wideEnough.panelVisible).toBe(true);
+	});
+
+	it("suppresses the toggle hint when the panel is requested-open but yielded at narrow width", () => {
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		mode.toggleIrcSidebar();
+		forceTerminalSize(mode, 64, 24);
+
+		const arrival = mode.captureIrcArrivalSnapshot();
+		expect(arrival.panelVisible).toBe(false);
+		expect(arrival.panelRequestedVisible).toBe(true);
+
+		const record = mode.ircLedger.observe(
+			{
+				observationId: "yielded-panel-arrival",
+				kind: "incoming",
+				from: "worker",
+				to: "you",
+				text: "no misleading hint",
+				timestamp: 1,
+			},
+			arrival.panelVisible,
+		);
+		expect(record.mode).toBe("persistent");
+
+		const components = mode.addLiveIrcObservationToChat(
+			{
+				observationId: "yielded-panel-arrival",
+				kind: "incoming",
+				from: "worker",
+				to: "you",
+				text: "no misleading hint",
+				timestamp: 1,
+			},
+			arrival,
+		);
+		const rendered = components.flatMap(component => component.render(120)).map(line => Bun.stripANSI(line));
+		expect(rendered.join("\n")).not.toContain("opens sidebar");
+	});
+
 	it("marks only durable transcript messages as viewport-anchor eligible", async () => {
 		await mode.init();
 		mode.addMessageToChat({ role: "user", content: "durable semantic user", timestamp: 1 });

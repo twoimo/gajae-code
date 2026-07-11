@@ -30,6 +30,7 @@ import type { HookSelectorComponent } from "./components/hook-selector";
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { IrcObservationLedger } from "./irc-observation-ledger";
+import type { ParsedIrcMessage } from "./utils/irc-message";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
 
@@ -62,6 +63,14 @@ export type TodoPhase = {
 	name: string;
 	tasks: TodoItem[];
 };
+
+export type IrcArrivalSnapshot = Readonly<{
+	panelVisible: boolean;
+	/** User-requested open state; may be true while the panel yields at narrow widths. */
+	panelRequestedVisible: boolean;
+	sidebarAvailable: boolean;
+	resolvedToggleKey: string | null;
+}>;
 
 export interface InteractiveModeContext {
 	// UI access
@@ -196,6 +205,7 @@ export interface InteractiveModeContext {
 	withLocalSubmission<T>(text: string, fn: () => Promise<T>, options?: { imageCount?: number }): Promise<T>;
 	isKnownSlashCommand(text: string): boolean;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): Component[];
+	addLiveIrcObservationToChat(message: ParsedIrcMessage, arrival: IrcArrivalSnapshot): Component[];
 	renderSessionContext(
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
@@ -218,6 +228,7 @@ export interface InteractiveModeContext {
 
 	// IRC sidebar
 	toggleIrcSidebar(): void;
+	captureIrcArrivalSnapshot(): IrcArrivalSnapshot;
 	applyIrcSidebarAvailability(enabled: boolean): void;
 	resetIrcSidebarSession(): void;
 	// Command handling

@@ -16,7 +16,8 @@ type MutableTerminalInfo = {
 const terminal = TERMINAL as unknown as MutableTerminalInfo;
 
 const sidebarTheme = {
-	fg: (_color: "dim", text: string) => text,
+	fg: (_color: "dim" | "accent", text: string) => text,
+	bold: (text: string) => text,
 	boxSharp: { vertical: "|" },
 } satisfies IrcSidebarTheme;
 

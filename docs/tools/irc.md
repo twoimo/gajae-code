@@ -119,8 +119,11 @@
 
 ## Sidebar
 
-- `irc.sidebar.enabled` defaults to `false`. When it and `irc.enabled` are enabled, `app.irc.sidebar.toggle` (default `Alt+I`, remappable) shows or hides a read-only IRC sidebar.
-- The sidebar retains the active runtime UI session's IRC observations only. It is not written to disk or restored into another session. Observations first seen while the sidebar setting is off remain inline; observations first seen while it is on use a fixed 10-second deadline from their observation time.
+- `irc.sidebar.enabled` defaults to `true`: the read-only sidebar is available when `irc.enabled` is also enabled, but starts closed. `app.irc.sidebar.toggle` (default `Alt+I`, remappable) opens or hides it.
+- The sidebar retains the active runtime UI session's IRC observations only. It is not written to disk or restored into another session. Each arrival decides its inline lifetime once: arrivals while the panel is visible expire 10 seconds after observation; arrivals while it is closed persist inline. Later toggles do not change that decision.
+- An eligible first live inline arrival while the sidebar is closed shows a one-time hint using the resolved toggle key (for example, `Alt+I opens sidebar`). Rebuilds do not show or consume this hint.
+- When open, the transcript/sidebar split targets 70:30. The sidebar keeps a 30-column minimum only while the transcript can retain at least half the usable width; below that boundary the sidebar yields completely and the transcript renders full width. Sidebar messages are Discord-style blocks: `sender → recipient · HH:mm`, followed by the complete body with a two-column indent and one blank row between messages.
+- The sidebar backlog is uncapped, runtime-only, and read-only. It does not affect welcome-screen row reservation, which counts transcript rows only.
 - While the sidebar is visible, Kitty terminals keep rendering real images in the transcript (Kitty placements are cursor-neutral and compose safely with the split). Cursor-advancing protocols — iTerm2 inline images and raw SIXEL sequences — are represented by compact text placeholders so they cannot corrupt the split. Hiding the sidebar restores normal rendering for every protocol.
 - A successful `/fork` starts a new logical UI session: it clears the sidebar ledger, hides the panel, and resets roster-delivery state. Failed or cancelled forks preserve the current runtime sidebar state.
 

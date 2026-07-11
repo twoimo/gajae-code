@@ -121,13 +121,21 @@ function eventContext(setting: { enabled: boolean }) {
 		ui: { requestRender: vi.fn() },
 		chatContainer,
 		settings: { get: () => setting.enabled },
+		captureIrcArrivalSnapshot: () => ({
+			panelVisible: setting.enabled,
+			panelRequestedVisible: setting.enabled,
+			sidebarAvailable: true,
+			resolvedToggleKey: "Alt+I",
+		}),
 		ircLedger: ledger,
 		session: {},
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
 	const addMessageToChat = vi.fn((message: CustomMessage) => helpers.addMessageToChat(message));
 	ctx.addMessageToChat = addMessageToChat;
-	return { ctx, chatContainer, ledger, addMessageToChat };
+	const addLiveIrcObservationToChat = vi.fn((message, arrival) => helpers.addLiveIrcObservationToChat(message, arrival));
+	ctx.addLiveIrcObservationToChat = addLiveIrcObservationToChat;
+	return { ctx, chatContainer, ledger, addMessageToChat, addLiveIrcObservationToChat };
 }
 
 function visibleSplit(component: BashExecutionComponent): IrcSplitViewComponent {
@@ -139,7 +147,7 @@ function visibleSplit(component: BashExecutionComponent): IrcSplitViewComponent 
 describe("IRC visualization red-team", () => {
 	it("keeps same-millisecond/same-customType observations distinct, dedupes persisted delivery, and records both", async () => {
 		const setting = { enabled: false };
-		const { ctx, chatContainer, ledger, addMessageToChat } = eventContext(setting);
+		const { ctx, chatContainer, ledger, addLiveIrcObservationToChat } = eventContext(setting);
 		const controller = new EventController(ctx);
 		const first = ircMessage("red-one", 1234, "first");
 		const second = ircMessage("red-two", 1234, "second");
@@ -148,7 +156,7 @@ describe("IRC visualization red-team", () => {
 		await controller.handleEvent({ type: "irc_message", message: second });
 		await controller.handleEvent({ type: "message_start", message: first });
 
-		expect(addMessageToChat).toHaveBeenCalledTimes(2);
+		expect(addLiveIrcObservationToChat).toHaveBeenCalledTimes(2);
 		expect(chatContainer.children).toHaveLength(4);
 		expect(ledger.getSidebarRecords().map(record => record.text)).toEqual(["first", "second"]);
 	});

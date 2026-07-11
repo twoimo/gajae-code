@@ -12,6 +12,31 @@ export type ParsedIrcMessage = {
 	kind: IrcMessageKind;
 };
 
+export interface IrcMessageBlock {
+	readonly sender: string;
+	readonly recipient: string;
+	readonly kind: "incoming" | "autoreply" | "outgoing";
+	readonly time: string;
+	readonly bodyLines: readonly string[];
+}
+
+/** Formats IRC observations into display-neutral semantic blocks for both IRC surfaces. */
+export function formatIrcMessageBlock(message: ParsedIrcMessage & { timestamp: number }): IrcMessageBlock {
+	const date = new Date(message.timestamp);
+	// IRC timestamps are human-facing, so use local time rather than UTC serialization.
+	const time = Number.isFinite(date.getTime())
+		? `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+		: "--:--";
+	const bodyLines = message.text === "" ? [] : message.text.replaceAll("\t", "    ").split("\n");
+	return {
+		sender: message.from.replaceAll("\t", "    "),
+		recipient: message.to.replaceAll("\t", "    "),
+		kind: message.kind === "relay" ? "outgoing" : message.kind,
+		time,
+		bodyLines,
+	};
+}
+
 type IrcCustomMessage = Extract<AgentMessage, { role: "custom" }>;
 
 export function isIrcCustomType(customType: string | undefined): customType is `irc:${IrcMessageKind}` {

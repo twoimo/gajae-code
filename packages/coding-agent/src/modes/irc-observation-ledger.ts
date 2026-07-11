@@ -16,12 +16,13 @@ export class IrcObservationLedger {
 	#records = new Map<string, IrcObservationRecord>();
 	#nextSequence = 0;
 
-	observe(message: ParsedIrcMessage, settingEnabledAtObservation: boolean): IrcObservationRecord {
+	/** Visible observations expire after 10 seconds; closed-panel observations persist. */
+	observe(message: ParsedIrcMessage, panelVisibleAtObservation: boolean): IrcObservationRecord {
 		const existing = this.#records.get(message.observationId);
 		if (existing) return existing;
 
 		const observedAt = Date.now();
-		const mode: InlineMode = settingEnabledAtObservation ? "ephemeral" : "persistent";
+		const mode: InlineMode = panelVisibleAtObservation ? "ephemeral" : "persistent";
 		const record: IrcObservationRecord = Object.freeze({
 			...message,
 			mode,

@@ -363,4 +363,18 @@ describe("Settings", () => {
 			expect(compaction.maintenancePruningMinSavingsTokens).toBe(12000);
 		});
 	});
+	describe("IRC sidebar default", () => {
+		it("materializes irc.sidebar.enabled=true when the setting is omitted", () => {
+			const settings = Settings.isolated();
+			expect(settings.get("irc.sidebar.enabled")).toBe(true);
+		});
+
+		it("keeps the generated JSON schema default in sync with the settings source", async () => {
+			const schema = JSON.parse(
+				await Bun.file(new URL("../../../schemas/config.schema.json", import.meta.url)).text(),
+			);
+			const sidebarDefault = schema?.properties?.irc?.properties?.sidebar?.properties?.enabled?.default;
+			expect(sidebarDefault).toBe(true);
+		});
+	});
 });
