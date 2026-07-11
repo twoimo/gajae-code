@@ -20,6 +20,10 @@ import type { Model, Usage } from "@gajae-code/ai";
 import { $env, prompt, Snowflake } from "@gajae-code/utils";
 import type { ToolSession } from "..";
 import { AsyncJobManager } from "../async";
+import { modeStatePath } from "../gjc-runtime/session-layout";
+import { readExistingStateForMutation } from "../gjc-runtime/state-writer";
+import { degradeRalplanIrcActivation } from "../gjc-runtime/ralplan-runtime";
+import { getRalplanIrcCoordinator, RalplanIrcCoordinator } from "../gjc-runtime/ralplan-irc-coordinator";
 import { resolveAgentModelPatterns } from "../config/model-resolver";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
@@ -27,6 +31,7 @@ import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.m
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
 import type { ForkContextSeed } from "../session/agent-session";
+import type { CreateAgentSessionOptions } from "../sdk";
 import { formatBytes, formatDuration } from "../tools/render-utils";
 import {
 	type AgentDefinition,
@@ -40,6 +45,7 @@ import {
 	type TaskParams,
 	type TaskToolDetails,
 	type TaskToolSchemaInstance,
+	type RalplanIrcTaskContext,
 } from "./types";
 
 // Import review tools for side effects (registers subagent tool handlers)
@@ -184,6 +190,67 @@ export {
  */
 function hasAvailableIrcTool(session: ToolSession): boolean {
 	return session.settings.get("irc.enabled") === true && session.getToolByName?.("irc") !== undefined;
+}
+
+const RALPLAN_IRC_ROLE_NAMES = new Set<RalplanIrcTaskContext["role"]>(["planner", "architect", "critic"]);
+
+interface RalplanIrcLaunchAuthorization {
+	context?: RalplanIrcTaskContext;
+	ircAvailable: boolean;
+}
+
+async function resolveRalplanIrcLaunchAuthorization(
+	session: ToolSession,
+	agent: AgentDefinition,
+): Promise<RalplanIrcLaunchAuthorization> {
+	if (agent.source !== "bundled" || !RALPLAN_IRC_ROLE_NAMES.has(agent.name as RalplanIrcTaskContext["role"])) {
+		return { ircAvailable: false };
+	}
+	const parentSessionId = session.getSessionId?.();
+	const activeSkill = session.getActiveSkillState?.();
+	if (!parentSessionId || activeSkill?.skill !== "ralplan" || activeSkill.session_id !== parentSessionId) {
+		return { ircAvailable: false };
+	}
+	const read = await readExistingStateForMutation(modeStatePath(session.cwd, parentSessionId, "ralplan"));
+	if (read.kind !== "valid") return { ircAvailable: false };
+	const state = read.value;
+	if (
+		state.session_id !== parentSessionId ||
+		typeof state.run_id !== "string" ||
+		!state.run_id.trim() ||
+		state.active !== true ||
+		state.irc !== true ||
+		state.irc_degraded === true
+	) {
+		return { ircAvailable: false };
+	}
+	const ircAvailable = hasAvailableIrcTool(session);
+	if (!ircAvailable) {
+		await degradeRalplanIrcActivation({
+			cwd: session.cwd,
+			sessionId: parentSessionId,
+			runId: state.run_id,
+			reason: "activation_failed",
+		});
+		return { ircAvailable: false };
+	}
+	return {
+		context: { parentSessionId, runId: state.run_id, role: agent.name as RalplanIrcTaskContext["role"] },
+		ircAvailable,
+	};
+}
+
+export function renderRalplanIrcFirstWriteMetadata(
+	context: RalplanIrcTaskContext,
+	agentId: string,
+	resumable: boolean,
+): string {
+
+	const roleFlag = `--${context.role}`;
+	const criticPrelude = context.role === "critic"
+		? " Before finalizing, send the required IRC DM to the Planner and await its delivery acknowledgement; the parent holds role finalization until that gate opens."
+		: "";
+	return `<ralplan-irc-first-write-metadata>Validated runtime metadata. On your FIRST gjc ralplan --write, include exactly ${roleFlag}-id ${agentId} ${roleFlag}-resumable ${resumable}. Do not omit, alter, or claim metadata not shown here.${criticPrelude}</ralplan-irc-first-write-metadata>`;
 }
 
 function renderDescription(
@@ -358,6 +425,11 @@ export function resolveForkContextMaxTokens(configured: number, model: Model | u
  * Requires async initialization to discover available agents.
  * Use `TaskTool.create(session)` to instantiate.
  */
+
+/** Optional hooks for task-created child sessions. */
+export interface TaskToolOptions {
+	onAgentRegistered?: CreateAgentSessionOptions["onAgentRegistered"];
+}
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
 	readonly label = "Task";
@@ -396,9 +468,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	private constructor(
 		private readonly session: ToolSession,
 		discoveredAgents: AgentDefinition[],
+		private readonly options: TaskToolOptions,
 	) {
 		this.#blockedAgent = $env.PI_BLOCKED_AGENT;
 		this.#discoveredAgents = discoveredAgents;
+		if (this.session.agentRegistry && !getRalplanIrcCoordinator(this.session.agentRegistry)) {
+			new RalplanIrcCoordinator({ registry: this.session.agentRegistry, cwd: this.session.cwd });
+		}
 	}
 
 	#getTaskSimpleMode(): TaskSimpleMode {
@@ -408,9 +484,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	/**
 	 * Create a TaskTool instance with async agent discovery.
 	 */
-	static async create(session: ToolSession): Promise<TaskTool> {
+	static async create(session: ToolSession, options: TaskToolOptions = {}): Promise<TaskTool> {
 		const { agents } = await discoverAgents(session.cwd);
-		return new TaskTool(session, agents);
+		return new TaskTool(session, agents, options);
 	}
 
 	async execute(
@@ -636,6 +712,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const label = uniqueId;
 			try {
 				const subtaskSessionFile = batchArtifactsDir ? path.join(batchArtifactsDir, `${uniqueId}.jsonl`) : null;
+				const childCapabilities = { resumable: subtaskSessionFile !== null };
 				const jobId = manager.register(
 					"task",
 					label,
@@ -791,7 +868,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						historicalJobIds: [],
 						status: manager.getJob(jobId)?.status ?? "running",
 						sessionFile: subtaskSessionFile,
-						resumable: !!batchArtifactsDir,
+						resumable: childCapabilities.resumable,
 					});
 				}
 			} catch (error) {
@@ -968,6 +1045,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					spawns: undefined,
 				}
 			: agent;
+
 
 		// Apply per-agent model override from settings (highest priority)
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
@@ -1283,10 +1361,31 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					reasons: advisory.reasons,
 				};
 				const taskSessionFile = overrides?.sessionFile ?? executionOverrides?.sessionFiles?.get(task.id) ?? null;
+				const childCapabilities = { resumable: taskSessionFile !== null };
+				const ralplanIrcLaunchAuthorization = await resolveRalplanIrcLaunchAuthorization(this.session, effectiveAgent);
+				const ralplanIrcTaskContext = ralplanIrcLaunchAuthorization.context;
+				const onAgentRegistered = ralplanIrcTaskContext
+					? (registration: NonNullable<CreateAgentSessionOptions["onAgentRegistered"]> extends (arg: infer T) => unknown ? T : never) => {
+						const bound = getRalplanIrcCoordinator(this.session.agentRegistry!)?.bindRegisteredChild(registration.id, {
+							parentSessionId: ralplanIrcTaskContext.parentSessionId,
+							runId: ralplanIrcTaskContext.runId,
+							role: ralplanIrcTaskContext.role,
+							token: registration.token,
+						});
+						if (!bound) throw new Error("Ralplan IRC child binding was rejected; refusing generic child launch.");
+						this.options.onAgentRegistered?.(registration);
+					}
+					: this.options.onAgentRegistered;
+				const ralplanIrcFirstWriteMetadata = ralplanIrcTaskContext
+					? renderRalplanIrcFirstWriteMetadata(ralplanIrcTaskContext, task.id, childCapabilities.resumable)
+					: undefined;
+				const taskAgent = ralplanIrcFirstWriteMetadata
+					? { ...effectiveAgent, systemPrompt: `${effectiveAgent.systemPrompt}\n\n${ralplanIrcFirstWriteMetadata}` }
+					: effectiveAgent;
 				if (!isIsolated) {
 					const result = await runSubprocess({
 						cwd: this.session.cwd,
-						agent: effectiveAgent,
+						agent: taskAgent,
 						task: renderSubagentUserPrompt(task.assignment, simpleMode),
 						assignment: task.assignment.trim(),
 						context: sharedContext,
@@ -1306,7 +1405,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						persistArtifacts: !!artifactsDir,
 						artifactsDir: effectiveArtifactsDir,
 						contextFile: contextFilePath,
-						ircAvailable: hasAvailableIrcTool(this.session),
+						ircAvailable: ralplanIrcLaunchAuthorization.ircAvailable,
+						ralplanIrcTaskContext,
 						enableLsp: subagentLspEnabled,
 						signal,
 						eventBus: this.session.eventBus,
@@ -1320,6 +1420,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						authStorage: this.session.authStorage,
 						modelRegistry: this.session.modelRegistry,
 						agentRegistry: this.session.agentRegistry,
+						onAgentRegistered,
 						settings: this.session.settings,
 						inheritedServiceTier: this.session.serviceTier,
 						contextFiles,
@@ -1350,7 +1451,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const result = await runSubprocess({
 						cwd: this.session.cwd,
 						worktree: isolationDir,
-						agent: effectiveAgent,
+						agent: taskAgent,
 						task: renderSubagentUserPrompt(task.assignment, simpleMode),
 						assignment: task.assignment.trim(),
 						context: sharedContext,
@@ -1370,7 +1471,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						persistArtifacts: !!artifactsDir,
 						artifactsDir: effectiveArtifactsDir,
 						contextFile: contextFilePath,
-						ircAvailable: hasAvailableIrcTool(this.session),
+						ircAvailable: ralplanIrcLaunchAuthorization.ircAvailable,
+						ralplanIrcTaskContext,
 						enableLsp: subagentLspEnabled,
 						signal,
 						eventBus: this.session.eventBus,
@@ -1384,6 +1486,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						authStorage: this.session.authStorage,
 						modelRegistry: this.session.modelRegistry,
 						agentRegistry: this.session.agentRegistry,
+						onAgentRegistered,
 						settings: this.session.settings,
 						inheritedServiceTier: this.session.serviceTier,
 						contextFiles,

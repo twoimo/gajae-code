@@ -21,6 +21,7 @@ import type { Model } from "@gajae-code/ai";
 import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { ACP_BOOTSTRAP_RACE_GUARD_MS, AcpAgent, createAcpExtensionUiContext } from "../src/modes/acp/acp-agent";
+import { runNativeRalplanCommand } from "../src/gjc-runtime/ralplan-runtime";
 import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 import type { PlanModeState } from "../src/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "../src/session/agent-session";
@@ -101,7 +102,7 @@ class FakeAgentSession {
 	promptCalls: string[] = [];
 	customMessages: Array<{ customType: string; content: string; details?: unknown }> = [];
 	skillsSettings = { enableSkillCommands: true };
-	skills: Array<{ name: string; description: string; filePath: string; baseDir: string; source: string }> = [];
+	skills: Array<{ name: string; description: string; filePath: string; baseDir: string; source: string; content?: string }> = [];
 	planModeState: PlanModeState | undefined;
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
@@ -445,6 +446,17 @@ async function createHarness(): Promise<AgentHarness> {
 		cwdB,
 		findSession: (sessionId: string) => sessions.find(session => session.sessionId === sessionId),
 	};
+}
+
+async function installRalplanIrcSkill(session: FakeAgentSession, cwd: string): Promise<void> {
+	session.skills = [{
+		name: "ralplan",
+		description: "Ralplan skill",
+		filePath: "embedded:ralplan",
+		baseDir: cwd,
+		source: "test",
+		content: "---\ndescription: Ralplan skill\n---\n# Ralplan\nPlan work.\n",
+	}];
 }
 
 /**
@@ -1356,6 +1368,58 @@ describe("ACP agent", () => {
 
 		expect(session.customMessages).toEqual([]);
 		expect(session.fastMode).toBe(true);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("ACP ralplan --irc dispatch uses session-bound native argv and matching run id", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		await installRalplanIrcSkill(session, harness.cwdA);
+
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			messageId: "00000000-0000-4000-8000-0000000000a2",
+			prompt: [{ type: "text", text: "/skill:ralplan --irc ACP task" }],
+		} as PromptRequest);
+
+		const message = session.customMessages[0]!;
+		const activation = (message.details as { workflowActivation?: Record<string, unknown> }).workflowActivation;
+		expect(session.customMessages).toHaveLength(1);
+		expect(activation).toMatchObject({ ircRequested: true, ircActive: true });
+		expect(activation).toEqual(
+			expect.objectContaining({ sessionId: session.sessionId, ircRequested: true, ircActive: true }),
+		);
+		expect(typeof activation?.runId).toBe("string");
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("ACP prior CLI handoff reuses the existing run id", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		await installRalplanIrcSkill(session, harness.cwdA);
+		const first = await runNativeRalplanCommand(
+			["--session-id", session.sessionId, "--json", "prior CLI handoff"],
+			harness.cwdA,
+		);
+		expect(first.status).toBe(0);
+		const firstRunId = (JSON.parse(first.stdout ?? "{}") as { run_id: string }).run_id;
+
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			messageId: "00000000-0000-4000-8000-0000000000a3",
+			prompt: [{ type: "text", text: "/skill:ralplan --irc activate IRC" }],
+		} as PromptRequest);
+
+		const activation = (session.customMessages[0]!.details as { workflowActivation?: { runId?: string } })
+			.workflowActivation;
+		expect(session.customMessages).toHaveLength(1);
+		expect(activation?.runId).toBe(firstRunId);
 
 		harness.abortController.abort();
 		await Bun.sleep(0);

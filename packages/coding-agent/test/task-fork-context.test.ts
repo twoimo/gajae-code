@@ -657,4 +657,17 @@ describe("fork context policy surface", () => {
 			expect(getOptions()?.forkContextSeed).toBeDefined();
 		}
 	});
+	test("threads onAgentRegistered through task child launch", async () => {
+		mockAgents([createAgent("executor", "allowed")]);
+		const { getOptions } = mockCreateAgentSession();
+		const onAgentRegistered = vi.fn();
+		const tool = await TaskTool.create(createSession(), { onAgentRegistered });
+
+		await executeDetached(tool, {
+			agent: "executor",
+			tasks: [{ id: "Child", description: "d", assignment: "a" }],
+		});
+
+		expect(getOptions()?.onAgentRegistered).toBe(onAgentRegistered);
+	});
 });

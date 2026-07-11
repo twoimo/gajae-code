@@ -9,6 +9,8 @@
  */
 import * as fs from "node:fs/promises";
 import { validateAllocatedTaskId, validateTaskId } from "./id";
+const MAIN_AGENT_ID = "0-Main";
+
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -87,8 +89,11 @@ export class AgentOutputManager {
 	async allocate(id: string): Promise<string> {
 		await this.#ensureInitialized();
 		const prefix = this.#parentPrefix ? `${validateAllocatedTaskId(this.#parentPrefix)}.` : "";
-		return `${prefix}${this.#nextId++}-${validateTaskId(id)}`;
+		const validated = validateTaskId(id);
+		if (!this.#parentPrefix && `${this.#nextId}-${validated}` === MAIN_AGENT_ID) this.#nextId += 1;
+		return `${prefix}${this.#nextId++}-${validated}`;
 	}
+
 
 	/**
 	 * Allocate unique IDs for a batch of tasks.
@@ -99,7 +104,11 @@ export class AgentOutputManager {
 	async allocateBatch(ids: string[]): Promise<string[]> {
 		await this.#ensureInitialized();
 		const prefix = this.#parentPrefix ? `${validateAllocatedTaskId(this.#parentPrefix)}.` : "";
-		return ids.map(id => `${prefix}${this.#nextId++}-${validateTaskId(id)}`);
+		return ids.map(id => {
+			const validated = validateTaskId(id);
+			if (!this.#parentPrefix && `${this.#nextId}-${validated}` === MAIN_AGENT_ID) this.#nextId += 1;
+			return `${prefix}${this.#nextId++}-${validated}`;
+		});
 	}
 
 	/**

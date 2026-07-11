@@ -97,7 +97,7 @@ import {
 	shouldRegisterNotificationsExtension,
 } from "./notifications/config";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
-import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID, type AgentRef, type AgentRegistrationToken } from "./registry/agent-registry";
 import { MCPManager } from "./runtime-mcp";
 import {
 	collectEnvSecrets,
@@ -368,6 +368,8 @@ export interface CreateAgentSessionOptions {
 	discoverableToolAllowedNames?: readonly string[];
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
+	/** Invoked synchronously after registry registration and before session attachment. */
+	onAgentRegistered?: (registration: { id: string; token: AgentRegistrationToken; ref: AgentRef }) => void;
 	/** Parent task ID prefix for nested artifact naming (e.g., "6-Extensions") */
 	parentTaskPrefix?: string;
 
@@ -1242,6 +1244,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let session!: AgentSession;
 	let hasSession = false;
 	let hasRegistered = false;
+	let registrationToken: AgentRegistrationToken | undefined;
 	const enableLsp = options.enableLsp ?? true;
 	const backgroundJobsEnabled = isBackgroundJobSupportEnabled(settings);
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
@@ -2071,7 +2074,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// so that subagents launched in the same parallel batch can see each other in
 		// their initial `# IRC Peers` block (rendered inside `rebuildSystemPrompt`).
 		// The session reference is attached after construction below.
-		agentRegistry.register({
+		const registration = agentRegistry.register({
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
 			rosterLabel: resolvedAgentRosterLabel,
@@ -2081,7 +2084,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running",
 		});
+		registrationToken = registration.token;
 		hasRegistered = true;
+		options.onAgentRegistered?.({ id: resolvedAgentId, token: registration.token, ref: registration.ref });
 
 		const { systemPrompt } = await logger.time(
 			"buildSystemPrompt",
@@ -2399,14 +2404,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Attach the live session to the pre-registered ref so peers can route IRC
 		// messages here. Refresh sessionFile in case it was unavailable at pre-register
 		// time. The dispose wrapper below unregisters on teardown.
-		agentRegistry.attachSession(resolvedAgentId, session, sessionManager.getSessionFile() ?? null);
+		agentRegistry.attachSession(resolvedAgentId, session, registrationToken, sessionManager.getSessionFile() ?? null);
 		{
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {
 				try {
 					await originalDispose();
 				} finally {
-					agentRegistry.unregister(resolvedAgentId);
+					agentRegistry.unregister(resolvedAgentId, registrationToken);
 					unsubscribeCredentialDisabled?.();
 					releaseLocalProtocolOverride();
 				}
@@ -2565,7 +2570,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (hasSession) {
 				await session.dispose();
 			} else {
-				if (hasRegistered) agentRegistry.unregister(resolvedAgentId);
+				if (hasRegistered) agentRegistry.unregister(resolvedAgentId, registrationToken);
 				await disposeKernelSessionsByOwner(evalKernelOwnerId);
 				await disposeVmContextsByOwner(evalKernelOwnerId);
 			}

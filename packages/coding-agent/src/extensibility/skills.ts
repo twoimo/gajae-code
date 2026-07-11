@@ -1,12 +1,16 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import { getProjectDir } from "@gajae-code/utils";
+import { getEmbeddedDefaultGjcSkillFragments } from "../defaults/gjc-defaults";
+import { degradeRalplanIrcActivation, runNativeRalplanCommand } from "../gjc-runtime/ralplan-runtime";
+import { modeStatePath } from "../gjc-runtime/session-layout";
+import { readExistingStateForMutation } from "../gjc-runtime/state-writer";
 import { skillCapability } from "../capability/skill";
 import type { SourceMeta } from "../capability/types";
 import type { SkillsSettings } from "../config/settings";
 import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
-import type { SkillPromptDetails } from "../session/messages";
+import type { SkillPromptDetails, WorkflowSkillActivation } from "../session/messages";
 import { expandTilde } from "../tools/path-utils";
 import type { LoadedSubskillActivation } from "./gjc-plugins";
 import { buildSubskillInjection } from "./gjc-plugins/injection";
@@ -406,6 +410,138 @@ export function resolveSkillSlashCommands(
 	return commands;
 }
 
+interface RalplanInvocationFlags {
+	interactive: boolean;
+	irc: boolean;
+	argv: string[];
+	hasTask: boolean;
+	hasWorkflowFlags: boolean;
+}
+
+class RalplanActivationError extends Error {
+	constructor(message: string, readonly operation: "native_handoff" | "fragment_load", readonly status?: number, readonly stderr?: string, readonly cause?: Error) {
+		super(message);
+		this.name = "RalplanActivationError";
+	}
+}
+
+function bounded(value: unknown, limit = 1_000): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.replaceAll("\u0000", "").trim();
+	return normalized ? normalized.slice(0, limit) : undefined;
+}
+
+function parseRalplanInvocation(args: string): RalplanInvocationFlags {
+	const tokens = args.trim().split(/\s+/).filter(Boolean);
+	let interactive = false;
+	let irc = false;
+	let hasTask = false;
+	let hasWorkflowFlags = false;
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--interactive") {
+			interactive = true;
+			hasWorkflowFlags = true;
+			continue;
+		}
+		if (token === "--deliberate" || token === "--irc") {
+			if (token === "--irc") irc = true;
+			hasWorkflowFlags = true;
+			continue;
+		}
+		if (token === "--architect" || token === "--critic") {
+			if (!tokens[index + 1] || tokens[index + 1]!.startsWith("-")) {
+				throw new RalplanActivationError(`${token} requires a non-option value`, "native_handoff", 2);
+			}
+			hasWorkflowFlags = true;
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("-")) {
+			throw new RalplanActivationError(`unsupported ralplan option: ${token}`, "native_handoff", 2);
+		}
+		hasTask = true;
+	}
+	return { interactive, irc, argv: tokens, hasTask, hasWorkflowFlags };
+}
+
+async function readMatchingRalplanState(cwd: string, sessionId: string, runId?: string): Promise<Record<string, unknown> | undefined> {
+	const read = await readExistingStateForMutation(modeStatePath(cwd, sessionId, "ralplan"));
+	if (read.kind === "corrupt") throw new Error(`ralplan state is corrupt or unreadable: ${read.error}`);
+	if (read.kind !== "valid") return undefined;
+	const state = read.value;
+	if (state.session_id !== sessionId || typeof state.run_id !== "string" || !state.run_id.trim() || (runId !== undefined && state.run_id !== runId)) return undefined;
+	return state;
+}
+
+function activationWarning(error: RalplanActivationError): NonNullable<WorkflowSkillActivation["warning"]> {
+	return { code: "ralplan_irc_activation_degraded", operation: error.operation, message: error.message, ...(error.status === undefined ? {} : { status: error.status }), ...(error.stderr ? { stderr: error.stderr } : {}), ...(error.cause?.name ? { causeName: error.cause.name } : {}) };
+}
+
+function legacyContinuationInstruction(): string {
+	return "\n\n---\n\n<ralplan-irc-degraded>IRC activation is durably degraded for this run. Continue with fresh-spawn legacy Planner, Architect, and Critic roles for the entire run; do not call coordinator pass operations or resume persisted IRC roles. Receipts remain the only consensus verdict authority.</ralplan-irc-degraded>";
+}
+
+async function loadRalplanIrcFragment(skill: Pick<Skill, "filePath">): Promise<string> {
+	if (skill.filePath.startsWith("embedded:")) {
+		const fragment = getEmbeddedDefaultGjcSkillFragments("ralplan").find(candidate => candidate.relativePath === "skill-fragments/ralplan/irc-consensus.md");
+		if (!fragment) throw new Error("embedded ralplan IRC fragment is unavailable");
+		return fragment.content;
+	}
+	return await Bun.file(path.resolve(path.dirname(skill.filePath), "..", "..", "skill-fragments", "ralplan", "irc-consensus.md")).text();
+}
+
+export async function prepareWorkflowSkillInvocation(skill: Pick<Skill, "name" | "filePath">, args: string, context: BuildSkillPromptMessageContext | undefined): Promise<{ activation?: WorkflowSkillActivation; fragment?: string; legacyContinuation: boolean }> {
+	if (skill.name !== "ralplan" || !context?.cwd || !context.sessionId) return { legacyContinuation: false };
+	const flags = parseRalplanInvocation(args);
+	let activationError: RalplanActivationError | undefined;
+	let runId: string | undefined;
+	try {
+		const result = await runNativeRalplanCommand(["--session-id", context.sessionId, "--json", ...flags.argv], context.cwd);
+		if (result.status !== 0) throw new RalplanActivationError(`ralplan native handoff failed (status=${result.status})`, "native_handoff", result.status, bounded(result.stderr));
+		if (!result.stdout?.trim()) throw new RalplanActivationError("ralplan native handoff returned no JSON receipt", "native_handoff", result.status, bounded(result.stderr));
+		let payload: Record<string, unknown>;
+		try { payload = JSON.parse(result.stdout) as Record<string, unknown>; } catch (cause) { throw new RalplanActivationError("ralplan native handoff returned invalid JSON", "native_handoff", result.status, bounded(result.stderr), cause instanceof Error ? cause : undefined); }
+		if (payload.ok !== true || payload.skill !== "ralplan" || typeof payload.run_id !== "string" || !payload.run_id.trim() || payload.state_path !== modeStatePath(context.cwd, context.sessionId, "ralplan")) throw new RalplanActivationError("ralplan native handoff returned an invalid receipt", "native_handoff", result.status, bounded(result.stderr));
+		runId = payload.run_id;
+		const state = await readMatchingRalplanState(context.cwd, context.sessionId, runId);
+		if (!state || (flags.irc && (payload.irc !== true || state.irc !== true))) throw new RalplanActivationError("ralplan native handoff state does not match the validated receipt", "native_handoff", result.status, bounded(result.stderr));
+		if (state.irc_degraded === true) {
+			const degradeReason = bounded(state.irc_degrade_reason) ?? "activation_failed";
+			return { activation: { skill: "ralplan", sessionId: context.sessionId, runId, interactive: flags.interactive, ircRequested: flags.irc, ircActive: false, degraded: true, degradeReason }, legacyContinuation: true };
+		}
+		const activation: WorkflowSkillActivation = { skill: "ralplan", sessionId: context.sessionId, runId, interactive: flags.interactive, ircRequested: flags.irc, ircActive: state.irc === true && state.irc_degraded !== true, degraded: false };
+		if (!activation.ircActive) return { activation, legacyContinuation: false };
+		try { return { activation, fragment: await loadRalplanIrcFragment(skill), legacyContinuation: false }; }
+		catch (cause) { activationError = new RalplanActivationError("ralplan IRC fragment could not be loaded", "fragment_load", undefined, undefined, cause instanceof Error ? cause : undefined); }
+	} catch (cause) {
+		activationError = cause instanceof RalplanActivationError ? cause : new RalplanActivationError("ralplan native handoff failed", "native_handoff", undefined, undefined, cause instanceof Error ? cause : undefined);
+		if (!flags.irc) {
+			if (!flags.hasWorkflowFlags && !flags.hasTask && activationError.status === 2) return { legacyContinuation: true };
+			throw activationError;
+		}
+	}
+	let state: Record<string, unknown> | undefined;
+	try {
+		state = await readMatchingRalplanState(context.cwd, context.sessionId, runId);
+	} catch (readError) {
+		throw new AggregateError([activationError, readError], "ralplan activation recovery state read failed");
+	}
+	const matchingRunId = typeof state?.run_id === "string" ? state.run_id : undefined;
+	if (!activationError || !matchingRunId || state?.active !== true || state.irc !== true || state.irc_degraded === true) throw activationError ?? new Error("ralplan activation failed without a recoverable run");
+	const reason = activationError.operation === "fragment_load" ? "fragment_unavailable" : "activation_failed";
+	try { await degradeRalplanIrcActivation({ cwd: context.cwd, sessionId: context.sessionId, runId: matchingRunId, reason }); }
+	catch (degradationError) { throw new AggregateError([activationError, degradationError], "ralplan activation degradation failed"); }
+	let confirmed: Record<string, unknown> | undefined;
+	try {
+		confirmed = await readMatchingRalplanState(context.cwd, context.sessionId, matchingRunId);
+	} catch (confirmationError) {
+		throw new AggregateError([activationError, confirmationError], "ralplan activation degradation confirmation failed");
+	}
+	if (confirmed?.active !== true || confirmed.irc !== true || confirmed.irc_degraded !== true || confirmed.irc_degrade_reason !== reason) throw new AggregateError([activationError, new Error("ralplan activation degradation was not durably confirmed")], "ralplan activation degradation confirmation failed");
+	return { activation: { skill: "ralplan", sessionId: context.sessionId, runId: matchingRunId, interactive: flags.interactive, ircRequested: flags.irc, ircActive: false, degraded: true, degradeReason: reason, warning: activationWarning(activationError) }, legacyContinuation: true };
+}
+
 export async function buildSkillPromptMessage(
 	skill: Pick<Skill, "name" | "filePath" | "content">,
 	args: string,
@@ -413,17 +549,19 @@ export async function buildSkillPromptMessage(
 ): Promise<BuiltSkillPromptMessage> {
 	const content = typeof skill.content === "string" ? skill.content : await Bun.file(skill.filePath).text();
 	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+	const workflow = await prepareWorkflowSkillInvocation(skill, args, context);
 	const metaLines = [`Skill: ${skill.filePath}`];
 	const trimmedArgs = args.trim();
 	if (trimmedArgs) {
 		metaLines.push(`User: ${trimmedArgs}`);
 	}
-	let message = `${body}\n\n---\n\n${metaLines.join("\n")}`;
+	let message = `${body}${workflow.fragment ? `\n\n---\n\n${workflow.fragment.trim()}` : ""}${workflow.legacyContinuation ? legacyContinuationInstruction() : ""}\n\n---\n\n${metaLines.join("\n")}`;
 	const details: SkillPromptDetails = {
 		name: skill.name,
 		path: skill.filePath,
 		args: trimmedArgs || undefined,
 		lineCount: body ? body.split("\n").length : 0,
+		...(workflow.activation ? { workflowActivation: workflow.activation } : {}),
 	};
 	if (context?.subskillActivationSet) {
 		details.subskillActivationSet = context.subskillActivationSet;

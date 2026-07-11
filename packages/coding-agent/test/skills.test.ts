@@ -11,6 +11,9 @@ import {
 	parseSkillInvocations,
 	type Skill,
 } from "@gajae-code/coding-agent/extensibility/skills";
+import { runNativeRalplanCommand } from "@gajae-code/coding-agent/gjc-runtime/ralplan-runtime";
+import { modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { isValidatedRalplanWorkflowActivation } from "@gajae-code/coding-agent/session/agent-session";
 
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
@@ -513,6 +516,30 @@ description: Skill loaded from a tilde-expanded custom directory.
 			expect(built.details.args).toBe(args);
 			expect(built.message).toContain(`User: ${args}`);
 			expect(built.message).toContain("END");
+		});
+
+		it("continues a canonical IRC run without --irc using its persisted activation and fragment", async () => {
+			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ralplan-irc-continuation-"));
+			const sessionId = "canonical-irc-session";
+			try {
+				const seeded = await runNativeRalplanCommand(["--session-id", sessionId, "--irc", "--json", "seed IRC run"], cwd);
+				expect(seeded.status).toBe(0);
+				const seededRunId = (JSON.parse(seeded.stdout ?? "{}") as { run_id?: string }).run_id;
+				expect(seededRunId).toBe(sessionId);
+
+				const built = await buildSkillPromptMessage(
+					{ ...makeSkill("ralplan"), filePath: "embedded:gjc/skills/ralplan/SKILL.md", content: "---\nname: ralplan\n---\n# Ralplan" },
+					"continue the run",
+					{ cwd, sessionId },
+				);
+				const activation = built.details.workflowActivation;
+				expect(activation).toMatchObject({ runId: seededRunId, ircRequested: false, ircActive: true, degraded: false });
+				expect(built.message).toContain("Ralplan IRC Consensus Protocol");
+				const canonical = JSON.parse(await fs.readFile(modeStatePath(cwd, sessionId, "ralplan"), "utf8"));
+				expect(isValidatedRalplanWorkflowActivation(activation, sessionId, canonical)).toBe(true);
+			} finally {
+				await fs.rm(cwd, { recursive: true, force: true });
+			}
 		});
 	});
 });

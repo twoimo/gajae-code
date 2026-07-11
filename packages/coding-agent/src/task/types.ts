@@ -172,6 +172,13 @@ export interface TaskParams {
 	isolated?: boolean;
 }
 
+/** Runtime-validated context for a bundled ralplan IRC role task. */
+export interface RalplanIrcTaskContext {
+	parentSessionId: string;
+	runId: string;
+	role: "planner" | "architect" | "critic";
+}
+
 /** A code review finding reported by the reviewer agent */
 export interface ReviewFinding {
 	title: string;

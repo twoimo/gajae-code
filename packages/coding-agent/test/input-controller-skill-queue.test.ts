@@ -25,6 +25,7 @@ import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { getEmbeddedDefaultGjcSkills } from "@gajae-code/coding-agent/defaults/gjc-defaults";
 import { resolveSkillSlashCommands, type Skill } from "@gajae-code/coding-agent/extensibility/skills";
+import { modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
 import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
 import { InputController } from "@gajae-code/coding-agent/modes/controllers/input-controller";
 import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
@@ -85,6 +86,8 @@ function createStubInputControllerContext(opts: {
 	skillCommands: Map<string, Skill>;
 	isStreaming: boolean;
 	busyPromptMode?: "steer" | "queue";
+	cwd?: string;
+	sessionId?: string;
 }) {
 	let editorText = "";
 	const editor: StubEditor = {
@@ -113,7 +116,7 @@ function createStubInputControllerContext(opts: {
 		ui: { requestRender },
 		skillCommands: opts.skillCommands,
 		session: {
-			sessionId: "stub-session",
+			sessionId: opts.sessionId ?? "stub-session",
 			isStreaming: opts.isStreaming,
 			isCompacting: false,
 			isBashRunning: false,
@@ -128,7 +131,7 @@ function createStubInputControllerContext(opts: {
 			get: (key: string) => (key === "busyPromptMode" ? opts.busyPromptMode : undefined),
 		},
 		sessionManager: {
-			getCwd: () => process.cwd(),
+			getCwd: () => opts.cwd ?? process.cwd(),
 		},
 		showError,
 		updatePendingMessagesDisplay,
@@ -242,6 +245,29 @@ describe("InputController #invokeSkillCommand (E1-E3)", () => {
 		const messageArg = firstCall[0];
 		expect(messageArg.content).toContain("Deep Interview");
 		expect(messageArg.details.path).toBe("embedded:gjc/skills/deep-interview/SKILL.md");
+		expect(ctx.showError).not.toHaveBeenCalled();
+	});
+
+	it("dispatches queued ralplan slash commands with the session-bound canonical IRC activation", async () => {
+		const sessionId = "queued-ralplan-session";
+		const ralplan = getEmbeddedDefaultGjcSkills().find(skill => skill.name === "ralplan");
+		if (!ralplan) throw new Error("expected embedded ralplan skill");
+		const { ctx, editor, enqueueCustomMessageDisplay, promptCustomMessage } = createStubInputControllerContext({
+			skillCommands: new Map<string, Skill>([["skill:ralplan", ralplan]]),
+			isStreaming: true,
+			cwd: tempDir.path(),
+			sessionId,
+		});
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		editor.setText("/skill:ralplan --irc queued consensus");
+		await controller.handleFollowUp();
+
+		expect(enqueueCustomMessageDisplay).toHaveBeenCalledWith("/skill:ralplan --irc queued consensus", "followUp");
+		const dispatched = promptCustomMessage.mock.calls[0]?.[0];
+		expect(dispatched?.details.workflowActivation).toMatchObject({ sessionId, runId: sessionId, ircRequested: true, ircActive: true, degraded: false });
+		expect(dispatched?.content).toContain("Ralplan IRC Consensus Protocol");
+		expect(fs.existsSync(modeStatePath(tempDir.path(), sessionId, "ralplan"))).toBe(true);
 		expect(ctx.showError).not.toHaveBeenCalled();
 	});
 

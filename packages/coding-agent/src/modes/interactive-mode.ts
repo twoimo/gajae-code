@@ -43,6 +43,7 @@ import type { CompactOptions } from "../extensibility/extensions/types";
 import { resolveSkillSlashCommands, type Skill } from "../extensibility/skills";
 import { BUILTIN_SLASH_COMMANDS, loadSlashCommands } from "../extensibility/slash-commands";
 import { consumePendingGoalModeRequest } from "../gjc-runtime/goal-mode-request";
+import type { RalplanIrcLifecycleEvent } from "../gjc-runtime/ralplan-irc-coordinator";
 import { type Goal, type GoalModeState, normalizeGoal } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
 import { getLspStartupWarningMessage, LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
@@ -391,6 +392,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#welcomeComponent?: WelcomeComponent;
 	#ircSplitView: IrcSplitViewComponent;
+	#ircSidebarManualVisible = false;
+	#ircSidebarWorkflowOwned = false;
+	#ralplanIrcLifecycleUnsubscribe?: () => void;
+	#ralplanIrcBoundaryAskListeners = new Set<(event: RalplanIrcLifecycleEvent) => void>();
 
 	constructor(
 		session: AgentSession,
@@ -497,6 +502,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController = new SelectorController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
+		this.#ralplanIrcLifecycleUnsubscribe = this.session.onRalplanIrcLifecycle(event => this.#handleRalplanIrcLifecycle(event));
 	}
 
 	async init(): Promise<void> {
@@ -2016,6 +2022,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#sttController = undefined;
 		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
+		this.#ralplanIrcLifecycleUnsubscribe?.();
+		this.#ralplanIrcLifecycleUnsubscribe = undefined;
+		this.#ralplanIrcBoundaryAskListeners.clear();
 		this.#extensionUiController.clearHookWidgets();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
 			unsubscribe();
@@ -2681,23 +2690,53 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	toggleIrcSidebar(): void {
-		if (this.settings.get("irc.enabled") !== true || this.settings.get("irc.sidebar.enabled") !== true) return;
-		this.#ircSplitView.setVisible(!this.#ircSplitView.visible);
-		this.#invalidateIrcSidebarRender();
-		this.ui.requestRender();
+		if (!this.#isIrcSidebarAvailable()) return;
+		this.#ircSidebarManualVisible = !this.#ircSidebarManualVisible;
+		this.#syncIrcSidebarVisibility();
 	}
 
 	applyIrcSidebarAvailability(enabled: boolean): void {
 		if (enabled) return;
-		this.#ircSplitView.setVisible(false);
-		this.#invalidateIrcSidebarRender();
-		this.ui.requestRender();
+		this.#ircSidebarManualVisible = false;
+		this.#syncIrcSidebarVisibility();
 	}
 
 	resetIrcSidebarSession(): void {
 		this.ircLedger.reset();
 		this.#eventController.resetIrcObservations();
-		this.#ircSplitView.setVisible(false);
+		this.#ircSidebarManualVisible = false;
+		this.#ircSidebarWorkflowOwned = false;
+		this.#syncIrcSidebarVisibility();
+	}
+
+	/** Prompt-side consumers use this hook to ask only at a completed pass boundary. */
+	onRalplanIrcBoundaryAskReady(listener: (event: RalplanIrcLifecycleEvent) => void): () => void {
+		this.#ralplanIrcBoundaryAskListeners.add(listener);
+		return () => this.#ralplanIrcBoundaryAskListeners.delete(listener);
+	}
+
+	#handleRalplanIrcLifecycle(event: RalplanIrcLifecycleEvent): void {
+		if (event.type === "open") {
+			this.#ircSidebarWorkflowOwned = true;
+			this.#syncIrcSidebarVisibility();
+			return;
+		}
+		if (event.type === "close") {
+			this.#ircSidebarWorkflowOwned = false;
+			this.#syncIrcSidebarVisibility();
+			return;
+		}
+		if (event.type === "boundary_ask_ready") {
+			for (const listener of this.#ralplanIrcBoundaryAskListeners) listener(event);
+		}
+	}
+
+	#isIrcSidebarAvailable(): boolean {
+		return this.settings.get("irc.enabled") === true && this.settings.get("irc.sidebar.enabled") === true;
+	}
+
+	#syncIrcSidebarVisibility(): void {
+		this.#ircSplitView.setVisible(this.#isIrcSidebarAvailable() && (this.#ircSidebarManualVisible || this.#ircSidebarWorkflowOwned));
 		this.#invalidateIrcSidebarRender();
 		this.ui.requestRender();
 	}

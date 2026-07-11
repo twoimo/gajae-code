@@ -296,6 +296,24 @@ describe("BashTool restricted role-agent allowlist", () => {
 		}
 	});
 
+	it("restricted first write accepts role CLI metadata with only artifact env override", async () => {
+		const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-restricted-role-metadata-bash-"));
+		try {
+			const cliPath = path.resolve(import.meta.dir, "..", "..", "src", "cli.ts");
+			const bunPath = process.execPath;
+			const tool = createRestrictedBashTool(root, [`${bunPath} ${cliPath} ralplan --write`]);
+			await expect(
+				tool.execute("tool-call", {
+					command: `${bunPath} ${cliPath} ralplan --write --stage architect --stage_n 1 --artifact-env GJC_RALPLAN_ARTIFACT --run-id role-metadata --session-id restricted-bash-test --architect-id 2-Architect --architect-resumable true`,
+					env: { GJC_RALPLAN_ARTIFACT: "# Architecture\n" },
+					timeout: 30,
+				}),
+			).resolves.toBeDefined();
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("marks restricted CLI subprocesses so ralplan does not ingest artifact file paths", async () => {
 		const root = await fs.mkdtemp(path.join(process.cwd(), ".tmp-restricted-bash-"));
 		try {

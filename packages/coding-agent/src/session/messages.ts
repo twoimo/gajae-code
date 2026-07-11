@@ -33,6 +33,25 @@ import { formatOutputNotice } from "../tools/output-meta";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 
+export interface WorkflowSkillActivation {
+	skill: "ralplan";
+	sessionId: string;
+	runId: string;
+	interactive: boolean;
+	ircRequested: boolean;
+	ircActive: boolean;
+	degraded: boolean;
+	degradeReason?: "activation_failed" | "fragment_unavailable";
+	warning?: {
+		code: "ralplan_irc_activation_degraded";
+		operation: "native_handoff" | "fragment_load";
+		message: string;
+		status?: number;
+		stderr?: string;
+		causeName?: string;
+	};
+}
+
 export interface SkillPromptDetails {
 	name: string;
 	path: string;
@@ -40,6 +59,8 @@ export interface SkillPromptDetails {
 	lineCount: number;
 	subskillActivation?: LoadedSubskillActivation;
 	subskillActivationSet?: LoadedSubskillActivation[];
+	/** Internal, runtime-validated ralplan activation metadata. Never user-authoritative. */
+	workflowActivation?: WorkflowSkillActivation;
 	/** Internal: tag used by AgentSession to remove the pending-display chip
 	 *  from `#steeringMessages` / `#followUpMessages` when the agent consumes
 	 *  this message. Not surfaced to renderers; the `__` prefix signals
@@ -84,7 +105,7 @@ export function readPendingDisplayTag(details: unknown): string | undefined {
  *  the CustomMessageEntry to disk. Scoped intentionally narrow: only fields
  *  declared here are stripped. Adding a new entry is a deliberate, reviewed
  *  change — unrelated future payload fields are never silently dropped. */
-export const INTERNAL_DETAILS_FIELDS = ["__pendingDisplayTag"] as const;
+export const INTERNAL_DETAILS_FIELDS = ["__pendingDisplayTag", "workflowActivation"] as const;
 
 /** Return a `details` copy with every key in `INTERNAL_DETAILS_FIELDS`
  *  removed. Returns the input unchanged when there is nothing to strip

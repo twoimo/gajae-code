@@ -27,7 +27,7 @@ function readPersistedCustomMessageEntry<T>(session: SessionManager, id: string)
 }
 
 describe("SessionManager.appendCustomMessageEntry (allowlist strip + persistence contract)", () => {
-	it("F1: strips __pendingDisplayTag from persisted details while preserving all other SkillPromptDetails fields", () => {
+	it("F1: strips internal details from persisted skill prompts while preserving ordinary fields", () => {
 		const session = SessionManager.inMemory();
 		const id = session.appendCustomMessageEntry<SkillPromptDetails>(
 			SKILL_TYPE,
@@ -38,6 +38,15 @@ describe("SessionManager.appendCustomMessageEntry (allowlist strip + persistence
 				path: "/s.md",
 				args: "bar",
 				lineCount: 10,
+				workflowActivation: {
+					skill: "ralplan",
+					sessionId: "session-123",
+					runId: "run-456",
+					interactive: true,
+					ircRequested: true,
+					ircActive: true,
+					degraded: false,
+				},
 				__pendingDisplayTag: "gjc-cmd-1-0",
 			},
 			"user",
@@ -50,8 +59,9 @@ describe("SessionManager.appendCustomMessageEntry (allowlist strip + persistence
 			args: "bar",
 			lineCount: 10,
 		});
-		// Explicit absence assertion — defends against `toEqual` semantics drift
+		// Explicit absence assertions defend against `toEqual` semantics drift
 		// where an `undefined`-valued key would still satisfy deep equality.
+		expect(Object.hasOwn(entry.details!, "workflowActivation")).toBe(false);
 		expect(Object.hasOwn(entry.details!, "__pendingDisplayTag")).toBe(false);
 	});
 

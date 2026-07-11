@@ -291,6 +291,8 @@ describe("SkillTool", () => {
 
 		expect(result.details?.name).toBe("ralplan");
 		expect(captured).toHaveLength(1);
+		expect(result.details?.workflowActivation).toBeUndefined();
+		expect((captured[0]!.message.content as string)).toContain("Plan");
 		expect(captured[0]!.message.details).toEqual(expect.objectContaining({ name: "ralplan" }));
 	});
 
@@ -510,6 +512,28 @@ describe("SkillTool", () => {
 		const tool = SkillTool.createIf(session)!;
 		await expect(tool.execute("call-1", { name: "ralplan" })).rejects.toThrow(/handoff failed/);
 		expect(captured).toHaveLength(0);
+	});
+
+	it("dispatches ralplan IRC activation metadata and consensus fragment on the custom message", async () => {
+		const cwd = await makeTempCwd();
+		const sessionId = "skill-tool-irc-session";
+		const sourceSkill = await makeSkill("ralplan", "---\nname: ralplan\n---\n# Ralplan");
+		const ralplan = { ...sourceSkill, filePath: "embedded:gjc/skills/ralplan/SKILL.md" };
+		const captured: CapturedSend[] = [];
+		const session = createSession(cwd, [ralplan], captured, { getSessionId: () => sessionId });
+		const tool = SkillTool.createIf(session)!;
+		try {
+			await tool.execute("call-irc", { name: "ralplan", args: "--irc dispatch consensus" });
+			expect(captured).toHaveLength(1);
+			const dispatched = captured[0]!.message;
+			expect(dispatched.content).toContain("Ralplan IRC Consensus Protocol");
+			expect(dispatched.details).toEqual(expect.objectContaining({
+				name: "ralplan",
+				workflowActivation: expect.objectContaining({ sessionId, runId: sessionId, ircRequested: true, ircActive: true, degraded: false }),
+			}));
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
 	});
 
 	it("throws a ToolError naming the available skills when the name is unknown", async () => {

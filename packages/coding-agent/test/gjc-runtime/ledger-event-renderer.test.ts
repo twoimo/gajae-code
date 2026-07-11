@@ -113,4 +113,18 @@ describe("ledger-event-renderer: ralplan", () => {
 		const collapsed = formatRalplanStagePresence(["planner", "architect", "critic", "revision"], 2);
 		expect(collapsed).toBe("P·A … 2 more stages");
 	});
+
+	it("deliberation renders L distinct from ADR D", () => {
+		expect(formatRalplanStagePresence(["deliberation", "adr"])).toBe("L·D");
+	});
+
+	it("deliberation remains in the current consensus iteration", () => {
+		expect(summarizeRalplanIndex([
+			{ stage: "planner", stageN: 1 },
+			{ stage: "architect", stageN: 1 },
+			{ stage: "deliberation", stageN: 1 },
+			{ stage: "revision", stageN: 2 },
+			{ stage: "deliberation", stageN: 2 },
+		])).toEqual({ iteration: 2, currentStages: ["revision", "deliberation"] });
+	});
 });

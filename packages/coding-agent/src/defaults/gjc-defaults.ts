@@ -7,6 +7,7 @@ import autoResearchGreenfieldFragment from "./gjc/skills/deep-interview/auto-res
 import lateralReviewPanelFragment from "./gjc/skills/deep-interview/lateral-review-panel.md" with { type: "text" };
 import deepInterviewSkill from "./gjc/skills/deep-interview/SKILL.md" with { type: "text" };
 import ralplanSkill from "./gjc/skills/ralplan/SKILL.md" with { type: "text" };
+import ralplanIrcConsensusFragment from "./gjc/skills/ralplan/irc-consensus.md" with { type: "text" };
 import teamSkill from "./gjc/skills/team/SKILL.md" with { type: "text" };
 import aiSlopCleanerFragment from "./gjc/skills/ultragoal/ai-slop-cleaner.md" with { type: "text" };
 import pipelineValidationContractsFragment from "./gjc/skills/ultragoal/pipeline-validation-contracts.md" with {
@@ -90,6 +91,12 @@ const DEFAULT_GJC_DEFINITIONS: readonly DefaultGjcDefinition[] = [
 		content: deepInterviewSkill,
 	},
 	{ kind: "skill", name: "ralplan", relativePath: "skills/ralplan/SKILL.md", content: ralplanSkill },
+	{
+		kind: "skill-fragment",
+		parentSkillName: "ralplan",
+		relativePath: "skill-fragments/ralplan/irc-consensus.md",
+		content: ralplanIrcConsensusFragment,
+	},
 	{ kind: "skill", name: "team", relativePath: "skills/team/SKILL.md", content: teamSkill },
 	{ kind: "skill", name: "ultragoal", relativePath: "skills/ultragoal/SKILL.md", content: ultragoalSkill },
 	{

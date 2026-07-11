@@ -1,7 +1,7 @@
 ---
 name: ralplan
 description: Consensus planning entrypoint that auto-gates vague team/ultragoal requests before execution
-argument-hint: "[--interactive] [--deliberate] [--architect openai-code] [--critic openai-code] <task description>"
+argument-hint: "[--interactive] [--deliberate] [--irc] [--architect openai-code] [--critic openai-code] <task description>"
 level: 4
 
 source: "forked from upstream ralplan skill and rebranded for GJC"
@@ -22,6 +22,7 @@ Ralplan is the consensus planning workflow. It triggers iterative planning with 
 - `--interactive`: Adds draft-review prompts and one-at-a-time reconciliation; final approval always uses an `ask` workflow gate and never auto-executes.
 - `--deliberate`: Forces high-risk deliberation: pre-mortem plus expanded test planning. It may also auto-enable for explicit auth/security, migration, destructive, incident, compliance/PII, or public-API-breakage risk.
 - `--architect openai-code` / `--critic openai-code`: Use OpenAI code for that review pass when available; otherwise note the fallback and use default GJC review.
+- `--irc`: Enables the validated IRC tri-agent consensus mode. Its parent-scoped `irc-consensus` fragment is loaded lazily only after activation; if activation degrades, continue the entire run with fresh-spawn legacy roles and no IRC coordinator operations.
 - `--write --stage <type> --stage_n <N> --artifact <markdown file path or markdown string>`: Native writer for Planner/Architect/Critic/revision/ADR/final pending-approval markdown under `.gjc/_session-{sessionid}/plans/ralplan/<run-id>/`; do not edit `.gjc/` directly.
 
 ## Usage with interactive mode

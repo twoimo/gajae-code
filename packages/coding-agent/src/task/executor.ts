@@ -28,7 +28,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
-import { createAgentSession, discoverAuthStorage } from "../sdk";
+import { createAgentSession, discoverAuthStorage, type CreateAgentSessionOptions } from "../sdk";
 import type { AgentSession, AgentSessionEvent, ForkContextSeed } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
 import type { AuthStorage } from "../session/auth-storage";
@@ -57,6 +57,7 @@ import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	type TaskToolDetails,
+	type RalplanIrcTaskContext,
 } from "./types";
 
 /** Agent event types to forward for progress tracking. */
@@ -144,6 +145,8 @@ export interface ExecutorOptions {
 	contextFile?: string;
 	/** Whether the parent runtime actually exposes IRC coordination. */
 	ircAvailable?: boolean;
+	/** Runtime-validated ralplan IRC role context; scopes IRC to this child only. */
+	ralplanIrcTaskContext?: RalplanIrcTaskContext;
 	eventBus?: EventBus;
 	contextFiles?: ContextFileEntry[];
 	skills?: Skill[];
@@ -154,6 +157,8 @@ export interface ExecutorOptions {
 	settings?: Settings;
 	/** Parent session's registry; shared by child sessions for IRC routing and roster visibility. */
 	agentRegistry?: AgentRegistry;
+	/** Synchronous hook for binding this child registration before session attachment. */
+	onAgentRegistered?: CreateAgentSessionOptions["onAgentRegistered"];
 	/**
 	 * Live service-tier intent of the parent session (`AgentSession.serviceTier`),
 	 * used as the inherited tier when `task.serviceTier === "inherit"`. Passing the
@@ -661,11 +666,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		};
 	}
 
-	// Set up artifact paths and write input file upfront if artifacts dir provided
-	let subtaskSessionFile: string | undefined = options.sessionFile ?? undefined;
-	if (!subtaskSessionFile && options.artifactsDir) {
-		subtaskSessionFile = path.join(options.artifactsDir, `${id}.jsonl`);
-	}
+	// A child is persistent only when its caller explicitly supplies a session file.
+	const subtaskSessionFile: string | undefined = options.sessionFile ?? undefined;
 
 	const settings = options.settings ?? Settings.isolated();
 	const subagentSettings = createSubagentSettings(settings, options.inheritedServiceTier);
@@ -695,6 +697,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		if (allowEvalPy || allowEvalJs) expanded.push("eval");
 		expanded.push("bash");
 		toolNames = Array.from(new Set(expanded));
+	}
+	if (options.ralplanIrcTaskContext && options.ircAvailable === true) {
+		toolNames = Array.from(new Set([...(toolNames ?? []), "irc"]));
 	}
 
 	const modelPatterns = normalizeModelPatterns(modelOverride ?? agent.model);
@@ -1426,6 +1431,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					telemetry: subagentTelemetry,
 					forkContextSeed: options.forkContextSeed,
 					agentRegistry,
+					onAgentRegistered: options.onAgentRegistered,
 					shouldPause: () => pauseRequested,
 				}),
 			);

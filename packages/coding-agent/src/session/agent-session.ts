@@ -216,6 +216,7 @@ import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
+import { getRalplanIrcCoordinator, type RalplanIrcLifecycleEvent } from "../gjc-runtime/ralplan-irc-coordinator";
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import ircPeerRosterTemplate from "../prompts/system/irc-peer-roster.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
@@ -291,6 +292,7 @@ import {
 	readPendingDisplayTag,
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
+	type WorkflowSkillActivation,
 } from "./messages";
 import { formatSessionDumpText } from "./session-dump-format";
 import type {
@@ -926,6 +928,27 @@ function extractPermissionLocations(
 	return out;
 }
 
+export function isValidatedRalplanWorkflowActivation(
+	value: unknown,
+	sessionId: string,
+	state: unknown,
+): value is WorkflowSkillActivation {
+	if (!value || typeof value !== "object" || !state || typeof state !== "object") return false;
+	const activation = value as Partial<WorkflowSkillActivation>;
+	const canonical = state as Record<string, unknown>;
+	if (
+		activation.skill !== "ralplan" || activation.sessionId !== sessionId || typeof activation.runId !== "string" ||
+		typeof activation.interactive !== "boolean" || typeof activation.ircRequested !== "boolean" ||
+		typeof activation.ircActive !== "boolean" || typeof activation.degraded !== "boolean" ||
+		canonical.session_id !== sessionId || canonical.run_id !== activation.runId || canonical.active !== true || (canonical.irc !== true && activation.ircActive)
+	) return false;
+	if (canonical.irc_degraded === true) {
+		return activation.ircActive === false && activation.degraded === true &&
+			typeof activation.degradeReason === "string" && activation.degradeReason === canonical.irc_degrade_reason;
+	}
+	return activation.degraded === false && activation.degradeReason === undefined && (activation.ircActive ? canonical.irc === true : canonical.irc !== true);
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -1299,6 +1322,9 @@ export class AgentSession {
 
 	#skillsSettings: SkillsSettings | undefined;
 	#activeSkillState: { skill: string; sessionId?: string } | undefined;
+	#ralplanIrcActivation: WorkflowSkillActivation | undefined;
+	#ralplanIrcLifecycleListeners = new Set<(event: RalplanIrcLifecycleEvent) => void>();
+	#ralplanIrcLifecycleUnsubscribe: (() => void) | undefined;
 
 	// Model registry for API key resolution
 	#modelRegistry: ModelRegistry;
@@ -1719,6 +1745,30 @@ export class AgentSession {
 			skill: this.#activeSkillState.skill,
 			...(this.#activeSkillState.sessionId ? { session_id: this.#activeSkillState.sessionId } : {}),
 		};
+	}
+
+	/** Observe lifecycle events only for this session's validated interactive IRC ralplan run. */
+	onRalplanIrcLifecycle(listener: (event: RalplanIrcLifecycleEvent) => void): () => void {
+		this.#ralplanIrcLifecycleListeners.add(listener);
+		this.#attachRalplanIrcLifecycleObserver();
+		return () => this.#ralplanIrcLifecycleListeners.delete(listener);
+	}
+
+	#attachRalplanIrcLifecycleObserver(): void {
+		if (this.#ralplanIrcLifecycleUnsubscribe || !this.#ralplanIrcActivation?.interactive || !this.#ralplanIrcActivation.ircActive) return;
+		const coordinator = this.#agentRegistry && getRalplanIrcCoordinator(this.#agentRegistry);
+		if (!coordinator) return;
+		this.#ralplanIrcLifecycleUnsubscribe = coordinator.onLifecycle(event => {
+			const activation = this.#ralplanIrcActivation;
+			if (
+				activation?.interactive &&
+				activation.ircActive &&
+				event.parentSessionId === activation.sessionId &&
+				event.runId === activation.runId
+			) {
+				for (const listener of this.#ralplanIrcLifecycleListeners) listener(event);
+			}
+		});
 	}
 
 	/** Best-effort accessor for the active skill's `current_phase` field from
@@ -5470,6 +5520,7 @@ export class AgentSession {
 		}
 	}
 
+
 	async #syncSkillPromptActiveState(
 		message: Pick<CustomMessage<unknown>, "customType" | "details">,
 		active: boolean,
@@ -5492,7 +5543,20 @@ export class AgentSession {
 		// active, so the mutation guard and Stop hook engage immediately instead
 		// of relying on the skill prompt to run its own state-init steps.
 		if (active) {
-			await ensureWorkflowSkillActivationState({ cwd: this.sessionManager.getCwd(), skill, sessionId });
+			const workflowActivation = (details as { workflowActivation?: unknown }).workflowActivation;
+			if (skill === "ralplan") {
+				let canonicalState: unknown;
+				try {
+					canonicalState = JSON.parse(await fs.promises.readFile(sessionModeStatePath(this.sessionManager.getCwd(), sessionId, "ralplan"), "utf8"));
+				} catch {
+					return;
+				}
+				if (!isValidatedRalplanWorkflowActivation(workflowActivation, sessionId, canonicalState)) return;
+				this.#ralplanIrcActivation = workflowActivation;
+				this.#attachRalplanIrcLifecycleObserver();
+			} else {
+				await ensureWorkflowSkillActivationState({ cwd: this.sessionManager.getCwd(), skill, sessionId });
+			}
 			const subskillDetails = details as {
 				subskillActivation?: LoadedSubskillActivation;
 				subskillActivationSet?: LoadedSubskillActivation[];
@@ -5514,6 +5578,11 @@ export class AgentSession {
 					active_subskills: subskillActivations.map(toActiveSubskillEntry),
 				});
 			}
+		}
+		if (!active && skill === "ralplan") {
+			this.#ralplanIrcActivation = undefined;
+			this.#ralplanIrcLifecycleUnsubscribe?.();
+			this.#ralplanIrcLifecycleUnsubscribe = undefined;
 		}
 		// In-memory tracking keeps `getActiveSkillState` accurate for the chain guard.
 		this.#activeSkillState = active ? { skill, sessionId } : undefined;
@@ -10290,7 +10359,9 @@ export class AgentSession {
 		message: string;
 		awaitReply?: boolean;
 		signal?: AbortSignal;
+		onDelivered?: () => void;
 	}): Promise<{ replyText: string | null }> {
+
 		const awaitReply = args.awaitReply !== false;
 		const incomingTimestamp = Date.now();
 		const incomingObservationId = crypto.randomUUID();
@@ -10313,10 +10384,10 @@ export class AgentSession {
 			timestamp: incomingTimestamp,
 		});
 
-		if (!awaitReply) {
-			this.#queueBackgroundExchangeInjection([incomingRecord]);
-			return { replyText: null };
-		}
+		this.#queueBackgroundExchangeInjection([incomingRecord]);
+		args.onDelivered?.();
+		if (!awaitReply) return { replyText: null };
+
 
 		const incomingPrompt = prompt.render(ircIncomingTemplate, {
 			from: args.from,
@@ -10346,7 +10417,7 @@ export class AgentSession {
 			kind: "reply",
 			timestamp: replyRecord.timestamp,
 		});
-		this.#queueBackgroundExchangeInjection([incomingRecord, replyRecord]);
+		this.#queueBackgroundExchangeInjection([replyRecord]);
 
 		return { replyText };
 	}
@@ -10389,6 +10460,7 @@ export class AgentSession {
 			timestamp: args.timestamp,
 		};
 		mainSession.emitIrcRelayObservation(relayRecord);
+		getRalplanIrcCoordinator(registry)?.recordObservation({ observationId: args.observationId, from: args.from, to: args.to, body: args.body, kind: args.kind, timestamp: args.timestamp });
 	}
 
 	/**
