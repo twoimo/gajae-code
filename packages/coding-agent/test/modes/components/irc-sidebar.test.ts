@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
 	computeIrcSplitWidths,
+	IRC_SIDEBAR_MAX_RENDER_ROWS,
 	type IrcSidebarTheme,
 	IrcSplitViewComponent,
 } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
@@ -215,7 +216,7 @@ describe("IrcSplitViewComponent", () => {
 		}
 	});
 
-	it("renders every line of a long message without a cap", () => {
+	it("renders ordinary complete bodies below the fixed render budget", () => {
 		const ledger = new IrcObservationLedger();
 		const body = Array.from({ length: 80 }, (_, index) => `line ${index}`).join("\n");
 		addRecord(ledger, body);
@@ -225,6 +226,33 @@ describe("IrcSplitViewComponent", () => {
 		const rendered = Bun.stripANSI(split.render(80).join("\n"));
 		expect(rendered).toContain("  line 0");
 		expect(rendered).toContain("  line 79");
+	});
+
+	it("caps materialized rows for a near-budget retained body and marks the elision", () => {
+		const ledger = new IrcObservationLedger();
+		addRecord(ledger, "x".repeat(15 * 1_024 * 1_024), "near-budget");
+		expect(ledger.getSidebarRecords()).toHaveLength(1);
+		const split = new IrcSplitViewComponent(new TestPane("left"), ledger, sidebarTheme);
+		split.setVisible(true);
+
+		const rendered = split.render(80);
+		expect(rendered.length).toBeLessThanOrEqual(IRC_SIDEBAR_MAX_RENDER_ROWS);
+		expect(Bun.stripANSI(rendered.join("\n"))).toContain("… message elided …");
+	});
+
+	it("renders a deterministic newest-record tail at the retained record-count boundary", () => {
+		const ledger = new IrcObservationLedger();
+		for (let index = 0; index < 10_000; index++) addRecord(ledger, `message-${index}`, `record-${index}`);
+		expect(ledger.getSidebarRecords()).toHaveLength(10_000);
+		const split = new IrcSplitViewComponent(new TestPane("left"), ledger, sidebarTheme);
+		split.setVisible(true);
+
+		const rendered = split.render(80);
+		const plain = Bun.stripANSI(rendered.join("\n"));
+		expect(rendered.length).toBeLessThanOrEqual(IRC_SIDEBAR_MAX_RENDER_ROWS);
+		expect(plain).toContain("… older IRC messages elided …");
+		expect(plain).toContain("message-9999");
+		expect(plain).not.toContain("message-0\n");
 	});
 
 	it("shows records captured before opening the sidebar", () => {

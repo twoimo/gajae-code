@@ -10,12 +10,16 @@ import {
 	withTerminalGraphicsFallback,
 	wrapTextWithAnsi,
 } from "@gajae-code/tui";
-import type { IrcObservationLedger } from "../irc-observation-ledger";
+import type { IrcObservationLedger, IrcObservationRecord } from "../irc-observation-ledger";
 import { formatIrcMessageBlock } from "../utils/irc-message";
 
 export const IRC_SIDEBAR_WIDTH_RATIO = 0.3;
 const IRC_SIDEBAR_MIN_WIDTH = 30;
 const IRC_SEPARATOR_WIDTH = 3;
+export const IRC_SIDEBAR_MAX_RENDER_ROWS = 2_048;
+const IRC_SIDEBAR_MAX_RENDER_SOURCE_CODE_UNITS = 64 * 1_024;
+const IRC_SIDEBAR_OLDER_MESSAGES_ELISION = "… older IRC messages elided …";
+const IRC_SIDEBAR_MESSAGE_ELISION = "  … message elided …";
 
 /** Computes transcript/sidebar widths while preserving at least half the terminal for the transcript. */
 export function computeIrcSplitWidths(width: number): {
@@ -47,25 +51,88 @@ function styleSender(componentTheme: IrcSidebarTheme, sender: string): string {
 	return componentTheme.fg("accent", componentTheme.bold(sender));
 }
 
+function takeSafePrefix(text: string, maxCodeUnits: number): { text: string; truncated: boolean; used: number } {
+	if (text.length <= maxCodeUnits) return { text, truncated: false, used: text.length };
+	let end = Math.max(0, maxCodeUnits);
+	if (end > 0 && /[\uD800-\uDBFF]/u.test(text[end - 1] ?? "")) end--;
+	return { text: text.slice(0, end), truncated: true, used: end };
+}
+
+function renderSidebarRecord(
+	record: IrcObservationRecord,
+	width: number,
+	componentTheme: IrcSidebarTheme,
+	maxRows: number,
+	maxSourceCodeUnits: number,
+): { lines: string[]; sourceCodeUnits: number; truncated: boolean } {
+	const bodyWidth = Math.max(1, width - 2);
+	const sourceLimit = Math.min(maxSourceCodeUnits, Math.max(0, maxRows - 1) * bodyWidth);
+	const clipped = takeSafePrefix(record.text, sourceLimit);
+	const block = formatIrcMessageBlock({ ...record, text: clipped.text });
+	const sender = styleSender(componentTheme, block.sender);
+	const time = componentTheme.fg("dim", block.time);
+	const lines = [truncateToWidth(`${sender} → ${block.recipient} · ${time}`, width)];
+	let truncated = clipped.truncated;
+
+	body: for (const bodyLine of block.bodyLines) {
+		for (const wrappedLine of wrapTextWithAnsi(bodyLine, bodyWidth)) {
+			if (lines.length >= maxRows) {
+				truncated = true;
+				break body;
+			}
+			lines.push(truncateToWidth(`  ${wrappedLine}`, width));
+		}
+	}
+	if (truncated && maxRows > 1) {
+		const marker = componentTheme.fg("dim", IRC_SIDEBAR_MESSAGE_ELISION);
+		if (lines.length >= maxRows) lines[maxRows - 1] = truncateToWidth(marker, width);
+		else lines.push(truncateToWidth(marker, width));
+	}
+	return { lines, sourceCodeUnits: clipped.used, truncated };
+}
+
 function renderSidebarRecords(ledger: IrcObservationLedger, width: number, componentTheme: IrcSidebarTheme): string[] {
 	if (width <= 0) return [];
 
-	const lines: string[] = [];
-	for (const [recordIndex, record] of ledger.getSidebarRecords().entries()) {
-		if (recordIndex > 0) lines.push("");
+	const records = ledger.getSidebarRecords();
+	const newestFirstBlocks: string[][] = [];
+	let renderedRows = 0;
+	let renderedSourceCodeUnits = 0;
+	let omittedOlderRecords = false;
+	for (let index = records.length - 1; index >= 0; index--) {
+		const separatorRows = newestFirstBlocks.length > 0 ? 1 : 0;
+		const availableRows = IRC_SIDEBAR_MAX_RENDER_ROWS - renderedRows - separatorRows - 2;
+		const availableSourceCodeUnits = IRC_SIDEBAR_MAX_RENDER_SOURCE_CODE_UNITS - renderedSourceCodeUnits;
+		if (availableRows <= 0 || (availableSourceCodeUnits <= 0 && records[index].text.length > 0)) {
+			omittedOlderRecords = true;
+			break;
+		}
 
-		const block = formatIrcMessageBlock(record);
-		const sender = styleSender(componentTheme, block.sender);
-		const time = componentTheme.fg("dim", block.time);
-		lines.push(truncateToWidth(`${sender} → ${block.recipient} · ${time}`, width));
-
-		for (const bodyLine of block.bodyLines) {
-			for (const wrappedLine of wrapTextWithAnsi(bodyLine, Math.max(1, width - 2))) {
-				lines.push(truncateToWidth(`  ${wrappedLine}`, width));
-			}
+		const rendered = renderSidebarRecord(
+			records[index],
+			width,
+			componentTheme,
+			availableRows,
+			availableSourceCodeUnits,
+		);
+		newestFirstBlocks.push(rendered.lines);
+		renderedRows += separatorRows + rendered.lines.length;
+		renderedSourceCodeUnits += rendered.sourceCodeUnits;
+		if (rendered.truncated) {
+			omittedOlderRecords = index > 0;
+			break;
 		}
 	}
-	return lines;
+
+	const lines: string[] = [];
+	if (omittedOlderRecords) {
+		lines.push(truncateToWidth(componentTheme.fg("dim", IRC_SIDEBAR_OLDER_MESSAGES_ELISION), width));
+	}
+	for (const block of newestFirstBlocks.reverse()) {
+		if (lines.length > 0) lines.push("");
+		lines.push(...block);
+	}
+	return lines.slice(0, IRC_SIDEBAR_MAX_RENDER_ROWS);
 }
 
 export interface IrcSidebarTheme {
