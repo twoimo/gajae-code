@@ -46,6 +46,28 @@ function expectAnchorSurvivesReflow(text: string, needle: string, from: number, 
 	expect(resolveRow(target.anchors, stored), `${needle} drifted ${from}->${to}`).toBe(targetRow);
 }
 
+// The page-down capture (see TUI.scrollViewportPages) stores the END of the
+// pinned row's span (max(graphemeStart, graphemeEnd - 1)), not its start. That
+// exposes within-token drift a start-of-row capture masks: an earlier row's span
+// end must not migrate into a later sibling row when that sibling rewraps.
+function expectPageDownAnchorSurvivesReflow(text: string, needle: string, from: number, to: number, id: string): void {
+	const source = render(text, from, id);
+	const sourceRow = rowWithText(source.lines, needle);
+	expect(sourceRow, `${needle} missing at width ${from}`).toBeGreaterThanOrEqual(0);
+	const anchor = source.anchors[sourceRow];
+	if (!anchor) throw new Error(`${needle} row carried no anchor at width ${from}`);
+	const stored = {
+		id,
+		graphemeIndex: Math.max(anchor.graphemeStart, anchor.graphemeEnd - 1),
+		cellOffset: Math.max(anchor.cellStart, anchor.cellEnd - 1),
+	};
+
+	const target = render(text, to, id);
+	const targetRow = rowWithText(target.lines, needle);
+	expect(targetRow, `${needle} missing at width ${to}`).toBeGreaterThanOrEqual(0);
+	expect(resolveRow(target.anchors, stored), `${needle} drifted ${from}->${to}`).toBe(targetRow);
+}
+
 function assertAnchorContract(anchors: Array<ViewportAnchorRow | null>): void {
 	const present = anchors.filter((anchor): anchor is ViewportAnchorRow => anchor !== null);
 	expect(present.length).toBeGreaterThan(1);
@@ -91,6 +113,15 @@ const TABLE_DOC = [
 	"TARGET paragraph immediately after the table block",
 ].join("\n");
 
+// A two-item bullet list is a single top-level token. The first item is short
+// (one row at every width); the second is long and rewraps into several rows as
+// the terminal narrows. A page-down anchor pinned on the first item must not
+// drift into the second when the second item rewraps.
+const LIST_DOC = [
+	"- ITEMONE",
+	"- ITEMTWO followed by lots and lots of extra words that will wrap into several rows once the terminal is narrow enough to force multiple line wrapping here",
+].join("\n");
+
 describe("markdown viewport anchors across topology-changing reflow (#2031)", () => {
 	it("keeps the post-HR paragraph anchored wide<->narrow", () => {
 		expectAnchorSurvivesReflow(HR_DOC, "TARGET", 100, 24, "hr");
@@ -111,8 +142,16 @@ describe("markdown viewport anchors across topology-changing reflow (#2031)", ()
 		expectAnchorSurvivesReflow(TABLE_DOC, "TARGET", 100, 24, "tbl");
 	});
 
+	it("keeps an earlier list item pinned when a later item rewraps (page-down capture)", () => {
+		// At width 120 both items occupy one row; at width 30 the second item wraps
+		// across several rows. The page-down capture stores ITEMONE's span end, which
+		// must resolve back to ITEMONE — not slide into ITEMTWO — after the reflow.
+		expectPageDownAnchorSurvivesReflow(LIST_DOC, "ITEMONE", 120, 30, "list");
+		expectPageDownAnchorSurvivesReflow(LIST_DOC, "ITEMONE", 30, 120, "list");
+	});
+
 	it("preserves the monotonic, non-overlapping anchor contract and leaks no markers", () => {
-		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC]) {
+		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC, LIST_DOC]) {
 			for (const width of [100, 40, 24, 10]) {
 				const rendered = render(doc, width, "contract");
 				expect(rendered.anchors.length).toBe(rendered.lines.length);
@@ -125,7 +164,7 @@ describe("markdown viewport anchors across topology-changing reflow (#2031)", ()
 	});
 
 	it("keeps anchor lines byte-identical to the plain render", () => {
-		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC]) {
+		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC, LIST_DOC]) {
 			for (const width of [100, 40, 24, 10]) {
 				const md = new Markdown(doc, 0, 0, defaultMarkdownTheme);
 				const withAnchors = md.renderWithViewportAnchorSource(width, { id: "parity" });

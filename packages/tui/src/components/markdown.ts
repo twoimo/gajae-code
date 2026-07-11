@@ -500,35 +500,46 @@ export class Markdown implements Component {
 			wrappedLines = [];
 			const spans: Array<ViewportAnchorSpan | null> = [];
 			for (const boundary of tokenBoundaries) {
-				// Wrap this token's rendered lines exactly as the plain path does, so
-				// the emitted `lines` stay byte-identical to render().
-				const tokenWrapped: string[] = [];
-				for (let r = boundary.start; r < boundary.end; r++) {
-					const line = renderedLines[r];
-					if (TERMINAL.isImageLine(line)) tokenWrapped.push(line);
-					else tokenWrapped.push(...wrapTextIfNeeded(line, contentWidth));
-				}
-				// Distribute the token's width-invariant source-text band across its
-				// content rows. A content row's anchor identifies the same source
-				// position at any width, so the row survives topology-changing reflow.
-				// Blank, decoration-only whitespace, and image rows carry no anchor.
-				const contentRows: number[] = [];
-				for (let r = 0; r < tokenWrapped.length; r++) {
-					const line = tokenWrapped[r];
-					if (!TERMINAL.isImageLine(line) && Bun.stripANSI(line).trim().length > 0) contentRows.push(r);
-				}
+				// Number this token's width-invariant source-text band [lo, hi) over its
+				// rendered lines (pre-wrap) rather than over the width-dependent count of
+				// final content rows. Each pre-wrap rendered line is a stable structural
+				// unit — a list item, a quoted line, a table row-line — so an earlier
+				// line's sub-band no longer moves when a *later* line of the same
+				// top-level token rewraps into more rows. That within-token drift was the
+				// P2 the first #2031 pass reintroduced: a page-down anchor pinned to list
+				// item 1 slid into item 2 once item 2 rewrapped, because both shared one
+				// content-row count that the later item inflated.
 				const lo = boundary.srcLo * ANCHOR_SOURCE_SCALE;
 				const hi = boundary.srcHi * ANCHOR_SOURCE_SCALE;
-				const rowSpans: Array<ViewportAnchorSpan | null> = new Array(tokenWrapped.length).fill(null);
-				const count = contentRows.length;
-				for (let c = 0; c < count; c++) {
-					const start = lo + Math.floor((c * (hi - lo)) / count);
-					const end = c === count - 1 ? hi : lo + Math.floor(((c + 1) * (hi - lo)) / count);
-					rowSpans[contentRows[c]] = { graphemeStart: start, graphemeEnd: end, cellStart: start, cellEnd: end };
-				}
-				for (let r = 0; r < tokenWrapped.length; r++) {
-					wrappedLines.push(tokenWrapped[r]);
-					spans.push(rowSpans[r]);
+				const lineCount = boundary.end - boundary.start;
+				for (let li = 0; li < lineCount; li++) {
+					const renderedLine = renderedLines[boundary.start + li];
+					// Each rendered line reserves its own non-overlapping sub-band.
+					const lineLo = lo + Math.floor((li * (hi - lo)) / lineCount);
+					const lineHi = li === lineCount - 1 ? hi : lo + Math.floor(((li + 1) * (hi - lo)) / lineCount);
+					// Wrap this rendered line exactly as the plain path does, so the
+					// emitted `lines` stay byte-identical to render().
+					const lineWrapped = TERMINAL.isImageLine(renderedLine)
+						? [renderedLine]
+						: wrapTextIfNeeded(renderedLine, contentWidth);
+					// Distribute the line's sub-band across its content rows. Blank,
+					// decoration-only whitespace, and image rows carry no anchor.
+					const contentRows: number[] = [];
+					for (let r = 0; r < lineWrapped.length; r++) {
+						const l = lineWrapped[r];
+						if (!TERMINAL.isImageLine(l) && Bun.stripANSI(l).trim().length > 0) contentRows.push(r);
+					}
+					const rowSpans: Array<ViewportAnchorSpan | null> = new Array(lineWrapped.length).fill(null);
+					const count = contentRows.length;
+					for (let c = 0; c < count; c++) {
+						const start = lineLo + Math.floor((c * (lineHi - lineLo)) / count);
+						const end = c === count - 1 ? lineHi : lineLo + Math.floor(((c + 1) * (lineHi - lineLo)) / count);
+						rowSpans[contentRows[c]] = { graphemeStart: start, graphemeEnd: end, cellStart: start, cellEnd: end };
+					}
+					for (let r = 0; r < lineWrapped.length; r++) {
+						wrappedLines.push(lineWrapped[r]);
+						spans.push(rowSpans[r]);
+					}
 				}
 			}
 			wrappedSpans = spans;
