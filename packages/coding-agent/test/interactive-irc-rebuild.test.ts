@@ -81,7 +81,14 @@ describe("IRC rebuild projection", () => {
 		vi.useFakeTimers({ now: 0 });
 		const { ctx, ledger, helpers, chatContainer } = makeContext();
 		ledger.observe(
-			{ observationId: "expired-during-rebuild", kind: "incoming", from: "peer", to: "you", text: "hello", timestamp: 0 },
+			{
+				observationId: "expired-during-rebuild",
+				kind: "incoming",
+				from: "peer",
+				to: "you",
+				text: "hello",
+				timestamp: 0,
+			},
 			true,
 		);
 		helpers.renderSessionContext(emptyContext);
@@ -98,7 +105,14 @@ describe("IRC rebuild projection", () => {
 		vi.useFakeTimers({ now: 0 });
 		const { ctx, ledger, helpers, chatContainer } = makeContext();
 		ledger.observe(
-			{ observationId: "expires-mid-reconcile", kind: "incoming", from: "peer", to: "you", text: "hello", timestamp: 0 },
+			{
+				observationId: "expires-mid-reconcile",
+				kind: "incoming",
+				from: "peer",
+				to: "you",
+				text: "hello",
+				timestamp: 0,
+			},
 			true,
 		);
 		helpers.renderSessionContext(emptyContext);
@@ -131,7 +145,14 @@ describe("IRC rebuild projection", () => {
 		vi.useFakeTimers({ now: 0 });
 		const { ctx, ledger, helpers, chatContainer } = makeContext();
 		ledger.observe(
-			{ observationId: "legacy-recheck-window", kind: "incoming", from: "peer", to: "you", text: "hello", timestamp: 0 },
+			{
+				observationId: "legacy-recheck-window",
+				kind: "incoming",
+				from: "peer",
+				to: "you",
+				text: "hello",
+				timestamp: 0,
+			},
 			true,
 		);
 		helpers.renderSessionContext(emptyContext);

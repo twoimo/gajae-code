@@ -8,10 +8,17 @@
  *
  * Conjoining jamo sequences (U+1100..U+11FF, e.g. `한`) are different:
  * terminals render each grapheme cluster like its NFC syllable, so width
- * measurement must normalize those sequences before calling Bun.stringWidth.
+ * measurement must normalize those sequences before calling the native grapheme-width engine.
  */
 import { describe, expect, it } from "bun:test";
-import { Ellipsis, sliceWithWidth, truncateToWidth, visibleWidth } from "@gajae-code/tui/utils";
+import {
+	Ellipsis,
+	sliceWithWidth,
+	truncateToWidth,
+	visibleWidth,
+	visibleWidths,
+	wrapTextWithAnsi,
+} from "@gajae-code/tui/utils";
 
 describe("visibleWidth — Hangul width parity", () => {
 	it("single compatibility jamo is 2 cells", () => {
@@ -34,7 +41,7 @@ describe("visibleWidth — Hangul width parity", () => {
 		expect(visibleWidth("\u318e")).toBe(2);
 	});
 
-	it("U+3164 HANGUL FILLER is 2 cells", () => {
+	it("U+3164 HANGUL FILLER remains 2 cells", () => {
 		expect(visibleWidth("\u3164")).toBe(2);
 	});
 
@@ -87,11 +94,49 @@ describe("visibleWidth — Hangul width parity", () => {
 		expect(visibleWidth("アイ")).toBe(4);
 	});
 
-	it("Halfwidth Hangul block is unaffected (already Narrow in Bun)", () => {
-		// U+FFA1 HALFWIDTH HANGUL LETTER KIYEOK — Bun reports 1, untouched.
+	it("Halfwidth Hangul block remains narrow", () => {
+		// U+FFA1 HALFWIDTH HANGUL LETTER KIYEOK remains narrow.
 		expect(visibleWidth("\uffa1")).toBe(1);
 		// U+FFDC HALFWIDTH HANGUL LETTER I
 		expect(visibleWidth("\uffdc")).toBe(1);
+	});
+});
+
+describe("visible-width text helper parity — Hangul tone marks", () => {
+	const toneMarkedSyllable = "가\u302e";
+	const nfdSyllable = "가";
+
+	it("uses native grapheme widths for tone marks, NFD Hangul, ANSI, and batched measurements", () => {
+		const ansiToneMarkedSyllable = `\x1b[36m${toneMarkedSyllable}\x1b[0m\x1b]8;;https://example.test\x07링크\x1b]8;;\x07`;
+		const cases = [toneMarkedSyllable, nfdSyllable, "ㅁ", ansiToneMarkedSyllable];
+
+		expect(visibleWidth(toneMarkedSyllable)).toBe(2);
+		expect(visibleWidth(nfdSyllable)).toBe(2);
+		expect(visibleWidths(cases)).toEqual(cases.map(visibleWidth));
+		expect(visibleWidth(ansiToneMarkedSyllable)).toBe(6);
+	});
+
+	it("uses the same boundary decisions as native wrapping and truncation", () => {
+		expect(wrapTextWithAnsi(`${toneMarkedSyllable}X`, 2)).toEqual([toneMarkedSyllable, "X"]);
+		expect(truncateToWidth(toneMarkedSyllable, 1, Ellipsis.Omit)).toBe("");
+		expect(truncateToWidth(toneMarkedSyllable, 2, Ellipsis.Omit)).toBe(toneMarkedSyllable);
+		expect(truncateToWidth(`${toneMarkedSyllable}X`, 3, Ellipsis.Omit)).toBe(`${toneMarkedSyllable}X`);
+	});
+});
+
+describe("visible-width text helper parity — emoji presentation", () => {
+	const emojiPresentation = ["❤️", "☑️", "↔️", "1️⃣", "👍🏽"];
+
+	it("keeps VS16 graphemes at two terminal cells", () => {
+		for (const emoji of emojiPresentation) expect(visibleWidth(emoji)).toBe(2);
+		expect(visibleWidths(emojiPresentation)).toEqual([2, 2, 2, 2, 2]);
+	});
+
+	it("uses the same VS16 boundary for wrapping and truncation", () => {
+		expect(wrapTextWithAnsi("❤️X", 2)).toEqual(["❤️", "X"]);
+		expect(truncateToWidth("❤️X", 2, Ellipsis.Omit)).toBe("❤️");
+		expect(wrapTextWithAnsi("👍🏽X", 2)).toEqual(["👍🏽", "X"]);
+		expect(truncateToWidth("👍🏽X", 2, Ellipsis.Omit)).toBe("👍🏽");
 	});
 });
 

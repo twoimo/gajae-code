@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@gajae-code/agent-core";
 import type { AssistantMessage, ImageContent, Message } from "@gajae-code/ai";
-import { type Component, Spacer, Text, TruncatedText } from "@gajae-code/tui";
+import { type Component, Spacer, Text, TruncatedText, type TUI } from "@gajae-code/tui";
 import { settings } from "../../config/settings";
 import { resolveSubskillActivationForSkillInvocation } from "../../extensibility/gjc-plugins";
 import { buildSkillPromptMessage, parseSkillInvocations } from "../../extensibility/skills";
@@ -20,18 +20,29 @@ import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { theme } from "../../modes/theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext } from "../../modes/types";
+import type { CompactionQueuedMessage, InteractiveModeContext, TranscriptRebuildPolicy } from "../../modes/types";
 import {
 	type CustomMessage,
 	isSilentAbort,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
-import type { SessionContext } from "../../session/session-manager";
+import {
+	associateSessionMessageViewportAnchorId,
+	getSessionMessageEntryId,
+	getSessionMessageViewportAnchorId,
+	type SessionContext,
+} from "../../session/session-manager";
 import { formatBytes, formatDuration } from "../../tools/render-utils";
 import { buildAbortDisplayMessage } from "./abort-message";
 import { isIrcCustomType, type ParsedIrcMessage, parseIrcMessage } from "./irc-message";
 
+export type { TranscriptRebuildPolicy } from "../../modes/types";
+
+export function prepareTranscriptRebuild(ui: TUI, policy: TranscriptRebuildPolicy): void {
+	if (policy === "replace-identity") ui.resetViewportAnchorIntent();
+	else ui.prepareViewportAnchorForTranscriptRebuild();
+}
 type TextBlock = { type: "text"; text: string };
 interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
@@ -119,8 +130,18 @@ function getChatChildTime(component: Component): number {
 	return chatChildAddedAt.get(component) ?? Date.now();
 }
 
+function stableSemanticIdPart(value: string): string {
+	let hash = 0xcbf29ce484222325n;
+	for (const char of value) {
+		hash ^= BigInt(char.codePointAt(0)!);
+		hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+	}
+	return hash.toString(36);
+}
+
 export function addChatChild(ctx: InteractiveModeContext, component: Component): void {
 	ctx.chatContainer.addChild(component);
+
 	chatChildAddedAt.set(component, Date.now());
 	trimChatChildren(ctx);
 }
@@ -187,8 +208,53 @@ export function trimChatChildren(ctx: InteractiveModeContext): void {
 }
 
 export class UiHelpers {
-	constructor(private ctx: InteractiveModeContext) {}
 	#renderedIrcInlineComponents = new Map<string, readonly Component[]>();
+	#viewportAnchorOccurrences = new WeakMap<object, { base: string; epoch: number; id: string }>();
+	#nextViewportAnchorOccurrence = new Map<string, number>();
+	#viewportAnchorOccurrenceEpoch = 0;
+
+	constructor(private ctx: InteractiveModeContext) {}
+
+	#resetViewportAnchorOccurrencePass(): void {
+		this.#viewportAnchorOccurrenceEpoch += 1;
+		this.#nextViewportAnchorOccurrence.clear();
+	}
+
+	#viewportAnchorOccurrenceId(message: object, base: string): string {
+		const existing = this.#viewportAnchorOccurrences.get(message);
+		if (existing?.base === base && existing.epoch === this.#viewportAnchorOccurrenceEpoch) return existing.id;
+		const occurrence = this.#nextViewportAnchorOccurrence.get(base) ?? 0;
+		this.#nextViewportAnchorOccurrence.set(base, occurrence + 1);
+		const id = `${base}:occurrence:${occurrence}`;
+		this.#viewportAnchorOccurrences.set(message, {
+			base,
+			epoch: this.#viewportAnchorOccurrenceEpoch,
+			id,
+		});
+		return id;
+	}
+
+	assistantViewportAnchorId(message: AssistantMessage): string {
+		const semanticId = getSessionMessageViewportAnchorId(message);
+		if (semanticId) return semanticId;
+		const entryId = getSessionMessageEntryId(message);
+		if (entryId) return `assistant:entry:${entryId}`;
+		const base = `assistant:${message.api}:${message.provider}:${message.model}:${message.timestamp}`;
+		const id = this.#viewportAnchorOccurrenceId(message, base);
+		associateSessionMessageViewportAnchorId(message, id);
+		return id;
+	}
+
+	#userViewportAnchorId(message: Extract<Message, { role: "user" }>): string {
+		const semanticId = getSessionMessageViewportAnchorId(message);
+		if (semanticId) return semanticId;
+		const entryId = getSessionMessageEntryId(message);
+		if (entryId) return `user:entry:${entryId}`;
+		const base = `user:local:${message.timestamp}:${stableSemanticIdPart(JSON.stringify(message.content))}`;
+		const id = this.#viewportAnchorOccurrenceId(message, base);
+		associateSessionMessageViewportAnchorId(message, id);
+		return id;
+	}
 
 	getRenderedIrcInlineComponents(): Map<string, readonly Component[]> {
 		return this.#renderedIrcInlineComponents;
@@ -407,7 +473,11 @@ export class UiHelpers {
 				const textContent = this.ctx.getUserMessageText(message);
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
-					const userComponent = new UserMessageComponent(textContent, isSynthetic);
+					const userComponent = new UserMessageComponent(
+						textContent,
+						isSynthetic,
+						message.role === "user" && !isSynthetic ? this.#userViewportAnchorId(message) : undefined,
+					);
 					addChatChild(this.ctx, userComponent);
 					if (options?.populateHistory && message.role === "user" && !isSynthetic) {
 						this.ctx.editor.addToHistory(textContent);
@@ -416,8 +486,11 @@ export class UiHelpers {
 				break;
 			}
 			case "assistant": {
-				const assistantComponent = new AssistantMessageComponent(message, this.ctx.hideThinkingBlock, () =>
-					this.ctx.ui.requestRender(),
+				const assistantComponent = new AssistantMessageComponent(
+					message,
+					this.ctx.hideThinkingBlock,
+					() => this.ctx.ui.requestRender(),
+					this.assistantViewportAnchorId(message),
 				);
 				addChatChild(this.ctx, assistantComponent);
 				break;
@@ -457,6 +530,7 @@ export class UiHelpers {
 		const deferredMessages: AgentMessage[] = [];
 		const persistedIrcObservationIds = new Set<string>();
 		const now = Date.now();
+		this.#resetViewportAnchorOccurrencePass();
 		this.#renderedIrcInlineComponents.clear();
 		for (const message of sessionContext.messages) {
 			// Defer compaction summaries so they render at the bottom (visible after scroll)

@@ -30,7 +30,6 @@ export class ReservedAgentIdError extends Error {
 	}
 }
 
-
 export type AgentRegistration = AgentRef & {
 	token: AgentRegistrationToken;
 };
@@ -98,7 +97,8 @@ export class AgentRegistry {
 	register(input: RegisterInput): AgentRegistration {
 		if (input.id === MAIN_AGENT_ID && input.kind !== "main") throw new ReservedAgentIdError(input.id);
 		const existing = this.#refs.get(input.id);
-		if (existing && (existing.status === "running" || existing.status === "idle")) throw new DuplicateLiveAgentIdError(input.id);
+		if (existing && (existing.status === "running" || existing.status === "idle"))
+			throw new DuplicateLiveAgentIdError(input.id);
 		const now = Date.now();
 		const ref: AgentRef = {
 			id: input.id,
@@ -131,12 +131,7 @@ export class AgentRegistry {
 		this.#emit({ type: "status_changed", ref });
 	}
 
-	attachSession(
-		id: string,
-		session: AgentSession,
-		sessionFile?: string | null,
-		options?: AttachSessionOptions,
-	): void {
+	attachSession(id: string, session: AgentSession, sessionFile?: string | null, options?: AttachSessionOptions): void {
 		const ref = this.#refs.get(id);
 		if (!ref || !this.#matchesToken(id, options?.token)) return;
 		ref.session = session;

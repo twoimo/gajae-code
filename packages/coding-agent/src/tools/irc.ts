@@ -21,15 +21,30 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@gajae-code/agent-core";
 import { prompt } from "@gajae-code/utils";
 import * as z from "zod/v4";
+import {
+	getRalplanIrcCoordinator,
+	MAIN_AGENT_ID,
+	RALPLAN_IRC_SEND_TIMEOUT_MS,
+} from "../gjc-runtime/ralplan-irc-coordinator";
+import { hasActiveRalplanIrcRun } from "../gjc-runtime/ralplan-runtime";
 import ircDescription from "../prompts/tools/irc.md" with { type: "text" };
 import type { AgentRef, AgentRegistry } from "../registry/agent-registry";
-import { getRalplanIrcCoordinator, MAIN_AGENT_ID, RALPLAN_IRC_SEND_TIMEOUT_MS } from "../gjc-runtime/ralplan-irc-coordinator";
-import { hasActiveRalplanIrcRun } from "../gjc-runtime/ralplan-runtime";
 
 import type { ToolSession } from ".";
 
 const ircSchema = z.object({
-	op: z.enum(["send", "list", "ralplan_pass_start", "ralplan_pass_end", "ralplan_deliberation_receipt_recorded", "ralplan_status", "ralplan_report_failure", "ralplan_activation_degrade"]).describe("irc operation"),
+	op: z
+		.enum([
+			"send",
+			"list",
+			"ralplan_pass_start",
+			"ralplan_pass_end",
+			"ralplan_deliberation_receipt_recorded",
+			"ralplan_status",
+			"ralplan_report_failure",
+			"ralplan_activation_degrade",
+		])
+		.describe("irc operation"),
 	to: z.string().optional().describe('recipient agent id or "all"'),
 	message: z.string().optional().describe("message body"),
 	awaitReply: z.boolean().optional().describe("wait for prose reply"),
@@ -97,40 +112,74 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		return await this.#executeRalplanControl(registry, senderId, params);
 	}
 
-	async #executeRalplanControl(registry: AgentRegistry, senderId: string, params: Exclude<IrcParams, { op: "send" | "list" }>): Promise<AgentToolResult<IrcDetails>> {
+	async #executeRalplanControl(
+		registry: AgentRegistry,
+		senderId: string,
+		params: Exclude<IrcParams, { op: "send" | "list" }>,
+	): Promise<AgentToolResult<IrcDetails>> {
 		const coordinator = getRalplanIrcCoordinator(registry);
 		const parentSessionId = this.session.getSessionId?.() ?? undefined;
 		if (senderId !== MAIN_AGENT_ID || !coordinator || !parentSessionId || !params.runId) {
-			return errorResult("Ralplan IRC control is restricted to the owning main session.", { op: params.op, from: senderId });
+			return errorResult("Ralplan IRC control is restricted to the owning main session.", {
+				op: params.op,
+				from: senderId,
+			});
 		}
 		if (params.op === "ralplan_activation_degrade") {
-			const ok = await coordinator.activationDegrade({ parentSessionId, runId: params.runId, reason: params.reason?.trim() || "activation_failed" });
-			return ok ? controlResult(params.op, senderId, "Ralplan IRC activation degraded.") : errorResult("No matching active Ralplan IRC run.", { op: params.op, from: senderId });
+			const ok = await coordinator.activationDegrade({
+				parentSessionId,
+				runId: params.runId,
+				reason: params.reason?.trim() || "activation_failed",
+			});
+			return ok
+				? controlResult(params.op, senderId, "Ralplan IRC activation degraded.")
+				: errorResult("No matching active Ralplan IRC run.", { op: params.op, from: senderId });
 		}
-		if (!Number.isInteger(params.stageN) || !Number.isInteger(params.cursorGeneration)) return errorResult("Ralplan IRC pass controls require stageN and cursorGeneration.", { op: params.op, from: senderId });
-		const cursor = { parentSessionId, runId: params.runId, stageN: params.stageN!, cursorGeneration: params.cursorGeneration! };
+		const stageN = params.stageN;
+		const cursorGeneration = params.cursorGeneration;
+		if (
+			typeof stageN !== "number" ||
+			typeof cursorGeneration !== "number" ||
+			!Number.isInteger(stageN) ||
+			!Number.isInteger(cursorGeneration)
+		)
+			return errorResult("Ralplan IRC pass controls require stageN and cursorGeneration.", {
+				op: params.op,
+				from: senderId,
+			});
+		const cursor = { parentSessionId, runId: params.runId, stageN, cursorGeneration };
 		if (params.op === "ralplan_pass_start") {
 			const authorized = await hasActiveRalplanIrcRun(this.session.cwd, parentSessionId, params.runId);
 			const ok = authorized && coordinator.startPass(cursor);
-			return ok ? controlResult(params.op, senderId, "Ralplan IRC pass started.") : errorResult("No matching active Ralplan IRC run.", { op: params.op, from: senderId });
+			return ok
+				? controlResult(params.op, senderId, "Ralplan IRC pass started.")
+				: errorResult("No matching active Ralplan IRC run.", { op: params.op, from: senderId });
 		}
 		if (params.op === "ralplan_status") {
-			if (!coordinator.matchesActivePass(cursor)) return errorResult("No matching active Ralplan IRC pass.", { op: params.op, from: senderId });
+			if (!coordinator.matchesActivePass(cursor))
+				return errorResult("No matching active Ralplan IRC pass.", { op: params.op, from: senderId });
 			return controlResult(params.op, senderId, coordinator.state);
 		}
 
 		if (params.op === "ralplan_pass_end") {
 			const markdown = coordinator.endPass(cursor);
-			return markdown === undefined ? errorResult("No matching active Ralplan IRC pass.", { op: params.op, from: senderId }) : controlResult(params.op, senderId, markdown);
+			return markdown === undefined
+				? errorResult("No matching active Ralplan IRC pass.", { op: params.op, from: senderId })
+				: controlResult(params.op, senderId, markdown);
 		}
 		if (params.op === "ralplan_deliberation_receipt_recorded") {
 			const ok = await coordinator.recordDeliberationReceipt(cursor);
 			return ok
 				? controlResult(params.op, senderId, "Ralplan deliberation receipt recorded.")
-				: errorResult("No matching completed Ralplan IRC pass or canonical deliberation receipt; its SHA-256 must match the just-completed transcript.", { op: params.op, from: senderId });
+				: errorResult(
+						"No matching completed Ralplan IRC pass or canonical deliberation receipt; its SHA-256 must match the just-completed transcript.",
+						{ op: params.op, from: senderId },
+					);
 		}
 		const ok = await coordinator.reportFailure({ ...cursor, reason: params.reason?.trim() || "reported_failure" });
-		return ok ? controlResult(params.op, senderId, "Ralplan IRC pass degraded.") : errorResult("No matching active Ralplan IRC pass.", { op: params.op, from: senderId });
+		return ok
+			? controlResult(params.op, senderId, "Ralplan IRC pass degraded.")
+			: errorResult("No matching active Ralplan IRC pass.", { op: params.op, from: senderId });
 	}
 
 	#executeList(registry: AgentRegistry, senderId: string): AgentToolResult<IrcDetails> {
@@ -182,12 +231,12 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		const notFound: string[] = [];
 		const isBroadcast = to === "all";
 		const coordinator = getRalplanIrcCoordinator(registry);
-		const senderBinding = coordinator?.isBound(senderId);
+		const senderBinding = coordinator?.isBound(senderId) ?? false;
 		if (isBroadcast) {
 			targets = registry.listVisibleTo(senderId).filter(target => {
-			const targetBinding = coordinator?.isBound(target.id);
-			return senderBinding ? coordinator!.isSameBoundPass(senderId, target.id) : !targetBinding;
-		});
+				const targetBinding = coordinator?.isBound(target.id) ?? false;
+				return senderBinding && coordinator ? coordinator.isSameBoundPass(senderId, target.id) : !targetBinding;
+			});
 		} else {
 			const ref = registry.get(to);
 			if (!ref || ref.id === senderId || (ref.status !== "running" && ref.status !== "idle")) {
@@ -195,14 +244,17 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				targets = [];
 			} else if (senderBinding || coordinator?.isBound(ref.id)) {
 				if (!senderBinding || !coordinator?.isSameBoundPass(senderId, ref.id)) {
-					return errorResult("Ralplan IRC messages may only be sent between peers in the same active pass.", { op: "send", from: senderId, to });
+					return errorResult("Ralplan IRC messages may only be sent between peers in the same active pass.", {
+						op: "send",
+						from: senderId,
+						to,
+					});
 				}
 				targets = [ref];
 			} else {
 				targets = [ref];
 			}
 		}
-
 
 		const awaitReply = params.awaitReply ?? !isBroadcast;
 
@@ -221,8 +273,10 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				return;
 			}
 			let deliveredAtTransport = false;
-			let resolveDelivery!: () => void;
-			const delivery = new Promise<void>(resolve => { resolveDelivery = resolve; });
+			let resolveDelivery: () => void = () => {};
+			const delivery = new Promise<void>(resolve => {
+				resolveDelivery = resolve;
+			});
 			try {
 				const bound = coordinator?.isSameBoundPass(senderId, target.id) === true;
 				const dispatch = targetSession.respondAsBackground({
@@ -230,16 +284,29 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 					message,
 					awaitReply,
 					signal,
-					onDelivered: () => { deliveredAtTransport = true; resolveDelivery(); },
+					onDelivered: () => {
+						deliveredAtTransport = true;
+						resolveDelivery();
+					},
 				});
-				if (bound) {
+				if (bound && coordinator) {
 					const completed = dispatch;
 					void completed.catch(() => {});
-					await raceRalplanSend(Promise.race([delivery, dispatch.then(() => delivery)]), signal, coordinator!.options.sendTimeoutMs);
+					await raceRalplanSend(
+						Promise.race([delivery, dispatch.then(() => delivery)]),
+						signal,
+						coordinator.options.sendTimeoutMs,
+					);
 					delivered.push(target.id);
-					coordinator!.recordDelivery({ from: senderId, to: target.id, body: message, delivered: true });
+					coordinator.recordDelivery({ from: senderId, to: target.id, body: message, delivered: true });
 					if (awaitReply) {
-						void completed.then(result => { if (result.replyText) replies.push({ from: target.id, text: result.replyText }); }).catch(error => { failed.push({ id: target.id, error: error instanceof Error ? error.message : String(error) }); });
+						void completed
+							.then(result => {
+								if (result.replyText) replies.push({ from: target.id, text: result.replyText });
+							})
+							.catch(error => {
+								failed.push({ id: target.id, error: error instanceof Error ? error.message : String(error) });
+							});
 					}
 				} else {
 					const result = await dispatch;
@@ -249,11 +316,14 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
 				failed.push({ id: target.id, error });
-				if (coordinator?.isSameBoundPass(senderId, target.id) || (senderBinding && !deliveredAtTransport)) await coordinator.degrade(error === "Ralplan IRC send timed out." ? "send_timeout" : "delivery_failed");
+				const sameBoundPass = coordinator?.isSameBoundPass(senderId, target.id) === true;
+				if (coordinator && (sameBoundPass || (senderBinding && !deliveredAtTransport))) {
+					await coordinator.degrade(error === "Ralplan IRC send timed out." ? "send_timeout" : "delivery_failed");
+				}
 			}
 		});
 		await Promise.all(dispatches);
-		if (notFound.length > 0 && senderBinding) await coordinator!.degrade("peer_unreachable");
+		if (notFound.length > 0 && senderBinding && coordinator) await coordinator.degrade("peer_unreachable");
 
 		const lines: string[] = [];
 		if (delivered.length === 0) {
@@ -300,12 +370,20 @@ function controlResult(op: IrcParams["op"], from: string, text: string): AgentTo
 	return { content: [{ type: "text", text }], details: { op, from } };
 }
 
-function raceRalplanSend<T>(dispatch: Promise<T>, signal?: AbortSignal, timeoutMs = RALPLAN_IRC_SEND_TIMEOUT_MS): Promise<T> {
+function raceRalplanSend<T>(
+	dispatch: Promise<T>,
+	signal?: AbortSignal,
+	timeoutMs = RALPLAN_IRC_SEND_TIMEOUT_MS,
+): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timeout = setTimeout(() => reject(new Error("Ralplan IRC send timed out.")), timeoutMs);
 		const abort = () => reject(signal?.reason instanceof Error ? signal.reason : new Error("IRC send cancelled."));
-		if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
-		dispatch.then(resolve, reject).finally(() => { clearTimeout(timeout); signal?.removeEventListener("abort", abort); });
+		if (signal?.aborted) abort();
+		else signal?.addEventListener("abort", abort, { once: true });
+		dispatch.then(resolve, reject).finally(() => {
+			clearTimeout(timeout);
+			signal?.removeEventListener("abort", abort);
+		});
 	});
 }
 

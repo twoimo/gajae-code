@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { AgentRegistry, DuplicateLiveAgentIdError, type AgentRegistrationToken } from "../src/registry/agent-registry";
+import { type AgentRegistrationToken, AgentRegistry, DuplicateLiveAgentIdError } from "../src/registry/agent-registry";
 import type { AgentSession } from "../src/session/agent-session";
 
 function register(registry: AgentRegistry, id = "1-Worker") {
@@ -10,7 +10,6 @@ function register(registry: AgentRegistry, id = "1-Worker") {
 		session: null,
 	});
 }
-
 
 const session = {} as AgentSession;
 

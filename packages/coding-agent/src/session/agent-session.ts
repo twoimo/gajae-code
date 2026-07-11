@@ -27,6 +27,7 @@ import {
 	type AgentState,
 	type AgentTool,
 	assertImagePlaceholdersHavePayload,
+	canContinuePersistedHistory,
 	resolveTelemetry,
 	type StablePrefixSnapshot,
 	ThinkingLevel,
@@ -193,6 +194,7 @@ import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
 import { buildGjcRuntimeSessionEnv, consumePendingGoalModeRequest } from "../gjc-runtime/goal-mode-request";
+import { getRalplanIrcCoordinator, type RalplanIrcLifecycleEvent } from "../gjc-runtime/ralplan-irc-coordinator";
 import {
 	assertNonEmptyGjcSessionId,
 	modeStatePath as sessionModeStatePath,
@@ -216,7 +218,6 @@ import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
-import { getRalplanIrcCoordinator, type RalplanIrcLifecycleEvent } from "../gjc-runtime/ralplan-irc-coordinator";
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import ircPeerRosterTemplate from "../prompts/system/irc-peer-roster.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
@@ -256,7 +257,10 @@ import {
 } from "../tool-discovery/tool-index";
 import type { AskAnswerSource, ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
-import { getAskAnswerSource as getAskAnswerSourceFromRegistry } from "../tools/ask-answer-registry";
+import {
+	getAskAnswerSource as getAskAnswerSourceFromRegistry,
+	notifyWorkflowGateEmitterChanged,
+} from "../tools/ask-answer-registry";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -302,7 +306,7 @@ import type {
 	SessionContext,
 	SessionManager,
 } from "./session-manager";
-import { getLatestCompactionEntry } from "./session-manager";
+import { getLatestCompactionEntry, transferSessionMessageIdentity } from "./session-manager";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { YieldQueue } from "./yield-queue";
 
@@ -937,16 +941,32 @@ export function isValidatedRalplanWorkflowActivation(
 	const activation = value as Partial<WorkflowSkillActivation>;
 	const canonical = state as Record<string, unknown>;
 	if (
-		activation.skill !== "ralplan" || activation.sessionId !== sessionId || typeof activation.runId !== "string" ||
-		typeof activation.interactive !== "boolean" || typeof activation.ircRequested !== "boolean" ||
-		typeof activation.ircActive !== "boolean" || typeof activation.degraded !== "boolean" ||
-		canonical.session_id !== sessionId || canonical.run_id !== activation.runId || canonical.active !== true || (canonical.irc !== true && activation.ircActive)
-	) return false;
+		activation.skill !== "ralplan" ||
+		activation.sessionId !== sessionId ||
+		typeof activation.runId !== "string" ||
+		typeof activation.interactive !== "boolean" ||
+		typeof activation.ircRequested !== "boolean" ||
+		typeof activation.ircActive !== "boolean" ||
+		typeof activation.degraded !== "boolean" ||
+		canonical.session_id !== sessionId ||
+		canonical.run_id !== activation.runId ||
+		canonical.active !== true ||
+		(canonical.irc !== true && activation.ircActive)
+	)
+		return false;
 	if (canonical.irc_degraded === true) {
-		return activation.ircActive === false && activation.degraded === true &&
-			typeof activation.degradeReason === "string" && activation.degradeReason === canonical.irc_degrade_reason;
+		return (
+			activation.ircActive === false &&
+			activation.degraded === true &&
+			typeof activation.degradeReason === "string" &&
+			activation.degradeReason === canonical.irc_degrade_reason
+		);
 	}
-	return activation.degraded === false && activation.degradeReason === undefined && (activation.ircActive ? canonical.irc === true : canonical.irc !== true);
+	return (
+		activation.degraded === false &&
+		activation.degradeReason === undefined &&
+		(activation.ircActive ? canonical.irc === true : canonical.irc !== true)
+	);
 }
 
 // ============================================================================
@@ -1755,7 +1775,12 @@ export class AgentSession {
 	}
 
 	#attachRalplanIrcLifecycleObserver(): void {
-		if (this.#ralplanIrcLifecycleUnsubscribe || !this.#ralplanIrcActivation?.interactive || !this.#ralplanIrcActivation.ircActive) return;
+		if (
+			this.#ralplanIrcLifecycleUnsubscribe ||
+			!this.#ralplanIrcActivation?.interactive ||
+			!this.#ralplanIrcActivation.ircActive
+		)
+			return;
 		const coordinator = this.#agentRegistry && getRalplanIrcCoordinator(this.#agentRegistry);
 		if (!coordinator) return;
 		this.#ralplanIrcLifecycleUnsubscribe = coordinator.onLifecycle(event => {
@@ -2260,7 +2285,9 @@ export class AgentSession {
 			const message = event.message;
 			const deobfuscatedContent = obfuscator.deobfuscateObject(message.content);
 			if (deobfuscatedContent !== message.content) {
-				displayEvent = { ...event, message: { ...message, content: deobfuscatedContent } };
+				const displayMessage = { ...message, content: deobfuscatedContent };
+				transferSessionMessageIdentity([message], [displayMessage]);
+				displayEvent = { ...event, message: displayMessage };
 			}
 		}
 
@@ -2275,6 +2302,15 @@ export class AgentSession {
 		}
 
 		await this.#emitSessionEvent(displayEvent);
+		if (
+			displayEvent !== event &&
+			displayEvent.type === "message_end" &&
+			displayEvent.message.role === "assistant" &&
+			event.type === "message_end" &&
+			event.message.role === "assistant"
+		) {
+			transferSessionMessageIdentity([displayEvent.message], [event.message]);
+		}
 
 		if (event.type === "turn_start") {
 			this.#resetStreamingEditState();
@@ -2821,8 +2857,7 @@ export class AgentSession {
 	}
 
 	#isResumableAgentTail(): boolean {
-		const lastMsg = this.agent.state.messages.at(-1);
-		return lastMsg !== undefined && lastMsg.role !== "assistant";
+		return canContinuePersistedHistory(this.agent.state.messages);
 	}
 
 	#stripOverflowFailedTurnForRetry(): void {
@@ -3814,6 +3849,10 @@ export class AgentSession {
 	 */
 	async dispose(): Promise<void> {
 		this.#isDisposed = true;
+		this.#ralplanIrcActivation = undefined;
+		this.#ralplanIrcLifecycleUnsubscribe?.();
+		this.#ralplanIrcLifecycleUnsubscribe = undefined;
+		this.#ralplanIrcLifecycleListeners.clear();
 		this.#pendingBackgroundExchanges = [];
 		this.yieldQueue.clear();
 		this.agent.setOnBeforeYield(undefined);
@@ -3825,6 +3864,8 @@ export class AgentSession {
 		} catch (error) {
 			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
 		}
+		this.#workflowGateEmitter = undefined;
+		notifyWorkflowGateEmitterChanged(this.sessionId, undefined);
 		await this.#flushWorkerIntegrationAttempt();
 		await this.#cancelPostPromptTasks();
 		// Cancel jobs this agent registered so a subagent's teardown doesn't
@@ -4955,6 +4996,14 @@ export class AgentSession {
 		return this.agent.state.messages;
 	}
 
+	/** Main startup calls this exactly once, after a strict open returned `kind: "opened"`. */
+	async continuePersistedHistory(): Promise<void> {
+		if (!canContinuePersistedHistory(this.agent.state.messages)) {
+			throw new Error("Cannot continue from persisted message history");
+		}
+		await this.agent.continue();
+	}
+
 	buildDisplaySessionContext(): SessionContext {
 		return deobfuscateSessionContext(this.sessionManager.buildSessionContext(), this.#obfuscator);
 	}
@@ -5089,6 +5138,7 @@ export class AgentSession {
 
 	setWorkflowGateEmitter(emitter: WorkflowGateEmitter | undefined): void {
 		this.#workflowGateEmitter = emitter;
+		notifyWorkflowGateEmitterChanged(this.sessionId, emitter);
 		if (emitter) {
 			this.#ensureWorkflowGateAskTool();
 		}
@@ -5520,7 +5570,6 @@ export class AgentSession {
 		}
 	}
 
-
 	async #syncSkillPromptActiveState(
 		message: Pick<CustomMessage<unknown>, "customType" | "details">,
 		active: boolean,
@@ -5547,7 +5596,12 @@ export class AgentSession {
 			if (skill === "ralplan") {
 				let canonicalState: unknown;
 				try {
-					canonicalState = JSON.parse(await fs.promises.readFile(sessionModeStatePath(this.sessionManager.getCwd(), sessionId, "ralplan"), "utf8"));
+					canonicalState = JSON.parse(
+						await fs.promises.readFile(
+							sessionModeStatePath(this.sessionManager.getCwd(), sessionId, "ralplan"),
+							"utf8",
+						),
+					);
 				} catch {
 					return;
 				}
@@ -10361,7 +10415,6 @@ export class AgentSession {
 		signal?: AbortSignal;
 		onDelivered?: () => void;
 	}): Promise<{ replyText: string | null }> {
-
 		const awaitReply = args.awaitReply !== false;
 		const incomingTimestamp = Date.now();
 		const incomingObservationId = crypto.randomUUID();
@@ -10387,7 +10440,6 @@ export class AgentSession {
 		this.#queueBackgroundExchangeInjection([incomingRecord]);
 		args.onDelivered?.();
 		if (!awaitReply) return { replyText: null };
-
 
 		const incomingPrompt = prompt.render(ircIncomingTemplate, {
 			from: args.from,
@@ -10460,7 +10512,14 @@ export class AgentSession {
 			timestamp: args.timestamp,
 		};
 		mainSession.emitIrcRelayObservation(relayRecord);
-		getRalplanIrcCoordinator(registry)?.recordObservation({ observationId: args.observationId, from: args.from, to: args.to, body: args.body, kind: args.kind, timestamp: args.timestamp });
+		getRalplanIrcCoordinator(registry)?.recordObservation({
+			observationId: args.observationId,
+			from: args.from,
+			to: args.to,
+			body: args.body,
+			kind: args.kind,
+			timestamp: args.timestamp,
+		});
 	}
 
 	/**

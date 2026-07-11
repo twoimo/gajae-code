@@ -3,7 +3,16 @@ import { Marked, marked, type Token, Tokenizer, type Tokens } from "marked";
 import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
 import type { Component } from "../tui";
-import { applyBackgroundToLine, padding, replaceTabs, visibleWidth, wrapTextWithAnsi } from "../utils";
+import {
+	annotateViewportAnchorGraphemes,
+	applyBackgroundToLine,
+	extractViewportAnchorRows,
+	padding,
+	replaceTabs,
+	type ViewportAnchorSpan,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "../utils";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
@@ -39,7 +48,12 @@ markdownParser.setOptions({
 // (Rust FFI) work for content/layout combinations already seen this session.
 
 const RENDER_CACHE_MAX = 256; // sane cap: ~256 distinct message × width combos
-const renderCache = new LRUCache<string, { source: string; lines: string[] }>({ max: RENDER_CACHE_MAX });
+const renderCache = new LRUCache<
+	string,
+	{ source: string; lines: string[]; anchorSpans?: Array<ViewportAnchorSpan | null> }
+>({
+	max: RENDER_CACHE_MAX,
+});
 const PARSE_CACHE_MAX = 128;
 const parseCache = new LRUCache<string, { source: string; tokens: Token[] }>({ max: PARSE_CACHE_MAX });
 const MARKDOWN_STREAM_THROTTLE_MS = 64;
@@ -59,6 +73,14 @@ const highlightCache = new LRUCache<string, string[]>({ max: HIGHLIGHT_CACHE_MAX
 function renderedLinesBytes(lines: readonly string[]): number {
 	let bytes = 0;
 	for (const line of lines) bytes += Buffer.byteLength(line, "utf8");
+	return bytes;
+}
+
+function anchorSpansBytes(spans: readonly (ViewportAnchorSpan | null)[]): number {
+	let bytes = spans.length * 8; // Array element references
+	for (const span of spans) {
+		if (span) bytes += 4 * 8; // Four numeric offsets
+	}
 	return bytes;
 }
 
@@ -108,6 +130,7 @@ export function getRenderCacheRetainedBytes(): number {
 	for (const entry of renderCache.values()) {
 		bytes += Buffer.byteLength(entry.source, "utf8");
 		bytes += renderedLinesBytes(entry.lines);
+		if (entry.anchorSpans) bytes += anchorSpansBytes(entry.anchorSpans);
 	}
 	for (const entry of parseCache.values()) bytes += Buffer.byteLength(entry.source, "utf8");
 	for (const lines of highlightCache.values()) bytes += renderedLinesBytes(lines);
@@ -235,6 +258,7 @@ export class Markdown implements Component {
 	#cachedText?: string;
 	#cachedWidth?: number;
 	#cachedLines?: string[];
+	#cachedAnchorSpans?: Array<ViewportAnchorSpan | null>;
 
 	#streaming = false;
 	#lastFullParseAt = 0;
@@ -310,6 +334,7 @@ export class Markdown implements Component {
 		this.#cachedText = undefined;
 		this.#cachedWidth = undefined;
 		this.#cachedLines = undefined;
+		this.#cachedAnchorSpans = undefined;
 	}
 
 	#exceedsHighlightCap(code: string): boolean {
@@ -354,20 +379,35 @@ export class Markdown implements Component {
 	}
 
 	render(width: number): string[] {
+		return this.#render(width, false).lines;
+	}
+
+	#render(width: number, includeAnchors: boolean): { lines: string[]; spans?: Array<ViewportAnchorSpan | null> } {
 		// L1: per-instance cache — fastest path for repeated renders of the same
 		// instance at the same width (e.g. resize debounce, repeated redraws).
-		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
-			return this.#cachedLines;
+		if (
+			this.#cachedLines &&
+			this.#cachedText === this.#text &&
+			this.#cachedWidth === width &&
+			(!includeAnchors || this.#cachedAnchorSpans !== undefined)
+		) {
+			return { lines: this.#cachedLines, spans: this.#cachedAnchorSpans };
 		}
 
 		// Calculate available width for content (subtract horizontal padding)
 		const contentWidth = Math.max(1, width - this.#paddingX * 2);
 
-		if (this.#streaming && this.#cachedLines && this.#cachedWidth === width && this.#lastFullParseAt > 0) {
+		if (
+			this.#streaming &&
+			this.#cachedLines &&
+			this.#cachedWidth === width &&
+			this.#lastFullParseAt > 0 &&
+			(!includeAnchors || this.#cachedAnchorSpans !== undefined)
+		) {
 			const elapsedMs = markdownNow() - this.#lastFullParseAt;
 			if (elapsedMs < MARKDOWN_STREAM_THROTTLE_MS) {
 				this.#armStaleThrottleTimer(MARKDOWN_STREAM_THROTTLE_MS - elapsedMs);
-				return this.#cachedLines;
+				return { lines: this.#cachedLines, spans: this.#cachedAnchorSpans };
 			}
 		}
 
@@ -378,7 +418,8 @@ export class Markdown implements Component {
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
 			this.#cachedLines = result;
-			return result;
+			this.#cachedAnchorSpans = includeAnchors ? [] : undefined;
+			return { lines: result, spans: this.#cachedAnchorSpans };
 		}
 
 		// Replace tabs with 3 spaces for consistent rendering
@@ -395,12 +436,17 @@ export class Markdown implements Component {
 		const headingProbe = this.#theme.heading("");
 		const cacheKey = `${contentKey}\x00${width}\x00${this.#paddingX}\x00${this.#paddingY}\x00${this.#codeBlockIndent}\x00${objectId(this.#theme)}\x00${this.#defaultTextStyle ? objectId(this.#defaultTextStyle) : -1}\x00${TERMINAL.imageProtocol ?? ""}\x00${TERMINAL.hyperlinks ? 1 : 0}\x00${bgColorProbe}\x00${headingProbe}`;
 		const cached = renderCache.get(cacheKey);
-		if (cached !== undefined && cached.source === normalizedText) {
+		if (
+			cached !== undefined &&
+			cached.source === normalizedText &&
+			(!includeAnchors || cached.anchorSpans !== undefined)
+		) {
 			// Populate L1 so subsequent calls from this instance are O(1) map lookup.
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
 			this.#cachedLines = cached.lines;
-			return cached.lines;
+			this.#cachedAnchorSpans = cached.anchorSpans;
+			return { lines: cached.lines, spans: cached.anchorSpans };
 		}
 
 		// Parse markdown to marked tokens. Parse cache is width/theme independent,
@@ -427,13 +473,36 @@ export class Markdown implements Component {
 			renderedLines.push(...tokenLines);
 		}
 
-		// Wrap lines (NO padding, NO background yet)
-		const wrappedLines: string[] = [];
-		for (const line of renderedLines) {
-			if (TERMINAL.isImageLine(line)) {
-				wrappedLines.push(line);
-			} else {
-				wrappedLines.push(...wrapTextIfNeeded(line, contentWidth));
+		let wrappedLines: string[];
+		let wrappedSpans: Array<ViewportAnchorSpan | null> | undefined;
+		if (includeAnchors) {
+			const markedRenderedLines: string[] = [];
+			const markerToken = crypto.randomUUID();
+			let nextGrapheme = 0;
+			let nextCell = 0;
+			for (const line of renderedLines) {
+				if (TERMINAL.isImageLine(line)) {
+					markedRenderedLines.push(line);
+					continue;
+				}
+				const marked = annotateViewportAnchorGraphemes(line, nextGrapheme, nextCell, markerToken);
+				markedRenderedLines.push(marked.text);
+				nextGrapheme = marked.nextGrapheme;
+				nextCell = marked.nextCell;
+			}
+			const markedWrappedLines: string[] = [];
+			for (const line of markedRenderedLines) {
+				if (TERMINAL.isImageLine(line)) markedWrappedLines.push(line);
+				else markedWrappedLines.push(...wrapTextIfNeeded(line, contentWidth));
+			}
+			const extracted = extractViewportAnchorRows(markedWrappedLines, markerToken);
+			wrappedLines = extracted.lines;
+			wrappedSpans = extracted.spans;
+		} else {
+			wrappedLines = [];
+			for (const line of renderedLines) {
+				if (TERMINAL.isImageLine(line)) wrappedLines.push(line);
+				else wrappedLines.push(...wrapTextIfNeeded(line, contentWidth));
 			}
 		}
 
@@ -470,21 +539,42 @@ export class Markdown implements Component {
 			emptyLines.push(line);
 		}
 
-		// Combine top padding, content, and bottom padding
 		const rawResult = [...emptyLines, ...contentLines, ...emptyLines];
+		const rawAnchorSpans = wrappedSpans && [
+			...emptyLines.map(() => null),
+			...wrappedSpans,
+			...emptyLines.map(() => null),
+		];
 		const result = rawResult.length > 0 ? rawResult : [""];
+		const anchorSpans = rawResult.length > 0 ? rawAnchorSpans : wrappedSpans ? [null] : undefined;
 
 		// Update L1 per-instance cache
 		this.#cachedText = this.#text;
 		this.#cachedWidth = width;
 		this.#cachedLines = result;
+		this.#cachedAnchorSpans = anchorSpans;
 		this.#lastFullParseAt = markdownNow();
 
 		// Update L2 module-level LRU so future instances with the same key skip
 		// the marked.lexer + highlightCode (Rust FFI) work entirely.
-		renderCache.set(cacheKey, { source: normalizedText, lines: result });
+		renderCache.set(cacheKey, { source: normalizedText, lines: result, ...(anchorSpans ? { anchorSpans } : {}) });
 
-		return result;
+		return { lines: result, spans: anchorSpans };
+	}
+
+	renderWithViewportAnchorSource(
+		width: number,
+		source: { id: string },
+	): {
+		lines: string[];
+		anchors: Array<({ id: string } & ViewportAnchorSpan) | null>;
+	} {
+		const { lines, spans } = this.#render(width, true);
+		if (!spans) throw new Error("Viewport anchor source render completed without row spans");
+		return {
+			lines,
+			anchors: spans.map(span => (span ? { id: source.id, ...span } : null)),
+		};
 	}
 
 	/**

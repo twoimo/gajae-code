@@ -9,8 +9,8 @@
  */
 import * as fs from "node:fs/promises";
 import { validateAllocatedTaskId, validateTaskId } from "./id";
-const MAIN_AGENT_ID = "0-Main";
 
+const MAIN_AGENT_ID = "0-Main";
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -93,7 +93,6 @@ export class AgentOutputManager {
 		if (!this.#parentPrefix && `${this.#nextId}-${validated}` === MAIN_AGENT_ID) this.#nextId += 1;
 		return `${prefix}${this.#nextId++}-${validated}`;
 	}
-
 
 	/**
 	 * Allocate unique IDs for a batch of tasks.

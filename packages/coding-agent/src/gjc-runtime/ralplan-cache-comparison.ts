@@ -57,9 +57,13 @@ export function adaptTaskTokenLogsToRalplanCacheTurns(
 	return logs.map(log => {
 		const logKey = [log.subagentId, log.turn].join("\u0000");
 		const matches = byLog.get(logKey) ?? [];
-		if (matches.length !== 1) throw new Error(`Expected exactly one ralplan cache key for subagent=${log.subagentId} turn=${log.turn}.`);
+		if (matches.length !== 1)
+			throw new Error(`Expected exactly one ralplan cache key for subagent=${log.subagentId} turn=${log.turn}.`);
 		const key = matches[0]!;
-		if (key.model !== log.model) throw new Error(`Ralplan cache key model does not match token log for subagent=${log.subagentId} turn=${log.turn}.`);
+		if (key.model !== log.model)
+			throw new Error(
+				`Ralplan cache key model does not match token log for subagent=${log.subagentId} turn=${log.turn}.`,
+			);
 		return {
 			...key,
 			inputTokens: log.input,
@@ -88,11 +92,13 @@ function cacheHitRate(turn: RalplanCacheTurn): number | null {
 }
 
 function comparable(turn: RalplanCacheTurn): boolean {
-	return (turn.role === "architect" || turn.role === "critic")
-		&& turn.pass === 2
-		&& Number.isInteger(turn.attemptOrdinal)
-		&& turn.attemptOrdinal > 0
-		&& turn.attemptId.length > 0;
+	return (
+		(turn.role === "architect" || turn.role === "critic") &&
+		turn.pass === 2 &&
+		Number.isInteger(turn.attemptOrdinal) &&
+		turn.attemptOrdinal > 0 &&
+		turn.attemptId.length > 0
+	);
 }
 
 function attemptSlotKey(turn: RalplanCacheTurn): string {
@@ -100,7 +106,9 @@ function attemptSlotKey(turn: RalplanCacheTurn): string {
 }
 
 function comparisonKey(turn: RalplanCacheTurn): string {
-	return [turn.role, turn.subagentId, turn.pass, turn.provider, turn.model, turn.attemptId, turn.attemptOrdinal].join("\u0000");
+	return [turn.role, turn.subagentId, turn.pass, turn.provider, turn.model, turn.attemptId, turn.attemptOrdinal].join(
+		"\u0000",
+	);
 }
 
 /**
@@ -132,19 +140,40 @@ export function compareRalplanCacheTurns(turns: readonly RalplanCacheTurn[], max
 		const irc = slot.filter(turn => turn.mode === "irc");
 		const legacy = slot.filter(turn => turn.mode === "legacy");
 		if (irc.length !== 1 || legacy.length !== 1 || comparisonKey(irc[0]!) !== comparisonKey(legacy[0]!)) {
-			disqualifications.push(`slot=${slotKey} reason=${irc.length > 1 || legacy.length > 1 ? "duplicate_attempt_ordinal" : "unmatched_attempt"}`);
+			disqualifications.push(
+				`slot=${slotKey} reason=${irc.length > 1 || legacy.length > 1 ? "duplicate_attempt_ordinal" : "unmatched_attempt"}`,
+			);
 			continue;
 		}
-		comparisons.push({ irc: irc[0]!, legacy: legacy[0]!, ircCacheHitRate: cacheHitRate(irc[0]!), legacyCacheHitRate: cacheHitRate(legacy[0]!) });
+		comparisons.push({
+			irc: irc[0]!,
+			legacy: legacy[0]!,
+			ircCacheHitRate: cacheHitRate(irc[0]!),
+			legacyCacheHitRate: cacheHitRate(legacy[0]!),
+		});
 	}
 	return { comparisons, rawTurns: [...turns], disqualifications };
 }
 
 export function renderRalplanCacheEvidenceForAdr(evidence: RalplanCacheEvidence): string {
-	const rows = evidence.comparisons.map(({ irc, legacy, ircCacheHitRate, legacyCacheHitRate }) =>
-		`- IRC run=${irc.runId} role=${irc.role} subagent=${irc.subagentId} provider=${irc.provider} model=${irc.model} pass=${irc.pass} turn=${irc.turn} attemptId=${irc.attemptId} attemptOrdinal=${irc.attemptOrdinal} input=${irc.inputTokens} cacheRead=${irc.cacheReadTokens} rate=${formatRate(ircCacheHitRate)}; legacy run=${legacy.runId} role=${legacy.role} subagent=${legacy.subagentId} provider=${legacy.provider} model=${legacy.model} pass=${legacy.pass} turn=${legacy.turn} attemptId=${legacy.attemptId} attemptOrdinal=${legacy.attemptOrdinal} input=${legacy.inputTokens} cacheRead=${legacy.cacheReadTokens} rate=${formatRate(legacyCacheHitRate)}`,
+	const rows = evidence.comparisons.map(
+		({ irc, legacy, ircCacheHitRate, legacyCacheHitRate }) =>
+			`- IRC run=${irc.runId} role=${irc.role} subagent=${irc.subagentId} provider=${irc.provider} model=${irc.model} pass=${irc.pass} turn=${irc.turn} attemptId=${irc.attemptId} attemptOrdinal=${irc.attemptOrdinal} input=${irc.inputTokens} cacheRead=${irc.cacheReadTokens} rate=${formatRate(ircCacheHitRate)}; legacy run=${legacy.runId} role=${legacy.role} subagent=${legacy.subagentId} provider=${legacy.provider} model=${legacy.model} pass=${legacy.pass} turn=${legacy.turn} attemptId=${legacy.attemptId} attemptOrdinal=${legacy.attemptOrdinal} input=${legacy.inputTokens} cacheRead=${legacy.cacheReadTokens} rate=${formatRate(legacyCacheHitRate)}`,
 	);
-	return ["## IRC Cache Evidence", "", ...rows, "", "### Disqualified attempt slots", ...evidence.disqualifications.map(value => `- ${value}`), "", "### Raw turn evidence", ...evidence.rawTurns.map(turn => `- run=${turn.runId} mode=${turn.mode} role=${turn.role} subagent=${turn.subagentId} pass=${turn.pass} turn=${turn.turn} attemptId=${turn.attemptId} attemptOrdinal=${turn.attemptOrdinal} provider=${turn.provider} model=${turn.model} input=${turn.inputTokens} cacheRead=${turn.cacheReadTokens} retry=${turn.isRetry === true}`)].join("\n");
+	return [
+		"## IRC Cache Evidence",
+		"",
+		...rows,
+		"",
+		"### Disqualified attempt slots",
+		...evidence.disqualifications.map(value => `- ${value}`),
+		"",
+		"### Raw turn evidence",
+		...evidence.rawTurns.map(
+			turn =>
+				`- run=${turn.runId} mode=${turn.mode} role=${turn.role} subagent=${turn.subagentId} pass=${turn.pass} turn=${turn.turn} attemptId=${turn.attemptId} attemptOrdinal=${turn.attemptOrdinal} provider=${turn.provider} model=${turn.model} input=${turn.inputTokens} cacheRead=${turn.cacheReadTokens} retry=${turn.isRetry === true}`,
+		),
+	].join("\n");
 }
 
 function formatRate(rate: number | null): string {

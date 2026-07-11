@@ -14,7 +14,7 @@ use napi::{JsString, bindgen_prelude::*};
 use napi_derive::napi;
 use smallvec::{SmallVec, smallvec};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const MIN_TAB_WIDTH: u32 = 1;
 const MAX_TAB_WIDTH: u32 = 16;
@@ -386,6 +386,11 @@ const fn ascii_cell_width_u16(u: u16, tab_width: usize) -> usize {
 
 #[inline]
 fn char_width_corrected(c: char) -> Option<usize> {
+	// U+3164 is East Asian Wide and xterm-compatible terminals occupy two
+	// cells for it even though unicode-width treats the filler as zero-width.
+	if c == '\u{3164}' {
+		return Some(2);
+	}
 	UnicodeWidthChar::width(c)
 }
 
@@ -401,19 +406,12 @@ fn grapheme_width_str(g: &str, tab_width: usize) -> usize {
 	if it.next().is_none() {
 		return char_width_corrected(c0).unwrap_or(0);
 	}
-	if g.contains('\u{200d}') {
-		return g
-			.chars()
-			.filter_map(char_width_corrected)
-			.max()
-			.unwrap_or(0);
-	}
-	// Multi-char grapheme: sum per-char widths. Conjoining Hangul jamo are
-	// kept in grapheme clusters by unicode-segmentation, and their summed
-	// width matches the NFC syllable width terminals render.
-	g.chars()
-		.map(|c| char_width_corrected(c).unwrap_or(0))
-		.sum()
+	// unicode-width's string state machine handles VS16 presentation,
+	// emoji modifiers, ZWJ sequences, and conjoining Hangul jamo as complete
+	// graphemes. Preserve the terminal-specific U+3164 correction because the
+	// crate treats Hangul Filler as zero-width.
+	let filler_correction = g.chars().filter(|c| *c == '\u{3164}').count() * 2;
+	UnicodeWidthStr::width(g) + filler_correction
 }
 
 thread_local! {
@@ -1448,6 +1446,21 @@ mod tests {
 		assert_eq!(visible_width_u16(&to_u16("a\tb"), DEFAULT_TAB_WIDTH), 1 + DEFAULT_TAB_WIDTH + 1);
 		assert_eq!(visible_width_u16(&to_u16("👨‍👩‍👧‍👦"), DEFAULT_TAB_WIDTH), 2);
 		assert_eq!(visible_width_u16(&to_u16("abcd👨‍👩‍👧‍👦wxyz"), DEFAULT_TAB_WIDTH), 10);
+	}
+
+	#[test]
+	fn test_emoji_grapheme_width() {
+		for emoji in ["❤️", "☑️", "↔️", "1️⃣", "👍🏽"] {
+			assert_eq!(visible_width_u16(&to_u16(emoji), DEFAULT_TAB_WIDTH), 2);
+		}
+		assert_eq!(truncate_string_for_test("❤️X", 2), "❤️");
+		assert_eq!(truncate_string_for_test("👍🏽X", 2), "👍🏽");
+	}
+
+	#[test]
+	fn test_hangul_filler_width() {
+		assert_eq!(visible_width_u16(&to_u16("\u{3164}"), DEFAULT_TAB_WIDTH), 2);
+		assert_eq!(truncate_string_for_test("\u{3164}X", 2), "\u{3164}");
 	}
 
 	#[test]

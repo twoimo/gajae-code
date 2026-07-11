@@ -20,8 +20,8 @@ import {
 import type { Model } from "@gajae-code/ai";
 import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
-import { ACP_BOOTSTRAP_RACE_GUARD_MS, AcpAgent, createAcpExtensionUiContext } from "../src/modes/acp/acp-agent";
 import { runNativeRalplanCommand } from "../src/gjc-runtime/ralplan-runtime";
+import { ACP_BOOTSTRAP_RACE_GUARD_MS, AcpAgent, createAcpExtensionUiContext } from "../src/modes/acp/acp-agent";
 import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 import type { PlanModeState } from "../src/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "../src/session/agent-session";
@@ -102,7 +102,14 @@ class FakeAgentSession {
 	promptCalls: string[] = [];
 	customMessages: Array<{ customType: string; content: string; details?: unknown }> = [];
 	skillsSettings = { enableSkillCommands: true };
-	skills: Array<{ name: string; description: string; filePath: string; baseDir: string; source: string; content?: string }> = [];
+	skills: Array<{
+		name: string;
+		description: string;
+		filePath: string;
+		baseDir: string;
+		source: string;
+		content?: string;
+	}> = [];
 	planModeState: PlanModeState | undefined;
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
@@ -449,14 +456,16 @@ async function createHarness(): Promise<AgentHarness> {
 }
 
 async function installRalplanIrcSkill(session: FakeAgentSession, cwd: string): Promise<void> {
-	session.skills = [{
-		name: "ralplan",
-		description: "Ralplan skill",
-		filePath: "embedded:ralplan",
-		baseDir: cwd,
-		source: "test",
-		content: "---\ndescription: Ralplan skill\n---\n# Ralplan\nPlan work.\n",
-	}];
+	session.skills = [
+		{
+			name: "ralplan",
+			description: "Ralplan skill",
+			filePath: "embedded:ralplan",
+			baseDir: cwd,
+			source: "test",
+			content: "---\ndescription: Ralplan skill\n---\n# Ralplan\nPlan work.\n",
+		},
+	];
 }
 
 /**

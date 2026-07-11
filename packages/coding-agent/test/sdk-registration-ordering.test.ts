@@ -8,7 +8,9 @@ import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
 
-async function withSessionOptions<T>(run: (options: Parameters<typeof createAgentSession>[0], registry: AgentRegistry) => Promise<T>): Promise<T> {
+async function withSessionOptions<T>(
+	run: (options: Parameters<typeof createAgentSession>[0], registry: AgentRegistry) => Promise<T>,
+): Promise<T> {
 	const tempDir = TempDir.createSync("@gjc-sdk-registration-");
 	let authStorage: AuthStorage | undefined;
 	try {
@@ -94,7 +96,11 @@ describe("createAgentSession registry handoff", () => {
 		await withSessionOptions(async (options, registry) => {
 			const main = await createAgentSession({ ...options, agentId: "0-Main", parentTaskPrefix: undefined });
 			try {
-				const architect = await createAgentSession({ ...options, agentId: "0-Main:agent-creation-architect", parentTaskPrefix: undefined });
+				const architect = await createAgentSession({
+					...options,
+					agentId: "0-Main:agent-creation-architect",
+					parentTaskPrefix: undefined,
+				});
 				try {
 					expect(registry.get("0-Main")?.session).toBe(main.session);
 					expect(registry.get("0-Main:agent-creation-architect")?.session).toBe(architect.session);

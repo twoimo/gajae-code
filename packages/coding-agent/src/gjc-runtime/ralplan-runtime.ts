@@ -50,7 +50,16 @@ export interface RalplanCommandResult {
 	stderr?: string;
 }
 
-const KNOWN_STAGES = ["planner", "architect", "critic", "deliberation", "revision", "post-interview", "adr", "final"] as const;
+const KNOWN_STAGES = [
+	"planner",
+	"architect",
+	"critic",
+	"deliberation",
+	"revision",
+	"post-interview",
+	"adr",
+	"final",
+] as const;
 type RalplanStage = (typeof KNOWN_STAGES)[number];
 
 const KNOWN_ARCHITECT_KINDS = new Set(["openai-code"]);
@@ -202,11 +211,13 @@ function ralplanStatePath(cwd: string, sessionId: string): string {
 /** Reads and validates the persisted state that authorizes a live IRC pass. */
 export async function hasActiveRalplanIrcRun(cwd: string, sessionId: string, runId: string): Promise<boolean> {
 	const existingRead = await readExistingStateForMutation(ralplanStatePath(cwd, sessionId));
-	return existingRead.kind === "valid"
-		&& existingRead.value.active === true
-		&& existingRead.value.irc === true
-		&& existingRead.value.irc_degraded !== true
-		&& existingRead.value.run_id === runId;
+	return (
+		existingRead.kind === "valid" &&
+		existingRead.value.active === true &&
+		existingRead.value.irc === true &&
+		existingRead.value.irc_degraded !== true &&
+		existingRead.value.run_id === runId
+	);
 }
 
 async function readActiveRunId(cwd: string, sessionId: string): Promise<string | undefined> {
@@ -214,14 +225,16 @@ async function readActiveRunId(cwd: string, sessionId: string): Promise<string |
 	const existingRead = await readExistingStateForMutation(statePath);
 	if (existingRead.kind === "absent") return undefined;
 	if (existingRead.kind === "corrupt") {
-		throw new RalplanCommandError(2, `existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`);
+		throw new RalplanCommandError(
+			2,
+			`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+		);
 	}
 	const candidate = typeof existingRead.value.run_id === "string" ? existingRead.value.run_id.trim() : "";
 	if (!candidate) return undefined;
 	assertSafePathComponent(candidate, "run-id");
 	return candidate;
 }
-
 
 /**
  * Run-state phases that an artifact write must never reopen. Once ralplan has
@@ -250,43 +263,47 @@ function advanceCurrentPhase(existingPhase: unknown, stage: RalplanStage): strin
 
 async function persistActiveRunId(cwd: string, sessionId: string, runId: string, stage: RalplanStage): Promise<void> {
 	const statePath = ralplanStatePath(cwd, sessionId);
-	await withWorkflowStateLock(statePath, async () => {
-		const existingRead = await readExistingStateForMutation(statePath);
-		if (existingRead.kind === "corrupt") {
-			throw new RalplanCommandError(
-				2,
-				`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
-			);
-		}
-		let existing: Record<string, unknown> = existingRead.kind === "valid" ? existingRead.value : {};
+	await withWorkflowStateLock(
+		statePath,
+		async () => {
+			const existingRead = await readExistingStateForMutation(statePath);
+			if (existingRead.kind === "corrupt") {
+				throw new RalplanCommandError(
+					2,
+					`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+				);
+			}
+			let existing: Record<string, unknown> = existingRead.kind === "valid" ? existingRead.value : {};
 
-		// A new run_id is a fresh run, not a stray write on the prior run: never inherit a
-		// previous run's terminal/locked phase (which would start the new run already
-		// "complete"/"handoff" and disarm the Stop hook). PHASE_LOCK only guards same-run writes.
-		const isNewRun = existing.run_id !== runId;
-		const nextPhase = isNewRun ? stage : advanceCurrentPhase(existing.current_phase, stage);
-		if (
-			existing.run_id === runId &&
-			existing.version === WORKFLOW_STATE_VERSION &&
-			existing.current_phase === nextPhase &&
-			(existing.active === true || PHASE_LOCK.has(nextPhase))
-		) {
-			return;
-		}
-		existing.run_id = runId;
-		if (typeof existing.skill !== "string") existing.skill = "ralplan";
-		// A successful persist means ralplan is actively writing this run's artifacts, so always
-		// re-assert active. Fallback-only init left active:false after a clear (#644, sibling of #638).
-		existing.active = true;
-		existing.current_phase = nextPhase;
-		existing = migrateWorkflowState(existing, "ralplan").state;
-		existing.updated_at = new Date().toISOString();
-		await writeWorkflowEnvelopeAtomic(statePath, existing, {
-			cwd,
-			receipt: { cwd, skill: "ralplan", owner: "gjc-runtime", command: "gjc ralplan persist-run-id", sessionId },
-			audit: { category: "state", verb: "write", owner: "gjc-runtime", skill: "ralplan", sessionId },
-		});
-	}, { cwd });
+			// A new run_id is a fresh run, not a stray write on the prior run: never inherit a
+			// previous run's terminal/locked phase (which would start the new run already
+			// "complete"/"handoff" and disarm the Stop hook). PHASE_LOCK only guards same-run writes.
+			const isNewRun = existing.run_id !== runId;
+			const nextPhase = isNewRun ? stage : advanceCurrentPhase(existing.current_phase, stage);
+			if (
+				existing.run_id === runId &&
+				existing.version === WORKFLOW_STATE_VERSION &&
+				existing.current_phase === nextPhase &&
+				(existing.active === true || PHASE_LOCK.has(nextPhase))
+			) {
+				return;
+			}
+			existing.run_id = runId;
+			if (typeof existing.skill !== "string") existing.skill = "ralplan";
+			// A successful persist means ralplan is actively writing this run's artifacts, so always
+			// re-assert active. Fallback-only init left active:false after a clear (#644, sibling of #638).
+			existing.active = true;
+			existing.current_phase = nextPhase;
+			existing = migrateWorkflowState(existing, "ralplan").state;
+			existing.updated_at = new Date().toISOString();
+			await writeWorkflowEnvelopeAtomic(statePath, existing, {
+				cwd,
+				receipt: { cwd, skill: "ralplan", owner: "gjc-runtime", command: "gjc ralplan persist-run-id", sessionId },
+				audit: { category: "state", verb: "write", owner: "gjc-runtime", skill: "ralplan", sessionId },
+			});
+		},
+		{ cwd },
+	);
 }
 
 /* --------------------------- planner run-state --------------------------- */
@@ -344,16 +361,34 @@ function parsePlannerStateArgs(args: readonly string[]): PlannerStateUpdate | un
 	const fallbackAttemptedId = plannerFlagValue(args, "--fallback-attempted-id");
 	const fallbackStageNRaw = plannerFlagValue(args, "--fallback-stage-n");
 	const fallbackReceiptPath = plannerFlagValue(args, "--fallback-receipt-path");
-	const anyFallback = [fallbackReason, fallbackAttemptedId, fallbackStageNRaw, fallbackReceiptPath].some(value => value !== undefined);
+	const anyFallback = [fallbackReason, fallbackAttemptedId, fallbackStageNRaw, fallbackReceiptPath].some(
+		value => value !== undefined,
+	);
 	let plannerFallback: PlannerFallbackStateUpdate | undefined;
 	if (anyFallback) {
-		if (!fallbackReason) throw new RalplanCommandError(2, "--fallback-reason is required when recording planner fallback metadata.");
-		if (!KNOWN_FALLBACK_REASONS.has(fallbackReason)) throw new RalplanCommandError(2, `invalid --fallback-reason: ${fallbackReason}. Expected one of: ${[...KNOWN_FALLBACK_REASONS].join(", ")}.`);
-		if (fallbackAttemptedId === undefined) throw new RalplanCommandError(2, "--fallback-attempted-id is required when recording planner fallback metadata.");
+		if (!fallbackReason)
+			throw new RalplanCommandError(2, "--fallback-reason is required when recording planner fallback metadata.");
+		if (!KNOWN_FALLBACK_REASONS.has(fallbackReason))
+			throw new RalplanCommandError(
+				2,
+				`invalid --fallback-reason: ${fallbackReason}. Expected one of: ${[...KNOWN_FALLBACK_REASONS].join(", ")}.`,
+			);
+		if (fallbackAttemptedId === undefined)
+			throw new RalplanCommandError(
+				2,
+				"--fallback-attempted-id is required when recording planner fallback metadata.",
+			);
 		assertSubagentId(fallbackAttemptedId, "--fallback-attempted-id");
-		if (fallbackStageNRaw === undefined) throw new RalplanCommandError(2, "--fallback-stage-n is required when recording planner fallback metadata.");
-		if (fallbackReceiptPath !== undefined && fallbackReceiptPath.trim() === "") throw new RalplanCommandError(2, "--fallback-receipt-path must not be empty.");
-		plannerFallback = { reason: fallbackReason, attemptedId: fallbackAttemptedId, stageN: parseStageN(fallbackStageNRaw), receiptPath: fallbackReceiptPath };
+		if (fallbackStageNRaw === undefined)
+			throw new RalplanCommandError(2, "--fallback-stage-n is required when recording planner fallback metadata.");
+		if (fallbackReceiptPath !== undefined && fallbackReceiptPath.trim() === "")
+			throw new RalplanCommandError(2, "--fallback-receipt-path must not be empty.");
+		plannerFallback = {
+			reason: fallbackReason,
+			attemptedId: fallbackAttemptedId,
+			stageN: parseStageN(fallbackStageNRaw),
+			receiptPath: fallbackReceiptPath,
+		};
 	}
 	if (Object.keys(roles).length === 0 && !plannerFallback) return undefined;
 	return { roles, plannerFallback };
@@ -361,18 +396,28 @@ function parsePlannerStateArgs(args: readonly string[]): PlannerStateUpdate | un
 
 function assertPlannerStateStageContract(stage: RalplanStage, update: PlannerStateUpdate | undefined): void {
 	if (!update) return;
-	const expectedRole = stage === "revision" ? "planner" : stage === "planner" || stage === "architect" || stage === "critic" ? stage : undefined;
+	const expectedRole =
+		stage === "revision"
+			? "planner"
+			: stage === "planner" || stage === "architect" || stage === "critic"
+				? stage
+				: undefined;
 	for (const role of Object.keys(update.roles) as Array<"planner" | "architect" | "critic">) {
 		if (role !== expectedRole) {
 			const expected = expectedRole ? `--${expectedRole}-*` : "no role metadata";
-			throw new RalplanCommandError(2, `refusing --${role}-* metadata on a ${stage}-stage write; this stage accepts ${expected}.`);
+			throw new RalplanCommandError(
+				2,
+				`refusing --${role}-* metadata on a ${stage}-stage write; this stage accepts ${expected}.`,
+			);
 		}
 	}
 }
 
 function plannerStatePayload(update: PlannerStateUpdate): Record<string, unknown> {
 	const payload: Record<string, unknown> = {};
-	for (const [role, roleUpdate] of Object.entries(update.roles) as Array<["planner" | "architect" | "critic", RoleStateUpdate]>) {
+	for (const [role, roleUpdate] of Object.entries(update.roles) as Array<
+		["planner" | "architect" | "critic", RoleStateUpdate]
+	>) {
 		if (roleUpdate.subagentId !== undefined) payload[`${role}_subagent_id`] = roleUpdate.subagentId;
 		if (roleUpdate.resumable !== undefined) payload[`${role}_resumable`] = roleUpdate.resumable;
 	}
@@ -380,7 +425,8 @@ function plannerStatePayload(update: PlannerStateUpdate): Record<string, unknown
 		payload.planner_fallback_reason = update.plannerFallback.reason;
 		payload.planner_fallback_attempted_id = update.plannerFallback.attemptedId;
 		payload.planner_fallback_stage_n = update.plannerFallback.stageN;
-		if (update.plannerFallback.receiptPath !== undefined) payload.planner_fallback_receipt_path = update.plannerFallback.receiptPath;
+		if (update.plannerFallback.receiptPath !== undefined)
+			payload.planner_fallback_receipt_path = update.plannerFallback.receiptPath;
 	}
 	return payload;
 }
@@ -392,45 +438,69 @@ async function applyPlannerStateUpdate(
 	update: PlannerStateUpdate,
 ): Promise<void> {
 	const statePath = ralplanStatePath(cwd, sessionId);
-	await withWorkflowStateLock(statePath, async () => {
-		const existingRead = await readExistingStateForMutation(statePath);
-		if (existingRead.kind === "corrupt") throw new RalplanCommandError(2, `existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`);
-		let existing: Record<string, unknown> = existingRead.kind === "valid" ? existingRead.value : {};
-		const recordedCriticId = existing.critic_subagent_id;
-		const requestedArchitectId = update.roles.architect?.subagentId;
-		if (stage === "critic" && typeof recordedCriticId === "string" && requestedArchitectId !== undefined && requestedArchitectId !== recordedCriticId) {
-			throw new RalplanCommandError(2, `refusing --architect-id ${requestedArchitectId} on a critic-stage write: recorded critic role id is ${recordedCriticId}.`);
-		}
+	await withWorkflowStateLock(
+		statePath,
+		async () => {
+			const existingRead = await readExistingStateForMutation(statePath);
+			if (existingRead.kind === "corrupt")
+				throw new RalplanCommandError(
+					2,
+					`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+				);
+			let existing: Record<string, unknown> = existingRead.kind === "valid" ? existingRead.value : {};
+			const recordedCriticId = existing.critic_subagent_id;
+			const requestedArchitectId = update.roles.architect?.subagentId;
+			if (
+				stage === "critic" &&
+				typeof recordedCriticId === "string" &&
+				requestedArchitectId !== undefined &&
+				requestedArchitectId !== recordedCriticId
+			) {
+				throw new RalplanCommandError(
+					2,
+					`refusing --architect-id ${requestedArchitectId} on a critic-stage write: recorded critic role id is ${recordedCriticId}.`,
+				);
+			}
 
-		let changed = false;
-		for (const [role, roleUpdate] of Object.entries(update.roles) as Array<["planner" | "architect" | "critic", RoleStateUpdate]>) {
-			for (const [field, value] of Object.entries({ subagent_id: roleUpdate.subagentId, resumable: roleUpdate.resumable })) {
-				if (value === undefined) continue;
-				const key = `${role}_${field}`;
-				if (!(key in existing)) {
-					existing[key] = value;
-					changed = true;
-				} else if (existing[key] !== value) {
-					throw new RalplanCommandError(2, `refusing to overwrite recorded ${key}: existing value ${JSON.stringify(existing[key])} conflicts with ${JSON.stringify(value)}.`);
+			let changed = false;
+			for (const [role, roleUpdate] of Object.entries(update.roles) as Array<
+				["planner" | "architect" | "critic", RoleStateUpdate]
+			>) {
+				for (const [field, value] of Object.entries({
+					subagent_id: roleUpdate.subagentId,
+					resumable: roleUpdate.resumable,
+				})) {
+					if (value === undefined) continue;
+					const key = `${role}_${field}`;
+					if (!(key in existing)) {
+						existing[key] = value;
+						changed = true;
+					} else if (existing[key] !== value) {
+						throw new RalplanCommandError(
+							2,
+							`refusing to overwrite recorded ${key}: existing value ${JSON.stringify(existing[key])} conflicts with ${JSON.stringify(value)}.`,
+						);
+					}
 				}
 			}
-		}
-		if (update.plannerFallback) {
-			Object.assign(existing, plannerStatePayload({ roles: {}, plannerFallback: update.plannerFallback }));
-			changed = true;
-		}
-		if (!changed) return;
-		if (typeof existing.skill !== "string") existing.skill = "ralplan";
-		if (typeof existing.active !== "boolean") existing.active = true;
-		if (typeof existing.current_phase !== "string") existing.current_phase = "planner";
-		existing = migrateWorkflowState(existing, "ralplan").state;
-		existing.updated_at = new Date().toISOString();
-		await writeWorkflowEnvelopeAtomic(statePath, existing, {
-			cwd,
-			receipt: { cwd, skill: "ralplan", owner: "gjc-runtime", command: "gjc ralplan planner-state", sessionId },
-			audit: { category: "state", verb: "write", owner: "gjc-runtime", skill: "ralplan", sessionId },
-		});
-	}, { cwd });
+			if (update.plannerFallback) {
+				Object.assign(existing, plannerStatePayload({ roles: {}, plannerFallback: update.plannerFallback }));
+				changed = true;
+			}
+			if (!changed) return;
+			if (typeof existing.skill !== "string") existing.skill = "ralplan";
+			if (typeof existing.active !== "boolean") existing.active = true;
+			if (typeof existing.current_phase !== "string") existing.current_phase = "planner";
+			existing = migrateWorkflowState(existing, "ralplan").state;
+			existing.updated_at = new Date().toISOString();
+			await writeWorkflowEnvelopeAtomic(statePath, existing, {
+				cwd,
+				receipt: { cwd, skill: "ralplan", owner: "gjc-runtime", command: "gjc ralplan planner-state", sessionId },
+				audit: { category: "state", verb: "write", owner: "gjc-runtime", skill: "ralplan", sessionId },
+			});
+		},
+		{ cwd },
+	);
 }
 
 async function resolveArtifactArgs(args: readonly string[], cwd: string): Promise<ResolvedArtifactArgs> {
@@ -631,7 +701,12 @@ export async function hasPersistedRalplanDeliberationReceipt(
 ): Promise<boolean> {
 	const receipt = await findExistingStageArtifact(cwd, sessionId, runId, "deliberation", stageN);
 	if (!receipt) return false;
-	const expectedPath = path.join(sessionPlansDir(cwd, sessionId), "ralplan", runId, `stage-${pad2(stageN)}-deliberation.md`);
+	const expectedPath = path.join(
+		sessionPlansDir(cwd, sessionId),
+		"ralplan",
+		runId,
+		`stage-${pad2(stageN)}-deliberation.md`,
+	);
 	if (receipt.path !== expectedPath) return false;
 	try {
 		const content = await fs.readFile(expectedPath, "utf8");
@@ -834,7 +909,8 @@ function extractPositionalTask(args: readonly string[]): string {
 			skipNext = true;
 			continue;
 		}
-		if (arg === "--interactive" || arg === "--deliberate" || arg === "--irc" || arg === "--write" || arg === "--json") continue;
+		if (arg === "--interactive" || arg === "--deliberate" || arg === "--irc" || arg === "--write" || arg === "--json")
+			continue;
 		if (arg.startsWith("-")) {
 			throw new RalplanCommandError(2, `unknown flag for gjc ralplan: ${arg}`);
 		}
@@ -888,58 +964,69 @@ async function seedRalplanState(
 	resolved: ConsensusHandoffArgs,
 ): Promise<{ statePath: string; runId: string }> {
 	const statePath = ralplanStatePath(cwd, resolved.sessionId);
-	const runId = await withWorkflowStateLock(statePath, async () => {
-		const existingRead = await readExistingStateForMutation(statePath);
-		if (existingRead.kind === "corrupt") {
-			throw new RalplanCommandError(2, `existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`);
-		}
-		const existing = existingRead.kind === "valid" ? existingRead.value : {};
-		const existingRunId = typeof existing.run_id === "string" ? existing.run_id.trim() : "";
-		if (existingRunId) assertSafePathComponent(existingRunId, "run-id");
-		const existingPhase = typeof existing.current_phase === "string" ? existing.current_phase.trim() : "";
-		const reuseActiveRun = Boolean(existingRunId) && existing.active === true && !PHASE_LOCK.has(existingPhase);
-		const nextRunId = reuseActiveRun ? existingRunId : existingRunId ? defaultRunId() : resolved.sessionId || defaultRunId();
-		assertSafePathComponent(nextRunId, "run-id");
-		const payload: Record<string, unknown> = {
-			...(reuseActiveRun ? existing : {}),
-			skill: "ralplan",
-			version: WORKFLOW_STATE_VERSION,
-			mode: resolved.deliberate ? "deliberate" : "short",
-			interactive: resolved.interactive,
-			task: resolved.task,
-			run_id: nextRunId,
-			updated_at: new Date().toISOString(),
-		};
-		if (!reuseActiveRun) {
-			payload.active = true;
-			payload.current_phase = "planner";
-		}
-		if (resolved.irc) {
-			payload.irc = true;
-			if (!("irc_degraded" in payload)) payload.irc_degraded = false;
-		}
-		if (resolved.architectKind) payload.architect_kind = resolved.architectKind;
-		if (resolved.criticKind) payload.critic_kind = resolved.criticKind;
-		if (resolved.sessionId) payload.session_id = resolved.sessionId;
-		await writeWorkflowEnvelopeAtomic(statePath, payload, {
-			cwd,
-			receipt: {
+	const runId = await withWorkflowStateLock(
+		statePath,
+		async () => {
+			const existingRead = await readExistingStateForMutation(statePath);
+			if (existingRead.kind === "corrupt") {
+				throw new RalplanCommandError(
+					2,
+					`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+				);
+			}
+			const existing = existingRead.kind === "valid" ? existingRead.value : {};
+			const existingRunId = typeof existing.run_id === "string" ? existing.run_id.trim() : "";
+			if (existingRunId) assertSafePathComponent(existingRunId, "run-id");
+			const existingPhase = typeof existing.current_phase === "string" ? existing.current_phase.trim() : "";
+			const reuseActiveRun = Boolean(existingRunId) && existing.active === true && !PHASE_LOCK.has(existingPhase);
+			const nextRunId = reuseActiveRun
+				? existingRunId
+				: existingRunId
+					? defaultRunId()
+					: resolved.sessionId || defaultRunId();
+			assertSafePathComponent(nextRunId, "run-id");
+			const payload: Record<string, unknown> = {
+				...(reuseActiveRun ? existing : {}),
+				skill: "ralplan",
+				version: WORKFLOW_STATE_VERSION,
+				mode: resolved.deliberate ? "deliberate" : "short",
+				interactive: resolved.interactive,
+				task: resolved.task,
+				run_id: nextRunId,
+				updated_at: new Date().toISOString(),
+			};
+			if (!reuseActiveRun) {
+				payload.active = true;
+				payload.current_phase = "planner";
+			}
+			if (resolved.irc) {
+				payload.irc = true;
+				if (!("irc_degraded" in payload)) payload.irc_degraded = false;
+			}
+			if (resolved.architectKind) payload.architect_kind = resolved.architectKind;
+			if (resolved.criticKind) payload.critic_kind = resolved.criticKind;
+			if (resolved.sessionId) payload.session_id = resolved.sessionId;
+			await writeWorkflowEnvelopeAtomic(statePath, payload, {
 				cwd,
-				skill: "ralplan",
-				owner: "gjc-runtime",
-				command: "gjc ralplan seed",
-				sessionId: resolved.sessionId,
-			},
-			audit: {
-				category: "state",
-				verb: "write",
-				owner: "gjc-runtime",
-				skill: "ralplan",
-				sessionId: resolved.sessionId,
-			},
-		});
-		return nextRunId;
-	}, { cwd });
+				receipt: {
+					cwd,
+					skill: "ralplan",
+					owner: "gjc-runtime",
+					command: "gjc ralplan seed",
+					sessionId: resolved.sessionId,
+				},
+				audit: {
+					category: "state",
+					verb: "write",
+					owner: "gjc-runtime",
+					skill: "ralplan",
+					sessionId: resolved.sessionId,
+				},
+			});
+			return nextRunId;
+		},
+		{ cwd },
+	);
 	await writeSessionActivityMarker(cwd, resolved.sessionId, { writer: "ralplan-runtime", path: statePath });
 	return { statePath, runId };
 }
@@ -963,29 +1050,49 @@ async function latchRalplanIrcDegradation(args: RalplanIrcActivationDegradationA
 		throw new RalplanCommandError(2, `invalid IRC degradation stage: ${stageN}`);
 	}
 	const statePath = ralplanStatePath(args.cwd, args.sessionId);
-	await withWorkflowStateLock(statePath, async () => {
-		const existingRead = await readExistingStateForMutation(statePath);
-		if (existingRead.kind === "corrupt") {
-			throw new RalplanCommandError(2, `existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`);
-		}
-		if (existingRead.kind !== "valid") throw new RalplanCommandError(2, "no active matching IRC ralplan run to degrade.");
-		let state = existingRead.value;
-		if (state.run_id !== args.runId || state.active !== true || state.irc !== true) {
-			throw new RalplanCommandError(2, "no active matching IRC ralplan run to degrade.");
-		}
-		if (state.irc_degraded === true) return;
-		state.irc_degraded = true;
-		state.irc_degrade_reason = args.reason;
-		state.irc_degraded_at = new Date().toISOString();
-		if (stageN !== undefined) state.irc_degraded_at_stage_n = stageN;
-		state = migrateWorkflowState(state, "ralplan").state;
-		state.updated_at = new Date().toISOString();
-		await writeWorkflowEnvelopeAtomic(statePath, state, {
-			cwd: args.cwd,
-			receipt: { cwd: args.cwd, skill: "ralplan", owner: "gjc-runtime", command: "gjc ralplan irc-degrade", sessionId: args.sessionId },
-			audit: { category: "state", verb: "write", owner: "gjc-runtime", skill: "ralplan", sessionId: args.sessionId },
-		});
-	}, { cwd: args.cwd });
+	await withWorkflowStateLock(
+		statePath,
+		async () => {
+			const existingRead = await readExistingStateForMutation(statePath);
+			if (existingRead.kind === "corrupt") {
+				throw new RalplanCommandError(
+					2,
+					`existing ralplan state is corrupt or tampered (${existingRead.error}); refusing to overwrite ${statePath}`,
+				);
+			}
+			if (existingRead.kind !== "valid")
+				throw new RalplanCommandError(2, "no active matching IRC ralplan run to degrade.");
+			let state = existingRead.value;
+			if (state.run_id !== args.runId || state.active !== true || state.irc !== true) {
+				throw new RalplanCommandError(2, "no active matching IRC ralplan run to degrade.");
+			}
+			if (state.irc_degraded === true) return;
+			state.irc_degraded = true;
+			state.irc_degrade_reason = args.reason;
+			state.irc_degraded_at = new Date().toISOString();
+			if (stageN !== undefined) state.irc_degraded_at_stage_n = stageN;
+			state = migrateWorkflowState(state, "ralplan").state;
+			state.updated_at = new Date().toISOString();
+			await writeWorkflowEnvelopeAtomic(statePath, state, {
+				cwd: args.cwd,
+				receipt: {
+					cwd: args.cwd,
+					skill: "ralplan",
+					owner: "gjc-runtime",
+					command: "gjc ralplan irc-degrade",
+					sessionId: args.sessionId,
+				},
+				audit: {
+					category: "state",
+					verb: "write",
+					owner: "gjc-runtime",
+					skill: "ralplan",
+					sessionId: args.sessionId,
+				},
+			});
+		},
+		{ cwd: args.cwd },
+	);
 }
 
 export async function degradeRalplanIrcActivation(args: RalplanIrcActivationDegradationArgs): Promise<void> {

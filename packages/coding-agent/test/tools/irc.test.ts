@@ -31,7 +31,12 @@ function makeFakeSession(): FakeSession {
 	let preDeliveryError: Error | null = null;
 	const calls: Array<{ from: string; message: string; awaitReply: boolean }> = [];
 	const session = {
-		respondAsBackground: async (args: { from: string; message: string; awaitReply?: boolean; onDelivered?: () => void }) => {
+		respondAsBackground: async (args: {
+			from: string;
+			message: string;
+			awaitReply?: boolean;
+			onDelivered?: () => void;
+		}) => {
 			const awaitReply = args.awaitReply !== false;
 			calls.push({ from: args.from, message: args.message, awaitReply });
 			if (preDeliveryError) {
@@ -104,7 +109,10 @@ async function seedActiveIrcRun(): Promise<{ cwd: string; sessionId: string; run
 }
 
 async function expectIrcDegraded(cwd: string, sessionId: string, reason: string): Promise<void> {
-	const state = JSON.parse(await fs.readFile(modeStatePath(cwd, sessionId, "ralplan"), "utf8")) as Record<string, unknown>;
+	const state = JSON.parse(await fs.readFile(modeStatePath(cwd, sessionId, "ralplan"), "utf8")) as Record<
+		string,
+		unknown
+	>;
 	expect(state).toMatchObject({ irc_degraded: true, irc_degrade_reason: reason });
 }
 
@@ -257,14 +265,33 @@ describe("IrcTool", () => {
 		const main = makeFakeSession();
 		const bad = makeFakeSession();
 		bad.setPreDeliveryError(new Error("down"));
-		const mainRegistration = registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+		const mainRegistration = registry.register({
+			id: "0-Main",
+			displayName: "main",
+			kind: "main",
+			session: main.session,
+		});
 		const badRegistration = registry.register({ id: "0-Bad", displayName: "bad", kind: "sub", session: bad.session });
 		const coordinator = new RalplanIrcCoordinator({ registry, cwd });
 		coordinator.startPass({ parentSessionId: sessionId, runId, stageN: 1, cursorGeneration: 1 });
-		coordinator.bindRegisteredChild("0-Main", { parentSessionId: sessionId, runId, role: "planner", token: mainRegistration.token });
-		coordinator.bindRegisteredChild("0-Bad", { parentSessionId: sessionId, runId, role: "critic", token: badRegistration.token });
+		coordinator.bindRegisteredChild("0-Main", {
+			parentSessionId: sessionId,
+			runId,
+			role: "planner",
+			token: mainRegistration.token,
+		});
+		coordinator.bindRegisteredChild("0-Bad", {
+			parentSessionId: sessionId,
+			runId,
+			role: "critic",
+			token: badRegistration.token,
+		});
 
-		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", { op: "send", to: "0-Bad", message: "ping" });
+		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", {
+			op: "send",
+			to: "0-Bad",
+			message: "ping",
+		});
 		expect(result.details?.failed).toEqual([{ id: "0-Bad", error: "down" }]);
 		await expectIrcDegraded(cwd, sessionId, "delivery_failed");
 	});
@@ -275,16 +302,34 @@ describe("IrcTool", () => {
 		const good = makeFakeSession();
 		const bad = makeFakeSession();
 		bad.setPreDeliveryError(new Error("down"));
-		const mainRegistration = registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
-		const goodRegistration = registry.register({ id: "0-Good", displayName: "good", kind: "sub", session: good.session });
+		const mainRegistration = registry.register({
+			id: "0-Main",
+			displayName: "main",
+			kind: "main",
+			session: main.session,
+		});
+		const goodRegistration = registry.register({
+			id: "0-Good",
+			displayName: "good",
+			kind: "sub",
+			session: good.session,
+		});
 		const badRegistration = registry.register({ id: "0-Bad", displayName: "bad", kind: "sub", session: bad.session });
 		const coordinator = new RalplanIrcCoordinator({ registry, cwd });
 		coordinator.startPass({ parentSessionId: sessionId, runId, stageN: 1, cursorGeneration: 1 });
-		for (const [id, role, token] of [["0-Main", "planner", mainRegistration.token], ["0-Good", "architect", goodRegistration.token], ["0-Bad", "critic", badRegistration.token]] as const) {
+		for (const [id, role, token] of [
+			["0-Main", "planner", mainRegistration.token],
+			["0-Good", "architect", goodRegistration.token],
+			["0-Bad", "critic", badRegistration.token],
+		] as const) {
 			coordinator.bindRegisteredChild(id, { parentSessionId: sessionId, runId, role, token });
 		}
 
-		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", { op: "send", to: "all", message: "ping" });
+		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", {
+			op: "send",
+			to: "all",
+			message: "ping",
+		});
 		expect(result.details?.delivered).toEqual(["0-Good"]);
 		expect(result.details?.failed).toEqual([{ id: "0-Bad", error: "down" }]);
 		await expectIrcDegraded(cwd, sessionId, "delivery_failed");
@@ -292,28 +337,66 @@ describe("IrcTool", () => {
 
 	it("terminal peer reports unreachable and latches canonical degradation for the active IRC run", async () => {
 		const { cwd, sessionId, runId } = await seedActiveIrcRun();
-		const mainRegistration = registry.register({ id: "0-Main", displayName: "main", kind: "main", session: makeFakeSession().session });
+		const mainRegistration = registry.register({
+			id: "0-Main",
+			displayName: "main",
+			kind: "main",
+			session: makeFakeSession().session,
+		});
 		const terminal = makeFakeSession();
-		const terminalRegistration = registry.register({ id: "0-Done", displayName: "done", kind: "sub", session: terminal.session });
+		const terminalRegistration = registry.register({
+			id: "0-Done",
+			displayName: "done",
+			kind: "sub",
+			session: terminal.session,
+		});
 		const coordinator = new RalplanIrcCoordinator({ registry, cwd });
 		coordinator.startPass({ parentSessionId: sessionId, runId, stageN: 1, cursorGeneration: 1 });
-		coordinator.bindRegisteredChild("0-Main", { parentSessionId: sessionId, runId, role: "planner", token: mainRegistration.token });
-		coordinator.bindRegisteredChild("0-Done", { parentSessionId: sessionId, runId, role: "critic", token: terminalRegistration.token });
+		coordinator.bindRegisteredChild("0-Main", {
+			parentSessionId: sessionId,
+			runId,
+			role: "planner",
+			token: mainRegistration.token,
+		});
+		coordinator.bindRegisteredChild("0-Done", {
+			parentSessionId: sessionId,
+			runId,
+			role: "critic",
+			token: terminalRegistration.token,
+		});
 		registry.setStatus("0-Done", "completed", terminalRegistration.token);
 
-		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", { op: "send", to: "0-Done", message: "ping" });
+		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", {
+			op: "send",
+			to: "0-Done",
+			message: "ping",
+		});
 		expect(result.details?.delivered ?? []).toEqual([]);
 		await expectIrcDegraded(cwd, sessionId, "peer_unreachable");
 	});
 
 	it("unknown peer reports notFound and latches canonical degradation for the active IRC run", async () => {
 		const { cwd, sessionId, runId } = await seedActiveIrcRun();
-		const mainRegistration = registry.register({ id: "0-Main", displayName: "main", kind: "main", session: makeFakeSession().session });
+		const mainRegistration = registry.register({
+			id: "0-Main",
+			displayName: "main",
+			kind: "main",
+			session: makeFakeSession().session,
+		});
 		const coordinator = new RalplanIrcCoordinator({ registry, cwd });
 		coordinator.startPass({ parentSessionId: sessionId, runId, stageN: 1, cursorGeneration: 1 });
-		coordinator.bindRegisteredChild("0-Main", { parentSessionId: sessionId, runId, role: "planner", token: mainRegistration.token });
+		coordinator.bindRegisteredChild("0-Main", {
+			parentSessionId: sessionId,
+			runId,
+			role: "planner",
+			token: mainRegistration.token,
+		});
 
-		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", { op: "send", to: "ghost", message: "ping" });
+		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", {
+			op: "send",
+			to: "ghost",
+			message: "ping",
+		});
 		expect(result.details?.notFound).toEqual(["ghost"]);
 		await expectIrcDegraded(cwd, sessionId, "peer_unreachable");
 	});
@@ -322,18 +405,49 @@ describe("IrcTool", () => {
 		const { cwd, sessionId, runId } = await seedActiveIrcRun();
 		const main = makeFakeSession();
 		const stuck = { respondAsBackground: () => new Promise(() => {}) } as unknown as AgentSession;
-		const mainRegistration = registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+		const mainRegistration = registry.register({
+			id: "0-Main",
+			displayName: "main",
+			kind: "main",
+			session: main.session,
+		});
 		const stuckRegistration = registry.register({ id: "0-Stuck", displayName: "stuck", kind: "sub", session: stuck });
 		const coordinator = new RalplanIrcCoordinator({ registry, cwd, sendTimeoutMs: 5 });
 		coordinator.startPass({ parentSessionId: sessionId, runId, stageN: 1, cursorGeneration: 1 });
-		coordinator.bindRegisteredChild("0-Main", { parentSessionId: sessionId, runId, role: "planner", token: mainRegistration.token });
-		coordinator.bindRegisteredChild("0-Stuck", { parentSessionId: sessionId, runId, role: "critic", token: stuckRegistration.token });
+		coordinator.bindRegisteredChild("0-Main", {
+			parentSessionId: sessionId,
+			runId,
+			role: "planner",
+			token: mainRegistration.token,
+		});
+		coordinator.bindRegisteredChild("0-Stuck", {
+			parentSessionId: sessionId,
+			runId,
+			role: "critic",
+			token: stuckRegistration.token,
+		});
 
-		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", { op: "send", to: "0-Stuck", message: "ping" });
+		const result = await new IrcTool(makeToolSession(registry, "0-Main", cwd)).execute("x", {
+			op: "send",
+			to: "0-Stuck",
+			message: "ping",
+		});
 		expect(result.details?.failed).toEqual([{ id: "0-Stuck", error: "Ralplan IRC send timed out." }]);
 		await expectIrcDegraded(cwd, sessionId, "send_timeout");
 	});
 	it("unbound generic IRC send preserves existing behavior and has no internal timer", async () => {
-		const main = makeFakeSession(), peer = makeFakeSession(); const gate = peer.gateNextCall(); registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session }); registry.register({ id: "0-Peer", displayName: "peer", kind: "sub", session: peer.session }); const pending = new IrcTool(makeToolSession(registry, "0-Main")).execute("x", { op: "send", to: "0-Peer", message: "ping" }); await Bun.sleep(10); gate.release(); expect((await pending).details?.delivered).toEqual(["0-Peer"]);
+		const main = makeFakeSession(),
+			peer = makeFakeSession();
+		const gate = peer.gateNextCall();
+		registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+		registry.register({ id: "0-Peer", displayName: "peer", kind: "sub", session: peer.session });
+		const pending = new IrcTool(makeToolSession(registry, "0-Main")).execute("x", {
+			op: "send",
+			to: "0-Peer",
+			message: "ping",
+		});
+		await Bun.sleep(10);
+		gate.release();
+		expect((await pending).details?.delivered).toEqual(["0-Peer"]);
 	});
 });

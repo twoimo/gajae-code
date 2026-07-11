@@ -14,10 +14,26 @@ async function root(): Promise<string> {
 }
 
 async function writePlanner(cwd: string, id: string, resumable: boolean) {
-	return await runNativeRalplanCommand([
-		"--write", "--stage", "planner", "--stage_n", "1", "--artifact", "# Plan", "--run-id", "role-run", "--session-id", "parent-session",
-		"--planner-id", id, "--planner-resumable", String(resumable),
-	], cwd);
+	return await runNativeRalplanCommand(
+		[
+			"--write",
+			"--stage",
+			"planner",
+			"--stage_n",
+			"1",
+			"--artifact",
+			"# Plan",
+			"--run-id",
+			"role-run",
+			"--session-id",
+			"parent-session",
+			"--planner-id",
+			id,
+			"--planner-resumable",
+			String(resumable),
+		],
+		cwd,
+	);
 }
 
 afterEach(async () => {
@@ -51,10 +67,26 @@ describe("ralplan IRC role first-write metadata", () => {
 
 	it("rejects mismatched role metadata before creating state or artifacts", async () => {
 		const cwd = await root();
-		const result = await runNativeRalplanCommand([
-			"--write", "--stage", "critic", "--stage_n", "3", "--artifact", "# Critic", "--run-id", "role-run", "--session-id", "parent-session",
-			"--architect-id", "1-Architect", "--architect-resumable", "true",
-		], cwd);
+		const result = await runNativeRalplanCommand(
+			[
+				"--write",
+				"--stage",
+				"critic",
+				"--stage_n",
+				"3",
+				"--artifact",
+				"# Critic",
+				"--run-id",
+				"role-run",
+				"--session-id",
+				"parent-session",
+				"--architect-id",
+				"1-Architect",
+				"--architect-resumable",
+				"true",
+			],
+			cwd,
+		);
 		expect(result.status).toBe(2);
 		expect(result.stderr).toContain("critic-stage write");
 		expect(await fs.readdir(cwd)).toEqual([]);

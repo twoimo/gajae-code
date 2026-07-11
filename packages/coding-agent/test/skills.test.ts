@@ -522,18 +522,30 @@ description: Skill loaded from a tilde-expanded custom directory.
 			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ralplan-irc-continuation-"));
 			const sessionId = "canonical-irc-session";
 			try {
-				const seeded = await runNativeRalplanCommand(["--session-id", sessionId, "--irc", "--json", "seed IRC run"], cwd);
+				const seeded = await runNativeRalplanCommand(
+					["--session-id", sessionId, "--irc", "--json", "seed IRC run"],
+					cwd,
+				);
 				expect(seeded.status).toBe(0);
 				const seededRunId = (JSON.parse(seeded.stdout ?? "{}") as { run_id?: string }).run_id;
 				expect(seededRunId).toBe(sessionId);
 
 				const built = await buildSkillPromptMessage(
-					{ ...makeSkill("ralplan"), filePath: "embedded:gjc/skills/ralplan/SKILL.md", content: "---\nname: ralplan\n---\n# Ralplan" },
+					{
+						...makeSkill("ralplan"),
+						filePath: "embedded:gjc/skills/ralplan/SKILL.md",
+						content: "---\nname: ralplan\n---\n# Ralplan",
+					},
 					"continue the run",
 					{ cwd, sessionId },
 				);
 				const activation = built.details.workflowActivation;
-				expect(activation).toMatchObject({ runId: seededRunId, ircRequested: false, ircActive: true, degraded: false });
+				expect(activation).toMatchObject({
+					runId: seededRunId,
+					ircRequested: false,
+					ircActive: true,
+					degraded: false,
+				});
 				expect(built.message).toContain("Ralplan IRC Consensus Protocol");
 				const canonical = JSON.parse(await fs.readFile(modeStatePath(cwd, sessionId, "ralplan"), "utf8"));
 				expect(isValidatedRalplanWorkflowActivation(activation, sessionId, canonical)).toBe(true);

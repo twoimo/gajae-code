@@ -20,18 +20,18 @@ import type { Model, Usage } from "@gajae-code/ai";
 import { $env, prompt, Snowflake } from "@gajae-code/utils";
 import type { ToolSession } from "..";
 import { AsyncJobManager } from "../async";
+import { resolveAgentModelPatterns } from "../config/model-resolver";
+import { getRalplanIrcCoordinator, RalplanIrcCoordinator } from "../gjc-runtime/ralplan-irc-coordinator";
+import { degradeRalplanIrcActivation } from "../gjc-runtime/ralplan-runtime";
 import { modeStatePath } from "../gjc-runtime/session-layout";
 import { readExistingStateForMutation } from "../gjc-runtime/state-writer";
-import { degradeRalplanIrcActivation } from "../gjc-runtime/ralplan-runtime";
-import { getRalplanIrcCoordinator, RalplanIrcCoordinator } from "../gjc-runtime/ralplan-irc-coordinator";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
-import type { ForkContextSeed } from "../session/agent-session";
 import type { CreateAgentSessionOptions } from "../sdk";
+import type { ForkContextSeed } from "../session/agent-session";
 import { formatBytes, formatDuration } from "../tools/render-utils";
 import {
 	type AgentDefinition,
@@ -40,12 +40,12 @@ import {
 	type ForkContextPolicy,
 	getTaskSchema,
 	hasCompleteAggregateUsageCostBreakdown,
+	type RalplanIrcTaskContext,
 	type SingleResult,
 	type TaskItem,
 	type TaskParams,
 	type TaskToolDetails,
 	type TaskToolSchemaInstance,
-	type RalplanIrcTaskContext,
 } from "./types";
 
 // Import review tools for side effects (registers subagent tool handlers)
@@ -245,11 +245,11 @@ export function renderRalplanIrcFirstWriteMetadata(
 	agentId: string,
 	resumable: boolean,
 ): string {
-
 	const roleFlag = `--${context.role}`;
-	const criticPrelude = context.role === "critic"
-		? " Before finalizing, send the required IRC DM to the Planner and await its delivery acknowledgement; the parent holds role finalization until that gate opens."
-		: "";
+	const criticPrelude =
+		context.role === "critic"
+			? " Before finalizing, send the required IRC DM to the Planner and await its delivery acknowledgement; the parent holds role finalization until that gate opens."
+			: "";
 	return `<ralplan-irc-first-write-metadata>Validated runtime metadata. On your FIRST gjc ralplan --write, include exactly ${roleFlag}-id ${agentId} ${roleFlag}-resumable ${resumable}. Do not omit, alter, or claim metadata not shown here.${criticPrelude}</ralplan-irc-first-write-metadata>`;
 }
 
@@ -1046,7 +1046,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 			: agent;
 
-
 		// Apply per-agent model override from settings (highest priority)
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
 		const settingsModelOverride = agentModelOverrides[agentName];
@@ -1362,25 +1361,41 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				};
 				const taskSessionFile = overrides?.sessionFile ?? executionOverrides?.sessionFiles?.get(task.id) ?? null;
 				const childCapabilities = { resumable: taskSessionFile !== null };
-				const ralplanIrcLaunchAuthorization = await resolveRalplanIrcLaunchAuthorization(this.session, effectiveAgent);
+				const ralplanIrcLaunchAuthorization = await resolveRalplanIrcLaunchAuthorization(
+					this.session,
+					effectiveAgent,
+				);
 				const ralplanIrcTaskContext = ralplanIrcLaunchAuthorization.context;
 				const onAgentRegistered = ralplanIrcTaskContext
-					? (registration: NonNullable<CreateAgentSessionOptions["onAgentRegistered"]> extends (arg: infer T) => unknown ? T : never) => {
-						const bound = getRalplanIrcCoordinator(this.session.agentRegistry!)?.bindRegisteredChild(registration.id, {
-							parentSessionId: ralplanIrcTaskContext.parentSessionId,
-							runId: ralplanIrcTaskContext.runId,
-							role: ralplanIrcTaskContext.role,
-							token: registration.token,
-						});
-						if (!bound) throw new Error("Ralplan IRC child binding was rejected; refusing generic child launch.");
-						this.options.onAgentRegistered?.(registration);
-					}
+					? (
+							registration: NonNullable<CreateAgentSessionOptions["onAgentRegistered"]> extends (
+								arg: infer T,
+							) => unknown
+								? T
+								: never,
+						) => {
+							const bound = getRalplanIrcCoordinator(this.session.agentRegistry!)?.bindRegisteredChild(
+								registration.id,
+								{
+									parentSessionId: ralplanIrcTaskContext.parentSessionId,
+									runId: ralplanIrcTaskContext.runId,
+									role: ralplanIrcTaskContext.role,
+									token: registration.token,
+								},
+							);
+							if (!bound)
+								throw new Error("Ralplan IRC child binding was rejected; refusing generic child launch.");
+							this.options.onAgentRegistered?.(registration);
+						}
 					: this.options.onAgentRegistered;
 				const ralplanIrcFirstWriteMetadata = ralplanIrcTaskContext
 					? renderRalplanIrcFirstWriteMetadata(ralplanIrcTaskContext, task.id, childCapabilities.resumable)
 					: undefined;
 				const taskAgent = ralplanIrcFirstWriteMetadata
-					? { ...effectiveAgent, systemPrompt: `${effectiveAgent.systemPrompt}\n\n${ralplanIrcFirstWriteMetadata}` }
+					? {
+							...effectiveAgent,
+							systemPrompt: `${effectiveAgent.systemPrompt}\n\n${ralplanIrcFirstWriteMetadata}`,
+						}
 					: effectiveAgent;
 				if (!isIsolated) {
 					const result = await runSubprocess({

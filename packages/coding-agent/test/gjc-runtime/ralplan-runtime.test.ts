@@ -16,8 +16,8 @@ import {
 	modeStatePath,
 	sessionPlansDir,
 } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { readVisibleSkillActiveState } from "@gajae-code/coding-agent/skill-state/active-state";
 import { runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
+import { readVisibleSkillActiveState } from "@gajae-code/coding-agent/skill-state/active-state";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];
@@ -117,19 +117,31 @@ describe("native gjc ralplan runtime — consensus handoff", () => {
 		const root = await tempDir();
 		const first = await runNativeRalplanCommand(["--irc", "--json", "task"], root);
 		const runId = (JSON.parse(first.stdout ?? "{}") as { run_id: string }).run_id;
-		await runNativeRalplanCommand(["--write", "--stage", "critic", "--stage_n", "3", "--artifact", "# Critic", "--run-id", runId], root);
+		await runNativeRalplanCommand(
+			["--write", "--stage", "critic", "--stage_n", "3", "--artifact", "# Critic", "--run-id", runId],
+			root,
+		);
 
 		const repeated = await runNativeRalplanCommand(["--irc", "--json", "resume task"], root);
 		expect(repeated.status).toBe(0);
 		const state = JSON.parse(await fs.readFile(ralplanStatePath(root), "utf-8"));
-		expect(state).toMatchObject({ run_id: runId, active: true, current_phase: "critic", irc: true, irc_degraded: false });
+		expect(state).toMatchObject({
+			run_id: runId,
+			active: true,
+			current_phase: "critic",
+			irc: true,
+			irc_degraded: false,
+		});
 	});
 
 	it("preserves the degraded latch and critic phase during repeated IRC activation", async () => {
 		const root = await tempDir();
 		const first = await runNativeRalplanCommand(["--irc", "--json", "task"], root);
 		const runId = (JSON.parse(first.stdout ?? "{}") as { run_id: string }).run_id;
-		await runNativeRalplanCommand(["--write", "--stage", "critic", "--stage_n", "3", "--artifact", "# Critic", "--run-id", runId], root);
+		await runNativeRalplanCommand(
+			["--write", "--stage", "critic", "--stage_n", "3", "--artifact", "# Critic", "--run-id", runId],
+			root,
+		);
 		await degradeRalplanIrcActivation({ cwd: root, sessionId: TEST_SESSION_ID, runId, reason: "first_reason" });
 
 		await runNativeRalplanCommand(["--irc", "resume task"], root);
@@ -141,7 +153,10 @@ describe("native gjc ralplan runtime — consensus handoff", () => {
 		const root = await tempDir();
 		const first = await runNativeRalplanCommand(["--json", "task"], root);
 		const oldRunId = (JSON.parse(first.stdout ?? "{}") as { run_id: string }).run_id;
-		await runNativeRalplanCommand(["--write", "--stage", "final", "--stage_n", "6", "--artifact", "# Final", "--run-id", oldRunId], root);
+		await runNativeRalplanCommand(
+			["--write", "--stage", "final", "--stage_n", "6", "--artifact", "# Final", "--run-id", oldRunId],
+			root,
+		);
 
 		const second = await runNativeRalplanCommand(["--json", "new task"], root);
 		const newRunId = (JSON.parse(second.stdout ?? "{}") as { run_id: string }).run_id;
@@ -332,21 +347,45 @@ describe("native gjc ralplan runtime — --write artifact path", () => {
 	it("merges role metadata when an identical artifact write is deduplicated", async () => {
 		const root = await tempDir();
 		const first = await runNativeRalplanCommand(
-			["--write", "--stage", "architect", "--stage_n", "2", "--artifact", "# Architecture", "--run-id", "dedup-roles", "--json"],
+			[
+				"--write",
+				"--stage",
+				"architect",
+				"--stage_n",
+				"2",
+				"--artifact",
+				"# Architecture",
+				"--run-id",
+				"dedup-roles",
+				"--json",
+			],
 			root,
 		);
 		expect(first.status).toBe(0);
 		const retry = await runNativeRalplanCommand(
 			[
-				"--write", "--stage", "architect", "--stage_n", "2", "--artifact", "# Architecture", "--run-id", "dedup-roles",
-				"--architect-id", "1-Architect", "--architect-resumable", "true", "--json",
+				"--write",
+				"--stage",
+				"architect",
+				"--stage_n",
+				"2",
+				"--artifact",
+				"# Architecture",
+				"--run-id",
+				"dedup-roles",
+				"--architect-id",
+				"1-Architect",
+				"--architect-resumable",
+				"true",
+				"--json",
 			],
 			root,
 		);
 		expect(JSON.parse(retry.stdout ?? "{}")).toMatchObject({ deduplicated: true });
 		const state = JSON.parse(await fs.readFile(ralplanStatePath(root), "utf-8"));
 		expect(state).toMatchObject({
-			architect_subagent_id: "1-Architect", architect_resumable: true,
+			architect_subagent_id: "1-Architect",
+			architect_resumable: true,
 		});
 	});
 
@@ -848,7 +887,21 @@ describe("native gjc ralplan runtime — persisted Planner state", () => {
 
 	it("makes role metadata write-once while allowing identical duplicate writes", async () => {
 		const root = await tempDir();
-		const initial = ["--write", "--stage", "planner", "--stage_n", "1", "--artifact", "# Plan", "--run-id", "write-once", "--planner-id", "0-Planner", "--planner-resumable", "true"];
+		const initial = [
+			"--write",
+			"--stage",
+			"planner",
+			"--stage_n",
+			"1",
+			"--artifact",
+			"# Plan",
+			"--run-id",
+			"write-once",
+			"--planner-id",
+			"0-Planner",
+			"--planner-resumable",
+			"true",
+		];
 		expect((await runNativeRalplanCommand(initial, root)).status).toBe(0);
 		expect((await runNativeRalplanCommand(initial, root)).status).toBe(0);
 		const conflict = await runNativeRalplanCommand([...initial.slice(0, -1), "false"], root);
@@ -1282,18 +1335,29 @@ describe("native gjc ralplan runtime — IRC activation", () => {
 
 	it("prior CLI handoff is idempotently reused by later IRC activation", async () => {
 		const root = await tempDir();
-		const first = await runNativeRalplanCommand(["--session-id", "shared-session", "--json", "prior CLI handoff"], root);
+		const first = await runNativeRalplanCommand(
+			["--session-id", "shared-session", "--json", "prior CLI handoff"],
+			root,
+		);
 		expect(first.status).toBe(0);
 		const firstReceipt = JSON.parse(first.stdout ?? "{}") as { run_id: string };
 
-		const second = await runNativeRalplanCommand(["--session-id", "shared-session", "--irc", "--json", "activate IRC"], root);
+		const second = await runNativeRalplanCommand(
+			["--session-id", "shared-session", "--irc", "--json", "activate IRC"],
+			root,
+		);
 		expect(second.status).toBe(0);
 		const secondReceipt = JSON.parse(second.stdout ?? "{}") as { run_id: string; irc?: boolean };
 		expect(secondReceipt).toMatchObject({ run_id: firstReceipt.run_id, irc: true });
 
 		const statePath = modeStatePath(root, "shared-session", "ralplan");
 		const state = JSON.parse(await fs.readFile(statePath, "utf-8")) as Record<string, unknown>;
-		expect(state).toMatchObject({ run_id: firstReceipt.run_id, task: "activate IRC", irc: true, irc_degraded: false });
+		expect(state).toMatchObject({
+			run_id: firstReceipt.run_id,
+			task: "activate IRC",
+			irc: true,
+			irc_degraded: false,
+		});
 	});
 
 	it("pre-pass IRC activation degradation latches without a stage or cursor", async () => {
@@ -1314,20 +1378,52 @@ describe("native gjc ralplan runtime — IRC activation", () => {
 
 	it("first architect and critic writes persist strict runtime-derived metadata", async () => {
 		const root = await tempDir();
-		const architect = await runNativeRalplanCommand([
-			"--write", "--stage", "architect", "--stage_n", "1", "--artifact", "# Architecture", "--run-id", "roles",
-			"--architect-id", "1-Architect", "--architect-resumable", "true", "--json",
-		], root);
+		const architect = await runNativeRalplanCommand(
+			[
+				"--write",
+				"--stage",
+				"architect",
+				"--stage_n",
+				"1",
+				"--artifact",
+				"# Architecture",
+				"--run-id",
+				"roles",
+				"--architect-id",
+				"1-Architect",
+				"--architect-resumable",
+				"true",
+				"--json",
+			],
+			root,
+		);
 		expect(architect.status).toBe(0);
-		const critic = await runNativeRalplanCommand([
-			"--write", "--stage", "critic", "--stage_n", "2", "--artifact", "# Critic", "--run-id", "roles",
-			"--critic-id", "2-Critic", "--critic-resumable", "false", "--json",
-		], root);
+		const critic = await runNativeRalplanCommand(
+			[
+				"--write",
+				"--stage",
+				"critic",
+				"--stage_n",
+				"2",
+				"--artifact",
+				"# Critic",
+				"--run-id",
+				"roles",
+				"--critic-id",
+				"2-Critic",
+				"--critic-resumable",
+				"false",
+				"--json",
+			],
+			root,
+		);
 		expect(critic.status).toBe(0);
 		const state = JSON.parse(await fs.readFile(ralplanStatePath(root), "utf-8"));
 		expect(state).toMatchObject({
-			architect_subagent_id: "1-Architect", architect_resumable: true,
-			critic_subagent_id: "2-Critic", critic_resumable: false,
+			architect_subagent_id: "1-Architect",
+			architect_resumable: true,
+			critic_subagent_id: "2-Critic",
+			critic_resumable: false,
 		});
 	});
 
@@ -1348,7 +1444,17 @@ describe("native gjc ralplan runtime — IRC activation", () => {
 		expect(lockWrite.status).toBe(0);
 
 		const secondWrite = await runNativeRalplanCommand(
-			["--write", "--stage", "deliberation", "--stage_n", "2", "--artifact", "# Deliberation 2", "--run-id", "delib"],
+			[
+				"--write",
+				"--stage",
+				"deliberation",
+				"--stage_n",
+				"2",
+				"--artifact",
+				"# Deliberation 2",
+				"--run-id",
+				"delib",
+			],
 			root,
 		);
 		expect(secondWrite.status).toBe(0);
@@ -1360,27 +1466,58 @@ describe("native gjc ralplan runtime — IRC activation", () => {
 		const root = await tempDir();
 		const seeded = await runNativeRalplanCommand(["--irc", "--json", "task"], root);
 		const { run_id: runId } = JSON.parse(seeded.stdout ?? "{}") as { run_id: string };
-		await degradeRalplanIrcPass({ cwd: root, sessionId: TEST_SESSION_ID, runId, stageN: 3, reason: "delivery_failed" });
+		await degradeRalplanIrcPass({
+			cwd: root,
+			sessionId: TEST_SESSION_ID,
+			runId,
+			stageN: 3,
+			reason: "delivery_failed",
+		});
 		await degradeRalplanIrcActivation({ cwd: root, sessionId: TEST_SESSION_ID, runId, reason: "activation_failed" });
 		const state = JSON.parse(await fs.readFile(ralplanStatePath(root), "utf-8"));
-		expect(state).toMatchObject({ irc_degraded: true, irc_degrade_reason: "delivery_failed", irc_degraded_at_stage_n: 3 });
+		expect(state).toMatchObject({
+			irc_degraded: true,
+			irc_degrade_reason: "delivery_failed",
+			irc_degraded_at_stage_n: 3,
+		});
 	});
 
 	it("preserves the first degradation when degradation and role metadata race", async () => {
 		const root = await tempDir();
 		const seeded = await runNativeRalplanCommand(["--irc", "--json", "task"], root);
 		const runId = (JSON.parse(seeded.stdout ?? "{}") as { run_id: string }).run_id;
-		await runNativeRalplanCommand(["--write", "--stage", "architect", "--stage_n", "2", "--artifact", "# Architecture", "--run-id", runId], root);
+		await runNativeRalplanCommand(
+			["--write", "--stage", "architect", "--stage_n", "2", "--artifact", "# Architecture", "--run-id", runId],
+			root,
+		);
 
 		await Promise.all([
 			degradeRalplanIrcActivation({ cwd: root, sessionId: TEST_SESSION_ID, runId, reason: "first_reason" }),
-			runNativeRalplanCommand([
-				"--write", "--stage", "architect", "--stage_n", "2", "--artifact", "# Architecture", "--run-id", runId,
-				"--architect-id", "1-Architect", "--architect-resumable", "true",
-			], root),
+			runNativeRalplanCommand(
+				[
+					"--write",
+					"--stage",
+					"architect",
+					"--stage_n",
+					"2",
+					"--artifact",
+					"# Architecture",
+					"--run-id",
+					runId,
+					"--architect-id",
+					"1-Architect",
+					"--architect-resumable",
+					"true",
+				],
+				root,
+			),
 		]);
 		const state = JSON.parse(await fs.readFile(ralplanStatePath(root), "utf-8"));
-		expect(state).toMatchObject({ irc_degraded: true, irc_degrade_reason: "first_reason", architect_subagent_id: "1-Architect" });
+		expect(state).toMatchObject({
+			irc_degraded: true,
+			irc_degrade_reason: "first_reason",
+			architect_subagent_id: "1-Architect",
+		});
 	});
 
 	it("keeps the first degradation reason and timestamp under concurrent degradation", async () => {
@@ -1403,7 +1540,9 @@ describe("native gjc ralplan runtime — IRC activation", () => {
 		}
 		expect(typeof state.irc_degraded_at).toBe("string");
 		// The latch must survive a subsequent explicit attempt with a different reason.
-		await degradeRalplanIrcActivation({ cwd: root, sessionId: TEST_SESSION_ID, runId, reason: "third_reason" }).catch(() => {});
+		await degradeRalplanIrcActivation({ cwd: root, sessionId: TEST_SESSION_ID, runId, reason: "third_reason" }).catch(
+			() => {},
+		);
 		const after = JSON.parse(await fs.readFile(ralplanStatePath(root), "utf-8"));
 		expect(after.irc_degrade_reason).toBe(winner);
 	});

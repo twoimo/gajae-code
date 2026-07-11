@@ -28,7 +28,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
-import { createAgentSession, discoverAuthStorage, type CreateAgentSessionOptions } from "../sdk";
+import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AgentSession, AgentSessionEvent, ForkContextSeed } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
 import type { AuthStorage } from "../session/auth-storage";
@@ -51,13 +51,13 @@ import {
 	MAX_OUTPUT_BYTES,
 	MAX_OUTPUT_LINES,
 	type ModelSubstitutionWarning,
+	type RalplanIrcTaskContext,
 	type ReviewFinding,
 	type SingleResult,
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	type TaskToolDetails,
-	type RalplanIrcTaskContext,
 } from "./types";
 
 /** Agent event types to forward for progress tracking. */

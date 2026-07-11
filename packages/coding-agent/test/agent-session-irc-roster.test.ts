@@ -29,12 +29,14 @@ afterEach(async () => {
 	await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
 });
 
-function createHarness(options: {
-	sessionManager?: SessionManager;
-	model?: MockModel;
-	getApiKey?: () => Promise<string>;
-	retryEnabled?: boolean;
-} = {}): Harness {
+function createHarness(
+	options: {
+		sessionManager?: SessionManager;
+		model?: MockModel;
+		getApiKey?: () => Promise<string>;
+		retryEnabled?: boolean;
+	} = {},
+): Harness {
 	const model = options.model ?? createMockModel({ handler: () => ({ content: ["ok"] }) });
 	const snapshots: Harness["snapshots"] = [];
 	const registry = new AgentRegistry();
@@ -207,7 +209,9 @@ describe("AgentSession IRC roster delivery", () => {
 	it("releases a normal-turn roster claim after a resolving aborted outcome", async () => {
 		let abort = true;
 		const harness = createHarness({
-			model: createMockModel({ handler: () => (abort ? { content: ["aborted"], stopReason: "aborted" } : { content: ["ok"] }) }),
+			model: createMockModel({
+				handler: () => (abort ? { content: ["aborted"], stopReason: "aborted" } : { content: ["ok"] }),
+			}),
 		});
 		addPeer(harness.registry);
 

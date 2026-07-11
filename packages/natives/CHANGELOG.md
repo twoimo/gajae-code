@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Preserved two-cell terminal width for Hangul Filler (U+3164), VS16 emoji-presentation graphemes, and emoji-modifier sequences while aligning TUI display-width measurement with native wrapping and truncation (#1979).
 
 ## [0.9.1] - 2026-07-08
 

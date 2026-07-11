@@ -166,7 +166,17 @@ export const WORKFLOW_MANIFEST: Record<CanonicalGjcWorkflowSkill, SkillManifest>
 	}),
 	ralplan: manifest({
 		skill: "ralplan",
-		states: ["planner", "architect", "critic", "deliberation", "revision", "post-interview", "adr", "final", "handoff"],
+		states: [
+			"planner",
+			"architect",
+			"critic",
+			"deliberation",
+			"revision",
+			"post-interview",
+			"adr",
+			"final",
+			"handoff",
+		],
 		terminalStates: ["final", "handoff"],
 		transitions: [
 			{ from: "planner", to: "architect", verb: "write-artifact" },
@@ -200,7 +210,16 @@ export const WORKFLOW_MANIFEST: Record<CanonicalGjcWorkflowSkill, SkillManifest>
 			{
 				name: "stage",
 				type: "enum",
-				enumValues: ["planner", "architect", "critic", "deliberation", "revision", "post-interview", "adr", "final"],
+				enumValues: [
+					"planner",
+					"architect",
+					"critic",
+					"deliberation",
+					"revision",
+					"post-interview",
+					"adr",
+					"final",
+				],
 				appliesToVerbs: ["write-artifact"],
 			},
 			{ name: "stage_n", type: "number", appliesToVerbs: ["write-artifact"] },

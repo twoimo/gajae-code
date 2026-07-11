@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
+import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import type { RalplanIrcLifecycleEvent } from "@gajae-code/coding-agent/gjc-runtime/ralplan-irc-coordinator";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
 import { InteractiveMode } from "@gajae-code/coding-agent/modes/interactive-mode";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
+import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
 import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
@@ -67,7 +67,17 @@ describe("interactive ralplan IRC sidebar lifecycle", () => {
 	});
 
 	it("non-interactive --irc records deliberation without auto-opening the IRC sidebar", () => {
-		mode.ircLedger.observe({ observationId: "non-interactive", kind: "incoming", from: "a", to: "b", text: "recorded", timestamp: Date.now() }, false);
+		mode.ircLedger.observe(
+			{
+				observationId: "non-interactive",
+				kind: "incoming",
+				from: "a",
+				to: "b",
+				text: "recorded",
+				timestamp: Date.now(),
+			},
+			false,
+		);
 		expect(mode.ircLedger.getSidebarRecords()).toHaveLength(1);
 		expect(sidebar().visible).toBe(false);
 	});
@@ -89,6 +99,13 @@ describe("interactive ralplan IRC sidebar lifecycle", () => {
 		notify?.(lifecycle("close"));
 		expect(sidebar().visible).toBe(false);
 		notify?.(lifecycle("open"));
+		mode.resetIrcSidebarSession();
+		expect(sidebar().visible).toBe(false);
+	});
+
+	it("logical session reset clears manually requested sidebar visibility", () => {
+		mode.toggleIrcSidebar();
+		expect(sidebar().visible).toBe(true);
 		mode.resetIrcSidebarSession();
 		expect(sidebar().visible).toBe(false);
 	});

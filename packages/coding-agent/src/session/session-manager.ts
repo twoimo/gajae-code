@@ -1,7 +1,9 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@gajae-code/agent-core";
+import { type AgentMessage, canContinuePersistedHistory } from "@gajae-code/agent-core";
 import type {
 	ImageContent,
 	Message,
@@ -61,7 +63,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
-import type { SessionStorage, SessionStorageWriter } from "./session-storage";
+import type { SessionStorage, SessionStorageStat, SessionStorageWriter } from "./session-storage";
 import { FileSessionStorage, MemorySessionStorage } from "./session-storage";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -143,6 +145,39 @@ export interface SessionMessageEntry extends SessionEntryBase {
 	 *  content-addressed blobs after compaction. The marker is entry-level session
 	 *  metadata (not a message field) so strict message types stay intact. */
 	evictedContent?: EvictedContentMarker;
+}
+
+const sessionMessageEntryIds = new WeakMap<object, string>();
+const sessionMessageViewportAnchorIds = new WeakMap<object, string>();
+
+export function associateSessionMessageEntryId(message: AgentMessage, entryId: string): void {
+	sessionMessageEntryIds.set(message, entryId);
+}
+
+export function getSessionMessageEntryId(message: AgentMessage): string | undefined {
+	return sessionMessageEntryIds.get(message);
+}
+
+export function associateSessionMessageViewportAnchorId(message: AgentMessage, anchorId: string): void {
+	sessionMessageViewportAnchorIds.set(message, anchorId);
+}
+
+export function getSessionMessageViewportAnchorId(message: AgentMessage): string | undefined {
+	return sessionMessageViewportAnchorIds.get(message);
+}
+
+export function transferSessionMessageIdentity(source: AgentMessage[], target: AgentMessage[]): void {
+	if (source.length !== target.length) {
+		throw new Error(
+			`Cannot transfer session message identity across ${source.length} source and ${target.length} target messages`,
+		);
+	}
+	for (let index = 0; index < source.length; index++) {
+		const entryId = getSessionMessageEntryId(source[index]);
+		if (entryId) associateSessionMessageEntryId(target[index], entryId);
+		const anchorId = getSessionMessageViewportAnchorId(source[index]);
+		if (anchorId) associateSessionMessageViewportAnchorId(target[index], anchorId);
+	}
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
@@ -332,6 +367,48 @@ export interface SessionContext {
 	modeData?: Record<string, unknown>;
 }
 
+/** Immutable fingerprint captured during read-only resume inspection. */
+export interface ResumeSessionIdentity {
+	canonicalPath: string;
+	sessionId: string;
+	dev: bigint;
+	ino: bigint;
+	size: number;
+	mtimeMs: number;
+	mtimeNs: bigint;
+	sha256: string;
+}
+
+export interface ResumeTailResumable {
+	kind: "resumable";
+	identity: ResumeSessionIdentity;
+}
+
+export interface ResumeTailTerminal {
+	kind: "terminal";
+	identity: ResumeSessionIdentity;
+}
+
+export interface ResumeTailError {
+	kind: "error";
+	reason: "missing" | "malformed" | "unstable" | "read-failed";
+}
+
+export type ResumeTailInspection = ResumeTailResumable | ResumeTailTerminal | ResumeTailError;
+
+export interface StrictSessionOpenSuccess {
+	kind: "opened";
+	manager: SessionManager;
+}
+
+export interface StrictSessionOpenFailure {
+	kind: "error";
+	reason: ResumeTailError["reason"] | "identity-mismatch";
+}
+
+/** Result of opening an inspected session without create-or-rewrite fallback. */
+export type StrictSessionOpenResult = StrictSessionOpenSuccess | StrictSessionOpenFailure;
+
 export interface SessionInfo {
 	path: string;
 	id: string;
@@ -515,6 +592,17 @@ function getDefaultSessionDirName(cwd: string): { encodedDirName: string; resolv
 			? encodeRelativeSessionDirName("-tmp", tempRoot, canonicalCwd)
 			: encodeLegacyAbsoluteSessionDirName(canonicalCwd);
 	return { encodedDirName, resolvedCwd };
+}
+
+/** Default and legacy directory candidates for maintenance-free resume discovery. */
+function getReadOnlyDefaultSessionDirs(cwd: string, sessionsRoot: string = getSessionsDir()): string[] {
+	const { encodedDirName, resolvedCwd } = getDefaultSessionDirName(cwd);
+	const canonicalCwd = resolveEquivalentPath(resolvedCwd);
+	return [
+		path.join(sessionsRoot, encodedDirName),
+		path.join(sessionsRoot, encodeLegacyAbsoluteSessionDirName(canonicalCwd)),
+		path.join(sessionsRoot, encodeLegacyAbsoluteSessionDirName(resolvedCwd)),
+	].filter((dir, index, dirs) => dirs.indexOf(dir) === index);
 }
 
 /**
@@ -747,6 +835,7 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
+			associateSessionMessageEntryId(entry.message, entry.id);
 			messages.push(entry.message);
 		} else if (entry.type === "custom_message") {
 			messages.push(
@@ -836,9 +925,11 @@ export function buildSessionContext(
 }
 
 function cloneSessionContext(context: SessionContext): SessionContext {
+	const messages = cloneJsonSemantic(context.messages);
+	transferSessionMessageIdentity(context.messages, messages);
 	return {
 		...context,
-		messages: cloneJsonSemantic(context.messages),
+		messages,
 		models: { ...context.models },
 		injectedTtsrRules: [...context.injectedTtsrRules],
 		injectedTtsrRuleRecords: context.injectedTtsrRuleRecords?.map(record => ({ ...record })),
@@ -968,6 +1059,207 @@ export async function loadEntriesFromFile(
 	}
 
 	return entries;
+}
+
+function sameResumeIdentity(left: ResumeSessionIdentity, right: ResumeSessionIdentity): boolean {
+	return (
+		left.canonicalPath === right.canonicalPath &&
+		left.sessionId === right.sessionId &&
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.mtimeNs === right.mtimeNs &&
+		left.sha256 === right.sha256
+	);
+}
+
+function sameResumeStat(left: SessionStorageStat, right: SessionStorageStat): boolean {
+	return (
+		left.isFile &&
+		right.isFile &&
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.mtimeNs === right.mtimeNs
+	);
+}
+
+interface ResumeInspectionSnapshot {
+	identity: ResumeSessionIdentity;
+	entries: FileEntry[];
+	context: SessionContext;
+	migrationApplied: boolean;
+}
+
+function resumeReadFailure(error: unknown, storage: SessionStorage, path: string): ResumeTailError {
+	let missing = isEnoent(error);
+	if (!missing) {
+		try {
+			missing = !storage.existsSync(path);
+		} catch {
+			// Preserve the primary read/stat failure when existence cannot be checked.
+		}
+	}
+	return { kind: "error", reason: missing ? "missing" : "read-failed" };
+}
+
+function hasStrictSessionSchema(entries: FileEntry[]): boolean {
+	for (const entry of entries) {
+		const value = entry as unknown as Record<string, unknown>;
+		if (typeof value.type !== "string") return false;
+		if (value.type === "session") {
+			if (typeof value.id !== "string" || typeof value.cwd !== "string" || typeof value.timestamp !== "string")
+				return false;
+			continue;
+		}
+		if (
+			typeof value.id !== "string" ||
+			(value.parentId !== null && typeof value.parentId !== "string") ||
+			typeof value.timestamp !== "string"
+		) {
+			return false;
+		}
+		switch (value.type) {
+			case "message": {
+				if (typeof value.message !== "object" || value.message === null) return false;
+				const message = value.message as Record<string, unknown>;
+				if (typeof message.role !== "string") return false;
+				break;
+			}
+			case "model_change":
+				if (
+					typeof value.model !== "string" &&
+					!(typeof value.provider === "string" && typeof value.modelId === "string")
+				)
+					return false;
+				break;
+			case "compaction":
+				if (
+					typeof value.summary !== "string" ||
+					typeof value.firstKeptEntryId !== "string" ||
+					typeof value.tokensBefore !== "number"
+				)
+					return false;
+				break;
+			case "branch_summary":
+				if (typeof value.fromId !== "string" || typeof value.summary !== "string") return false;
+				break;
+			case "custom":
+				if (typeof value.customType !== "string") return false;
+				break;
+			case "custom_message":
+				if (
+					typeof value.customType !== "string" ||
+					(typeof value.content !== "string" && !Array.isArray(value.content)) ||
+					typeof value.display !== "boolean"
+				)
+					return false;
+				break;
+			case "label":
+				if (typeof value.targetId !== "string" || (value.label !== undefined && typeof value.label !== "string"))
+					return false;
+				break;
+			case "ttsr_injection":
+				if (!Array.isArray(value.injectedRules) || !value.injectedRules.every(rule => typeof rule === "string"))
+					return false;
+				break;
+			case "mcp_tool_selection":
+				if (
+					!Array.isArray(value.selectedToolNames) ||
+					!value.selectedToolNames.every(name => typeof name === "string")
+				)
+					return false;
+				break;
+			case "session_init":
+				if (
+					typeof value.systemPrompt !== "string" ||
+					typeof value.task !== "string" ||
+					!Array.isArray(value.tools) ||
+					!value.tools.every(tool => typeof tool === "string")
+				)
+					return false;
+				break;
+			case "mode_change":
+				if (typeof value.mode !== "string") return false;
+				break;
+			case "thinking_level_change":
+				if (
+					value.thinkingLevel !== undefined &&
+					value.thinkingLevel !== null &&
+					typeof value.thinkingLevel !== "string"
+				)
+					return false;
+				break;
+			case "service_tier_change":
+				if (value.serviceTier !== null && typeof value.serviceTier !== "string") return false;
+				break;
+			default:
+				return false;
+		}
+	}
+	return true;
+}
+
+function inspectResumeSessionFile(
+	filePath: string,
+	storage: SessionStorage,
+): ResumeInspectionSnapshot | ResumeTailError {
+	const canonicalPath = resolveEquivalentPath(path.resolve(filePath));
+	let before: SessionStorageStat;
+	try {
+		before = storage.statSync(canonicalPath);
+	} catch (error) {
+		return resumeReadFailure(error, storage, canonicalPath);
+	}
+	if (!before.isFile || !storage.readSnapshotSync) {
+		return { kind: "error", reason: "read-failed" };
+	}
+
+	let bytes: Uint8Array;
+	let snapshot: SessionStorageStat;
+	let after: SessionStorageStat;
+	try {
+		const readSnapshot = storage.readSnapshotSync(canonicalPath);
+		bytes = readSnapshot.bytes;
+		snapshot = readSnapshot.stat;
+		after = storage.statSync(canonicalPath);
+	} catch (error) {
+		return resumeReadFailure(error, storage, canonicalPath);
+	}
+	if (!sameResumeStat(before, snapshot) || !sameResumeStat(snapshot, after)) {
+		return { kind: "error", reason: "unstable" };
+	}
+
+	try {
+		const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		for (const line of content.split(/\r?\n/)) {
+			if (line.length === 0) continue;
+			JSON.parse(line);
+		}
+		const entries = parseSessionEntries(content);
+		const header = entries[0] as SessionHeader | undefined;
+		if (header?.type !== "session" || typeof header.id !== "string") {
+			return { kind: "error", reason: "malformed" };
+		}
+		const migrationApplied = migrateToCurrentVersion(entries);
+		if (!hasStrictSessionSchema(entries)) return { kind: "error", reason: "malformed" };
+		const context = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session"));
+		const identity: ResumeSessionIdentity = {
+			canonicalPath,
+			sessionId: header.id,
+			dev: snapshot.dev,
+			ino: snapshot.ino,
+			size: snapshot.size,
+			mtimeMs: snapshot.mtimeMs,
+			mtimeNs: snapshot.mtimeNs,
+			sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+		};
+		return { identity, entries, context, migrationApplied };
+	} catch {
+		return { kind: "error", reason: "malformed" };
+	}
 }
 
 /**
@@ -1605,11 +1897,13 @@ function cloneJsonSemantic<T>(value: T): T {
 }
 
 function cloneAgentMessage<T extends AgentMessage>(message: T): T {
-	return {
+	const cloned = {
 		...message,
 		...("content" in message ? { content: cloneJsonSemantic(message.content) } : {}),
 		...("providerPayload" in message ? { providerPayload: cloneJsonSemantic(message.providerPayload) } : {}),
-	};
+	} as T;
+	transferSessionMessageIdentity([message], [cloned]);
+	return cloned;
 }
 
 function cloneSessionEntry(entry: SessionEntry): SessionEntry {
@@ -2921,6 +3215,26 @@ export class SessionManager {
 		await this.setSessionFile(sessionFile);
 	}
 
+	async #hydrateExistingSession(sessionFile: string, entries: FileEntry[], migrationApplied: boolean): Promise<void> {
+		const header = entries[0] as SessionHeader;
+		this.#sessionFile = path.resolve(sessionFile);
+		this.#sessionId = header.id;
+		this.#sessionName = header.title;
+		this.#titleSource = header.titleSource;
+		this.#needsFullRewriteOnNextPersist = migrationApplied;
+		await resolveBlobRefsInEntries(entries, this.#blobStore);
+		this.#fileEntries = entries;
+		this.#resetResidentTextBlobStore();
+		this.#fileEntries = this.#fileEntries.map(entry =>
+			prepareEntryForResidentSync(entry, this.#residentBlobStores()),
+		);
+		this.sanitizeLoadedOpenAIResponsesReplayMetadata();
+		this.#buildIndex();
+		this.#bumpAllRevisions();
+		this.#flushed = true;
+		this.#ensuredOnDisk = true;
+	}
+
 	/** Initialize with a new session (used by factory methods) */
 	#initNewSession(): void {
 		this.#newSessionSync();
@@ -3874,7 +4188,10 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			message,
 		};
+		associateSessionMessageEntryId(message, entry.id);
 		this.#appendEntry(entry);
+		const residentEntry = this.#byId.get(entry.id);
+		if (residentEntry?.type === "message") transferSessionMessageIdentity([message], [residentEntry.message]);
 		return entry.id;
 	}
 
@@ -4546,6 +4863,9 @@ export class SessionManager {
 			this.#residentBlobStoresForColdRehydrate(),
 		);
 		if (rehydrated !== materialized) this.#coldSpillReadCount += this.#countColdSpillPayloads(entry);
+		if (entry.type === "message" && rehydrated.type === "message") {
+			transferSessionMessageIdentity([entry.message], [rehydrated.message]);
+		}
 		return rehydrated;
 	}
 
@@ -4935,6 +5255,71 @@ export class SessionManager {
 		const manager = new SessionManager(cwd, dir, true, storage);
 		await manager.#initSessionFile(filePath);
 		return manager;
+	}
+
+	/**
+	 * List sessions for the resume picker without recovery or other maintenance writes.
+	 */
+	static async listForResumePickerReadOnly(
+		cwd: string,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<SessionInfo[]> {
+		const dirs = sessionDir ? [sessionDir] : getReadOnlyDefaultSessionDirs(cwd);
+		try {
+			const files = new Set<string>();
+			for (const dir of dirs) {
+				for (const filePath of storage.listFilesSync(dir, "*.jsonl")) files.add(filePath);
+			}
+			return await collectSessionsFromFiles([...files], storage);
+		} catch {
+			return [];
+		}
+	}
+
+	/** Inspect a selected session without acquiring write-capable ownership. */
+	static async inspectSessionTailReadOnly(
+		filePath: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<ResumeTailInspection> {
+		const inspected = inspectResumeSessionFile(filePath, storage);
+		if ("kind" in inspected) return inspected;
+		return canContinuePersistedHistory(inspected.context.messages)
+			? { kind: "resumable", identity: inspected.identity }
+			: { kind: "terminal", identity: inspected.identity };
+	}
+
+	/**
+	 * Main startup code MUST retain the consented inspection identity and branch on
+	 * the returned discriminant; an error result never creates, rewrites, or adopts
+	 * the selected path. Breadcrumb ownership begins only after `kind: "opened"`.
+	 */
+	static async openExistingStrict(
+		identity: ResumeSessionIdentity,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<StrictSessionOpenResult> {
+		const inspected = inspectResumeSessionFile(identity.canonicalPath, storage);
+		if ("kind" in inspected) return inspected;
+		if (!sameResumeIdentity(identity, inspected.identity)) {
+			return { kind: "error", reason: "identity-mismatch" };
+		}
+		const entries = structuredClone(inspected.entries) as FileEntry[];
+		const header = entries[0] as SessionHeader;
+		const dir = sessionDir ?? path.resolve(identity.canonicalPath, "..");
+		const manager = new SessionManager(header.cwd || getProjectDir(), dir, true, storage);
+		await manager.#hydrateExistingSession(identity.canonicalPath, entries, inspected.migrationApplied);
+		const ownershipInspection = inspectResumeSessionFile(identity.canonicalPath, storage);
+		if ("kind" in ownershipInspection) {
+			await manager.close();
+			return ownershipInspection;
+		}
+		if (!sameResumeIdentity(identity, ownershipInspection.identity)) {
+			await manager.close();
+			return { kind: "error", reason: "identity-mismatch" };
+		}
+		writeTerminalBreadcrumb(manager.cwd, identity.canonicalPath);
+		return { kind: "opened", manager };
 	}
 
 	/**

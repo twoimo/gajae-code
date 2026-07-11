@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { getDefaultGjcDefinitions } from "@gajae-code/coding-agent/defaults/gjc-defaults";
-import { getEmbeddedDefaultGjcSkillFragments } from "@gajae-code/coding-agent/defaults/gjc-defaults";
+import {
+	getDefaultGjcDefinitions,
+	getEmbeddedDefaultGjcSkillFragments,
+} from "@gajae-code/coding-agent/defaults/gjc-defaults";
 
 import { getBundledAgent } from "@gajae-code/coding-agent/task/agents";
 
@@ -106,8 +108,12 @@ describe("ralplan decision artifacts", () => {
 			definition => definition.kind === "skill" && definition.name === "ralplan",
 		);
 		const content = ralplan?.content ?? "";
-		expect(content).toContain("--irc`: Enables the validated IRC tri-agent consensus mode. Its parent-scoped `irc-consensus` fragment is loaded lazily only after activation");
-		expect(content).not.toMatch(/respondAsBackground|ralplan_pass_start|ralplan_pass_end|ralplan_report_failure|ralplan_activation_degrade/u);
+		expect(content).toContain(
+			"--irc`: Enables the validated IRC tri-agent consensus mode. Its parent-scoped `irc-consensus` fragment is loaded lazily only after activation",
+		);
+		expect(content).not.toMatch(
+			/respondAsBackground|ralplan_pass_start|ralplan_pass_end|ralplan_report_failure|ralplan_activation_degrade/u,
+		);
 		const fragments = getEmbeddedDefaultGjcSkillFragments("ralplan");
 		expect(fragments).toHaveLength(1);
 		expect(fragments[0]?.relativePath).toBe("skill-fragments/ralplan/irc-consensus.md");

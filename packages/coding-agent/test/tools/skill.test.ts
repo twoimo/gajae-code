@@ -289,10 +289,14 @@ describe("SkillTool", () => {
 
 		const result = await tool.execute("call-1", { name: "ralplan" });
 
-		expect(result.details?.name).toBe("ralplan");
+		expect(result.details).toEqual({
+			name: "ralplan",
+			path: ralplan.filePath,
+			args: undefined,
+			lineCount: 1,
+		});
 		expect(captured).toHaveLength(1);
-		expect(result.details?.workflowActivation).toBeUndefined();
-		expect((captured[0]!.message.content as string)).toContain("Plan");
+		expect(captured[0]!.message.content as string).toContain("Plan");
 		expect(captured[0]!.message.details).toEqual(expect.objectContaining({ name: "ralplan" }));
 	});
 
@@ -523,14 +527,28 @@ describe("SkillTool", () => {
 		const session = createSession(cwd, [ralplan], captured, { getSessionId: () => sessionId });
 		const tool = SkillTool.createIf(session)!;
 		try {
-			await tool.execute("call-irc", { name: "ralplan", args: "--irc dispatch consensus" });
+			const result = await tool.execute("call-irc", { name: "ralplan", args: "--irc dispatch consensus" });
 			expect(captured).toHaveLength(1);
 			const dispatched = captured[0]!.message;
-			expect(dispatched.content).toContain("Ralplan IRC Consensus Protocol");
-			expect(dispatched.details).toEqual(expect.objectContaining({
+			expect(result.details).toEqual({
 				name: "ralplan",
-				workflowActivation: expect.objectContaining({ sessionId, runId: sessionId, ircRequested: true, ircActive: true, degraded: false }),
-			}));
+				path: ralplan.filePath,
+				args: "--irc dispatch consensus",
+				lineCount: 1,
+			});
+			expect(dispatched.content).toContain("Ralplan IRC Consensus Protocol");
+			expect(dispatched.details).toEqual(
+				expect.objectContaining({
+					name: "ralplan",
+					workflowActivation: expect.objectContaining({
+						sessionId,
+						runId: sessionId,
+						ircRequested: true,
+						ircActive: true,
+						degraded: false,
+					}),
+				}),
+			);
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}

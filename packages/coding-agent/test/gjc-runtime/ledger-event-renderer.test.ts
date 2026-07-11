@@ -119,12 +119,14 @@ describe("ledger-event-renderer: ralplan", () => {
 	});
 
 	it("deliberation remains in the current consensus iteration", () => {
-		expect(summarizeRalplanIndex([
-			{ stage: "planner", stageN: 1 },
-			{ stage: "architect", stageN: 1 },
-			{ stage: "deliberation", stageN: 1 },
-			{ stage: "revision", stageN: 2 },
-			{ stage: "deliberation", stageN: 2 },
-		])).toEqual({ iteration: 2, currentStages: ["revision", "deliberation"] });
+		expect(
+			summarizeRalplanIndex([
+				{ stage: "planner", stageN: 1 },
+				{ stage: "architect", stageN: 1 },
+				{ stage: "deliberation", stageN: 1 },
+				{ stage: "revision", stageN: 2 },
+				{ stage: "deliberation", stageN: 2 },
+			]),
+		).toEqual({ iteration: 2, currentStages: ["revision", "deliberation"] });
 	});
 });

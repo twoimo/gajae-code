@@ -1,12 +1,11 @@
-import type { TaskTokenLog } from "@gajae-code/coding-agent/task/types";
-
 import { describe, expect, it } from "bun:test";
 import {
 	adaptTaskTokenLogsToRalplanCacheTurns,
 	compareRalplanCacheTurns,
-	renderRalplanCacheEvidenceForAdr,
 	type RalplanCacheTurn,
+	renderRalplanCacheEvidenceForAdr,
 } from "@gajae-code/coding-agent/gjc-runtime/ralplan-cache-comparison";
+import type { TaskTokenLog } from "@gajae-code/coding-agent/task/types";
 
 function turn(overrides: Partial<RalplanCacheTurn> = {}): RalplanCacheTurn {
 	return {
@@ -29,10 +28,14 @@ function turn(overrides: Partial<RalplanCacheTurn> = {}): RalplanCacheTurn {
 
 function pair(overrides: Partial<RalplanCacheTurn> = {}): RalplanCacheTurn[] {
 	const attemptOrdinal = overrides.attemptOrdinal ?? overrides.turn ?? 1;
-	const attemptId = overrides.attemptId ?? `${overrides.role ?? "architect"}-${overrides.subagentId ?? "architect-1"}-attempt-${attemptOrdinal}`;
-	return [turn({ ...overrides, attemptId, attemptOrdinal }), turn({ ...overrides, attemptId, attemptOrdinal, mode: "legacy", runId: "legacy-run" })];
+	const attemptId =
+		overrides.attemptId ??
+		`${overrides.role ?? "architect"}-${overrides.subagentId ?? "architect-1"}-attempt-${attemptOrdinal}`;
+	return [
+		turn({ ...overrides, attemptId, attemptOrdinal }),
+		turn({ ...overrides, attemptId, attemptOrdinal, mode: "legacy", runId: "legacy-run" }),
+	];
 }
-
 
 describe("ralplan cache comparison", () => {
 	it("selects only comparable second-pass Architect and Critic turns", () => {
@@ -57,24 +60,47 @@ describe("ralplan cache comparison", () => {
 	});
 
 	it("does not backfill an explicit retry slot with later favorable pairs", () => {
-		const evidence = compareRalplanCacheTurns([
-			...pair({ isRetry: true, attemptOrdinal: 1, turn: 1 }),
-			...pair({ attemptOrdinal: 2, turn: 2, cacheReadTokens: 90 }),
-			...pair({ attemptOrdinal: 3, turn: 3, cacheReadTokens: 90 }),
-		], 1);
+		const evidence = compareRalplanCacheTurns(
+			[
+				...pair({ isRetry: true, attemptOrdinal: 1, turn: 1 }),
+				...pair({ attemptOrdinal: 2, turn: 2, cacheReadTokens: 90 }),
+				...pair({ attemptOrdinal: 3, turn: 3, cacheReadTokens: 90 }),
+			],
+			1,
+		);
 		expect(evidence.comparisons).toHaveLength(0);
 		expect(evidence.disqualifications).toContainEqual(expect.stringContaining("explicit_retry"));
 	});
 
 	it("adapts production-shaped token logs using immutable ralplan evidence keys", () => {
-		const logs: TaskTokenLog[] = [{
-			subagentId: "architect-1", agent: "architect", turn: 1, at: "2026-01-01T00:00:00.000Z",
-			input: 100, output: 20, cacheRead: 40, cacheWrite: 10, totalTokens: 170, model: "gpt-test",
-		}];
-		const [adapted] = adaptTaskTokenLogsToRalplanCacheTurns(logs, [{
-			runId: "irc-run", mode: "irc", role: "architect", subagentId: "architect-1", pass: 2,
-			turn: 1, provider: "openai", model: "gpt-test", attemptId: "architect-1-1", attemptOrdinal: 1,
-		}]);
+		const logs: TaskTokenLog[] = [
+			{
+				subagentId: "architect-1",
+				agent: "architect",
+				turn: 1,
+				at: "2026-01-01T00:00:00.000Z",
+				input: 100,
+				output: 20,
+				cacheRead: 40,
+				cacheWrite: 10,
+				totalTokens: 170,
+				model: "gpt-test",
+			},
+		];
+		const [adapted] = adaptTaskTokenLogsToRalplanCacheTurns(logs, [
+			{
+				runId: "irc-run",
+				mode: "irc",
+				role: "architect",
+				subagentId: "architect-1",
+				pass: 2,
+				turn: 1,
+				provider: "openai",
+				model: "gpt-test",
+				attemptId: "architect-1-1",
+				attemptOrdinal: 1,
+			},
+		]);
 		expect(adapted).toMatchObject({ runId: "irc-run", inputTokens: 100, cacheReadTokens: 40 });
 	});
 
@@ -89,9 +115,10 @@ describe("ralplan cache comparison", () => {
 	});
 
 	it("caps live comparison at three paired attempts without favorable-result retries", () => {
-		const evidence = compareRalplanCacheTurns([
-			...pair({ turn: 1 }), ...pair({ turn: 2 }), ...pair({ turn: 3 }), ...pair({ turn: 4 }),
-		], 99);
+		const evidence = compareRalplanCacheTurns(
+			[...pair({ turn: 1 }), ...pair({ turn: 2 }), ...pair({ turn: 3 }), ...pair({ turn: 4 })],
+			99,
+		);
 		expect(evidence.comparisons).toHaveLength(3);
 		expect(evidence.comparisons.map(pairing => pairing.irc.turn)).toEqual([1, 2, 3]);
 	});

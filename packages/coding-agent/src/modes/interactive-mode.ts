@@ -117,8 +117,15 @@ import {
 	onThemeChange,
 	theme,
 } from "./theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext, SubmittedUserInput, TodoItem, TodoPhase } from "./types";
-import { addChatChild, UiHelpers } from "./utils/ui-helpers";
+import type {
+	CompactionQueuedMessage,
+	InteractiveModeContext,
+	SubmittedUserInput,
+	TodoItem,
+	TodoPhase,
+	TranscriptRebuildPolicy,
+} from "./types";
+import { addChatChild, prepareTranscriptRebuild, UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
 const COMPOSER_NEWLINE_HINT = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
@@ -393,7 +400,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#welcomeComponent?: WelcomeComponent;
 	#ircSplitView: IrcSplitViewComponent;
-	#ircSidebarManualVisible = false;
+	#ircSidebarAvailable = false;
+	#ircSidebarRequestedVisible = false;
 	#ircSidebarWorkflowOwned = false;
 	#ralplanIrcLifecycleUnsubscribe?: () => void;
 	#ralplanIrcBoundaryAskListeners = new Set<(event: RalplanIrcLifecycleEvent) => void>();
@@ -504,7 +512,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController = new SelectorController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
-		this.#ralplanIrcLifecycleUnsubscribe = this.session.onRalplanIrcLifecycle(event => this.#handleRalplanIrcLifecycle(event));
+		this.#ralplanIrcLifecycleUnsubscribe = this.session.onRalplanIrcLifecycle(event =>
+			this.#handleRalplanIrcLifecycle(event),
+		);
 	}
 
 	async init(): Promise<void> {
@@ -576,6 +586,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		this.ui.addChild(this.#ircSplitView);
+		this.ui.setViewportAnchorComponent(this.#ircSplitView);
+
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);
@@ -623,6 +635,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorChrome();
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
+		this.#syncIrcSidebarAvailabilityFromSettings();
 		this.ui.requestRender(true);
 
 		// GitHub star reminder (interactive-only). Register the decline-driven
@@ -888,7 +901,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (!submission.customType) {
 			this.pendingImages = submission.images ? [...submission.images] : [];
-			this.rebuildChatFromMessages();
+			this.rebuildChatFromMessages("reconcile-same-transcript");
 			this.editor.setText(submission.text);
 		}
 		this.updateEditorChrome();
@@ -1036,7 +1049,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setTopBorder(undefined);
 	}
 
-	rebuildChatFromMessages(): void {
+	rebuildChatFromMessages(policy: TranscriptRebuildPolicy): void {
+		prepareTranscriptRebuild(this.ui, policy);
 		this.chatContainer.clear();
 		const context = this.session.buildDisplaySessionContext();
 		this.renderSessionContext(context);
@@ -2314,6 +2328,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventController.reconcileIrcExpiryTimers(this.#uiHelpers.getRenderedIrcInlineComponents());
 	}
 
+	rebuildInitialMessages(
+		policy: TranscriptRebuildPolicy,
+		prebuiltContext?: SessionContext,
+		options?: { preserveExistingChat?: boolean },
+	): void {
+		prepareTranscriptRebuild(this.ui, policy);
+		this.#uiHelpers.renderInitialMessages(prebuiltContext, options);
+	}
 	renderInitialMessages(prebuiltContext?: SessionContext, options?: { preserveExistingChat?: boolean }): void {
 		this.#uiHelpers.renderInitialMessages(prebuiltContext, options);
 	}
@@ -2324,6 +2346,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	findLastAssistantMessage(): AssistantMessage | undefined {
 		return this.#uiHelpers.findLastAssistantMessage();
+	}
+
+	getAssistantViewportAnchorId(message: AssistantMessage): string {
+		return this.#uiHelpers.assistantViewportAnchorId(message);
 	}
 
 	extractAssistantText(message: AssistantMessage): string {
@@ -2692,14 +2718,18 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	toggleIrcSidebar(): void {
-		if (!this.#isIrcSidebarAvailable() || this.settings.get("irc.sidebar.enabled") !== true) return;
-		this.#ircSidebarManualVisible = !this.#ircSidebarManualVisible;
+		if (
+			!this.#ircSidebarAvailable ||
+			this.settings.get("irc.enabled") !== true ||
+			this.settings.get("irc.sidebar.enabled") !== true
+		)
+			return;
+		this.#ircSidebarRequestedVisible = !this.#ircSidebarRequestedVisible;
 		this.#syncIrcSidebarVisibility();
 	}
 
 	applyIrcSidebarAvailability(enabled: boolean): void {
-		if (enabled) return;
-		this.#ircSidebarManualVisible = false;
+		this.#ircSidebarAvailable = enabled;
 		this.#syncIrcSidebarVisibility();
 	}
 
@@ -2707,13 +2737,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#ircSidebarWorkflowOwned;
 	}
 
+	#syncIrcSidebarAvailabilityFromSettings(): void {
+		this.applyIrcSidebarAvailability(
+			this.settings.get("irc.enabled") === true && this.settings.get("irc.sidebar.enabled") === true,
+		);
+	}
+
 	resetIrcSidebarSession(): void {
 		this.ircLedger.reset();
 		this.#eventController.resetIrcObservations();
-		this.#ircSidebarManualVisible = false;
 		this.#ralplanIrcWorkflowOwner = undefined;
 		this.#ircSidebarWorkflowOwned = false;
-		this.#syncIrcSidebarVisibility();
+		this.#ircSidebarRequestedVisible = false;
+		this.#syncIrcSidebarAvailabilityFromSettings();
 	}
 
 	/** Prompt-side consumers use this hook to ask only at a completed pass boundary. */
@@ -2724,14 +2760,26 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#hasRalplanIrcWorkflowOwnership(event: RalplanIrcLifecycleEvent): boolean {
 		const owner = this.#ralplanIrcWorkflowOwner;
-		return this.#ircSidebarWorkflowOwned && owner?.parentSessionId === event.parentSessionId && owner.runId === event.runId && owner.stageN === event.stageN;
+		return (
+			this.#ircSidebarWorkflowOwned &&
+			owner?.parentSessionId === event.parentSessionId &&
+			owner.runId === event.runId &&
+			owner.stageN === event.stageN
+		);
 	}
 
 	async #promptRalplanIrcBoundaryInterjection(event: RalplanIrcLifecycleEvent): Promise<void> {
 		if (!this.#hasRalplanIrcWorkflowOwnership(event)) return;
-		const text = (await this.showHookEditor(RALPLAN_IRC_BOUNDARY_INTERJECT_TITLE, undefined, undefined, { promptStyle: true }))?.trim();
+		const text = (
+			await this.showHookEditor(RALPLAN_IRC_BOUNDARY_INTERJECT_TITLE, undefined, undefined, { promptStyle: true })
+		)?.trim();
 		if (!text || !this.#hasRalplanIrcWorkflowOwnership(event)) return;
-		await this.withLocalSubmission(text, () => this.session.prompt(text, this.session.isStreaming ? { streamingBehavior: "followUp", followUpQueuePolicy: "sequential" } : undefined));
+		await this.withLocalSubmission(text, () =>
+			this.session.prompt(
+				text,
+				this.session.isStreaming ? { streamingBehavior: "followUp", followUpQueuePolicy: "sequential" } : undefined,
+			),
+		);
 	}
 
 	#handleRalplanIrcLifecycle(event: RalplanIrcLifecycleEvent): void {
@@ -2751,16 +2799,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (event.type === "boundary_ask_ready") {
 			for (const listener of this.#ralplanIrcBoundaryAskListeners) listener(event);
-			void this.#promptRalplanIrcBoundaryInterjection(event).catch(error => this.showError(error instanceof Error ? error.message : String(error)));
+			void this.#promptRalplanIrcBoundaryInterjection(event).catch(error =>
+				this.showError(error instanceof Error ? error.message : String(error)),
+			);
 		}
 	}
 
-	#isIrcSidebarAvailable(): boolean {
-		return this.settings.get("irc.enabled") === true;
-	}
-
 	#syncIrcSidebarVisibility(): void {
-		this.#ircSplitView.setVisible(this.#isIrcSidebarAvailable() && (this.#ircSidebarWorkflowOwned || (this.#ircSidebarManualVisible && this.settings.get("irc.sidebar.enabled") === true)));
+		const workflowVisible = this.#ircSidebarWorkflowOwned && this.settings.get("irc.enabled") === true;
+		this.#ircSplitView.setVisible(workflowVisible || (this.#ircSidebarAvailable && this.#ircSidebarRequestedVisible));
 		this.#invalidateIrcSidebarRender();
 		this.ui.requestRender();
 	}

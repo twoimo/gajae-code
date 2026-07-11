@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isValidatedRalplanWorkflowActivation } from "../src/session/agent-session";
 import { activeStateDir, modeStatePath } from "../src/gjc-runtime/session-layout";
 import { removeActiveEntry, writeActiveEntry, writeGuardedJsonAtomic } from "../src/gjc-runtime/state-writer";
+import { isValidatedRalplanWorkflowActivation } from "../src/session/agent-session";
 import {
 	applyHandoffToActiveState,
 	CANONICAL_GJC_WORKFLOW_SKILLS,
@@ -26,54 +26,69 @@ async function withTempCwd(fn: (cwd: string) => Promise<void>): Promise<void> {
 }
 
 describe("ralplan workflow activation canonical-state validator", () => {
-		const sessionId = "session-123";
-		const runId = "run-456";
-		const canonicalActive = { session_id: sessionId, run_id: runId, active: true, irc: true };
-		const canonicalDegraded = {
-			...canonicalActive,
-			irc_degraded: true,
-			irc_degrade_reason: "activation_failed",
-		};
-		const activation = {
-			skill: "ralplan" as const,
-			sessionId,
-			runId,
-			interactive: true,
-			ircRequested: true,
-			ircActive: true,
-			degraded: false,
-		};
+	const sessionId = "session-123";
+	const runId = "run-456";
+	const canonicalActive = { session_id: sessionId, run_id: runId, active: true, irc: true };
+	const canonicalDegraded = {
+		...canonicalActive,
+		irc_degraded: true,
+		irc_degrade_reason: "activation_failed",
+	};
+	const activation = {
+		skill: "ralplan" as const,
+		sessionId,
+		runId,
+		interactive: true,
+		ircRequested: true,
+		ircActive: true,
+		degraded: false,
+	};
 
-		it.each([
-			["accepts canonical active non-degraded metadata", activation, canonicalActive, true],
-			["rejects contradictory degraded metadata for canonical active IRC", { ...activation, degraded: true }, canonicalActive, false],
-			["rejects degraded metadata for canonical non-IRC", { ...activation, ircActive: false, degraded: true }, { session_id: sessionId, run_id: runId, active: true, irc: false }, false],
-			["rejects a degradation reason for canonical non-degraded IRC", { ...activation, degradeReason: "activation_failed" }, canonicalActive, false],
-			[
-				"accepts canonical degraded metadata with its persisted reason",
-				{ ...activation, ircActive: false, degraded: true, degradeReason: "activation_failed" },
-				canonicalDegraded,
-				true,
-			],
-			["rejects a mismatched session id", { ...activation, sessionId: "forged-session" }, canonicalActive, false],
-			["rejects a mismatched run id", { ...activation, runId: "forged-run" }, canonicalActive, false],
-			[
-				"rejects active IRC metadata when canonical IRC is degraded",
-				{ ...activation, degraded: true, degradeReason: "activation_failed" },
-				canonicalDegraded,
-				false,
-			],
-			[
-				"rejects a degraded reason that differs from canonical state",
-				{ ...activation, ircActive: false, degraded: true, degradeReason: "fragment_unavailable" },
-				canonicalDegraded,
-				false,
-			],
-			["rejects metadata without canonical state", activation, undefined, false],
-		] as const)("%s", (_name, candidate, canonical, expected) => {
-			expect(isValidatedRalplanWorkflowActivation(candidate, sessionId, canonical)).toBe(expected);
-		});
+	it.each([
+		["accepts canonical active non-degraded metadata", activation, canonicalActive, true],
+		[
+			"rejects contradictory degraded metadata for canonical active IRC",
+			{ ...activation, degraded: true },
+			canonicalActive,
+			false,
+		],
+		[
+			"rejects degraded metadata for canonical non-IRC",
+			{ ...activation, ircActive: false, degraded: true },
+			{ session_id: sessionId, run_id: runId, active: true, irc: false },
+			false,
+		],
+		[
+			"rejects a degradation reason for canonical non-degraded IRC",
+			{ ...activation, degradeReason: "activation_failed" },
+			canonicalActive,
+			false,
+		],
+		[
+			"accepts canonical degraded metadata with its persisted reason",
+			{ ...activation, ircActive: false, degraded: true, degradeReason: "activation_failed" },
+			canonicalDegraded,
+			true,
+		],
+		["rejects a mismatched session id", { ...activation, sessionId: "forged-session" }, canonicalActive, false],
+		["rejects a mismatched run id", { ...activation, runId: "forged-run" }, canonicalActive, false],
+		[
+			"rejects active IRC metadata when canonical IRC is degraded",
+			{ ...activation, degraded: true, degradeReason: "activation_failed" },
+			canonicalDegraded,
+			false,
+		],
+		[
+			"rejects a degraded reason that differs from canonical state",
+			{ ...activation, ircActive: false, degraded: true, degradeReason: "fragment_unavailable" },
+			canonicalDegraded,
+			false,
+		],
+		["rejects metadata without canonical state", activation, undefined, false],
+	] as const)("%s", (_name, candidate, canonical, expected) => {
+		expect(isValidatedRalplanWorkflowActivation(candidate, sessionId, canonical)).toBe(expected);
 	});
+});
 
 describe("GJC skill-active state", () => {
 	it("normalizes legacy top-level active state into active skills", () => {

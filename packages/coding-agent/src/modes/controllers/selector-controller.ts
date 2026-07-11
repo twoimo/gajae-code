@@ -1,5 +1,3 @@
-import * as path from "node:path";
-
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import { getOAuthProviders } from "@gajae-code/ai/utils/oauth";
 import type { OAuthProvider } from "@gajae-code/ai/utils/oauth/types";
@@ -717,8 +715,7 @@ export class SelectorController {
 						child.setHideThinkingBlock(value as boolean);
 					}
 				}
-				this.ctx.chatContainer.clear();
-				this.ctx.rebuildChatFromMessages();
+				this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 				break;
 			case "theme": {
 				setTheme(value as string, true).then(result => {
@@ -1183,8 +1180,7 @@ export class SelectorController {
 					}
 					this.ctx.resetIrcSidebarSession();
 
-					this.ctx.chatContainer.clear();
-					this.ctx.renderInitialMessages();
+					this.ctx.rebuildInitialMessages("replace-identity");
 					this.ctx.editor.setText(result.selectedText);
 					done();
 					this.ctx.showStatus("Branched to new session");
@@ -1294,8 +1290,7 @@ export class SelectorController {
 						}
 
 						// Update UI — pass the context built by navigateTree to skip a second O(N) walk.
-						this.ctx.chatContainer.clear();
-						this.ctx.renderInitialMessages(result.sessionContext);
+						this.ctx.rebuildInitialMessages("reconcile-same-transcript", result.sessionContext);
 						await this.ctx.reloadTodos();
 						if (result.editorText && !this.ctx.editor.getText().trim()) {
 							this.ctx.editor.setText(result.editorText);
@@ -1405,30 +1400,24 @@ export class SelectorController {
 		this.ctx.statusLine.setSessionStartTime(Date.now());
 		this.ctx.updateEditorTopBorder();
 		this.ctx.updateEditorBorderColor();
-		this.ctx.renderInitialMessages();
+		this.ctx.rebuildInitialMessages("replace-identity");
 		await this.ctx.reloadTodos();
 		this.ctx.ui.requestRender();
 		return true;
 	}
 
 	async handleResumeSession(sessionPath: string): Promise<void> {
-		const previousSessionFile = this.ctx.sessionManager.getSessionFile();
-		const switchingToDifferentSession = previousSessionFile
-			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
-			: true;
+		const previousSessionId = this.ctx.sessionManager.getSessionId();
 		this.#clearTransientSessionUi();
 
 		// Switch session via AgentSession (emits hook and tool session events)
 		if (!(await this.ctx.session.switchSession(sessionPath))) return;
-		if (switchingToDifferentSession) {
-			this.ctx.resetIrcSidebarSession();
-		}
+		const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
+		if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
-		// Clear and re-render the chat
-		this.ctx.chatContainer.clear();
-		this.ctx.renderInitialMessages();
+		this.ctx.rebuildInitialMessages(switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript");
 		await this.ctx.reloadTodos();
 		this.ctx.showStatus("Resumed session");
 	}

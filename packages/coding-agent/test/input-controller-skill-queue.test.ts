@@ -265,7 +265,13 @@ describe("InputController #invokeSkillCommand (E1-E3)", () => {
 
 		expect(enqueueCustomMessageDisplay).toHaveBeenCalledWith("/skill:ralplan --irc queued consensus", "followUp");
 		const dispatched = promptCustomMessage.mock.calls[0]?.[0];
-		expect(dispatched?.details.workflowActivation).toMatchObject({ sessionId, runId: sessionId, ircRequested: true, ircActive: true, degraded: false });
+		expect(dispatched?.details.workflowActivation).toMatchObject({
+			sessionId,
+			runId: sessionId,
+			ircRequested: true,
+			ircActive: true,
+			degraded: false,
+		});
 		expect(dispatched?.content).toContain("Ralplan IRC Consensus Protocol");
 		expect(fs.existsSync(modeStatePath(tempDir.path(), sessionId, "ralplan"))).toBe(true);
 		expect(ctx.showError).not.toHaveBeenCalled();

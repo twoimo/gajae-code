@@ -1351,8 +1351,7 @@ export class InputController {
 		if (this.ctx.streamingComponent) {
 			this.ctx.chatContainer.detachChild(this.ctx.streamingComponent);
 		}
-		this.ctx.chatContainer.clear();
-		this.ctx.rebuildChatFromMessages();
+		this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 
 		// If streaming, re-add the streaming component with updated visibility and re-render
 		if (this.ctx.streamingComponent && this.ctx.streamingMessage) {

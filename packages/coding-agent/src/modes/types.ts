@@ -31,6 +31,8 @@ import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { IrcObservationLedger } from "./irc-observation-ledger";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
+
+export type TranscriptRebuildPolicy = "replace-identity" | "reconcile-same-transcript";
 export type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
@@ -192,13 +194,18 @@ export interface InteractiveModeContext {
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
 	): void;
-	renderInitialMessages(prebuiltContext?: SessionContext, options?: { preserveExistingChat?: boolean }): void;
+	rebuildInitialMessages(
+		policy: TranscriptRebuildPolicy,
+		prebuiltContext?: SessionContext,
+		options?: { preserveExistingChat?: boolean },
+	): void;
 	getUserMessageText(message: Message): string;
+	getAssistantViewportAnchorId?(message: AssistantMessage): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
 	updateEditorTopBorder(): void;
 	updateEditorBorderColor(): void;
-	rebuildChatFromMessages(): void;
+	rebuildChatFromMessages(policy: TranscriptRebuildPolicy): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "bun:test";
-import { submitInteractiveInput } from "@gajae-code/coding-agent/main";
+import { runInteractiveMode, StartupUpdateOrchestrator, submitInteractiveInput } from "@gajae-code/coding-agent/main";
+import type { InteractiveMode } from "@gajae-code/coding-agent/modes/interactive-mode";
 import type { SubmittedUserInput } from "@gajae-code/coding-agent/modes/types";
+import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
 
 function createInput(overrides: Partial<SubmittedUserInput> = {}): SubmittedUserInput {
 	return {
@@ -79,5 +81,51 @@ describe("submitInteractiveInput", () => {
 		});
 		expect(mode.finishPendingSubmission).toHaveBeenCalledWith(input);
 		expect(mode.showError).not.toHaveBeenCalled();
+	});
+});
+
+describe("interactive startup input ordering", () => {
+	it("runs queued startup messages once after UI initialization instead of continuing the persisted tail", async () => {
+		const events: string[] = [];
+		const stop = new Error("stop interactive input");
+		const session = {
+			continuePersistedHistory: async () => events.push("continue"),
+			prompt: async (text: string) => events.push(`prompt:${text}`),
+		} as unknown as AgentSession;
+		const createMode = (): InteractiveMode =>
+			({
+				init: async () => events.push("init"),
+				showNewVersionNotification: () => {},
+				renderInitialMessages: () => events.push("render"),
+				showError: () => {},
+				getUserInput: async () => {
+					throw stop;
+				},
+			}) as unknown as InteractiveMode;
+
+		await expect(
+			runInteractiveMode(
+				session,
+				"test",
+				undefined,
+				[],
+				new StartupUpdateOrchestrator(
+					"interactive",
+					() => false,
+					async () => undefined,
+				),
+				["first queued", "second queued"],
+				() => {},
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				createMode,
+				"continue-tail",
+			),
+		).rejects.toBe(stop);
+
+		expect(events).toEqual(["init", "render", "prompt:first queued", "prompt:second queued"]);
 	});
 });
