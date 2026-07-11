@@ -23,7 +23,9 @@ import {
 	type AfterToolCallResult,
 	type Agent,
 	AgentBusyError,
+	type AgentContext,
 	type AgentEvent,
+	type AgentLoopConfig,
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
@@ -32,6 +34,7 @@ import {
 	type ManagedAttemptContinuationOwnership,
 	type ManagedAttemptDecision,
 	type ManagedAttemptOutcome,
+	type MidRunMaintenanceOutcome,
 	resolveTelemetry,
 	type StablePrefixSnapshot,
 	ThinkingLevel,
@@ -539,6 +542,14 @@ export interface AgentSessionConfig {
 	/** Optional provider-facing cache identity, distinct from logical session identity. */
 	providerCacheSessionId?: string;
 }
+
+type MidRunMaintenanceLifecycle = Parameters<NonNullable<AgentLoopConfig["maintainContext"]>>[1];
+
+type AutoCompactionTerminalStatus =
+	| { kind: "compacted" }
+	| { kind: "aborted"; source: "signal" | "hook" }
+	| { kind: "skipped" }
+	| { kind: "failed" };
 
 /** Options for AgentSession.prompt() */
 export interface PromptOptions {
@@ -1324,6 +1335,18 @@ export class AgentSession {
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
 	#autoCompactionAbortController: AbortController | undefined = undefined;
+
+	/** Invocation-scoped EventStream drain barriers owned by active maintenance calls. */
+	#activeMidRunBarrierControllers = new Set<AbortController>();
+	/** Maintenance invocations that must settle before resources are torn down. */
+	#activeMidRunMaintenancePromises = new Set<Promise<MidRunMaintenanceOutcome>>();
+	// Anti-loop guard (#1662): signature of the assistant response that last
+	// anchored a mid-run maintenance attempt. A given provider response drives at
+	// most one attempt, so a compaction that cannot shrink further can't wedge the
+	// loop into interrupt → resume → interrupt; a NEW response (fresh signature) is
+	// required to re-trigger. A content signature (not object identity) is used so
+	// it survives the message-array rebuild that compaction/prune perform.
+	#lastMidRunMaintenanceAnchorSignature: string | undefined = undefined;
 	#resourceSampler: () => EmergencyCompactionSample = () => this.#defaultResourceSample();
 	#retainedMemorySampler: (() => RetainedMemorySample) | undefined;
 	#prePromptContextCheckPromise: Promise<void> | undefined = undefined;
@@ -1389,6 +1412,7 @@ export class AgentSession {
 	#providerSessionId: string | undefined;
 	#providerCacheSessionId: string | undefined;
 	#isDisposed = false;
+	#disposePromise: Promise<void> | undefined;
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
 
@@ -1868,6 +1892,9 @@ export class AgentSession {
 			},
 		});
 		this.agent.setOnBeforeYield(() => this.yieldQueue.flush("streaming"));
+		this.agent.setMaintainContext((context, lifecycle) =>
+			this.#trackMidRunMaintenance(this.#runMidRunMaintenance(context, lifecycle)),
+		);
 		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
 		this.#rebuildSystemPrompt = config.rebuildSystemPrompt;
 		this.#getMcpServerInstructions = config.getMcpServerInstructions;
@@ -2500,6 +2527,12 @@ export class AgentSession {
 			}
 			return;
 		}
+		// A maintenance agent_end is an internal checkpoint only while another
+		// continuation will follow. An aborted maintenance run is its terminal
+		// settlement and must reach public subscribers.
+		if (event.type === "agent_end" && event.stopReason === "maintenance" && event.maintenanceOutcome !== "aborted")
+			return;
+
 		const persistRuntimeState = () => this.#persistRuntimeStateInBackground(event);
 		// Hold agent_end until the prompt's finally and all earlier async event work
 		// have unwound. Subscribers treat this event as the ready signal; flushing it
@@ -2541,6 +2574,13 @@ export class AgentSession {
 		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
 			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
 		}
+
+		// Agent listeners run synchronously, but this handler yields while emitting
+		// session events. Capture the maintenance run identity before that yield so
+		// a later raw listener cannot revive a cancelled/replaced continuation.
+		const maintenanceGeneration =
+			event.type === "agent_end" && event.stopReason === "maintenance" ? this.#promptGeneration : undefined;
+		const maintenanceWasDisposed = this.#isDisposed;
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -2605,9 +2645,36 @@ export class AgentSession {
 			this.#silentAbortPending = false;
 		}
 
+		// Canonical persistence must happen synchronously before listener work can
+		// await: the EventStream FIFO drain then guarantees tool results and every
+		// steering message are in the branch before a maintenance rewrite starts.
+		if (event.type === "message_end") {
+			if (event.message.role === "hookMessage" || event.message.role === "custom") {
+				const isRosterReminder = event.message.role === "custom" && event.message.customType === "irc-peer-roster";
+				if (!isRosterReminder) {
+					this.sessionManager.appendCustomMessageEntry(
+						event.message.customType,
+						event.message.content,
+						event.message.display,
+						event.message.details,
+						event.message.attribution ?? "agent",
+						getSessionMessageObservationId(event.message),
+					);
+				}
+			} else if (
+				event.message.role === "user" ||
+				event.message.role === "developer" ||
+				event.message.role === "assistant" ||
+				event.message.role === "toolResult" ||
+				event.message.role === "fileMention"
+			) {
+				this.sessionManager.appendMessage(event.message);
+			}
+		}
+
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
 		// obfuscated placeholders, but listeners (TUI, extensions, exporters) must see real
-		// values. The original event.message stays obfuscated so the persistence path below
+		// values. The original event.message stays obfuscated so the canonical persistence path above
 		// writes `#HASH#` tokens to the session file; convertToLlm re-obfuscates outbound
 		// traffic on the next turn. Walks text, thinking, and toolCall arguments/intent.
 		let displayEvent: AgentEvent = event;
@@ -2804,38 +2871,11 @@ export class AgentSession {
 			this.#maybeAbortStreamingEdit(event, this.#promptGeneration);
 		}
 
-		// Handle session persistence
+		// Handle post-persistence message side effects.
 		if (event.type === "message_end") {
-			// Check if this is a hook/custom message
-			if (event.message.role === "hookMessage" || event.message.role === "custom") {
-				// Roster reminders are request-context-only: never persist them, or a
-				// reload would resurrect stale rosters into agent history.
-				const isRosterReminder = event.message.role === "custom" && event.message.customType === "irc-peer-roster";
-				if (!isRosterReminder) {
-					// Persist as CustomMessageEntry
-					this.sessionManager.appendCustomMessageEntry(
-						event.message.customType,
-						event.message.content,
-						event.message.display,
-						event.message.details,
-						event.message.attribution ?? "agent",
-						getSessionMessageObservationId(event.message),
-					);
-				}
-				if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
-					this.#markTtsrInjected(this.#extractTtsrRuleNames(event.message.details));
-				}
-			} else if (
-				event.message.role === "user" ||
-				event.message.role === "developer" ||
-				event.message.role === "assistant" ||
-				event.message.role === "toolResult" ||
-				event.message.role === "fileMention"
-			) {
-				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+			if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
+				this.#markTtsrInjected(this.#extractTtsrRuleNames(event.message.details));
 			}
-			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
@@ -2946,6 +2986,29 @@ export class AgentSession {
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end") {
+			// Cooperative mid-run maintenance interruption (issue #2035). The loop
+			// ended the run losslessly after #runMidRunMaintenance did prune/
+			// compact/promote; this handler is the SINGLE continuation owner. Resume
+			// the same run on the rewritten context (no synthetic prompt), skipping
+			// the goal-runtime / skill-state / retry / compaction finalization a
+			// normal agent_end runs — none of that applies to an in-progress run.
+			// "aborted" settles without resuming; the generation guard drops the
+			// continuation if a newer prompt/abort has moved the run on.
+			if (event.stopReason === "maintenance") {
+				this.#lastAssistantMessage = undefined;
+				const outcome = event.maintenanceOutcome;
+				if (
+					outcome &&
+					outcome !== "aborted" &&
+					!maintenanceWasDisposed &&
+					!this.#isDisposed &&
+					maintenanceGeneration !== undefined &&
+					this.#promptGeneration === maintenanceGeneration
+				) {
+					this.#scheduleAgentContinue({ generation: maintenanceGeneration, skipCompactionCheck: true });
+				}
+				return;
+			}
 			const usage = this.getSessionStats().tokens;
 			await this.#goalRuntime.onAgentEnd({
 				currentUsage: {
@@ -3153,21 +3216,26 @@ export class AgentSession {
 		const signal = this.#postPromptTasksAbortController.signal;
 		return this.#schedulePostPromptTask(
 			async () => {
-				if (signal.aborted) {
-					skip("aborted_signal");
-					return;
-				}
-				if (scheduledGeneration !== undefined && this.#promptGeneration !== scheduledGeneration) {
-					skip("generation_changed");
-					return;
-				}
-				if (options?.shouldContinue && !options.shouldContinue()) {
-					skip("queue_drained");
-					return;
-				}
+				const canContinue = (): boolean => {
+					if (signal.aborted || this.#isDisposed) {
+						skip("aborted_signal");
+						return false;
+					}
+					if (scheduledGeneration !== undefined && this.#promptGeneration !== scheduledGeneration) {
+						skip("generation_changed");
+						return false;
+					}
+					if (options?.shouldContinue && !options.shouldContinue()) {
+						skip("queue_drained");
+						return false;
+					}
+					return true;
+				};
+				if (!canContinue()) return;
 				try {
 					if (!options?.skipCompactionCheck) {
 						await this.#checkEstimatedContextBeforePrompt();
+						if (!canContinue()) return;
 					}
 					if (signal.aborted) {
 						skip("aborted_signal");
@@ -4168,6 +4236,7 @@ export class AgentSession {
 	 * Used internally during operations that need to pause event processing.
 	 */
 	#disconnectFromAgent(): void {
+		this.#abortActiveMidRunBarriers();
 		if (this.#unsubscribeAgent) {
 			this.#unsubscribeAgent();
 			this.#unsubscribeAgent = undefined;
@@ -4221,12 +4290,49 @@ export class AgentSession {
 	 * Remove all listeners, flush pending writes, and disconnect from agent.
 	 * Call this when completely done with the session.
 	 */
-	async dispose(): Promise<void> {
+	dispose(): Promise<void> {
 		this.#evalExecutionDisposing = true;
-		await this.#closeSessionAdmission();
+		if (this.#disposePromise) return this.#disposePromise;
+		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		this.#disposePromise = promise;
+		void this.#dispose().then(resolve, reject);
+		return promise;
+	}
+
+	async #dispose(): Promise<void> {
+		const admissionClosed = this.#closeSessionAdmission();
 		this.#isDisposed = true;
+		// Reject new direct Python starts as soon as disposal begins (synchronously,
+		// before any await) so callers cannot race a start against teardown.
+		this.#evalExecutionDisposing = true;
+		this.#abortActiveMidRunBarriers();
+		this.abortCompaction();
+		this.agent.abort();
+		// Disconnect the Agent event bridge NOW — before the maintenance join and the
+		// bounded idle / forceAbort below — so no agent_end emitted during teardown
+		// (including the one forceAbort emits) can re-enter #handleAgentEvent and start
+		// fresh post-turn maintenance or mutate the closing session. Maintenance promises
+		// are joined directly (not via events), so this does not affect the join.
+		this.#disconnectFromAgent();
+		// R2-5: join any in-flight mid-run maintenance invocation before teardown so the
+		// abort-aware maintenance promise (already aborted above) settles and cannot touch
+		// torn-down state afterward.
+		await this.#waitForActiveMidRunMaintenance();
+		// R2-5: give the aborted Agent run a bounded chance to settle, then force-
+		// invalidate its run id so an abort-ignoring provider/tool cannot emit a late
+		// message_end after teardown. Mirrors AgentSession.abort({ timeoutMs }).
+		const disposeIdleSettled = await Promise.race([
+			this.agent.waitForIdle().then(
+				() => true,
+				() => true,
+			),
+			Bun.sleep(2_000).then(() => false),
+		]);
+		if (!disposeIdleSettled) this.agent.forceAbort("Session disposed");
+		await admissionClosed;
 		this.#pendingBackgroundExchanges = [];
 		this.yieldQueue.clear();
+
 		this.agent.setOnBeforeYield(undefined);
 		try {
 			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
@@ -4287,12 +4393,14 @@ export class AgentSession {
 		await disposeKernelSessionsByOwner(this.#evalKernelOwnerId);
 		await disposeVmContextsByOwner(this.#evalKernelOwnerId);
 		this.#releasePowerAssertion();
+		// Disconnect the agent event listener BEFORE closing session resources so a late
+		// provider/tool message_end cannot append to the closing SessionManager.
+		this.#disconnectFromAgent();
 		await this.sessionManager.close();
 		this.#closeAllProviderSessions("dispose");
 		const hindsightState = this.setHindsightSessionState(undefined);
 		await hindsightState?.flushRetainQueue();
 		hindsightState?.dispose();
-		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();
 			this.#unsubscribeAppendOnly = undefined;
@@ -7334,6 +7442,32 @@ export class AgentSession {
 		return this.#applyCompactionPostAppend(compactionEntryId, firstKeptEntryId, fromExtension);
 	}
 
+	/** Read-only test seam for active mid-run EventStream drain barriers. */
+	get activeMidRunBarrierCountForTests(): number {
+		return this.#activeMidRunBarrierControllers.size;
+	}
+
+	/** Read-only test seam for active mid-run maintenance invocations. */
+	get activeMidRunMaintenanceCountForTests(): number {
+		return this.#activeMidRunMaintenancePromises.size;
+	}
+
+	/** Test seam: drive the cooperative mid-run maintenance checkpoint directly. */
+	runMidRunMaintenanceForTests(
+		context: AgentContext,
+		lifecycle: MidRunMaintenanceLifecycle = {
+			signal: new AbortController().signal,
+			awaitEventDrain: async () => {},
+		},
+	): Promise<MidRunMaintenanceOutcome> {
+		return this.#trackMidRunMaintenance(this.#runMidRunMaintenance(context, lifecycle));
+	}
+
+	/** Test seam: estimate mid-run context tokens for a given context view. */
+	estimateMidRunContextTokensForTests(messages: readonly AgentMessage[]): number {
+		return this.#estimateMidRunContextTokens(messages);
+	}
+
 	#cloneTodoPhases(phases: TodoPhase[]): TodoPhase[] {
 		return phases.map(phase => ({
 			name: phase.name,
@@ -7371,6 +7505,7 @@ export class AgentSession {
 		 *  hand-off rather than a failure. */
 		silent?: boolean;
 	}): Promise<void> {
+		this.#abortActiveMidRunBarriers();
 		if (options?.silent) {
 			this.#silentAbortPending = true;
 		} else {
@@ -7803,14 +7938,17 @@ export class AgentSession {
 			cause?: ModelChangeCause;
 			reason?: TemporaryModelReason;
 			providerSessionScope?: TemporaryProviderSessionScope;
+			signal?: AbortSignal;
 		},
 		// biome-ignore lint/suspicious/noConfusingVoidType: Existing session adapters return Promise<void>; a scope is optional.
 	): Promise<TemporaryProviderSessionScope | void> {
+		if (options?.signal?.aborted) return;
 		const suppliedScope = options?.providerSessionScope;
 		if (suppliedScope && this.#temporaryProviderSessionScopes.at(-1)?.token !== suppliedScope) return;
-
 		const previousEditMode = this.#resolveActiveEditMode();
 		const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+		if (options?.signal?.aborted) return;
+
 		if (!apiKey) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -8406,7 +8544,7 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
-	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+	async #pruneToolOutputs(signal?: AbortSignal): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.sessionManager.getBranch();
 		const result = pruneToolOutputs(branchEntries, DEFAULT_PRUNE_CONFIG);
 		const argumentResult = pruneAssistantToolArguments(branchEntries, DEFAULT_PRUNE_CONFIG);
@@ -8416,7 +8554,7 @@ export class AgentSession {
 		const tokensSaved =
 			result.tokensSaved + argumentResult.argumentTokensSaved + Math.round(fileMentionResult.bytesSaved / 4);
 		const prunedCount = result.prunedCount + argumentResult.argumentPrunedCount + fileMentionResult.changed.length;
-		if (prunedCount === 0) {
+		if (prunedCount === 0 || signal?.aborted) {
 			return undefined;
 		}
 
@@ -8679,6 +8817,28 @@ export class AgentSession {
 		this.#compactionAbortController?.abort();
 		this.#autoCompactionAbortController?.abort();
 		this.#handoffAbortController?.abort();
+	}
+
+	#abortActiveMidRunBarriers(): void {
+		for (const controller of this.#activeMidRunBarrierControllers) {
+			controller.abort();
+		}
+		this.#activeMidRunBarrierControllers.clear();
+	}
+
+	#trackMidRunMaintenance(maintenance: Promise<MidRunMaintenanceOutcome>): Promise<MidRunMaintenanceOutcome> {
+		this.#activeMidRunMaintenancePromises.add(maintenance);
+		maintenance.then(
+			() => this.#activeMidRunMaintenancePromises.delete(maintenance),
+			() => this.#activeMidRunMaintenancePromises.delete(maintenance),
+		);
+		return maintenance;
+	}
+
+	async #waitForActiveMidRunMaintenance(): Promise<void> {
+		while (this.#activeMidRunMaintenancePromises.size > 0) {
+			await Promise.allSettled([...this.#activeMidRunMaintenancePromises]);
+		}
 	}
 
 	/** Trigger idle compaction through the auto-compaction flow (with UI events). */
@@ -8961,6 +9121,167 @@ export class AgentSession {
 				await this.#runAutoCompaction("threshold", false);
 			}
 		}
+	}
+
+	/**
+	 * Cooperative mid-run context maintenance (issue #2035).
+	 *
+	 * Invoked by the agent loop (via {@link Agent.setMaintainContext}) at the top
+	 * of each tool-loop iteration — after pending tool-result / steering messages
+	 * are durable and before the model call. Threshold-based auto-compaction was
+	 * previously only evaluated at `agent_end` and before a user prompt, so a
+	 * single long agentic run grew straight through the compaction margin and died
+	 * with provider `context_length_exceeded`. This bounds that run.
+	 *
+	 * Decision input is the last assistant `usage.totalTokens` plus the estimated
+	 * trailing tool/steering deltas (NOT the pre-prompt estimator's prompt-only
+	 * anchor, which drops the last assistant's output). Reuses the existing
+	 * prune → promote → compact machinery and returns an explicit outcome.
+	 *
+	 * A non-"not-needed" outcome ends the current run losslessly
+	 * (`agent_end.stopReason === "maintenance"`); the `agent_end` handler is the
+	 * single continuation owner that resumes the run with no synthetic prompt.
+	 * This method never self-continues, runs goal-runtime hooks, clears skill
+	 * state, or emits a user-facing pause.
+	 */
+	async #runMidRunMaintenance(
+		context: AgentContext,
+		lifecycle: MidRunMaintenanceLifecycle,
+	): Promise<MidRunMaintenanceOutcome> {
+		if (this.#isDisposed) return "aborted";
+		const invocationController = new AbortController();
+		this.#activeMidRunBarrierControllers.add(invocationController);
+		const maintenanceSignal = AbortSignal.any([lifecycle.signal, invocationController.signal]);
+		const isAborted = () => maintenanceSignal.aborted;
+
+		try {
+			try {
+				await lifecycle.awaitEventDrain(invocationController.signal);
+			} catch {
+				return isAborted() ? "aborted" : "failed";
+			}
+			if (isAborted()) return "aborted";
+
+			// In-place context-full maintenance only. "off" defers entirely; "handoff"
+			// keeps its existing agent_end / pre-prompt boundaries (a mid-tool-loop
+			// session swap would be far more disruptive than the overflow it avoids).
+			const compactionSettings = this.settings.getGroup("compaction");
+			if (!compactionSettings.enabled || compactionSettings.strategy !== "context-full") return "not-needed";
+			const contextWindow = this.model?.contextWindow ?? 0;
+			if (contextWindow <= 0) return "not-needed";
+			// A compaction already in flight (overflow recovery, manual, idle) owns the
+			// context; never double-compact underneath it.
+			if (this.isCompacting) return "not-needed";
+
+			// Model maxTokens is a capability ceiling, not a per-turn reservation;
+			// track actual context fullness (mirrors the agent_end / pre-prompt checks).
+			const autoCompactionOutputReserveTokens = 0;
+			const anchor = this.#findMidRunUsageAnchor(context.messages);
+			let contextTokens = this.#estimateMidRunContextTokens(context.messages);
+			if (!shouldCompact(contextTokens, contextWindow, compactionSettings, autoCompactionOutputReserveTokens)) {
+				return "not-needed";
+			}
+			// Anti-loop (#1662): a given provider response anchors at most one
+			// maintenance attempt. Until a NEW response re-anchors usage, repeat checks
+			// on the same anchor are no-ops so a compaction that cannot shrink further
+			// cannot wedge the loop into interrupt → resume → interrupt.
+			const anchorSignature = anchor
+				? `${anchor.message.provider}/${anchor.message.model}#${anchor.message.timestamp}#${calculateContextTokens(anchor.message.usage as Usage)}`
+				: undefined;
+			if (anchorSignature) {
+				if (anchorSignature === this.#lastMidRunMaintenanceAnchorSignature) return "not-needed";
+				this.#lastMidRunMaintenanceAnchorSignature = anchorSignature;
+			}
+
+			// The FIFO consumer barrier made every prior materialized message canonical.
+			// Flush those synchronous branch appends before any history rewrite.
+			if (isAborted()) return "aborted";
+			await this.sessionManager.flush();
+			if (isAborted()) return "aborted";
+
+			// 1) Prune stale tool outputs first — cheaper than compaction, may avert it,
+			//    and (like all history rewrites) resets the codex provider session /
+			//    prompt-cache epoch via #closeCodexProviderSessionsForHistoryRewrite.
+			if (isAborted()) return "aborted";
+			const pruneResult = await this.#pruneToolOutputs(maintenanceSignal);
+			if (isAborted()) return "aborted";
+			if (pruneResult) {
+				contextTokens = Math.max(0, contextTokens - pruneResult.tokensSaved);
+			}
+			if (!shouldCompact(contextTokens, contextWindow, compactionSettings, autoCompactionOutputReserveTokens)) {
+				return pruneResult && pruneResult.prunedCount > 0 ? "pruned" : "not-needed";
+			}
+
+			// 2) Try context promotion (switch to a larger-window model) before compacting.
+			const lastAssistant = this.#findLastAssistantMessage();
+			if (lastAssistant && lastAssistant.stopReason !== "aborted" && lastAssistant.stopReason !== "error") {
+				if (isAborted()) return "aborted";
+				const promoted = await this.#tryContextPromotion(lastAssistant, maintenanceSignal);
+				if (isAborted()) return "aborted";
+				if (promoted) return "promoted";
+			}
+
+			// 3) Compact via the existing auto-compaction machinery. continueAfterMaintenance
+			//    is false so it does NOT schedule its own (synthetic) continuation — the
+			//    agent_end("maintenance") handler owns resumption. The oversized-maintenance
+			//    signature guard and the previous_response_id / prompt-cache-epoch reset
+			//    (#applyCompactionPostAppend) are inherited from #runAutoCompaction.
+			if (isAborted()) return "aborted";
+			const compactionStatus = await this.#runAutoCompaction("threshold", false, false, {
+				continueAfterMaintenance: false,
+				deferHandoffMaintenance: false,
+				signal: maintenanceSignal,
+			});
+			if (isAborted()) return "aborted";
+			if (compactionStatus.kind === "compacted") return "compacted";
+			if (compactionStatus.kind === "aborted") {
+				return compactionStatus.source === "hook" ? "not-needed" : "aborted";
+			}
+			return "failed";
+		} finally {
+			this.#activeMidRunBarrierControllers.delete(invocationController);
+		}
+	}
+
+	/**
+	 * Mid-run context-token estimate for {@link #runMidRunMaintenance}.
+	 *
+	 * Anchors on the last non-error assistant's `usage.totalTokens` — at the top
+	 * of a tool-loop iteration that output is already durable context that will be
+	 * re-sent — plus the inflated script-aware delta (see {@link #estimateMessageCompactionDeltaTokens}) of every trailing tool-result /
+	 * steering message appended since. Operates on the loop's authoritative
+	 * context view (not `this.messages`) so it is independent of listener flush
+	 * timing.
+	 */
+	#estimateMidRunContextTokens(messages: readonly AgentMessage[]): number {
+		const anchor = this.#findMidRunUsageAnchor(messages);
+		if (!anchor) {
+			let estimated = 0;
+			for (const message of messages) estimated += this.#estimateMessageCompactionDeltaTokens(message);
+			return estimated;
+		}
+		let tokens = calculateContextTokens(anchor.message.usage as Usage);
+		for (let i = anchor.index + 1; i < messages.length; i++) {
+			tokens += this.#estimateMessageCompactionDeltaTokens(messages[i]);
+		}
+		return tokens;
+	}
+
+	/**
+	 * Locate the anchor for {@link #estimateMidRunContextTokens}: the most recent
+	 * non-aborted/non-error assistant message that carries provider usage. Also
+	 * keys the anti-loop guard so each provider response drives at most one
+	 * maintenance attempt.
+	 */
+	#findMidRunUsageAnchor(messages: readonly AgentMessage[]): { index: number; message: AssistantMessage } | undefined {
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.role !== "assistant") continue;
+			const assistantMsg = msg as AssistantMessage;
+			if (assistantMsg.stopReason === "aborted" || assistantMsg.stopReason === "error") continue;
+			if (assistantMsg.usage) return { index: i, message: assistantMsg };
+		}
+		return undefined;
 	}
 
 	async #checkEstimatedContextBeforePrompt(pendingMessages: readonly AgentMessage[] = []): Promise<void> {
@@ -9339,7 +9660,8 @@ export class AgentSession {
 	 * Attempt context promotion to a larger model.
 	 * Returns true if promotion succeeded (caller should retry without compacting).
 	 */
-	async #tryContextPromotion(assistantMessage: AssistantMessage): Promise<boolean> {
+	async #tryContextPromotion(assistantMessage: AssistantMessage, signal?: AbortSignal): Promise<boolean> {
+		if (signal?.aborted) return false;
 		const promotionSettings = this.settings.getGroup("contextPromotion");
 		if (!promotionSettings.enabled) return false;
 		const currentModel = this.model;
@@ -9348,14 +9670,19 @@ export class AgentSession {
 			return false;
 		const contextWindow = currentModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
-		const targetModel = await this.#resolveContextPromotionTarget(currentModel, contextWindow);
-		if (!targetModel) return false;
+		const targetModel = await this.#resolveContextPromotionTarget(currentModel, contextWindow, signal);
+		if (!targetModel || signal?.aborted) return false;
 
 		try {
-			await this.setModelTemporary(targetModel, undefined, {
+			const scope = await this.setModelTemporary(targetModel, undefined, {
 				cause: "temporary-operation",
 				reason: "context-promotion",
+				signal,
 			});
+			if (signal?.aborted) {
+				if (scope) this.restoreTemporaryProviderSessionScope(scope);
+				return false;
+			}
 			logger.debug("Context promotion switched model on overflow", {
 				from: `${currentModel.provider}/${currentModel.id}`,
 				to: `${targetModel.provider}/${targetModel.id}`,
@@ -9371,7 +9698,12 @@ export class AgentSession {
 		}
 	}
 
-	async #resolveContextPromotionTarget(currentModel: Model, contextWindow: number): Promise<Model | undefined> {
+	async #resolveContextPromotionTarget(
+		currentModel: Model,
+		contextWindow: number,
+		signal?: AbortSignal,
+	): Promise<Model | undefined> {
+		if (signal?.aborted) return undefined;
 		const availableModels = this.#modelRegistry.getAvailable();
 		if (availableModels.length === 0) return undefined;
 
@@ -9380,7 +9712,7 @@ export class AgentSession {
 		if (modelsAreEqual(candidate, currentModel)) return undefined;
 		if (candidate.contextWindow <= contextWindow) return undefined;
 		const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
-		if (!apiKey) return undefined;
+		if (!apiKey || signal?.aborted) return undefined;
 		return candidate;
 	}
 
@@ -9928,13 +10260,18 @@ export class AgentSession {
 		reason: "overflow" | "threshold" | "idle",
 		willRetry: boolean,
 		deferred = false,
-		options?: { continueAfterMaintenance?: boolean; deferHandoffMaintenance?: boolean; force?: boolean },
-	): Promise<void> {
+		options?: {
+			continueAfterMaintenance?: boolean;
+			deferHandoffMaintenance?: boolean;
+			force?: boolean;
+			signal?: AbortSignal;
+		},
+	): Promise<AutoCompactionTerminalStatus> {
 		const compactionSettings = this.settings.getGroup("compaction");
 		// `force` is the non-disableable emergency floor (F6): it bypasses the user's
 		// disabled/off settings so a resource-floor breach still compacts before OOM.
-		if (!options?.force && compactionSettings.strategy === "off") return;
-		if (!options?.force && reason !== "idle" && !compactionSettings.enabled) return;
+		if (!options?.force && compactionSettings.strategy === "off") return { kind: "skipped" };
+		if (!options?.force && reason !== "idle" && !compactionSettings.enabled) return { kind: "skipped" };
 		const generation = this.#promptGeneration;
 		if (
 			options?.deferHandoffMaintenance !== false &&
@@ -9951,27 +10288,44 @@ export class AgentSession {
 				},
 				{ generation },
 			);
-			return;
+			return { kind: "skipped" };
 		}
 
 		let action: "context-full" | "handoff" =
 			compactionSettings.strategy === "handoff" && reason !== "overflow" ? "handoff" : "context-full";
 		const continueAfterMaintenance = options?.continueAfterMaintenance !== false;
-		await this.#emitSessionEvent({ type: "auto_compaction_start", reason, action });
-		// Abort any older auto-compaction before installing this run's controller.
+		// Register the controller before the observable start event so an abort from
+		// a local subscriber, extension, dispose, or caller signal owns this run.
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
 		this.#autoCompactionAbortController = autoCompactionAbortController;
-		const autoCompactionSignal = autoCompactionAbortController.signal;
+		const autoCompactionSignal = options?.signal
+			? AbortSignal.any([autoCompactionAbortController.signal, options.signal])
+			: autoCompactionAbortController.signal;
 		let maintenanceAttemptSignature: string | undefined;
+		const emitAborted = async (): Promise<AutoCompactionTerminalStatus> => {
+			await this.#emitSessionEvent({
+				type: "auto_compaction_end",
+				action,
+				result: undefined,
+				aborted: true,
+				willRetry: false,
+			});
+			return { kind: "aborted", source: "signal" };
+		};
 
 		try {
+			if (autoCompactionSignal.aborted) return { kind: "aborted", source: "signal" };
+			await this.#emitSessionEvent({ type: "auto_compaction_start", reason, action });
+			if (autoCompactionSignal.aborted) return await emitAborted();
+
 			if (compactionSettings.strategy === "handoff" && reason !== "overflow") {
 				const handoffFocus = AUTO_HANDOFF_THRESHOLD_FOCUS;
 				const handoffResult = await this.handoff(handoffFocus, {
 					autoTriggered: true,
-					signal: this.#autoCompactionAbortController.signal,
+					signal: autoCompactionSignal,
 				});
+
 				if (!handoffResult) {
 					const aborted = autoCompactionSignal.aborted;
 					if (aborted) {
@@ -9982,13 +10336,15 @@ export class AgentSession {
 							aborted: true,
 							willRetry: false,
 						});
-						return;
+						return { kind: "aborted", source: "signal" };
 					}
 					logger.warn("Auto-handoff returned no document; falling back to context-full maintenance", {
 						reason,
 					});
 					action = "context-full";
 				}
+				if (autoCompactionSignal.aborted) return await emitAborted();
+
 				if (handoffResult) {
 					await this.#emitSessionEvent({
 						type: "auto_compaction_end",
@@ -9997,15 +10353,12 @@ export class AgentSession {
 						aborted: false,
 						willRetry: false,
 					});
-					if (
-						continueAfterMaintenance &&
-						!autoCompactionSignal.aborted &&
-						reason !== "idle" &&
-						compactionSettings.autoContinue !== false
-					) {
+					if (autoCompactionSignal.aborted) return { kind: "aborted", source: "signal" };
+					if (continueAfterMaintenance && reason !== "idle" && compactionSettings.autoContinue !== false) {
 						this.#scheduleAutoContinuePrompt(generation);
 					}
-					return;
+					if (autoCompactionSignal.aborted) return { kind: "aborted", source: "signal" };
+					return { kind: "compacted" };
 				}
 			}
 
@@ -10018,7 +10371,7 @@ export class AgentSession {
 					willRetry: false,
 					skipped: true,
 				});
-				return;
+				return { kind: "skipped" };
 			}
 
 			const availableModels = this.#modelRegistry.getAvailable();
@@ -10031,8 +10384,10 @@ export class AgentSession {
 					willRetry: false,
 					skipped: true,
 				});
-				return;
+				return { kind: "skipped" };
 			}
+
+			if (autoCompactionSignal.aborted) return await emitAborted();
 
 			const pathEntries = this.sessionManager.getBranch();
 
@@ -10043,6 +10398,8 @@ export class AgentSession {
 			const preparation = prepareCompaction(pathEntries, compactionSettings, {
 				tokenCorrectionRatio: overflowRatio !== undefined ? Math.max(1, overflowRatio) : undefined,
 			});
+			if (autoCompactionSignal.aborted) return await emitAborted();
+
 			if (!preparation) {
 				const continuationSkipReason = willRetry ? this.#detectOverflowRetryContinuationSkip() : undefined;
 				await this.#emitSessionEvent({
@@ -10069,7 +10426,7 @@ export class AgentSession {
 				} else if (continueAfterMaintenance && reason !== "idle" && compactionSettings.autoContinue !== false) {
 					this.#scheduleAutoContinuePrompt(generation);
 				}
-				return;
+				return { kind: "skipped" };
 			}
 
 			let hookCompaction: CompactionResult | undefined;
@@ -10084,6 +10441,7 @@ export class AgentSession {
 					customInstructions: undefined,
 					signal: autoCompactionSignal,
 				})) as SessionBeforeCompactResult | undefined;
+				if (autoCompactionSignal.aborted) return await emitAborted();
 
 				if (hookResult?.cancel) {
 					await this.#emitSessionEvent({
@@ -10093,7 +10451,7 @@ export class AgentSession {
 						aborted: true,
 						willRetry: false,
 					});
-					return;
+					return { kind: "aborted", source: "hook" };
 				}
 
 				if (hookResult?.compaction) {
@@ -10103,6 +10461,7 @@ export class AgentSession {
 			}
 
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
+			if (autoCompactionSignal.aborted) return await emitAborted();
 
 			let summary: string;
 			let shortSummary: string | undefined;
@@ -10137,7 +10496,7 @@ export class AgentSession {
 						errorMessage:
 							"Auto-compaction skipped: previous unchanged maintenance request exceeded the model context window; change or reduce the conversation before retrying maintenance.",
 					});
-					return;
+					return { kind: "skipped" };
 				}
 				const retrySettings = this.settings.getGroup("retry");
 				const telemetry = resolveTelemetry(this.agent.telemetry, this.sessionId);
@@ -10151,6 +10510,8 @@ export class AgentSession {
 					let attempt = 0;
 					while (true) {
 						try {
+							if (autoCompactionSignal.aborted) return await emitAborted();
+
 							compactResult = await compact(preparation, candidate, apiKey, undefined, autoCompactionSignal, {
 								...this.#maintenanceProviderTransport(),
 								promptOverride: compactionPrep.hookPrompt,
@@ -10249,7 +10610,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return;
+				return { kind: "aborted", source: "signal" };
 			}
 
 			const compactionEntryId = this.sessionManager.appendCompaction(
@@ -10262,6 +10623,7 @@ export class AgentSession {
 				preserveData,
 			);
 			await this.#applyCompactionPostAppend(compactionEntryId, firstKeptEntryId, fromExtension);
+			if (autoCompactionSignal.aborted) return await emitAborted();
 
 			const result: CompactionResult = {
 				summary,
@@ -10282,6 +10644,7 @@ export class AgentSession {
 				willRetry: willRetry && !continuationSkipReason,
 				continuationSkipReason,
 			});
+			if (autoCompactionSignal.aborted) return { kind: "aborted", source: "signal" };
 
 			if (willRetry) {
 				this.#scheduleOverflowRetryContinuation(generation);
@@ -10299,6 +10662,7 @@ export class AgentSession {
 			} else if (continueAfterMaintenance && reason !== "idle" && compactionSettings.autoContinue !== false) {
 				this.#scheduleAutoContinuePrompt(generation);
 			}
+			return { kind: "compacted" };
 		} catch (error) {
 			if (autoCompactionSignal.aborted) {
 				await this.#emitSessionEvent({
@@ -10308,7 +10672,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return;
+				return { kind: "aborted", source: "signal" };
 			}
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			if (maintenanceAttemptSignature && this.#isOversizedMaintenanceError(errorMessage)) {
@@ -10325,6 +10689,7 @@ export class AgentSession {
 						? `Context overflow recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`,
 			});
+			return { kind: "failed" };
 		} finally {
 			if (this.#autoCompactionAbortController === autoCompactionAbortController) {
 				this.#autoCompactionAbortController = undefined;
@@ -12771,9 +13136,9 @@ export class AgentSession {
 
 	/**
 	 * Observed heuristic→actual token correction for the compaction keep window
-	 * (Finding 7). Compares the provider's real prompt tokens against the chars/4
-	 * heuristic estimate of the same content (stable system prefix + history
-	 * before the last usage-bearing assistant turn — that turn's own output is
+	 * (Finding 7). Compares the provider's real prompt tokens against the
+	 * script-aware display-token heuristic estimate of the same content (stable
+	 * system prefix + history before the last usage-bearing assistant turn — that turn's own output is
 	 * the response, not part of the request's prompt, so it belongs on neither
 	 * side of the ratio). Image-bearing content is bucketed out
 	 * of BOTH sides using the identical fixed IMAGE_TOKEN_ESTIMATE so the 1200-token

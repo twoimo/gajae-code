@@ -729,6 +729,8 @@ async function runLoop(
 	streamFn?: StreamFn,
 	initialTransaction?: ManagedAttemptTransaction,
 ): Promise<void> {
+	const loopSignal = signal ?? new AbortController().signal;
+
 	const telemetry = resolveTelemetry(config.telemetry, config.sessionId);
 	const invokeAgentSpan = startInvokeAgentSpan(telemetry, config.model);
 	const stepCounter = { count: 0 };
@@ -739,7 +741,8 @@ async function runLoop(
 				currentContext,
 				newMessages,
 				config,
-				signal,
+				loopSignal,
+
 				stream,
 				telemetry,
 				invokeAgentSpan,
@@ -767,7 +770,8 @@ async function runLoopBody(
 	currentContext: AgentContext,
 	newMessages: AgentMessage[],
 	config: AgentLoopConfig,
-	signal: AbortSignal | undefined,
+	loopSignal: AbortSignal,
+
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
@@ -779,6 +783,11 @@ async function runLoopBody(
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 	let harmonyRetryAttempt = 0;
+	// Whether at least one assistant response has been produced in THIS run. The
+	// mid-run maintenance checkpoint only fires between tool iterations (after a
+	// model response); pre-turn maintenance is the pre-prompt check's job, so the
+	// first iteration is skipped to avoid duplicating/racing it.
+	let modelHasResponded = false;
 	let harmonyTruncateResumeCount = 0;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
@@ -812,6 +821,38 @@ async function runLoopBody(
 				pendingMessages = [];
 			}
 
+			// Cooperative mid-run context maintenance. Runs after pending
+			// tool/steering messages are materialized into durable context and
+			// before syncContextBeforeModelCall / the model call — the only
+			// boundary where the full unsent context is already durable. A
+			// non-"not-needed" outcome means context was (or was attempted to be)
+			// rewritten, so end the run WITHOUT the lossy agent_end finalization;
+			// the maintenance owner resumes the run on the rewritten context.
+			// "not-needed" falls through to the model call.
+			if (config.maintainContext && modelHasResponded && !loopSignal.aborted) {
+				const lifecycle = {
+					signal: loopSignal,
+					awaitEventDrain: (invocationSignal: AbortSignal) =>
+						stream.waitForConsumerDrain(AbortSignal.any([loopSignal, invocationSignal])),
+				};
+				const maintenanceOutcome = await config.maintainContext(currentContext, lifecycle);
+				// A callback can settle after its loop has been cancelled. Never let a
+				// stale "not-needed" fall through to streamAssistantResponse, which
+				// invokes the provider before it observes the aborted signal.
+				const outcome = loopSignal.aborted ? "aborted" : maintenanceOutcome;
+
+				if (outcome !== "not-needed") {
+					stream.push({
+						type: "agent_end",
+						messages: newMessages,
+						stopReason: "maintenance",
+						maintenanceOutcome: outcome,
+					});
+					stream.end(newMessages);
+					return;
+				}
+			}
+
 			// Refresh prompt/tool context from live state before each model call
 			if (config.syncContextBeforeModelCall) {
 				await config.syncContextBeforeModelCall(currentContext);
@@ -835,7 +876,7 @@ async function runLoopBody(
 				message = await streamAssistantResponse(
 					currentContext,
 					attemptConfig,
-					signal,
+					loopSignal,
 					attemptTransaction ? (attemptTransaction as unknown as EventStream<AgentEvent, AgentMessage[]>) : stream,
 					telemetry,
 					invokeAgentSpan,
@@ -909,6 +950,7 @@ async function runLoopBody(
 				}
 			}
 			newMessages.push(message);
+			modelHasResponded = true;
 			let steeringMessagesFromExecution: AgentMessage[] | undefined;
 
 			// Detect empty "successful" responses (stopReason "stop" + empty content).
@@ -985,7 +1027,7 @@ async function runLoopBody(
 				const executionResult = await executeToolCalls(
 					currentContext,
 					message,
-					signal,
+					loopSignal,
 					stream,
 					config,
 					telemetry,

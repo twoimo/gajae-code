@@ -371,6 +371,7 @@ export class Agent {
 	#onHarmonyLeak?: (event: HarmonyAuditEvent) => void | Promise<void>;
 	#onBeforeYield?: () => Promise<void> | void;
 	#shouldPause?: AgentLoopConfig["shouldPause"];
+	#maintainContext?: AgentLoopConfig["maintainContext"];
 	#telemetry?: AgentLoopConfig["telemetry"];
 	#appendOnlyContext?: AppendOnlyContextManager;
 
@@ -706,6 +707,10 @@ export class Agent {
 
 	setShouldPause(fn: AgentLoopConfig["shouldPause"] | undefined): void {
 		this.#shouldPause = fn;
+	}
+
+	setMaintainContext(fn: AgentLoopConfig["maintainContext"] | undefined): void {
+		this.#maintainContext = fn;
 	}
 
 	emitExternalEvent(event: AgentEvent) {
@@ -1381,6 +1386,7 @@ export class Agent {
 		const cursorExecHandlers = fallbackManaged ? undefined : this.#cursorExecHandlersForRun(runId);
 		let managedDecision: ManagedAttemptDecision | undefined;
 		let managedOutcome: ManagedAttemptOutcome | undefined;
+		let maintenanceInterrupted = false;
 
 		const config: AgentLoopConfig = {
 			model,
@@ -1506,6 +1512,12 @@ export class Agent {
 				if (this.#activeRunId !== runId) return false;
 				return this.#shouldPause?.() === true;
 			},
+			maintainContext: this.#maintainContext
+				? async (context, lifecycle) => {
+						if (this.#activeRunId !== runId) return "not-needed";
+						return (await this.#maintainContext?.(context, lifecycle)) ?? "not-needed";
+					}
+				: undefined,
 			telemetry: this.#telemetry,
 		};
 
@@ -1574,6 +1586,11 @@ export class Agent {
 						}
 						this.#state.isStreaming = false;
 						this.#state.streamMessage = null;
+						if (event.stopReason === "maintenance") {
+							maintenanceInterrupted = true;
+							this.#emit(event);
+							continue;
+						}
 						this.#finalizeRun(managedLogicalRunOwner ?? runId, event);
 						continue;
 				}
@@ -1663,7 +1680,12 @@ export class Agent {
 				this.#runningPrompt = undefined;
 				this.#resolveRunningPrompt = undefined;
 			}
-			if (fallbackManaged && !continuation && this.#managedLogicalRunOwner === managedLogicalRunOwner) {
+			if (
+				fallbackManaged &&
+				!continuation &&
+				!maintenanceInterrupted &&
+				this.#managedLogicalRunOwner === managedLogicalRunOwner
+			) {
 				this.#managedLogicalRunOwner = undefined;
 			}
 			if (continuation && ownership.isCurrent()) {

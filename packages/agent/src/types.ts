@@ -77,6 +77,15 @@ export type ManagedAttemptOutcomeHandler = (
 ) => ManagedAttemptDecision | Promise<ManagedAttemptDecision>;
 
 /**
+ * Outcome of a cooperative mid-run context-maintenance checkpoint (see
+ * {@link AgentLoopConfig.maintainContext}). Any value other than "not-needed"
+ * means the checkpoint mutated (or attempted to mutate) durable context, so the
+ * loop ends the current run without the lossy `agent_end` finalization and the
+ * maintenance owner resumes the run on the rewritten context.
+ */
+export type MidRunMaintenanceOutcome = "not-needed" | "pruned" | "compacted" | "promoted" | "failed" | "aborted";
+
+/**
  * Configuration for the agent loop.
  */
 export interface AgentLoopConfig extends SimpleStreamOptions {
@@ -222,6 +231,33 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Use this when tool availability or the system prompt can change mid-turn.
 	 */
 	syncContextBeforeModelCall?: (context: AgentContext) => void | Promise<void>;
+
+	/**
+	 * Cooperative mid-run context-maintenance checkpoint.
+	 *
+	 * Invoked at the top of every loop iteration AFTER pending tool-result /
+	 * steering messages have been materialized into durable context and BEFORE
+	 * {@link syncContextBeforeModelCall} and the model call. This is the only
+	 * boundary where the full unsent context (tool results + dequeued steering)
+	 * is already durable, so a long uninterrupted tool loop can be bounded here
+	 * before it grows past the provider window.
+	 *
+	 * The callback owns the maintenance decision (prune / compact / promote) and
+	 * receives the minimal cancellation-aware lifecycle: `signal` is the
+	 * non-optional loop signal, and `awaitEventDrain(invocationSignal)` waits for
+	 * prior event consumer bodies with loop and invocation cancellation composed.
+	 * Any outcome other than "not-needed" ends the current run with
+	 * `agent_end.stopReason === "maintenance"` (NOT the lossy pause / completed
+	 * finalization); the callback's continuation owner resumes the run on the
+	 * rewritten context.
+	 */
+	maintainContext?: (
+		context: AgentContext,
+		lifecycle: {
+			signal: AbortSignal;
+			awaitEventDrain: (invocationSignal: AbortSignal) => Promise<void>;
+		},
+	) => Promise<MidRunMaintenanceOutcome> | MidRunMaintenanceOutcome;
 
 	/**
 	 * Optional transform applied to tool call arguments before execution.
@@ -532,8 +568,10 @@ export type AgentEvent =
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
-			/** Indicates whether the loop ended normally, suspended, or was cancelled. */
-			stopReason?: "completed" | "paused" | "cancelled";
+			/** Indicates whether the loop ended normally, suspended, cancelled, or entered maintenance. */
+			stopReason?: "completed" | "paused" | "cancelled" | "maintenance";
+			/** Present iff `stopReason === "maintenance"`; the maintenance outcome. */
+			maintenanceOutcome?: MidRunMaintenanceOutcome;
 			/** Present iff `AgentTelemetryConfig` was supplied on this run. */
 			telemetry?: AgentRunSummary;
 			coverage?: AgentRunCoverage;

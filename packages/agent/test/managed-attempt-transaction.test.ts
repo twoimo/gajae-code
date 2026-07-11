@@ -322,6 +322,41 @@ describe("managed retry ownership", () => {
 		expectManagedRunStart(events);
 	});
 
+	it("preserves one managed logical lifecycle across maintenance continuation", async () => {
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "missing-tool", arguments: {} }] },
+				{ content: ["accepted after maintenance"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		});
+		let maintenanceCalls = 0;
+		agent.setMaintainContext(() => (maintenanceCalls++ === 0 ? "compacted" : "not-needed"));
+		const events: Array<{ type: string; stopReason?: string }> = [];
+		const resumed = Promise.withResolvers<void>();
+		const options = { fallbackManaged: true } as const;
+		agent.subscribe(event => {
+			events.push({ type: event.type, stopReason: event.type === "agent_end" ? event.stopReason : undefined });
+			if (event.type === "agent_end" && event.stopReason === "maintenance") {
+				queueMicrotask(() => {
+					void agent.continue(options).then(resumed.resolve, resumed.reject);
+				});
+			}
+		});
+
+		await agent.prompt("run", options);
+		await resumed.promise;
+
+		expect(events.filter(event => event.type === "agent_start")).toHaveLength(1);
+		expect(events.filter(event => event.type === "agent_end" && event.stopReason === "maintenance")).toHaveLength(1);
+		expect(events.filter(event => event.type === "agent_end" && event.stopReason !== "maintenance")).toEqual([
+			{ type: "agent_end", stopReason: "completed" },
+		]);
+	});
+
 	it("dedupes a logical terminal request after an accepted retry", async () => {
 		const mock = createMockModel({ responses: [{ content: ["accepted"] }] });
 		let attempts = 0;

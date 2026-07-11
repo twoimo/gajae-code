@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Cooperative mid-run context maintenance now waits at a cancellation-aware FIFO consumer-drain checkpoint before flushing or rewriting session history. Materialized tool results and steering messages are synchronously canonicalized first; aborted barriers and hook/signal-cancelled compactions settle without rewriting or scheduling a continuation. Promotion, pruning, and compaction each start a clean provider/prompt-cache epoch. Script-aware #2067 unsent-delta accounting remains cache-free and distinct from the lifecycle checkpoint.
+
 ### Added
 
 - Added the additive SDK Q10 model-catalog DTO: `Q10`, `models.list/current`, `models.list`, and `models.current` now return the same paged registry rows with reasoning/thinking capability metadata and current-model readback. `thinking.validLevels` is an `off`-first canonical menu; sparse raw reasoning descriptors remain available for inspection. The public DTO types are exported from `@gajae-code/coding-agent/sdk`, while undocumented `/sdk/models` deep imports remain unavailable. `inherit` is readback-only and malformed descriptors fail with a safe internal SDK error (#2163).
