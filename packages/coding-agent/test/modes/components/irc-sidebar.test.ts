@@ -240,6 +240,28 @@ describe("IrcSplitViewComponent", () => {
 		expect(Bun.stripANSI(rendered.join("\n"))).toContain("… message elided …");
 	});
 
+	it.each(["from", "to"] as const)("bounds a near-budget %s identity before sidebar formatting", field => {
+		const ledger = new IrcObservationLedger();
+		ledger.observe(
+			{
+				observationId: `large-${field}`,
+				kind: "incoming",
+				from: field === "from" ? "a".repeat(15 * 1_024 * 1_024) : "alice",
+				to: field === "to" ? "b".repeat(15 * 1_024 * 1_024) : "bob",
+				text: "",
+				timestamp: 1,
+			},
+			false,
+		);
+		expect(ledger.getSidebarRecords()).toHaveLength(1);
+		const split = new IrcSplitViewComponent(new TestPane("left"), ledger, sidebarTheme);
+		split.setVisible(true);
+
+		const rendered = split.render(80);
+		expect(rendered.length).toBeLessThanOrEqual(IRC_SIDEBAR_MAX_RENDER_ROWS);
+		expect(Bun.stripANSI(rendered.join("\n"))).toContain("…");
+	});
+
 	it("clips the UTF-8 source projection only at complete grapheme boundaries", () => {
 		const ledger = new IrcObservationLedger();
 		addRecord(ledger, "e\u0301👩🏽‍💻界".repeat(20_000), "unicode-near-budget");

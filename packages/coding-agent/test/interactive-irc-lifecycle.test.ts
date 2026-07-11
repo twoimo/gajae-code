@@ -72,6 +72,36 @@ beforeAll(async () => {
 	setThemeInstance(theme);
 });
 
+describe("bounded IRC inline projection", () => {
+	it.each([false, true])("bounds near-budget live and rebuilt bodies when panelVisible=%s", panelVisible => {
+		const chatContainer = new Container();
+		const helpers = new UiHelpers({ chatContainer } as InteractiveModeContext);
+		const message = {
+			observationId: `inline-budget-${panelVisible}`,
+			kind: "incoming" as const,
+			from: "peer",
+			to: "you",
+			text: "x".repeat(15 * 1_024 * 1_024),
+			timestamp: 1,
+		};
+		helpers.addLiveIrcObservationToChat(message, {
+			panelVisible,
+			panelRequestedVisible: panelVisible,
+			sidebarAvailable: true,
+			resolvedToggleKey: null,
+		});
+		const live = chatContainer.render(80);
+		expect(live.length).toBeLessThanOrEqual(2_050);
+		expect(Bun.stripANSI(live.join("\n"))).toContain("… message elided …");
+
+		chatContainer.clear();
+		helpers.addRebuiltIrcObservationToChat(message);
+		const rebuilt = chatContainer.render(80);
+		expect(rebuilt.length).toBeLessThanOrEqual(2_050);
+		expect(Bun.stripANSI(rebuilt.join("\n"))).toContain("… message elided …");
+	});
+});
+
 const incoming = {
 	observationId: "hint",
 	kind: "incoming" as const,
@@ -228,6 +258,22 @@ describe("IRC lifecycle resets", () => {
 			),
 		).toBeUndefined();
 		expect(ledger.getSidebarRecords().some(record => record.text === "resurrected")).toBe(false);
+	});
+
+	it("keeps distinct lone-surrogate observation IDs distinct in replay suppression", () => {
+		const ledger = new IrcObservationLedger();
+		const first = ledger.observe(
+			{ observationId: "\uD800", kind: "incoming", from: "peer", to: "you", text: "first", timestamp: 1 },
+			false,
+		);
+		const second = ledger.observe(
+			{ observationId: "\uD801", kind: "incoming", from: "peer", to: "you", text: "second", timestamp: 2 },
+			false,
+		);
+
+		expect(first).toBeDefined();
+		expect(second).toBeDefined();
+		expect(ledger.getSidebarRecords().map(record => record.text)).toEqual(["first", "second"]);
 	});
 
 	it("fails closed after the bounded unique-identity capacity is exhausted", () => {

@@ -28,7 +28,12 @@ function measureRetainedUtf8Bytes(message: ParsedIrcMessage): number {
 }
 
 function tombstoneIdentity(observationId: string): string {
-	return crypto.createHash("sha256").update(observationId).digest("hex");
+	const hash = crypto.createHash("sha256");
+	hash.update("gjc:irc:observation-id:utf16le:v1\0");
+	for (let offset = 0; offset < observationId.length; offset += 4_096) {
+		hash.update(Buffer.from(observationId.slice(offset, offset + 4_096), "utf16le"));
+	}
+	return hash.digest("hex");
 }
 
 /** Runtime-only IRC observations. This intentionally has no persistence layer. */

@@ -304,7 +304,11 @@ import type {
 	SessionContext,
 	SessionManager,
 } from "./session-manager";
-import { getLatestCompactionEntry, transferSessionMessageIdentity } from "./session-manager";
+import {
+	getLatestCompactionEntry,
+	getSessionMessageObservationId,
+	transferSessionMessageIdentity,
+} from "./session-manager";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { YieldQueue } from "./yield-queue";
 
@@ -2425,6 +2429,7 @@ export class AgentSession {
 						event.message.display,
 						event.message.details,
 						event.message.attribution ?? "agent",
+						getSessionMessageObservationId(event.message),
 					);
 				}
 				if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
@@ -6225,6 +6230,7 @@ export class AgentSession {
 				message.display,
 				message.details,
 				message.attribution ?? "agent",
+				getSessionMessageObservationId(appMessage),
 			);
 			return;
 		}
@@ -6252,6 +6258,7 @@ export class AgentSession {
 			message.display,
 			message.details,
 			message.attribution ?? "agent",
+			getSessionMessageObservationId(appMessage),
 		);
 	}
 

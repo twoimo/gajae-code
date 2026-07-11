@@ -1,6 +1,5 @@
 import {
 	type Component,
-	getSegmenter,
 	padding,
 	renderComponentWithViewportAnchors,
 	TERMINAL,
@@ -12,7 +11,7 @@ import {
 	wrapTextWithAnsi,
 } from "@gajae-code/tui";
 import type { IrcObservationLedger, IrcObservationRecord } from "../irc-observation-ledger";
-import { formatIrcMessageBlock } from "../utils/irc-message";
+import { formatIrcMessageBlock, projectIrcText } from "../utils/irc-message";
 
 export const IRC_SIDEBAR_WIDTH_RATIO = 0.3;
 const IRC_SIDEBAR_MIN_WIDTH = 30;
@@ -21,7 +20,6 @@ export const IRC_SIDEBAR_MAX_RENDER_ROWS = 2_048;
 const IRC_SIDEBAR_MAX_RENDER_SOURCE_UTF8_BYTES = 64 * 1_024;
 const IRC_SIDEBAR_OLDER_MESSAGES_ELISION = "… older IRC messages elided …";
 const IRC_SIDEBAR_MESSAGE_ELISION = "  … message elided …";
-const graphemeSegmenter = getSegmenter();
 
 /** Computes transcript/sidebar widths while preserving at least half the terminal for the transcript. */
 export function computeIrcSplitWidths(width: number): {
@@ -53,18 +51,6 @@ function styleSender(componentTheme: IrcSidebarTheme, sender: string): string {
 	return componentTheme.fg("accent", componentTheme.bold(sender));
 }
 
-function takeSafePrefix(text: string, maxUtf8Bytes: number): { text: string; truncated: boolean; utf8Bytes: number } {
-	let end = 0;
-	let utf8Bytes = 0;
-	for (const part of graphemeSegmenter.segment(text)) {
-		const segmentBytes = Buffer.byteLength(part.segment, "utf8");
-		if (utf8Bytes + segmentBytes > maxUtf8Bytes) break;
-		utf8Bytes += segmentBytes;
-		end = part.index + part.segment.length;
-	}
-	return { text: text.slice(0, end), truncated: end < text.length, utf8Bytes };
-}
-
 function renderSidebarRecord(
 	record: IrcObservationRecord,
 	width: number,
@@ -74,7 +60,7 @@ function renderSidebarRecord(
 ): { lines: string[]; sourceUtf8Bytes: number; truncated: boolean } {
 	const bodyWidth = Math.max(1, width - 2);
 	const sourceLimit = Math.min(maxSourceUtf8Bytes, Math.max(0, maxRows - 1) * bodyWidth);
-	const clipped = takeSafePrefix(record.text, sourceLimit);
+	const clipped = projectIrcText(record.text, sourceLimit);
 	const block = formatIrcMessageBlock({ ...record, text: clipped.text });
 	const sender = styleSender(componentTheme, block.sender);
 	const time = componentTheme.fg("dim", block.time);

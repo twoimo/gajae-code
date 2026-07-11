@@ -9,7 +9,10 @@ import {
 	parseIrcMessage,
 } from "@gajae-code/coding-agent/modes/utils/irc-message";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import { associateSessionMessageEntryId } from "@gajae-code/coding-agent/session/session-manager";
+import {
+	associateSessionMessageObservationId,
+	buildSessionContext,
+} from "@gajae-code/coding-agent/session/session-manager";
 import { Container } from "@gajae-code/tui";
 
 beforeEach(async () => {
@@ -111,7 +114,7 @@ describe("formatIrcMessageBlock", () => {
 		);
 	});
 
-	it("uses stable per-occurrence session entry IDs for UUID-less messages", () => {
+	it("uses stable per-occurrence session observation IDs for UUID-less messages", () => {
 		const firstMessage = {
 			role: "custom",
 			customType: "irc:incoming",
@@ -121,12 +124,53 @@ describe("formatIrcMessageBlock", () => {
 			details: { from: "peer", message: "hello" },
 		} as never;
 		const secondMessage = structuredClone(firstMessage);
-		associateSessionMessageEntryId(firstMessage, "entry-a");
-		associateSessionMessageEntryId(secondMessage, "entry-b");
+		associateSessionMessageObservationId(firstMessage, "session:a:entry:same");
+		associateSessionMessageObservationId(secondMessage, "session:b:entry:same");
 
-		expect(parseIrcMessage(firstMessage)?.observationId).toBe("entry-a");
-		expect(parseIrcMessage(firstMessage)?.observationId).toBe("entry-a");
-		expect(parseIrcMessage(secondMessage)?.observationId).toBe("entry-b");
+		expect(parseIrcMessage(firstMessage)?.observationId).toBe("session:a:entry:same");
+		expect(parseIrcMessage(firstMessage)?.observationId).toBe("session:a:entry:same");
+		expect(parseIrcMessage(secondMessage)?.observationId).toBe("session:b:entry:same");
+	});
+
+	it("keeps a fallback identity immutable when entry association happens after the first parse", () => {
+		const legacyMessage = {
+			role: "custom",
+			customType: "irc:incoming",
+			content: "hello",
+			display: true,
+			attribution: "agent",
+			details: { from: "peer", message: "hello" },
+		} as never;
+		const firstIdentity = parseIrcMessage(legacyMessage)?.observationId;
+		associateSessionMessageObservationId(legacyMessage, "session:later:entry:id");
+
+		expect(parseIrcMessage(legacyMessage)?.observationId).toBe(firstIdentity);
+	});
+
+	it("rehydrates persisted fallback identities and namespaces legacy entry IDs by session", () => {
+		const persistedIdentity = "legacy:sha256:persisted";
+		const entry = (observationId?: string) =>
+			[
+				{
+					type: "custom_message",
+					id: "same-entry",
+					parentId: null,
+					timestamp: "2026-01-01T00:00:00.000Z",
+					customType: "irc:incoming",
+					content: "hello",
+					display: true,
+					attribution: "agent",
+					details: { from: "peer", message: "hello", ...(observationId ? { observationId } : {}) },
+				},
+			] as never;
+		const persisted = buildSessionContext(entry(persistedIdentity), undefined, undefined, "session-a")
+			.messages[0] as never;
+		const sessionA = buildSessionContext(entry(), undefined, undefined, "session-a").messages[0] as never;
+		const sessionB = buildSessionContext(entry(), undefined, undefined, "session-b").messages[0] as never;
+
+		expect(parseIrcMessage(persisted)?.observationId).toBe(persistedIdentity);
+		expect(parseIrcMessage(sessionA)?.observationId).toBe("session:session-a:entry:same-entry");
+		expect(parseIrcMessage(sessionB)?.observationId).toBe("session:session-b:entry:same-entry");
 	});
 
 	it("hashes a near-budget UUID-less body into a fixed-size identity that the ledger can retain", () => {

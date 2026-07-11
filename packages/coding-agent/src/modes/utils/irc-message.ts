@@ -1,8 +1,12 @@
 import * as crypto from "node:crypto";
 import type { AgentMessage } from "@gajae-code/agent-core";
+import { getSegmenter } from "@gajae-code/tui";
 import { sanitizeText } from "@gajae-code/utils";
-import { getSessionMessageEntryId } from "../../session/session-manager";
+import { associateSessionMessageObservationId, getSessionMessageObservationId } from "../../session/session-manager";
 
+const graphemeSegmenter = getSegmenter();
+const IRC_IDENTITY_SOURCE_MAX_UTF8_BYTES = 4 * 1_024;
+const IRC_IDENTITY_DISPLAY_MAX_UTF8_BYTES = 256;
 export type IrcMessageKind = "incoming" | "autoreply" | "relay";
 
 export type ParsedIrcMessage = {
@@ -22,12 +26,30 @@ export interface IrcMessageBlock {
 	readonly bodyLines: readonly string[];
 }
 
-/** Normalizes untrusted IRC identity fields without altering visible grapheme composition. */
+export function projectIrcText(
+	text: string,
+	maxUtf8Bytes: number,
+): { text: string; truncated: boolean; utf8Bytes: number } {
+	let end = 0;
+	let utf8Bytes = 0;
+	for (const part of graphemeSegmenter.segment(text)) {
+		const segmentBytes = Buffer.byteLength(part.segment, "utf8");
+		if (utf8Bytes + segmentBytes > maxUtf8Bytes) break;
+		utf8Bytes += segmentBytes;
+		end = part.index + part.segment.length;
+	}
+	return { text: text.slice(0, end), truncated: end < text.length, utf8Bytes };
+}
+
+/** Normalizes and bounds untrusted IRC identity fields without splitting visible graphemes. */
 export function normalizeIrcIdentity(identity: string): string {
-	return sanitizeText(identity.replace(/[\r\n\t\u2028\u2029]+/g, " ")).replace(
+	const source = projectIrcText(identity, IRC_IDENTITY_SOURCE_MAX_UTF8_BYTES);
+	const sanitized = sanitizeText(source.text.replace(/[\r\n\t\u2028\u2029]+/g, " ")).replace(
 		/[\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/g,
 		"",
 	);
+	const display = projectIrcText(sanitized, IRC_IDENTITY_DISPLAY_MAX_UTF8_BYTES);
+	return source.truncated || display.truncated ? `${display.text}…` : display.text;
 }
 
 /** Formats IRC observations into display-neutral semantic blocks for both IRC surfaces. */
@@ -81,21 +103,32 @@ export function parseIrcMessage(message: IrcCustomMessage): ParsedIrcMessage | u
 	const sourceTimestamp =
 		typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : undefined;
 	const timestamp = sourceTimestamp ?? Date.now();
-	const from = normalizeIrcIdentity(kind === "autoreply" ? "you" : stringDetail(message.details, "from") || "?");
-	const to = normalizeIrcIdentity(kind === "incoming" ? "you" : stringDetail(message.details, "to") || "?");
-	const text = sanitizeText(
+	const rawFrom = kind === "autoreply" ? "you" : stringDetail(message.details, "from") || "?";
+	const rawTo = kind === "incoming" ? "you" : stringDetail(message.details, "to") || "?";
+	const rawText =
 		kind === "incoming"
 			? stringDetail(message.details, "message")
 			: kind === "autoreply"
 				? stringDetail(message.details, "reply")
-				: stringDetail(message.details, "body"),
+				: stringDetail(message.details, "body");
+	const from = normalizeIrcIdentity(rawFrom);
+	const to = normalizeIrcIdentity(rawTo);
+	const text = sanitizeText(rawText);
+	const explicitObservationId = stringDetail(message.details, "observationId");
+	const observationId = associateSessionMessageObservationId(
+		message,
+		explicitObservationId ||
+			getSessionMessageObservationId(message) ||
+			legacyObservationId([
+				kind,
+				sourceTimestamp === undefined ? "null" : String(sourceTimestamp),
+				rawFrom,
+				rawTo,
+				rawText,
+			]),
 	);
-	const observationId = stringDetail(message.details, "observationId");
 	return {
-		observationId:
-			observationId ||
-			getSessionMessageEntryId(message) ||
-			legacyObservationId([kind, sourceTimestamp === undefined ? "null" : String(sourceTimestamp), from, to, text]),
+		observationId,
 		from,
 		to,
 		text,
