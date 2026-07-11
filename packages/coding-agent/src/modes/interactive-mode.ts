@@ -2787,6 +2787,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#resolveEffectiveIrcSidebarToggleKey(): string | null {
 		for (const key of this.keybindings.getKeys("app.irc.sidebar.toggle")) {
+			if (this.editor.hasActionKey(key)) continue;
 			const shadowed = IRC_SIDEBAR_TOGGLE_SHADOWING_ACTIONS.some(action =>
 				this.keybindings.getKeys(action).includes(key),
 			);

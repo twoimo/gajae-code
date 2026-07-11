@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@gajae-code/agent-core";
 import { sanitizeText } from "@gajae-code/utils";
+import { getSessionMessageEntryId } from "../../session/session-manager";
 
 export type IrcMessageKind = "incoming" | "autoreply" | "relay";
 
@@ -65,8 +66,9 @@ export function parseIrcMessage(message: IrcCustomMessage): ParsedIrcMessage | u
 	if (!isIrcCustomType(message.customType)) return undefined;
 
 	const kind = message.customType.slice(4) as IrcMessageKind;
-	const timestamp =
-		typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : Date.now();
+	const sourceTimestamp =
+		typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : undefined;
+	const timestamp = sourceTimestamp ?? Date.now();
 	const from = normalizeIrcIdentity(kind === "autoreply" ? "you" : stringDetail(message.details, "from") || "?");
 	const to = normalizeIrcIdentity(kind === "incoming" ? "you" : stringDetail(message.details, "to") || "?");
 	const text = sanitizeText(
@@ -78,7 +80,10 @@ export function parseIrcMessage(message: IrcCustomMessage): ParsedIrcMessage | u
 	);
 	const observationId = stringDetail(message.details, "observationId");
 	return {
-		observationId: observationId || `legacy:${JSON.stringify([kind, timestamp, from, to, text])}`,
+		observationId:
+			observationId ||
+			getSessionMessageEntryId(message) ||
+			`legacy:${JSON.stringify([kind, sourceTimestamp ?? null, from, to, text])}`,
 		from,
 		to,
 		text,

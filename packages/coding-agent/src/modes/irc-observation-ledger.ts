@@ -14,13 +14,17 @@ export type IrcObservationRecord = Readonly<
 		observedAt: number;
 		sequence: number;
 		expiresAt?: number;
+		retainedUtf8Bytes: number;
 	}
 >;
 
-function estimateRetainedUtf8Bytes(message: ParsedIrcMessage): number {
-	return new TextEncoder().encode(
-		`${message.observationId}\u0000${message.from}\u0000${message.to}\u0000${message.text}\u0000${message.kind}`,
-	).byteLength;
+function measureRetainedUtf8Bytes(message: ParsedIrcMessage): number {
+	let bytes = 4;
+	for (const value of [message.observationId, message.from, message.to, message.text, message.kind]) {
+		bytes += Buffer.byteLength(value, "utf8");
+		if (bytes > MAX_RETAINED_UTF8_BYTES) return bytes;
+	}
+	return bytes;
 }
 
 function tombstoneIdentity(observationId: string): string {
@@ -50,7 +54,7 @@ export class IrcObservationLedger {
 		const record = this.#records.get(observationId);
 		if (!record) return;
 		this.#records.delete(observationId);
-		this.#retainedUtf8Bytes -= estimateRetainedUtf8Bytes(record);
+		this.#retainedUtf8Bytes -= record.retainedUtf8Bytes;
 		this.#addTombstone(observationId);
 		this.#evictedObservationIds.add(observationId);
 	}
@@ -69,7 +73,7 @@ export class IrcObservationLedger {
 		if (existing) return existing;
 		if (this.#tombstones.has(tombstoneIdentity(message.observationId))) return undefined;
 
-		const estimatedBytes = estimateRetainedUtf8Bytes(message);
+		const estimatedBytes = measureRetainedUtf8Bytes(message);
 		if (estimatedBytes > MAX_RETAINED_UTF8_BYTES) {
 			// Keep only the bounded identity tombstone; never retain an oversized payload.
 			this.#addTombstone(message.observationId);
@@ -84,6 +88,7 @@ export class IrcObservationLedger {
 			observedAt,
 			sequence: this.#nextSequence++,
 			...(mode === "ephemeral" ? { expiresAt: observedAt + 10_000 } : {}),
+			retainedUtf8Bytes: estimatedBytes,
 		});
 		this.#records.set(record.observationId, record);
 		this.#retainedUtf8Bytes += estimatedBytes;

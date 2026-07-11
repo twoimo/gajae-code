@@ -21,6 +21,8 @@ function makeContext() {
 		session: {},
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
+	ctx.removeRenderedIrcInlineComponents = observationId => helpers.removeRenderedIrcInlineComponents(observationId);
+	ctx.resetRenderedIrcInlineComponents = () => helpers.resetRenderedIrcInlineComponents();
 	ctx.addMessageToChat = message => helpers.addMessageToChat(message);
 	ctx.getUserMessageText = message => helpers.getUserMessageText(message);
 	return { ctx, ledger, helpers, chatContainer };
@@ -280,7 +282,7 @@ describe("IRC rebuild projection", () => {
 			const transcript = Bun.stripANSI(chatContainer.render(100).join("\n"));
 			expect(transcript.indexOf("before")).toBeLessThan(transcript.indexOf("[IRC]"));
 			expect(transcript.indexOf("[IRC]")).toBeLessThan(transcript.indexOf("after"));
-			expect(helpers.getRenderedIrcInlineComponents()).toHaveLength(1);
+			expect(helpers.getRenderedIrcInlineComponents().size).toBe(1);
 			expect(chatContainer.children).toHaveLength(4);
 		}
 	});

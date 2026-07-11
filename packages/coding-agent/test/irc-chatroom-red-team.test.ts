@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
 	computeIrcSplitWidths,
@@ -18,8 +19,9 @@ import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
 import { type Component, Container, TUI, visibleWidth } from "@gajae-code/tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
-const artifactDirectory = path.resolve(import.meta.dir, "../artifacts");
+const artifactDirectory = path.join(os.tmpdir(), `gjc-irc-chatroom-red-team-${process.pid}`);
 const widths = Array.from({ length: 500 }, (_, index) => index + 1);
+const candidateRef = Bun.env.GITHUB_HEAD_SHA ?? Bun.env.GITHUB_SHA ?? "local-worktree";
 const expectedCaseInventory = [
 	"width-boundaries",
 	"hostile-bodies",
@@ -93,6 +95,8 @@ beforeAll(() => initTheme());
 afterAll(async () => {
 	await fs.mkdir(artifactDirectory, { recursive: true });
 	const summary = {
+		candidateRef,
+		generatedAt: new Date().toISOString(),
 		verdict: cases.every(testCase => testCase.verdict === "pass") ? "pass" : "fail",
 		passed: cases.filter(testCase => testCase.verdict === "pass").length,
 		failed: cases.filter(testCase => testCase.verdict === "fail").length,
@@ -108,6 +112,8 @@ afterAll(async () => {
 		path.join(artifactDirectory, "g001-irc-chatroom-boundary-report.json"),
 		`${JSON.stringify(
 			{
+				candidateRef,
+				generatedAt: new Date().toISOString(),
 				schemaVersion: 1,
 				kind: "algorithm-boundary-report",
 				widths: widthResults,
@@ -128,6 +134,8 @@ afterAll(async () => {
 
 describe("G001 IRC chat-room adversarial QA", () => {
 	it("holds separator-inclusive split arithmetic and final visible-cell widths from 1 through 500", () => {
+		const widthLedger = new IrcObservationLedger();
+		widthLedger.observe(parsed("width-hostile", "안녕 👩🏽‍💻 e\u0301 long-token-without-breaks"), false);
 		for (const width of widths) {
 			const result = computeIrcSplitWidths(width);
 			const normalized = Math.max(0, Math.floor(width));
@@ -138,7 +146,7 @@ describe("G001 IRC chat-room adversarial QA", () => {
 			expect(result.rightWidth === 0 || result.rightWidth >= 30).toBe(true);
 			expect(result.rightWidth === 0).toBe(width < 65);
 			expect(result.leftWidth).toBeGreaterThanOrEqual(Math.floor(normalized * 0.5));
-			const split = new IrcSplitViewComponent(new Lines(["x"]), new IrcObservationLedger(), plainTheme);
+			const split = new IrcSplitViewComponent(new Lines(["x"]), widthLedger, plainTheme);
 			split.setVisible(true);
 			expect(split.render(width).every(row => visibleWidth(row) <= width)).toBe(true);
 		}

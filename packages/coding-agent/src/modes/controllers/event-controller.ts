@@ -103,11 +103,6 @@ type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
 
-type IrcInlineComponentOwner = {
-	removeRenderedIrcInlineComponents?(observationId: string): readonly Component[] | undefined;
-	resetRenderedIrcInlineComponents?(): readonly (readonly Component[])[];
-};
-
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	#lastThinkingCount = 0;
@@ -295,9 +290,7 @@ export class EventController {
 				removedComponents.add(component);
 			}
 			this.#renderedIrcComponents.delete(observationId);
-			for (const component of (
-				this.ctx as InteractiveModeContext & IrcInlineComponentOwner
-			).removeRenderedIrcInlineComponents?.(observationId) ?? []) {
+			for (const component of this.ctx.removeRenderedIrcInlineComponents(observationId) ?? []) {
 				removedComponents.add(component);
 			}
 
@@ -313,9 +306,7 @@ export class EventController {
 	#cleanupExpiredIrcInlineComponents(observationId: string): void {
 		const removedComponents = new Set<Component>(this.#renderedIrcComponents.get(observationId));
 		this.#renderedIrcComponents.delete(observationId);
-		for (const component of (
-			this.ctx as InteractiveModeContext & IrcInlineComponentOwner
-		).removeRenderedIrcInlineComponents?.(observationId) ?? []) {
+		for (const component of this.ctx.removeRenderedIrcInlineComponents(observationId) ?? []) {
 			removedComponents.add(component);
 		}
 		for (const component of removedComponents) this.ctx.chatContainer.removeChild(component);
@@ -419,9 +410,7 @@ export class EventController {
 		const observationIds = new Set<string>(this.#renderedIrcComponents.keys());
 		for (const observationId of this.ctx.ircLedger.drainEvictedObservationIds()) observationIds.add(observationId);
 		this.#cleanupIrcObservationIds([...observationIds]);
-		for (const components of (
-			this.ctx as InteractiveModeContext & IrcInlineComponentOwner
-		).resetRenderedIrcInlineComponents?.() ?? []) {
+		for (const components of this.ctx.resetRenderedIrcInlineComponents()) {
 			for (const component of components) this.ctx.chatContainer.removeChild(component);
 		}
 		this.#renderedIrcComponents.clear();

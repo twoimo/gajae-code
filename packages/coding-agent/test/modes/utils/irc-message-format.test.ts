@@ -3,8 +3,13 @@ import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
 import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { formatIrcMessageBlock, type ParsedIrcMessage } from "@gajae-code/coding-agent/modes/utils/irc-message";
+import {
+	formatIrcMessageBlock,
+	type ParsedIrcMessage,
+	parseIrcMessage,
+} from "@gajae-code/coding-agent/modes/utils/irc-message";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
+import { associateSessionMessageEntryId } from "@gajae-code/coding-agent/session/session-manager";
 import { Container } from "@gajae-code/tui";
 
 beforeEach(async () => {
@@ -104,5 +109,23 @@ describe("formatIrcMessageBlock", () => {
 		expect(formatIrcMessageBlock({ ...message("incoming", "hello"), timestamp: Number.MAX_VALUE }).time).toBe(
 			"--:--",
 		);
+	});
+
+	it("uses stable per-occurrence session entry IDs for UUID-less messages", () => {
+		const firstMessage = {
+			role: "custom",
+			customType: "irc:incoming",
+			content: "hello",
+			display: true,
+			attribution: "agent",
+			details: { from: "peer", message: "hello" },
+		} as never;
+		const secondMessage = structuredClone(firstMessage);
+		associateSessionMessageEntryId(firstMessage, "entry-a");
+		associateSessionMessageEntryId(secondMessage, "entry-b");
+
+		expect(parseIrcMessage(firstMessage)?.observationId).toBe("entry-a");
+		expect(parseIrcMessage(firstMessage)?.observationId).toBe("entry-a");
+		expect(parseIrcMessage(secondMessage)?.observationId).toBe("entry-b");
 	});
 });

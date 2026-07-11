@@ -1,10 +1,11 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 
+import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
 import { CommandController } from "@gajae-code/coding-agent/modes/controllers/command-controller";
 import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
 import { getWelcomeTranscriptReservedRows } from "@gajae-code/coding-agent/modes/interactive-mode";
 import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance, theme } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
 import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
 import { Container, Text } from "@gajae-code/tui";
@@ -256,10 +257,10 @@ describe("IRC lifecycle resets", () => {
 		expect(transcriptIncludesHint(chatContainer)).toBe(true);
 	});
 
-	it("reserves welcome rows from the transcript alone despite a large IRC ledger", () => {
+	it("reserves welcome rows from the transcript instead of the rendered IRC split", () => {
 		const transcript = new Container();
 		transcript.addChild(new Text("transcript\nrow"));
-		const emptyReservation = getWelcomeTranscriptReservedRows(transcript, 80);
+		const transcriptReservation = getWelcomeTranscriptReservedRows(transcript, 80);
 		const ledger = new IrcObservationLedger();
 		for (let index = 0; index < 50; index++) {
 			ledger.observe(
@@ -274,9 +275,10 @@ describe("IRC lifecycle resets", () => {
 				false,
 			);
 		}
+		const split = new IrcSplitViewComponent(transcript, ledger, () => theme);
+		split.setVisible(true);
 
-		expect(ledger.getSidebarRecords()).toHaveLength(50);
-		expect(transcript.children).toHaveLength(1);
-		expect(getWelcomeTranscriptReservedRows(transcript, 80)).toBe(emptyReservation);
+		expect(split.render(80).length).toBeGreaterThan(transcriptReservation);
+		expect(getWelcomeTranscriptReservedRows(transcript, 80)).toBe(transcriptReservation);
 	});
 });

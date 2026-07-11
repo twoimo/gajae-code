@@ -42,6 +42,8 @@ function makeContext(arrival: IrcArrivalSnapshot) {
 		captureIrcArrivalSnapshot,
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
+	ctx.removeRenderedIrcInlineComponents = observationId => helpers.removeRenderedIrcInlineComponents(observationId);
+	ctx.resetRenderedIrcInlineComponents = () => helpers.resetRenderedIrcInlineComponents();
 	const addLiveIrcObservationToChat = vi.fn(
 		(item: Parameters<InteractiveModeContext["addLiveIrcObservationToChat"]>[0], snapshot: IrcArrivalSnapshot) =>
 			helpers.addLiveIrcObservationToChat(item, snapshot),

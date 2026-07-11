@@ -178,6 +178,18 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(rendered.join("\n")).not.toContain("opens sidebar");
 	});
 
+	it("suppresses a toggle hint when a built-in editor action owns the configured key", () => {
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		vi.spyOn(mode.keybindings, "getKeys").mockImplementation(action =>
+			action === "app.irc.sidebar.toggle" ? ["ctrl+c", "alt+i"] : [],
+		);
+		vi.spyOn(mode.editor, "hasActionKey").mockImplementation(key => key === "ctrl+c");
+
+		expect(mode.captureIrcArrivalSnapshot().resolvedToggleKey).toBe("alt+i");
+	});
+
 	it("converts requested-visible state to a closed arrival snapshot below the sidebar width floor", () => {
 		mode.settings.set("irc.enabled", true);
 		mode.settings.set("irc.sidebar.enabled", true);

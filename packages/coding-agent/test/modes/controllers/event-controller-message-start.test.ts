@@ -247,6 +247,8 @@ function createIrcContext() {
 		session: {},
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
+	ctx.removeRenderedIrcInlineComponents = observationId => helpers.removeRenderedIrcInlineComponents(observationId);
+	ctx.resetRenderedIrcInlineComponents = () => helpers.resetRenderedIrcInlineComponents();
 	const addMessageToChat: InteractiveModeContext["addMessageToChat"] = vi.fn((message, options) =>
 		helpers.addMessageToChat(message, options),
 	);
