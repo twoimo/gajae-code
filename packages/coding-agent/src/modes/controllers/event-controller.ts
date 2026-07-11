@@ -265,7 +265,7 @@ export class EventController {
 	#observeIrcMessage(message: CustomMessage): void {
 		const parsed = parseIrcMessage(message);
 		if (!parsed) return;
-		const record = this.ctx.ircLedger.observe(parsed, this.ctx.settings.get("irc.sidebar.enabled") === true);
+		const record = this.ctx.ircLedger.observe(parsed, this.ctx.settings.get("irc.sidebar.enabled") === true || this.ctx.isIrcSidebarWorkflowOwned());
 		const signature = `irc:${record.observationId}`;
 		if (this.#renderedCustomMessages.has(signature)) return;
 		this.#renderedCustomMessages.add(signature);

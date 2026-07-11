@@ -598,6 +598,7 @@ export class AgentDashboard extends Container {
 		const userPrompt = prompt.render(agentCreationUserPrompt, { request: description });
 
 		const { session } = await createAgentSession({
+			agentId: "0-Main:agent-creation-architect",
 			cwd: this.cwd,
 			authStorage: modelRegistry.authStorage,
 			modelRegistry,

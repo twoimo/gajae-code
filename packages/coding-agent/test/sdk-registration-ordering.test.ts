@@ -90,4 +90,20 @@ describe("createAgentSession registry handoff", () => {
 			expect(registry.get("1-Worker")).toBeUndefined();
 		});
 	});
+	it("allows the dashboard architect session to coexist with the live main session", async () => {
+		await withSessionOptions(async (options, registry) => {
+			const main = await createAgentSession({ ...options, agentId: "0-Main", parentTaskPrefix: undefined });
+			try {
+				const architect = await createAgentSession({ ...options, agentId: "0-Main:agent-creation-architect", parentTaskPrefix: undefined });
+				try {
+					expect(registry.get("0-Main")?.session).toBe(main.session);
+					expect(registry.get("0-Main:agent-creation-architect")?.session).toBe(architect.session);
+				} finally {
+					await architect.session.dispose();
+				}
+			} finally {
+				await main.session.dispose();
+			}
+		});
+	});
 });

@@ -31,9 +31,12 @@ export class ReservedAgentIdError extends Error {
 }
 
 
-export interface AgentRegistration {
-	ref: AgentRef;
+export type AgentRegistration = AgentRef & {
 	token: AgentRegistrationToken;
+};
+
+export interface AttachSessionOptions {
+	token?: AgentRegistrationToken;
 }
 
 export interface AgentRef {
@@ -113,7 +116,7 @@ export class AgentRegistry {
 		this.#refs.set(ref.id, ref);
 		this.#tokens.set(ref.id, token);
 		this.#emit({ type: "registered", ref });
-		return { ref, token };
+		return Object.assign(ref, { token }) as AgentRegistration;
 	}
 
 	#matchesToken(id: string, token: AgentRegistrationToken | undefined): boolean {
@@ -131,11 +134,11 @@ export class AgentRegistry {
 	attachSession(
 		id: string,
 		session: AgentSession,
-		token?: AgentRegistrationToken,
 		sessionFile?: string | null,
+		options?: AttachSessionOptions,
 	): void {
 		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesToken(id, token)) return;
+		if (!ref || !this.#matchesToken(id, options?.token)) return;
 		ref.session = session;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
 		ref.lastActivity = Date.now();

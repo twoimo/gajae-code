@@ -2086,7 +2086,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 		registrationToken = registration.token;
 		hasRegistered = true;
-		options.onAgentRegistered?.({ id: resolvedAgentId, token: registration.token, ref: registration.ref });
+		options.onAgentRegistered?.({ id: resolvedAgentId, token: registration.token, ref: registration });
 
 		const { systemPrompt } = await logger.time(
 			"buildSystemPrompt",
@@ -2404,7 +2404,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Attach the live session to the pre-registered ref so peers can route IRC
 		// messages here. Refresh sessionFile in case it was unavailable at pre-register
 		// time. The dispose wrapper below unregisters on teardown.
-		agentRegistry.attachSession(resolvedAgentId, session, registrationToken, sessionManager.getSessionFile() ?? null);
+		agentRegistry.attachSession(resolvedAgentId, session, sessionManager.getSessionFile() ?? null, { token: registrationToken });
 		{
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {

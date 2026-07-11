@@ -60,6 +60,12 @@
 11. Deferred injection waits until the recipient is no longer streaming; `#flushPendingBackgroundExchanges` appends the custom messages through normal `message_start`/`message_end` external events so persistence and listeners see them.
 12. `send` aggregates `delivered`, `replies`, `failed`, and `notFound`, then returns one text summary plus matching `details`.
 
+### Ralplan IRC consensus operations
+
+Validated `ralplan --irc` role sessions may additionally use the bounded consensus operations: the parent alone starts, ends, checks, reports failure for, or degrades a pass; bound Planner, Architect, and Critic sessions only exchange observations. A pass does not open deliberation until all three live, token-matched sessions have attached and the required Critic → Planner delivery is acknowledged. The parent persists the rendered transcript as the canonical deliberation artifact before the interactive boundary interjection affordance is shown. Timeout or write failure degrades the run through the canonical ralplan state; failed persistence leaves the in-memory pass retryable rather than silently latching it.
+
+These operations are parent/run/stage/generation scoped. Child-supplied run coordinates do not authorize control actions, stale registrations cannot inherit bindings, and IRC degradation is one-way for that ralplan run; legacy non-IRC ralplan remains unchanged.
+
 ## Modes / Variants
 - `list`: enumerate visible peers and logical channels.
 - `send` direct message: one exact peer id, default synchronous auto-reply.
@@ -119,8 +125,9 @@
 
 ## Sidebar
 
-- `irc.sidebar.enabled` defaults to `false`. When it and `irc.enabled` are enabled, `app.irc.sidebar.toggle` (default `Alt+I`, remappable) shows or hides a read-only IRC sidebar.
-- The sidebar retains the active runtime UI session's IRC observations only. It is not written to disk or restored into another session. Observations first seen while the sidebar setting is off remain inline; observations first seen while it is on use a fixed 10-second deadline from their observation time.
+- `irc.sidebar.enabled` defaults to `false` and remains the manual opt-in for `Alt+I` (`app.irc.sidebar.toggle`, remappable).
+- A validated interactive ralplan IRC pass temporarily owns the sidebar: it is visible and IRC observations are admitted even when `irc.sidebar.enabled` is `false`. Closing, degrading, or resetting that pass releases only workflow ownership; the manual setting continues to control normal sidebar use.
+- The sidebar retains the active runtime UI session's IRC observations only. It is not written to disk or restored into another session. Observations first seen while neither manual nor validated workflow ownership is active remain inline; admitted observations use a fixed 10-second deadline from their observation time.
 - While the sidebar is visible, Kitty terminals keep rendering real images in the transcript (Kitty placements are cursor-neutral and compose safely with the split). Cursor-advancing protocols — iTerm2 inline images and raw SIXEL sequences — are represented by compact text placeholders so they cannot corrupt the split. Hiding the sidebar restores normal rendering for every protocol.
 - A successful `/fork` starts a new logical UI session: it clears the sidebar ledger, hides the panel, and resets roster-delivery state. Failed or cancelled forks preserve the current runtime sidebar state.
 

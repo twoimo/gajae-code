@@ -73,6 +73,7 @@ describe("interactive ralplan IRC sidebar lifecycle", () => {
 	});
 
 	it("interactive IRC pass start opens the workflow-owned sidebar", () => {
+		session.settings.set("irc.sidebar.enabled", false);
 		notify?.(lifecycle("open"));
 		expect(sidebar().visible).toBe(true);
 	});
@@ -104,14 +105,21 @@ describe("interactive ralplan IRC sidebar lifecycle", () => {
 		expect(sidebar().visible).toBe(true);
 	});
 
-	it("boundary ask occurs after deliberation receipt and never during active pass", () => {
-		const ask = vi.fn();
-		mode.onRalplanIrcBoundaryAskReady(ask);
+	it("boundary ask presents the interjection affordance and submits its text as a user message", async () => {
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue();
+		vi.spyOn(mode, "showHookEditor").mockResolvedValue("Ask the parent to reconsider the rollout.");
 		notify?.(lifecycle("open"));
-		notify?.(lifecycle("required_dm_delivered"));
-		notify?.(lifecycle("close"));
-		expect(ask).not.toHaveBeenCalled();
 		notify?.(lifecycle("boundary_ask_ready"));
-		expect(ask).toHaveBeenCalledWith(lifecycle("boundary_ask_ready"));
+		await Bun.sleep(0);
+		expect(prompt).toHaveBeenCalledWith("Ask the parent to reconsider the rollout.", undefined);
+	});
+
+	it("does not prompt an interjection after workflow ownership is released", async () => {
+		const ask = vi.spyOn(mode, "showHookEditor");
+		notify?.(lifecycle("open"));
+		notify?.(lifecycle("close"));
+		notify?.(lifecycle("boundary_ask_ready"));
+		await Bun.sleep(0);
+		expect(ask).not.toHaveBeenCalled();
 	});
 });

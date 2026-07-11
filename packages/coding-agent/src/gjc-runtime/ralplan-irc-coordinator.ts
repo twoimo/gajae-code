@@ -130,12 +130,13 @@ export class RalplanIrcCoordinator {
 	async degrade(reason: string): Promise<void> {
 		if (this.#state === "degraded" || this.#state === "closed" || !this.#cursor) return;
 		const cursor = this.#cursor;
+		await degradeRalplanIrcPass({ cwd: this.options.cwd, sessionId: cursor.parentSessionId, runId: cursor.runId, stageN: cursor.stageN, reason });
+		if (!this.#matches(cursor)) return;
 		this.#state = "degraded";
 		this.childBindings.clear();
 		this.#clearTimer();
 		this.#completedPass = undefined;
 		this.#emitLifecycle({ type: "close", ...cursor });
-		await degradeRalplanIrcPass({ cwd: this.options.cwd, sessionId: cursor.parentSessionId, runId: cursor.runId, stageN: cursor.stageN, reason });
 	}
 	close(): void { if (this.#state === "closed") return; const cursor = this.#cursor; this.#state = "closed"; this.childBindings.clear(); this.#clearTimer(); if (cursor) this.#emitLifecycle({ type: "close", ...cursor }); }
 

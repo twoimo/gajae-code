@@ -123,6 +123,7 @@ import { addChatChild, UiHelpers } from "./utils/ui-helpers";
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
 const COMPOSER_NEWLINE_HINT = process.platform === "win32" ? "Alt+Enter/Ctrl+J" : "Shift+Enter/Ctrl+J";
 export const DEFAULT_COMPOSER_PLACEHOLDER = `Type your message... ${COMPOSER_NEWLINE_HINT}: New line · Ctrl+C: Clear · Ctrl+R: Search history · Shift+Tab: Reasoning`;
+const RALPLAN_IRC_BOUNDARY_INTERJECT_TITLE = "IRC deliberation complete — add an interjection";
 const WELCOME_RESERVED_CONTAINER_CHILD_LIMIT = 8;
 const FRIENDLY_KEY_PARTS: Record<string, string> = {
 	alt: "Alt",
@@ -396,6 +397,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#ircSidebarWorkflowOwned = false;
 	#ralplanIrcLifecycleUnsubscribe?: () => void;
 	#ralplanIrcBoundaryAskListeners = new Set<(event: RalplanIrcLifecycleEvent) => void>();
+	#ralplanIrcWorkflowOwner?: Pick<RalplanIrcLifecycleEvent, "parentSessionId" | "runId" | "stageN">;
 
 	constructor(
 		session: AgentSession,
@@ -2690,7 +2692,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	toggleIrcSidebar(): void {
-		if (!this.#isIrcSidebarAvailable()) return;
+		if (!this.#isIrcSidebarAvailable() || this.settings.get("irc.sidebar.enabled") !== true) return;
 		this.#ircSidebarManualVisible = !this.#ircSidebarManualVisible;
 		this.#syncIrcSidebarVisibility();
 	}
@@ -2701,10 +2703,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncIrcSidebarVisibility();
 	}
 
+	isIrcSidebarWorkflowOwned(): boolean {
+		return this.#ircSidebarWorkflowOwned;
+	}
+
 	resetIrcSidebarSession(): void {
 		this.ircLedger.reset();
 		this.#eventController.resetIrcObservations();
 		this.#ircSidebarManualVisible = false;
+		this.#ralplanIrcWorkflowOwner = undefined;
 		this.#ircSidebarWorkflowOwned = false;
 		this.#syncIrcSidebarVisibility();
 	}
@@ -2715,28 +2722,45 @@ export class InteractiveMode implements InteractiveModeContext {
 		return () => this.#ralplanIrcBoundaryAskListeners.delete(listener);
 	}
 
+	#hasRalplanIrcWorkflowOwnership(event: RalplanIrcLifecycleEvent): boolean {
+		const owner = this.#ralplanIrcWorkflowOwner;
+		return this.#ircSidebarWorkflowOwned && owner?.parentSessionId === event.parentSessionId && owner.runId === event.runId && owner.stageN === event.stageN;
+	}
+
+	async #promptRalplanIrcBoundaryInterjection(event: RalplanIrcLifecycleEvent): Promise<void> {
+		if (!this.#hasRalplanIrcWorkflowOwnership(event)) return;
+		const text = (await this.showHookEditor(RALPLAN_IRC_BOUNDARY_INTERJECT_TITLE, undefined, undefined, { promptStyle: true }))?.trim();
+		if (!text || !this.#hasRalplanIrcWorkflowOwnership(event)) return;
+		await this.withLocalSubmission(text, () => this.session.prompt(text, this.session.isStreaming ? { streamingBehavior: "followUp", followUpQueuePolicy: "sequential" } : undefined));
+	}
+
 	#handleRalplanIrcLifecycle(event: RalplanIrcLifecycleEvent): void {
 		if (event.type === "open") {
+			this.#ralplanIrcWorkflowOwner = event;
 			this.#ircSidebarWorkflowOwned = true;
 			this.#syncIrcSidebarVisibility();
 			return;
 		}
 		if (event.type === "close") {
-			this.#ircSidebarWorkflowOwned = false;
-			this.#syncIrcSidebarVisibility();
+			if (this.#hasRalplanIrcWorkflowOwnership(event)) {
+				this.#ralplanIrcWorkflowOwner = undefined;
+				this.#ircSidebarWorkflowOwned = false;
+				this.#syncIrcSidebarVisibility();
+			}
 			return;
 		}
 		if (event.type === "boundary_ask_ready") {
 			for (const listener of this.#ralplanIrcBoundaryAskListeners) listener(event);
+			void this.#promptRalplanIrcBoundaryInterjection(event).catch(error => this.showError(error instanceof Error ? error.message : String(error)));
 		}
 	}
 
 	#isIrcSidebarAvailable(): boolean {
-		return this.settings.get("irc.enabled") === true && this.settings.get("irc.sidebar.enabled") === true;
+		return this.settings.get("irc.enabled") === true;
 	}
 
 	#syncIrcSidebarVisibility(): void {
-		this.#ircSplitView.setVisible(this.#isIrcSidebarAvailable() && (this.#ircSidebarManualVisible || this.#ircSidebarWorkflowOwned));
+		this.#ircSplitView.setVisible(this.#isIrcSidebarAvailable() && (this.#ircSidebarWorkflowOwned || (this.#ircSidebarManualVisible && this.settings.get("irc.sidebar.enabled") === true)));
 		this.#invalidateIrcSidebarRender();
 		this.ui.requestRender();
 	}

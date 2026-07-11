@@ -207,6 +207,7 @@ export interface InteractiveModeContext {
 	toggleIrcSidebar(): void;
 	applyIrcSidebarAvailability(enabled: boolean): void;
 	resetIrcSidebarSession(): void;
+	isIrcSidebarWorkflowOwned(): boolean;
 	// Command handling
 	handleExportCommand(text: string): Promise<void>;
 	handleShareCommand(): Promise<void>;
