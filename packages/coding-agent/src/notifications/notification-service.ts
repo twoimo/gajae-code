@@ -21,22 +21,57 @@ import {
 	type NotificationConfig,
 	tokenFingerprint,
 } from "./config";
-import { daemonPaths, HEARTBEAT_TTL_MS } from "./daemon-paths";
+import { type DaemonPaths, daemonPaths, HEARTBEAT_TTL_MS } from "./daemon-paths";
 import type { DaemonState } from "./telegram-daemon";
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
+
+/**
+ * Telegram bot-token shape: `<digits>:<base64url-ish>`. Used to redact a
+ * token-shaped substring from a diagnostic even when the exact configured token
+ * is not known to the caller (e.g. a token echoed inside a fetch error URL).
+ */
+const TELEGRAM_TOKEN_PATTERN = /\d{6,}:[A-Za-z0-9_-]{20,}/g;
+
+/**
+ * Strip secrets from a human-facing diagnostic string. Redacts the configured
+ * bot token (exact match) and any token-shaped substring so health/test details
+ * can never leak a credential regardless of where the string originated.
+ */
+export function sanitizeDiagnostic(text: string, token?: string): string {
+	let out = text;
+	const trimmed = token?.trim();
+	if (trimmed) out = out.split(trimmed).join("<redacted>");
+	return out.replace(TELEGRAM_TOKEN_PATTERN, "<redacted>");
+}
 
 /** Minimal filesystem surface the service needs; injectable for tests. */
 export interface NotificationServiceFs {
 	readdir(dir: string): Promise<string[]>;
 	readFile(file: string, encoding: "utf8"): Promise<string>;
 	unlink(file: string): Promise<void>;
+	/**
+	 * Atomically create `file` with O_EXCL semantics: resolves `true` when this
+	 * call created it, `false` when it already existed. Used to hold the daemon
+	 * steal-mutex ({@link DaemonPaths.steal}) during owner-bound lock removal so
+	 * recovery and a concurrent daemon takeover are mutually exclusive.
+	 */
+	createExclusive(file: string): Promise<boolean>;
 }
 
 const nodeServiceFs: NotificationServiceFs = {
 	readdir: dir => fsPromises.readdir(dir),
 	readFile: (file, encoding) => fsPromises.readFile(file, encoding),
 	unlink: file => fsPromises.unlink(file),
+	createExclusive: async file => {
+		try {
+			const handle = await fsPromises.open(file, "wx", 0o600);
+			await handle.close();
+			return true;
+		} catch {
+			return false;
+		}
+	},
 };
 
 /** Injectable dependencies shared across service operations. */
@@ -141,7 +176,21 @@ interface EndpointView {
 	sessionId: string;
 	pid: number | undefined;
 	stale: boolean;
-	updatedAt: number | undefined;
+}
+
+type EndpointLiveness = "live" | "dead" | "unknown";
+
+/**
+ * Classify an endpoint using owner-proof semantics. An endpoint is only `dead`
+ * with positive proof: an explicit `stale` tombstone, or a recorded pid that is
+ * confirmed not alive. A PID-less endpoint is `unknown` (not provably dead) and
+ * must never be treated as dead — removing it could delete a live session's
+ * discovery file that simply omitted a pid.
+ */
+function endpointLiveness(view: EndpointView, pidAlive: (pid: number) => boolean): EndpointLiveness {
+	if (view.stale) return "dead";
+	if (view.pid === undefined) return "unknown";
+	return pidAlive(view.pid) ? "live" : "dead";
 }
 
 async function readEndpointView(fs: NotificationServiceFs, file: string): Promise<EndpointView | undefined> {
@@ -159,12 +208,10 @@ async function readEndpointView(fs: NotificationServiceFs, file: string): Promis
 	}
 	if (!parsed || typeof parsed !== "object") return undefined;
 	const rec = parsed as Record<string, unknown>;
-	const sessionId = typeof rec.sessionId === "string" ? rec.sessionId : path.basename(file, ".json");
 	return {
-		sessionId,
+		sessionId: typeof rec.sessionId === "string" ? rec.sessionId : path.basename(file, ".json"),
 		pid: typeof rec.pid === "number" ? rec.pid : undefined,
 		stale: rec.stale === true,
-		updatedAt: typeof rec.updatedAt === "number" ? rec.updatedAt : undefined,
 	};
 }
 
@@ -220,7 +267,8 @@ export interface DaemonHealth {
 export interface EndpointHealth {
 	total: number;
 	live: number;
-	stale: number;
+	dead: number;
+	unknown: number;
 	unreadable: number;
 }
 
@@ -259,9 +307,12 @@ async function probeTelegramReachability(
 			const username = payload.result?.username;
 			return { ok: true, detail: username ? `reachable as @${username}` : "reachable" };
 		}
-		return { ok: false, detail: payload?.description ?? `Telegram getMe failed (HTTP ${response.status})` };
+		return {
+			ok: false,
+			detail: sanitizeDiagnostic(payload?.description ?? `Telegram getMe failed (HTTP ${response.status})`, token),
+		};
 	} catch (err) {
-		return { ok: false, detail: err instanceof Error ? err.message : "network error" };
+		return { ok: false, detail: sanitizeDiagnostic(err instanceof Error ? err.message : "network error", token) };
 	}
 }
 
@@ -335,7 +386,8 @@ export async function checkNotificationHealth(opts: HealthOptions): Promise<Noti
 	const dir = endpointDir(stateRoot);
 	const files = await listEndpointFiles(fs, dir);
 	let live = 0;
-	let stale = 0;
+	let dead = 0;
+	let unknownEndpoints = 0;
 	let unreadable = 0;
 	for (const name of files) {
 		const view = await readEndpointView(fs, path.join(dir, name));
@@ -343,19 +395,31 @@ export async function checkNotificationHealth(opts: HealthOptions): Promise<Noti
 			unreadable += 1;
 			continue;
 		}
-		const dead = view.pid === undefined || !pidAlive(view.pid);
-		if (view.stale || dead) stale += 1;
-		else live += 1;
+		switch (endpointLiveness(view, pidAlive)) {
+			case "live":
+				live += 1;
+				break;
+			case "dead":
+				dead += 1;
+				break;
+			default:
+				unknownEndpoints += 1;
+				break;
+		}
 	}
-	const endpoints: EndpointHealth = { total: files.length, live, stale, unreadable };
-	if (stale > 0 || unreadable > 0) {
+	const endpoints: EndpointHealth = { total: files.length, live, dead, unknown: unknownEndpoints, unreadable };
+	if (dead > 0 || unreadable > 0) {
 		checks.push({
 			name: "endpoints",
 			level: "warn",
-			detail: `${stale} stale / ${unreadable} unreadable of ${files.length} endpoint file(s); run recovery`,
+			detail: `${dead} dead / ${unreadable} unreadable of ${files.length} endpoint file(s); run recovery`,
 		});
 	} else {
-		checks.push({ name: "endpoints", level: "ok", detail: `${live} live endpoint file(s)` });
+		checks.push({
+			name: "endpoints",
+			level: "ok",
+			detail: `${live} live, ${unknownEndpoints} unverified endpoint file(s)`,
+		});
 	}
 
 	// Optional network reachability probe.
@@ -434,14 +498,17 @@ export async function sendNotificationTest(opts: TestOptions): Promise<Notificat
 			ok: false,
 			adapter: "telegram",
 			chatId: cfg.chatId,
-			detail: payload?.description ?? `Telegram sendMessage failed (HTTP ${response.status})`,
+			detail: sanitizeDiagnostic(
+				payload?.description ?? `Telegram sendMessage failed (HTTP ${response.status})`,
+				cfg.botToken,
+			),
 		};
 	} catch (err) {
 		return {
 			ok: false,
 			adapter: "telegram",
 			chatId: cfg.chatId,
-			detail: err instanceof Error ? err.message : "network error",
+			detail: sanitizeDiagnostic(err instanceof Error ? err.message : "network error", cfg.botToken),
 		};
 	}
 }
@@ -459,7 +526,13 @@ export interface RecoveredEndpoint {
 	reason: "stale-flag" | "dead-pid";
 }
 
-export type DaemonRecoveryAction = "none" | "cleared-dead-owner-lock" | "left-active" | "orphan-lock-left";
+export type DaemonRecoveryAction =
+	| "none"
+	| "cleared-dead-owner-lock"
+	| "left-active"
+	| "left-contended"
+	| "owner-superseded"
+	| "orphan-lock-left";
 
 export interface NotificationRecoveryReport {
 	endpointsScanned: number;
@@ -481,10 +554,47 @@ export interface RecoveryOptions {
 }
 
 /**
+ * Owner-bound removal of a dead daemon's lock. Closes the classic
+ * check-then-unlink TOCTOU: a naive `unlink(lock)` after observing a dead owner
+ * can delete a *new* live owner's lock if a daemon took over in between. This
+ * primitive re-checks ownership while holding the same steal-mutex the daemon's
+ * own takeover path uses ({@link DaemonPaths.steal}), so the two are mutually
+ * exclusive, and unlinks only when the recorded owner is still the same
+ * confirmed-dead process.
+ */
+async function removeDeadOwnerLock(
+	fs: NotificationServiceFs,
+	paths: DaemonPaths,
+	pidAlive: (pid: number) => boolean,
+	expected: DaemonState,
+): Promise<"cleared" | "contended" | "superseded" | "now-alive" | "unlink-failed"> {
+	if (!(await fs.createExclusive(paths.steal))) return "contended";
+	try {
+		const current = await readDaemonStateFile(fs, paths.state);
+		if (!current || current.ownerId !== expected.ownerId || current.pid !== expected.pid) {
+			return "superseded";
+		}
+		if (pidAlive(current.pid)) return "now-alive";
+		try {
+			await fs.unlink(paths.lock);
+			return "cleared";
+		} catch {
+			return "unlink-failed";
+		}
+	} finally {
+		await fs.unlink(paths.steal).catch(() => undefined);
+	}
+}
+
+/**
  * Ownership-protected cleanup. Removes only DEAD-owner artifacts:
- * per-session endpoint files flagged stale or whose pid is dead, and a daemon
- * lock whose recorded owner pid is confirmed dead. Never removes a live owner's
- * lock, never deletes unreadable files, and never kills a process.
+ * per-session endpoint files with positive proof of death (a stale tombstone or
+ * a dead recorded pid), and a daemon lock whose recorded owner is confirmed
+ * dead. A PID-less endpoint is treated as unknown (not dead) and kept. The
+ * daemon lock is removed through {@link removeDeadOwnerLock}, an owner-bound
+ * primitive that re-checks ownership under the daemon steal-mutex so it can
+ * never race a concurrent takeover. Never removes a live owner's lock, never
+ * deletes unreadable files, and never kills a process.
  */
 export async function recoverNotifications(opts: RecoveryOptions): Promise<NotificationRecoveryReport> {
 	const deps = opts.deps ?? {};
@@ -504,8 +614,9 @@ export async function recoverNotifications(opts: RecoveryOptions): Promise<Notif
 			unreadable += 1;
 			continue;
 		}
-		const dead = view.pid === undefined || !pidAlive(view.pid);
-		if (!view.stale && !dead) {
+		if (endpointLiveness(view, pidAlive) !== "dead") {
+			// Keep live AND unknown (PID-less) endpoints: only positive proof of
+			// death (a stale tombstone or a dead pid) authorizes removal.
 			kept += 1;
 			continue;
 		}
@@ -545,22 +656,28 @@ export async function recoverNotifications(opts: RecoveryOptions): Promise<Notif
 			pid: state.pid,
 		};
 	} else if (hasLock) {
-		try {
-			await fs.unlink(paths.lock);
-			daemon = {
-				action: "cleared-dead-owner-lock",
-				detail: `cleared lock of dead owner pid ${state.pid}`,
-				ownerId: state.ownerId,
-				pid: state.pid,
-			};
-		} catch {
-			daemon = {
-				action: "orphan-lock-left",
-				detail: `could not remove lock of dead owner pid ${state.pid}`,
-				ownerId: state.ownerId,
-				pid: state.pid,
-			};
-		}
+		const outcome = await removeDeadOwnerLock(fs, paths, pidAlive, state);
+		const action: DaemonRecoveryAction =
+			outcome === "cleared"
+				? "cleared-dead-owner-lock"
+				: outcome === "now-alive"
+					? "left-active"
+					: outcome === "superseded"
+						? "owner-superseded"
+						: outcome === "contended"
+							? "left-contended"
+							: "orphan-lock-left";
+		const detail =
+			outcome === "cleared"
+				? `cleared lock of dead owner pid ${state.pid}`
+				: outcome === "now-alive"
+					? `owner pid ${state.pid} became live during recovery; lock left untouched`
+					: outcome === "superseded"
+						? "a new daemon owner took over during recovery; lock left untouched"
+						: outcome === "contended"
+							? "another daemon is starting or stealing the lock; lock left untouched"
+							: `could not remove lock of dead owner pid ${state.pid}`;
+		daemon = { action, detail, ownerId: state.ownerId, pid: state.pid };
 	} else {
 		daemon = {
 			action: "none",

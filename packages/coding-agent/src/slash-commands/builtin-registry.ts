@@ -485,21 +485,33 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "notify",
 		priority: 30,
-		description: "Notification status, health, test and recovery",
-		acpDescription: "Notification status, health, test and recovery",
+		description: "Notification status, health, test, recovery, and session on/off",
+		acpDescription: "Notification status, health, test, recovery, and session on/off",
 		subcommands: [
+			{ name: "on", description: "Enable notifications for this session" },
+			{ name: "off", description: "Disable notifications for this session" },
 			{ name: "status", description: "Show notification configuration (no secrets)" },
 			{ name: "health", description: "Config, daemon-ownership and endpoint health" },
 			{ name: "test", description: "Send a test notification", usage: "[message]" },
 			{ name: "recovery", description: "Clear dead-owner locks and stale endpoint files" },
 			{ name: "setup", description: "How to pair a Telegram bot (run in a terminal)" },
 		],
-		inlineHint: "[status|health|test|recovery|setup]",
-		acpInputHint: "[status|health|test|recovery|setup]",
+		inlineHint: "[on|off|status|health|test|recovery|setup]",
+		acpInputHint: "[on|off|status|health|test|recovery|setup]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
 			const action = verb || "status";
+			// `on`/`off` are session-local runtime controls owned by the
+			// notifications extension command (`api.registerCommand("notify")`),
+			// which holds the live per-session server/disable state. Pass them
+			// through untouched — never consume them — so this builtin cannot
+			// shadow that control. Everything below is config/service diagnostics
+			// the extension does not implement, so the builtin owns them exclusively
+			// (and the extension therefore never consumes them).
+			if (action === "on" || action === "off") {
+				return { prompt: command.text };
+			}
 			const stateRoot = path.join(runtime.cwd, ".gjc", "state");
 			switch (action) {
 				case "status":
@@ -526,7 +538,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 						runtime,
 					);
 				default:
-					return usage(`Usage: /notify [status|health|test|recovery|setup] (got "${action}")`, runtime);
+					return usage(`Usage: /notify [on|off|status|health|test|recovery|setup] (got "${action}")`, runtime);
 			}
 		},
 	},
