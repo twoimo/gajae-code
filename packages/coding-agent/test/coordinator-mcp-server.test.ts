@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,10 +8,12 @@ import {
 	boundedEventWatchTimeoutMs,
 	boundedPollIntervalMs,
 	boundedRuntimePromptAckTimeoutMs,
+	boundedRuntimeReadinessTimeoutMs,
 	COORDINATOR_AWAIT_TURN_TIMEOUT_MAX_MS,
 	COORDINATOR_EVENT_WATCH_TIMEOUT_MAX_MS,
 	COORDINATOR_MCP_TOOL_NAMES,
 	COORDINATOR_POLL_INTERVAL_MAX_MS,
+	COORDINATOR_RUNTIME_READINESS_TIMEOUT_MAX_MS,
 	coordinatorOwnerIsolationProbe,
 	createCoordinatorMcpServer,
 } from "../src/coordinator-mcp/server";
@@ -31,6 +32,87 @@ async function tempRoot(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-coordinator-server-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+async function writeReadyMarker(input: {
+	sessionId: string;
+	launchId: string;
+	readinessMarkerFile: string;
+}): Promise<void> {
+	await fs.mkdir(path.dirname(input.readinessMarkerFile), { recursive: true });
+	await fs.writeFile(
+		input.readinessMarkerFile,
+		`${JSON.stringify({
+			schema_version: 1,
+			session_id: input.sessionId,
+			launch_id: input.launchId,
+			state: "ready_for_input",
+			event: "interactive_input_ready",
+			source: "gjc_interactive_runtime",
+			ready_for_input: true,
+			created_at: "2026-07-11T00:00:00.000Z",
+		})}\n`,
+	);
+}
+function attestedStart<T extends Record<string, unknown>>(
+	input: { sessionId: string; launchId: string; readinessMarkerFile: string },
+	result: T,
+): T & { sessionId: string; launchId: string; readinessMarkerFile: string } {
+	return {
+		tmuxSession: input.sessionId,
+		tmuxTarget: `${input.sessionId}:0.0`,
+		tmuxSocketKey: PRIVATE_SOCKET,
+		tmuxOwnerServerKey: PRIVATE_SOCKET,
+		tmuxOwnerGeneration: `${input.sessionId}-generation`,
+		tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+		tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+		paneId: "%24",
+		...result,
+		tmuxNativeSessionId:
+			typeof result.tmuxNativeSessionId === "string"
+				? result.tmuxNativeSessionId
+				: `$${typeof result.tmuxSession === "string" ? result.tmuxSession : input.sessionId}`,
+		sessionId: input.sessionId,
+		launchId: input.launchId,
+		readinessMarkerFile: input.readinessMarkerFile,
+	};
+}
+
+async function readyStart<T extends Record<string, unknown>>(
+	input: { sessionId: string; launchId: string; readinessMarkerFile: string },
+	result: T,
+): Promise<T & { sessionId: string; launchId: string; readinessMarkerFile: string }> {
+	await writeReadyMarker(input);
+	return attestedStart(input, result);
+}
+
+function launchEnvValue(command: string[], name: string): string {
+	const sessionCommand = command.at(-1) ?? "";
+	const match = new RegExp(`${name}='([^']+)'`).exec(sessionCommand);
+	if (!match?.[1]) throw new Error(`missing_${name.toLowerCase()}`);
+	return match[1];
+}
+
+async function writeReadyMarkerFromTmuxLaunch(command: string[]): Promise<void> {
+	await writeReadyMarker({
+		sessionId: launchEnvValue(command, "GJC_COORDINATOR_SESSION_ID"),
+		launchId: launchEnvValue(command, "GJC_COORDINATOR_SESSION_LAUNCH_ID"),
+		readinessMarkerFile: launchEnvValue(command, "GJC_COORDINATOR_SESSION_READINESS_FILE"),
+	});
+}
+
+function startedSessionId(result: Record<string, unknown>): string {
+	const session = result.session as { session_id?: unknown } | undefined;
+	if (typeof session?.session_id !== "string") throw new Error("missing_started_session_id");
+	return session.session_id;
+}
+
+async function waitForCondition(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!(await predicate())) {
+		if (Date.now() >= deadline) throw new Error("condition_timeout");
+		await Bun.sleep(5);
+	}
 }
 function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -112,6 +194,14 @@ async function privateSessionProof(stateRoot: string, sessionId: string): Promis
 	) as Record<string, unknown>;
 }
 
+function privateTmuxCommandRunner(command: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+	if (tmuxSubcommand(command) === "has-session") return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+	if (tmuxSubcommand(command) === "display-message")
+		return Promise.resolve({ exitCode: 0, stdout: tmuxIdentity(command), stderr: "" });
+	if (isTmuxPromptDeliveryCommand(command)) return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+	return Promise.resolve({ exitCode: 1, stdout: "", stderr: "unexpected command" });
+}
+
 function expectPrivateTmuxMutations(commands: string[][], socketKey = PRIVATE_SOCKET): void {
 	for (const command of commands.filter(isTmuxPromptDeliveryCommand))
 		expect(command).toEqual(["tmux", "-L", socketKey, ...command.slice(3)]);
@@ -133,6 +223,11 @@ describe("Coordinator MCP server protocol", () => {
 		expect(boundedPollIntervalMs(10_000)).toBe(10_000);
 		expect(boundedPollIntervalMs(60_000)).toBe(COORDINATOR_POLL_INTERVAL_MAX_MS);
 		expect(boundedRuntimePromptAckTimeoutMs(3_600_000)).toBe(300_000);
+	});
+
+	it("bounds runtime readiness independently from prompt acknowledgement", () => {
+		expect(boundedRuntimeReadinessTimeoutMs(250)).toBe(250);
+		expect(boundedRuntimeReadinessTimeoutMs(3_600_000)).toBe(COORDINATOR_RUNTIME_READINESS_TIMEOUT_MAX_MS);
 	});
 
 	it("initializes with GJC coordinator server identity and lists GJC-named tools", async () => {
@@ -484,20 +579,21 @@ describe("Coordinator MCP server protocol", () => {
 			},
 			services: {
 				ownerIsolationProbe: privateOwnerProbe(),
-				startSession: async input => ({
-					sessionId: "delegate-session",
-					tmuxSession: "delegate-session",
-					tmuxTarget: "delegate-session:0.0",
-					tmuxSocketKey: PRIVATE_SOCKET,
-					tmuxOwnerServerKey: PRIVATE_SOCKET,
-					tmuxOwnerGeneration: "delegate-generation",
-					tmuxOwnerServerPid: PRIVATE_OWNER_PID,
-					tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
-					tmuxNativeSessionId: "$delegate-session",
-					paneId: "%24",
-					cwd: input.cwd,
-					createdAt: "2026-06-28T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "delegate-session",
+						tmuxTarget: "delegate-session:0.0",
+						tmuxSocketKey: PRIVATE_SOCKET,
+						tmuxOwnerServerKey: PRIVATE_SOCKET,
+						tmuxOwnerGeneration: "delegate-generation",
+						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+						tmuxNativeSessionId: "$delegate-session",
+						paneId: "%24",
+						cwd: input.cwd,
+						createdAt: "2026-06-28T00:00:00.000Z",
+					}),
 				commandRunner: async command => {
 					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
 					if (tmuxSubcommand(command) === "display-message")
@@ -589,7 +685,6 @@ describe("Coordinator MCP server protocol", () => {
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "public-owner-redaction");
 		const commands: string[][] = [];
-		let started = 0;
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -600,40 +695,41 @@ describe("Coordinator MCP server protocol", () => {
 			},
 			services: {
 				ownerIsolationProbe: privateOwnerProbe(),
-				startSession: async input => ({
-					sessionId: `public-session-${++started}`,
-					tmuxSession: `public-session-${started}`,
-					tmuxTarget: `public-session-${started}:0.0`,
-					tmuxSocketKey: PRIVATE_SOCKET,
-					tmuxOwnerGeneration: "private-generation",
-					tmuxOwnerStateDir: "/private/state",
-					tmuxOwnerServerKey: PRIVATE_SOCKET,
-					tmuxOwnerServerPid: PRIVATE_OWNER_PID,
-					tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
-					tmuxNativeSessionId: "$buffer-session",
-					paneId: "%24",
-					owner_terminal: {
-						generation: "nested-generation",
-						server_key: PRIVATE_SOCKET,
-						intent_id: "nested-intent",
-						dedupe_key: "nested-dedupe",
-						pid: PRIVATE_OWNER_PID,
-						start_time: PRIVATE_OWNER_START_TIME,
-						socket_key: PRIVATE_SOCKET,
-					},
-					nested: {
-						ownerTerminal: {
-							generation: "camel-nested-generation",
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: input.sessionId,
+						tmuxTarget: `${input.sessionId}:0.0`,
+						tmuxSocketKey: PRIVATE_SOCKET,
+						tmuxOwnerGeneration: "private-generation",
+						tmuxOwnerStateDir: "/private/state",
+						tmuxOwnerServerKey: PRIVATE_SOCKET,
+						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+						tmuxNativeSessionId: `$${input.sessionId}`,
+						paneId: "%24",
+						owner_terminal: {
+							generation: "nested-generation",
 							server_key: PRIVATE_SOCKET,
-							intent_id: "camel-nested-intent",
-							dedupe_key: "camel-nested-dedupe",
+							intent_id: "nested-intent",
+							dedupe_key: "nested-dedupe",
 							pid: PRIVATE_OWNER_PID,
 							start_time: PRIVATE_OWNER_START_TIME,
 							socket_key: PRIVATE_SOCKET,
 						},
-					},
-					cwd: input.cwd,
-				}),
+						nested: {
+							ownerTerminal: {
+								generation: "camel-nested-generation",
+								server_key: PRIVATE_SOCKET,
+								intent_id: "camel-nested-intent",
+								dedupe_key: "camel-nested-dedupe",
+								pid: PRIVATE_OWNER_PID,
+								start_time: PRIVATE_OWNER_START_TIME,
+								socket_key: PRIVATE_SOCKET,
+							},
+						},
+						cwd: input.cwd,
+					}),
 				commandRunner: async command => {
 					commands.push(command);
 					return { exitCode: 0, stdout: "", stderr: "" };
@@ -844,20 +940,21 @@ describe("Coordinator MCP server protocol", () => {
 			},
 			services: {
 				ownerIsolationProbe: privateOwnerProbe(),
-				startSession: async input => ({
-					sessionId: "delegate-session",
-					tmuxSession: "delegate-session",
-					tmuxTarget: "delegate-session:0.0",
-					tmuxSocketKey: PRIVATE_SOCKET,
-					tmuxOwnerServerKey: PRIVATE_SOCKET,
-					tmuxOwnerGeneration: "delegate-generation",
-					tmuxOwnerServerPid: PRIVATE_OWNER_PID,
-					tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
-					tmuxNativeSessionId: "$delegate-session",
-					paneId: "%24",
-					cwd: input.cwd,
-					createdAt: "2026-07-02T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "delegate-session",
+						tmuxTarget: "delegate-session:0.0",
+						tmuxSocketKey: PRIVATE_SOCKET,
+						tmuxOwnerServerKey: PRIVATE_SOCKET,
+						tmuxOwnerGeneration: "delegate-generation",
+						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+						tmuxNativeSessionId: "$delegate-session",
+						paneId: "%24",
+						cwd: input.cwd,
+						createdAt: "2026-07-02T00:00:00.000Z",
+					}),
 				commandRunner: async command => {
 					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
 					if (tmuxSubcommand(command) === "display-message")
@@ -1238,14 +1335,16 @@ describe("Coordinator MCP server protocol", () => {
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
 				startSession: async input => {
 					calls.push(input);
-					return {
-						sessionId: "gjc-demo",
+					await writeReadyMarker(input);
+					return attestedStart(input, {
+						readinessFile: input.readinessFile,
 						tmuxSession: "gjc-demo",
 						cwd: input.cwd,
 						createdAt: "2026-06-07T00:00:00.000Z",
-					};
+					});
 				},
 				listSessions: () => [],
 			},
@@ -1262,9 +1361,579 @@ describe("Coordinator MCP server protocol", () => {
 		});
 
 		expect(response.result.isError).toBe(false);
-		expect(JSON.parse(response.result.content[0].text).session.session_id).toBe("gjc-demo");
-		expect(calls).toEqual([
-			{ cwd: root, prompt: "hello", namespace: { profile: "local", repo: "repo" }, worktree: true },
+		const payload = JSON.parse(response.result.content[0].text) as {
+			session: { session_id: string; launch_id: string; readiness_marker_file: string };
+		};
+		expect(payload.session.session_id).toMatch(/^gjc-coordinator-/);
+		expect(payload.session.launch_id).toMatch(/^[0-9a-f-]{36}$/);
+		expect(payload.session.readiness_marker_file).toContain(payload.session.launch_id);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			cwd: root,
+			prompt: "hello",
+			namespace: { profile: "local", repo: "repo" },
+			worktree: true,
+			sessionId: payload.session.session_id,
+			launchId: payload.session.launch_id,
+			readinessMarkerFile: payload.session.readiness_marker_file,
+		});
+	});
+
+	it("rejects missing and mismatched coordinator launch attestations", async () => {
+		const root = await tempRoot();
+		const baseEnv = {
+			GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+			GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
+			GJC_COORDINATOR_MCP_PROFILE: "local",
+		};
+		const missing = createCoordinatorMcpServer({
+			env: { ...baseEnv, GJC_COORDINATOR_MCP_REPO: "missing" },
+			services: {
+				startSession: async input => ({ sessionId: input.sessionId, cwd: input.cwd }),
+			},
+		});
+		expect(await missing.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true })).toEqual({
+			ok: false,
+			reason: "coordinator_launch_attestation_missing",
+		});
+
+		const mismatched = createCoordinatorMcpServer({
+			env: { ...baseEnv, GJC_COORDINATOR_MCP_REPO: "mismatched" },
+			services: {
+				startSession: async input => ({
+					sessionId: input.sessionId,
+					launchId: `${input.launchId}-wrong`,
+					readinessMarkerFile: input.readinessMarkerFile,
+					cwd: input.cwd,
+				}),
+			},
+		});
+		expect(await mismatched.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true })).toEqual({
+			ok: false,
+			reason: "coordinator_launch_attestation_mismatch",
+		});
+	});
+
+	it("times out readiness with zero sends, retains the session, and gates an explicit retry", async () => {
+		const root = await tempRoot();
+		const stateRoot = path.join(root, ".gjc", "state", "readiness-timeout");
+		const commands: string[][] = [];
+		const launched = Promise.withResolvers<{ sessionId: string; launchId: string; readinessMarkerFile: string }>();
+		const server = createCoordinatorMcpServer({
+			env: {
+				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+				GJC_COORDINATOR_MCP_STATE_ROOT: stateRoot,
+				GJC_COORDINATOR_MCP_RUNTIME_READINESS_TIMEOUT_MS: "25",
+				GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
+				GJC_COORDINATOR_MCP_PROFILE: "local",
+				GJC_COORDINATOR_MCP_REPO: "repo",
+			},
+			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => {
+					launched.resolve(input);
+					return attestedStart(input, {
+						tmuxSession: "readiness-timeout",
+						tmuxTarget: "readiness-timeout:0.0",
+						cwd: input.cwd,
+					});
+				},
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					if (isTmuxPromptDeliveryCommand(command)) {
+						commands.push(command);
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+				},
+			},
+		});
+
+		const started = await server.callTool("gjc_coordinator_start_session", {
+			cwd: root,
+			prompt: "first",
+			allow_mutation: true,
+		});
+		const launch = await launched.promise;
+		const sessionId = startedSessionId(started);
+		const failedTurn = started.turn as {
+			turn_id: string;
+			status: string;
+			error: { code: string };
+			delivery: Record<string, unknown>;
+		};
+		expect(failedTurn).toMatchObject({
+			status: "failed",
+			error: { code: "runtime_readiness_timeout" },
+			delivery: { tmux_keys_sent: false, prompt_acknowledged: false },
+		});
+		expect(commands).toEqual([]);
+		expect(await Bun.file(path.join(stateRoot, "local", "repo", "active-turns", `${sessionId}.json`)).exists()).toBe(
+			false,
+		);
+		expect(await Bun.file(path.join(stateRoot, "local", "repo", "sessions", `${sessionId}.json`)).exists()).toBe(
+			true,
+		);
+		await writeReadyMarker(launch);
+		expect(commands).toEqual([]);
+
+		const retried = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "retry",
+			allow_mutation: true,
+		});
+		expect(retried.ok).toBe(true);
+		expect(retried.turn_id).not.toBe(failedTurn.turn_id);
+		expect(commands.map(tmuxSubcommand)).toEqual(TMUX_PROMPT_DELIVERY_COMMANDS);
+	});
+
+	it("continues waiting after invalid marker notifications and accepts the later valid marker", async () => {
+		const root = await tempRoot();
+		const stateRoot = path.join(root, ".gjc", "state", "readiness-no-miss");
+		const commands: string[][] = [];
+		const launched = Promise.withResolvers<{ sessionId: string; launchId: string; readinessMarkerFile: string }>();
+		const server = createCoordinatorMcpServer({
+			env: {
+				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+				GJC_COORDINATOR_MCP_STATE_ROOT: stateRoot,
+				GJC_COORDINATOR_MCP_RUNTIME_READINESS_TIMEOUT_MS: "1000",
+				GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
+				GJC_COORDINATOR_MCP_PROFILE: "local",
+				GJC_COORDINATOR_MCP_REPO: "repo",
+			},
+			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => {
+					launched.resolve(input);
+					return attestedStart(input, {
+						tmuxSession: "readiness-no-miss",
+						tmuxTarget: "readiness-no-miss:0.0",
+						cwd: input.cwd,
+					});
+				},
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					if (isTmuxPromptDeliveryCommand(command)) {
+						commands.push(command);
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+				},
+			},
+		});
+		const starting = server.callTool("gjc_coordinator_start_session", {
+			cwd: root,
+			prompt: "work",
+			allow_mutation: true,
+		});
+		const launch = await launched.promise;
+		const activeFile = path.join(stateRoot, "local", "repo", "active-turns", `${launch.sessionId}.json`);
+		await waitForCondition(async () => await Bun.file(activeFile).exists());
+		await fs.mkdir(path.dirname(launch.readinessMarkerFile), { recursive: true });
+		await Bun.write(launch.readinessMarkerFile, "{}\n");
+		await Bun.write(launch.readinessMarkerFile, '{"schema_version":1\n');
+		await writeReadyMarker(launch);
+		const started = await starting;
+		expect(started.ok).toBe(true);
+		expect(commands.map(tmuxSubcommand)).toEqual(TMUX_PROMPT_DELIVERY_COMMANDS);
+	});
+
+	it("lets report terminalization beat late readiness without stale injection", async () => {
+		const root = await tempRoot();
+		const stateRoot = path.join(root, ".gjc", "state", "readiness-report-race");
+		const commands: string[][] = [];
+		const launched = Promise.withResolvers<{ sessionId: string; launchId: string; readinessMarkerFile: string }>();
+		const server = createCoordinatorMcpServer({
+			env: {
+				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+				GJC_COORDINATOR_MCP_STATE_ROOT: stateRoot,
+				GJC_COORDINATOR_MCP_RUNTIME_READINESS_TIMEOUT_MS: "1000",
+				GJC_COORDINATOR_MCP_MUTATIONS: "sessions,reports",
+				GJC_COORDINATOR_MCP_PROFILE: "local",
+				GJC_COORDINATOR_MCP_REPO: "repo",
+			},
+			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => {
+					launched.resolve(input);
+					return attestedStart(input, {
+						tmuxSession: "readiness-report-race",
+						tmuxTarget: "readiness-report-race:0.0",
+						cwd: input.cwd,
+					});
+				},
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					if (isTmuxPromptDeliveryCommand(command)) {
+						commands.push(command);
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+				},
+			},
+		});
+		const started = await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const launch = await launched.promise;
+		const sessionId = startedSessionId(started);
+		const sending = server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "work",
+			allow_mutation: true,
+		});
+		const activeFile = path.join(stateRoot, "local", "repo", "active-turns", `${sessionId}.json`);
+		await waitForCondition(async () => await Bun.file(activeFile).exists());
+		const active = JSON.parse(await Bun.file(activeFile).text()) as { turn_id: string };
+		await server.callTool("gjc_coordinator_report_status", {
+			session_id: sessionId,
+			turn_id: active.turn_id,
+			status: "completed",
+			summary: "won",
+			allow_mutation: true,
+		});
+		await writeReadyMarker(launch);
+		const sent = await sending;
+		expect(sent.status).toBe("completed");
+		expect(commands).toEqual([]);
+	});
+
+	it("serializes force replacement against readiness and injects only the replacement turn", async () => {
+		const root = await tempRoot();
+		const stateRoot = path.join(root, ".gjc", "state", "readiness-force-race");
+		const commands: string[][] = [];
+		const launched = Promise.withResolvers<{ sessionId: string; launchId: string; readinessMarkerFile: string }>();
+		const server = createCoordinatorMcpServer({
+			env: {
+				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+				GJC_COORDINATOR_MCP_STATE_ROOT: stateRoot,
+				GJC_COORDINATOR_MCP_RUNTIME_READINESS_TIMEOUT_MS: "1000",
+				GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
+				GJC_COORDINATOR_MCP_PROFILE: "local",
+				GJC_COORDINATOR_MCP_REPO: "repo",
+			},
+			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => {
+					launched.resolve(input);
+					return attestedStart(input, {
+						tmuxSession: "readiness-force-race",
+						tmuxTarget: "readiness-force-race:0.0",
+						cwd: input.cwd,
+					});
+				},
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					if (isTmuxPromptDeliveryCommand(command)) {
+						commands.push(command);
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+				},
+			},
+		});
+		const started = await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const launch = await launched.promise;
+		const sessionId = startedSessionId(started);
+		const first = server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "first",
+			allow_mutation: true,
+		});
+		const activeFile = path.join(stateRoot, "local", "repo", "active-turns", `${sessionId}.json`);
+		await waitForCondition(async () => await Bun.file(activeFile).exists());
+		const firstClaim = JSON.parse(await Bun.file(activeFile).text()) as { turn_id: string };
+		const replacement = server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "replacement",
+			force: true,
+			allow_mutation: true,
+		});
+		await waitForCondition(async () => {
+			// The active claim is briefly cleared and rewritten while the force
+			// replacement swaps turns under the fence; tolerate that transient gap.
+			const file = Bun.file(activeFile);
+			if (!(await file.exists())) return false;
+			try {
+				const claim = JSON.parse(await file.text()) as { turn_id: string };
+				return claim.turn_id !== firstClaim.turn_id;
+			} catch {
+				return false;
+			}
+		});
+		await writeReadyMarker(launch);
+		const [firstResult, replacementResult] = await Promise.all([first, replacement]);
+		expect(firstResult.status).toBe("superseded");
+		expect(replacementResult.turn_id).not.toBe(firstClaim.turn_id);
+		expect(commands.map(tmuxSubcommand)).toEqual(TMUX_PROMPT_DELIVERY_COMMANDS);
+	});
+
+	it("prevents late readiness injection after runtime or liveness terminalization", async () => {
+		for (const winner of ["runtime", "liveness"] as const) {
+			const root = await tempRoot();
+			const stateRoot = path.join(root, ".gjc", "state", `readiness-${winner}-race`);
+			const commands: string[][] = [];
+			const launched = Promise.withResolvers<{ sessionId: string; launchId: string; readinessMarkerFile: string }>();
+			const server = createCoordinatorMcpServer({
+				env: {
+					GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+					GJC_COORDINATOR_MCP_STATE_ROOT: stateRoot,
+					GJC_COORDINATOR_MCP_RUNTIME_READINESS_TIMEOUT_MS: "1000",
+					GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
+					GJC_COORDINATOR_MCP_PROFILE: "local",
+					GJC_COORDINATOR_MCP_REPO: winner,
+				},
+				services: {
+					ownerIsolationProbe: privateOwnerProbe(),
+					startSession: async input => {
+						launched.resolve(input);
+						return attestedStart(input, {
+							tmuxSession: `readiness-${winner}-race`,
+							tmuxTarget: `readiness-${winner}-race:0.0`,
+							cwd: input.cwd,
+						});
+					},
+					commandRunner: async command => {
+						if (tmuxSubcommand(command) === "has-session") {
+							return { exitCode: winner === "liveness" ? 1 : 0, stdout: "", stderr: "" };
+						}
+						if (tmuxSubcommand(command) === "display-message")
+							return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+						if (isTmuxPromptDeliveryCommand(command)) {
+							commands.push(command);
+							return { exitCode: 0, stdout: "", stderr: "" };
+						}
+						return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+					},
+				},
+			});
+			const started = await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+			const launch = await launched.promise;
+			const sessionId = startedSessionId(started);
+			const sending = server.callTool("gjc_coordinator_send_prompt", {
+				session_id: sessionId,
+				prompt: "work",
+				allow_mutation: true,
+			});
+			const activeFile = path.join(stateRoot, "local", winner, "active-turns", `${sessionId}.json`);
+			await waitForCondition(async () => await Bun.file(activeFile).exists());
+			const active = JSON.parse(await Bun.file(activeFile).text()) as { turn_id: string };
+			if (winner === "runtime") {
+				const sessionStateFile = path.join(stateRoot, "local", winner, "session-states", `${sessionId}.json`);
+				await Bun.write(
+					sessionStateFile,
+					JSON.stringify({
+						schema_version: 1,
+						session_id: sessionId,
+						state: "completed",
+						ready_for_input: true,
+						current_turn_id: active.turn_id,
+						last_turn_id: active.turn_id,
+						updated_at: new Date().toISOString(),
+						source: "agent_session_event",
+						live: false,
+						reason: "agent_end",
+						owner_generation: `${sessionId}-generation`,
+						final_response: {
+							text: "runtime won",
+							format: "markdown",
+							source: "agent_end",
+							artifact_path: null,
+							truncated: false,
+						},
+					}),
+				);
+			}
+			let terminal: Record<string, unknown> | null = null;
+			const expectedStatus = winner === "runtime" ? "completed" : "failed";
+			await waitForCondition(async () => {
+				terminal = await server.callTool("gjc_coordinator_read_turn", {
+					session_id: sessionId,
+					turn_id: active.turn_id,
+				});
+				return (
+					terminal.ok === true && (terminal.turn as { status?: string } | undefined)?.status === expectedStatus
+				);
+			});
+			expect(terminal).toMatchObject({ ok: true, turn: { status: expectedStatus } });
+			await writeReadyMarker(launch);
+			await sending;
+			expect(commands).toEqual([]);
+		}
+	});
+
+	it("fails closed for unverified origins and trusts only strict legacy registration", async () => {
+		const root = await tempRoot();
+		const stateRoot = path.join(root, ".gjc", "state", "origin-precedence");
+		const namespaceDir = path.join(stateRoot, "local", "repo");
+		const sessionsDir = path.join(namespaceDir, "sessions");
+		await fs.mkdir(sessionsDir, { recursive: true });
+		const commands: string[][] = [];
+		const server = createCoordinatorMcpServer({
+			env: {
+				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+				GJC_COORDINATOR_MCP_STATE_ROOT: stateRoot,
+				GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
+				GJC_COORDINATOR_MCP_PROFILE: "local",
+				GJC_COORDINATOR_MCP_REPO: "repo",
+			},
+			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					if (isTmuxPromptDeliveryCommand(command)) {
+						commands.push(command);
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+				},
+			},
+		});
+
+		await Bun.write(
+			path.join(sessionsDir, "unknown.json"),
+			JSON.stringify({ session_id: "unknown", tmux_session: "unknown", tmux_target: "unknown:0.0", cwd: root }),
+		);
+		expect(
+			await server.callTool("gjc_coordinator_send_prompt", {
+				session_id: "unknown",
+				prompt: "work",
+				allow_mutation: true,
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "session_origin_unverified",
+			session_id: "unknown",
+		});
+		expect(await Bun.file(path.join(namespaceDir, "active-turns", "unknown.json")).exists()).toBe(false);
+
+		await Bun.write(
+			path.join(sessionsDir, "incomplete.json"),
+			JSON.stringify({
+				session_id: "incomplete",
+				origin: "coordinator_created",
+				tmux_session: "incomplete",
+				tmux_target: "incomplete:0.0",
+				cwd: root,
+			}),
+		);
+		expect(
+			await server.callTool("gjc_coordinator_send_prompt", {
+				session_id: "incomplete",
+				prompt: "work",
+				allow_mutation: true,
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "coordinator_launch_metadata_missing",
+			session_id: "incomplete",
+			action: expect.stringContaining("explicitly register"),
+		});
+		expect(await Bun.file(path.join(namespaceDir, "active-turns", "incomplete.json")).exists()).toBe(false);
+
+		await Bun.write(
+			path.join(sessionsDir, "legacy.json"),
+			JSON.stringify({
+				session_id: "legacy",
+				registered_at: "2026-07-11T00:00:00.000Z",
+				authoritative: true,
+				tmux_session: "legacy",
+				tmux_target: "legacy:0.0",
+				tmux_socket_key: PRIVATE_SOCKET,
+				tmux_owner_server_key: PRIVATE_SOCKET,
+				tmux_owner_generation: "legacy-generation",
+				tmux_owner_server_pid: PRIVATE_OWNER_PID,
+				tmux_owner_server_start_time: PRIVATE_OWNER_START_TIME,
+				tmux_native_session_id: "$legacy",
+				pane_id: "%24",
+				cwd: root,
+			}),
+		);
+		const legacy = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: "legacy",
+			prompt: "work",
+			allow_mutation: true,
+		});
+		expect(legacy.ok).toBe(true);
+		expect(commands.map(tmuxSubcommand)).toEqual(TMUX_PROMPT_DELIVERY_COMMANDS);
+	});
+
+	it("promotes one queued turn once under concurrent terminal reports", async () => {
+		const root = await tempRoot();
+		const commands: string[][] = [];
+		const server = createCoordinatorMcpServer({
+			env: {
+				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
+				GJC_COORDINATOR_MCP_MUTATIONS: "sessions,reports",
+				GJC_COORDINATOR_MCP_PROFILE: "local",
+				GJC_COORDINATOR_MCP_REPO: "promotion-race",
+			},
+			services: {
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input =>
+					await readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "promotion-race",
+						tmuxTarget: "promotion-race:0.0",
+						cwd: input.cwd,
+					}),
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					if (isTmuxPromptDeliveryCommand(command)) {
+						commands.push(command);
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					return { exitCode: 1, stdout: "", stderr: "unexpected command" };
+				},
+			},
+		});
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
+		const first = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "first",
+			allow_mutation: true,
+		});
+		const queued = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "second",
+			queue: true,
+			allow_mutation: true,
+		});
+		const reports = await Promise.all([
+			server.callTool("gjc_coordinator_report_status", {
+				session_id: sessionId,
+				turn_id: first.turn_id,
+				status: "completed",
+				summary: "done",
+				allow_mutation: true,
+			}),
+			server.callTool("gjc_coordinator_report_status", {
+				session_id: sessionId,
+				turn_id: first.turn_id,
+				status: "completed",
+				summary: "done",
+				allow_mutation: true,
+			}),
+		]);
+		expect(reports.filter(report => report.promoted_turn != null)).toHaveLength(1);
+		expect((reports.find(report => report.promoted_turn != null)?.promoted_turn as { turn_id: string }).turn_id).toBe(
+			queued.turn_id as string,
+		);
+		expect(commands.map(tmuxSubcommand)).toEqual([
+			...TMUX_PROMPT_DELIVERY_COMMANDS,
+			...TMUX_PROMPT_DELIVERY_COMMANDS,
 		]);
 	});
 	it("uses portable process incarnation evidence and rejects replacement or unavailable proof", async () => {
@@ -1859,6 +2528,11 @@ describe("Coordinator MCP server protocol", () => {
 			),
 		) as { generation: string; session_id: string };
 		expect(generation).toMatchObject({ generation: ownerGeneration, session_id: session.session_id });
+		await writeReadyMarker({
+			sessionId: session.session_id,
+			launchId: privateSession.launch_id as string,
+			readinessMarkerFile: privateSession.readiness_marker_file as string,
+		});
 
 		const sent = await server.callTool("gjc_coordinator_send_prompt", {
 			session_id: session.session_id,
@@ -2008,6 +2682,7 @@ describe("Coordinator MCP server protocol", () => {
 					commands.push(command);
 					if (tmuxSubcommand(command) === "new-session") {
 						const sessionId = command.at(command.indexOf("-s") + 1);
+						await writeReadyMarkerFromTmuxLaunch(command);
 						return { exitCode: 0, stdout: `${sessionId}:0.0 %99 $99\n`, stderr: "" };
 					}
 					if (tmuxSubcommand(command) === "display-message") {
@@ -2111,7 +2786,9 @@ await log("started");
 
 const stateFile = process.env.GJC_COORDINATOR_SESSION_STATE_FILE;
 const sessionId = process.env.GJC_COORDINATOR_SESSION_ID;
-if (!stateFile || !sessionId) process.exit(2);
+const launchId = process.env.GJC_COORDINATOR_SESSION_LAUNCH_ID;
+const readinessFile = process.env.GJC_COORDINATOR_SESSION_READINESS_FILE;
+if (!stateFile || !sessionId || !launchId || !readinessFile) process.exit(2);
 await fs.mkdir(path.dirname(stateFile), { recursive: true });
 async function writeState(payload) {
   const lockFile = stateFile + ".lock";
@@ -2136,6 +2813,17 @@ async function writeState(payload) {
     await fs.rm(lockFile, { force: true });
   }
 }
+await fs.mkdir(path.dirname(readinessFile), { recursive: true });
+await fs.writeFile(readinessFile, JSON.stringify({
+  schema_version: 1,
+  session_id: sessionId,
+  launch_id: launchId,
+  state: "ready_for_input",
+  event: "interactive_input_ready",
+  source: "gjc_interactive_runtime",
+  ready_for_input: true,
+  created_at: new Date().toISOString()
+}));
 await writeState({
   schema_version: 1,
   session_id: sessionId,
@@ -2263,6 +2951,9 @@ setInterval(() => {}, 1000);
 								.catch(() => "missing fake runtime output")),
 					);
 				}
+				// session_state is a live runtime snapshot that can momentarily lag the
+				// turn's reconciled acknowledgement within a single read_turn response;
+				// assert the durable turn delivery/ack evidence, not the racy snapshot.
 				expect(read).toMatchObject({
 					ok: true,
 					turn: {
@@ -2270,7 +2961,6 @@ setInterval(() => {}, 1000);
 						delivery: { tmux_keys_sent: true, prompt_acknowledged: true, state: "acknowledged" },
 						error: null,
 					},
-					session_state: { state: "running", current_turn_id: turnId, reason: "turn_start" },
 				});
 			} finally {
 				if (tmuxSession && tmuxSocketKey)
@@ -2292,21 +2982,24 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "work",
 			allow_mutation: true,
 		});
 		await server.callTool("gjc_coordinator_report_status", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turn.turn_id,
 			status: "completed",
 			summary: "Done",
@@ -2327,9 +3020,9 @@ setInterval(() => {}, 1000);
 		expect(status.reports).toHaveLength(1);
 		expect(status.events).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ event_type: "session_state", session_id: "gjc-demo", status: "completed" }),
-				expect.objectContaining({ event_type: "turn_state", session_id: "gjc-demo", status: "completed" }),
-				expect.objectContaining({ event_type: "coordination_report", session_id: "gjc-demo", status: "completed" }),
+				expect.objectContaining({ event_type: "session_state", session_id: sessionId, status: "completed" }),
+				expect.objectContaining({ event_type: "turn_state", session_id: sessionId, status: "completed" }),
+				expect.objectContaining({ event_type: "coordination_report", session_id: sessionId, status: "completed" }),
 			]),
 		);
 	});
@@ -2346,24 +3039,26 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					tmuxSession: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "gjc-demo",
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 				listSessions: () => [],
 			},
 		});
-		await server.handleJsonRpc({
+		const started = await server.handleJsonRpc({
 			jsonrpc: "2.0",
 			id: 6,
 			method: "tools/call",
 			params: { name: "gjc_coordinator_start_session", arguments: { cwd: root, allow_mutation: true } },
 		});
+		const sessionId = startedSessionId(JSON.parse(started.result.content[0].text) as Record<string, unknown>);
 		await Bun.write(
 			path.join(stateRoot, "local", "repo", "questions", "q1.json"),
-			JSON.stringify({ id: "q1", session_id: "gjc-demo", status: "open", schema: { max_length: 20 } }),
+			JSON.stringify({ id: "q1", session_id: sessionId, status: "open", schema: { max_length: 20 } }),
 		);
 
 		const prompt = await server.handleJsonRpc({
@@ -2372,7 +3067,7 @@ setInterval(() => {}, 1000);
 			method: "tools/call",
 			params: {
 				name: "gjc_coordinator_send_prompt",
-				arguments: { session_id: "gjc-demo", prompt: "continue", allow_mutation: true },
+				arguments: { session_id: sessionId, prompt: "continue", allow_mutation: true },
 			},
 		});
 		const answer = await server.handleJsonRpc({
@@ -2444,19 +3139,22 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					tmuxSession: "gjc-demo",
-					tmuxTarget: "missing-target",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "gjc-demo",
+						tmuxTarget: "missing-target",
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 
 		const first = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "first",
 			allow_mutation: true,
 		});
@@ -2466,19 +3164,19 @@ setInterval(() => {}, 1000);
 		expect(first.delivery).toMatchObject({ delivered: false, queued: true });
 
 		const rejected = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "second",
 			allow_mutation: true,
 		});
 		expect(rejected).toEqual({
 			ok: false,
 			reason: "active_turn_exists",
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			active_turn_id: first.turn_id,
 		});
 
 		const queued = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "second",
 			queue: true,
 			allow_mutation: true,
@@ -2490,7 +3188,7 @@ setInterval(() => {}, 1000);
 		await Bun.write(artifactPath, "evidence");
 
 		const completed = await server.callTool("gjc_coordinator_report_status", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: first.turn_id,
 			status: "completed",
 			summary: "Done",
@@ -2511,7 +3209,7 @@ setInterval(() => {}, 1000);
 		expect(promotedTurn.turn_id).toBe(queuedTurnId);
 
 		const read = await server.callTool("gjc_coordinator_read_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: first.turn_id,
 		});
 		expect(read.ok).toBe(true);
@@ -2519,17 +3217,17 @@ setInterval(() => {}, 1000);
 		const advisoryStatus = read.advisory_status as { live: boolean | null };
 		expect(readTurn.schema_version).toBe(1);
 		expect(readTurn.status).toBe("completed");
-		expect(advisoryStatus.live).toBeNull();
+		expect(advisoryStatus.live).toBe(false);
 
 		const afterTerminal = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "third",
 			allow_mutation: true,
 		});
 		expect(afterTerminal).toEqual({
 			ok: false,
 			reason: "active_turn_exists",
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			active_turn_id: queued.turn_id,
 		});
 	});
@@ -2546,16 +3244,19 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "needs answer",
 			allow_mutation: true,
 		});
@@ -2563,7 +3264,7 @@ setInterval(() => {}, 1000);
 		await fs.mkdir(questionsDir, { recursive: true });
 		await Bun.write(
 			path.join(questionsDir, "q-safe.json"),
-			JSON.stringify({ id: "q-safe", session_id: "gjc-demo", turn_id: turn.turn_id, status: "open" }),
+			JSON.stringify({ id: "q-safe", session_id: sessionId, turn_id: turn.turn_id, status: "open" }),
 		);
 		await Bun.write(
 			path.join(questionsDir, "q-other.json"),
@@ -2582,7 +3283,7 @@ setInterval(() => {}, 1000);
 		});
 		expect(
 			await server.callTool("gjc_coordinator_submit_question_answer", {
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				turn_id: turn.turn_id,
 				question_id: "../escape",
 				answer: "bad",
@@ -2591,7 +3292,7 @@ setInterval(() => {}, 1000);
 		).toEqual({ ok: false, reason: "invalid_question_id" });
 		expect(
 			await server.callTool("gjc_coordinator_submit_question_answer", {
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				turn_id: turn.turn_id,
 				question_id: "q-other",
 				answer: "bad",
@@ -2600,7 +3301,7 @@ setInterval(() => {}, 1000);
 		).toEqual({ ok: false, reason: "question_session_mismatch" });
 
 		const answered = await server.callTool("gjc_coordinator_submit_question_answer", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turn.turn_id,
 			question_id: "q-safe",
 			answer: "yes",
@@ -2625,23 +3326,26 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const queued = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "queued",
 			queue: true,
 			allow_mutation: true,
 		});
 
 		const awaited = await server.callTool("gjc_coordinator_await_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: queued.turn_id,
 			timeout_ms: 1,
 			poll_interval_ms: 1,
@@ -2665,16 +3369,19 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const queued = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "queued",
 			queue: true,
 			allow_mutation: true,
@@ -2683,7 +3390,7 @@ setInterval(() => {}, 1000);
 		const started = Date.now();
 		const timer = setTimeout(() => {
 			void server.callTool("gjc_coordinator_report_status", {
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				turn_id: queued.turn_id,
 				status: "completed",
 				summary: "Done",
@@ -2692,7 +3399,7 @@ setInterval(() => {}, 1000);
 		}, 25);
 		try {
 			const awaited = await server.callTool("gjc_coordinator_await_turn", {
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				turn_id: queued.turn_id,
 				timeout_ms: 1000,
 				poll_interval_ms: 750,
@@ -2719,20 +3426,21 @@ setInterval(() => {}, 1000);
 			},
 			services: {
 				ownerIsolationProbe: privateOwnerProbe(),
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					tmuxSession: "gjc-demo",
-					tmuxTarget: "gjc-demo:0.0",
-					tmuxSocketKey: PRIVATE_SOCKET,
-					tmuxOwnerServerKey: PRIVATE_SOCKET,
-					tmuxOwnerGeneration: "gjc-demo-generation",
-					tmuxOwnerServerPid: PRIVATE_OWNER_PID,
-					tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
-					tmuxNativeSessionId: "$session",
-					paneId: "%24",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input =>
+					readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "gjc-demo",
+						tmuxTarget: "gjc-demo:0.0",
+						tmuxSocketKey: PRIVATE_SOCKET,
+						tmuxOwnerServerKey: PRIVATE_SOCKET,
+						tmuxOwnerGeneration: "gjc-demo-generation",
+						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+						tmuxNativeSessionId: "$session",
+						paneId: "%24",
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
 				commandRunner: async command => {
 					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
 					if (tmuxSubcommand(command) === "display-message")
@@ -2742,9 +3450,11 @@ setInterval(() => {}, 1000);
 				},
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "work",
 			allow_mutation: true,
 		});
@@ -2752,10 +3462,10 @@ setInterval(() => {}, 1000);
 		const sessionStatesDir = path.join(stateRoot, "local", "repo", "session-states");
 		await fs.mkdir(sessionStatesDir, { recursive: true });
 		await Bun.write(
-			path.join(sessionStatesDir, "gjc-demo.json"),
+			path.join(sessionStatesDir, `${sessionId}.json`),
 			JSON.stringify({
 				schema_version: 1,
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				state: "errored",
 				ready_for_input: false,
 				current_turn_id: null,
@@ -2781,7 +3491,7 @@ setInterval(() => {}, 1000);
 		);
 
 		const read = await server.callTool("gjc_coordinator_read_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turnId,
 		});
 
@@ -2804,16 +3514,16 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-06-07T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "work",
 			allow_mutation: true,
 		});
@@ -2821,10 +3531,10 @@ setInterval(() => {}, 1000);
 		const sessionStatesDir = path.join(stateRoot, "local", "repo", "session-states");
 		await fs.mkdir(sessionStatesDir, { recursive: true });
 		await Bun.write(
-			path.join(sessionStatesDir, "gjc-demo.json"),
+			path.join(sessionStatesDir, `${sessionId}.json`),
 			JSON.stringify({
 				schema_version: 1,
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				state: "completed",
 				ready_for_input: true,
 				current_turn_id: turnId,
@@ -2833,6 +3543,7 @@ setInterval(() => {}, 1000);
 				source: "agent_session_event",
 				live: false,
 				reason: "agent_end",
+				owner_generation: `${sessionId}-generation`,
 				final_response: {
 					text: "Runtime final answer",
 					format: "markdown",
@@ -2844,7 +3555,7 @@ setInterval(() => {}, 1000);
 		);
 
 		const read = await server.callTool("gjc_coordinator_read_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turnId,
 		});
 
@@ -2857,7 +3568,7 @@ setInterval(() => {}, 1000);
 		expect((read.session_state as { state: string; last_turn_id: string }).last_turn_id).toBe(turnId);
 	});
 	it("accepts process-postmortem owner terminal evidence only from the registered private owner", async () => {
-		const ownerTerminal = (generation: string, socketKey: string): Record<string, unknown> => ({
+		const ownerTerminal = (sessionId: string, generation: string, socketKey: string): Record<string, unknown> => ({
 			generation,
 			socket_key: socketKey,
 			signal: "SIGTERM",
@@ -2866,21 +3577,29 @@ setInterval(() => {}, 1000);
 			observer: "sidecar",
 			observed_at: "2026-06-07T00:00:01.000Z",
 			intent_id: "intent",
-			dedupe_key: `owner-loss:gjc-demo:${generation}`,
+			dedupe_key: `owner-loss:${sessionId}:${generation}`,
 		});
-		const cases: Array<[string, Record<string, unknown> | undefined, string | null]> = [
-			["missing", undefined, null],
-			["stale-generation", ownerTerminal("stale-generation", PRIVATE_SOCKET), "active"],
-			["cross-owner-socket", ownerTerminal("current-generation", "other-private-socket"), "active"],
-			["valid", ownerTerminal("current-generation", PRIVATE_SOCKET), "completed"],
-			["malformed", { ...ownerTerminal("current-generation", PRIVATE_SOCKET), socket_key: 42 }, null],
+		const cases: Array<[string, (sessionId: string) => Record<string, unknown> | undefined, string | null]> = [
+			["missing", () => undefined, null],
+			["stale-generation", sessionId => ownerTerminal(sessionId, "stale-generation", PRIVATE_SOCKET), "active"],
+			[
+				"cross-owner-socket",
+				sessionId => ownerTerminal(sessionId, "current-generation", "other-private-socket"),
+				"active",
+			],
+			["valid", sessionId => ownerTerminal(sessionId, "current-generation", PRIVATE_SOCKET), "completed"],
+			[
+				"malformed",
+				sessionId => ({ ...ownerTerminal(sessionId, "current-generation", PRIVATE_SOCKET), socket_key: 42 }),
+				null,
+			],
 			[
 				"incoherent-expected-result",
-				{ ...ownerTerminal("current-generation", PRIVATE_SOCKET), result: "cleanup" },
+				sessionId => ({ ...ownerTerminal(sessionId, "current-generation", PRIVATE_SOCKET), result: "cleanup" }),
 				null,
 			],
 		];
-		for (const [caseName, ownerTerminal, expectedStatus] of cases) {
+		for (const [caseName, ownerTerminalForSession, expectedStatus] of cases) {
 			const root = await tempRoot();
 			const stateRoot = path.join(root, ".gjc", "state", `runtime-owner-terminal-${caseName}`);
 			const server = createCoordinatorMcpServer({
@@ -2893,20 +3612,20 @@ setInterval(() => {}, 1000);
 				},
 				services: {
 					ownerIsolationProbe: privateOwnerProbe(),
-					startSession: async input => ({
-						sessionId: "gjc-demo",
-						tmuxSession: "gjc-demo",
-						tmuxTarget: "gjc-demo:0.0",
-						tmuxSocketKey: PRIVATE_SOCKET,
-						tmuxOwnerServerKey: PRIVATE_SOCKET,
-						tmuxOwnerGeneration: "current-generation",
-						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
-						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
-						tmuxNativeSessionId: "$42",
-						paneId: "%24",
-						cwd: input.cwd,
-						createdAt: "2026-06-07T00:00:00.000Z",
-					}),
+					startSession: async input =>
+						readyStart(input, {
+							tmuxSession: input.sessionId,
+							tmuxTarget: `${input.sessionId}:0.0`,
+							tmuxSocketKey: PRIVATE_SOCKET,
+							tmuxOwnerServerKey: PRIVATE_SOCKET,
+							tmuxOwnerGeneration: "current-generation",
+							tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+							tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+							tmuxNativeSessionId: `$${input.sessionId}`,
+							paneId: "%24",
+							cwd: input.cwd,
+							createdAt: "2026-06-07T00:00:00.000Z",
+						}),
 					commandRunner: async command => {
 						if (tmuxSubcommand(command) === "has-session" || isTmuxPromptDeliveryCommand(command))
 							return { exitCode: 0, stdout: "", stderr: "" };
@@ -2916,17 +3635,20 @@ setInterval(() => {}, 1000);
 					},
 				},
 			});
-			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+			const sessionId = startedSessionId(
+				await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+			);
 			const sent = await server.callTool("gjc_coordinator_send_prompt", {
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				prompt: "work",
 				allow_mutation: true,
 			});
+			const ownerTerminal = ownerTerminalForSession(sessionId);
 			await Bun.write(
-				path.join(stateRoot, "local", "repo", "session-states", "gjc-demo.json"),
+				path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`),
 				JSON.stringify({
 					schema_version: 1,
-					session_id: "gjc-demo",
+					session_id: sessionId,
 					state: "completed",
 					ready_for_input: true,
 					current_turn_id: sent.turn_id,
@@ -2942,7 +3664,7 @@ setInterval(() => {}, 1000);
 				}),
 			);
 			const read = await server.callTool("gjc_coordinator_read_turn", {
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				turn_id: sent.turn_id,
 			});
 			if (expectedStatus)
@@ -2954,6 +3676,7 @@ setInterval(() => {}, 1000);
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "hermes-runtime-race");
 		let runtimeStatePath = "";
+		let sessionId = "";
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -2964,21 +3687,24 @@ setInterval(() => {}, 1000);
 			},
 			services: {
 				ownerIsolationProbe: privateOwnerProbe(),
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					tmuxSession: "gjc-demo",
-					tmuxTarget: "gjc-demo:0.0",
-					tmuxSocketKey: PRIVATE_SOCKET,
-					tmuxOwnerServerKey: PRIVATE_SOCKET,
-					tmuxOwnerGeneration: "gjc-demo-generation",
-					tmuxOwnerStateDir: path.join(stateRoot, "local", "repo"),
-					tmuxOwnerServerPid: PRIVATE_OWNER_PID,
-					tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
-					tmuxNativeSessionId: "$gjc-demo",
-					paneId: "%24",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				startSession: async input => {
+					sessionId = input.sessionId;
+					return await readyStart(input, {
+						sessionId: input.sessionId,
+						tmuxSession: "gjc-demo",
+						tmuxTarget: "gjc-demo:0.0",
+						tmuxSocketKey: PRIVATE_SOCKET,
+						tmuxOwnerServerKey: PRIVATE_SOCKET,
+						tmuxOwnerGeneration: "gjc-demo-generation",
+						tmuxOwnerStateDir: path.join(stateRoot, "local", "repo"),
+						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+						tmuxNativeSessionId: "$gjc-demo",
+						paneId: "%24",
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					});
+				},
 				commandRunner: async command => {
 					if (tmuxSubcommand(command) === "has-session") return { exitCode: 0, stdout: "", stderr: "" };
 					if (tmuxSubcommand(command) === "display-message")
@@ -2987,17 +3713,17 @@ setInterval(() => {}, 1000);
 						return { exitCode: 0, stdout: "", stderr: "" };
 					if (tmuxSubcommand(command) === "send-keys") {
 						const activeTurn = JSON.parse(
-							await Bun.file(path.join(stateRoot, "local", "repo", "active-turns", "gjc-demo.json")).text(),
+							await Bun.file(path.join(stateRoot, "local", "repo", "active-turns", `${sessionId}.json`)).text(),
 						) as {
 							turn_id: string;
 						};
-						runtimeStatePath = path.join(stateRoot, "local", "repo", "session-states", "gjc-demo.json");
+						runtimeStatePath = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
 						await fs.mkdir(path.dirname(runtimeStatePath), { recursive: true });
 						await Bun.write(
 							runtimeStatePath,
 							JSON.stringify({
 								schema_version: 1,
-								session_id: "gjc-demo",
+								session_id: sessionId,
 								state: "completed",
 								ready_for_input: true,
 								current_turn_id: activeTurn.turn_id,
@@ -3022,10 +3748,10 @@ setInterval(() => {}, 1000);
 				},
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		startedSessionId(await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }));
 
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "work",
 			allow_mutation: true,
 		});
@@ -3037,7 +3763,7 @@ setInterval(() => {}, 1000);
 		expect(persistedState).toMatchObject({ state: "completed", current_turn_id: turnId });
 
 		const read = await server.callTool("gjc_coordinator_read_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turnId,
 		});
 
@@ -3059,16 +3785,16 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-06-07T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "work",
 			allow_mutation: true,
 		});
@@ -3076,10 +3802,10 @@ setInterval(() => {}, 1000);
 		const sessionStatesDir = path.join(stateRoot, "local", "repo", "session-states");
 		await fs.mkdir(sessionStatesDir, { recursive: true });
 		await Bun.write(
-			path.join(sessionStatesDir, "gjc-demo.json"),
+			path.join(sessionStatesDir, `${sessionId}.json`),
 			JSON.stringify({
 				schema_version: 1,
-				session_id: "gjc-demo",
+				session_id: sessionId,
 				state: "completed",
 				ready_for_input: true,
 				current_turn_id: turnId,
@@ -3088,11 +3814,12 @@ setInterval(() => {}, 1000);
 				source: "agent_session_event",
 				live: false,
 				reason: "agent_end",
+				owner_generation: `${sessionId}-generation`,
 			}),
 		);
 
 		const read = await server.callTool("gjc_coordinator_read_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turnId,
 		});
 
@@ -3118,24 +3845,33 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					tmuxSession: "definitely-missing-gjc-demo",
-					tmuxTarget: "definitely-missing-gjc-demo:0.0",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input =>
+					readyStart(input, {
+						tmuxSession: "definitely-missing-gjc-demo",
+						tmuxTarget: "definitely-missing-gjc-demo:0.0",
+						cwd: input.cwd,
+						createdAt: "2026-06-07T00:00:00.000Z",
+					}),
+				commandRunner: async command => {
+					if (tmuxSubcommand(command) === "has-session") return { exitCode: 1, stdout: "", stderr: "missing" };
+					if (tmuxSubcommand(command) === "display-message")
+						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+					return { exitCode: 0, stdout: "", stderr: "" };
+				},
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const first = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "first",
 			allow_mutation: true,
 		});
 
 		const read = await server.callTool("gjc_coordinator_read_turn", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: first.turn_id,
 		});
 
@@ -3144,7 +3880,7 @@ setInterval(() => {}, 1000);
 		expect((read.session_state as { state: string }).state).toBe("stale");
 
 		const second = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "second",
 			allow_mutation: true,
 		});
@@ -3163,16 +3899,16 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					tmuxSession: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input =>
+					readyStart(input, { tmuxSession: "gjc-demo", cwd: input.cwd, createdAt: "2026-06-07T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
 
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const firstWatch = await server.callTool("gjc_coordinator_watch_events", { after_seq: 0, limit: 2 });
 		expect(firstWatch.ok).toBe(true);
 		expect(firstWatch.timed_out).toBe(false);
@@ -3183,12 +3919,12 @@ setInterval(() => {}, 1000);
 		expect(firstEvents.map(event => event.kind)).toEqual(["session.started", "session.state_changed"]);
 
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			prompt: "continue",
 			allow_mutation: true,
 		});
 		await server.callTool("gjc_coordinator_report_status", {
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			turn_id: turn.turn_id,
 			status: "completed",
 			summary: "Done",
@@ -3212,7 +3948,7 @@ setInterval(() => {}, 1000);
 
 		const filtered = await server.callTool("gjc_coordinator_watch_events", {
 			after_seq: 0,
-			session_id: "gjc-demo",
+			session_id: sessionId,
 			event_types: ["turn.completed", "report.written"],
 		});
 		expect((filtered.events as Array<{ kind: string }>).map(event => event.kind)).toEqual([
@@ -3246,11 +3982,9 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: crypto.randomUUID(),
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-06-07T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
 
@@ -3277,11 +4011,9 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId: "gjc-demo",
-					cwd: input.cwd,
-					createdAt: "2026-06-07T00:00:00.000Z",
-				}),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-06-07T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
 
@@ -3315,9 +4047,27 @@ setInterval(() => {}, 1000);
 		const namespace = path.join(stateRoot, "local", "repo");
 		const sessionId = "durable-session";
 		await fs.mkdir(path.join(namespace, "sessions"), { recursive: true });
+		const readinessMarkerFile = path.join(namespace, "readiness", `${sessionId}.json`);
+		await writeReadyMarker({ sessionId, launchId: "durable-state-launch", readinessMarkerFile });
 		await Bun.write(
 			path.join(namespace, "sessions", `${sessionId}.json`),
-			JSON.stringify({ session_id: sessionId, cwd: root, tmux_socket_key: PRIVATE_SOCKET, pane_id: "%99" }),
+			JSON.stringify({
+				session_id: sessionId,
+				registered_at: "2026-07-11T00:00:00.000Z",
+				authoritative: true,
+				cwd: root,
+				tmux_session: sessionId,
+				tmux_target: `${sessionId}:0.0`,
+				tmux_socket_key: PRIVATE_SOCKET,
+				tmux_owner_server_key: PRIVATE_SOCKET,
+				tmux_owner_generation: `${sessionId}-generation`,
+				tmux_owner_server_pid: PRIVATE_OWNER_PID,
+				tmux_owner_server_start_time: PRIVATE_OWNER_START_TIME,
+				tmux_native_session_id: `$${sessionId}`,
+				pane_id: "%24",
+				launch_id: "durable-state-launch",
+				readiness_marker_file: readinessMarkerFile,
+			}),
 		);
 		const server = createCoordinatorMcpServer({
 			env: {
@@ -3327,6 +4077,7 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_PROFILE: "local",
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
+			services: { ownerIsolationProbe: privateOwnerProbe(), commandRunner: privateTmuxCommandRunner },
 		});
 
 		const missing = await server.callTool("gjc_coordinator_send_prompt", {
@@ -3424,7 +4175,14 @@ setInterval(() => {}, 1000);
 		await fs.mkdir(path.join(namespace, "sessions"), { recursive: true });
 		await Bun.write(
 			path.join(namespace, "sessions", `${sessionId}.json`),
-			JSON.stringify({ session_id: sessionId, cwd: root }),
+			JSON.stringify({
+				session_id: sessionId,
+				registered_at: "2026-01-01T00:00:00.000Z",
+				authoritative: true,
+				tmux_session: sessionId,
+				tmux_target: `${sessionId}:0.0`,
+				cwd: root,
+			}),
 		);
 		await fs.mkdir(path.join(namespace, "events"), { recursive: true });
 		await Bun.write(
@@ -3459,7 +4217,14 @@ setInterval(() => {}, 1000);
 		await fs.mkdir(path.join(namespace, "sessions"), { recursive: true });
 		await Bun.write(
 			path.join(namespace, "sessions", `${sessionId}.json`),
-			JSON.stringify({ session_id: sessionId, cwd: root }),
+			JSON.stringify({
+				session_id: sessionId,
+				registered_at: "2026-01-01T00:00:00.000Z",
+				authoritative: true,
+				tmux_session: sessionId,
+				tmux_target: `${sessionId}:0.0`,
+				cwd: root,
+			}),
 		);
 		await fs.mkdir(path.join(namespace, "events"), { recursive: true });
 		const journal = `${JSON.stringify({ schema_version: 1, seq: 7, id: "event-000000000007", timestamp: "2026-01-01T00:00:00.000Z", kind: "session.started", summary: "prior event" })}\n`;
@@ -3553,9 +4318,9 @@ setInterval(() => {}, 1000);
 	it("OWNER-TERMINAL-ROUNDTRIP accepts an actual sidecar terminal marker with its canonical socket_key", async () => {
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "owner-roundtrip");
-		const sessionId = "owner-roundtrip";
-		const stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
-		const generation = await replaceOwnerGeneration(root, sessionId, "owner-roundtrip-generation");
+		let sessionId = "";
+		let stateFile = "";
+		let generation = "";
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -3565,16 +4330,33 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({
-					sessionId,
-					cwd: input.cwd,
-					createdAt: "2026-07-10T00:00:00.000Z",
-					tmuxOwnerGeneration: generation,
-					tmuxOwnerServerKey: "managed-socket-key",
-				}),
+				ownerIsolationProbe: privateOwnerProbe("managed-socket-key"),
+				startSession: async input => {
+					sessionId = input.sessionId;
+					stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
+					generation = await replaceOwnerGeneration(root, sessionId, "owner-roundtrip-generation");
+					return await readyStart(input, {
+						cwd: input.cwd,
+						createdAt: "2026-07-10T00:00:00.000Z",
+						tmuxSession: sessionId,
+						tmuxTarget: `${sessionId}:0.0`,
+						tmuxSocketKey: "managed-socket-key",
+						tmuxOwnerServerKey: "managed-socket-key",
+						tmuxOwnerGeneration: generation,
+						tmuxOwnerServerPid: PRIVATE_OWNER_PID,
+						tmuxOwnerServerStartTime: PRIVATE_OWNER_START_TIME,
+						tmuxNativeSessionId: `$${sessionId}`,
+						paneId: "%24",
+					});
+				},
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		expect(await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true })).toMatchObject(
+			{
+				ok: true,
+			},
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
 			session_id: sessionId,
 			prompt: "fixed synthetic task",
@@ -3608,8 +4390,8 @@ setInterval(() => {}, 1000);
 	it("TERMINAL-PRESERVATION keeps the complete runtime marker byte-stable through reconciliation and finalization", async () => {
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "terminal-preservation");
-		const sessionId = "terminal-preservation";
-		const stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
+		let sessionId = "";
+		let stateFile = "";
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -3619,10 +4401,15 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({ sessionId, cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
+		stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
 			session_id: sessionId,
 			prompt: "fixed synthetic task",
@@ -3656,6 +4443,7 @@ setInterval(() => {}, 1000);
 				source: "agent_session_event",
 				live: false,
 				reason: "agent_end",
+				owner_generation: `${sessionId}-generation`,
 				final_response: {
 					text: "terminal result",
 					format: "markdown",
@@ -3685,8 +4473,8 @@ setInterval(() => {}, 1000);
 		for (const releaseSidecarFirst of [false]) {
 			const root = await tempRoot();
 			const stateRoot = path.join(root, ".gjc", "state", `shared-writer-${releaseSidecarFirst}`);
-			const sessionId = `shared-writer-${releaseSidecarFirst}`;
-			const stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
+			let sessionId = "";
+			let stateFile = "";
 			const entered = Promise.withResolvers<void>();
 			const release = Promise.withResolvers<void>();
 			let blockReconciliation = false;
@@ -3700,24 +4488,22 @@ setInterval(() => {}, 1000);
 				},
 				services: {
 					ownerIsolationProbe: privateOwnerProbe(),
-					startSession: async input => ({
-						sessionId,
-						tmuxSession: sessionId,
-						tmuxTarget: `${sessionId}:0.0`,
-						cwd: input.cwd,
-						createdAt: "2026-07-10T00:00:00.000Z",
-					}),
+					startSession: async input =>
+						readyStart(input, { cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
 					commandRunner: async command => {
 						if (tmuxSubcommand(command) === "has-session" && blockReconciliation) {
 							entered.resolve();
 							await release.promise;
 							return { exitCode: 0, stdout: "", stderr: "" };
 						}
-						return { exitCode: 0, stdout: tmuxIdentity(command), stderr: "" };
+						return privateTmuxCommandRunner(command);
 					},
 				},
 			});
-			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+			sessionId = startedSessionId(
+				await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+			);
+			stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
 			await persistPrivateOwnerProof(stateRoot, sessionId);
 			const turn = await server.callTool("gjc_coordinator_send_prompt", {
 				session_id: sessionId,
@@ -3806,10 +4592,8 @@ setInterval(() => {}, 1000);
 	it("recovers orphaned state locks and waits for a live lock beyond the legacy retry window", async () => {
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "state-lock-recovery");
-		const sessionId = "state-lock-recovery";
-		const stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
-		await fs.mkdir(path.dirname(stateFile), { recursive: true });
-		await Bun.write(`${stateFile}.lock`, JSON.stringify({ pid: 999_999_999, start_time: "0", token: "orphan" }));
+		let sessionId = "";
+		let stateFile = "";
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -3819,19 +4603,36 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({ sessionId, cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		expect(await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true })).toMatchObject(
-			{ ok: true },
+		sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
 		);
+		stateFile = path.join(stateRoot, "local", "repo", "session-states", `${sessionId}.json`);
+		await Bun.write(`${stateFile}.lock`, JSON.stringify({ pid: 999_999_999, start_time: "0", token: "orphan" }));
+		expect(
+			await server.callTool("gjc_coordinator_send_prompt", {
+				session_id: sessionId,
+				prompt: "recover orphaned lock",
+				allow_mutation: true,
+			}),
+		).toMatchObject({ ok: true });
+		expect(sessionId).toBeTruthy();
 		const stat = await fs.readFile(`/proc/${process.pid}/stat`, "utf8");
 		const startTime = stat
 			.slice(stat.lastIndexOf(")") + 1)
 			.trim()
 			.split(/\s+/)[19];
 		await Bun.write(`${stateFile}.lock`, JSON.stringify({ pid: process.pid, start_time: startTime, token: "live" }));
-		const write = server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		const write = server.callTool("gjc_coordinator_send_prompt", {
+			session_id: sessionId,
+			prompt: "wait for live lock",
+			force: true,
+			allow_mutation: true,
+		});
 		await Bun.sleep(1_100);
 		await fs.rm(`${stateFile}.lock`);
 		expect(await write).toMatchObject({ ok: true });
@@ -3841,7 +4642,7 @@ setInterval(() => {}, 1000);
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "turn-identity-mismatch");
 		const namespace = path.join(stateRoot, "local", "repo");
-		const sessionId = "turn-identity-mismatch";
+		let sessionId = "";
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -3851,10 +4652,14 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({ sessionId, cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const turn = await server.callTool("gjc_coordinator_send_prompt", {
 			session_id: sessionId,
 			prompt: "fixed synthetic task",
@@ -3897,7 +4702,7 @@ setInterval(() => {}, 1000);
 		const root = await tempRoot();
 		const stateRoot = path.join(root, ".gjc", "state", "queued-turn-identity-mismatch");
 		const namespace = path.join(stateRoot, "local", "repo");
-		const sessionId = "queued-turn-identity-mismatch";
+		let sessionId = "";
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -3907,10 +4712,14 @@ setInterval(() => {}, 1000);
 				GJC_COORDINATOR_MCP_REPO: "repo",
 			},
 			services: {
-				startSession: async input => ({ sessionId, cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				ownerIsolationProbe: privateOwnerProbe(),
+				startSession: async input => readyStart(input, { cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+				commandRunner: privateTmuxCommandRunner,
 			},
 		});
-		await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+		sessionId = startedSessionId(
+			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+		);
 		const active = await server.callTool("gjc_coordinator_send_prompt", {
 			session_id: sessionId,
 			prompt: "fixed active task",
@@ -3945,7 +4754,7 @@ setInterval(() => {}, 1000);
 			const root = await tempRoot();
 			const stateRoot = path.join(root, ".gjc", "state", `corrupt-turn-${corruptActiveTurn}`);
 			const namespace = path.join(stateRoot, "local", "repo");
-			const sessionId = "corrupt-session";
+			let sessionId = "";
 			const server = createCoordinatorMcpServer({
 				env: {
 					GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -3955,10 +4764,15 @@ setInterval(() => {}, 1000);
 					GJC_COORDINATOR_MCP_REPO: "repo",
 				},
 				services: {
-					startSession: async input => ({ sessionId, cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+					ownerIsolationProbe: privateOwnerProbe(),
+					startSession: async input =>
+						readyStart(input, { cwd: input.cwd, createdAt: "2026-07-10T00:00:00.000Z" }),
+					commandRunner: privateTmuxCommandRunner,
 				},
 			});
-			await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true });
+			sessionId = startedSessionId(
+				await server.callTool("gjc_coordinator_start_session", { cwd: root, allow_mutation: true }),
+			);
 			const turn = await server.callTool("gjc_coordinator_send_prompt", {
 				session_id: sessionId,
 				prompt: "fixed synthetic task",

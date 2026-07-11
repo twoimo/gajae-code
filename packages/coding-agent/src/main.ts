@@ -34,6 +34,7 @@ import { BUNDLED_GROK_BUILD_EXTENSION_ID, getBundledGrokBuildExtensionFactory } 
 import { initializeWithSettings } from "./discovery";
 import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
+import { persistCoordinatorRuntimeInputReady } from "./gjc-runtime/session-state-sidecar";
 import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
 import type { SessionSelectionResult } from "./modes/components/session-selector";
 import type { InteractiveMode } from "./modes/interactive-mode";
@@ -465,6 +466,12 @@ export async function runInteractiveMode(
 			);
 
 	await initializeInteractiveModeWithStartupUpdate(mode, startupUpdate);
+	try {
+		await persistCoordinatorRuntimeInputReady();
+	} catch (error) {
+		logger.warn("Failed to persist coordinator runtime input readiness", { error: String(error) });
+		throw error;
+	}
 
 	mode.renderInitialMessages(undefined, { preserveExistingChat: true });
 

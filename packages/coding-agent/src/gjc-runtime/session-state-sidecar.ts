@@ -22,6 +22,20 @@ export const GJC_TMUX_OWNER_SERVER_KEY_ENV = "GJC_TMUX_OWNER_SERVER_KEY";
 export const GJC_COORDINATOR_SESSION_STATE_FILE_ENV = "GJC_COORDINATOR_SESSION_STATE_FILE";
 export const GJC_COORDINATOR_SESSION_ID_ENV = "GJC_COORDINATOR_SESSION_ID";
 export const GJC_COORDINATOR_SESSION_BRANCH_ENV = "GJC_COORDINATOR_SESSION_BRANCH";
+export const GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV = "GJC_COORDINATOR_SESSION_LAUNCH_ID";
+export const GJC_COORDINATOR_SESSION_READINESS_FILE_ENV = "GJC_COORDINATOR_SESSION_READINESS_FILE";
+
+export type RuntimeInputReadyMarker = Readonly<{
+	schema_version: 1;
+	session_id: string;
+	launch_id: string;
+	state: "ready_for_input";
+	event: "interactive_input_ready";
+	source: "gjc_interactive_runtime";
+	ready_for_input: true;
+	created_at: string;
+}>;
+
 const GJC_SESSION_PROMPT_ACCEPTED_JSON_ENV = "GJC_SESSION_PROMPT_ACCEPTED_JSON";
 const GJC_SESSION_WORKTREE_BASELINE_DIRTY_ENV = "GJC_SESSION_WORKTREE_BASELINE_DIRTY";
 
@@ -93,6 +107,99 @@ export type TerminalRuntimeStateStatus =
 				| "session_file_mismatch"
 				| "non_terminal_state";
 	  };
+
+function runtimeReadinessMarkerConflict(): Error {
+	const error = new Error("runtime_readiness_marker_conflict");
+	Object.assign(error, { code: "runtime_readiness_marker_conflict" });
+	return error;
+}
+
+function isRuntimeInputReadyMarker(value: unknown): value is RuntimeInputReadyMarker {
+	if (!value || typeof value !== "object") return false;
+	const marker = value as Record<string, unknown>;
+	return (
+		marker.schema_version === 1 &&
+		typeof marker.session_id === "string" &&
+		typeof marker.launch_id === "string" &&
+		marker.state === "ready_for_input" &&
+		marker.event === "interactive_input_ready" &&
+		marker.source === "gjc_interactive_runtime" &&
+		marker.ready_for_input === true &&
+		typeof marker.created_at === "string" &&
+		marker.created_at.length > 0 &&
+		Number.isFinite(Date.parse(marker.created_at))
+	);
+}
+
+function immutableRuntimeInputReadyMarker(marker: RuntimeInputReadyMarker): RuntimeInputReadyMarker {
+	return Object.freeze({ ...marker });
+}
+
+async function readRuntimeInputReadyMarker(readinessFile: string): Promise<RuntimeInputReadyMarker | null> {
+	let text: string;
+	try {
+		text = await Bun.file(readinessFile).text();
+	} catch (error) {
+		const code = (error as { code?: unknown }).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return null;
+		throw runtimeReadinessMarkerConflict();
+	}
+	try {
+		const marker = JSON.parse(text) as unknown;
+		if (!isRuntimeInputReadyMarker(marker)) throw runtimeReadinessMarkerConflict();
+		return immutableRuntimeInputReadyMarker(marker);
+	} catch (error) {
+		if ((error as { code?: unknown }).code === "runtime_readiness_marker_conflict") throw error;
+		throw runtimeReadinessMarkerConflict();
+	}
+}
+
+export async function persistCoordinatorRuntimeInputReady(): Promise<RuntimeInputReadyMarker | null> {
+	const stateFile = process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]?.trim();
+	const sessionId = process.env[GJC_COORDINATOR_SESSION_ID_ENV]?.trim();
+	const launchId = process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV]?.trim();
+	const readinessFile = process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV]?.trim();
+	if (!stateFile || !sessionId || !launchId || !readinessFile) return null;
+
+	const expected = { sessionId, launchId };
+	const existing = await readRuntimeInputReadyMarker(readinessFile);
+	if (existing) {
+		if (existing.session_id !== expected.sessionId || existing.launch_id !== expected.launchId) {
+			throw runtimeReadinessMarkerConflict();
+		}
+		return existing;
+	}
+
+	const marker = immutableRuntimeInputReadyMarker({
+		schema_version: 1,
+		session_id: expected.sessionId,
+		launch_id: expected.launchId,
+		state: "ready_for_input",
+		event: "interactive_input_ready",
+		source: "gjc_interactive_runtime",
+		ready_for_input: true,
+		created_at: new Date().toISOString(),
+	});
+	const tempFile = path.join(
+		path.dirname(readinessFile),
+		`.${path.basename(readinessFile)}.${process.pid}.${randomUUID()}.tmp`,
+	);
+	try {
+		await fs.mkdir(path.dirname(readinessFile), { recursive: true });
+		await fs.writeFile(tempFile, `${JSON.stringify(marker)}\n`, { flag: "wx" });
+		try {
+			await fs.link(tempFile, readinessFile);
+		} catch (error) {
+			if ((error as { code?: unknown }).code !== "EEXIST") throw runtimeReadinessMarkerConflict();
+			const raced = await readRuntimeInputReadyMarker(readinessFile);
+			if (raced && raced.session_id === expected.sessionId && raced.launch_id === expected.launchId) return raced;
+			throw runtimeReadinessMarkerConflict();
+		}
+		return marker;
+	} finally {
+		await fs.rm(tempFile, { force: true });
+	}
+}
 
 function sameResolvedPath(left: string, right: string): boolean {
 	return path.resolve(left) === path.resolve(right);

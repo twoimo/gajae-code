@@ -23,6 +23,42 @@ async function withTempRoot(run: (root: string) => Promise<void>): Promise<void>
 	}
 }
 
+type LaunchInput = {
+	cwd: string;
+	sessionId: string;
+	launchId: string;
+	readinessMarkerFile: string;
+};
+
+async function writeReadyMarker(input: LaunchInput): Promise<void> {
+	await Bun.write(
+		input.readinessMarkerFile,
+		`${JSON.stringify({
+			schema_version: 1,
+			session_id: input.sessionId,
+			launch_id: input.launchId,
+			state: "ready_for_input",
+			event: "interactive_input_ready",
+			source: "gjc_interactive_runtime",
+			ready_for_input: true,
+			created_at: "2026-07-11T00:00:00.000Z",
+		})}\n`,
+	);
+}
+
+async function readyStart<T extends Record<string, unknown>>(
+	input: LaunchInput,
+	result: T,
+): Promise<T & { sessionId: string; launchId: string; readinessMarkerFile: string }> {
+	await writeReadyMarker(input);
+	return {
+		...result,
+		sessionId: input.sessionId,
+		launchId: input.launchId,
+		readinessMarkerFile: input.readinessMarkerFile,
+	};
+}
+
 async function runCommand(argv: string[]): Promise<string> {
 	let output = "";
 	const writeSpy = spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
@@ -160,47 +196,50 @@ describe("gjc mcp-serve coordinator", () => {
 				reason: "coordinator_mutation_call_not_allowed",
 			});
 
-			const allowed = await handleCoordinatorMcpRequest(
-				{
-					jsonrpc: "2.0",
-					id: 2,
-					method: "tools/call",
-					params: { name: "gjc_coordinator_start_session", arguments: { cwd: root, allow_mutation: true } },
-				},
-				{
-					env,
-					createSession: () => {
+			const allowedServer = createCoordinatorMcpServer({
+				env: { ...env, GJC_COORDINATOR_MCP_STATE_ROOT: path.join(root, ".state-allowed") },
+				services: {
+					startSession: async input => {
 						created = true;
 						return {
-							name: "x",
-							cwd: root,
+							sessionId: input.sessionId,
+							launchId: input.launchId,
+							readinessMarkerFile: input.readinessMarkerFile,
+							name: input.sessionId,
 							attached: false,
 							windows: 1,
 							panes: 1,
 							bindings: "root",
-							createdAt: "now",
+							cwd: input.cwd,
+							createdAt: "2026-07-11T00:00:00.000Z",
 						};
 					},
 				},
-			);
+			});
+			const allowedPayload = await allowedServer.callTool("gjc_coordinator_start_session", {
+				cwd: root,
+				allow_mutation: true,
+			});
 			expect(created).toBe(true);
-			const allowedPayload = JSON.parse(allowed.result.content[0].text);
 			expect(allowedPayload).toMatchObject({
 				ok: true,
 				session: {
-					session_id: "x",
-					name: "x",
+					session_id: expect.stringMatching(/^gjc-coordinator-/),
+					name: expect.stringMatching(/^gjc-coordinator-/),
 					attached: false,
 					windows: 1,
 					panes: 1,
 					bindings: "root",
-					created_at: "now",
-					createdAt: "now",
+					created_at: "2026-07-11T00:00:00.000Z",
+					createdAt: "2026-07-11T00:00:00.000Z",
+					origin: "coordinator_created",
+					launch_id: expect.any(String),
+					readiness_marker_file: expect.any(String),
 				},
 				session_state: {
-					session_id: "x",
-					state: "ready_for_input",
-					ready_for_input: true,
+					session_id: expect.stringMatching(/^gjc-coordinator-/),
+					state: "booting",
+					ready_for_input: false,
 				},
 			});
 		});
@@ -266,11 +305,12 @@ describe("gjc mcp-serve coordinator", () => {
 			const server = await createCoordinatorMcpServer({
 				env,
 				services: {
-					startSession: input => ({
-						name: "generic-controller-session",
-						cwd: input.cwd,
-						createdAt: "now",
-					}),
+					startSession: async input =>
+						await readyStart(input, {
+							name: input.sessionId,
+							cwd: input.cwd,
+							createdAt: "now",
+						}),
 				},
 			});
 
@@ -289,33 +329,34 @@ describe("gjc mcp-serve coordinator", () => {
 				cwd: root,
 				allow_mutation: true,
 			});
+			const sessionId = String((started.session as { session_id: string }).session_id);
 			expect(started).toMatchObject({
 				ok: true,
-				session: { session_id: "generic-controller-session", cwd: root },
-				session_state: { state: "ready_for_input" },
+				session: { session_id: sessionId, cwd: root },
+				session_state: { state: "booting" },
 			});
 
 			const sent = await server.callTool("gjc_coordinator_send_prompt", {
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				prompt: "Run a mocked generic controller task.",
 				allow_mutation: true,
 			});
 			expect(sent).toMatchObject({
 				ok: true,
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				status: "active",
 			});
 			const turnId = String(sent.turn_id);
 
 			const activeConflict = await server.callTool("gjc_coordinator_send_prompt", {
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				prompt: "Second prompt should be protected.",
 				allow_mutation: true,
 			});
 			expect(activeConflict).toMatchObject({ ok: false, reason: "active_turn_exists", active_turn_id: turnId });
 
 			const queued = await server.callTool("gjc_coordinator_send_prompt", {
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				prompt: "Queued follow-up.",
 				queue: true,
 				allow_mutation: true,
@@ -328,13 +369,13 @@ describe("gjc mcp-serve coordinator", () => {
 				path.join(questionDir, "question-1.json"),
 				JSON.stringify({
 					question_id: "question-1",
-					session_id: "generic-controller-session",
+					session_id: sessionId,
 					turn_id: turnId,
 					status: "pending",
 				}),
 			);
 			const questionAnswer = await server.callTool("gjc_coordinator_submit_question_answer", {
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				turn_id: turnId,
 				question_id: "question-1",
 				answer: { decision: "approve" },
@@ -343,7 +384,7 @@ describe("gjc mcp-serve coordinator", () => {
 			expect(questionAnswer).toMatchObject({ ok: true, question: { status: "answered" } });
 
 			const reported = await server.callTool("gjc_coordinator_report_status", {
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				turn_id: turnId,
 				status: "completed",
 				summary: "Mocked lifecycle completed.",
@@ -357,7 +398,7 @@ describe("gjc mcp-serve coordinator", () => {
 			});
 
 			const readTurn = await server.callTool("gjc_coordinator_read_turn", {
-				session_id: "generic-controller-session",
+				session_id: sessionId,
 				turn_id: turnId,
 			});
 			expect(readTurn).toMatchObject({ ok: true, turn: { status: "completed" } });
@@ -386,11 +427,12 @@ describe("coordinator delegate tools", () => {
 
 	function delegateServices() {
 		return {
-			startSession: (input: { cwd: string }) => ({
-				name: "delegate-session",
-				cwd: input.cwd,
-				createdAt: "now",
-			}),
+			startSession: async (input: LaunchInput) =>
+				await readyStart(input, {
+					name: input.sessionId,
+					cwd: input.cwd,
+					createdAt: "now",
+				}),
 		};
 	}
 
@@ -500,7 +542,7 @@ describe("coordinator delegate tools", () => {
 				ok: true,
 				workflow: "plan",
 				tool_name: "gjc_delegate_plan",
-				session_id: "delegate-session",
+				session_id: expect.stringMatching(/^gjc-coordinator-/),
 				status: "active",
 			});
 			expect(String((result.turn as { prompt?: { text?: string } }).prompt?.text)).toContain("/skill:ralplan");

@@ -9,11 +9,14 @@ import {
 	eventAffectsCoordinatorRuntimeState,
 	GJC_COORDINATOR_SESSION_BRANCH_ENV,
 	GJC_COORDINATOR_SESSION_ID_ENV,
+	GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV,
+	GJC_COORDINATOR_SESSION_READINESS_FILE_ENV,
 	GJC_COORDINATOR_SESSION_STATE_FILE_ENV,
 	GJC_TMUX_OWNER_GENERATION_ENV,
 	GJC_TMUX_OWNER_SERVER_KEY_ENV,
 	GJC_TMUX_OWNER_STATE_DIR_ENV,
 	ownerTerminalContextFromEnvironment,
+	persistCoordinatorRuntimeInputReady,
 	persistCoordinatorRuntimeStateFromEvent,
 	persistCoordinatorRuntimeStateFromPostmortem,
 	readTerminalRuntimeStateMarker,
@@ -56,6 +59,8 @@ function expectCompactJson(raw: string): RuntimePayload {
 const ORIGINAL_STATE_FILE = process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV];
 const ORIGINAL_SESSION_ID = process.env[GJC_COORDINATOR_SESSION_ID_ENV];
 const ORIGINAL_BRANCH = process.env[GJC_COORDINATOR_SESSION_BRANCH_ENV];
+const ORIGINAL_LAUNCH_ID = process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV];
+const ORIGINAL_READINESS_FILE = process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV];
 const PROMPT_ACCEPTED_ENV = "GJC_SESSION_PROMPT_ACCEPTED_JSON";
 const BASELINE_DIRTY_ENV = "GJC_SESSION_WORKTREE_BASELINE_DIRTY";
 const ORIGINAL_PROMPT_ACCEPTED = process.env[PROMPT_ACCEPTED_ENV];
@@ -79,6 +84,10 @@ afterEach(async () => {
 	else process.env[GJC_COORDINATOR_SESSION_ID_ENV] = ORIGINAL_SESSION_ID;
 	if (ORIGINAL_BRANCH === undefined) delete process.env[GJC_COORDINATOR_SESSION_BRANCH_ENV];
 	else process.env[GJC_COORDINATOR_SESSION_BRANCH_ENV] = ORIGINAL_BRANCH;
+	if (ORIGINAL_LAUNCH_ID === undefined) delete process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV];
+	else process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV] = ORIGINAL_LAUNCH_ID;
+	if (ORIGINAL_READINESS_FILE === undefined) delete process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV];
+	else process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV] = ORIGINAL_READINESS_FILE;
 	if (ORIGINAL_PROMPT_ACCEPTED === undefined) delete process.env[PROMPT_ACCEPTED_ENV];
 	else process.env[PROMPT_ACCEPTED_ENV] = ORIGINAL_PROMPT_ACCEPTED;
 	if (ORIGINAL_BASELINE_DIRTY === undefined) delete process.env[BASELINE_DIRTY_ENV];
@@ -1720,5 +1729,146 @@ describe("coordinator runtime state sidecar", () => {
 		});
 		await persistCoordinatorRuntimeStateFromPostmortem(postmortem.Reason.SIGTERM, context);
 		expect(await readPayload(stateFile)).toEqual(terminal);
+	});
+	it("persists an immutable runtime input readiness marker with the coordinator authority fields", async () => {
+		const root = await tempRoot();
+		const stateFile = path.join(root, "state.json");
+		const readinessFile = path.join(root, "runtime-input-ready.json");
+		process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] = stateFile;
+		process.env[GJC_COORDINATOR_SESSION_ID_ENV] = "ready-session";
+		process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV] = "ready-launch";
+		process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV] = readinessFile;
+		setSystemTime(new Date("2026-07-11T12:00:00.000Z"));
+
+		const marker = await persistCoordinatorRuntimeInputReady();
+
+		if (!marker) throw new Error("expected_runtime_readiness_marker");
+		expect(marker).toEqual({
+			schema_version: 1,
+			session_id: "ready-session",
+			launch_id: "ready-launch",
+			state: "ready_for_input",
+			event: "interactive_input_ready",
+			source: "gjc_interactive_runtime",
+			ready_for_input: true,
+			created_at: "2026-07-11T12:00:00.000Z",
+		});
+		expect(Object.isFrozen(marker)).toBe(true);
+		expect(await readJson(readinessFile)).toEqual(marker);
+		setSystemTime();
+	});
+
+	it("does not create a readiness marker without every coordinator authority input", async () => {
+		delete process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV];
+		delete process.env[GJC_COORDINATOR_SESSION_ID_ENV];
+		delete process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV];
+		delete process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV];
+
+		expect(await persistCoordinatorRuntimeInputReady()).toBeNull();
+	});
+
+	it("returns the original readiness marker without rewriting its timestamp", async () => {
+		const root = await tempRoot();
+		const readinessFile = path.join(root, "runtime-input-ready.json");
+		process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] = path.join(root, "state.json");
+		process.env[GJC_COORDINATOR_SESSION_ID_ENV] = "idempotent-session";
+		process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV] = "idempotent-launch";
+		process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV] = readinessFile;
+		setSystemTime(new Date("2026-07-11T12:00:00.000Z"));
+		const first = await persistCoordinatorRuntimeInputReady();
+		const original = await Bun.file(readinessFile).text();
+		setSystemTime(new Date("2026-07-11T12:01:00.000Z"));
+
+		const second = await persistCoordinatorRuntimeInputReady();
+
+		expect(second).toEqual(first);
+		expect(await Bun.file(readinessFile).text()).toBe(original);
+		setSystemTime();
+	});
+
+	it("rejects malformed and conflicting readiness markers without overwriting them", async () => {
+		const root = await tempRoot();
+		const readinessFile = path.join(root, "runtime-input-ready.json");
+		process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] = path.join(root, "state.json");
+		process.env[GJC_COORDINATOR_SESSION_ID_ENV] = "conflict-session";
+		process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV] = "conflict-launch";
+		process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV] = readinessFile;
+		await Bun.write(readinessFile, "not json");
+
+		await expect(persistCoordinatorRuntimeInputReady()).rejects.toMatchObject({
+			code: "runtime_readiness_marker_conflict",
+		});
+		expect(await Bun.file(readinessFile).text()).toBe("not json");
+		await Bun.write(
+			readinessFile,
+			JSON.stringify({
+				schema_version: 1,
+				session_id: "other-session",
+				launch_id: "conflict-launch",
+				state: "ready_for_input",
+				event: "interactive_input_ready",
+				source: "gjc_interactive_runtime",
+				ready_for_input: true,
+				created_at: "2026-07-11T12:00:00.000Z",
+			}),
+		);
+
+		await expect(persistCoordinatorRuntimeInputReady()).rejects.toMatchObject({
+			code: "runtime_readiness_marker_conflict",
+		});
+		expect((await readJson(readinessFile)).session_id).toBe("other-session");
+		await Bun.write(
+			readinessFile,
+			JSON.stringify({
+				schema_version: 1,
+				session_id: "conflict-session",
+				launch_id: "conflict-launch",
+				state: "ready_for_input",
+				event: "interactive_input_ready",
+				source: "gjc_interactive_runtime",
+				ready_for_input: true,
+				created_at: "",
+			}),
+		);
+		await expect(persistCoordinatorRuntimeInputReady()).rejects.toMatchObject({
+			code: "runtime_readiness_marker_conflict",
+		});
+		expect((await readJson(readinessFile)).created_at).toBe("");
+	});
+
+	it("resolves a same-authority create race to the installed marker and removes temporary files", async () => {
+		const root = await tempRoot();
+		const readinessFile = path.join(root, "runtime-input-ready.json");
+		process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] = path.join(root, "state.json");
+		process.env[GJC_COORDINATOR_SESSION_ID_ENV] = "race-session";
+		process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV] = "race-launch";
+		process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV] = readinessFile;
+
+		const [left, right] = await Promise.all([
+			persistCoordinatorRuntimeInputReady(),
+			persistCoordinatorRuntimeInputReady(),
+		]);
+		if (!left || !right) throw new Error("expected_runtime_readiness_marker");
+
+		expect(left).toEqual(right);
+		expect(await readJson(readinessFile)).toEqual(left);
+		expect((await fs.readdir(root)).filter(entry => entry.endsWith(".tmp"))).toEqual([]);
+	});
+
+	it("keeps the input readiness marker independent from subsequent mutable state writes", async () => {
+		const root = await tempRoot();
+		const stateFile = path.join(root, "state.json");
+		const readinessFile = path.join(root, "runtime-input-ready.json");
+		process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] = stateFile;
+		process.env[GJC_COORDINATOR_SESSION_ID_ENV] = "independent-session";
+		process.env[GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV] = "independent-launch";
+		process.env[GJC_COORDINATOR_SESSION_READINESS_FILE_ENV] = readinessFile;
+		const marker = await persistCoordinatorRuntimeInputReady();
+		if (!marker) throw new Error("expected_runtime_readiness_marker");
+
+		await persistCoordinatorRuntimeStateFromEvent({ type: "agent_start" }, { sessionId: "fallback", cwd: root });
+
+		expect(await readJson(readinessFile)).toEqual(marker);
+		expect((await readJson(stateFile)).state).toBe("running");
 	});
 });

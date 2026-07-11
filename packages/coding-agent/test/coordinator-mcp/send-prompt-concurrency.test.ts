@@ -31,11 +31,34 @@ describe("send_prompt same-session concurrency", () => {
 					GJC_COORDINATOR_MCP_REPO: "repo-race",
 				},
 				services: {
-					startSession: (input: { cwd: string }) => ({
-						name: "race-session",
-						cwd: input.cwd,
-						createdAt: "now",
-					}),
+					startSession: async (input: {
+						cwd: string;
+						sessionId: string;
+						launchId: string;
+						readinessMarkerFile: string;
+					}) => {
+						await Bun.write(
+							input.readinessMarkerFile,
+							`${JSON.stringify({
+								schema_version: 1,
+								session_id: input.sessionId,
+								launch_id: input.launchId,
+								state: "ready_for_input",
+								event: "interactive_input_ready",
+								source: "gjc_interactive_runtime",
+								ready_for_input: true,
+								created_at: "2026-07-11T00:00:00.000Z",
+							})}\n`,
+						);
+						return {
+							name: input.sessionId,
+							sessionId: input.sessionId,
+							launchId: input.launchId,
+							readinessMarkerFile: input.readinessMarkerFile,
+							cwd: input.cwd,
+							createdAt: "2026-07-11T00:00:00.000Z",
+						};
+					},
 				},
 			});
 
@@ -44,16 +67,17 @@ describe("send_prompt same-session concurrency", () => {
 				allow_mutation: true,
 			});
 			expect(started.ok).toBe(true);
+			const sessionId = (started.session as { session_id: string }).session_id;
 
 			// The exact race the maintainer reproduced 25/25: two same-session prompts at once.
 			const results = await Promise.all([
 				server.callTool("gjc_coordinator_send_prompt", {
-					session_id: "race-session",
+					session_id: sessionId,
 					prompt: "first concurrent prompt",
 					allow_mutation: true,
 				}),
 				server.callTool("gjc_coordinator_send_prompt", {
-					session_id: "race-session",
+					session_id: sessionId,
 					prompt: "second concurrent prompt",
 					allow_mutation: true,
 				}),
