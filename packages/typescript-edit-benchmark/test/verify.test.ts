@@ -99,7 +99,7 @@ describe("verifyExpectedFiles", () => {
 			const result = await verifyExpectedFiles(expectedDir, actualDir);
 
 			expect(result.success).toBe(false);
-			expect(result.error).toContain("Unexpected files: .gjc/_session-decoy.json");
+			expect(result.error).toContain(`Unexpected files: ${path.join(".gjc", "_session-decoy.json")}`);
 		} finally {
 			await cleanup();
 		}
@@ -116,7 +116,9 @@ describe("verifyExpectedFiles", () => {
 			const result = await verifyExpectedFiles(expectedDir, actualDir);
 
 			expect(result.success).toBe(false);
-			expect(result.error).toContain("Unexpected files: .gjc/agents/foo.md, .gjc/mcp.json");
+			expect(result.error).toContain(
+				`Unexpected files: ${path.join(".gjc", "agents", "foo.md")}, ${path.join(".gjc", "mcp.json")}`,
+			);
 		} finally {
 			await cleanup();
 		}
