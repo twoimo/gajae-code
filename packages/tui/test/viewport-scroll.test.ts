@@ -461,7 +461,7 @@ describe("registered viewport anchor", () => {
 	});
 
 	it("does not strip or trust user-supplied anchor-like APC content", () => {
-		const literalMarker = "\x1b_GJC_ANCHOR:0:1:0:1\x1b\\";
+		const literalMarker = "\x1b_AGJC_ANCHOR:0:1:0:1\x1b\\";
 		const container = new Container();
 		const text = new Text(`${literalMarker}visible`, 0, 0);
 		container.addChild(text);

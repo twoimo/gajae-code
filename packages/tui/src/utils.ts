@@ -179,7 +179,11 @@ export interface ViewportAnchorAnnotation {
 	token: string;
 }
 
-const VIEWPORT_ANCHOR_PREFIX = "\x1b_GJC_ANCHOR:";
+// APC marker for viewport anchors. Must NOT start with "\x1b_G": that is the
+// Kitty graphics prefix and TERMINAL.isImageLine() would misclassify every
+// annotated line as an image line, which skips wrapping (issue: assistant
+// prose overflowing the terminal on Kitty-protocol terminals).
+const VIEWPORT_ANCHOR_PREFIX = "\x1b_AGJC_ANCHOR:";
 const VIEWPORT_ANCHOR_SUFFIX = "\x1b\\";
 
 function ansiSequenceEnd(text: string, start: number): number {
@@ -249,7 +253,7 @@ export function extractViewportAnchorRows(
 	lines: readonly string[],
 	token: string,
 ): { lines: string[]; spans: Array<ViewportAnchorSpan | null> } {
-	const markerRegex = new RegExp(`\\x1b_GJC_ANCHOR:${token}:(\\d+):(\\d+):(\\d+):(\\d+)\\x1b\\\\`, "g");
+	const markerRegex = new RegExp(`\\x1b_AGJC_ANCHOR:${token}:(\\d+):(\\d+):(\\d+):(\\d+)\\x1b\\\\`, "g");
 	const cleanLines: string[] = [];
 	const spans: Array<ViewportAnchorSpan | null> = [];
 	for (const line of lines) {
