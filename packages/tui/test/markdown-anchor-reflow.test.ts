@@ -122,6 +122,24 @@ const LIST_DOC = [
 	"- ITEMTWO followed by lots and lots of extra words that will wrap into several rows once the terminal is narrow enough to force multiple line wrapping here",
 ].join("\n");
 
+// A table is one top-level token; its rows are the width-invariant source units.
+// The second data cell is long and rewraps into several rows as the terminal
+// narrows. A page-down anchor pinned on the header must not drift into a data row.
+const TABLE_ROWS_DOC = [
+	"| HEADA | HEADB |",
+	"| --- | --- |",
+	"| shortcell | a very long cell body with lots and lots of extra words to force wrapping across several rows once the terminal narrows indeed yes more here |",
+].join("\n");
+
+// A blockquote with two separate paragraph blocks (blank quoted line between).
+// The second block rewraps as the terminal narrows; a page-down anchor pinned on
+// the first block must not drift into the second.
+const MULTIBLOCK_QUOTE_DOC = [
+	"> QHEAD",
+	">",
+	"> QTAIL second quoted paragraph with lots and lots of extra words that wrap into several rows once the terminal is narrow enough to force wrapping here indeed",
+].join("\n");
+
 describe("markdown viewport anchors across topology-changing reflow (#2031)", () => {
 	it("keeps the post-HR paragraph anchored wide<->narrow", () => {
 		expectAnchorSurvivesReflow(HR_DOC, "TARGET", 100, 24, "hr");
@@ -150,8 +168,17 @@ describe("markdown viewport anchors across topology-changing reflow (#2031)", ()
 		expectPageDownAnchorSurvivesReflow(LIST_DOC, "ITEMONE", 30, 120, "list");
 	});
 
+	it("keeps an earlier table row / quote block pinned when a later one rewraps (page-down capture)", () => {
+		// A table header must not slide into a data row when a data cell rewraps.
+		expectPageDownAnchorSurvivesReflow(TABLE_ROWS_DOC, "HEADA", 120, 40, "tblrows");
+		expectPageDownAnchorSurvivesReflow(TABLE_ROWS_DOC, "HEADA", 40, 120, "tblrows");
+		// The first quote block must not slide into the second when the second rewraps.
+		expectPageDownAnchorSurvivesReflow(MULTIBLOCK_QUOTE_DOC, "QHEAD", 120, 30, "bqblocks");
+		expectPageDownAnchorSurvivesReflow(MULTIBLOCK_QUOTE_DOC, "QHEAD", 30, 120, "bqblocks");
+	});
+
 	it("preserves the monotonic, non-overlapping anchor contract and leaks no markers", () => {
-		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC, LIST_DOC]) {
+		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC, LIST_DOC, TABLE_ROWS_DOC, MULTIBLOCK_QUOTE_DOC]) {
 			for (const width of [100, 40, 24, 10]) {
 				const rendered = render(doc, width, "contract");
 				expect(rendered.anchors.length).toBe(rendered.lines.length);
@@ -164,7 +191,7 @@ describe("markdown viewport anchors across topology-changing reflow (#2031)", ()
 	});
 
 	it("keeps anchor lines byte-identical to the plain render", () => {
-		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC, LIST_DOC]) {
+		for (const doc of [HR_DOC, BLOCKQUOTE_DOC, TABLE_DOC, LIST_DOC, TABLE_ROWS_DOC, MULTIBLOCK_QUOTE_DOC]) {
 			for (const width of [100, 40, 24, 10]) {
 				const md = new Markdown(doc, 0, 0, defaultMarkdownTheme);
 				const withAnchors = md.renderWithViewportAnchorSource(width, { id: "parity" });
