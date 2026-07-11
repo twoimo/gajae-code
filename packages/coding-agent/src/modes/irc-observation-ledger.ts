@@ -6,7 +6,7 @@ type InlineMode = "persistent" | "ephemeral";
 
 const MAX_RECORDS = 10_000;
 const MAX_RETAINED_UTF8_BYTES = 16 * 1024 * 1024;
-const MAX_TOMBSTONES = 10_000;
+const MAX_SEEN_IDENTITIES = 100_000;
 
 export type IrcObservationRecord = Readonly<
 	ParsedIrcMessage & {
@@ -36,18 +36,19 @@ export class IrcObservationLedger {
 	#records = new Map<string, IrcObservationRecord>();
 	#retainedUtf8Bytes = 0;
 	#nextSequence = 0;
-	#tombstones = new Map<string, undefined>();
+	#seenObservationIdentities = new Set<string>();
+	#identityCapacityExhausted = false;
 	#evictedObservationIds = new Set<string>();
 
-	#addTombstone(observationId: string): void {
+	#rememberObservationIdentity(observationId: string): boolean {
 		const identity = tombstoneIdentity(observationId);
-		if (this.#tombstones.has(identity)) return;
-		this.#tombstones.set(identity, undefined);
-		while (this.#tombstones.size > MAX_TOMBSTONES) {
-			const oldestIdentity = this.#tombstones.keys().next().value;
-			if (oldestIdentity === undefined) return;
-			this.#tombstones.delete(oldestIdentity);
+		if (this.#seenObservationIdentities.has(identity) || this.#identityCapacityExhausted) return false;
+		if (this.#seenObservationIdentities.size >= MAX_SEEN_IDENTITIES) {
+			this.#identityCapacityExhausted = true;
+			return false;
 		}
+		this.#seenObservationIdentities.add(identity);
+		return true;
 	}
 
 	#evict(observationId: string): void {
@@ -55,7 +56,6 @@ export class IrcObservationLedger {
 		if (!record) return;
 		this.#records.delete(observationId);
 		this.#retainedUtf8Bytes -= record.retainedUtf8Bytes;
-		this.#addTombstone(observationId);
 		this.#evictedObservationIds.add(observationId);
 	}
 
@@ -71,14 +71,10 @@ export class IrcObservationLedger {
 	observe(message: ParsedIrcMessage, panelVisibleAtObservation: boolean): IrcObservationRecord | undefined {
 		const existing = this.#records.get(message.observationId);
 		if (existing) return existing;
-		if (this.#tombstones.has(tombstoneIdentity(message.observationId))) return undefined;
+		if (!this.#rememberObservationIdentity(message.observationId)) return undefined;
 
 		const estimatedBytes = measureRetainedUtf8Bytes(message);
-		if (estimatedBytes > MAX_RETAINED_UTF8_BYTES) {
-			// Keep only the bounded identity tombstone; never retain an oversized payload.
-			this.#addTombstone(message.observationId);
-			return undefined;
-		}
+		if (estimatedBytes > MAX_RETAINED_UTF8_BYTES) return undefined;
 
 		const observedAt = Date.now();
 		const mode: InlineMode = panelVisibleAtObservation ? "ephemeral" : "persistent";
@@ -117,7 +113,6 @@ export class IrcObservationLedger {
 
 	reset(): void {
 		for (const observationId of this.#records.keys()) {
-			this.#addTombstone(observationId);
 			this.#evictedObservationIds.add(observationId);
 		}
 		this.#records.clear();

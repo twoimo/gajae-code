@@ -197,6 +197,71 @@ describe("IRC lifecycle resets", () => {
 		expect(ledger.drainEvictedObservationIds()).toEqual(["count-0"]);
 	});
 
+	it("never resurrects an evicted identity after more than the retained-count window", () => {
+		const ledger = new IrcObservationLedger();
+		for (let index = 0; index <= 20_000; index++) {
+			ledger.observe(
+				{
+					observationId: `replay-${index}`,
+					kind: "incoming",
+					from: "peer",
+					to: "you",
+					text: "x",
+					timestamp: index,
+				},
+				false,
+			);
+		}
+
+		expect(ledger.getRecord("replay-0")).toBeUndefined();
+		expect(
+			ledger.observe(
+				{
+					observationId: "replay-0",
+					kind: "incoming",
+					from: "peer",
+					to: "you",
+					text: "resurrected",
+					timestamp: 30_000,
+				},
+				false,
+			),
+		).toBeUndefined();
+		expect(ledger.getSidebarRecords().some(record => record.text === "resurrected")).toBe(false);
+	});
+
+	it("fails closed after the bounded unique-identity capacity is exhausted", () => {
+		const ledger = new IrcObservationLedger();
+		for (let index = 0; index < 100_000; index++) {
+			ledger.observe(
+				{
+					observationId: `capacity-${index}`,
+					kind: "incoming",
+					from: "peer",
+					to: "you",
+					text: "x",
+					timestamp: index,
+				},
+				false,
+			);
+		}
+
+		expect(
+			ledger.observe(
+				{
+					observationId: "capacity-overflow",
+					kind: "incoming",
+					from: "peer",
+					to: "you",
+					text: "new",
+					timestamp: 100_000,
+				},
+				false,
+			),
+		).toBeUndefined();
+		expect(ledger.getSidebarRecords().at(-1)?.observationId).toBe("capacity-99999");
+	});
+
 	it("bounds the ledger by retained UTF-8 payload bytes with deterministic eviction", () => {
 		const ledger = new IrcObservationLedger();
 		const payload = "b".repeat(9 * 1024 * 1024);

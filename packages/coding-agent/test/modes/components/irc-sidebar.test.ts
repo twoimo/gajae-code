@@ -240,6 +240,21 @@ describe("IrcSplitViewComponent", () => {
 		expect(Bun.stripANSI(rendered.join("\n"))).toContain("… message elided …");
 	});
 
+	it("clips the UTF-8 source projection only at complete grapheme boundaries", () => {
+		const ledger = new IrcObservationLedger();
+		addRecord(ledger, "e\u0301👩🏽‍💻界".repeat(20_000), "unicode-near-budget");
+		const split = new IrcSplitViewComponent(new TestPane("left"), ledger, sidebarTheme);
+		split.setVisible(true);
+
+		const plainLines = split.render(80).map(line => Bun.stripANSI(line));
+		expect(plainLines.join("\n")).toContain("… message elided …");
+		expect(plainLines.join("\n")).not.toContain("�");
+		for (const line of plainLines) {
+			expect(line).not.toMatch(/^\s*[\u0300-\u036f\u200d]/u);
+			expect(line).not.toMatch(/[\u200d]$/u);
+		}
+	});
+
 	it("renders a deterministic newest-record tail at the retained record-count boundary", () => {
 		const ledger = new IrcObservationLedger();
 		for (let index = 0; index < 10_000; index++) addRecord(ledger, `message-${index}`, `record-${index}`);

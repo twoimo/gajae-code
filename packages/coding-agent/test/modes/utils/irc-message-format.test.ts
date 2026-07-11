@@ -128,4 +128,46 @@ describe("formatIrcMessageBlock", () => {
 		expect(parseIrcMessage(firstMessage)?.observationId).toBe("entry-a");
 		expect(parseIrcMessage(secondMessage)?.observationId).toBe("entry-b");
 	});
+
+	it("hashes a near-budget UUID-less body into a fixed-size identity that the ledger can retain", () => {
+		const body = "x".repeat(15 * 1_024 * 1_024);
+		const legacyMessage = {
+			role: "custom",
+			customType: "irc:incoming",
+			content: body,
+			display: true,
+			attribution: "agent",
+			details: { from: "peer", message: body },
+		} as never;
+
+		const parsed = parseIrcMessage(legacyMessage);
+		expect(parsed?.observationId).toMatch(/^legacy:sha256:[0-9a-f]{64}$/);
+		expect(parseIrcMessage(legacyMessage)?.observationId).toBe(parsed?.observationId);
+		const ledger = new IrcObservationLedger();
+		expect(parsed && ledger.observe(parsed, false)).toBeDefined();
+		expect(ledger.getSidebarRecords()).toHaveLength(1);
+	});
+
+	it("length-prefixes legacy identity fields so adjacent field boundaries cannot collide", () => {
+		const first = parseIrcMessage({
+			role: "custom",
+			customType: "irc:incoming",
+			content: "bc",
+			display: true,
+			attribution: "agent",
+			timestamp: 1,
+			details: { from: "a", message: "bc" },
+		} as never);
+		const second = parseIrcMessage({
+			role: "custom",
+			customType: "irc:incoming",
+			content: "c",
+			display: true,
+			attribution: "agent",
+			timestamp: 1,
+			details: { from: "ab", message: "c" },
+		} as never);
+
+		expect(first?.observationId).not.toBe(second?.observationId);
+	});
 });

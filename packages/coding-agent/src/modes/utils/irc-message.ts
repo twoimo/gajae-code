@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import type { AgentMessage } from "@gajae-code/agent-core";
 import { sanitizeText } from "@gajae-code/utils";
 import { getSessionMessageEntryId } from "../../session/session-manager";
@@ -58,6 +59,17 @@ function stringDetail(details: unknown, key: string): string {
 	return typeof value === "string" ? value : "";
 }
 
+function legacyObservationId(fields: readonly string[]): string {
+	const hash = crypto.createHash("sha256");
+	hash.update("gjc:irc:legacy-observation:v1\0");
+	for (const field of fields) {
+		hash.update(String(Buffer.byteLength(field, "utf8")));
+		hash.update(":");
+		hash.update(field);
+	}
+	return `legacy:sha256:${hash.digest("hex")}`;
+}
+
 /**
  * Normalizes every supported IRC custom message into its UI observation shape.
  * Legacy records have no UUID, so their immutable payload is used as a stable key.
@@ -83,7 +95,7 @@ export function parseIrcMessage(message: IrcCustomMessage): ParsedIrcMessage | u
 		observationId:
 			observationId ||
 			getSessionMessageEntryId(message) ||
-			`legacy:${JSON.stringify([kind, sourceTimestamp ?? null, from, to, text])}`,
+			legacyObservationId([kind, sourceTimestamp === undefined ? "null" : String(sourceTimestamp), from, to, text]),
 		from,
 		to,
 		text,
