@@ -61,6 +61,15 @@
 								}
 							},
 							"additionalProperties": false
+						},
+						"topics": {
+							"type": "object",
+							"properties": {
+								"nameTemplate": {
+									"type": "string"
+								}
+							},
+							"additionalProperties": false
 						}
 					},
 					"additionalProperties": false

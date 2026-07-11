@@ -533,6 +533,7 @@ const defaultConfig: NotificationConfig = {
 	idleTimeoutMs: 60_000,
 	rich: { enabled: true },
 	richDraft: { enabled: false },
+	topics: {},
 };
 
 export function notificationsEnabled(): boolean {

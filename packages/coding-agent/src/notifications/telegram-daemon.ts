@@ -959,6 +959,12 @@ export interface TelegramDaemonOptions {
 	rich?: { enabled: boolean };
 	/** Opt-in rich-draft streaming of live turn previews (off by default; see rich-draft.ts). */
 	richDraft?: { enabled: boolean };
+	/**
+	 * Per-session Telegram forum-topic naming. `nameTemplate` supports the
+	 * `{repo}`, `{branch}`, and `{title}` placeholders; unset preserves the
+	 * built-in `{repo}/{branch} - {title}` composition and its fallbacks.
+	 */
+	topics?: { nameTemplate?: string };
 }
 
 interface SessionSocket {
@@ -1874,6 +1880,12 @@ export class TelegramNotificationDaemon {
 		const repo = typeof msg?.repo === "string" && msg.repo ? msg.repo : undefined;
 		const branch = typeof msg?.branch === "string" && msg.branch ? msg.branch : undefined;
 		const title = typeof msg?.title === "string" && msg.title ? msg.title : undefined;
+		// A configured `nameTemplate` (e.g. "{title} · {repo}/{branch}") wins only
+		// when every placeholder it references resolves for this session; otherwise
+		// we fall through to the built-in composition so provisional/edge names
+		// (missing title, repo, or branch) never render with dangling separators.
+		const templated = this.renderTopicNameTemplate({ repo, branch, title });
+		if (templated !== undefined) return templated;
 		// Name the topic "{repo}/{branch}" before a session title exists, then
 		// "{repo}/{branch} - {title}" once it does. Fall back to the session id
 		// only when no repo identity is available.
@@ -1881,6 +1893,32 @@ export class TelegramNotificationDaemon {
 		if (base) return title ? `${base} - ${title}` : base;
 		if (title) return title;
 		return `GJC ${sessionId.slice(-6)}`;
+	}
+
+	/**
+	 * Render the operator-configured topic name template, or `undefined` when no
+	 * usable template applies so the caller uses the built-in composition. The
+	 * template is honored only if it is non-blank AND every placeholder it
+	 * references (`{repo}`, `{branch}`, `{title}`) has a value for this session,
+	 * which preserves the default title/repo/branch fallbacks and prevents
+	 * half-filled names with dangling separators. Unknown placeholders are left
+	 * verbatim.
+	 */
+	private renderTopicNameTemplate(values: { repo?: string; branch?: string; title?: string }): string | undefined {
+		const template = this.opts.topics?.nameTemplate?.trim();
+		if (!template) return undefined;
+		let missing = false;
+		const rendered = template.replace(/\{(repo|branch|title)\}/g, (_match, key: "repo" | "branch" | "title") => {
+			const value = values[key];
+			if (!value) {
+				missing = true;
+				return "";
+			}
+			return value;
+		});
+		if (missing) return undefined;
+		const trimmed = rendered.trim();
+		return trimmed.length > 0 ? trimmed : undefined;
 	}
 
 	private topicIdentityKey(msg: { repo?: unknown; branch?: unknown }): string | undefined {

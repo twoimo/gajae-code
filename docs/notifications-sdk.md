@@ -259,6 +259,18 @@ session creates a fresh topic before sending again. The bot must be allowed to
 delete messages in that chat; without that permission, deletion is best-effort and
 delivery continues.
 
+Per-session topics are titled `{repo}/{branch} - {title}` by default (falling back
+to `{repo}/{branch}`, then the session title, then `GJC <id>` when identity is
+missing). Set `notifications.telegram.topics.nameTemplate` to reorder or reshape
+that title — for example `"{title} · {repo}/{branch}"` puts the session title
+first so concurrent sessions on the same checkout stay distinguishable in the
+sidebar. The template supports the `{repo}`, `{branch}`, and `{title}`
+placeholders; unknown placeholders are left verbatim. The template is applied
+only when every placeholder it references has a value for that session — otherwise
+the daemon falls back to the built-in composition, so provisional and identity-less
+topics never render with dangling separators. Leaving the setting unset preserves
+the default naming exactly.
+
 ### Singleton poller and trust model
 
 Telegram `getUpdates` allows only one active long-poll owner per bot token. The

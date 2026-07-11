@@ -2347,6 +2347,113 @@ test("image_attachment frame uploads via sendPhoto into an identified session to
 	expect(Number(photo!.body.message_thread_id)).toBeGreaterThan(0);
 });
 
+describe("telegram topic name template (#1909)", () => {
+	async function createdTopicName(
+		identity: { repo?: string; branch?: string; title?: string },
+		topics?: { nameTemplate?: string },
+	): Promise<string | undefined> {
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: settings(agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			topics,
+		});
+		const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+		await daemon.handleSessionMessage(session as never, {
+			type: "identity_header",
+			sessionId: "S",
+			...identity,
+		});
+		return bot.calls.find(c => c.method === "createForumTopic")?.body.name as string | undefined;
+	}
+
+	test("unset template preserves the built-in {repo}/{branch} - {title} composition", async () => {
+		expect(await createdTopicName({ repo: "gajae-code", branch: "dev", title: "Fix flaky retries" })).toBe(
+			"gajae-code/dev - Fix flaky retries",
+		);
+	});
+
+	test("configured template renders the session title first", async () => {
+		expect(
+			await createdTopicName(
+				{ repo: "gajae-code", branch: "dev", title: "Fix flaky retries" },
+				{ nameTemplate: "{title} · {repo}/{branch}" },
+			),
+		).toBe("Fix flaky retries · gajae-code/dev");
+	});
+
+	test("a referenced placeholder with no value falls back to the default composition (no dangling separator)", async () => {
+		// Before a session title exists, the title-first template must NOT render
+		// "· gajae-code/dev"; it falls back to the built-in composition instead.
+		expect(
+			await createdTopicName({ repo: "gajae-code", branch: "dev" }, { nameTemplate: "{title} · {repo}/{branch}" }),
+		).toBe("gajae-code/dev");
+	});
+
+	test("a repo-less session with a template falls back to the session-id default", async () => {
+		expect(await createdTopicName({}, { nameTemplate: "{title} · {repo}/{branch}" })).toBe("GJC S");
+	});
+
+	test("a blank template is ignored so behavior is unchanged", async () => {
+		expect(
+			await createdTopicName({ repo: "gajae-code", branch: "dev", title: "Ship it" }, { nameTemplate: "   " }),
+		).toBe("gajae-code/dev - Ship it");
+	});
+
+	test("a title-only template renders just the title, falling back when the title is absent", async () => {
+		expect(
+			await createdTopicName({ repo: "gajae-code", branch: "dev", title: "Ship it" }, { nameTemplate: "{title}" }),
+		).toBe("Ship it");
+		expect(await createdTopicName({ repo: "gajae-code", branch: "dev" }, { nameTemplate: "{title}" })).toBe(
+			"gajae-code/dev",
+		);
+	});
+
+	test("unknown placeholders are left verbatim", async () => {
+		expect(
+			await createdTopicName(
+				{ repo: "gajae-code", branch: "dev", title: "Ship it" },
+				{ nameTemplate: "{title} [{env}]" },
+			),
+		).toBe("Ship it [{env}]");
+	});
+
+	test("a later title header renames the topic using the configured template", async () => {
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: settings(agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			topics: { nameTemplate: "{title} · {repo}/{branch}" },
+		});
+		const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+		await daemon.handleSessionMessage(session as never, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "gajae-code",
+			branch: "dev",
+		});
+		await daemon.handleSessionMessage(session as never, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "gajae-code",
+			branch: "dev",
+			title: "Second title",
+		});
+		expect(bot.calls.filter(c => c.method === "createForumTopic").map(c => c.body.name)).toEqual(["gajae-code/dev"]);
+		expect(bot.calls.filter(c => c.method === "editForumTopic").map(c => c.body.name)).toEqual([
+			"Second title · gajae-code/dev",
+		]);
+	});
+});
+
 test("identity-less threaded frames wait for identity instead of creating fallback topics", async () => {
 	const agentDir = tempAgentDir();
 	const bot = new FakeBotApi();

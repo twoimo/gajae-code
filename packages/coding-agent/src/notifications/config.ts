@@ -39,6 +39,15 @@ export interface NotificationConfig {
 	richDraft: {
 		enabled: boolean;
 	};
+	topics: {
+		/**
+		 * Optional Telegram forum-topic name template with `{repo}`, `{branch}`,
+		 * and `{title}` placeholders. Unset preserves the built-in
+		 * `{repo}/{branch} - {title}` composition (with its title/repo/branch
+		 * fallbacks).
+		 */
+		nameTemplate?: string;
+	};
 }
 
 /** Read typed config from Settings. */
@@ -64,6 +73,9 @@ export function getNotificationConfig(settings: Settings): NotificationConfig {
 		},
 		richDraft: {
 			enabled: settings.get("notifications.telegram.richDraft.enabled"),
+		},
+		topics: {
+			nameTemplate: settings.get("notifications.telegram.topics.nameTemplate"),
 		},
 	};
 }

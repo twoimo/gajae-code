@@ -44,6 +44,9 @@ const BASE_CFG: NotificationConfig = {
 	richDraft: {
 		enabled: false,
 	},
+	topics: {
+		nameTemplate: undefined,
+	},
 	idleTimeoutMs: 60000,
 };
 
@@ -101,6 +104,9 @@ describe("notifications config", () => {
 			},
 			richDraft: {
 				enabled: false,
+			},
+			topics: {
+				nameTemplate: undefined,
 			},
 			idleTimeoutMs: 1234,
 		});
