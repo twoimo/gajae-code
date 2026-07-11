@@ -10,7 +10,7 @@ import type { DaemonRuntimeInfo } from "../daemon/control-types";
 import { resolveGjcRuntimeSpawnInfo } from "../daemon/runtime";
 import { getNotificationConfig, isTelegramConfigured, tokenFingerprint } from "./config";
 import { parseInThreadConfigCommand, parseRichToggleCommand, parseTelegramControlCommand } from "./config-commands";
-import { daemonPaths } from "./daemon-paths";
+import { daemonPaths, HEARTBEAT_TTL_MS } from "./daemon-paths";
 import {
 	buildCompactChoiceGrid,
 	code,
@@ -119,7 +119,7 @@ export interface TelegramDaemonDeps {
 }
 
 export const HEARTBEAT_INTERVAL_MS = 5_000;
-export const HEARTBEAT_TTL_MS = 20_000;
+export { HEARTBEAT_TTL_MS };
 export const DAEMON_VERSION = 1;
 /** Capability token advertised when the server supports app-level ping/pong. */
 export const CLIENT_PING_PONG_CAPABILITY = "client_ping_pong";
