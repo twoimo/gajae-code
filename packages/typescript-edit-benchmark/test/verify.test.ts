@@ -71,7 +71,9 @@ describe("verifyExpectedFiles", () => {
 		}
 	});
 
-	it("ignores session runtime metadata with Windows path separators", async () => {
+	it("does not reinterpret literal backslashes as separators on POSIX", async () => {
+		if (path.sep !== "/") return;
+
 		const { expectedDir, actualDir, cleanup } = await createTempDirs();
 		try {
 			await Bun.write(path.join(expectedDir, "index.ts"), "export const value = 1;\n");
@@ -80,7 +82,8 @@ describe("verifyExpectedFiles", () => {
 
 			const result = await verifyExpectedFiles(expectedDir, actualDir);
 
-			expect(result.success).toBe(true);
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("Unexpected files: .gjc\\_session-123\\runtime-state.json");
 		} finally {
 			await cleanup();
 		}
