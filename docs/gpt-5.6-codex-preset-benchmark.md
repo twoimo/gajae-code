@@ -107,7 +107,7 @@ Terra high recorded 6/11 verified edits after one transport/ghost failure in the
 
 ### Sol medium's product assignment
 
-Sol medium recorded 4/12 verified edits in the selected-task sample and was faster with fewer reported input tokens than the other listed xhigh setups. Its `codex-medium` default-agent and architecture assignments are product judgments because the benchmark does not measure those broader roles.
+Sol medium recorded 4/12 verified edits in the selected-task sample and was faster with fewer reported input tokens than the other listed xhigh setups. Its `codex-medium` default-agent assignment and the Sol-family architecture assignments are product judgments because the benchmark does not measure those broader roles.
 
 ### Higher effort is not automatically cheaper
 
