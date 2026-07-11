@@ -81,9 +81,13 @@ async function installRuntimeGlobals(): Promise<void> {
 	const { warnIfMacOSNoFileLimitTooLow } = await import("./cli/nofile-limit");
 	warnIfMacOSNoFileLimitTooLow();
 
-	// Strip macOS malloc-stack-logging env vars before any subprocess is spawned.
-	// Otherwise every child bun process (subagents, plugin installs, ptree spawns,
-	// etc.) prints a `MallocStackLogging: can't turn off …` warning to stderr.
+	// Secondary in-process scrub of the macOS malloc-stack-logging vars. The real
+	// boundary is the darwin re-exec guard at the top of runCli(): Bun snapshots the
+	// spawn-default environment at startup, so deleting these here does NOT clean the
+	// env children inherit by default — it only tidies `process.env` for code that
+	// reads it directly. Kept as belt-and-braces for the rare re-exec-unavailable
+	// fallback; managed spawns already use filterProcessEnv and the native PTY lane
+	// strips them independently.
 	delete process.env.MallocStackLogging;
 	delete process.env.MallocStackLoggingNoCompact;
 }
@@ -279,6 +283,27 @@ export function routeRootArgv(argv: readonly string[]): string[] {
 
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
+	// macOS malloc-env launch boundary. Re-exec once with a scrubbed environment
+	// BEFORE any fast path or subprocess spawn, so the startup env snapshot Bun hands
+	// to every child lane (Bun.spawn defaults, node:child_process, native PTY, tmux
+	// owner, plugin installs, subagents) is clean. This runs ahead of the
+	// tmux-owner-isolation and notify-daemon fast paths so those lanes execute inside
+	// the already-scrubbed process too. The cheap inline predicate keeps the common
+	// (uncontaminated / non-darwin) path free of extra module loads; the guard module
+	// (MACOS_MALLOC_ENV_VARS / GJC_MALLOC_ENV_REEXEC) loads only when a re-exec is due.
+	if (
+		process.platform === "darwin" &&
+		process.env.GJC_MALLOC_ENV_REEXEC === undefined &&
+		(process.env.MallocStackLogging !== undefined || process.env.MallocStackLoggingNoCompact !== undefined)
+	) {
+		const { reexecWithScrubbedMallocEnv } = await import("./cli/malloc-env-guard");
+		const code = await reexecWithScrubbedMallocEnv();
+		if (code !== null) {
+			process.exitCode = code;
+			return;
+		}
+		// Re-exec could not be spawned; fall through and run in this process.
+	}
 	if (isTmuxOwnerIsolationCliArgv(argv)) {
 		await runTmuxOwnerIsolationCliFromStdin();
 		return;
