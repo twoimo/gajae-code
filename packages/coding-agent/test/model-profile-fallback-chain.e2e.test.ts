@@ -106,4 +106,35 @@ describe("model profile fallback chain e2e", () => {
 		expect(selector(session.model!)).toBe(selector(fallback));
 		expect(session.getConfiguredModelChain("default")).toEqual([selector(primary), selector(fallback)]);
 	});
+
+	it("keeps a temporary selection on its one-entry runtime chain across prompts", async () => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallback = getBundledModel("openai", "gpt-4o-mini");
+		const selected = getBundledModel("anthropic", "claude-opus-4-8");
+		if (!primary || !fallback || !selected) throw new Error("Expected bundled test models");
+		const registry = new ModelRegistry(authStorage);
+		const calls: string[] = [];
+		const agent = new Agent({
+			getApiKey: provider => `${provider}-test-key`,
+			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: ((model, _context, options) => {
+				calls.push(selector(model));
+				expect(options?.fallbackManaged).toBeUndefined();
+				return successfulStream(model);
+			}) satisfies AgentOptions["streamFn"],
+		});
+		const settings = Settings.isolated({ "compaction.enabled": false });
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry: registry });
+		session.setConfiguredModelChain("default", [selector(primary), selector(fallback)], "test");
+		await session.setModelTemporary(selected, undefined, { cause: "user-selection", reason: "other" });
+		session.setDefaultFallbackRuntimeModel(selector(selected));
+
+		await session.prompt("temporary pick");
+		await session.waitForIdle();
+		await session.prompt("temporary pick remains active");
+		await session.waitForIdle();
+
+		expect(calls).toEqual([selector(selected), selector(selected)]);
+		expect(session.getConfiguredModelChain("default")).toEqual([selector(primary), selector(fallback)]);
+	});
 });

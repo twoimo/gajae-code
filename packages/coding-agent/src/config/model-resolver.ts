@@ -755,10 +755,10 @@ export function resolveModelOverride(
 
 /**
  * Resolve a configured fallback chain to its first callable entry without
- * charging requests. Consumers constructing a managed fallback controller
- * MUST pass `{ managedFallback: true }` for every chain length so unsuitable
- * entries (including Cursor's provider-side tool mode) fail closed during
- * resolution before any request is attempted.
+ * charging requests. For retryable chains, consumers MUST pass
+ * `{ managedFallback: true }` so unsuitable entries (including Cursor's
+ * provider-side tool mode) fail closed during resolution before any request
+ * is attempted. Single-entry chains remain non-managed selections.
  */
 export interface ModelChainResolutionOptions {
 	managedFallback?: boolean;
@@ -787,7 +787,7 @@ export async function resolveModelChainWithAuth(
 			skips.push({ selector, reason: "unknown_model" });
 			continue;
 		}
-		if (options?.managedFallback) {
+		if (options?.managedFallback && modelPatterns.length > 1) {
 			const cursorReason = managedCursorFallbackUnavailableReason(candidate.model, selector);
 			if (cursorReason) {
 				skips.push({ selector, reason: cursorReason });
@@ -859,7 +859,7 @@ export async function resolveModelOverrideWithAuthFallback(
 			activeIndex += 1;
 			continue;
 		}
-		if (options?.managedFallback) {
+		if (options?.managedFallback && modelPatterns.length > 1) {
 			const cursorReason = managedCursorFallbackUnavailableReason(candidate.model, pattern);
 			if (cursorReason) {
 				skips.push({ selector: pattern, reason: cursorReason });

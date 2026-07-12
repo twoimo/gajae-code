@@ -85,7 +85,7 @@ function instrumentSettings(settings: Settings) {
 }
 
 describe("model profile activation red-team", () => {
-	test("ATOMICITY: unresolvable role selector after resolved default throws with zero mutation", async () => {
+	test("fully unresolved non-default role selector activates and preserves the configured selector", async () => {
 		const session = fakeSession();
 		const settings = Settings.isolated({
 			"task.agentModelOverrides": { executor: "provider-a/original" },
@@ -95,7 +95,7 @@ describe("model profile activation red-team", () => {
 		const registry = fakeRegistry({
 			profiles: [
 				{
-					name: "bad-role",
+					name: "unresolved-role",
 					requiredProviders: [],
 					modelMapping: { default: "provider-a/default:high", executor: "provider-b/missing" },
 					source: "user",
@@ -103,16 +103,13 @@ describe("model profile activation red-team", () => {
 			],
 		});
 
-		await expect(
-			activateModelProfile({ session, modelRegistry: registry, settings, profileName: "bad-role" }),
-		).rejects.toThrow('Model profile "bad-role" executor selector did not resolve: provider-b/missing');
-		expect(session.model?.id).toBe("initial");
-		expect(session.thinkingLevel).toBe(ThinkingLevel.Low);
-		expect(session.setModelTemporaryCalls).toEqual([]);
-		expect(settings.get("task.agentModelOverrides")).toEqual({ executor: "provider-a/original" });
+		await activateModelProfile({ session, modelRegistry: registry, settings, profileName: "unresolved-role" });
+		expect(session.model?.id).toBe("default");
+		expect(session.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(settings.get("task.agentModelOverrides")).toEqual({ executor: "provider-b/missing" });
 		expect(settings.get("modelProfile.default")).toBe("old-profile");
 		expect(calls.setCalls).toEqual([]);
-		expect(calls.overrideCalls).toEqual([]);
+		expect(calls.overrideCalls).toEqual(["task.agentModelOverrides"]);
 		expect(calls.flushCount).toBe(0);
 	});
 

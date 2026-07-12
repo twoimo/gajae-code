@@ -9677,9 +9677,7 @@ export class AgentSession {
 		}
 		if (!resolution.model) throw new Error(this.#fallbackExhaustionError(controller));
 		this.#setModelAuthoritatively(resolution.model, "restore");
-		if (resolution.explicitThinkingLevel && resolution.thinkingLevel !== undefined) {
-			this.setThinkingLevel(resolution.thinkingLevel);
-		}
+		this.setThinkingLevel(resolution.explicitThinkingLevel ? resolution.thinkingLevel : this.thinkingLevel);
 	}
 
 	/**
@@ -9703,7 +9701,10 @@ export class AgentSession {
 				? { ...configuredChain, entries: [...configuredChain.entries] }
 				: { role: "default", entries: settingsEntries, origin: "session", explicitHead: true };
 		const existing = this.#defaultFallbackController;
-		if (existing && existing.chain.entries.join("\u0000") === chain.entries.join("\u0000")) {
+		if (
+			existing &&
+			(existing.chain.origin === "runtime" || existing.chain.entries.join("\u0000") === chain.entries.join("\u0000"))
+		) {
 			return existing;
 		}
 		this.#defaultFallbackController = new FallbackChainController(chain, this.settings.get("fallback.maxAttempts"));
@@ -9781,7 +9782,7 @@ export class AgentSession {
 			const from = controller.tried.at(-1)?.selector ?? controller.chain.entries[controller.activeIndex - 1] ?? selector;
 			const to = selector;
 			this.#setModelAuthoritatively(resolved.model, "fallback-switch");
-			if (resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined) this.setThinkingLevel(resolved.thinkingLevel);
+			this.setThinkingLevel(resolved.explicitThinkingLevel ? resolved.thinkingLevel : this.thinkingLevel);
 			if (from !== to) {
 				this.#emit({
 					type: "model_fallback_switched",
@@ -9789,7 +9790,7 @@ export class AgentSession {
 					from,
 					to,
 					reason,
-					role: controller.chain.role,
+					role: controller.chain.origin === "subagent" ? (controller.chain.identity ?? controller.chain.role) : controller.chain.role,
 					scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
 					activeIndex: controller.activeIndex,
 					chainLength: controller.chain.entries.length,
@@ -9812,7 +9813,7 @@ export class AgentSession {
 			from,
 			to,
 			reason: "resolution",
-			role: controller.chain.role,
+			role: controller.chain.origin === "subagent" ? (controller.chain.identity ?? controller.chain.role) : controller.chain.role,
 			scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
 			activeIndex: controller.activeIndex,
 			chainLength: controller.chain.entries.length,

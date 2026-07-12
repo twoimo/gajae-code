@@ -28,6 +28,8 @@ function createControllerContext() {
 		role: string;
 		options?: { cause?: "user-selection"; selector?: string; thinkingLevel?: ThinkingLevel };
 	}> = [];
+	const setModelTemporary = vi.fn(async () => {});
+	const setDefaultFallbackRuntimeModel = vi.fn();
 	const session = {
 		model: model("provider-a", "current") as Model | undefined,
 		thinkingLevel: ThinkingLevel.Medium as ThinkingLevel | undefined,
@@ -54,7 +56,8 @@ function createControllerContext() {
 			this.model = nextModel;
 			if (options?.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
 		},
-		async setModelTemporary() {},
+		setModelTemporary,
+		setDefaultFallbackRuntimeModel,
 		setThinkingLevel(thinkingLevel: ThinkingLevel) {
 			this.thinkingLevel = thinkingLevel;
 		},
@@ -75,7 +78,7 @@ function createControllerContext() {
 		showError: vi.fn(),
 		notifyConfigChanged: vi.fn(async () => {}),
 	};
-	return { ctx, settings, session, setModelCalls };
+	return { ctx, settings, session, setModelCalls, setModelTemporary, setDefaultFallbackRuntimeModel };
 }
 
 async function openSelector(ctx: ReturnType<typeof createControllerContext>["ctx"]): Promise<ModelSelectorComponent> {
@@ -142,5 +145,24 @@ describe("SelectorController model batch assignments", () => {
 		expect(ctx.showStatus).toHaveBeenCalledWith(
 			"All model targets set to provider-a/selected:high for DEFAULT, EXECUTOR, ARCHITECT, PLANNER, CRITIC.",
 		);
+	});
+
+	test("temporary selection replaces the live fallback chain with the selected model", async () => {
+		const { ctx, settings, setModelTemporary, setDefaultFallbackRuntimeModel } = createControllerContext();
+		const selector = await openSelector(ctx);
+
+		await selector.__testSelectAssignment({
+			model: selectedModel,
+			role: null,
+			thinkingLevel: ThinkingLevel.Low,
+			selector: "provider-a/selected:low",
+		});
+
+		expect(setModelTemporary).toHaveBeenCalledWith(selectedModel, ThinkingLevel.Low, {
+			cause: "user-selection",
+			reason: "other",
+		});
+		expect(setDefaultFallbackRuntimeModel).toHaveBeenCalledWith("provider-a/selected:low");
+		expect(settings.getModelRole("default")).toBe("provider-a/original-default:medium");
 	});
 });

@@ -124,7 +124,7 @@ function deriveSessionId(modelId: string, context: Context): string {
 }
 
 function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: AbortSignal): SimpleStreamOptions {
-	const opts: SimpleStreamOptions = { signal, fallbackManaged: true };
+	const opts: SimpleStreamOptions = { signal };
 	const { options } = parsed;
 	// OpenAI code backend backend rejects `temperature` / `top_p` (per-model defaults only),
 	// so we drop them silently for that one provider. Every other unsupported

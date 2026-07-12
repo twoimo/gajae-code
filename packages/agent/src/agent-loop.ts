@@ -765,11 +765,12 @@ async function runLoopBody(
 				firstTurn = false;
 			}
 
-			// Process pending messages (inject before next assistant response)
+			// Commit queued user input outside the provisional assistant transaction so a
+			// discarded managed attempt cannot lose it before its retry continuation.
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
-					attemptStream.push({ type: "message_start", message });
-					attemptStream.push({ type: "message_end", message });
+					stream.push({ type: "message_start", message });
+					stream.push({ type: "message_end", message });
 					currentContext.messages.push(message);
 					newMessages.push(message);
 				}

@@ -39,6 +39,20 @@ test("skips a Cursor chain head during managed auth-aware resolution", async () 
 	expect(resolution.skips[0]?.reason).toContain("cannot be used in a retryable fallback chain");
 });
 
+test("does not skip a Cursor single-entry selection when managed fallback is requested", async () => {
+	const cursor = { ...mockModels[0], api: "cursor-agent", provider: "cursor" } as Model;
+	const resolution = await resolveModelChainWithAuth(
+		["cursor/claude-sonnet-4-5"],
+		{ getAvailable: () => [cursor], getApiKey: async () => "key" } as never,
+		undefined,
+		undefined,
+		{ managedFallback: true },
+	);
+	expect(resolution.model).toBe(cursor);
+	expect(resolution.activeIndex).toBe(0);
+	expect(resolution.skips).toEqual([]);
+});
+
 // Mock models for testing
 const mockModels: Model<"anthropic-messages">[] = [
 	{

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { Agent, type AgentOptions } from "@gajae-code/agent-core";
-import { type AssistantMessage, getBundledModel, type Model } from "@gajae-code/ai";
+import { Effort, type AssistantMessage, getBundledModel, type Model } from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
 import { resolveAgentModelPatterns } from "@gajae-code/coding-agent/config/model-resolver";
@@ -45,7 +45,6 @@ describe("task.agentModelOverrides fallback chain e2e", () => {
 		tempDir = TempDir.createSync("@task-override-fallback-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		authStorage.setRuntimeApiKey("openai", "test-key");
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 	});
 
@@ -58,7 +57,7 @@ describe("task.agentModelOverrides fallback chain e2e", () => {
 
 	it("resolves an executor array into fresh child sessions that independently switch from its head", async () => {
 		const primary = getBundledModel("anthropic", "claude-sonnet-4-5");
-		const fallback = getBundledModel("openai", "gpt-4o-mini");
+		const fallback = getBundledModel("anthropic", "claude-sonnet-4-6");
 		if (!primary || !fallback) throw new Error("Expected bundled test models");
 		const chain = [selector(primary), selector(fallback)];
 		const settings = Settings.isolated({
@@ -77,14 +76,20 @@ describe("task.agentModelOverrides fallback chain e2e", () => {
 			for (const task of ["first executor call", "second executor call"]) {
 				const agent = new Agent({
 					getApiKey: provider => `${provider}-test-key`,
-					initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+					initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [], thinkingLevel: Effort.XHigh },
 					streamFn: ((model, _context, options) => {
 						calls.push(selector(model));
 						expect(options?.fallbackManaged).toBe(true);
 						return selector(model) === selector(primary) ? rateLimitStream(model) : successfulStream(model);
 					}) satisfies AgentOptions["streamFn"],
 				});
-				const child = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry: new ModelRegistry(authStorage) });
+				const child = new AgentSession({
+					agent,
+					sessionManager: SessionManager.inMemory(),
+					settings,
+					modelRegistry: new ModelRegistry(authStorage),
+					thinkingLevel: Effort.XHigh,
+				});
 				childSessions.push(child);
 				const events: AgentSessionEvent[] = [];
 				child.subscribe(event => events.push(event));
@@ -94,8 +99,9 @@ describe("task.agentModelOverrides fallback chain e2e", () => {
 				await child.waitForIdle();
 				expect(selector(child.model!)).toBe(selector(fallback));
 				expect(events.filter(event => event.type === "model_fallback_switched")).toEqual([
-					expect.objectContaining({ from: selector(primary), to: selector(fallback), role: "default", activeIndex: 1, chainLength: 2 }),
+					expect.objectContaining({ from: selector(primary), to: selector(fallback), role: "executor", activeIndex: 1, chainLength: 2 }),
 				]);
+				expect(child.thinkingLevel).toBe(Effort.High);
 				expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(1);
 				const assistantStarts = events.filter(event => event.type === "message_start" && event.message.role === "assistant");
 				const discardedMessages = events.flatMap(event =>
@@ -113,5 +119,37 @@ describe("task.agentModelOverrides fallback chain e2e", () => {
 			await Promise.all(childSessions.map(child => child.dispose()));
 		}
 		expect(calls).toEqual([selector(primary), selector(fallback), selector(primary), selector(fallback)]);
+	});
+	it("re-clamps thinking after resolution skips to a narrower fallback", async () => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallback = getBundledModel("anthropic", "claude-sonnet-4-6");
+		if (!primary || !fallback) throw new Error("Expected bundled test models");
+		const calls: string[] = [];
+		const agent = new Agent({
+			getApiKey: provider => `${provider}-test-key`,
+			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [], thinkingLevel: Effort.XHigh },
+			streamFn: ((model, _context, options) => {
+				calls.push(selector(model));
+				expect(options?.fallbackManaged).toBe(true);
+				return successfulStream(model);
+			}) satisfies AgentOptions["streamFn"],
+		});
+		const child = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: new ModelRegistry(authStorage),
+			thinkingLevel: Effort.XHigh,
+		});
+		try {
+			child.setConfiguredModelChain("default", ["unknown/primary", selector(fallback)], "test");
+			await child.prompt("Resolve the fallback before requesting");
+			await child.waitForIdle();
+
+			expect(calls).toEqual([selector(fallback)]);
+			expect(child.thinkingLevel).toBe(Effort.High);
+		} finally {
+			await child.dispose();
+		}
 	});
 });

@@ -242,6 +242,36 @@ describe("managed attempt transaction", () => {
 		expect(events).not.toContain("agent_end");
 		expect(agent.state.messages.filter(message => message.role === "assistant")).toHaveLength(0);
 	});
+
+	it("retains queued follow-up input when its managed attempt is discarded for retry", async () => {
+		const mock = createMockModel({ responses: [{ content: ["initial"] }, { content: ["retried"] }] });
+		let calls = 0;
+		const queuedFollowUp = { role: "user" as const, content: "queued follow-up", timestamp: Date.now() };
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["test"], tools: [], messages: [] },
+			streamFn: (...args) => {
+				calls += 1;
+				if (calls === 2) throw Object.assign(new Error("limited"), { status: 429 });
+				return mock.stream(...args);
+			},
+		});
+		agent.followUp(queuedFollowUp);
+		const options = {
+			fallbackManaged: true,
+			onManagedAttemptOutcome: () => ({
+				type: "retry" as const,
+				continuation: async (ownership: { isCurrent(): boolean }) => {
+					if (ownership.isCurrent()) await agent.continue(options);
+				},
+			}),
+		};
+
+		await agent.prompt("run", options);
+
+		expect(calls).toBe(3);
+		expect(agent.state.messages).toContainEqual(queuedFollowUp);
+		expect(agent.state.messages.filter(message => message.role === "assistant").map(message => message.content)).toHaveLength(2);
+	});
 });
 
 	describe("managed retry ownership", () => {

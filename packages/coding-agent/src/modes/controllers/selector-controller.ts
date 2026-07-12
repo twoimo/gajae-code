@@ -910,6 +910,9 @@ export class SelectorController {
 								cause: "user-selection",
 								reason: "other",
 							});
+							this.ctx.session.setDefaultFallbackRuntimeModel(
+								selectedSelector ?? formatModelSelectorValue(`${model.provider}/${model.id}`, thinkingLevel),
+							);
 							this.ctx.statusLine.invalidate();
 							this.ctx.updateEditorBorderColor();
 							this.ctx.showStatus(`Temporary model: ${selectedSelector ?? model.id}`);

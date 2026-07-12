@@ -11,6 +11,8 @@ import {
 	materializeModelProfileForDeletion,
 	prepareModelProfileActivation,
 } from "../src/config/model-profile-activation";
+import { resolveModelChainWithAuth } from "../src/config/model-resolver";
+
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { BUILTIN_MODEL_PROFILES, mergeModelProfiles } from "../src/config/model-profiles";
 import { kNoAuth, type ModelRegistry } from "../src/config/model-registry";
@@ -191,6 +193,45 @@ describe("model profile activation", () => {
 		expect(session.seedDefaultFallbackResolutionCalls).toEqual([
 			{ activeIndex: 1, skips: [{ selector: "provider-a/missing", reason: "unknown_model" }] },
 		]);
+	});
+
+	test("preserves a fully unresolved executor chain and skips it without request attempts", async () => {
+		const executorChain = ["provider-a/unknown-executor", "provider-b/unknown-executor"];
+		const profile: ModelProfileDefinition = {
+			name: "unresolved-executor",
+			requiredProviders: [],
+			modelMapping: { default: "provider-a/default", executor: executorChain },
+			source: "user",
+		};
+		const settings = Settings.isolated();
+		await activateModelProfile({
+			session: fakeSession(),
+			modelRegistry: fakeRegistry({ profiles: [profile] }),
+			settings,
+			profileName: profile.name,
+		});
+
+		expect(settings.get("task.agentModelOverrides").executor).toEqual(executorChain);
+		let credentialLookups = 0;
+		const resolution = await resolveModelChainWithAuth(
+			executorChain,
+			{
+				getAvailable: () => [],
+				getApiKey: async () => {
+					credentialLookups += 1;
+					return kNoAuth;
+				},
+			},
+			settings,
+			"session-1",
+			{ managedFallback: true },
+		);
+		expect(resolution.model).toBeUndefined();
+		expect(resolution).toMatchObject({
+			activeIndex: executorChain.length,
+			skips: executorChain.map(selector => ({ selector, reason: "unknown_model" })),
+		});
+		expect(credentialLookups).toBe(0);
 	});
 
 	test("preserves unavailable middle and tail entries while resolving the first usable default", async () => {

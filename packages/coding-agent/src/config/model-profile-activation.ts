@@ -317,7 +317,7 @@ function resolveAndClampSelectorValue(
 			clamped.push(selector);
 		}
 	}
-	if (!resolvedAny) {
+	if (!resolvedAny && role === "default") {
 		throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selectors[0]}`);
 	}
 	return clamped.length === 1 && typeof selectorValue === "string" ? clamped[0] : clamped;
