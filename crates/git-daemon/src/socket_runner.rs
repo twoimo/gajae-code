@@ -29,37 +29,88 @@ use crate::{
 /// these end frame consumption. A mid-run `error` is not terminal.
 const TERMINAL: [&str; 2] = ["completed", "agent_end"];
 
-/// Build the `prompt` command that drives the unattended run.
+/// The agent-wire protocol version this consumer understands
+/// (`AGENT_WIRE_PROTOCOL_VERSION` in the canonical TypeScript contract). Event
+/// frames stamped with any other version are rejected — fail closed.
+const SUPPORTED_PROTOCOL_VERSION: u64 = 2;
+
+/// Correlates the prompt request with its acceptance response.
+const PROMPT_REQUEST_ID: &str = "git-daemon-prompt";
+
+/// Build the correlated `prompt` command that drives the unattended run.
 #[must_use]
 pub fn prompt_command(message: &str) -> Value {
-	json!({ "type": "prompt", "message": message })
+	json!({ "id": PROMPT_REQUEST_ID, "type": "prompt", "message": message })
 }
 
 /// Parse one engine frame into a [`StreamEvent`].
 ///
-/// Recognizes `{type:"event", seq, payload:{event_type, event}}` frames: a
-/// usage-bearing non-terminal event becomes [`StreamEvent::Usage`], everything
-/// else becomes [`StreamEvent::Lifecycle`]. Non-event frames (`ready`,
-/// `response`, …) return `None` and are skipped without losing the cursor.
+/// Recognizes `{type:"event", seq, payload:{event_type, event}}` frames. A
+/// frame that declares an unsupported `protocol_version` (anything other than
+/// `2`) is rejected outright — fail closed, never reduce foreign-protocol
+/// frames toward a success verdict. A canonical `message_end` usage payload at
+/// `event.message.usage` maps its
+/// `totalTokens` and `cost.total` fields into [`UsageObservation`]; legacy
+/// `event.usage` observations remain supported. Tool execution end events
+/// become a one-call [`UsageObservation`]; everything else becomes a
+/// [`StreamEvent::Lifecycle`]. Non-event frames (`ready`, `response`, …)
+/// return `None` and are skipped without losing the cursor.
 #[must_use]
 pub fn parse_stream_event(frame: &Value) -> Option<StreamEvent> {
 	if frame.get("type")?.as_str()? != "event" {
 		return None;
 	}
+	// Fail closed on the protocol envelope: the canonical producer stamps every
+	// event frame with the supported agent-wire version. A missing or foreign
+	// version must never influence the run verdict (an unknown protocol could
+	// re-define terminal semantics).
+	if frame.get("protocol_version").and_then(Value::as_u64) != Some(SUPPORTED_PROTOCOL_VERSION) {
+		return None;
+	}
 	let seq = frame.get("seq")?.as_u64()?;
 	let payload = frame.get("payload")?;
 	let event_type = payload.get("event_type")?.as_str()?.to_owned();
+	let stop_reason = if event_type == "agent_end" {
+		payload
+			.pointer("/event/stopReason")
+			.and_then(Value::as_str)
+			.map(str::to_owned)
+	} else {
+		None
+	};
 	let usage = if TERMINAL.contains(&event_type.as_str()) {
 		None
 	} else {
-		payload
-			.pointer("/event/usage")
-			.and_then(|u| serde_json::from_value::<UsageObservation>(u.clone()).ok())
+		if event_type == "message_end" {
+			canonical_usage(payload)
+		} else {
+			None
+		}
+		.or_else(|| {
+			payload
+				.pointer("/event/usage")
+				.and_then(|u| serde_json::from_value::<UsageObservation>(u.clone()).ok())
+		})
 	};
+	if event_type == "tool_execution_end" {
+		let mut usage = usage.unwrap_or_default();
+		usage.tool_calls = usage.tool_calls.saturating_add(1);
+		return Some(StreamEvent::Usage { seq, usage });
+	}
 	if let Some(usage) = usage {
 		return Some(StreamEvent::Usage { seq, usage });
 	}
-	Some(StreamEvent::Lifecycle { seq, event_type })
+	Some(StreamEvent::Lifecycle { seq, event_type, stop_reason })
+}
+
+fn canonical_usage(payload: &Value) -> Option<UsageObservation> {
+	let usage = payload.pointer("/event/message/usage")?;
+	Some(UsageObservation {
+		tokens:       usage.get("totalTokens")?.as_u64()?,
+		tool_calls:   0,
+		cost_usd:     usage.pointer("/cost/total")?.as_f64()?,
+		wall_time_ms: 0,
+	})
 }
 
 /// A [`WorkRunner`] that drives an unbounded run over a gjc-rpc stream.
@@ -134,30 +185,45 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 			 head: {branch}",
 			self.prompt
 		);
+		let mut events: Vec<StreamEvent> = Vec::new();
 		if client.send(&prompt_command(&message)).await.is_err() {
 			return failed_outcome();
 		}
+		// Fail closed unless the engine accepts this exact prompt request. Event
+		// frames can race the response, so retain them for normal reduction below.
+		if !self.await_prompt_accepted(&mut client, &mut events).await {
+			return failed_outcome();
+		}
 
-		let mut events: Vec<StreamEvent> = Vec::new();
+		// A terminal event may have raced (and been buffered before) the prompt
+		// acknowledgement; reduce it immediately instead of idling on a stream
+		// that will never emit another terminal.
+		let already_terminal = events.iter().any(|event| {
+			matches!(event, StreamEvent::Lifecycle { event_type, .. } if TERMINAL.contains(&event_type.as_str()))
+		});
+
 		let idle = std::time::Duration::from_secs(self.idle_timeout_secs);
-		loop {
-			// Fail closed if the engine stalls (no frame within the idle window):
-			// an unattended daemon must not hang forever on a dead/stuck engine.
-			let Ok(next) = tokio::time::timeout(idle, client.next_frame()).await else {
-				return failed_outcome();
-			};
-			match next {
-				Ok(Some(frame)) => {
-					if let Some(event) = parse_stream_event(&frame) {
-						let terminal = matches!(&event, StreamEvent::Lifecycle { event_type, .. } if TERMINAL.contains(&event_type.as_str()));
-						events.push(event);
-						if terminal {
-							break;
+		if !already_terminal {
+			loop {
+				// Fail closed if the engine stalls (no frame within the idle
+				// window): an unattended daemon must not hang forever on a
+				// dead/stuck engine.
+				let Ok(next) = tokio::time::timeout(idle, client.next_frame()).await else {
+					return failed_outcome();
+				};
+				match next {
+					Ok(Some(frame)) => {
+						if let Some(event) = parse_stream_event(&frame) {
+							let terminal = matches!(&event, StreamEvent::Lifecycle { event_type, .. } if TERMINAL.contains(&event_type.as_str()));
+							events.push(event);
+							if terminal {
+								break;
+							}
 						}
-					}
-				},
-				Ok(None) => break, // EOF before terminal -> failure below
-				Err(_) => return failed_outcome(),
+					},
+					Ok(None) => break, // EOF before terminal -> failure below
+					Err(_) => return failed_outcome(),
+				}
 			}
 		}
 
@@ -174,6 +240,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SocketWorkRunner<S> {
 				Ok(Some(frame)) => {
 					if frame.get("type").and_then(Value::as_str) == Some("response")
 						&& frame.get("command").and_then(Value::as_str) == Some("negotiate_unattended")
+					{
+						return frame
+							.get("success")
+							.and_then(Value::as_bool)
+							.unwrap_or(false);
+					}
+				},
+				Ok(None) | Err(_) => return false,
+			}
+		}
+	}
+
+	/// Read frames until the correlated `prompt` response, retaining any event
+	/// frames that arrive first. EOF/decode error or rejection => fail closed.
+	async fn await_prompt_accepted(
+		&self,
+		client: &mut RpcClient<S>,
+		events: &mut Vec<StreamEvent>,
+	) -> bool {
+		loop {
+			match client.next_frame().await {
+				Ok(Some(frame)) => {
+					if let Some(event) = parse_stream_event(&frame) {
+						events.push(event);
+					}
+					if frame.get("type").and_then(Value::as_str) == Some("response")
+						&& frame.get("command").and_then(Value::as_str) == Some("prompt")
+						&& frame.get("id").and_then(Value::as_str) == Some(PROMPT_REQUEST_ID)
 					{
 						return frame
 							.get("success")
@@ -209,7 +303,12 @@ mod tests {
 	}
 
 	fn event(seq: u64, event_type: &str, inner: Value) -> Value {
-		json!({ "type": "event", "seq": seq, "payload": { "event_type": event_type, "event": inner } })
+		json!({
+			"type": "event",
+			"protocol_version": SUPPORTED_PROTOCOL_VERSION,
+			"seq": seq,
+			"payload": { "event_type": event_type, "event": inner },
+		})
 	}
 
 	/// The engine's `negotiate_unattended` acceptance response frame.
@@ -217,22 +316,134 @@ mod tests {
 		frame(&json!({ "type": "response", "command": "negotiate_unattended", "success": true }))
 	}
 
+	fn prompt_response(success: bool) -> String {
+		frame(&json!({
+			"id": PROMPT_REQUEST_ID,
+			"type": "response",
+			"command": "prompt",
+			"success": success,
+		}))
+	}
+
 	#[test]
-	fn parses_lifecycle_and_usage_and_skips_non_events() {
+	fn prompt_command_includes_a_correlation_id() {
+		assert_eq!(prompt_command("resolve")["id"], PROMPT_REQUEST_ID);
+	}
+
+	#[test]
+	fn parses_lifecycle_and_skips_non_events() {
 		assert!(matches!(
 			parse_stream_event(&event(1, "agent_start", json!({}))),
-			Some(StreamEvent::Lifecycle { seq: 1, .. })
-		));
-		assert!(matches!(
-			parse_stream_event(&event(
-				2,
-				"message",
-				json!({ "usage": { "tokens": 5, "tool_calls": 1, "cost_usd": 0.0, "wall_time_ms": 0 } })
-			)),
-			Some(StreamEvent::Usage { seq: 2, .. })
+			Some(StreamEvent::Lifecycle { seq: 1, stop_reason: None, .. })
 		));
 		assert!(parse_stream_event(&json!({ "type": "ready" })).is_none());
 		assert!(parse_stream_event(&json!({ "type": "response", "command": "x" })).is_none());
+	}
+
+	#[test]
+	fn rejects_missing_or_foreign_protocol_versions() {
+		// Version 2 is accepted (the `event` helper stamps it).
+		assert!(parse_stream_event(&event(1, "agent_end", json!({ "messages": [] }))).is_some());
+		// A missing protocol_version fails closed.
+		let unversioned = json!({
+			"type": "event",
+			"seq": 1,
+			"payload": { "event_type": "agent_end", "event": { "messages": [] } },
+		});
+		assert!(parse_stream_event(&unversioned).is_none());
+		// Foreign and non-numeric versions fail closed.
+		let mut foreign = event(1, "agent_end", json!({ "messages": [] }));
+		foreign["protocol_version"] = json!(999);
+		assert!(parse_stream_event(&foreign).is_none());
+		foreign["protocol_version"] = json!("2");
+		assert!(parse_stream_event(&foreign).is_none());
+	}
+
+	#[test]
+	fn parses_canonical_message_end_usage() {
+		let parsed = parse_stream_event(&event(
+			2,
+			"message_end",
+			json!({
+				"message": {
+					"usage": {
+						"input": 50,
+						"output": 60,
+						"cacheRead": 5,
+						"cacheWrite": 5,
+						"totalTokens": 120,
+						"cost": { "input": 0.001, "output": 0.002, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.003 }
+					}
+				}
+			}),
+		));
+		assert_eq!(
+			parsed,
+			Some(StreamEvent::Usage {
+				seq:   2,
+				usage: UsageObservation {
+					tokens:       120,
+					tool_calls:   0,
+					cost_usd:     0.003,
+					wall_time_ms: 0,
+				},
+			})
+		);
+	}
+
+	#[test]
+	fn parses_legacy_event_usage() {
+		let parsed = parse_stream_event(&event(
+			2,
+			"message",
+			json!({ "usage": { "tokens": 5, "tool_calls": 1, "cost_usd": 0.0, "wall_time_ms": 0 } }),
+		));
+		assert_eq!(
+			parsed,
+			Some(StreamEvent::Usage {
+				seq:   2,
+				usage: UsageObservation {
+					tokens:       5,
+					tool_calls:   1,
+					cost_usd:     0.0,
+					wall_time_ms: 0,
+				},
+			})
+		);
+	}
+
+	#[test]
+	fn parses_tool_execution_end_as_a_tool_call_observation() {
+		let parsed = parse_stream_event(&event(2, "tool_execution_end", json!({})));
+		assert_eq!(
+			parsed,
+			Some(StreamEvent::Usage {
+				seq:   2,
+				usage: UsageObservation {
+					tokens:       0,
+					tool_calls:   1,
+					cost_usd:     0.0,
+					wall_time_ms: 0,
+				},
+			})
+		);
+	}
+
+	#[test]
+	fn parses_paused_agent_end_stop_reason() {
+		let parsed = parse_stream_event(&event(
+			2,
+			"agent_end",
+			json!({ "messages": [], "stopReason": "paused" }),
+		));
+		assert_eq!(
+			parsed,
+			Some(StreamEvent::Lifecycle {
+				seq:         2,
+				event_type:  "agent_end".to_owned(),
+				stop_reason: Some("paused".to_owned()),
+			})
+		);
 	}
 
 	fn runner(
@@ -257,10 +468,22 @@ mod tests {
 			frame(&event(1, "agent_start", json!({}))),
 			frame(&event(
 				2,
-				"message",
-				json!({ "usage": { "tokens": 120, "tool_calls": 3, "cost_usd": 0.0, "wall_time_ms": 0 } }),
+				"message_end",
+				json!({
+					"message": {
+						"usage": {
+							"input": 50,
+							"output": 60,
+							"cacheRead": 5,
+							"cacheWrite": 5,
+							"totalTokens": 120,
+							"cost": { "input": 0.001, "output": 0.002, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.003 }
+						}
+					}
+				}),
 			)),
-			frame(&event(3, "completed", json!({}))),
+			prompt_response(true),
+			frame(&event(3, "agent_end", json!({ "messages": [] }))),
 		]
 		.concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
@@ -273,11 +496,28 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn paused_agent_end_is_a_failed_outcome() {
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		let script = [
+			accept(),
+			prompt_response(true),
+			frame(&event(1, "agent_start", json!({}))),
+			frame(&event(2, "agent_end", json!({ "messages": [], "stopReason": "paused" }))),
+		]
+		.concat();
+		engine.write_all(script.as_bytes()).await.unwrap();
+		engine.flush().await.unwrap();
+		let out = runner(client_side, 128).run("wk").await;
+		assert!(!out.succeeded, "a paused agent_end must fail closed");
+	}
+
+	#[tokio::test]
 	async fn error_without_terminal_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
 		// A mid-run error that never reaches a terminal, then EOF -> failed.
 		let script = [
 			accept(),
+			prompt_response(true),
 			frame(&event(1, "agent_start", json!({}))),
 			frame(&event(2, "error", json!({}))),
 		]
@@ -291,7 +531,8 @@ mod tests {
 	#[tokio::test]
 	async fn eof_before_terminal_is_a_failed_outcome() {
 		let (mut engine, client_side) = tokio::io::duplex(8192);
-		let script = [accept(), frame(&event(1, "agent_start", json!({})))].concat();
+		let script =
+			[accept(), prompt_response(true), frame(&event(1, "agent_start", json!({})))].concat();
 		engine.write_all(script.as_bytes()).await.unwrap();
 		drop(engine); // EOF with no terminal event
 		let out = runner(client_side, 128).run("wk").await;
@@ -304,6 +545,7 @@ mod tests {
 		// Gap beyond the replay window (seq 1 -> 50) before terminal.
 		let script = [
 			accept(),
+			prompt_response(true),
 			frame(&event(1, "agent_start", json!({}))),
 			frame(&event(50, "completed", json!({}))),
 		]
@@ -312,6 +554,65 @@ mod tests {
 		engine.flush().await.unwrap();
 		let out = runner(client_side, 4).run("wk").await;
 		assert!(!out.succeeded, "a lost stream must never reduce to success");
+	}
+
+	#[tokio::test]
+	async fn rejected_correlated_prompt_fails_closed_even_if_agent_ends() {
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		let script = [
+			accept(),
+			frame(&event(1, "agent_start", json!({}))),
+			prompt_response(false),
+			frame(&event(2, "agent_end", json!({ "messages": [] }))),
+		]
+		.concat();
+		engine.write_all(script.as_bytes()).await.unwrap();
+		engine.flush().await.unwrap();
+		let out = runner(client_side, 128).run("wk").await;
+		assert!(!out.succeeded, "a rejected prompt must never yield a successful run");
+	}
+
+	#[tokio::test]
+	async fn terminal_buffered_before_prompt_ack_reduces_without_idling() {
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		// The full run (including the terminal agent_end) races AHEAD of the
+		// prompt acknowledgement, and the peer then stays OPEN: the runner must
+		// reduce the buffered terminal immediately instead of idling out.
+		let script = [
+			accept(),
+			frame(&event(1, "agent_start", json!({}))),
+			frame(&event(2, "agent_end", json!({ "messages": [] }))),
+			prompt_response(true),
+		]
+		.concat();
+		engine.write_all(script.as_bytes()).await.unwrap();
+		engine.flush().await.unwrap();
+		let out = tokio::time::timeout(
+			std::time::Duration::from_secs(5),
+			runner(client_side, 128).run("wk"),
+		)
+		.await
+		.expect("must reduce the buffered terminal without waiting for the idle timeout");
+		assert!(out.succeeded, "a terminal buffered before prompt ack must reduce normally");
+		drop(engine); // keep the peer open until after the run resolves
+	}
+
+	#[tokio::test]
+	async fn ignores_an_unrelated_prompt_response_until_the_correlated_response_arrives() {
+		let (mut engine, client_side) = tokio::io::duplex(8192);
+		let script = [
+			accept(),
+			frame(
+				&json!({ "id": "other-prompt", "type": "response", "command": "prompt", "success": false }),
+			),
+			prompt_response(true),
+			frame(&event(1, "agent_start", json!({}))),
+			frame(&event(2, "agent_end", json!({ "messages": [] }))),
+		]
+		.concat();
+		engine.write_all(script.as_bytes()).await.unwrap();
+		engine.flush().await.unwrap();
+		assert!(runner(client_side, 128).run("wk").await.succeeded);
 	}
 
 	#[tokio::test]

@@ -21,8 +21,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
 	/// An agent-lifecycle event; `event_type` is the engine's
-	/// `payload.event_type`.
-	Lifecycle { seq: u64, event_type: String },
+	/// `payload.event_type`. `stop_reason` is present for `agent_end` events.
+	Lifecycle { seq: u64, event_type: String, stop_reason: Option<String> },
 	/// Observed (not enforced) usage, accumulated for the ledger (D3).
 	Usage { seq: u64, usage: UsageObservation },
 }
@@ -35,12 +35,14 @@ impl StreamEvent {
 	}
 }
 
-/// Terminal lifecycle event types that end the agent loop. Reaching one means
-/// the run completed; an `error` event mid-run is NOT terminal (the agent may
-/// recover and continue), so only the end-of-loop signal ends reduction. A
-/// stream that ends without one yields no outcome (the caller treats it as a
-/// failed run), so a truncated/aborted run never counts as success.
-const TERMINAL_OK: [&str; 2] = ["completed", "agent_end"];
+/// Terminal lifecycle event types that end the agent loop. An `agent_end` with
+/// no stop reason or a `completed` stop reason is terminal and successful; any
+/// other stop reason is terminal and unsuccessful. An `error` event mid-run is
+/// NOT terminal (the agent may recover and continue), so only the end-of-loop
+/// signal ends reduction. A stream that ends without one yields no outcome (the
+/// caller treats it as a failed run), so a truncated/aborted run never counts
+/// as success.
+const TERMINAL: [&str; 2] = ["completed", "agent_end"];
 
 /// The outcome of reducing a run's event stream.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,9 +62,10 @@ pub struct RunReduction {
 ///
 /// A sequence gap (in-window or beyond) with no replay channel degrades to
 /// `stream_lost` with no outcome — never a false terminal success. A terminal
-/// event (`completed`/`agent_end` → success, `error`/`budget_exceeded` →
-/// failure) ends reduction; a stream that ends without a terminal event yields
-/// no outcome (the caller treats that as a failed run).
+/// event (`completed` or an `agent_end` with no stop reason or `completed` →
+/// success; every other `agent_end` stop reason → failure) ends reduction; a
+/// stream that ends without a terminal event yields no outcome (the caller
+/// treats that as a failed run).
 #[must_use]
 pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduction {
 	let mut tracker = StreamTracker::new(replay_window);
@@ -86,9 +89,16 @@ pub fn reduce_run_events(events: &[StreamEvent], replay_window: u64) -> RunReduc
 		}
 		match event {
 			StreamEvent::Usage { usage: u, .. } => usage.add_observed(u),
-			StreamEvent::Lifecycle { event_type, .. } => {
-				if TERMINAL_OK.contains(&event_type.as_str()) {
-					succeeded = Some(true);
+			StreamEvent::Lifecycle { event_type, stop_reason, .. } => {
+				if event_type == "tool_execution_end" {
+					usage.tool_calls = usage.tool_calls.saturating_add(1);
+				}
+				if TERMINAL.contains(&event_type.as_str()) {
+					succeeded = Some(if event_type == "completed" {
+						true
+					} else {
+						matches!(stop_reason.as_deref(), None | Some("completed"))
+					});
 					break;
 				}
 			},
@@ -108,7 +118,15 @@ mod tests {
 	}
 
 	fn life(seq: u64, ev: &str) -> StreamEvent {
-		StreamEvent::Lifecycle { seq, event_type: ev.to_owned() }
+		StreamEvent::Lifecycle { seq, event_type: ev.to_owned(), stop_reason: None }
+	}
+
+	fn agent_end(seq: u64, stop_reason: Option<&str>) -> StreamEvent {
+		StreamEvent::Lifecycle {
+			seq,
+			event_type: "agent_end".to_owned(),
+			stop_reason: stop_reason.map(str::to_owned),
+		}
 	}
 
 	#[test]
@@ -128,9 +146,36 @@ mod tests {
 	}
 
 	#[test]
-	fn agent_end_is_also_terminal_success() {
-		let r = reduce_run_events(&[life(1, "agent_start"), life(2, "agent_end")], 10);
-		assert!(r.outcome.unwrap().succeeded);
+	fn agent_end_without_stop_reason_or_with_completed_reason_is_terminal_success() {
+		for stop_reason in [None, Some("completed")] {
+			let r = reduce_run_events(&[life(1, "agent_start"), agent_end(2, stop_reason)], 10);
+			assert!(r.outcome.unwrap().succeeded);
+		}
+	}
+
+	#[test]
+	fn paused_agent_end_is_terminal_failure() {
+		let r = reduce_run_events(&[life(1, "agent_start"), agent_end(2, Some("paused"))], 10);
+		let out = r.outcome.expect("paused agent_end is terminal");
+		assert!(!out.succeeded, "paused agent_end must not count as success");
+	}
+
+	#[test]
+	fn error_aborted_and_unknown_agent_end_reasons_are_terminal_failures() {
+		for stop_reason in ["error", "aborted", "unrecognized"] {
+			let r = reduce_run_events(&[life(1, "agent_start"), agent_end(2, Some(stop_reason))], 10);
+			let out = r.outcome.expect("agent_end is terminal");
+			assert!(!out.succeeded, "{stop_reason} agent_end must fail closed");
+		}
+	}
+
+	#[test]
+	fn tool_execution_end_counts_a_tool_call() {
+		let r = reduce_run_events(
+			&[life(1, "agent_start"), life(2, "tool_execution_end"), life(3, "completed")],
+			10,
+		);
+		assert_eq!(r.outcome.unwrap().usage.tool_calls, 1);
 	}
 
 	#[test]
