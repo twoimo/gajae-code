@@ -1,4 +1,5 @@
 import type { Effort } from "@gajae-code/ai/model-thinking";
+import { PET_MODE_IDS, PET_SKIN_IDS, PET_SKINS } from "@gajae-code/tui/components/gajae-pet";
 import { TASK_SIMPLE_MODES } from "../task/simple-mode";
 import { getThinkingLevelMetadata } from "../thinking-metadata";
 import { EDIT_MODES } from "../utils/edit-mode";
@@ -261,6 +262,7 @@ export const SETTINGS_SCHEMA = {
 	"notifications.telegram.chatId": { type: "string", default: undefined },
 	"notifications.telegram.rich.enabled": { type: "boolean", default: true },
 	"notifications.telegram.richDraft.enabled": { type: "boolean", default: false },
+	"notifications.telegram.topics.nameTemplate": { type: "string", default: undefined },
 	"notifications.discord.botToken": { type: "string", default: undefined },
 	"notifications.discord.applicationId": { type: "string", default: undefined },
 	"notifications.discord.guildId": { type: "string", default: undefined },
@@ -274,6 +276,11 @@ export const SETTINGS_SCHEMA = {
 		type: "string",
 		default: "lean",
 		validate: (value: string) => value === "lean" || value === "verbose",
+	},
+	"notifications.sessionScope": {
+		type: "string",
+		default: "all",
+		validate: (value: string) => value === "all" || value === "primary",
 	},
 	"notifications.daemon.idleTimeoutMs": {
 		type: "number",
@@ -512,6 +519,25 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			label: "Session Accent",
 			description: "Use the session name color for the editor border and status line gap",
+		},
+	},
+
+	"pet.mode": {
+		type: "enum",
+		values: PET_MODE_IDS,
+		default: "off",
+		ui: {
+			tab: "appearance",
+			label: "Gajae Pet",
+			description: "16x16 real-pixel gajae living beside the composer (sixel/kitty terminals)",
+			options: [
+				{ value: "off", label: "Off", description: "No pet" },
+				...PET_SKIN_IDS.map(id => ({
+					value: id,
+					label: PET_SKINS[id].label,
+					description: PET_SKINS[id].description,
+				})),
+			],
 		},
 	},
 	"statusLine.maxRows": {
@@ -1228,7 +1254,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "interaction",
 			label: "Check for Updates",
-			description: "If false, skip update check",
+			description:
+				"At interactive startup, notify of newer versions; never install. Use `gjc update` only for recognized Bun global, Windows npm, or bundled-installer binaries; source, linked, and unrecognized installs use their original method.",
 		},
 	},
 
@@ -2165,6 +2192,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "IRC",
 			description: "Enable agent-to-agent IRC messaging via the irc tool",
+		},
+	},
+
+	"irc.sidebar.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "IRC Sidebar",
+			description: "Enable the IRC message sidebar (opens with the toggle key; starts closed)",
 		},
 	},
 
@@ -3420,6 +3457,9 @@ export interface NotificationsSettings {
 		};
 		richDraft: {
 			enabled: boolean;
+		};
+		topics: {
+			nameTemplate: string | undefined;
 		};
 	};
 	discord: {

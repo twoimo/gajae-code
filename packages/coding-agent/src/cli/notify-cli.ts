@@ -8,10 +8,20 @@ import { APP_NAME } from "@gajae-code/utils/dirs";
 import chalk from "chalk";
 import { Settings } from "../config/settings";
 import { ensureDiscordDaemon, ensureSlackDaemon, type EnsureChatDaemonResult } from "../sdk/bus/chat-daemon-control";
-import { getNotificationConfig, maskToken } from "../sdk/bus/config";
+import { maskToken } from "../sdk/bus/config";
+import {
+	buildNotificationStatusReport,
+	checkNotificationHealth,
+	formatNotificationHealthReport,
+	formatNotificationRecoveryReport,
+	formatNotificationStatusReport,
+	formatNotificationTestResult,
+	recoverNotifications,
+	sendNotificationTest,
+} from "../sdk/bus/notification-service";
 import { runDaemonInternal } from "../sdk/bus/telegram-daemon-cli";
 
-export type NotifyAction = "setup" | "status" | "daemon-internal";
+export type NotifyAction = "setup" | "status" | "health" | "test" | "recovery" | "daemon-internal";
 export type NotifySetupProvider = "telegram" | "discord" | "slack";
 
 export interface NotifyCommandArgs {
@@ -30,6 +40,8 @@ export interface NotifyCommandArgs {
 	slackWorkspaceId?: string;
 	slackChannelId?: string;
 	redact?: boolean;
+	probe?: boolean;
+	message?: string;
 }
 
 export interface NotifyCommandDeps {
@@ -119,6 +131,19 @@ export function parseNotifyArgs(args: string[]): NotifyCommandArgs | undefined {
 			redact: rest.includes("--redact"),
 		};
 	}
+	if (action === "health" || action === "test" || action === "recovery") {
+		const rest = args.slice(2);
+		const flag = (name: string): string | undefined => {
+			const i = rest.indexOf(name);
+			return i >= 0 ? rest[i + 1] : undefined;
+		};
+		return {
+			action,
+			rawArgs: rest,
+			probe: rest.includes("--probe"),
+			message: flag("--message"),
+		};
+	}
 	if (action === "daemon-internal") {
 		return {
 			action,
@@ -131,18 +156,34 @@ export function parseNotifyArgs(args: string[]): NotifyCommandArgs | undefined {
 }
 
 export async function runNotifyCommand(cmd: NotifyCommandArgs, deps: NotifyCommandDeps = {}): Promise<void> {
-	if (cmd.action === "setup") {
-		await runSetup(cmd, deps);
-		return;
-	}
-	if (cmd.action === "status") {
-		await runStatus(deps);
-		return;
-	}
-	if (cmd.smoke) {
-		await runDaemonInternal(["--smoke"]);
-	} else {
-		await runDaemonInternal(cmd.rawArgs);
+	switch (cmd.action) {
+		case "setup":
+			await runSetup(cmd, {
+				...deps,
+				setupToken: deps.setupToken ?? cmd.token,
+				setupChatId: deps.setupChatId ?? cmd.chatId,
+				setupRedact: deps.setupRedact ?? cmd.redact,
+			});
+			return;
+		case "status":
+			await runStatus(deps);
+			return;
+		case "health":
+			await runHealth(deps, cmd);
+			return;
+		case "test":
+			await runTest(deps, cmd);
+			return;
+		case "recovery":
+			await runRecovery(deps);
+			return;
+		case "daemon-internal":
+			if (cmd.smoke) {
+				await runDaemonInternal(["--smoke"]);
+			} else {
+				await runDaemonInternal(cmd.rawArgs);
+			}
+			return;
 	}
 }
 
@@ -479,22 +520,40 @@ async function verifyThreadedMode(
 
 async function runStatus(deps: NotifyCommandDeps): Promise<void> {
 	const settings = await getSettings(deps);
-	const cfg = getNotificationConfig(settings);
+	const report = buildNotificationStatusReport(settings);
 	process.stdout.write(
-		`${chalk.bold("Notifications")}\n` +
-			`  enabled: ${cfg.enabled}\n` +
-			`  telegram.botToken: ${maskToken(cfg.botToken)}\n` +
-			`  telegram.chatId: ${cfg.chatId ?? "(unset)"}\n` +
-			`  discord.botToken: ${maskToken(cfg.discord.botToken)}\n` +
-			`  discord.applicationId: ${cfg.discord.applicationId ?? "(unset)"}\n` +
-			`  discord.guildId: ${cfg.discord.guildId ?? "(unset)"}\n` +
-			`  discord.parentChannelId: ${cfg.discord.parentChannelId ?? "(unset)"}\n` +
-			`  slack.botToken: ${maskToken(cfg.slack.botToken)}\n` +
-			`  slack.appToken: ${maskToken(cfg.slack.appToken)}\n` +
-			`  slack.workspaceId: ${cfg.slack.workspaceId ?? "(unset)"}\n` +
-			`  slack.channelId: ${cfg.slack.channelId ?? "(unset)"}\n` +
-			`  redact: ${cfg.redact}\n`,
+		`${chalk.bold("Notifications")}\n${formatNotificationStatusReport(report).split("\n").slice(1).join("\n")}\n`,
 	);
+}
+
+async function runHealth(deps: NotifyCommandDeps, cmd: NotifyCommandArgs): Promise<void> {
+	const settings = await getSettings(deps);
+	const report = await checkNotificationHealth({
+		settings,
+		probe: cmd.probe,
+		deps: { fetchImpl: deps.fetchImpl, apiBase: deps.apiBase },
+	});
+	process.stdout.write(`${formatNotificationHealthReport(report)}\n`);
+	if (report.overall === "error" && deps.setExitCode) deps.setExitCode(1);
+	else if (report.overall === "error") process.exitCode = 1;
+}
+
+async function runTest(deps: NotifyCommandDeps, cmd: NotifyCommandArgs): Promise<void> {
+	const settings = await getSettings(deps);
+	const result = await sendNotificationTest({
+		settings,
+		text: cmd.message,
+		deps: { fetchImpl: deps.fetchImpl, apiBase: deps.apiBase },
+	});
+	process.stdout.write(`${formatNotificationTestResult(result)}\n`);
+	if (!result.ok && deps.setExitCode) deps.setExitCode(1);
+	else if (!result.ok) process.exitCode = 1;
+}
+
+async function runRecovery(deps: NotifyCommandDeps): Promise<void> {
+	const settings = await getSettings(deps);
+	const report = await recoverNotifications({ settings });
+	process.stdout.write(`${formatNotificationRecoveryReport(report)}\n`);
 }
 
 async function waitForPrivateChat(
@@ -587,10 +646,16 @@ ${chalk.bold("Usage:")}
   ${APP_NAME} notify setup discord --discord-bot-token <token> --discord-application-id <id> --discord-guild-id <id> --discord-parent-channel-id <id>
   ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id>
   ${APP_NAME} notify status
+  ${APP_NAME} notify health [--probe]
+  ${APP_NAME} notify test [--message <text>]
+  ${APP_NAME} notify recovery
 
 ${chalk.bold("Subcommands:")}
   setup     Pair Telegram or save complete non-interactive Discord/Slack notification settings
   status    Show notification configuration without secrets
+  health    Report config, daemon-ownership and endpoint health (--probe adds a Telegram reachability check)
+  test      Send a one-off test notification through the configured Telegram adapter
+  recovery  Clear dead-owner daemon locks and stale per-session endpoint files (never touches a live owner)
 
 ${chalk.bold("Examples:")}
   ${APP_NAME} notify setup
@@ -598,6 +663,9 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} notify setup discord --discord-bot-token <token> --discord-application-id <id> --discord-guild-id <id> --discord-parent-channel-id <id>
   ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id>
   ${APP_NAME} notify status
+  ${APP_NAME} notify health --probe
+  ${APP_NAME} notify test --message "hello from gjc"
+  ${APP_NAME} notify recovery
 
 ${chalk.bold("Threaded Mode:")}
   GJC uses Telegram private-chat topics for per-session threads. Setup verifies the bot

@@ -96,6 +96,7 @@ describe("SDK operation inventory", () => {
 				constructor() {}
 				public publicMethod(): void {}
 				protected protectedMethod(): void {}
+				private privateMethod(): void {}
 				static staticMethod(): void {}
 				override overrideable(): void {}
 				get accessor(): string { return "value"; }
@@ -113,6 +114,7 @@ describe("SDK operation inventory", () => {
 			"agent_session:constructor",
 			"agent_session:publicMethod",
 			"agent_session:protectedMethod",
+			"agent_session:privateMethod",
 			"agent_session:staticMethod",
 			"agent_session:overrideable",
 			"agent_session:generatorMethod",
@@ -139,6 +141,42 @@ describe("SDK operation inventory", () => {
 			}
 		`);
 		expect(seams).toEqual(["acp:formatted/action", "acp:template/action"]);
+	});
+
+	it("ignores string, comment, computed-property, and nested-member decoys", () => {
+		const seams = scanAgentSessionMethods(`
+			class AgentSession {
+				@decorator({ label: "})" })
+				private async *decoratedPrivate(
+					value = "notAMethod() {}",
+				): AsyncGenerator<string> {
+					yield \`{\${value}}\`;
+				}
+				["computed"]() {}
+				field = () => ({ text: "notAMethod() {}" });
+			}
+		`);
+		expect(seams).toEqual(["agent_session:decoratedPrivate"]);
+	});
+
+	it("finds direct and nested ACP method cases without reading strings or interpolated templates", () => {
+		const seams = scanAcpMethods(`
+			switch (method) {
+				case "escaped\\nmethod":
+					const decoy = "case \\\"ignored\\\": {";
+					break;
+				case \`literal/method\`:
+					break;
+				case \`dynamic/\${"value"}\`:
+					break;
+				case "outer": {
+					switch (method) { case "nested": break; }
+					break;
+				}
+				// case "comment"
+			}
+		`);
+		expect(seams).toEqual(["acp:escaped\nmethod", "acp:literal/method", "acp:outer", "acp:nested"]);
 	});
 
 	it("rejects an unmapped action seam found in a fixture scan root", async () => {

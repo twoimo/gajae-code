@@ -5,7 +5,10 @@
 //! layer (added later) owns sockets and broadcast; it delegates all lifecycle
 //! decisions here so the rules are unit-testable without networking.
 
-use std::collections::HashMap;
+use std::{
+	collections::HashMap,
+	sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::protocol::{
 	ActionKind, ActionNeeded, ActionResolved, RejectReason, Reply, ReplyAnswer, ResolvedBy,
@@ -39,6 +42,37 @@ pub enum ReplyClassification {
 #[derive(Debug, Clone)]
 struct PendingAction {
 	repliable: bool,
+	claim: Option<Claim>,
+}
+
+#[derive(Debug, Clone)]
+struct Claim {
+	receipt_id: String,
+	connection_id: String,
+	generation: String,
+	answer: ReplyAnswer,
+	idempotency_key: Option<String>,
+}
+
+/// An atomically claimed reply that may be forwarded to the host exactly once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedReply {
+	pub reply: Reply,
+	pub reply_receipt_id: String,
+}
+
+/// Authenticated connection provenance retained for a claimed reply receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyOrigin {
+	pub connection_id: String,
+	pub generation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+	Forward(ClaimedReply),
+	Duplicate,
+	Reject(RejectReason),
 }
 
 /// Record of a resolved action, retained for idempotency and late-reply
@@ -54,6 +88,9 @@ struct ResolvedRecord {
 pub struct ActionRegistry {
 	pending: HashMap<String, PendingAction>,
 	resolved: HashMap<String, ResolvedRecord>,
+	receipts: HashMap<String, String>,
+	origins: HashMap<String, ReplyOrigin>,
+	next_receipt: AtomicU64,
 	/// The single currently-pending `ask`, replayed to clients that connect
 	/// late. Idle pings are intentionally ephemeral and never buffered.
 	buffered_ask: Option<ActionNeeded>,
@@ -75,7 +112,9 @@ impl ActionRegistry {
 	pub fn register_ask(&mut self, needed: ActionNeeded, repliable: bool) {
 		debug_assert_eq!(needed.kind, ActionKind::Ask);
 		self.buffered_ask = Some(needed.clone());
-		self.pending.insert(needed.id, PendingAction { repliable });
+		self
+			.pending
+			.insert(needed.id, PendingAction { repliable, claim: None });
 	}
 
 	/// Record an idle ping. Ephemeral: not stored, not buffered, never
@@ -110,6 +149,13 @@ impl ActionRegistry {
 		id: &str,
 		answer: Option<ReplyAnswer>,
 	) -> Option<ActionResolved> {
+		if self
+			.pending
+			.get(id)
+			.is_some_and(|pending| pending.claim.is_some())
+		{
+			return None;
+		}
 		self
 			.resolve_internal(id, ResolvedBy::Local, answer, None)
 			.ok()
@@ -202,6 +248,126 @@ impl ActionRegistry {
 		ReplyClassification::Forward
 	}
 
+	/// Atomically claim a reply for host forwarding. A claim binds the
+	/// authenticated connection id/generation and yields one receipt; duplicate
+	/// same-body retries do not re-forward, while conflicts are rejected.
+	pub fn claim_reply(
+		&mut self,
+		reply: &Reply,
+		connection_id: &str,
+		generation: &str,
+		authorized: bool,
+		resolver_available: bool,
+	) -> ClaimOutcome {
+		if !authorized {
+			return ClaimOutcome::Reject(RejectReason::Unauthorized);
+		}
+		if let Some(record) = self.resolved.get(&reply.id) {
+			return match (&record.idempotency_key, &reply.idempotency_key) {
+				(Some(existing), Some(incoming))
+					if existing == incoming && record.answer.as_ref() == Some(&reply.answer) =>
+				{
+					ClaimOutcome::Duplicate
+				},
+				(Some(existing), Some(incoming)) if existing == incoming => {
+					ClaimOutcome::Reject(RejectReason::IdempotencyConflict)
+				},
+				_ => ClaimOutcome::Reject(RejectReason::AlreadyAnswered),
+			};
+		}
+		let Some(pending) = self.pending.get_mut(&reply.id) else {
+			return ClaimOutcome::Reject(RejectReason::UnknownAction);
+		};
+		if !pending.repliable || !resolver_available {
+			return ClaimOutcome::Reject(RejectReason::ResolverUnavailable);
+		}
+		if let Some(claim) = &pending.claim {
+			return if claim.connection_id == connection_id
+				&& claim.generation == generation
+				&& claim.idempotency_key == reply.idempotency_key
+				&& claim.answer == reply.answer
+			{
+				ClaimOutcome::Duplicate
+			} else {
+				ClaimOutcome::Reject(RejectReason::IdempotencyConflict)
+			};
+		}
+		let receipt_id = format!("reply:{}", self.next_receipt.fetch_add(1, Ordering::Relaxed));
+		pending.claim = Some(Claim {
+			receipt_id: receipt_id.clone(),
+			connection_id: connection_id.to_owned(),
+			generation: generation.to_owned(),
+			answer: reply.answer.clone(),
+			idempotency_key: reply.idempotency_key.clone(),
+		});
+		self.receipts.insert(receipt_id.clone(), reply.id.clone());
+		self.origins.insert(
+			receipt_id.clone(),
+			ReplyOrigin { connection_id: connection_id.to_owned(), generation: generation.to_owned() },
+		);
+		ClaimOutcome::Forward(ClaimedReply { reply: reply.clone(), reply_receipt_id: receipt_id })
+	}
+
+	/// Return the authenticated origin bound to a receipt, including after the
+	/// action itself became terminal. This is provenance, not authority to
+	/// reopen the action.
+	#[must_use]
+	pub fn claim_origin(&self, receipt_id: &str) -> Option<ReplyOrigin> {
+		self.origins.get(receipt_id).cloned()
+	}
+
+	#[must_use]
+	pub fn claim_action_id(&self, receipt_id: &str) -> Option<String> {
+		self.receipts.get(receipt_id).cloned()
+	}
+
+	#[must_use]
+	pub fn has_claim_for_action(&self, id: &str) -> bool {
+		self
+			.pending
+			.get(id)
+			.is_some_and(|pending| pending.claim.is_some())
+	}
+
+	/// Complete a claimed reply. A receipt cannot settle a different action.
+	pub fn resolve_claim(
+		&mut self,
+		receipt_id: &str,
+		answer: Option<ReplyAnswer>,
+		idempotency_key: Option<String>,
+	) -> Option<ActionResolved> {
+		let id = self.receipts.get(receipt_id)?.clone();
+		let pending = self.pending.get(&id)?;
+		let claim = pending.claim.as_ref()?;
+		if claim.receipt_id != receipt_id
+			|| answer.as_ref() != Some(&claim.answer)
+			|| idempotency_key != claim.idempotency_key
+		{
+			return None;
+		}
+		self
+			.resolve_internal(&id, ResolvedBy::Client, answer, idempotency_key)
+			.ok()
+	}
+
+	/// Terminally close a claimed invalid reply. The interaction must be
+	/// reissued under a fresh action id; it is never reopened.
+	pub fn close_claim_invalid(&mut self, receipt_id: &str) -> Option<ActionResolved> {
+		let id = self.receipts.get(receipt_id)?.clone();
+		let pending = self.pending.get(&id)?;
+		if !matches!(pending.claim.as_ref(), Some(claim) if claim.receipt_id == receipt_id) {
+			return None;
+		}
+		self
+			.resolve_internal(&id, ResolvedBy::Client, None, None)
+			.ok()
+	}
+
+	/// Cancel a claim during abort/shutdown and terminalize its pending action.
+	pub fn cancel_claim(&mut self, receipt_id: &str) -> Option<ActionResolved> {
+		self.close_claim_invalid(receipt_id)
+	}
+
 	/// Resolve a pending action as answered by a remote client.
 	///
 	/// Called by the host **after** it has resolved the real workflow gate, so
@@ -213,6 +379,13 @@ impl ActionRegistry {
 		answer: Option<ReplyAnswer>,
 		idempotency_key: Option<String>,
 	) -> Option<ActionResolved> {
+		if self
+			.pending
+			.get(id)
+			.is_some_and(|pending| pending.claim.is_some())
+		{
+			return None;
+		}
 		self
 			.resolve_internal(id, ResolvedBy::Client, answer, idempotency_key)
 			.ok()
@@ -225,8 +398,12 @@ impl ActionRegistry {
 		answer: Option<ReplyAnswer>,
 		idempotency_key: Option<String>,
 	) -> Result<ActionResolved, RejectReason> {
-		if self.pending.remove(id).is_none() {
+		let Some(pending) = self.pending.remove(id) else {
 			return Err(RejectReason::AlreadyAnswered);
+		};
+		if let Some(claim) = pending.claim {
+			self.receipts.remove(&claim.receipt_id);
+			self.origins.remove(&claim.receipt_id);
 		}
 		if self.buffered_ask.as_ref().is_some_and(|a| a.id == id) {
 			self.buffered_ask = None;
@@ -250,6 +427,7 @@ mod tests {
 			session_id: "s".into(),
 			question: Some("?".into()),
 			options: Some(vec!["Yes".into(), "No".into()]),
+			controls: vec![],
 			summary: None,
 		}
 	}
@@ -261,6 +439,7 @@ mod tests {
 			session_id: "s".into(),
 			question: None,
 			options: None,
+			controls: vec![],
 			summary: Some("idle".into()),
 		}
 	}
@@ -381,5 +560,45 @@ mod tests {
 			reg.apply_reply(&r2, true, true),
 			ReplyOutcome::Rejected(RejectReason::IdempotencyConflict)
 		);
+	}
+
+	#[test]
+	fn claimed_reply_requires_authorization_and_exact_settlement() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(ask("a1"), true);
+		let mut incoming = reply("a1", ReplyAnswer::Index(0));
+		incoming.idempotency_key = Some("k1".into());
+		assert_eq!(
+			reg.claim_reply(&incoming, "c1", "g1", false, true),
+			ClaimOutcome::Reject(RejectReason::Unauthorized),
+		);
+		let claim = match reg.claim_reply(&incoming, "c1", "g1", true, true) {
+			ClaimOutcome::Forward(claim) => claim,
+			other => panic!("expected forwarded claim, got {other:?}"),
+		};
+		assert!(
+			reg.resolve_claim(&claim.reply_receipt_id, Some(ReplyAnswer::Index(1)), Some("k1".into()))
+				.is_none()
+		);
+		assert!(reg.is_pending("a1"));
+		assert!(
+			reg.resolve_claim(&claim.reply_receipt_id, Some(ReplyAnswer::Index(0)), Some("k1".into()))
+				.is_some()
+		);
+		assert!(reg.claim_origin(&claim.reply_receipt_id).is_none());
+	}
+
+	#[test]
+	fn invalid_claim_close_is_terminal_and_cleans_origin() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(ask("a1"), true);
+		let incoming = reply("a1", ReplyAnswer::Text("bad".into()));
+		let claim = match reg.claim_reply(&incoming, "c1", "g1", true, true) {
+			ClaimOutcome::Forward(claim) => claim,
+			other => panic!("expected forwarded claim, got {other:?}"),
+		};
+		assert!(reg.close_claim_invalid(&claim.reply_receipt_id).is_some());
+		assert!(!reg.is_pending("a1"));
+		assert!(reg.claim_origin(&claim.reply_receipt_id).is_none());
 	}
 }

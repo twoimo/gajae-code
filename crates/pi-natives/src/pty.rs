@@ -31,22 +31,22 @@ use crate::{ps, task};
 #[napi(object)]
 pub struct PtyStartOptions<'env> {
 	/// Command string to execute.
-	pub command:    String,
+	pub command: String,
 	/// Working directory for command execution.
-	pub cwd:        Option<String>,
+	pub cwd: Option<String>,
 	/// Environment variables for this command.
-	pub env:        Option<HashMap<String, String>>,
+	pub env: Option<HashMap<String, String>>,
 	/// Timeout in milliseconds before cancelling.
 	pub timeout_ms: Option<u32>,
 	/// Abort signal for cancelling the operation.
-	pub signal:     Option<Unknown<'env>>,
+	pub signal: Option<Unknown<'env>>,
 	/// PTY column count.
-	pub cols:       Option<u16>,
+	pub cols: Option<u16>,
 	/// PTY row count.
-	pub rows:       Option<u16>,
+	pub rows: Option<u16>,
 	/// Shell binary to use (e.g. "sh", "bash", or an absolute path).
 	/// Defaults to "sh" if not provided.
-	pub shell:      Option<String>,
+	pub shell: Option<String>,
 }
 
 /// Result of a PTY command run.
@@ -63,11 +63,11 @@ pub struct PtyRunResult {
 #[derive(Clone)]
 struct PtyRunConfig {
 	command: String,
-	cwd:     Option<String>,
-	env:     Option<HashMap<String, String>>,
-	cols:    u16,
-	rows:    u16,
-	shell:   Option<String>,
+	cwd: Option<String>,
+	env: Option<HashMap<String, String>>,
+	cols: u16,
+	rows: u16,
+	shell: Option<String>,
 }
 
 enum ReaderEvent {
@@ -154,11 +154,11 @@ impl PtySession {
 	) -> Result<PromiseRaw<'env, PtyRunResult>> {
 		let run_config = PtyRunConfig {
 			command: options.command,
-			cwd:     options.cwd,
-			env:     options.env,
-			cols:    options.cols.unwrap_or(120).clamp(20, 400),
-			rows:    options.rows.unwrap_or(40).clamp(5, 200),
-			shell:   options.shell,
+			cwd: options.cwd,
+			env: options.env,
+			cols: options.cols.unwrap_or(120).clamp(20, 400),
+			rows: options.rows.unwrap_or(40).clamp(5, 200),
+			shell: options.shell,
 		};
 		let ct = task::CancelToken::new(options.timeout_ms, options.signal);
 		let core = Arc::clone(&self.core);
@@ -283,12 +283,12 @@ type DisarmedPty = (
 	Option<i32>,
 );
 struct PostSpawnSetupGuard {
-	child:            Option<Box<dyn Child + Send + Sync>>,
-	master:           Option<Box<dyn portable_pty::MasterPty + Send>>,
-	writer:           Option<Box<dyn Write + Send>>,
-	child_pid:        Option<i32>,
+	child: Option<Box<dyn Child + Send + Sync>>,
+	master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+	writer: Option<Box<dyn Write + Send>>,
+	child_pid: Option<i32>,
 	process_group_id: Option<i32>,
-	disarmed:         bool,
+	disarmed: bool,
 }
 
 impl PostSpawnSetupGuard {
@@ -389,7 +389,7 @@ fn try_send_reader_event(
 	if *dropped_chunks > 0 {
 		match tx.try_send(ReaderEvent::Loss {
 			dropped_chunks: *dropped_chunks,
-			dropped_bytes:  *dropped_bytes,
+			dropped_bytes: *dropped_bytes,
 		}) {
 			Ok(()) => {
 				*dropped_chunks = 0;
@@ -419,10 +419,7 @@ fn send_reader_final_events(
 ) -> bool {
 	if *dropped_chunks > 0 {
 		if tx
-			.send(ReaderEvent::Loss {
-				dropped_chunks: *dropped_chunks,
-				dropped_bytes:  *dropped_bytes,
-			})
+			.send(ReaderEvent::Loss { dropped_chunks: *dropped_chunks, dropped_bytes: *dropped_bytes })
 			.is_err()
 		{
 			return false;
@@ -467,6 +464,50 @@ impl Drop for WindowsOpenptyAttempt {
 	}
 }
 
+/// Remove the macOS malloc-stack-logging debug vars from a PTY child command.
+///
+/// macOS libmalloc prints `MallocStackLogging: …` to any TTY-attached process
+/// that inherits these vars, and PTY children always have a TTY stderr, so a
+/// contaminated parent would flood the terminal once per child. Applied after
+/// any caller-supplied env so explicit forwarding cannot reintroduce them.
+/// No-op off macOS (the vars are simply absent).
+fn scrub_macos_malloc_stack_logging_env(cmd: &mut CommandBuilder) {
+	cmd.env_remove("MallocStackLogging");
+	cmd.env_remove("MallocStackLoggingNoCompact");
+}
+
+/// Build the PTY child command from a run config.
+///
+/// portable-pty's `CommandBuilder` snapshots the live parent environ, so the
+/// malloc-env scrub here also protects direct SDK/embedder consumers that never
+/// pass through the CLI re-exec guard. Kept as one builder so production and
+/// tests spawn from the exact same command.
+fn build_pty_command(config: &PtyRunConfig) -> CommandBuilder {
+	let shell = config.shell.as_deref().unwrap_or("sh");
+	let mut cmd = CommandBuilder::new(shell);
+	// Use shell-appropriate command execution flags
+	let lower = shell.to_lowercase();
+	if lower.ends_with("cmd.exe") || lower.ends_with("cmd") {
+		cmd.arg("/c");
+	} else if lower.contains("powershell") || lower.contains("pwsh") {
+		cmd.arg("-Command");
+	} else {
+		// sh/bash/zsh/fish etc.
+		cmd.arg("-lc");
+	}
+	cmd.arg(&config.command);
+	if let Some(cwd) = config.cwd.as_ref() {
+		cmd.cwd(cwd);
+	}
+	if let Some(env) = config.env.as_ref() {
+		for (key, value) in env {
+			cmd.env(key, value);
+		}
+	}
+	scrub_macos_malloc_stack_logging_env(&mut cmd);
+	cmd
+}
+
 fn run_pty_sync(
 	config: PtyRunConfig,
 	on_chunk: Option<ThreadsafeFunction<String>>,
@@ -488,9 +529,9 @@ fn run_pty_sync(
 			let (tx, rx) = mpsc::channel();
 			let handle = std::thread::spawn(move || {
 				let result = pty_system.openpty(PtySize {
-					rows:         config.rows,
-					cols:         config.cols,
-					pixel_width:  0,
+					rows: config.rows,
+					cols: config.cols,
+					pixel_width: 0,
 					pixel_height: 0,
 				});
 				let _ = tx.send(result);
@@ -521,36 +562,11 @@ fn run_pty_sync(
 		unreachable!()
 	} else {
 		pty_system
-			.openpty(PtySize {
-				rows:         config.rows,
-				cols:         config.cols,
-				pixel_width:  0,
-				pixel_height: 0,
-			})
+			.openpty(PtySize { rows: config.rows, cols: config.cols, pixel_width: 0, pixel_height: 0 })
 			.map_err(|err| Error::from_reason(format!("Failed to open PTY: {err}")))?
 	};
 
-	let shell = config.shell.as_deref().unwrap_or("sh");
-	let mut cmd = CommandBuilder::new(shell);
-	// Use shell-appropriate command execution flags
-	let lower = shell.to_lowercase();
-	if lower.ends_with("cmd.exe") || lower.ends_with("cmd") {
-		cmd.arg("/c");
-	} else if lower.contains("powershell") || lower.contains("pwsh") {
-		cmd.arg("-Command");
-	} else {
-		// sh/bash/zsh/fish etc.
-		cmd.arg("-lc");
-	}
-	cmd.arg(&config.command);
-	if let Some(cwd) = config.cwd.as_ref() {
-		cmd.cwd(cwd);
-	}
-	if let Some(env) = config.env.as_ref() {
-		for (key, value) in env {
-			cmd.env(key, value);
-		}
-	}
+	let cmd = build_pty_command(&config);
 	ct.heartbeat()
 		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before spawn: {err}")))?;
 
@@ -905,12 +921,38 @@ mod tests {
 	fn test_config(command: &str) -> PtyRunConfig {
 		PtyRunConfig {
 			command: command.to_string(),
-			cwd:     None,
-			env:     None,
-			cols:    80,
-			rows:    24,
-			shell:   Some("sh".to_string()),
+			cwd: None,
+			env: None,
+			cols: 80,
+			rows: 24,
+			shell: Some("sh".to_string()),
 		}
+	}
+
+	#[test]
+	fn build_pty_command_scrubs_macos_malloc_stack_logging_env() {
+		let mut env = std::collections::HashMap::new();
+		env.insert("MallocStackLogging".to_string(), "1".to_string());
+		env.insert("MallocStackLoggingNoCompact".to_string(), "1".to_string());
+		env.insert("KEEP_ME".to_string(), "value".to_string());
+		let mut config = test_config("true");
+		config.env = Some(env);
+
+		let cmd = build_pty_command(&config);
+
+		assert!(
+			cmd.get_env("MallocStackLogging").is_none(),
+			"MallocStackLogging must be scrubbed even when explicitly forwarded",
+		);
+		assert!(
+			cmd.get_env("MallocStackLoggingNoCompact").is_none(),
+			"MallocStackLoggingNoCompact must be scrubbed even when explicitly forwarded",
+		);
+		assert_eq!(
+			cmd.get_env("KEEP_ME"),
+			Some(std::ffi::OsStr::new("value")),
+			"unrelated forwarded env vars must be preserved",
+		);
 	}
 
 	#[cfg(unix)]

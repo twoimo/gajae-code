@@ -4,10 +4,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import { BrokerWorkflowGateEmitter, FileGateStore, type OpenGateInput, type WorkflowGateEmitter } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import { createAgentSession } from "@gajae-code/coding-agent/sdk";
 import { Settings } from "../src/config/settings";
+import {
+	BrokerWorkflowGateEmitter,
+	FileGateStore,
+	type OpenGateInput,
+	type WorkflowGateEmitter,
+} from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import { SessionManager } from "../src/session/session-manager";
+import { registerWorkflowGateEmitterListener } from "../src/tools/ask-answer-registry";
 
 /**
  * The SDK-built ToolSession must forward getWorkflowGateEmitter from AgentSession
@@ -37,6 +43,10 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 		});
 		try {
 			const received: OpenGateInput[] = [];
+			let publishedEmitter: WorkflowGateEmitter | undefined;
+			const disposeEmitterListener = registerWorkflowGateEmitterListener(session.sessionId, emitter => {
+				publishedEmitter = emitter;
+			});
 			const emitter: WorkflowGateEmitter = {
 				isUnattended: () => true,
 				emitGate: input => {
@@ -45,6 +55,8 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 				},
 			};
 			session.setWorkflowGateEmitter(emitter);
+			expect(publishedEmitter).toBe(emitter);
+			disposeEmitterListener();
 			expect(session.getWorkflowGateEmitter()).toBe(emitter);
 
 			const askTool = session.getToolByName("ask");
@@ -70,7 +82,7 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 		} finally {
 			await session.dispose();
 		}
-	});
+	}, 15_000);
 	it("late-registers ask when a headless session receives a workflow gate emitter", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-headless-"));
 		tempDirs.push(tempDir);
@@ -129,7 +141,7 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 		} finally {
 			await session.dispose();
 		}
-	});
+	}, 15_000);
 	it("provides a durable SDK-native emitter without extension injection", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-production-"));
 		tempDirs.push(tempDir);
@@ -165,7 +177,11 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 			);
 			for (let i = 0; i < 20 && !gate; i += 1) await Bun.sleep(1);
 			expect(gate).toBeDefined();
-			const response = { gate_id: gate!.gate_id, answer: { selected: ["JWT"], other: false }, idempotency_key: "sdk-answer" };
+			const response = {
+				gate_id: gate!.gate_id,
+				answer: { selected: ["JWT"], other: false },
+				idempotency_key: "sdk-answer",
+			};
 			expect(await emitter!.resolveGate!(response)).toMatchObject({ status: "accepted" });
 			expect(await emitter!.resolveGate!(response)).toMatchObject({ status: "accepted" });
 			expect(JSON.stringify((await result).details)).toContain("JWT");

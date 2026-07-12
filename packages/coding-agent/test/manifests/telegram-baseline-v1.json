@@ -152,6 +152,13 @@
 			"argv": [
 				"bun",
 				"test",
+				"packages/coding-agent/test/notifications-map-answer-gate.test.ts"
+			]
+		},
+		{
+			"argv": [
+				"bun",
+				"test",
 				"packages/coding-agent/test/notifications-operator-runtime.test.ts"
 			]
 		},
@@ -216,6 +223,13 @@
 				"bun",
 				"test",
 				"packages/coding-agent/test/notifications-rich-render.test.ts"
+			]
+		},
+		{
+			"argv": [
+				"bun",
+				"test",
+				"packages/coding-agent/test/notifications-service.test.ts"
 			]
 		},
 		{

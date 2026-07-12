@@ -8,16 +8,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentSideConnection, InitializeRequest } from "@agentclientprotocol/sdk";
-import { zInitializeResponse } from "@agentclientprotocol/sdk/dist/schema/zod.gen.js";
+import acpProtocolSchema from "@agentclientprotocol/sdk/schema/schema.json" with { type: "json" };
+import { fromJSONSchema } from "zod/v4";
+import type * as z from "zod/v4/core";
 import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
 import { ACP_TERMINAL_AUTH_FLAG, prepareAcpTerminalAuthArgs } from "../src/modes/acp/terminal-auth";
 import { expectAcpStructure } from "./helpers/acp-schema";
 
-
 const cleanupRoots: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
+const zInitializeResponse = fromJSONSchema({
+	$schema: acpProtocolSchema.$schema,
+	$ref: "#/$defs/InitializeResponse",
+	$defs: acpProtocolSchema.$defs,
+} as unknown as z.JSONSchema.JSONSchema);
 
 afterEach(async () => {
 	if (originalAgentDir) {
@@ -138,6 +144,7 @@ describe("ACP initialize conformance", () => {
 					fork: expect.any(Object),
 					resume: expect.any(Object),
 					close: expect.any(Object),
+					delete: expect.any(Object),
 				}),
 			}),
 		);

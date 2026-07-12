@@ -9,6 +9,8 @@ import {
 	type ClientCapabilities,
 	type CloseSessionRequest,
 	type CloseSessionResponse,
+	type DeleteSessionRequest,
+	type DeleteSessionResponse,
 	type ForkSessionRequest,
 	type ForkSessionResponse,
 	type InitializeRequest,
@@ -25,20 +27,21 @@ import {
 	type ResumeSessionRequest,
 	type ResumeSessionResponse,
 	type SessionInfo,
-	type SessionNotification,
-	type SessionUpdate,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
-	type SetSessionModelRequest,
-	type SetSessionModelResponse,
 	type SetSessionModeRequest,
 	type SetSessionModeResponse,
 } from "@agentclientprotocol/sdk";
 import { getAgentDir } from "@gajae-code/utils";
 import packageJson from "../../../package.json" with { type: "json" };
-import { AcpSdkAdapter, AcpSdkAdapterError, type AcpProviderRegistration, type AcpReverseConnection } from "../../sdk/acp";
-import { readSdkBrokerDiscovery, SdkClient } from "../../sdk/client";
+import {
+	type AcpProviderRegistration,
+	type AcpReverseConnection,
+	AcpSdkAdapter,
+	AcpSdkAdapterError,
+} from "../../sdk/acp";
 import { ensureBroker } from "../../sdk/broker/ensure";
+import { readSdkBrokerDiscovery, SdkClient } from "../../sdk/client";
 import { mapAgentWireEventPayloadToAcpSessionUpdates } from "./acp-event-mapper";
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
 
@@ -98,21 +101,53 @@ export function createAcpExtensionUiContext(
 	getSessionId: () => string,
 	capabilities: ClientCapabilities | undefined,
 ): {
-	select: (message: string, options: string[], dialog?: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void }) => Promise<string | undefined>;
-	confirm: (message: string, detail?: string, dialog?: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void }) => Promise<boolean>;
-	input: (message: string, placeholder?: string, dialog?: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void }) => Promise<string | undefined>;
+	select: (
+		message: string,
+		options: string[],
+		dialog?: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void },
+	) => Promise<string | undefined>;
+	confirm: (
+		message: string,
+		detail?: string,
+		dialog?: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void },
+	) => Promise<boolean>;
+	input: (
+		message: string,
+		placeholder?: string,
+		dialog?: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void },
+	) => Promise<string | undefined>;
 } {
-	const elicit = async (kind: "select" | "confirm" | "input", message: string, options: string[] | undefined, dialog: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void } | undefined): Promise<unknown> => {
+	const elicit = async (
+		kind: "select" | "confirm" | "input",
+		message: string,
+		options: string[] | undefined,
+		dialog: { signal?: AbortSignal; timeout?: number; onTimeout?: () => void } | undefined,
+	): Promise<unknown> => {
 		if (!capabilities?.elicitation?.form || dialog?.signal?.aborted) return undefined;
-		const request = (connection as unknown as { unstable_createElicitation(input: JsonObject): Promise<JsonObject> }).unstable_createElicitation({
+		const request = (
+			connection as unknown as { unstable_createElicitation(input: JsonObject): Promise<JsonObject> }
+		).unstable_createElicitation({
 			sessionId: getSessionId(),
 			message,
-			requestedSchema: { type: "object", properties: { value: kind === "confirm" ? { type: "boolean" } : { type: "string", ...(options ? { enum: options } : {}) } }, required: ["value"] },
+			requestedSchema: {
+				type: "object",
+				properties: {
+					value:
+						kind === "confirm" ? { type: "boolean" } : { type: "string", ...(options ? { enum: options } : {}) },
+				},
+				required: ["value"],
+			},
 		});
 		let timer: NodeJS.Timeout | undefined;
-		const timeout = dialog?.timeout === undefined ? undefined : new Promise<undefined>(resolve => {
-			timer = setTimeout(() => { dialog.onTimeout?.(); resolve(undefined); }, dialog.timeout);
-		});
+		const timeout =
+			dialog?.timeout === undefined
+				? undefined
+				: new Promise<undefined>(resolve => {
+						timer = setTimeout(() => {
+							dialog.onTimeout?.();
+							resolve(undefined);
+						}, dialog.timeout);
+					});
 		try {
 			const response = timeout ? await Promise.race([request, timeout]) : await request;
 			return object(object(response)?.content)?.value;
@@ -127,7 +162,8 @@ export function createAcpExtensionUiContext(
 			const value = await elicit("select", message, options, dialog);
 			return typeof value === "string" && options.includes(value) ? value : undefined;
 		},
-		confirm: async (message, detail, dialog) => (await elicit("confirm", detail ? `${message}\n\n${detail}` : message, undefined, dialog)) === true,
+		confirm: async (message, detail, dialog) =>
+			(await elicit("confirm", detail ? `${message}\n\n${detail}` : message, undefined, dialog)) === true,
 		input: async (message, placeholder, dialog) => {
 			const value = await elicit("input", placeholder ? `${message}\n\n${placeholder}` : message, undefined, dialog);
 			return typeof value === "string" ? value : undefined;
@@ -145,6 +181,7 @@ export class AcpAgent implements Agent {
 	readonly #connection: AgentSideConnection;
 	readonly #agentDir: string;
 	readonly #sessions = new Map<string, SessionRecord>();
+	readonly #knownSessionCwds = new Map<string, string>();
 	#clientCapabilities: ClientCapabilities | undefined;
 	#broker: Promise<AcpSdkAdapter> | undefined;
 	#disposed = false;
@@ -164,11 +201,13 @@ export class AcpAgent implements Agent {
 
 	async initialize(params: InitializeRequest): Promise<InitializeResponse> {
 		this.#clientCapabilities = params.clientCapabilities;
-		const authMethods: AuthMethod[] = [{
-			id: "agent",
-			name: "Use existing local credentials",
-			description: "Authenticate via the provider keys/OAuth state already configured under ~/.gjc.",
-		}];
+		const authMethods: AuthMethod[] = [
+			{
+				id: "agent",
+				name: "Use existing local credentials",
+				description: "Authenticate via the provider keys/OAuth state already configured under ~/.gjc.",
+			},
+		];
 		if (params.clientCapabilities?.auth?.terminal === true) {
 			authMethods.push({
 				type: "terminal",
@@ -186,7 +225,7 @@ export class AcpAgent implements Agent {
 				loadSession: true,
 				mcpCapabilities: { http: true, sse: true },
 				promptCapabilities: { embeddedContext: true, image: true },
-				sessionCapabilities: { list: {}, fork: {}, resume: {}, close: {} },
+				sessionCapabilities: { list: {}, fork: {}, resume: {}, close: {}, delete: {} },
 			},
 		};
 	}
@@ -205,6 +244,7 @@ export class AcpAgent implements Agent {
 			randomUUID(),
 		);
 		const id = sessionId(result);
+		this.#knownSessionCwds.set(id, params.cwd);
 		await this.#attach(id, params.cwd, endpoint(result));
 		this.#scheduleBootstrap(id);
 		return { sessionId: id, ...(await this.#sessionState(id)) };
@@ -229,7 +269,12 @@ export class AcpAgent implements Agent {
 		const source = await this.#resolveSavedSession(params.sessionId, params.cwd);
 		const result = await (await this.#brokerAdapter()).global(
 			"session.fork",
-			{ cwd: params.cwd, sourceSessionId: params.sessionId, sourceSessionPath: source, target: { path: params.cwd } },
+			{
+				cwd: params.cwd,
+				sourceSessionId: params.sessionId,
+				sourceSessionPath: source,
+				target: { path: params.cwd },
+			},
 			randomUUID(),
 		);
 		const id = sessionId(result);
@@ -243,12 +288,23 @@ export class AcpAgent implements Agent {
 		const result = object(await (await this.#brokerAdapter()).global("session.list"));
 		const listing = object(result?.result) ?? result;
 		const listed = Array.isArray(listing?.sessions) ? listing.sessions : [];
+		for (const session of listed) {
+			const candidate = object(session) as BrokerSession | undefined;
+			if (typeof candidate?.sessionId === "string" && typeof candidate.locator?.repo === "string")
+				this.#knownSessionCwds.set(candidate.sessionId, candidate.locator.repo);
+		}
 		const sessions = listed
 			.map(value => object(value) as BrokerSession | undefined)
-			.filter((value): value is BrokerSession & { locator: { repo: string } } => typeof value?.sessionId === "string" && typeof value.locator?.repo === "string")
+			.filter(
+				(value): value is BrokerSession & { locator: { repo: string } } =>
+					typeof value?.sessionId === "string" && typeof value.locator?.repo === "string",
+			)
 			.filter(value => !params.cwd || value.locator.repo === params.cwd)
 			.slice(this.#cursor(params.cursor), this.#cursor(params.cursor) + SESSION_PAGE_SIZE)
-			.map(value => ({ sessionId: value.sessionId, cwd: value.locator.repo, title: value.sessionId } satisfies SessionInfo));
+			.map(
+				value =>
+					({ sessionId: value.sessionId, cwd: value.locator.repo, title: value.sessionId }) satisfies SessionInfo,
+			);
 		const offset = this.#cursor(params.cursor) + sessions.length;
 		return { sessions, nextCursor: offset < listed.length ? String(offset) : undefined };
 	}
@@ -261,16 +317,50 @@ export class AcpAgent implements Agent {
 		return {};
 	}
 
+	async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+		const record = this.#sessions.get(params.sessionId);
+		const cwd = record?.cwd ?? this.#knownSessionCwds.get(params.sessionId);
+		// ACP's delete request has no cwd. Only delete sessions this connection has
+		// already scoped through the broker; unknown ids remain the protocol no-op.
+		if (!cwd) return {};
+
+		if (record) {
+			record.unsubscribe();
+			await record.adapter.close();
+			this.#sessions.delete(params.sessionId);
+			await (await this.#brokerAdapter()).global("session.close", { sessionId: params.sessionId }, randomUUID());
+		}
+
+		let saved: string;
+		try {
+			saved = await this.#resolveSavedSession(params.sessionId, cwd);
+		} catch (error) {
+			if (error instanceof AcpSdkAdapterError && error.code === "not_found") return {};
+			throw error;
+		}
+		await (await this.#brokerAdapter()).global(
+			"session.delete",
+			{ sessionId: params.sessionId, sessionPath: saved, cwd, target: { path: cwd } },
+			randomUUID(),
+		);
+		this.#knownSessionCwds.delete(params.sessionId);
+		return {};
+	}
+
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
 		if (params.modeId !== ACP_DEFAULT_MODE_ID && params.modeId !== ACP_PLAN_MODE_ID)
 			throw new Error(`Unsupported ACP mode: ${params.modeId}`);
 		await this.#adapter(params.sessionId).control("mode.plan.set", { on: params.modeId === ACP_PLAN_MODE_ID });
-		await this.#connection.sessionUpdate({ sessionId: params.sessionId, update: { sessionUpdate: "current_mode_update", currentModeId: params.modeId } });
+		await this.#connection.sessionUpdate({
+			sessionId: params.sessionId,
+			update: { sessionUpdate: "current_mode_update", currentModeId: params.modeId },
+		});
 		return {};
 	}
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
-		if (typeof params.value !== "string") throw new Error(`Unsupported boolean ACP config option: ${params.configId}`);
+		if (typeof params.value !== "string")
+			throw new Error(`Unsupported boolean ACP config option: ${params.configId}`);
 		switch (params.configId) {
 			case MODE_CONFIG_ID:
 				await this.setSessionMode({ sessionId: params.sessionId, modeId: params.value });
@@ -285,13 +375,11 @@ export class AcpAgent implements Agent {
 				throw new Error(`Unknown ACP config option: ${params.configId}`);
 		}
 		const state = await this.#sessionState(params.sessionId);
-		await this.#connection.sessionUpdate({ sessionId: params.sessionId, update: { sessionUpdate: "config_option_update", configOptions: state.configOptions ?? [] } });
+		await this.#connection.sessionUpdate({
+			sessionId: params.sessionId,
+			update: { sessionUpdate: "config_option_update", configOptions: state.configOptions ?? [] },
+		});
 		return { configOptions: state.configOptions ?? [] };
-	}
-
-	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
-		await this.#adapter(params.sessionId).setModel(params.modelId);
-		return {};
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -303,14 +391,17 @@ export class AcpAgent implements Agent {
 			.filter(block => block.type === "image")
 			.map(block => ({ type: "image", data: block.data, mimeType: block.mimeType }));
 		await this.#adapter(params.sessionId).prompt({ text, ...(images.length ? { images } : {}) });
-		return { stopReason: "end_turn", userMessageId: params.messageId };
+		return { stopReason: "end_turn" };
 	}
 
 	async cancel(params: { sessionId: string }): Promise<void> {
 		await this.#adapter(params.sessionId).cancel();
 		await this.#connection.sessionUpdate({
 			sessionId: params.sessionId,
-			update: { sessionUpdate: "session_info_update", _meta: { gjcPhase: "idle", running: false, gjcRunning: false } },
+			update: {
+				sessionUpdate: "session_info_update",
+				_meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+			},
 		});
 	}
 
@@ -335,20 +426,29 @@ export class AcpAgent implements Agent {
 	}
 
 	async extNotification(_method: string, _params: JsonObject): Promise<void> {}
-	get signal(): AbortSignal { return this.#connection.signal; }
-	get closed(): Promise<void> { return this.#connection.closed; }
+	get signal(): AbortSignal {
+		return this.#connection.signal;
+	}
+	get closed(): Promise<void> {
+		return this.#connection.closed;
+	}
 
 	async #attachExisting(id: string, cwd: string, operation: "session.resume"): Promise<void> {
 		if (this.#sessions.has(id)) return;
 		const saved = await this.#resolveSavedSession(id, cwd);
-		const result = await (await this.#brokerAdapter()).global(operation, { cwd, sessionId: id, sessionPath: saved, target: { path: cwd } }, randomUUID());
+		const result = await (await this.#brokerAdapter()).global(
+			operation,
+			{ cwd, sessionId: id, sessionPath: saved, target: { path: cwd } },
+			randomUUID(),
+		);
 		await this.#attach(id, cwd, endpoint(result));
 	}
 
 	async #attach(id: string, cwd: string, discovered: Endpoint): Promise<void> {
 		const existing = this.#sessions.get(id);
 		if (existing) {
-			if (path.resolve(existing.cwd) !== path.resolve(cwd)) throw new Error(`ACP session ${id} is already attached for ${existing.cwd}.`);
+			if (path.resolve(existing.cwd) !== path.resolve(cwd))
+				throw new Error(`ACP session ${id} is already attached for ${existing.cwd}.`);
 			return;
 		}
 		const adapter = await AcpSdkAdapter.connect({
@@ -360,6 +460,7 @@ export class AcpAgent implements Agent {
 		});
 		const unsubscribe = adapter.onFrame(frame => void this.#handleSdkFrame(id, frame));
 		this.#sessions.set(id, { cwd, adapter, unsubscribe });
+		this.#knownSessionCwds.set(id, cwd);
 	}
 
 	async #brokerAdapter(): Promise<AcpSdkAdapter> {
@@ -382,17 +483,22 @@ export class AcpAgent implements Agent {
 	}
 
 	async #resolveSavedSession(id: string, cwd: string): Promise<string> {
-		const response = object(await (await this.#brokerAdapter()).global("session.list", { resolveSessionId: id, cwd }));
+		const response = object(
+			await (await this.#brokerAdapter()).global("session.list", { resolveSessionId: id, cwd }),
+		);
 		const result = object(response?.result) ?? response;
 		const saved = object(result?.savedSession);
-		if (saved?.id !== id || typeof saved.path !== "string") throw new AcpSdkAdapterError("not_found", `Saved ACP session does not exist: ${id}`);
+		if (saved?.id !== id || typeof saved.path !== "string")
+			throw new AcpSdkAdapterError("not_found", `Saved ACP session does not exist: ${id}`);
 		return saved.path;
 	}
 
 	#providers(): AcpProviderRegistration[] {
 		const capabilities = this.#clientCapabilities;
 		return [
-			...(capabilities?.fs?.readTextFile || capabilities?.fs?.writeTextFile ? [{ capability: "fs", definitions: [] }] : []),
+			...(capabilities?.fs?.readTextFile || capabilities?.fs?.writeTextFile
+				? [{ capability: "fs", definitions: [] }]
+				: []),
 			...(capabilities?.terminal ? [{ capability: "terminal", definitions: [] }] : []),
 			...(capabilities?._meta ? [{ capability: "permission", definitions: [] }] : []),
 			{ capability: "ui", definitions: [] },
@@ -411,7 +517,8 @@ export class AcpAgent implements Agent {
 			request: async (method: string, params: JsonObject): Promise<unknown> => {
 				const name = methods[method] ?? method;
 				const target = (this.#connection as unknown as Record<string, unknown>)[name];
-				if (typeof target !== "function") throw new AcpSdkAdapterError("acp_reverse_unavailable", `ACP reverse method is unavailable: ${method}`);
+				if (typeof target !== "function")
+					throw new AcpSdkAdapterError("acp_reverse_unavailable", `ACP reverse method is unavailable: ${method}`);
 				const request = method === "permission.request" ? { ...params, sessionId } : params;
 				return await (target as (input: JsonObject) => Promise<unknown>)(request);
 			},
@@ -427,34 +534,55 @@ export class AcpAgent implements Agent {
 			await this.#connection.sessionUpdate(notification);
 	}
 
-	async #sessionState(id: string): Promise<Pick<NewSessionResponse, "configOptions" | "models" | "modes">> {
-		const adapter = this.#adapter(id);
-		const [models, config] = await Promise.all([adapter.query("models.list/current"), adapter.query("config.list/get")]);
-		const modelItems = pageItems(models);
+	async #sessionState(id: string): Promise<Pick<NewSessionResponse, "configOptions" | "modes">> {
+		const config = await this.#adapter(id).query("config.list/get");
 		const configItems = pageItems(config);
-		const availableModels = modelItems
-			.map(item => object(item))
-			.filter((item): item is JsonObject => Boolean(item && typeof item.id === "string"))
-			.map(item => ({ modelId: String(item.id), name: typeof item.name === "string" ? item.name : String(item.id) }));
 		const configOptions = configItems
 			.map(item => object(item))
-			.filter((item): item is JsonObject => Boolean(item && typeof item.id === "string" && typeof item.value === "string"))
-			.map(item => ({ id: String(item.id), name: typeof item.name === "string" ? item.name : String(item.id), type: "select" as const, currentValue: String(item.value), options: [] }));
-		const currentModelId = availableModels[0]?.modelId ?? "unknown";
+			.filter((item): item is JsonObject =>
+				Boolean(item && typeof item.id === "string" && typeof item.value === "string"),
+			)
+			.map(item => ({
+				id: String(item.id),
+				name: typeof item.name === "string" ? item.name : String(item.id),
+				type: "select" as const,
+				currentValue: String(item.value),
+				options: [],
+			}));
 		return {
 			configOptions: [
-				{ id: MODE_CONFIG_ID, name: "Mode", type: "select", currentValue: ACP_DEFAULT_MODE_ID, options: [{ value: ACP_DEFAULT_MODE_ID, name: "Default" }, { value: ACP_PLAN_MODE_ID, name: "Plan" }] },
+				{
+					id: MODE_CONFIG_ID,
+					name: "Mode",
+					type: "select",
+					currentValue: ACP_DEFAULT_MODE_ID,
+					options: [
+						{ value: ACP_DEFAULT_MODE_ID, name: "Default" },
+						{ value: ACP_PLAN_MODE_ID, name: "Plan" },
+					],
+				},
 				...configOptions,
 			],
-			models: { availableModels, currentModelId },
-			modes: { availableModes: [{ id: ACP_DEFAULT_MODE_ID, name: "Default" }, { id: ACP_PLAN_MODE_ID, name: "Plan" }], currentModeId: ACP_DEFAULT_MODE_ID },
+			modes: {
+				availableModes: [
+					{ id: ACP_DEFAULT_MODE_ID, name: "Default" },
+					{ id: ACP_PLAN_MODE_ID, name: "Plan" },
+				],
+				currentModeId: ACP_DEFAULT_MODE_ID,
+			},
 		};
 	}
 
 	#scheduleBootstrap(id: string): void {
 		setTimeout(() => {
 			if (!this.#sessions.has(id) || this.#connection.signal.aborted) return;
-			void this.#connection.sessionUpdate({ sessionId: id, update: { sessionUpdate: "session_info_update", _meta: { gjcPhase: "idle", running: false, gjcRunning: false } } });
+			void this.#connection.sessionUpdate({
+				sessionId: id,
+				update: {
+					sessionUpdate: "session_info_update",
+					_meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+				},
+			});
 		}, ACP_BOOTSTRAP_RACE_GUARD_MS);
 	}
 

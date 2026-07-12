@@ -51,6 +51,30 @@ function stateRoot(input: Input): string | undefined {
 	const cwd = text(input.cwd) ?? text(input.path) ?? text(target?.path);
 	return cwd ? path.join(cwd, ".gjc", "state") : undefined;
 }
+function lifecycleScope(input: Input): string | undefined {
+	const target = input.target as Record<string, unknown> | undefined;
+	const cwd = text(input.cwd) ?? text(input.path) ?? text(target?.path);
+	return cwd ? path.resolve(cwd) : undefined;
+}
+
+async function reconcileReadyScope(broker: Broker, id: string, scope: string | undefined): Promise<void> {
+	if (!scope) return;
+	await broker.index.refresh();
+	const record = broker.index.listSessions().sessions.find(session => session.sessionId === id);
+	if (!record || record.locator.repo === scope) return;
+	// The host records its physical cwd, which Darwin canonicalizes from /var to
+	// /private/var. Preserve the lifecycle caller's lexical cwd for ACP's scoped
+	// listing while retaining the host-provided state root for endpoint binding.
+	await broker.index.append({
+		type: "record_reconciled",
+		sessionId: id,
+		locator: { ...record.locator, repo: scope },
+		endpointGeneration: record.endpointGeneration,
+		pid: record.pid,
+		endpointMtimeMs: record.endpointMtimeMs,
+	});
+}
+
 function command(): { file: string; args: string[] } {
 	const configured = process.env.GJC_SDK_SESSION_COMMAND;
 	if (configured) {
@@ -286,6 +310,7 @@ export async function executeLifecycle(broker: Broker, operation: string, input:
 				? fail("readiness_timeout", `Session ${launch.id} did not register an endpoint before the readiness timeout.`)
 				: fail("terminal_uncertain", `Session ${launch.id} did not become ready and its spawned process could not be verified dead.`);
 		}
+		await reconcileReadyScope(broker, launch.id, lifecycleScope(input));
 		return { ok: true, result: { sessionId: launch.id, endpoint } };
 	}
 

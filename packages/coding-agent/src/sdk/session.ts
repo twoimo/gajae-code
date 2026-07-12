@@ -96,6 +96,7 @@ import { shouldHostSdk } from "../sdk/host";
 import {
 	getNotificationConfig,
 	type NotificationConfig,
+	SPAWN_PROVENANCE_ENV,
 	shouldRegisterNotificationsExtension,
 } from "../sdk/bus/config";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
@@ -244,6 +245,28 @@ function buildMcpNotificationBatchMessage(entries: McpNotificationEntry[]): Agen
 	};
 }
 
+function sanitizeRosterLabel(value: string): string {
+	const normalized = value
+		.replace(/[\p{Cc}]/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
+}
+
+function humanizeAgentTaskId(id: string): string {
+	return id
+		.replace(/([a-z\d])([A-Z])/g, "$1 $2")
+		.replace(/[-_]+/g, " ")
+		.trim();
+}
+
+function resolveAgentRosterLabel(label: string | undefined, agentId: string, displayName: string): string {
+	return (
+		sanitizeRosterLabel(label ?? "") ||
+		sanitizeRosterLabel(humanizeAgentTaskId(agentId)) ||
+		sanitizeRosterLabel(displayName)
+	);
+}
 // Types
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: getProjectDir() */
@@ -336,6 +359,8 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Compact task label for hidden IRC roster reminders. */
+	agentRosterLabel?: string;
 	/** Optional restricted bash command prefixes for read-only role agents. */
 	bashAllowedPrefixes?: string[];
 	/** Restriction policy paired with bashAllowedPrefixes. */
@@ -1273,7 +1298,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
 	const isSubSession = taskDepth > 0 || Boolean(options.parentTaskPrefix) || Boolean(options.currentAgentType);
 	const resolvedAgentDisplayName = options.agentDisplayName ?? (isSubSession ? "sub" : "main");
+	const resolvedAgentRosterLabel = resolveAgentRosterLabel(
+		options.agentRosterLabel,
+		resolvedAgentId,
+		resolvedAgentDisplayName,
+	);
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
+	let disposeLocalProtocolOverride: (() => void) | undefined;
+	let localProtocolOverrideReleased = false;
+	const releaseLocalProtocolOverride = (): void => {
+		if (localProtocolOverrideReleased) return;
+		localProtocolOverrideReleased = true;
+		disposeLocalProtocolOverride?.();
+	};
 
 	try {
 		const getActiveModelString = (): string | undefined => {
@@ -1403,7 +1440,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
 		if (options.localProtocolOptions) {
-			LocalProtocolHandler.setOverride(options.localProtocolOptions);
+			disposeLocalProtocolOverride = LocalProtocolHandler.installOverride(options.localProtocolOptions);
 		}
 		toolSession.getArtifactsDir = getArtifactsDir;
 		toolSession.agentOutputManager = new AgentOutputManager(
@@ -1582,6 +1619,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			notificationCfg = undefined;
 		}
 		const isTopLevelSdkSession = taskDepth === 0 && !options.parentTaskPrefix && !options.currentAgentType;
+		// Consume the GJC spawn-provenance marker: read it once, then remove it
+		// from this process's env so it is never re-inherited by children this
+		// session later spawns (marker is per-spawn, not dynastic — each GJC child
+		// spawn site sets it explicitly). Suppression under `sessionScope=primary`
+		// keeps auto-spawned children (team workers, harness owners) silent while
+		// explicit SDK session opt-in (GJC_NOTIFICATIONS=1) still wins.
+		const spawnProvenance = process.env[SPAWN_PROVENANCE_ENV];
+		const spawnedByGjc = typeof spawnProvenance === "string" && spawnProvenance.trim().length > 0;
+		delete process.env[SPAWN_PROVENANCE_ENV];
 		if (
 			shouldRegisterNotificationsExtension({
 				env: process.env,
@@ -1589,10 +1635,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				taskDepth,
 				parentTaskPrefix: options.parentTaskPrefix,
 				currentAgentType: options.currentAgentType,
+				spawnedByGjc,
 			}) ||
 			shouldHostSdk(notificationCfg, isTopLevelSdkSession)
 		) {
-			inlineExtensions.push(api => createNotificationsExtension(api, { settings }));
+			inlineExtensions.push(api => createNotificationsExtension(api, { settings, spawnedByGjc }));
 		}
 
 		// Extension/module discovery is quarantined; retain only the private
@@ -2042,6 +2089,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agentRegistry.register({
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
+			rosterLabel: resolvedAgentRosterLabel,
 			kind: isSubSession ? "sub" : "main",
 			parentId: options.parentTaskPrefix,
 			session: null,
@@ -2375,6 +2423,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				} finally {
 					agentRegistry.unregister(resolvedAgentId);
 					unsubscribeCredentialDisabled?.();
+					releaseLocalProtocolOverride();
 				}
 			};
 		}
@@ -2539,6 +2588,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			logger.warn("Failed to clean up createAgentSession resources after startup error", {
 				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
 			});
+		} finally {
+			releaseLocalProtocolOverride();
 		}
 		throw error;
 	}

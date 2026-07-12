@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import path from "node:path";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
-import { zSessionNotification } from "@agentclientprotocol/sdk/dist/schema/zod.gen.js";
-import type { Model } from "@gajae-code/ai";
+import acpProtocolSchema from "@agentclientprotocol/sdk/schema/schema.json" with { type: "json" };
+import { fromJSONSchema } from "zod/v4";
+import type * as z from "zod/v4/core";
 import {
 	buildToolCallStartUpdate,
 	mapAgentSessionEventToAcpSessionUpdates,
@@ -12,6 +13,12 @@ import {
 import { toAgentWireEventPayload } from "../src/modes/shared/agent-wire/event-envelope";
 import type { AgentSessionEvent } from "../src/session/agent-session";
 import { expectAcpStructure, expectAcpStructureRejects } from "./helpers/acp-schema";
+
+const zSessionNotification = fromJSONSchema({
+	$schema: acpProtocolSchema.$schema,
+	$ref: "#/$defs/SessionNotification",
+	$defs: acpProtocolSchema.$defs,
+} as unknown as z.JSONSchema.JSONSchema);
 
 function makeAssistantMessage(text: string) {
 	return {
@@ -43,20 +50,6 @@ function expectAcpNotifications(updates: SessionNotification[]): void {
 		expectAcpStructure(zSessionNotification, update);
 	}
 }
-
-const TEST_MODEL: Model = {
-	id: "claude-sonnet-4-20250514",
-	name: "Claude Sonnet",
-	api: "anthropic-messages",
-	provider: "anthropic",
-	baseUrl: "https://example.invalid",
-	reasoning: true,
-	input: ["text", "image"],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 200_000,
-	maxTokens: 8_192,
-};
-
 
 describe("ACP event mapper", () => {
 	it("attaches a stable messageId to live assistant chunks", () => {

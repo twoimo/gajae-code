@@ -53,28 +53,49 @@ pub enum RejectReason {
 	Unauthorized,
 }
 
+/// A deterministic remote ask control. Controls are capability-gated by
+/// [`capabilities::ASK_CONTROLS_V1`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskControl {
+	pub id: String,
+	pub kind: String,
+	pub label: String,
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReplyControl {
+	pub control_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StructuredReply {
+	/// Selected options, each an index or a label.
+	pub selected: Vec<AnswerSelector>,
+	/// Optional free-text "other" value.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub custom: Option<String>,
+}
+
 /// A client-supplied answer to a pending `ask` action.
 ///
-/// Accepts a zero-based option index, an option label / free-text string, or a
-/// structured multi-select payload. Deserialization is order-sensitive: a JSON
-/// number becomes [`ReplyAnswer::Index`], a JSON string becomes
-/// [`ReplyAnswer::Text`], and a JSON object becomes
-/// [`ReplyAnswer::Structured`].
+/// Accepts a zero-based option index, an option label / free-text string, a
+/// deterministic control, or a structured multi-select payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ReplyAnswer {
 	/// Zero-based index into the action's `options`.
 	Index(u32),
+	/// A typed deterministic control reply, distinct from labels and text.
+	Control(ReplyControl),
+
 	/// An option label or free-text answer.
 	Text(String),
 	/// An explicit multi-select / free-text payload.
-	Structured {
-		/// Selected options, each an index or a label.
-		selected: Vec<AnswerSelector>,
-		/// Optional free-text "other" value.
-		#[serde(default, skip_serializing_if = "Option::is_none")]
-		custom: Option<String>,
-	},
+	Structured(StructuredReply),
 }
 
 /// One selected option within a [`ReplyAnswer::Structured`] payload.
@@ -104,6 +125,9 @@ pub struct ActionNeeded {
 	/// The selectable options for an ask (present for `ask` when offered).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub options: Option<Vec<String>>,
+	/// Typed deterministic controls, advertised only with `ask_controls_v1`.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub controls: Vec<AskControl>,
 	/// A short summary (e.g. truncated last assistant message for `idle`).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub summary: Option<String>,
@@ -131,6 +155,117 @@ pub struct ReplyRejected {
 	pub id: String,
 	/// Why the reply was rejected.
 	pub reason: RejectReason,
+}
+
+/// A terminal acknowledgement outcome. Native only returns `unknown` when the
+/// daemon did not supply correlated terminal delivery evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+	tag = "status",
+	rename_all = "snake_case",
+	rename_all_fields = "camelCase",
+	deny_unknown_fields
+)]
+pub enum AskSelectedAckOutcome {
+	Delivered { message_id: i64 },
+	Failed { reason: AskSelectedAckFailedReason },
+	Unknown { reason: AskSelectedAckUnknownReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskSelectedAckFailedReason {
+	Unsupported,
+	NoParticipant,
+	AmbiguousParticipant,
+	RouteMissing,
+	Expired,
+	Cancelled,
+	TelegramRejected,
+	SessionClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskSelectedAckUnknownReason {
+	TransportAmbiguous,
+	OriginDisconnected,
+	HostTimeout,
+	Shutdown,
+}
+
+/// A live acknowledgement is restricted to the connection that claimed the
+/// source reply. Recovery is topic-only and has no pending-action authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+	tag = "mode",
+	rename_all = "snake_case",
+	rename_all_fields = "camelCase",
+	deny_unknown_fields
+)]
+pub enum AskSelectedAckRequest {
+	Live {
+		request_id: String,
+		commit_key: String,
+		action_id: String,
+		deadline_at: i64,
+	},
+	Recovery {
+		request_id: String,
+		commit_key: String,
+		session_id: String,
+		action_id: String,
+		deadline_at: i64,
+	},
+}
+
+impl AskSelectedAckRequest {
+	#[must_use]
+	pub fn request_id(&self) -> &str {
+		match self {
+			Self::Live { request_id, .. } | Self::Recovery { request_id, .. } => request_id,
+		}
+	}
+
+	#[must_use]
+	pub fn commit_key(&self) -> &str {
+		match self {
+			Self::Live { commit_key, .. } | Self::Recovery { commit_key, .. } => commit_key,
+		}
+	}
+
+	#[must_use]
+	pub const fn deadline_at(&self) -> i64 {
+		match self {
+			Self::Live { deadline_at, .. } | Self::Recovery { deadline_at, .. } => *deadline_at,
+		}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskSelectedAckResult {
+	pub request_id: String,
+	pub commit_key: String,
+	pub outcome: AskSelectedAckOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskSelectedAckCancel {
+	pub request_id: String,
+	pub commit_key: String,
+	pub reason: AskSelectedAckCancelReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskSelectedAckCancelReason {
+	HostTimeout,
+	ToolAbort,
+	ActionResolved,
+	SessionShutdown,
+	EndpointReplaced,
 }
 
 /// An inbound reply from a client.
@@ -186,6 +321,12 @@ pub enum ServerMessage {
 	ControlCommandResult(ControlCommandResult),
 	/// Application-level liveness response to a client ping.
 	Pong(Pong),
+	/// A native acknowledgement request, unicast to an authorized participant.
+	AskSelectedAckRequest(AskSelectedAckRequest),
+	/// A native cancellation for a previously dispatched acknowledgement
+	/// request.
+	AskSelectedAckCancel(AskSelectedAckCancel),
+
 	/// Forward-compat: an unrecognized frame type. Tolerated, never emitted.
 	#[serde(other)]
 	Unknown,
@@ -207,6 +348,9 @@ pub enum ClientMessage {
 	ControlCommand(ControlCommand),
 	/// Application-level liveness ping from a client.
 	Ping(Ping),
+	/// Correlated terminal outcome for a native acknowledgement request.
+	AskSelectedAckResult(AskSelectedAckResult),
+
 	/// Forward-compat: an unrecognized frame type. Tolerated, ignored.
 	#[serde(other)]
 	Unknown,
@@ -566,7 +710,7 @@ pub struct SessionReady {
 }
 
 /// Current protocol version emitted in [`ServerHello`].
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Capability tokens for protocol negotiation.
 pub mod capabilities {
@@ -590,6 +734,10 @@ pub mod capabilities {
 	pub const SESSION_LIFECYCLE: &str = "session_lifecycle";
 	/// Replayable readiness signal for late-connecting clients.
 	pub const SESSION_READY: &str = "session_ready";
+	/// Typed remote ask controls and typed control replies.
+	pub const ASK_CONTROLS_V1: &str = "ask_controls_v1";
+	/// Correlated, origin-bound `Selected!` acknowledgement requests.
+	pub const ASK_SELECTED_ACK_V1: &str = "ask_selected_ack_v1";
 }
 
 #[cfg(test)]
@@ -604,6 +752,7 @@ mod tests {
 			session_id: "sess-1".into(),
 			question: Some("Proceed?".into()),
 			options: Some(vec!["Yes".into(), "No".into()]),
+			controls: vec![],
 			summary: None,
 		});
 		let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
@@ -624,6 +773,7 @@ mod tests {
 			session_id: "sess-1".into(),
 			question: None,
 			options: None,
+			controls: vec![],
 			summary: Some("done refactoring".into()),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
@@ -665,7 +815,7 @@ mod tests {
 			panic!("expected reply")
 		};
 		match reply.answer {
-			ReplyAnswer::Structured { selected, custom } => {
+			ReplyAnswer::Structured(StructuredReply { selected, custom }) => {
 				assert_eq!(selected.len(), 2);
 				assert_eq!(selected[0], AnswerSelector::Index(0));
 				assert_eq!(selected[1], AnswerSelector::Label("Maybe".into()));
@@ -802,7 +952,7 @@ mod tests {
 		assert_eq!(hello, back);
 		let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
 		assert_eq!(v["type"], "hello");
-		assert_eq!(v["protocolVersion"], 2);
+		assert_eq!(v["protocolVersion"], PROTOCOL_VERSION);
 		assert_eq!(v["capabilities"][0], "threaded");
 	}
 
@@ -829,7 +979,7 @@ mod tests {
 		});
 		let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "hello");
-		assert_eq!(v["protocolVersion"], 2);
+		assert_eq!(v["protocolVersion"], PROTOCOL_VERSION);
 		assert!(
 			v["capabilities"]
 				.as_array()
@@ -837,6 +987,64 @@ mod tests {
 				.iter()
 				.any(|cap| cap == capabilities::CLIENT_PING_PONG)
 		);
+	}
+
+	#[test]
+	fn ask_selected_ack_frames_use_camel_case_fields() {
+		let request = ServerMessage::AskSelectedAckRequest(AskSelectedAckRequest::Live {
+			request_id: "r1".into(),
+			commit_key: "c1".into(),
+			action_id: "a1".into(),
+			deadline_at: 123,
+		});
+		assert_eq!(
+			serde_json::to_string(&request).unwrap(),
+			r#"{"type":"ask_selected_ack_request","mode":"live","requestId":"r1","commitKey":"c1","actionId":"a1","deadlineAt":123}"#,
+		);
+		let result: ClientMessage = serde_json::from_str(
+			r#"{"type":"ask_selected_ack_result","requestId":"r1","commitKey":"c1","outcome":{"status":"delivered","messageId":42}}"#,
+		)
+		.unwrap();
+		assert!(matches!(
+			result,
+			ClientMessage::AskSelectedAckResult(AskSelectedAckResult {
+				request_id,
+				commit_key,
+				outcome: AskSelectedAckOutcome::Delivered { message_id: 42 },
+			}) if request_id == "r1" && commit_key == "c1"
+		));
+	}
+
+	#[test]
+	fn ask_selected_ack_frames_reject_malformed_boundaries() {
+		for raw in [
+			r#"{"type":"ask_selected_ack_request","mode":"live","requestId":"r","commitKey":"c","actionId":"a","deadlineAt":1,"extra":true}"#,
+			r#"{"type":"ask_selected_ack_request","mode":"live","requestId":"r","commitKey":"c","deadlineAt":1}"#,
+			r#"{"type":"ask_selected_ack_request","mode":"other","requestId":"r","commitKey":"c","deadlineAt":1}"#,
+			r#"{"type":"ask_selected_ack_cancel","requestId":"r","commitKey":"c","reason":"bogus"}"#,
+		] {
+			assert!(serde_json::from_str::<ServerMessage>(raw).is_err(), "accepted {raw}");
+		}
+		for raw in [
+			r#"{"type":"ask_selected_ack_result","requestId":"r","commitKey":"c","outcome":{"status":"delivered"}}"#,
+			r#"{"type":"ask_selected_ack_result","requestId":"r","commitKey":"c","outcome":{"status":"failed","reason":"bogus"}}"#,
+			r#"{"type":"ask_selected_ack_result","requestId":"r","commitKey":"c","outcome":{"status":"unknown","reason":"host_timeout","extra":true}}"#,
+		] {
+			assert!(serde_json::from_str::<ClientMessage>(raw).is_err(), "accepted {raw}");
+		}
+		let recovery: ServerMessage = serde_json::from_str(
+			r#"{"type":"ask_selected_ack_request","mode":"recovery","requestId":"r","commitKey":"c","sessionId":"s","actionId":"a","deadlineAt":1}"#,
+		)
+		.unwrap();
+		assert!(matches!(
+			recovery,
+			ServerMessage::AskSelectedAckRequest(AskSelectedAckRequest::Recovery { .. })
+		));
+		let cancel: ServerMessage = serde_json::from_str(
+			r#"{"type":"ask_selected_ack_cancel","requestId":"r","commitKey":"c","reason":"session_shutdown"}"#,
+		)
+		.unwrap();
+		assert!(matches!(cancel, ServerMessage::AskSelectedAckCancel(_)));
 	}
 
 	#[test]
@@ -945,16 +1153,9 @@ mod tests {
 	#[test]
 	fn reply_answer_type_boundaries_are_enforced() {
 		let object = r#"{"type":"reply","id":"a1","answer":{"selected":[0,"Maybe"],"custom":"x","future":true},"token":"t"}"#;
-		let ClientMessage::Reply(reply) = serde_json::from_str(object).unwrap() else {
-			panic!("expected reply")
-		};
-		assert_eq!(
-			reply.answer,
-			ReplyAnswer::Structured {
-				selected: vec![AnswerSelector::Index(0), AnswerSelector::Label("Maybe".into())],
-				custom: Some("x".into()),
-			}
-		);
+		assert!(serde_json::from_str::<ClientMessage>(object).is_err());
+		let mixed = r#"{"type":"reply","id":"a1","answer":{"controlId":"navigation_forward","selected":[0]},"token":"t"}"#;
+		assert!(serde_json::from_str::<ClientMessage>(mixed).is_err());
 
 		let max = r#"{"type":"reply","id":"a1","answer":4294967295,"token":"t"}"#;
 		let ClientMessage::Reply(reply) = serde_json::from_str(max).unwrap() else {

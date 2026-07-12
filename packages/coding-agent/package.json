@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@gajae-code/coding-agent",
-	"version": "0.9.6",
+	"version": "0.10.0",
 	"description": "Gajae Code CLI with read, bash, edit, write tools and session management",
 	"homepage": "https://gajae-code.com",
 	"author": "Yeachan-Heo and Gajae Code Contributors",
@@ -30,7 +30,7 @@
 	"scripts": {
 		"build": "bun scripts/build-binary.ts",
 		"check": "biome check . && bun run verify:sdk-canonicalization && bun run check:types",
-		"check:types": "tsgo -p tsconfig.json --noEmit",
+		"check:types": "tsc -p tsconfig.json --noEmit",
 		"lint": "biome lint .",
 		"test": "bun test",
 		"bench:context": "bun run bench/context-optimization.bench.ts",

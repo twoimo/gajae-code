@@ -1,29 +1,24 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-
 import {
 	COORDINATOR_MCP_PROTOCOL_VERSION,
 	COORDINATOR_MCP_SERVER_NAME,
 	COORDINATOR_MCP_TOOL_NAMES,
-	createCoordinatorMcpServer,
-	handleCoordinatorMcpRequest,
-} from "../src/coordinator-mcp/server";
-
-const tempDirs: string[] = [];
-
-afterEach(async () => {
-	await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
-});
+} from "../src/coordinator/contract";
+import { createCoordinatorMcpServer, handleCoordinatorMcpRequest } from "../src/coordinator-mcp/server";
 
 async function withTempRoot(run: (root: string) => Promise<void>): Promise<void> {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-coordinator-mcp-cli-"));
-	tempDirs.push(root);
-	await run(root);
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-coordinator-mcp-"));
+	try {
+		await run(root);
+	} finally {
+		await fs.rm(root, { recursive: true, force: true });
+	}
 }
 
-describe("gjc coordinator MCP compatibility handler", () => {
+describe("canonical SDK coordinator compatibility handler", () => {
 	it("serves initialization and the canonical tool inventory", async () => {
 		await withTempRoot(async root => {
 			const env = { GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root };
@@ -42,7 +37,9 @@ describe("gjc coordinator MCP compatibility handler", () => {
 			});
 			const listed = await handleCoordinatorMcpRequest({ jsonrpc: "2.0", id: 2, method: "tools/list" }, { env });
 			expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([...COORDINATOR_MCP_TOOL_NAMES]);
-			const promptTool = listed.result.tools.find((tool: { name: string }) => tool.name === "gjc_coordinator_send_prompt");
+			const promptTool = listed.result.tools.find(
+				(tool: { name: string }) => tool.name === "gjc_coordinator_send_prompt",
+			);
 			expect(promptTool.inputSchema.required).toEqual(expect.arrayContaining(["idempotency_key", "allow_mutation"]));
 		});
 	});
@@ -57,10 +54,9 @@ describe("gjc coordinator MCP compatibility handler", () => {
 					GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
 				},
 			});
-			expect(await server.callTool("gjc_coordinator_start_session", { cwd: root, idempotency_key: "start-1" })).toEqual({
-				ok: false,
-				reason: "coordinator_mutation_call_not_allowed:sessions",
-			});
+			expect(
+				await server.callTool("gjc_coordinator_start_session", { cwd: root, idempotency_key: "start-1" }),
+			).toEqual({ ok: false, reason: "coordinator_mutation_call_not_allowed:sessions" });
 			expect(await server.callTool("gjc_coordinator_read_artifact", { path: artifact })).toMatchObject({
 				ok: true,
 				text: "coordinator artifact",

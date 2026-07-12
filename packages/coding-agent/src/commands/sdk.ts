@@ -39,6 +39,7 @@ async function runSessionHost(): Promise<void> {
 	});
 	if (session.sessionManager.getSessionId() !== request.sessionId)
 		throw new Error(`Lifecycle session id mismatch: expected ${request.sessionId}, got ${session.sessionManager.getSessionId()}.`);
+	await session.sessionManager.ensureOnDisk();
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);
 	await new Promise<void>(() => {});

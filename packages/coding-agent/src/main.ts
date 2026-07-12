@@ -34,7 +34,11 @@ import { BUNDLED_GROK_BUILD_EXTENSION_ID, getBundledGrokBuildExtensionFactory } 
 import { initializeWithSettings } from "./discovery";
 import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
+import { persistCoordinatorRuntimeInputReady } from "./gjc-runtime/session-state-sidecar";
+import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
+import type { SessionSelectionResult } from "./modes/components/session-selector";
 import type { InteractiveMode } from "./modes/interactive-mode";
+import type { PrintModeOptions } from "./modes/print-mode";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
 import { applyCliRuntimeApiKeyOverride } from "./runtime-api-key";
@@ -48,7 +52,13 @@ import {
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
-import { resolveResumableSession, type SessionInfo, SessionManager } from "./session/session-manager";
+import {
+	type ResumeSessionIdentity,
+	resolveResumableSession,
+	type SessionInfo,
+	SessionManager,
+	type StrictSessionOpenResult,
+} from "./session/session-manager";
 import { runStartupCredentialAutoImportIfNeeded } from "./setup/credential-auto-import";
 import { formatModelOnboardingGuidance } from "./setup/model-onboarding-guidance";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
@@ -59,9 +69,6 @@ import { getDisplayChangelogEntries, getInstalledVersionChangelogEntry, getNewEn
 import type { EventBus } from "./utils/event-bus";
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
-	if (!settings.get("startup.checkUpdate")) {
-		return;
-	}
 	try {
 		const response = await fetch("https://registry.npmjs.org/@gajae-code/coding-agent/latest");
 		if (!response.ok) return undefined;
@@ -77,6 +84,59 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 	} catch {
 		return undefined;
 	}
+}
+
+export type StartupUpdateRoute = "interactive" | "print" | "text" | "json" | "acp";
+
+export function classifyStartupUpdateRoute(
+	parsed: Pick<Args, "print" | "mode">,
+	autoPrint: boolean,
+): StartupUpdateRoute {
+	if (!parsed.print && !autoPrint && parsed.mode === undefined) return "interactive";
+	if (parsed.print) return "print";
+	return parsed.mode === "acp" ? "acp" : "text";
+}
+
+/** Coordinates the non-blocking update check around the interactive UI lifecycle. */
+export class StartupUpdateOrchestrator {
+	#versionCheckPromise: Promise<string | undefined> | undefined;
+	readonly #route: StartupUpdateRoute;
+	readonly #enabled: () => boolean;
+	readonly #check: () => Promise<string | undefined>;
+
+	constructor(route: StartupUpdateRoute, enabled: () => boolean, check: () => Promise<string | undefined>) {
+		this.#route = route;
+		this.#enabled = enabled;
+		this.#check = check;
+	}
+
+	startBeforeInteractiveInitialization(): void {
+		if (this.#route !== "interactive" || !this.#enabled() || this.#versionCheckPromise) return;
+		try {
+			this.#versionCheckPromise = this.#check().catch(() => undefined);
+		} catch {
+			this.#versionCheckPromise = Promise.resolve(undefined);
+		}
+	}
+
+	attachAfterInteractiveInitialization(notify: (version: string) => void): void {
+		this.#versionCheckPromise?.then(version => {
+			if (version && this.#enabled()) notify(version);
+		}).catch(() => {});
+	}
+}
+
+export interface StartupUpdateInteractiveMode {
+	init: () => Promise<void>;
+	showNewVersionNotification: (version: string) => void;
+}
+
+export async function initializeInteractiveModeWithStartupUpdate(
+	mode: StartupUpdateInteractiveMode,
+	startupUpdate: StartupUpdateOrchestrator,
+): Promise<void> {
+	await mode.init();
+	startupUpdate.attachAfterInteractiveInitialization(version => mode.showNewVersionNotification(version));
 }
 
 const ACP_DEFAULTED_SETTING_PATHS: SettingPath[] = [
@@ -313,12 +373,58 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 	};
 }
 
-async function runInteractiveMode(
+interface InteractiveModeFactoryOptions {
+	session: AgentSession;
+	version: string;
+	changelogMarkdown: string | undefined;
+	setExtensionUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	lspServers: LspStartupServerInfo[] | undefined;
+	mcpManager: MCPManager | undefined;
+	eventBus?: EventBus;
+}
+
+type CreateInteractiveMode = (options: InteractiveModeFactoryOptions) => InteractiveMode;
+
+type ResumePickerTerminalCheck = () => boolean;
+type ListForResumePickerReadOnly = (cwd: string, sessionDir?: string) => Promise<SessionInfo[]>;
+type SelectResumeSession = (sessions: SessionInfo[]) => Promise<SessionSelectionResult>;
+type OpenExistingSessionStrict = (
+	identity: ResumeSessionIdentity,
+	sessionDir?: string,
+) => Promise<StrictSessionOpenResult>;
+
+export const BARE_RESUME_CONFLICT_ERROR =
+	"--resume without a session cannot be combined with --continue, --fork, or --no-session.";
+export const BARE_RESUME_INTERACTIVE_ERROR = "--resume requires an interactive terminal; use --resume <id>.";
+export const BARE_RESUME_OPEN_ERROR = "Could not open the selected session. Use --resume <id>.";
+
+function isBareResume(parsed: Args): boolean {
+	return (
+		parsed.resume === true &&
+		parsed.version !== true &&
+		parsed.listModels === undefined &&
+		parsed.export === undefined
+	);
+}
+
+function hasBareResumeConflict(parsed: Args): boolean {
+	return parsed.continue === true || parsed.fork !== undefined || parsed.noSession === true;
+}
+
+function isNormalLocalInteractiveRoute(parsed: Args): boolean {
+	return parsed.mode === undefined && parsed.print !== true;
+}
+
+function hasResumePickerTerminal(): boolean {
+	return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+export async function runInteractiveMode(
 	session: AgentSession,
 	version: string,
 	changelogMarkdown: string | undefined,
 	notifs: (InteractiveModeNotify | null)[],
-	versionCheckPromise: Promise<string | undefined>,
+	startupUpdate: StartupUpdateOrchestrator,
 	initialMessages: string[],
 	setExtensionUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	lspServers: LspStartupServerInfo[] | undefined,
@@ -326,30 +432,36 @@ async function runInteractiveMode(
 	eventBus?: EventBus,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
+	createInteractiveMode?: CreateInteractiveMode,
+	resumeAction?: "continue-tail" | "open-idle",
 ): Promise<void> {
-	const { InteractiveMode } = await import("./modes/interactive-mode");
-	const mode = new InteractiveMode(
-		session,
-		version,
-		changelogMarkdown,
-		setExtensionUIContext,
-		lspServers,
-		mcpManager,
-		eventBus,
-	);
+	const mode = createInteractiveMode
+		? createInteractiveMode({
+				session,
+				version,
+				changelogMarkdown,
+				setExtensionUIContext,
+				lspServers,
+				mcpManager,
+				eventBus,
+			})
+		: new (await import("./modes/interactive-mode")).InteractiveMode(
+				session,
+				version,
+				changelogMarkdown,
+				setExtensionUIContext,
+				lspServers,
+				mcpManager,
+				eventBus,
+			);
 
-	await mode.init();
-
-	versionCheckPromise
-		.then(newVersion => {
-			if (!settings.get("startup.checkUpdate")) {
-				return;
-			}
-			if (newVersion) {
-				mode.showNewVersionNotification(newVersion);
-			}
-		})
-		.catch(() => {});
+	await initializeInteractiveModeWithStartupUpdate(mode, startupUpdate);
+	try {
+		await persistCoordinatorRuntimeInputReady();
+	} catch (error) {
+		logger.warn("Failed to persist coordinator runtime input readiness", { error: String(error) });
+		throw error;
+	}
 
 	mode.renderInitialMessages(undefined, { preserveExistingChat: true });
 
@@ -363,6 +475,16 @@ async function runInteractiveMode(
 			mode.showError(notify.message);
 		} else if (notify.kind === "info") {
 			mode.showStatus(notify.message);
+		}
+	}
+
+	const hasStartupInput = initialMessage !== undefined || initialMessages.length > 0;
+	if (!hasStartupInput && resumeAction === "continue-tail") {
+		try {
+			await session.continuePersistedHistory();
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+			mode.showError(errorMessage);
 		}
 	}
 
@@ -453,6 +575,9 @@ export async function createSessionManager(
 	cwd: string,
 	activeSettings: Settings = settings,
 ): Promise<SessionManager | undefined> {
+	if (parsed.resume === true) {
+		return undefined;
+	}
 	if (parsed.fork) {
 		if (parsed.noSession) {
 			throw new Error("--fork requires session persistence");
@@ -746,13 +871,27 @@ export interface RlmPreset {
 	onSessionCreated?: (session: AgentSession) => void | Promise<void>;
 }
 
-interface RunRootCommandDependencies {
+type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
+
+export interface RunRootCommandDependencies {
 	createAgentSession?: typeof createAgentSession;
 	discoverAuthStorage?: typeof discoverAuthStorage;
 	runAcpMode?: (options?: { agentDir?: string }) => Promise<void>;
 	settings?: Settings;
 	rlmPreset?: RlmPreset;
 	suppressProcessExit?: boolean;
+	startupUpdate?: { check: () => Promise<string | undefined> };
+	initTheme?: typeof initTheme;
+	readPipedInput?: typeof readPipedInput;
+	runStartupCredentialAutoImportIfNeeded?: typeof runStartupCredentialAutoImportIfNeeded;
+	getChangelogForDisplay?: typeof getChangelogForDisplay;
+	createInteractiveMode?: CreateInteractiveMode;
+	runPrintMode?: RunPrintMode;
+	isResumePickerTerminal?: ResumePickerTerminalCheck;
+	listForResumePickerReadOnly?: ListForResumePickerReadOnly;
+	selectResumeSession?: SelectResumeSession;
+	openExistingSessionStrict?: OpenExistingSessionStrict;
+	initializeSettings?: typeof Settings.init;
 }
 
 export async function runRootCommand(
@@ -760,14 +899,73 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = {},
 ): Promise<void> {
-	logger.startTiming();
-
-	// Initialize theme early with defaults (CLI commands need symbols)
-	// Will be re-initialized with user preferences later
-	await logger.time("initTheme:initial", initTheme);
-
 	const parsedArgs = parsed;
-	await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
+	let initialThemeInitialized = false;
+	let autoChdirApplied = false;
+	let bareResumeSessionManager: SessionManager | undefined;
+	let bareResumeAction: "continue-tail" | "open-idle" | undefined;
+
+	if (isBareResume(parsedArgs)) {
+		if (hasBareResumeConflict(parsedArgs)) {
+			process.stderr.write(`${BARE_RESUME_CONFLICT_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+		if (!isNormalLocalInteractiveRoute(parsedArgs) || !(deps.isResumePickerTerminal ?? hasResumePickerTerminal)()) {
+			process.stderr.write(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+
+		logger.startTiming();
+		await logger.time("initTheme:initial", deps.initTheme ?? initTheme);
+		initialThemeInitialized = true;
+
+		await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
+		autoChdirApplied = true;
+		const resumeCwd = getProjectDir();
+		const sessions = await (deps.listForResumePickerReadOnly ?? SessionManager.listForResumePickerReadOnly)(
+			resumeCwd,
+			parsedArgs.sessionDir,
+		);
+		if (sessions.length === 0) {
+			process.stdout.write(`${chalk.dim("No sessions found")}\n`);
+			return;
+		}
+		const selection = await (deps.selectResumeSession ?? selectSession)(sessions);
+		if (selection.kind === "cancelled") {
+			return;
+		}
+		let opened: StrictSessionOpenResult;
+		try {
+			opened = await (deps.openExistingSessionStrict ?? SessionManager.openExistingStrict)(
+				selection.identity,
+				parsedArgs.sessionDir,
+			);
+		} catch {
+			process.stderr.write(`${BARE_RESUME_OPEN_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+		if (opened.kind === "error") {
+			process.stderr.write(`${BARE_RESUME_OPEN_ERROR}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			return;
+		}
+		bareResumeSessionManager = opened.manager;
+		bareResumeAction = selection.action;
+	}
+
+	if (!initialThemeInitialized) {
+		logger.startTiming();
+		// Initialize theme early with defaults (CLI commands need symbols).
+		// It is re-initialized with user preferences later.
+		await logger.time("initTheme:initial", deps.initTheme ?? initTheme);
+	}
+
+	if (!autoChdirApplied) {
+		await logger.time("maybeAutoChdir", maybeAutoChdir, parsedArgs);
+	}
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
 
@@ -812,7 +1010,8 @@ export async function runRootCommand(
 	}
 
 	const cwd = getProjectDir();
-	const settingsInstance = deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd }));
+	const settingsInstance =
+		deps.settings ?? (await logger.time("settings:init", deps.initializeSettings ?? Settings.init, { cwd }));
 	if (parsedArgs.mode === "acp") {
 		applyAcpDefaultSettingOverrides(settingsInstance);
 	}
@@ -824,7 +1023,7 @@ export async function runRootCommand(
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
-		const pipedInput = await readPipedInput();
+		const pipedInput = await (deps.readPipedInput ?? readPipedInput)();
 		if (parsedArgs.fileArgs.length === 0) {
 			return { pipedInput, fileText: undefined, fileImages: undefined };
 		}
@@ -840,7 +1039,13 @@ export async function runRootCommand(
 		stdinContent: pipedInput,
 	});
 	const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
-	const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
+	const startupUpdateRoute = classifyStartupUpdateRoute(parsedArgs, autoPrint);
+	const startupUpdate = new StartupUpdateOrchestrator(
+		startupUpdateRoute,
+		() => settingsInstance.get("startup.checkUpdate"),
+		deps.startupUpdate?.check ?? (() => checkForNewVersion(VERSION)),
+	);
+	const isInteractive = startupUpdateRoute === "interactive";
 	const mode = parsedArgs.mode || "text";
 
 	// Initialize discovery system with settings for provider persistence
@@ -860,7 +1065,7 @@ export async function runRootCommand(
 
 	await logger.time(
 		"initTheme:final",
-		initTheme,
+		deps.initTheme ?? initTheme,
 		isInteractive,
 		settingsInstance.get("symbolPreset"),
 		settingsInstance.get("colorBlindMode"),
@@ -869,11 +1074,15 @@ export async function runRootCommand(
 	);
 
 	const credentialAutoImportNotice = isInteractive
-		? await logger.time("credentialAutoImport", runStartupCredentialAutoImportIfNeeded, {
-				authStorage,
-				modelRegistry,
-				agentDir: settingsInstance.getAgentDir(),
-			})
+		? await logger.time(
+				"credentialAutoImport",
+				deps.runStartupCredentialAutoImportIfNeeded ?? runStartupCredentialAutoImportIfNeeded,
+				{
+					authStorage,
+					modelRegistry,
+					agentDir: settingsInstance.getAgentDir(),
+				},
+			)
 		: undefined;
 
 	let scopedModels: ScopedModel[] = [];
@@ -891,29 +1100,11 @@ export async function runRootCommand(
 		);
 	}
 
-	// Create session manager based on CLI flags
-	let sessionManager = await logger.time(
-		"createSessionManager",
-		createSessionManager,
-		parsedArgs,
-		cwd,
-		settingsInstance,
-	);
-
-	// Handle --resume (no value): show session picker
-	if (parsedArgs.resume === true && !parsedArgs.fork) {
-		const sessions = await logger.time("SessionManager.list", SessionManager.list, cwd, parsedArgs.sessionDir);
-		if (sessions.length === 0) {
-			process.stdout.write(`${chalk.dim("No sessions found")}\n`);
-			return;
-		}
-		const selectedPath = await logger.time("selectSession", selectSession, sessions);
-		if (!selectedPath) {
-			process.stdout.write(`${chalk.dim("No session selected")}\n`);
-			return;
-		}
-		sessionManager = await SessionManager.open(selectedPath);
-	}
+	// Create session manager based on CLI flags. A bare resume was strictly opened
+	// before startup discovery, so it never reaches create-or-open behavior here.
+	const sessionManager =
+		bareResumeSessionManager ??
+		(await logger.time("createSessionManager", createSessionManager, parsedArgs, cwd, settingsInstance));
 
 	// Restore the resumed session's working directory so the HUD branch, the
 	// project path, and the agent's tools all match where the session was
@@ -1086,8 +1277,12 @@ export async function runRootCommand(
 		}
 
 		if (isInteractive) {
-			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
-			const changelogMarkdown = await logger.time("main:getChangelogForDisplay", getChangelogForDisplay, parsedArgs);
+			startupUpdate.startBeforeInteractiveInitialization();
+			const changelogMarkdown = await logger.time(
+				"main:getChangelogForDisplay",
+				deps.getChangelogForDisplay ?? getChangelogForDisplay,
+				parsedArgs,
+			);
 
 			const scopedModelsForDisplay = sessionOptions.scopedModels ?? scopedModels;
 			if (scopedModelsForDisplay.length > 0) {
@@ -1113,7 +1308,7 @@ export async function runRootCommand(
 				VERSION,
 				changelogMarkdown,
 				notifs,
-				versionCheckPromise,
+				startupUpdate,
 				parsedArgs.messages,
 				setToolUIContext,
 				lspServers,
@@ -1121,10 +1316,12 @@ export async function runRootCommand(
 				eventBus,
 				initialMessage,
 				initialImages,
+				deps.createInteractiveMode,
+				bareResumeAction,
 			);
 		} else {
-			const { runPrintMode } = await import("./modes/print-mode");
-			await runPrintMode(session, {
+			const runPrint = deps.runPrintMode ?? (await import("./modes/print-mode")).runPrintMode;
+			await runPrint(session, {
 				mode,
 				messages: parsedArgs.messages,
 				initialMessage,
@@ -1146,6 +1343,10 @@ export async function runRootCommand(
 }
 
 export async function main(args: string[]): Promise<void> {
+	if (isTmuxOwnerIsolationCliArgv(args)) {
+		await runTmuxOwnerIsolationCliFromStdin();
+		return;
+	}
 	const { runCli } = await import("./cli");
 	await runCli(args.length === 0 ? ["launch"] : args);
 }

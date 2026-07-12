@@ -19,13 +19,14 @@ use std::{
 		Arc,
 		atomic::{AtomicBool, AtomicU64, Ordering},
 	},
+	time::{Duration, Instant},
 };
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use tokio::{
 	net::{TcpListener, TcpStream},
-	sync::{broadcast, mpsc},
+	sync::{broadcast, mpsc, oneshot},
 };
 use tokio_tungstenite::tungstenite::{
 	Error, Message,
@@ -36,17 +37,19 @@ use tokio_tungstenite::tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-	actions::{ActionRegistry, ReplyClassification, ReplyOutcome},
+	actions::{ActionRegistry, ClaimOutcome, ReplyOutcome},
 	discovery::EndpointRecord,
 	protocol::{
-		ActionNeeded, ClientMessage, PROTOCOL_VERSION, Pong, RejectReason, Reply, ReplyAnswer,
-		ReplyRejected, ServerHello, ServerMessage, SessionReady, capabilities,
+		ActionNeeded, AskSelectedAckCancel, AskSelectedAckCancelReason, AskSelectedAckFailedReason,
+		AskSelectedAckOutcome, AskSelectedAckRequest, AskSelectedAckUnknownReason, ClientMessage,
+		PROTOCOL_VERSION, Pong, RejectReason, ReplyAnswer, ReplyRejected, ServerHello, ServerMessage,
+		SessionReady, capabilities,
 	},
 	query::REQUEST_FRAME_BYTES,
 };
 
 /// Configuration for a per-session notification server.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ServerConfig {
 	/// The session this endpoint belongs to.
 	pub session_id: String,
@@ -87,13 +90,149 @@ impl ServerConfig {
 
 /// Shared server state behind the handle and every connection task.
 #[derive(Debug)]
+struct DirectMessage {
+	message: Option<ServerMessage>,
+	raw_json: Option<String>,
+	dispatched: Option<oneshot::Sender<bool>>,
+}
+
+fn prepare_direct_ack(state: &ServerState, direct: &DirectMessage) -> bool {
+	let Some(ServerMessage::AskSelectedAckRequest(request)) = &direct.message else {
+		return true;
+	};
+	state.acks.lock().begin_dispatch(request.request_id())
+}
+
+#[derive(Debug)]
+struct Connection {
+	generation: String,
+	capabilities: Vec<String>,
+	tx: mpsc::UnboundedSender<DirectMessage>,
+}
+
+type AckOrigin = (String, String);
+type FinishedAck = (String, Option<AckOrigin>, bool);
+
+type AckFinish = (AskSelectedAckOutcome, Option<FinishedAck>);
+
+#[derive(Debug)]
+struct AckPending {
+	commit_key: String,
+	origin: Option<AckOrigin>,
+	dispatched: bool,
+	waiter: oneshot::Sender<AskSelectedAckOutcome>,
+}
+
+#[derive(Debug, Default)]
+struct AckRegistry {
+	pending: HashMap<String, AckPending>,
+	commits: HashMap<String, String>,
+	terminal: HashMap<String, (AskSelectedAckOutcome, Instant)>,
+	completed: HashMap<String, (String, AskSelectedAckOutcome, Instant)>,
+}
+
+impl AckRegistry {
+	fn prune(&mut self) {
+		self
+			.terminal
+			.retain(|_, (_, at)| at.elapsed() < Duration::from_mins(1));
+		self
+			.completed
+			.retain(|_, (_, _, at)| at.elapsed() < Duration::from_mins(1));
+	}
+
+	fn finish(&mut self, request_id: &str, outcome: AskSelectedAckOutcome) -> AckFinish {
+		let Some(pending) = self.pending.remove(request_id) else {
+			let actual = self
+				.completed
+				.get(request_id)
+				.map_or(outcome, |(_, outcome, _)| outcome.clone());
+			return (actual, None);
+		};
+		self.commits.remove(&pending.commit_key);
+		self
+			.terminal
+			.insert(pending.commit_key.clone(), (outcome.clone(), Instant::now()));
+		self.completed.insert(
+			request_id.to_owned(),
+			(pending.commit_key.clone(), outcome.clone(), Instant::now()),
+		);
+		let finished = (pending.commit_key, pending.origin, pending.dispatched);
+		let _ = pending.waiter.send(outcome.clone());
+		(outcome, Some(finished))
+	}
+
+	fn cancel(
+		&mut self,
+		request_id: &str,
+		commit_key: &str,
+		outcome: AskSelectedAckOutcome,
+	) -> AckFinish {
+		if let Some((completed_commit, completed_outcome, _)) = self.completed.get(request_id) {
+			return if completed_commit == commit_key {
+				(completed_outcome.clone(), None)
+			} else {
+				(outcome, None)
+			};
+		}
+		if self
+			.pending
+			.get(request_id)
+			.is_none_or(|pending| pending.commit_key != commit_key)
+		{
+			return (outcome, None);
+		}
+		self.finish(request_id, outcome)
+	}
+
+	fn begin_dispatch(&mut self, request_id: &str) -> bool {
+		let Some(pending) = self.pending.get_mut(request_id) else {
+			return false;
+		};
+		pending.dispatched = true;
+		true
+	}
+
+	fn settle_result(
+		&mut self,
+		connection_id: &str,
+		generation: &str,
+		result: &crate::protocol::AskSelectedAckResult,
+	) -> bool {
+		let authorized = self.pending.get(&result.request_id).is_some_and(|pending| {
+			pending.commit_key == result.commit_key
+				&& pending.origin.as_ref() == Some(&(connection_id.to_owned(), generation.to_owned()))
+		});
+		if !authorized {
+			return false;
+		}
+		self
+			.finish(&result.request_id, result.outcome.clone())
+			.1
+			.is_some()
+	}
+
+	fn finish_disconnect(&mut self, request_id: &str) {
+		let Some(pending) = self.pending.get(request_id) else {
+			return;
+		};
+		let outcome = if pending.dispatched {
+			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::OriginDisconnected }
+		} else {
+			AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::SessionClosed }
+		};
+		let _ = self.finish(request_id, outcome);
+	}
+}
+
+#[derive(Debug)]
 struct ServerState {
 	token: String,
 	registry: Mutex<ActionRegistry>,
 	tx: broadcast::Sender<ServerMessage>,
 	resolver_available: AtomicBool,
 	/// Present in forward mode: accepted replies are sent here for the host.
-	reply_tx: Option<mpsc::UnboundedSender<Reply>>,
+	reply_tx: Option<mpsc::UnboundedSender<crate::actions::ClaimedReply>>,
 	/// Always present: inbound free-text injections / in-thread config commands
 	/// forwarded to the host (token-authorized).
 	inbound_tx: mpsc::UnboundedSender<ClientMessage>,
@@ -101,27 +240,29 @@ struct ServerState {
 	frame_tx: mpsc::UnboundedSender<(String, String)>,
 	/// Connection lifecycle notifications for provider lease cleanup.
 	close_tx: mpsc::UnboundedSender<String>,
-	connections: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
-	next_connection_id: AtomicU64,
+	connections: Mutex<HashMap<String, Connection>>,
+	acks: Mutex<AckRegistry>,
+	closing: AtomicBool,
 	/// Buffered last readiness frame, replayed to late-connecting clients so a
 	/// lifecycle control client can wait for readiness deterministically.
 	session_ready: Mutex<Option<SessionReady>>,
+	connection_sequence: AtomicU64,
 }
 
 /// Handle to a running server. Dropping it does not stop the server; call
 /// [`ServerHandle::stop`] (idempotent) for deterministic shutdown.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerHandle {
 	addr: SocketAddr,
 	state: Arc<ServerState>,
 	cancel: CancellationToken,
-	accept_task: tokio::task::JoinHandle<()>,
+	accept_task: Arc<tokio::task::JoinHandle<()>>,
 	session_id: String,
 	state_root: Option<PathBuf>,
-	reply_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Reply>>>,
-	inbound_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ClientMessage>>>,
-	frame_rx: Mutex<Option<mpsc::UnboundedReceiver<(String, String)>>>,
-	close_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+	reply_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::actions::ClaimedReply>>>>,
+	inbound_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ClientMessage>>>>,
+	frame_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<(String, String)>>>>,
+	close_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
 }
 
 impl ServerHandle {
@@ -195,7 +336,9 @@ impl ServerHandle {
 	/// [`ServerHandle::resolve_client`] (or [`ServerHandle::reject`] on
 	/// failure).
 	#[must_use]
-	pub fn take_reply_receiver(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Reply>> {
+	pub fn take_reply_receiver(
+		&self,
+	) -> Option<tokio::sync::mpsc::UnboundedReceiver<crate::actions::ClaimedReply>> {
 		self.reply_rx.lock().take()
 	}
 
@@ -223,19 +366,27 @@ impl ServerHandle {
 
 	/// Send raw JSON to one connected client. Returns false after that client has disconnected.
 	pub fn send_to(&self, connection_id: &str, json: String) -> bool {
-		let sender = self.state.connections.lock().get(connection_id).cloned();
-		sender.is_some_and(|sender| sender.send(json).is_ok())
+		let sender = self
+			.state
+			.connections
+			.lock()
+			.get(connection_id)
+			.map(|connection| connection.tx.clone());
+		sender.is_some_and(|sender| {
+			sender
+				.send(DirectMessage { message: None, raw_json: Some(json), dispatched: None })
+				.is_ok()
+		})
 	}
 
-	/// Resolve a pending action as answered by a remote client, after the host
-	/// has resolved the real gate. Broadcasts `action_resolved`; no-op if
-	/// already terminal.
+	/// Resolve an unclaimed legacy action. Claimed forward-mode replies require
+	/// [`Self::resolve_claim`] with the exact receipt.
 	pub fn resolve_client(
 		&self,
 		id: &str,
 		answer: Option<ReplyAnswer>,
 		idempotency_key: Option<String>,
-	) {
+	) -> bool {
 		let resolved = self
 			.state
 			.registry
@@ -243,16 +394,66 @@ impl ServerHandle {
 			.resolve_client(id, answer, idempotency_key);
 		if let Some(resolved) = resolved {
 			let _ = self.state.tx.send(ServerMessage::ActionResolved(resolved));
+			true
+		} else {
+			false
 		}
 	}
 
-	/// Reject a forwarded reply after the host failed to resolve its gate.
-	/// Broadcasts `reply_rejected` for the action id; the action stays pending.
-	pub fn reject(&self, id: &str, reason: RejectReason) {
+	/// Resolve a claimed reply by its one-shot receipt and broadcast terminal
+	/// state.
+	pub fn resolve_claim(
+		&self,
+		receipt_id: &str,
+		answer: Option<ReplyAnswer>,
+		idempotency_key: Option<String>,
+	) -> bool {
+		let resolved = self
+			.state
+			.registry
+			.lock()
+			.resolve_claim(receipt_id, answer, idempotency_key);
+		if let Some(resolved) = resolved {
+			let _ = self.state.tx.send(ServerMessage::ActionResolved(resolved));
+			true
+		} else {
+			false
+		}
+	}
+
+	/// Close an invalid claim terminally; callers must reissue under a fresh id.
+	pub fn close_claim_invalid(&self, receipt_id: &str) -> bool {
+		let resolved = self.state.registry.lock().close_claim_invalid(receipt_id);
+		if let Some(resolved) = resolved {
+			let _ = self.state.tx.send(ServerMessage::ActionResolved(resolved));
+			true
+		} else {
+			false
+		}
+	}
+
+	/// Cancel an outstanding claim during abort or shutdown.
+	pub fn cancel_claim(&self, receipt_id: &str) -> bool {
+		let resolved = self.state.registry.lock().cancel_claim(receipt_id);
+		if let Some(resolved) = resolved {
+			let _ = self.state.tx.send(ServerMessage::ActionResolved(resolved));
+			true
+		} else {
+			false
+		}
+	}
+
+	/// Reject only an unclaimed legacy reply. Claimed forward-mode replies must
+	/// be closed by receipt so they cannot remain orphaned.
+	pub fn reject(&self, id: &str, reason: RejectReason) -> bool {
+		if self.state.registry.lock().has_claim_for_action(id) {
+			return false;
+		}
 		let _ = self
 			.state
 			.tx
 			.send(ServerMessage::ReplyRejected(ReplyRejected { id: id.to_owned(), reason }));
+		true
 	}
 
 	/// Update whether the SDK workflow-gate resolver is currently available.
@@ -261,6 +462,278 @@ impl ServerHandle {
 			.state
 			.resolver_available
 			.store(available, Ordering::SeqCst);
+	}
+
+	/// Unicast a live acknowledgement to the connection that atomically claimed
+	/// the source reply, then await its one terminal correlated outcome.
+	pub async fn request_ask_selected_ack(
+		&self,
+		receipt_id: &str,
+		request: AskSelectedAckRequest,
+	) -> AskSelectedAckOutcome {
+		let action_id = match &request {
+			AskSelectedAckRequest::Live { action_id, .. } => action_id,
+			AskSelectedAckRequest::Recovery { .. } => {
+				return AskSelectedAckOutcome::Failed {
+					reason: AskSelectedAckFailedReason::Unsupported,
+				};
+			},
+		};
+		if self
+			.state
+			.registry
+			.lock()
+			.claim_action_id(receipt_id)
+			.as_deref()
+			!= Some(action_id)
+		{
+			return AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::RouteMissing };
+		}
+		let Some(origin) = self.state.registry.lock().claim_origin(receipt_id) else {
+			return AskSelectedAckOutcome::Failed {
+				reason: AskSelectedAckFailedReason::SessionClosed,
+			};
+		};
+		match self.state.connections.lock().get(&origin.connection_id) {
+			None => {
+				return AskSelectedAckOutcome::Failed {
+					reason: AskSelectedAckFailedReason::SessionClosed,
+				};
+			},
+			Some(connection) if connection.generation != origin.generation => {
+				return AskSelectedAckOutcome::Failed {
+					reason: AskSelectedAckFailedReason::SessionClosed,
+				};
+			},
+			Some(connection)
+				if !connection
+					.capabilities
+					.iter()
+					.any(|capability| capability == capabilities::ASK_SELECTED_ACK_V1) =>
+			{
+				return AskSelectedAckOutcome::Failed {
+					reason: AskSelectedAckFailedReason::Unsupported,
+				};
+			},
+			Some(_) => {},
+		}
+		self
+			.request_ack(request, Some((origin.connection_id, origin.generation)))
+			.await
+	}
+
+	/// Select exactly one authenticated acknowledgement-capable participant.
+	pub async fn request_recovered_ask_selected_ack(
+		&self,
+		request: AskSelectedAckRequest,
+	) -> AskSelectedAckOutcome {
+		match &request {
+			AskSelectedAckRequest::Recovery { session_id, .. } if session_id == &self.session_id => {},
+			AskSelectedAckRequest::Recovery { .. } => {
+				return AskSelectedAckOutcome::Failed {
+					reason: AskSelectedAckFailedReason::RouteMissing,
+				};
+			},
+			AskSelectedAckRequest::Live { .. } => {
+				return AskSelectedAckOutcome::Failed {
+					reason: AskSelectedAckFailedReason::Unsupported,
+				};
+			},
+		}
+		let participants: Vec<_> = self
+			.state
+			.connections
+			.lock()
+			.iter()
+			.filter(|(_, c)| {
+				c.capabilities
+					.iter()
+					.any(|v| v == capabilities::ASK_SELECTED_ACK_V1)
+			})
+			.map(|(id, c)| (id.clone(), c.generation.clone()))
+			.collect();
+		match participants.as_slice() {
+			[] => AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::NoParticipant },
+			[origin] => self.request_ack(request, Some(origin.clone())).await,
+			_ => AskSelectedAckOutcome::Failed {
+				reason: AskSelectedAckFailedReason::AmbiguousParticipant,
+			},
+		}
+	}
+
+	async fn request_ack(
+		&self,
+		request: AskSelectedAckRequest,
+		origin: Option<(String, String)>,
+	) -> AskSelectedAckOutcome {
+		let request_id = request.request_id().to_owned();
+		let commit_key = request.commit_key().to_owned();
+		let deadline_at = request.deadline_at();
+		let now_ms = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_millis() as i64;
+		let remaining_ms = deadline_at.saturating_sub(now_ms);
+		if remaining_ms <= 0 {
+			return AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Expired };
+		}
+		let deadline =
+			Duration::from_millis(u64::try_from(remaining_ms).unwrap_or_default().min(10_000));
+		let (tx, rx) = oneshot::channel();
+		{
+			let mut acks = self.state.acks.lock();
+			acks.prune();
+			if self.state.closing.load(Ordering::Acquire) {
+				return AskSelectedAckOutcome::Unknown {
+					reason: AskSelectedAckUnknownReason::Shutdown,
+				};
+			}
+			if let Some((outcome, _)) = acks.terminal.get(&commit_key) {
+				return outcome.clone();
+			}
+			if acks.commits.contains_key(&commit_key) || acks.pending.contains_key(&request_id) {
+				return AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Cancelled };
+			}
+			acks.commits.insert(commit_key.clone(), request_id.clone());
+			acks.pending.insert(
+				request_id.clone(),
+				AckPending { commit_key, origin: origin.clone(), dispatched: false, waiter: tx },
+			);
+		}
+		let (dispatch_tx, dispatch_rx) = oneshot::channel();
+		let queued = origin
+			.and_then(|(id, generation)| {
+				self
+					.state
+					.connections
+					.lock()
+					.get(&id)
+					.filter(|connection| connection.generation == generation)
+					.map(|connection| {
+						connection
+							.tx
+							.send(DirectMessage {
+								message: Some(ServerMessage::AskSelectedAckRequest(request)),
+								raw_json: None,
+								dispatched: Some(dispatch_tx),
+							})
+							.is_ok()
+					})
+			})
+			.unwrap_or(false);
+		if !queued {
+			return self.finish_ack(
+				&request_id,
+				AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::SessionClosed },
+				AskSelectedAckCancelReason::HostTimeout,
+			);
+		}
+		match tokio::time::timeout(deadline, dispatch_rx).await {
+			Ok(Ok(true)) => {},
+			Ok(Ok(false) | Err(_)) => {
+				return self.finish_ack(
+					&request_id,
+					AskSelectedAckOutcome::Unknown {
+						reason: AskSelectedAckUnknownReason::TransportAmbiguous,
+					},
+					AskSelectedAckCancelReason::HostTimeout,
+				);
+			},
+			Err(_) => {
+				return self.finish_ack(
+					&request_id,
+					AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::HostTimeout },
+					AskSelectedAckCancelReason::HostTimeout,
+				);
+			},
+		}
+		let now_ms = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_millis() as i64;
+		let remaining_ms = deadline_at.saturating_sub(now_ms);
+		if remaining_ms <= 0 {
+			return self.finish_ack(
+				&request_id,
+				AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::HostTimeout },
+				AskSelectedAckCancelReason::HostTimeout,
+			);
+		}
+		match tokio::time::timeout(
+			Duration::from_millis(u64::try_from(remaining_ms).unwrap_or_default().min(10_000)),
+			rx,
+		)
+		.await
+		{
+			Ok(Ok(outcome)) => outcome,
+			_ => self.finish_ack(
+				&request_id,
+				AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::HostTimeout },
+				AskSelectedAckCancelReason::HostTimeout,
+			),
+		}
+	}
+
+	fn finish_ack(
+		&self,
+		request_id: &str,
+		outcome: AskSelectedAckOutcome,
+		cancel_reason: AskSelectedAckCancelReason,
+	) -> AskSelectedAckOutcome {
+		let (actual, cancel) = {
+			let mut acks = self.state.acks.lock();
+			let (actual, finished) = acks.finish(request_id, outcome);
+			let cancel = finished.and_then(|(commit_key, origin, dispatched)| {
+				dispatched.then_some((commit_key, origin))
+			});
+			(actual, cancel)
+		};
+		if let Some((commit_key, Some((id, generation)))) = cancel
+			&& let Some(connection) = self
+				.state
+				.connections
+				.lock()
+				.get(&id)
+				.filter(|c| c.generation == generation)
+		{
+			let _ = connection.tx.send(DirectMessage {
+				message: Some(ServerMessage::AskSelectedAckCancel(AskSelectedAckCancel {
+					request_id: request_id.to_owned(),
+					commit_key,
+					reason: cancel_reason,
+				})),
+				raw_json: None,
+				dispatched: None,
+			});
+		}
+		actual
+	}
+
+	/// Terminalize a request and unicast the caller-provided cancellation frame
+	/// only when the request was actually dispatched.
+	pub fn cancel_ask_selected_ack(&self, cancel: AskSelectedAckCancel) -> AskSelectedAckOutcome {
+		let outcome = AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Cancelled };
+		let (actual, dispatched) = {
+			let mut acks = self.state.acks.lock();
+			let (actual, finished) = acks.cancel(&cancel.request_id, &cancel.commit_key, outcome);
+			let dispatched = finished.and_then(|(_, origin, dispatched)| dispatched.then_some(origin));
+			(actual, dispatched)
+		};
+		if let Some(Some((id, generation))) = dispatched
+			&& let Some(connection) = self
+				.state
+				.connections
+				.lock()
+				.get(&id)
+				.filter(|c| c.generation == generation)
+		{
+			let _ = connection.tx.send(DirectMessage {
+				message: Some(ServerMessage::AskSelectedAckCancel(cancel)),
+				raw_json: None,
+				dispatched: None,
+			});
+		}
+		actual
 	}
 
 	/// Number of clients currently subscribed to the broadcast channel.
@@ -272,6 +745,15 @@ impl ServerHandle {
 	/// Stop the server. Idempotent: cancels the accept loop and all connection
 	/// tasks; safe to call multiple times.
 	pub fn stop(&self) {
+		self.state.closing.store(true, Ordering::Release);
+		let ids: Vec<_> = self.state.acks.lock().pending.keys().cloned().collect();
+		for id in ids {
+			let _ = self.finish_ack(
+				&id,
+				AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::Shutdown },
+				AskSelectedAckCancelReason::SessionShutdown,
+			);
+		}
 		self.cancel.cancel();
 		self.accept_task.abort();
 		if let Some(root) = self.state_root.as_deref() {
@@ -282,9 +764,9 @@ impl ServerHandle {
 
 impl Drop for ServerHandle {
 	fn drop(&mut self) {
-		// Best-effort: ensure the accept loop does not outlive the handle's intent
-		// when the caller forgot to stop. Connection tasks observe the same token.
-		self.cancel.cancel();
+		if Arc::strong_count(&self.accept_task) == 1 {
+			self.cancel.cancel();
+		}
 	}
 }
 
@@ -329,8 +811,10 @@ pub async fn start(config: ServerConfig) -> std::io::Result<ServerHandle> {
 		frame_tx,
 		close_tx,
 		connections: Mutex::new(HashMap::new()),
-		next_connection_id: AtomicU64::new(1),
+		acks: Mutex::new(AckRegistry::default()),
+		closing: AtomicBool::new(false),
 		session_ready: Mutex::new(None),
+		connection_sequence: AtomicU64::new(1),
 	});
 	let cancel = CancellationToken::new();
 	let accept_task = tokio::spawn(accept_loop(listener, Arc::clone(&state), cancel.clone()));
@@ -338,13 +822,13 @@ pub async fn start(config: ServerConfig) -> std::io::Result<ServerHandle> {
 		addr,
 		state,
 		cancel,
-		accept_task,
+		accept_task: Arc::new(accept_task),
 		session_id: config.session_id,
 		state_root: config.state_root,
-		reply_rx: Mutex::new(reply_rx),
-		inbound_rx: Mutex::new(Some(inbound_rx)),
-		frame_rx: Mutex::new(Some(frame_rx)),
-		close_rx: Mutex::new(Some(close_rx)),
+		reply_rx: Arc::new(Mutex::new(reply_rx)),
+		inbound_rx: Arc::new(Mutex::new(Some(inbound_rx))),
+		frame_rx: Arc::new(Mutex::new(Some(frame_rx))),
+		close_rx: Arc::new(Mutex::new(Some(close_rx))),
 	})
 }
 
@@ -383,15 +867,15 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 		max_frame_size: Some(REQUEST_FRAME_BYTES),
 		..WebSocketConfig::default()
 	};
-	let Ok(ws) = tokio_tungstenite::accept_hdr_async_with_config(stream, auth, Some(ws_config)).await else {
+	let Ok(ws) =
+		tokio_tungstenite::accept_hdr_async_with_config(stream, auth, Some(ws_config)).await
+	else {
 		return;
 	};
-	let connection_id = format!("conn-{}", state.next_connection_id.fetch_add(1, Ordering::Relaxed));
+	let connection_id =
+		format!("connection:{}", state.connection_sequence.fetch_add(1, Ordering::Relaxed));
+	let generation = "0".to_owned();
 	let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
-	state
-		.connections
-		.lock()
-		.insert(connection_id.clone(), direct_tx);
 	let mut rx = state.tx.subscribe();
 	let (mut write, mut read) = ws.split();
 	let hello = ServerMessage::Hello(ServerHello {
@@ -404,69 +888,147 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 			capabilities::CONFIG.into(),
 			capabilities::CLIENT_PING_PONG.into(),
 			capabilities::SESSION_READY.into(),
+			capabilities::ASK_CONTROLS_V1.into(),
+			capabilities::ASK_SELECTED_ACK_V1.into(),
 		],
 		connection_id: Some(connection_id.clone()),
 	});
-	if send_msg(&mut write, &hello).await.is_ok() {
-		let replay = state.registry.lock().replay_for_new_client().cloned();
-		let ready_replay = state.session_ready.lock().clone();
-		let initial_ok = match replay {
-			Some(replay) => send_msg(&mut write, &ServerMessage::ActionNeeded(replay))
-				.await
-				.is_ok(),
-			None => true,
-		} && match ready_replay {
-			Some(ready) => send_msg(&mut write, &ServerMessage::SessionReady(ready))
-				.await
-				.is_ok(),
-			None => true,
-		};
-		if initial_ok {
-			loop {
-				tokio::select! {
-					() = cancel.cancelled() => break,
-					Some(json) = direct_rx.recv() => if write.send(Message::Text(json)).await.is_err() { break },
-					incoming = read.next() => match incoming {
-						Some(Ok(Message::Text(text))) => {
-							if text.len() > REQUEST_FRAME_BYTES
-								|| !handle_text(text.as_str(), &connection_id, &state, &mut write).await
-							{
-								let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
-								break;
-							}
-						},
-						Some(Ok(Message::Binary(_))) => {
-							let _ = reject_frame(&mut write, CloseCode::Unsupported, "binary protocol frames are unsupported").await;
-							break;
-						},
-						Some(Ok(Message::Ping(payload))) => if write.send(Message::Pong(payload)).await.is_err() { break },
-						Some(Ok(Message::Close(_))) | None => break,
-						Some(Err(Error::Capacity(_))) => {
-							let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
-							break;
-						},
-						Some(Err(_)) => break,
-						Some(Ok(_)) => {}
-					},
-					broadcasted = rx.recv() => match broadcasted {
-						Ok(msg) => if send_msg(&mut write, &msg).await.is_err() { break },
-						Err(broadcast::error::RecvError::Lagged(_)) => {},
-						Err(broadcast::error::RecvError::Closed) => break,
-					},
+	if send_msg(&mut write, &hello).await.is_err() {
+		return;
+	}
+
+	// Replay the buffered ask (if any) to this freshly-connected client.
+	let replay = state.registry.lock().replay_for_new_client().cloned();
+	if let Some(replay) = replay
+		&& send_msg(&mut write, &ServerMessage::ActionNeeded(replay))
+			.await
+			.is_err()
+	{
+		return;
+	}
+
+	// Replay the buffered readiness frame (if any) so a late-connecting control
+	// client observes readiness without relying on WS-open alone.
+	let ready_replay = state.session_ready.lock().clone();
+	if let Some(ready) = ready_replay
+		&& send_msg(&mut write, &ServerMessage::SessionReady(ready))
+			.await
+			.is_err()
+	{
+		return;
+	}
+	state.connections.lock().insert(
+		connection_id.clone(),
+		Connection { generation: generation.clone(), capabilities: Vec::new(), tx: direct_tx },
+	);
+
+	loop {
+		tokio::select! {
+			() = cancel.cancelled() => {
+				while let Ok(direct) = direct_rx.try_recv() {
+					if !prepare_direct_ack(&state, &direct) {
+						if let Some(dispatched) = direct.dispatched {
+							let _ = dispatched.send(false);
+						}
+						continue;
+					}
+					let sent = match (&direct.raw_json, &direct.message) {
+						(Some(json), _) => write.send(Message::Text(json.clone().into())).await.is_ok(),
+						(None, Some(message)) => send_msg(&mut write, message).await.is_ok(),
+						(None, None) => false,
+					};
+					if let Some(dispatched) = direct.dispatched {
+						let _ = dispatched.send(sent);
+					}
+					if !sent {
+						break;
+					}
 				}
-			}
+				break;
+			},
+			incoming = read.next() => match incoming {
+				Some(Ok(Message::Text(text))) => {
+					if text.len() > REQUEST_FRAME_BYTES
+						|| !handle_text(text.as_str(), &state, &mut write, &connection_id, &generation).await
+					{
+						let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
+						break;
+					}
+				},
+				Some(Ok(Message::Binary(_))) => {
+					let _ = reject_frame(&mut write, CloseCode::Unsupported, "binary protocol frames are unsupported").await;
+					break;
+				},
+				Some(Ok(Message::Ping(payload))) => {
+					if write.send(Message::Pong(payload)).await.is_err() {
+						break;
+					}
+				},
+				Some(Ok(Message::Close(_))) | None => break,
+				Some(Err(Error::Capacity(_))) => {
+					let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
+					break;
+				},
+				Some(Ok(_)) => {},
+				Some(Err(_)) => break,
+			},
+			direct = direct_rx.recv() => {
+				let Some(direct) = direct else {
+					break;
+				};
+				if !prepare_direct_ack(&state, &direct) {
+					if let Some(dispatched) = direct.dispatched {
+						let _ = dispatched.send(false);
+					}
+					continue;
+				}
+				let sent = match (&direct.raw_json, &direct.message) {
+					(Some(json), _) => write.send(Message::Text(json.clone().into())).await.is_ok(),
+					(None, Some(message)) => send_msg(&mut write, message).await.is_ok(),
+					(None, None) => false,
+				};
+				if let Some(dispatched) = direct.dispatched {
+					let _ = dispatched.send(sent);
+				}
+				if !sent {
+					break;
+				}
+			},
+			broadcasted = rx.recv() => match broadcasted {
+				Ok(msg) => {
+					if send_msg(&mut write, &msg).await.is_err() {
+						break;
+					}
+				},
+				Err(broadcast::error::RecvError::Lagged(_)) => {},
+				Err(broadcast::error::RecvError::Closed) => break,
+			},
 		}
 	}
 	state.connections.lock().remove(&connection_id);
-	let _ = state.close_tx.send(connection_id);
+	let _ = state.close_tx.send(connection_id.clone());
+	let ids: Vec<_> = state
+		.acks
+		.lock()
+		.pending
+		.iter()
+		.filter(|(_, pending)| {
+			pending.origin.as_ref() == Some(&(connection_id.clone(), generation.clone()))
+		})
+		.map(|(id, _)| id.clone())
+		.collect();
+	for id in ids {
+		state.acks.lock().finish_disconnect(&id);
+	}
 }
 
 /// Returns `false` when the connection should close.
 async fn handle_text<S>(
 	text: &str,
-	connection_id: &str,
 	state: &Arc<ServerState>,
 	write: &mut S,
+	connection_id: &str,
+	generation: &str,
 ) -> bool
 where
 	S: SinkExt<Message> + Unpin,
@@ -508,24 +1070,46 @@ where
 				.await
 				.is_ok();
 		},
-		// Capability handshake / forward-compat: nothing to do server-side yet.
-		ClientMessage::Hello(_) | ClientMessage::Unknown => return true,
+		ClientMessage::AskSelectedAckResult(result) => {
+			state
+				.acks
+				.lock()
+				.settle_result(connection_id, generation, &result);
+			return true;
+		},
+		ClientMessage::Hello(hello) => {
+			if let Some(connection) = state.connections.lock().get_mut(connection_id) {
+				connection.capabilities = hello.capabilities;
+			}
+			return true;
+		},
+		ClientMessage::Unknown => return true,
 	};
 
 	let authorized = tokens_match(&reply.token, &state.token);
 	let resolver = state.resolver_available.load(Ordering::SeqCst);
 
-	// Forward mode: accepted replies go to the host (which resolves the real gate
-	// and calls resolve_client); only immediate rejections are answered here.
+	// Forward mode: accepted replies go to the host, which must settle the exact
+	// claim receipt after resolving the real gate.
 	if let Some(reply_tx) = &state.reply_tx {
-		let classification = state
-			.registry
-			.lock()
-			.classify_reply(&reply, authorized, resolver);
+		let classification =
+			state
+				.registry
+				.lock()
+				.claim_reply(&reply, connection_id, generation, authorized, resolver);
 		return match classification {
-			ReplyClassification::Forward => reply_tx.send(reply).is_ok(),
-			ReplyClassification::Duplicate => true,
-			ReplyClassification::Reject(reason) => {
+			ClaimOutcome::Forward(claim) => {
+				let receipt_id = claim.reply_receipt_id.clone();
+				if reply_tx.send(claim).is_err() {
+					let resolved = state.registry.lock().cancel_claim(&receipt_id);
+					if let Some(resolved) = resolved {
+						let _ = state.tx.send(ServerMessage::ActionResolved(resolved));
+					}
+				}
+				true
+			},
+			ClaimOutcome::Duplicate => true,
+			ClaimOutcome::Reject(reason) => {
 				send_msg(write, &ServerMessage::ReplyRejected(ReplyRejected { id: reply.id, reason }))
 					.await
 					.is_ok()
@@ -559,10 +1143,7 @@ where
 	S: SinkExt<Message> + Unpin,
 {
 	write
-		.send(Message::Close(Some(CloseFrame {
-			code,
-			reason: reason.into(),
-		})))
+		.send(Message::Close(Some(CloseFrame { code, reason: reason.into() })))
 		.await
 		.map_err(|_| ())
 }
@@ -622,7 +1203,7 @@ mod tests {
 	use tokio_tungstenite::connect_async;
 
 	use super::*;
-	use crate::protocol::{ActionKind, Ping, Reply};
+	use crate::protocol::{ActionKind, ClientHello, Ping, Reply};
 
 	fn ask(id: &str) -> ActionNeeded {
 		ActionNeeded {
@@ -631,6 +1212,7 @@ mod tests {
 			session_id: "s".into(),
 			question: Some("Proceed?".into()),
 			options: Some(vec!["Yes".into(), "No".into()]),
+			controls: vec![],
 			summary: None,
 		}
 	}
@@ -836,6 +1418,8 @@ mod tests {
 				capabilities::CONFIG,
 				capabilities::CLIENT_PING_PONG,
 				capabilities::SESSION_READY,
+				capabilities::ASK_CONTROLS_V1,
+				capabilities::ASK_SELECTED_ACK_V1,
 			]
 		);
 
@@ -930,14 +1514,297 @@ mod tests {
 			.await
 			.expect("forward timeout")
 			.expect("reply forwarded");
-		assert_eq!(fwd.id, "a1");
-		assert_eq!(fwd.answer, ReplyAnswer::Index(1));
+		assert_eq!(fwd.reply.id, "a1");
 
-		handle.resolve_client("a1", Some(ReplyAnswer::Index(1)), None);
+		assert_eq!(fwd.reply.answer, ReplyAnswer::Index(1));
+
+		assert!(!handle.resolve_client("a1", Some(ReplyAnswer::Index(1)), None));
+		assert!(!handle.resolve_claim("stale-receipt", Some(ReplyAnswer::Index(1)), None));
+		assert!(!handle.close_claim_invalid("stale-receipt"));
+		assert!(!handle.cancel_claim("stale-receipt"));
+		assert!(handle.resolve_claim(&fwd.reply_receipt_id, Some(ReplyAnswer::Index(1)), None));
 		let resolved = next_server_msg(&mut ws).await;
 		assert!(
 			matches!(resolved, ServerMessage::ActionResolved(r) if r.id == "a1" && r.resolved_by == crate::protocol::ResolvedBy::Client)
 		);
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn live_selected_ack_is_origin_bound_and_correlated() {
+		let mut config = ServerConfig::new("s", "secret");
+		config.forward_replies = true;
+		let handle = start(config).await.unwrap();
+		let mut replies = handle.take_reply_receiver().expect("forward receiver");
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Hello(ClientHello {
+				protocol_version: PROTOCOL_VERSION,
+				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		wait_for_clients(&handle, 1).await;
+		handle.register_ask(ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+		let reply = Reply {
+			id: "a1".into(),
+			answer: ReplyAnswer::Index(0),
+			token: "secret".into(),
+			idempotency_key: Some("k1".into()),
+		};
+		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
+			.await
+			.unwrap();
+		let claim = replies.recv().await.expect("claimed reply");
+		let request = AskSelectedAckRequest::Live {
+			request_id: "r1".into(),
+			commit_key: "c1".into(),
+			action_id: "a1".into(),
+			deadline_at: (std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_millis()
+				+ 5_000) as i64,
+		};
+		let request_task = {
+			let handle = handle.clone();
+			let receipt = claim.reply_receipt_id.clone();
+			tokio::spawn(async move { handle.request_ask_selected_ack(&receipt, request).await })
+		};
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::AskSelectedAckRequest(AskSelectedAckRequest::Live { request_id, commit_key, .. })
+				if request_id == "r1" && commit_key == "c1"
+		));
+		let mut wrong_origin = connect(&handle, "secret").await;
+		next_server_hello(&mut wrong_origin).await;
+		let _ = next_server_msg(&mut wrong_origin).await;
+		wrong_origin
+			.send(Message::Text(
+				serde_json::to_string(&ClientMessage::AskSelectedAckResult(
+					crate::protocol::AskSelectedAckResult {
+						request_id: "r1".into(),
+						commit_key: "c1".into(),
+						outcome: AskSelectedAckOutcome::Delivered { message_id: 99 },
+					},
+				))
+				.unwrap(),
+			))
+			.await
+			.unwrap();
+		tokio::time::sleep(Duration::from_millis(20)).await;
+		assert!(!request_task.is_finished(), "wrong-origin result settled request");
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::AskSelectedAckResult(
+				crate::protocol::AskSelectedAckResult {
+					request_id: "r1".into(),
+					commit_key: "c1".into(),
+					outcome: AskSelectedAckOutcome::Delivered { message_id: 42 },
+				},
+			))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		assert_eq!(request_task.await.unwrap(), AskSelectedAckOutcome::Delivered { message_id: 42 });
+		handle.resolve_claim(&claim.reply_receipt_id, Some(ReplyAnswer::Index(0)), Some("k1".into()));
+		assert!(matches!(next_server_msg(&mut ws).await, ServerMessage::ActionResolved(_)));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn dispatched_acknowledgement_disconnect_is_unknown() {
+		let mut config = ServerConfig::new("s", "secret");
+		config.forward_replies = true;
+		let handle = start(config).await.unwrap();
+		let mut replies = handle.take_reply_receiver().expect("forward receiver");
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Hello(ClientHello {
+				protocol_version: PROTOCOL_VERSION,
+				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		handle.register_ask(ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Reply(Reply {
+				id: "a1".into(),
+				answer: ReplyAnswer::Index(0),
+				token: "secret".into(),
+				idempotency_key: Some("k1".into()),
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		let claim = replies.recv().await.expect("claimed reply");
+		let task = {
+			let handle = handle.clone();
+			let receipt = claim.reply_receipt_id.clone();
+			tokio::spawn(async move {
+				handle
+					.request_ask_selected_ack(
+						&receipt,
+						AskSelectedAckRequest::Live {
+							request_id: "disconnect-request".into(),
+							commit_key: "disconnect-commit".into(),
+							action_id: "a1".into(),
+							deadline_at: (std::time::SystemTime::now()
+								.duration_since(std::time::UNIX_EPOCH)
+								.unwrap()
+								.as_millis() + 5_000) as i64,
+						},
+					)
+					.await
+			})
+		};
+		assert!(matches!(next_server_msg(&mut ws).await, ServerMessage::AskSelectedAckRequest(_)));
+		ws.close(None).await.unwrap();
+		assert_eq!(
+			task.await.unwrap(),
+			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::OriginDisconnected }
+		);
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn stop_terminalizes_pending_acknowledgement_and_preserves_cancel_reason() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Hello(ClientHello {
+				protocol_version: PROTOCOL_VERSION,
+				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		wait_for_clients(&handle, 1).await;
+		tokio::time::sleep(Duration::from_millis(20)).await;
+		let task = {
+			let handle = handle.clone();
+			tokio::spawn(async move {
+				handle
+					.request_recovered_ask_selected_ack(AskSelectedAckRequest::Recovery {
+						request_id: "shutdown-request".into(),
+						commit_key: "shutdown-commit".into(),
+						session_id: "s".into(),
+						action_id: "a1".into(),
+						deadline_at: (std::time::SystemTime::now()
+							.duration_since(std::time::UNIX_EPOCH)
+							.unwrap()
+							.as_millis() + 5_000) as i64,
+					})
+					.await
+			})
+		};
+		assert!(matches!(next_server_msg(&mut ws).await, ServerMessage::AskSelectedAckRequest(_)));
+		handle.stop();
+		assert_eq!(
+			task.await.unwrap(),
+			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::Shutdown }
+		);
+		assert_eq!(
+			handle
+				.request_ack(
+					AskSelectedAckRequest::Recovery {
+						request_id: "after-stop-request".into(),
+						commit_key: "after-stop-commit".into(),
+						session_id: "s".into(),
+						action_id: "a2".into(),
+						deadline_at: (std::time::SystemTime::now()
+							.duration_since(std::time::UNIX_EPOCH)
+							.unwrap()
+							.as_millis() + 5_000) as i64,
+					},
+					None
+				)
+				.await,
+			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::Shutdown }
+		);
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::AskSelectedAckCancel(AskSelectedAckCancel {
+				reason: AskSelectedAckCancelReason::SessionShutdown,
+				..
+			})
+		));
+	}
+
+	#[tokio::test]
+	async fn live_selected_ack_requires_capability() {
+		let mut config = ServerConfig::new("s", "secret");
+		config.forward_replies = true;
+		let handle = start(config).await.unwrap();
+		let mut replies = handle.take_reply_receiver().expect("forward receiver");
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		wait_for_clients(&handle, 1).await;
+		handle.register_ask(ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+		let reply = Reply {
+			id: "a1".into(),
+			answer: ReplyAnswer::Index(0),
+			token: "secret".into(),
+			idempotency_key: None,
+		};
+		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
+			.await
+			.unwrap();
+		let claim = replies.recv().await.expect("claimed reply");
+		let outcome = handle
+			.request_ask_selected_ack(
+				&claim.reply_receipt_id,
+				AskSelectedAckRequest::Live {
+					request_id: "r1".into(),
+					commit_key: "c1".into(),
+					action_id: "a1".into(),
+					deadline_at: 123,
+				},
+			)
+			.await;
+		assert_eq!(
+			outcome,
+			AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Unsupported }
+		);
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn dropped_host_receiver_terminalizes_claim_instead_of_orphaning_it() {
+		let mut config = ServerConfig::new("s", "secret");
+		config.forward_replies = true;
+		let handle = start(config).await.unwrap();
+		drop(handle.take_reply_receiver().expect("forward receiver"));
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		wait_for_clients(&handle, 1).await;
+		handle.register_ask(ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+		let reply = Reply {
+			id: "a1".into(),
+			answer: ReplyAnswer::Index(0),
+			token: "secret".into(),
+			idempotency_key: None,
+		};
+		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
+			.await
+			.unwrap();
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ActionResolved(resolved) if resolved.id == "a1" && resolved.answer.is_none()
+		));
 		handle.stop();
 	}
 
@@ -1208,7 +2075,9 @@ mod tests {
 			))
 			.await
 			.expect("send healthy request");
-		assert!(matches!(next_server_msg(&mut healthy).await, ServerMessage::Pong(Pong { nonce }) if nonce == "healthy"));
+		assert!(
+			matches!(next_server_msg(&mut healthy).await, ServerMessage::Pong(Pong { nonce }) if nonce == "healthy")
+		);
 		handle.stop();
 	}
 
@@ -1227,7 +2096,84 @@ mod tests {
 			.expect("binary client was not closed")
 			.expect("binary client stream closed without a close frame")
 			.expect("binary client close error");
-		assert!(matches!(rejected, Message::Close(Some(frame)) if frame.code == CloseCode::Unsupported));
+		assert!(
+			matches!(rejected, Message::Close(Some(frame)) if frame.code == CloseCode::Unsupported)
+		);
 		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn send_failure_after_dispatch_begins_is_transport_ambiguous() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let (tx, mut rx) = mpsc::unbounded_channel();
+		handle.state.connections.lock().insert(
+			"origin".into(),
+			Connection {
+				generation: "generation".into(),
+				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+				tx,
+			},
+		);
+		let task = {
+			let handle = handle.clone();
+			tokio::spawn(async move {
+				handle
+					.request_ack(
+						AskSelectedAckRequest::Recovery {
+							request_id: "send-failure-request".into(),
+							commit_key: "send-failure-commit".into(),
+							session_id: "s".into(),
+							action_id: "a1".into(),
+							deadline_at: (std::time::SystemTime::now()
+								.duration_since(std::time::UNIX_EPOCH)
+								.unwrap()
+								.as_millis() + 5_000) as i64,
+						},
+						Some(("origin".into(), "generation".into())),
+					)
+					.await
+			})
+		};
+		let direct = rx.recv().await.expect("queued acknowledgement");
+		assert!(prepare_direct_ack(&handle.state, &direct));
+		direct
+			.dispatched
+			.expect("dispatch receipt")
+			.send(false)
+			.unwrap();
+		assert_eq!(
+			task.await.unwrap(),
+			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::TransportAmbiguous }
+		);
+		handle.stop();
+	}
+	#[test]
+	fn acknowledgement_registry_linearizes_dispatch_terminal_and_cancel() {
+		let mut registry = AckRegistry::default();
+		let (waiter, receiver) = oneshot::channel();
+		registry.commits.insert("commit".into(), "request".into());
+		registry.pending.insert(
+			"request".into(),
+			AckPending { commit_key: "commit".into(), origin: None, dispatched: false, waiter },
+		);
+		let delivered = AskSelectedAckOutcome::Delivered { message_id: 42 };
+		let unknown =
+			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::HostTimeout };
+		assert!(registry.begin_dispatch("request"));
+		let (actual, finished) = registry.finish("request", delivered.clone());
+		assert_eq!(actual, delivered);
+		assert!(finished.expect("first settlement").2);
+		assert!(!registry.begin_dispatch("request"));
+		assert_eq!(registry.finish("request", unknown).0, delivered);
+		let cancelled =
+			AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Cancelled };
+		assert_eq!(registry.cancel("request", "commit", cancelled.clone()).0, delivered);
+		assert_eq!(
+			registry
+				.cancel("request", "wrong-commit", cancelled.clone())
+				.0,
+			cancelled
+		);
+		assert_eq!(receiver.blocking_recv().unwrap(), delivered);
 	}
 }

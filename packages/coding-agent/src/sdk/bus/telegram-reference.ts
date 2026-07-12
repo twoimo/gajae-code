@@ -31,6 +31,16 @@ export interface InlineButton {
 	callback_data: string;
 }
 
+/** Typed action controls are protocol data, never inferred from option labels. */
+export interface TelegramActionControl {
+	id: "navigation_forward";
+	kind: "navigation";
+	label: "Next" | "Done";
+	enabled: boolean;
+}
+
+export type TelegramCallbackAnswer = number | string | { controlId: TelegramActionControl["id"] };
+
 /** A rendered Telegram message for an `action_needed`. */
 export interface RenderedMessage {
 	text: string;
@@ -51,10 +61,22 @@ export function decodeCallbackData(data: string): { id: string; index: number } 
 	return { index: Number(m[1]), id: m[2]! };
 }
 
+/** Encode a typed control independently from option labels. */
+export function encodeControlCallbackData(actionId: string, controlId: TelegramActionControl["id"]): string {
+	const encoded = `c:${controlId === "navigation_forward" ? "n" : controlId}:${actionId}`;
+	if (Buffer.byteLength(encoded, "utf8") > 64) throw new Error("control callback data exceeded Telegram limit");
+	return encoded;
+}
+
+export function decodeControlCallbackData(data: string): { id: string; controlId: TelegramActionControl["id"] } | null {
+	const match = /^c:n:(.+)$/.exec(data);
+	return match ? { controlId: "navigation_forward", id: match[1]! } : null;
+}
+
 export interface CallbackRoute {
 	sessionId: string;
 	actionId: string;
-	answer: number | string;
+	answer: TelegramCallbackAnswer;
 }
 
 export interface SerializedAliasTable {
@@ -78,7 +100,11 @@ function isCallbackRoute(value: unknown): value is CallbackRoute {
 	return (
 		typeof route.sessionId === "string" &&
 		typeof route.actionId === "string" &&
-		(typeof route.answer === "string" || typeof route.answer === "number")
+		(typeof route.answer === "string" ||
+			typeof route.answer === "number" ||
+			(typeof route.answer === "object" &&
+				route.answer !== null &&
+				(route.answer as { controlId?: unknown }).controlId === "navigation_forward"))
 	);
 }
 
@@ -129,6 +155,7 @@ export function buildActionMessage(action: {
 	id: string;
 	question?: string;
 	options?: string[];
+	controls?: readonly TelegramActionControl[];
 	summary?: string;
 }): RenderedMessage {
 	if (action.kind === "idle") {
@@ -137,9 +164,15 @@ export function buildActionMessage(action: {
 	}
 	const text = `❓ ${bold(action.question ?? "Question")}`;
 	const options = action.options ?? [];
-	if (options.length === 0) return { text: `${text}\n\n(reply with text)` };
-	const body = `${text}\n\n${numberedOptionList(options)}`;
-	const inline_keyboard = buildCompactChoiceGrid(options, i => encodeCallbackData(action.id, i));
+	const controls = (action.controls ?? []).filter(control => control.enabled);
+	if (options.length === 0 && controls.length === 0) return { text: `${text}\n\n(reply with text)` };
+	const body = options.length ? `${text}\n\n${numberedOptionList(options)}` : text;
+	const inline_keyboard = [
+		...(options.length ? buildCompactChoiceGrid(options, i => encodeCallbackData(action.id, i)) : []),
+		...controls.map(control => [
+			{ text: control.label, callback_data: encodeControlCallbackData(action.id, control.id) },
+		]),
+	];
 	return { text: body, inline_keyboard };
 }
 
@@ -182,7 +215,7 @@ export async function sendTelegramHtmlChunks(
 export interface ReplyFrame {
 	type: "reply";
 	id: string;
-	answer: number | string;
+	answer: TelegramCallbackAnswer;
 	token: string;
 }
 
@@ -195,17 +228,15 @@ export function telegramUpdateToReply(
 	token: string,
 	latestPendingAskId: string | undefined,
 ): ReplyFrame | null {
-	const u = update as {
-		callback_query?: { data?: string };
-		message?: { text?: string };
-	};
+	const u = update as { callback_query?: { data?: string }; message?: { text?: string } };
 	if (u.callback_query?.data) {
 		const decoded = decodeCallbackData(u.callback_query.data);
 		if (decoded) return { type: "reply", id: decoded.id, answer: decoded.index, token };
+		const control = decodeControlCallbackData(u.callback_query.data);
+		if (control) return { type: "reply", id: control.id, answer: { controlId: control.controlId }, token };
 	}
-	if (u.message?.text && latestPendingAskId) {
+	if (u.message?.text && latestPendingAskId)
 		return { type: "reply", id: latestPendingAskId, answer: u.message.text, token };
-	}
 	return null;
 }
 
@@ -239,7 +270,10 @@ function updateChatId(update: TelegramUpdateShape): string | undefined {
 	return id === undefined || id === null ? undefined : String(id);
 }
 
-function routeWithAnswer(route: CallbackRoute | Omit<CallbackRoute, "answer">, answer: number | string): CallbackRoute {
+function routeWithAnswer(
+	route: CallbackRoute | Omit<CallbackRoute, "answer">,
+	answer: TelegramCallbackAnswer,
+): CallbackRoute {
 	return { sessionId: route.sessionId, actionId: route.actionId, answer };
 }
 
@@ -320,6 +354,7 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 			id?: string;
 			question?: string;
 			options?: string[];
+			controls?: TelegramActionControl[];
 			summary?: string;
 			reason?: string;
 		};
@@ -330,6 +365,7 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 				id: msg.id,
 				question: msg.question,
 				options: msg.options,
+				controls: msg.controls,
 				summary: msg.summary,
 			});
 			await sendTelegramHtmlChunks(send, opts.chatId, rendered.text, rendered.inline_keyboard);

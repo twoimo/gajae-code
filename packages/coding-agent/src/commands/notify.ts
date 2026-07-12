@@ -5,7 +5,7 @@ import { Args, Command, Flags } from "@gajae-code/utils/cli";
 import { type NotifyAction, type NotifyCommandArgs, runNotifyCliCommand } from "../cli/notify-cli";
 import { initTheme } from "../modes/theme/theme";
 
-const ACTIONS: NotifyAction[] = ["setup", "status", "daemon-internal"];
+const ACTIONS: NotifyAction[] = ["setup", "status", "health", "test", "recovery", "daemon-internal"];
 
 export default class Notify extends Command {
 	static description = "Configure Telegram, Discord, or Slack notifications";
@@ -36,6 +36,8 @@ export default class Notify extends Command {
 		"slack-workspace-id": Flags.string({ description: "Slack workspace id (non-interactive Slack setup)" }),
 		"slack-channel-id": Flags.string({ description: "Slack channel id (non-interactive Slack setup)" }),
 		redact: Flags.boolean({ description: "Enable redaction of remote notification content" }),
+		probe: Flags.boolean({ description: "notify health: probe Telegram reachability (getMe)" }),
+		message: Flags.string({ description: "notify test: custom message body" }),
 		"owner-id": Flags.string({ description: "Internal: daemon owner id" }),
 		"agent-dir": Flags.string({ description: "Internal: agent dir for the daemon" }),
 	};
@@ -74,6 +76,8 @@ export default class Notify extends Command {
 			slackWorkspaceId: flagRec["slack-workspace-id"] as string | undefined,
 			slackChannelId: flagRec["slack-channel-id"] as string | undefined,
 			redact: Boolean(flags.redact),
+			probe: Boolean(flags.probe),
+			message: flags.message as string | undefined,
 		};
 
 		if (action !== "daemon-internal") await initTheme();

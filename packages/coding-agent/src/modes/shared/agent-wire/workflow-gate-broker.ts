@@ -13,6 +13,9 @@
  */
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import type { AskSelectedAckOutcome } from "../../../tools";
+import { classifyAskGateDisposition } from "./deep-interview-gate";
+import { answerHashOf, canonicalJson, compileGateSchema, schemaHash, validateGateAnswer } from "./workflow-gate-schema";
 import type {
 	WorkflowGate,
 	WorkflowGateContext,
@@ -20,10 +23,64 @@ import type {
 	WorkflowGateOption,
 	WorkflowGateResolution,
 	WorkflowGateResponse,
+	WorkflowGateValidationError,
 	WorkflowStage,
 } from "./workflow-gate-types";
 import { RESERVED_WORKFLOW_STAGES } from "./workflow-gate-types";
-import { answerHashOf, canonicalJson, compileGateSchema, schemaHash, validateGateAnswer } from "./workflow-gate-schema";
+
+export type PersistedSemanticDisposition = "commit" | "resolve_without_commit";
+export type PersistedResolutionOrigin =
+	| { kind: "generic"; channel: "sdk" | "other" }
+	| { kind: "telegram_notification"; interactionActionId: string };
+
+export type PersistedAckPolicy =
+	| { kind: "none"; reason: "non_telegram" | "semantic_noncommit" | "legacy_unproven" }
+	| {
+			kind: "telegram_selected_v1";
+			commitKey: string;
+			actionId: string;
+			state: "pending" | "attempt_started" | "delivered" | "failed" | "unknown";
+			outcome?: AskSelectedAckOutcome;
+			updatedAt: string;
+	  };
+
+export interface GateResolutionOptions {
+	semanticDisposition?: PersistedSemanticDisposition;
+	resolutionOrigin?: PersistedResolutionOrigin;
+	ackPolicy?: PersistedAckPolicy;
+	beforeAdvance?: () => Promise<void>;
+}
+
+export interface WorkflowGateTerminalController {
+	completeGateInteractions(gateId: string): void | Promise<void>;
+	cancelGateInteractions(gateId: string, reason: string): void | Promise<void>;
+}
+
+export interface NotificationGateResolutionOptions {
+	interactionActionId: string;
+	replyReceiptId: string;
+	answerJson: string;
+	idempotencyKey?: string;
+	requestSelectedAck(input: {
+		replyReceiptId: string;
+		actionId: string;
+		commitKey: string;
+		daemonDeadlineAt: number;
+		hostTimeoutMs: number;
+	}): Promise<AskSelectedAckOutcome>;
+	resolveClaim(): void;
+	closeClaimInvalid(reason: string): void;
+}
+
+export interface AskSelectedAckRecoveryParticipant {
+	requestRecoveredAskSelectedAck(input: {
+		sessionId: string;
+		actionId: string;
+		commitKey: string;
+		deadlineAt: number;
+		hostTimeoutMs: number;
+	}): Promise<AskSelectedAckOutcome>;
+}
 
 /** SDK-native surface for emitting a workflow gate and awaiting its answer. */
 export interface WorkflowGateEmitter {
@@ -31,7 +88,13 @@ export interface WorkflowGateEmitter {
 	emitGate(input: OpenGateInput): Promise<unknown>;
 	onGateEmitted?(listener: (gate: WorkflowGate) => void): () => void;
 	resolveGate?(response: WorkflowGateResponse): Promise<WorkflowGateResolution>;
+	resolveGateFromNotification?(
+		response: WorkflowGateResponse,
+		options: NotificationGateResolutionOptions,
+	): Promise<WorkflowGateResolution>;
+	registerGateTerminalController?(controller: WorkflowGateTerminalController): () => void;
 	listPendingGates?(): WorkflowGate[];
+	setAckRecoveryParticipant?(participant: AskSelectedAckRecoveryParticipant | null): void;
 }
 
 /**
@@ -45,8 +108,15 @@ export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
 	private readonly listeners = new Set<(gate: WorkflowGate) => void>();
 	private readonly waiters = new Map<string, { resolve(answer: unknown): void }>();
 	private readonly broker: WorkflowGateBroker;
+	private terminalController: WorkflowGateTerminalController | undefined;
+	private recoveryParticipant: AskSelectedAckRecoveryParticipant | undefined;
+	private recoveryPromise: Promise<void> | undefined;
+	private readonly participantReady = Promise.withResolvers<void>();
 
-	constructor(runId: string, private readonly store: GateStore) {
+	constructor(
+		private readonly runId: string,
+		private readonly store: GateStore,
+	) {
 		this.broker = new WorkflowGateBroker(runId, store, {
 			emit: gate => {
 				for (const listener of this.listeners) listener(gate);
@@ -57,6 +127,7 @@ export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
 				this.waiters.delete(gate.gate_id);
 				waiter.resolve(answer);
 			},
+			finalizeAccepted: record => this.finalizeAccepted(record),
 		});
 	}
 
@@ -89,6 +160,173 @@ export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
 			.filter(record => record.status === "pending")
 			.map(record => record.gate);
 	}
+
+	registerGateTerminalController(controller: WorkflowGateTerminalController): () => void {
+		if (this.terminalController && this.terminalController !== controller)
+			throw new Error("a workflow gate terminal controller is already registered");
+		this.terminalController = controller;
+		return () => {
+			if (this.terminalController === controller) this.terminalController = undefined;
+		};
+	}
+
+	setAckRecoveryParticipant(participant: AskSelectedAckRecoveryParticipant | null): void {
+		this.recoveryParticipant = participant ?? undefined;
+		if (participant) this.participantReady.resolve();
+		void this.startRecoveryOnce();
+	}
+
+	async resolveGateFromNotification(
+		response: WorkflowGateResponse,
+		options: NotificationGateResolutionOptions,
+	): Promise<WorkflowGateResolution> {
+		let claimSettled = false;
+		const resolveClaim = () => {
+			if (claimSettled) return;
+			claimSettled = true;
+			options.resolveClaim();
+		};
+		const closeClaimInvalid = (reason: string) => {
+			if (claimSettled) return;
+			claimSettled = true;
+			options.closeClaimInvalid(reason);
+		};
+		try {
+			JSON.parse(options.answerJson);
+		} catch {
+			closeClaimInvalid("invalid_structured_answer");
+			return {
+				gate_id: response.gate_id,
+				status: "rejected",
+				answer_hash: "",
+				resolved_at: new Date().toISOString(),
+				error: this.broker.validationError(response.gate_id, "json_parse", "invalid structured answer"),
+			};
+		}
+		let semanticDisposition: PersistedSemanticDisposition;
+		try {
+			semanticDisposition = this.broker.classifyDisposition(response.gate_id, response.answer);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "invalid answer";
+			closeClaimInvalid(message);
+			return {
+				gate_id: response.gate_id,
+				status: "rejected",
+				answer_hash: "",
+				resolved_at: new Date().toISOString(),
+				error: this.broker.validationError(response.gate_id, "semantic_disposition", message),
+			};
+		}
+		const commitKey = `${response.gate_id}:${options.idempotencyKey ?? options.replyReceiptId}`;
+		const ackPolicy: PersistedAckPolicy =
+			semanticDisposition === "commit"
+				? {
+						kind: "telegram_selected_v1",
+						commitKey,
+						actionId: options.interactionActionId,
+						state: "pending",
+						updatedAt: new Date().toISOString(),
+					}
+				: { kind: "none", reason: "semantic_noncommit" };
+		try {
+			const resolution = await this.broker.resolve(response, {
+				resolutionOrigin: { kind: "telegram_notification", interactionActionId: options.interactionActionId },
+				ackPolicy,
+				semanticDisposition,
+				beforeAdvance: async () => {
+					if (ackPolicy.kind === "telegram_selected_v1") {
+						this.broker.updateAckPolicy(response.gate_id, {
+							...ackPolicy,
+							state: "attempt_started",
+							updatedAt: new Date().toISOString(),
+						});
+						let outcome: AskSelectedAckOutcome;
+						try {
+							outcome = await options.requestSelectedAck({
+								replyReceiptId: options.replyReceiptId,
+								actionId: options.interactionActionId,
+								commitKey,
+								daemonDeadlineAt: Date.now() + 8_000,
+								hostTimeoutMs: 10_000,
+							});
+						} catch {
+							outcome = { status: "unknown", reason: "host_timeout" };
+						}
+						this.broker.updateAckPolicy(response.gate_id, {
+							...ackPolicy,
+							state: outcome.status,
+							outcome,
+							updatedAt: new Date().toISOString(),
+						});
+					}
+					resolveClaim();
+				},
+			});
+			if (resolution.status === "accepted") resolveClaim();
+			else closeClaimInvalid(resolution.error?.code ?? "invalid_answer");
+			return resolution;
+		} catch (error) {
+			closeClaimInvalid(error instanceof Error ? error.message : "invalid_answer");
+			throw error;
+		}
+	}
+
+	private async finalizeAccepted(record: PersistedGate): Promise<void> {
+		const policy = record.ackPolicy;
+		if (policy?.kind === "telegram_selected_v1" && policy.state === "pending") {
+			let outcome: AskSelectedAckOutcome;
+			const participant = this.recoveryParticipant;
+			if (!participant) outcome = { status: "failed", reason: "no_participant" };
+			else {
+				this.broker.updateAckPolicy(record.gate.gate_id, {
+					...policy,
+					state: "attempt_started",
+					updatedAt: new Date().toISOString(),
+				});
+				try {
+					outcome = await participant.requestRecoveredAskSelectedAck({
+						sessionId: this.runId,
+						actionId: policy.actionId,
+						commitKey: policy.commitKey,
+						deadlineAt: Date.now() + 8_000,
+						hostTimeoutMs: 10_000,
+					});
+				} catch {
+					outcome = { status: "unknown", reason: "host_timeout" };
+				}
+			}
+			this.broker.updateAckPolicy(record.gate.gate_id, {
+				...policy,
+				state: outcome.status,
+				outcome,
+				updatedAt: new Date().toISOString(),
+			});
+		}
+		if (policy?.kind === "telegram_selected_v1" && policy.state === "attempt_started") {
+			this.broker.updateAckPolicy(record.gate.gate_id, {
+				...policy,
+				state: "unknown",
+				outcome: { status: "unknown", reason: "shutdown" },
+				updatedAt: new Date().toISOString(),
+			});
+		}
+		await this.terminalController?.completeGateInteractions(record.gate.gate_id);
+	}
+
+	private async startRecoveryOnce(options: { participantGraceMs?: number } = {}): Promise<void> {
+		if (this.recoveryPromise) return this.recoveryPromise;
+		this.recoveryPromise = (async () => {
+			if (!this.recoveryParticipant) {
+				const grace = options.participantGraceMs ?? 2_000;
+				await Promise.race([
+					this.participantReady.promise,
+					new Promise<void>(resolve => setTimeout(resolve, grace)),
+				]);
+			}
+			await this.broker.recover();
+		})();
+		return this.recoveryPromise;
+	}
 }
 
 const V1_STAGES: readonly WorkflowStage[] = ["deep-interview", "ralplan", "ultragoal"];
@@ -102,6 +340,9 @@ export interface PersistedGate {
 	answer?: unknown;
 	resolution?: WorkflowGateResolution;
 	advanced: boolean;
+	semanticDisposition?: PersistedSemanticDisposition;
+	resolutionOrigin?: PersistedResolutionOrigin;
+	ackPolicy?: PersistedAckPolicy;
 }
 
 export interface GateStore {
@@ -219,6 +460,8 @@ export interface BrokerHooks {
 	 * it for any gate left `accepted` but not `advanced` by a crash.
 	 */
 	advance?(gate: WorkflowGate, answer: unknown): void | Promise<void>;
+	/** Runs after durable acceptance and before advance, including crash recovery. */
+	finalizeAccepted?(record: PersistedGate): Promise<void>;
 	/** Append-only audit sink. */
 	audit?(event: GateAuditEvent): void;
 }
@@ -242,11 +485,50 @@ export class WorkflowGateBrokerError extends Error {
 }
 
 export class WorkflowGateBroker {
+	private readonly recovering = new Set<string>();
+	private readonly gateLocks = new Map<string, Promise<void>>();
+
+	private async withGateLock<T>(gateId: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.gateLocks.get(gateId) ?? Promise.resolve();
+		const release = Promise.withResolvers<void>();
+		const current = previous.then(() => release.promise);
+		this.gateLocks.set(gateId, current);
+		await previous;
+		try {
+			return await operation();
+		} finally {
+			release.resolve();
+			if (this.gateLocks.get(gateId) === current) this.gateLocks.delete(gateId);
+		}
+	}
+
 	constructor(
 		private readonly runId: string,
 		private readonly store: GateStore,
 		private readonly hooks: BrokerHooks = {},
 	) {}
+
+	classifyDisposition(gateId: string, answer: unknown): PersistedSemanticDisposition {
+		const record = this.store.get(gateId);
+		if (!record) throw new WorkflowGateBrokerError("unknown_gate", `no pending gate ${gateId}`);
+		return classifyAskGateDisposition(record.gate, answer);
+	}
+	validationError(gateId: string, keyword: string, message: string): WorkflowGateValidationError {
+		const record = this.store.get(gateId);
+		return {
+			code: "invalid_workflow_gate_answer",
+			gate_id: gateId,
+			schema_hash: record ? schemaHash(record.gate.schema) : "",
+			errors: [{ path: "$", keyword, message }],
+		};
+	}
+
+	updateAckPolicy(gateId: string, ackPolicy: PersistedAckPolicy): void {
+		const record = this.store.get(gateId);
+		if (record?.status !== "accepted")
+			throw new WorkflowGateBrokerError("unknown_gate", `no accepted gate ${gateId}`);
+		this.store.put({ ...record, ackPolicy });
+	}
 
 	private runShort(): string {
 		return this.runId.replace(/[^a-zA-Z0-9]/g, "").slice(-8) || "run";
@@ -288,7 +570,14 @@ export class WorkflowGateBroker {
 	 * On success the resolution is persisted BEFORE `advance` is invoked exactly
 	 * once. Invalid answers leave the gate pending (per #315 acceptance).
 	 */
-	async resolve(response: WorkflowGateResponse): Promise<WorkflowGateResolution> {
+	async resolve(response: WorkflowGateResponse, options: GateResolutionOptions = {}): Promise<WorkflowGateResolution> {
+		return this.withGateLock(response.gate_id, () => this.resolveUnlocked(response, options));
+	}
+
+	private async resolveUnlocked(
+		response: WorkflowGateResponse,
+		options: GateResolutionOptions = {},
+	): Promise<WorkflowGateResolution> {
 		const record = this.store.get(response.gate_id);
 		if (!record) {
 			this.hooks.audit?.({ event: "gate_response_unknown_gate", gate_id: response.gate_id });
@@ -329,6 +618,13 @@ export class WorkflowGateBroker {
 			};
 		}
 
+		const semanticDisposition =
+			options.semanticDisposition ?? classifyAskGateDisposition(record.gate, response.answer);
+		const resolutionOrigin = options.resolutionOrigin ?? { kind: "generic", channel: "sdk" as const };
+		const ackPolicy =
+			options.ackPolicy ??
+			({ kind: "none", reason: semanticDisposition === "commit" ? "non_telegram" : "semantic_noncommit" } as const);
+
 		const resolution: WorkflowGateResolution = {
 			gate_id: response.gate_id,
 			status: "accepted",
@@ -346,18 +642,30 @@ export class WorkflowGateBroker {
 			answer: response.answer,
 			resolution,
 			advanced: false,
+			semanticDisposition,
+			resolutionOrigin,
+			ackPolicy,
 		});
 		this.hooks.audit?.({ event: "gate_response_accepted", gate_id: response.gate_id, answer_hash: answerHash });
-		await this.hooks.advance?.(record.gate, response.answer);
-		this.store.put({
-			gate: record.gate,
-			status: "accepted",
-			idempotencyKey: response.idempotency_key,
-			responseHash,
-			answer: response.answer,
-			resolution,
-			advanced: true,
-		});
+		await options.beforeAdvance?.();
+		await this.hooks.finalizeAccepted?.(this.store.get(response.gate_id) as PersistedGate);
+		const finalized = this.store.get(response.gate_id);
+		if (finalized?.status !== "accepted") {
+			throw new WorkflowGateBrokerError(
+				"unknown_gate",
+				`accepted gate ${response.gate_id} disappeared before advance`,
+			);
+		}
+		if (finalized.advanced) return finalized.resolution ?? resolution;
+		await this.hooks.advance?.(finalized.gate, finalized.answer);
+		const latest = this.store.get(response.gate_id);
+		if (latest?.status !== "accepted") {
+			throw new WorkflowGateBrokerError(
+				"unknown_gate",
+				`accepted gate ${response.gate_id} disappeared after advance`,
+			);
+		}
+		this.store.put({ ...latest, advanced: true });
 		return resolution;
 	}
 
@@ -370,15 +678,25 @@ export class WorkflowGateBroker {
 	async recover(): Promise<string[]> {
 		const recovered: string[] = [];
 		for (const listed of this.store.list()) {
-			if (listed.status !== "accepted" || listed.advanced) continue;
-			// Re-read immediately before advancing so a concurrent recoverer that
-			// already advanced this gate (stale snapshot) cannot double-advance.
-			const rec = this.store.get(listed.gate.gate_id);
-			if (rec?.status !== "accepted" || rec.advanced) continue;
-			await this.hooks.advance?.(rec.gate, rec.answer);
-			this.store.put({ ...rec, advanced: true });
-			this.hooks.audit?.({ event: "gate_advance_recovered", gate_id: rec.gate.gate_id });
-			recovered.push(rec.gate.gate_id);
+			if (listed.status !== "accepted" || listed.advanced || this.recovering.has(listed.gate.gate_id)) continue;
+			this.recovering.add(listed.gate.gate_id);
+			try {
+				await this.withGateLock(listed.gate.gate_id, async () => {
+					const rec = this.store.get(listed.gate.gate_id);
+					if (rec?.status !== "accepted" || rec.advanced) return;
+					await this.hooks.finalizeAccepted?.(rec);
+					const finalized = this.store.get(listed.gate.gate_id);
+					if (finalized?.status !== "accepted" || finalized.advanced) return;
+					await this.hooks.advance?.(finalized.gate, finalized.answer);
+					const latest = this.store.get(listed.gate.gate_id);
+					if (latest?.status !== "accepted" || latest.advanced) return;
+					this.store.put({ ...latest, advanced: true });
+					this.hooks.audit?.({ event: "gate_advance_recovered", gate_id: latest.gate.gate_id });
+					recovered.push(latest.gate.gate_id);
+				});
+			} finally {
+				this.recovering.delete(listed.gate.gate_id);
+			}
 		}
 		return recovered;
 	}

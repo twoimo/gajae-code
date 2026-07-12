@@ -122,16 +122,92 @@ export type {
 	DiscoverableToolSource,
 } from "../tool-discovery/tool-index";
 
+/** A typed remote action available to an ask answer source. */
+export type AskRemoteControlId = "navigation_forward";
+
+export interface AskRemoteControl {
+	id: AskRemoteControlId;
+	kind: "navigation";
+	label: "Next" | "Done";
+	enabled: boolean;
+}
+
+export interface AskAnswerRequest {
+	question: string;
+	options: string[];
+	interaction: "selector" | "custom_editor" | "clarification_editor";
+	controls: readonly AskRemoteControl[];
+}
+
+export type AskRemoteInteraction =
+	| { kind: "value"; value: string }
+	| { kind: "control"; controlId: AskRemoteControlId };
+
+export type AskSettlement =
+	| { kind: "commit" }
+	| {
+			kind: "resolve_without_commit";
+			reason:
+				| "toggle"
+				| "other_transition"
+				| "clarification_transition"
+				| "clarification_submitted"
+				| "empty_navigation"
+				| "back_navigation"
+				| "cancelled"
+				| "aborted"
+				| "timed_out"
+				| "exception"
+				| "shutdown";
+	  }
+	| {
+			kind: "invalid";
+			reason:
+				| "invalid_option"
+				| "invalid_control"
+				| "invalid_structured_answer"
+				| "empty_custom"
+				| "empty_clarification";
+	  };
+
+export type AskSelectedAckOutcome =
+	| { status: "delivered"; messageId: number }
+	| {
+			status: "failed";
+			reason:
+				| "unsupported"
+				| "no_participant"
+				| "ambiguous_participant"
+				| "route_missing"
+				| "expired"
+				| "cancelled"
+				| "telegram_rejected"
+				| "session_closed";
+	  }
+	| { status: "unknown"; reason: "transport_ambiguous" | "origin_disconnected" | "host_timeout" | "shutdown" };
+
+export type AskSettlementResult =
+	| { kind: "committed"; ack: AskSelectedAckOutcome }
+	| { kind: "resolved_without_commit" }
+	| { kind: "invalid_closed" };
+
+export interface AskRemoteReceipt {
+	source: "remote";
+	interaction: AskRemoteInteraction;
+	settle(value: AskSettlement): Promise<AskSettlementResult>;
+}
+
+export type AskAnswerSourceResult = AskRemoteReceipt | string | undefined;
+
 /**
- * Source of remote answers for interactive asks (e.g. a Telegram reply routed
- * through the Gajae-Code SDK). Lets a pending ask resolve without RPC mode.
+ * Source of remote answers for interactive asks. `awaitAnswer` remains the legacy
+ * wire for existing integrations; typed sources opt into `awaitAnswerRequest`.
+ * This keeps a string-only source from accidentally acquiring acknowledgement
+ * authority while allowing SDK-routed interactions to settle durably.
  */
 export interface AskAnswerSource {
-	/**
-	 * Race a remote answer against the local UI for one question. Resolves with the
-	 * chosen option label or free-text answer, or `undefined` to defer to local UI.
-	 */
 	awaitAnswer(question: string, options: string[], signal?: AbortSignal): Promise<string | undefined>;
+	awaitAnswerRequest?(request: AskAnswerRequest, signal?: AbortSignal): Promise<AskAnswerSourceResult>;
 }
 
 /** Session context for tool factories */
@@ -233,9 +309,8 @@ export interface ToolSession {
 	/** SDK workflow-gate emitter, when a remote gate responder is connected. */
 	getWorkflowGateEmitter?: () => WorkflowGateEmitter | undefined;
 	/**
-	 * Optional remote answer source for interactive asks. When present, the ask
-	 * tool races the local UI selection against a remote answer (e.g. a Telegram
-	 * reply via the Gajae-Code SDK) so asks can be answered without RPC mode.
+	 * Optional SDK-routed answer source for interactive asks. When present, the
+	 * tool races the local UI selection against the remote SDK answer.
 	 * No-op when undefined: the ask path behaves exactly as before.
 	 */
 	getAskAnswerSource?: () => AskAnswerSource | undefined;

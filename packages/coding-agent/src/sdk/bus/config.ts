@@ -4,6 +4,17 @@ import * as z from "zod/v4";
 import { ConfigFile, type LoadResult } from "../../config/config-file";
 import type { Settings } from "../../config/settings";
 
+/**
+ * Env marker set by GJC's own programmatic separate-process child spawn sites
+ * (team workers, harness RPC owners) and carrying the spawning session id.
+ *
+ * Presence — not the value — marks a session as GJC-spawned. It is consumed
+ * (read once, then deleted from the child's own env) at startup so it is
+ * per-spawn rather than dynastic: a grandchild is marked only if its own spawn
+ * site marks it, never by inheriting a marked ancestor's environment.
+ */
+export const SPAWN_PROVENANCE_ENV = "GJC_SPAWNED_BY_SESSION";
+
 export interface NotificationConfig {
 	enabled: boolean;
 	botToken?: string;
@@ -22,12 +33,27 @@ export interface NotificationConfig {
 	};
 	redact: boolean;
 	verbosity: "lean" | "verbose";
+	/**
+	 * Which sessions may register a notification endpoint. `all` (default)
+	 * preserves historical behavior; `primary` suppresses GJC-spawned children
+	 * (those carrying {@link SPAWN_PROVENANCE_ENV}) unless they explicitly opt in.
+	 */
+	sessionScope: "all" | "primary";
 	idleTimeoutMs: number;
 	rich: {
 		enabled: boolean;
 	};
 	richDraft: {
 		enabled: boolean;
+	};
+	topics: {
+		/**
+		 * Optional Telegram forum-topic name template with `{repo}`, `{branch}`,
+		 * and `{title}` placeholders. Unset preserves the built-in
+		 * `{repo}/{branch} - {title}` composition (with its title/repo/branch
+		 * fallbacks).
+		 */
+		nameTemplate?: string;
 	};
 }
 
@@ -51,12 +77,16 @@ export function getNotificationConfig(settings: Settings): NotificationConfig {
 		},
 		redact: settings.get("notifications.redact"),
 		verbosity: settings.get("notifications.verbosity") === "verbose" ? "verbose" : "lean",
+		sessionScope: settings.get("notifications.sessionScope") === "primary" ? "primary" : "all",
 		idleTimeoutMs: settings.get("notifications.daemon.idleTimeoutMs"),
 		rich: {
 			enabled: settings.get("notifications.telegram.rich.enabled"),
 		},
 		richDraft: {
 			enabled: settings.get("notifications.telegram.richDraft.enabled"),
+		},
+		topics: {
+			nameTemplate: settings.get("notifications.telegram.topics.nameTemplate"),
 		},
 	};
 }
@@ -169,11 +199,25 @@ export function shouldRegisterNotificationsExtension(input: {
 	parentTaskPrefix?: string;
 	/** Role-agent type/name; present for task sessions even if depth metadata is lost. */
 	currentAgentType?: string;
+	/**
+	 * True when this session was launched by one of GJC's own programmatic
+	 * separate-process child spawn sites (marked via {@link SPAWN_PROVENANCE_ENV}).
+	 * Under `notifications.sessionScope = "primary"` such children are suppressed
+	 * unless they explicitly opt in, so an interactive parent that fans out work
+	 * does not flood the paired chat with topics for children the user never
+	 * asked for. User-opened sessions (CLI/tmux/headless) never carry the marker.
+	 */
+	spawnedByGjc?: boolean;
 }): boolean {
 	if ((input.taskDepth ?? 0) > 0 || input.parentTaskPrefix || input.currentAgentType) return false;
 	if (completionNotifyDisabledByEnv(input.env)) return false;
 	if (input.env.GJC_NOTIFICATIONS === "0") return false;
 	if (input.env.GJC_NOTIFICATIONS === "1" || input.env.GJC_NOTIFICATIONS_TOKEN) return true;
+	// Spawned-child suppression sits below explicit opt-in (so Telegram
+	// `/session_create` and cold `/session_resume`, which launch with
+	// GJC_NOTIFICATIONS=1, keep their fully bidirectional topic) and above global
+	// auto-on (so their children stay silent under `primary`).
+	if (input.spawnedByGjc && input.cfg?.sessionScope === "primary") return false;
 	return input.cfg ? isGloballyConfigured(input.cfg) : false;
 }
 
@@ -183,17 +227,21 @@ export function shouldRegisterNotificationsExtension(input: {
  *  1) env.GJC_NOTIFICATIONS === "0"  -> false (hard opt-out)
  *  2) sessionDisabled === true       -> false (local /notify off)
  *  3) env.GJC_NOTIFICATIONS === "1" || env.GJC_NOTIFICATIONS_TOKEN present -> true (legacy explicit)
- *  4) isGloballyConfigured(cfg)      -> true (global auto-on)
- *  5) otherwise false
+ *  4) spawned GJC child with `sessionScope=primary` -> false
+ *  5) isGloballyConfigured(cfg)      -> true (global auto-on)
+ *  6) otherwise false
  */
 export function isSessionNotificationsEnabled(input: {
 	cfg: NotificationConfig;
 	env: NodeJS.ProcessEnv;
 	sessionDisabled: boolean;
+	/** This process was programmatically spawned by GJC (consumed at SDK startup). */
+	spawnedByGjc?: boolean;
 }): boolean {
 	if (input.env.GJC_NOTIFICATIONS === "0") return false;
 	if (input.sessionDisabled) return false;
 	if (input.env.GJC_NOTIFICATIONS === "1" || input.env.GJC_NOTIFICATIONS_TOKEN) return true;
+	if (input.spawnedByGjc && input.cfg.sessionScope === "primary") return false;
 	return isGloballyConfigured(input.cfg);
 }
 

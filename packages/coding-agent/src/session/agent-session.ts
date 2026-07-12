@@ -27,6 +27,7 @@ import {
 	type AgentState,
 	type AgentTool,
 	assertImagePlaceholdersHavePayload,
+	canContinuePersistedHistory,
 	resolveTelemetry,
 	type StablePrefixSnapshot,
 	ThinkingLevel,
@@ -218,6 +219,7 @@ import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
+import ircPeerRosterTemplate from "../prompts/system/irc-peer-roster.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
 import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" with { type: "text" };
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
@@ -255,7 +257,10 @@ import {
 } from "../tool-discovery/tool-index";
 import type { AskAnswerSource, ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
-import { getAskAnswerSource as getAskAnswerSourceFromRegistry } from "../tools/ask-answer-registry";
+import {
+	getAskAnswerSource as getAskAnswerSourceFromRegistry,
+	notifyWorkflowGateEmitterChanged,
+} from "../tools/ask-answer-registry";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -300,8 +305,13 @@ import type {
 	NewSessionOptions,
 	SessionContext,
 	SessionManager,
+	SessionManagerCloseOutcome,
 } from "./session-manager";
-import { getLatestCompactionEntry } from "./session-manager";
+import {
+	getLatestCompactionEntry,
+	getSessionMessageObservationId,
+	transferSessionMessageIdentity,
+} from "./session-manager";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { YieldQueue } from "./yield-queue";
 
@@ -540,6 +550,7 @@ export interface SessionStats {
 	};
 	premiumRequests: number;
 	cost: number;
+	costBreakdown?: Usage["cost"];
 }
 
 /** Internal marker for hook messages queued through the agent loop */
@@ -1278,6 +1289,9 @@ export class AgentSession {
 	// Agent identity + registry for IRC relay forwarding to the main session UI.
 	#agentId: string | undefined;
 	#agentRegistry: AgentRegistry | undefined;
+	#lastDeliveredIrcRosterSignature: string | null = null;
+	#ircRosterEpoch = 0;
+	#ircRosterClaim: { token: symbol; signature: string; epoch: number } | null = null;
 	#providerSessionId: string | undefined;
 	#providerCacheSessionId: string | undefined;
 	#isDisposed = false;
@@ -2107,6 +2121,16 @@ export class AgentSession {
 		return queued;
 	}
 
+	#persistRuntimeStateInBackground(event: AgentSessionEvent): void {
+		void persistCoordinatorRuntimeStateFromEvent(event, {
+			sessionId: this.sessionId,
+			cwd: this.sessionManager.getCwd(),
+			sessionFile: this.sessionManager.getSessionFile(),
+		}).catch(() => {
+			logger.warn("Failed to persist coordinator runtime state", { event: event.type });
+		});
+	}
+
 	async #emitSessionEvent(event: AgentSessionEvent): Promise<void> {
 		if (event.type === "message_update") {
 			// Fast path: message_update maps to no sidecar state, so we must not
@@ -2118,12 +2142,7 @@ export class AgentSession {
 			}
 			return;
 		}
-		const persistRuntimeState = () =>
-			persistCoordinatorRuntimeStateFromEvent(event, {
-				sessionId: this.sessionId,
-				cwd: this.sessionManager.getCwd(),
-				sessionFile: this.sessionManager.getSessionFile(),
-			});
+		const persistRuntimeState = () => this.#persistRuntimeStateInBackground(event);
 		// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
 		// (ACP, Cursor, and SDK clients) treat agent_end as the "session is idle" signal;
 		// emitting while #promptInFlightCount > 0 lets a client fire its next
@@ -2226,7 +2245,9 @@ export class AgentSession {
 			const message = event.message;
 			const deobfuscatedContent = obfuscator.deobfuscateObject(message.content);
 			if (deobfuscatedContent !== message.content) {
-				displayEvent = { ...event, message: { ...message, content: deobfuscatedContent } };
+				const displayMessage = { ...message, content: deobfuscatedContent };
+				transferSessionMessageIdentity([message], [displayMessage]);
+				displayEvent = { ...event, message: displayMessage };
 			}
 		}
 
@@ -2241,6 +2262,15 @@ export class AgentSession {
 		}
 
 		await this.#emitSessionEvent(displayEvent);
+		if (
+			displayEvent !== event &&
+			displayEvent.type === "message_end" &&
+			displayEvent.message.role === "assistant" &&
+			event.type === "message_end" &&
+			event.message.role === "assistant"
+		) {
+			transferSessionMessageIdentity([displayEvent.message], [event.message]);
+		}
 
 		if (event.type === "turn_start") {
 			this.#resetStreamingEditState();
@@ -2410,14 +2440,20 @@ export class AgentSession {
 		if (event.type === "message_end") {
 			// Check if this is a hook/custom message
 			if (event.message.role === "hookMessage" || event.message.role === "custom") {
-				// Persist as CustomMessageEntry
-				this.sessionManager.appendCustomMessageEntry(
-					event.message.customType,
-					event.message.content,
-					event.message.display,
-					event.message.details,
-					event.message.attribution ?? "agent",
-				);
+				// Roster reminders are request-context-only: never persist them, or a
+				// reload would resurrect stale rosters into agent history.
+				const isRosterReminder = event.message.role === "custom" && event.message.customType === "irc-peer-roster";
+				if (!isRosterReminder) {
+					// Persist as CustomMessageEntry
+					this.sessionManager.appendCustomMessageEntry(
+						event.message.customType,
+						event.message.content,
+						event.message.display,
+						event.message.details,
+						event.message.attribution ?? "agent",
+						getSessionMessageObservationId(event.message),
+					);
+				}
 				if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
 					this.#markTtsrInjected(this.#extractTtsrRuleNames(event.message.details));
 				}
@@ -2782,8 +2818,7 @@ export class AgentSession {
 	}
 
 	#isResumableAgentTail(): boolean {
-		const lastMsg = this.agent.state.messages.at(-1);
-		return lastMsg !== undefined && lastMsg.role !== "assistant";
+		return canContinuePersistedHistory(this.agent.state.messages);
 	}
 
 	#stripOverflowFailedTurnForRetry(): void {
@@ -3786,6 +3821,8 @@ export class AgentSession {
 		} catch (error) {
 			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
 		}
+		this.#workflowGateEmitter = undefined;
+		notifyWorkflowGateEmitterChanged(this.sessionId, undefined);
 		await this.#flushWorkerIntegrationAttempt();
 		await this.#cancelPostPromptTasks();
 		// Cancel jobs this agent registered so a subagent's teardown doesn't
@@ -3848,6 +3885,18 @@ export class AgentSession {
 		}
 		this.#eventListeners = [];
 		this.#rebuildEventListenerSnapshot();
+	}
+	/**
+	 * Strict writer close for ACP session delete. On the first attempt it flushes
+	 * pending writes, then returns the certainty-aware close outcome so the caller
+	 * can block destructive mutation on a non-`closed` result. When the manager
+	 * retains a retryable writer (a prior `close_failed_retryable`), the flush is
+	 * NOT repeated: the underlying writer rejects flushes while in the retryable
+	 * state, and `SessionManager.closeStrict()` owns the flush/close sequencing so
+	 * a second call can return `closed` once the OS close lands.
+	 */
+	async closeWriterStrict(): Promise<SessionManagerCloseOutcome> {
+		return this.sessionManager.flushAndCloseStrict();
 	}
 
 	/**
@@ -3947,6 +3996,20 @@ export class AgentSession {
 		} finally {
 			this.#allowAcpAgentInitiatedTurns = previousAllowAcpAgentInitiatedTurns;
 		}
+	}
+
+	/**
+	 * Owner-scoped async-delivery snapshot used by the strict ACP delete
+	 * quiescence barrier to PROVE quiescence after a best-effort drain. Unlike
+	 * {@link drainAsyncJobDeliveriesForAcp}'s boolean return (which conflates
+	 * "nothing to drain" with "timed out"), this reads the live state directly so
+	 * any remaining queued/delivering work is observable and can block mutation.
+	 */
+	getAsyncDeliveryStateForAcp(): { queued: number; delivering: boolean } {
+		const manager = AsyncJobManager.instance();
+		if (!manager) return { queued: 0, delivering: false };
+		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		return manager.getDeliveryState(ownerFilter);
 	}
 
 	/** Most recent assistant message in agent state. */
@@ -4901,6 +4964,14 @@ export class AgentSession {
 		return this.agent.state.messages;
 	}
 
+	/** Main startup calls this exactly once, after a strict open returned `kind: "opened"`. */
+	async continuePersistedHistory(): Promise<void> {
+		if (!canContinuePersistedHistory(this.agent.state.messages)) {
+			throw new Error("Cannot continue from persisted message history");
+		}
+		await this.agent.continue();
+	}
+
 	buildDisplaySessionContext(): SessionContext {
 		return deobfuscateSessionContext(this.sessionManager.buildSessionContext(), this.#obfuscator);
 	}
@@ -5109,6 +5180,7 @@ export class AgentSession {
 
 	setWorkflowGateEmitter(emitter: WorkflowGateEmitter | undefined): void {
 		this.#workflowGateEmitter = emitter;
+		notifyWorkflowGateEmitterChanged(this.sessionId, emitter);
 		if (emitter) {
 			this.#ensureWorkflowGateAskTool();
 		}
@@ -5656,6 +5728,7 @@ export class AgentSession {
 	): Promise<void> {
 		this.#beginInFlight();
 		const generation = this.#promptGeneration;
+		const rosterClaim = this.#claimIrcRosterCandidate();
 		try {
 			// Flush any pending bash messages before the new prompt
 			this.#flushPendingBashMessages();
@@ -5707,6 +5780,11 @@ export class AgentSession {
 			}
 			const volatileProjectContextMessage = await this.#buildVolatileProjectContextMessage();
 			messages.push(volatileProjectContextMessage);
+			if (rosterClaim && this.#isCurrentIrcRosterClaim(rosterClaim.token, rosterClaim.epoch)) {
+				messages.push(rosterClaim.message);
+			} else if (rosterClaim) {
+				this.#releaseIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
+			}
 			if (options?.prependMessages) {
 				messages.push(...options.prependMessages);
 			}
@@ -5811,10 +5889,27 @@ export class AgentSession {
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
 			await this.#promptAgentWithIdleRetry(messages, agentPromptOptions);
+			const terminalAssistant = this.#findLastAssistantMessage();
+			if (
+				rosterClaim &&
+				terminalAssistant &&
+				terminalAssistant.stopReason !== "error" &&
+				terminalAssistant.stopReason !== "aborted"
+			) {
+				this.#commitIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
+			}
 			if (!options?.skipPostPromptRecoveryWait) {
 				await this.#waitForPostPromptRecovery();
 			}
 		} finally {
+			if (rosterClaim) {
+				this.agent.replaceMessages(
+					this.agent.state.messages.filter(
+						candidate => !(candidate.role === "custom" && candidate.customType === "irc-peer-roster"),
+					),
+				);
+				this.#releaseIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
+			}
 			this.#endInFlight();
 		}
 	}
@@ -6278,6 +6373,7 @@ export class AgentSession {
 				message.display,
 				message.details,
 				message.attribution ?? "agent",
+				getSessionMessageObservationId(appMessage),
 			);
 			return;
 		}
@@ -6305,6 +6401,7 @@ export class AgentSession {
 			message.display,
 			message.details,
 			message.attribution ?? "agent",
+			getSessionMessageObservationId(appMessage),
 		);
 	}
 
@@ -6786,6 +6883,8 @@ export class AgentSession {
 		this.#planReferencePath = "local://PLAN.md";
 		this.#reconnectToAgent();
 
+		this.#resetIrcRosterDeliveryState();
+
 		// Emit session_switch event with reason "new" to hooks
 		if (this.#extensionRunner) {
 			await this.#extensionRunner.emit({
@@ -6892,6 +6991,8 @@ export class AgentSession {
 		// Update agent session ID
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
+
+		this.#resetIrcRosterDeliveryState();
 
 		// Emit session_switch event with reason "fork" to hooks
 		if (this.#extensionRunner) {
@@ -7831,6 +7932,8 @@ export class AgentSession {
 			// goal/plan-mode-context copy; clear the static-once signatures.
 			this.#resetInjectedContextSignatures();
 			this.#syncTodoPhasesFromBranch();
+
+			this.#resetIrcRosterDeliveryState();
 
 			return { document: handoffText, savedPath };
 		} catch (error) {
@@ -10378,17 +10481,19 @@ export class AgentSession {
 	}): Promise<{ replyText: string | null }> {
 		const awaitReply = args.awaitReply !== false;
 		const incomingTimestamp = Date.now();
+		const incomingObservationId = crypto.randomUUID();
 		const incomingRecord: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
 			content: `[IRC \`${args.from}\` → you]\n\n${args.message}`,
 			display: true,
-			details: { from: args.from, message: args.message },
+			details: { observationId: incomingObservationId, from: args.from, message: args.message },
 			attribution: "agent",
 			timestamp: incomingTimestamp,
 		};
 		void this.#emitSessionEvent({ type: "irc_message", message: incomingRecord });
 		this.#forwardIrcRelayToMain({
+			observationId: incomingObservationId,
 			from: args.from,
 			to: this.#agentId ?? "?",
 			body: args.message,
@@ -10410,17 +10515,19 @@ export class AgentSession {
 			signal: args.signal,
 		});
 
+		const replyObservationId = crypto.randomUUID();
 		const replyRecord: CustomMessage = {
 			role: "custom",
 			customType: "irc:autoreply",
 			content: `[IRC you → \`${args.from}\` (auto)]\n\n${replyText}`,
 			display: true,
-			details: { to: args.from, reply: replyText },
+			details: { observationId: replyObservationId, to: args.from, reply: replyText },
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
 		void this.#emitSessionEvent({ type: "irc_message", message: replyRecord });
 		this.#forwardIrcRelayToMain({
+			observationId: replyObservationId,
 			from: this.#agentId ?? "?",
 			to: args.from,
 			body: replyText,
@@ -10439,6 +10546,7 @@ export class AgentSession {
 	 * it is NOT injected into the main agent's persisted history.
 	 */
 	#forwardIrcRelayToMain(args: {
+		observationId: string;
 		from: string;
 		to: string;
 		body: string;
@@ -10458,7 +10566,13 @@ export class AgentSession {
 			customType: "irc:relay",
 			content: `[IRC \`${args.from}\` ${arrow} \`${args.to}\`]\n\n${args.body}`,
 			display: true,
-			details: { from: args.from, to: args.to, body: args.body, kind: args.kind },
+			details: {
+				observationId: args.observationId,
+				from: args.from,
+				to: args.to,
+				body: args.body,
+				kind: args.kind,
+			},
 			attribution: "agent",
 			timestamp: args.timestamp,
 		};
@@ -10530,6 +10644,61 @@ export class AgentSession {
 		void this.#emitSessionEvent({ type: "subagent_steer_message", message: record });
 	}
 
+	#buildIrcRosterCandidate(): { signature: string; message: CustomMessage } | null {
+		const peers = (this.#agentRegistry?.listVisibleTo(this.#agentId ?? "") ?? [])
+			.map(peer => ({ id: peer.id, label: peer.rosterLabel || peer.displayName }))
+			.sort((left, right) => left.id.localeCompare(right.id));
+		const signature = JSON.stringify(peers);
+		if (peers.length === 0 && this.#lastDeliveredIrcRosterSignature === null) return null;
+		return {
+			signature,
+			message: {
+				role: "custom",
+				customType: "irc-peer-roster",
+				content: prompt.render(ircPeerRosterTemplate, {
+					roster: peers.map(peer => `${peer.id} (${peer.label})`).join(", "),
+				}),
+				display: false,
+				attribution: "agent",
+				timestamp: Date.now(),
+			},
+		};
+	}
+
+	#claimIrcRosterCandidate(): { token: symbol; epoch: number; message: CustomMessage } | null {
+		if (this.#ircRosterClaim) return null;
+		const candidate = this.#buildIrcRosterCandidate();
+		if (!candidate || candidate.signature === this.#lastDeliveredIrcRosterSignature) return null;
+		const token = Symbol("irc-roster");
+		const epoch = this.#ircRosterEpoch;
+		this.#ircRosterClaim = { token, signature: candidate.signature, epoch };
+		return { token, epoch, message: candidate.message };
+	}
+
+	#isCurrentIrcRosterClaim(token: symbol, epoch: number): boolean {
+		return this.#ircRosterEpoch === epoch && this.#ircRosterClaim?.token === token;
+	}
+
+	#commitIrcRosterClaim(token: symbol, epoch: number): void {
+		const claim = this.#ircRosterClaim;
+		if (this.#ircRosterEpoch !== epoch || claim?.token !== token) {
+			this.#releaseIrcRosterClaim(token, epoch);
+			return;
+		}
+		this.#lastDeliveredIrcRosterSignature = claim.signature;
+		this.#ircRosterClaim = null;
+	}
+
+	#releaseIrcRosterClaim(token: symbol, epoch: number): void {
+		if (this.#isCurrentIrcRosterClaim(token, epoch)) this.#ircRosterClaim = null;
+	}
+
+	#resetIrcRosterDeliveryState(): void {
+		this.#ircRosterEpoch += 1;
+		this.#lastDeliveredIrcRosterSignature = null;
+		this.#ircRosterClaim = null;
+	}
+
 	/**
 	 * Run a single ephemeral side-channel turn against this session's current
 	 * model + system prompt + history.  No tools are used; the side request
@@ -10546,61 +10715,84 @@ export class AgentSession {
 		onTextDelta?: (delta: string) => void;
 		signal?: AbortSignal;
 	}): Promise<{ replyText: string; assistantMessage: AssistantMessage }> {
-		const model = this.model;
-		if (!model) {
-			throw new Error("No active model on session");
-		}
-		const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
-		if (!apiKey) {
-			throw new Error(`No API key for ${model.provider}/${model.id}`);
-		}
-
-		const snapshot = this.#buildEphemeralSnapshot(args.promptText);
-		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
-		const context: Context = {
-			systemPrompt: this.systemPrompt,
-			messages: llmMessages,
-			// Empty tools array: with toolChoice="none" some encoders still serialize the
-			// recipient's tool catalog and the model leaks raw call markup
-			// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
-			// removes the surface entirely.
-			tools: [],
-		};
-		const options = this.prepareSimpleStreamOptions(
-			{
-				apiKey,
-				sessionId: this.sessionId,
-				reasoning: toReasoningEffort(this.thinkingLevel),
-				hideThinkingSummary: this.agent.hideThinkingSummary,
-				serviceTier: this.serviceTier,
-				signal: args.signal,
-				toolChoice: "none",
-			},
-			model.provider,
-		);
-
-		let replyText = "";
-		let assistantMessage: AssistantMessage | undefined;
-		const stream = streamSimple(model, context, options);
-		for await (const event of stream) {
-			if (event.type === "text_delta") {
-				replyText += event.delta;
-				if (args.onTextDelta) args.onTextDelta(event.delta);
-				continue;
+		const rosterClaim = this.#claimIrcRosterCandidate();
+		try {
+			const model = this.model;
+			if (!model) {
+				throw new Error("No active model on session");
 			}
-			if (event.type === "done") {
-				assistantMessage = event.message;
-				break;
+			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+			if (!apiKey) {
+				throw new Error(`No API key for ${model.provider}/${model.id}`);
 			}
-			if (event.type === "error") {
-				throw new Error(event.error.errorMessage || "Ephemeral turn failed");
-			}
-		}
 
-		if (!assistantMessage) {
-			throw new Error("Ephemeral turn ended without a final message");
+			const rosterMessage =
+				rosterClaim && this.#isCurrentIrcRosterClaim(rosterClaim.token, rosterClaim.epoch)
+					? rosterClaim.message
+					: undefined;
+			if (rosterClaim && !rosterMessage) {
+				this.#releaseIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
+			}
+			let snapshot = this.#buildEphemeralSnapshot(args.promptText, rosterMessage ? [rosterMessage] : undefined);
+			let llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
+			if (rosterMessage && !this.#isCurrentIrcRosterClaim(rosterClaim!.token, rosterClaim!.epoch)) {
+				this.#releaseIrcRosterClaim(rosterClaim!.token, rosterClaim!.epoch);
+				// Conversion is asynchronous, so rebuild without a claim invalidated while it awaited.
+				snapshot = this.#buildEphemeralSnapshot(args.promptText);
+				llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
+			}
+			const context: Context = {
+				systemPrompt: this.systemPrompt,
+				messages: llmMessages,
+				// Empty tools array: with toolChoice="none" some encoders still serialize the
+				// recipient's tool catalog and the model leaks raw call markup
+				// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
+				// removes the surface entirely.
+				tools: [],
+			};
+			const options = this.prepareSimpleStreamOptions(
+				{
+					apiKey,
+					sessionId: this.sessionId,
+					reasoning: toReasoningEffort(this.thinkingLevel),
+					hideThinkingSummary: this.agent.hideThinkingSummary,
+					serviceTier: this.serviceTier,
+					signal: args.signal,
+					toolChoice: "none",
+				},
+				model.provider,
+			);
+
+			let replyText = "";
+			let assistantMessage: AssistantMessage | undefined;
+			const stream = streamSimple(model, context, options);
+			for await (const event of stream) {
+				if (event.type === "text_delta") {
+					replyText += event.delta;
+					if (args.onTextDelta) args.onTextDelta(event.delta);
+					continue;
+				}
+				if (event.type === "done") {
+					assistantMessage = event.message;
+					break;
+				}
+				if (event.type === "error") {
+					throw new Error(event.error.errorMessage || "Ephemeral turn failed");
+				}
+			}
+
+			if (!assistantMessage) {
+				throw new Error("Ephemeral turn ended without a final message");
+			}
+			if (rosterClaim) {
+				this.#commitIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
+			}
+			return { replyText: dedupeIrcReply(replyText.trim()), assistantMessage };
+		} finally {
+			if (rosterClaim) {
+				this.#releaseIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
+			}
 		}
-		return { replyText: dedupeIrcReply(replyText.trim()), assistantMessage };
 	}
 
 	/**
@@ -10609,7 +10801,7 @@ export class AgentSession {
 	 * the partial response in context, then appends the prompt as a virtual
 	 * user message.
 	 */
-	#buildEphemeralSnapshot(promptText: string): AgentMessage[] {
+	#buildEphemeralSnapshot(promptText: string, prependMessages?: AgentMessage[]): AgentMessage[] {
 		const messages = [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant") {
@@ -10640,6 +10832,7 @@ export class AgentSession {
 				}
 			}
 		}
+		if (prependMessages) messages.push(...prependMessages);
 		messages.push({
 			role: "user",
 			content: [{ type: "text", text: promptText }],
@@ -10851,7 +11044,9 @@ export class AgentSession {
 
 			if (switchingToDifferentSession) {
 				this.#resetHindsightConversationTrackingIfHindsight();
+				this.#resetIrcRosterDeliveryState();
 			}
+
 			this.#reconnectToAgent();
 			return true;
 		} catch (error) {
@@ -10973,6 +11168,8 @@ export class AgentSession {
 			this.#resetInjectedContextSignatures();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 		}
+
+		this.#resetIrcRosterDeliveryState();
 
 		return { selectedText, cancelled: false };
 	}
@@ -11209,6 +11406,52 @@ export class AgentSession {
 		let totalCacheWrite = 0;
 		let totalCost = 0;
 		let totalPremiumRequests = 0;
+		const totalCostBreakdown: Usage["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+		let hasCompleteCostBreakdown = true;
+		const addCostBreakdown = (cost: unknown): void => {
+			if (!cost || typeof cost !== "object") {
+				hasCompleteCostBreakdown = false;
+				return;
+			}
+			const completeCost = cost as Usage["cost"];
+			if (
+				!Number.isFinite(completeCost.input) ||
+				completeCost.input < 0 ||
+				!Number.isFinite(completeCost.output) ||
+				completeCost.output < 0 ||
+				!Number.isFinite(completeCost.cacheRead) ||
+				completeCost.cacheRead < 0 ||
+				!Number.isFinite(completeCost.cacheWrite) ||
+				completeCost.cacheWrite < 0 ||
+				!Number.isFinite(completeCost.total) ||
+				completeCost.total < 0
+			) {
+				hasCompleteCostBreakdown = false;
+				return;
+			}
+			if (!hasCompleteCostBreakdown) return;
+			totalCostBreakdown.input += completeCost.input;
+			totalCostBreakdown.output += completeCost.output;
+			totalCostBreakdown.cacheRead += completeCost.cacheRead;
+			totalCostBreakdown.cacheWrite += completeCost.cacheWrite;
+			totalCostBreakdown.total += completeCost.total;
+			if (
+				!Number.isFinite(totalCostBreakdown.input) ||
+				!Number.isFinite(totalCostBreakdown.output) ||
+				!Number.isFinite(totalCostBreakdown.cacheRead) ||
+				!Number.isFinite(totalCostBreakdown.cacheWrite) ||
+				!Number.isFinite(totalCostBreakdown.total)
+			) {
+				hasCompleteCostBreakdown = false;
+			}
+		};
+		const hasCompleteTaskToolUsage = (details: unknown): boolean =>
+			Boolean(
+				details &&
+					typeof details === "object" &&
+					(details as Record<string, unknown>).usageCostBreakdownComplete === true,
+			);
+
 		const getTaskToolUsage = (details: unknown): Usage | undefined => {
 			if (!details || typeof details !== "object") return undefined;
 			const record = details as Record<string, unknown>;
@@ -11232,6 +11475,7 @@ export class AgentSession {
 				totalCacheWrite += assistantMsg.usage.cacheWrite;
 				totalPremiumRequests += assistantMsg.usage.premiumRequests ?? 0;
 				totalCost += assistantMsg.usage.cost.total;
+				addCostBreakdown(assistantMsg.usage.cost);
 			} else if (message.role === "toolResult") {
 				toolResults += 1;
 				if (message.toolName === "task") {
@@ -11243,6 +11487,11 @@ export class AgentSession {
 						totalCacheWrite += usage.cacheWrite;
 						totalPremiumRequests += usage.premiumRequests ?? 0;
 						totalCost += usage.cost.total;
+						if (hasCompleteTaskToolUsage(message.details)) {
+							addCostBreakdown(usage.cost);
+						} else {
+							hasCompleteCostBreakdown = false;
+						}
 					}
 				}
 			}
@@ -11264,6 +11513,7 @@ export class AgentSession {
 				total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
 			},
 			cost: totalCost,
+			...(hasCompleteCostBreakdown ? { costBreakdown: totalCostBreakdown } : {}),
 			premiumRequests: totalPremiumRequests,
 		};
 	}
@@ -11349,10 +11599,29 @@ export class AgentSession {
 	}
 
 	/**
+	 * Usage-anchor eligibility for context estimation. Mirrors the compaction
+	 * rule (see getAssistantUsage in compaction.ts): error/aborted turns carry
+	 * absent or partial usage, so they must not anchor an estimate. Anchor on
+	 * the last successful positive-usage assistant instead and let callers
+	 * estimate every later message (including error/aborted ones) as trailing
+	 * context.
+	 */
+	#anchorableAssistantUsage(message: AgentMessage): Usage | undefined {
+		if (message.role !== "assistant") return undefined;
+		const assistant = message as AssistantMessage;
+		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return undefined;
+		const usage = assistant.usage;
+		if (!usage || calculateContextTokens(usage) <= 0) return undefined;
+		return usage;
+	}
+
+	/**
 	 * Observed heuristic→actual token correction for the compaction keep window
 	 * (Finding 7). Compares the provider's real prompt tokens against the chars/4
-	 * heuristic estimate of the same content (stable system prefix + history through
-	 * the last usage-bearing assistant turn). Image-bearing content is bucketed out
+	 * heuristic estimate of the same content (stable system prefix + history
+	 * before the last usage-bearing assistant turn — that turn's own output is
+	 * the response, not part of the request's prompt, so it belongs on neither
+	 * side of the ratio). Image-bearing content is bucketed out
 	 * of BOTH sides using the identical fixed IMAGE_TOKEN_ESTIMATE so the 1200-token
 	 * image charge cannot skew the text ratio. Returns undefined when data is
 	 * insufficient, so prepareCompaction applies no correction (never the confounded
@@ -11363,9 +11632,9 @@ export class AgentSession {
 		let lastUsageIndex = -1;
 		let lastUsage: Usage | undefined;
 		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "assistant" && (msg as AssistantMessage).usage) {
-				lastUsage = (msg as AssistantMessage).usage;
+			const usage = this.#anchorableAssistantUsage(messages[i]);
+			if (usage) {
+				lastUsage = usage;
 				lastUsageIndex = i;
 				break;
 			}
@@ -11377,7 +11646,7 @@ export class AgentSession {
 		let heuristic = 0;
 		for (const block of this.agent.state.systemPrompt) heuristic += estimateTextTokensHeuristic(block);
 		let imageBlocks = 0;
-		for (let i = 0; i <= lastUsageIndex; i++) {
+		for (let i = 0; i < lastUsageIndex; i++) {
 			heuristic += this.#estimateMessageDisplayTokens(messages[i]);
 			imageBlocks += this.#countImageBlocks(messages[i]);
 		}
@@ -11402,18 +11671,16 @@ export class AgentSession {
 	} {
 		const messages = this.messages;
 
-		// Find last assistant message with usage
+		// Find the last successful assistant message with positive usage.
+		// Error/aborted turns are estimated as trailing context instead.
 		let lastUsageIndex: number | null = null;
 		let lastUsage: Usage | undefined;
 		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "assistant") {
-				const assistantMsg = msg as AssistantMessage;
-				if (assistantMsg.usage) {
-					lastUsage = assistantMsg.usage;
-					lastUsageIndex = i;
-					break;
-				}
+			const usage = this.#anchorableAssistantUsage(messages[i]);
+			if (usage) {
+				lastUsage = usage;
+				lastUsageIndex = i;
+				break;
 			}
 		}
 
@@ -11428,7 +11695,11 @@ export class AgentSession {
 			};
 		}
 
-		const usageTokens = calculatePromptTokens(lastUsage);
+		// Anchor on total context tokens (input + cache + output), not prompt-only
+		// tokens: the next request replays the anchor assistant's own output
+		// (text/reasoning/tool calls), so dropping it undercounts the very tokens
+		// a large-reasoning turn just added (Sol xhigh emits tens of thousands).
+		const usageTokens = calculateContextTokens(lastUsage);
 		let trailingTokens = 0;
 		for (let i = lastUsageIndex + 1; i < messages.length; i++) {
 			trailingTokens += estimateMessage(messages[i]);
@@ -11456,55 +11727,33 @@ export class AgentSession {
 	}
 
 	/**
-	 * Conservative inflation applied to the native-free chars/4 estimate of the
-	 * UNSENT context delta. chars/4 undercounts dense code/CJK, so we bias high
-	 * to compact slightly early rather than overflow the model window before the
-	 * next provider response re-anchors the exact count.
+	 * Conservative inflation applied to the native-free estimate of the UNSENT
+	 * context delta. The heuristic is script-aware (CJK counted ~1 token/char),
+	 * but dense non-CJK content (compact JSON, diffs, hashes) can still exceed
+	 * chars/4, so we bias high to compact slightly early rather than overflow
+	 * the model window before the next provider response re-anchors the count.
 	 */
 	#compactionDeltaInflation = 1.2;
-	#compactionDeltaTokenCache = new WeakMap<AgentMessage, { len: number; tokens: number }>();
-
-	/**
-	 * Cheap content-size signal to invalidate the compaction-delta token cache on mutation. Recursively
-	 * sums string lengths across the whole message (depth-bounded), so it covers every
-	 * provider-visible shape (text/thinking/tool args, toolResult output, tool names, etc.)
-	 * without allocating a serialized copy. A size-preserving in-place edit yields only a
-	 * benign estimate drift.
-	 */
-	#messageTokenSize(value: unknown, depth = 0): number {
-		if (depth > 6) return 0;
-		if (typeof value === "string") return value.length;
-		if (typeof value === "number" || typeof value === "boolean") return 8;
-		if (Array.isArray(value)) {
-			let size = 0;
-			for (const item of value) size += this.#messageTokenSize(item, depth + 1);
-			return size;
-		}
-		if (value && typeof value === "object") {
-			let size = 0;
-			for (const item of Object.values(value)) size += this.#messageTokenSize(item, depth + 1);
-			return size;
-		}
-		return 0;
-	}
 
 	#estimateMessageCompactionDeltaTokens(message: AgentMessage): number {
-		// Provider usage anchors the already-sent context (see calculatePromptTokens); this
-		// estimates only the UNSENT delta with the native-free chars/4 heuristic, inflated by
+		// Provider usage anchors the already-sent context (see calculateContextTokens); this
+		// estimates only the UNSENT delta with the script-aware heuristic, inflated by
 		// #compactionDeltaInflation so dense input cannot undercount us past the compaction
-		// threshold before the next provider response re-anchors the exact count. Cached per
-		// message object, invalidated by a cheap content-size signal; a rare size-preserving
-		// in-place edit yields only a benign estimate drift, never wrong output.
-		const len = this.#messageTokenSize(message);
-		const cached = this.#compactionDeltaTokenCache.get(message);
-		if (cached && cached.len === len) return cached.tokens;
+		// threshold before the next provider response re-anchors the exact count.
+		//
+		// Deliberately uncached: this feeds the compaction-threshold decision, and a
+		// stale estimate after an in-place mutation (e.g. a same-length ASCII→CJK
+		// edit, which changes the script-aware estimate up to 4x) could hold the
+		// session under the threshold while the real prompt overflows. Any cheap
+		// invalidation signal short of recomputing the estimator's own converted
+		// fragments provably admits stale reuse, and the call sites run once per
+		// prompt over the few messages trailing the usage anchor, so correctness
+		// wins over a microcache here.
 		let heuristic = 0;
 		for (const llmMessage of convertToLlm([message])) {
 			heuristic += estimateMessageTokensHeuristic(llmMessage);
 		}
-		const tokens = Math.ceil(heuristic * this.#compactionDeltaInflation);
-		this.#compactionDeltaTokenCache.set(message, { len, tokens });
-		return tokens;
+		return Math.ceil(heuristic * this.#compactionDeltaInflation);
 	}
 
 	/**
