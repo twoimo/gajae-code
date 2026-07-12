@@ -1449,8 +1449,6 @@ export class AgentSession {
 	#promptGeneration = 0;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	#temporaryProviderSessionScopes: TemporaryProviderSessionScopeRecord[] = [];
-	/** The one scope created implicitly by setModelTemporary; explicit scopes remain caller-owned. */
-	#autoTemporaryProviderSessionScope: TemporaryProviderSessionScope | undefined;
 
 	/**
 	 * Provider keys for which the Anthropic fast-mode auto-fallback fired this
@@ -1833,6 +1831,11 @@ export class AgentSession {
 		return token;
 	}
 
+	/** Returns the topmost auto-owned scope without retaining a separate ownership handle. */
+	#currentAutoTemporaryProviderSessionScope(): TemporaryProviderSessionScopeRecord | undefined {
+		return this.#temporaryProviderSessionScopes.findLast(scope => scope.autoOwned);
+	}
+
 	/** Restore a temporary scope, unwinding any auto-owned scopes above it. */
 	restoreTemporaryProviderSessionScope(token: TemporaryProviderSessionScope): boolean {
 		const scopeIndex = this.#temporaryProviderSessionScopes.findLastIndex(scope => scope.token === token);
@@ -1848,7 +1851,6 @@ export class AgentSession {
 	#restoreTopTemporaryProviderSessionScope(): void {
 		const scope = this.#temporaryProviderSessionScopes.pop();
 		if (!scope) return;
-		if (this.#autoTemporaryProviderSessionScope === scope.token) this.#autoTemporaryProviderSessionScope = undefined;
 		this.#closeProviderSessionMap(this.#providerSessionState, "temporary scope restore");
 		this.#rebindProviderSessionState(scope.providerSessionState);
 		this.#defaultFallbackController = scope.fallbackController;
@@ -1867,7 +1869,6 @@ export class AgentSession {
 		const scope = this.#temporaryProviderSessionScopes.at(-1);
 		if (!scope || scope.token !== token) return false;
 		this.#temporaryProviderSessionScopes.pop();
-		if (this.#autoTemporaryProviderSessionScope === token) this.#autoTemporaryProviderSessionScope = undefined;
 		this.#closeProviderSessionMap(scope.providerSessionState, "temporary scope commit");
 		return true;
 	}
@@ -1876,7 +1877,6 @@ export class AgentSession {
 	#commitAllTemporaryProviderSessionScopes(): void {
 		const scopes = this.#temporaryProviderSessionScopes;
 		this.#temporaryProviderSessionScopes = [];
-		this.#autoTemporaryProviderSessionScope = undefined;
 		for (const scope of scopes) this.#closeProviderSessionMap(scope.providerSessionState, "permanent model change");
 	}
 
@@ -3994,7 +3994,6 @@ export class AgentSession {
 		const maps = new Set<Map<string, ProviderSessionState>>([this.#providerSessionState]);
 		for (const scope of this.#temporaryProviderSessionScopes) maps.add(scope.providerSessionState);
 		this.#temporaryProviderSessionScopes = [];
-		this.#autoTemporaryProviderSessionScope = undefined;
 		for (const providerSessionState of maps) this.#closeProviderSessionMap(providerSessionState, reason);
 	}
 
@@ -7114,18 +7113,19 @@ export class AgentSession {
 
 		const isTemporaryOperation = options?.cause === undefined || options.cause === "temporary-operation";
 		const autoCreateScope = isTemporaryOperation && !suppliedScope;
-		const restoredAutoScope = autoCreateScope && this.#autoTemporaryProviderSessionScope !== undefined;
-		if (restoredAutoScope) {
-			this.restoreTemporaryProviderSessionScope(this.#autoTemporaryProviderSessionScope!);
+		const currentAutoScope = this.#currentAutoTemporaryProviderSessionScope();
+		const replaceAutoScope =
+			autoCreateScope && currentAutoScope !== undefined && this.#temporaryProviderSessionScopes.at(-1) === currentAutoScope;
+		if (replaceAutoScope && currentAutoScope) {
+			this.#restoreTopTemporaryProviderSessionScope();
 		}
 		const scope = isTemporaryOperation
 			? (suppliedScope ??
-				(restoredAutoScope && this.model && modelsAreEqual(this.model, model)
+				(replaceAutoScope && this.model && modelsAreEqual(this.model, model)
 					? undefined
 					: this.#beginTemporaryProviderSessionScope(options?.reason ?? "other", true)))
 			: undefined;
 		const ownsScope = scope !== undefined && !suppliedScope;
-		if (autoCreateScope && scope) this.#autoTemporaryProviderSessionScope = scope;
 		try {
 			if (isTemporaryOperation) {
 				this.agent.setModel(model);
