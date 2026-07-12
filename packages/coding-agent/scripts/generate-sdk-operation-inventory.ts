@@ -173,6 +173,7 @@ const SEAM_TO_SDK: Readonly<Record<string, string>> = {
 	"agent_session:handoff": "session.handoff",
 	"agent_session:exportToHtml": "session.export_html",
 	"agent_session:getAvailableModels": "models.list/current",
+	"agent_session:getSdkConfigItems": "config.list/get",
 	"agent_session:getActiveToolNames": "tools.list",
 	"agent_session:getQueuedMessages": "queue.messages.list",
 	"agent_session:getTodoPhases": "todo.list",
