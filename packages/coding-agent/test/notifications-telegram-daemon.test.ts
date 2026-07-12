@@ -4048,6 +4048,73 @@ test("run() persists aliases before releasing ownership on exit", async () => {
 	await daemon.run();
 	expect(fs.existsSync(daemonPaths(agentDir).aliases)).toBe(true);
 });
+describe("telegram custody loading", () => {
+	test("migrates custody before the first scan without Telegram deletion or delivery", async () => {
+		const agentDir = tempAgentDir();
+		const custodyPath = path.join(agentDir, "notifications", "telegram-deletion-custody.json");
+		fs.mkdirSync(path.dirname(custodyPath), { recursive: true });
+		fs.writeFileSync(
+			custodyPath,
+			JSON.stringify({
+				version: 1,
+				chatId: "42",
+				records: { "7": { state: "in_flight", updatedAt: 1 } },
+			}),
+		);
+
+		const s = settings(agentDir);
+		const events: string[] = [];
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: process.pid,
+			randomId: () => "owner",
+		});
+		class CustodyOrderDaemon extends TelegramNotificationDaemon {
+			override async loadTopics(): Promise<void> {
+				events.push("topics");
+			}
+
+			override async loadCustody() {
+				const result = await super.loadCustody();
+				events.push("custody");
+				return result;
+			}
+
+			override async scanRoots(): Promise<void> {
+				events.push("scan");
+				this.requestStop();
+			}
+		}
+		const bot = new FakeBotApi();
+		const daemon = new CustodyOrderDaemon({
+			settings: s,
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			createLifecycleControlServer: null,
+			scanIntervalMs: 2_147_483_647,
+		});
+
+		await daemon.run();
+
+		expect(events).toEqual(["topics", "custody", "scan"]);
+		expect(daemon.custodyLoadResult).toEqual({
+			mode: "writable",
+			migrated: true,
+			records: [{ chatId: "42", topicId: "7", state: "unknown", updatedAt: 1 }],
+		});
+		expect(JSON.parse(fs.readFileSync(custodyPath, "utf8"))).toEqual({
+			version: 2,
+			records: {
+				"42:7": { chatId: "42", topicId: "7", state: "unknown", updatedAt: 1 },
+			},
+		});
+		expect(bot.calls.filter(call => call.method === "deleteForumTopic" || call.method === "sendMessage")).toEqual([]);
+	});
+});
 
 test("a fresh daemon scanRoots reconnects an existing session endpoint", async () => {
 	FakeWs.instances = [];

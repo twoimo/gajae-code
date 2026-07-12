@@ -47,6 +47,7 @@ import { listRecentSessions } from "./recent-activity";
 import { ReplySentStore } from "./reply-sent-store";
 import { DraftStreamState, deliverDraft, shouldStreamDraft } from "./rich-draft";
 import { deliverRichActionWithFallback, deliverRichWithFallback, shouldPromoteRich } from "./rich-render";
+import { type TelegramCustodyLoadResult, TelegramCustodyStore } from "./telegram-custody-store";
 import {
 	type AliasTable,
 	buildActionMarkdown,
@@ -1024,6 +1025,9 @@ export class TelegramNotificationDaemon {
 	private running = false;
 	private readonly fsImpl: TelegramDaemonFs;
 	private readonly botApi: BotApi;
+	readonly #custodyStore: TelegramCustodyStore;
+	/** Startup custody result retained for later deletion-recovery phases. */
+	#custodyLoadResult: TelegramCustodyLoadResult | undefined;
 	private readonly topics = new TopicRegistry();
 	/** Serializes registry snapshots so an older atomic write cannot overwrite newer rename state. */
 	private topicsPersistQueue: Promise<void> = Promise.resolve();
@@ -1430,6 +1434,11 @@ export class TelegramNotificationDaemon {
 	constructor(private readonly opts: TelegramDaemonOptions) {
 		this.fsImpl = opts.fs ?? nodeFs;
 		this.replyStore = new ReplySentStore({ agentDir: opts.settings.getAgentDir(), fs: opts.fs });
+		this.#custodyStore = new TelegramCustodyStore({
+			agentDir: opts.settings.getAgentDir(),
+			fs: opts.fs,
+			now: opts.now,
+		});
 		this.aliasTable = createAliasTable();
 		this.botApi =
 			opts.botApi ??
@@ -2114,6 +2123,15 @@ export class TelegramNotificationDaemon {
 		// Restore the full serialized registry (topicId + identitySent + name) so a
 		// fresh daemon after reload does not resend identity headers or lose renames.
 		if (raw && typeof raw === "object") this.topics.load(raw);
+	}
+	get custodyLoadResult(): TelegramCustodyLoadResult | undefined {
+		return this.#custodyLoadResult;
+	}
+
+	async loadCustody(): Promise<TelegramCustodyLoadResult> {
+		const result = await this.#custodyStore.load();
+		this.#custodyLoadResult = result;
+		return result;
 	}
 
 	/** Download a Telegram file by its file_path (from getFile) into memory. */
@@ -3227,6 +3245,7 @@ export class TelegramNotificationDaemon {
 			await this.registerBotCommands();
 			await this.loadAliases();
 			await this.loadTopics();
+			await this.loadCustody();
 			await this.loadSeenUpdateIds();
 			await this.replyStore.load();
 			await this.runScan();
