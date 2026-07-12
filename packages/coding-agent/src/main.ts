@@ -1384,12 +1384,10 @@ export async function runRootCommand(
 			if ($env.PI_TIMING) {
 				logger.printTimings();
 			}
+			stopThemeWatcher();
 			if (!deps.suppressProcessExit) {
-				await session.dispose();
-				stopThemeWatcher();
-				await postmortem.quit(0);
-			} else {
-				stopThemeWatcher();
+				const exitCode = typeof process.exitCode === "number" ? process.exitCode : 0;
+				await postmortem.quit(exitCode);
 			}
 		}
 	}

@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getAgentDir } from "@gajae-code/utils";
+import { getAgentDir, isKnownSinkPeerClosedError } from "@gajae-code/utils";
 import { VERSION } from "@gajae-code/utils/dirs";
+
 import {
 	COORDINATOR_MCP_PROTOCOL_VERSION,
 	COORDINATOR_MCP_SERVER_NAME,
@@ -47,6 +48,15 @@ interface JsonRpcResponse {
 	error?: { code: number; message: string; data?: unknown };
 }
 
+function sinkErrorCode(error: unknown): string | undefined {
+	if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
+	try {
+		const code = Reflect.get(error, "code");
+		return typeof code === "string" ? code : undefined;
+	} catch {
+		return undefined;
+	}
+}
 interface CoordinatorFinalResponse {
 	text: string | null;
 	format: "markdown";
@@ -2758,9 +2768,23 @@ export interface PumpCoordinatorOptions {
 }
 
 /**
- * Pump a newline-delimited JSON-RPC stream with bounded concurrent dispatch.
- * Long-running data calls cannot block keepalive pings, while the data queue
- * remains bounded and writes stay serialized.
+ * Pump a newline-delimited JSON-RPC stream with BOUNDED concurrent dispatch.
+ *
+ * A long-running tool call (e.g. gjc_coordinator_await_turn, which polls for
+ * minutes) must not block the read loop from answering keepalive pings on the
+ * same stdio channel. But naive unbounded concurrency reintroduces its own
+ * hazards, so this pump enforces the safety envelope the coordinator needs:
+ *
+ *  - Control frames (ping) bypass the data-concurrency cap → keepalive is always
+ *    answerable even while data handlers saturate.
+ *  - Data handlers are capped at `maxDataConcurrency`; excess is queued up to
+ *    `maxQueueDepth`, then rejected as `server_busy` (bounded memory / fanout).
+ *  - A coded local `EPIPE` terminalizes writer and dispatch together; other
+ *    writer faults reject the pump without poisoning the serialized write chain.
+ *  - On EOF or a closed peer the pump drains already-running handlers (bounded
+ *    by `drainTimeoutMs`) and never promotes queued work.
+ *  - Byte chunks are decoded with a streaming decoder so multibyte characters
+ *    split across chunks are not corrupted.
  */
 export async function pumpCoordinatorMcpStream(
 	handleJsonRpc: (request: JsonRpcRequest) => Promise<JsonRpcResponse>,
@@ -2770,45 +2794,81 @@ export async function pumpCoordinatorMcpStream(
 ): Promise<void> {
 	const maxDataConcurrency = Math.max(1, options.maxDataConcurrency ?? 32);
 	const maxQueueDepth = Math.max(0, options.maxQueueDepth ?? 256);
-	const drainTimeoutMs = Math.max(0, options.drainTimeoutMs ?? 30_000);
+	const drainTimeoutMs = Math.max(1, options.drainTimeoutMs ?? 30_000);
 
-	let writeClosed = false;
+	let writerState: "open" | "terminalizing" | "closed" = "open";
 	let draining = false;
 	let writeChain: Promise<void> = Promise.resolve();
 	const inFlight = new Set<Promise<void>>();
 	let activeData = 0;
 	const dataQueue: JsonRpcRequest[] = [];
+	const peerClosed = Promise.withResolvers<void>();
+	const writerFailure = Promise.withResolvers<never>();
+	void writerFailure.promise.catch(() => {});
+	const inputIterator = input[Symbol.asyncIterator]();
+	let inputDetached = false;
+	let fatalWriterFailure: { value: unknown } | undefined;
 
-	const emit = (response: JsonRpcResponse): void => {
+	const detachInput = (): void => {
+		if (inputDetached) return;
+		inputDetached = true;
+		const detached = inputIterator.return?.();
+		if (detached) void detached.catch(() => {});
+	};
+	const terminalizePeer = (): void => {
+		if (writerState !== "open") return;
+		writerState = "terminalizing";
+		draining = true;
+		dataQueue.length = 0;
+		detachInput();
+		peerClosed.resolve();
+	};
+	const failWriter = (failure: unknown): void => {
+		if (writerState === "closed") return;
+		writerState = "closed";
+		draining = true;
+		dataQueue.length = 0;
+		detachInput();
+		fatalWriterFailure = { value: failure };
+
+		writerFailure.reject(failure);
+	};
+	const isExpectedPeerClosure = (failure: unknown): boolean =>
+		isKnownSinkPeerClosedError(failure) && sinkErrorCode(failure) === "EPIPE";
+
+	const emit = (response: JsonRpcResponse): Promise<void> => {
 		writeChain = writeChain.then(async () => {
-			if (writeClosed) return;
+			if (writerState !== "open") return;
 			try {
 				await writeLine(`${JSON.stringify(response)}\n`);
-			} catch {
-				writeClosed = true;
+			} catch (failure) {
+				if (isExpectedPeerClosure(failure)) terminalizePeer();
+				else failWriter(failure);
 			}
 		});
+		return writeChain;
 	};
 
 	const launch = (request: JsonRpcRequest, control: boolean): void => {
 		const task = (async () => {
+			let response: JsonRpcResponse;
 			try {
-				emit(await handleJsonRpc(request));
+				response = await handleJsonRpc(request);
 			} catch {
-				emit({
+				response = {
 					jsonrpc: "2.0",
 					id: request.id ?? null,
 					error: { code: -32603, message: "coordinator_request_failed" },
-				});
-			} finally {
-				if (!control) {
-					activeData -= 1;
-					if (!draining) {
-						const next = dataQueue.shift();
-						if (next) {
-							activeData += 1;
-							launch(next, false);
-						}
+				};
+			}
+			await emit(response);
+			if (!control) {
+				activeData -= 1;
+				if (!draining && writerState === "open") {
+					const next = dataQueue.shift();
+					if (next) {
+						activeData += 1;
+						launch(next, false);
 					}
 				}
 			}
@@ -2818,6 +2878,8 @@ export async function pumpCoordinatorMcpStream(
 	};
 
 	const dispatch = (request: JsonRpcRequest): void => {
+		if (writerState !== "open") return;
+		// Notifications (no id) get no response; the coordinator has no side-effecting ones.
 		if (request.id === undefined || request.id === null) return;
 		if (request.method === "ping") {
 			launch(request, true);
@@ -2832,46 +2894,75 @@ export async function pumpCoordinatorMcpStream(
 			dataQueue.push(request);
 			return;
 		}
-		emit({
+		void emit({
 			jsonrpc: "2.0",
 			id: request.id,
 			error: { code: -32000, message: "server_busy: coordinator request queue is full" },
 		});
 	};
 
+	const drainInFlightAndWrites = async (): Promise<void> => {
+		let timer: NodeJS.Timeout | undefined;
+		const timeout = new Promise<"timed_out">(resolve => {
+			timer = setTimeout(() => resolve("timed_out"), drainTimeoutMs);
+			(timer as { unref?: () => void }).unref?.();
+		});
+		const drain = async (): Promise<"drained"> => {
+			while (true) {
+				if (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+				const writes = writeChain;
+				await writes;
+				if (inFlight.size === 0 && writes === writeChain) return "drained";
+			}
+		};
+		try {
+			if ((await Promise.race([drain(), timeout])) === "timed_out") {
+				writerState = "closed";
+				draining = true;
+				dataQueue.length = 0;
+				detachInput();
+			}
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	};
+
 	const decoder = new TextDecoder();
 	let buffer = "";
-	for await (const chunk of input) {
-		buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
-		let newline = buffer.indexOf("\n");
-		while (newline >= 0) {
-			const line = buffer.slice(0, newline).trim();
-			buffer = buffer.slice(newline + 1);
-			if (line.length > 0) {
-				try {
-					dispatch(JSON.parse(line) as JsonRpcRequest);
-				} catch {
-					// Ignore malformed frames rather than terminating the stdio server.
+	let inputFailure: unknown;
+	try {
+		while (writerState === "open") {
+			const next = await Promise.race([inputIterator.next(), peerClosed.promise, writerFailure.promise]);
+			if (!next || next.done) break;
+			buffer += typeof next.value === "string" ? next.value : decoder.decode(next.value, { stream: true });
+			let newline = buffer.indexOf("\n");
+			while (newline >= 0 && writerState === "open") {
+				const line = buffer.slice(0, newline).trim();
+				buffer = buffer.slice(newline + 1);
+				if (line.length > 0) {
+					let request: JsonRpcRequest | null = null;
+					try {
+						request = JSON.parse(line) as JsonRpcRequest;
+					} catch {
+						request = null; // ignore malformed frames rather than crashing the loop
+					}
+					if (request) dispatch(request);
 				}
+				newline = buffer.indexOf("\n");
 			}
-			newline = buffer.indexOf("\n");
 		}
+	} catch (failure) {
+		inputFailure = failure;
 	}
 
+	// Input EOF or a closed peer stops promotion. One deadline bounds both the
+	// active handlers and the serialized writes they have already queued.
 	draining = true;
-	if (inFlight.size > 0) {
-		const drain = Promise.allSettled(Array.from(inFlight)).then(() => undefined);
-		if (drainTimeoutMs > 0) {
-			const timeout = Promise.withResolvers<void>();
-			const timer = setTimeout(timeout.resolve, drainTimeoutMs);
-			timer.unref?.();
-			await Promise.race([drain, timeout.promise]);
-			clearTimeout(timer);
-		} else {
-			await drain;
-		}
-	}
-	await writeChain;
+	dataQueue.length = 0;
+	await drainInFlightAndWrites();
+	if (fatalWriterFailure) throw fatalWriterFailure.value;
+	if (inputFailure !== undefined) throw inputFailure;
+	writerState = "closed";
 }
 
 export async function runCoordinatorMcpStdio(options: CoordinatorMcpServerOptions = {}): Promise<void> {

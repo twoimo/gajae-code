@@ -14,6 +14,7 @@
 ### Fixed
 
 - IRC deliveries now accept their exchange batch in the recipient's volatile current-session queue before recipient/main UI observations or sender success. Awaited deliveries generate the reply first, then accept the ordered incoming + auto-reply pair and commit the IRC roster claim before observation; provider failures and sender aborts before acceptance leave no ghost exchange, while observer failures after acceptance are isolated. This is not a durability guarantee: durable history injection remains a later flush and no fsync, recovery, persistent IDs, or deduplication was added.
+- Print mode now records terminal text-mode errors as exit status 1 (or 78 for context overflow) without bypassing output quiescence or session disposal. It retains JSON event delivery through disposal and suppresses `EPIPE` from its owned stdout; `ERR_STREAM_DESTROYED` is suppressed only after that `EPIPE` has latched, while other output failures remain errors.
 
 ## [0.10.0] - 2026-07-12
 
