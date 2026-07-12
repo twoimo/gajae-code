@@ -139,7 +139,12 @@ import { createAppendOnlyContextManager, resolveAppendOnlyMode } from "../append
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
 import type { Rule } from "../capability/rule";
-import { GJC_MODEL_ASSIGNMENT_TARGETS, isAuthenticated, MODEL_ROLE_IDS, type ModelRegistry } from "../config/model-registry";
+import {
+	GJC_MODEL_ASSIGNMENT_TARGETS,
+	isAuthenticated,
+	MODEL_ROLE_IDS,
+	type ModelRegistry,
+} from "../config/model-registry";
 import {
 	extractExplicitThinkingSelector,
 	formatModelSelectorValue,
@@ -610,7 +615,6 @@ type RetryErrorClassification =
 	| "transient"
 	| "local_unavailable"
 	| "unknown";
-
 
 function isLocalModelEndpoint(model: Model | undefined): boolean {
 	if (!model) return false;
@@ -1444,6 +1448,9 @@ export class AgentSession {
 	#promptGeneration = 0;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	#temporaryProviderSessionScopes: TemporaryProviderSessionScopeRecord[] = [];
+	/** The one scope created implicitly by setModelTemporary; explicit scopes remain caller-owned. */
+	#autoTemporaryProviderSessionScope: TemporaryProviderSessionScope | undefined;
+
 	/**
 	 * Provider keys for which the Anthropic fast-mode auto-fallback fired this
 	 * session (the provider rejected `speed:"fast"` and we retried without it).
@@ -1521,7 +1528,6 @@ export class AgentSession {
 		void this.#queueExtensionEvent(pending);
 	}
 
-
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -1596,11 +1602,11 @@ export class AgentSession {
 			injectIdle: async messages => {
 				const first = messages[0];
 				if (!first) return;
-			if (messages.length === 1) {
-				await this.agent.prompt(first, this.#managedFallbackPromptOptions());
-			} else {
-				await this.agent.prompt(messages, this.#managedFallbackPromptOptions());
-			}
+				if (messages.length === 1) {
+					await this.agent.prompt(first, this.#managedFallbackPromptOptions());
+				} else {
+					await this.agent.prompt(messages, this.#managedFallbackPromptOptions());
+				}
 			},
 			scheduleIdleFlush: run => {
 				this.#schedulePostPromptTask(
@@ -1823,6 +1829,7 @@ export class AgentSession {
 		const scope = this.#temporaryProviderSessionScopes.at(-1);
 		if (!scope || scope.token !== token) return false;
 		this.#temporaryProviderSessionScopes.pop();
+		if (this.#autoTemporaryProviderSessionScope === token) this.#autoTemporaryProviderSessionScope = undefined;
 		this.#closeProviderSessionMap(this.#providerSessionState, "temporary scope restore");
 		this.#rebindProviderSessionState(scope.providerSessionState);
 		this.#defaultFallbackController = scope.fallbackController;
@@ -1842,6 +1849,7 @@ export class AgentSession {
 		const scope = this.#temporaryProviderSessionScopes.at(-1);
 		if (!scope || scope.token !== token) return false;
 		this.#temporaryProviderSessionScopes.pop();
+		if (this.#autoTemporaryProviderSessionScope === token) this.#autoTemporaryProviderSessionScope = undefined;
 		this.#closeProviderSessionMap(scope.providerSessionState, "temporary scope commit");
 		return true;
 	}
@@ -1850,6 +1858,7 @@ export class AgentSession {
 	#commitAllTemporaryProviderSessionScopes(): void {
 		const scopes = this.#temporaryProviderSessionScopes;
 		this.#temporaryProviderSessionScopes = [];
+		this.#autoTemporaryProviderSessionScope = undefined;
 		for (const scope of scopes) this.#closeProviderSessionMap(scope.providerSessionState, "permanent model change");
 	}
 
@@ -2218,7 +2227,6 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	#handleAgentEvent = async (event: AgentEvent): Promise<void> => {
-
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -3968,6 +3976,7 @@ export class AgentSession {
 		const maps = new Set<Map<string, ProviderSessionState>>([this.#providerSessionState]);
 		for (const scope of this.#temporaryProviderSessionScopes) maps.add(scope.providerSessionState);
 		this.#temporaryProviderSessionScopes = [];
+		this.#autoTemporaryProviderSessionScope = undefined;
 		for (const providerSessionState of maps) this.#closeProviderSessionMap(providerSessionState, reason);
 	}
 
@@ -5685,7 +5694,6 @@ export class AgentSession {
 			// Reset todo reminder count on new user prompt
 			this.#todoReminderCount = 0;
 
-
 			// Validate model
 			if (!this.model) {
 				throw new Error(formatNoModelOnboardingError());
@@ -6658,9 +6666,8 @@ export class AgentSession {
 		this.abortBash();
 		this.abortEval();
 		const postPromptDrain = this.#cancelPostPromptTasks();
-		const managedLogicalRunId = this.#defaultFallbackChain().chain.entries.length > 1
-			? this.agent.currentManagedLogicalRunId
-			: undefined;
+		const managedLogicalRunId =
+			this.#defaultFallbackChain().chain.entries.length > 1 ? this.agent.currentManagedLogicalRunId : undefined;
 		this.agent.abort();
 		const cleanup = Promise.all([postPromptDrain, this.agent.waitForIdle()]).then(
 			() => ({ type: "settled" as const }),
@@ -7043,7 +7050,6 @@ export class AgentSession {
 		return this.sessionManager.buildSessionContext().models.default;
 	}
 
-
 	/**
 	 * Re-assert the session resume default ("provider/id") in the session log
 	 * WITHOUT touching the live runtime model. Appends a `model_change` with
@@ -7089,10 +7095,19 @@ export class AgentSession {
 		if (suppliedScope && this.#temporaryProviderSessionScopes.at(-1)?.token !== suppliedScope) return;
 
 		const isTemporaryOperation = options?.cause === undefined || options.cause === "temporary-operation";
+		const autoCreateScope = isTemporaryOperation && !suppliedScope;
+		const restoredAutoScope = autoCreateScope && this.#autoTemporaryProviderSessionScope !== undefined;
+		if (restoredAutoScope) {
+			this.restoreTemporaryProviderSessionScope(this.#autoTemporaryProviderSessionScope!);
+		}
 		const scope = isTemporaryOperation
-			? (options?.providerSessionScope ?? this.beginTemporaryProviderSessionScope(options?.reason ?? "other"))
+			? (suppliedScope ??
+				(restoredAutoScope && this.model && modelsAreEqual(this.model, model)
+					? undefined
+					: this.beginTemporaryProviderSessionScope(options?.reason ?? "other")))
 			: undefined;
-		const ownsScope = scope !== undefined && scope !== options?.providerSessionScope;
+		const ownsScope = scope !== undefined && !suppliedScope;
+		if (autoCreateScope && scope) this.#autoTemporaryProviderSessionScope = scope;
 		try {
 			if (isTemporaryOperation) {
 				this.agent.setModel(model);
@@ -9432,7 +9447,12 @@ export class AgentSession {
 			);
 		}
 		const trigger = classifyFallbackTrigger({ message: message.errorMessage, status: message.errorStatus });
-		if (trigger.class === "rate_limit" || trigger.class === "quota" || trigger.class === "auth" || trigger.class === "server") {
+		if (
+			trigger.class === "rate_limit" ||
+			trigger.class === "quota" ||
+			trigger.class === "auth" ||
+			trigger.class === "server"
+		) {
 			return true;
 		}
 		const classification = this.#classifyErrorForRetry(message);
@@ -9578,7 +9598,6 @@ export class AgentSession {
 		return "unknown";
 	}
 
-
 	#parseRetryAfterMsFromError(errorMessage: string): number | undefined {
 		const now = Date.now();
 		const retryAfterMsMatch = /retry-after-ms\s*[:=]\s*(\d+)/i.exec(errorMessage);
@@ -9634,7 +9653,9 @@ export class AgentSession {
 		fallbackManaged?: boolean;
 		nextFallbackAttempt?: (model: Model) => ReturnType<typeof beginAttempt>;
 		onManagedAttemptAccepted?: () => void;
-		onManagedAttemptOutcome?: (outcome: ManagedAttemptOutcome) => ManagedAttemptDecision | Promise<ManagedAttemptDecision>;
+		onManagedAttemptOutcome?: (
+			outcome: ManagedAttemptOutcome,
+		) => ManagedAttemptDecision | Promise<ManagedAttemptDecision>;
 	} {
 		const controller = this.#defaultFallbackChain();
 		if (controller.chain.entries.length < 2) return {};
@@ -9692,7 +9713,9 @@ export class AgentSession {
 			this.settings.getModelRole("default") ?? (this.model ? formatModelString(this.model) : undefined),
 		);
 		const materializeSettingsChain =
-			configuredChain?.origin === "legacy_session" && configuredChain.entries.length === 1 && settingsEntries.length > 1;
+			configuredChain?.origin === "legacy_session" &&
+			configuredChain.entries.length === 1 &&
+			settingsEntries.length > 1;
 		if (materializeSettingsChain) {
 			this.setConfiguredModelChain("default", settingsEntries, "modelRoles");
 		}
@@ -9717,7 +9740,11 @@ export class AgentSession {
 			this.#defaultFallbackChain().resetAttemptBudget();
 			return { type: "terminal", terminal: { stopReason: outcome.reason } };
 		}
-		return this.#handleRetryableError(outcome.failure.message, true, outcome.failure.transportFailure) as Promise<ManagedAttemptDecision>;
+		return this.#handleRetryableError(
+			outcome.failure.message,
+			true,
+			outcome.failure.transportFailure,
+		) as Promise<ManagedAttemptDecision>;
 	}
 
 	#managedFallbackExhaustionMessage(discarded: AssistantMessage, errorMessage: string): AssistantMessage {
@@ -9757,7 +9784,11 @@ export class AgentSession {
 		return undefined;
 	}
 
-	async #advanceDefaultFallback(controller: FallbackChainController, reason: string, attemptsUsed: number): Promise<boolean> {
+	async #advanceDefaultFallback(
+		controller: FallbackChainController,
+		reason: string,
+		attemptsUsed: number,
+	): Promise<boolean> {
 		while (!controller.isExhausted()) {
 			const selector = controller.currentSelector();
 			if (!selector) return false;
@@ -9780,7 +9811,8 @@ export class AgentSession {
 				controller.onResolutionSkip("unauthenticated");
 				continue;
 			}
-			const from = controller.tried.at(-1)?.selector ?? controller.chain.entries[controller.activeIndex - 1] ?? selector;
+			const from =
+				controller.tried.at(-1)?.selector ?? controller.chain.entries[controller.activeIndex - 1] ?? selector;
 			const to = selector;
 			this.#setModelAuthoritatively(resolved.model, "fallback-switch");
 			this.setThinkingLevel(resolved.explicitThinkingLevel ? resolved.thinkingLevel : this.thinkingLevel);
@@ -9791,7 +9823,10 @@ export class AgentSession {
 					from,
 					to,
 					reason,
-					role: controller.chain.origin === "subagent" ? (controller.chain.identity ?? controller.chain.role) : controller.chain.role,
+					role:
+						controller.chain.origin === "subagent"
+							? (controller.chain.identity ?? controller.chain.role)
+							: controller.chain.role,
 					scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
 					activeIndex: controller.activeIndex,
 					chainLength: controller.chain.entries.length,
@@ -9814,7 +9849,10 @@ export class AgentSession {
 			from,
 			to,
 			reason: "resolution",
-			role: controller.chain.origin === "subagent" ? (controller.chain.identity ?? controller.chain.role) : controller.chain.role,
+			role:
+				controller.chain.origin === "subagent"
+					? (controller.chain.identity ?? controller.chain.role)
+					: controller.chain.role,
 			scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
 			activeIndex: controller.activeIndex,
 			chainLength: controller.chain.entries.length,
@@ -9834,7 +9872,8 @@ export class AgentSession {
 	}
 
 	async #markFailedManagedCredential(trigger: { class: FallbackTriggerClass; retryAfterMs?: number }): Promise<void> {
-		if (!this.model || (trigger.class !== "auth" && trigger.class !== "quota" && trigger.class !== "rate_limit")) return;
+		if (!this.model || (trigger.class !== "auth" && trigger.class !== "quota" && trigger.class !== "rate_limit"))
+			return;
 
 		const authStorage = this.#modelRegistry.authStorage;
 		if (trigger.class === "auth") {
@@ -9895,7 +9934,8 @@ export class AgentSession {
 
 		const generation = this.#promptGeneration;
 		const errorMessage = message.errorMessage || "Unknown error";
-		const retryAfterMs = trigger.retryAfterMs ?? (managedFallback ? undefined : this.#parseRetryAfterMsFromError(errorMessage));
+		const retryAfterMs =
+			trigger.retryAfterMs ?? (managedFallback ? undefined : this.#parseRetryAfterMsFromError(errorMessage));
 		const delayMs =
 			outcome === "advance"
 				? 0
@@ -9980,7 +10020,12 @@ export class AgentSession {
 				} else {
 					const attempt = this.#retryAttempt;
 					this.#retryAttempt = 0;
-					await this.#emitSessionEvent({ type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" });
+					await this.#emitSessionEvent({
+						type: "auto_retry_end",
+						success: false,
+						attempt,
+						finalError: "Retry cancelled",
+					});
 					this.#resolveRetry();
 					return;
 				}
@@ -9990,7 +10035,12 @@ export class AgentSession {
 				this.#retryAbortController = undefined;
 				const attempt = this.#retryAttempt;
 				this.#retryAttempt = 0;
-				await this.#emitSessionEvent({ type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" });
+				await this.#emitSessionEvent({
+					type: "auto_retry_end",
+					success: false,
+					attempt,
+					finalError: "Retry cancelled",
+				});
 				this.#resolveRetry();
 				return;
 			}
@@ -10086,7 +10136,10 @@ export class AgentSession {
 		this.#resolveRetry();
 	}
 
-	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice; fallbackManaged?: boolean }): Promise<void> {
+	async #promptAgentWithIdleRetry(
+		messages: AgentMessage[],
+		options?: { toolChoice?: ToolChoice; fallbackManaged?: boolean },
+	): Promise<void> {
 		const deadline = Date.now() + 30_000;
 		for (;;) {
 			try {
@@ -10998,7 +11051,8 @@ export class AgentSession {
 
 			const sessionContext = this.buildDisplaySessionContext();
 			const didReloadConversationChange =
-				!switchingToDifferentSession && this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
+				!switchingToDifferentSession &&
+				this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 
@@ -11026,7 +11080,8 @@ export class AgentSession {
 			}
 
 			const configuredDefaultChain = sessionContext.configuredModelChains.default?.entries;
-			const defaultEntries = configuredDefaultChain ?? (sessionContext.models.default ? [sessionContext.models.default] : []);
+			const defaultEntries =
+				configuredDefaultChain ?? (sessionContext.models.default ? [sessionContext.models.default] : []);
 			this.#defaultFallbackController = undefined;
 			if (defaultEntries.length > 0) {
 				const resolution = await resolveModelChainWithAuth(

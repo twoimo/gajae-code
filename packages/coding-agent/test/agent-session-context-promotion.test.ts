@@ -119,10 +119,12 @@ describe("AgentSession context promotion", () => {
 			modelRegistry,
 		});
 
+		const originalMap = session.providerSessionState;
 		const closeSpy = vi.fn();
-		session.providerSessionState.set("openai-codex-responses", {
+		originalMap.set("openai-codex-responses", {
 			close: closeSpy,
 		} satisfies ProviderSessionState);
+
 
 		const overflowMessage = createOverflowMessage(sparkModel);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
@@ -135,8 +137,20 @@ describe("AgentSession context promotion", () => {
 		// Context promotion is a temporary operation: the prior provider session is
 		// suspended (non-destructive), not closed, during the switch.
 		expect(closeSpy).toHaveBeenCalledTimes(0);
-		// A subsequent permanent model change commits the suspended scope and
-		// closes the prior provider session exactly once.
+		const promotedMap = session.providerSessionState;
+		const promotedClose = vi.fn();
+		promotedMap.set("promoted", { close: promotedClose } satisfies ProviderSessionState);
+
+		await session.setModelTemporary(sparkModel, undefined, {
+			cause: "temporary-operation",
+			reason: "context-promotion",
+		});
+		expect(session.providerSessionState).toBe(originalMap);
+		expect(promotedClose).toHaveBeenCalledTimes(1);
+		expect(closeSpy).toHaveBeenCalledTimes(0);
+
+		// A subsequent permanent model change commits the restored provider session
+		// exactly once.
 		await session.setModel(codexModel, "default", { cause: "user-selection" });
 		expect(closeSpy).toHaveBeenCalledTimes(1);
 	});

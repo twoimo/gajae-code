@@ -30,7 +30,7 @@ function createControllerContext() {
 	}> = [];
 	const setModelTemporary = vi.fn(async () => {});
 	const setDefaultFallbackRuntimeModel = vi.fn();
-	const restoreTemporaryProviderSessionScope = vi.fn(() => true);
+
 	const session = {
 		model: model("provider-a", "current") as Model | undefined,
 		thinkingLevel: ThinkingLevel.Medium as ThinkingLevel | undefined,
@@ -59,7 +59,7 @@ function createControllerContext() {
 		},
 		setModelTemporary,
 		setDefaultFallbackRuntimeModel,
-		restoreTemporaryProviderSessionScope,
+
 		setThinkingLevel(thinkingLevel: ThinkingLevel) {
 			this.thinkingLevel = thinkingLevel;
 		},
@@ -86,7 +86,7 @@ function createControllerContext() {
 		session,
 		setModelCalls,
 		setModelTemporary,
-		restoreTemporaryProviderSessionScope,
+
 		setDefaultFallbackRuntimeModel,
 	};
 }
@@ -176,11 +176,8 @@ describe("SelectorController model batch assignments", () => {
 		expect(settings.getModelRole("default")).toBe("provider-a/original-default:medium");
 	});
 
-	test("replaces the prior temporary provider-session scope before the next pick", async () => {
-		const { ctx, setModelTemporary, restoreTemporaryProviderSessionScope } = createControllerContext();
-		const firstScope = { reason: "other" };
-		const secondScope = { reason: "other" };
-		setModelTemporary.mockResolvedValueOnce(firstScope as never).mockResolvedValueOnce(secondScope as never);
+	test("relies on AgentSession to replace the prior temporary provider-session scope", async () => {
+		const { ctx, setModelTemporary } = createControllerContext();
 		const selector = await openSelector(ctx);
 
 		await selector.__testSelectAssignment({
@@ -196,10 +193,6 @@ describe("SelectorController model batch assignments", () => {
 			selector: "provider-a/replacement:high",
 		});
 
-		expect(restoreTemporaryProviderSessionScope).toHaveBeenCalledTimes(1);
-		expect(restoreTemporaryProviderSessionScope).toHaveBeenCalledWith(firstScope);
-		expect(restoreTemporaryProviderSessionScope.mock.invocationCallOrder[0]).toBeLessThan(
-			setModelTemporary.mock.invocationCallOrder[1],
-		);
+		expect(setModelTemporary).toHaveBeenCalledTimes(2);
 	});
 });

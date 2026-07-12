@@ -8,13 +8,13 @@ import { SessionManager } from "@gajae-code/coding-agent/session/session-manager
 
 const model = { provider: "test", id: "model", api: "openai-responses", name: "model" } as Model;
 
-function createSession(streamFn?: AgentOptions["streamFn"]): AgentSession {
+function createSession(streamFn?: AgentOptions["streamFn"], models: readonly Model[] = [model]): AgentSession {
 	const agent = new Agent({ initialState: { model, systemPrompt: [], tools: [], messages: [] }, streamFn });
 	return new AgentSession({
 		agent,
 		sessionManager: SessionManager.inMemory(),
 		settings: Settings.isolated(),
-		modelRegistry: { getAvailable: () => [model], getApiKey: async () => "key" } as never,
+		modelRegistry: { getAvailable: () => models, getApiKey: async () => "key" } as never,
 	});
 }
 
@@ -111,7 +111,7 @@ describe("temporary provider-session suspension", () => {
 		expect(originalClose).toHaveBeenCalledTimes(1);
 	});
 
-	test("replaces selector temporary scopes without nesting and restores the original map", async () => {
+	test("auto-created temporary scopes replace each other and restore the original map", async () => {
 		const session = createSession();
 		const originalMap = session.providerSessionState;
 		const originalClose = vi.fn();
@@ -122,9 +122,6 @@ describe("temporary provider-session suspension", () => {
 		let activeScope: Awaited<ReturnType<typeof session.setModelTemporary>> | undefined;
 
 		for (const temporaryModel of temporaryModels) {
-			if (activeScope) {
-				expect(session.restoreTemporaryProviderSessionScope(activeScope)).toBe(true);
-			}
 			activeScope = await session.setModelTemporary(temporaryModel, undefined, {
 				cause: "temporary-operation",
 				reason: "other",
@@ -146,6 +143,28 @@ describe("temporary provider-session suspension", () => {
 		expect(originalClose).not.toHaveBeenCalled();
 		expect(temporaryMaps).toHaveLength(3);
 		expect(temporaryCloses).toSatisfy(closes => closes.every(close => close.mock.calls.length === 1));
+	});
+
+	test("temporary role cycling back rebinds the original provider-session map", async () => {
+		const slowModel = { ...model, id: "slow" } as Model;
+		const session = createSession(undefined, [model, slowModel]);
+		session.settings.set("modelRoles", { default: "test/model", slow: "test/slow" });
+		const originalMap = session.providerSessionState;
+		const originalClose = vi.fn();
+		originalMap.set("original", state(originalClose));
+
+		await session.cycleRoleModels(["default", "slow"], { temporary: true });
+		const temporaryMap = session.providerSessionState;
+		const temporaryClose = vi.fn();
+		temporaryMap.set("slow", state(temporaryClose));
+
+		await session.cycleRoleModels(["default", "slow"], { temporary: true });
+
+		expect(session.model).toBe(model);
+		expect(session.providerSessionState).toBe(originalMap);
+		expect(session.agent.providerSessionState).toBe(originalMap);
+		expect(temporaryClose).toHaveBeenCalledTimes(1);
+		expect(originalClose).not.toHaveBeenCalled();
 	});
 
 	test("temporary model picks suspend provider state and replace the runtime fallback chain", async () => {
