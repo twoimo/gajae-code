@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { TopicRegistry } from "../src/notifications/topic-registry";
+import { TopicRegistry } from "../src/sdk/bus/topic-registry";
 
 describe("TopicRegistry", () => {
 	test("creates a topic once and reuses it on resume", async () => {

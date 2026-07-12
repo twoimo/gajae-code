@@ -26,13 +26,13 @@ import * as path from "node:path";
 // relative path is used instead of the @gajae-code/natives package resolution).
 import { NotificationServer } from "../../natives/native/index.js";
 import { Settings } from "../src/config/settings";
-import { markdownToTelegramHtml, TELEGRAM_PARSE_MODE } from "../src/notifications/html-format";
+import { markdownToTelegramHtml, TELEGRAM_PARSE_MODE } from "../src/sdk/bus/html-format";
 import {
 	type BotApi,
 	registerNotificationRoot,
 	type TelegramDaemonFs,
 	TelegramNotificationDaemon,
-} from "../src/notifications/telegram-daemon";
+} from "../src/sdk/bus/telegram-daemon";
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -129,7 +129,7 @@ async function connectRealPipeline(rich?: { enabled: boolean }): Promise<Harness
 
 	// Register the session's notification root so the daemon's scanRoots discovers it.
 	await registerNotificationRoot({ settings: s, cwd, sessionId });
-	// The napi server writes its endpoint file under <stateRoot>/notifications/<id>.json,
+	// The napi server writes its endpoint file under <stateRoot>/sdk/<id>.json,
 	// which is exactly where registerNotificationRoot points the daemon to scan.
 	const stateRoot = path.join(cwd, ".gjc", "state");
 	const srv = new NotificationServer(sessionId, "tok", stateRoot, true);

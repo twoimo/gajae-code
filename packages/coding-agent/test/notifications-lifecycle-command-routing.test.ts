@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Settings } from "../src/config/settings";
-import { TELEGRAM_PARSE_MODE } from "../src/notifications/html-format";
-import { TelegramNotificationDaemon } from "../src/notifications/telegram-daemon";
+import { TELEGRAM_PARSE_MODE } from "../src/sdk/bus/html-format";
+import { TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
 
 function settings(agentDir: string): Settings {
 	const base = Settings.isolated({

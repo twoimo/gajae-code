@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatContextUpdate, formatIdentityHeader, renderThreadedFrame } from "../src/notifications/threaded-render";
+import { formatContextUpdate, formatIdentityHeader, renderThreadedFrame } from "../src/sdk/bus/threaded-render";
 
 describe("renderThreadedFrame", () => {
 	test("identity_header renders pinned bullets with identity flag", () => {

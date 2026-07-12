@@ -8,7 +8,7 @@ import {
 	normalizeLifecyclePath,
 	parseLifecycleCommand,
 	validateLifecycleTarget,
-} from "@gajae-code/coding-agent/notifications/lifecycle-commands";
+} from "@gajae-code/coding-agent/sdk/bus/lifecycle-commands";
 
 describe("lifecycle command parser (G009)", () => {
 	it("detects lifecycle command text", () => {

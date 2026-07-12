@@ -1,7 +1,7 @@
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
- * This class is shared between all run modes (interactive, print, rpc).
+ * This class is shared by interactive, print, ACP, and SDK-hosted session callers.
  * It encapsulates:
  * - Agent state access
  * - Event subscription with automatic session persistence
@@ -185,13 +185,14 @@ import type {
 } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
-import type { LoadedSubskillActivation } from "../extensibility/gjc-plugins";
+import { resolveSubskillActivationForSkillInvocation, type LoadedSubskillActivation } from "../extensibility/gjc-plugins";
 import { resolveCurrentPhaseForParent } from "../extensibility/gjc-plugins/injection";
 import { readActiveSubskillsForParent, toActiveSubskillEntry } from "../extensibility/gjc-plugins/state";
 import { loadActiveSubskillTools } from "../extensibility/gjc-plugins/tools";
 import type { HookCommandContext } from "../extensibility/hooks/types";
-import type { Skill, SkillWarning } from "../extensibility/skills";
+import { buildSkillPromptMessage, type Skill, type SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
+
 import { buildGjcRuntimeSessionEnv, consumePendingGoalModeRequest } from "../gjc-runtime/goal-mode-request";
 import {
 	assertNonEmptyGjcSessionId,
@@ -211,7 +212,7 @@ import { ensureWorkflowSkillActivationState } from "../hooks/skill-state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { shutdownAll as shutdownAllLspClients } from "../lsp/client";
 import { resolveMemoryBackend } from "../memory-backend";
-import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/unattended-session";
+import { BrokerWorkflowGateEmitter, FileGateStore, type WorkflowGateEmitter } from "../modes/shared/agent-wire/workflow-gate-broker";
 import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
@@ -273,7 +274,8 @@ import { buildNamedToolChoice, buildNamedToolChoiceResult } from "../utils/tool-
 import { buildWorkflowIntentDiff, WORKFLOW_INTENT_DIFF_CUSTOM_TYPE } from "../workflow/workflow-intent-diff";
 import { buildWorkspaceTree, type WorkspaceTree } from "../workspace-tree";
 import type { AuthStorage } from "./auth-storage";
-import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
+import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome, ClientBridgePermissionToolCall } from "./client-bridge";
+
 import {
 	type ContributionPrepOptions,
 	type ContributionPrepResult,
@@ -1212,6 +1214,12 @@ export class AgentSession {
 	#allowAcpAgentInitiatedTurns = false;
 	/** Per-session memory of allow_always / reject_always decisions for gated tools. */
 	#acpPermissionDecisions: Map<string, "allow_always" | "reject_always"> = new Map();
+	/** SDK-controlled permission policy applied before ACP client prompting. */
+	#sdkPermissionMode: "prompt" | "allow" | "deny" = "prompt";
+	/** Permission provider registered by a live SDK reverse lease. */
+	#sdkPermissionProvider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined;
+
+
 	#guardedToolWrapperCache = new WeakMap<AgentTool, Map<string, AgentTool>>();
 	#acpPermissionWrapperVersion = 0;
 
@@ -1332,7 +1340,6 @@ export class AgentSession {
 	#discoverableToolSearchIndex: DiscoverableToolSearchIndex | null = null;
 	#selectedDiscoveredToolNames = new Set<string>();
 	#discoverableToolAllowedNames: ReadonlySet<string> | undefined;
-	#rpcHostToolNames = new Set<string>();
 	#gjcSubskillToolNames = new Set<string>();
 	#gjcSubskillToolSignature: string | undefined;
 	#defaultSelectedMCPServerNames = new Set<string>();
@@ -1566,6 +1573,14 @@ export class AgentSession {
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.#setGuardedAgentTools(this.agent.state.tools);
+		const workflowGateSessionId = this.sessionManager.getSessionId();
+		assertNonEmptyGjcSessionId(workflowGateSessionId, "AgentSession workflow-gate session");
+		this.setWorkflowGateEmitter(
+			new BrokerWorkflowGateEmitter(
+				workflowGateSessionId,
+				new FileGateStore(path.join(sessionStateDir(this.sessionManager.getCwd(), workflowGateSessionId), "workflow-gates.json")),
+			),
+		);
 		this.yieldQueue = new YieldQueue({
 			isStreaming: () => this.isStreaming,
 			injectStreaming: message => this.agent.followUp(message),
@@ -1669,6 +1684,12 @@ export class AgentSession {
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
+		// SDK ToolSession callbacks capture the just-constructed session. Defer the
+		// initial ask-tool attachment until that capture has been assigned by the
+		// session factory, while retaining the durable emitter created above.
+		queueMicrotask(() => {
+			if (!this.#isDisposed) this.#ensureWorkflowGateAskTool();
+		});
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -2104,7 +2125,7 @@ export class AgentSession {
 				sessionFile: this.sessionManager.getSessionFile(),
 			});
 		// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
-		// (rpc-mode, ACP, Cursor) treat agent_end as the "session is idle" signal;
+		// (ACP, Cursor, and SDK clients) treat agent_end as the "session is idle" signal;
 		// emitting while #promptInFlightCount > 0 lets a client fire its next
 		// `prompt` into a session that still reports isStreaming === true. Flush
 		// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
@@ -3952,8 +3973,8 @@ export class AgentSession {
 	}
 
 	/** Single point for invalidating cached discovery indices. Call after any change that can
-	 *  affect which tools should be discoverable: registry mutations (refreshMCPTools,
-	 *  refreshRpcHostTools) or active-tool mutations (#applyActiveToolsByName). */
+	 *  affect which tools should be discoverable: registry mutations (refreshMCPTools)
+	 *  or active-tool mutations (#applyActiveToolsByName). */
 	#invalidateDiscoveryCaches(): void {
 		this.#discoverableMCPSearchIndex = null;
 		this.#discoverableToolSearchIndex = null;
@@ -4056,6 +4077,29 @@ export class AgentSession {
 	hasForegroundBashBackgroundRequestHandler(): boolean {
 		return this.#foregroundBashBackgroundRequestHandler !== undefined;
 	}
+
+	/** Set the SDK permission policy used by guarded ACP tool execution. */
+	setSdkPermissionMode(mode: "prompt" | "allow" | "deny"): void {
+		this.#sdkPermissionMode = mode;
+	}
+
+	/** Current SDK permission policy for guarded ACP tool execution. */
+	get sdkPermissionMode(): "prompt" | "allow" | "deny" {
+		return this.#sdkPermissionMode;
+	}
+
+	/** Register or clear the SDK reverse permission provider for this session. */
+	setSdkPermissionProvider(provider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined): void {
+		this.#sdkPermissionProvider = provider;
+		this.#acpPermissionDecisions.clear();
+		this.#acpPermissionWrapperVersion++;
+		const activeTools = this.getActiveToolNames()
+			.map(name => this.#toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => tool !== undefined);
+		this.#setGuardedAgentTools(activeTools);
+	}
+
+
 
 	/**
 	 * Ask the active managed foreground bash call to return as a background job.
@@ -4256,16 +4300,17 @@ export class AgentSession {
 		return [...new Set(activated)];
 	}
 
-	/**
-	 * Wrap a tool with a permission-gate proxy when an ACP client is connected.
-	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
-	 * the bridge exposes `requestPermission`. No-ops for all other cases.
-	 */
+	/** Wrap guarded tools so SDK permission modes remain fail-closed without a reverse provider. */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
 		const bridge = this.#clientBridge;
-		// Match the capability+method gating pattern used by read/write/bash.
-		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
+		const requestPermission = this.#sdkPermissionProvider ?? (
+			bridge?.capabilities.requestPermission && bridge.requestPermission
+				? (toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => bridge.requestPermission!(toolCall, options, signal)
+				: undefined
+		);
 		if (!PERMISSION_REQUIRED_TOOLS.has(tool.name)) return tool;
+
+
 		return new Proxy(tool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return Reflect.get(target, prop, target);
@@ -4288,6 +4333,15 @@ export class AgentSession {
 					const commandContent = command
 						? [{ type: "content" as const, content: { type: "text" as const, text: `$ ${command}` } }]
 						: undefined;
+					if (this.#sdkPermissionMode === "allow") {
+						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
+					}
+					if (this.#sdkPermissionMode === "deny") {
+						throw new ToolError(`Tool call rejected by session permission policy (${target.name})`);
+					}
+					if (!requestPermission) {
+						throw new ToolError(`Tool call rejected because no permission provider is connected (${target.name})`);
+					}
 					// Short-circuit on persisted decisions.
 					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
 					if (persisted === "allow_always") {
@@ -4307,7 +4361,8 @@ export class AgentSession {
 					signal?.addEventListener("abort", onAbort, { once: true });
 					let raced: PermissionRaceResult;
 					try {
-						const permissionPromise = bridge.requestPermission!(
+						const permissionPromise = requestPermission(
+
 							{
 								toolCallId,
 								toolName: target.name,
@@ -4386,13 +4441,14 @@ export class AgentSession {
 	#guardedToolWrapperCacheKey(): string {
 		const bridge = this.#clientBridge;
 		const acpEnabled = Boolean(bridge?.capabilities.requestPermission && bridge.requestPermission);
+		const sdkEnabled = this.#sdkPermissionProvider !== undefined;
 		const activeSkill = this.#activeSkillState?.skill ?? "";
 		const activeSkillSession = this.#activeSkillState?.sessionId ?? "";
 		return [
 			"deep-interview-mutation-v1",
 			"ultragoal-ask-v1",
 			`active=${activeSkill}:${activeSkillSession}`,
-			`acp=${acpEnabled ? "on" : "off"}:${this.#acpPermissionWrapperVersion}`,
+			`acp=${acpEnabled ? "on" : "off"}:sdk=${sdkEnabled ? "on" : "off"}:${this.#acpPermissionWrapperVersion}`,
 		].join("|");
 	}
 
@@ -4607,7 +4663,7 @@ export class AgentSession {
 	 * cache per-tool strings without preserving this property.
 	 *
 	 * Inputs NOT covered: tool input schemas; memory instructions read from disk;
-	 * and SDK-init-time closure constants in `sdk.ts` (`repeatToolDescriptions`,
+	 * and SDK-init-time closure constants in `sdk/session.ts` (`repeatToolDescriptions`,
 	 * `eagerTasks`, `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
 	 * closure-captured ones cannot change at runtime regardless of skip behavior.
 	 * For everything else, callers must explicitly call `refreshBaseSystemPrompt()`
@@ -4705,56 +4761,6 @@ export class AgentSession {
 		await this.#applyActiveToolsByName(nextActive, { previousSelectedMCPToolNames });
 	}
 
-	/**
-	 * Replace RPC host-owned tools and refresh the active tool set before the next model call.
-	 */
-	async refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
-		const nextToolNames = rpcTools.map(tool => tool.name);
-		const uniqueToolNames = new Set(nextToolNames);
-		if (uniqueToolNames.size !== nextToolNames.length) {
-			throw new Error("RPC host tool names must be unique");
-		}
-		if (uniqueToolNames.has("ask")) {
-			throw new Error('RPC host tool "ask" is reserved and cannot be supplied by the host');
-		}
-
-		for (const name of uniqueToolNames) {
-			if (this.#toolRegistry.has(name) && !this.#rpcHostToolNames.has(name)) {
-				throw new Error(`RPC host tool "${name}" conflicts with an existing tool`);
-			}
-		}
-
-		const previousRpcHostToolNames = new Set(this.#rpcHostToolNames);
-		const previousActiveToolNames = this.getActiveToolNames();
-		for (const name of previousRpcHostToolNames) {
-			this.#toolRegistry.delete(name);
-		}
-		this.#rpcHostToolNames.clear();
-
-		for (const tool of rpcTools) {
-			const finalTool = (
-				this.#extensionRunner ? new ExtensionToolWrapper(tool, this.#extensionRunner) : tool
-			) as AgentTool;
-			this.#toolRegistry.set(finalTool.name, finalTool);
-			this.#rpcHostToolNames.add(finalTool.name);
-		}
-
-		// Registry contents changed — invalidate discovery caches so the next BM25 lookup sees
-		// the new RPC-host tool set. (#applyActiveToolsByName below also invalidates, but doing
-		// it here too keeps the contract local to "registry mutated".)
-		this.#invalidateDiscoveryCaches();
-
-		const activeNonRpcToolNames = previousActiveToolNames.filter(name => !previousRpcHostToolNames.has(name));
-		const preservedRpcToolNames = previousActiveToolNames.filter(
-			name => previousRpcHostToolNames.has(name) && this.#rpcHostToolNames.has(name),
-		);
-		const autoActivatedRpcToolNames = rpcTools
-			.filter(tool => !tool.hidden && !previousRpcHostToolNames.has(tool.name))
-			.map(tool => tool.name);
-		await this.#applyActiveToolsByName(
-			Array.from(new Set([...activeNonRpcToolNames, ...preservedRpcToolNames, ...autoActivatedRpcToolNames])),
-		);
-	}
 
 	async #hasActiveGjcSubskillTools(parent: string, sessionId: string | undefined): Promise<boolean> {
 		if (!parent.trim()) return false;
@@ -5009,6 +5015,80 @@ export class AgentSession {
 			this.#planReferenceSent = false;
 			this.#planReferencePath = state.planFilePath;
 		}
+	}
+
+	async invokeSkill(name: string, args = ""): Promise<{ name: string; path: string; args?: string; lineCount?: number }> {
+		const skillName = name.trim();
+		if (!skillName) throw Object.assign(new Error("skill.invoke requires a skill name."), { code: "invalid_input" });
+		if (typeof args !== "string") throw Object.assign(new Error("skill.invoke args must be a string."), { code: "invalid_input" });
+		const skill = this.skills.find(candidate => candidate.name === skillName);
+		if (!skill) throw Object.assign(new Error(`Skill ${skillName} was not found.`), { code: "invalid_input" });
+		const activation = await resolveSubskillActivationForSkillInvocation({
+			cwd: this.sessionManager.getCwd(),
+			sessionId: this.sessionId,
+			skillName: skill.name,
+			args,
+		});
+		const built = await buildSkillPromptMessage(skill, activation.cleanedArgs, {
+			subskillActivation: activation.activation,
+			subskillActivationSet: activation.activeSubskillsToPersist,
+			cwd: this.sessionManager.getCwd(),
+			sessionId: this.sessionId,
+		});
+		await this.promptCustomMessage({
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: built.message,
+			display: true,
+			details: built.details,
+			attribution: "user",
+		});
+		return { name: skill.name, path: skill.filePath, args: activation.cleanedArgs || undefined, lineCount: built.details.lineCount };
+	}
+
+	setSdkPlanMode(on: boolean): PlanModeState | undefined {
+		if (typeof on !== "boolean") throw Object.assign(new Error("mode.plan.set requires a boolean on value."), { code: "invalid_input" });
+		if (!on) {
+			this.setPlanModeState(undefined);
+			return undefined;
+		}
+		const state: PlanModeState = { enabled: true, planFilePath: "local://PLAN.md", workflow: "parallel" };
+		this.setPlanModeState(state);
+		return state;
+	}
+
+	async operateGoal(op: "create" | "get" | "resume" | "pause" | "complete" | "drop", objective?: string): Promise<unknown> {
+		try {
+			switch (op) {
+				case "create": return await this.#goalRuntime.createGoal({ objective: objective ?? "" });
+				case "get": return this.getGoalModeState();
+				case "resume": return await this.#goalRuntime.resumeGoal();
+				case "pause": return await this.#goalRuntime.pauseGoal();
+				case "complete": return await this.#goalRuntime.completeGoalFromTool();
+				case "drop": return await this.#goalRuntime.dropGoal();
+			}
+		} catch (error) {
+			throw Object.assign(new Error(error instanceof Error ? error.message : "Goal operation failed."), { code: "invalid_input" });
+		}
+	}
+
+	getTranscript(): Array<{ id: string; role: string; textSummary: string; ts: string; body: string }> {
+		return this.sessionManager.getEntries().flatMap(entry => {
+			if (entry.type !== "message") return [];
+			const message = entry.message as unknown as { role?: unknown; content?: unknown };
+			const body = typeof message.content === "string"
+				? message.content
+				: Array.isArray(message.content)
+					? message.content
+						.map(part => typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? part.text : "")
+						.filter(Boolean)
+						.join("\n")
+					: "";
+			return [{ id: entry.id, role: typeof message.role === "string" ? message.role : "unknown", textSummary: body.slice(0, 500), ts: entry.timestamp, body }];
+		});
+	}
+
+	getTranscriptBody(entryId: string): string | undefined {
+		return this.getTranscript().find(entry => entry.id === entryId)?.body;
 	}
 
 	getGoalModeState(): GoalModeState | undefined {
@@ -5787,6 +5867,42 @@ export class AgentSession {
 				void this.abort();
 			},
 			hasPendingMessages: () => this.queuedMessageCount > 0,
+			getPendingMessageCounts: () => this.pendingMessageCounts,
+			getTranscript: () => this.getTranscript(),
+			getTranscriptBody: entryId => this.getTranscriptBody(entryId),
+			getGoalState: () => this.getGoalModeState(),
+			getTodoState: () => this.getTodoPhases(),
+			getQueuedMessages: () => this.getQueuedMessageEntries(),
+			getActiveTools: () => this.getActiveToolNames(),
+			getAllTools: () => this.getAllToolNames(),
+			cycleModel: () => this.cycleModel(),
+			cycleThinkingLevel: () => this.cycleThinkingLevel(),
+			setQueueMode: (kind, mode) => {
+				if (kind === "steering" && (mode === "all" || mode === "one-at-a-time")) {
+					this.setSteeringMode(mode);
+					return true;
+				}
+				if (kind === "follow_up" && (mode === "all" || mode === "one-at-a-time")) {
+					this.setFollowUpMode(mode);
+					return true;
+				}
+				if (kind === "interrupt" && (mode === "immediate" || mode === "wait")) {
+					this.setInterruptMode(mode);
+					return true;
+				}
+				return false;
+			},
+			invokeSkill: (name, args) => this.invokeSkill(name, args),
+			setPlanMode: on => this.setSdkPlanMode(on),
+			operateGoal: (op, objective) => this.operateGoal(op, objective),
+			getSkillState: () => this.skills.map(skill => ({ name: skill.name, description: skill.description })),
+			getConfigItems: () => ({ steeringMode: this.steeringMode, followUpMode: this.followUpMode, interruptMode: this.interruptMode }),
+			getBranchCandidates: () => this.sessionManager.getTree(),
+			getExtensions: () => this.#extensionRunner?.getExtensionPaths() ?? [],
+			getArtifact: () => undefined,
+			getJobs: () => undefined,
+			sdkBindings: () => ["cycleModel", "cycleThinkingLevel", "setQueueMode", "getSkillState", "getConfigItems", "getBranchCandidates", "getExtensions"],
+			clearContext: () => this.clearContext(),
 			shutdown: () => {
 				void this.dispose();
 				process.exit(0);
@@ -6305,6 +6421,14 @@ export class AgentSession {
 	/** Number of pending messages (includes steering, follow-up, and next-turn messages) */
 	get queuedMessageCount(): number {
 		return this.#steeringMessages.length + this.#followUpMessages.length + this.#pendingNextTurnMessages.length;
+	}
+	/** Typed pending-message counts per queue (steering, follow-up, next-turn). */
+	get pendingMessageCounts(): { steering: number; followUp: number; nextTurn: number } {
+		return {
+			steering: this.#steeringMessages.length,
+			followUp: this.#followUpMessages.length,
+			nextTurn: this.#pendingNextTurnMessages.length,
+		};
 	}
 
 	/** Whether the agent has queued steering messages that a `user_interrupt`

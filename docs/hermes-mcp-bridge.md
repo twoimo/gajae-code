@@ -8,7 +8,7 @@ gjc mcp-serve coordinator
 
 `gjc mcp-serve hermes` is accepted as a compatibility alias for the same coordinator bridge.
 
-The bridge is intentionally separate from GJC's client-side MCP runtime. It lets an external coordinator list sessions, start worktree/tmux-oriented sessions, queue bounded follow-up prompts, read status/tail/artifacts, handle structured questions, and write coordination reports without scraping terminal scrollback.
+The bridge is intentionally separate from GJC's client-side MCP runtime. It lets an external coordinator discover and control SDK-backed sessions, queue bounded follow-up prompts, read status/artifacts, handle structured questions, and write coordination reports without scraping terminal scrollback.
 
 ## Core contract and adapters
 
@@ -41,7 +41,7 @@ gjc setup hermes \
   --install
 ```
 
-The generated setup is model-agnostic and worktree-isolated. By default it renders `GJC_COORDINATOR_MCP_SESSION_COMMAND` as `gjc --worktree`, so spawned sessions launch inside a GJC-managed sibling worktree while GJC still records the original repo as the project identity for tmux/session resume. Users who need a stable named branch can set `--worktree-name`; users who need a specific local wrapper, dev checkout, or provider/model can opt in explicitly:
+The generated setup is model-agnostic and worktree-isolated. By default it renders `GJC_COORDINATOR_MCP_SESSION_COMMAND` as `gjc --worktree`, so spawned sessions launch inside a GJC-managed sibling worktree while GJC retains the source repository as project identity. Users who need a stable named branch can set `--worktree-name`; users who need a specific local wrapper, dev checkout, or provider/model can opt in explicitly:
 
 ```bash
 gjc setup hermes \
@@ -82,19 +82,17 @@ Mutating tools require both startup opt-in and per-call consent:
 export GJC_COORDINATOR_MCP_MUTATIONS="sessions,questions,reports"
 ```
 
-Every mutating MCP call must also include `allow_mutation: true`. Missing startup opt-in or missing per-call consent returns an error instead of falling back to shell or terminal relay.
+Every mutating MCP call must include `allow_mutation: true` and the required caller-provided `idempotency_key`. Missing startup opt-in, per-call consent, or an idempotency key returns an error.
 
-Real tmux/GJC actuation uses the configured GJC-compatible session command. `gjc setup hermes` writes this as `gjc --worktree` by default so GJC owns worktree creation and resume identity:
+`gjc_coordinator_start_session` uses the configured GJC-compatible session command to create a session. `gjc setup hermes` writes `gjc --worktree` by default:
 
 ```bash
 export GJC_COORDINATOR_MCP_SESSION_COMMAND="gjc --worktree"
 ```
 
-With that command configured, `gjc_coordinator_start_session` launches a detached tmux session, `gjc_coordinator_send_prompt` creates a durable turn and sends input to that pane, `gjc_coordinator_read_coordination_status` returns a canonical polling snapshot for sessions, session states, turns, questions, reports, and bounded event summaries, and `gjc_coordinator_read_tail` reads bounded advisory pane output. Tmux tail parsing is not the completion source of truth; turn completion comes from explicit durable turn state such as runtime session state or `gjc_coordinator_report_status`.
+The coordinator discovers that session's SDK endpoint, then sends prompts and answers through SDK control operations. `gjc_coordinator_read_coordination_status` returns a canonical polling snapshot for sessions, session states, turns, questions, reports, and bounded event summaries. Tmux identifiers, when supplied while registering an existing session, are advisory process metadata only; they do not provide control authority or determine turn completion.
 
 For resume safety, prefer the generated GJC-native worktree command over creating a git worktree in Hermes itself. GJC's launch path records the original repo as the project identity while running in the worktree, so session listing/resume can still group the session under the source project. If Hermes creates and later deletes an unmanaged worktree, a saved session may still exist but its cwd can be gone.
-
-When an operator needs the session to stay visible in a routed tmux pane (for example a Clawhip/Hermes/OpenClaw channel that watches stale sessions and accepts follow-up prompts), use the documented visible-session fallback instead of inventing a private terminal protocol: [`docs/gjc-session-clawhip-routing.md`](./gjc-session-clawhip-routing.md). It keeps the same worktree isolation discipline while making the router, not GJC internals, own channel ids, mentions, and notification policy.
 
 Artifact reads are canonicalized, symlink escapes are rejected, and returned content is byte-capped by `GJC_COORDINATOR_MCP_ARTIFACT_BYTE_CAP`.
 
@@ -138,23 +136,22 @@ Mutating tools:
 - `gjc_delegate_execute`
 - `gjc_delegate_team`
 
-The `gjc_delegate_*` tools are high-level, session-level delegation: each starts (or reuses) a session and sends one workflow-tagged turn that runs `/skill:ralplan`, `/skill:ultragoal`, or `/skill:team` to completion, returning a durable `turn_id`, status, and artifact references. They use the same `sessions` mutation class and fail-closed workdir gating as `gjc_coordinator_start_session`, and emit a `delegation.started` event. Pass `cwd` and `task`; set `allow_mutation: true` only with startup mutation opt-in plus per-call consent. Prefer these over manual `start_session` + `send_prompt` when delegating a whole workflow.
+The `gjc_delegate_*` tools are high-level, session-level delegation: each starts (or reuses) an SDK-discovered session and sends one workflow-tagged turn for `/skill:ralplan`, `/skill:ultragoal`, or `/skill:team`, returning a durable `turn_id`, status, and artifact references. They use the same `sessions` mutation class and fail-closed workdir gating as `gjc_coordinator_start_session`, and emit a `delegation.started` event. Pass `await_completion: true` to use the durable bounded await/report path; `timeout_ms`, `poll_interval_ms`, and `lines` apply to that completion payload. Without it, the tool returns immediately after SDK acknowledgement. Pass `cwd` and `task`; set `allow_mutation: true` and a caller-provided `idempotency_key` only with startup mutation opt-in plus per-call consent. Prefer these over manual `start_session` + `send_prompt` when delegating a whole workflow.
 
-
-`gjc_coordinator_register_session` registers an existing visible tmux-backed GJC pane as the coordinator-authoritative session. Use it when an operator has already launched a visible terminal/tmux lane and the external coordinator must send prompts to that same pane instead of creating a hidden `gjc-coordinator-*` session. The tool validates the workdir allowlist, safe session/target tokens, and tmux target liveness before writing session state.
+`gjc_coordinator_register_session` registers an existing SDK-discoverable GJC session for coordinator control. It validates the workdir allowlist and session id, then verifies endpoint discovery before writing session state. Optional tmux identifiers are retained only as advisory process metadata.
 ## Turn orchestration flow
 
 External coordinators should treat turns, not terminal scrollback, as the unit of work:
 
-1. Call `gjc_coordinator_start_session` with `allow_mutation: true`.
-2. Call `gjc_coordinator_send_prompt` with `allow_mutation: true`.
+1. Call `gjc_coordinator_start_session` with `allow_mutation: true` and `idempotency_key`.
+2. Call `gjc_coordinator_send_prompt` with `allow_mutation: true` and `idempotency_key`.
 3. Store the returned `turn_id`.
 4. Poll `gjc_coordinator_read_turn`, or call bounded `gjc_coordinator_await_turn`, until the turn is terminal.
 5. If `gjc_coordinator_list_questions` shows a question for that turn, answer with `gjc_coordinator_submit_question_answer`.
 6. Use `gjc_coordinator_report_status` with `session_id` and `turn_id` to write explicit completion/failure evidence.
    Use `status: "cancelled"` for coordinator-policy cancellation, and `status: "failed"` plus `blocker` for provider/tool/task failures.
 
-`gjc_coordinator_send_prompt` preserves the legacy `queued` and `delivered` fields and adds turn fields:
+`gjc_coordinator_send_prompt` returns versioned top-level routing fields that exactly mirror its nested durable `turn`: `status`, `queued`, and `delivered` equal `turn.status`, `turn.delivery.queued`, and `turn.delivery.delivered`; `active_turn_id` is the new turn id unless this response queued a follow-up, in which case it is the existing active turn id.
 
 ```json
 {
@@ -169,9 +166,9 @@ External coordinators should treat turns, not terminal scrollback, as the unit o
 ```
 
 A session may have only one active turn by default. A second prompt is rejected with `active_turn_exists` unless the caller explicitly passes `queue: true` or `force: true`. Queued turns are durable and the next queued turn is promoted when the active turn reaches a terminal `gjc_coordinator_report_status`. Force supersedes the previous active turn and audits that state in the turn journal.
-Coordinator cancellation is recorded through `gjc_coordinator_report_status` with terminal `status: "cancelled"`; this updates durable turn state but does not kill the underlying tmux process. If the correct policy is replacement work rather than cancellation, send the replacement prompt with `force: true` so the previous active turn is superseded and audited.
+Coordinator cancellation is recorded through `gjc_coordinator_report_status` with terminal `status: "cancelled"`; this updates durable turn state but does not control any process. If the correct policy is replacement work rather than cancellation, send the replacement prompt with `force: true` so the previous active turn is superseded and audited.
 
-`gjc_coordinator_read_turn` returns the authoritative durable turn plus advisory pane status:
+`gjc_coordinator_read_turn` returns the authoritative durable turn plus advisory SDK session status:
 
 ```json
 {

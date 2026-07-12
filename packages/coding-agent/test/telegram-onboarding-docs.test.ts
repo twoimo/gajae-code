@@ -10,7 +10,7 @@ async function readRepoFile(...segments: string[]): Promise<string> {
 describe("Telegram onboarding docs", () => {
 	it("documents the supported fallback when BotFather lacks Threaded Mode settings", async () => {
 		const onboarding = await readRepoFile("docs", "telegram-onboarding.md");
-		const sdk = await readRepoFile("docs", "notifications-sdk.md");
+		const sdk = await readRepoFile("docs", "sdk.md");
 
 		expect(onboarding).toContain("If BotFather's **Bot Settings** menu does not show **Threads Settings** or");
 		expect(onboarding).toContain("do not treat that as a setup blocker");

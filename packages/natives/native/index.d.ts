@@ -118,6 +118,10 @@ export declare class NotificationServer {
    * config commands). Must be called before [`Self::start`].
    */
   onInbound(callback: (err: null | Error, msg: InboundEvent) => void): void
+  /** Register the raw v3 SDK frame callback. Must be called before [`Self::start`]. */
+  onSdkFrame(callback: (err: null | Error, frame: SdkFrameEvent) => void): void
+  /** Register the connection-close callback. Must be called before [`Self::start`]. */
+  onConnectionClose(callback: (err: null | Error, connectionId: string) => void): void
   /**
    * Bind the loopback endpoint and start serving. Resolves with the bound
    * endpoint info once the socket is bound.
@@ -129,7 +133,7 @@ export declare class NotificationServer {
   /**
    * Broadcast an `action_needed` ask. `needed_json` is a JSON `ActionNeeded`.
    *
-   * `repliable` should be `true` only in unattended/RPC mode.
+   * `repliable` should be `true` only when an SDK workflow-gate resolver is available.
    *
    * # Errors
    * Fails if not started or `needed_json` is invalid.
@@ -153,6 +157,8 @@ export declare class NotificationServer {
    * Fails if not started or `frame_json` is not a valid `ServerMessage`.
    */
   pushFrame(frameJson: string): void
+  /** Send raw JSON to one connected v3 SDK client. */
+  sendTo(connectionId: string, json: string): void
   /**
    * Publish a replayable `session_ready` readiness signal. `ready_json` is a
    * JSON `SessionReady`. Unlike [`Self::push_frame`], this frame is buffered
@@ -189,7 +195,7 @@ export declare class NotificationServer {
    */
   reject(id: string, reason?: string | undefined | null): void
   /**
-   * Update whether the unattended gate resolver is currently available.
+   * Update whether the SDK workflow-gate resolver is currently available.
    *
    * # Errors
    * Fails if not started.
@@ -1479,6 +1485,12 @@ export interface ReplyEvent {
   answerJson: string
   /** Optional idempotency key supplied by the client. */
   idempotencyKey?: string
+}
+
+/** A raw v3 SDK frame paired with its actual WebSocket connection id. */
+export interface SdkFrameEvent {
+  connectionId: string
+  json: string
 }
 
 /**

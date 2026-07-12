@@ -6,7 +6,7 @@ usage() {
 Usage: harness-tmux-owner-start.sh <session-name> <workspace> [issue-or-pr] [branch-label] [base]
 
 Starts a GJC harness control-plane session with its RuntimeOwner resident inside tmux.
-Use this for harness/RPC dogfooding when the owner process must remain operator-visible.
+Use this for SDK/harness ownership debugging when the owner process must remain operator-visible.
 
 Env:
   GJC_HARNESS_STATE_ROOT  default: ~/.local/state/gjc-harness-tmux/<session-name>

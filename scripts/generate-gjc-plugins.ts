@@ -10,11 +10,12 @@
  *
  * Usage:
  *   bun scripts/generate-gjc-plugins.ts            # write files
- *   bun scripts/generate-gjc-plugins.ts --check    # compare bytes, exit 1 on drift
+ *   bun scripts/generate-gjc-plugins.ts --check    # compare complete file set + bytes, exit 1 on drift
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { COORDINATOR_MCP_TOOL_NAMES } from "../packages/coding-agent/src/coordinator/contract";
 
 const repoRoot = path.join(import.meta.dir, "..");
@@ -156,7 +157,7 @@ description: Use GJC's published tmux session helpers for Clawhip-visible worktr
 
 Use this skill when a task needs an operator-visible GJC session in tmux: Clawhip/Hermes/OpenClaw can watch the pane, route stale-session alerts, and send follow-up prompts while the work stays in a dedicated git worktree.
 
-Prefer Coordinator MCP for pure machine control. Prefer RPC/ACP when a host owns the tools. Use this visible-session helper flow when humans or chatops need tmux scrollback and a stable session name.
+Prefer Coordinator MCP for pure machine control. Use the SDK/ACP integration when a host owns the tools. Use this visible-session helper flow when humans or chatops need tmux scrollback and a stable session name.
 
 ## Public helpers
 
@@ -200,7 +201,7 @@ Include repository, worktree, branch, base branch, issue/PR id, scope, non-goals
 
 ## Harness owner sessions
 
-For harness/RPC dogfooding where the RuntimeOwner itself must remain visible, use:
+For SDK/harness ownership debugging where the RuntimeOwner itself must remain visible, use:
 
 \`\`\`sh
 ./scripts/gjc-session/harness-tmux-owner-start.sh <session-name> <workspace> [issue-or-pr] [branch-label] [base]
@@ -332,10 +333,31 @@ function writeFiles(files: Map<string, string>): void {
 	process.stdout.write(`Generated ${files.size} plugin file(s) under plugins/\n`);
 }
 
-function checkFiles(files: Map<string, string>): number {
+function listPluginFiles(dir: string, rel = ""): string[] {
+	if (!fs.existsSync(dir)) return [];
+	const files: string[] = [];
+	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		const entryRel = path.join(rel, entry.name);
+		const entryPath = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			files.push(...listPluginFiles(entryPath, entryRel));
+		} else {
+			// Treat symlinks and special entries as files: no unrendered entry may be installable.
+			files.push(entryRel);
+		}
+	}
+	return files;
+}
+
+export function findUnexpectedPluginFiles(files: ReadonlyMap<string, string>, root = pluginsDir): string[] {
+	const expected = new Set(files.keys());
+	return listPluginFiles(root).filter(rel => !expected.has(rel)).sort();
+}
+
+function checkFiles(files: Map<string, string>, root = pluginsDir, report = true): number {
 	const problems: string[] = [];
 	for (const [rel, content] of files) {
-		const target = path.join(pluginsDir, rel);
+		const target = path.join(root, rel);
 		let actual: string | null = null;
 		try {
 			actual = fs.readFileSync(target, "utf8");
@@ -348,13 +370,49 @@ function checkFiles(files: Map<string, string>): number {
 			problems.push(`drift: plugins/${rel}`);
 		}
 	}
+	for (const rel of findUnexpectedPluginFiles(files, root)) {
+		problems.push(`unexpected: plugins/${rel}`);
+	}
 	if (problems.length > 0) {
-		for (const problem of problems) process.stderr.write(`${problem}\n`);
-		process.stderr.write(`Plugin bundle drift detected. Run \`bun run generate-plugins\`.\n`);
+		if (report) {
+			for (const problem of problems) process.stderr.write(`${problem}\n`);
+			process.stderr.write(`Plugin bundle drift detected. Run \`bun run generate-plugins\`.\n`);
+		}
 		return 1;
 	}
 	process.stdout.write(`Plugin bundle is in sync (${files.size} file(s)).\n`);
 	return 0;
+}
+
+function runSelfTest(): void {
+	const files = renderPluginFiles();
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-plugin-self-test-"));
+	try {
+		for (const [rel, content] of files) {
+			const target = path.join(root, rel);
+			fs.mkdirSync(path.dirname(target), { recursive: true });
+			fs.writeFileSync(target, content);
+		}
+		for (const rel of [
+			path.join(PLUGIN_NAME, "commands", "stale.md"),
+			path.join(PLUGIN_NAME, "skills", "stale", "SKILL.md"),
+		]) {
+			const target = path.join(root, rel);
+			fs.mkdirSync(path.dirname(target), { recursive: true });
+			fs.writeFileSync(target, "stale\n");
+		}
+		const unexpected = findUnexpectedPluginFiles(files, root);
+		if (
+			checkFiles(files, root, false) !== 1 ||
+			!unexpected.includes(path.join(PLUGIN_NAME, "commands", "stale.md")) ||
+			!unexpected.includes(path.join(PLUGIN_NAME, "skills", "stale", "SKILL.md"))
+		) {
+			throw new Error("plugin file-set check did not reject stale command and skill files");
+		}
+		process.stdout.write("Plugin file-set self-test passed.\n");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 }
 
 export { DELEGATE_TOOLS };
@@ -364,11 +422,11 @@ if (import.meta.main) {
 		process.stderr.write(`Expected 3 delegate tools in the coordinator contract, found ${DELEGATE_TOOLS.length}.\n`);
 		process.exit(1);
 	}
-	const check = process.argv.includes("--check");
-	const files = renderPluginFiles();
-	if (check) {
-		process.exit(checkFiles(files));
+	if (process.argv.includes("--self-test")) {
+		runSelfTest();
+	} else if (process.argv.includes("--check")) {
+		process.exit(checkFiles(renderPluginFiles()));
 	} else {
-		writeFiles(files);
+		writeFiles(renderPluginFiles());
 	}
 }

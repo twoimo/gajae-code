@@ -207,7 +207,7 @@ export type GjcTeamNotificationDeliveryState =
 	| "acknowledged";
 
 export type GjcTeamPaneAttemptResult = "sent" | "queued" | "deferred" | "failed";
-export type GjcTeamMailboxDeliveryTransportKind = "notifications_sdk" | "pane";
+export type GjcTeamMailboxDeliveryTransportKind = "sdk" | "pane";
 
 export interface GjcTeamNotification {
 	id: string;
@@ -234,7 +234,7 @@ export interface GjcTeamMailboxDeliveryInput {
 	env: NodeJS.ProcessEnv;
 }
 export type GjcTeamMailboxDeliveryResult =
-	| { transport: "notifications_sdk"; state: GjcTeamNotificationDeliveryState; reason?: string }
+	| { transport: "sdk"; state: GjcTeamNotificationDeliveryState; reason?: string }
 	| { transport: "pane"; state: GjcTeamPaneAttemptResult; reason?: string };
 export interface GjcTeamMailboxDeliveryTransport {
 	deliverMailboxMessage(input: GjcTeamMailboxDeliveryInput): Promise<GjcTeamMailboxDeliveryResult | null>;
@@ -4004,7 +4004,7 @@ async function attemptConfiguredMailboxTransport(
 			env,
 		});
 		if (!result) return null;
-		if (result.transport === "notifications_sdk" && result.state === "failed") return null;
+		if (result.transport === "sdk" && result.state === "failed") return null;
 		return writeNotificationRecord(dir, {
 			...notification,
 			delivery_state: result.state,

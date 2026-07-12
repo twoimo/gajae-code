@@ -14,32 +14,98 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type {
-	RpcWorkflowGate,
-	RpcWorkflowGateContext,
-	RpcWorkflowGateKind,
-	RpcWorkflowGateOption,
-	RpcWorkflowGateResolution,
-	RpcWorkflowGateResponse,
-	RpcWorkflowStage,
-} from "../../rpc/rpc-types";
-import { RESERVED_WORKFLOW_STAGES } from "../../rpc/rpc-types";
+	WorkflowGate,
+	WorkflowGateContext,
+	WorkflowGateKind,
+	WorkflowGateOption,
+	WorkflowGateResolution,
+	WorkflowGateResponse,
+	WorkflowStage,
+} from "./workflow-gate-types";
+import { RESERVED_WORKFLOW_STAGES } from "./workflow-gate-types";
 import { answerHashOf, canonicalJson, compileGateSchema, schemaHash, validateGateAnswer } from "./workflow-gate-schema";
 
-const V1_STAGES: readonly RpcWorkflowStage[] = ["deep-interview", "ralplan", "ultragoal"];
+/** SDK-native surface for emitting a workflow gate and awaiting its answer. */
+export interface WorkflowGateEmitter {
+	isUnattended(): boolean;
+	emitGate(input: OpenGateInput): Promise<unknown>;
+	onGateEmitted?(listener: (gate: WorkflowGate) => void): () => void;
+	resolveGate?(response: WorkflowGateResponse): Promise<WorkflowGateResolution>;
+	listPendingGates?(): WorkflowGate[];
+}
+
+/**
+ * SDK-native workflow-gate emitter backed by a durable broker/store pair.
+ *
+ * Answers are resolved by the broker, so validation and idempotency have one
+ * authority. Listeners replay durable pending gates when attached, allowing an
+ * SDK host that starts after a gate was opened to discover it.
+ */
+export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
+	private readonly listeners = new Set<(gate: WorkflowGate) => void>();
+	private readonly waiters = new Map<string, { resolve(answer: unknown): void }>();
+	private readonly broker: WorkflowGateBroker;
+
+	constructor(runId: string, private readonly store: GateStore) {
+		this.broker = new WorkflowGateBroker(runId, store, {
+			emit: gate => {
+				for (const listener of this.listeners) listener(gate);
+			},
+			advance: (gate, answer) => {
+				const waiter = this.waiters.get(gate.gate_id);
+				if (!waiter) return;
+				this.waiters.delete(gate.gate_id);
+				waiter.resolve(answer);
+			},
+		});
+	}
+
+	isUnattended(): boolean {
+		return true;
+	}
+
+	emitGate(input: OpenGateInput): Promise<unknown> {
+		const gate = this.broker.openGate(input);
+		// A listener may answer synchronously while the broker emits. The durable
+		// record is the source of truth in that race; never strand its promise.
+		const persisted = this.store.get(gate.gate_id);
+		if (persisted?.status === "accepted") return Promise.resolve(persisted.answer);
+		return new Promise(resolve => this.waiters.set(gate.gate_id, { resolve }));
+	}
+
+	onGateEmitted(listener: (gate: WorkflowGate) => void): () => void {
+		this.listeners.add(listener);
+		for (const gate of this.listPendingGates()) listener(gate);
+		return () => this.listeners.delete(listener);
+	}
+
+	resolveGate(response: WorkflowGateResponse): Promise<WorkflowGateResolution> {
+		return this.broker.resolve(response);
+	}
+
+	listPendingGates(): WorkflowGate[] {
+		return this.store
+			.list()
+			.filter(record => record.status === "pending")
+			.map(record => record.gate);
+	}
+}
+
+const V1_STAGES: readonly WorkflowStage[] = ["deep-interview", "ralplan", "ultragoal"];
 
 export interface PersistedGate {
-	gate: RpcWorkflowGate;
+	gate: WorkflowGate;
 	status: "pending" | "accepted";
 	idempotencyKey?: string;
 	responseHash?: string;
 	/** Raw accepted answer, retained so a crashed advance can be replayed. */
 	answer?: unknown;
-	resolution?: RpcWorkflowGateResolution;
+	resolution?: WorkflowGateResolution;
 	advanced: boolean;
 }
 
 export interface GateStore {
-	nextSeq(stage: RpcWorkflowStage): number;
+	nextSeq(stage: WorkflowStage): number;
 	put(record: PersistedGate): void;
 	get(gateId: string): PersistedGate | undefined;
 	/** All persisted gate records (used for crash recovery). */
@@ -47,10 +113,10 @@ export interface GateStore {
 }
 
 export class MemoryGateStore implements GateStore {
-	private counters = new Map<RpcWorkflowStage, number>();
+	private counters = new Map<WorkflowStage, number>();
 	private gates = new Map<string, PersistedGate>();
 
-	nextSeq(stage: RpcWorkflowStage): number {
+	nextSeq(stage: WorkflowStage): number {
 		const next = (this.counters.get(stage) ?? 0) + 1;
 		this.counters.set(stage, next);
 		return next;
@@ -115,7 +181,7 @@ export class FileGateStore implements GateStore {
 		}
 		renameSync(tmp, this.filePath);
 	}
-	nextSeq(stage: RpcWorkflowStage): number {
+	nextSeq(stage: WorkflowStage): number {
 		const next = (this.state.counters[stage] ?? 0) + 1;
 		this.state.counters[stage] = next;
 		this.flush();
@@ -135,7 +201,7 @@ export class FileGateStore implements GateStore {
 }
 
 export type GateAuditEvent =
-	| { event: "gate_emitted"; gate_id: string; stage: RpcWorkflowStage; kind: RpcWorkflowGateKind }
+	| { event: "gate_emitted"; gate_id: string; stage: WorkflowStage; kind: WorkflowGateKind }
 	| { event: "gate_response_accepted"; gate_id: string; answer_hash: string }
 	| { event: "gate_response_rejected"; gate_id: string; answer_hash: string }
 	| { event: "gate_response_idempotent_replay"; gate_id: string }
@@ -146,23 +212,23 @@ export type GateAuditEvent =
 
 export interface BrokerHooks {
 	/** Called once when a pending gate has been persisted and should be emitted. */
-	emit?(gate: RpcWorkflowGate): void;
+	emit?(gate: WorkflowGate): void;
 	/**
 	 * Invoked to advance the workflow after an accepted resolution is durably
 	 * committed. MUST be idempotent keyed by `gate.gate_id`: `recover()` replays
 	 * it for any gate left `accepted` but not `advanced` by a crash.
 	 */
-	advance?(gate: RpcWorkflowGate, answer: unknown): void | Promise<void>;
+	advance?(gate: WorkflowGate, answer: unknown): void | Promise<void>;
 	/** Append-only audit sink. */
 	audit?(event: GateAuditEvent): void;
 }
 
 export interface OpenGateInput {
-	stage: RpcWorkflowStage;
-	kind: RpcWorkflowGateKind;
-	schema: RpcWorkflowGate["schema"];
-	options?: RpcWorkflowGateOption[];
-	context?: RpcWorkflowGateContext;
+	stage: WorkflowStage;
+	kind: WorkflowGateKind;
+	schema: WorkflowGate["schema"];
+	options?: WorkflowGateOption[];
+	context?: WorkflowGateContext;
 }
 
 export class WorkflowGateBrokerError extends Error {
@@ -187,7 +253,7 @@ export class WorkflowGateBroker {
 	}
 
 	/** Open and emit a gate. The pending record is persisted BEFORE emission. */
-	openGate(input: OpenGateInput): RpcWorkflowGate {
+	openGate(input: OpenGateInput): WorkflowGate {
 		if (RESERVED_WORKFLOW_STAGES.includes(input.stage) || !V1_STAGES.includes(input.stage)) {
 			throw new WorkflowGateBrokerError(
 				"invalid_workflow_stage",
@@ -198,7 +264,7 @@ export class WorkflowGateBroker {
 		compileGateSchema(input.schema);
 		const seq = this.store.nextSeq(input.stage).toString().padStart(6, "0");
 		const gateId = `wg_${this.runShort()}_${input.stage}_${seq}`;
-		const gate: RpcWorkflowGate = {
+		const gate: WorkflowGate = {
 			type: "workflow_gate",
 			gate_id: gateId,
 			stage: input.stage,
@@ -222,7 +288,7 @@ export class WorkflowGateBroker {
 	 * On success the resolution is persisted BEFORE `advance` is invoked exactly
 	 * once. Invalid answers leave the gate pending (per #315 acceptance).
 	 */
-	async resolve(response: RpcWorkflowGateResponse): Promise<RpcWorkflowGateResolution> {
+	async resolve(response: WorkflowGateResponse): Promise<WorkflowGateResolution> {
 		const record = this.store.get(response.gate_id);
 		if (!record) {
 			this.hooks.audit?.({ event: "gate_response_unknown_gate", gate_id: response.gate_id });
@@ -235,7 +301,7 @@ export class WorkflowGateBroker {
 			const sameKey = record.idempotencyKey === response.idempotency_key;
 			if (response.idempotency_key !== undefined && sameKey && sameBody) {
 				this.hooks.audit?.({ event: "gate_response_idempotent_replay", gate_id: response.gate_id });
-				return record.resolution as RpcWorkflowGateResolution;
+				return record.resolution as WorkflowGateResolution;
 			}
 			if (response.idempotency_key !== undefined && sameKey && !sameBody) {
 				this.hooks.audit?.({ event: "gate_response_idempotency_conflict", gate_id: response.gate_id });
@@ -263,7 +329,7 @@ export class WorkflowGateBroker {
 			};
 		}
 
-		const resolution: RpcWorkflowGateResolution = {
+		const resolution: WorkflowGateResolution = {
 			gate_id: response.gate_id,
 			status: "accepted",
 			answer_hash: answerHash,

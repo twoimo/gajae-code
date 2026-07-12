@@ -5,13 +5,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseNotifyArgs, promptForToken, runNotifyCliCommand, runNotifyCommand } from "../src/cli/notify-cli";
 import { Settings } from "../src/config/settings";
-import { getNotificationConfig, maskToken } from "../src/notifications/config";
+import { getNotificationConfig, maskToken } from "../src/sdk/bus/config";
 import {
 	createLightweightDaemonSettings,
 	loadLightweightDaemonSettings,
 	ownerPidFromOwnerId,
 	runDaemonInternal,
-} from "../src/notifications/telegram-daemon-cli";
+} from "../src/sdk/bus/telegram-daemon-cli";
 
 type FakeCall = { method: string; body: Record<string, unknown> };
 
@@ -299,7 +299,7 @@ describe("notify setup cli", () => {
 		);
 
 		expect(exitCode).toBe(130);
-		expect(stderr).toBe("Telegram notify setup cancelled.\n");
+		expect(stderr).toBe("Notify setup cancelled.\n");
 		expect(stderr).not.toContain("[Uncaught Exception]");
 		expect(stderr).not.toContain("Telegram bot token prompt cancelled.");
 		expect(getNotificationConfig(settings).enabled).toBe(false);

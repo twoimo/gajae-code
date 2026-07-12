@@ -4,9 +4,9 @@ import {
 	deliverRichActionWithFallback,
 	deliverRichWithFallback,
 	shouldPromoteRich,
-} from "../src/notifications/rich-render";
-import type { BotApi } from "../src/notifications/telegram-daemon";
-import type { ThreadedSend } from "../src/notifications/threaded-render";
+} from "../src/sdk/bus/rich-render";
+import type { BotApi } from "../src/sdk/bus/telegram-daemon";
+import type { ThreadedSend } from "../src/sdk/bus/threaded-render";
 
 /** A valid finalized send that satisfies the rich-markdown marker clauses. */
 function makeSend(over: Partial<ThreadedSend> = {}): ThreadedSend {

@@ -10,7 +10,7 @@ Gajae-Code notifications are a loopback WebSocket SDK plus a managed Telegram
 reference daemon:
 
 - each GJC session publishes a local notification endpoint under
-  `.gjc/state/notifications/<sessionId>.json`;
+  `.gjc/state/sdk/<sessionId>.json`;
 - the managed Telegram daemon scans those endpoints, connects to them, and sends
   action-needed events to the configured Telegram chat;
 - replies and inline button taps route back to the exact session/action through
@@ -162,7 +162,7 @@ these are present:
 - `notifications.telegram.botToken`
 - `notifications.telegram.chatId`
 
-Environment/session precedence from `packages/coding-agent/src/notifications/config.ts`:
+Environment/session precedence from `packages/coding-agent/src/sdk/bus/config.ts`:
 
 1. `GJC_NOTIFICATIONS=0` is a hard opt-out.
 2. Local `/notify off` disables only the current session.
@@ -261,7 +261,7 @@ Inside a running GJC session:
 The manual Telegram CLI remains a reference/debug tool:
 
 ```sh
-bun run packages/coding-agent/src/notifications/telegram-cli.ts --bot-token "$BOT_TOKEN"
+bun run packages/coding-agent/src/sdk/bus/telegram-cli.ts --bot-token "$BOT_TOKEN"
 ```
 
 If a fresh managed daemon already owns the same bot token and paired chat, the
@@ -308,7 +308,7 @@ Check, in order:
 1. `gjc notify status`
 2. `GJC_NOTIFICATIONS` is not set to `0`
 3. the session has not run `/notify off`
-4. the repo has `.gjc/state/notifications/<sessionId>.json`
+4. the repo has `.gjc/state/sdk/<sessionId>.json`
 5. the managed daemon state is fresh under the GJC agent notifications directory
 
 Do not paste endpoint discovery files into public issues; they contain the

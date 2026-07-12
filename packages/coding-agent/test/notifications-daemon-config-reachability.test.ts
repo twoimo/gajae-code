@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { YAML } from "bun";
 import type { Settings } from "../src/config/settings";
-import { getNotificationConfig } from "../src/notifications/config";
-import { createLightweightDaemonSettings } from "../src/notifications/telegram-daemon-cli";
+import { getNotificationConfig, isDiscordConfigured, isGloballyConfigured, isSlackConfigured } from "../src/sdk/bus/config";
+import { createLightweightDaemonSettings } from "../src/sdk/bus/telegram-daemon-cli";
 
 // The daemon is spawned as a lightweight process that reads config.yml into a
 // raw object and exposes it through createLightweightDaemonSettings, NOT the
@@ -49,6 +49,36 @@ describe("notifications daemon config reachability (rich)", () => {
 	test("stale richFinal config is ignored", () => {
 		const cfg = cfgFromRaw({ notifications: { telegram: { richFinal: { enabled: false, topicId: "9001" } } } });
 		expect(cfg.rich).toEqual({ enabled: true });
+	});
+});
+
+describe("notifications daemon config reachability (providers)", () => {
+	test("complete providers are reachable and partial providers are rejected", () => {
+		const completeDiscord = cfgFromRaw({
+			notifications: {
+				enabled: true,
+				discord: { botToken: "discord-secret", applicationId: "app", guildId: "guild", parentChannelId: "parent" },
+			},
+		});
+		expect(isDiscordConfigured(completeDiscord)).toBe(true);
+		expect(isGloballyConfigured(completeDiscord)).toBe(true);
+		const partialDiscord = cfgFromRaw({ notifications: { enabled: true, discord: { botToken: "discord-secret" } } });
+		expect(isDiscordConfigured(partialDiscord)).toBe(false);
+		expect(isGloballyConfigured(partialDiscord)).toBe(false);
+
+		const completeSlack = cfgFromRaw({
+			notifications: {
+				enabled: true,
+				slack: { botToken: "slack-bot-secret", appToken: "slack-app-secret", workspaceId: "workspace", channelId: "channel" },
+			},
+		});
+		expect(isSlackConfigured(completeSlack)).toBe(true);
+		expect(isGloballyConfigured(completeSlack)).toBe(true);
+		const partialSlack = cfgFromRaw({
+			notifications: { enabled: true, slack: { botToken: "slack-bot-secret", appToken: "slack-app-secret" } },
+		});
+		expect(isSlackConfigured(partialSlack)).toBe(false);
+		expect(isGloballyConfigured(partialSlack)).toBe(false);
 	});
 });
 

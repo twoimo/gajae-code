@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
-import { getTelegramFileSink } from "../src/notifications/attachment-registry";
-import { createNotificationsExtension } from "../src/notifications/index";
-import { readEndpoint } from "../src/notifications/telegram-reference";
+import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
+import { createNotificationsExtension } from "../src/sdk/bus/index";
+import { readEndpoint } from "../src/sdk/bus/telegram-reference";
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 async function waitFor(pred: () => boolean, ms = 4000, label = "condition"): Promise<void> {
@@ -64,7 +64,7 @@ function createHarness(redact: boolean) {
 			getCwd: () => cwd,
 		},
 	} as never;
-	const endpoint = () => path.join(cwd, ".gjc", "state", "notifications", `${sid}.json`);
+	const endpoint = () => path.join(cwd, ".gjc", "state", "sdk", `${sid}.json`);
 
 	return {
 		handlers,

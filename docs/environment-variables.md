@@ -453,7 +453,6 @@ Extra conditional behavior:
 | `GJC_TIMING`                  | If set (any non-empty value), prints a hierarchical timing-span tree to **stderr** via `logger.printTimings()`. In interactive mode the tree prints once the agent is ready (before the TUI starts); in print mode it prints after the whole prompt batch completes. Print-mode prompts are wrapped in `print:prompt:initial` / `print:prompt:next` spans so each user message shows up as its own row. `GJC_TIMING=x` exits the process with code 0 right after printing in interactive mode (use to measure cold startup only). `GJC_TIMING=full` lists every module-load entry instead of just the top N. |
 | `GJC_PACKAGE_DIR`             | Overrides package asset base dir resolution (docs/examples/changelog path lookup)                  |
 | `GJC_DISABLE_LSPMUX`          | If `1`, disables lspmux detection/integration and forces direct LSP server spawning                |
-| `GJC_RPC_EMIT_TITLE`          | Boolean-like flag enabling title events in RPC mode                                                |
 | `SMITHERY_URL`               | Smithery web URL override (default `https://smithery.ai`)                                          |
 | `SMITHERY_API_URL`           | Smithery API base URL override (default `https://api.smithery.ai`)                                 |
 | `PUPPETEER_EXECUTABLE_PATH`  | Browser tool Chromium executable override                                                          |
@@ -544,25 +543,9 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 
 ---
 
-## 11) Bridge mode (`--mode bridge`)
+## 11) Removed ingress modes
 
-Consumed by `packages/coding-agent/src/modes/bridge/*`. The bridge is a
-network-reachable control surface and is **secure-by-default**: it refuses to
-start without TLS and a bearer token, and the 0.3.1 default endpoint matrix
-fail-closes session events, commands, controller ownership, UI responses, host
-tool results, and host URI results. See `docs/bridge.md` for protocol details.
-
-| Variable | Required | Default | Behavior |
-| --- | --- | --- | --- |
-| `GJC_BRIDGE_TOKEN` | Yes | — | Bearer token required on authenticated endpoints. **Secret — never commit.** |
-| `GJC_BRIDGE_TLS_CERT` | Yes | — | Path to the TLS certificate (PEM). Startup fails closed if cert/key are missing (TLS is mandatory, including loopback). |
-| `GJC_BRIDGE_TLS_KEY` | Yes | — | Path to the TLS private key (PEM). **Secret — never commit; `chmod 600`.** |
-| `GJC_BRIDGE_HOST` | No | `127.0.0.1` | Bind hostname. |
-| `GJC_BRIDGE_PORT` | No | `4077` | Bind port (1–65535). |
-| `GJC_BRIDGE_SCOPES` | No | `prompt` | Parsed for dormant command-surface compatibility. Valid scopes: `prompt`, `control`, `bash`, `export`, `session`, `model`, `message:read`, `host_tools`, `host_uri`, `admin`. The default endpoint matrix still advertises no accepted scopes and rejects commands before scope checks. |
-
-Local development with a self-signed certificate must add the local CA to the
-client trust store; there is no plaintext or certificate-verification-bypass mode.
+`--mode rpc`, `--mode rpc-ui`, and `--mode bridge` have been removed. The retired bridge-prefixed variables and `GJC_RPC_EMIT_TITLE` are not runtime configuration variables. Use the [SDK machine interface](./sdk.md) for external machine control.
 
 ---
 
@@ -574,6 +557,5 @@ Treat these as secrets; do not log or commit them:
 - Cloud credentials (`AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS` path may expose service-account material)
 - Search/provider auth vars (`EXA_API_KEY`, `BRAVE_API_KEY`, `PERPLEXITY_API_KEY`, Anthropic search keys)
 - Foundry mTLS material (`ANTHROPIC_MODEL_CODE_CLIENT_CERT`, `ANTHROPIC_MODEL_CODE_CLIENT_KEY`, `NODE_EXTRA_CA_CERTS` when it points to private CA bundles)
-- Bridge auth/TLS material (`GJC_BRIDGE_TOKEN` and the `GJC_BRIDGE_TLS_KEY` private key; never commit cert/key/token material)
 
 Python runtime also explicitly strips many common key vars before spawning kernel subprocesses (`packages/coding-agent/src/eval/py/runtime.ts`).

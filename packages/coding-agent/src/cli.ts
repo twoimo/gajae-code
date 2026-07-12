@@ -7,6 +7,7 @@
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
+import { runChatDaemonInternal } from "./sdk/bus/chat-daemon-cli";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -39,6 +40,7 @@ export const commands: CommandEntry[] = [
 	{ name: "config", load: () => import("./commands/config").then(m => m.default) },
 	{ name: "stats", load: () => import("./commands/stats").then(m => m.default) },
 	{ name: "notify", load: () => import("./commands/notify").then(m => m.default) },
+	{ name: "sdk", load: () => import("./commands/sdk").then(m => m.default) },
 	{ name: "daemon", load: () => import("./commands/daemon").then(m => m.default) },
 	{ name: "web-search", aliases: ["q"], load: () => import("./commands/web-search").then(m => m.default) },
 	{ name: "local-provider", load: () => import("./commands/local-provider").then(m => m.default) },
@@ -117,6 +119,18 @@ async function runNotifyDaemonInternalFastPath(argv: string[]): Promise<void> {
 	await runNotifyCommand(cmd);
 }
 
+function isChatDaemonInternalFastPath(argv: string[]): boolean {
+	return argv[0] === "daemon" && (argv[1] === "discord-internal" || argv[1] === "slack-internal");
+}
+
+async function runChatDaemonInternalFastPath(argv: string[]): Promise<void> {
+	const action = argv[1];
+	if (action !== "discord-internal" && action !== "slack-internal") {
+		throw new Error("invalid chat daemon internal fast path");
+	}
+	await runChatDaemonInternal(action === "discord-internal" ? "discord" : "slack", argv.slice(2));
+}
+
 function rootFixtureArg(argv: string[]): { present: boolean; id: string | undefined } {
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -171,8 +185,8 @@ export class RootHelpCommand extends Command {
 		"append-system-prompt": Flags.string({ description: "Append text or file contents to the system prompt" }),
 		"allow-home": Flags.boolean({ description: "Allow starting in ~ without auto-switching to a temp dir" }),
 		mode: Flags.string({
-			description: "Output mode: text (default), json, rpc, acp, rpc-ui, or bridge",
-			options: ["text", "json", "rpc", "acp", "rpc-ui", "bridge"],
+			description: "Output mode: text (default), json, or acp",
+			options: ["text", "json", "acp"],
 		}),
 		print: Flags.boolean({ char: "p", description: "Non-interactive mode: process prompt and exit" }),
 		continue: Flags.boolean({ char: "c", description: "Continue previous session" }),
@@ -264,6 +278,10 @@ async function runSmokeTest(): Promise<void> {
 export async function runCli(argv: string[]): Promise<void> {
 	if (isNotifyDaemonInternalFastPath(argv)) {
 		await runNotifyDaemonInternalFastPath(argv);
+		return;
+	}
+	if (isChatDaemonInternalFastPath(argv)) {
+		await runChatDaemonInternalFastPath(argv);
 		return;
 	}
 	if (argv[0] === "--smoke-test") {

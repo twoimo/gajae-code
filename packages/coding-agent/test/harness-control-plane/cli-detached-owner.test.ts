@@ -9,7 +9,6 @@ import { createHarnessCliEnv, type HarnessCliEnv } from "./cli-workspace-env";
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
 const SID = "d";
-const FAKE_RPC = path.join(import.meta.dir, "fixtures", "fake-rpc.ts");
 
 function gitInit(dir: string): void {
 	const run = (args: string[]): void => {
@@ -25,8 +24,45 @@ function gitInit(dir: string): void {
 let root: string;
 let workspace: string;
 let tmuxCommand: string;
-let rpcCommandEnv: string;
+
 let cliEnv: HarnessCliEnv;
+let sdkServer: ReturnType<typeof Bun.serve>;
+let disableSdkHost = false;
+
+async function startSdkFixture(): Promise<void> {
+	sdkServer = Bun.serve<{ token: string }>({
+		port: 0,
+		fetch(req, server) {
+			if (server.upgrade(req, { data: { token: "test-token" } })) return undefined;
+			return new Response("Not found", { status: 404 });
+		},
+		websocket: {
+			open(ws) { ws.send(JSON.stringify({ type: "hello", connectionId: "fixture" })); },
+			message(ws, message) {
+				const frame = JSON.parse(String(message)) as Record<string, unknown>;
+				const id = frame.id as string;
+				if (frame.type === "query_request") {
+					const item = frame.query === "session.metadata" ? { sessionId: SID, name: "Fixture", cwd: workspace, kind: "main" } : frame.query === "session.last_assistant" ? { text: "" } : { usage: {}, isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
+					ws.send(JSON.stringify({ type: "query_response", id, ok: true, page: { items: [item], complete: true, revision: "1" } }));
+					return;
+				}
+				if (frame.type === "event_replay") {
+					ws.send(JSON.stringify({ type: "event_replay_result", id, ok: true, events: [], generation: 1, lastSeq: 0 }));
+					return;
+				}
+				if (frame.type === "control_request") {
+					ws.send(JSON.stringify({ type: "control_response", id, ok: true, result: { commandId: "fixture-command", accepted: true } }));
+					for (const type of ["agent_start", "tool_execution_start", "agent_end"]) ws.send(JSON.stringify({ type: "event", payload: { type } }));
+				}
+			},
+		},
+	});
+	await mkdir(path.join(workspace, ".gjc", "state", "sdk"), { recursive: true });
+	await writeFile(
+		path.join(workspace, ".gjc", "state", "sdk", `${SID}.json`),
+		JSON.stringify({ url: `ws://127.0.0.1:${sdkServer.port}`, token: "test-token" }),
+	);
+}
 
 async function createFakeTmuxBin(
 	rootDir: string,
@@ -70,9 +106,9 @@ async function runHarness(args: string[]): Promise<{ code: number; json: Record<
 		env: {
 			...cliEnv.env,
 			GJC_HARNESS_STATE_ROOT: root,
-			// Drive the REAL GajaeCodeRpc against a protocol fixture (no shipped fake seam).
-			GJC_HARNESS_RPC_COMMAND: rpcCommandEnv,
+
 			GJC_TMUX_COMMAND: tmuxCommand,
+			...(disableSdkHost ? { GJC_SDK_DISABLE: "1" } : {}),
 		},
 		stdout: "pipe",
 		stderr: "pipe",
@@ -96,10 +132,13 @@ beforeEach(async () => {
 	workspace = await mkdtemp(path.join(tmpdir(), "hw"));
 	cliEnv = createHarnessCliEnv(repoRoot);
 	tmuxCommand = await createFakeTmuxBin(root);
-	rpcCommandEnv = JSON.stringify(["bun", FAKE_RPC]);
+
+	disableSdkHost = false;
+	await startSdkFixture();
 });
 
 afterEach(async () => {
+	sdkServer.stop(true);
 	cliEnv.cleanup();
 	// Safety net: kill any lingering detached owner.
 	try {
@@ -192,38 +231,34 @@ describe("gjc harness start --detach (detached owner lifecycle, B1)", () => {
 
 	it("reports blocked only after detached owner endpoint remains unavailable", async () => {
 		tmuxCommand = await createFakeTmuxBin(root, { skipOwnerLaunch: true });
-		const originalRpcCommandEnv = rpcCommandEnv;
-		rpcCommandEnv = "{";
-		try {
-			const started = await runHarness([
-				"start",
-				"--input",
-				JSON.stringify({ harness: "gajae-code", workspace, sessionId: SID, detach: true }),
-			]);
-			expect(started.code).toBe(1);
-			expect(started.json?.ok).toBe(false);
-			const state = started.json?.state as Record<string, unknown>;
-			const evidence = started.json?.evidence as Record<string, unknown>;
-			expect(state.lifecycle).toBe("blocked");
-			expect(state.ownerLive).toBe(false);
-			expect(state.blockers).toContain("detached-owner-not-live");
-			expect(evidence.ownerRuntime).toBe("detached");
-			expect(evidence.reason).toBe("detached-owner-not-live");
+		disableSdkHost = true;
+		await rm(path.join(workspace, ".gjc", "state", "sdk", `${SID}.json`), { force: true });
+		const started = await runHarness([
+			"start",
+			"--input",
+			JSON.stringify({ harness: "gajae-code", workspace, sessionId: SID, detach: true }),
+		]);
+		expect(started.code).toBe(1);
+		expect(started.json?.ok).toBe(false);
+		const state = started.json?.state as Record<string, unknown>;
+		const evidence = started.json?.evidence as Record<string, unknown>;
+		expect(state.lifecycle).toBe("blocked");
+		expect(state.ownerLive).toBe(false);
+		expect(state.blockers).toContain("detached-owner-not-live");
+		expect(evidence.ownerRuntime).toBe("detached");
+		expect(evidence.reason).toBe("detached-owner-not-live");
 
-			const submit = await runHarness(["submit", "--session", SID, "--input", JSON.stringify({ prompt: "go" })]);
-			expect(submit.code).toBe(1);
-			expect(submit.json?.ok).toBe(false);
-			expect((submit.json?.state as Record<string, unknown>).ownerLive).toBe(false);
-			expect((submit.json?.evidence as Record<string, unknown>).accepted).toBe(false);
-			expect((submit.json?.evidence as Record<string, unknown>).reason).toBe("owner-not-live");
-			expect(submit.json?.nextAllowedActions).toContainEqual({
-				verb: "submit",
-				available: false,
-				reason: "lifecycle-blocked",
-			});
-		} finally {
-			rpcCommandEnv = originalRpcCommandEnv;
-		}
+		const submit = await runHarness(["submit", "--session", SID, "--input", JSON.stringify({ prompt: "go" })]);
+		expect(submit.code).toBe(1);
+		expect(submit.json?.ok).toBe(false);
+		expect((submit.json?.state as Record<string, unknown>).ownerLive).toBe(false);
+		expect((submit.json?.evidence as Record<string, unknown>).accepted).toBe(false);
+		expect((submit.json?.evidence as Record<string, unknown>).reason).toBe("owner-not-live");
+		expect(submit.json?.nextAllowedActions).toContainEqual({
+			verb: "submit",
+			available: false,
+			reason: "lifecycle-blocked",
+		});
 	}, 60_000);
 	it("falls back explicitly when tmux cannot start", async () => {
 		tmuxCommand = await createFakeTmuxBin(root, { failNewSession: true });

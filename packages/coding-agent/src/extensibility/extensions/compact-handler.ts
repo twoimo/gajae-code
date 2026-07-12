@@ -3,7 +3,7 @@
  *
  * Extension-facing APIs accept `string | CompactOptions`, but `AgentSession.compact`
  * takes two positional arguments `(instructions, options)`. This helper splits the
- * union so the same adapter can be reused by print-mode, rpc-mode, and the executor.
+ * union so the same adapter can be reused by print, SDK, ACP, and executor callers.
  */
 import type { Model } from "@gajae-code/ai";
 import type { CompactOptions } from "./types";

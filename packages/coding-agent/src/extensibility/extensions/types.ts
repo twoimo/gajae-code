@@ -7,6 +7,8 @@
  * - Register commands, keyboard shortcuts, and CLI flags
  * - Interact with the user via UI primitives
  */
+import type { ClientBridgePermissionOption, ClientBridgePermissionOutcome, ClientBridgePermissionToolCall } from "../../session/client-bridge";
+
 import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback, ThinkingLevel } from "@gajae-code/agent-core";
 import type { CompactionResult } from "@gajae-code/agent-core/compaction";
 import type {
@@ -32,7 +34,7 @@ import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { CustomEditor } from "../../modes/components/custom-editor";
-import type { WorkflowGateEmitter } from "../../modes/shared/agent-wire/unattended-session";
+import type { WorkflowGateEmitter } from "../../modes/shared/agent-wire/workflow-gate-broker";
 import type { Theme } from "../../modes/theme/theme";
 import type { CustomMessage } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
@@ -114,7 +116,7 @@ export interface ExtensionUIDialogOptions {
 	/**
 	 * For interactive TUI select dialogs, render the focused option across
 	 * multiple rows instead of truncating it. This is a select-only rendering
-	 * hint; non-TUI bridges (RPC, ACP) drop it and do not serialize it.
+	 * hint; non-TUI clients (SDK, ACP) drop it and do not serialize it.
 	 */
 	wrapFocused?: boolean;
 	/**
@@ -128,7 +130,7 @@ export interface ExtensionUIDialogOptions {
 	 * inline: selecting it keeps the title and option list on screen and opens
 	 * a free-text input below the list. Submitting calls `onSubmit` with the
 	 * typed text and resolves the select with `optionLabel`; Escape returns to
-	 * option selection. Non-TUI bridges (RPC, ACP) drop it; callers must keep
+	 * option selection. Non-TUI clients (SDK, ACP) drop it; callers must keep
 	 * a fallback path for selects that resolve `optionLabel` without invoking
 	 * `onSubmit`.
 	 */
@@ -164,7 +166,7 @@ export type ExtensionWidgetContent = string[] | ExtensionUiComponentFactory | un
 
 /**
  * UI context for extensions to request interactive UI.
- * Each mode (interactive, RPC, print) provides its own implementation.
+ * Interactive, SDK, and headless callers provide their own implementation.
  */
 // fallow-ignore-next-line code-duplication
 // Parallel to HookUIContext: extensions expose a strictly larger UI surface
@@ -272,6 +274,14 @@ export interface ExtensionUIContext {
 // Extension Context
 // ============================================================================
 
+export interface ExtensionTranscriptEntry {
+	id: string;
+	role: string;
+	textSummary: string;
+	ts: string;
+	body?: string;
+}
+
 export interface ContextUsage {
 	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
 	tokens: number | null;
@@ -307,7 +317,7 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
-	/** Whether UI is available (false in print/RPC mode) */
+	/** Whether an interactive UI is available */
 	hasUI: boolean;
 	/** Current working directory */
 	cwd: string;
@@ -325,17 +335,51 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/** Typed pending-message counts per queue (steering, follow-up, next-turn). */
+	getPendingMessageCounts(): { steering: number; followUp: number; nextTurn: number };
+	/** Read-only session data exposed to extensions and the SDK host. */
+	getTranscript(): ExtensionTranscriptEntry[];
+	getTranscriptBody(entryId: string): string | undefined;
+	getGoalState(): unknown;
+	getTodoState(): unknown;
+	getQueuedMessages(): unknown[];
+	getActiveTools(): string[];
+	getAllTools(): string[];
+	/** Session control seams used by the SDK host. */
+	cycleModel(): Promise<{ model: Model; thinkingLevel: ThinkingLevel | undefined } | undefined>;
+	cycleThinkingLevel(): ThinkingLevel | undefined;
+	setQueueMode(kind: "steering" | "follow_up" | "interrupt", mode: unknown): boolean;
+	getSkillState(): unknown;
+	getConfigItems(): unknown;
+	getBranchCandidates(): unknown;
+	getExtensions(): unknown;
+	getArtifact(id: string): Uint8Array | string | undefined | Promise<Uint8Array | string | undefined>;
+	getArtifactRange?(id: string, offset: number, length: number): { bytes: Uint8Array; totalBytes: number } | undefined | Promise<{ bytes: Uint8Array; totalBytes: number } | undefined>;
+
+	getJobs(): unknown;
+	/** Typed skill and mode controls exposed to the SDK host. */
+	invokeSkill?(name: string, args?: string): Promise<unknown>;
+	setPlanMode?(on: boolean): unknown;
+	operateGoal?(op: "create" | "get" | "resume" | "pause" | "complete" | "drop", objective?: string): Promise<unknown>;
+
+	/** Typed nonvisual session controls exposed to the SDK host. */
+	sdkControl?(operation: string, input: Record<string, unknown>): unknown | Promise<unknown>;
+	/** Install a permission callback backed by a live SDK reverse provider lease. */
+	setSdkPermissionProvider?(provider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined): void;
+	/** Names of session SDK seams actually installed by the active runtime. */
+	sdkBindings?(): readonly string[];
+
+
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
 	/** @deprecated Use hasPendingMessages() instead */
 	hasQueuedMessages(): boolean;
-	/**
-	 * Unattended workflow-gate bridge. Present only when the session runs in
-	 * unattended/RPC mode; `undefined` in interactive/TUI mode (notify-only).
-	 */
+	/** SDK workflow-gate bridge, when a session has a remote gate responder. */
 	workflowGate?: WorkflowGateEmitter;
+	/** Clear the active conversation while preserving the saved session identity. */
+	clearContext(): Promise<boolean>;
 }
 
 /**
@@ -609,12 +653,12 @@ export interface UserPythonEvent {
 // Input Events
 // ============================================================================
 
-/** Fired when the user submits input (interactive mode only). */
+/** Fired when input enters through an interactive, SDK, or extension source. */
 export interface InputEvent {
 	type: "input";
 	text: string;
 	images?: ImageContent[];
-	source: "interactive" | "rpc" | "extension";
+	source: "interactive" | "sdk" | "extension";
 }
 
 // ============================================================================
@@ -1256,12 +1300,39 @@ export interface ExtensionContextActions {
 	isIdle: () => boolean;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
+	/** Typed pending-message counts per queue; optional for embedders without a counted queue. */
+	getPendingMessageCounts?: () => { steering: number; followUp: number; nextTurn: number };
+	getTranscript?: () => ExtensionTranscriptEntry[];
+	getTranscriptBody?: (entryId: string) => string | undefined;
+	getGoalState?: () => unknown;
+	getTodoState?: () => unknown;
+	getQueuedMessages?: () => unknown[];
+	getActiveTools?: () => string[];
+	getAllTools?: () => string[];
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
-	/** Unattended workflow-gate bridge (present only in unattended/RPC mode). */
+	/** SDK workflow-gate bridge, when a session has a remote gate responder. */
 	getWorkflowGate?: () => WorkflowGateEmitter | undefined;
+	/** Clear the active conversation while preserving the saved session identity. */
+	clearContext?: () => Promise<boolean>;
+	/** Session control and query seams exposed to the per-session SDK host. */
+	cycleModel?: () => Promise<{ model: Model; thinkingLevel: ThinkingLevel | undefined } | undefined>;
+	cycleThinkingLevel?: () => ThinkingLevel | undefined;
+	setQueueMode?: (kind: "steering" | "follow_up" | "interrupt", mode: unknown) => boolean;
+	getSkillState?: () => unknown;
+	getConfigItems?: () => unknown;
+	getBranchCandidates?: () => unknown;
+	getExtensions?: () => unknown;
+	getArtifact?: (id: string) => Uint8Array | string | undefined | Promise<Uint8Array | string | undefined>;
+	getArtifactRange?: (id: string, offset: number, length: number) => { bytes: Uint8Array; totalBytes: number } | undefined | Promise<{ bytes: Uint8Array; totalBytes: number } | undefined>;
+	getJobs?: () => unknown;
+	setSdkPermissionProvider?: (provider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined) => void;
+	sdkControl?: (operation: string, input: Record<string, unknown>) => unknown | Promise<unknown>;
+	invokeSkill?: (name: string, args?: string) => Promise<unknown>;
+	setPlanMode?: (on: boolean) => unknown;
+	operateGoal?: (op: "create" | "get" | "resume" | "pause" | "complete" | "drop", objective?: string) => Promise<unknown>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */

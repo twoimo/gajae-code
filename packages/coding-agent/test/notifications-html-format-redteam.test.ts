@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { finalizeTelegramHtml, markdownToTelegramHtml, truncateTelegramHtml } from "../src/notifications/html-format";
+import { finalizeTelegramHtml, markdownToTelegramHtml, truncateTelegramHtml } from "../src/sdk/bus/html-format";
 
 const allowedTags = new Set(["b", "i", "u", "s", "code", "pre", "a", "blockquote", "tg-spoiler"]);
 const allowedTagPattern = /<\/?(?:b|i|u|s|code|pre|blockquote|tg-spoiler)>|<a\s+href="[^"]*">|<\/a>/gi;

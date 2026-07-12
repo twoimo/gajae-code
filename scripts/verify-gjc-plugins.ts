@@ -5,7 +5,7 @@
  *
  * Asserts the security and contract invariants the host bundles must hold:
  * - the three delegate tools exist in the coordinator contract;
- * - committed files match the renderer output (no hand drift);
+ * - committed files exactly match the renderer output, including no unexpected installable files;
  * - the nested plugin layout matches the verified Claude + Codex shapes;
  * - generated MCP config is fail-closed (WORKDIR_ROOTS, no invalid ROOTS, no MUTATIONS);
  * - the Codex .mcp.json file uses a Codex-accepted shape (mcp_servers wrapper or
@@ -13,9 +13,10 @@
  *   per the official Codex plugin docs.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { COORDINATOR_MCP_TOOL_NAMES } from "../packages/coding-agent/src/coordinator/contract";
-import { renderPluginFiles } from "./generate-gjc-plugins";
+import { findUnexpectedPluginFiles, renderPluginFiles } from "./generate-gjc-plugins";
 
 const PLUGIN_DIR = "gajae-code";
 
@@ -46,7 +47,8 @@ gate(
 	`found: ${delegateTools.join(", ") || "none"}`,
 );
 
-// Drift would be caught by `generate-gjc-plugins --check`; here we only assert shape.
+// The generator's --check enforces byte-for-byte content and the complete file set;
+// this verifier independently rejects unexpected on-disk installable files.
 
 // Required nested layout (verified installable on Claude Code + Codex CLI 0.139.0).
 const claudeManifest = path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json");
@@ -57,6 +59,12 @@ const skill = path.join(PLUGIN_DIR, "skills", "gjc-delegation", "SKILL.md");
 const sessionSkill = path.join(PLUGIN_DIR, "skills", "gjc-session", "SKILL.md");
 const codexMarketplace = path.join(".agents", "plugins", "marketplace.json");
 const claudeMarketplace = path.join(".claude-plugin", "marketplace.json");
+const unexpectedPluginFiles = findUnexpectedPluginFiles(files);
+gate(
+	"no unexpected installable plugin files",
+	unexpectedPluginFiles.length === 0,
+	unexpectedPluginFiles.join(", ") || "none",
+);
 
 gate(
 	"nested plugin layout present",
@@ -150,6 +158,20 @@ gate(
 		sessionSkillText.includes("Never hard-code private ids") &&
 		!/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/u.test(sessionSkillText),
 	"no embedded credentials or private routing values",
+);
+gate(
+	"gjc-session guidance uses SDK ownership modes, not retired RPC modes",
+	sessionSkillText.includes("Use the SDK/ACP integration when a host owns the tools.") &&
+		sessionSkillText.includes("For SDK/harness ownership debugging") &&
+		!sessionSkillText.includes("Prefer RPC/ACP") &&
+		!sessionSkillText.includes("harness/RPC dogfooding"),
+	"generated skill uses SDK/ACP and SDK/harness ownership guidance",
+);
+const harnessHelperText = fs.readFileSync(path.join(import.meta.dir, "gjc-session", "harness-tmux-owner-start.sh"), "utf8");
+gate(
+	"harness helper does not recommend retired RPC modes",
+	harnessHelperText.includes("SDK/harness ownership debugging") && !harnessHelperText.includes("harness/RPC dogfooding"),
+	"helper uses SDK/harness ownership guidance",
 );
 
 let failures = 0;

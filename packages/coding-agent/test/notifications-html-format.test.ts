@@ -14,10 +14,10 @@ import {
 	TELEGRAM_MESSAGE_LIMIT,
 	TELEGRAM_PARSE_MODE,
 	truncateTelegramHtml,
-} from "../src/notifications/html-format";
-import { TelegramNotificationDaemon } from "../src/notifications/telegram-daemon";
-import { buildActionMessage } from "../src/notifications/telegram-reference";
-import { formatIdentityHeader, renderThreadedFrame } from "../src/notifications/threaded-render";
+} from "../src/sdk/bus/html-format";
+import { TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
+import { buildActionMessage } from "../src/sdk/bus/telegram-reference";
+import { formatIdentityHeader, renderThreadedFrame } from "../src/sdk/bus/threaded-render";
 
 describe("escapeHtml (AC2)", () => {
 	test("escapes & < > and escapes & first", () => {

@@ -1,0 +1,88 @@
+import { expect, test } from "bun:test";
+import { OPERATIONS } from "../src/sdk/protocol/operation-registry";
+import { dispatchControl, type ControlRequest, type ControlSurface } from "../src/sdk/host/control";
+
+const methodByOperation: Record<string, string> = {
+	"turn.prompt": "prompt", "turn.steer": "steer", "turn.follow_up": "followUp", "turn.abort": "abort", "turn.abort_and_prompt": "abortAndPrompt", "ask.answer": "answerAsk", "workflow.gate_answer": "answerGate", "workflow.plan_approve": "approvePlan", "skill.invoke": "invokeSkill", "mode.plan.set": "setPlanMode", "mode.goal.operate": "operateGoal", "todo.replace": "replaceTodo", "model.set": "setModel", "model.cycle": "cycleModel", "thinking.set": "setThinking", "thinking.cycle": "cycleThinking", "permission_mode.set": "setPermissionMode", "queue.steering_mode.set": "setQueueMode", "queue.follow_up_mode.set": "setQueueMode", "queue.interrupt_mode.set": "setQueueMode", "compaction.run": "runCompaction", "compaction.auto.set": "setAutoCompaction", "retry.auto.set": "setAutoRetry", "retry.abort": "abortRetry", "bash.execute": "executeBash", "bash.abort": "abortBash", "session.new": "newSession", "session.fork": "forkSession", "session.resume": "resumeSession", "session.close": "closeSession", "session.switch": "switchSession", "session.branch": "branchSession", "session.rename": "renameSession", "session.handoff": "handoffSession", "session.export_html": "exportHtml", "config.patch": "patchConfig", "runtime.reload": "reloadRuntime", "auth.login": "login", "host_tools.register": "registerHostTools", "host_uri.register": "registerHostUri", "service_tier.set": "setServiceTier", "tools.active.set": "setActiveTools", "queue.message.remove": "removeQueueMessage", "queue.message.move": "moveQueueMessage", "queue.message.update": "updateQueueMessage", "extension.set_enabled": "setExtensionEnabled", "context.clear": "clearContext", "session.delete": "deleteSession", "session.cwd.move": "moveCwd", "retry.last": "retryLast", "retry.now": "retryNow", "bash.background": "backgroundBash",
+};
+
+function request(row: (typeof OPERATIONS)[number]): ControlRequest {
+	return {
+		id: row.id,
+		operation: row.sdkId,
+		input: { text: "text", images: [], id: "id", answer: "answer", response: "response", choice: "choice", name: "name", args: [], on: true, op: "create", objective: "goal", items: [], level: "high", mode: "all", cmd: "echo hi", entryId: "entry", target: "target", patch: {}, components: [], provider: "provider", defs: [], tier: "pro", names: [], before: "before", after: "after", path: "/tmp" },
+		confirm: row.sdkId === "context.clear" || row.sdkId === "session.delete",
+	};
+}
+
+test("dispatches every control registry operation to its ControlSurface method", async () => {
+	const calls: string[] = [];
+	const surface = new Proxy({}, { get: (_, property) => (..._args: unknown[]) => { calls.push(String(property)); return String(property); } }) as ControlSurface;
+	const rows = OPERATIONS.filter(row => row.kind === "control");
+	for (const row of rows) {
+		const response = await dispatchControl(surface, row, request(row));
+		expect(response).toEqual({ id: row.id, ok: true, result: methodByOperation[row.sdkId] });
+	}
+	expect(calls).toEqual(rows.map(row => methodByOperation[row.sdkId]));
+});
+
+test("rejects unknown operations, malformed input, and missing destructive confirmation", async () => {
+	const surface = {} as ControlSurface;
+	const unknown = await dispatchControl(surface, undefined, { id: "x", operation: "no.such.operation", input: {} });
+	expect(unknown.error?.code).toBe("unknown_operation");
+	const prompt = OPERATIONS.find(row => row.sdkId === "turn.prompt")!;
+	expect((await dispatchControl(surface, prompt, { id: "bad", operation: prompt.sdkId, input: [] })).error?.code).toBe("invalid_input");
+	const clear = OPERATIONS.find(row => row.sdkId === "context.clear")!;
+	const response = await dispatchControl(surface, clear, { id: "clear", operation: clear.sdkId, input: {} });
+	expect(response.error).toMatchObject({ code: "invalid_input" });
+	expect(response.error?.message).toContain("confirm");
+});
+
+test("returns the current revision on an optimistic concurrency conflict", async () => {
+	const tools = OPERATIONS.find(row => row.sdkId === "tools.active.set")!;
+	const surface = { revisionProvider: () => "new-revision" } as unknown as ControlSurface;
+	const response = await dispatchControl(surface, tools, { ...request(tools), expectedRevision: "old-revision" });
+	expect(response.error).toEqual({ code: "revision_conflict", message: "The resource revision has changed.", currentRevision: "new-revision" });
+});
+
+test("serializes ordered operations while retry.now bypasses the session chain", async () => {
+	const prompt = OPERATIONS.find(row => row.sdkId === "turn.prompt")!;
+	const retryNow = OPERATIONS.find(row => row.sdkId === "retry.now")!;
+	const started: string[] = [];
+	let releaseFirst!: () => void;
+	const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+	const surface = {
+		prompt: async (value: string) => { started.push(value); if (value === "first") await first; },
+		retryNow: () => { started.push("retry"); },
+	} as ControlSurface;
+	const one = dispatchControl(surface, prompt, { ...request(prompt), id: "one", input: { text: "first" } });
+	const two = dispatchControl(surface, prompt, { ...request(prompt), id: "two", input: { text: "second" } });
+	const retry = dispatchControl(surface, retryNow, request(retryNow));
+	await retry;
+	await new Promise(resolve => setTimeout(resolve, 0));
+	expect(started).toEqual(["retry", "first"]);
+	releaseFirst();
+	await Promise.all([one, two, retry]);
+	expect(started).toEqual(["retry", "first", "second"]);
+});
+
+test("preserves typed registry errors and maps unknown failures to internal", async () => {
+	const tools = OPERATIONS.find(row => row.sdkId === "tools.active.set")!;
+	const typed = await dispatchControl({ setActiveTools: () => { throw { code: "unknown_tool", message: "Tool is unavailable." }; } } as unknown as ControlSurface, tools, request(tools));
+	expect(typed.error).toEqual({ code: "unknown_tool", message: "Tool is unavailable." });
+	const internal = await dispatchControl({ setActiveTools: () => { throw new Error("database exploded"); } } as unknown as ControlSurface, tools, request(tools));
+	expect(internal.error).toEqual({ code: "internal", message: "Control operation failed." });
+});
+
+test("replays matching idempotency requests, rejects conflicts, and evicts LRU entries", async () => {
+	const abort = OPERATIONS.find(row => row.sdkId === "turn.abort")!;
+	let calls = 0;
+	const surface = { abort: () => ++calls } as unknown as ControlSurface;
+	const first = await dispatchControl(surface, abort, { id: "one", operation: abort.sdkId, input: { b: 2, a: 1 }, idempotencyKey: "same" });
+	const replay = await dispatchControl(surface, abort, { id: "two", operation: abort.sdkId, input: { a: 1, b: 2 }, idempotencyKey: "same" });
+	expect([first, replay]).toEqual([{ id: "one", ok: true, result: 1 }, { id: "two", ok: true, result: 1 }]);
+	expect(await dispatchControl(surface, abort, { id: "conflict", operation: abort.sdkId, input: { a: 3 }, idempotencyKey: "same" })).toMatchObject({ error: { code: "idempotency_conflict" } });
+	for (let index = 0; index < 256; index++) await dispatchControl(surface, abort, { id: `id-${index}`, operation: abort.sdkId, input: {}, idempotencyKey: `key-${index}` });
+	await dispatchControl(surface, abort, { id: "evicted", operation: abort.sdkId, input: { a: 1, b: 2 }, idempotencyKey: "same" });
+	expect(calls).toBe(258);
+});

@@ -17,10 +17,10 @@ import { resolveGjcTmuxCommand, sanitizeTmuxToken } from "../gjc-runtime/tmux-co
 import { classifyRecovery } from "../harness-control-plane/classifier";
 import { callEndpoint, EndpointUnreachableError } from "../harness-control-plane/control-endpoint";
 import { type ResolvedOwner, RuntimeOwner, resolveOwner, resolveOwnerLive } from "../harness-control-plane/owner";
+import { createSdkSessionTransport, spawnNormalHarnessSession } from "../harness-control-plane/sdk-transport";
 import { preserveDirtyWorktree } from "../harness-control-plane/preserve";
 import { RECEIPT_SPOOL_DIR_ENV } from "../harness-control-plane/receipt-spool";
 import { buildReceipt, requiresVanishBeforeAction, type VanishEvidence } from "../harness-control-plane/receipts";
-import { GajaeCodeRpc } from "../harness-control-plane/rpc-adapter";
 import { classifyLeaseStatus, readLease } from "../harness-control-plane/session-lease";
 import { buildResponse, buildStateView, submitUnavailableReason } from "../harness-control-plane/state-machine";
 import {
@@ -623,29 +623,32 @@ export default class Harness extends Command {
 	/** Detached owner daemon (spawned by `start --detach`). Runs until retired or signalled. */
 	async #runOwner(root: string, input: Record<string, unknown>, flagSession: string | undefined): Promise<void> {
 		const sessionId = requireSessionId(input, flagSession);
-		const sessionDir = sessionPaths(root, sessionId).gjcSessionDir;
-		// Optional rpc command override (tests / non-default hosts); defaults to `gjc --mode rpc`.
-		const override = process.env.GJC_HARNESS_RPC_COMMAND;
-		const command = override ? (JSON.parse(override) as string[]) : undefined;
-		const rpc = new GajaeCodeRpc({ sessionDir, command });
-		const owner = new RuntimeOwner({ root, sessionId, rpc });
+		const state = await loadState(root, sessionId);
+		const transport = await createSdkSessionTransport({
+			repo: state.handle.workspace,
+			sessionId,
+			spawn: () => spawnNormalHarnessSession(state.handle.workspace, sessionId),
+		});
+		const owner = new RuntimeOwner({ root, sessionId, transport });
 		const info = await owner.start();
 		writeJson({ ok: true, owner: info });
 		await new Promise<void>(resolve => {
 			const stop = (): void => {
 				clearInterval(timer);
+				process.removeListener("SIGTERM", stop);
+				process.removeListener("SIGINT", stop);
 				resolve();
 			};
-			const timer = setInterval(async () => {
-				const resolved = await resolveOwner(root, sessionId);
-				if (!resolved.live) stop();
+			const timer = setInterval(() => {
+				void resolveOwner(root, sessionId).then(resolved => {
+					if (!resolved.live) stop();
+				});
 			}, 500);
 			timer.unref?.();
 			process.on("SIGTERM", stop);
 			process.on("SIGINT", stop);
 		});
 		await owner.stop();
-		process.exit(0);
 	}
 
 	#buildOwnerCommand(sessionId: string): string[] {
@@ -656,7 +659,7 @@ export default class Harness extends Command {
 	}
 
 	async #waitForOwner(root: string, sessionId: string): Promise<boolean> {
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 160; i++) {
 			const owner = await resolveOwner(root, sessionId);
 			if (owner.live && owner.socketPath) {
 				try {
@@ -689,11 +692,11 @@ export default class Harness extends Command {
 		if (process.env[RECEIPT_SPOOL_DIR_ENV]) {
 			envAssignments.push(`${RECEIPT_SPOOL_DIR_ENV}=${shellQuote(process.env[RECEIPT_SPOOL_DIR_ENV])}`);
 		}
-		if (process.env.GJC_HARNESS_RPC_COMMAND) {
-			envAssignments.push(`GJC_HARNESS_RPC_COMMAND=${shellQuote(process.env.GJC_HARNESS_RPC_COMMAND)}`);
-		}
 		if (process.env.GJC_HARNESS_TEST_NODE_MODULES) {
 			envAssignments.push(`GJC_HARNESS_TEST_NODE_MODULES=${shellQuote(process.env.GJC_HARNESS_TEST_NODE_MODULES)}`);
+		}
+		if (process.env.GJC_SDK_DISABLE) {
+			envAssignments.push(`GJC_SDK_DISABLE=${shellQuote(process.env.GJC_SDK_DISABLE)}`);
 		}
 		const ownerCommand = this.#buildOwnerCommand(sessionId).map(shellQuote).join(" ");
 		const shellCommand = `exec env ${envAssignments.join(" ")} ${ownerCommand}`;
@@ -734,6 +737,7 @@ export default class Harness extends Command {
 				...(process.env.GJC_HARNESS_TEST_NODE_MODULES
 					? { GJC_HARNESS_TEST_NODE_MODULES: process.env.GJC_HARNESS_TEST_NODE_MODULES }
 					: {}),
+				...(process.env.GJC_SDK_DISABLE ? { GJC_SDK_DISABLE: process.env.GJC_SDK_DISABLE } : {}),
 			},
 			stdout: "ignore",
 			stderr: "ignore",
@@ -791,7 +795,7 @@ export default class Harness extends Command {
 			base: typeof input.base === "string" ? input.base : null,
 			issueOrPr: preflight.normalizedIssueOrPr,
 			processHandle: { kind: "runtime-owner", ownerId: null, pid: null },
-			rpcHandle: { kind: "rpc-subprocess", pid: null, sessionDir: `${root}/sessions/${sessionId}/gjc-session` },
+			sdkHandle: { kind: "sdk-session-endpoint", sessionId },
 			ownerHandle: { leasePath, endpoint: null, heartbeatAt: null },
 			routerHandle: { kind: "default-in-owner", policy: "default-fallback", eventsPath },
 			viewportHandle: { kind: "event-monitor", tmuxSessionName: null, viewOnly: true },

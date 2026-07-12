@@ -27,7 +27,7 @@ icy_sixel.workspace = true
 ignore.workspace = true
 image.workspace = true
 inferno = { workspace = true, optional = true }
-gjc-notifications = { path = "../gjc-notifications" }
+gjc-sdk = { path = "../gjc-sdk" }
 memmap2.workspace = true
 napi.workspace = true
 napi-derive.workspace = true

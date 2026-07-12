@@ -2,11 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createNotificationsExtension } from "../src/notifications/index";
-import { readEndpoint } from "../src/notifications/telegram-reference";
+import { createNotificationsExtension } from "../src/sdk/bus/index";
+import { readEndpoint } from "../src/sdk/bus/telegram-reference";
+import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
+import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
 
 /**
- * Regression for "notifications SDK spawns a new session instead of renaming":
+ * Regression for "the SDK notification transport spawns a new session instead of renaming":
  * an in-process session id change (`/new`, plan "approve and execute", fork,
  * resume) emits `session_switch` with a new session id. Previously the
  * notifications runtime was keyed only on `session_start`, so the new id had no
@@ -47,11 +49,13 @@ async function withNotifications<T>(fn: () => Promise<T>): Promise<T> {
 
 function createHarness(prefix: string, initialName: string | undefined = "Original") {
 	const handlers = new Map<string, Handler>();
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const api = {
 		on: (event: string, handler: Handler) => {
 			handlers.set(event, handler);
 		},
-		registerCommand: () => {},
+		registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+			commands.set(name, command),
 		sendUserMessage: () => {},
 	} as never;
 	createNotificationsExtension(api);
@@ -72,9 +76,10 @@ function createHarness(prefix: string, initialName: string | undefined = "Origin
 		},
 	} as never;
 
-	const notifDir = path.join(cwd, ".gjc", "state", "notifications");
+	const notifDir = path.join(cwd, ".gjc", "state", "sdk");
 	return {
 		handlers,
+		commands,
 		ctx,
 		cwd,
 		notifDir,
@@ -151,7 +156,7 @@ test("session_switch reuses the existing topic instead of spawning a new session
 
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 
-		const notifDir = path.join(cwd, ".gjc", "state", "notifications");
+		const notifDir = path.join(cwd, ".gjc", "state", "sdk");
 		const originalEndpoint = path.join(notifDir, `${sid}.json`);
 		await waitFor(() => fs.existsSync(originalEndpoint), 4000, "original endpoint file");
 
@@ -366,4 +371,43 @@ test("session_switch reason=resume starts a fresh runtime for the resumed sessio
 			"busy activity for resumed session id",
 		);
 	});
+}, 30000);
+
+test("session_switch keeps notification resources inactive until notify on rebinds them to the new id", async () => {
+	const previous = process.env.GJC_NOTIFICATIONS;
+	delete process.env.GJC_NOTIFICATIONS;
+	try {
+		const harness = createHarness("gjc-notif-switch-off-");
+		const originalId = harness.sid;
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		await waitFor(
+			() => fs.existsSync(harness.endpoint(originalId)),
+			4000,
+			"SDK endpoint while notifications are off",
+		);
+		expect(getAskAnswerSource(originalId)).toBeUndefined();
+		expect(getTelegramFileSink(originalId)).toBeUndefined();
+
+		const newId = `switch-on-${originalId}`;
+		harness.sid = newId;
+		await harness.handlers.get("session_switch")!(
+			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(originalId) },
+			harness.ctx,
+		);
+		expect(fs.existsSync(harness.endpoint(originalId))).toBe(true);
+		expect(getAskAnswerSource(originalId)).toBeUndefined();
+		expect(getTelegramFileSink(originalId)).toBeUndefined();
+		expect(getAskAnswerSource(newId)).toBeUndefined();
+		expect(getTelegramFileSink(newId)).toBeUndefined();
+
+		process.env.GJC_NOTIFICATIONS = "1";
+		await harness.commands.get("notify")!.handler("on", { ...(harness.ctx as Record<string, unknown>), ui: { notify: () => {} } });
+		expect(getAskAnswerSource(originalId)).toBeUndefined();
+		expect(getTelegramFileSink(originalId)).toBeUndefined();
+		expect(getAskAnswerSource(newId)).toBeDefined();
+		expect(getTelegramFileSink(newId)).toBeDefined();
+	} finally {
+		if (previous === undefined) delete process.env.GJC_NOTIFICATIONS;
+		else process.env.GJC_NOTIFICATIONS = previous;
+	}
 }, 30000);

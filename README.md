@@ -32,7 +32,7 @@
   <img src="assets/telegram-mobile-hero.png" alt="Gajae Code mobile answers for coding agents hero illustration" width="100%" />
 </p>
 
-**Mobile answers for coding agents** — Gajae-Code now ships a configure-once notifications SDK and managed Telegram reference daemon. Each session exposes a loopback WebSocket discovery file and a generic `action_needed`/`reply` protocol so Telegram, Discord, Slack, mobile apps, or local tools can surface pending asks and route answers back without terminal scraping.
+**Mobile answers for coding agents** — Gajae-Code now ships a configure-once [Gajae-Code SDK](docs/sdk.md) and managed Telegram reference daemon. Each session exposes a loopback WebSocket discovery file and a generic `action_needed`/`reply` protocol so Telegram, Discord, Slack, mobile apps, or local tools can surface pending asks and route answers back without terminal scraping.
 
 The bundled Telegram flow adds a threaded per-session surface with context updates, live/finalized output, image attachments, inline buttons, free-text replies, typing indicators, and double-check acknowledgements. `gjc daemon` keeps one safe long-poll owner per bot token so new sessions attach cleanly instead of tripping Telegram 409 conflicts.
 
@@ -52,7 +52,7 @@ The bundled Telegram flow adds a threaded per-session surface with context updat
 
 ## Website
 
-Visit **[gajae-code.com](https://gajae-code.com)** for the Gajae Code landing page, quick-start guide, architecture overview, harness notes, bridge/RPC docs, skills, receipts, remote-control design, and troubleshooting.
+Visit **[gajae-code.com](https://gajae-code.com)** for the Gajae Code landing page, quick-start guide, architecture overview, harness notes, SDK docs, skills, receipts, remote-control design, and troubleshooting.
 
 ## What is Gajae-Code?
 
@@ -233,9 +233,9 @@ gjc setup defaults --check
 | Claude Code | `gjc --tmux` or `gjc --tmux --worktree <name>` | GJC does not become a Claude Code extension. |
 | OpenCode | `gjc` or `gjc --tmux` | External-runner workflow only today. |
 | Claw Code | `gjc --tmux --worktree <name>` | GJC does not install into or replace Claw Code. |
-| External controller / bot | `gjc --mode rpc` for a subprocess worker, or Bridge/HTTPS surfaces where configured | External controllers drive GJC through generic RPC/bridge contracts, not scrollback scraping. |
+| External controller / bot | SDK WebSocket for a live session; Coordinator MCP (`gjc mcp-serve coordinator`) for multi-session orchestration; `gjc daemon session` CLI for scripts | External controllers drive GJC through the SDK's loopback WebSocket protocol (`docs/sdk.md`) or Coordinator MCP, not scrollback scraping. |
 
-For evaluating Aside as an opt-in search/context retrieval sidecar, see [`docs/aside-integration.md`](docs/aside-integration.md). For generic third-party bot setup and provider-independent smokes, see [`docs/bot-integration.md`](docs/bot-integration.md). For the readiness classification across RPC, ACP, and Bridge/HTTPS surfaces, see [`docs/external-control-readiness.md`](docs/external-control-readiness.md). For lower-level protocol details, see [`docs/rpc.md`](docs/rpc.md) and [`docs/bridge.md`](docs/bridge.md).
+For evaluating Aside as an opt-in search/context retrieval sidecar, see [`docs/aside-integration.md`](docs/aside-integration.md). For generic third-party bot setup and provider-independent smokes, see [`docs/bot-integration.md`](docs/bot-integration.md). For external-control readiness, see [`docs/external-control-readiness.md`](docs/external-control-readiness.md). For the wire protocol and machine interfaces, see [`docs/sdk.md`](docs/sdk.md).
 
 ## Configuration
 

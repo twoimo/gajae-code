@@ -4,7 +4,7 @@ This guide documents the visible tmux session pattern used by operator bots such
 
 Use this pattern when a human or chatops router needs to watch the session, receive stale-session alerts, and send follow-up prompts into the same visible GJC pane.
 
-For pure machine control, prefer the Coordinator MCP tools in [`docs/hermes-mcp-bridge.md`](./hermes-mcp-bridge.md). For a single embedded worker process, prefer [`docs/rpc.md`](./rpc.md). This visible-session pattern is the operator-facing fallback/interop lane.
+For pure machine control, prefer the Coordinator MCP tools in [`docs/hermes-mcp-bridge.md`](./hermes-mcp-bridge.md) and the [SDK machine interface](./sdk.md). This visible-session pattern is the operator-facing fallback/interop lane.
 
 ## Contract
 

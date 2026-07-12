@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  *  - hold the {@link SessionLease} (single writer),
- *  - own the {@link HarnessRpc} subprocess (injected; real `GajaeCodeRpc` in prod, fake in tests),
+ *  - own an injected SDK session transport,
  *  - serve owner-routed primitives over the {@link ControlServer} endpoint,
  *  - be the SOLE writer of the severity event stream,
  *  - heartbeat the lease.
@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { AgentWireOwnerObservation } from "../modes/shared/agent-wire/event-contract";
-import { observeRpcOutboundFrame } from "../modes/shared/agent-wire/event-observation";
+import { observeAgentWireFrame } from "../modes/shared/agent-wire/event-observation";
 import { classifyRecovery } from "./classifier";
 import { ControlServer, type EndpointRequest } from "./control-endpoint";
 import { defaultFinalizeChecks, type FinalizeChecks, runFinalize, type ValidationCommandSpec } from "./finalize";
@@ -30,7 +30,6 @@ import {
 	type VanishEvidence,
 	validateReceipt,
 } from "./receipts";
-import { type HarnessRpc, type RpcStateSnapshot, singleFlightAccept } from "./rpc-adapter";
 import {
 	acquireLease,
 	canWriteEvents,
@@ -40,6 +39,7 @@ import {
 	releaseLease,
 	type SessionLease,
 } from "./session-lease";
+import { type HarnessSessionTransport, type SessionStateSnapshot, singleFlightAccept } from "./session-transport";
 import { buildStateView, nextAllowedActions, submitUnavailableReason } from "./state-machine";
 import {
 	appendEvent,
@@ -81,7 +81,7 @@ function reconcileLiveOwnerState(state: SessionState): { state: SessionState; re
 export interface OwnerOptions {
 	root: string;
 	sessionId: string;
-	rpc: HarnessRpc;
+	transport: HarnessSessionTransport;
 	ownerId?: string;
 	ttlMs?: number;
 	heartbeatMs?: number;
@@ -121,7 +121,7 @@ export class RuntimeOwner {
 		this.#opts = {
 			root: opts.root,
 			sessionId: opts.sessionId,
-			rpc: opts.rpc,
+			transport: opts.transport,
 			ownerId: this.ownerId,
 			ttlMs: opts.ttlMs ?? DEFAULT_TTL_MS,
 			heartbeatMs: opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
@@ -149,8 +149,8 @@ export class RuntimeOwner {
 		this.#leaseEpoch = lease.leaseEpoch;
 		await this.#server.listen();
 		await this.#emit("info", "owner_started", { ownerId: this.ownerId, leaseEpoch: this.#leaseEpoch });
-		if (this.#opts.rpc.onEventFrame) {
-			this.#unsubscribeFrames = this.#opts.rpc.onEventFrame(frame => this.#handleFrame(frame));
+		if (this.#opts.transport.onEventFrame) {
+			this.#unsubscribeFrames = this.#opts.transport.onEventFrame(frame => this.#handleFrame(frame));
 		}
 		this.#heartbeatTimer = setInterval(() => {
 			void heartbeat(root, sessionId, this.ownerId, this.#opts.ttlMs, this.#opts.clock).catch(err => {
@@ -175,7 +175,7 @@ export class RuntimeOwner {
 
 	/** Map an RPC frame and route it: semantic/signal-bearing -> serial emit; high-frequency progress -> coalesce. */
 	#handleFrame(frame: Record<string, unknown>): void {
-		const mapped = observeRpcOutboundFrame(frame);
+		const mapped = observeAgentWireFrame(frame);
 		if (!mapped) return;
 		if (mapped.semantic || (mapped.signal && !mapped.coalesceKey)) {
 			this.#framePump = this.#framePump
@@ -291,7 +291,7 @@ export class RuntimeOwner {
 		};
 	}
 
-	#submitGateReason(state: SessionState, rpcState: RpcStateSnapshot | null): string | null {
+	#submitGateReason(state: SessionState, rpcState: SessionStateSnapshot | null): string | null {
 		const rpcReason = rpcState
 			? rpcState.isStreaming || rpcState.steeringQueueDepth > 0 || rpcState.followupQueueDepth > 0
 				? "rpc-not-idle"
@@ -333,9 +333,9 @@ export class RuntimeOwner {
 		const state = await this.#loadState();
 		const workspace = state.handle.workspace;
 		let streaming = false;
-		let rpcState: RpcStateSnapshot | null = null;
+		let rpcState: SessionStateSnapshot | null = null;
 		try {
-			rpcState = await this.#opts.rpc.getState();
+			rpcState = await this.#opts.transport.getState();
 			streaming = rpcState.isStreaming;
 		} catch {
 			streaming = false;
@@ -366,8 +366,8 @@ export class RuntimeOwner {
 				gitDelta = "unknown";
 			}
 		}
-		const rpcLive = this.#opts.rpc.isLive ? this.#opts.rpc.isLive() : rpcState !== null;
-		const rpcLastFrameAt = this.#opts.rpc.lastFrameAt ? this.#opts.rpc.lastFrameAt() : null;
+		const rpcLive = this.#opts.transport.isLive ? this.#opts.transport.isLive() : rpcState !== null;
+		const rpcLastFrameAt = this.#opts.transport.lastFrameAt ? this.#opts.transport.lastFrameAt() : null;
 		// Sticky semantic signals come from the persisted owner event log -> survive polling gaps.
 		const recent = (await readEvents(this.#opts.root, this.#opts.sessionId, 0)).slice(-200);
 		const observedSignals = this.#aggregateSignals(recent).slice(0, 7);
@@ -519,7 +519,7 @@ export class RuntimeOwner {
 			sessionId: this.#opts.sessionId,
 			workspace: state.handle.workspace,
 			branch: state.handle.branch ?? "",
-			rpc: this.#opts.rpc,
+			transport: this.#opts.transport,
 			observe: () => this.#observeGit(),
 			finalizeChecks: this.#finalizeChecks ?? defaultFinalizeChecks(state.handle.workspace),
 			validationCommands: this.#validationCommands,
@@ -544,8 +544,8 @@ export class RuntimeOwner {
 		// Review-only finalize with no explicit verdict pulls the final assistant text from the live
 		// RPC owner so the verdict can be extracted deterministically instead of demanded from the operator.
 		let assistantText: string | null = null;
-		if (reviewOnly && inputVerdict == null && this.#opts.rpc.getLastAssistantText) {
-			assistantText = await this.#opts.rpc.getLastAssistantText().catch(() => null);
+		if (reviewOnly && inputVerdict == null && this.#opts.transport.getLastAssistantText) {
+			assistantText = await this.#opts.transport.getLastAssistantText().catch(() => null);
 		}
 		const fin = await runFinalize({
 			root: this.#opts.root,
@@ -595,7 +595,7 @@ export class RuntimeOwner {
 				lifecycleGate,
 			);
 		}
-		const result = await singleFlightAccept(this.#opts.rpc, prompt, this.#opts.acceptanceTimeoutMs);
+		const result = await singleFlightAccept(this.#opts.transport, prompt, this.#opts.acceptanceTimeoutMs);
 		if (result.accepted) {
 			state.lifecycle = "observing";
 			state.updatedAt = new Date(this.#opts.clock ? this.#opts.clock() : Date.now()).toISOString();
@@ -651,7 +651,7 @@ export class RuntimeOwner {
 			this.#heartbeatTimer = null;
 		}
 		await this.#server.close().catch(() => {});
-		await this.#opts.rpc.close().catch(() => {});
+		await this.#opts.transport.close().catch(() => {});
 		await releaseLease(this.#opts.root, this.#opts.sessionId, this.ownerId).catch(() => {});
 	}
 }

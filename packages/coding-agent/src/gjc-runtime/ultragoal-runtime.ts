@@ -9,6 +9,7 @@ import { DEFAULT_ULTRAGOAL_OBJECTIVE } from "./goal-mode-request";
 import {
 	computeUltragoalPlanGeneration,
 	findFreshBatchCloseReceipt,
+	findLedgerReceiptEvent,
 	requiredUltragoalGoals,
 	validateDeferredMemberReceiptFresh,
 	validateReceiptFreshBase,
@@ -3451,7 +3452,12 @@ function canonicalChangeSetRows(value: unknown, fieldName: string): UltragoalCha
 		if ("goalId" in record) throw new Error(`${fieldName}[${index}] must not contain goalId attribution`);
 		const status = nonEmptyString(record.status);
 		if (!status) throw new Error(`${fieldName}[${index}].status is required`);
-		return { path: normalizeRepoPath(pathValue), status: status as UltragoalChangeStatus };
+		const oldPath = nonEmptyString(record.oldPath);
+		return {
+			path: normalizeRepoPath(pathValue),
+			status: status as UltragoalChangeStatus,
+			...(oldPath ? { oldPath: normalizeRepoPath(oldPath) } : {}),
+		};
 	});
 }
 
@@ -3711,6 +3717,140 @@ function validateBatchCloseQualityGate(
 		throw new Error("validationBatchClose.unionChangeSet.unionHash does not match declared union");
 	requireNonEmptyString(close.coverageEvidence, "validationBatchClose.coverageEvidence");
 }
+
+function hydrateReviewedBatchReplacementClose(input: {
+	gate: JsonObject;
+	plan: UltragoalPlan;
+	goal: UltragoalGoal;
+	metadata: UltragoalValidationBatchMetadata;
+	ledger: readonly UltragoalLedgerEvent[];
+	changeSet?: UltragoalChangeSet;
+}): JsonObject {
+	const requested = qualityGateObject(input.gate.validationBatchClose);
+	if (requested?.kind !== "review-blocker-replacement-close") return input.gate;
+	const expectedKeys = new Set(["schemaVersion", "kind", "replacementGoalId", "coverageEvidence"]);
+	if (Object.keys(requested).some(key => !expectedKeys.has(key)))
+		throw new Error("review-blocker replacement close contains unsupported fields");
+	const replacementGoalId = nonEmptyString(requested.replacementGoalId);
+	const coverageEvidence = nonEmptyString(requested.coverageEvidence);
+	if (requested.schemaVersion !== 1 || !replacementGoalId || !coverageEvidence)
+		throw new Error("review-blocker replacement close is malformed");
+	if (input.goal.status !== "active" || input.metadata.finalGoalId !== input.goal.id)
+		throw new Error("review-blocker replacement close requires the active durable validation-batch final goal");
+	if (!input.changeSet) throw new Error("review-blocker replacement close requires a current cumulative change set");
+
+	const replacements = input.plan.goals.filter(
+		goal => goal.steering?.kind === "review_blocker" && goal.steering.blockedGoalId === input.goal.id,
+	);
+	if (replacements.length !== 1 || replacements[0]?.id !== replacementGoalId)
+		throw new Error("review-blocker replacement close requires exactly the declared replacement");
+	const replacement = replacements[0]!;
+	const replacementReceipt = replacement.completionVerification;
+	if (replacement.status !== "complete" || replacementReceipt?.receiptKind !== "per-goal")
+		throw new Error("review-blocker replacement close requires a completed per-goal replacement receipt");
+	const replacementDiagnostic = validateReceiptFreshBase({
+		plan: input.plan,
+		ledger: input.ledger,
+		goal: replacement,
+		receipt: replacementReceipt,
+		receiptKind: "per-goal",
+	});
+	if (replacementDiagnostic) throw new Error(`review-blocker replacement close ${replacementDiagnostic.message}`);
+	const replacementCheckpointIndex = input.ledger.findIndex(
+		event => event.eventId === replacementReceipt.checkpointLedgerEventId,
+	);
+	const reviewRecordedIndex = input.ledger.findIndex(
+		event =>
+			event.event === "review_blockers_recorded" &&
+			event.goalId === input.goal.id &&
+			event.blockerGoalId === replacement.id,
+	);
+	const reactivatedIndex = input.ledger.findIndex(
+		(event, index) =>
+			index > replacementCheckpointIndex &&
+			event.event === "goal_checkpointed" &&
+			event.goalId === input.goal.id &&
+			event.status === "active",
+	);
+	if (reviewRecordedIndex < 0 || reviewRecordedIndex >= replacementCheckpointIndex || reactivatedIndex < 0)
+		throw new Error("review-blocker replacement close lacks durable supersession and reopening evidence");
+
+	const historicalRequiredGoalIds = input.plan.goals
+		.filter(goal => goal.id !== input.goal.id && goal.status !== "superseded")
+		.map(goal => goal.id);
+	const aggregateGoals = input.plan.goals.filter(goal => {
+		const receipt = goal.completionVerification;
+		return goal.status === "complete" && receipt?.receiptKind === "final-aggregate";
+	});
+	const aggregateGoal = aggregateGoals.find(goal => {
+		const receipt = goal.completionVerification!;
+		const event = findLedgerReceiptEvent(input.ledger, receipt);
+		return (
+			event !== null &&
+			hashStructuredValue(event.qualityGateJson) === receipt.qualityGateHash &&
+			goal.updatedAt === receipt.verifiedAt &&
+			receipt.basis.relevantGoalIdsBeforeCheckpoint.length === historicalRequiredGoalIds.length &&
+			receipt.basis.relevantGoalIdsBeforeCheckpoint.every(
+				(goalId, index) => goalId === historicalRequiredGoalIds[index],
+			)
+		);
+	});
+	if (!aggregateGoal)
+		throw new Error(
+			"review-blocker replacement close requires a fresh final-aggregate receipt covering required goals",
+		);
+
+	const memberMetadataHashes: Record<string, string> = {};
+	const memberChangeSetHashes: Record<string, string> = {};
+	const memberReceipts: JsonObject[] = [];
+	for (const memberId of input.metadata.memberIds) {
+		const member = input.plan.goals.find(goal => goal.id === memberId);
+		if (!member?.validationBatch)
+			throw new Error(`review-blocker replacement close references missing batch member ${memberId}`);
+		memberMetadataHashes[memberId] = member.validationBatch.metadataHash;
+		if (memberId === input.goal.id) continue;
+		const receipt = requireDeferredMemberReceiptFresh(
+			input.plan,
+			input.ledger,
+			member,
+			"review-blocker replacement close",
+		);
+		memberChangeSetHashes[memberId] = receipt.validationBatch.changeSetHash;
+		memberReceipts.push({
+			goalId: memberId,
+			receiptId: receipt.receiptId,
+			checkpointLedgerEventId: receipt.checkpointLedgerEventId,
+			qualityGateHash: receipt.qualityGateHash,
+			changeSetHash: receipt.validationBatch.changeSetHash,
+			role: "deferred-member",
+		});
+	}
+	const paths = input.changeSet.paths.map(row => ({ ...row }));
+	memberChangeSetHashes[input.goal.id] = changeSetHashForPaths(paths);
+	const unionHash = hashStructuredValue({
+		memberChangeSetHashes,
+		paths: paths.map(row => ({ path: row.path, status: row.status, oldPath: row.oldPath })),
+	});
+	return {
+		...input.gate,
+		validationBatchClose: {
+			schemaVersion: 1,
+			kind: "validation-batch-close",
+			batchId: input.metadata.batchId,
+			finalGoalId: input.metadata.finalGoalId,
+			memberIds: [...input.metadata.memberIds],
+			memberMetadataHashes,
+			memberReceipts,
+			unionChangeSet: {
+				source: "validation-batch",
+				memberChangeSetHashes,
+				paths,
+				unionHash,
+			},
+			coverageEvidence,
+		},
+	};
+}
 async function readRequiredCompletionQualityGate(
 	cwd: string,
 	value: string | undefined,
@@ -3729,13 +3869,25 @@ async function readRequiredCompletionQualityGate(
 	const gate = await readStructuredValue(cwd, value);
 	const gateObject = qualityGateObject(gate);
 	if (!gateObject) throw new Error("qualityGate must be a JSON object");
-	await validateCompletionQualityGate(cwd, gateObject, {
+	const validationBatch = options.goal ? requireFreshValidationBatchMetadata(options.goal) : undefined;
+	const hydratedGate =
+		validationBatch && options.plan && options.goal && options.ledger
+			? hydrateReviewedBatchReplacementClose({
+					gate: gateObject,
+					plan: options.plan,
+					goal: options.goal,
+					metadata: validationBatch,
+					ledger: options.ledger,
+					changeSet: options.changeSet,
+				})
+			: gateObject;
+	await validateCompletionQualityGate(cwd, hydratedGate, {
 		changeSet: options.changeSet,
 		plan: options.plan,
 		goal: options.goal,
 		ledger: options.ledger,
 	});
-	return gate;
+	return hydratedGate;
 }
 
 function validatePipelineCheckpointSafety(

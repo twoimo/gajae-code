@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed the native notifications SDK crate from `gjc-notifications` to `gjc-sdk` as part of the Gajae-Code SDK rename. Sessions and daemons must restart together across the upgrade because discovery moved from `.gjc/state/notifications/` to `.gjc/state/sdk/` without dual-scan compatibility.
+
 ## [0.9.1] - 2026-07-08
 
 ### Changed

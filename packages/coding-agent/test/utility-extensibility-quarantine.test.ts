@@ -71,7 +71,7 @@ describe("GJC utility extensibility quarantine", () => {
 	});
 
 	it("does not default-discover skills, extensions, custom commands, custom tools, plugins, or marketplaces", async () => {
-		const sdk = await source("sdk.ts");
+		const sdk = await source("sdk", "session.ts");
 		const main = await source("main.ts");
 		const settingsSchema = await source("config", "settings-schema.ts");
 

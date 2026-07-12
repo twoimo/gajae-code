@@ -8,7 +8,7 @@
 - Key collaborators:
   - `packages/coding-agent/src/tool-discovery/tool-index.ts` — discoverable-tool metadata and BM25 index/search.
   - `packages/coding-agent/src/session/agent-session.ts` — session discovery mode, corpus assembly, activation, cache invalidation.
-  - `packages/coding-agent/src/sdk.ts` — initial hiding of discoverable built-ins and prompt-time discoverable summary.
+  - `packages/coding-agent/src/sdk/session.ts` — initial hiding of discoverable built-ins and prompt-time discoverable summary.
   - `packages/coding-agent/src/tools/index.ts` — tool-session discovery hooks, essential/discoverable load modes, registry wiring.
   - `packages/coding-agent/src/config/settings-schema.ts` — `tools.discoveryMode` and legacy `mcp.discoveryMode` settings.
 
@@ -108,6 +108,6 @@
   - Built-in entries appear only in `"all"` mode and only for registry tools whose `loadMode === "discoverable"` and are not currently active.
   - Hidden/internal built-ins are intentionally excluded from the built-in corpus: `resolve`, `yield`, `report_finding`, `report_tool_issue` are called out in the `#collectDiscoverableBuiltinTools()` comment.
 - `AgentSession.getDiscoverableTools()` currently assembles built-in discoverable tools.
-- On startup, `packages/coding-agent/src/sdk.ts` hides non-essential discoverable built-ins in `tools.discoveryMode = "all"`; defaults are `read`, `bash`, `edit`, `write`, `search`, and `find` unless `tools.essentialOverride` changes them.
+- On startup, `packages/coding-agent/src/sdk/session.ts` hides non-essential discoverable built-ins in `tools.discoveryMode = "all"`; defaults are `read`, `bash`, `edit`, `write`, `search`, and `find` unless `tools.essentialOverride` changes them.
 - Query tokenization is simple and deterministic: camelCase is split, non-alphanumerics become spaces, tokens are lowercased, and only non-empty alphanumeric tokens survive.
 - Scores are rounded differently by surface: `details.tools[].score` keeps 6 decimals; the TUI line renders 3.

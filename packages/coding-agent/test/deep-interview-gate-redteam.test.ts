@@ -4,12 +4,12 @@ import {
 	DeepInterviewGateError,
 	gateAnswerToResult,
 	questionToGate,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
+} from "../src/modes/shared/agent-wire/deep-interview-gate";
 import {
 	MemoryGateStore,
 	WorkflowGateBroker,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
-import { schemaHash } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-schema";
+} from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { schemaHash } from "../src/modes/shared/agent-wire/workflow-gate-schema";
 import { askSchema } from "@gajae-code/coding-agent/tools/ask";
 
 const singleQ: AskGateQuestion = {
@@ -211,7 +211,7 @@ describe("deep-interview question gates red-team", () => {
 		});
 	});
 
-	it("keeps generic pick-first unattended consumers safe for zero-option questions", async () => {
+	it("keeps generic pick-first SDK workflow-gate consumers safe for zero-option questions", async () => {
 		const zeroQ: AskGateQuestion = {
 			id: "zero-options-generic",
 			question: "What constraint is missing?",

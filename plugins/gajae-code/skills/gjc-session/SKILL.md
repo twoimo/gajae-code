@@ -7,7 +7,7 @@ description: Use GJC's published tmux session helpers for Clawhip-visible worktr
 
 Use this skill when a task needs an operator-visible GJC session in tmux: Clawhip/Hermes/OpenClaw can watch the pane, route stale-session alerts, and send follow-up prompts while the work stays in a dedicated git worktree.
 
-Prefer Coordinator MCP for pure machine control. Prefer RPC/ACP when a host owns the tools. Use this visible-session helper flow when humans or chatops need tmux scrollback and a stable session name.
+Prefer Coordinator MCP for pure machine control. Use the SDK/ACP integration when a host owns the tools. Use this visible-session helper flow when humans or chatops need tmux scrollback and a stable session name.
 
 ## Public helpers
 
@@ -51,7 +51,7 @@ Include repository, worktree, branch, base branch, issue/PR id, scope, non-goals
 
 ## Harness owner sessions
 
-For harness/RPC dogfooding where the RuntimeOwner itself must remain visible, use:
+For SDK/harness ownership debugging where the RuntimeOwner itself must remain visible, use:
 
 ```sh
 ./scripts/gjc-session/harness-tmux-owner-start.sh <session-name> <workspace> [issue-or-pr] [branch-label] [base]

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { listRecentSessions } from "@gajae-code/coding-agent/notifications/recent-activity";
+import { listRecentSessions } from "@gajae-code/coding-agent/sdk/bus/recent-activity";
 
 const roots: string[] = [];
 function tempSessionsRoot(): string {

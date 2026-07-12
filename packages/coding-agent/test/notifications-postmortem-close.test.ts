@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { postmortem } from "@gajae-code/utils";
-import { createNotificationsExtension } from "../src/notifications/index";
-import { readEndpoint } from "../src/notifications/telegram-reference";
+import { createNotificationsExtension } from "../src/sdk/bus/index";
+import { readEndpoint } from "../src/sdk/bus/telegram-reference";
 
 /**
  * Regression for "hard terminal close orphans the Telegram topic": a native
@@ -64,7 +64,7 @@ function createHarness(prefix: string) {
 		},
 	} as never;
 
-	const endpoint = path.join(cwd, ".gjc", "state", "notifications", `${sid}.json`);
+	const endpoint = path.join(cwd, ".gjc", "state", "sdk", `${sid}.json`);
 	return { handlers, ctx, sid, endpoint };
 }
 
