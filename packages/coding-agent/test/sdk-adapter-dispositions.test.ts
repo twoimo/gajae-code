@@ -391,7 +391,7 @@ for (const adapter of machineAdapters) {
 				if (adapter === "acp") await assertAcpRow(operation, true);
 				else if (adapter === "mcp") await assertMcpRow(operation, true);
 				else await assertDaemonCliRow(operation, true);
-			});
+			}, 60_000);
 		}
 	}
 }

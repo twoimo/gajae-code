@@ -141,10 +141,12 @@ describe("compiled daemon smoke coverage", () => {
 			const xdgDataHome = path.join(temp, "xdg");
 			const nativeCache = path.join(xdgDataHome, "gjc", "natives", nativeVersion);
 			fs.mkdirSync(nativeCache, { recursive: true });
-			fs.copyFileSync(
-				path.join(repoRoot, "packages/natives/native/pi_natives.darwin-arm64.node"),
-				path.join(nativeCache, "pi_natives.darwin-arm64.node"),
-			);
+			const nativeSrcDir = path.join(repoRoot, "packages/natives/native");
+			for (const nativeFile of fs.readdirSync(nativeSrcDir)) {
+				if (/^pi_natives\..*\.node$/.test(nativeFile)) {
+					fs.copyFileSync(path.join(nativeSrcDir, nativeFile), path.join(nativeCache, nativeFile));
+				}
+			}
 			const version = await runWithTimeout(
 				[binaryPath, "--version"],
 				{ cwd: temp, env: { ...process.env, XDG_DATA_HOME: xdgDataHome } },
