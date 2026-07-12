@@ -19,7 +19,25 @@ afterEach(async () => {
 
 type SdkControl = { operation: string; input: Record<string, unknown>; idempotencyKey?: string };
 
-async function createSdkControlServer(root: string, controls: SdkControl[], commands: string[][] = []) {
+async function createSdkControlServer(
+	root: string,
+	controls: SdkControl[],
+	queries: string[] = [],
+	queryResult: (query: string) => unknown = query =>
+		query === "context.get"
+			? {
+					type: "query_response",
+					id: "query-1",
+					ok: true,
+					page: { items: [{ isStreaming: true }], complete: true, revision: "test" },
+				}
+			: {
+					type: "query_response",
+					id: "query-1",
+					ok: true,
+					page: { items: ["first assistant line\nlatest assistant line"], complete: true, revision: "test" },
+				},
+) {
 	const stateRoot = path.join(root, ".gjc", "coordinator-state");
 	let createdSessions = 0;
 	const server = createCoordinatorMcpServer({
@@ -32,10 +50,6 @@ async function createSdkControlServer(root: string, controls: SdkControl[], comm
 		},
 		services: {
 			resolveModelProfiles: () => new Map([["codex-eco", { name: "codex-eco" }]]),
-			commandRunner: async command => {
-				commands.push(command);
-				return { exitCode: 1, stdout: "", stderr: "SDK control must not use tmux" };
-			},
 			connectSdk: async () =>
 				({
 					control: async (
@@ -61,6 +75,10 @@ async function createSdkControlServer(root: string, controls: SdkControl[], comm
 							return { ok: true, result: { sessionId } };
 						}
 						return { ok: true, result: { sessionId: String(input.sessionId ?? "visible-session") } };
+					},
+					query: async (query: string) => {
+						queries.push(query);
+						return queryResult(query);
 					},
 					close: async () => {},
 				}) as unknown as SdkClient,
@@ -106,17 +124,86 @@ describe("Coordinator MCP canonical SDK controls", () => {
 	it("uses SDK discovery for registered-session authority and leaves tmux as advisory metadata", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
-		const commands: string[][] = [];
-		const server = await createSdkControlServer(root, controls, commands);
+		const server = await createSdkControlServer(root, controls);
 		const registered = await registerSdkSession(server, root);
 		expect(registered).toMatchObject({ ok: true, registered: true, session_state: { state: "ready_for_input" } });
 		const status = await server.callTool("gjc_coordinator_read_status", { session_id: "visible-session" });
 		expect(status).toMatchObject({ ok: true, status: { live: true } });
-		expect(commands).toEqual([]);
 		expect(controls).toEqual([
 			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
 			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: undefined },
 		]);
+	});
+	it("reads bounded tail output through the SDK", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const queries: string[] = [];
+		const server = await createSdkControlServer(root, controls, queries);
+		await registerSdkSession(server, root);
+
+		await expect(
+			server.callTool("gjc_coordinator_read_tail", { session_id: "visible-session", lines: 1 }),
+		).resolves.toEqual({ ok: true, source: "sdk", lines: ["latest assistant line"] });
+		expect(queries).toEqual(["session.last_assistant"]);
+	});
+	it("returns SDK query failures without a terminal fallback", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const queries: string[] = [];
+		const server = await createSdkControlServer(root, controls, queries, () => ({
+			type: "query_response",
+			id: "query-1",
+			ok: false,
+			error: { code: "unavailable", message: "session endpoint unavailable" },
+		}));
+		await registerSdkSession(server, root);
+
+		await expect(
+			server.callTool("gjc_coordinator_read_tail", { session_id: "visible-session" }),
+		).resolves.toMatchObject({
+			ok: false,
+			error: { code: "unavailable" },
+		});
+		expect(queries).toEqual(["session.last_assistant"]);
+	});
+	it("reads active-turn status through SDK context", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const queries: string[] = [];
+		const server = await createSdkControlServer(root, controls, queries);
+		await registerSdkSession(server, root);
+		const sent = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: "visible-session",
+			prompt: "work",
+			idempotency_key: "prompt-1",
+			allow_mutation: true,
+		});
+
+		await expect(server.callTool("gjc_coordinator_read_turn", { turn_id: sent.turn_id })).resolves.toMatchObject({
+			ok: true,
+			advisory_status: { authority: "sdk", live: true, is_streaming: true },
+		});
+		expect(queries).toEqual(["context.get"]);
+	});
+	it("returns an explicit uncertain active-turn view when the SDK endpoint is absent", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const queries: string[] = [];
+		const server = await createSdkControlServer(root, controls, queries);
+		await registerSdkSession(server, root);
+		const sent = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: "visible-session",
+			prompt: "work",
+			idempotency_key: "prompt-1",
+			allow_mutation: true,
+		});
+		await fs.rm(path.join(root, ".gjc", "state", "sdk", "visible-session.json"));
+
+		await expect(server.callTool("gjc_coordinator_read_turn", { turn_id: sent.turn_id })).resolves.toMatchObject({
+			ok: true,
+			advisory_status: { authority: "sdk", live: null, reason: "not_found" },
+		});
+		expect(queries).toEqual([]);
 	});
 
 	it("passes a resolved mpreset into the SDK lifecycle create request and persists it with the session", async () => {
@@ -148,8 +235,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 	it("routes prompts, follow-ups, abort-and-prompts, and answers through SDK controls with caller keys", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
-		const commands: string[][] = [];
-		const server = await createSdkControlServer(root, controls, commands);
+		const server = await createSdkControlServer(root, controls);
 		await registerSdkSession(server, root);
 		const first = await server.callTool("gjc_coordinator_send_prompt", {
 			session_id: "visible-session",
@@ -191,7 +277,6 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			{ operation: "turn.abort_and_prompt", input: { text: "replace" }, idempotencyKey: "prompt-3" },
 			{ operation: "ask.answer", input: { id: "ask-1", answer: { choice: "yes" } }, idempotencyKey: "answer-1" },
 		]);
-		expect(commands).toEqual([]);
 	});
 
 	it("delivers every delegation workflow through broker lifecycle and SDK control", async () => {
@@ -286,9 +371,8 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		]);
 	});
 
-	it("returns SDK failures rather than falling back to local or tmux control", async () => {
+	it("returns SDK failures rather than falling back outside SDK control", async () => {
 		const root = await tempRoot();
-		const commands: string[][] = [];
 		const server = createCoordinatorMcpServer({
 			env: {
 				GJC_COORDINATOR_MCP_WORKDIR_ROOTS: root,
@@ -296,12 +380,6 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				GJC_COORDINATOR_MCP_MUTATIONS: "sessions",
 				GJC_COORDINATOR_MCP_PROFILE: "local",
 				GJC_COORDINATOR_MCP_REPO: "repo",
-			},
-			services: {
-				commandRunner: async command => {
-					commands.push(command);
-					return { exitCode: 0, stdout: "", stderr: "" };
-				},
 			},
 		});
 		await registerSdkSession(server, root);
@@ -313,7 +391,6 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				allow_mutation: true,
 			}),
 		).toMatchObject({ ok: false, error: { code: "not_found" } });
-		expect(commands).toEqual([]);
 	});
 
 	it("keeps coordinator metadata reports and event journals available without turning them into control authority", async () => {
@@ -339,11 +416,10 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
 		]);
 	});
-	it("closes an idle ephemeral coordinator session through broker lifecycle without tmux ownership", async () => {
+	it("closes an idle ephemeral coordinator session through broker lifecycle without terminal ownership", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
-		const commands: string[][] = [];
-		const server = await createSdkControlServer(root, controls, commands);
+		const server = await createSdkControlServer(root, controls);
 		const sessionFile = path.join(
 			root,
 			".gjc",
@@ -378,7 +454,6 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			}),
 		]);
 		expect(await Bun.file(sessionFile).exists()).toBe(false);
-		expect(commands).toEqual([]);
 	});
 
 	it("idle reaping selects only stale ephemeral coordinator records and uses SDK session.close", async () => {

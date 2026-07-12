@@ -103,6 +103,7 @@ const fs=require('fs'), path=require('path'), crypto=require('crypto');
 const root=process.env.GJC_STATE_ROOT, id=process.env.GJC_SESSION_ID, agent=process.env.GJC_AGENT_DIR;
 fs.mkdirSync(path.join(root,'sdk'),{recursive:true});
 fs.writeFileSync(path.join(agent,'fixture.pid'),String(process.pid));
+fs.writeFileSync(path.join(agent,'fixture.request.json'),process.env.GJC_SDK_LIFECYCLE_REQUEST);
 
 fs.writeFileSync(path.join(root,'sdk',id+'.json'),JSON.stringify({sessionId:id,pid:process.pid,url:'ws://127.0.0.1:1',token:'fake'}));
 const m=fs.statSync(path.join(root,'sdk',id+'.json')).mtimeMs;
@@ -119,14 +120,25 @@ setInterval(()=>{},1000);
 	try {
 		const started = Date.now();
 		const [first, second] = await Promise.all([
-			broker.handleRequest("session.create", { stateRoot, readinessTimeoutMs: 100, body: "first" }, "create-1"),
-			broker.handleRequest("session.create", { stateRoot, readinessTimeoutMs: 100, body: "second" }, "create-2"),
+			broker.handleRequest(
+				"session.create",
+				{ stateRoot, readinessTimeoutMs: 100, body: "first", modelPreset: "codex-eco" },
+				"create-1",
+			),
+			broker.handleRequest(
+				"session.create",
+				{ stateRoot, readinessTimeoutMs: 100, body: "second", modelPreset: "codex-eco" },
+				"create-2",
+			),
 		]);
 		expect(first).toMatchObject({ ok: false, error: { code: "readiness_timeout" } });
 		expect(second).toMatchObject({ ok: false, error: { code: "readiness_timeout" } });
 		expect(Date.now() - started).toBeGreaterThanOrEqual(180);
 		const fixturePid = Number(await fs.readFile(path.join(agentDir, "fixture.pid"), "utf8"));
 		expect(() => process.kill(fixturePid, 0)).toThrow();
+		expect(JSON.parse(await fs.readFile(path.join(agentDir, "fixture.request.json"), "utf8"))).toMatchObject({
+			modelPreset: "codex-eco",
+		});
 		expect((await fs.readdir(path.join(stateRoot, "sdk"))).filter(name => name.endsWith(".json"))).toEqual([]);
 		const listed = await broker.handleRequest("session.list", {});
 		expect(listed.ok).toBe(true);

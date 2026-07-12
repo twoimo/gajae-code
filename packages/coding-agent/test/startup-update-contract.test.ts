@@ -238,7 +238,11 @@ describe("startup update contract", () => {
 			let checks = 0;
 			const runners: string[] = [];
 			try {
-				await runRootCommand(rootArgs(testCase.args), [], {
+				const parsed =
+					testCase.expectedRunner === "acp"
+						? ({ messages: [], fileArgs: [], unknownFlags: new Map(), ...testCase.args } satisfies Args)
+						: rootArgs(testCase.args);
+				await runRootCommand(parsed, [], {
 					createAgentSession: async () => fakeSessionResult(),
 					discoverAuthStorage: async () => authStorage,
 					settings: Settings.isolated({ "marketplace.autoUpdate": "off", "startup.checkUpdate": true }),
@@ -268,6 +272,45 @@ describe("startup update contract", () => {
 			}
 		}
 	}, 30_000);
+
+	it("forwards CLI model and thinking to SDK-backed ACP startup controls", async () => {
+		using tempDir = TempDir.createSync("@gjc-acp-startup-options-");
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		const originalNoTitle = Bun.env.PI_NO_TITLE;
+		let options: { agentDir?: string; startupOptions?: { modelId?: string; thinkingLevel?: string } } | undefined;
+		try {
+			await runRootCommand(
+				{
+					messages: [],
+					fileArgs: [],
+					unknownFlags: new Map(),
+					mode: "acp",
+					model: `${testModel.provider}/${testModel.id}`,
+					thinking: "high" as Args["thinking"],
+				},
+				[],
+				{
+					discoverAuthStorage: async () => authStorage,
+					settings: Settings.isolated({ "marketplace.autoUpdate": "off", "startup.checkUpdate": true }),
+					suppressProcessExit: true,
+					initTheme: async () => {},
+					readPipedInput: async () => undefined,
+					runStartupCredentialAutoImportIfNeeded: async () => undefined,
+					runAcpMode: async input => {
+						options = input;
+					},
+				},
+			);
+			expect(options?.startupOptions).toEqual({
+				modelId: `${testModel.provider}/${testModel.id}`,
+				thinkingLevel: "high",
+			});
+		} finally {
+			authStorage.close();
+			if (originalNoTitle === undefined) delete Bun.env.PI_NO_TITLE;
+			else Bun.env.PI_NO_TITLE = originalNoTitle;
+		}
+	});
 
 	it("runs the real root and interactive-mode path without awaiting the version check", async () => {
 		using tempDir = TempDir.createSync("@gjc-startup-interactive-");

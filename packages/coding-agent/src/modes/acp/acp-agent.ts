@@ -43,6 +43,8 @@ import {
 import { ensureBroker } from "../../sdk/broker/ensure";
 import { readSdkBrokerDiscovery, SdkClient } from "../../sdk/client";
 import { mapAgentWireEventPayloadToAcpSessionUpdates } from "./acp-event-mapper";
+import { resolveAcpPermissionMode } from "./permission-mode";
+import type { AcpStartupOptions } from "./startup-options";
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
 
 const ACP_DEFAULT_MODE_ID = "default";
@@ -54,10 +56,15 @@ const SESSION_PAGE_SIZE = 50;
 export const ACP_BOOTSTRAP_RACE_GUARD_MS = 50;
 
 type JsonObject = Record<string, unknown>;
+interface AcpSessionState {
+	config: Map<string, string>;
+}
+
 type SessionRecord = {
 	cwd: string;
 	adapter: AcpSdkAdapter;
 	unsubscribe: () => void;
+	state: AcpSessionState;
 };
 type Endpoint = { url: string; token: string };
 
@@ -67,8 +74,39 @@ type BrokerSession = {
 	live?: boolean;
 };
 
+function parseAcpStartupOptions(value: unknown): AcpStartupOptions | undefined {
+	const candidate = object(value);
+	if (!candidate) return undefined;
+	const modelId = typeof candidate.modelId === "string" ? candidate.modelId : undefined;
+	const thinkingLevel = typeof candidate.thinkingLevel === "string" ? candidate.thinkingLevel : undefined;
+	return modelId || thinkingLevel
+		? { ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) }
+		: undefined;
+}
+
 function object(value: unknown): JsonObject | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : undefined;
+}
+
+/** Applies ACP's offset cursor after narrowing the broker listing to the requested cwd. */
+export function paginateAcpSessions(listed: unknown[], cwd: string | undefined, offset: number): ListSessionsResponse {
+	const filtered = listed
+		.map(value => object(value) as BrokerSession | undefined)
+		.filter(
+			(value): value is BrokerSession & { locator: { repo: string } } =>
+				typeof value?.sessionId === "string" && typeof value.locator?.repo === "string",
+		)
+		.filter(value => !cwd || value.locator.repo === cwd);
+	const sessions = filtered
+		.slice(offset, offset + SESSION_PAGE_SIZE)
+		.map(
+			value =>
+				({ sessionId: value.sessionId, cwd: value.locator.repo, title: value.sessionId }) satisfies SessionInfo,
+		);
+	return {
+		sessions,
+		nextCursor: offset + sessions.length < filtered.length ? String(offset + sessions.length) : undefined,
+	};
 }
 
 function endpoint(value: unknown): Endpoint {
@@ -93,6 +131,127 @@ function pageItems(value: unknown): unknown[] {
 	const result = object(response?.result) ?? response;
 	const page = object(result?.page);
 	return Array.isArray(page?.items) ? page.items : [];
+}
+
+const ACP_CONFIG_OPTIONS = [
+	{ id: MODEL_CONFIG_ID, name: "Model", options: [] },
+	{ id: THINKING_CONFIG_ID, name: "Thinking", options: [] },
+	{
+		id: "steeringMode",
+		name: "Steering queue",
+		options: [
+			{ value: "all", name: "All" },
+			{ value: "one-at-a-time", name: "One at a time" },
+		],
+	},
+	{
+		id: "followUpMode",
+		name: "Follow-up queue",
+		options: [
+			{ value: "all", name: "All" },
+			{ value: "one-at-a-time", name: "One at a time" },
+		],
+	},
+	{
+		id: "interruptMode",
+		name: "Interrupt mode",
+		options: [
+			{ value: "immediate", name: "Immediate" },
+			{ value: "wait", name: "Wait" },
+		],
+	},
+] as const;
+
+const ACP_CONFIG_CONTROL_OPERATIONS: Record<string, string> = {
+	steeringMode: "queue.steering_mode.set",
+	followUpMode: "queue.follow_up_mode.set",
+	interruptMode: "queue.interrupt_mode.set",
+};
+
+function configValues(query: unknown, overrides: ReadonlyMap<string, string>): Map<string, string> {
+	const values = new Map<string, string>();
+	for (const item of pageItems(query)) {
+		const record = object(item);
+		if (!record) continue;
+		if (typeof record.id === "string" && typeof record.value === "string") {
+			values.set(record.id, record.value);
+			continue;
+		}
+		for (const [id, value] of Object.entries(record)) {
+			if (typeof value === "string") values.set(id, value);
+		}
+	}
+	for (const [id, value] of overrides) values.set(id, value);
+	return values;
+}
+
+/** Maps the live canonical SDK config query into the ACP 1.2.1 session state surface. */
+export function acpSessionStateFromConfig(query: unknown, overrides: ReadonlyMap<string, string> = new Map()) {
+	const values = configValues(query, overrides);
+	const currentModeId = values.get(MODE_CONFIG_ID) === ACP_PLAN_MODE_ID ? ACP_PLAN_MODE_ID : ACP_DEFAULT_MODE_ID;
+	return {
+		configOptions: [
+			{
+				id: MODE_CONFIG_ID,
+				name: "Mode",
+				type: "select" as const,
+				currentValue: currentModeId,
+				options: [
+					{ value: ACP_DEFAULT_MODE_ID, name: "Default" },
+					{ value: ACP_PLAN_MODE_ID, name: "Plan" },
+				],
+			},
+			...ACP_CONFIG_OPTIONS.flatMap(option => {
+				const value = values.get(option.id);
+				return value === undefined
+					? []
+					: [{ ...option, type: "select" as const, currentValue: value, options: [...option.options] }];
+			}),
+		],
+		modes: {
+			availableModes: [
+				{ id: ACP_DEFAULT_MODE_ID, name: "Default" },
+				{ id: ACP_PLAN_MODE_ID, name: "Plan" },
+			],
+			currentModeId,
+		},
+	};
+}
+
+/** Registers a permission provider only when the ACP client requires prompts. */
+export function acpProviderRegistrations(
+	capabilities: ClientCapabilities | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): AcpProviderRegistration[] {
+	return [
+		...(capabilities?.fs?.readTextFile || capabilities?.fs?.writeTextFile
+			? [{ capability: "fs", definitions: [] }]
+			: []),
+		...(capabilities?.terminal ? [{ capability: "terminal", definitions: [] }] : []),
+		...(resolveAcpPermissionMode(capabilities, env) === "prompt"
+			? [{ capability: "permission", definitions: [] }]
+			: []),
+		{ capability: "ui", definitions: [] },
+	];
+}
+
+/** Maps ACP permission handling to the session's canonical SDK policy. */
+export async function applyAcpPermissionMode(
+	adapter: Pick<AcpSdkAdapter, "control">,
+	capabilities: ClientCapabilities | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+	const mode = resolveAcpPermissionMode(capabilities, env);
+	await adapter.control("permission_mode.set", { mode: mode === "prompt" ? "prompt" : "allow" });
+}
+
+/** Applies CLI-provided ACP startup settings through SDK controls before session exposure. */
+export async function applyAcpStartupOptions(
+	adapter: Pick<AcpSdkAdapter, "setModel" | "control">,
+	options: AcpStartupOptions | undefined,
+): Promise<void> {
+	if (options?.modelId) await adapter.setModel(options.modelId);
+	if (options?.thinkingLevel) await adapter.control("thinking.set", { level: options.thinkingLevel });
 }
 
 /** ACP form elicitation uses the client-facing reverse surface without owning a session runtime. */
@@ -184,12 +343,17 @@ export class AcpAgent implements Agent {
 	readonly #knownSessionCwds = new Map<string, string>();
 	#clientCapabilities: ClientCapabilities | undefined;
 	#broker: Promise<AcpSdkAdapter> | undefined;
+	readonly #startupOptions: AcpStartupOptions | undefined;
 	#disposed = false;
 
-	constructor(connection: AgentSideConnection, options?: { agentDir?: string } | unknown) {
+	constructor(
+		connection: AgentSideConnection,
+		options?: { agentDir?: string; startupOptions?: AcpStartupOptions } | unknown,
+	) {
 		this.#connection = connection;
 		const candidate = object(options);
 		this.#agentDir = typeof candidate?.agentDir === "string" ? candidate.agentDir : getAgentDir();
+		this.#startupOptions = parseAcpStartupOptions(candidate?.startupOptions);
 		queueMicrotask(() => {
 			if (connection.signal.aborted) {
 				void this.#dispose();
@@ -240,12 +404,25 @@ export class AcpAgent implements Agent {
 		this.#assertAbsoluteCwd(params.cwd);
 		const result = await (await this.#brokerAdapter()).global(
 			"session.create",
-			{ cwd: params.cwd, target: { path: params.cwd } },
+			{
+				cwd: params.cwd,
+				target: { path: params.cwd },
+				...(this.#startupOptions?.modelPreset ? { modelPreset: this.#startupOptions.modelPreset } : {}),
+			},
 			randomUUID(),
 		);
 		const id = sessionId(result);
 		this.#knownSessionCwds.set(id, params.cwd);
-		await this.#attach(id, params.cwd, endpoint(result));
+		try {
+			await this.#attach(id, params.cwd, endpoint(result));
+			await applyAcpStartupOptions(this.#adapter(id), this.#startupOptions);
+			if (this.#startupOptions?.modelId) this.#setConfigValue(id, MODEL_CONFIG_ID, this.#startupOptions.modelId);
+			if (this.#startupOptions?.thinkingLevel)
+				this.#setConfigValue(id, THINKING_CONFIG_ID, this.#startupOptions.thinkingLevel);
+		} catch (error) {
+			await this.#discardNewSession(id);
+			throw error;
+		}
 		this.#scheduleBootstrap(id);
 		return { sessionId: id, ...(await this.#sessionState(id)) };
 	}
@@ -293,20 +470,7 @@ export class AcpAgent implements Agent {
 			if (typeof candidate?.sessionId === "string" && typeof candidate.locator?.repo === "string")
 				this.#knownSessionCwds.set(candidate.sessionId, candidate.locator.repo);
 		}
-		const sessions = listed
-			.map(value => object(value) as BrokerSession | undefined)
-			.filter(
-				(value): value is BrokerSession & { locator: { repo: string } } =>
-					typeof value?.sessionId === "string" && typeof value.locator?.repo === "string",
-			)
-			.filter(value => !params.cwd || value.locator.repo === params.cwd)
-			.slice(this.#cursor(params.cursor), this.#cursor(params.cursor) + SESSION_PAGE_SIZE)
-			.map(
-				value =>
-					({ sessionId: value.sessionId, cwd: value.locator.repo, title: value.sessionId }) satisfies SessionInfo,
-			);
-		const offset = this.#cursor(params.cursor) + sessions.length;
-		return { sessions, nextCursor: offset < listed.length ? String(offset) : undefined };
+		return paginateAcpSessions(listed, params.cwd ?? undefined, this.#cursor(params.cursor));
 	}
 
 	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
@@ -351,6 +515,7 @@ export class AcpAgent implements Agent {
 		if (params.modeId !== ACP_DEFAULT_MODE_ID && params.modeId !== ACP_PLAN_MODE_ID)
 			throw new Error(`Unsupported ACP mode: ${params.modeId}`);
 		await this.#adapter(params.sessionId).control("mode.plan.set", { on: params.modeId === ACP_PLAN_MODE_ID });
+		this.#setConfigValue(params.sessionId, MODE_CONFIG_ID, params.modeId);
 		await this.#connection.sessionUpdate({
 			sessionId: params.sessionId,
 			update: { sessionUpdate: "current_mode_update", currentModeId: params.modeId },
@@ -371,9 +536,13 @@ export class AcpAgent implements Agent {
 			case THINKING_CONFIG_ID:
 				await this.#adapter(params.sessionId).control("thinking.set", { level: params.value });
 				break;
-			default:
-				throw new Error(`Unknown ACP config option: ${params.configId}`);
+			default: {
+				const operation = ACP_CONFIG_CONTROL_OPERATIONS[params.configId];
+				if (!operation) throw new Error(`Unknown ACP config option: ${params.configId}`);
+				await this.#adapter(params.sessionId).control(operation, { mode: params.value });
+			}
 		}
+		this.#setConfigValue(params.sessionId, params.configId, params.value);
 		const state = await this.#sessionState(params.sessionId);
 		await this.#connection.sessionUpdate({
 			sessionId: params.sessionId,
@@ -459,8 +628,30 @@ export class AcpAgent implements Agent {
 			providers: this.#providers(),
 		});
 		const unsubscribe = adapter.onFrame(frame => void this.#handleSdkFrame(id, frame));
-		this.#sessions.set(id, { cwd, adapter, unsubscribe });
+		this.#sessions.set(id, { cwd, adapter, unsubscribe, state: { config: new Map() } });
 		this.#knownSessionCwds.set(id, cwd);
+		try {
+			await applyAcpPermissionMode(adapter, this.#clientCapabilities);
+		} catch (error) {
+			unsubscribe();
+			this.#sessions.delete(id);
+			this.#knownSessionCwds.delete(id);
+			await adapter.close().catch(() => undefined);
+			throw error;
+		}
+	}
+
+	async #discardNewSession(id: string): Promise<void> {
+		const record = this.#sessions.get(id);
+		this.#sessions.delete(id);
+		this.#knownSessionCwds.delete(id);
+		try {
+			record?.unsubscribe();
+			await record?.adapter.close();
+		} catch {}
+		try {
+			await (await this.#brokerAdapter()).global("session.close", { sessionId: id }, randomUUID());
+		} catch {}
 	}
 
 	async #brokerAdapter(): Promise<AcpSdkAdapter> {
@@ -482,6 +673,12 @@ export class AcpAgent implements Agent {
 		return record.adapter;
 	}
 
+	#setConfigValue(id: string, key: string, value: string): void {
+		const record = this.#sessions.get(id);
+		if (!record) throw new AcpSdkAdapterError("not_found", `Unsupported ACP session: ${id}`);
+		record.state.config.set(key, value);
+	}
+
 	async #resolveSavedSession(id: string, cwd: string): Promise<string> {
 		const response = object(
 			await (await this.#brokerAdapter()).global("session.list", { resolveSessionId: id, cwd }),
@@ -494,15 +691,7 @@ export class AcpAgent implements Agent {
 	}
 
 	#providers(): AcpProviderRegistration[] {
-		const capabilities = this.#clientCapabilities;
-		return [
-			...(capabilities?.fs?.readTextFile || capabilities?.fs?.writeTextFile
-				? [{ capability: "fs", definitions: [] }]
-				: []),
-			...(capabilities?.terminal ? [{ capability: "terminal", definitions: [] }] : []),
-			...(capabilities?._meta ? [{ capability: "permission", definitions: [] }] : []),
-			{ capability: "ui", definitions: [] },
-		];
+		return acpProviderRegistrations(this.#clientCapabilities);
 	}
 
 	#reverseConnection(sessionId: string): AcpReverseConnection {
@@ -535,42 +724,10 @@ export class AcpAgent implements Agent {
 	}
 
 	async #sessionState(id: string): Promise<Pick<NewSessionResponse, "configOptions" | "modes">> {
-		const config = await this.#adapter(id).query("config.list/get");
-		const configItems = pageItems(config);
-		const configOptions = configItems
-			.map(item => object(item))
-			.filter((item): item is JsonObject =>
-				Boolean(item && typeof item.id === "string" && typeof item.value === "string"),
-			)
-			.map(item => ({
-				id: String(item.id),
-				name: typeof item.name === "string" ? item.name : String(item.id),
-				type: "select" as const,
-				currentValue: String(item.value),
-				options: [],
-			}));
-		return {
-			configOptions: [
-				{
-					id: MODE_CONFIG_ID,
-					name: "Mode",
-					type: "select",
-					currentValue: ACP_DEFAULT_MODE_ID,
-					options: [
-						{ value: ACP_DEFAULT_MODE_ID, name: "Default" },
-						{ value: ACP_PLAN_MODE_ID, name: "Plan" },
-					],
-				},
-				...configOptions,
-			],
-			modes: {
-				availableModes: [
-					{ id: ACP_DEFAULT_MODE_ID, name: "Default" },
-					{ id: ACP_PLAN_MODE_ID, name: "Plan" },
-				],
-				currentModeId: ACP_DEFAULT_MODE_ID,
-			},
-		};
+		const record = this.#sessions.get(id);
+		if (!record) throw new AcpSdkAdapterError("not_found", `Unsupported ACP session: ${id}`);
+		const config = await record.adapter.query("config.list/get");
+		return acpSessionStateFromConfig(config, record.state.config);
 	}
 
 	#scheduleBootstrap(id: string): void {

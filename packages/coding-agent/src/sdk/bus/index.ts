@@ -1922,7 +1922,7 @@ export function createNotificationsExtension(
 				try {
 					await ensureBroker({ agentDir });
 					const index = await new SessionIndex(agentDir).open();
-					const locator = { repo: readGitRepoName(ctx.cwd) ?? ctx.cwd, stateRoot };
+					const locator = { repo: path.resolve(ctx.cwd), stateRoot };
 					const endpointMtimeMs = fs.statSync(path.join(stateRoot, "sdk", `${id}.json`)).mtimeMs;
 					await host.registerWithBroker({
 						// The endpoint is written before registration. Its exact mtime

@@ -36,6 +36,7 @@ import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { persistCoordinatorRuntimeInputReady } from "./gjc-runtime/session-state-sidecar";
 import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
+import type { AcpStartupOptions } from "./modes/acp/startup-options";
 import type { SessionSelectionResult } from "./modes/components/session-selector";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -169,6 +170,111 @@ function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): v
 	for (const settingPath of ACP_DEFAULTED_SETTING_PATHS) {
 		targetSettings.override(settingPath, getDefault(settingPath));
 	}
+}
+
+/**
+ * Translate only ACP startup settings with a canonical SDK control carrier.
+ * Every other local-session flag is rejected so the broker-backed ACP host
+ * never appears to accept options it cannot apply to its remote session.
+ */
+export function resolveAcpStartupOptions(
+	parsed: Pick<
+		Args,
+		| "allowHome"
+		| "apiKey"
+		| "appendSystemPrompt"
+		| "credential"
+		| "continue"
+		| "default"
+		| "cwd"
+		| "fileArgs"
+		| "fork"
+		| "hooks"
+		| "messages"
+		| "mpreset"
+		| "model"
+		| "models"
+		| "noLsp"
+		| "noPty"
+		| "noRules"
+		| "noSession"
+		| "noSkills"
+		| "noTitle"
+		| "noTools"
+		| "pluginDirs"
+		| "print"
+		| "provider"
+		| "providerSessionId"
+		| "resume"
+		| "sessionDir"
+		| "skills"
+		| "slow"
+		| "smol"
+		| "plan"
+		| "systemPrompt"
+		| "thinking"
+		| "tmux"
+		| "tools"
+		| "extensions"
+		| "unknownFlags"
+	>,
+	sessionOptions: Pick<CreateAgentSessionOptions, "model" | "modelPattern" | "thinkingLevel">,
+): AcpStartupOptions {
+	const unsupported = [
+		...(parsed.allowHome ? ["--allow-home"] : []),
+		...(parsed.default ? ["--default"] : []),
+		...(parsed.apiKey ? ["--api-key"] : []),
+		...(parsed.appendSystemPrompt ? ["--append-system-prompt"] : []),
+		...(parsed.credential ? ["--credential"] : []),
+		...(parsed.continue ? ["--continue"] : []),
+		...(parsed.cwd ? ["--cwd"] : []),
+		...(parsed.fileArgs.length > 0 ? ["@file"] : []),
+		...(parsed.fork ? ["--fork"] : []),
+		...(parsed.hooks?.length ? ["--hook"] : []),
+		...(parsed.messages.length > 0 ? ["initial prompt"] : []),
+		...(parsed.models?.length ? ["--models"] : []),
+		...(parsed.noLsp ? ["--no-lsp"] : []),
+		...(parsed.noPty ? ["--no-pty"] : []),
+		...(parsed.noRules ? ["--no-rules"] : []),
+		...(parsed.noSession ? ["--no-session"] : []),
+		...(parsed.noSkills ? ["--no-skills"] : []),
+		...(parsed.noTitle ? ["--no-title"] : []),
+		...(parsed.noTools ? ["--no-tools"] : []),
+		...(parsed.pluginDirs?.length ? ["--plugin-dir"] : []),
+		...(parsed.print ? ["--print"] : []),
+		...(parsed.provider && !parsed.model ? ["--provider"] : []),
+		...(parsed.providerSessionId ? ["--provider-session-id"] : []),
+		...(parsed.resume ? ["--resume"] : []),
+		...(parsed.sessionDir ? ["--session-dir"] : []),
+		...(parsed.skills?.length ? ["--skills"] : []),
+		...(parsed.slow ? ["--slow"] : []),
+		...(parsed.smol ? ["--smol"] : []),
+		...(parsed.plan ? ["--plan"] : []),
+		...(parsed.systemPrompt ? ["--system-prompt"] : []),
+		...(parsed.tmux ? ["--tmux"] : []),
+		...(parsed.tools?.length ? ["--tools"] : []),
+		...(parsed.extensions?.length ? ["--extension"] : []),
+		...(parsed.unknownFlags.size > 0 ? ["extension flags"] : []),
+	];
+	if (unsupported.length > 0) {
+		throw new Error(
+			`Unsupported under SDK-backed ACP: ${unsupported.join(", ")}. Use ACP session configuration or SDK controls after session creation.`,
+		);
+	}
+	if (parsed.model && (!sessionOptions.model || sessionOptions.modelPattern)) {
+		throw new Error(
+			"Unsupported under SDK-backed ACP: --model could not be resolved to a canonical model ID. Use session/set_config_option after session creation.",
+		);
+	}
+	return {
+		...(parsed.mpreset ? { modelPreset: parsed.mpreset } : {}),
+		...(parsed.model && sessionOptions.model
+			? { modelId: `${sessionOptions.model.provider}/${sessionOptions.model.id}` }
+			: {}),
+		...((parsed.model || parsed.thinking) && sessionOptions.thinkingLevel
+			? { thinkingLevel: sessionOptions.thinkingLevel }
+			: {}),
+	};
 }
 
 async function readPipedInput(): Promise<string | undefined> {
@@ -1183,6 +1289,7 @@ export async function runRootCommand(
 
 	// Research-mode (RLM) preset: augment session options before session creation.
 	deps.rlmPreset?.applyOptions(sessionOptions, settingsInstance);
+	const acpStartupOptions = mode === "acp" ? resolveAcpStartupOptions(parsedArgs, sessionOptions) : undefined;
 
 	// Handle CLI --api-key as runtime override (not persisted)
 	if (parsedArgs.apiKey && parsedArgs.credential) {
@@ -1225,6 +1332,7 @@ export async function runRootCommand(
 	if (mode === "acp") {
 		await (deps.runAcpMode ?? (await import("./modes/acp")).runAcpMode)({
 			agentDir: settingsInstance.getAgentDir(),
+			...(acpStartupOptions ? { startupOptions: acpStartupOptions } : {}),
 		});
 	} else {
 		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager, eventBus } = await createSession(

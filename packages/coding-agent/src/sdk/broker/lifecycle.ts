@@ -7,6 +7,7 @@ import { FileSessionStorage } from "../../session/session-storage";
 import { SdkClient } from "../client/client";
 import type { Broker, BrokerResponse } from "./broker";
 import { isPidAlive } from "./discovery";
+import { resolveSdkInternalSpawnCommand } from "./runtime";
 
 const READY_TIMEOUT_MS = 10_000;
 const POLL_MS = 50;
@@ -20,6 +21,7 @@ export interface SessionLifecycleLaunchRequest {
 	sourceSessionId?: string;
 	sourceSessionPath?: string;
 	sessionPath?: string;
+	modelPreset?: string;
 }
 
 export function readSessionLifecycleLaunchRequest(value: string | undefined): SessionLifecycleLaunchRequest {
@@ -32,7 +34,8 @@ export function readSessionLifecycleLaunchRequest(value: string | undefined): Se
 		typeof request.sessionId !== "string" ||
 		!request.sessionId ||
 		typeof request.stateRoot !== "string" ||
-		!request.stateRoot
+		!request.stateRoot ||
+		(request.modelPreset !== undefined && (typeof request.modelPreset !== "string" || !request.modelPreset))
 	)
 		throw new Error("GJC_SDK_LIFECYCLE_REQUEST is invalid.");
 	return request as SessionLifecycleLaunchRequest;
@@ -44,6 +47,7 @@ type SessionLaunch = {
 	sourceSessionId?: string;
 	sourceSessionPath?: string;
 	sessionPath?: string;
+	modelPreset?: string;
 };
 
 const fail = (code: string, message: string): BrokerResponse => ({
@@ -93,10 +97,7 @@ function command(): { file: string; args: string[] } {
 		const [file, ...args] = configured.trim().split(/\s+/);
 		if (file) return { file, args };
 	}
-	const entrypoint = process.argv[1]?.endsWith("cli.ts")
-		? process.argv[1]
-		: path.resolve(import.meta.dir, "../../cli.ts");
-	return { file: process.execPath, args: [entrypoint, "sdk", "session-host-internal"] };
+	return resolveSdkInternalSpawnCommand("session-host-internal");
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -314,7 +315,8 @@ async function launchInput(
 	const root = stateRoot(input);
 	if (!root) return fail("invalid_input", "A target path or stateRoot is required.");
 	const requested = sessionId(input);
-	if (operation === "session.create") return { id: randomUUID(), root };
+	const modelPreset = text(input.modelPreset);
+	if (operation === "session.create") return { id: randomUUID(), root, modelPreset };
 	if (operation === "session.resume") {
 		if (!requested) return fail("invalid_input", "sessionId is required to resume a saved session.");
 		const savedPath = text(input.sessionPath);
@@ -324,7 +326,7 @@ async function launchInput(
 		} catch {
 			return fail("not_found", "Requested saved session does not exist.");
 		}
-		return { id: requested, root, sessionPath: savedPath };
+		return { id: requested, root, sessionPath: savedPath, modelPreset };
 	}
 	const sourceSessionId = text(input.sourceSessionId) ?? text(input.sourceId);
 	const sourceSessionPath = text(input.sourceSessionPath) ?? text(input.sourcePath) ?? text(input.sessionPath);
@@ -343,7 +345,7 @@ async function launchInput(
 			return fail("not_found", "Source saved session does not exist.");
 		}
 	}
-	return { id: randomUUID(), root, sourceSessionId, sourceSessionPath };
+	return { id: randomUUID(), root, sourceSessionId, sourceSessionPath, modelPreset };
 }
 
 function within(root: string, candidate: string): boolean {
@@ -412,6 +414,7 @@ export async function executeLifecycle(
 			...(launch.sourceSessionId ? { sourceSessionId: launch.sourceSessionId } : {}),
 			...(launch.sourceSessionPath ? { sourceSessionPath: launch.sourceSessionPath } : {}),
 			...(launch.sessionPath ? { sessionPath: launch.sessionPath } : {}),
+			...(launch.modelPreset ? { modelPreset: launch.modelPreset } : {}),
 		};
 		let child: ChildProcess | undefined;
 		try {

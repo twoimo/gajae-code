@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { getSessionsDir } from "@gajae-code/utils";
+import { lifecycleArgs } from "../src/commands/sdk";
 import { Broker } from "../src/sdk/broker/broker";
 import {
 	brokerDiscoveryPath,
@@ -11,11 +12,42 @@ import {
 } from "../src/sdk/broker/discovery";
 import { ensureBroker } from "../src/sdk/broker/ensure";
 import { getBrokerIdentityKey } from "../src/sdk/broker/identity";
+import { readSessionLifecycleLaunchRequest } from "../src/sdk/broker/lifecycle";
+import { resolveSdkInternalSpawnCommand } from "../src/sdk/broker/runtime";
 
 const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-"));
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const brokerEntrypoint = path.resolve(import.meta.dir, "../src/cli.ts");
 
+it("SDK internal commands self-spawn compiled binaries without source entrypoints", () => {
+	const compiled = {
+		execPath: "/opt/gjc/gjc",
+		mode: "compiled" as const,
+		argsPrefix: [],
+		reloadPicksUpSourceEdits: false,
+		warning: "Rebuild",
+	};
+	expect(resolveSdkInternalSpawnCommand("broker-internal", compiled)).toEqual({
+		file: "/opt/gjc/gjc",
+		args: ["sdk", "broker-internal"],
+	});
+	expect(resolveSdkInternalSpawnCommand("session-host-internal", compiled)).toEqual({
+		file: "/opt/gjc/gjc",
+		args: ["sdk", "session-host-internal"],
+	});
+});
+
+it("SDK lifecycle model presets reach the session host parser", () => {
+	const request = readSessionLifecycleLaunchRequest(
+		JSON.stringify({
+			operation: "session.create",
+			sessionId: "session-1",
+			stateRoot: "/state",
+			modelPreset: "codex-eco",
+		}),
+	);
+	expect(lifecycleArgs(request, "/repo", "/agent").mpreset).toBe("codex-eco");
+});
 async function waitForDiscovery(agentDir: string) {
 	const deadline = Date.now() + 5_000;
 	while (Date.now() < deadline) {

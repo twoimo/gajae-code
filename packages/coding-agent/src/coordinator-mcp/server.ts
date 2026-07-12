@@ -66,7 +66,6 @@ interface RuntimeSessionStatePayload extends CoordinatorSessionState {
 }
 
 interface CoordinatorServices {
-	commandRunner?: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 	connectSdk?: (url: string, token: string) => Promise<SdkClient>;
 	resolveModelProfiles?: CoordinatorModelProfileLoader;
 }
@@ -327,10 +326,10 @@ function toolSchema(name: CoordinatorToolName): {
 	if (name === "gjc_coordinator_read_turn") {
 		return {
 			name,
-			description: "Read authoritative durable turn state plus bounded advisory tmux status.",
+			description: "Read authoritative durable turn state without terminal-pane inspection.",
 			inputSchema: {
 				type: "object",
-				properties: { session_id: sessionId, turn_id: { type: "string" }, lines: { type: "number" } },
+				properties: { session_id: sessionId, turn_id: { type: "string" } },
 				required: ["turn_id"],
 			},
 		};
@@ -352,7 +351,6 @@ function toolSchema(name: CoordinatorToolName): {
 						type: "number",
 						description: "Bounded polling interval in milliseconds, capped at 10 seconds.",
 					},
-					lines: { type: "number" },
 				},
 				required: ["turn_id"],
 			},
@@ -414,7 +412,7 @@ function toolSchema(name: CoordinatorToolName): {
 	if (name === "gjc_coordinator_read_tail") {
 		return {
 			name,
-			description: "Read a bounded structured session tail, not tmux scrollback.",
+			description: "Read bounded last-assistant output through the session SDK, never terminal scrollback.",
 			inputSchema: { type: "object", properties: { session_id: sessionId, lines: { type: "number" } } },
 		};
 	}
@@ -492,7 +490,6 @@ function toolSchema(name: CoordinatorToolName): {
 							"Bounded await timeout in milliseconds, capped at 30 minutes like gjc_coordinator_await_turn.",
 					},
 					poll_interval_ms: { type: "number", description: "Bounded await polling interval." },
-					lines: { type: "number", description: "Bounded advisory tail lines returned with await/read payloads." },
 				},
 				required: ["cwd", "idempotency_key", "allow_mutation"],
 			},
@@ -1405,85 +1402,11 @@ export function boundedEventWatchTimeoutMs(value: unknown): number {
 export function boundedPollIntervalMs(value: unknown): number {
 	return Math.min(Math.max(parsePositiveIntegerMs(value, 100), 10), COORDINATOR_POLL_INTERVAL_MAX_MS);
 }
-async function runCommand(command: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { exitCode, stdout, stderr };
-}
-
-type CommandRunner = (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
 function boundedLineCount(value: unknown): number {
 	const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) return 80;
 	return Math.min(parsed, 400);
-}
-
-async function captureTmuxTail(
-	session: Record<string, unknown>,
-	lines: number,
-	runner: CommandRunner = runCommand,
-): Promise<string[]> {
-	const target = typeof session.tmux_target === "string" ? session.tmux_target : session.tmuxTarget;
-	if (typeof target !== "string" || target.length === 0) return [];
-	const captured = await runner(["tmux", "capture-pane", "-t", target, "-p", "-S", `-${lines}`]);
-
-	if (captured.exitCode !== 0) return [];
-	return captured.stdout.split("\n").slice(-lines);
-}
-
-async function hasTmuxSession(
-	session: Record<string, unknown>,
-	runner: CommandRunner = runCommand,
-): Promise<boolean | null> {
-	const tmuxSession = typeof session.tmux_session === "string" ? session.tmux_session : session.tmuxSession;
-	if (typeof tmuxSession !== "string" || tmuxSession.length === 0) return null;
-	const checked = await runner(["tmux", "has-session", "-t", tmuxSession]);
-	return checked.exitCode === 0;
-}
-
-function lastMatchingLine(lines: string[], pattern: RegExp): string | null {
-	for (let index = lines.length - 1; index >= 0; index--) {
-		const line = lines[index]?.trim();
-		if (line && pattern.test(line)) return line;
-	}
-	return null;
-}
-
-function summarizePaneTail(lines: string[]): Record<string, unknown> {
-	const nonEmpty = lines.map(line => line.trim()).filter(Boolean);
-	const spinnerLine = lastMatchingLine(nonEmpty, /^[⠁-⣿]\s+/u);
-	const hudLine = lastMatchingLine(nonEmpty, /\/ 📁 | PR \d+|Status Review|Tracking/i);
-	const errorLine = lastMatchingLine(nonEmpty, /\b(error|failed|exception|404|not_found)\b/i);
-	const assistantLine = lastMatchingLine(nonEmpty, /^(gajae|assistant)\b/i);
-	const lastContent = nonEmpty.at(-1) ?? null;
-	return {
-		state: spinnerLine ? "working" : errorLine ? "error_or_warning" : "idle_or_unknown",
-		activity: spinnerLine ?? hudLine ?? lastContent,
-		hud: hudLine,
-		last_error: errorLine,
-		last_speaker: assistantLine,
-		last_content: lastContent,
-	};
-}
-
-async function inspectTmuxSession(
-	session: Record<string, unknown>,
-	lines = 80,
-	runner: CommandRunner = runCommand,
-): Promise<Record<string, unknown>> {
-	const live = await hasTmuxSession(session, runner);
-	const tail = live ? await captureTmuxTail(session, lines, runner) : [];
-
-	return {
-		live,
-		...summarizePaneTail(tail),
-		tail_preview: tail.slice(-20),
-	};
 }
 
 function waitForTurnStateChange(namespaceDir: string, turn: TurnRecord, timeoutMs: number): Promise<void> {
@@ -1607,7 +1530,6 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 	const services = options.services ?? {};
 	const loadModelProfiles = services.resolveModelProfiles ?? loadCoordinatorModelProfiles;
 	const namespaceDir = coordinatorNamespacePath(config);
-	const commandRunner = services.commandRunner ?? runCommand;
 	const sessionTransitionTails = new Map<string, Promise<void>>();
 
 	async function withSessionTransition<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
@@ -1645,6 +1567,59 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		} finally {
 			await client.close();
 		}
+	}
+
+	async function querySession(session: Record<string, unknown>, query: string): Promise<Record<string, unknown>> {
+		const sessionId = optionalString(session.session_id) ?? optionalString(session.sessionId);
+		const cwd = optionalString(session.cwd);
+		if (!sessionId || !cwd)
+			throw new SdkClientError("not_found", "Coordinator session has no SDK endpoint identity.");
+		const endpoint = await readSdkSessionEndpoint(cwd, sessionId);
+		if (!endpoint) throw new SdkClientError("not_found", `SDK session not found: ${sessionId}`);
+		const client = await (services.connectSdk ?? ((url, token) => SdkClient.connect(url, token)))(
+			endpoint.url,
+			endpoint.token,
+		);
+		try {
+			const response = asRecord(await client.query(query));
+			if (response?.ok !== true) {
+				const error = asRecord(response?.error);
+				throw new SdkClientError(
+					typeof error?.code === "string" ? error.code : "unavailable",
+					typeof error?.message === "string" ? error.message : `SDK ${query} query failed.`,
+				);
+			}
+			return response;
+		} finally {
+			await client.close();
+		}
+	}
+
+	function sdkQueryPageItem(response: Record<string, unknown>, query: string): unknown {
+		const items = asRecord(response.page)?.items;
+		if (!Array.isArray(items) || items.length !== 1)
+			throw new SdkClientError("unavailable", `SDK ${query} query returned an invalid page.`);
+		return items[0];
+	}
+
+	async function queryLastAssistant(session: Record<string, unknown>): Promise<string | null> {
+		const item = sdkQueryPageItem(await querySession(session, "session.last_assistant"), "session.last_assistant");
+		if (typeof item === "string") return item;
+		const message = asRecord(item);
+		return typeof message?.text === "string"
+			? message.text
+			: typeof message?.content === "string"
+				? message.content
+				: null;
+	}
+
+	async function queryContextStatus(session: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const context = asRecord(sdkQueryPageItem(await querySession(session, "context.get"), "context.get"));
+		return {
+			authority: "sdk",
+			live: true,
+			...(typeof context?.isStreaming === "boolean" ? { is_streaming: context.isStreaming } : {}),
+		};
 	}
 
 	function requirePromptAcknowledgement(result: unknown): void {
@@ -1802,11 +1777,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		return evidence;
 	}
 
-	async function readTurnPayload(
-		turnId: unknown,
-		sessionId: unknown,
-		lines: unknown,
-	): Promise<Record<string, unknown>> {
+	async function readTurnPayload(turnId: unknown, sessionId: unknown): Promise<Record<string, unknown>> {
 		const turn = await readTurnRecord(namespaceDir, turnId);
 		if (!turn) return { ok: false, reason: "unknown_turn" };
 		if (sessionId != null && turn.session_id !== safeExternalId("session", sessionId)) {
@@ -1814,8 +1785,25 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		}
 		const session = asRecord(await readJsonFile(sessionFile(turn.session_id)));
 		let resolvedTurn = turn;
-		let advisoryStatus: Record<string, unknown> = { live: false };
+		let advisoryStatus: Record<string, unknown> = {
+			authority: "sdk",
+			live: null,
+			reason: "session_endpoint_unobserved",
+		};
 		let sessionState = await readSessionState(namespaceDir, turn.session_id);
+		if (session) {
+			try {
+				advisoryStatus = await queryContextStatus(session);
+			} catch (error) {
+				advisoryStatus = {
+					authority: "sdk",
+					live: null,
+					reason: error instanceof SdkClientError ? error.code : "unavailable",
+				};
+			}
+		} else {
+			advisoryStatus = { authority: "sdk", live: null, reason: "session_record_missing" };
+		}
 		resolvedTurn = await reconcileRuntimeAcknowledgement(
 			namespaceDir,
 			resolvedTurn,
@@ -1849,8 +1837,6 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		} else if (!session && ACTIVE_TURN_STATUSES.has(resolvedTurn.status)) {
 			resolvedTurn = await markTurnFailedForUnavailableSession(namespaceDir, resolvedTurn, "session_record_missing");
 			sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
-		} else if (session) {
-			advisoryStatus = await inspectTmuxSession(session, boundedLineCount(lines), commandRunner);
 		}
 		if (ACTIVE_TURN_STATUSES.has(resolvedTurn.status)) {
 			resolvedTurn = await reconcileRuntimeAcknowledgement(
@@ -1884,12 +1870,11 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		sessionId: unknown,
 		timeoutMs: unknown,
 		pollIntervalMs: unknown,
-		lines: unknown,
 	): Promise<Record<string, unknown>> {
 		const timeout = boundedAwaitTurnTimeoutMs(timeoutMs);
 		const pollInterval = boundedPollIntervalMs(pollIntervalMs);
 		const deadline = Date.now() + timeout;
-		let payload = await readTurnPayload(turnId, sessionId, lines);
+		let payload = await readTurnPayload(turnId, sessionId);
 		while (
 			payload.ok === true &&
 			!TERMINAL_TURN_STATUSES.has((payload.turn as TurnRecord).status) &&
@@ -1898,7 +1883,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		) {
 			const remainingMs = deadline - Date.now();
 			await waitForTurnStateChange(namespaceDir, payload.turn as TurnRecord, Math.min(pollInterval, remainingMs));
-			payload = await readTurnPayload(turnId, sessionId, lines);
+			payload = await readTurnPayload(turnId, sessionId);
 		}
 		if (
 			payload.ok === true &&
@@ -2079,11 +2064,23 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				}
 			}
 			if (name === "gjc_coordinator_read_tail") {
-				const session = asRecord(await readJsonFile(sessionFile(args.session_id)));
-				return {
-					ok: true,
-					lines: session ? await captureTmuxTail(session, boundedLineCount(args.lines), commandRunner) : [],
-				};
+				const sessionId = safeExternalId("session", args.session_id);
+				const session = asRecord(await readJsonFile(sessionFile(sessionId)));
+				if (!session)
+					return {
+						ok: false,
+						error: { code: "not_found", message: `Coordinator session not found: ${sessionId}` },
+					};
+				try {
+					const text = await queryLastAssistant(session);
+					return {
+						ok: true,
+						source: "sdk",
+						lines: text === null ? [] : text.split("\n").slice(-boundedLineCount(args.lines)),
+					};
+				} catch (error) {
+					return sdkError(error);
+				}
 			}
 			if (name === "gjc_coordinator_list_questions") return { ok: true, questions: await listQuestions(args) };
 			if (name === "gjc_coordinator_list_artifacts") return { ok: true, roots: config.allowedRoots };
@@ -2272,7 +2269,6 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 									sessionId,
 									args.timeout_ms,
 									args.poll_interval_ms,
-									args.lines,
 								),
 							}
 						: response;
@@ -2437,16 +2433,10 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				}
 			}
 			if (name === "gjc_coordinator_read_turn") {
-				return await readTurnPayload(args.turn_id, args.session_id, args.lines);
+				return await readTurnPayload(args.turn_id, args.session_id);
 			}
 			if (name === "gjc_coordinator_await_turn") {
-				return await awaitTurnPayload(
-					args.turn_id,
-					args.session_id,
-					args.timeout_ms,
-					args.poll_interval_ms,
-					args.lines,
-				);
+				return await awaitTurnPayload(args.turn_id, args.session_id, args.timeout_ms, args.poll_interval_ms);
 			}
 			if (name === "gjc_coordinator_submit_question_answer") {
 				requireCoordinatorMutation(config, "questions", args);

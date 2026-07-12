@@ -13,7 +13,7 @@ These instructions teach a Hermes-style coordinator how to operate GJC through t
    If a second task is needed while one turn is active, pass `queue: true`; the next queued turn is promoted after the active turn is reported terminal.
 5. If GJC asks a structured question, use `{{TOOL_PREFIX}}_list_questions` and answer with `{{TOOL_PREFIX}}_submit_question_answer`.
 6. Use `{{TOOL_PREFIX}}_report_status` for coordinator-visible status and final reports.
-7. Use `{{TOOL_PREFIX}}_read_tail` only as advisory debug output when structured turn state is insufficient.
+7. Use `{{TOOL_PREFIX}}_read_tail` only to inspect the latest assistant response through the SDK when structured turn state is insufficient; it never reads terminal output.
 
 ## Prefer high-level delegation
 

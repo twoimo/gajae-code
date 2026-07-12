@@ -1,18 +1,19 @@
 import { Args, Command, Flags } from "@gajae-code/utils/cli";
 import type { Args as ParsedArgs } from "../cli/args";
-import { createSessionManager } from "../main";
+import { applyStartupModelProfiles, createSessionManager } from "../main";
 import { initializeExtensions } from "../modes/runtime-init";
 import { createAgentSession } from "../sdk";
 import { Broker } from "../sdk/broker/broker";
 import { readSessionLifecycleLaunchRequest, type SessionLifecycleLaunchRequest } from "../sdk/broker/lifecycle";
 import { SessionManager } from "../session/session-manager";
 
-function lifecycleArgs(request: SessionLifecycleLaunchRequest, cwd: string, agentDir: string): ParsedArgs {
+export function lifecycleArgs(request: SessionLifecycleLaunchRequest, cwd: string, agentDir: string): ParsedArgs {
 	return {
 		messages: [],
 		fileArgs: [],
 		unknownFlags: new Map(),
 		...(request.operation === "session.resume" ? { resume: request.sessionPath } : {}),
+		...(request.modelPreset ? { mpreset: request.modelPreset } : {}),
 		...(request.operation === "session.fork"
 			? {
 					fork: request.sourceSessionPath ?? request.sourceSessionId,
@@ -31,6 +32,14 @@ async function runSessionHost(): Promise<void> {
 	const parsed = lifecycleArgs(request, cwd, agentDir);
 	const sessionManager = await createSessionManager(parsed, cwd);
 	const { session } = await createAgentSession({ cwd, agentDir, sessionManager });
+	if (request.modelPreset) {
+		await applyStartupModelProfiles({
+			session,
+			settings: session.settings,
+			modelRegistry: session.modelRegistry,
+			parsedArgs: parsed,
+		});
+	}
 	let stopping = false;
 	const stop = () => {
 		if (stopping) return;

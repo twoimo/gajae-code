@@ -16,6 +16,8 @@ import {
 	type WorkflowGateEmitter,
 } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import type { InteractiveModeContext } from "../src/modes/types";
+import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
+import { SessionIndex } from "../src/sdk/broker/session-index";
 import { createNotificationsExtension } from "../src/sdk/bus";
 import { SessionSdkHost } from "../src/sdk/host";
 import type {
@@ -124,6 +126,31 @@ function context(
 		clearContext: async () => true,
 	};
 }
+
+test("SDK broker registration records an absolute lifecycle scope", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-locator-"));
+	const cwd = path.relative(process.cwd(), root);
+	const agentDir = path.join(root, "agent");
+	const sessionId = `locator-${Date.now()}`;
+	dirs.push(root);
+	process.env.GJC_NOTIFICATIONS = "1";
+	start(context(cwd, sessionId), {
+		get: () => undefined,
+		getAgentDir: () => agentDir,
+	} as unknown as Settings);
+	try {
+		await waitFor(
+			() => fs.existsSync(path.join(agentDir, "sdk", "sessions", "index.jsonl")),
+			"SDK broker registration",
+		);
+		const sessions = (await new SessionIndex(agentDir).open()).listSessions().sessions;
+		expect(sessions).toContainEqual(
+			expect.objectContaining({ sessionId, locator: expect.objectContaining({ repo: path.resolve(cwd) }) }),
+		);
+	} finally {
+		await brokerOwnerForTest(agentDir)?.stop();
+	}
+});
 
 test("ExtensionRunner forwards SDK permission providers into its production context", () => {
 	let installed: SdkPermissionProvider;

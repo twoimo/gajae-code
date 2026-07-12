@@ -1,9 +1,11 @@
 import * as stream from "node:stream";
 import { AgentSideConnection, ndJsonStream, type Stream } from "@agentclientprotocol/sdk";
 import { AcpAgent } from "./acp-agent";
+import type { AcpStartupOptions } from "./startup-options";
 
 export interface AcpModeOptions {
 	agentDir?: string;
+	startupOptions?: AcpStartupOptions;
 }
 
 export function createAcpConnection(transport: Stream, options: AcpModeOptions = {}): AgentSideConnection {

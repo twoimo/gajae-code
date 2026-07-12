@@ -5109,6 +5109,19 @@ export class AgentSession {
 		return this.#planModeState;
 	}
 
+	/** Live SDK configuration values exposed through the session query surface. */
+	getSdkConfigItems(): Record<string, string> {
+		const model = this.model;
+		return {
+			mode: this.#planModeState?.enabled ? "plan" : "default",
+			...(model ? { model: `${model.provider}/${model.id}` } : {}),
+			thinking: this.#thinkingLevel ?? "off",
+			steeringMode: this.steeringMode,
+			followUpMode: this.followUpMode,
+			interruptMode: this.interruptMode,
+		};
+	}
+
 	setPlanModeState(state: PlanModeState | undefined): void {
 		this.#planModeState = state;
 		if (state?.enabled) {
@@ -6054,11 +6067,7 @@ export class AgentSession {
 			setPlanMode: on => this.setSdkPlanMode(on),
 			operateGoal: (op, objective) => this.operateGoal(op, objective),
 			getSkillState: () => this.skills.map(skill => ({ name: skill.name, description: skill.description })),
-			getConfigItems: () => ({
-				steeringMode: this.steeringMode,
-				followUpMode: this.followUpMode,
-				interruptMode: this.interruptMode,
-			}),
+			getConfigItems: () => this.getSdkConfigItems(),
 			getBranchCandidates: () => this.sessionManager.getTree(),
 			getExtensions: () => this.#extensionRunner?.getExtensionPaths() ?? [],
 			getArtifact: () => undefined,

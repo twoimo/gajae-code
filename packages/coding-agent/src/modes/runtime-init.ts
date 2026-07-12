@@ -112,11 +112,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			setPlanMode: on => session.setSdkPlanMode(on),
 			operateGoal: (op, objective) => session.operateGoal(op, objective),
 			getSkillState: () => session.skills.map(skill => ({ name: skill.name, description: skill.description })),
-			getConfigItems: () => ({
-				steeringMode: session.steeringMode,
-				followUpMode: session.followUpMode,
-				interruptMode: session.interruptMode,
-			}),
+			getConfigItems: () => session.getSdkConfigItems(),
 			getBranchCandidates: () => session.sessionManager.getTree(),
 			getExtensions: () => session.extensionRunner?.getExtensionPaths() ?? [],
 			getArtifact: async id => {

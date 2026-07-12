@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { type BrokerDiscovery, readBrokerDiscovery } from "./discovery";
+import { resolveSdkInternalSpawnCommand } from "./runtime";
 export interface EnsureBrokerSettings {
 	agentDir: string;
 	heartbeatTtlMs?: number;
@@ -14,10 +14,8 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export async function ensureBroker(settings: EnsureBrokerSettings): Promise<BrokerDiscovery> {
 	const existing = await readBrokerDiscovery(settings.agentDir, settings.heartbeatTtlMs);
 	if (existing) return existing;
-	const entrypoint = process.argv[1]?.endsWith("cli.ts")
-		? process.argv[1]
-		: path.resolve(import.meta.dir, "../../cli.ts");
-	const child = spawn(process.execPath, [entrypoint, "sdk", "broker-internal", "--agent-dir", settings.agentDir], {
+	const command = resolveSdkInternalSpawnCommand("broker-internal");
+	const child = spawn(command.file, [...command.args, "--agent-dir", settings.agentDir], {
 		detached: true,
 		stdio: "ignore",
 		env: process.env,
