@@ -1,9 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	readVisibleSessionBackendId,
-	VISIBLE_SESSION_BACKEND_IDS,
-	type VisibleSessionBackendId,
-} from "./backend";
+import { readVisibleSessionBackendId, VISIBLE_SESSION_BACKEND_IDS, type VisibleSessionBackendId } from "./backend";
 
 describe("visible session backend IDs", () => {
 	it("reads every canonical durable backend ID", () => {
