@@ -10,9 +10,21 @@ import chalk from "chalk";
 import { parseThinkingLevel, resolveThinkingLevelForModel } from "../thinking";
 import { isAuthenticated, kNoAuth, MODEL_ROLE_IDS, type ModelRegistry, type ModelRole } from "./model-registry";
 import type { Settings } from "./settings";
+import { normalizeModelSelectorValue, type ModelSelectorValue } from "./model-selector-value";
+
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<KnownProvider, string> = DEFAULT_MODEL_PER_PROVIDER;
+
+/**
+ * Cursor's current RPC transport executes its exec protocol while streaming and
+ * has no client-side tool-call mode. Managed fallback attempts must not enable
+ * that irreversible path.
+ */
+export function managedCursorFallbackUnavailableReason(model: Model<Api>, selector: string): string | undefined {
+	if (model.api !== "cursor-agent") return undefined;
+	return `Cursor model ${selector} requires provider-side tool execution and cannot be used in a retryable fallback chain`;
+}
 
 export interface ScopedModelSelection {
 	model: Model<Api>;
@@ -524,10 +536,8 @@ function getModelRoleAlias(value: string): ModelRole | undefined {
 	return undefined;
 }
 
-function normalizeModelPatternList(value: string | string[] | undefined): string[] {
-	if (!value) return [];
-	const patterns = Array.isArray(value) ? value : value.split(",");
-	return patterns.map(pattern => pattern.trim()).filter(Boolean);
+function normalizeModelPatternList(value: ModelSelectorValue | undefined): string[] {
+	return normalizeModelSelectorValue(value);
 }
 
 function isSessionInheritedAgentPattern(value: string): boolean {
@@ -545,7 +555,7 @@ function resolveConfiguredRolePattern(value: string, settings?: Settings): strin
 	const role = getModelRoleAlias(aliasCandidate);
 	if (!role) return [normalized];
 
-	const configured = settings?.getModelRole(role)?.trim();
+	const configured = settings?.getModelRole(role);
 	const resolved = configured ? normalizeModelPatternList(configured) : undefined;
 	if (!resolved || resolved.length === 0) {
 		return undefined;
@@ -560,14 +570,14 @@ function resolveConfiguredRolePattern(value: string, settings?: Settings): strin
 export function expandRoleAlias(value: string, settings?: Settings): string {
 	const normalized = value.trim();
 	if (normalized === DEFAULT_MODEL_ROLE) {
-		return settings?.getModelRole("default") ?? value;
+		return normalizeModelPatternList(settings?.getModelRole("default"))[0] ?? value;
 	}
 
 	const resolved = resolveConfiguredRolePattern(value, settings)?.[0];
 	return resolved ?? value;
 }
 
-export function resolveConfiguredModelPatterns(value: string | string[] | undefined, settings?: Settings): string[] {
+export function resolveConfiguredModelPatterns(value: ModelSelectorValue | undefined, settings?: Settings): string[] {
 	const patterns = normalizeModelPatternList(value);
 	return patterns.flatMap(pattern => {
 		const resolved = resolveConfiguredRolePattern(pattern, settings);
@@ -575,8 +585,8 @@ export function resolveConfiguredModelPatterns(value: string | string[] | undefi
 	});
 }
 export interface AgentModelPatternResolutionOptions {
-	settingsOverride?: string | string[];
-	agentModel?: string | string[];
+	settingsOverride?: ModelSelectorValue;
+	agentModel?: ModelSelectorValue;
 	settings?: Settings;
 	activeModelPattern?: string;
 	fallbackModelPattern?: string;
@@ -597,7 +607,10 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 	}
 
 	const fallback =
-		activeModelPattern?.trim() || fallbackModelPattern?.trim() || settings?.getModelRole("default")?.trim() || "";
+		activeModelPattern?.trim() ||
+		fallbackModelPattern?.trim() ||
+		normalizeModelPatternList(settings?.getModelRole("default"))[0] ||
+		"";
 	return resolveConfiguredModelPatterns(fallback, settings);
 }
 
@@ -612,21 +625,14 @@ export interface ResolvedModelRoleValue {
 }
 
 export function resolveModelRoleValue(
-	roleValue: string | undefined,
+	roleValue: ModelSelectorValue | undefined,
 	availableModels: Model<Api>[],
 	options?: { settings?: Settings; matchPreferences?: ModelMatchPreferences; modelRegistry?: CanonicalModelRegistry },
 ): ResolvedModelRoleValue {
-	if (!roleValue) {
-		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
-	}
-
-	const normalized = roleValue.trim();
-	if (!normalized || normalized === DEFAULT_MODEL_ROLE) {
-		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
-	}
-
-	const effectivePatterns = resolveConfiguredRolePattern(normalized, options?.settings);
-	if (!effectivePatterns || effectivePatterns.length === 0) {
+	const effectivePatterns = normalizeModelPatternList(roleValue).flatMap(pattern =>
+		resolveConfiguredRolePattern(pattern, options?.settings) ?? [],
+	);
+	if (effectivePatterns.length === 0) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
 
@@ -654,11 +660,10 @@ export function resolveModelRoleValue(
 }
 
 export function extractExplicitThinkingSelector(
-	value: string | undefined,
+	value: ModelSelectorValue | undefined,
 	settings?: Settings,
 ): ThinkingLevel | undefined {
-	if (!value) return undefined;
-	const normalized = value.trim();
+	const normalized = normalizeModelPatternList(value)[0];
 	if (!normalized || normalized === DEFAULT_MODEL_ROLE) return undefined;
 
 	const visited = new Set<string>();
@@ -712,12 +717,13 @@ export function resolveModelFromSettings(options: {
 	let sawConfiguredProviderQualifiedRole = false;
 	for (const role of roles) {
 		const configured = settings.getModelRole(role);
-		if (!configured) continue;
-		const expanded = expandRoleAlias(configured, settings).trim();
+		const expanded = normalizeModelPatternList(configured)[0];
+		if (!expanded) continue;
+		const resolvedValue = expandRoleAlias(expanded, settings).trim();
 		if (expanded.includes("/")) {
 			sawConfiguredProviderQualifiedRole = true;
 		}
-		const resolved = resolveModelFromString(expanded, availableModels, matchPreferences, modelRegistry);
+		const resolved = resolveModelFromString(resolvedValue, availableModels, matchPreferences, modelRegistry);
 		if (resolved) return resolved;
 	}
 	return sawConfiguredProviderQualifiedRole ? undefined : availableModels[0];
@@ -781,31 +787,54 @@ export async function resolveModelOverrideWithAuthFallback(
 	authFallbackUsed: boolean;
 	requestedModel?: Model<Api>;
 	fallbackReason?: "auth_unavailable";
+	activeIndex?: number;
+	parentFallbackSelector?: string;
+	skips: Array<{ selector: string; reason: "unknown_model" | "unauthenticated" }>;
 }> {
-	const primary = resolveModelOverride(modelPatterns, modelRegistry, settings);
-	const unchanged = { ...primary, requestedModel: primary.model, authFallbackUsed: false };
-	if (!primary.model || !parentActiveModelPattern) {
-		return unchanged;
+	const availableModels = modelRegistry.getAvailable();
+	const matchPreferences = { usageOrder: settings?.getStorage()?.getModelUsageOrder() };
+	let requestedModel: Model<Api> | undefined;
+	let requestedResolution: ResolvedModelRoleValue | undefined;
+	const skips: Array<{ selector: string; reason: "unknown_model" | "unauthenticated" }> = [];
+	let activeIndex = 0;
+	for (const pattern of modelPatterns) {
+		const candidate = resolveModelRoleValue(pattern, availableModels, { settings, matchPreferences, modelRegistry });
+		if (!requestedModel && candidate.model) {
+			requestedModel = candidate.model;
+			requestedResolution = candidate;
+		}
+		if (!candidate.model) {
+			skips.push({ selector: pattern, reason: "unknown_model" });
+			activeIndex += 1;
+			continue;
+		}
+		const key = await modelRegistry.getApiKey(candidate.model, sessionId);
+		if (key === kNoAuth || isAuthenticated(key)) {
+			return { ...candidate, requestedModel: candidate.model, authFallbackUsed: false, activeIndex, skips };
+		}
+		skips.push({ selector: pattern, reason: "unauthenticated" });
+		activeIndex += 1;
 	}
-
-	const primaryKey = await modelRegistry.getApiKey(primary.model, sessionId);
-	if (primaryKey === kNoAuth || isAuthenticated(primaryKey)) {
-		return unchanged;
+	const fallback = parentActiveModelPattern
+		? resolveModelOverride([parentActiveModelPattern], modelRegistry, settings)
+		: { explicitThinkingLevel: false };
+	if (fallback.model) {
+		const fallbackKey = await modelRegistry.getApiKey(fallback.model, sessionId);
+		if (fallbackKey === kNoAuth || isAuthenticated(fallbackKey)) {
+			const isParentSubstitution = requestedModel === undefined || !modelsAreEqual(fallback.model, requestedModel);
+			return {
+				...fallback,
+				requestedModel,
+				authFallbackUsed: requestedModel !== undefined && isParentSubstitution,
+				fallbackReason: requestedModel && isParentSubstitution ? "auth_unavailable" : undefined,
+				parentFallbackSelector: isParentSubstitution ? formatModelString(fallback.model) : undefined,
+				skips,
+			};
+		}
 	}
-
-	const fallback = resolveModelOverride([parentActiveModelPattern], modelRegistry, settings);
-	if (!fallback.model) {
-		return unchanged;
-	}
-	if (modelsAreEqual(fallback.model, primary.model)) {
-		return unchanged;
-	}
-	const fallbackKey = await modelRegistry.getApiKey(fallback.model, sessionId);
-	if (!isAuthenticated(fallbackKey)) {
-		return unchanged;
-	}
-
-	return { ...fallback, requestedModel: primary.model, authFallbackUsed: true, fallbackReason: "auth_unavailable" };
+	return requestedResolution
+		? { ...requestedResolution, requestedModel, authFallbackUsed: false, activeIndex, skips }
+		: { explicitThinkingLevel: false, requestedModel, authFallbackUsed: false, activeIndex, skips };
 }
 
 /**

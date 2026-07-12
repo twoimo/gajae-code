@@ -21,6 +21,7 @@ import type {
 import { normalizeSystemPrompts } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { appendRawHttpRequestDumpFor400, type RawHttpRequestDump, withHttpStatus } from "../utils/http-inspector";
+import { transportFailureFacts } from "../utils/fallback-transport";
 import { resolveRetryBudget } from "../utils/retry-budget";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
@@ -124,6 +125,22 @@ function extractErrorMessage(errorText: string): string {
 		// Not JSON, return as-is
 	}
 	return errorText;
+}
+
+function createGeminiCliHttpError(response: Response, errorText: string, formatErrorMessage = true): Error {
+	const message = formatErrorMessage ? extractErrorMessage(errorText) : errorText;
+	const error = withHttpStatus(
+		new Error(`Cloud Code Assist API error (${response.status}): ${message}`),
+		response.status,
+	) as Error & { code?: string; headers?: Headers };
+	error.headers = response.headers;
+	try {
+		const code = (JSON.parse(errorText) as { error?: { code?: unknown } }).error?.code;
+		if (typeof code === "string") error.code = code;
+	} catch {
+		// The response body is not JSON.
+	}
+	return error;
 }
 
 interface GeminiCliApiKeyPayload {
@@ -373,11 +390,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			);
 			if (!response.ok && sentForcedToolChoice) {
 				const errorText = await response.text();
-				const error = withHttpStatus(
-					new Error(`Cloud Code Assist API error (${response.status}): ${extractErrorMessage(errorText)}`),
-					response.status,
-				);
-				if (firstTokenTime === undefined && isForcedToolChoiceUnsupportedError(error, true)) {
+				const error = createGeminiCliHttpError(response, errorText);
+				if (!options?.fallbackManaged && firstTokenTime === undefined && isForcedToolChoiceUnsupportedError(error, true)) {
 					const beforeMark = resolveToolChoice(model, options?.toolChoice);
 					markToolChoiceIncapability(model, "auto", error.message);
 					stream.push({
@@ -416,10 +430,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			}
 			if (!response.ok) {
 				const errorText = await response.text();
-				throw withHttpStatus(
-					new Error(`Cloud Code Assist API error (${response.status}): ${extractErrorMessage(errorText)}`),
-					response.status,
-				);
+				throw createGeminiCliHttpError(response, errorText);
 			}
 			const requestUrl = response.url;
 
@@ -605,10 +616,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 					if (!currentResponse.ok) {
 						const retryErrorText = await currentResponse.text();
-						throw withHttpStatus(
-							new Error(`Cloud Code Assist API error (${currentResponse.status}): ${retryErrorText}`),
-							currentResponse.status,
-						);
+						throw createGeminiCliHttpError(currentResponse, retryErrorText, false);
 					}
 				}
 
@@ -647,6 +655,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorStatus = extractHttpStatusFromError(error);
+			output.transportFailure = transportFailureFacts(error);
 			output.errorMessage = await appendRawHttpRequestDumpFor400(
 				error instanceof Error ? error.message : JSON.stringify(error),
 				error,

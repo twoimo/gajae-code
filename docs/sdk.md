@@ -199,7 +199,7 @@ const unsubscribe = session.subscribe((event) => {
 
 - `auto_compaction_start` / `auto_compaction_end`
 - `auto_retry_start` / `auto_retry_end`
-- `retry_fallback_applied` / `retry_fallback_succeeded`
+- `model_fallback_switched { eventId, from, to, reason, role, scope, activeIndex, chainLength, attemptsUsed }`
 - `ttsr_triggered`
 - `todo_reminder` / `todo_auto_clear`
 - `irc_message`

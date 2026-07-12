@@ -12,20 +12,26 @@ import {
 	GJC_MODEL_ASSIGNMENT_TARGETS,
 	type GjcModelAssignmentTargetId,
 	isAuthenticated,
+	kNoAuth,
 	type ModelRegistry,
 } from "./model-registry";
 import { formatModelSelectorValue, resolveModelRoleValue } from "./model-resolver";
+import { normalizeModelSelectorValue, type ModelSelectorValue } from "./model-selector-value";
 import type { Settings } from "./settings";
 
 const LEGACY_MODEL_PROFILE_ALIASES: ReadonlyMap<string, string> = new Map([["codex-standard", "codex-medium"]]);
 
-type ModelProfileActivationSession = Pick<AgentSession, "model" | "thinkingLevel" | "sessionId"> & {
+type ModelProfileActivationSession = Pick<
+	AgentSession,
+	"model" | "thinkingLevel" | "sessionId" | "getConfiguredModelChain" | "setConfiguredModelChain"
+> & {
 	setModelTemporary?: AgentSession["setModelTemporary"];
 	setActiveModelProfile?: (name: string | undefined) => void;
 	getActiveModelProfile?: () => string | undefined;
 	getSessionDefaultModelSelector?: () => string | undefined;
 	recordResumeDefaultModel?: (selector: string) => void;
 };
+
 
 export interface PrepareModelProfileActivationOptions {
 	session: ModelProfileActivationSession;
@@ -53,12 +59,15 @@ export interface PreparedModelProfileActivation {
 	settings: Pick<Settings, "clearOverride" | "get" | "getGlobal" | "override" | "set" | "flush">;
 	previousModel: Model<Api> | undefined;
 	previousThinkingLevel: ThinkingLevel | undefined;
-	previousAgentModelOverrides: Record<string, string>;
-	previousModelRoles: Record<string, string>;
+	previousAgentModelOverrides: Record<string, ModelSelectorValue>;
+	previousModelRoles: Record<string, ModelSelectorValue>;
+	previousDefaultChain: readonly string[] | undefined;
 	defaultModel: Model<Api> | undefined;
 	defaultThinkingLevel: ThinkingLevel | undefined;
-	modelRoles: Record<string, string>;
-	agentModelOverrides: Record<string, string>;
+	/** Full configured default fallback chain, clamped entry-by-entry. */
+	defaultChain: readonly string[];
+	modelRoles: Record<string, ModelSelectorValue>;
+	agentModelOverrides: Record<string, ModelSelectorValue>;
 	previousActiveModelProfile: string | undefined;
 	/**
 	 * The session resume default ("provider/id") captured BEFORE activation —
@@ -214,32 +223,65 @@ function rewriteSelectorProvider(
 	return replacement + selector.substring(slash);
 }
 
+function rewriteSelectorValueProvider(
+	selectorValue: ModelSelectorValue,
+	authenticatedProviders: ReadonlySet<string>,
+	alternativeGroups: readonly (readonly string[])[],
+): ModelSelectorValue {
+	const selectors = normalizeModelSelectorValue(selectorValue).map(selector =>
+		rewriteSelectorProvider(selector, authenticatedProviders, alternativeGroups),
+	);
+	return selectors.length === 1 && typeof selectorValue === "string" ? selectors[0] : selectors;
+}
+
 function rewriteBindingsProviders(
 	bindings: {
-		defaultSelector?: string;
-		modelRoles: Record<string, string>;
-		agentModelOverrides: Record<string, string>;
+		defaultSelector?: ModelSelectorValue;
+		modelRoles: Record<string, ModelSelectorValue>;
+		agentModelOverrides: Record<string, ModelSelectorValue>;
 	},
 	authenticatedProviders: ReadonlySet<string>,
 	alternativeGroups: readonly (readonly string[])[],
-): { defaultSelector?: string; modelRoles: Record<string, string>; agentModelOverrides: Record<string, string> } {
+): {
+	defaultSelector?: ModelSelectorValue;
+	modelRoles: Record<string, ModelSelectorValue>;
+	agentModelOverrides: Record<string, ModelSelectorValue>;
+} {
 	return {
 		defaultSelector: bindings.defaultSelector
-			? rewriteSelectorProvider(bindings.defaultSelector, authenticatedProviders, alternativeGroups)
+			? rewriteSelectorValueProvider(bindings.defaultSelector, authenticatedProviders, alternativeGroups)
 			: undefined,
 		modelRoles: Object.fromEntries(
-			Object.entries(bindings.modelRoles).map(([role, sel]) => [
+			Object.entries(bindings.modelRoles).map(([role, selector]) => [
 				role,
-				rewriteSelectorProvider(sel, authenticatedProviders, alternativeGroups),
+				rewriteSelectorValueProvider(selector, authenticatedProviders, alternativeGroups),
 			]),
 		),
 		agentModelOverrides: Object.fromEntries(
-			Object.entries(bindings.agentModelOverrides).map(([role, sel]) => [
+			Object.entries(bindings.agentModelOverrides).map(([role, selector]) => [
 				role,
-				rewriteSelectorProvider(sel, authenticatedProviders, alternativeGroups),
+				rewriteSelectorValueProvider(selector, authenticatedProviders, alternativeGroups),
 			]),
 		),
 	};
+}
+
+function resolveAndClampSelectorValue(
+	selectorValue: ModelSelectorValue,
+	availableModels: Model<Api>[],
+	options: { settings: Settings; modelRegistry: ModelRegistry },
+	profileLabel: string,
+	role: string,
+): ModelSelectorValue {
+	const selectors = normalizeModelSelectorValue(selectorValue);
+	const clamped = selectors.map(selector => {
+		const resolved = resolveModelRoleValue(selector, availableModels, options);
+		if (!resolved.model) {
+			throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selector}`);
+		}
+		return formatClampedModelSelector(selector, resolved.model);
+	});
+	return clamped.length === 1 && typeof selectorValue === "string" ? clamped[0] : clamped;
 }
 
 export async function prepareModelProfileActivation(
@@ -254,37 +296,32 @@ export async function prepareModelProfileActivation(
 	}
 	const profileLabel = formatModelProfileDisplayLabel(profile);
 
-	const allProviders = aggregateModelProfileRequiredProviders(profile.requiredProviders, profile);
+	const requiredProviders = aggregateModelProfileRequiredProviders(profile.requiredProviders, profile);
 	const alternativeGroups = profile.alternativeProviderGroups ?? [];
 	const alternativeSet = new Set(alternativeGroups.flat());
 
 	const missingProviders: string[] = [];
 	const authenticatedProviders: string[] = [];
-	for (const provider of allProviders) {
+	for (const provider of requiredProviders) {
 		const apiKey = await options.modelRegistry.getApiKeyForProvider(provider, options.session.sessionId);
-		if (!isAuthenticated(apiKey)) {
+		if (apiKey !== kNoAuth && !isAuthenticated(apiKey)) {
 			missingProviders.push(provider);
 		} else {
 			authenticatedProviders.push(provider);
 		}
 	}
 
-	// Check strict (non-alternative) providers — all must be authenticated.
-	const strictMissing = missingProviders.filter(p => !alternativeSet.has(p));
+	// Required providers are the only activation prerequisites. Mapped fallback
+	// providers are resolution-time candidates and intentionally do not gate here.
+	const strictMissing = missingProviders.filter(provider => !alternativeSet.has(provider));
 	if (strictMissing.length > 0) {
 		throw new Error(formatModelProfileCredentialError(profileLabel, strictMissing));
 	}
-
-	// Check alternative groups — at least one provider per group must be authenticated.
 	for (const group of alternativeGroups) {
-		const groupAuthenticated = group.some(p => authenticatedProviders.includes(p));
+		const groupAuthenticated = group.some(provider => authenticatedProviders.includes(provider));
 		if (!groupAuthenticated) {
 			throw new Error(formatModelProfileCredentialError(profileLabel, [...group]));
 		}
-	}
-
-	if (authenticatedProviders.length === 0) {
-		throw new Error(formatModelProfileCredentialError(profileLabel, missingProviders));
 	}
 
 	const availableModels = options.modelRegistry.getAll();
@@ -292,41 +329,50 @@ export async function prepareModelProfileActivation(
 	if (missingProviders.length > 0 && alternativeGroups.length > 0) {
 		bindings = rewriteBindingsProviders(bindings, new Set(authenticatedProviders), alternativeGroups);
 	}
+	const defaultChain = bindings.defaultSelector
+		? normalizeModelSelectorValue(
+				resolveAndClampSelectorValue(
+					bindings.defaultSelector,
+					availableModels,
+					{ settings: options.settings as Settings, modelRegistry: options.modelRegistry as ModelRegistry },
+					profileLabel,
+					"default",
+				),
+			)
+		: [];
 	const resolvedDefault = bindings.defaultSelector
 		? resolveModelRoleValue(bindings.defaultSelector, availableModels, {
 				settings: options.settings as Settings,
 				modelRegistry: options.modelRegistry,
 			})
 		: undefined;
-	if (bindings.defaultSelector && !resolvedDefault?.model) {
-		throw new Error(`Model profile "${profileLabel}" default selector did not resolve: ${bindings.defaultSelector}`);
-	}
 
-	const modelRoles: Record<string, string> = {};
-	for (const [role, selector] of Object.entries(bindings.modelRoles) as [GjcModelAssignmentTargetId, string][]) {
-		const resolved = resolveModelRoleValue(selector, availableModels, {
-			settings: options.settings as Settings,
-			modelRegistry: options.modelRegistry,
-		});
-		if (!resolved.model) {
-			throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selector}`);
-		}
-		modelRoles[role] = formatClampedModelSelector(selector, resolved.model);
-	}
-
-	const agentModelOverrides: Record<string, string> = {};
-	for (const [role, selector] of Object.entries(bindings.agentModelOverrides) as [
+	const modelRoles: Record<string, ModelSelectorValue> = {};
+	for (const [role, selectorValue] of Object.entries(bindings.modelRoles) as [
 		GjcModelAssignmentTargetId,
-		string,
+		ModelSelectorValue,
 	][]) {
-		const resolved = resolveModelRoleValue(selector, availableModels, {
-			settings: options.settings as Settings,
-			modelRegistry: options.modelRegistry,
-		});
-		if (!resolved.model) {
-			throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selector}`);
-		}
-		agentModelOverrides[role] = formatClampedModelSelector(selector, resolved.model);
+		modelRoles[role] = resolveAndClampSelectorValue(
+			selectorValue,
+			availableModels,
+			{ settings: options.settings as Settings, modelRegistry: options.modelRegistry as ModelRegistry },
+			profileLabel,
+			role,
+		);
+	}
+
+	const agentModelOverrides: Record<string, ModelSelectorValue> = {};
+	for (const [role, selectorValue] of Object.entries(bindings.agentModelOverrides) as [
+		GjcModelAssignmentTargetId,
+		ModelSelectorValue,
+	][]) {
+		agentModelOverrides[role] = resolveAndClampSelectorValue(
+			selectorValue,
+			availableModels,
+			{ settings: options.settings as Settings, modelRegistry: options.modelRegistry as ModelRegistry },
+			profileLabel,
+			role,
+		);
 	}
 
 	return {
@@ -337,8 +383,11 @@ export async function prepareModelProfileActivation(
 		previousThinkingLevel: options.session.thinkingLevel,
 		previousAgentModelOverrides: { ...options.settings.get("task.agentModelOverrides") },
 		previousModelRoles: { ...options.settings.get("modelRoles") },
+		previousDefaultChain: options.session.getConfiguredModelChain("default"),
+
 		defaultModel: resolvedDefault?.model,
 		defaultThinkingLevel: resolvedDefault?.thinkingLevel,
+		defaultChain,
 		modelRoles,
 		agentModelOverrides,
 		previousActiveModelProfile: options.session.getActiveModelProfile?.(),
@@ -363,14 +412,21 @@ export async function applyPreparedModelProfileActivation(
 	let defaultChanged = false;
 	let modelRolesChanged = false;
 	let defaultThinkingChanged = false;
+	let defaultChainChanged = false;
 
 	try {
+		if (prepared.defaultChain.length > 0) {
+			prepared.session.setConfiguredModelChain("default", prepared.defaultChain, "profile-activation", prepared.profileName, true);
+
+			defaultChainChanged = true;
+		}
 		if (prepared.defaultModel) {
 			await prepared.session.setModelTemporary(
 				prepared.defaultModel,
 				options.thinkingLevelOverride ?? prepared.defaultThinkingLevel,
 				{
 					persistAsSessionDefault: true,
+					cause: "profile-activation",
 				},
 			);
 			modelChanged = true;
@@ -413,6 +469,15 @@ export async function applyPreparedModelProfileActivation(
 		if (overridesChanged) {
 			prepared.settings.override("task.agentModelOverrides", previousAgentModelOverrides);
 		}
+		if (defaultChainChanged) {
+			prepared.session.setConfiguredModelChain(
+				"default",
+				prepared.previousDefaultChain ?? [],
+				"rollback",
+				prepared.previousActiveModelProfile,
+				true,
+			);
+		}
 		prepared.session.setActiveModelProfile?.(previousActiveModelProfile);
 		if (modelChanged) {
 			// Runtime rolls back to the pre-activation live model. That model may
@@ -420,7 +485,7 @@ export async function applyPreparedModelProfileActivation(
 			// so it is recorded as role:"temporary" (NOT the resume default) to
 			// preserve the issue #849 protection.
 			if (previousModel) {
-				await prepared.session.setModelTemporary(previousModel, previousThinkingLevel);
+				await prepared.session.setModelTemporary(previousModel, previousThinkingLevel, { cause: "rollback" });
 			}
 			// The happy path already appended the profile main model as the resume
 			// default (role:"default"). Re-assert the pre-activation resume default
@@ -439,10 +504,10 @@ export async function applyPreparedModelProfileActivation(
 }
 
 export interface MaterializeModelProfileForDeletionResult {
-	modelRoles: Record<string, string>;
-	agentModelOverrides: Record<string, string>;
-	previousModelRoles: Record<string, string>;
-	previousAgentModelOverrides: Record<string, string>;
+	modelRoles: Record<string, ModelSelectorValue>;
+	agentModelOverrides: Record<string, ModelSelectorValue>;
+	previousModelRoles: Record<string, ModelSelectorValue>;
+	previousAgentModelOverrides: Record<string, ModelSelectorValue>;
 	previousDefaultProfile: string | undefined;
 	previousPersistedDefaultProfile: string | undefined;
 	previousActiveModelProfile: string | undefined;

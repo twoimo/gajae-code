@@ -117,16 +117,16 @@ describe("model profile red-team schema and catalog cases", () => {
 		});
 	});
 
-	test("mergeModelProfiles aggregates underdeclared providers from mappings", () => {
-		const merged = mergeModelProfiles({
-			underdeclared: {
-				required_providers: ["provider-a"],
-				model_mapping: { default: "provider-a/default", executor: "provider-b/executor:high" },
-			},
-		});
-
-		expect(merged.get("underdeclared")?.requiredProviders).toEqual(["provider-a", "provider-b"]);
+test("mergeModelProfiles does not add underdeclared mapped providers to activation prerequisites", () => {
+	const merged = mergeModelProfiles({
+		underdeclared: {
+			required_providers: ["provider-a"],
+			model_mapping: { default: "provider-a/default", executor: "provider-b/executor:high" },
+		},
 	});
+
+	expect(merged.get("underdeclared")?.requiredProviders).toEqual(["provider-a"]);
+});
 
 	test("resolveProfileBindings on a default-only mapping returns only defaultSelector", () => {
 		const resolved = resolveProfileBindings({

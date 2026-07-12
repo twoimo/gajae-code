@@ -1,3 +1,4 @@
+import type { FallbackAttemptToken, TransportFailureFacts } from "./utils/fallback-transport";
 import type { ZodType, z } from "zod/v4";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
@@ -306,6 +307,10 @@ export interface StreamOptions {
 	maxTokens?: number;
 	signal?: AbortSignal;
 	apiKey?: string;
+	/** Disables all transport-level replay; the fallback controller owns retries. */
+	fallbackManaged?: boolean;
+	/** Opaque token returned by beginAttempt for a managed transport invocation. */
+	fallbackAttempt?: FallbackAttemptToken;
 	/**
 	 * Called when a provider returns 401 before any replay-unsafe assistant
 	 * event has been emitted. Returning a different key retries the provider
@@ -596,6 +601,8 @@ export interface AssistantMessage {
 	errorMessage?: string;
 	/** HTTP status surfaced by the provider when the request failed. Populated by every provider's catch block alongside `errorMessage` so consumers (auth retry, telemetry, UI) can branch without regex-scraping the message. */
 	errorStatus?: number;
+	/** Typed upstream failure facts retained for retry classification without parsing errorMessage. */
+	transportFailure?: TransportFailureFacts;
 	/**
 	 * Stable identifiers for request features the provider silently dropped
 	 * during this turn (e.g. `"priority"`). Set when a server-side rejection

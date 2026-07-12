@@ -7,7 +7,8 @@ import threading
 import time
 import unittest
 
-from gjc_rpc import RpcClient, RpcCommandError, RpcConcurrencyError, RpcError, host_tool
+from gjc_rpc import ModelFallbackSwitchedEvent, RpcClient, RpcCommandError, RpcConcurrencyError, RpcError, host_tool
+
 
 
 FAKE_SERVER = textwrap.dedent(
@@ -177,8 +178,21 @@ FAKE_SERVER = textwrap.dedent(
                 }
             )
             emit_event({"type": "auto_retry_end", "success": True, "attempt": 1})
-            emit_event({"type": "retry_fallback_applied", "from": "a", "to": "b", "role": "primary"})
-            emit_event({"type": "retry_fallback_succeeded", "model": "b", "role": "primary"})
+            emit_event(
+                {
+                    "type": "model_fallback_switched",
+                    "eventId": "fallback-1",
+                    "from": "a",
+                    "to": "b",
+                    "reason": "rate_limit",
+                    "role": "primary",
+                    "scope": "session",
+                    "activeIndex": 1,
+                    "chainLength": 2,
+                    "attemptsUsed": 3,
+                }
+            )
+
             emit_event({"type": "ttsr_triggered", "rules": [{"id": "rule-1"}]})
             emit_event(
                 {
@@ -948,6 +962,13 @@ class RpcClientTests(unittest.TestCase):
     def test_all_typed_event_listeners_receive_eventful_prompt(self) -> None:
         seen: list[str] = []
 
+        fallback_events: list[ModelFallbackSwitchedEvent] = []
+
+        def on_model_fallback_switched(event: ModelFallbackSwitchedEvent) -> None:
+            fallback_events.append(event)
+            seen.append(event.type)
+
+
         with self.make_client() as client:
             client.on_event(lambda event: seen.append(f"event:{event.type}"))
             client.on_agent_start(lambda event: seen.append(event.type))
@@ -961,8 +982,8 @@ class RpcClientTests(unittest.TestCase):
             client.on_auto_compaction_end(lambda event: seen.append(event.type))
             client.on_auto_retry_start(lambda event: seen.append(event.type))
             client.on_auto_retry_end(lambda event: seen.append(event.type))
-            client.on_retry_fallback_applied(lambda event: seen.append(event.type))
-            client.on_retry_fallback_succeeded(lambda event: seen.append(event.type))
+            client.on_model_fallback_switched(on_model_fallback_switched)
+
             client.on_ttsr_triggered(lambda event: seen.append(event.type))
             client.on_todo_reminder(lambda event: seen.append(event.type))
             client.on_todo_auto_clear(lambda event: seen.append(event.type))
@@ -982,13 +1003,24 @@ class RpcClientTests(unittest.TestCase):
             "auto_compaction_end",
             "auto_retry_start",
             "auto_retry_end",
-            "retry_fallback_applied",
-            "retry_fallback_succeeded",
+            "model_fallback_switched",
+
             "ttsr_triggered",
             "todo_reminder",
             "todo_auto_clear",
         ]:
             self.assertIn(expected, seen)
+        self.assertEqual(len(fallback_events), 1)
+        fallback_event = fallback_events[0]
+        self.assertEqual(fallback_event.event_id, "fallback-1")
+        self.assertEqual(fallback_event.from_, "a")
+        self.assertEqual(fallback_event.to, "b")
+        self.assertEqual(fallback_event.reason, "rate_limit")
+        self.assertEqual(fallback_event.role, "primary")
+        self.assertEqual(fallback_event.scope, "session")
+        self.assertEqual(fallback_event.active_index, 1)
+        self.assertEqual(fallback_event.chain_length, 2)
+        self.assertEqual(fallback_event.attempts_used, 3)
 
     def test_extension_and_unknown_notification_listeners(self) -> None:
         seen_extension_errors: list[str] = []

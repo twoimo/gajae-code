@@ -3,6 +3,7 @@ import { Effort, type Model } from "@gajae-code/ai";
 import {
 	expandRoleAlias,
 	findInitialModel,
+	managedCursorFallbackUnavailableReason,
 	parseModelPattern,
 	parseModelString,
 	resolveAgentModelPatterns,
@@ -14,6 +15,14 @@ import {
 	restoreModelFromSession,
 } from "@gajae-code/coding-agent/config/model-resolver";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
+
+	test("rejects Cursor transports from retryable managed fallback chains at resolution", () => {
+		const cursor = { ...mockModels[0], api: "cursor-agent", provider: "cursor" } as Model;
+		expect(managedCursorFallbackUnavailableReason(cursor, "cursor/claude-4-sonnet")).toBe(
+			"Cursor model cursor/claude-4-sonnet requires provider-side tool execution and cannot be used in a retryable fallback chain",
+		);
+		expect(managedCursorFallbackUnavailableReason(mockModels[0], "anthropic/claude-sonnet-4-5")).toBeUndefined();
+	});
 
 // Mock models for testing
 const mockModels: Model<"anthropic-messages">[] = [

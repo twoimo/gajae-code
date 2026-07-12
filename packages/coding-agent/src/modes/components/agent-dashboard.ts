@@ -34,6 +34,7 @@ import { isEnoent, prompt } from "@gajae-code/utils";
 import { YAML } from "bun";
 import { getConfigDirs } from "../../config";
 import type { ModelRegistry } from "../../config/model-registry";
+import { selectorHead } from "../../config/model-selector-value";
 import {
 	formatModelString,
 	resolveAgentModelPatterns,
@@ -82,6 +83,24 @@ interface AgentDashboardModelContext {
 	modelRegistry?: ModelRegistry;
 	activeModelPattern?: string;
 	defaultModelPattern?: string;
+}
+
+export function resolveAgentCreationModel(
+	modelPatterns: string[],
+	modelRegistry: ModelRegistry,
+	settings: Settings | undefined,
+) {
+	const { model } = resolveModelOverride(modelPatterns, modelRegistry, settings);
+	if (model) return model;
+	if (modelPatterns.length > 0) {
+		throw new Error(`Configured model selector(s) did not resolve: ${modelPatterns.join(", ")}.`);
+	}
+
+	const fallbackModel = modelRegistry.getAvailable()[0];
+	if (!fallbackModel) {
+		throw new Error("No available model to generate agent specification.");
+	}
+	return fallbackModel;
 }
 
 const SOURCE_ORDER: Record<AgentSource, number> = {
@@ -370,7 +389,7 @@ export class AgentDashboard extends Container {
 				.map(agent => ({
 					...agent,
 					disabled: disabled.has(agent.name),
-					overrideModel: overrides[agent.name]?.trim() || undefined,
+					overrideModel: selectorHead(overrides[agent.name])?.trim() || undefined,
 				}));
 
 			this.#tabs = this.#buildTabs(this.#allAgents);
@@ -587,12 +606,7 @@ export class AgentDashboard extends Container {
 				settings?.getModelRole("default"),
 			settings,
 		);
-		const { model } = resolveModelOverride(modelPatterns, modelRegistry, settings);
-		const fallbackModel = modelRegistry.getAvailable()[0];
-		const selectedModel = model ?? fallbackModel;
-		if (!selectedModel) {
-			throw new Error("No available model to generate agent specification.");
-		}
+		const selectedModel = resolveAgentCreationModel(modelPatterns, modelRegistry, settings);
 
 		const systemPrompt = prompt.render(agentCreationArchitectPrompt, { TASK_TOOL_NAME: "task" });
 		const userPrompt = prompt.render(agentCreationUserPrompt, { request: description });

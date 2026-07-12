@@ -64,7 +64,7 @@ Flow (`#handleRetryableError`):
 5. If attempt exceeded `retry.maxRetries`, emit final failure event and stop.
 6. Compute base delay: `retry.baseDelayMs * 2^(attempt-1)`.
 7. For usage-limit errors, parse retry hints and call auth storage (`markUsageLimitReached(...)`); if credential switching succeeds, force delay to `0`, otherwise use a larger retry-after/backoff hint when present.
-8. If no credential switch occurred, suppress the current model selector for cooldown, try configured retry model fallback chains, and force delay to `0` on model switch.
+8. If no credential switch occurred, suppress the current model selector for cooldown, advance an ordered role-array fallback chain when eligible, and force delay to `0` on a model switch.
 9. Emit `auto_retry_start`.
 10. Remove the trailing assistant error message from agent runtime state (kept in persisted session history).
 11. Sleep with abort support.
@@ -147,13 +147,16 @@ This prevents callers from treating a retrying turn as complete too early.
 
 ### Configuration knobs
 
-Defined in settings schema under retry group:
+The standard retry controls are defined in the settings schema under `retry`:
 
 - `retry.enabled`
 - `retry.maxRetries`
 - `retry.baseDelayMs`
-- `retry.fallbackChains`
-- `retry.fallbackRevertPolicy` (`"cooldown-expiry"` by default; `"never"` disables automatic restoration)
+- `retry.maxDelayMs`
+
+Fallback candidates are configured as ordered selector arrays on preset `model_mapping` roles, top-level `modelRoles`, or `task.agentModelOverrides`; `fallback.maxAttempts` controls the total request-time attempts per concrete entry. Resolution-time unavailable, unauthenticated, and unknown entries advance immediately without consuming that budget.
+
+On settings load, a source-aware one-shot migration still reads legacy `retry.fallbackChains` and combines the effective role chain with its ordered, deduplicated legacy tail into the corresponding role array. The legacy key is ignored after migration; it is not a retry configuration surface.
 
 Programmatic toggles in session:
 
@@ -181,15 +184,14 @@ Session-level retry events:
 
 - `auto_retry_start { attempt, maxAttempts, delayMs, errorMessage }`
 - `auto_retry_end { success, attempt, finalError? }`
-- `retry_fallback_applied { from, to, role }`
-- `retry_fallback_succeeded { model, role }`
+- `model_fallback_switched { eventId, from, to, reason, role, scope, activeIndex, chainLength, attemptsUsed }` — emitted once for each real fallback-model switch
 
 Propagation:
 
 - emitted through `AgentSession.subscribe(...)`
 - forwarded to extension runner as extension events
 - in RPC mode, forwarded directly as JSON event objects (`session.subscribe(event => output(event))`)
-- in TUI, consumed by `EventController` for loader/error UI
+- in TUI, `model_fallback_switched` updates the fallback-model status/notice
 
 Final failure surfacing:
 
@@ -216,7 +218,7 @@ A new retry chain can still start later on a future retryable error after counte
 - Classification is regex text matching; provider-specific structured errors are not used here.
 - Retry strips the failing assistant error from **runtime context** before re-continue, but session history still keeps that error entry.
 - `RpcSessionState` currently exposes `autoCompactionEnabled` but not an `autoRetryEnabled` field; RPC callers must track their own toggle state or query settings through other APIs.
-- Model fallback changes append temporary `model_change` entries and may later restore the primary model when its cooldown expires, depending on `retry.fallbackRevertPolicy`.
+- Fallback state is driven by the configured ordered role array; a real model change emits the canonical `model_fallback_switched` event rather than a legacy retry-fallback event.
 
 ## Provider request/stream retry budgets
 

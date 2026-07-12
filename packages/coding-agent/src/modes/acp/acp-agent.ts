@@ -1447,7 +1447,7 @@ export class AcpAgent implements Agent {
 		if (!model) {
 			throw new Error(`Unknown ACP model: ${modelId}`);
 		}
-		await session.setModel(model);
+		await session.setModel(model, "default", { cause: "user-selection" });
 	}
 
 	#setThinkingLevelById(session: AgentSession, value: string): void {
@@ -2054,7 +2054,7 @@ export class AcpAgent implements Agent {
 					if (!apiKey) {
 						return false;
 					}
-					await record.session.setModel(model);
+					await record.session.setModel(model, "default", { cause: "user-selection" });
 					return true;
 				},
 				getThinkingLevel: () => record.session.thinkingLevel,

@@ -39,8 +39,8 @@ from .protocol import (
     ModelCycleResult,
     ModelInfo,
     ReadyEvent,
-    RetryFallbackAppliedEvent,
-    RetryFallbackSucceededEvent,
+    ModelFallbackSwitchedEvent,
+
     RpcAgentEvent,
     RpcNotification,
     SessionState,
@@ -116,8 +116,8 @@ AutoCompactionStartListener = Callable[[AutoCompactionStartEvent], None]
 AutoCompactionEndListener = Callable[[AutoCompactionEndEvent], None]
 AutoRetryStartListener = Callable[[AutoRetryStartEvent], None]
 AutoRetryEndListener = Callable[[AutoRetryEndEvent], None]
-RetryFallbackAppliedListener = Callable[[RetryFallbackAppliedEvent], None]
-RetryFallbackSucceededListener = Callable[[RetryFallbackSucceededEvent], None]
+ModelFallbackSwitchedListener = Callable[[ModelFallbackSwitchedEvent], None]
+
 TtsrTriggeredListener = Callable[[TtsrTriggeredEvent], None]
 TodoReminderListener = Callable[[TodoReminderEvent], None]
 TodoAutoClearListener = Callable[[TodoAutoClearEvent], None]
@@ -580,11 +580,8 @@ class RpcClient:
     def on_auto_retry_end(self, listener: AutoRetryEndListener) -> Callable[[], None]:
         return self._add_typed_event_listener("auto_retry_end", listener)
 
-    def on_retry_fallback_applied(self, listener: RetryFallbackAppliedListener) -> Callable[[], None]:
-        return self._add_typed_event_listener("retry_fallback_applied", listener)
-
-    def on_retry_fallback_succeeded(self, listener: RetryFallbackSucceededListener) -> Callable[[], None]:
-        return self._add_typed_event_listener("retry_fallback_succeeded", listener)
+    def on_model_fallback_switched(self, listener: ModelFallbackSwitchedListener) -> Callable[[], None]:
+        return self._add_typed_event_listener("model_fallback_switched", listener)
 
     def on_ttsr_triggered(self, listener: TtsrTriggeredListener) -> Callable[[], None]:
         return self._add_typed_event_listener("ttsr_triggered", listener)

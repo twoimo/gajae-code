@@ -5,6 +5,7 @@ import {
 	type ModelLookupRegistry,
 	resolveModelOverrideWithAuthFallback,
 } from "@gajae-code/coding-agent/config/model-resolver";
+import { FallbackChainController, type ConfiguredFallbackChain } from "@gajae-code/coding-agent/session/fallback-chain-controller";
 
 /**
  * Regression test for #985.
@@ -93,6 +94,76 @@ describe("issue #985: subagent dispatch auth fallback", () => {
 		expect(result.requestedModel?.provider).toBe("opencode-zen");
 		expect(result.requestedModel?.id).toBe("qwen3.6-plus-free");
 		expect(result.fallbackReason).toBe("auth_unavailable");
+		expect(result.parentFallbackSelector).toBe("deepseek/deepseek-v4-pro");
+	});
+
+	test("rebases the fallback controller to the concrete parent after every override is unauthenticated", async () => {
+		const registry = createMockRegistry({
+			models: [parentModel, unauthedTaskModel],
+			authedProviders: new Set(["deepseek"]),
+		});
+		const result = await resolveModelOverrideWithAuthFallback(
+			["qwen3.6-plus-free", "opencode-zen/qwen3.6-plus-free"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+		);
+
+		expect(result.parentFallbackSelector).toBe("deepseek/deepseek-v4-pro");
+		const controller = new FallbackChainController(
+			{
+				role: "default",
+				entries: [result.parentFallbackSelector!],
+				origin: "subagent",
+				explicitHead: true,
+			} satisfies ConfiguredFallbackChain,
+			1,
+		);
+		expect(controller.currentSelector()).toBe("deepseek/deepseek-v4-pro");
+		expect(controller.attemptsUsed).toBe(0);
+	});
+
+	test("rebases to the parent when every override selector is unknown", async () => {
+		const registry = createMockRegistry({
+			models: [parentModel],
+			authedProviders: new Set(["deepseek"]),
+		});
+		const result = await resolveModelOverrideWithAuthFallback(
+			["unknown/first", "unknown/second"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+		);
+
+		expect(result.requestedModel).toBeUndefined();
+		expect(result.parentFallbackSelector).toBe("deepseek/deepseek-v4-pro");
+		const controller = new FallbackChainController(
+			{ role: "default", entries: [result.parentFallbackSelector!], origin: "subagent", explicitHead: true },
+			1,
+		);
+		expect(controller.onAttemptFailure("server", "500")).toBe("exhausted");
+		expect(controller.tried).toEqual([
+			{ selector: "deepseek/deepseek-v4-pro", triggerClass: "server", reason: "500" },
+		]);
+	});
+
+	test("rebases to a keyless parent fallback", async () => {
+		const registry: ModelLookupRegistry & { getApiKey(model: Model<Api>): Promise<string | undefined> } = {
+			getAvailable: () => [parentModel, unauthedTaskModel],
+			getApiKey: async (model: Model<Api>) => (model.provider === "deepseek" ? kNoAuth : undefined),
+		} as never;
+		const result = await resolveModelOverrideWithAuthFallback(
+			["qwen3.6-plus-free"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+		);
+
+		expect(result.model).toBe(parentModel);
+		expect(result.parentFallbackSelector).toBe("deepseek/deepseek-v4-pro");
+		const controller = new FallbackChainController(
+			{ role: "default", entries: [result.parentFallbackSelector!], origin: "subagent", explicitHead: true },
+			1,
+		);
+		expect(controller.onAttemptFailure("server", "500")).toBe("exhausted");
+		expect(controller.tried[0]?.selector).toBe("deepseek/deepseek-v4-pro");
 	});
 
 	test("does not fall back when resolved subagent model has working auth", async () => {

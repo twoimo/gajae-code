@@ -1031,18 +1031,18 @@ class AutoRetryEndEvent:
 
 
 @dataclass(slots=True, frozen=True)
-class RetryFallbackAppliedEvent:
-    from_model: str
-    to_model: str
+class ModelFallbackSwitchedEvent:
+    event_id: str
+    from_: str
+    to: str
+    reason: str
     role: str
-    type: Literal["retry_fallback_applied"] = "retry_fallback_applied"
+    scope: str
+    active_index: int
+    chain_length: int
+    attempts_used: int
+    type: Literal["model_fallback_switched"] = "model_fallback_switched"
 
-
-@dataclass(slots=True, frozen=True)
-class RetryFallbackSucceededEvent:
-    model: str
-    role: str
-    type: Literal["retry_fallback_succeeded"] = "retry_fallback_succeeded"
 
 
 @dataclass(slots=True, frozen=True)
@@ -1142,8 +1142,8 @@ RpcAgentEvent: TypeAlias = (
     | AutoCompactionEndEvent
     | AutoRetryStartEvent
     | AutoRetryEndEvent
-    | RetryFallbackAppliedEvent
-    | RetryFallbackSucceededEvent
+    | ModelFallbackSwitchedEvent
+
     | TtsrTriggeredEvent
     | TodoReminderEvent
     | TodoAutoClearEvent
@@ -1646,14 +1646,18 @@ def _parse_session_event(payload: JsonObject) -> RpcNotification:
             attempt=int(payload.get("attempt", 0)),
             final_error=_optional_str(payload, "finalError"),
         )
-    if event_type == "retry_fallback_applied":
-        return RetryFallbackAppliedEvent(
-            from_model=str(payload.get("from", "")),
-            to_model=str(payload.get("to", "")),
+    if event_type == "model_fallback_switched":
+        return ModelFallbackSwitchedEvent(
+            event_id=str(payload.get("eventId", "")),
+            from_=str(payload.get("from", "")),
+            to=str(payload.get("to", "")),
+            reason=str(payload.get("reason", "")),
             role=str(payload.get("role", "")),
+            scope=str(payload.get("scope", "")),
+            active_index=int(payload.get("activeIndex", 0)),
+            chain_length=int(payload.get("chainLength", 0)),
+            attempts_used=int(payload.get("attemptsUsed", 0)),
         )
-    if event_type == "retry_fallback_succeeded":
-        return RetryFallbackSucceededEvent(model=str(payload.get("model", "")), role=str(payload.get("role", "")))
     if event_type == "ttsr_triggered":
         return TtsrTriggeredEvent(rules=_clone_json_objects(payload.get("rules"), field="ttsr_triggered.rules"))
     if event_type == "todo_reminder":

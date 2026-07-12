@@ -17,6 +17,7 @@ import {
 import { formatModelProfileDisplayLabel, recommendModelProfileForProvider } from "../../config/model-profiles";
 import { GJC_MODEL_ASSIGNMENT_TARGETS, type GjcModelAssignmentTargetId } from "../../config/model-registry";
 import { formatModelSelectorValue } from "../../config/model-resolver";
+import { selectorHead } from "../../config/model-selector-value";
 import type { ModelProfileConfig } from "../../config/models-config-schema";
 import { type Settings, settings } from "../../config/settings";
 import { DebugSelectorComponent } from "../../debug";
@@ -628,7 +629,7 @@ export class SelectorController {
 		const dashboard = await AgentDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows, {
 			modelRegistry: this.ctx.session.modelRegistry,
 			activeModelPattern,
-			defaultModelPattern,
+			defaultModelPattern: selectorHead(defaultModelPattern),
 		});
 		this.showSelector(done => {
 			dashboard.onClose = () => {
@@ -905,7 +906,10 @@ export class SelectorController {
 						const { model, role, thinkingLevel, selector: selectedSelector } = selection;
 						if (role === null) {
 							// Temporary: update agent state but don't persist to settings
-							await this.ctx.session.setModelTemporary(model, thinkingLevel);
+							await this.ctx.session.setModelTemporary(model, thinkingLevel, {
+								cause: "user-selection",
+								reason: "other",
+							});
 							this.ctx.statusLine.invalidate();
 							this.ctx.updateEditorBorderColor();
 							this.ctx.showStatus(`Temporary model: ${selectedSelector ?? model.id}`);
@@ -937,6 +941,7 @@ export class SelectorController {
 								await this.ctx.session.setModel(model, "default", {
 									selector: defaultSelector,
 									thinkingLevel,
+									cause: "user-selection",
 								});
 								if (thinkingLevel && thinkingLevel !== ThinkingLevel.Inherit) {
 									this.ctx.session.setThinkingLevel(thinkingLevel);
@@ -989,6 +994,7 @@ export class SelectorController {
 							await this.ctx.session.setModel(model, role, {
 								selector: selectedSelector,
 								thinkingLevel,
+								cause: "user-selection",
 							});
 							const value = formatModelSelectorValue(
 								selectedSelector ?? `${model.provider}/${model.id}`,
@@ -1066,6 +1072,7 @@ export class SelectorController {
 					currentThinkingLevel: this.ctx.session.thinkingLevel,
 					activeModelProfile:
 						this.ctx.session.getActiveModelProfile?.() ?? this.ctx.settings.get("modelProfile.default"),
+					configuredDefaultChain: this.ctx.session.getConfiguredModelChain?.("default"),
 					isFastForProvider: provider => this.ctx.session.isFastForProvider(provider),
 					isFastForSubagentProvider: provider => this.ctx.session.isFastForSubagentProvider(provider),
 					isCurrentModelFastModeActive: () => this.ctx.session.isFastModeActive(),

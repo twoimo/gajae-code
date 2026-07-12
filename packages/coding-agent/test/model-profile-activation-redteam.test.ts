@@ -43,6 +43,13 @@ function fakeSession(initial = model("provider-a", "initial")) {
 		thinkingLevel: ThinkingLevel.Low as ThinkingLevel | undefined,
 		sessionId: "session-1",
 		setModelTemporaryCalls: [] as Array<{ model: Model; thinkingLevel?: ThinkingLevel }>,
+		configuredModelChains: new Map<string, readonly string[]>(),
+		getConfiguredModelChain(role: string) {
+			return this.configuredModelChains.get(role);
+		},
+		setConfiguredModelChain(role: string, entries: readonly string[]) {
+			this.configuredModelChains.set(role, [...entries]);
+		},
 		async setModelTemporary(next: Model, thinkingLevel?: ThinkingLevel) {
 			this.setModelTemporaryCalls.push({ model: next, thinkingLevel });
 			this.model = next;
@@ -143,13 +150,13 @@ describe("model profile activation red-team", () => {
 		expect(calls.flushCount).toBe(0);
 	});
 
-	test("AUTHZ: underdeclared mapped provider hard-blocks with zero mutation", async () => {
+	test("AUTHZ: underdeclared mapped provider is a resolution-time candidate, not an activation gate", async () => {
 		const session = fakeSession();
 		const settings = Settings.isolated({
 			"task.agentModelOverrides": { executor: "provider-a/original" },
 			"modelProfile.default": "old-profile",
 		});
-		const calls = instrumentSettings(settings);
+		instrumentSettings(settings);
 		const registry = fakeRegistry({
 			missingProviders: ["provider-b"],
 			profiles: [
@@ -162,19 +169,11 @@ describe("model profile activation red-team", () => {
 			],
 		});
 
-		await expect(
-			activateModelProfile({ session, modelRegistry: registry, settings, profileName: "underdeclared-provider" }),
-		).rejects.toThrow(
-			'Model profile "underdeclared-provider" requires credentials for: provider-b. Run /login and configure the missing provider(s), then retry.',
-		);
-		expect(session.model?.id).toBe("initial");
-		expect(session.thinkingLevel).toBe(ThinkingLevel.Low);
-		expect(session.setModelTemporaryCalls).toEqual([]);
-		expect(settings.get("task.agentModelOverrides")).toEqual({ executor: "provider-a/original" });
-		expect(settings.get("modelProfile.default")).toBe("old-profile");
-		expect(calls.setCalls).toEqual([]);
-		expect(calls.overrideCalls).toEqual([]);
-		expect(calls.flushCount).toBe(0);
+		// Only explicitly declared requiredProviders hard-gate activation.
+		// Mapped fallback providers (provider-b) are resolved entry-by-entry at
+		// request time, so activation succeeds and the mapped selector is kept.
+		await activateModelProfile({ session, modelRegistry: registry, settings, profileName: "underdeclared-provider" });
+		expect(settings.get("task.agentModelOverrides").executor).toBe("provider-b/executor");
 	});
 
 	test("--default failure path does not persist or flush modelProfile.default", async () => {

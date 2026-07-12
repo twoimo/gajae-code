@@ -48,6 +48,7 @@ import {
 } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
+import { transportFailureFacts } from "../utils/fallback-transport";
 import { getOpenAIStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 import { parseStreamingJson } from "../utils/json-parse";
 import { resolveRetryBudget } from "../utils/retry-budget";
@@ -1372,6 +1373,7 @@ async function recoverCodexStreamError(
 	runtime: CodexStreamRuntime,
 	error: unknown,
 ): Promise<boolean> {
+	if (context.options?.fallbackManaged) return false;
 	if (await tryRetryWithoutForcedToolChoice(context, runtime, error)) {
 		return true;
 	}
@@ -1396,6 +1398,7 @@ async function tryRetryWithoutForcedToolChoice(
 	error: unknown,
 ): Promise<boolean> {
 	if (
+		context.options?.fallbackManaged ||
 		runtime.providerRetryAttempt > 0 ||
 		context.output.content.length > 0 ||
 		context.firstTokenTime !== undefined ||
@@ -1468,7 +1471,7 @@ async function tryReconnectCodexWebSocketOnConnectionLimit(
 		return false;
 	}
 	const websocketState = context.requestContext.websocketState;
-	if (!websocketState || runtime.transport !== "websocket" || context.options?.signal?.aborted) {
+	if (!websocketState || runtime.transport !== "websocket" || context.options?.signal?.aborted || context.options?.fallbackManaged) {
 		return false;
 	}
 
@@ -1519,6 +1522,7 @@ async function tryRecoverCodexPreviousResponseNotFound(
 	if (
 		!isCodexPreviousResponseNotFound(error) ||
 		!websocketState ||
+		context.options?.fallbackManaged ||
 		runtime.transport !== "websocket" ||
 		context.output.content.length > 0 ||
 		context.options?.signal?.aborted ||
@@ -1556,7 +1560,8 @@ async function tryReplayWebsocketFailureOverSse(
 		isCodexWebSocketRetryableStreamError(error) &&
 		runtime.canSafelyReplayWebsocketOverSse &&
 		!runtime.sawTerminalEvent &&
-		!context.options?.signal?.aborted;
+		!context.options?.signal?.aborted &&
+		!context.options?.fallbackManaged;
 	if (!canReplay) return false;
 
 	const state = websocketState;
@@ -1608,7 +1613,8 @@ async function tryRetryCodexProviderError(
 		!isRetryableCodexProviderError(error) ||
 		context.output.content.length > 0 ||
 		runtime.providerRetryAttempt >= resolveRetryBudget(context.options?.streamMaxRetries, CODEX_MAX_RETRIES) ||
-		context.options?.signal?.aborted
+		context.options?.signal?.aborted ||
+		context.options?.fallbackManaged
 	) {
 		return false;
 	}
@@ -1692,6 +1698,7 @@ async function handleCodexStreamFailure(
 	}
 	output.stopReason = context.options?.signal?.aborted ? "aborted" : "error";
 	output.errorStatus = extractHttpStatusFromError(error);
+	output.transportFailure = transportFailureFacts(error);
 	output.errorMessage = await finalizeErrorMessage(error, context.requestContext.rawRequestDump);
 	output.duration = Date.now() - context.startTime;
 	if (context.firstTokenTime) {
@@ -1719,6 +1726,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			try {
 				initialTransport = await openInitialCodexEventStream(model, options, requestSetup, requestContext);
 			} catch (error) {
+				if (options?.fallbackManaged) throw error;
 				initialTransport = await retryCodexInitialTransportWithoutToolChoice(
 					model,
 					options,
@@ -2408,6 +2416,7 @@ async function openCodexSseEventStream(
 		const error = new Error(info.friendlyMessage || info.message);
 		(error as { headers?: Headers; status?: number }).headers = response.headers;
 		(error as { headers?: Headers; status?: number }).status = response.status;
+		(error as { code?: string }).code = info.code;
 		throw error;
 	}
 	if (!response.body) {

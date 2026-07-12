@@ -235,7 +235,7 @@ export async function dispatchRpcCommand(
 				if (!model) {
 					return rpcError(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				await session.setModel(model, "default", { cause: "user-selection" });
 				return rpcSuccess(id, "set_model", model);
 			}
 

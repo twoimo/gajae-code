@@ -57,6 +57,7 @@ import {
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
+import { transportFailureFacts } from "../utils/fallback-transport";
 import { isFoundryEnabled } from "../utils/foundry";
 import { finalizeErrorMessage, type RawHttpRequestDump, rewriteCopilotError } from "../utils/http-inspector";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
@@ -1608,6 +1609,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				} catch (streamError) {
 					const streamFailure = activeAbortTracker.getLocalAbortReason() ?? streamError;
 					if (
+						!options?.fallbackManaged &&
 						!disableStrictTools &&
 						firstTokenTime === undefined &&
 						hasStrictAnthropicTools(params) &&
@@ -1632,6 +1634,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					if (
 						!droppedForcedToolChoice &&
 						firstTokenTime === undefined &&
+						!options?.fallbackManaged &&
 						isSentForcedAnthropicToolChoice(params.tool_choice) &&
 						isForcedToolChoiceUnsupportedError(streamFailure, true)
 					) {
@@ -1663,6 +1666,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 						continue;
 					}
 					if (
+						!options?.fallbackManaged &&
 						!thinkingRepairAttempted &&
 						firstTokenTime === undefined &&
 						isAnthropicThinkingBlockMutationError(streamFailure)
@@ -1683,6 +1687,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 						continue;
 					}
 					if (
+						!options?.fallbackManaged &&
 						!dropFastMode &&
 						resolveServiceTier(options?.serviceTier, model.provider) === "priority" &&
 						firstTokenTime === undefined &&
@@ -1750,6 +1755,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 			const firstEventTimeoutError = activeAbortTracker.getLocalAbortReason();
 			output.stopReason = activeAbortTracker.wasCallerAbort() ? "aborted" : "error";
 			output.errorStatus = extractHttpStatusFromError(error);
+			output.transportFailure = transportFailureFacts(error);
 			output.errorMessage = firstEventTimeoutError?.message ?? (await finalizeErrorMessage(error, rawRequestDump));
 			output.errorMessage = rewriteCopilotError(output.errorMessage, error, model.provider);
 			output.duration = Date.now() - startTime;

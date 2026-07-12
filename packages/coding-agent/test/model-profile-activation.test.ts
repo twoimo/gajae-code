@@ -1,5 +1,6 @@
 import { describe, expect, it, test } from "bun:test";
-import { ThinkingLevel } from "@gajae-code/agent-core";
+import { Agent, ThinkingLevel } from "@gajae-code/agent-core";
+
 import type { Model } from "@gajae-code/ai";
 import {
 	activateModelProfile,
@@ -11,8 +12,12 @@ import {
 } from "../src/config/model-profile-activation";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { BUILTIN_MODEL_PROFILES, mergeModelProfiles } from "../src/config/model-profiles";
-import type { ModelRegistry } from "../src/config/model-registry";
+import { kNoAuth, type ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
+import { AgentSession } from "../src/session/agent-session";
+import { SessionManager } from "../src/session/session-manager";
+import { TempDir } from "@gajae-code/utils";
+
 
 const model = (provider: string, id: string, thinking?: Model["thinking"]): Model =>
 	({
@@ -97,6 +102,13 @@ function fakeSession(initial = model("provider-a", "initial")) {
 		thinkingLevel: ThinkingLevel.Low as ThinkingLevel | undefined,
 		sessionId: "session-1",
 		setModelTemporaryCalls: [] as Array<{ model: Model; thinkingLevel?: ThinkingLevel }>,
+		configuredModelChains: new Map<string, readonly string[]>(),
+		getConfiguredModelChain(role: string) {
+			return this.configuredModelChains.get(role);
+		},
+		setConfiguredModelChain(role: string, entries: readonly string[]) {
+			this.configuredModelChains.set(role, [...entries]);
+		},
 		async setModelTemporary(next: Model, thinkingLevel?: ThinkingLevel) {
 			this.setModelTemporaryCalls.push({ model: next, thinkingLevel });
 			this.model = next;
@@ -128,6 +140,175 @@ describe("model profile activation", () => {
 			executor: "provider-b/executor",
 			architect: "provider-a/architect",
 		});
+	});
+
+	test("keeps unauthenticated fallback heads and authenticated mixed-provider tails", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "fallback-profile",
+			requiredProviders: [],
+			modelMapping: {
+				default: ["provider-a/default:high", "provider-b/executor"],
+				executor: ["provider-c/executor", "provider-b/executor"],
+			},
+			source: "user",
+		};
+		const session = fakeSession();
+		const prepared = await prepareModelProfileActivation({
+			session,
+			modelRegistry: fakeRegistry({ missingProviders: ["provider-a", "provider-c"], profiles: [profile] }),
+			settings: Settings.isolated(),
+			profileName: profile.name,
+		});
+
+		expect(prepared.defaultChain).toEqual(["provider-a/default", "provider-b/executor"]);
+		expect(prepared.agentModelOverrides.executor).toEqual(["provider-c/executor", "provider-b/executor"]);
+		await applyPreparedModelProfileActivation(prepared);
+		expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/default", "provider-b/executor"]);
+	});
+
+	test("hard required providers still gate activation", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "hard-required",
+			requiredProviders: ["provider-a"],
+			modelMapping: { default: ["provider-b/executor", "provider-c/executor"] },
+			source: "user",
+		};
+		await expect(
+			prepareModelProfileActivation({
+				session: fakeSession(),
+				modelRegistry: fakeRegistry({ missingProviders: ["provider-a"], profiles: [profile] }),
+				settings: Settings.isolated(),
+				profileName: profile.name,
+			}),
+		).rejects.toThrow('Model profile "hard-required" requires credentials for: provider-a.');
+	});
+
+	test("accepts the kNoAuth sentinel for required keyless providers", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "keyless-required",
+			requiredProviders: ["provider-a"],
+			modelMapping: { default: "provider-a/default" },
+			source: "user",
+		};
+		const registry = {
+			...fakeRegistry({ profiles: [profile] }),
+			getApiKeyForProvider: async () => kNoAuth,
+		};
+
+		await expect(
+			prepareModelProfileActivation({
+				session: fakeSession(),
+				modelRegistry: registry as unknown as ModelRegistry,
+				settings: Settings.isolated(),
+				profileName: profile.name,
+			}),
+		).resolves.toMatchObject({ profileName: profile.name });
+	});
+
+
+	test("installs the default chain and restores the previous chain on rollback", async () => {
+		const session = fakeSession();
+		session.setConfiguredModelChain("default", ["provider-c/default"]);
+		const settings = Settings.isolated();
+		const prepared = await prepareModelProfileActivation({
+			session,
+			modelRegistry: fakeRegistry(),
+			settings,
+			profileName: "profile-a",
+		});
+		settings.flush = async () => {
+			throw new Error("flush failed");
+		};
+
+		await expect(applyPreparedModelProfileActivation(prepared, { persistDefault: true })).rejects.toThrow("flush failed");
+		expect(session.getConfiguredModelChain("default")).toEqual(["provider-c/default"]);
+	});
+
+	test("rollback from an unconfigured session clears the profile chain before reopen", async () => {
+		const tempDir = TempDir.createSync("@gjc-profile-chain-rollback-");
+		try {
+			const previousModel = model("provider-c", "default");
+			const manager = SessionManager.create(tempDir.path(), tempDir.path());
+			const sessionRegistry = { ...fakeRegistry(), getApiKey: async () => kNoAuth };
+			const session = new AgentSession({
+				agent: new Agent({ initialState: { model: previousModel, systemPrompt: [], tools: [], messages: [] } }),
+				sessionManager: manager,
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: sessionRegistry as unknown as ModelRegistry,
+			});
+			const settings = Settings.isolated();
+			const prepared = await prepareModelProfileActivation({
+				session,
+				modelRegistry: sessionRegistry as unknown as ModelRegistry,
+				settings,
+				profileName: "profile-a",
+			});
+			settings.flush = async () => {
+				throw new Error("flush failed");
+			};
+
+			await expect(applyPreparedModelProfileActivation(prepared, { persistDefault: true })).rejects.toThrow("flush failed");
+			expect(manager.buildSessionContext().configuredModelChains.default?.entries).toEqual(["provider-c/default"]);
+
+			await manager.ensureOnDisk();
+			await manager.flush();
+			const sessionFile = manager.getSessionFile();
+			if (!sessionFile) throw new Error("Expected persisted session file");
+			await manager.close();
+
+			const reopened = await SessionManager.open(sessionFile);
+			try {
+				expect(reopened.buildSessionContext().models.default).toBe("provider-c/default");
+				expect(reopened.buildSessionContext().configuredModelChains.default?.entries).toEqual(["provider-c/default"]);
+			} finally {
+				await reopened.close();
+			}
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	test("restores a persisted AgentSession configured chain and activates its head on resume", async () => {
+		const tempDir = TempDir.createSync("@gjc-profile-chain-resume-");
+		try {
+			const head = model("provider-a", "default");
+			const fallback = model("provider-b", "executor");
+			const manager = SessionManager.create(tempDir.path(), tempDir.path());
+			const configuringSession = new AgentSession({
+				agent: new Agent({ initialState: { model: fallback, systemPrompt: [], tools: [], messages: [] } }),
+				sessionManager: manager,
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: { getAvailable: () => [head, fallback] } as ModelRegistry,
+			});
+			configuringSession.setConfiguredModelChain(
+				"default",
+				["provider-a/default", "provider-b/executor"],
+				"profile-activation",
+			);
+			manager.appendModelChange("provider-b/executor", "default");
+			await manager.ensureOnDisk();
+			await manager.flush();
+			const sessionFile = manager.getSessionFile();
+			if (!sessionFile) throw new Error("Expected persisted session file");
+			await manager.close();
+
+			const reopened = await SessionManager.open(sessionFile);
+			const session = new AgentSession({
+				agent: new Agent({ initialState: { model: fallback, systemPrompt: [], tools: [], messages: [] } }),
+				sessionManager: reopened,
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: { getAvailable: () => [head, fallback] } as ModelRegistry,
+			});
+			try {
+				expect(await session.switchSession(sessionFile)).toBe(true);
+				expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/default", "provider-b/executor"]);
+				expect(session.model).toMatchObject({ provider: "provider-a", id: "default" });
+			} finally {
+				await session.dispose();
+			}
+		} finally {
+			tempDir.removeSync();
+		}
 	});
 
 	test("alternative selector rewrite stays within matching provider group", async () => {
@@ -453,11 +634,16 @@ function stubXiaomiRegistry(
 }
 
 function stubXiaomiSession() {
+	const configuredModelChains = new Map<string, readonly string[]>();
 	return {
 		model: undefined,
 		thinkingLevel: ThinkingLevel.Medium,
 		sessionId: "test-session",
 		setModelTemporary: async () => {},
+		setConfiguredModelChain: (role: string, entries: readonly string[]) => {
+			configuredModelChains.set(role, [...entries]);
+		},
+		getConfiguredModelChain: (role: string) => configuredModelChains.get(role),
 		setActiveModelProfile: () => {},
 		getActiveModelProfile: () => undefined,
 	};
