@@ -1,7 +1,8 @@
-import type { VisibleSessionBackendId } from "./backend";
+import type { VisibleSessionBackendId, VisibleSessionUnsupportedBackendId } from "./backend";
 
 export const VISIBLE_SESSION_SCHEMA_VERSION = 1 as const;
 export type VisibleSessionBackend = VisibleSessionBackendId;
+export type VisibleSessionStoredBackend = VisibleSessionBackend | VisibleSessionUnsupportedBackendId;
 export type VisibleSessionPlatform = "win32" | "posix";
 export type VisibleSessionGenerationStatus = "prepared" | "active";
 export interface VisibleSessionName {
@@ -37,7 +38,7 @@ export interface VisibleSessionRegistryEntry {
 	name: VisibleSessionName;
 	repository: string;
 	worktree: string;
-	backend: VisibleSessionBackend;
+	backend: VisibleSessionStoredBackend;
 	active: VisibleSessionGeneration;
 	history: VisibleSessionGeneration[];
 }
