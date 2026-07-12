@@ -191,6 +191,39 @@ describe("AgentSession managed fallback upstream request counts", () => {
 		});
 	});
 
+	it("resets the active entry budget after accepted tool rounds", async () => {
+		const calls: string[] = [];
+		const { primary, fallback } = createSession(3, (model, context, options) => {
+			calls.push(selector(model));
+			if (calls.length <= 2) {
+				return createMockModel({
+					responses: [{ content: [{ type: "toolCall", name: "read", arguments: { round: calls.length } }] }],
+				}).stream(model, context, options);
+			}
+			return selector(model) === selector(primary) ? rateLimitStream(model) : successfulStream(model, "Recovered after tools");
+		});
+		session!.agent.state.tools = [
+			{
+				name: "read",
+				description: "Read a fixture",
+				parameters: { type: "object", properties: { round: { type: "number" } } },
+				execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+			},
+		] as never;
+
+		await session!.prompt("Use two tools before the provider fails");
+		await session!.waitForIdle();
+
+		expect(calls).toEqual([
+			selector(primary),
+			selector(primary),
+			selector(primary),
+			selector(primary),
+			selector(primary),
+			selector(fallback),
+		]);
+	});
+
 	it("keeps a one-entry chain non-managed and token-free", async () => {
 		const primary = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!primary) throw new Error("Expected bundled test model");

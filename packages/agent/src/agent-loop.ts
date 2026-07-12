@@ -904,6 +904,9 @@ async function runLoopBody(
 
 			// One provider invocation is committed before any tool can run.
 			transaction?.flush();
+			if (config.fallbackManaged && message.stopReason !== "error" && message.stopReason !== "aborted") {
+				await config.onManagedAttemptAccepted?.();
+			}
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				// Create placeholder tool results for any tool calls in the aborted message

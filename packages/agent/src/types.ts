@@ -88,6 +88,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * upstream request count, including multi-step tool turns.
 	 */
 	nextFallbackAttempt?: (model: Model) => SimpleStreamOptions["fallbackAttempt"];
+	/** Called after a managed upstream request is accepted and committed. */
+	onManagedAttemptAccepted?: () => void | Promise<void>;
 
 /** Receives a managed invocation outcome without publishing provisional lifecycle events. */
 	onManagedAttemptOutcome?: ManagedAttemptOutcomeHandler;

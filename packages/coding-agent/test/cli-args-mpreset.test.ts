@@ -44,16 +44,38 @@ function fakeSession(initial = model("initial-provider", "initial")) {
 		model: initial as Model | undefined,
 		thinkingLevel: undefined as ThinkingLevel | undefined,
 		sessionId: "session-1",
-		setModelTemporaryCalls: [] as Array<{ model: Model; thinkingLevel?: ThinkingLevel }>,
-		async setModelTemporary(next: Model, thinkingLevel?: ThinkingLevel) {
-			session.setModelTemporaryCalls.push({ model: next, thinkingLevel });
+		setModelTemporaryCalls: [] as Array<{
+			model: Model;
+			thinkingLevel?: ThinkingLevel;
+			options?: { persistAsSessionDefault?: boolean; cause?: string };
+		}>,
+		configuredModelChains: [] as Array<{ role: string; entries: readonly string[] }>,
+		seedDefaultFallbackResolutionCalls: [] as Array<{
+			activeIndex: number;
+			skips: Array<{ selector: string; reason: string }>;
+		}>,
+		async setModelTemporary(
+			next: Model,
+			thinkingLevel?: ThinkingLevel,
+			options?: { persistAsSessionDefault?: boolean; cause?: string },
+		) {
+			session.setModelTemporaryCalls.push({ model: next, thinkingLevel, options });
 			session.model = next;
 			session.thinkingLevel = thinkingLevel;
 		},
 		getConfiguredModelChain: () => undefined,
-		setConfiguredModelChain() {},
+		setConfiguredModelChain(role: string, entries: readonly string[]) {
+			session.configuredModelChains.push({ role, entries });
+		},
+		seedDefaultFallbackResolution(activeIndex: number, skips: Array<{ selector: string; reason: string }>) {
+			session.seedDefaultFallbackResolutionCalls.push({ activeIndex, skips });
+		},
 	};
-	return session as unknown as AgentSession & { setModelTemporaryCalls: Array<{ model: Model; thinkingLevel?: ThinkingLevel }> };
+	return session as unknown as AgentSession & {
+		setModelTemporaryCalls: typeof session.setModelTemporaryCalls;
+		configuredModelChains: typeof session.configuredModelChains;
+		seedDefaultFallbackResolutionCalls: typeof session.seedDefaultFallbackResolutionCalls;
+	};
 }
 describe("CLI model profile args", () => {
 	test("parses --mpreset with separate value", () => {
@@ -160,6 +182,27 @@ test("deferred explicit CLI --model is reapplied after --mpreset activation", as
 	expect(session.model).toBe(explicitModel);
 });
 
+
+test("explicit CLI --model rebases the resumed session default chain", async () => {
+	const explicitModel = model("cli-provider", "explicit");
+	const session = fakeSession(model("profile-provider", "persisted"));
+
+	await applyStartupModelProfiles({
+		session,
+		settings: Settings.isolated(),
+		modelRegistry: fakeRegistry([]) as never,
+		parsedArgs: { model: "cli-provider/explicit" },
+		startupModel: explicitModel,
+		startupThinkingLevel: undefined,
+	});
+
+	expect(session.model).toBe(explicitModel);
+	expect(session.setModelTemporaryCalls).toEqual([
+		expect.objectContaining({ model: explicitModel, options: { persistAsSessionDefault: true, cause: "startup-override" } }),
+	]);
+	expect(session.configuredModelChains).toEqual([{ role: "default", entries: ["cli-provider/explicit"] }]);
+	expect(session.seedDefaultFallbackResolutionCalls).toEqual([{ activeIndex: 0, skips: [] }]);
+});
 test("ACP session factory applies default profile and --mpreset before returning session", async () => {
 	const settings = Settings.isolated({ "modelProfile.default": "default-profile" });
 	const session = fakeSession();

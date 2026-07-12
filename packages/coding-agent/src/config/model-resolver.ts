@@ -753,13 +753,23 @@ export function resolveModelOverride(
 	return { explicitThinkingLevel: false };
 }
 
-/** Resolve a fallback chain to its first callable entry without charging attempts. */
+/**
+ * Resolve a configured fallback chain to its first callable entry without
+ * charging requests. Consumers constructing a managed fallback controller
+ * MUST pass `{ managedFallback: true }` for every chain length so unsuitable
+ * entries (including Cursor's provider-side tool mode) fail closed during
+ * resolution before any request is attempted.
+ */
+export interface ModelChainResolutionOptions {
+	managedFallback?: boolean;
+}
+
 export async function resolveModelChainWithAuth(
 	modelPatterns: readonly string[],
 	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
 	settings?: Settings,
 	sessionId?: string,
-	options?: { managedFallback?: boolean },
+	options?: ModelChainResolutionOptions,
 ): Promise<{
 	model?: Model<Api>;
 	thinkingLevel?: ThinkingLevel;
@@ -777,7 +787,7 @@ export async function resolveModelChainWithAuth(
 			skips.push({ selector, reason: "unknown_model" });
 			continue;
 		}
-		if (options?.managedFallback && modelPatterns.length > 1) {
+		if (options?.managedFallback) {
 			const cursorReason = managedCursorFallbackUnavailableReason(candidate.model, selector);
 			if (cursorReason) {
 				skips.push({ selector, reason: cursorReason });
@@ -820,6 +830,7 @@ export async function resolveModelOverrideWithAuthFallback(
 	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
 	settings?: Settings,
 	sessionId?: string,
+	options?: ModelChainResolutionOptions,
 ): Promise<{
 	model?: Model<Api>;
 	thinkingLevel?: ThinkingLevel;
@@ -829,13 +840,13 @@ export async function resolveModelOverrideWithAuthFallback(
 	fallbackReason?: "auth_unavailable";
 	activeIndex?: number;
 	parentFallbackSelector?: string;
-	skips: Array<{ selector: string; reason: "unknown_model" | "unauthenticated" }>;
+	skips: Array<{ selector: string; reason: string }>;
 }> {
 	const availableModels = modelRegistry.getAvailable();
 	const matchPreferences = { usageOrder: settings?.getStorage()?.getModelUsageOrder() };
 	let requestedModel: Model<Api> | undefined;
 	let requestedResolution: ResolvedModelRoleValue | undefined;
-	const skips: Array<{ selector: string; reason: "unknown_model" | "unauthenticated" }> = [];
+	const skips: Array<{ selector: string; reason: string }> = [];
 	let activeIndex = 0;
 	for (const pattern of modelPatterns) {
 		const candidate = resolveModelRoleValue(pattern, availableModels, { settings, matchPreferences, modelRegistry });
@@ -847,6 +858,14 @@ export async function resolveModelOverrideWithAuthFallback(
 			skips.push({ selector: pattern, reason: "unknown_model" });
 			activeIndex += 1;
 			continue;
+		}
+		if (options?.managedFallback) {
+			const cursorReason = managedCursorFallbackUnavailableReason(candidate.model, pattern);
+			if (cursorReason) {
+				skips.push({ selector: pattern, reason: cursorReason });
+				activeIndex += 1;
+				continue;
+			}
 		}
 		const key = await modelRegistry.getApiKey(candidate.model, sessionId);
 		if (key === kNoAuth || isAuthenticated(key)) {

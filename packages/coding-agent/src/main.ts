@@ -314,8 +314,12 @@ export async function applyStartupModelProfiles(args: {
 	// Explicit CLI --model/--thinking must win over any activated profile.
 	if (explicitModel) {
 		await args.session.setModelTemporary(explicitModel, args.startupThinkingLevel ?? args.parsedArgs.thinking, {
+			persistAsSessionDefault: true,
 			cause: "startup-override",
 		});
+		const selector = `${explicitModel.provider}/${explicitModel.id}`;
+		args.session.setConfiguredModelChain("default", [selector], "startup-override", undefined, true);
+		args.session.seedDefaultFallbackResolution(0, []);
 	} else if (args.parsedArgs.thinking && args.session.model) {
 		await args.session.setModelTemporary(args.session.model, args.parsedArgs.thinking, { cause: "startup-override" });
 	}

@@ -47,6 +47,14 @@ const unauthedTaskModel: Model<Api> = {
 	maxTokens: 8192,
 };
 
+const cursorTaskModel: Model<Api> = {
+	...unauthedTaskModel,
+	id: "cursor-task",
+	name: "Cursor Task",
+	api: "cursor-agent",
+	provider: "cursor",
+};
+
 const sharedModel: Model<Api> = {
 	id: "shared-id",
 	name: "Shared",
@@ -278,3 +286,23 @@ describe("issue #985: subagent dispatch auth fallback", () => {
 		expect(sessionIds).toEqual(["parent-session"]);
 	});
 });
+
+	test("skips a Cursor subagent chain head when managed fallback is enabled", async () => {
+		const registry = createMockRegistry({
+			models: [cursorTaskModel, parentModel],
+			authedProviders: new Set(["cursor", "deepseek"]),
+		});
+
+		const result = await resolveModelOverrideWithAuthFallback(
+			["cursor/cursor-task", "deepseek/deepseek-v4-pro"],
+			undefined,
+			registry,
+			undefined,
+			undefined,
+			{ managedFallback: true },
+		);
+
+		expect(result.model).toBe(parentModel);
+		expect(result.activeIndex).toBe(1);
+		expect(result.skips[0]?.reason).toContain("cannot be used in a retryable fallback chain");
+	});

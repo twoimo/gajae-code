@@ -284,6 +284,8 @@ export interface AgentPromptOptions {
 	fallbackManaged?: boolean;
 	/** Called once immediately before every managed upstream request. */
 	nextFallbackAttempt?: AgentLoopConfig["nextFallbackAttempt"];
+	/** Called after a managed upstream request is accepted and committed. */
+	onManagedAttemptAccepted?: AgentLoopConfig["onManagedAttemptAccepted"];
 	/** Receives a discarded managed attempt without exposing assistant lifecycle events. */
 	onManagedAttemptOutcome?: AgentLoopConfig["onManagedAttemptOutcome"];
 }
@@ -1365,6 +1367,7 @@ export class Agent {
 				? {
 						fallbackManaged: true,
 						nextFallbackAttempt: options?.nextFallbackAttempt,
+						onManagedAttemptAccepted: options?.onManagedAttemptAccepted,
 						onManagedAttemptOutcome: async outcome => {
 							managedOutcome = outcome;
 							managedDecision =

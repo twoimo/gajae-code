@@ -171,7 +171,7 @@ describe("model profile activation", () => {
 		expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/default:high", "provider-b/executor"]);
 	});
 
-	test("skips unavailable default-chain entries and activates the valid tail", async () => {
+	test("preserves unavailable default-chain entries and activates the valid tail", async () => {
 		const profile: ModelProfileDefinition = {
 			name: "unavailable-head",
 			requiredProviders: [],
@@ -187,8 +187,63 @@ describe("model profile activation", () => {
 		});
 
 		expect(session.model).toMatchObject({ provider: "provider-b", id: "executor" });
-		expect(session.getConfiguredModelChain("default")).toEqual(["provider-b/executor"]);
+		expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/missing", "provider-b/executor"]);
+		expect(session.seedDefaultFallbackResolutionCalls).toEqual([
+			{ activeIndex: 1, skips: [{ selector: "provider-a/missing", reason: "unknown_model" }] },
+		]);
+	});
+
+	test("preserves unavailable middle and tail entries while resolving the first usable default", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "unavailable-middle-tail",
+			requiredProviders: [],
+			modelMapping: { default: ["provider-a/default", "provider-a/missing", "provider-b/missing"] },
+			source: "user",
+		};
+		const session = fakeSession();
+		await activateModelProfile({
+			session,
+			modelRegistry: fakeRegistry({ profiles: [profile] }),
+			settings: Settings.isolated(),
+			profileName: profile.name,
+		});
+
+		expect(session.model).toMatchObject({ provider: "provider-a", id: "default" });
+		expect(session.getConfiguredModelChain("default")).toEqual([
+			"provider-a/default",
+			"provider-a/missing",
+			"provider-b/missing",
+		]);
 		expect(session.seedDefaultFallbackResolutionCalls).toEqual([{ activeIndex: 0, skips: [] }]);
+	});
+
+	test("skips authenticated Cursor default heads before seeding a retryable fallback chain", async () => {
+		const cursor = { ...model("cursor", "agent"), api: "cursor-agent" } as Model;
+		const fallback = model("provider-b", "executor");
+		const profile: ModelProfileDefinition = {
+			name: "cursor-default-head",
+			requiredProviders: [],
+			modelMapping: { default: ["cursor/agent", "provider-b/executor"] },
+			source: "user",
+		};
+		const session = fakeSession();
+		const registry = { ...fakeRegistry({ profiles: [profile] }), getAll: () => [cursor, fallback] };
+		await activateModelProfile({ session, modelRegistry: registry, settings: Settings.isolated(), profileName: profile.name });
+
+		expect(session.model).toMatchObject({ provider: "provider-b", id: "executor" });
+		expect(session.getConfiguredModelChain("default")).toEqual(["cursor/agent", "provider-b/executor"]);
+		expect(session.seedDefaultFallbackResolutionCalls).toEqual([
+			{
+				activeIndex: 1,
+				skips: [
+					{
+						selector: "cursor/agent",
+						reason:
+							"Cursor model cursor/agent requires provider-side tool execution and cannot be used in a retryable fallback chain",
+					},
+				],
+			},
+		]);
 	});
 
 	test("skips unauthenticated default-chain entries and seeds the authenticated tail", async () => {

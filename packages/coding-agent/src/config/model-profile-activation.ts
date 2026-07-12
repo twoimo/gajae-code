@@ -15,7 +15,7 @@ import {
 	kNoAuth,
 	type ModelRegistry,
 } from "./model-registry";
-import { formatModelSelectorValue, parseModelString, resolveModelRoleValue } from "./model-resolver";
+import { formatModelSelectorValue, parseModelString, resolveModelChainWithAuth, resolveModelRoleValue } from "./model-resolver";
 import { normalizeModelSelectorValue, type ModelSelectorValue } from "./model-selector-value";
 import type { Settings } from "./settings";
 
@@ -65,13 +65,12 @@ export interface PreparedModelProfileActivation {
 	previousDefaultChain: readonly string[] | undefined;
 	defaultModel: Model<Api> | undefined;
 	defaultThinkingLevel: ThinkingLevel | undefined;
-	/** Full configured default fallback chain, clamped entry-by-entry. */
+	/** Full configured default fallback chain with resolvable entries clamped. */
+	defaultChain: readonly string[];
 	/** Index of the authenticated default-chain entry selected for activation. */
 	defaultActiveIndex: number | undefined;
 	/** Resolution-time skips that occurred before selecting the default entry. */
 	defaultResolutionSkips: Array<{ selector: string; reason: string }>;
-	/** Full configured default fallback chain, clamped entry-by-entry. */
-	defaultChain: readonly string[];
 	modelRoles: Record<string, ModelSelectorValue>;
 	agentModelOverrides: Record<string, ModelSelectorValue>;
 	previousActiveModelProfile: string | undefined;
@@ -308,13 +307,17 @@ function resolveAndClampSelectorValue(
 ): ModelSelectorValue {
 	const selectors = normalizeModelSelectorValue(selectorValue);
 	const clamped: string[] = [];
+	let resolvedAny = false;
 	for (const selector of selectors) {
 		const resolved = resolveModelRoleValue(selector, availableModels, options);
 		if (resolved.model) {
 			clamped.push(formatMaterializedSelector(selector, resolved.model));
+			resolvedAny = true;
+		} else {
+			clamped.push(selector);
 		}
 	}
-	if (clamped.length === 0) {
+	if (!resolvedAny) {
 		throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selectors[0]}`);
 	}
 	return clamped.length === 1 && typeof selectorValue === "string" ? clamped[0] : clamped;
@@ -378,27 +381,22 @@ export async function prepareModelProfileActivation(
 					),
 				)
 			: [];
-	let defaultModel: Model<Api> | undefined;
-	let defaultThinkingLevel: ThinkingLevel | undefined;
-	let defaultActiveIndex: number | undefined;
-	const defaultResolutionSkips: Array<{ selector: string; reason: string }> = [];
-	let clampedIndex = 0;
-	for (const selector of defaultSelectors) {
-		const resolved = resolveModelRoleValue(selector, availableModels, {
-			settings: options.settings as Settings,
-			modelRegistry: options.modelRegistry,
-		});
-		if (!resolved.model) continue;
-		const clampedSelector = defaultChain[clampedIndex++];
-		const apiKey = await options.modelRegistry.getApiKeyForProvider(resolved.model.provider, options.session.sessionId);
-		if (apiKey === kNoAuth || isAuthenticated(apiKey)) {
-			defaultModel = resolved.model;
-			defaultThinkingLevel = resolved.thinkingLevel;
-			defaultActiveIndex = clampedIndex - 1;
-			break;
-		}
-		defaultResolutionSkips.push({ selector: clampedSelector, reason: "unauthenticated" });
-	}
+	const defaultResolution = await resolveModelChainWithAuth(
+		defaultChain,
+		{
+			...options.modelRegistry,
+			getAvailable: () => availableModels,
+			getApiKey: (model, sessionId) =>
+				options.modelRegistry.getApiKeyForProvider(model.provider, sessionId, model.baseUrl),
+		} as ModelRegistry,
+		options.settings as Settings,
+		options.session.sessionId,
+		{ managedFallback: true },
+	);
+	const defaultModel = defaultResolution.model;
+	const defaultThinkingLevel = defaultResolution.thinkingLevel;
+	const defaultActiveIndex = defaultModel ? defaultResolution.activeIndex : undefined;
+	const defaultResolutionSkips = defaultResolution.skips;
 	if (bindings.defaultSelector && !defaultModel) {
 		throw new Error(`Model profile "${profileLabel}" default selectors did not resolve to an authenticated model`);
 	}

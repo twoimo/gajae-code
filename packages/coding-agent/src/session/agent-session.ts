@@ -1195,6 +1195,8 @@ export class AgentSession {
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#eventListeners: AgentSessionEventListener[] = [];
 	#eventListenerSnapshot: readonly AgentSessionEventListener[] = Object.freeze([]);
+	/** Resolution-time switches that occur before a consumer can subscribe. */
+	#pendingFallbackSwitches: Extract<AgentSessionEvent, { type: "model_fallback_switched" }>[] = [];
 
 	#rebuildEventListenerSnapshot(): void {
 		this.#eventListenerSnapshot = Object.freeze([...this.#eventListeners]);
@@ -3766,6 +3768,7 @@ export class AgentSession {
 	subscribe(listener: AgentSessionEventListener): () => void {
 		this.#eventListeners.push(listener);
 		this.#rebuildEventListenerSnapshot();
+		for (const event of this.#pendingFallbackSwitches.splice(0)) listener(event);
 
 		// Return unsubscribe function for this specific listener
 		return () => {
@@ -7006,9 +7009,27 @@ export class AgentSession {
 		});
 	}
 
-	/** Seed default fallback state after auth-aware model resolution skips chain entries. */
+	/**
+	 * Replace only the in-memory default fallback controller. Used when startup
+	 * falls through an unavailable persisted chain to the global default, which
+	 * must not mutate the persisted configured intent.
+	 */
+	setDefaultFallbackRuntimeModel(selector: string): void {
+		this.#defaultFallbackController = new FallbackChainController(
+			{ role: "default", entries: [selector], origin: "runtime", explicitHead: true },
+			this.settings.get("fallback.maxAttempts"),
+		);
+		this.#defaultFallbackExhaustedLastTurn = false;
+	}
+
+	/**
+	 * Seed default fallback state after guarded auth-aware model resolution skips chain entries.
+	 * The configured chain's role, origin, and identity are retained by the controller.
+	 */
 	seedDefaultFallbackResolution(activeIndex: number, skips: Array<{ selector: string; reason: string }>): void {
-		this.#defaultFallbackChain().seedResolution(activeIndex, skips);
+		const controller = this.#defaultFallbackChain();
+		controller.seedResolution(activeIndex, skips);
+		this.#emitResolutionFallbackSwitch(controller);
 	}
 
 	/**
@@ -9611,6 +9632,7 @@ export class AgentSession {
 	#managedFallbackPromptOptions(): {
 		fallbackManaged?: boolean;
 		nextFallbackAttempt?: (model: Model) => ReturnType<typeof beginAttempt>;
+		onManagedAttemptAccepted?: () => void;
 		onManagedAttemptOutcome?: (outcome: ManagedAttemptOutcome) => ManagedAttemptDecision | Promise<ManagedAttemptDecision>;
 	} {
 		const controller = this.#defaultFallbackChain();
@@ -9621,6 +9643,7 @@ export class AgentSession {
 				controller.onAttemptStarted();
 				return beginAttempt(formatModelString(model), String(++this.#fallbackInvocationId));
 			},
+			onManagedAttemptAccepted: () => controller.resetAttemptBudget(),
 			onManagedAttemptOutcome: outcome => this.#handleManagedAttemptOutcome(outcome),
 		};
 	}
@@ -9636,17 +9659,22 @@ export class AgentSession {
 	}
 
 	async #ensureDefaultFallbackResolution(): Promise<void> {
-		if (this.#defaultFallbackController) return;
 		const controller = this.#defaultFallbackChain();
 		if (controller.chain.entries.length < 2) return;
+		const resolutionStart = controller.activeIndex;
 		const resolution = await resolveModelChainWithAuth(
-			controller.chain.entries,
+			controller.chain.entries.slice(resolutionStart),
 			this.#modelRegistry,
 			this.settings,
 			this.sessionId,
 			{ managedFallback: true },
 		);
-		controller.seedResolution(resolution.activeIndex, resolution.skips);
+		const activeIndex = resolutionStart + resolution.activeIndex;
+		if (activeIndex > resolutionStart) {
+			this.seedDefaultFallbackResolution(activeIndex, [...controller.skips, ...resolution.skips]);
+		} else {
+			controller.seedResolution(activeIndex, [...controller.skips, ...resolution.skips]);
+		}
 		if (!resolution.model) throw new Error(this.#fallbackExhaustionError(controller));
 		this.#setModelAuthoritatively(resolution.model, "restore");
 		if (resolution.explicitThinkingLevel && resolution.thinkingLevel !== undefined) {
@@ -9654,6 +9682,11 @@ export class AgentSession {
 		}
 	}
 
+	/**
+	 * Materialize the default controller from the persisted configured-chain
+	 * metadata. Consumers seed only resolution state; role/origin/identity stay
+	 * intrinsic to controller construction and are never inferred at runtime.
+	 */
 	#defaultFallbackChain(): FallbackChainController {
 		const configuredChain = this.sessionManager.buildSessionContext().configuredModelChains.default;
 		const settingsEntries = normalizeModelSelectorValue(
@@ -9664,13 +9697,16 @@ export class AgentSession {
 		if (materializeSettingsChain) {
 			this.setConfiguredModelChain("default", settingsEntries, "modelRoles");
 		}
-		const entries = materializeSettingsChain ? settingsEntries : (configuredChain?.entries ?? settingsEntries);
+		const chain: ConfiguredFallbackChain = materializeSettingsChain
+			? { role: "default", entries: settingsEntries, origin: "modelRoles", explicitHead: true }
+			: configuredChain
+				? { ...configuredChain, entries: [...configuredChain.entries] }
+				: { role: "default", entries: settingsEntries, origin: "session", explicitHead: true };
 		const existing = this.#defaultFallbackController;
-		if (existing && existing.chain.entries.join("\u0000") === entries.join("\u0000")) return existing;
-		this.#defaultFallbackController = new FallbackChainController(
-			{ role: "default", entries, origin: "session", explicitHead: true } satisfies ConfiguredFallbackChain,
-			this.settings.get("fallback.maxAttempts"),
-		);
+		if (existing && existing.chain.entries.join("\u0000") === chain.entries.join("\u0000")) {
+			return existing;
+		}
+		this.#defaultFallbackController = new FallbackChainController(chain, this.settings.get("fallback.maxAttempts"));
 		return this.#defaultFallbackController;
 	}
 
@@ -9753,7 +9789,7 @@ export class AgentSession {
 					from,
 					to,
 					reason,
-					role: controller.chain.identity ?? controller.chain.role,
+					role: controller.chain.role,
 					scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
 					activeIndex: controller.activeIndex,
 					chainLength: controller.chain.entries.length,
@@ -9763,6 +9799,30 @@ export class AgentSession {
 			return true;
 		}
 		return false;
+	}
+
+	#emitResolutionFallbackSwitch(controller: FallbackChainController): void {
+		if (controller.activeIndex <= 0) return;
+		const to = controller.currentSelector();
+		const from = controller.chain.entries[controller.activeIndex - 1];
+		if (!from || !to || from === to) return;
+		const event: Extract<AgentSessionEvent, { type: "model_fallback_switched" }> = {
+			type: "model_fallback_switched",
+			eventId: crypto.randomUUID(),
+			from,
+			to,
+			reason: "resolution",
+			role: controller.chain.role,
+			scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
+			activeIndex: controller.activeIndex,
+			chainLength: controller.chain.entries.length,
+			attemptsUsed: 0,
+		};
+		if (this.#eventListeners.length === 0) {
+			this.#pendingFallbackSwitches.push(event);
+		} else {
+			this.#emit(event);
+		}
 	}
 
 	#fallbackExhaustionError(controller: FallbackChainController): string {
@@ -10927,6 +10987,7 @@ export class AgentSession {
 		this.#followUpMessages = [];
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
+		let unavailableDefaultChainMessage: string | undefined;
 
 		try {
 			await this.sessionManager.setSessionFile(sessionPath);
@@ -10965,7 +11026,7 @@ export class AgentSession {
 			const configuredDefaultChain = sessionContext.configuredModelChains.default?.entries;
 			const defaultEntries = configuredDefaultChain ?? (sessionContext.models.default ? [sessionContext.models.default] : []);
 			this.#defaultFallbackController = undefined;
-			if (defaultEntries.length > 1) {
+			if (defaultEntries.length > 0) {
 				const resolution = await resolveModelChainWithAuth(
 					defaultEntries,
 					this.#modelRegistry,
@@ -10974,23 +11035,16 @@ export class AgentSession {
 					{ managedFallback: true },
 				);
 				const controller = this.#defaultFallbackChain();
-				controller.seedResolution(resolution.activeIndex, resolution.skips);
-				if (!resolution.model) throw new Error(this.#fallbackExhaustionError(controller));
+				this.seedDefaultFallbackResolution(resolution.activeIndex, resolution.skips);
+				if (!resolution.model) {
+					unavailableDefaultChainMessage = this.#fallbackExhaustionError(controller);
+					throw new Error(unavailableDefaultChainMessage);
+				}
 				if (!this.model || !modelsAreEqual(this.model, resolution.model)) {
 					this.#setModelAuthoritatively(resolution.model, "restore");
 				}
 				if (resolution.explicitThinkingLevel && resolution.thinkingLevel !== undefined) {
 					this.setThinkingLevel(resolution.thinkingLevel);
-				}
-			} else if (defaultEntries.length === 1) {
-				const parsed = parseModelString(defaultEntries[0]);
-				if (parsed) {
-					const match = this.#modelRegistry
-						.getAvailable()
-						.find(model => model.provider === parsed.provider && model.id === parsed.id);
-					if (match && (!this.model || !modelsAreEqual(this.model, match))) {
-						this.#setModelAuthoritatively(match, "restore");
-					}
 				}
 			}
 
@@ -11021,6 +11075,7 @@ export class AgentSession {
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			this.#defaultFallbackController = undefined;
 			this.#syncAgentSessionId(previousSessionState.sessionId);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			let restoreMcpError: unknown;
@@ -11060,6 +11115,10 @@ export class AgentSession {
 			this.#reconnectToAgent();
 			if (restoreMcpError) {
 				throw restoreMcpError;
+			}
+			if (unavailableDefaultChainMessage) {
+				this.emitNotice("error", `Could not restore session model: ${unavailableDefaultChainMessage}`, "fallback");
+				return false;
 			}
 			throw error;
 		}

@@ -2392,8 +2392,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			providerSessionState: options.providerSessionState,
 		});
 		hasSession = true;
-		if (restoredDefaultResolution && model) {
+		const restoredModelWasSelected = restoredDefaultResolution?.model === model;
+		if (restoredDefaultResolution && restoredModelWasSelected) {
 			session.seedDefaultFallbackResolution(restoredDefaultResolution.activeIndex, restoredDefaultResolution.skips);
+		} else if (restoredDefaultResolution && model) {
+			session.setDefaultFallbackRuntimeModel(formatModelString(model));
 		}
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {

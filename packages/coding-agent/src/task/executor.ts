@@ -1248,6 +1248,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					modelRegistry,
 					settings,
 					options.parentSessionId,
+					{ managedFallback: true },
 				),
 			);
 			if (model) {
