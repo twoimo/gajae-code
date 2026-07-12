@@ -156,7 +156,6 @@ function validStoredBackend(value: unknown): value is string {
 	return validText(value) && readVisibleSessionBackendId(value).kind !== "invalid";
 }
 
-
 function validMetadata(value: unknown): value is VisibleSessionMetadataRead {
 	if (!isRecord(value)) return false;
 	if (value.schemaVersion === VISIBLE_SESSION_PUBLIC_STATE_SCHEMA_VERSION) {
