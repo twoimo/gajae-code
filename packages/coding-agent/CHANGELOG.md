@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-12
+
 ### Added
 
 - Added an opt-in `/pet on|off` composer companion with idle gaze, working claw motion, and occasional automatic flex animation on Sixel- and Kitty-graphics terminals.

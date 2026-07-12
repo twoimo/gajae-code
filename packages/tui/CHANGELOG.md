@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-07-12
 ### Fixed
 
 - Unified TUI wrapping, truncation, and visible-width measurements on the native grapheme-width engine, preventing Hangul tone marks from causing Korean/CJK layout width drift (#1979).
