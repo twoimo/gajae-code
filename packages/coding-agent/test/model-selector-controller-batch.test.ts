@@ -30,6 +30,7 @@ function createControllerContext() {
 	}> = [];
 	const setModelTemporary = vi.fn(async () => {});
 	const setDefaultFallbackRuntimeModel = vi.fn();
+	const restoreTemporaryProviderSessionScope = vi.fn(() => true);
 	const session = {
 		model: model("provider-a", "current") as Model | undefined,
 		thinkingLevel: ThinkingLevel.Medium as ThinkingLevel | undefined,
@@ -58,6 +59,7 @@ function createControllerContext() {
 		},
 		setModelTemporary,
 		setDefaultFallbackRuntimeModel,
+		restoreTemporaryProviderSessionScope,
 		setThinkingLevel(thinkingLevel: ThinkingLevel) {
 			this.thinkingLevel = thinkingLevel;
 		},
@@ -78,7 +80,15 @@ function createControllerContext() {
 		showError: vi.fn(),
 		notifyConfigChanged: vi.fn(async () => {}),
 	};
-	return { ctx, settings, session, setModelCalls, setModelTemporary, setDefaultFallbackRuntimeModel };
+	return {
+		ctx,
+		settings,
+		session,
+		setModelCalls,
+		setModelTemporary,
+		restoreTemporaryProviderSessionScope,
+		setDefaultFallbackRuntimeModel,
+	};
 }
 
 async function openSelector(ctx: ReturnType<typeof createControllerContext>["ctx"]): Promise<ModelSelectorComponent> {
@@ -164,5 +174,32 @@ describe("SelectorController model batch assignments", () => {
 		});
 		expect(setDefaultFallbackRuntimeModel).toHaveBeenCalledWith("provider-a/selected:low");
 		expect(settings.getModelRole("default")).toBe("provider-a/original-default:medium");
+	});
+
+	test("replaces the prior temporary provider-session scope before the next pick", async () => {
+		const { ctx, setModelTemporary, restoreTemporaryProviderSessionScope } = createControllerContext();
+		const firstScope = { reason: "other" };
+		const secondScope = { reason: "other" };
+		setModelTemporary.mockResolvedValueOnce(firstScope as never).mockResolvedValueOnce(secondScope as never);
+		const selector = await openSelector(ctx);
+
+		await selector.__testSelectAssignment({
+			model: selectedModel,
+			role: null,
+			thinkingLevel: ThinkingLevel.Low,
+			selector: "provider-a/selected:low",
+		});
+		await selector.__testSelectAssignment({
+			model: model("provider-a", "replacement"),
+			role: null,
+			thinkingLevel: ThinkingLevel.High,
+			selector: "provider-a/replacement:high",
+		});
+
+		expect(restoreTemporaryProviderSessionScope).toHaveBeenCalledTimes(1);
+		expect(restoreTemporaryProviderSessionScope).toHaveBeenCalledWith(firstScope);
+		expect(restoreTemporaryProviderSessionScope.mock.invocationCallOrder[0]).toBeLessThan(
+			setModelTemporary.mock.invocationCallOrder[1],
+		);
 	});
 });

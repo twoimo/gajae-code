@@ -43,6 +43,7 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext, OAuthSelectorOptions } from "../../modes/types";
+import type { TemporaryProviderSessionScope } from "../../session/agent-session";
 import { type SessionInfo, SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
 import {
@@ -143,6 +144,8 @@ function formatProviderOnboardingCommandGuide(): string {
 }
 
 export class SelectorController {
+	#temporaryModelScope: TemporaryProviderSessionScope | undefined;
+
 	constructor(private ctx: InteractiveModeContext) {}
 
 	async #refreshOAuthProviderAuthState(): Promise<void> {
@@ -899,17 +902,25 @@ export class SelectorController {
 						}
 						if (selection.kind === "profile") {
 							await this.#applyModelProfile(selection.profileName, selection.setDefault);
+							this.#temporaryModelScope = undefined;
 							done();
 							this.ctx.ui.requestRender();
 							return;
 						}
 						const { model, role, thinkingLevel, selector: selectedSelector } = selection;
 						if (role === null) {
-							// Temporary: update agent state but don't persist to settings
-							await this.ctx.session.setModelTemporary(model, thinkingLevel, {
+							// Temporary: update agent state but don't persist to settings.
+							// Replace the prior selector scope so its suspended map is rebound
+							// before the next temporary map is created.
+							if (this.#temporaryModelScope) {
+								this.ctx.session.restoreTemporaryProviderSessionScope(this.#temporaryModelScope);
+								this.#temporaryModelScope = undefined;
+							}
+							const temporaryScope = await this.ctx.session.setModelTemporary(model, thinkingLevel, {
 								cause: "temporary-operation",
 								reason: "other",
 							});
+							if (temporaryScope) this.#temporaryModelScope = temporaryScope;
 							this.ctx.session.setDefaultFallbackRuntimeModel(
 								selectedSelector ?? formatModelSelectorValue(`${model.provider}/${model.id}`, thinkingLevel),
 							);
@@ -946,6 +957,7 @@ export class SelectorController {
 									thinkingLevel,
 									cause: "user-selection",
 								});
+								this.#temporaryModelScope = undefined;
 								if (thinkingLevel && thinkingLevel !== ThinkingLevel.Inherit) {
 									this.ctx.session.setThinkingLevel(thinkingLevel);
 								}
@@ -999,6 +1011,7 @@ export class SelectorController {
 								thinkingLevel,
 								cause: "user-selection",
 							});
+							this.#temporaryModelScope = undefined;
 							const value = formatModelSelectorValue(
 								selectedSelector ?? `${model.provider}/${model.id}`,
 								thinkingLevel,

@@ -7077,7 +7077,7 @@ export class AgentSession {
 			reason?: TemporaryModelReason;
 			providerSessionScope?: TemporaryProviderSessionScope;
 		},
-	): Promise<void> {
+	): Promise<TemporaryProviderSessionScope | void> {
 		const suppliedScope = options?.providerSessionScope;
 		if (suppliedScope && this.#temporaryProviderSessionScopes.at(-1)?.token !== suppliedScope) return;
 
@@ -7114,6 +7114,7 @@ export class AgentSession {
 			if (ownsScope) this.restoreTemporaryProviderSessionScope(scope);
 			throw error;
 		}
+		return scope;
 	}
 
 	/**

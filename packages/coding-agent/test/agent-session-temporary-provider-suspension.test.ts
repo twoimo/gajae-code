@@ -111,6 +111,43 @@ describe("temporary provider-session suspension", () => {
 		expect(originalClose).toHaveBeenCalledTimes(1);
 	});
 
+	test("replaces selector temporary scopes without nesting and restores the original map", async () => {
+		const session = createSession();
+		const originalMap = session.providerSessionState;
+		const originalClose = vi.fn();
+		originalMap.set("original", state(originalClose));
+		const temporaryModels = ["first", "second", "third"].map(id => ({ ...model, id }) as Model);
+		const temporaryMaps: Map<string, ProviderSessionState>[] = [];
+		const temporaryCloses: ReturnType<typeof vi.fn>[] = [];
+		let activeScope: Awaited<ReturnType<typeof session.setModelTemporary>> | undefined;
+
+		for (const temporaryModel of temporaryModels) {
+			if (activeScope) {
+				expect(session.restoreTemporaryProviderSessionScope(activeScope)).toBe(true);
+			}
+			activeScope = await session.setModelTemporary(temporaryModel, undefined, {
+				cause: "temporary-operation",
+				reason: "other",
+			});
+			expect(activeScope).toBeDefined();
+			const temporaryMap = session.providerSessionState;
+			const temporaryClose = vi.fn();
+			temporaryMap.set(temporaryModel.id, state(temporaryClose));
+			temporaryMaps.push(temporaryMap);
+			temporaryCloses.push(temporaryClose);
+			expect(temporaryCloses.slice(0, -1)).toSatisfy(closes => closes.every(close => close.mock.calls.length === 1));
+			expect(temporaryClose).not.toHaveBeenCalled();
+		}
+
+		if (!activeScope) throw new Error("Temporary model selection did not create a scope");
+		expect(session.restoreTemporaryProviderSessionScope(activeScope)).toBe(true);
+		expect(session.providerSessionState).toBe(originalMap);
+		expect(session.agent.providerSessionState).toBe(originalMap);
+		expect(originalClose).not.toHaveBeenCalled();
+		expect(temporaryMaps).toHaveLength(3);
+		expect(temporaryCloses).toSatisfy(closes => closes.every(close => close.mock.calls.length === 1));
+	});
+
 	test("temporary model picks suspend provider state and replace the runtime fallback chain", async () => {
 		const fallbackManaged: Array<boolean | undefined> = [];
 		const session = createSession((selected, context, options) => {
