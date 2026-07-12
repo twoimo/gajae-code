@@ -27,6 +27,7 @@ use parking_lot::Mutex;
 use tokio::{
 	net::{TcpListener, TcpStream},
 	sync::{broadcast, mpsc, oneshot},
+	time::sleep,
 };
 use tokio_tungstenite::tungstenite::{
 	Error, Message,
@@ -37,13 +38,14 @@ use tokio_tungstenite::tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-	actions::{ActionRegistry, ClaimOutcome, ReplyOutcome},
+	actions::{ActionIdentity, ActionRegistry, ClaimOutcome, ReplyOutcome},
 	discovery::EndpointRecord,
 	protocol::{
-		ActionNeeded, AskSelectedAckCancel, AskSelectedAckCancelReason, AskSelectedAckFailedReason,
-		AskSelectedAckOutcome, AskSelectedAckRequest, AskSelectedAckUnknownReason, ClientMessage,
-		PROTOCOL_VERSION, Pong, RejectReason, ReplyAnswer, ReplyRejected, ServerHello, ServerMessage,
-		SessionReady, capabilities,
+		ActionKind, ActionNeeded, ActionUnavailable, ActionUnavailableReason, AskSelectedAckCancel,
+		AskSelectedAckCancelReason, AskSelectedAckFailedReason, AskSelectedAckOutcome,
+		AskSelectedAckRequest, AskSelectedAckUnknownReason, ClientMessage, PROTOCOL_VERSION, Pong,
+		RejectReason, ReplyAnswer, ReplyRejected, ServerHello, ServerMessage, SessionReady,
+		capabilities,
 	},
 	query::REQUEST_FRAME_BYTES,
 };
@@ -88,27 +90,71 @@ impl ServerConfig {
 	}
 }
 
-/// Shared server state behind the handle and every connection task.
+/// Bounded time a connection may defer controlled delivery while it advertises
+/// its capabilities.
+const CLIENT_HELLO_GRACE: Duration = Duration::from_secs(1);
+
+/// Commands serialized through the owning connection task.
 #[derive(Debug)]
-struct DirectMessage {
-	message: Option<ServerMessage>,
-	raw_json: Option<String>,
-	dispatched: Option<oneshot::Sender<bool>>,
+enum DirectCommand {
+	Deliver(Box<ServerMessage>, Option<oneshot::Sender<bool>>),
+	RawJson(String),
+	ReevaluateAsk,
 }
 
-fn prepare_direct_ack(state: &ServerState, direct: &DirectMessage) -> bool {
-	let Some(ServerMessage::AskSelectedAckRequest(request)) = &direct.message else {
+fn prepare_direct_ack(state: &ServerState, message: &ServerMessage) -> bool {
+	let ServerMessage::AskSelectedAckRequest(request) = message else {
 		return true;
 	};
 	state.acks.lock().begin_dispatch(request.request_id())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Negotiation {
+	AwaitingHello,
+	TimedOut,
+	Negotiated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+	Unavailable,
+	Full,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Delivered {
+	identity:     ActionIdentity,
+	presentation: Presentation,
+}
+
+#[derive(Debug, Clone)]
 struct Connection {
 	generation: String,
 	capabilities: Vec<String>,
-	tx: mpsc::UnboundedSender<DirectMessage>,
+	negotiation:  Negotiation,
+	delivered:    Option<Delivered>,
+	tx:           mpsc::UnboundedSender<DirectCommand>,
 }
+
+/// Error returned when a caller attempts to broadcast an action through the
+/// generic frame API instead of the action lifecycle APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushFrameError {
+	ActionNeededProhibited,
+}
+
+impl std::fmt::Display for PushFrameError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::ActionNeededProhibited => {
+				formatter.write_str("ActionNeeded must be sent with register_ask or note_idle")
+			},
+		}
+	}
+}
+
+impl std::error::Error for PushFrameError {}
 
 type AckOrigin = (String, String);
 type FinishedAck = (String, Option<AckOrigin>, bool);
@@ -278,17 +324,23 @@ impl ServerHandle {
 		format!("ws://{}", self.addr)
 	}
 
-	/// Register an `ask` action and broadcast it to connected clients.
+	/// Register an `ask` action and queue a connection-local reevaluation for
+	/// every client. All asks use this path; only idle pings use broadcast.
 	///
 	/// `repliable` should be `true` only when the SDK workflow-gate resolver can
 	/// actually answer the ask.
 	pub fn register_ask(&self, needed: ActionNeeded, repliable: bool) {
-		self
+		self.state.registry.lock().register_ask(needed, repliable);
+		let connections = self
 			.state
-			.registry
+			.connections
 			.lock()
-			.register_ask(needed.clone(), repliable);
-		let _ = self.state.tx.send(ServerMessage::ActionNeeded(needed));
+			.values()
+			.map(|connection| connection.tx.clone())
+			.collect::<Vec<_>>();
+		for connection in connections {
+			let _ = connection.send(DirectCommand::ReevaluateAsk);
+		}
 	}
 
 	/// Broadcast an ephemeral idle ping (not buffered, not repliable).
@@ -297,14 +349,21 @@ impl ServerHandle {
 		let _ = self.state.tx.send(ServerMessage::ActionNeeded(msg));
 	}
 
-	/// Broadcast an ephemeral threaded-session frame to connected clients.
+	/// Broadcast an ephemeral threaded-session frame. `ActionNeeded` frames are
+	/// prohibited here: use [`ServerHandle::register_ask`] or
+	/// [`ServerHandle::note_idle`] so ask delivery remains connection-specific.
 	///
-	/// Used for the additive identity/context/turn/image/config/hello frames.
-	/// Like [`ServerHandle::note_idle`] these are not buffered for replay (the
-	/// host re-emits the identity header on reconnect); existing buffered-ask
-	/// replay (see [`ServerHandle::register_ask`]) is unaffected.
-	pub fn push_frame(&self, msg: ServerMessage) {
+	/// Like [`ServerHandle::note_idle`] these frames are not buffered for
+	/// replay.
+	///
+	/// # Errors
+	/// Returns [`PushFrameError::ActionNeededProhibited`] for `ActionNeeded`.
+	pub fn push_frame(&self, msg: ServerMessage) -> Result<(), PushFrameError> {
+		if matches!(msg, ServerMessage::ActionNeeded(_)) {
+			return Err(PushFrameError::ActionNeededProhibited);
+		}
 		let _ = self.state.tx.send(msg);
+		Ok(())
 	}
 
 	/// Publish a session-readiness signal: buffer it (so late-connecting clients
@@ -372,11 +431,7 @@ impl ServerHandle {
 			.lock()
 			.get(connection_id)
 			.map(|connection| connection.tx.clone());
-		sender.is_some_and(|sender| {
-			sender
-				.send(DirectMessage { message: None, raw_json: Some(json), dispatched: None })
-				.is_ok()
-		})
+		sender.is_some_and(|sender| sender.send(DirectCommand::RawJson(json)).is_ok())
 	}
 
 	/// Resolve an unclaimed legacy action. Claimed forward-mode replies require
@@ -601,26 +656,23 @@ impl ServerHandle {
 			);
 		}
 		let (dispatch_tx, dispatch_rx) = oneshot::channel();
-		let queued = origin
-			.and_then(|(id, generation)| {
-				self
-					.state
-					.connections
-					.lock()
-					.get(&id)
-					.filter(|connection| connection.generation == generation)
-					.map(|connection| {
-						connection
-							.tx
-							.send(DirectMessage {
-								message: Some(ServerMessage::AskSelectedAckRequest(request)),
-								raw_json: None,
-								dispatched: Some(dispatch_tx),
-							})
-							.is_ok()
-					})
-			})
-			.unwrap_or(false);
+		let direct_tx = origin.as_ref().and_then(|(id, generation)| {
+			self
+				.state
+				.connections
+				.lock()
+				.get(id)
+				.filter(|connection| connection.generation == *generation)
+				.map(|connection| connection.tx.clone())
+		});
+		let queued = direct_tx.is_some_and(|direct_tx| {
+			direct_tx
+				.send(DirectCommand::Deliver(
+					Box::new(ServerMessage::AskSelectedAckRequest(request)),
+					Some(dispatch_tx),
+				))
+				.is_ok()
+		});
 		if !queued {
 			return self.finish_ack(
 				&request_id,
@@ -688,23 +740,24 @@ impl ServerHandle {
 			});
 			(actual, cancel)
 		};
-		if let Some((commit_key, Some((id, generation)))) = cancel
-			&& let Some(connection) = self
+		if let Some((commit_key, Some((id, generation)))) = cancel {
+			let direct_tx = self
 				.state
 				.connections
 				.lock()
 				.get(&id)
-				.filter(|c| c.generation == generation)
-		{
-			let _ = connection.tx.send(DirectMessage {
-				message: Some(ServerMessage::AskSelectedAckCancel(AskSelectedAckCancel {
-					request_id: request_id.to_owned(),
-					commit_key,
-					reason: cancel_reason,
-				})),
-				raw_json: None,
-				dispatched: None,
-			});
+				.filter(|connection| connection.generation == generation)
+				.map(|connection| connection.tx.clone());
+			if let Some(direct_tx) = direct_tx {
+				let _ = direct_tx.send(DirectCommand::Deliver(
+					Box::new(ServerMessage::AskSelectedAckCancel(AskSelectedAckCancel {
+						request_id: request_id.to_owned(),
+						commit_key,
+						reason: cancel_reason,
+					})),
+					None,
+				));
+			}
 		}
 		actual
 	}
@@ -719,19 +772,20 @@ impl ServerHandle {
 			let dispatched = finished.and_then(|(_, origin, dispatched)| dispatched.then_some(origin));
 			(actual, dispatched)
 		};
-		if let Some(Some((id, generation))) = dispatched
-			&& let Some(connection) = self
+		if let Some(Some((id, generation))) = dispatched {
+			let direct_tx = self
 				.state
 				.connections
 				.lock()
 				.get(&id)
-				.filter(|c| c.generation == generation)
-		{
-			let _ = connection.tx.send(DirectMessage {
-				message: Some(ServerMessage::AskSelectedAckCancel(cancel)),
-				raw_json: None,
-				dispatched: None,
-			});
+				.filter(|connection| connection.generation == generation)
+				.map(|connection| connection.tx.clone());
+			if let Some(direct_tx) = direct_tx {
+				let _ = direct_tx.send(DirectCommand::Deliver(
+					Box::new(ServerMessage::AskSelectedAckCancel(cancel)),
+					None,
+				));
+			}
 		}
 		actual
 	}
@@ -875,7 +929,7 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 	let connection_id =
 		format!("connection:{}", state.connection_sequence.fetch_add(1, Ordering::Relaxed));
 	let generation = "0".to_owned();
-	let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
+	let (direct_tx, mut direct_rx) = mpsc::unbounded_channel::<DirectCommand>();
 	let mut rx = state.tx.subscribe();
 	let (mut write, mut read) = ws.split();
 	let hello = ServerMessage::Hello(ServerHello {
@@ -897,111 +951,153 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 		return;
 	}
 
-	// Replay the buffered ask (if any) to this freshly-connected client.
-	let replay = state.registry.lock().replay_for_new_client().cloned();
-	if let Some(replay) = replay
-		&& send_msg(&mut write, &ServerMessage::ActionNeeded(replay))
-			.await
-			.is_err()
-	{
-		return;
-	}
+	state
+		.connections
+		.lock()
+		.insert(connection_id.clone(), Connection {
+			generation:   generation.clone(),
+			capabilities: Vec::new(),
+			negotiation:  Negotiation::AwaitingHello,
+			delivered:    None,
+			tx:           direct_tx.clone(),
+		});
 
-	// Replay the buffered readiness frame (if any) so a late-connecting control
-	// client observes readiness without relying on WS-open alone.
+	// Replay readiness before ask presentation; the ask itself is tailored by the
+	// connection task after insertion and never written before ClientHello policy.
 	let ready_replay = state.session_ready.lock().clone();
 	if let Some(ready) = ready_replay
 		&& send_msg(&mut write, &ServerMessage::SessionReady(ready))
 			.await
 			.is_err()
 	{
+		state.connections.lock().remove(&connection_id);
 		return;
 	}
-	state.connections.lock().insert(
-		connection_id.clone(),
-		Connection { generation: generation.clone(), capabilities: Vec::new(), tx: direct_tx },
-	);
+	let _ = direct_tx.send(DirectCommand::ReevaluateAsk);
+
+	let grace = sleep(CLIENT_HELLO_GRACE);
+	tokio::pin!(grace);
+	let mut awaiting = true;
 
 	loop {
 		tokio::select! {
 			() = cancel.cancelled() => {
 				while let Ok(direct) = direct_rx.try_recv() {
-					if !prepare_direct_ack(&state, &direct) {
-						if let Some(dispatched) = direct.dispatched {
-							let _ = dispatched.send(false);
-						}
-						continue;
-					}
-					let sent = match (&direct.raw_json, &direct.message) {
-						(Some(json), _) => write.send(Message::Text(json.clone().into())).await.is_ok(),
-						(None, Some(message)) => send_msg(&mut write, message).await.is_ok(),
-						(None, None) => false,
+					let sent = match direct {
+						DirectCommand::Deliver(message, dispatched) => {
+							if !prepare_direct_ack(&state, &message) {
+								if let Some(dispatched) = dispatched {
+									let _ = dispatched.send(false);
+								}
+								continue;
+							}
+							let sent = send_msg(&mut write, &message).await.is_ok();
+							if let Some(dispatched) = dispatched {
+								let _ = dispatched.send(sent);
+							}
+							sent
+						},
+						DirectCommand::RawJson(json) => {
+							write.send(Message::Text(json.into())).await.is_ok()
+						},
+						DirectCommand::ReevaluateAsk => true,
 					};
-					if let Some(dispatched) = direct.dispatched {
-						let _ = dispatched.send(sent);
-					}
 					if !sent {
 						break;
 					}
 				}
 				break;
 			},
-			incoming = read.next() => match incoming {
-				Some(Ok(Message::Text(text))) => {
-					if text.len() > REQUEST_FRAME_BYTES
-						|| !handle_text(text.as_str(), &state, &mut write, &connection_id, &generation).await
-					{
+			() = &mut grace, if awaiting => {
+				awaiting = false;
+				if let Some(connection) = state.connections.lock().get_mut(&connection_id) {
+					connection.negotiation = Negotiation::TimedOut;
+				}
+				let _ = direct_tx.send(DirectCommand::ReevaluateAsk);
+			},
+			incoming = read.next() => {
+				match incoming {
+					Some(Ok(Message::Text(text))) => {
+						if text.len() > REQUEST_FRAME_BYTES
+							|| !handle_text(
+								text.as_str(),
+								&state,
+								&mut write,
+								&connection_id,
+								&generation,
+								&mut awaiting,
+								&direct_tx,
+							).await
+						{
+							let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
+							break;
+						}
+					},
+					Some(Ok(Message::Binary(_))) => {
+						let _ = reject_frame(&mut write, CloseCode::Unsupported, "binary protocol frames are unsupported").await;
+						break;
+					},
+					Some(Ok(Message::Ping(payload))) => {
+						if write.send(Message::Pong(payload)).await.is_err() {
+							break;
+						}
+					},
+					Some(Ok(Message::Close(_))) | None => break,
+					Some(Err(Error::Capacity(_))) => {
 						let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
 						break;
-					}
-				},
-				Some(Ok(Message::Binary(_))) => {
-					let _ = reject_frame(&mut write, CloseCode::Unsupported, "binary protocol frames are unsupported").await;
-					break;
-				},
-				Some(Ok(Message::Ping(payload))) => {
-					if write.send(Message::Pong(payload)).await.is_err() {
-						break;
-					}
-				},
-				Some(Ok(Message::Close(_))) | None => break,
-				Some(Err(Error::Capacity(_))) => {
-					let _ = reject_frame(&mut write, CloseCode::Size, "request frame exceeds 256 KiB").await;
-					break;
-				},
-				Some(Ok(_)) => {},
-				Some(Err(_)) => break,
+					},
+					Some(Ok(_)) => {},
+					Some(Err(_)) => break,
+				}
 			},
 			direct = direct_rx.recv() => {
 				let Some(direct) = direct else {
 					break;
 				};
-				if !prepare_direct_ack(&state, &direct) {
-					if let Some(dispatched) = direct.dispatched {
-						let _ = dispatched.send(false);
-					}
-					continue;
-				}
-				let sent = match (&direct.raw_json, &direct.message) {
-					(Some(json), _) => write.send(Message::Text(json.clone().into())).await.is_ok(),
-					(None, Some(message)) => send_msg(&mut write, message).await.is_ok(),
-					(None, None) => false,
-				};
-				if let Some(dispatched) = direct.dispatched {
-					let _ = dispatched.send(sent);
-				}
-				if !sent {
-					break;
+				match direct {
+					DirectCommand::Deliver(message, dispatched) => {
+						if !prepare_direct_ack(&state, &message) {
+							if let Some(dispatched) = dispatched {
+								let _ = dispatched.send(false);
+							}
+							continue;
+						}
+						let sent = send_msg(&mut write, &message).await.is_ok();
+						if let Some(dispatched) = dispatched {
+							let _ = dispatched.send(sent);
+						}
+						if !sent {
+							break;
+						}
+					},
+					DirectCommand::RawJson(json) => {
+						if write.send(Message::Text(json.into())).await.is_err() {
+							break;
+						}
+					},
+					DirectCommand::ReevaluateAsk => {
+						if !reevaluate_ask(&state, &mut write, &connection_id).await {
+							break;
+						}
+					},
 				}
 			},
-			broadcasted = rx.recv() => match broadcasted {
-				Ok(msg) => {
-					if send_msg(&mut write, &msg).await.is_err() {
-						break;
-					}
-				},
-				Err(broadcast::error::RecvError::Lagged(_)) => {},
-				Err(broadcast::error::RecvError::Closed) => break,
+			broadcasted = rx.recv() => {
+				match broadcasted {
+					Ok(msg) => {
+						let allowed = !matches!(
+							&msg,
+							ServerMessage::ActionNeeded(needed)
+								if needed.kind != ActionKind::Idle || !needed.controls.is_empty()
+						);
+						if allowed && send_msg(&mut write, &msg).await.is_err() {
+							break;
+						}
+					},
+					Err(broadcast::error::RecvError::Lagged(_)) => {},
+					Err(broadcast::error::RecvError::Closed) => break,
+				}
 			},
 		}
 	}
@@ -1022,6 +1118,75 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 	}
 }
 
+/// Reevaluate the canonical ask inside the connection task so its write is
+/// serialized with all broadcast and direct frames. The registry retains only
+/// canonical action data; this constant-space record is presentation authority.
+async fn reevaluate_ask<S>(state: &Arc<ServerState>, write: &mut S, connection_id: &str) -> bool
+where
+	S: SinkExt<Message> + Unpin,
+{
+	let Some((needed, identity)) = state.registry.lock().current_ask_snapshot() else {
+		return true;
+	};
+	let Some((negotiation, client_capabilities, delivered)) = state
+		.connections
+		.lock()
+		.get(connection_id)
+		.map(|connection| {
+			(connection.negotiation, connection.capabilities.clone(), connection.delivered.clone())
+		})
+	else {
+		return false;
+	};
+
+	let presentation = if needed.controls.is_empty() {
+		Some(Presentation::Full)
+	} else {
+		match negotiation {
+			Negotiation::AwaitingHello => None,
+			Negotiation::TimedOut => Some(Presentation::Unavailable),
+			Negotiation::Negotiated
+				if client_capabilities
+					.iter()
+					.any(|capability| capability == capabilities::ASK_CONTROLS_V1) =>
+			{
+				Some(Presentation::Full)
+			},
+			Negotiation::Negotiated => Some(Presentation::Unavailable),
+		}
+	};
+	let Some(presentation) = presentation else {
+		return true;
+	};
+	if delivered.as_ref().is_some_and(|delivered| {
+		delivered.identity == identity
+			&& (delivered.presentation == presentation || delivered.presentation == Presentation::Full)
+	}) {
+		return true;
+	}
+
+	// Confirm current identity immediately before the connection writer emits.
+	if state.registry.lock().current_identity().as_ref() != Some(&identity) {
+		return true;
+	}
+	let message = match presentation {
+		Presentation::Full => ServerMessage::ActionNeeded(needed),
+		Presentation::Unavailable => ServerMessage::ActionUnavailable(ActionUnavailable {
+			id:                    needed.id,
+			session_id:            needed.session_id,
+			reason:                ActionUnavailableReason::MissingCapability,
+			required_capabilities: vec![capabilities::ASK_CONTROLS_V1.into()],
+		}),
+	};
+	if send_msg(write, &message).await.is_err() {
+		return false;
+	}
+	if let Some(connection) = state.connections.lock().get_mut(connection_id) {
+		connection.delivered = Some(Delivered { identity, presentation });
+	}
+	true
+}
+
 /// Returns `false` when the connection should close.
 async fn handle_text<S>(
 	text: &str,
@@ -1029,6 +1194,8 @@ async fn handle_text<S>(
 	write: &mut S,
 	connection_id: &str,
 	generation: &str,
+	awaiting: &mut bool,
+	direct_tx: &mpsc::UnboundedSender<DirectCommand>,
 ) -> bool
 where
 	S: SinkExt<Message> + Unpin,
@@ -1078,9 +1245,16 @@ where
 			return true;
 		},
 		ClientMessage::Hello(hello) => {
+			*awaiting = false;
 			if let Some(connection) = state.connections.lock().get_mut(connection_id) {
-				connection.capabilities = hello.capabilities;
+				for capability in hello.capabilities {
+					if !connection.capabilities.contains(&capability) {
+						connection.capabilities.push(capability);
+					}
+				}
+				connection.negotiation = Negotiation::Negotiated;
 			}
+			let _ = direct_tx.send(DirectCommand::ReevaluateAsk);
 			return true;
 		},
 		ClientMessage::Unknown => return true,
@@ -1088,15 +1262,27 @@ where
 
 	let authorized = tokens_match(&reply.token, &state.token);
 	let resolver = state.resolver_available.load(Ordering::SeqCst);
+	let delivered = state
+		.connections
+		.lock()
+		.get(connection_id)
+		.filter(|connection| connection.generation == generation)
+		.and_then(|connection| match &connection.delivered {
+			Some(Delivered { identity, presentation: Presentation::Full }) => Some(identity.clone()),
+			_ => None,
+		});
 
 	// Forward mode: accepted replies go to the host, which must settle the exact
 	// claim receipt after resolving the real gate.
 	if let Some(reply_tx) = &state.reply_tx {
-		let classification =
-			state
-				.registry
-				.lock()
-				.claim_reply(&reply, connection_id, generation, authorized, resolver);
+		let classification = state.registry.lock().claim_reply_if_delivered(
+			delivered.as_ref(),
+			&reply,
+			connection_id,
+			generation,
+			authorized,
+			resolver,
+		);
 		return match classification {
 			ClaimOutcome::Forward(claim) => {
 				let receipt_id = claim.reply_receipt_id.clone();
@@ -1117,10 +1303,12 @@ where
 		};
 	}
 
-	let outcome = state
-		.registry
-		.lock()
-		.apply_reply(&reply, authorized, resolver);
+	let outcome = state.registry.lock().apply_reply_if_delivered(
+		delivered.as_ref(),
+		&reply,
+		authorized,
+		resolver,
+	);
 
 	match outcome {
 		ReplyOutcome::Resolved(resolved) => {
@@ -1203,7 +1391,32 @@ mod tests {
 	use tokio_tungstenite::connect_async;
 
 	use super::*;
-	use crate::protocol::{ActionKind, ClientHello, Ping, Reply};
+	use crate::protocol::{ActionKind, AskControl, ClientHello, Ping, Reply};
+
+	// Tokio's mock clock is process-global. Acquire the lock before constructing
+	// a paused runtime so concurrent libtest workers cannot share its clock.
+	static PAUSED_TIME_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+	fn run_paused_test(test: impl std::future::Future<Output = ()>) {
+		let _time_guard = PAUSED_TIME_TEST_LOCK.lock();
+		tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.start_paused(true)
+			.build()
+			.expect("paused Tokio runtime")
+			.block_on(async {
+				// A perpetually runnable task prevents Tokio from automatically
+				// advancing mocked time while the test is waiting on socket I/O.
+				let keep_runtime_busy = tokio::spawn(async {
+					loop {
+						tokio::task::yield_now().await;
+					}
+				});
+				test.await;
+				keep_runtime_busy.abort();
+				let _ = keep_runtime_busy.await;
+			});
+	}
 
 	fn ask(id: &str) -> ActionNeeded {
 		ActionNeeded {
@@ -1215,6 +1428,44 @@ mod tests {
 			controls: vec![],
 			summary: None,
 		}
+	}
+
+	fn controlled_ask(id: &str) -> ActionNeeded {
+		let mut needed = ask(id);
+		needed.controls = vec![AskControl {
+			id:      "navigation_forward".into(),
+			kind:    "navigation".into(),
+			label:   "Continue".into(),
+			enabled: true,
+		}];
+		needed
+	}
+
+	fn idle(id: &str) -> ActionNeeded {
+		ActionNeeded {
+			id:         id.into(),
+			kind:       ActionKind::Idle,
+			session_id: "s".into(),
+			question:   None,
+			options:    None,
+			controls:   vec![],
+			summary:    Some("idle".into()),
+		}
+	}
+
+	async fn send_hello(
+		ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+		capabilities: Vec<String>,
+	) {
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Hello(ClientHello {
+				protocol_version: PROTOCOL_VERSION,
+				capabilities,
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
 	}
 
 	async fn next_server_msg<S>(read: &mut S) -> ServerMessage
@@ -1231,6 +1482,21 @@ mod tests {
 				return serde_json::from_str(t.as_str()).expect("valid server message");
 			}
 		}
+	}
+
+	async fn next_server_msg_after_delivery<S>(read: &mut S) -> ServerMessage
+	where
+		S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+	{
+		let msg = read
+			.next()
+			.await
+			.expect("stream closed before controlled delivery")
+			.expect("websocket error before controlled delivery");
+		let Message::Text(text) = msg else {
+			panic!("expected text controlled delivery, got {msg:?}");
+		};
+		serde_json::from_str(text.as_str()).expect("valid controlled delivery")
 	}
 
 	async fn next_server_hello<S>(read: &mut S) -> ServerHello
@@ -1251,6 +1517,7 @@ mod tests {
 		}
 	}
 
+
 	async fn connect(
 		handle: &ServerHandle,
 		token: &str,
@@ -1258,6 +1525,22 @@ mod tests {
 		let url = format!("ws://{}/?token={}", handle.addr(), token);
 		let (ws, _resp) = connect_async(url).await.expect("connect");
 		ws
+	}
+
+	async fn wait_for_controlled_delivery(handle: &ServerHandle) {
+		for _ in 0..200 {
+			if handle.state.connections.lock().values().any(|connection| {
+				connection.negotiation == Negotiation::TimedOut
+					&& matches!(
+						connection.delivered,
+						Some(Delivered { presentation: Presentation::Unavailable, .. })
+					)
+			}) {
+				return;
+			}
+			tokio::task::yield_now().await;
+		}
+		panic!("controlled ask was not delivered after hello timeout");
 	}
 
 	#[test]
@@ -1317,6 +1600,282 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn mixed_clients_receive_capability_tailored_controlled_presentations() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut v2 = connect(&handle, "secret").await;
+		next_server_hello(&mut v2).await;
+		let mut v3 = connect(&handle, "secret").await;
+		next_server_hello(&mut v3).await;
+		send_hello(&mut v2, vec![]).await;
+		send_hello(&mut v3, vec![capabilities::ASK_CONTROLS_V1.into()]).await;
+		wait_for_clients(&handle, 2).await;
+
+		handle.register_ask(controlled_ask("a1"), true);
+		assert!(matches!(
+			next_server_msg(&mut v2).await,
+			ServerMessage::ActionUnavailable(ActionUnavailable { id, reason: ActionUnavailableReason::MissingCapability, .. }) if id == "a1"
+		));
+		assert!(matches!(
+			next_server_msg(&mut v3).await,
+			ServerMessage::ActionNeeded(needed) if needed.id == "a1" && !needed.controls.is_empty()
+		));
+		handle.stop();
+	}
+
+	#[test]
+	fn controlled_ask_defers_before_hello_then_times_out_unavailable() {
+		run_paused_test(async {
+			let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+			let mut ws = connect(&handle, "secret").await;
+			next_server_hello(&mut ws).await;
+			tokio::task::yield_now().await;
+			handle.register_ask(controlled_ask("a1"), true);
+			tokio::task::yield_now().await;
+			assert!(
+				handle
+					.state
+					.connections
+					.lock()
+					.values()
+					.all(|connection| connection.delivered.is_none())
+			);
+
+			tokio::time::advance(CLIENT_HELLO_GRACE).await;
+			wait_for_controlled_delivery(&handle).await;
+			assert!(matches!(
+				next_server_msg_after_delivery(&mut ws).await,
+				ServerMessage::ActionUnavailable(ActionUnavailable { id, .. }) if id == "a1"
+			));
+			handle.stop();
+		});
+	}
+
+	#[test]
+	fn hello_timeout_persists_when_idle_for_later_controlled_ask() {
+		run_paused_test(async {
+			let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+			let mut ws = connect(&handle, "secret").await;
+			next_server_hello(&mut ws).await;
+			tokio::task::yield_now().await;
+			tokio::time::advance(CLIENT_HELLO_GRACE).await;
+			tokio::task::yield_now().await;
+
+			handle.register_ask(controlled_ask("a1"), true);
+			wait_for_controlled_delivery(&handle).await;
+			assert!(matches!(
+				next_server_msg_after_delivery(&mut ws).await,
+				ServerMessage::ActionUnavailable(ActionUnavailable { id, .. }) if id == "a1"
+			));
+			handle.stop();
+		});
+	}
+
+	#[tokio::test]
+	async fn unavailable_controlled_ask_upgrades_once_after_capable_hello() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![]).await;
+		handle.register_ask(controlled_ask("a1"), true);
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ActionUnavailable(ActionUnavailable { id, .. }) if id == "a1"
+		));
+
+		send_hello(&mut ws, vec![capabilities::ASK_CONTROLS_V1.into()]).await;
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ActionNeeded(needed) if needed.id == "a1" && !needed.controls.is_empty()
+		));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn repeated_reduced_hello_never_downgrades_full_controlled_delivery() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![capabilities::ASK_CONTROLS_V1.into()]).await;
+		handle.register_ask(controlled_ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+
+		send_hello(&mut ws, vec![]).await;
+		tokio::task::yield_now().await;
+		let connection = handle.state.connections.lock().values().next().cloned();
+		assert!(matches!(
+			connection,
+			Some(Connection {
+				negotiation: Negotiation::Negotiated,
+				delivered: Some(Delivered { presentation: Presentation::Full, .. }),
+				capabilities,
+				..
+			}) if capabilities.contains(&capabilities::ASK_CONTROLS_V1.into())
+		));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn non_capable_controlled_reply_is_rejected_without_claim() {
+		let mut config = ServerConfig::new("s", "secret");
+		config.forward_replies = true;
+		let handle = start(config).await.unwrap();
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![]).await;
+		handle.register_ask(controlled_ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Reply(Reply {
+				id:              "a1".into(),
+				answer:          ReplyAnswer::Index(0),
+				token:           "secret".into(),
+				idempotency_key: None,
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ReplyRejected(ReplyRejected { id, reason: RejectReason::InvalidAnswer }) if id == "a1"
+		));
+		assert!(!handle.state.registry.lock().has_claim_for_action("a1"));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn same_id_replacement_rejects_stale_full_delivery_epoch() {
+		let mut config = ServerConfig::new("s", "secret");
+		config.forward_replies = true;
+		let handle = start(config).await.unwrap();
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![capabilities::ASK_CONTROLS_V1.into()]).await;
+		handle.register_ask(controlled_ask("a1"), true);
+		let _ = next_server_msg(&mut ws).await;
+		let delivered = handle
+			.state
+			.connections
+			.lock()
+			.values()
+			.next()
+			.and_then(|connection| connection.delivered.clone())
+			.expect("full delivery record");
+		handle
+			.state
+			.registry
+			.lock()
+			.register_ask(controlled_ask("a1"), true);
+		assert_ne!(
+			delivered.identity,
+			handle
+				.state
+				.registry
+				.lock()
+				.current_identity()
+				.expect("replacement identity")
+		);
+
+		ws.send(Message::Text(
+			serde_json::to_string(&ClientMessage::Reply(Reply {
+				id:              "a1".into(),
+				answer:          ReplyAnswer::Index(0),
+				token:           "secret".into(),
+				idempotency_key: None,
+			}))
+			.unwrap(),
+		))
+		.await
+		.unwrap();
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ReplyRejected(ReplyRejected { reason: RejectReason::InvalidAnswer, .. })
+		));
+		assert!(!handle.state.registry.lock().has_claim_for_action("a1"));
+		assert!(handle.state.registry.lock().is_pending("a1"));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn deferred_stale_reevaluation_never_writes_resolved_or_replaced_ask() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		handle.register_ask(controlled_ask("old"), true);
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		tokio::task::yield_now().await;
+		handle.resolve_local("old", None);
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ActionResolved(resolved) if resolved.id == "old"
+		));
+		handle.register_ask(controlled_ask("new"), true);
+		send_hello(&mut ws, vec![capabilities::ASK_CONTROLS_V1.into()]).await;
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ActionNeeded(needed) if needed.id == "new"
+		));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn reconnect_resets_controlled_delivery_authority_for_the_new_generation() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut first = connect(&handle, "secret").await;
+		next_server_hello(&mut first).await;
+		send_hello(&mut first, vec![capabilities::ASK_CONTROLS_V1.into()]).await;
+		handle.register_ask(controlled_ask("a1"), true);
+		assert!(matches!(next_server_msg(&mut first).await, ServerMessage::ActionNeeded(_)));
+		first.close(None).await.unwrap();
+		tokio::time::timeout(Duration::from_secs(1), async {
+			loop {
+				if handle.state.connections.lock().is_empty() {
+					break;
+				}
+				tokio::task::yield_now().await;
+			}
+		})
+		.await
+		.expect("first generation removed");
+
+		let mut second = connect(&handle, "secret").await;
+		next_server_hello(&mut second).await;
+		let new_connection = handle.state.connections.lock().values().next().cloned();
+		assert!(matches!(
+			new_connection,
+			Some(Connection {
+				negotiation: Negotiation::AwaitingHello,
+				delivered: None,
+				capabilities,
+				..
+			}) if capabilities.is_empty()
+		));
+
+		second
+			.send(Message::Text(
+				serde_json::to_string(&ClientMessage::Reply(Reply {
+					id:              "a1".into(),
+					answer:          ReplyAnswer::Index(0),
+					token:           "secret".into(),
+					idempotency_key: None,
+				}))
+				.unwrap(),
+			))
+			.await
+			.unwrap();
+		assert!(matches!(
+			next_server_msg(&mut second).await,
+			ServerMessage::ReplyRejected(ReplyRejected { reason: RejectReason::InvalidAnswer, .. })
+		));
+
+		send_hello(&mut second, vec![]).await;
+		assert!(matches!(
+			next_server_msg(&mut second).await,
+			ServerMessage::ActionUnavailable(ActionUnavailable { id, .. }) if id == "a1"
+		));
+		handle.stop();
+	}
+
+	#[tokio::test]
 	async fn push_frame_broadcasts_threaded_frames_and_preserves_ask() {
 		use crate::protocol::{IdentityHeader, TurnPhase, TurnStream};
 		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
@@ -1324,25 +1883,29 @@ mod tests {
 		next_server_hello(&mut ws).await;
 		wait_for_clients(&handle, 1).await;
 
-		handle.push_frame(ServerMessage::IdentityHeader(IdentityHeader {
-			session_id: "s".into(),
-			repo: "gajae-code".into(),
-			branch: "feat/notification-surface".into(),
-			machine: "m1".into(),
-			title: Some("Session".into()),
-		}));
+		handle
+			.push_frame(ServerMessage::IdentityHeader(IdentityHeader {
+				session_id: "s".into(),
+				repo:       "gajae-code".into(),
+				branch:     "feat/notification-surface".into(),
+				machine:    "m1".into(),
+				title:      Some("Session".into()),
+			}))
+			.unwrap();
 		match next_server_msg(&mut ws).await {
 			ServerMessage::IdentityHeader(h) => assert_eq!(h.repo, "gajae-code"),
 			other => panic!("expected identity_header, got {other:?}"),
 		}
 
-		handle.push_frame(ServerMessage::TurnStream(TurnStream {
-			session_id: "s".into(),
-			phase: TurnPhase::Finalized,
-			text: "done".into(),
-			final_answer: None,
-			message_ref: None,
-		}));
+		handle
+			.push_frame(ServerMessage::TurnStream(TurnStream {
+				session_id:   "s".into(),
+				phase:        TurnPhase::Finalized,
+				text:         "done".into(),
+				final_answer: None,
+				message_ref:  None,
+			}))
+			.unwrap();
 		match next_server_msg(&mut ws).await {
 			ServerMessage::TurnStream(t) => {
 				assert_eq!(t.phase, TurnPhase::Finalized);
@@ -1351,12 +1914,42 @@ mod tests {
 			other => panic!("expected turn_stream, got {other:?}"),
 		}
 
-		// Buffered-ask broadcast still works alongside the new streaming frames.
+		// Asks share the connection-local reevaluation path alongside streaming frames.
 		handle.register_ask(ask("a1"), true);
 		match next_server_msg(&mut ws).await {
 			ServerMessage::ActionNeeded(a) => assert_eq!(a.id, "a1"),
 			other => panic!("expected action_needed, got {other:?}"),
 		}
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn push_frame_rejects_asks_and_egress_filter_allows_only_idle_broadcasts() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		wait_for_clients(&handle, 1).await;
+
+		assert_eq!(
+			handle.push_frame(ServerMessage::ActionNeeded(controlled_ask("blocked"))),
+			Err(PushFrameError::ActionNeededProhibited),
+		);
+		let _ = handle
+			.state
+			.tx
+			.send(ServerMessage::ActionNeeded(controlled_ask("injected")));
+		assert!(
+			tokio::time::timeout(Duration::from_millis(50), ws.next())
+				.await
+				.is_err()
+		);
+
+		handle.note_idle(idle("idle-1"));
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::ActionNeeded(needed)
+				if needed.kind == ActionKind::Idle && needed.id == "idle-1" && needed.controls.is_empty()
+		));
 		handle.stop();
 	}
 
@@ -2105,12 +2698,16 @@ mod tests {
 	#[tokio::test]
 	async fn send_failure_after_dispatch_begins_is_transport_ambiguous() {
 		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
-		let (tx, mut rx) = mpsc::unbounded_channel();
-		handle.state.connections.lock().insert(
-			"origin".into(),
-			Connection {
+		let (tx, mut rx) = mpsc::unbounded_channel::<DirectCommand>();
+		handle
+			.state
+			.connections
+			.lock()
+			.insert("origin".into(), Connection {
 				generation: "generation".into(),
 				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+				negotiation: Negotiation::Negotiated,
+				delivered: None,
 				tx,
 			},
 		);
@@ -2135,16 +2732,14 @@ mod tests {
 			})
 		};
 		let direct = rx.recv().await.expect("queued acknowledgement");
-		assert!(prepare_direct_ack(&handle.state, &direct));
-		direct
-			.dispatched
-			.expect("dispatch receipt")
-			.send(false)
-			.unwrap();
-		assert_eq!(
-			task.await.unwrap(),
-			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::TransportAmbiguous }
-		);
+		let DirectCommand::Deliver(message, Some(dispatched)) = direct else {
+			panic!("expected acknowledgement delivery command");
+		};
+		assert!(prepare_direct_ack(&handle.state, &message));
+		dispatched.send(false).unwrap();
+		assert_eq!(task.await.unwrap(), AskSelectedAckOutcome::Unknown {
+			reason: AskSelectedAckUnknownReason::TransportAmbiguous,
+		});
 		handle.stop();
 	}
 	#[test]

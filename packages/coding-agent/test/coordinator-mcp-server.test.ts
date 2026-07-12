@@ -38,7 +38,11 @@ async function createSdkControlServer(root: string, controls: SdkControl[], comm
 			},
 			connectSdk: async () =>
 				({
-					control: async (operation: string, input: Record<string, unknown>, options: { idempotencyKey?: string }) => {
+					control: async (
+						operation: string,
+						input: Record<string, unknown>,
+						options: { idempotencyKey?: string },
+					) => {
 						controls.push({ operation, input, idempotencyKey: options.idempotencyKey });
 						return { accepted: true, turn_id: `sdk-${controls.length}` };
 					},
@@ -210,9 +214,21 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		expect(controls).toEqual(
 			expect.arrayContaining([
 				{ operation: "session.create", input: { cwd: root, target: { path: root } }, idempotencyKey: "plan" },
-				{ operation: "turn.prompt", input: { text: expect.stringContaining("/skill:ralplan") }, idempotencyKey: "plan" },
-				{ operation: "turn.prompt", input: { text: expect.stringContaining("/skill:ultragoal") }, idempotencyKey: "execute" },
-				{ operation: "turn.prompt", input: { text: expect.stringContaining("/skill:team") }, idempotencyKey: "team" },
+				{
+					operation: "turn.prompt",
+					input: { text: expect.stringContaining("/skill:ralplan") },
+					idempotencyKey: "plan",
+				},
+				{
+					operation: "turn.prompt",
+					input: { text: expect.stringContaining("/skill:ultragoal") },
+					idempotencyKey: "execute",
+				},
+				{
+					operation: "turn.prompt",
+					input: { text: expect.stringContaining("/skill:team") },
+					idempotencyKey: "team",
+				},
 			]),
 		);
 	});
@@ -239,7 +255,10 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			poll_interval_ms: 10,
 			lines: 3,
 		});
-		expect(awaited).toMatchObject({ ok: true, completion: { ok: false, reason: "timeout", turn: { status: "active" } } });
+		expect(awaited).toMatchObject({
+			ok: true,
+			completion: { ok: false, reason: "timeout", turn: { status: "active" } },
+		});
 	});
 
 	it("rejects missing caller idempotency keys without invoking the SDK", async () => {
@@ -319,5 +338,82 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		expect(controls).toEqual([
 			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
 		]);
+	});
+	it("closes an idle ephemeral coordinator session through broker lifecycle without tmux ownership", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const commands: string[][] = [];
+		const server = await createSdkControlServer(root, controls, commands);
+		const sessionFile = path.join(
+			root,
+			".gjc",
+			"coordinator-state",
+			"local",
+			"repo",
+			"sessions",
+			"visible-session.json",
+		);
+		await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+		await Bun.write(
+			sessionFile,
+			JSON.stringify({
+				session_id: "visible-session",
+				cwd: root,
+				ephemeral: true,
+				created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+			}),
+		);
+
+		expect(
+			await server.callTool("gjc_coordinator_stop_session", {
+				session_id: "visible-session",
+				allow_mutation: true,
+			}),
+		).toMatchObject({ ok: true, closed: true, session_id: "visible-session" });
+		expect(controls).toEqual([
+			expect.objectContaining({
+				operation: "session.close",
+				input: { sessionId: "visible-session" },
+				idempotencyKey: expect.any(String),
+			}),
+		]);
+		expect(await Bun.file(sessionFile).exists()).toBe(false);
+		expect(commands).toEqual([]);
+	});
+
+	it("idle reaping selects only stale ephemeral coordinator records and uses SDK session.close", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		const sessionsDir = path.join(root, ".gjc", "coordinator-state", "local", "repo", "sessions");
+		await fs.mkdir(sessionsDir, { recursive: true });
+		await Bun.write(
+			path.join(sessionsDir, "idle-session.json"),
+			JSON.stringify({
+				session_id: "idle-session",
+				cwd: root,
+				ephemeral: true,
+				created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+			}),
+		);
+		await Bun.write(
+			path.join(sessionsDir, "registered-session.json"),
+			JSON.stringify({
+				session_id: "registered-session",
+				cwd: root,
+				created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+			}),
+		);
+
+		expect(await server.sessionReaper.sweepOnce()).toBe(1);
+		expect(controls).toEqual([
+			expect.objectContaining({
+				operation: "session.close",
+				input: { sessionId: "idle-session" },
+				idempotencyKey: expect.any(String),
+			}),
+		]);
+		expect(await Bun.file(path.join(sessionsDir, "idle-session.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(sessionsDir, "registered-session.json")).exists()).toBe(true);
 	});
 });

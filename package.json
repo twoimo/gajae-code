@@ -14,7 +14,7 @@
       "@babel/parser": "^7.29.3",
       "@babel/traverse": "^7.29.0",
       "@babel/types": "^7.29.0",
-      "@biomejs/biome": "^2.4.14",
+      "@biomejs/biome": "2.5.2",
       "@bufbuild/protobuf": "^2.12.0",
       "@bufbuild/protoc-gen-es": "^2.12.0",
       "@mozilla/readability": "^0.6.0",
@@ -22,6 +22,7 @@
       "@gajae-code/stats": "0.10.0",
       "@gajae-code/agent-core": "0.10.0",
       "@gajae-code/ai": "0.10.0",
+
       "@gajae-code/coding-agent": "0.10.0",
       "@gajae-code/natives": "0.10.0",
       "@gajae-code/natives-darwin-arm64": "0.10.0",

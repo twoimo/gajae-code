@@ -105,6 +105,9 @@ Mutating tools:
 - `gjc_coordinator_send_prompt`
 - `gjc_coordinator_submit_question_answer`
 - `gjc_coordinator_report_status`
+- `gjc_coordinator_stop_session`
+
+`gjc_coordinator_stop_session` closes a coordinator delegate-created (ephemeral) session through canonical SDK broker lifecycle control, then removes its coordinator metadata only after the broker reports success. It refuses sessions with an active turn. User-registered sessions require both `force: true` and the `GJC_COORDINATOR_MCP_FORCE_STOP` capability; the same SDK lifecycle path reaps abandoned ephemeral delegate sessions after the configured idle TTL.
 
 High-level delegation tools:
 

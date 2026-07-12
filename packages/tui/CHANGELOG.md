@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-07-12
 ### Fixed
 
 - Unified TUI wrapping, truncation, and visible-width measurements on the native grapheme-width engine, preventing Hangul tone marks from causing Korean/CJK layout width drift (#1979).
@@ -10,6 +12,7 @@
 ### Added
 
 - Added transparent Sixel and Kitty real-pixel encoders plus animated 16x16 frame art for the Gajae composer pet.
+- Added an opt-in IRC sidebar split (`alt+i`, remappable): a responsive 70:30 vertical right-hand split that renders Discord-style IRC message blocks through a shared inline/sidebar formatter, with unbounded session backfill and tail-aligned panes. Kitty terminals render inline images inside the split via a cursor-neutral graphics fallback; cursor-advancing protocols (iTerm2, raw Sixel) keep the textual placeholder (#2018).
 
 ## [0.9.4] - 2026-07-09
 

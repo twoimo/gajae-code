@@ -24,6 +24,7 @@ import {
 	coordinatorNamespacePath,
 	requireCoordinatorMutation,
 } from "./policy";
+import { createSessionReaper, type ReapableSession, type SessionReaper } from "./session-reaper";
 
 export type { CoordinatorToolName };
 export { COORDINATOR_MCP_PROTOCOL_VERSION, COORDINATOR_MCP_SERVER_NAME, COORDINATOR_MCP_TOOL_NAMES };
@@ -155,6 +156,7 @@ interface CoordinatorSessionState {
 type CoordinatorEventKind =
 	| "session.registered"
 	| "session.started"
+	| "session.reaped"
 	| "session.state_changed"
 	| "turn.queued"
 	| "turn.delivering"
@@ -280,6 +282,26 @@ function toolSchema(name: CoordinatorToolName): {
 					allow_mutation: allowMutation,
 				},
 				required: ["cwd", "idempotency_key", "allow_mutation"],
+			},
+		};
+	}
+	if (name === "gjc_coordinator_stop_session") {
+		return {
+			name,
+			description:
+				"Close and reap a coordinator delegate-created (ephemeral) SDK session through broker lifecycle control. Non-ephemeral user-registered sessions require both force and the force-stop capability.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					session_id: sessionId,
+					force: {
+						type: "boolean",
+						description: "Close a non-ephemeral session; requires the GJC_COORDINATOR_MCP_FORCE_STOP capability.",
+					},
+					reason: { type: "string", description: "Optional audit reason recorded on the session.reaped event." },
+					allow_mutation: allowMutation,
+				},
+				required: ["session_id", "allow_mutation"],
 			},
 		};
 	}
@@ -1689,6 +1711,74 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 	function sessionFile(sessionId: unknown): string {
 		return path.join(namespaceDir, "sessions", `${safeExternalId("session", sessionId)}.json`);
 	}
+	async function reapSession(
+		rawId: unknown,
+		opts: { force?: boolean; reason?: string } = {},
+	): Promise<{ ok: boolean; reason?: string; closed: boolean; active_turn_id?: string; detail?: string }> {
+		const id = safeExternalId("session", rawId);
+		return await withSessionTransition(id, async () => {
+			const session = asRecord(await readJsonFile(sessionFile(id)));
+			if (!session) return { ok: false, reason: "unknown_session", closed: false };
+			if (session.ephemeral !== true && opts.force !== true)
+				return { ok: false, reason: "not_ephemeral", closed: false };
+			const activeTurn = await readActiveTurn(namespaceDir, id);
+			if (activeTurn) return { ok: false, reason: "active_turn", closed: false, active_turn_id: activeTurn.turn_id };
+			const cwd = optionalString(session.cwd);
+			if (!cwd) return { ok: false, reason: "session_metadata_missing", closed: false };
+			try {
+				brokerResult(
+					await brokerSession(cwd, "session.close", { sessionId: id }, `coordinator-reap-${randomUUID()}`),
+				);
+			} catch (error) {
+				return {
+					ok: false,
+					reason: "close_failed",
+					detail: error instanceof SdkClientError ? error.code : "unavailable",
+					closed: false,
+				};
+			}
+			await fs.rm(sessionFile(id), { force: true });
+			await fs.rm(sessionStateFile(namespaceDir, id), { force: true });
+			await fs.rm(activeTurnFile(namespaceDir, id), { force: true });
+			await appendCoordinatorEvent(namespaceDir, {
+				kind: "session.reaped",
+				sessionId: id,
+				summary: `Session ${id} closed and reaped${opts.reason ? ` (${opts.reason})` : ""}`,
+				metadata: { reason: opts.reason ?? null, force: opts.force === true, closed: true },
+			});
+			return { ok: true, closed: true };
+		});
+	}
+
+	const sessionReaper: SessionReaper = createSessionReaper(
+		{
+			listSessions: async (): Promise<ReapableSession[]> => {
+				const sessions = await listJsonFiles(path.join(namespaceDir, "sessions"));
+				const out: ReapableSession[] = [];
+				for (const raw of sessions) {
+					const session = asRecord(raw);
+					const sessionId = optionalString(session?.session_id);
+					if (!session || session.ephemeral !== true || !sessionId) continue;
+					const state = await readSessionState(namespaceDir, sessionId);
+					const stamp = optionalString(state?.updated_at) ?? optionalString(session.created_at);
+					const lastActivityMs = stamp ? Date.parse(stamp) : Number.NaN;
+					out.push({
+						sessionId,
+						ephemeral: true,
+						hasActiveTurn: (await readActiveTurn(namespaceDir, sessionId)) !== null,
+						lastActivityMs: Number.isFinite(lastActivityMs) ? lastActivityMs : Date.now(),
+					});
+				}
+				return out;
+			},
+			reapSession: async (sessionId: string): Promise<void> => {
+				const result = await reapSession(sessionId, { reason: "idle_reaper" });
+				if (!result.ok) throw new Error(result.reason ?? "session_reap_failed");
+			},
+			now: () => Date.now(),
+		},
+		{ idleTtlMs: config.sessionIdleTtlMs, sweepIntervalMs: config.sessionSweepIntervalMs },
+	);
 	async function listQuestions(args: Record<string, unknown>): Promise<unknown[]> {
 		const sessionId = args.session_id == null ? null : safeExternalId("session", args.session_id);
 		const status = typeof args.status === "string" && args.status.length > 0 ? args.status : null;
@@ -2119,6 +2209,8 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 						session = normalizeSession({
 							session_id: sessionId,
 							cwd: canonicalCwd,
+							ephemeral: true,
+							created_at: new Date().toISOString(),
 							...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
 						});
 					}
@@ -2187,6 +2279,28 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				} catch (error) {
 					return sdkError(error);
 				}
+			}
+			if (name === "gjc_coordinator_stop_session") {
+				requireCoordinatorMutation(config, "sessions", args);
+				const sessionId = safeExternalId("session", args.session_id);
+				const forceRequested = args.force === true;
+				// force is a capability distinct from allow_mutation: closing a non-ephemeral
+				// user-registered session requires GJC_COORDINATOR_MCP_FORCE_STOP to be enabled.
+				if (forceRequested && !config.forceStopEnabled) {
+					return { ok: false, reason: "force_not_authorized", session_id: sessionId, closed: false };
+				}
+				const result = await reapSession(sessionId, {
+					force: forceRequested,
+					reason: optionalString(args.reason) ?? "stop_session",
+				});
+				return {
+					ok: result.ok,
+					session_id: sessionId,
+					closed: result.closed,
+					...(result.reason ? { reason: result.reason } : {}),
+					...(result.active_turn_id ? { active_turn_id: result.active_turn_id } : {}),
+					...(result.detail ? { detail: result.detail } : {}),
+				};
 			}
 			if (name === "gjc_coordinator_start_session") {
 				requireCoordinatorMutation(config, "sessions", args);
@@ -2485,7 +2599,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		return { jsonrpc: "2.0", id, error: { code: -32601, message: `unknown_method:${request.method}` } };
 	}
 
-	return { config, callTool, handleJsonRpc, handle: handleJsonRpc };
+	return { config, callTool, handleJsonRpc, handle: handleJsonRpc, reapSession, sessionReaper };
 }
 
 function legacyToolResult(payload: unknown): { content: Array<{ type: "text"; text: string }>; isError: boolean } {
@@ -2661,13 +2775,18 @@ export async function pumpCoordinatorMcpStream(
 
 export async function runCoordinatorMcpStdio(options: CoordinatorMcpServerOptions = {}): Promise<void> {
 	const server = createCoordinatorMcpServer(options);
-	await pumpCoordinatorMcpStream(
-		request => server.handleJsonRpc(request),
-		process.stdin,
-		line => {
-			const write = Promise.withResolvers<void>();
-			process.stdout.write(line, error => (error ? write.reject(error) : write.resolve()));
-			return write.promise;
-		},
-	);
+	server.sessionReaper.start();
+	try {
+		await pumpCoordinatorMcpStream(
+			request => server.handleJsonRpc(request),
+			process.stdin,
+			line => {
+				const write = Promise.withResolvers<void>();
+				process.stdout.write(line, error => (error ? write.reject(error) : write.resolve()));
+				return write.promise;
+			},
+		);
+	} finally {
+		server.sessionReaper.stop();
+	}
 }

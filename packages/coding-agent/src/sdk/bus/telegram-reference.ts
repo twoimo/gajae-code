@@ -25,6 +25,14 @@ import {
 } from "./html-format";
 import { renderThreadedFrame } from "./threaded-render";
 
+/** `ask_controls_v1` is a protocol version 3 wire token. Keep this local because
+ * `telegram-daemon.ts` imports this reference client. */
+const REFERENCE_CLIENT_HELLO = {
+	type: "hello",
+	protocolVersion: 3,
+	capabilities: ["ask_controls_v1"],
+} as const;
+
 /** One inline-keyboard button. */
 export interface InlineButton {
 	text: string;
@@ -357,6 +365,7 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 			controls?: TelegramActionControl[];
 			summary?: string;
 			reason?: string;
+			requiredCapabilities?: unknown;
 		};
 		if (msg.type === "action_needed" && msg.id) {
 			if (msg.kind === "ask") latestPendingAskId = msg.id;
@@ -369,6 +378,18 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 				summary: msg.summary,
 			});
 			await sendTelegramHtmlChunks(send, opts.chatId, rendered.text, rendered.inline_keyboard);
+		} else if (msg.type === "action_unavailable") {
+			const requiredCapabilities = Array.isArray(msg.requiredCapabilities)
+				? msg.requiredCapabilities
+						.filter((capability): capability is string => typeof capability === "string")
+						.slice(0, 4)
+						.map(capability => capability.slice(0, 64))
+				: [];
+			console.warn(
+				`Telegram reference client: server withheld a controlled ask because this client lacks requiredCapabilities=[${requiredCapabilities.join(", ") || "unspecified"}].`,
+			);
+			// Diagnostic only: never turn it into a Telegram prompt or option buttons.
+			return;
 		} else if (msg.type === "action_resolved" && msg.id === latestPendingAskId) {
 			latestPendingAskId = undefined;
 		} else {
@@ -383,6 +404,9 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 	};
 
 	let messageQueue = Promise.resolve();
+	ws.addEventListener("open", () => {
+		if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(REFERENCE_CLIENT_HELLO));
+	});
 	ws.addEventListener("message", ev => {
 		const data = String(ev.data);
 		messageQueue = messageQueue.catch(() => undefined).then(() => handleServerMessage(data));

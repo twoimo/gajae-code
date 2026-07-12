@@ -75,6 +75,18 @@ pub enum ClaimOutcome {
 	Reject(RejectReason),
 }
 
+/// Concrete identity of the canonical buffered ask.
+///
+/// The epoch changes on every registration, including same-id replacement, so a
+/// delivery from an older registration cannot authorize a newer action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionIdentity {
+	/// Stable action id.
+	pub id:    String,
+	/// Monotonic registration epoch for this id.
+	pub epoch: u64,
+}
+
 /// Record of a resolved action, retained for idempotency and late-reply
 /// rejection.
 #[derive(Debug, Clone)]
@@ -94,6 +106,8 @@ pub struct ActionRegistry {
 	/// The single currently-pending `ask`, replayed to clients that connect
 	/// late. Idle pings are intentionally ephemeral and never buffered.
 	buffered_ask: Option<ActionNeeded>,
+	/// Monotonic registration epoch for the canonical buffered ask.
+	epoch:        u64,
 }
 
 impl ActionRegistry {
@@ -103,18 +117,37 @@ impl ActionRegistry {
 		Self::default()
 	}
 
-	/// Register an `ask` action. It becomes the buffered ask replayed to late
-	/// clients.
+	/// Register an `ask` action. It becomes the canonical buffered ask used by
+	/// tailored connection delivery. Every registration receives a fresh epoch.
 	///
 	/// `repliable` is `false` when the session has no SDK workflow-gate resolver,
 	/// so the ask is broadcast as notify-only and any reply is rejected with
 	/// [`RejectReason::ResolverUnavailable`].
 	pub fn register_ask(&mut self, needed: ActionNeeded, repliable: bool) {
 		debug_assert_eq!(needed.kind, ActionKind::Ask);
+		self.epoch = self
+			.epoch
+			.checked_add(1)
+			.expect("action registry epoch exhausted");
+		if let Some(previous_id) = self.buffered_ask.as_ref().map(|ask| ask.id.clone()) {
+			self.retire_pending(&previous_id);
+		}
+		self.retire_pending(&needed.id);
+		self.resolved.remove(&needed.id);
 		self.buffered_ask = Some(needed.clone());
 		self
 			.pending
 			.insert(needed.id, PendingAction { repliable, claim: None });
+	}
+
+	fn retire_pending(&mut self, id: &str) {
+		let Some(pending) = self.pending.remove(id) else {
+			return;
+		};
+		if let Some(claim) = pending.claim {
+			self.receipts.remove(&claim.receipt_id);
+			self.origins.remove(&claim.receipt_id);
+		}
 	}
 
 	/// Record an idle ping. Ephemeral: not stored, not buffered, never
@@ -126,11 +159,31 @@ impl ActionRegistry {
 		needed
 	}
 
-	/// The buffered ask to replay to a newly-connected client, if any is
-	/// pending.
+	/// Identity of the current canonical buffered ask, if any.
 	#[must_use]
-	pub const fn replay_for_new_client(&self) -> Option<&ActionNeeded> {
-		self.buffered_ask.as_ref()
+	pub fn current_identity(&self) -> Option<ActionIdentity> {
+		self
+			.buffered_ask
+			.as_ref()
+			.map(|ask| ActionIdentity { id: ask.id.clone(), epoch: self.epoch })
+	}
+
+	/// Clone the canonical ask and its concrete registration identity for
+	/// connection-specific presentation.
+	#[must_use]
+	pub fn current_ask_snapshot(&self) -> Option<(ActionNeeded, ActionIdentity)> {
+		self.buffered_ask.clone().map(|ask| {
+			let identity = ActionIdentity { id: ask.id.clone(), epoch: self.epoch };
+			(ask, identity)
+		})
+	}
+
+	fn controlled_identity_for(&self, id: &str) -> Option<ActionIdentity> {
+		self
+			.buffered_ask
+			.as_ref()
+			.filter(|ask| ask.id == id && !ask.controls.is_empty())
+			.map(|ask| ActionIdentity { id: ask.id.clone(), epoch: self.epoch })
 	}
 
 	/// Whether an action with `id` is currently pending.
@@ -208,6 +261,25 @@ impl ActionRegistry {
 			// but keep the branch honest for the locking server layer).
 			Err(reason) => ReplyOutcome::Rejected(reason),
 		}
+	}
+
+	/// Atomically compare a controlled reply's delivered identity before
+	/// applying it. Ordinary asks preserve [`Self::apply_reply`] behavior
+	/// without a delivery requirement.
+	pub fn apply_reply_if_delivered(
+		&mut self,
+		delivered: Option<&ActionIdentity>,
+		reply: &Reply,
+		authorized: bool,
+		resolver_available: bool,
+	) -> ReplyOutcome {
+		if self
+			.controlled_identity_for(&reply.id)
+			.is_some_and(|current| delivered != Some(&current))
+		{
+			return ReplyOutcome::Rejected(RejectReason::InvalidAnswer);
+		}
+		self.apply_reply(reply, authorized, resolver_available)
 	}
 
 	/// Classify an inbound reply **without mutating** state.
@@ -306,6 +378,27 @@ impl ActionRegistry {
 			ReplyOrigin { connection_id: connection_id.to_owned(), generation: generation.to_owned() },
 		);
 		ClaimOutcome::Forward(ClaimedReply { reply: reply.clone(), reply_receipt_id: receipt_id })
+	}
+
+	/// Atomically compare a controlled reply's delivered identity before
+	/// claiming it for host forwarding. Ordinary asks preserve
+	/// [`Self::claim_reply`] behavior without a delivery requirement.
+	pub fn claim_reply_if_delivered(
+		&mut self,
+		delivered: Option<&ActionIdentity>,
+		reply: &Reply,
+		connection_id: &str,
+		generation: &str,
+		authorized: bool,
+		resolver_available: bool,
+	) -> ClaimOutcome {
+		if self
+			.controlled_identity_for(&reply.id)
+			.is_some_and(|current| delivered != Some(&current))
+		{
+			return ClaimOutcome::Reject(RejectReason::InvalidAnswer);
+		}
+		self.claim_reply(reply, connection_id, generation, authorized, resolver_available)
 	}
 
 	/// Return the authenticated origin bound to a receipt, including after the
@@ -418,7 +511,7 @@ impl ActionRegistry {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::protocol::ActionKind;
+	use crate::protocol::{ActionKind, AskControl};
 
 	fn ask(id: &str) -> ActionNeeded {
 		ActionNeeded {
@@ -430,6 +523,17 @@ mod tests {
 			controls: vec![],
 			summary: None,
 		}
+	}
+
+	fn controlled_ask(id: &str) -> ActionNeeded {
+		let mut needed = ask(id);
+		needed.controls = vec![AskControl {
+			id:      "navigation_forward".into(),
+			kind:    "navigation".into(),
+			label:   "Continue".into(),
+			enabled: true,
+		}];
+		needed
 	}
 
 	fn idle(id: &str) -> ActionNeeded {
@@ -449,11 +553,13 @@ mod tests {
 	}
 
 	#[test]
-	fn buffered_ask_is_replayed_to_late_clients() {
+	fn canonical_ask_snapshot_tracks_pending_ask() {
 		let mut reg = ActionRegistry::new();
-		assert!(reg.replay_for_new_client().is_none());
+		assert!(reg.current_ask_snapshot().is_none());
 		reg.register_ask(ask("a1"), true);
-		assert_eq!(reg.replay_for_new_client().map(|a| a.id.as_str()), Some("a1"));
+		let (needed, identity) = reg.current_ask_snapshot().expect("canonical ask snapshot");
+		assert_eq!(needed.id, "a1");
+		assert_eq!(identity.id, "a1");
 	}
 
 	#[test]
@@ -461,7 +567,7 @@ mod tests {
 		let reg = ActionRegistry::new();
 		let msg = reg.note_idle(idle("i1"));
 		assert_eq!(msg.id, "i1");
-		assert!(reg.replay_for_new_client().is_none());
+		assert!(reg.current_ask_snapshot().is_none());
 		assert!(!reg.is_pending("i1"));
 	}
 
@@ -472,7 +578,7 @@ mod tests {
 		let first = reg.apply_reply(&reply("a1", ReplyAnswer::Index(0)), true, true);
 		assert!(matches!(first, ReplyOutcome::Resolved(r) if r.resolved_by == ResolvedBy::Client));
 		// buffered ask cleared after resolution
-		assert!(reg.replay_for_new_client().is_none());
+		assert!(reg.current_ask_snapshot().is_none());
 		let second = reg.apply_reply(&reply("a1", ReplyAnswer::Index(1)), true, true);
 		assert_eq!(second, ReplyOutcome::Rejected(RejectReason::AlreadyAnswered));
 	}
@@ -600,5 +706,144 @@ mod tests {
 		assert!(reg.close_claim_invalid(&claim.reply_receipt_id).is_some());
 		assert!(!reg.is_pending("a1"));
 		assert!(reg.claim_origin(&claim.reply_receipt_id).is_none());
+	}
+
+	#[test]
+	fn same_id_reregistration_clears_terminal_record_for_apply_and_claim() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(ask("a1"), true);
+		assert!(reg.resolve_local("a1", None).is_some());
+		reg.register_ask(ask("a1"), true);
+
+		assert!(matches!(
+			reg.apply_reply(&reply("a1", ReplyAnswer::Index(0)), true, true),
+			ReplyOutcome::Resolved(ActionResolved { resolved_by: ResolvedBy::Client, .. })
+		));
+
+		reg.register_ask(ask("a1"), true);
+		let claim = match reg.claim_reply(&reply("a1", ReplyAnswer::Index(1)), "c1", "g1", true, true)
+		{
+			ClaimOutcome::Forward(claim) => claim,
+			other => panic!("expected forwarded claim after reregistration, got {other:?}"),
+		};
+		assert!(
+			reg.resolve_claim(&claim.reply_receipt_id, Some(ReplyAnswer::Index(1)), None)
+				.is_some()
+		);
+	}
+
+	#[test]
+	fn superseded_action_reply_is_rejected_without_mutating_current_action() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(controlled_ask("a1"), true);
+		let delivered = reg.current_identity().expect("first identity");
+		reg.register_ask(ask("a2"), true);
+		let current = reg.current_identity().expect("replacement identity");
+		let incoming = reply("a1", ReplyAnswer::Index(0));
+
+		assert_eq!(
+			reg.apply_reply_if_delivered(Some(&delivered), &incoming, true, true),
+			ReplyOutcome::Rejected(RejectReason::UnknownAction),
+		);
+		assert_eq!(
+			reg.claim_reply_if_delivered(Some(&delivered), &incoming, "c1", "g1", true, true),
+			ClaimOutcome::Reject(RejectReason::UnknownAction),
+		);
+		assert!(!reg.is_pending("a1"));
+		assert!(!reg.has_claim_for_action("a1"));
+		assert!(reg.receipts.is_empty());
+		assert!(reg.origins.is_empty());
+		assert_eq!(reg.current_identity(), Some(current));
+		assert!(reg.is_pending("a2"));
+		assert!(matches!(
+			reg.apply_reply(&reply("a2", ReplyAnswer::Index(1)), true, true),
+			ReplyOutcome::Resolved(ActionResolved { resolved_by: ResolvedBy::Client, .. })
+		));
+	}
+
+	#[test]
+	fn superseding_claimed_action_cleans_receipt_and_origin() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(ask("a1"), true);
+		let claim = match reg.claim_reply(&reply("a1", ReplyAnswer::Index(0)), "c1", "g1", true, true)
+		{
+			ClaimOutcome::Forward(claim) => claim,
+			other => panic!("expected forwarded claim, got {other:?}"),
+		};
+		assert_eq!(reg.claim_action_id(&claim.reply_receipt_id).as_deref(), Some("a1"));
+		assert!(reg.claim_origin(&claim.reply_receipt_id).is_some());
+
+		reg.register_ask(ask("a2"), true);
+
+		assert!(!reg.is_pending("a1"));
+		assert!(reg.claim_action_id(&claim.reply_receipt_id).is_none());
+		assert!(reg.claim_origin(&claim.reply_receipt_id).is_none());
+		assert!(reg.receipts.is_empty());
+		assert!(reg.origins.is_empty());
+		assert!(reg.is_pending("a2"));
+	}
+
+	#[test]
+	fn registration_epochs_change_on_replacement_and_reregistration() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(ask("a1"), true);
+		let first = reg.current_identity().expect("first identity");
+		reg.register_ask(ask("a1"), true);
+		let replacement = reg.current_identity().expect("replacement identity");
+		assert_eq!(first.id, replacement.id);
+		assert!(replacement.epoch > first.epoch);
+
+		assert!(reg.resolve_local("a1", None).is_some());
+		assert!(reg.current_identity().is_none(), "resolution clears the buffered ask");
+		reg.register_ask(ask("a1"), true);
+		assert!(reg.current_identity().expect("reregistered identity").epoch > replacement.epoch);
+	}
+
+	#[test]
+	fn stale_identity_does_not_confirm_controlled_reply_or_mutate() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(controlled_ask("a1"), true);
+		let stale = reg.current_identity().expect("initial identity");
+		reg.register_ask(controlled_ask("a1"), true);
+		let current = reg.current_identity().expect("replacement identity");
+		assert_ne!(stale, current);
+
+		let incoming = reply("a1", ReplyAnswer::Index(0));
+		assert_eq!(
+			reg.apply_reply_if_delivered(Some(&stale), &incoming, true, true),
+			ReplyOutcome::Rejected(RejectReason::InvalidAnswer),
+		);
+		assert!(reg.is_pending("a1"));
+		assert_eq!(reg.current_identity(), Some(current));
+	}
+
+	#[test]
+	fn compare_and_claim_mismatch_is_mutation_free() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(controlled_ask("a1"), true);
+		let delivered = ActionIdentity { id: "a1".into(), epoch: 0 };
+		let incoming = reply("a1", ReplyAnswer::Index(0));
+		assert_eq!(
+			reg.claim_reply_if_delivered(Some(&delivered), &incoming, "c1", "g1", true, true),
+			ClaimOutcome::Reject(RejectReason::InvalidAnswer),
+		);
+		assert!(reg.is_pending("a1"));
+		assert!(!reg.has_claim_for_action("a1"));
+	}
+
+	#[test]
+	fn tailored_snapshot_never_mutates_canonical_controls() {
+		let mut reg = ActionRegistry::new();
+		reg.register_ask(controlled_ask("a1"), true);
+		let (mut tailored, _) = reg.current_ask_snapshot().expect("snapshot");
+		tailored.controls.clear();
+		assert_eq!(
+			reg.current_ask_snapshot()
+				.expect("canonical snapshot")
+				.0
+				.controls
+				.len(),
+			1
+		);
 	}
 }

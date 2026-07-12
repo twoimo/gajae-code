@@ -53,6 +53,14 @@ pub enum RejectReason {
 	Unauthorized,
 }
 
+/// Why a controlled action could not be presented to this connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionUnavailableReason {
+	/// The client did not negotiate a capability required by the action.
+	MissingCapability,
+}
+
 /// A deterministic remote ask control. Controls are capability-gated by
 /// [`capabilities::ASK_CONTROLS_V1`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,12 +133,31 @@ pub struct ActionNeeded {
 	/// The selectable options for an ask (present for `ask` when offered).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub options: Option<Vec<String>>,
-	/// Typed deterministic controls, advertised only with `ask_controls_v1`.
+	/// Typed deterministic controls. Senders emit controls only after this
+	/// connection has negotiated [`capabilities::ASK_CONTROLS_V1`]; non-capable
+	/// or timed-out connections receive `action_unavailable` instead.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub controls: Vec<AskControl>,
 	/// A short summary (e.g. truncated last assistant message for `idle`).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub summary: Option<String>,
+}
+
+/// Sent when a controlled action cannot be presented to this connection.
+///
+/// This frame is non-actionable. A sender emits it after Hello negotiation (or
+/// its bounded grace timeout) when the client lacks the required capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionUnavailable {
+	/// The action that could not be presented.
+	pub id:                    String,
+	/// The session the action belongs to.
+	pub session_id:            String,
+	/// Why the action is unavailable.
+	pub reason:                ActionUnavailableReason,
+	/// Capabilities required for an actionable presentation.
+	pub required_capabilities: Vec<String>,
 }
 
 /// Broadcast when a pending action transitions to a terminal, non-repliable
@@ -326,6 +353,8 @@ pub enum ServerMessage {
 	/// A native cancellation for a previously dispatched acknowledgement
 	/// request.
 	AskSelectedAckCancel(AskSelectedAckCancel),
+	/// A controlled action could not be presented to this connection.
+	ActionUnavailable(ActionUnavailable),
 
 	/// Forward-compat: an unrecognized frame type. Tolerated, never emitted.
 	#[serde(other)]
@@ -766,6 +795,45 @@ mod tests {
 	}
 
 	#[test]
+	fn controlled_action_needed_wire_shape_roundtrips() {
+		let msg = ServerMessage::ActionNeeded(ActionNeeded {
+			id:         "a1".into(),
+			kind:       ActionKind::Ask,
+			session_id: "sess-1".into(),
+			question:   Some("Proceed?".into()),
+			options:    Some(vec!["Yes".into(), "No".into()]),
+			controls:   vec![AskControl {
+				id:      "navigation_forward".into(),
+				kind:    "navigation".into(),
+				label:   "Continue".into(),
+				enabled: true,
+			}],
+			summary:    None,
+		});
+		let raw = serde_json::to_string(&msg).unwrap();
+		assert_eq!(
+			raw,
+			r#"{"type":"action_needed","id":"a1","kind":"ask","sessionId":"sess-1","question":"Proceed?","options":["Yes","No"],"controls":[{"id":"navigation_forward","kind":"navigation","label":"Continue","enabled":true}]}"#,
+		);
+		let decoded: ServerMessage = serde_json::from_str(&raw).unwrap();
+		assert_eq!(decoded, msg);
+	}
+
+	#[test]
+	fn action_unavailable_serializes_with_required_capabilities() {
+		let msg = ServerMessage::ActionUnavailable(ActionUnavailable {
+			id:                    "a1".into(),
+			session_id:            "sess-1".into(),
+			reason:                ActionUnavailableReason::MissingCapability,
+			required_capabilities: vec![capabilities::ASK_CONTROLS_V1.into()],
+		});
+		assert_eq!(
+			serde_json::to_string(&msg).unwrap(),
+			r#"{"type":"action_unavailable","id":"a1","sessionId":"sess-1","reason":"missing_capability","requiredCapabilities":["ask_controls_v1"]}"#,
+		);
+	}
+
+	#[test]
 	fn idle_action_omits_ask_fields() {
 		let msg = ServerMessage::ActionNeeded(ActionNeeded {
 			id: "idle-sess-1-7".into(),
@@ -781,6 +849,21 @@ mod tests {
 		assert_eq!(v["summary"], "done refactoring");
 		assert!(v.get("question").is_none());
 		assert!(v.get("options").is_none());
+	}
+
+	#[test]
+	fn action_needed_omits_empty_controls() {
+		let msg = ServerMessage::ActionNeeded(ActionNeeded {
+			id:         "a1".into(),
+			kind:       ActionKind::Ask,
+			session_id: "sess-1".into(),
+			question:   Some("Proceed?".into()),
+			options:    Some(vec!["Yes".into()]),
+			controls:   vec![],
+			summary:    None,
+		});
+		let value = serde_json::to_value(msg).unwrap();
+		assert!(value.get("controls").is_none());
 	}
 
 	#[test]

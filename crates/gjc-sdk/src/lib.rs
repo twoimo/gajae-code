@@ -23,7 +23,7 @@ pub mod query;
 pub mod reverse;
 pub mod server;
 
-pub use actions::{ActionRegistry, ReplyClassification, ReplyOutcome};
+pub use actions::{ActionIdentity, ActionRegistry, ReplyClassification, ReplyOutcome};
 pub use broker_protocol::{
 	BrokerClientFrame, BrokerError, BrokerHello, BrokerOperation, BrokerRequest, BrokerResponse,
 	BrokerServerFrame, PROTOCOL_MAJOR,
@@ -44,8 +44,9 @@ pub use lifecycle::{
 	SessionLifecycleError, SessionResume, SessionResumeResponse, SessionResumeTarget,
 };
 pub use protocol::{
-	ActionKind, ActionNeeded, ActionResolved, AnswerSelector, ClientMessage, RejectReason, Reply,
-	ReplyAnswer, ReplyRejected, ResolvedBy, ServerMessage, Verbosity,
+	ActionKind, ActionNeeded, ActionResolved, ActionUnavailable, ActionUnavailableReason,
+	AnswerSelector, ClientMessage, RejectReason, Reply, ReplyAnswer, ReplyRejected, ResolvedBy,
+	ServerMessage, Verbosity,
 };
 pub use query::{
 	CursorEnvelope, QueryClientFrame, QueryError, QueryPage, QueryRequest, QueryResponse,
@@ -56,4 +57,4 @@ pub use reverse::{
 	ReverseCapability, ReverseClientFrame, ReverseError, ReverseRequest, ReverseResponse,
 	ReverseServerFrame,
 };
-pub use server::{ServerConfig, ServerHandle, start};
+pub use server::{PushFrameError, ServerConfig, ServerHandle, start};

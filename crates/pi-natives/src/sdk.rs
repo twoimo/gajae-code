@@ -370,9 +370,15 @@ impl NotificationServer {
 	/// Fails if not started or `frame_json` is not a valid `ServerMessage`.
 	#[napi]
 	pub fn push_frame(&self, frame_json: String) -> Result<()> {
+		// `ActionNeeded` is rejected at runtime here (see `ServerHandle::push_frame`);
+		// action delivery must go through `register_ask`/`note_idle` so it stays
+		// capability-gated per connection. Kept as an in-body note so the generated
+		// N-API `index.d.ts` signature/docs remain byte-stable for issue #2029.
 		let msg: ServerMessage = serde_json::from_str(&frame_json)
 			.map_err(|e| Error::from_reason(format!("invalid frame json: {e}")))?;
-		self.with_handle(|h| h.push_frame(msg))
+		self
+			.with_handle(|h| h.push_frame(msg))?
+			.map_err(|error| Error::from_reason(error.to_string()))
 	}
 
 	/// Send raw JSON to one connected v3 SDK client.
