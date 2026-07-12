@@ -1461,9 +1461,14 @@ export interface PtyRunResult {
 }
 
 /** Options for running a command in a PTY session. */
-export interface PtyStartOptions {
-  /** Command string to execute. */
-  command: string
+// --- generated PtyStartOptions union (do not edit) ---
+interface PtyStartOptionsGenerated {
+  /** Command string to execute through a shell. */
+  command?: string
+  /** Executable to invoke directly, without a shell. */
+  executable?: string
+  /** Arguments to pass directly to `executable`. */
+  args?: Array<string>
   /** Working directory for command execution. */
   cwd?: string
   /** Environment variables for this command. */
@@ -1482,6 +1487,30 @@ export interface PtyStartOptions {
    */
   shell?: string
 }
+type PtyStartOptionsCommon = Omit<PtyStartOptionsGenerated, "command" | "executable" | "args" | "shell">
+
+export type PtyStartOptions =
+  | (PtyStartOptionsCommon & {
+      /** Command string to execute through a shell. */
+      command: NonNullable<PtyStartOptionsGenerated["command"]>
+      /** Direct executable mode is incompatible with command mode. */
+      executable?: never
+      /** Direct executable arguments are incompatible with command mode. */
+      args?: never
+      /** Shell binary to use (e.g. "sh", "bash", or an absolute path). */
+      shell?: PtyStartOptionsGenerated["shell"]
+    })
+  | (PtyStartOptionsCommon & {
+      /** Shell command mode is incompatible with direct executable mode. */
+      command?: never
+      /** Executable to invoke directly, without a shell. */
+      executable: NonNullable<PtyStartOptionsGenerated["executable"]>
+      /** Arguments to pass directly to executable. */
+      args?: PtyStartOptionsGenerated["args"]
+      /** Shell selection is incompatible with direct executable mode. */
+      shell?: never
+    })
+// --- end generated PtyStartOptions union ---
 
 export declare function ptyTimeoutCount(): bigint
 

@@ -30,8 +30,12 @@ use crate::{ps, task};
 /// Options for running a command in a PTY session.
 #[napi(object)]
 pub struct PtyStartOptions<'env> {
-	/// Command string to execute.
-	pub command:    String,
+	/// Command string to execute through a shell.
+	pub command:    Option<String>,
+	/// Executable to invoke directly, without a shell.
+	pub executable: Option<String>,
+	/// Arguments to pass directly to `executable`.
+	pub args:       Option<Vec<String>>,
 	/// Working directory for command execution.
 	pub cwd:        Option<String>,
 	/// Environment variables for this command.
@@ -61,13 +65,53 @@ pub struct PtyRunResult {
 }
 
 #[derive(Clone)]
+enum PtyCommand {
+	LegacyShell { command: String, shell: Option<String> },
+	DirectExecutable { executable: String, args: Vec<String> },
+}
+
+#[derive(Clone)]
 struct PtyRunConfig {
-	command: String,
+	command: PtyCommand,
 	cwd:     Option<String>,
 	env:     Option<HashMap<String, String>>,
 	cols:    u16,
 	rows:    u16,
-	shell:   Option<String>,
+}
+
+impl PtyRunConfig {
+	fn new(
+		command: Option<String>,
+		executable: Option<String>,
+		args: Option<Vec<String>>,
+		shell: Option<String>,
+		cwd: Option<String>,
+		env: Option<HashMap<String, String>>,
+		cols: u16,
+		rows: u16,
+	) -> Result<Self> {
+		if executable.is_none() && args.is_some() {
+			return Err(Error::from_reason("PTY start option 'args' requires 'executable'."));
+		}
+		let command = match (command, executable) {
+			(Some(_), Some(_)) | (None, None) => {
+				return Err(Error::from_reason(
+					"PTY start requires exactly one of 'command' or 'executable'.",
+				));
+			},
+			(Some(command), None) => PtyCommand::LegacyShell { command, shell },
+			(None, Some(_)) if shell.is_some() => {
+				return Err(Error::from_reason(
+					"PTY start option 'shell' cannot be used with 'executable'.",
+				));
+			},
+			(None, Some(executable)) => {
+				PtyCommand::DirectExecutable { executable, args: args.unwrap_or_default() }
+			},
+		};
+
+		Ok(Self { command, cwd, env, cols, rows })
+	}
 }
 
 enum ReaderEvent {
@@ -152,15 +196,29 @@ impl PtySession {
 		#[napi(ts_arg_type = "((error: Error | null, chunk: string) => void) | undefined | null")]
 		on_chunk: Option<ThreadsafeFunction<String>>,
 	) -> Result<PromiseRaw<'env, PtyRunResult>> {
-		let run_config = PtyRunConfig {
-			command: options.command,
-			cwd:     options.cwd,
-			env:     options.env,
-			cols:    options.cols.unwrap_or(120).clamp(20, 400),
-			rows:    options.rows.unwrap_or(40).clamp(5, 200),
-			shell:   options.shell,
-		};
-		let ct = task::CancelToken::new(options.timeout_ms, options.signal);
+		let PtyStartOptions {
+			command,
+			executable,
+			args,
+			cwd,
+			env: command_env,
+			timeout_ms,
+			signal,
+			cols,
+			rows,
+			shell,
+		} = options;
+		let run_config = PtyRunConfig::new(
+			command,
+			executable,
+			args,
+			shell,
+			cwd,
+			command_env,
+			cols.unwrap_or(120).clamp(20, 400),
+			rows.unwrap_or(40).clamp(5, 200),
+		)?;
+		let ct = task::CancelToken::new(timeout_ms, signal);
 		let core = Arc::clone(&self.core);
 
 		// Register control channel synchronously so write()/kill() work immediately.
@@ -486,19 +544,31 @@ fn scrub_macos_malloc_stack_logging_env(cmd: &mut CommandBuilder) {
 /// pass through the CLI re-exec guard. Kept as one builder so production and
 /// tests spawn from the exact same command.
 fn build_pty_command(config: &PtyRunConfig) -> CommandBuilder {
-	let shell = config.shell.as_deref().unwrap_or("sh");
-	let mut cmd = CommandBuilder::new(shell);
-	// Use shell-appropriate command execution flags
-	let lower = shell.to_lowercase();
-	if lower.ends_with("cmd.exe") || lower.ends_with("cmd") {
-		cmd.arg("/c");
-	} else if lower.contains("powershell") || lower.contains("pwsh") {
-		cmd.arg("-Command");
-	} else {
-		// sh/bash/zsh/fish etc.
-		cmd.arg("-lc");
-	}
-	cmd.arg(&config.command);
+	let mut cmd = match &config.command {
+		PtyCommand::LegacyShell { command, shell } => {
+			let shell = shell.as_deref().unwrap_or("sh");
+			let mut cmd = CommandBuilder::new(shell);
+			// Use shell-appropriate command execution flags.
+			let lower = shell.to_lowercase();
+			if lower.ends_with("cmd.exe") || lower.ends_with("cmd") {
+				cmd.arg("/c");
+			} else if lower.contains("powershell") || lower.contains("pwsh") {
+				cmd.arg("-Command");
+			} else {
+				// sh/bash/zsh/fish etc.
+				cmd.arg("-lc");
+			}
+			cmd.arg(command);
+			cmd
+		},
+		PtyCommand::DirectExecutable { executable, args } => {
+			let mut cmd = CommandBuilder::new(executable);
+			for arg in args {
+				cmd.arg(arg);
+			}
+			cmd
+		},
+	};
 	if let Some(cwd) = config.cwd.as_ref() {
 		cmd.cwd(cwd);
 	}
@@ -916,10 +986,11 @@ fn emit_chunk(text: &str, callback: Option<&ThreadsafeFunction<String>>) -> bool
 
 #[cfg(test)]
 mod tests {
+	use std::sync::{Mutex, mpsc};
+	#[cfg(unix)]
 	use std::{
 		fs,
 		path::PathBuf,
-		sync::{Mutex, mpsc},
 		time::{Duration, Instant},
 	};
 
@@ -928,12 +999,14 @@ mod tests {
 
 	fn test_config(command: &str) -> PtyRunConfig {
 		PtyRunConfig {
-			command: command.to_string(),
+			command: PtyCommand::LegacyShell {
+				command: command.to_string(),
+				shell:   Some("sh".to_string()),
+			},
 			cwd:     None,
 			env:     None,
 			cols:    80,
 			rows:    24,
-			shell:   Some("sh".to_string()),
 		}
 	}
 
@@ -1020,6 +1093,7 @@ mod tests {
 		assert_eq!(pty_timeout_count(), before + 1);
 	}
 
+	#[cfg(unix)]
 	#[test]
 	fn bounded_reader_channel_reports_success_for_high_output() {
 		let _guard = PTY_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
@@ -1179,6 +1253,7 @@ mod tests {
 		let _ = fs::remove_file(pid_path);
 	}
 
+	#[cfg(unix)]
 	#[test]
 	fn kill_path_reaps_sigterm_trapping_child() {
 		let _guard = PTY_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
