@@ -17,6 +17,7 @@ import {
 	visibleSessionStartupDiagnosticsPath,
 	writeVisibleSessionOwnerManifest,
 } from "./launch";
+import { validateVisibleSessionName } from "./paths";
 import { VisibleSessionRegistry } from "./registry";
 
 async function withTempDir<T>(callback: (directory: string) => Promise<T>): Promise<T> {
@@ -1283,7 +1284,14 @@ describe("visible-session launch", () => {
 				},
 			);
 			await Bun.sleep(0);
-			const privateRoot = path.join(root, "agent", "visible-sessions", "private", "alpha", receipt.generationId);
+			const privateRoot = path.join(
+				root,
+				"agent",
+				"visible-sessions",
+				"private",
+				validateVisibleSessionName("Alpha").key,
+				receipt.generationId,
+			);
 			const token = (await fs.readFile(path.join(privateRoot, "control-token"))).toString("hex");
 			const diagnostics = await fs.readFile(visibleSessionStartupDiagnosticsPath(privateRoot), "utf8");
 			expect(diagnostics).not.toContain(token);
