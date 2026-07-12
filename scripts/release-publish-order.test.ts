@@ -16,6 +16,31 @@ interface PackageManifest {
 }
 
 const repoRoot = path.join(import.meta.dir, "..");
+type YamlRecord = Record<string, unknown>;
+
+const relevanceGuard = "needs.relevance.outputs.relevant == 'true'";
+
+function isYamlRecord(value: unknown): value is YamlRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireYamlRecord(value: unknown, location: string): YamlRecord {
+	expect(isYamlRecord(value), `${location} must be a YAML mapping`).toBe(true);
+	if (!isYamlRecord(value)) throw new Error(`${location} must be a YAML mapping`);
+	return value;
+}
+
+function requireWorkflowStep(steps: unknown[], property: "name" | "run", value: string): [YamlRecord, number] {
+	const index = steps.findIndex((candidate) => isYamlRecord(candidate) && candidate[property] === value);
+	expect(index, `workflow step ${property}=${value} must exist`).toBeGreaterThanOrEqual(0);
+	return [requireYamlRecord(steps[index], `workflow step ${property}=${value}`), index];
+}
+
+async function readCiWorkflowJobs(): Promise<YamlRecord> {
+	const workflow = await Bun.file(path.join(repoRoot, ".github/workflows/ci.yml")).text();
+	const parsed: unknown = Bun.YAML.parse(workflow);
+	return requireYamlRecord(requireYamlRecord(parsed, "CI workflow").jobs, "CI workflow jobs");
+}
 
 async function readManifest(relativePath: string): Promise<PackageManifest> {
 	return (await Bun.file(path.join(repoRoot, relativePath, "package.json")).json()) as PackageManifest;
@@ -165,6 +190,75 @@ describe("release bump set equals publish set", () => {
 		// ship a 0.x tag whose npm version never advances. Any published dir that is
 		// private would be skipped at publish time. Both break one-release-truth.
 		expect([...publishDirs].sort()).toEqual([...bumpableDirs].sort());
+	});
+});
+
+describe("portable CI test coverage", () => {
+	test("windows smoke runs portable TypeScript gates before the native build", async () => {
+		const jobs = await readCiWorkflowJobs();
+		const windowsSmoke = requireYamlRecord(jobs.windows_smoke, "windows_smoke job");
+		const steps = windowsSmoke.steps;
+		expect(windowsSmoke["runs-on"]).toBe("windows-latest");
+		expect(Array.isArray(steps), "windows_smoke steps must be a YAML sequence").toBe(true);
+		if (!Array.isArray(steps)) throw new Error("windows_smoke steps must be a YAML sequence");
+
+		const [installStep, installIndex] = requireWorkflowStep(steps, "run", "bun install --frozen-lockfile");
+		const [typeCheckStep, typeCheckIndex] = requireWorkflowStep(steps, "name", "Type check workspace (Windows)");
+		const [portableContractsStep, portableContractsIndex] = requireWorkflowStep(
+			steps,
+			"name",
+			"Test portable CI contracts (Windows)",
+		);
+		const [posixSkipStep, posixSkipIndex] = requireWorkflowStep(
+			steps,
+			"name",
+			"Verify POSIX-only session tests skip on Windows",
+		);
+		const [nativeBuildStep, nativeBuildIndex] = requireWorkflowStep(
+			steps,
+			"name",
+			"Build native addon (win32-x64 baseline)",
+		);
+
+		expect(installStep.if).toBe(relevanceGuard);
+		expect(typeCheckStep).toMatchObject({
+			if: relevanceGuard,
+			run: "bun run ci:check:full",
+		});
+		expect(portableContractsStep).toMatchObject({
+			if: relevanceGuard,
+			run: "bun test scripts/ci-dev-affected.test.ts scripts/release-publish-order.test.ts scripts/verify-platform-test-policy.test.ts",
+		});
+		expect(posixSkipStep).toMatchObject({
+			if: relevanceGuard,
+			run: "bun scripts/verify-platform-test-policy.ts --expect-skipped scripts/gjc-session/create.test.ts",
+		});
+		expect(nativeBuildStep.if).toBe(relevanceGuard);
+		expect(installIndex).toBeLessThan(typeCheckIndex);
+		expect(typeCheckIndex).toBeLessThan(portableContractsIndex);
+		expect(portableContractsIndex).toBeLessThan(posixSkipIndex);
+		expect(posixSkipIndex).toBeLessThan(nativeBuildIndex);
+	});
+
+	test("linux test executes the POSIX session integration before the full TypeScript suite", async () => {
+		const jobs = await readCiWorkflowJobs();
+		const linuxTest = requireYamlRecord(jobs.test, "test job");
+		const steps = linuxTest.steps;
+		expect(Array.isArray(steps), "test steps must be a YAML sequence").toBe(true);
+		if (!Array.isArray(steps)) throw new Error("test steps must be a YAML sequence");
+
+		const [posixIntegrationStep, posixIntegrationIndex] = requireWorkflowStep(
+			steps,
+			"name",
+			"Test POSIX session integration (Linux)",
+		);
+		const [, fullTypeScriptTestIndex] = requireWorkflowStep(steps, "name", "Test workspace (TS)");
+
+		expect(posixIntegrationStep).toMatchObject({
+			if: relevanceGuard,
+			run: "bun scripts/verify-platform-test-policy.ts --expect-executed scripts/gjc-session/create.test.ts",
+		});
+		expect(posixIntegrationIndex).toBeLessThan(fullTypeScriptTestIndex);
 	});
 });
 

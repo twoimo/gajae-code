@@ -27,6 +27,7 @@ const NATIVE_BUILD_KEYS: ReadonlySet<string> = new Set(["native-build", "native-
 const BEHAVIORAL_OWNER_TESTS: Readonly<Record<string, readonly string[]>> = {
 	"packages/coding-agent/src/main.ts": ["packages/coding-agent/test/startup-update-contract.test.ts"],
 };
+const PLATFORM_TEST_POLICY_TEST = "scripts/verify-platform-test-policy.test.ts";
 
 export interface PackageManifest {
 	name?: string;
@@ -208,12 +209,20 @@ function taskNeedsRust(key: string): boolean {
 
 // Build the machine-readable descriptor list for the current changed-path plan.
 // `cwd` is emitted repo-relative so the JSON stays portable across runners.
+export function normalizeRepoRelativePosixPath(value: string, separator: string): string {
+	return value.split(separator).join("/") || ".";
+}
+
+export function toRepoRelativePosixPath(root: string, target: string): string {
+	return normalizeRepoRelativePosixPath(path.relative(root, target), path.sep);
+}
+
 export function describeTasks(tasks: readonly Task[]): TaskMatrixEntry[] {
 	return tasks.map(task => ({
 		key: task.key,
 		description: task.description,
 		command: task.command,
-		cwd: task.cwd ? path.relative(repoRoot, task.cwd) || "." : undefined,
+		cwd: task.cwd ? toRepoRelativePosixPath(repoRoot, task.cwd) : undefined,
 		native: taskNeedsNative(task.key),
 		rust: taskNeedsRust(task.key),
 		nativeBuild: isNativeBuildKey(task.key),
@@ -309,7 +318,7 @@ function printPlan(paths: readonly string[], plannedTasks: readonly Task[]): voi
 	}
 	console.log("Planned tasks:");
 	for (const task of plannedTasks) {
-		const where = task.cwd ? ` (cwd: ${path.relative(repoRoot, task.cwd) || "."})` : "";
+		const where = task.cwd ? ` (cwd: ${toRepoRelativePosixPath(repoRoot, task.cwd)})` : "";
 		console.log(` - ${task.description}: ${task.command.join(" ")}${where}`);
 	}
 }
@@ -499,6 +508,9 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	if (needsNativeRuntime) {
 		add(tasks, "cli-smoke", "GJC CLI smoke test", ["bun", "run", "ci:test:smoke"]);
 	}
+	if (paths.some(isPlatformTestPolicyPath)) {
+		addTestFileTask(tasks, PLATFORM_TEST_POLICY_TEST);
+	}
 	if (paths.some(isWorkflowOrScriptPath)) {
 		add(tasks, "affected-dry-run", "Affected CI selector self-check", ["bun", "scripts/ci-dev-affected.ts", "--dry-run"]);
 		add(tasks, "affected-selftest", "Affected CI selector unit tests", ["bun", "test", "scripts/ci-dev-affected.test.ts"]);
@@ -544,6 +556,10 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 		if (isWorkflowPath(changedPath)) {
 			needYamlParse = true;
 			needCiSelftest = true;
+			continue;
+		}
+		if (isPlatformTestPolicyPath(changedPath)) {
+			addTestFileTask(tasks, PLATFORM_TEST_POLICY_TEST);
 			continue;
 		}
 		if (isCiHarnessScriptPath(changedPath)) {
@@ -705,6 +721,9 @@ function isTestFilePath(changedPath: string): boolean {
 
 function isCiHarnessScriptPath(changedPath: string): boolean {
 	return changedPath === "scripts/ci-dev-affected.ts" || changedPath === "scripts/ci-dev-affected.test.ts" || changedPath === "scripts/check-workflow-yaml.ts";
+}
+function isPlatformTestPolicyPath(changedPath: string): boolean {
+	return changedPath === "scripts/verify-platform-test-policy.ts" || changedPath === PLATFORM_TEST_POLICY_TEST;
 }
 
 function isWebPath(changedPath: string): boolean {
@@ -870,7 +889,7 @@ function isWorkflowPath(changedPath: string): boolean {
 }
 
 function isWorkflowHarnessPath(changedPath: string): boolean {
-	return isWorkflowPath(changedPath) || changedPath === "scripts/ci-dev-affected.ts" || changedPath === "scripts/check-workflow-yaml.ts";
+	return isWorkflowPath(changedPath) || isCiHarnessScriptPath(changedPath);
 }
 
 function isToolingScriptPath(changedPath: string): boolean {

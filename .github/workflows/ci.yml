@@ -217,6 +217,15 @@ jobs:
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - if: needs.relevance.outputs.relevant == 'true'
            run: bun install --frozen-lockfile
+         - name: Type check workspace (Windows)
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun run ci:check:full
+         - name: Test portable CI contracts (Windows)
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun test scripts/ci-dev-affected.test.ts scripts/release-publish-order.test.ts scripts/verify-platform-test-policy.test.ts
+         - name: Verify POSIX-only session tests skip on Windows
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun scripts/verify-platform-test-policy.ts --expect-skipped scripts/gjc-session/create.test.ts
          - name: Build native addon (win32-x64 baseline)
            if: needs.relevance.outputs.relevant == 'true'
            env:
@@ -302,6 +311,9 @@ jobs:
               merge-multiple: true
               run-id: ${{ steps.source.outputs.run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Test POSIX session integration (Linux)
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun scripts/verify-platform-test-policy.ts --expect-executed scripts/gjc-session/create.test.ts
          - name: Test workspace (TS)
            if: needs.relevance.outputs.relevant == 'true'
            env:

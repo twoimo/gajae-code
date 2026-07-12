@@ -35,6 +35,7 @@
 ### Fixed
 
 - The coordinator MCP owner-server probe now recognizes tmux ≥3.7's missing-server diagnostic (`error connecting to <socket> (No such file or directory)`) as an absent server. tmux 3.7 changed the wording from the older `no server running on <socket>`, which the coordinator probe did not match — so a brand-new coordinator socket (which never has a server yet) was misclassified `unverifiable` instead of `absent`, and **every** `gjc_delegate_*` / session create failed closed with `coordinator_tmux_owner_server_unverifiable` on tmux ≥3.7. The coordinator and `gjc` harness probes now match the same no-server wordings the other owner-isolation probes already did.
+- Made TS7 CI validation portable by normalizing affected-plan paths and requiring explicit proof that the POSIX-only session suite is fully skipped on Windows and executes with zero skips on Linux.
 - Preserved explicit Telegram forum-topic renames as durable user-owned names, immediately re-asserting delayed edits while retaining restart and rename-race recovery (#1910).
 - Prevented typed provider safety stops from entering automatic retry loops and aligned ACP refusal reporting with the provider-native classification.
 - `gjc resume` now aliases value-less `--resume`, requests confirmation before opening and continues a resumable tail once only; terminal tails open idle, and headless bare resume exits with explicit `--resume <id>` guidance (#1973).

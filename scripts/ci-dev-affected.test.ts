@@ -2,7 +2,17 @@ import { afterAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describeTasks, packageScriptCommand, planTargetedTasks, planTasks, resolvePackageCwd, runCommand, type WorkspacePackage } from "./ci-dev-affected";
+import {
+	describeTasks,
+	normalizeRepoRelativePosixPath,
+	packageScriptCommand,
+	planTargetedTasks,
+	planTasks,
+	resolvePackageCwd,
+	runCommand,
+	toRepoRelativePosixPath,
+	type WorkspacePackage,
+} from "./ci-dev-affected";
 
 const packages: WorkspacePackage[] = [
 	{
@@ -154,6 +164,25 @@ describe("runCommand executes package scripts in the target cwd (issue #622)", (
 	});
 });
 
+describe("repo-relative POSIX path serialization", () => {
+	test("normalizes POSIX and Windows nested relative paths without backslashes", () => {
+		const posixRelative = path.posix.relative("/repo", "/repo/packages/coding-agent");
+		const windowsRelative = path.win32.relative("C:\\repo", "C:\\repo\\packages\\coding-agent");
+
+		expect(normalizeRepoRelativePosixPath(posixRelative, path.posix.sep)).toBe("packages/coding-agent");
+		expect(normalizeRepoRelativePosixPath(windowsRelative, path.win32.sep)).toBe("packages/coding-agent");
+		expect(normalizeRepoRelativePosixPath(windowsRelative, path.win32.sep)).not.toContain("\\");
+	});
+
+	test("serializes nested paths and the repository root with host path semantics", () => {
+		const root = path.join("repo");
+		const nested = path.join(root, "packages", "coding-agent");
+
+		expect(toRepoRelativePosixPath(root, nested)).toBe("packages/coding-agent");
+		expect(toRepoRelativePosixPath(root, root)).toBe(".");
+	});
+});
+
 describe("describeTasks matrix emission", () => {
 	test("package test task needs native, native build task is flagged, check does not", () => {
 		const entries = describeTasks(planForPaths(["packages/example/src/index.ts"]));
@@ -197,10 +226,12 @@ describe("describeTasks matrix emission", () => {
 		expect(entries.every(entry => !entry.nativeBuild)).toBe(true);
 	});
 
-	test("cwd is emitted repo-relative for package-scoped tasks", () => {
+	test("cwd is emitted repo-relative with POSIX separators for package-scoped tasks", () => {
 		const entries = describeTasks(planForPaths(["packages/example/src/index.ts"]));
 		const pkgCheck = entries.find(entry => entry.key === "check:@gajae-code/example");
+
 		expect(pkgCheck?.cwd).toBe("packages/example");
+		expect(pkgCheck?.cwd).not.toContain("\\");
 	});
 });
 
@@ -277,6 +308,14 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(stdout).toContain("Dev affected-path CI");
 	});
 
+	test("--dry-run displays package cwd with POSIX separators", async () => {
+		const { stdout, exitCode } = await runScript(["--dry-run"], "python/robogjc/web/app.ts");
+
+		expect(exitCode).toBe(0);
+		expect(stdout).toContain("cwd: python/robogjc/web");
+		expect(stdout).not.toContain("cwd: python\\robogjc\\web");
+	});
+
 	test("--task fails loudly on a key absent from the current plan", async () => {
 		const { stderr, exitCode } = await runScript(["--task=does-not-exist"], "docs/readme.md");
 		expect(exitCode).toBe(1);
@@ -303,6 +342,7 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		"packages/coding-agent/test/cli.test.ts",
 		"packages/coding-agent/test/rlm-live-model-e2e.test.ts",
 		"packages/coding-agent/test/startup-update-contract.test.ts",
+		"scripts/verify-platform-test-policy.test.ts",
 	];
 
 	function targeted(paths: readonly string[]) {
@@ -390,9 +430,31 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest", "yaml-parse"]);
 	});
 
-	test("a CI harness script change plans ci-selftest + ci-dry-run (no yaml-parse)", () => {
-		const tasks = targeted(["scripts/ci-dev-affected.ts"]);
-		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest"]);
+	test.each([
+		["selector source", "scripts/ci-dev-affected.ts"],
+		["selector test", "scripts/ci-dev-affected.test.ts"],
+	])("a CI harness %s change plans ci-selftest + ci-dry-run exactly once (no yaml-parse)", (_kind, changedPath) => {
+		const tasks = targeted([changedPath]);
+		const selftestKey = "ci-selftest";
+
+		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", selftestKey]);
+		expect(tasks.filter(task => task.key === selftestKey)).toHaveLength(1);
+		expect(tasks.find(task => task.key === selftestKey)?.command).toEqual(["bun", "test", "scripts/ci-dev-affected.test.ts"]);
+	});
+	test.each([
+		["verifier source", "scripts/verify-platform-test-policy.ts"],
+		["verifier test", "scripts/verify-platform-test-policy.test.ts"],
+	])("a platform test policy %s change schedules its focused verifier test once", (_kind, changedPath) => {
+		const tasks = targeted([changedPath]);
+		const focusedKey = "test:scripts/verify-platform-test-policy.test.ts";
+
+		expect(tasks.map(task => task.key)).toEqual([focusedKey, "native-linux-x64"]);
+		expect(tasks.find(task => task.key === focusedKey)?.command).toEqual([
+			"bun",
+			"test",
+			"scripts/verify-platform-test-policy.test.ts",
+		]);
+		expect(tasks.filter(task => task.key === focusedKey)).toHaveLength(1);
 	});
 
 	test("native platform package changes plan release publish validation", () => {
@@ -472,7 +534,33 @@ describe("push-mode broad planning still runs the fuller suite", () => {
 		const entries = describeTasks(tasks);
 		expect(entries.find(entry => entry.key === "test:@gajae-code/coding-agent:shard-1-of-8")?.native).toBe(true);
 	});
+	test.each([
+		["verifier source", "scripts/verify-platform-test-policy.ts"],
+		["verifier test", "scripts/verify-platform-test-policy.test.ts"],
+	])("push mode routes a platform test policy %s change to its focused verifier test", (_kind, changedPath) => {
+		const tasks = planTasks([changedPath], [codingAgent]);
+		const focusedKey = "test:scripts/verify-platform-test-policy.test.ts";
 
+		expect(tasks.map(task => task.key)).toEqual(["root-check", "native-linux-x64", focusedKey]);
+		expect(tasks.find(task => task.key === focusedKey)?.command).toEqual([
+			"bun",
+			"test",
+			"scripts/verify-platform-test-policy.test.ts",
+		]);
+		expect(tasks.filter(task => task.key === focusedKey)).toHaveLength(1);
+	});
+
+	test.each([
+		["selector source", "scripts/ci-dev-affected.ts"],
+		["selector test", "scripts/ci-dev-affected.test.ts"],
+	])("push mode routes a CI harness %s change to its selftest exactly once", (_kind, changedPath) => {
+		const tasks = planTasks([changedPath], [codingAgent]);
+		const selftestKey = "affected-selftest";
+
+		expect(tasks.map(task => task.key).sort()).toEqual(["affected-dry-run", selftestKey]);
+		expect(tasks.filter(task => task.key === selftestKey)).toHaveLength(1);
+		expect(tasks.find(task => task.key === selftestKey)?.command).toEqual(["bun", "test", "scripts/ci-dev-affected.test.ts"]);
+	});
 	test("full-workspace changes partition root tests into matrix shards", () => {
 		const tasks = planTasks(["tsconfig.json"], [codingAgent]);
 		const keys = tasks.map(task => task.key);

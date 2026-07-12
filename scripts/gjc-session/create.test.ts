@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+
+setDefaultTimeout(process.platform === "linux" ? 20_000 : 5_000);
 
 const roots: string[] = [];
 const sessions: Array<{ name: string; socket: string }> = [];
@@ -210,7 +212,7 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
 
-describe("gjc-session create public owner lifecycle", () => {
+describe.skipIf(process.platform === "win32")("gjc-session create public owner lifecycle", () => {
 	test("rejects missing binaries, directories, git worktrees, and detached branches", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-validation-")); roots.push(root);
 		const missing = Bun.spawnSync(["bash", createScript, "x", root], { env: env({ GJC_BIN: "/definitely-not-a-gjc-executable" }), stderr: "pipe" });
