@@ -1443,15 +1443,13 @@ export class AgentSession {
 		nonEditDeterminations: 0,
 	};
 	#promptInFlightCount = 0;
-	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
-	// Local subscribers and extension hooks both receive the deferred event from
-	// #flushPendingAgentEnd(), preserving the local-before-extension ordering used
-	// by #emitSessionEvent while still preventing external clients from resuming
-	// before #promptWithMessage's finally decrements #promptInFlightCount. Without
-	// this, a client that resumes on `agent_end` can fire its next `prompt` while
-	// the session still reports busy and hit AgentBusyError. Flushed from both
-	// #endInFlight (normal) and #resetInFlight (abort).
+	#agentEventHandlersInFlight = 0;
+	#queuedExtensionEventCount = 0;
+	// Wire-level agent_end emission is deferred until both the prompt finalizer and
+	// async event handlers settle. Subscribers treat agent_end as readiness, so
+	// publishing it earlier lets a successor corrupt the prior prompt's lifecycle.
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
+
 	#obfuscator: SecretObfuscator | undefined;
 	#checkpointState: CheckpointState | undefined = undefined;
 	#providerReplaySourceCache = new WeakMap<AgentMessage, ProviderReplaySourceCacheEntry>();
@@ -1523,14 +1521,9 @@ export class AgentSession {
 		}
 	}
 
-	#resetInFlight(): void {
-		this.#promptInFlightCount = 0;
-		this.#releasePowerAssertion();
-		this.#flushPendingBackgroundExchanges();
-		this.#flushPendingAgentEnd();
-	}
-
 	#flushPendingAgentEnd(): void {
+		if (this.#promptInFlightCount > 0 || this.#agentEventHandlersInFlight > 0 || this.#queuedExtensionEventCount > 0)
+			return;
 		const pending = this.#pendingAgentEndEmit;
 		if (!pending) return;
 		this.#pendingAgentEndEmit = undefined;
@@ -1721,7 +1714,8 @@ export class AgentSession {
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
-		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
+		this.#unsubscribeAgent = this.agent.subscribe(this.#trackAgentEvent);
+
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
 		// SDK ToolSession callbacks capture the just-constructed session. Defer the
@@ -2139,13 +2133,31 @@ export class AgentSession {
 	#queuedExtensionEvents: Promise<void> = Promise.resolve();
 
 	#queueExtensionEvent(event: AgentSessionEvent): Promise<void> {
+		this.#queuedExtensionEventCount++;
 		const emit = async () => {
 			await this.#emitExtensionEvent(event);
 		};
 		const queued = this.#queuedExtensionEvents.then(emit, emit);
 		this.#queuedExtensionEvents = queued.catch(() => {});
+		const settled = () => {
+			this.#queuedExtensionEventCount = Math.max(0, this.#queuedExtensionEventCount - 1);
+			this.#flushPendingAgentEnd();
+		};
+		void queued.then(settled, settled);
 		return queued;
 	}
+
+	#trackAgentEvent = async (event: AgentEvent): Promise<void> => {
+		this.#agentEventHandlersInFlight++;
+		try {
+			await this.#handleAgentEvent(event);
+		} catch (error) {
+			logger.warn("Agent event handler failed", { event: event.type, error: String(error) });
+		} finally {
+			this.#agentEventHandlersInFlight = Math.max(0, this.#agentEventHandlersInFlight - 1);
+			this.#flushPendingAgentEnd();
+		}
+	};
 
 	#persistRuntimeStateInBackground(event: AgentSessionEvent): void {
 		void persistCoordinatorRuntimeStateFromEvent(event, {
@@ -2169,15 +2181,14 @@ export class AgentSession {
 			return;
 		}
 		const persistRuntimeState = () => this.#persistRuntimeStateInBackground(event);
-		// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
-		// (ACP, Cursor, and SDK clients) treat agent_end as the "session is idle" signal;
-		// emitting while #promptInFlightCount > 0 lets a client fire its next
-		// `prompt` into a session that still reports isStreaming === true. Flush
-		// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
-		// an auto-compaction turn that starts before the original prompt unwinds)
-		// supersedes the pending one, which is what subscribers want — they only
-		// care about the final settle.
-		if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
+		// Hold agent_end until the prompt's finally and all earlier async event work
+		// have unwound. Subscribers treat this event as the ready signal; flushing it
+		// from abort while either barrier is active permits a successor to race the
+		// prior prompt's cleanup.
+		if (
+			event.type === "agent_end" &&
+			(this.#promptInFlightCount > 0 || this.#agentEventHandlersInFlight > 0 || this.#queuedExtensionEventCount > 0)
+		) {
 			this.#pendingAgentEndEmit = event;
 			return;
 		}
@@ -2205,6 +2216,11 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	#handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// Record a successful final yield before any asynchronous extension work so a
+		// concurrently delivered agent_end cannot start post-turn maintenance first.
+		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
+			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
+		}
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -2336,9 +2352,6 @@ export class AgentSession {
 			if (event.toolName === "bash" && !event.isError) {
 				await this.#activatePendingGjcGoalModeRequest();
 			}
-		}
-		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
-			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
 		}
 		if (event.type === "turn_end" && this.#pendingRewindReport) {
 			const report = this.#pendingRewindReport;
@@ -3801,7 +3814,7 @@ export class AgentSession {
 	 */
 	#reconnectToAgent(): void {
 		if (this.#unsubscribeAgent) return; // Already connected
-		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
+		this.#unsubscribeAgent = this.agent.subscribe(this.#trackAgentEvent);
 	}
 
 	/**
@@ -6885,10 +6898,11 @@ export class AgentSession {
 			}
 		}
 		await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
-		// Clear prompt-in-flight state: waitForIdle resolves when the agent loop's finally
-		// block runs, but nested prompt setup/finalizers may still be unwinding. Without this,
-		// a subsequent prompt() can incorrectly observe the session as busy after an abort.
-		this.#resetInFlight();
+		// waitForIdle resolves before #promptWithMessage's finally and asynchronous
+		// event handlers necessarily unwind. Keep their counters intact: #endInFlight
+		// and the event barrier publish deferred readiness only when they actually settle.
+		this.#flushPendingBackgroundExchanges();
+		this.#flushPendingAgentEnd();
 		// Safety net: clear the silent-abort flag if it was never consumed (the
 		// abort produced no aborted assistant message_end to stamp). Prevents the
 		// marker from leaking onto a later, unrelated abort.

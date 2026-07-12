@@ -206,7 +206,7 @@ async function fixture(): Promise<AdapterFixture> {
 	const agentDir = path.join(repo, ".gjc", "agent");
 	const stateRoot = path.join(repo, ".gjc", "state");
 	Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
-	const productionHost = await startProductionSdkHost(repo);
+	const productionHost = await startProductionSdkHost(repo, { acceptPromptPreflightWithoutExecution: true });
 	const sessionId = productionHost.sessionId;
 	const observed: ObservedRequest[] = productionHost.observed;
 	const broker = new Broker({ agentDir, packageGeneration: "adapter-dispositions" });

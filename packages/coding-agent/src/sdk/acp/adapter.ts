@@ -349,11 +349,11 @@ export class AcpSdkAdapter {
 			const method = typeof request?.method === "string" ? request.method : "";
 			const payload = request?.payload && typeof request.payload === "object" ? (request.payload as JsonObject) : {};
 			const result = await this.#forwardReverse(method, payload);
-			if (this.#isReverseCancelled(id) || !this.#ownsReverseLease(connectionId, capability, leaseId)) return;
+			if (!this.#canRespondToReverse(id, active, connectionId, capability, leaseId)) return;
 
 			this.#client.send({ type: "reverse_response", id, connectionId, leaseId, ok: true, result });
 		} catch (error) {
-			if (this.#isReverseCancelled(id) || !this.#ownsReverseLease(connectionId, capability, leaseId)) return;
+			if (!this.#canRespondToReverse(id, active, connectionId, capability, leaseId)) return;
 
 			const typed =
 				error instanceof AcpSdkAdapterError || error instanceof SdkClientError
@@ -379,6 +379,20 @@ export class AcpSdkAdapter {
 		return this.#connectionId === connectionId && this.#leases.get(capability) === leaseId;
 	}
 
+	#canRespondToReverse(
+		id: string,
+		request: ReverseRequest,
+		connectionId: string,
+		capability: string,
+		leaseId: string,
+	): boolean {
+		return (
+			this.#reverseRequests.get(id) === request &&
+			request.state === "pending" &&
+			this.#ownsReverseLease(connectionId, capability, leaseId)
+		);
+	}
+
 	#cancelReverse(id: string): void {
 		const request: ReverseRequest = this.#reverseRequests.get(id) ?? { state: "pending" };
 		if (request.state === "cancelled") return;
@@ -391,10 +405,6 @@ export class AcpSdkAdapter {
 		if (this.#reverseRequests.get(id) !== request) return;
 		if (request.cancelTimer) clearTimeout(request.cancelTimer);
 		this.#reverseRequests.delete(id);
-	}
-
-	#isReverseCancelled(id: string): boolean {
-		return this.#reverseRequests.get(id)?.state === "cancelled";
 	}
 
 	async #forwardReverse(method: string, payload: JsonObject): Promise<unknown> {

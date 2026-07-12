@@ -229,6 +229,37 @@ test("ACP reverse dispatch requires exact current lease ownership and rejects in
 	}
 });
 
+test("ACP reverse cancellation remains terminal after its tombstone TTL while the callback is still running", async () => {
+	const sdk = new FakeSdkClient();
+	const callback = Promise.withResolvers<unknown>();
+	const adapter = new AcpSdkAdapter({
+		url: "ws://unused",
+		token: "secret",
+		client: sdk as never,
+		providers: [{ capability: "ui", definitions: [{ name: "select" }] }],
+		reverseCancelTtlMs: 5,
+		connection: { request: async () => await callback.promise },
+	});
+	await adapter.start();
+	try {
+		sdk.emit({
+			type: "reverse_request",
+			id: "slow-cancelled",
+			connectionId: sdk.connectionId,
+			capability: "ui",
+			leaseId: "lease-1",
+			payload: { method: "ui.select", payload: {} },
+		});
+		sdk.emit({ type: "reverse_cancel", id: "slow-cancelled" });
+		await Bun.sleep(10);
+		callback.resolve({ selected: "yes" });
+		await Bun.sleep(0);
+		expect(sdk.frames.some(frame => frame.type === "reverse_response" && frame.id === "slow-cancelled")).toBe(false);
+	} finally {
+		await adapter.close();
+	}
+});
+
 test("ACP reverse cancellation and stale failures suppress responses over the real WebSocket transport", async () => {
 	let server!: ReturnType<typeof Bun.serve>;
 

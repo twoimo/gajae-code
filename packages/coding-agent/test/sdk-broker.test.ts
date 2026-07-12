@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { getSessionsDir } from "@gajae-code/utils";
@@ -14,6 +15,7 @@ import { ensureBroker } from "../src/sdk/broker/ensure";
 import { getBrokerIdentityKey } from "../src/sdk/broker/identity";
 import { readSessionLifecycleLaunchRequest } from "../src/sdk/broker/lifecycle";
 import { resolveSdkInternalSpawnCommand } from "../src/sdk/broker/runtime";
+import { SessionManager } from "../src/session/session-manager";
 import { FileSessionStorage } from "../src/session/session-storage";
 
 const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-"));
@@ -127,7 +129,7 @@ describe("SDK broker identity and discovery", () => {
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
-	it("returns only an endpoint bound to the indexed generation", async () => {
+	it("returns only an endpoint bound to the indexed incarnation", async () => {
 		const dir = await temp();
 		const stateRoot = path.join(dir, "state");
 		const endpointPath = path.join(stateRoot, "sdk", "s.json");
@@ -144,9 +146,28 @@ describe("SDK broker identity and discovery", () => {
 			pid: process.pid,
 			endpointMtimeMs,
 		});
-		expect(await broker.handleRequest("session.get_endpoint", { sessionId: "s", endpointGeneration: 3 })).toEqual({
+		const endpointIncarnation = createHash("sha256")
+			.update(JSON.stringify({ endpointGeneration: 3, endpointMtimeMs, pid: process.pid, sessionId: "s" }))
+			.digest("hex");
+		expect(
+			await broker.handleRequest("session.get_endpoint", {
+				sessionId: "s",
+				endpointGeneration: 3,
+				endpointIncarnation,
+			}),
+		).toEqual({
 			ok: true,
 			result: { sessionId: "s", pid: process.pid, token: "session-secret" },
+		});
+		expect(
+			await broker.handleRequest("session.get_endpoint", {
+				sessionId: "s",
+				endpointGeneration: 3,
+				endpointIncarnation: "0".repeat(64),
+			}),
+		).toEqual({
+			ok: false,
+			error: { code: "endpoint_stale", message: "session endpoint is stale" },
 		});
 		expect(await broker.handleRequest("session.get_endpoint", { sessionId: "s", endpointGeneration: 2 })).toEqual({
 			ok: false,
@@ -164,6 +185,60 @@ describe("SDK broker identity and discovery", () => {
 			ok: false,
 			error: { code: "endpoint_stale", message: "session endpoint is stale" },
 		});
+	});
+	it("rejects a cross-scope live resume without returning the indexed endpoint", async () => {
+		const dir = await temp();
+		const liveCwd = path.join(dir, "live-workspace");
+		const requestedCwd = path.join(dir, "requested-workspace");
+		const stateRoot = path.join(liveCwd, ".gjc", "state");
+		const sessionId = "shared-live-session";
+		const sessionDir = SessionManager.getDefaultSessionDir(liveCwd, dir);
+		const sessionPath = path.join(sessionDir, `${sessionId}.jsonl`);
+		const endpointPath = path.join(stateRoot, "sdk", `${sessionId}.json`);
+		const broker = new Broker({ agentDir: dir });
+		await fs.mkdir(requestedCwd, { recursive: true });
+		await fs.mkdir(path.dirname(endpointPath), { recursive: true });
+		await fs.mkdir(sessionDir, { recursive: true });
+		await fs.writeFile(
+			sessionPath,
+			`${JSON.stringify({ type: "session", id: sessionId, timestamp: new Date().toISOString(), cwd: liveCwd })}\n`,
+		);
+		await fs.writeFile(
+			endpointPath,
+			JSON.stringify({ sessionId, pid: process.pid, token: "foreign-workspace-token" }),
+		);
+		await broker.start();
+		try {
+			await broker.index.append({
+				type: "host_registered",
+				sessionId,
+				locator: { repo: liveCwd, stateRoot },
+				endpointGeneration: 1,
+				pid: process.pid,
+				endpointMtimeMs: (await fs.stat(endpointPath)).mtimeMs,
+			});
+			const result = await broker.handleRequest(
+				"session.resume",
+				{
+					cwd: requestedCwd,
+					target: { path: requestedCwd },
+					sessionId,
+					sessionPath,
+				},
+				"cross-scope-resume",
+			);
+			expect(result).toEqual({
+				ok: false,
+				error: {
+					code: "endpoint_stale",
+					message: "Live session does not match the requested resume scope.",
+				},
+			});
+			expect(JSON.stringify(result)).not.toContain("foreign-workspace-token");
+		} finally {
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 	it("replays only the same lifecycle body and conflicts when a caller reuses its key for the same target", async () => {
 		const dir = await temp();

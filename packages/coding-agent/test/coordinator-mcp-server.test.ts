@@ -20,7 +20,18 @@ afterEach(async () => {
 });
 
 type SdkControl = { operation: string; input: Record<string, unknown>; idempotencyKey?: string };
+function brokerEndpointIncarnation(
+	sessionId: string,
+	endpointGeneration: number,
+	pid: number,
+	endpointMtimeMs: number,
+): string {
+	return createHash("sha256")
+		.update(JSON.stringify({ endpointGeneration, endpointMtimeMs, pid, sessionId }))
+		.digest("hex");
+}
 
+type EndpointRequestHandler = (input: Record<string, unknown>, sessions: Array<Record<string, unknown>>) => unknown;
 function lifecycleControls(controls: SdkControl[]): SdkControl[] {
 	return controls.filter(
 		control => control.operation !== "session.list" && control.operation !== "session.get_endpoint",
@@ -56,7 +67,8 @@ async function createSdkControlServer(
 		},
 	],
 	sessionCommand?: string,
-) {
+	endpointRequestHandler?: EndpointRequestHandler,
+): Promise<ReturnType<typeof createCoordinatorMcpServer>> {
 	const stateRoot = path.join(root, ".gjc", "coordinator-state");
 	const agentDir = path.join(root, "agent-global");
 	let createdSessions = 0;
@@ -90,6 +102,7 @@ async function createSdkControlServer(
 						controls.push({ operation, input, idempotencyKey: options.idempotencyKey });
 						if (operation === "session.list") return { ok: true, result: { sessions: brokerSessions } };
 						if (operation === "session.get_endpoint") {
+							if (endpointRequestHandler) return endpointRequestHandler(input, brokerSessions);
 							return {
 								ok: true,
 								result: {
@@ -239,7 +252,11 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			{ operation: "session.list", input: { cwd: root }, idempotencyKey: undefined },
 			{
 				operation: "session.get_endpoint",
-				input: { sessionId: "visible-session", endpointGeneration: 1 },
+				input: {
+					sessionId: "visible-session",
+					endpointGeneration: 1,
+					endpointIncarnation: brokerEndpointIncarnation("visible-session", 1, 101, 1),
+				},
 				idempotencyKey: "register-1",
 			},
 			{ operation: "session.list", input: { cwd: root }, idempotencyKey: undefined },
@@ -613,6 +630,61 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		expect(
 			controls.filter(control => control.operation === "turn.prompt" || control.operation === "session.close"),
 		).toEqual([]);
+	});
+	it("does not return successor credentials after a same-generation restart between list and endpoint retrieval", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const sessions = [
+			{
+				sessionId: "visible-session",
+				locator: { repo: root },
+				live: true,
+				endpointGeneration: 1,
+				pid: 101,
+				endpointMtimeMs: 1,
+			},
+		];
+		let rotateAtEndpointRetrieval = false;
+		const initialIncarnation = brokerEndpointIncarnation("visible-session", 1, 101, 1);
+		const server = await createSdkControlServer(root, controls, undefined, undefined, sessions, undefined, input => {
+			if (!rotateAtEndpointRetrieval)
+				return {
+					ok: true,
+					result: {
+						url: "ws://broker.example.test/endpoint?token=broker-endpoint-secret",
+						token: "Bearer broker-endpoint-secret",
+					},
+				};
+			sessions[0] = { ...sessions[0]!, pid: 202, endpointMtimeMs: 2 };
+			if (input.endpointIncarnation === initialIncarnation)
+				return { ok: false, error: { code: "endpoint_stale", message: "session endpoint is stale" } };
+			return {
+				ok: true,
+				result: {
+					url: "ws://broker.example.test/successor?token=successor-endpoint-secret",
+					token: "Bearer successor-endpoint-secret",
+				},
+			};
+		});
+		await registerSdkSession(server, root);
+		rotateAtEndpointRetrieval = true;
+
+		const result = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: "visible-session",
+			prompt: "must not reach successor",
+			idempotency_key: "same-generation-restart",
+			allow_mutation: true,
+		});
+		expect(result).toMatchObject({ ok: false, error: { code: "endpoint_stale" } });
+		expect(JSON.stringify(result)).not.toContain("successor-endpoint-secret");
+		expect(controls.filter(control => control.operation === "turn.prompt")).toEqual([]);
+		expect(controls.filter(control => control.operation === "session.get_endpoint").at(-1)).toMatchObject({
+			input: {
+				sessionId: "visible-session",
+				endpointGeneration: 1,
+				endpointIncarnation: initialIncarnation,
+			},
+		});
 	});
 	it("fails closed on corrupt or crash-left coordinator idempotency records", async () => {
 		const root = await tempRoot();

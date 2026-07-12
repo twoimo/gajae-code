@@ -36,6 +36,9 @@ const machineTmuxDocumentationPaths = new Set([
 const machineTmuxDocumentationPattern =
 	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
 const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b/g;
+function normalizeShellContinuations(contents: string): string {
+	return contents.replace(/\\\r?\n[ \t]*/g, " ");
+}
 
 function isWorkspacePackageManifest(file: string): boolean {
 	return file === "package.json" || (file.startsWith("packages/") && file.endsWith("/package.json"));
@@ -227,29 +230,138 @@ function isPublishedGjcSessionShellHelper(file: string): boolean {
 	return file.startsWith("scripts/gjc-session/") && file.endsWith(".sh");
 }
 
+function pythonFirstArgument(contents: string, openingParen: number): { text: string; start: number } | undefined {
+	let depth = 0;
+	let quote: "'" | '"' | undefined;
+	for (let index = openingParen + 1; index < contents.length; index++) {
+		const character = contents[index];
+		if (quote) {
+			if (character === "\\") {
+				index++;
+			} else if (character === quote) {
+				quote = undefined;
+			}
+			continue;
+		}
+		if (character === "'" || character === '"') {
+			quote = character;
+			continue;
+		}
+		if (character === "(" || character === "[" || character === "{") {
+			depth++;
+			continue;
+		}
+		if (character === ")" || character === "]" || character === "}") {
+			if (depth === 0 && character === ")") {
+				return { text: contents.slice(openingParen + 1, index), start: openingParen + 1 };
+			}
+			depth--;
+			continue;
+		}
+		if (character === "," && depth === 0) {
+			return { text: contents.slice(openingParen + 1, index), start: openingParen + 1 };
+		}
+	}
+	return undefined;
+}
+
 function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	if (file !== "scripts/gjc-session/create.sh") return [];
 	const violations: string[] = [];
 	const violation = (offset: number, detail: string) =>
 		violations.push(`${file}:${lineNumber(contents, offset)}: ${detail}`);
-	const arity = contents.match(/^\s*\[\[\s+\$#\s+-eq\s+2\s+\]\]/m);
-	if (!arity) violation(0, "human-only tmux owner must accept exactly two startup operands");
-	const canonicalCommand = /^\s*command = \[os\.environ\["GJC_SESSION_GJC_BIN"\]\]\s*$/gm;
+	const exactArityGuard =
+		/^\s*\[\[\s+\$#\s+-eq\s+2\s+\]\]\s+\|\|\s+\{\s*echo\s+["']Usage:\s+\$0\s+<session-name>\s+<worktree-path>["']\s+>&2;\s+exit\s+2;\s*\}\s*$/gm;
+	const arityGuards = [...contents.matchAll(exactArityGuard)];
+	const twoOperandArityChecks = [...contents.matchAll(/\[\[\s+\$#\s+-eq\s+2\s+\]\]/g)];
+	const arityGuard = arityGuards[0];
+	const guardPrefix = arityGuard ? contents.slice(0, arityGuard.index ?? 0) : "";
+	if (
+		arityGuards.length !== 1 ||
+		twoOperandArityChecks.length !== 1 ||
+		/(?:^|[;\n])\s*(?:if|while|until|for|case|function)\b/m.test(guardPrefix) ||
+		/(?:&&|\|\|)\s*(?:\\\r?\n\s*)?$/.test(guardPrefix)
+	) {
+		violation(arityGuard?.index ?? 0, "human-only tmux owner must have one fail-closed exact two-operand guard");
+	}
+
+	const canonicalCommand = /^\s*command\s*=\s*\[\s*os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]\s*\]\s*$/gm;
 	const canonicalCommands = [...contents.matchAll(canonicalCommand)];
-	const commandAssignments = [...contents.matchAll(/^\s*(?:command|argv|args|startup)\s*=\s*[[(]/gim)];
-	if (canonicalCommands.length !== 1 || commandAssignments.length !== 1) {
+	const commandMutations = [
+		...contents.matchAll(/\bcommand\s*(?:\[[^\]\n]*\]\s*=|\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\(|\+=|=)/g),
+	];
+	if (
+		canonicalCommands.length !== 1 ||
+		commandMutations.length !== 1 ||
+		commandMutations[0]?.index !== canonicalCommands[0]?.index
+	) {
 		violation(
-			commandAssignments[0]?.index ?? 0,
+			commandMutations[0]?.index ?? 0,
 			"human-only tmux owner must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
 		);
 	}
+	const canonicalInteractivePopenAssignment =
+		/^\s*child\s*=\s*subprocess\.Popen\(\s*command\s*(?:,\s*cwd\s*=\s*os\.environ\[\s*["']GJC_SESSION_WORKDIR["']\s*\])?\s*\)\s*$/;
+	const pythonCommandAssignment =
+		/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?=(?:\(\s*)?(?:command\b|\[\s*\*?command\b|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\(\s*command\b))[^\n]*$/gm;
+	for (const match of contents.matchAll(pythonCommandAssignment)) {
+		if (canonicalInteractivePopenAssignment.test(match[0])) continue;
+		violation(match.index ?? 0, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
+	}
+
+	const allowedGjcEnvironmentReferences: Array<{ start: number; end: number }> = canonicalCommands.map(match => ({
+		start: match.index ?? 0,
+		end: (match.index ?? 0) + match[0].length,
+	}));
+	const subprocessCalls = /\bsubprocess\.(Popen|run|call|check_call|check_output)\s*\(/g;
+	let interactiveLaunches = 0;
+	for (const match of contents.matchAll(subprocessCalls)) {
+		const openingParen = (match.index ?? 0) + match[0].lastIndexOf("(");
+		const argument = pythonFirstArgument(contents, openingParen);
+		if (!argument) continue;
+		const isInteractiveLaunch = match[1] === "Popen" && argument.text.trim() === "command";
+		const isLifecycleCall =
+			/^\s*\[\s*os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]\s*,\s*["']--internal-tmux-owner-isolation["']\s*\]\s*$/.test(
+				argument.text,
+			);
+		if (isInteractiveLaunch) {
+			interactiveLaunches++;
+			continue;
+		}
+		if (isLifecycleCall) {
+			allowedGjcEnvironmentReferences.push({ start: argument.start, end: argument.start + argument.text.length });
+			continue;
+		}
+		if (/\bcommand\b|os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]/.test(argument.text)) {
+			violation(
+				match.index ?? 0,
+				"human-only tmux owner must invoke GJC only with zero interactive argv or the exact owner-isolation lifecycle argv",
+			);
+		}
+	}
+	if (interactiveLaunches !== 1) {
+		violation(0, "human-only tmux owner must launch exactly one zero-argv interactive GJC process");
+	}
+	for (const match of contents.matchAll(/os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]/g)) {
+		const offset = match.index ?? 0;
+		if (!allowedGjcEnvironmentReferences.some(range => offset >= range.start && offset < range.end)) {
+			violation(offset, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
+		}
+	}
+
+	const normalizedContents = normalizeShellContinuations(contents);
+	const shellGjcInvocations =
+		/(?:^|[|;&(]\s*|\btimeout\s+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)\s+)(["']?)\$(?:GJC_BIN|GJC_SESSION_GJC_BIN|\{(?:GJC_BIN|GJC_SESSION_GJC_BIN)\})\1([^\r\n;|&)]*)/gm;
+	for (const match of normalizedContents.matchAll(shellGjcInvocations)) {
+		const argumentsText = (match[2] ?? "").trim().replace(/["']$/, "");
+		const isZeroArgInteractiveLaunch = argumentsText.length === 0;
+		const isLifecycleCall = /^(?:["']?--internal-tmux-owner-isolation["']?)$/.test(argumentsText);
+		if (!isZeroArgInteractiveLaunch && !isLifecycleCall) {
+			violation(match.index ?? 0, "human-only tmux owner invokes GJC with a non-lifecycle startup argument");
+		}
+	}
 	for (const match of contents.matchAll(/\bGJC_SESSION_FLAGS\b/g)) {
 		violation(match.index ?? 0, "human-only tmux owner exposes caller-provided startup arguments");
-	}
-	for (const match of contents.matchAll(
-		/^\s*["']?\$(?:GJC_BIN|GJC_SESSION_GJC_BIN)["']?\s+(?!--internal-tmux-owner-isolation\b)\S+/gm,
-	)) {
-		violation(match.index ?? 0, "human-only tmux owner invokes GJC with a non-lifecycle startup argument");
 	}
 	return violations;
 }
@@ -486,17 +598,19 @@ async function scan(): Promise<string[]> {
 		}
 		if (machineTmuxDocumentationPaths.has(file)) {
 			const contents = await Bun.file(path.join(repoRoot, file)).text();
-			for (const match of contents.matchAll(machineTmuxDocumentationPattern)) {
+			const normalizedContents = normalizeShellContinuations(contents);
+			for (const match of normalizedContents.matchAll(machineTmuxDocumentationPattern)) {
 				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: published machine documentation directs tmux prompt or viewing access`,
+					`${file}:${lineNumber(normalizedContents, match.index ?? 0)}: published machine documentation directs tmux prompt or viewing access`,
 				);
 			}
 		}
 		if (isPublishedGjcSessionShellHelper(file)) {
 			const contents = await Bun.file(path.join(repoRoot, file)).text();
-			for (const match of contents.matchAll(tmuxMachineBusPrimitivePattern)) {
+			const normalizedContents = normalizeShellContinuations(contents);
+			for (const match of normalizedContents.matchAll(tmuxMachineBusPrimitivePattern)) {
 				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: published shell helper performs tmux machine prompt injection or pane viewing`,
+					`${file}:${lineNumber(normalizedContents, match.index ?? 0)}: published shell helper performs tmux machine prompt injection or pane viewing`,
 				);
 			}
 			violations.push(...tmuxCreateStartupViolations(file, contents));
@@ -813,33 +927,174 @@ async function selfTest(): Promise<void> {
 		1,
 		"published shell helper performs tmux machine prompt injection or pane viewing",
 	);
+	const canonicalCreateFixture = `#!/usr/bin/env bash
+[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }
+command = [os.environ["GJC_SESSION_GJC_BIN"]]
+child = subprocess.Popen(command)
+subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolation"])
+"$GJC_BIN" --internal-tmux-owner-isolation
+`;
+	await runSelfTestFixture({ "scripts/gjc-session/create.sh": canonicalCreateFixture }, 0);
 	await runSelfTestFixture(
-		{ "scripts/gjc-session/create.sh": "#!/usr/bin/env bash\nGJC_SESSION_FLAGS=unsafe\n" },
+		{ "scripts/gjc-session/create.sh": `${canonicalCreateFixture}\nGJC_SESSION_FLAGS=unsafe\n` },
 		1,
 		"exposes caller-provided startup arguments",
 	);
 	await runSelfTestFixture(
 		{
-			"scripts/gjc-session/create.sh":
-				'#!/usr/bin/env bash\n[[ $# -eq 2 ]]\ncommand = [\n  os.environ["GJC_SESSION_GJC_BIN"],\n  "--file",\n  "task.md",\n]\n',
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				"[[ $# -eq 2 ]] || true",
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'if false; then\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }\nfi',
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'command.extend(["--file", "task.md"])\nchild = subprocess.Popen(command)',
+			),
 		},
 		1,
 		"must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
 	);
 	await runSelfTestFixture(
 		{
-			"scripts/gjc-session/create.sh":
-				'#!/usr/bin/env bash\n[[ $# -ge 2 ]]\ncommand = [os.environ["GJC_SESSION_GJC_BIN"]]\n',
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'command += ["--file", "task.md"]\nchild = subprocess.Popen(command)',
+			),
 		},
 		1,
-		"must accept exactly two startup operands",
+		"must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
 	);
 	await runSelfTestFixture(
 		{
-			"scripts/gjc-session/create.sh":
-				'#!/usr/bin/env bash\n[[ $# -eq 2 ]]\ncommand = [os.environ["GJC_SESSION_GJC_BIN"]]\n"$GJC_BIN" --internal-tmux-owner-isolation\n',
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'child = subprocess.Popen(command + ["--file", "task.md"])',
+			),
 		},
-		0,
+		1,
+		"must invoke GJC only with zero interactive argv or the exact owner-isolation lifecycle argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'launch = command + ["--file", "task.md"]\nchild = subprocess.Popen(launch)',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": `${canonicalCreateFixture}\nlaunch = [os.environ["GJC_SESSION_GJC_BIN"], "--file", "task.md"]\nsubprocess.Popen(launch)\n`,
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolation"]',
+				'[\n  os.environ["GJC_SESSION_GJC_BIN"],\n  "--internal-tmux-owner-isolation",\n  "--file",\n  "task.md",\n]',
+			),
+		},
+		1,
+		"must invoke GJC only with zero interactive argv or the exact owner-isolation lifecycle argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'captured=$("$GJC_BIN" --file task.md)',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'"$GJC_BIN" --internal-tmux-owner-isolation \\\n  --file task.md',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'"$GJC_BIN" \\\n  --file task.md',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'"$GJC_BIN" \\\n  session status',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'"$GJC_BIN" \\\n  "write a prompt"',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'"$GJC_BIN" --internal-tmux-owner-isolation \\\n  "write a prompt"',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	const realCreate = await Bun.file(path.join(repoRoot, "scripts/gjc-session/create.sh")).text();
+	await runSelfTestFixture({ "scripts/gjc-session/create.sh": realCreate }, 0);
+	await runSelfTestFixture(
+		{ "scripts/gjc-session/watch-output.sh": "#!/usr/bin/env bash\n$TMUX_BIN \\\n  pipe-pane -t session 'sink'\n" },
+		1,
+		"published shell helper performs tmux machine prompt injection or pane viewing",
+	);
+	await runSelfTestFixture(
+		{ "docs/gjc-session-clawhip-routing.md": "$TMUX_BIN \\\n  pipe-pane -t owner 'sink'\n" },
+		1,
+		"published machine documentation directs tmux prompt or viewing access",
+	);
+	await runSelfTestFixture(
+		{
+			"docs/gjc-session-clawhip-routing.md": './scripts/gjc-session/create.sh bot /repo \\\n  --print "task"\n',
+		},
+		1,
+		"published machine documentation directs tmux prompt or viewing access",
 	);
 	await runSelfTestFixture(
 		{ "scripts/gjc-session/watch-output.sh": "#!/usr/bin/env bash\ntmux pipe-pane -t session 'sink'\n" },

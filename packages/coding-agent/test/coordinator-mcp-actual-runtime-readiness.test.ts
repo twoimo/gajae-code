@@ -38,7 +38,7 @@ describe("Coordinator MCP runtime readiness", () => {
 		expect(boundedRuntimePromptAckTimeoutMs(3_600_000)).toBe(COORDINATOR_RUNTIME_PROMPT_ACK_TIMEOUT_MAX_MS);
 	});
 
-	it("does not publish terminal runtime state until the in-flight prompt flushes agent_end", async () => {
+	it("does not publish terminal runtime state until prompt and event-handler cleanup settle", async () => {
 		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "gjc-coordinator-runtime-idle-"));
 		const stateFile = path.join(cwd, "runtime-state.json");
 		const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
@@ -46,6 +46,8 @@ describe("Coordinator MCP runtime readiness", () => {
 		if (!model) throw new Error("Expected bundled model");
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const stream = new AssistantMessageEventStream();
+		const messageEndBarrier = Promise.withResolvers<void>();
+		let messageEndHandlerStarted = false;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
@@ -61,11 +63,21 @@ describe("Coordinator MCP runtime readiness", () => {
 				return stream;
 			},
 		});
+		const extensionRunner = {
+			emitBeforeAgentStart: async () => undefined,
+			hasHandlers: () => false,
+			emit: async (event: { type: string }) => {
+				if (event.type !== "message_end") return;
+				messageEndHandlerStarted = true;
+				await messageEndBarrier.promise;
+			},
+		};
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated(),
 			modelRegistry: new ModelRegistry(authStorage, path.join(cwd, "models.yml")),
+			extensionRunner: extensionRunner as never,
 		});
 		const previousStateFile = process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV];
 		const previousSessionId = process.env[GJC_COORDINATOR_SESSION_ID_ENV];
@@ -75,13 +87,18 @@ describe("Coordinator MCP runtime readiness", () => {
 			const prompt = session.prompt("hold open");
 			await waitFor(() => session.isStreaming && fs.existsSync(stateFile), "running runtime state");
 			session.agent.emitExternalEvent({
-				type: "agent_end",
-				messages: [createAssistantMessage("premature terminal")],
+				type: "message_end",
+				message: createAssistantMessage("wait for extension cleanup"),
 			});
-			await Bun.sleep(25);
-			expect((await readState(stateFile)).state).toBe("running");
+			await waitFor(() => messageEndHandlerStarted, "message_end extension handler");
 
 			await session.abort();
+			await Bun.sleep(25);
+			expect((await readState(stateFile)).state).toBe("running");
+			// The provider stream may have stopped already; readiness is the durable
+			// terminal state, which must remain running until the handler barrier clears.
+
+			messageEndBarrier.resolve();
 			await prompt.catch(() => {});
 			await waitFor(() => {
 				if (!fs.existsSync(stateFile)) return false;
@@ -89,6 +106,7 @@ describe("Coordinator MCP runtime readiness", () => {
 				return state.state === "completed" || state.state === "errored";
 			}, "terminal runtime state");
 		} finally {
+			messageEndBarrier.resolve();
 			if (previousStateFile === undefined) delete process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV];
 			else process.env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] = previousStateFile;
 			if (previousSessionId === undefined) delete process.env[GJC_COORDINATOR_SESSION_ID_ENV];

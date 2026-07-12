@@ -10,6 +10,7 @@ import { runSdkSessionCli } from "../src/sdk/cli";
 import { SdkClient } from "../src/sdk/client";
 import { readSdkBrokerDiscovery } from "../src/sdk/client/discovery";
 import { createSdkMcpServer } from "../src/sdk/mcp";
+import { SessionManager } from "../src/session/session-manager";
 
 const cliEntrypoint = path.resolve(import.meta.dir, "../src/cli.ts");
 const spawned: Array<ReturnType<typeof Bun.spawn>> = [];
@@ -231,14 +232,15 @@ test("broker atomically reuses the indexed live owner for distinct resume keys",
 	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-resume-live-"));
 	const agentDir = path.join(root, "agent");
 	const stateRoot = path.join(root, ".gjc", "state");
-	const sessionId = "already-live";
-	const sessionPath = path.join(agentDir, "sessions", `${sessionId}.jsonl`);
+	const savedSession = SessionManager.create(root, SessionManager.getDefaultSessionDir(root, agentDir));
+	await savedSession.ensureOnDisk();
+	const sessionId = savedSession.getSessionId();
+	const sessionPath = savedSession.getSessionFile();
+	if (!sessionPath) throw new Error("Expected saved session path.");
 	const endpointPath = path.join(stateRoot, "sdk", `${sessionId}.json`);
 	const broker = new Broker({ agentDir });
 	try {
 		await broker.start();
-		await fs.mkdir(path.dirname(sessionPath), { recursive: true });
-		await fs.writeFile(sessionPath, JSON.stringify({ type: "session", id: sessionId }));
 		await fs.mkdir(path.dirname(endpointPath), { recursive: true });
 		await fs.writeFile(
 			endpointPath,

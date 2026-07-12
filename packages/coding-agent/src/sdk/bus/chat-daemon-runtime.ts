@@ -30,6 +30,25 @@ export interface ChatDaemonSdkClient {
 	send(frame: Record<string, unknown>): void;
 }
 
+export type ChatDeliveryPhase = "pre_send" | "ambiguous";
+
+/** An authorized SDK command could not be conclusively delivered. */
+export class ChatDeliveryError extends Error {
+	constructor(readonly phase: ChatDeliveryPhase) {
+		super("Authorized chat SDK command delivery failed.");
+		this.name = "ChatDeliveryError";
+	}
+}
+
+function chatDeliveryPhase(error: unknown): ChatDeliveryPhase | undefined {
+	if (error instanceof ChatDeliveryError) return error.phase;
+	if (!(error instanceof SdkClientError)) return undefined;
+	if (error.code === "connection_closed") return "pre_send";
+	return ["unavailable", "timeout", "reconnect_exhausted", "protocol_error"].includes(error.code)
+		? "ambiguous"
+		: undefined;
+}
+
 export interface ChatDaemonRuntimeDeps {
 	createDiscordProvider?: (
 		config: NonNullable<ChatDaemonRuntimeConfig["notifications"]["discord"]>,
@@ -414,31 +433,33 @@ export class ChatDaemonRuntime {
 		}
 		if (!input || typeof input !== "object" || Array.isArray(input)) return false;
 		const operation = match[2]!;
+		let outcome: { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
 		try {
-			const outcome = await sendAuthorizedChatOperation(transport, { kind, operation, input }, async () => {
+			outcome = await sendAuthorizedChatOperation(transport, { kind, operation, input }, async () => {
 				if (kind === "global")
 					return await this.#runGlobalCommand(operation, input as Record<string, unknown>, idempotencyKey);
 				const client = boundClient ?? this.#sessions.get(sessionId)?.client;
-				if (!client) throw new SdkClientError("unavailable", "Session SDK client is unavailable.");
+				if (!client) throw new ChatDeliveryError("pre_send");
 				return await client.request(
 					kind === "control"
 						? { type: "control_request", operation, input, confirm: true, idempotencyKey }
 						: { type: "query_request", query: operation, input, idempotencyKey },
 				);
 			});
-			await this.#postCommandOutcome(transport, sessionId, { kind, operation }, outcome);
-			return outcome.ok;
 		} catch (error) {
-			const message = error instanceof Error ? error.message : "Command request failed.";
-			const code = error instanceof SdkClientError ? error.code : "unavailable";
-			await this.#postCommandOutcome(
-				transport,
-				sessionId,
-				{ kind, operation },
-				{ ok: false, error: { code, message } },
-			);
-			return false;
+			const phase = chatDeliveryPhase(error);
+			if (phase) throw error instanceof ChatDeliveryError ? error : new ChatDeliveryError(phase);
+			if (!(error instanceof SdkClientError)) throw new ChatDeliveryError("ambiguous");
+			outcome = {
+				ok: false,
+				error: {
+					code: error.code,
+					message: error.message,
+				},
+			};
 		}
+		await this.#postCommandOutcome(transport, sessionId, { kind, operation }, outcome);
+		return outcome.ok;
 	}
 	async #runGlobalCommand(
 		operation: string,
@@ -446,10 +467,15 @@ export class ChatDaemonRuntime {
 		idempotencyKey: string,
 	): Promise<Record<string, unknown>> {
 		const discovery = await readSdkBrokerDiscovery(this.input.agentDir);
-		if (!discovery) throw new SdkClientError("unavailable", "SDK broker discovery is unavailable.");
-		const client = await (
-			this.deps.createBrokerClient ?? (async endpoint => await SdkClient.connect(endpoint.url, endpoint.token))
-		)({ url: discovery.url, token: discovery.token });
+		if (!discovery) throw new ChatDeliveryError("pre_send");
+		let client: ChatDaemonSdkClient;
+		try {
+			client = await (
+				this.deps.createBrokerClient ?? (async endpoint => await SdkClient.connect(endpoint.url, endpoint.token))
+			)({ url: discovery.url, token: discovery.token });
+		} catch {
+			throw new ChatDeliveryError("pre_send");
+		}
 		try {
 			return await client.request({ type: "broker_request", operation, input, idempotencyKey });
 		} finally {

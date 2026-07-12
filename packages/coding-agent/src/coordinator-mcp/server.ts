@@ -2085,14 +2085,18 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			await brokerSession(
 				workspace,
 				"session.get_endpoint",
-				{ sessionId, endpointGeneration: authority.endpointGeneration },
+				{
+					sessionId,
+					endpointGeneration: authority.endpointGeneration,
+					endpointIncarnation: authority.endpointIncarnation,
+				},
 				idempotencyKey,
 			),
 		);
 		const url = optionalString(endpointRecord.url);
 		const token = optionalString(endpointRecord.token);
 		if (!url || !token)
-			throw new SdkClientError("endpoint_stale", "Broker returned an invalid generation-bound endpoint.");
+			throw new SdkClientError("endpoint_stale", "Broker returned an invalid incarnation-bound endpoint.");
 		return { ...authority, endpoint: { url, token } };
 	}
 

@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ChatDeliveryError } from "../src/sdk/bus/chat-daemon-runtime";
 import {
 	type ChatEffect,
 	ChatEffectJournal,
 	type ChatEffectLease,
 	type EnqueueChatEffect,
 } from "../src/sdk/bus/chat-effect-journal";
+
 import { ConversationStore } from "../src/sdk/bus/conversation-store";
 import type { DiscordConversation } from "../src/sdk/bus/discord-conversation";
 import {
@@ -1119,6 +1121,57 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 		);
 	});
 
+	test("retries typed command pre-send delivery failures but retains ambiguous delivery", async () => {
+		let retryableAttempts = 0;
+		let ambiguousAttempts = 0;
+		await withDaemon(
+			async (daemon, _provider, agentDir) => {
+				const conversation = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });
+				const retryable = {
+					...inbound(conversation.threadId!, "command-retryable", 1),
+					interaction: undefined,
+					content: "/sdk query retryable {}",
+				};
+				await daemon.handleInbound(retryable);
+				const journal = new ChatEffectJournal({ agentDir, transport: "discord" });
+				expect(
+					await journal.read(`discord:app:guild:parent:${conversation.threadId}:command-retryable`),
+				).toMatchObject({
+					state: "accepted",
+					receipt: { status: "pre_send_failure" },
+				});
+				await daemon.handleInbound(retryable);
+				expect(retryableAttempts).toBe(2);
+
+				const ambiguous = {
+					...inbound(conversation.threadId!, "command-ambiguous", 1),
+					interaction: undefined,
+					content: "/sdk query ambiguous {}",
+				};
+				await daemon.handleInbound(ambiguous);
+				expect(
+					await journal.read(`discord:app:guild:parent:${conversation.threadId}:command-ambiguous`),
+				).toMatchObject({
+					state: "uncertain",
+					receipt: { status: "uncertain" },
+				});
+				await daemon.handleInbound(ambiguous);
+				expect(ambiguousAttempts).toBe(1);
+			},
+			{
+				onCommand: async (_sessionId, content) => {
+					if (content.includes("retryable")) {
+						retryableAttempts++;
+						if (retryableAttempts === 1) throw new ChatDeliveryError("pre_send");
+						return true;
+					}
+					ambiguousAttempts++;
+					throw new ChatDeliveryError("ambiguous");
+				},
+			},
+		);
+	});
+
 	test("retries definite pre-send SDK and binding failures but preserves ambiguous sends", async () => {
 		const frames: Record<string, unknown>[] = [];
 		const failures: Error[] = [
@@ -1141,7 +1194,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					const effect = await new ChatEffectJournal({ agentDir, transport: "discord" }).read(
 						`discord:app:guild:parent:${conversation.threadId}:definite-pre-send`,
 					);
-					expect(effect).toMatchObject({ state: "accepted", receipt: { status: "pre_send_failure" } });
+					expect(effect).toMatchObject({ state: "accepted", receipt: { status: "deferred" } });
 				}
 				const effectsPath = path.join(agentDir, "sdk", "daemons", "discord", "effects.json");
 				expect(await fs.readFile(effectsPath, "utf8")).not.toContain("token-definite-pre-send");
@@ -1351,6 +1404,63 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 			expect(effects).not.toContain("token-token-private");
 			expect(effects).not.toContain('"token"');
 		});
+	});
+
+	test("recovers a deferred action after a definite SDK pre-send failure without its callback token", async () => {
+		const frames: Record<string, unknown>[] = [];
+		let deferred = 0;
+		await withDaemon(
+			async (daemon, provider, agentDir) => {
+				const conversation = await daemon.notify({
+					sessionId: "session",
+					endpointGeneration: 1,
+					content: "Choose",
+					actionId: "ask",
+					options: ["Yes"],
+				});
+				provider.deferInteraction = async () => {
+					deferred++;
+				};
+				await daemon.handleInbound(inbound(conversation.threadId!, "deferred-retry", 1));
+
+				const effectId = `discord:app:guild:parent:${conversation.threadId}:deferred-retry`;
+				const journal = new ChatEffectJournal({ agentDir, transport: "discord" });
+				expect(await journal.read(effectId)).toMatchObject({ state: "accepted", receipt: { status: "deferred" } });
+				const effects = await fs.readFile(path.join(agentDir, "sdk", "daemons", "discord", "effects.json"), "utf8");
+				expect(effects).not.toContain("token-deferred-retry");
+
+				const recovered = new DiscordNotificationDaemon({
+					agentDir,
+					repo: agentDir,
+					guildId: "guild",
+					parentChannelId: "parent",
+					provider,
+					resolveEndpoint: async () => ({
+						generation: 1,
+						isCurrent: () => true,
+						send: frame => {
+							frames.push(frame);
+						},
+					}),
+				});
+				await recovered.start();
+				expect(deferred).toBe(1);
+				expect(frames).toMatchObject([
+					{ type: "reply", id: "ask", answer: "yes", idempotencyKey: expect.any(String) },
+				]);
+				expect(await journal.read(effectId)).toMatchObject({ state: "terminal" });
+				await recovered.stop();
+			},
+			{
+				resolveEndpoint: async () => ({
+					generation: 1,
+					isCurrent: () => true,
+					send: () => {
+						throw new DiscordEndpointBindingError();
+					},
+				}),
+			},
+		);
 	});
 
 	test("reconstructs an uncertain post receipt from its stable nonce without a duplicate", async () => {
@@ -1686,6 +1796,52 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 			await restarted.stop();
 		});
 	});
+	test("terminalizes stale non-closing archive and unarchive effects before provider calls", async () => {
+		let generation = 1;
+		await withDaemon(
+			async (daemon, provider, agentDir) => {
+				const archive = await daemon.notify({ sessionId: "archive", endpointGeneration: 1, content: "open" });
+				const unarchive = await daemon.notify({ sessionId: "unarchive", endpointGeneration: 1, content: "open" });
+				const store = new ConversationStore<DiscordConversation>({ agentDir, kind: "discord" });
+				const unarchiveKey = `app:guild:parent:${unarchive.threadId}`;
+				const unarchiveRecord = await store.read(unarchiveKey);
+				expect(unarchiveRecord).toBeDefined();
+				await store.write(unarchiveKey, unarchiveRecord!.generation, {
+					...unarchiveRecord!,
+					generation: unarchiveRecord!.generation + 1,
+					state: "resuming",
+					updatedAt: Date.now(),
+				});
+				const journal = new ChatEffectJournal({ agentDir, transport: "discord" });
+				await journal.enqueue({
+					id: "live-stale-archive",
+					kind: "archive",
+					transport: "discord",
+					sessionId: "archive",
+					endpointGeneration: 1,
+					payload: { threadId: archive.threadId! },
+				});
+				await journal.enqueue({
+					id: "live-stale-unarchive",
+					kind: "unarchive",
+					transport: "discord",
+					sessionId: "unarchive",
+					endpointGeneration: 1,
+					payload: { threadId: unarchive.threadId! },
+				});
+				generation = 2;
+				await daemon.start();
+				for (const id of ["live-stale-archive", "live-stale-unarchive"])
+					expect(await journal.read(id)).toMatchObject({ state: "terminal", receipt: { status: "stale_noop" } });
+				expect(provider.archived).toEqual([]);
+				expect(provider.unarchived).toEqual([]);
+			},
+			{
+				resolveEndpoint: async () => ({ generation, isCurrent: () => generation === 1, send: () => {} }),
+			},
+		);
+	});
+
 	test("terminalizes stale post, archive, and unarchive effects after close and generation-rotated resume", async () => {
 		await withDaemon(async (daemon, provider, agentDir) => {
 			const original = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });

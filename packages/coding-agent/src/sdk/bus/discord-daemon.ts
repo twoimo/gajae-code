@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SdkClientError } from "../client/client";
+import type { ChatDeliveryError } from "./chat-daemon-runtime";
+
 import {
 	type ChatEffect,
 	ChatEffectJournal,
@@ -246,7 +248,9 @@ export class DiscordNotificationDaemon {
 	async archive(sessionId: string): Promise<void> {
 		const record = await this.#bySession(sessionId);
 		if (!record?.threadId || record.state !== "active") return;
+		await this.#requireLiveBinding(record.sessionId!, record.endpointGeneration!);
 		await this.#threadEffect(`archive:${record.threadId}`, record, "archive");
+		await this.#requireLiveBinding(record.sessionId!, record.endpointGeneration!);
 		await this.#replace(record, { ...record, state: "archived", archivedAt: this.#now() });
 	}
 
@@ -269,9 +273,11 @@ export class DiscordNotificationDaemon {
 			await this.#driveClose(record);
 			return undefined;
 		}
+		await this.#requireLiveBinding(sessionId, endpointGeneration);
 		const resuming = await this.#replace(record, {
 			...record,
 			state: "resuming",
+			endpointGeneration,
 			pendingActionId: undefined,
 			pendingActionNonce: undefined,
 			pendingActionEffectId: undefined,
@@ -279,13 +285,14 @@ export class DiscordNotificationDaemon {
 
 		try {
 			await this.#threadEffect(`unarchive:${resuming.threadId}:${endpointGeneration}`, resuming, "unarchive");
+			await this.#requireLiveBinding(sessionId, endpointGeneration);
 			return await this.#replace(resuming, {
 				...resuming,
 				state: "active",
-				endpointGeneration,
 				archivedAt: undefined,
 			});
 		} catch {
+			await this.#requireLiveBinding(sessionId, endpointGeneration);
 			const superseded = await this.#replace(resuming, {
 				...resuming,
 				state: "archived",
@@ -295,6 +302,7 @@ export class DiscordNotificationDaemon {
 			});
 
 			const replacement = await this.#create(sessionId, endpointGeneration, `resume-${randomUUID()}`);
+			await this.#requireLiveBinding(sessionId, endpointGeneration);
 			await this.#replace(superseded, { ...superseded, supersededByThreadId: replacement.threadId });
 			return replacement;
 		}
@@ -480,7 +488,7 @@ export class DiscordNotificationDaemon {
 		interaction?: DiscordInboundEvent["interaction"],
 		liveCallbackEffect?: ChatEffect<DiscordInboundEffectPayload>,
 	): Promise<void> {
-		const effect =
+		const claimedEffect =
 			liveCallbackEffect ??
 			(await this.#rescheduleAfterEffectTransition(
 				this.#effects.claim<DiscordInboundEffectPayload>(
@@ -489,17 +497,19 @@ export class DiscordNotificationDaemon {
 					this.#dispatchLeaseMs,
 				),
 			));
-		if (!effect) return;
-		const lease = { owner: this.#dispatchOwner, epoch: effect.epoch };
+		if (!claimedEffect) return;
+		let effect: ChatEffect<DiscordInboundEffectPayload> = claimedEffect;
+		let lease = { owner: this.#dispatchOwner, epoch: effect.epoch };
+
 		const current = await this.#currentInboundRecord(record, receipt);
 		if (!current) {
 			await this.#terminalizeInbound(record, receipt, "rejected");
 			return;
 		}
 		record = current;
-		if (receipt.kind === "action") {
-			// Callback tokens cannot survive a restart. Recovery skips a valid live
-			// callback lease; a reclaimed action without its token is terminal.
+		if (receipt.kind === "action" && !this.#isDeferredActionEffect(effect)) {
+			// Callback tokens cannot survive a restart. Once defer succeeds, the
+			// durable deferred receipt lets recovery resume the SDK delivery without one.
 			if (!interaction) {
 				await this.#terminalizeInbound(record, receipt, "callback_token_unavailable");
 				return;
@@ -536,6 +546,16 @@ export class DiscordNotificationDaemon {
 				if (!(await renewCallbackLease())) return;
 				await this.options.provider.deferInteraction({ id: interaction.id, token: interaction.token });
 				if (!(await renewCallbackLease())) return;
+				const deferred = await this.#rescheduleAfterEffectTransition(
+					this.#effects.record(effect.id, lease, "accepted", { status: "deferred" }),
+				);
+				if (!deferred) return;
+				const reclaimed = await this.#rescheduleAfterEffectTransition(
+					this.#effects.claim<DiscordInboundEffectPayload>(effect.id, this.#dispatchOwner, this.#dispatchLeaseMs),
+				);
+				if (!reclaimed) return;
+				effect = reclaimed;
+				lease = { owner: this.#dispatchOwner, epoch: effect.epoch };
 			} catch {
 				await this.#rescheduleAfterEffectTransition(
 					this.#effects.record(effect.id, lease, "accepted", { status: "callback_failed" }),
@@ -545,6 +565,7 @@ export class DiscordNotificationDaemon {
 				clearInterval(timer);
 			}
 		}
+
 		const dispatchable = await this.#currentInboundRecord(record, receipt);
 		if (!dispatchable) {
 			await this.#terminalizeInbound(record, receipt, "stale_binding");
@@ -554,10 +575,13 @@ export class DiscordNotificationDaemon {
 		const endpoint = initialEndpoint ?? (await this.#resolveEndpoint(record.sessionId!, receipt.endpointGeneration));
 		if (!this.#matches(record, endpoint) || receipt.endpointGeneration !== endpoint.generation) {
 			await this.#rescheduleAfterEffectTransition(
-				this.#effects.record(effect.id, lease, "accepted", { status: "pre_send_binding_changed" }),
+				this.#effects.record(effect.id, lease, "accepted", {
+					status: this.#inboundAcceptedStatus(effect, "pre_send_binding_changed"),
+				}),
 			);
 			return;
 		}
+
 		let leaseLost = false;
 		let renewal: Promise<boolean> | undefined;
 		const renew = async (): Promise<boolean> => {
@@ -589,10 +613,13 @@ export class DiscordNotificationDaemon {
 			if (!(await renew())) return;
 			if (!this.#matches(record, endpoint) || receipt.endpointGeneration !== endpoint.generation) {
 				await this.#rescheduleAfterEffectTransition(
-					this.#effects.record(effect.id, lease, "accepted", { status: "pre_send_binding_changed" }),
+					this.#effects.record(effect.id, lease, "accepted", {
+						status: this.#inboundAcceptedStatus(effect, "pre_send_binding_changed"),
+					}),
 				);
 				return;
 			}
+
 			if (!(await renew())) return;
 			const beforeSend = await this.#currentInboundRecord(record, receipt);
 			if (!beforeSend) {
@@ -602,10 +629,13 @@ export class DiscordNotificationDaemon {
 			record = beforeSend;
 			if (!this.#matches(record, endpoint) || receipt.endpointGeneration !== endpoint.generation) {
 				await this.#rescheduleAfterEffectTransition(
-					this.#effects.record(effect.id, lease, "accepted", { status: "pre_send_binding_changed" }),
+					this.#effects.record(effect.id, lease, "accepted", {
+						status: this.#inboundAcceptedStatus(effect, "pre_send_binding_changed"),
+					}),
 				);
 				return;
 			}
+
 			if (effect.payload.type === "command")
 				await this.options.onCommand?.(
 					record.sessionId!,
@@ -621,7 +651,7 @@ export class DiscordNotificationDaemon {
 				const state = this.#isDefiniteSdkPreSendFailure(error) ? "accepted" : "uncertain";
 				await this.#rescheduleAfterEffectTransition(
 					this.#effects.record(effect.id, lease, state, {
-						status: state === "accepted" ? "pre_send_failure" : "uncertain",
+						status: state === "accepted" ? this.#inboundAcceptedStatus(effect, "pre_send_failure") : "uncertain",
 					}),
 				);
 			}
@@ -629,6 +659,13 @@ export class DiscordNotificationDaemon {
 			clearInterval(timer);
 		}
 	}
+	#isDeferredActionEffect(effect: ChatEffect<DiscordInboundEffectPayload>): boolean {
+		return effect.kind === "discord.inbound.action" && effect.receipt?.status === "deferred";
+	}
+	#inboundAcceptedStatus(effect: ChatEffect<DiscordInboundEffectPayload>, fallback: string): string {
+		return this.#isDeferredActionEffect(effect) ? "deferred" : fallback;
+	}
+
 	#hasLiveCallbackLease(effect: ChatEffect | undefined): boolean {
 		return (
 			effect?.kind === "discord.inbound.action" &&
@@ -971,11 +1008,15 @@ export class DiscordNotificationDaemon {
 		if (!(await this.#bindingCurrent(sessionId, endpointGeneration))) throw new DiscordEndpointBindingError();
 	}
 	#isDefiniteSdkPreSendFailure(error: unknown): boolean {
+		if (error instanceof DiscordEndpointBindingError) return true;
+		if (error instanceof SdkClientError) return error.code === "connection_closed";
 		return (
-			error instanceof DiscordEndpointBindingError ||
-			(error instanceof SdkClientError && error.code === "connection_closed")
+			error instanceof Error &&
+			error.name === "ChatDeliveryError" &&
+			(error as ChatDeliveryError).phase === "pre_send"
 		);
 	}
+
 	async #ensureConversation(input: DiscordNotificationInput): Promise<DiscordConversation> {
 		const existing = await this.#bySession(input.sessionId);
 		if (existing && closingIntent(existing)) {
@@ -1377,14 +1418,17 @@ export class DiscordNotificationDaemon {
 		sessionId: string | undefined,
 		endpointGeneration: number,
 		payload: TPayload,
-		operation: (ensure: () => Promise<void>) => Promise<ChatEffectReceipt>,
+		operation: (ensure: () => Promise<void>, beforeProvider: () => void) => Promise<ChatEffectReceipt>,
 		revalidate: () => boolean | Promise<boolean>,
+		terminalizeStaleBeforeProvider = false,
 	): Promise<ChatEffectReceipt> {
 		const initial = await this.#rescheduleAfterEffectTransition(
 			this.#effects.enqueue({ id, kind, transport: "discord", sessionId, endpointGeneration, payload }),
 		);
 		if (initial.state === "terminal") {
 			if (!initial.receipt) throw new Error(`Discord effect ${id} has no receipt`);
+			if (terminalizeStaleBeforeProvider && initial.receipt.status === "stale_noop")
+				throw new DiscordEndpointBindingError("Discord thread effect is no longer current.");
 			return initial.receipt;
 		}
 		const effect = await this.#rescheduleAfterEffectTransition(
@@ -1393,16 +1437,21 @@ export class DiscordNotificationDaemon {
 		if (!effect) throw new Error(`Discord effect ${id} is owned by another worker`);
 		const lease: ChatEffectLease = { owner: this.#providerOwner, epoch: effect.epoch };
 		let renewalLost = false;
+		let revalidationFailed = false;
+		let providerEffectStarted = false;
 		let renewal: Promise<boolean> | undefined;
 		const renew = async (): Promise<boolean> => {
 			if (renewalLost) return false;
 			if (renewal) return await renewal;
 			const currentRenewal = (async (): Promise<boolean> => {
-				if (
-					!(await this.#rescheduleAfterEffectTransition(this.#effects.renew(id, lease, this.#providerLeaseMs))) ||
-					!(await revalidate())
-				)
+				const renewed = await this.#rescheduleAfterEffectTransition(
+					this.#effects.renew(id, lease, this.#providerLeaseMs),
+				);
+				if (!renewed) renewalLost = true;
+				else if (!(await revalidate())) {
+					revalidationFailed = true;
 					renewalLost = true;
+				}
 				return !renewalLost;
 			})();
 			renewal = currentRenewal;
@@ -1423,13 +1472,19 @@ export class DiscordNotificationDaemon {
 		};
 		try {
 			await ensure();
-			const receipt = await operation(ensure);
+			const receipt = await operation(ensure, () => {
+				providerEffectStarted = true;
+			});
 			await ensure();
 			const committed = await this.#effects.record(id, lease, "terminal", receipt);
 			if (!committed) throw new Error(`Discord effect ${id} lost its fence before commit`);
 			return receipt;
 		} catch (error) {
-			if (!renewalLost)
+			if (terminalizeStaleBeforeProvider && revalidationFailed && !providerEffectStarted)
+				await this.#rescheduleAfterEffectTransition(
+					this.#effects.record(id, lease, "terminal", { status: "stale_noop" }),
+				);
+			else if (!renewalLost)
 				await this.#rescheduleAfterEffectTransition(
 					this.#effects.record(id, lease, "uncertain", { status: "uncertain" }),
 				);
@@ -1438,6 +1493,7 @@ export class DiscordNotificationDaemon {
 			clearInterval(timer);
 		}
 	}
+
 	async #postEffect(
 		id: string,
 		record: DiscordConversation,
@@ -1506,8 +1562,9 @@ export class DiscordNotificationDaemon {
 			record.sessionId,
 			record.endpointGeneration!,
 			{ threadId: record.threadId!, locked },
-			async ensure => {
+			async (ensure, beforeProvider) => {
 				await ensure();
+				beforeProvider();
 				if (operation === "archive")
 					await this.options.provider.archiveThread({
 						threadId: record.threadId!,
@@ -1519,16 +1576,22 @@ export class DiscordNotificationDaemon {
 			async () => {
 				const current = await this.#byThread(record.guildId, record.parentChannelId, record.threadId!);
 				const intent = closingIntent(record);
-				return closing
+				const mappingCurrent = closing
 					? !!current &&
-							intent?.nonce === closingIntent(current)?.nonce &&
-							current.sessionId === record.sessionId &&
-							current.endpointGeneration === record.endpointGeneration
+						intent?.nonce === closingIntent(current)?.nonce &&
+						current.sessionId === record.sessionId &&
+						current.endpointGeneration === record.endpointGeneration
 					: !!current &&
-							current.state === (operation === "archive" ? "active" : "resuming") &&
-							current.generation === record.generation &&
-							current.endpointGeneration === record.endpointGeneration;
+						current.state === (operation === "archive" ? "active" : "resuming") &&
+						current.generation === record.generation &&
+						current.endpointGeneration === record.endpointGeneration;
+				return (
+					mappingCurrent &&
+					(closing ||
+						(!!record.sessionId && (await this.#bindingCurrent(record.sessionId, record.endpointGeneration!))))
+				);
 			},
+			!closing,
 		);
 	}
 	async #createThreadEffect(intent: DiscordConversation, name: string): Promise<DiscordThread> {

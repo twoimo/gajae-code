@@ -7,7 +7,10 @@ import { createAgentSession } from "../../src/sdk";
 import { createNotificationsExtension } from "../../src/sdk/bus";
 import { SessionManager } from "../../src/session/session-manager";
 
-export async function startProductionSdkHost(cwd: string): Promise<{
+export async function startProductionSdkHost(
+	cwd: string,
+	options: { acceptPromptPreflightWithoutExecution?: boolean } = {},
+): Promise<{
 	endpoint: { url: string; token: string };
 	sessionId: string;
 	observed: Array<{ kind: "control" | "query"; operation: string }>;
@@ -40,6 +43,11 @@ export async function startProductionSdkHost(cwd: string): Promise<{
 		enableMCP: false,
 		enableLsp: false,
 	});
+	if (options.acceptPromptPreflightWithoutExecution) {
+		session.sendUserMessage = async (_content, promptOptions) => {
+			promptOptions?.onPreflightAccepted?.();
+		};
+	}
 	await initializeExtensions(session, {
 		reportSendError: () => {},
 		reportRuntimeError: () => {},

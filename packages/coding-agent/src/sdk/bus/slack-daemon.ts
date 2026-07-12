@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { SdkClientError } from "../client/client";
 import { readSdkSessionEndpoint, type SdkSessionEndpoint } from "../client/discovery";
+import type { ChatDeliveryError } from "./chat-daemon-runtime";
 import { ConversationStore } from "./conversation-store";
 import {
 	acceptsSlackInbound,
@@ -767,6 +768,7 @@ export class SlackNotificationDaemon {
 				return false;
 			}
 			const state = this.#isDefiniteSdkPreSendFailure(error) ? "accepted" : "uncertain";
+
 			const recorded = await this.#rescheduleAfterEffectTransition(
 				this.#journal.record(effect.id, lease, state, { status: state }),
 			);
@@ -1719,9 +1721,12 @@ export class SlackNotificationDaemon {
 		);
 	}
 	#isDefiniteSdkPreSendFailure(error: unknown): boolean {
+		if (error instanceof SlackEndpointBindingError) return true;
+		if (error instanceof SdkClientError) return error.code === "connection_closed";
 		return (
-			error instanceof SlackEndpointBindingError ||
-			(error instanceof SdkClientError && error.code === "connection_closed")
+			error instanceof Error &&
+			error.name === "ChatDeliveryError" &&
+			(error as ChatDeliveryError).phase === "pre_send"
 		);
 	}
 }

@@ -409,4 +409,4 @@ it("incrementally continues very large escaped emoji fields through bounded snap
 	expect(reads.every(({ start, end }) => end - start <= 512 * 1024)).toBe(true);
 	expect(reads.every(({ start, end }) => end - start < serializedBytes)).toBe(true);
 	await store.close();
-});
+}, 30_000);

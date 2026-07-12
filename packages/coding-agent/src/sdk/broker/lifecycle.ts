@@ -3,9 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { getSessionsDir } from "@gajae-code/utils";
+import { getSessionsDir, resolveEquivalentPath } from "@gajae-code/utils";
 
-import { prepareLaunchWorktree } from "../../gjc-runtime/launch-worktree";
+import { planLaunchWorktree, prepareLaunchWorktree } from "../../gjc-runtime/launch-worktree";
+import { SessionManager } from "../../session/session-manager";
 import {
 	FileSessionStorage,
 	SessionDeleteVerificationError,
@@ -124,6 +125,111 @@ function lifecycleWorktreeTarget(input: Input): SessionLifecycleWorktreeTarget |
 	return isLifecycleWorktreeTarget(worktree) ? worktree : null;
 }
 
+type LiveResumeRecord = {
+	locator: { repo: string; stateRoot: string };
+	endpointGeneration: number;
+	pid: number;
+	endpointMtimeMs?: number;
+	live: boolean;
+};
+type ResumeScope = {
+	cwd: string;
+	stateRoot: string;
+	sessionPath: string;
+	sessionIdentity: {
+		dev: bigint;
+		ino: bigint;
+		size: number;
+		mtimeMs: number;
+		mtimeNs: bigint;
+	};
+};
+function sameResumeLocator(record: LiveResumeRecord, cwd: string, root: string): boolean {
+	return (
+		resolveEquivalentPath(record.locator.repo) === resolveEquivalentPath(cwd) &&
+		resolveEquivalentPath(record.locator.stateRoot) === resolveEquivalentPath(root)
+	);
+}
+function sameResumeSessionIdentity(left: ResumeScope, right: ResumeScope): boolean {
+	return (
+		left.sessionPath === right.sessionPath &&
+		left.sessionIdentity.dev === right.sessionIdentity.dev &&
+		left.sessionIdentity.ino === right.sessionIdentity.ino &&
+		left.sessionIdentity.size === right.sessionIdentity.size &&
+		left.sessionIdentity.mtimeMs === right.sessionIdentity.mtimeMs &&
+		left.sessionIdentity.mtimeNs === right.sessionIdentity.mtimeNs
+	);
+}
+function sameLiveResumeRecord(expected: LiveResumeRecord, current: LiveResumeRecord): boolean {
+	return (
+		current.live &&
+		current.endpointGeneration === expected.endpointGeneration &&
+		current.pid === expected.pid &&
+		current.endpointMtimeMs === expected.endpointMtimeMs &&
+		sameResumeLocator(current, expected.locator.repo, expected.locator.stateRoot)
+	);
+}
+async function validateLiveResumeScope(
+	broker: Broker,
+	input: Input,
+	requestedSessionId: string,
+	record: LiveResumeRecord,
+): Promise<ResumeScope | BrokerResponse> {
+	const requestedCwd = lifecycleCwd(input);
+	if (!requestedCwd) return fail("invalid_input", "A target path is required.");
+	const suppliedRoot = stateRoot(input, requestedCwd);
+	if (!suppliedRoot || !hasDefaultStateRoot(requestedCwd, suppliedRoot))
+		return fail("invalid_input", "stateRoot must be the default .gjc/state for cwd.");
+	try {
+		if (!(await fs.stat(requestedCwd)).isDirectory())
+			return fail("invalid_input", "Lifecycle worktree must be a directory.");
+	} catch {
+		return fail("invalid_input", "Lifecycle worktree does not exist.");
+	}
+	const worktree = lifecycleWorktreeTarget(input);
+	if (worktree === null) return fail("invalid_input", "Lifecycle worktree target is invalid.");
+	let cwd = requestedCwd;
+	if (worktree) {
+		try {
+			const planned = planLaunchWorktree(
+				requestedCwd,
+				worktree.name
+					? { enabled: true, detached: false, name: worktree.name }
+					: { enabled: true, detached: true, name: null },
+			);
+			if (!planned.enabled) return fail("invalid_input", "Lifecycle worktree target is invalid.");
+			cwd = path.resolve(planned.worktreePath);
+		} catch (error) {
+			return fail(
+				"invalid_input",
+				`Unable to validate lifecycle worktree: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	const root = defaultStateRoot(cwd);
+	if (!sameResumeLocator(record, cwd, root))
+		return fail("endpoint_stale", "Live session does not match the requested resume scope.");
+	const sessionPath = text(input.sessionPath);
+	if (!sessionPath) return fail("invalid_input", "sessionPath is required to resume a saved session.");
+	const inventory = SessionManager.inventorySessionsStrict(cwd, {
+		sessionDir: SessionManager.getDefaultSessionDir(cwd, broker.settings.agentDir),
+	});
+	if (inventory.kind !== "complete")
+		return fail("endpoint_stale", "Requested saved session could not be verified for the requested workspace.");
+	const canonicalSessionPath = path.resolve(sessionPath);
+	const matches = inventory.candidates.filter(
+		candidate => candidate.id === requestedSessionId && candidate.path === canonicalSessionPath,
+	);
+	if (matches.length !== 1)
+		return fail("endpoint_stale", "Requested saved session does not match the live session scope.");
+	const session = matches[0]!;
+	return {
+		cwd,
+		stateRoot: root,
+		sessionPath: canonicalSessionPath,
+		sessionIdentity: session.identity,
+	};
+}
 async function reconcileReadyScope(broker: Broker, id: string, scope: string | undefined): Promise<void> {
 	if (!scope) return;
 	await broker.index.refresh();
@@ -721,18 +827,37 @@ export async function executeLifecycle(
 				? broker.index.listSessions().sessions.find(session => session.sessionId === requestedSessionId)
 				: undefined;
 			if (existing?.live) {
+				const initialScope = await validateLiveResumeScope(broker, input, requestedSessionId!, existing);
+				if ("ok" in initialScope) return initialScope;
+				const initialIncarnation = endpointIncarnation(existing, requestedSessionId!);
+				if (!initialIncarnation)
+					return fail("live_session", "Session is already live but its endpoint incarnation is unavailable.");
 				const endpoint = await broker.handleRequest("session.get_endpoint", {
 					sessionId: requestedSessionId,
 					endpointGeneration: existing.endpointGeneration,
+					endpointIncarnation: initialIncarnation,
 				});
 				if (!endpoint.ok)
-					return fail("live_session", "Session is already live but its generation-bound endpoint is unavailable.");
+					return fail(
+						"live_session",
+						"Session is already live but its incarnation-bound endpoint is unavailable.",
+					);
+				await broker.index.refresh();
+				const current = broker.index
+					.listSessions()
+					.sessions.find(session => session.sessionId === requestedSessionId);
+				if (!current || !sameLiveResumeRecord(existing, current))
+					return fail("endpoint_stale", "Live session changed while its resume authority was being verified.");
+				const finalScope = await validateLiveResumeScope(broker, input, requestedSessionId!, current);
+				if ("ok" in finalScope) return finalScope;
+				if (!sameResumeSessionIdentity(initialScope, finalScope))
+					return fail("endpoint_stale", "Saved session changed while its resume authority was being verified.");
 				return {
 					ok: true,
 					result: {
 						sessionId: requestedSessionId,
-						cwd: existing.locator.repo,
-						endpointGeneration: existing.endpointGeneration,
+						cwd: finalScope.cwd,
+						endpointGeneration: current.endpointGeneration,
 						endpoint: endpoint.result,
 						reused: true,
 					},

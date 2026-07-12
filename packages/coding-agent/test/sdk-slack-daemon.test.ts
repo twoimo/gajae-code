@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ChatDeliveryError } from "../src/sdk/bus/chat-daemon-runtime";
 import { ChatEffectJournal } from "../src/sdk/bus/chat-effect-journal";
 import { type SlackEndpoint, SlackEndpointBindingError, SlackNotificationDaemon } from "../src/sdk/bus/slack-daemon";
 import { SlackProviderError } from "../src/sdk/bus/slack-live-provider";
@@ -1208,6 +1209,55 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 						injected.push(frame);
 					},
 				}),
+			},
+		);
+	});
+
+	it("retries typed command pre-send delivery failures but retains ambiguous delivery", async () => {
+		let retryableAttempts = 0;
+		let ambiguousAttempts = 0;
+		await withDaemon(
+			async (daemon, _fake, _injected, _setEndpointGeneration, agentDir) => {
+				const root = await daemon.postRoot("session", "root");
+				const retryable = messageEnvelope("retryable-envelope", "retryable-event", root.rootTs!, {
+					clientMsgId: "retryable-message",
+					text: "/sdk query retryable {}",
+				});
+				expect(await daemon.handleEnvelope(retryable)).toBe(false);
+				const journal = new ChatEffectJournal({ agentDir, transport: "slack" });
+				expect(
+					await journal.read(`inbound:T1:C1:${root.rootTs}:U1:retryable-event:retryable-message`),
+				).toMatchObject({
+					state: "accepted",
+					receipt: { status: "accepted" },
+				});
+				expect(await daemon.handleEnvelope({ ...retryable, envelope_id: "retryable-redelivery" })).toBe(true);
+				expect(retryableAttempts).toBe(2);
+
+				const ambiguous = messageEnvelope("ambiguous-envelope", "ambiguous-event", root.rootTs!, {
+					clientMsgId: "ambiguous-message",
+					text: "/sdk query ambiguous {}",
+				});
+				expect(await daemon.handleEnvelope(ambiguous)).toBe(false);
+				expect(
+					await journal.read(`inbound:T1:C1:${root.rootTs}:U1:ambiguous-event:ambiguous-message`),
+				).toMatchObject({
+					state: "uncertain",
+					receipt: { status: "uncertain" },
+				});
+				expect(await daemon.handleEnvelope({ ...ambiguous, envelope_id: "ambiguous-redelivery" })).toBe(false);
+				expect(ambiguousAttempts).toBe(1);
+			},
+			{
+				onCommand: async (_sessionId, content) => {
+					if (content.includes("retryable")) {
+						retryableAttempts++;
+						if (retryableAttempts === 1) throw new ChatDeliveryError("pre_send");
+						return true;
+					}
+					ambiguousAttempts++;
+					throw new ChatDeliveryError("ambiguous");
+				},
 			},
 		);
 	});

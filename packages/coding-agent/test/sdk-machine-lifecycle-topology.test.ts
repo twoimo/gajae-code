@@ -146,11 +146,21 @@ async function acpGlobal(
 	return result(response.result ?? { ok: false, error: response.error ?? { code: "unknown" } });
 }
 
-test("shipped gjc --mode acp stdio/NDJSON drives authenticated G03-G07 lifecycle topology with durable effects", async () => {
+test("shipped ACP rejects raw generic lifecycle ingress in favor of typed session methods", async () => {
 	const life = await fixture();
-	await life.invokeScenario((operation, input, idempotencyKey) =>
-		acpGlobal(life.repo, life.agentDir, operation, input, idempotencyKey),
-	);
+	try {
+		await expect(
+			acpGlobal(
+				life.repo,
+				life.agentDir,
+				"session.create",
+				{ cwd: life.repo, target: { path: life.repo }, stateRoot: life.stateRoot },
+				"raw-lifecycle-must-not-reach-broker",
+			),
+		).resolves.toMatchObject({ ok: false, error: { code: "operation_prohibited" } });
+	} finally {
+		await life.cleanup();
+	}
 }, 120_000);
 
 test("shipped mcp-serve sdk stdio drives authenticated G03-G07 lifecycle topology with durable effects", async () => {

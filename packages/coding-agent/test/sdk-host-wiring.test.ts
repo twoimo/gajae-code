@@ -430,6 +430,91 @@ test("SDK host preserves ordered prompt image blocks in the host payload", async
 	]);
 });
 
+test("SDK host delivers accepted prompt failures after their acknowledgement", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-terminal-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-prompt-terminal-${Date.now()}`;
+	const handlers = start(context(cwd, sessionId), undefined, () =>
+		Promise.reject(Object.assign(new Error("prompt failed after preflight"), { code: "unavailable" })),
+	);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "prompt-terminal",
+			operation: "turn.prompt",
+			input: { text: "fail after acknowledgement" },
+		}),
+	);
+	await waitFor(
+		() =>
+			frames.some(frame => frame.type === "control_response" && frame.id === "prompt-terminal") &&
+			frames.some(frame => frame.type === "agent_failed"),
+		"accepted prompt terminal failure",
+	);
+	const acknowledgementIndex = frames.findIndex(
+		frame => frame.type === "control_response" && frame.id === "prompt-terminal",
+	);
+	const failureIndex = frames.findIndex(frame => frame.type === "agent_failed");
+	expect(acknowledgementIndex).toBeGreaterThanOrEqual(0);
+	expect(failureIndex).toBeGreaterThan(acknowledgementIndex);
+	const acknowledgement = frames[acknowledgementIndex] as { result?: { commandId?: unknown; turnId?: unknown } };
+	expect(frames[failureIndex]).toMatchObject({
+		type: "agent_failed",
+		commandId: acknowledgement.result?.commandId,
+		turnId: acknowledgement.result?.turnId,
+		error: { code: "unavailable", message: "prompt failed after preflight" },
+	});
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
+});
+
+test("SDK host applies prompt preflight correlation to abort_and_prompt", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-abort-prompt-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-abort-prompt-${Date.now()}`;
+	let aborts = 0;
+	const handlers = start({ ...context(cwd, sessionId), abort: () => aborts++ }, undefined, () => {});
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "abort-and-prompt",
+			operation: "turn.abort_and_prompt",
+			input: { text: "replacement" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "abort-and-prompt"),
+		"abort-and-prompt response",
+	);
+	expect(aborts).toBe(1);
+	expect(frames.find(frame => frame.type === "control_response" && frame.id === "abort-and-prompt")).toMatchObject({
+		ok: true,
+		result: { accepted: true, commandId: expect.any(String), turnId: expect.any(String) },
+	});
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
+});
+
 test("SDK session switches rotate endpoint authority before publishing the replacement host", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-switch-"));
 	dirs.push(cwd);

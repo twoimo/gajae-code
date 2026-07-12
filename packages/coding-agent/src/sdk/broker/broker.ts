@@ -155,6 +155,68 @@ function canonicalJson(value: unknown): string {
 		.map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
 		.join(",")}}`;
 }
+
+type EndpointAuthority = { endpointGeneration?: number; endpointIncarnation?: string };
+function endpointIncarnation(
+	record: Pick<IndexedSession, "endpointGeneration" | "endpointMtimeMs" | "pid">,
+	sessionId: string,
+): string | undefined {
+	if (
+		!Number.isSafeInteger(record.endpointGeneration) ||
+		record.endpointGeneration <= 0 ||
+		!Number.isSafeInteger(record.pid) ||
+		record.pid <= 0 ||
+		typeof record.endpointMtimeMs !== "number" ||
+		!Number.isFinite(record.endpointMtimeMs) ||
+		record.endpointMtimeMs <= 0
+	)
+		return undefined;
+	return createHash("sha256")
+		.update(
+			canonicalJson({
+				endpointGeneration: record.endpointGeneration,
+				endpointMtimeMs: record.endpointMtimeMs,
+				pid: record.pid,
+				sessionId,
+			}),
+		)
+		.digest("hex");
+}
+function expectedEndpointAuthority(input: Record<string, unknown>): EndpointAuthority | BrokerResponse {
+	const endpointGeneration = input.endpointGeneration;
+	const endpointIncarnation = input.endpointIncarnation;
+	if (
+		endpointGeneration !== undefined &&
+		(typeof endpointGeneration !== "number" || !Number.isSafeInteger(endpointGeneration) || endpointGeneration <= 0)
+	)
+		return error("invalid_input", "endpointGeneration must be a positive safe integer");
+	if (
+		endpointIncarnation !== undefined &&
+		(typeof endpointIncarnation !== "string" || !/^[a-f0-9]{64}$/.test(endpointIncarnation))
+	)
+		return error("invalid_input", "endpointIncarnation must be a SHA-256 hash");
+	if (endpointIncarnation !== undefined && endpointGeneration === undefined)
+		return error("invalid_input", "endpointIncarnation requires endpointGeneration");
+	return { endpointGeneration, endpointIncarnation };
+}
+function matchesEndpointAuthority(record: IndexedSession, authority: EndpointAuthority): boolean {
+	return (
+		(authority.endpointGeneration === undefined || authority.endpointGeneration === record.endpointGeneration) &&
+		(authority.endpointIncarnation === undefined ||
+			authority.endpointIncarnation === endpointIncarnation(record, record.sessionId))
+	);
+}
+function sameEndpointRecord(expected: IndexedSession, current: IndexedSession): boolean {
+	return (
+		current.live &&
+		current.endpointGeneration === expected.endpointGeneration &&
+		current.pid === expected.pid &&
+		current.endpointMtimeMs === expected.endpointMtimeMs &&
+		path.resolve(current.locator.repo) === path.resolve(expected.locator.repo) &&
+		path.resolve(current.locator.stateRoot) === path.resolve(expected.locator.stateRoot)
+	);
+}
+
 function lifecycleTarget(operation: string, input: Record<string, unknown>): unknown {
 	const target = input.target as Record<string, unknown> | undefined;
 	const string = (...values: unknown[]): string | undefined =>
@@ -413,18 +475,16 @@ export class Broker {
 		const sessionId = input.sessionId;
 		if (typeof sessionId !== "string" || !isCanonicalSessionId(sessionId))
 			return error("invalid_input", "sessionId must be a canonical safe identifier");
+		const authority = expectedEndpointAuthority(input);
+		if ("ok" in authority) return authority;
 		await this.index.refresh();
-
 		const record = this.index.listSessions().sessions.find(session => session.sessionId === sessionId);
 		if (!record) return error("resource_gone", "session is not indexed");
-		if (
-			!record.live ||
-			(typeof input.endpointGeneration === "number" && input.endpointGeneration !== record.endpointGeneration)
-		)
+		if (!record.live || !matchesEndpointAuthority(record, authority))
 			return error("endpoint_stale", "session endpoint is stale");
-		return this.#readEndpoint(record);
+		return this.#readEndpoint(record, authority);
 	}
-	async #readEndpoint(record: IndexedSession): Promise<BrokerResponse> {
+	async #readEndpoint(record: IndexedSession, authority: EndpointAuthority): Promise<BrokerResponse> {
 		if (!isCanonicalSessionId(record.sessionId))
 			return error("invalid_input", "indexed sessionId is not a canonical safe identifier");
 
@@ -439,6 +499,10 @@ export class Broker {
 				record.endpointMtimeMs === undefined ||
 				metadata.mtimeMs !== record.endpointMtimeMs
 			)
+				return error("endpoint_stale", "session endpoint is stale");
+			await this.index.refresh();
+			const current = this.index.listSessions().sessions.find(session => session.sessionId === record.sessionId);
+			if (!current || !sameEndpointRecord(record, current) || !matchesEndpointAuthority(current, authority))
 				return error("endpoint_stale", "session endpoint is stale");
 			return { ok: true, result: endpoint };
 		} catch (e) {
