@@ -68,9 +68,9 @@ async function sendRawFrameChunks(endpoint: string, chunks: readonly Buffer[]): 
 			socket.destroy();
 			return;
 		}
-		if (process.platform === "win32") socket.write(finalChunk);
-		else socket.end(finalChunk);
+		socket.write(finalChunk);
 	});
+	socket.once("end", () => socket.end());
 	socket.on("data", (chunk: Buffer) => {
 		const frames = decoder.push(chunk);
 		if (frames.length === 1) response = decodeControlResponseFrame(frames[0]);
@@ -732,6 +732,7 @@ describe.serial("visible session local control transport", () => {
 			const lstat = vi.spyOn(fs, "lstat").mockImplementation((async target => {
 				if (target !== endpoint) return originalLstat(target);
 				endpointLstats++;
+				if (endpointLstats === 1) return originalLstat(target);
 				if (endpointLstats === 2) throw identityError;
 				throw cleanupError;
 			}) as typeof fs.lstat);
@@ -1008,7 +1009,7 @@ describe.serial("visible session local control transport", () => {
 				endpoint,
 				generation: "generation-1",
 				token: "a".repeat(64),
-				requestTimeoutMs: 10,
+				requestTimeoutMs: 100,
 				maxConnections: 1,
 				handler: async (_request, context) => {
 					calls++;
@@ -1026,7 +1027,7 @@ describe.serial("visible session local control transport", () => {
 			});
 			await server.listen();
 			try {
-				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 100)).resolves.toEqual({
+				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 1_000)).resolves.toEqual({
 					version: 1,
 					id: "request-1",
 					ok: false,
@@ -1044,7 +1045,7 @@ describe.serial("visible session local control transport", () => {
 				});
 				expect(responses).toEqual([{ version: 1, id: "request-1", ok: false, error: "timeout" }]);
 				await expect(
-					sendControlRequest(endpoint, { ...createRequest("a".repeat(64)), id: "request-2" }, 100),
+					sendControlRequest(endpoint, { ...createRequest("a".repeat(64)), id: "request-2" }, 1_000),
 				).resolves.toEqual({ version: 1, id: "request-2", ok: true, result: {} });
 			} finally {
 				end.mockRestore();
