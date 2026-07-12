@@ -85,7 +85,7 @@ describe("SDK broker WebSocket transport", () => {
 				type: "broker_response",
 				id: "create",
 				ok: false,
-				error: { code: "invalid_input", message: "A target path or stateRoot is required." },
+				error: { code: "invalid_input", message: "A target path is required." },
 			});
 			ws.close();
 		} finally {
