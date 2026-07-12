@@ -1171,8 +1171,7 @@ export async function launchVisibleSession(
 		(request.ownerReadyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS) < 1
 	)
 		throw new Error("Visible session owner readiness timeout is invalid");
-	if (request.input.backend !== "conpty")
-		throw new Error("Visible session launch requires the conpty backend");
+	if (request.input.backend !== "conpty") throw new Error("Visible session launch requires the conpty backend");
 	const now = dependencies.now ?? Date.now;
 	const createdAt = now();
 	const deadline = createdAt + (request.ownerReadyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS);
