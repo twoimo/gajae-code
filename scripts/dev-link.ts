@@ -107,6 +107,48 @@ function assertResolvedGjcIsSource(winner: GjcHit | undefined): void {
 	process.exit(1);
 }
 
+/**
+ * Guard: `bun install` run from another worktree rewrites the
+ * `node_modules/@gajae-code/*` workspace symlinks to point at THAT checkout,
+ * and a later `bun install` here won't repair them (name+version still match,
+ * so bun considers the install satisfied). Fail loudly instead of letting the
+ * build break with confusing missing-export errors.
+ */
+function assertWorkspaceLinksLocal(): void {
+	const repoRootReal = realpath(repoRoot) ?? repoRoot;
+	const scopeDir = path.join(repoRoot, "node_modules", "@gajae-code");
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(scopeDir);
+	} catch {
+		return; // no install yet — nothing to validate
+	}
+
+	const stale: Array<{ link: string; real: string }> = [];
+	for (const entry of entries) {
+		const link = path.join(scopeDir, entry);
+		try {
+			if (!fs.lstatSync(link).isSymbolicLink()) continue;
+		} catch {
+			continue;
+		}
+		const real = realpath(link);
+		if (real && !real.startsWith(repoRootReal + path.sep)) {
+			stale.push({ link, real });
+		}
+	}
+
+	if (stale.length === 0) return;
+
+	console.error("✗ Workspace symlinks point outside this checkout (stale cross-worktree install):");
+	for (const { link, real } of stale) {
+		console.error(`    ${link}`);
+		console.error(`      -> ${real}`);
+	}
+	console.error("  Fix: rm -rf node_modules/@gajae-code && bun install");
+	process.exit(1);
+}
+
 function assertSourceExists(): void {
 	if (!fs.existsSync(cliSource)) {
 		console.error(`✗ Cannot find CLI source at ${cliSource}`);
@@ -118,6 +160,7 @@ function assertSourceExists(): void {
 /** Doctor: verify the `gjc` the shell resolves is this checkout's source. */
 function check(): never {
 	assertSourceExists();
+	assertWorkspaceLinksLocal();
 	const hits = findGjcOnPath();
 	if (hits.length === 0) {
 		console.error("✗ `gjc` is not on PATH.");
@@ -154,6 +197,7 @@ function check(): never {
 /** Link: point `gjc` at this checkout's source on PATH. */
 function link(): never {
 	assertSourceExists();
+	assertWorkspaceLinksLocal();
 
 	if (process.platform === "win32") {
 		console.error("dev:link targets Unix-like systems (symlink into ~/.local/bin).");

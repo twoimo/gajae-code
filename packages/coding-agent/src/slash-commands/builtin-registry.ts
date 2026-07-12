@@ -3,7 +3,15 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import { type Model, modelsAreEqual } from "@gajae-code/ai";
 import { getOAuthProviders } from "@gajae-code/ai/utils/oauth";
-import { isPetMode, PET_MODE_IDS, PET_SKIN_IDS, PET_SKINS, Spacer, Text } from "@gajae-code/tui";
+import {
+	isPetMode,
+	isUnderTerminalMultiplexer,
+	PET_MODE_IDS,
+	PET_SKIN_IDS,
+	PET_SKINS,
+	Spacer,
+	Text,
+} from "@gajae-code/tui";
 import { setProjectDir } from "@gajae-code/utils";
 import { jobElapsedMs } from "../async";
 import { materializeActiveModelProfileAssignments } from "../config/model-profile-activation";
@@ -579,7 +587,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			}
 			if (arg !== "off" && !GajaePetWidget.pixelProtocol()) {
 				ctx.showStatus(
-					"Gajae pet needs a sixel/kitty-graphics terminal (Windows Terminal 1.22+, kitty, Ghostty, WezTerm)",
+					isUnderTerminalMultiplexer()
+						? "Gajae pet: graphics are suppressed inside tmux/screen/zellij — escapes are not forwarded end-to-end. Run gjc outside the multiplexer in a sixel/kitty-graphics terminal, or set PI_FORCE_IMAGE_PROTOCOL=sixel when your multiplexer+client chain renders sixel."
+						: "Gajae pet needs a sixel/kitty-graphics terminal (Windows Terminal 1.22+, kitty, Ghostty, WezTerm)",
 					{ dim: true },
 				);
 			} else if (isPetMode(arg)) {
