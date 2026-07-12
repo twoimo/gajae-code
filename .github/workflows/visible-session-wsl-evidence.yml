@@ -1,0 +1,155 @@
+name: Visible Session Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: Full lowercase commit SHA to test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  visible-session-evidence:
+    runs-on: [self-hosted, Windows, X64, windows-11-wsl-tmux]
+    timeout-minutes: 45
+    env:
+      HEAD_SHA: ${{ inputs.head_sha }}
+    steps:
+      - name: Validate requested commit
+        shell: pwsh
+        run: |
+          if ($env:HEAD_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw "head_sha must be a 40-character lowercase commit SHA"
+          }
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+      - name: Verify checked-out commit
+        shell: pwsh
+        run: |
+          $actualHead = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualHead -cne $env:HEAD_SHA) {
+            throw "Checked-out revision does not match head_sha"
+          }
+          $worktreeStatus = (& git status --porcelain) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $worktreeStatus.Length -ne 0) {
+            throw "Checked-out worktree is not clean"
+          }
+      - name: Verify required runner configuration
+        shell: pwsh
+        env:
+          GJC_WSL_TEST_DISTRO: ${{ vars.GJC_WSL_TEST_DISTRO }}
+          GJC_WSL_RECEIPT_HMAC_KEY: ${{ secrets.GJC_WSL_RECEIPT_HMAC_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_NAME)) {
+            throw "Required self-hosted runner is unavailable"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GJC_WSL_TEST_DISTRO)) {
+            throw "Required WSL distribution is not configured"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GJC_WSL_RECEIPT_HMAC_KEY)) {
+            throw "Required WSL receipt signing key is not configured"
+          }
+          if ($null -eq (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+            throw "Required WSL runner capability is unavailable"
+          }
+          & wsl.exe --distribution $env:GJC_WSL_TEST_DISTRO --exec /bin/true *> $null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Configured WSL distribution is unavailable"
+          }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+        with:
+          bun-version: "1.3.14"
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly
+        with:
+          toolchain: nightly-2026-04-29
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build modern native addon
+        env:
+          TARGET_PLATFORM: win32
+          TARGET_ARCH: x64
+          TARGET_VARIANTS: modern
+        run: bun run ci:build:native
+      - name: Build coding-agent binary
+        run: bun --cwd=packages/coding-agent run build
+      - name: Hash tested binary
+        shell: pwsh
+        run: |
+          $binaryPath = "packages/coding-agent/dist/gjc.exe"
+          if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+            throw "Expected coding-agent binary was not produced"
+          }
+          $binarySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $binaryPath).Hash.ToLowerInvariant()
+          if ($binarySha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Unable to calculate binary SHA-256"
+          }
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "GJC_WSL_BINARY_SHA256=$binarySha256`n")
+      - name: Produce visible-session evidence
+        shell: pwsh
+        env:
+          GJC_WSL_TEST_DISTRO: ${{ vars.GJC_WSL_TEST_DISTRO }}
+          GJC_WSL_RECEIPT_HMAC_KEY: ${{ secrets.GJC_WSL_RECEIPT_HMAC_KEY }}
+        run: |
+          $receiptDirectory = Join-Path $env:RUNNER_TEMP "visible-session-wsl-evidence"
+          New-Item -ItemType Directory -Force -Path $receiptDirectory | Out-Null
+          $receiptPath = Join-Path $receiptDirectory "receipt.json"
+          $signaturePath = Join-Path $receiptDirectory "receipt.sig"
+          & bun scripts/run-visible-session-wsl-e2e.ts `
+            --distro $env:GJC_WSL_TEST_DISTRO `
+            --source `
+            --compiled `
+            --head $env:HEAD_SHA `
+            --binary-sha256 $env:GJC_WSL_BINARY_SHA256 `
+            --out $receiptPath `
+            --signature $signaturePath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Visible-session evidence producer failed"
+          }
+      - name: Verify visible-session evidence
+        shell: pwsh
+        env:
+          GJC_WSL_RECEIPT_HMAC_KEY: ${{ secrets.GJC_WSL_RECEIPT_HMAC_KEY }}
+        run: |
+          $receiptDirectory = Join-Path $env:RUNNER_TEMP "visible-session-wsl-evidence"
+          $receiptPath = Join-Path $receiptDirectory "receipt.json"
+          $signaturePath = Join-Path $receiptDirectory "receipt.sig"
+          & bun scripts/verify-visible-session-wsl-receipt.ts `
+            --receipt $receiptPath `
+            --signature $signaturePath `
+            --expected-head $env:HEAD_SHA `
+            --expected-binary-sha $env:GJC_WSL_BINARY_SHA256 `
+            --max-age-hours 168 `
+            --hmac-env GJC_WSL_RECEIPT_HMAC_KEY
+          if ($LASTEXITCODE -ne 0) {
+            throw "Visible-session evidence verifier failed"
+          }
+          $testedBinaryPath = "packages/coding-agent/dist/gjc.exe"
+          $artifactBinaryPath = Join-Path $receiptDirectory "gjc.exe"
+          Copy-Item -LiteralPath $testedBinaryPath -Destination $artifactBinaryPath
+          $artifactBinarySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactBinaryPath).Hash.ToLowerInvariant()
+          if ($artifactBinarySha256 -cne $env:GJC_WSL_BINARY_SHA256) {
+            throw "Copied evidence binary does not match the tested binary"
+          }
+          $artifactFiles = @(
+            Get-ChildItem -LiteralPath $receiptDirectory -File |
+              Sort-Object Name |
+              ForEach-Object Name
+          )
+          if (($artifactFiles -join ",") -cne "gjc.exe,receipt.json,receipt.sig") {
+            throw "Evidence artifact inventory is not exact"
+          }
+      - name: Upload visible-session receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: visible-session-wsl-receipt-${{ inputs.head_sha }}
+          path: |
+            ${{ runner.temp }}/visible-session-wsl-evidence/receipt.json
+            ${{ runner.temp }}/visible-session-wsl-evidence/receipt.sig
+            ${{ runner.temp }}/visible-session-wsl-evidence/gjc.exe
+          if-no-files-found: error
+          retention-days: 7

@@ -11,6 +11,13 @@ export interface VisibleSessionTmuxOwnership {
 	stateFilePath: string;
 	ownerGeneration: string;
 }
+export interface VisibleSessionWslTmuxOwnership {
+	distro: string;
+	linuxStateFilePath: string;
+	hostVersion: string;
+	distroVersion: string;
+	schemaVersion: number;
+}
 export interface VisibleSessionName {
 	displayName: string;
 	key: string;
@@ -40,6 +47,7 @@ export interface VisibleSessionGeneration {
 	tokenFilePath: string;
 	tokenSha256: string;
 	tmux?: VisibleSessionTmuxOwnership;
+	wslTmux?: VisibleSessionWslTmuxOwnership;
 }
 export interface VisibleSessionRegistryEntry {
 	name: VisibleSessionName;
