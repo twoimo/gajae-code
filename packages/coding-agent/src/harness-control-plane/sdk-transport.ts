@@ -27,6 +27,9 @@ export interface CreateSdkSessionTransportOptions {
 	/** Starts the normal GJC session before discovery. Test callers may provide a deterministic SDK host. */
 	spawn?: () => SpawnedHarnessSession | Promise<SpawnedHarnessSession>;
 	discoveryTimeoutMs?: number;
+	/** Test seam: inject SDK client/endpoint resolution to avoid a process-global module mock. */
+	connect?: typeof SdkClient.connect;
+	readEndpoint?: (repo: string, sessionId: string) => Promise<{ url: string; token: string } | null>;
 }
 
 function invalidResponse(detail: string): never {
@@ -127,13 +130,14 @@ export async function createSdkSessionTransport(
 	options: CreateSdkSessionTransportOptions,
 ): Promise<HarnessSessionTransport> {
 	let child: SpawnedHarnessSession | undefined;
-	let endpoint = await readSdkSessionEndpoint(options.repo, options.sessionId);
+	const readEndpoint = options.readEndpoint ?? readSdkSessionEndpoint;
+	let endpoint = await readEndpoint(options.repo, options.sessionId);
 	if (!endpoint && options.spawn) child = await options.spawn();
 	const timeoutMs = options.discoveryTimeoutMs ?? DISCOVERY_TIMEOUT_MS;
 	const deadline = Date.now() + timeoutMs;
 	while (!endpoint && Date.now() < deadline) {
 		await new Promise(resolve => setTimeout(resolve, DISCOVERY_POLL_MS));
-		endpoint = await readSdkSessionEndpoint(options.repo, options.sessionId);
+		endpoint = await readEndpoint(options.repo, options.sessionId);
 	}
 	if (!endpoint) {
 		child?.kill("SIGTERM");
@@ -143,7 +147,7 @@ export async function createSdkSessionTransport(
 		);
 	}
 
-	const client = await SdkClient.connect(endpoint.url, endpoint.token);
+	const client = await (options.connect ?? SdkClient.connect)(endpoint.url, endpoint.token);
 	let cursor = 0;
 	let lastFrameAt: string | null = null;
 	let live = true;

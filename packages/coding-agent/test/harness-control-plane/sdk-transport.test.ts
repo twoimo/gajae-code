@@ -1,4 +1,6 @@
-import { afterAll, describe, expect, it, mock } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import { createSdkSessionTransport } from "../../src/harness-control-plane/sdk-transport";
+import type { SdkClient } from "../../src/sdk/client";
 
 type Responses = {
 	metadata: unknown;
@@ -37,25 +39,13 @@ const client = {
 	close: async (): Promise<void> => {},
 };
 
-const realClientModule = await import("../../src/sdk/client");
-
-mock.module("../../src/sdk/client", () => ({
-	SdkClient: { connect: async () => client },
-	readSdkSessionEndpoint: async () => ({ url: "ws://sdk.test", token: "token" }),
-}));
-
-afterAll(() => {
-	// Restore the real module so this process-global mock.module does not leak
-	// SdkClient (a non-constructor stub) into sibling shard tests that construct
-	// the real SdkClient (e.g. sdk-acp-two-client-race, sdk-chat-daemon-worker).
-	mock.module("../../src/sdk/client", () => realClientModule);
-	mock.restore();
-});
-
-const { createSdkSessionTransport } = await import("../../src/harness-control-plane/sdk-transport");
-
 async function transport() {
-	return await createSdkSessionTransport({ repo: "/repo", sessionId: "session" });
+	return await createSdkSessionTransport({
+		repo: "/repo",
+		sessionId: "session",
+		connect: async () => client as unknown as SdkClient,
+		readEndpoint: async () => ({ url: "ws://sdk.test", token: "token" }),
+	});
 }
 
 async function expectInvalidResponse(work: () => Promise<unknown>): Promise<void> {
