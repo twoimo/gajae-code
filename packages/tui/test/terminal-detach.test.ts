@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "bun:test";
+import {
+	createRawTerminalLease,
+	emergencyRawTerminalRestore,
+	type RawTerminalStdin,
+	type WindowsConsoleDriver,
+} from "@gajae-code/tui";
 import { ProcessTerminal, type Terminal, type TerminalAppearance } from "@gajae-code/tui/terminal";
 import { type Component, CURSOR_MARKER, TUI } from "@gajae-code/tui/tui";
 
@@ -119,6 +125,42 @@ class DetachingTerminal implements Terminal {
 async function settle(): Promise<void> {
 	await new Promise<void>(resolve => process.nextTick(resolve));
 	await Bun.sleep(25);
+}
+function createRawStdin(raw: boolean, flowing: boolean | null, paused: boolean): {
+	stdin: RawTerminalStdin;
+	state: { raw: boolean; flowing: boolean | null; paused: boolean };
+	calls: string[];
+} {
+	const state = { raw, flowing, paused };
+	const calls: string[] = [];
+	return {
+		stdin: {
+			isTTY: true,
+			get isRaw(): boolean {
+				return state.raw;
+			},
+			setRawMode: (mode: boolean): void => {
+				calls.push(`raw:${mode}`);
+				state.raw = mode;
+			},
+			isPaused: (): boolean => state.paused,
+			get readableFlowing(): boolean | null {
+				return state.flowing;
+			},
+			pause: (): void => {
+				calls.push("pause");
+				state.flowing = false;
+				state.paused = true;
+			},
+			resume: (): void => {
+				calls.push("resume");
+				state.flowing = true;
+				state.paused = false;
+			},
+		},
+		state,
+		calls,
+	};
 }
 
 function withStdoutProperty<T>(
@@ -268,5 +310,109 @@ describe("terminal detach handling", () => {
 		expect(() => tui.requestRender(true)).not.toThrow();
 		await settle();
 		expect(terminal.writes.length).toBe(writesBeforeCursorFailure);
+	});
+});
+
+describe("raw terminal lease", () => {
+	it("restores the exact raw and flow state only once", () => {
+		const { stdin, state, calls } = createRawStdin(false, false, true);
+		const lease = createRawTerminalLease({ stdin, platform: "linux" });
+
+		expect(state).toEqual({ raw: true, flowing: true, paused: false });
+		lease.close();
+		lease.close();
+
+		expect(state).toEqual({ raw: false, flowing: false, paused: true });
+		expect(calls).toEqual(["raw:true", "resume", "pause", "raw:false"]);
+	});
+
+	it("rolls back stdin and console mode when Windows VT adoption fails", () => {
+		const { stdin, state, calls } = createRawStdin(false, false, true);
+		let mode = 0x0011;
+		let driverClosed = false;
+		const modeWrites: number[] = [];
+		const consoleDriver: WindowsConsoleDriver = {
+			getInputMode: (): number => mode,
+			setInputMode: (nextMode: number): boolean => {
+				modeWrites.push(nextMode);
+				if (nextMode === 0x0211) return false;
+				mode = nextMode;
+				return true;
+			},
+			close: (): void => {
+				driverClosed = true;
+			},
+		};
+
+		expect(() => createRawTerminalLease({ stdin, platform: "win32", consoleDriver })).toThrow(
+			"Could not enable Windows virtual terminal input",
+		);
+
+		expect(state).toEqual({ raw: false, flowing: false, paused: true });
+		expect(calls).toEqual(["raw:true", "resume", "pause", "raw:false"]);
+		expect(mode).toBe(0x0011);
+		expect(modeWrites).toEqual([0x0211, 0x0011]);
+		expect(driverClosed).toBe(true);
+
+		const successor = createRawTerminalLease({
+			stdin: createRawStdin(false, false, true).stdin,
+			platform: "linux",
+		});
+		successor.close();
+	});
+
+	it("enables Windows VT input and restores the original console mode", () => {
+		const { stdin, state } = createRawStdin(false, false, true);
+		let mode = 0x0011;
+		let driverClosed = false;
+		const modeWrites: number[] = [];
+		const consoleDriver: WindowsConsoleDriver = {
+			getInputMode: (): number => mode,
+			setInputMode: (nextMode: number): boolean => {
+				modeWrites.push(nextMode);
+				mode = nextMode;
+				return true;
+			},
+			close: (): void => {
+				driverClosed = true;
+			},
+		};
+		const originalSetRawMode = stdin.setRawMode!;
+		stdin.setRawMode = (nextRaw: boolean): void => {
+			originalSetRawMode(nextRaw);
+			if (nextRaw) mode = 0x0001;
+		};
+
+		const lease = createRawTerminalLease({ stdin, platform: "win32", consoleDriver });
+		expect(modeWrites).toEqual([0x0201]);
+
+		lease.close();
+
+		expect(state).toEqual({ raw: false, flowing: false, paused: true });
+		expect(mode).toBe(0x0011);
+		expect(modeWrites).toEqual([0x0201, 0x0011]);
+		expect(driverClosed).toBe(true);
+	});
+
+	it("retries emergency restoration after a partial close failure", () => {
+		const { stdin, state } = createRawStdin(false, false, true);
+		const setRawMode = stdin.setRawMode!;
+		let rawRestoreFailures = 1;
+		stdin.setRawMode = (mode: boolean): void => {
+			if (!mode && rawRestoreFailures-- > 0) throw new Error("raw restore failed");
+			setRawMode(mode);
+		};
+
+		const lease = createRawTerminalLease({ stdin, platform: "linux" });
+		expect(() => lease.close()).toThrow("raw restore failed");
+
+		emergencyRawTerminalRestore();
+
+		expect(state).toEqual({ raw: false, flowing: false, paused: true });
+		const successor = createRawTerminalLease({
+			stdin: createRawStdin(false, false, true).stdin,
+			platform: "linux",
+		});
+		successor.close();
 	});
 });
