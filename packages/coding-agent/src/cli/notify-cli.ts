@@ -39,6 +39,7 @@ export interface NotifyCommandArgs {
 	slackAppToken?: string;
 	slackWorkspaceId?: string;
 	slackChannelId?: string;
+	slackAuthorizedUserId?: string;
 	redact?: boolean;
 	probe?: boolean;
 	message?: string;
@@ -133,6 +134,7 @@ export function parseNotifyArgs(args: string[]): NotifyCommandArgs | undefined {
 			...(flag("--slack-app-token") ? { slackAppToken: flag("--slack-app-token") } : {}),
 			...(flag("--slack-workspace-id") ? { slackWorkspaceId: flag("--slack-workspace-id") } : {}),
 			...(flag("--slack-channel-id") ? { slackChannelId: flag("--slack-channel-id") } : {}),
+			...(flag("--slack-authorized-user-id") ? { slackAuthorizedUserId: flag("--slack-authorized-user-id") } : {}),
 			redact: rest.includes("--redact"),
 		};
 	}
@@ -260,17 +262,19 @@ async function runSlackSetup(cmd: NotifyCommandArgs, deps: NotifyCommandDeps): P
 	const appToken = requiredSetupValue(cmd.slackAppToken, "--slack-app-token");
 	const workspaceId = requiredSetupValue(cmd.slackWorkspaceId, "--slack-workspace-id");
 	const channelId = requiredSetupValue(cmd.slackChannelId, "--slack-channel-id");
+	const authorizedUserId = cmd.slackAuthorizedUserId?.trim() || undefined;
 	const settings = await getSettings(deps);
 	settings.set("notifications.slack.botToken", botToken);
 	settings.set("notifications.slack.appToken", appToken);
 	settings.set("notifications.slack.workspaceId", workspaceId);
 	settings.set("notifications.slack.channelId", channelId);
+	settings.set("notifications.slack.authorizedUserId", authorizedUserId);
 	settings.set("notifications.enabled", true);
 	if (cmd.redact) settings.set("notifications.redact", true);
 	await settings.flushOrThrow();
 	const daemon = await ensureConfiguredProviderDaemon("slack", settings, deps);
 	process.stdout.write(
-		`Slack notifications enabled. botToken=${maskToken(botToken)} appToken=${maskToken(appToken)} workspaceId=${workspaceId} channelId=${channelId} daemon=${daemon}\n`,
+		`Slack notifications enabled. botToken=${maskToken(botToken)} appToken=${maskToken(appToken)} workspaceId=${workspaceId} channelId=${channelId} authorizedUserId=${authorizedUserId ?? "(unset; inbound denied)"} daemon=${daemon}\n`,
 	);
 }
 
@@ -662,7 +666,7 @@ export function printNotifyHelp(): void {
 ${chalk.bold("Usage:")}
   ${APP_NAME} notify setup [telegram]
   ${APP_NAME} notify setup discord --discord-bot-token <token> --discord-application-id <id> --discord-guild-id <id> --discord-parent-channel-id <id>
-  ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id>
+  ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id> [--slack-authorized-user-id <id>]
   ${APP_NAME} notify status
   ${APP_NAME} notify health [--probe]
   ${APP_NAME} notify test [--message <text>]
@@ -679,7 +683,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} notify setup
   ${APP_NAME} notify setup --token <botToken> --chat-id <chatId> [--redact]
   ${APP_NAME} notify setup discord --discord-bot-token <token> --discord-application-id <id> --discord-guild-id <id> --discord-parent-channel-id <id>
-  ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id>
+  ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id> [--slack-authorized-user-id <id>]
   ${APP_NAME} notify status
   ${APP_NAME} notify health --probe
   ${APP_NAME} notify test --message "hello from gjc"

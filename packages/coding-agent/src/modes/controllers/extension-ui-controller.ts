@@ -1286,9 +1286,10 @@ export class ExtensionUiController {
 		// (queueSteer/queueFollowUp push synchronously) before refreshing pending display.
 		const send = this.ctx.session.sendUserMessage(content, options);
 		applyInjectedUserSubmission(this.ctx, { content, queued });
-		send.catch((err: unknown) => {
+		void send.catch((err: unknown) => {
 			this.ctx.showError(`Extension sendUserMessage failed: ${err instanceof Error ? err.message : String(err)}`);
 		});
+		return send;
 	};
 
 	#applyCustomMessageDisplay(wasStreaming: boolean, shouldDisplay: boolean | undefined): void {

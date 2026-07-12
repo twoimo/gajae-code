@@ -67,6 +67,8 @@ describe("send_prompt same-session concurrency", () => {
 												locator: { repo: root },
 												live: true,
 												endpointGeneration: 1,
+												pid: 100,
+												endpointMtimeMs: 1,
 											});
 											return { ok: true, result: { sessionId } };
 										}

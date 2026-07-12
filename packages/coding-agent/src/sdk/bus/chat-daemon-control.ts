@@ -99,6 +99,7 @@ function identityFor(settings: Settings, kind: ChatDaemonKind): string | undefin
 		cfg.slack.appToken,
 		cfg.slack.workspaceId,
 		cfg.slack.channelId,
+		cfg.slack.authorizedUserId ?? "",
 		String(cfg.redact),
 		cfg.verbosity,
 	]);

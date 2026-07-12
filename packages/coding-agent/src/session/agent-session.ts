@@ -517,6 +517,8 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
+	/** Invoked after all prompt preflight checks pass and immediately before agent execution begins. */
+	onPreflightAccepted?: () => void;
 }
 
 /** Result from a handoff operation. */
@@ -1532,6 +1534,10 @@ export class AgentSession {
 		const pending = this.#pendingAgentEndEmit;
 		if (!pending) return;
 		this.#pendingAgentEndEmit = undefined;
+		// Persist before notifying synchronous subscribers: a subscriber may start a
+		// successor prompt from agent_end, whose running state must serialize after
+		// this terminal boundary rather than be overwritten by it.
+		this.#persistRuntimeStateInBackground(pending);
 		this.#emit(pending);
 		void this.#queueExtensionEvent(pending);
 	}
@@ -2172,8 +2178,16 @@ export class AgentSession {
 		// supersedes the pending one, which is what subscribers want — they only
 		// care about the final settle.
 		if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
-			void persistRuntimeState();
 			this.#pendingAgentEndEmit = event;
+			return;
+		}
+
+		if (event.type === "agent_end") {
+			// Start the durable terminal write before synchronous subscribers can
+			// re-enter prompt(), so a successor's running transition serializes after it.
+			void persistRuntimeState();
+			this.#emit(event);
+			await this.#emitExtensionEvent(event);
 			return;
 		}
 
@@ -5644,6 +5658,7 @@ export class AgentSession {
 			if (workflowIntentDiff) {
 				this.sessionManager.appendCustomEntry(WORKFLOW_INTENT_DIFF_CUSTOM_TYPE, workflowIntentDiff);
 			}
+			options?.onPreflightAccepted?.();
 			return;
 		}
 
@@ -5797,7 +5812,7 @@ export class AgentSession {
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
-		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck"> & {
+		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck" | "onPreflightAccepted"> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 		},
@@ -5964,6 +5979,7 @@ export class AgentSession {
 			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
+			options?.onPreflightAccepted?.();
 			await this.#promptAgentWithIdleRetry(messages, agentPromptOptions);
 			const terminalAssistant = this.#findLastAssistantMessage();
 			if (
@@ -6538,7 +6554,7 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -6562,10 +6578,12 @@ export class AgentSession {
 
 		if (options?.deliverAs === "followUp") {
 			await this.#queueFollowUp(text, images);
+			options.onPreflightAccepted?.();
 			return;
 		}
 		if (options?.deliverAs === "steer") {
 			await this.#queueSteer(text, images);
+			options.onPreflightAccepted?.();
 			return;
 		}
 
@@ -6576,6 +6594,7 @@ export class AgentSession {
 		// the message in the steering queue with no turn to consume it.
 		if (this.isStreaming) {
 			await this.#queueSteer(text, images);
+			options?.onPreflightAccepted?.();
 			return;
 		}
 
@@ -6583,6 +6602,7 @@ export class AgentSession {
 		await this.prompt(text, {
 			expandPromptTemplates: false,
 			images,
+			onPreflightAccepted: options?.onPreflightAccepted,
 		});
 	}
 
@@ -11122,20 +11142,9 @@ export class AgentSession {
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 
-			// The target session is loaded and MCP selections are restored: the
-			// switch is committed far enough to discard pre-switch delivery queues.
-			// Clear before session_switch hooks, so messages enqueued by hooks belong
-			// to the new session and remain deliverable.
+			// The target session is loaded and MCP selections are restored: discard
+			// pre-switch delivery queues before completing the restored agent state.
 			this.agent.clearAllQueues();
-
-			// Emit session_switch event to hooks
-			if (this.#extensionRunner) {
-				await this.#extensionRunner.emit({
-					type: "session_switch",
-					reason: "resume",
-					previousSessionFile,
-				});
-			}
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#resetInjectedContextSignatures();
@@ -11189,6 +11198,9 @@ export class AgentSession {
 				: configuredServiceTier === "none"
 					? undefined
 					: configuredServiceTier;
+			// Establish the successor's durable session identity only after every
+			// restored state facet is live. Identity-bound extension hooks run below.
+			await this.sessionManager.ensureOnDisk();
 
 			if (switchingToDifferentSession) {
 				this.#resetHindsightConversationTrackingIfHindsight();
@@ -11196,6 +11208,16 @@ export class AgentSession {
 			}
 
 			this.#reconnectToAgent();
+			// session_switch is the post-commit identity signal. SDK authority and
+			// other identity-bound integrations must not observe the successor until
+			// messages, model state, MCP selections, and the agent subscription are live.
+			if (this.#extensionRunner) {
+				await this.#extensionRunner.emit({
+					type: "session_switch",
+					reason: "resume",
+					previousSessionFile,
+				});
+			}
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -11303,14 +11325,6 @@ export class AgentSession {
 
 		await this.#restoreMCPSelectionsForSessionContext(sessionContext);
 
-		// Emit session_branch event to hooks (after branch completes)
-		if (this.#extensionRunner) {
-			await this.#extensionRunner.emit({
-				type: "session_branch",
-				previousSessionFile,
-			});
-		}
-
 		if (!skipConversationRestore) {
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#resetInjectedContextSignatures();
@@ -11318,6 +11332,14 @@ export class AgentSession {
 		}
 
 		this.#resetIrcRosterDeliveryState();
+		// session_branch is the post-commit identity signal. Publish it only after
+		// the successor's messages and MCP selections are restored.
+		if (this.#extensionRunner) {
+			await this.#extensionRunner.emit({
+				type: "session_branch",
+				previousSessionFile,
+			});
+		}
 
 		return { selectedText, cancelled: false };
 	}

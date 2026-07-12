@@ -40,6 +40,7 @@ const BASE_CFG: NotificationConfig = {
 		appToken: undefined,
 		workspaceId: undefined,
 		channelId: undefined,
+		authorizedUserId: undefined,
 	},
 	redact: false,
 	verbosity: "lean",
@@ -90,6 +91,7 @@ describe("notifications config", () => {
 			"notifications.slack.appToken": "slack-app-token",
 			"notifications.slack.workspaceId": "slack-workspace",
 			"notifications.slack.channelId": "slack-channel",
+			"notifications.slack.authorizedUserId": "slack-user",
 			"notifications.redact": true,
 			"notifications.daemon.idleTimeoutMs": 1234,
 		});
@@ -109,6 +111,7 @@ describe("notifications config", () => {
 				appToken: "slack-app-token",
 				workspaceId: "slack-workspace",
 				channelId: "slack-channel",
+				authorizedUserId: "slack-user",
 			},
 			redact: true,
 			verbosity: "lean",
@@ -145,6 +148,7 @@ describe("notifications config", () => {
 				appToken: "slack-app-token",
 				workspaceId: "workspace",
 				channelId: "channel",
+				authorizedUserId: "slack-user",
 			},
 		};
 

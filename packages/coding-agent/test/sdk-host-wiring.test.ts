@@ -58,7 +58,15 @@ function start(
 		{
 			on: (event: string, handler: (event: unknown, context: unknown) => unknown) => handlers.set(event, handler),
 			registerCommand: () => {},
-			sendUserMessage,
+			sendUserMessage: (
+				content: Parameters<ExtensionActions["sendUserMessage"]>[0],
+				options?: Parameters<ExtensionActions["sendUserMessage"]>[1],
+			) => {
+				const { onPreflightAccepted, ...delivery } = options ?? {};
+				const submission = sendUserMessage(content, Object.keys(delivery).length > 0 ? delivery : undefined);
+				onPreflightAccepted?.();
+				return Promise.resolve(submission);
+			},
 		} as never,
 		settings ? { settings } : undefined,
 	);
@@ -368,7 +376,9 @@ test("SDK host preserves ordered prompt image blocks in the host payload", async
 	const sessionId = `sdk-prompt-images-${Date.now()}`;
 	const sent: Parameters<ExtensionActions["sendUserMessage"]>[] = [];
 	const sessionContext = context(cwd, sessionId);
-	const handlers = start(sessionContext, undefined, (...args) => sent.push(args));
+	const handlers = start(sessionContext, undefined, (...args) => {
+		sent.push(args);
+	});
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
 	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
 	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };

@@ -102,16 +102,32 @@ async function loadConfig(agentDir: string, kind: ChatDaemonKind): Promise<ChatD
 	) {
 		throw new Error("Slack notifications are enabled but configuration is incomplete");
 	}
-	const slack = config.slack as { botToken: string; appToken: string; workspaceId: string; channelId: string };
-	const { botToken, appToken, workspaceId, channelId } = slack;
+	const slack = config.slack as {
+		botToken: string;
+		appToken: string;
+		workspaceId: string;
+		channelId: string;
+		authorizedUserId?: string;
+	};
+	const { botToken, appToken, workspaceId, channelId, authorizedUserId } = slack;
 	const identity = crypto
 		.createHash("sha256")
-		.update([botToken, appToken, workspaceId, channelId, String(config.redact), config.verbosity].join("\0"))
+		.update(
+			[
+				botToken,
+				appToken,
+				workspaceId,
+				channelId,
+				authorizedUserId ?? "",
+				String(config.redact),
+				config.verbosity,
+			].join("\0"),
+		)
 		.digest("hex")
 		.slice(0, 16);
 	return {
 		identity,
-		notifications: { slack: { botToken, appToken, workspaceId, channelId } },
+		notifications: { slack: { botToken, appToken, workspaceId, channelId, authorizedUserId } },
 		presentation: { redact: config.redact, verbosity: config.verbosity },
 	};
 }

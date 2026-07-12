@@ -30,6 +30,7 @@ export interface NotificationConfig {
 		appToken?: string;
 		workspaceId?: string;
 		channelId?: string;
+		authorizedUserId?: string;
 	};
 	redact: boolean;
 	verbosity: "lean" | "verbose";
@@ -74,6 +75,7 @@ export function getNotificationConfig(settings: Settings): NotificationConfig {
 			appToken: settings.get("notifications.slack.appToken"),
 			workspaceId: settings.get("notifications.slack.workspaceId"),
 			channelId: settings.get("notifications.slack.channelId"),
+			authorizedUserId: settings.get("notifications.slack.authorizedUserId"),
 		},
 		redact: settings.get("notifications.redact"),
 		verbosity: settings.get("notifications.verbosity") === "verbose" ? "verbose" : "lean",
@@ -111,6 +113,7 @@ const notificationConfigSchema = z
 						appToken: z.string().optional(),
 						workspaceId: z.string().optional(),
 						channelId: z.string().optional(),
+						authorizedUserId: z.string().optional(),
 					})
 					.passthrough()
 					.optional(),

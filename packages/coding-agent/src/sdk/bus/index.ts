@@ -554,7 +554,15 @@ function pushSessionFrame(
 /** Agent lifecycle is SDK session truth, independent of optional chat delivery. */
 function emitAgentLifecycle(
 	runtime: Pick<SessionRuntime, "host">,
-	frame: { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string },
+	frame:
+		| { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string }
+		| {
+				type: "agent_failed";
+				sessionId: string;
+				commandId: string;
+				turnId: string;
+				error: { code: string; message: string };
+		  },
 ): void {
 	runtime.host.emitEvent({ kind: frame.type, payload: frame });
 }
@@ -1192,6 +1200,7 @@ function sdkControlSurface(
 	api: ExtensionAPI,
 	isBusy: () => boolean,
 	onPromptAccepted: (correlation: { commandId: string; turnId: string }) => void = () => {},
+	onPromptFailed: (correlation: { commandId: string; turnId: string }, error: unknown) => void = () => {},
 	settings?: Settings,
 	configOverrides: Map<string, unknown> = new Map(),
 	configRevision: { current: number } = { current: 0 },
@@ -1221,7 +1230,7 @@ function sdkControlSurface(
 		return ctx.sdkControl(operation, input);
 	};
 	const surface: ControlSurface = {
-		prompt: (text, images) => {
+		prompt: async (text, images) => {
 			const promptImages = Array.isArray(images) ? (images as { data: string; mimeType?: string }[]) : [];
 			const content: string | (TextContent | ImageContent)[] =
 				promptImages.length > 0
@@ -1235,8 +1244,26 @@ function sdkControlSurface(
 					: text;
 			const commandId = crypto.randomUUID();
 			const turnId = crypto.randomUUID();
-			api.sendUserMessage(content, isBusy() ? { deliverAs: "steer" } : undefined);
-			onPromptAccepted({ commandId, turnId });
+			const acceptance = Promise.withResolvers<void>();
+			let accepted = false;
+			const onPreflightAccepted = () => {
+				if (accepted) return;
+				accepted = true;
+				onPromptAccepted({ commandId, turnId });
+				acceptance.resolve();
+			};
+			// Do not acknowledge the prompt until AgentSession's async preflight
+			// succeeds. The callback records correlation before agent_start can fire.
+			const submitted = api.sendUserMessage(content, {
+				...(isBusy() ? { deliverAs: "steer" as const } : {}),
+				onPreflightAccepted,
+			});
+			const submission = Promise.resolve(submitted);
+			void submission.catch(error => {
+				if (!accepted) acceptance.reject(error);
+				else onPromptFailed({ commandId, turnId }, error);
+			});
+			await acceptance.promise;
 			return { commandId, turnId, accepted: true };
 		},
 		steer: text => send(text, "steer"),
@@ -1612,6 +1639,23 @@ export function createNotificationsExtension(
 			api,
 			() => runtime?.busy === true,
 			correlation => pendingPromptCorrelations.push(correlation),
+			(correlation, error) => {
+				const pendingIndex = pendingPromptCorrelations.findIndex(
+					candidate => candidate.commandId === correlation.commandId && candidate.turnId === correlation.turnId,
+				);
+				if (pendingIndex === -1 || !runtime) return;
+				pendingPromptCorrelations.splice(pendingIndex, 1);
+				const candidate = error as { code?: unknown; message?: unknown };
+				emitAgentLifecycle(runtime, {
+					type: "agent_failed",
+					sessionId: runtime.id,
+					...correlation,
+					error: {
+						code: typeof candidate.code === "string" ? candidate.code : "internal",
+						message: typeof candidate.message === "string" ? candidate.message : "Prompt submission failed.",
+					},
+				});
+			},
 			settings,
 			configOverrides,
 			configRevision,

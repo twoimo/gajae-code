@@ -1508,12 +1508,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							pendingExtensionMessages.push(sendPromise);
 						},
 						sendUserMessage: (content, options) => {
-							const sendPromise = session.sendUserMessage(content, options).catch(e => {
+							const send = session.sendUserMessage(content, options);
+							const observedSend = send.catch(e => {
 								logger.error("Extension sendUserMessage failed", {
 									error: e instanceof Error ? e.message : String(e),
 								});
 							});
-							pendingExtensionMessages.push(sendPromise);
+							pendingExtensionMessages.push(observedSend);
+							return send;
 						},
 						appendEntry: (customType, data) => {
 							session.sessionManager.appendCustomEntry(customType, data);

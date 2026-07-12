@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -604,21 +604,62 @@ async function validateDeletePath(
 		metadataRoot: requestedRoot,
 	};
 }
-function sameCloseGeneration(
-	expected: {
-		locator: { repo: string; stateRoot: string };
-		endpointGeneration: number;
-		pid: number;
-		endpointMtimeMs?: number;
-	},
-	current: {
-		locator: { repo: string; stateRoot: string };
-		endpointGeneration: number;
-		pid: number;
-		endpointMtimeMs?: number;
-		live: boolean;
-	},
-): boolean {
+type CloseAuthority = { endpointGeneration: number; endpointIncarnation: string };
+type CloseRecord = {
+	locator: { repo: string; stateRoot: string };
+	endpointGeneration: number;
+	pid: number;
+	endpointMtimeMs?: number;
+};
+
+function endpointIncarnation(record: CloseRecord, sessionId: string): string | undefined {
+	if (
+		!Number.isSafeInteger(record.endpointGeneration) ||
+		record.endpointGeneration <= 0 ||
+		!Number.isSafeInteger(record.pid) ||
+		record.pid <= 0 ||
+		typeof record.endpointMtimeMs !== "number" ||
+		!Number.isFinite(record.endpointMtimeMs) ||
+		record.endpointMtimeMs <= 0
+	)
+		return undefined;
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				endpointGeneration: record.endpointGeneration,
+				endpointMtimeMs: record.endpointMtimeMs,
+				pid: record.pid,
+				sessionId,
+			}),
+		)
+		.digest("hex");
+}
+
+function requestedCloseAuthority(input: Input): { authority: CloseAuthority | undefined } | { error: BrokerResponse } {
+	const endpointGeneration = input.endpointGeneration;
+	const endpointIncarnation = input.endpointIncarnation;
+	if (endpointGeneration === undefined && endpointIncarnation === undefined) return { authority: undefined };
+	if (
+		typeof endpointGeneration !== "number" ||
+		!Number.isSafeInteger(endpointGeneration) ||
+		endpointGeneration <= 0 ||
+		typeof endpointIncarnation !== "string" ||
+		!/^[a-f0-9]{64}$/.test(endpointIncarnation)
+	)
+		return {
+			error: fail("invalid_input", "session.close endpoint authority is invalid"),
+		};
+	return { authority: { endpointGeneration, endpointIncarnation } };
+}
+
+function sameCloseAuthority(authority: CloseAuthority, record: CloseRecord, sessionId: string): boolean {
+	return (
+		authority.endpointGeneration === record.endpointGeneration &&
+		authority.endpointIncarnation === endpointIncarnation(record, sessionId)
+	);
+}
+
+function sameCloseGeneration(expected: CloseRecord, current: CloseRecord & { live: boolean }): boolean {
 	return (
 		current.live &&
 		current.endpointGeneration === expected.endpointGeneration &&
@@ -632,16 +673,14 @@ function sameCloseGeneration(
 async function revalidateCloseGeneration(
 	broker: Broker,
 	id: string,
-	expected: {
-		locator: { repo: string; stateRoot: string };
-		endpointGeneration: number;
-		pid: number;
-		endpointMtimeMs?: number;
-	},
+	expected: CloseRecord,
+	authority: CloseAuthority | undefined,
 ): Promise<BrokerResponse | undefined> {
 	await broker.index.refresh();
 	const current = broker.index.listSessions().sessions.find(session => session.sessionId === id);
-	return current && sameCloseGeneration(expected, current)
+	return current &&
+		sameCloseGeneration(expected, current) &&
+		(!authority || sameCloseAuthority(authority, current, id))
 		? undefined
 		: fail("endpoint_stale", "session endpoint is stale");
 }
@@ -789,6 +828,10 @@ export async function executeLifecycle(
 		if (!record) return fail("not_found", "session is not indexed");
 		if (record.terminalUncertain)
 			return fail("terminal_uncertain", "Session ownership is uncertain and cannot be closed safely.");
+		const requestedAuthority = requestedCloseAuthority(input);
+		if ("error" in requestedAuthority) return requestedAuthority.error;
+		if (requestedAuthority.authority && !sameCloseAuthority(requestedAuthority.authority, record, id))
+			return fail("endpoint_stale", "session endpoint is stale");
 		await broker.ledger.transition(identity, "effect_started", { intendedSessionId: id, effectMarker: randomUUID() });
 
 		let usedSignalFallback = false;
@@ -822,7 +865,7 @@ export async function executeLifecycle(
 					refreshedEndpoint.token !== endpoint.token
 				)
 					return fail("endpoint_stale", "session endpoint is stale");
-				const stale = await revalidateCloseGeneration(broker, id, record);
+				const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
 				if (stale) return stale;
 				const response = await client.control("session.close");
 				if ((response as { ok?: unknown }).ok !== true)
@@ -841,6 +884,8 @@ export async function executeLifecycle(
 		}
 
 		if (usedSignalFallback) {
+			const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
+			if (stale) return stale;
 			if (!(await signalVerifiedSession(record, id, "SIGTERM")))
 				return fail(
 					"close_refused",
@@ -848,6 +893,8 @@ export async function executeLifecycle(
 				);
 			note = "Endpoint close was unreachable; sent SIGTERM to the durably identified session process.";
 			if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
+				const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
+				if (stale) return stale;
 				if (!(await signalVerifiedSession(record, id, "SIGKILL")))
 					return fail(
 						"close_refused",
@@ -871,14 +918,6 @@ export async function executeLifecycle(
 			);
 		}
 
-		await broker.index.append({
-			type: "session_closed",
-			sessionId: id,
-			locator: record.locator,
-			endpointGeneration: record.endpointGeneration,
-			pid: record.pid,
-		});
-		await fs.rm(lifecycleMarkerPath(record.locator.stateRoot, id), { force: true });
 		return { ok: true, result: { sessionId: id, ...(note ? { note } : {}) } };
 	}
 	if (operation === "session.delete") {

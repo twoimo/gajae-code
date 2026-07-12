@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
@@ -174,6 +175,52 @@ test("broker refuses a stale registered PID when no durable effect marker proves
 			},
 		});
 		expect(process.pid).toBeGreaterThan(0);
+	} finally {
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("broker refuses same-generation close authority from a prior endpoint incarnation", async () => {
+	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-close-incarnation-"));
+	const stateRoot = path.join(agentDir, "state");
+	const sessionId = "successor";
+	const endpoint = path.join(stateRoot, "sdk", `${sessionId}.json`);
+	const broker = new Broker({ agentDir });
+	try {
+		await broker.start();
+		await fs.mkdir(path.dirname(endpoint), { recursive: true });
+		await fs.writeFile(
+			endpoint,
+			JSON.stringify({ sessionId, pid: process.pid, url: "ws://127.0.0.1:1", token: "successor-token" }),
+		);
+		const endpointMtimeMs = (await fs.stat(endpoint)).mtimeMs;
+		await broker.index.append({
+			type: "host_registered",
+			sessionId,
+			locator: { repo: "fixture", stateRoot },
+			endpointGeneration: 1,
+			pid: process.pid,
+			endpointMtimeMs,
+		});
+		const staleEndpointIncarnation = createHash("sha256")
+			.update(
+				JSON.stringify({
+					endpointGeneration: 1,
+					endpointMtimeMs: endpointMtimeMs - 1,
+					pid: process.pid,
+					sessionId,
+				}),
+			)
+			.digest("hex");
+		expect(
+			await broker.handleRequest(
+				"session.close",
+				{ sessionId, endpointGeneration: 1, endpointIncarnation: staleEndpointIncarnation },
+				"stale-incarnation-close",
+			),
+		).toEqual({ ok: false, error: { code: "endpoint_stale", message: "session endpoint is stale" } });
+		expect(await fs.readFile(endpoint, "utf8")).toContain("successor-token");
 	} finally {
 		await broker.stop();
 		await fs.rm(agentDir, { recursive: true, force: true });
@@ -437,7 +484,7 @@ test("shipped sdk session-host-internal stays alive only after a semantic ready 
 	}
 }, 20_000);
 
-test("broker close acknowledges before terminating the lifecycle child and records a terminal index", async () => {
+test("broker close acknowledges before terminating the lifecycle child and preserves its terminal host index", async () => {
 	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-sdk-close-subprocess-"));
 	const agentDir = path.join(root, "agent");
 	const sessionId = "close-subprocess";
@@ -471,7 +518,7 @@ test("broker close acknowledges before terminating the lifecycle child and recor
 				.filter(Boolean)
 				.map(line => JSON.parse(line) as { type?: string; sessionId?: string })
 				.at(-1),
-		).toMatchObject({ type: "session_closed", sessionId });
+		).toMatchObject({ type: "host_unregistered", sessionId });
 		expect(await broker.handleRequest("session.close", { sessionId }, "close-1")).toEqual(closed);
 	} finally {
 		await broker.stop();

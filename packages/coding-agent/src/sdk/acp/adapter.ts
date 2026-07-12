@@ -42,8 +42,6 @@ export type AcpReconnectFailedHandler = (error: SdkClientError) => void;
 export type AcpFrameHandler = (frame: SdkFrame) => void;
 type ReverseRequest = {
 	state: "pending" | "cancelled";
-	connectionId?: string;
-	leaseId?: string;
 	cancelTimer?: NodeJS.Timeout;
 };
 
@@ -332,25 +330,30 @@ export class AcpSdkAdapter {
 
 		if (frame.type !== "reverse_request") return;
 		const id = typeof frame.id === "string" ? frame.id : "";
-		const connectionId = typeof frame.connectionId === "string" ? frame.connectionId : this.#connectionId;
+		const connectionId = typeof frame.connectionId === "string" ? frame.connectionId : "";
+		const capability = typeof frame.capability === "string" ? frame.capability : "";
 		const leaseId = typeof frame.leaseId === "string" ? frame.leaseId : "";
-		if (!id || !connectionId || !leaseId) return;
-		const active: ReverseRequest = this.#reverseRequests.get(id) ?? { state: "pending" };
-		active.connectionId = connectionId;
-		active.leaseId = leaseId;
+		if (
+			!id ||
+			!connectionId ||
+			!capability ||
+			!leaseId ||
+			this.#reverseRequests.has(id) ||
+			!this.#ownsReverseLease(connectionId, capability, leaseId)
+		)
+			return;
+		const active: ReverseRequest = { state: "pending" };
 		this.#reverseRequests.set(id, active);
 		try {
-			if (this.#isReverseCancelled(id)) return;
-
 			const request = frame.payload as JsonObject | undefined;
 			const method = typeof request?.method === "string" ? request.method : "";
 			const payload = request?.payload && typeof request.payload === "object" ? (request.payload as JsonObject) : {};
 			const result = await this.#forwardReverse(method, payload);
-			if (this.#isReverseCancelled(id) || !this.#ownsReverseResponse(connectionId, leaseId)) return;
+			if (this.#isReverseCancelled(id) || !this.#ownsReverseLease(connectionId, capability, leaseId)) return;
 
 			this.#client.send({ type: "reverse_response", id, connectionId, leaseId, ok: true, result });
 		} catch (error) {
-			if (this.#isReverseCancelled(id) || !this.#ownsReverseResponse(connectionId, leaseId)) return;
+			if (this.#isReverseCancelled(id) || !this.#ownsReverseLease(connectionId, capability, leaseId)) return;
 
 			const typed =
 				error instanceof AcpSdkAdapterError || error instanceof SdkClientError
@@ -372,8 +375,8 @@ export class AcpSdkAdapter {
 		}
 	}
 
-	#ownsReverseResponse(connectionId: string, leaseId: string): boolean {
-		return this.#connectionId === connectionId && [...this.#leases.values()].includes(leaseId);
+	#ownsReverseLease(connectionId: string, capability: string, leaseId: string): boolean {
+		return this.#connectionId === connectionId && this.#leases.get(capability) === leaseId;
 	}
 
 	#cancelReverse(id: string): void {

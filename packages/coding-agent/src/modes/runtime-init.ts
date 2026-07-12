@@ -49,9 +49,11 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 				});
 			},
 			sendUserMessage: (content, sendOptions) => {
-				session.sendUserMessage(content, sendOptions).catch(e => {
+				const send = session.sendUserMessage(content, sendOptions);
+				void send.catch(e => {
 					reportSendError("extension_send_user", e instanceof Error ? e : new Error(String(e)));
 				});
+				return send;
 			},
 			appendEntry: (customType, data) => {
 				session.sessionManager.appendCustomEntry(customType, data);

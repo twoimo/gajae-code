@@ -29,16 +29,16 @@ API calls.
 - `--slack-app-token`
 - `--slack-workspace-id`
 - `--slack-channel-id`
+- `--slack-authorized-user-id` for the single Slack user authorized to submit replies and `/sdk` commands
 
-It also accepts `--redact`. Provide secret values from an approved local secret
-mechanism, not shell history, committed configuration, tickets, screenshots, or
-chat. Setup writes:
+Without `--slack-authorized-user-id`, the adapter remains outbound-only: every inbound envelope is acknowledged but denied before it can create a durable claim or reach an SDK endpoint. The user ID is an identifier, not a secret. It also accepts `--redact`. Provide secret values from an approved local secret mechanism, not shell history, committed configuration, tickets, screenshots, or chat. Setup writes:
 
 - `notifications.enabled = true`
 - `notifications.slack.botToken`
 - `notifications.slack.appToken`
 - `notifications.slack.workspaceId`
 - `notifications.slack.channelId`
+- `notifications.slack.authorizedUserId` when configured
 - `notifications.redact = true` when requested
 
 `gjc notify status` masks all token values. It is status output, not a credential
@@ -46,12 +46,7 @@ recovery mechanism.
 
 ## Socket Mode, threads, and resume
 
-The daemon validates the envelope and durably claims every accepted inbound effect
-before sending its Socket Mode acknowledgement. The durable claim records only the
-replay identity, protected-effect reference, and captured endpoint generation; it
-never records Socket Mode cursors, endpoint tokens, or message bodies. Rejected,
-bot-authored, and already-claimed envelopes are acknowledged without an SDK
-endpoint call.
+The daemon validates the configured workspace, channel, and paired user before durably claiming an inbound effect or sending its Socket Mode acknowledgement. The durable claim records the paired actor identity, replay identity, protected-effect reference, and captured endpoint generation; it never records Socket Mode cursors, endpoint tokens, or message bodies. Rejected, bot-authored, unauthorized, and already-claimed envelopes are acknowledged without an SDK endpoint call.
 
 Acknowledgement latency is therefore bounded by local durable-claim work rather
 than SDK availability or command execution. After the ACK, the worker dispatches

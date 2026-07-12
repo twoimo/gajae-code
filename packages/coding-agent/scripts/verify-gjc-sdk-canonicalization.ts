@@ -36,6 +36,8 @@ const machineTmuxDocumentationPaths = new Set([
 const machineTmuxDocumentationPattern =
 	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b)/g;
 const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b/g;
+const tmuxMachineStartupIngressPattern =
+	/\bGJC_SESSION_FLAGS\b|(?:GJC_SESSION_GJC_BIN|GJC_BIN)[^\n]*(?:--print\b|-p(?:\s|["'])|--prompt\b|--message\b|--file\b|--mode\b|--continue\b|--resume\b|--fork\b|--session\b)/g;
 
 function isWorkspacePackageManifest(file: string): boolean {
 	return file === "package.json" || (file.startsWith("packages/") && file.endsWith("/package.json"));
@@ -472,6 +474,11 @@ async function scan(): Promise<string[]> {
 					`${file}:${lineNumber(contents, match.index ?? 0)}: published shell helper performs tmux machine prompt injection or pane viewing`,
 				);
 			}
+			for (const match of contents.matchAll(tmuxMachineStartupIngressPattern)) {
+				violations.push(
+					`${file}:${lineNumber(contents, match.index ?? 0)}: published shell helper exposes machine startup input to the human-only tmux owner`,
+				);
+			}
 		}
 		if (file === scannerPath || !isSource(file)) continue;
 
@@ -784,6 +791,14 @@ async function selfTest(): Promise<void> {
 		},
 		1,
 		"published shell helper performs tmux machine prompt injection or pane viewing",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh":
+				'#!/usr/bin/env bash\nGJC_SESSION_FLAGS=unsafe\ncommand=("$GJC_BIN" -p automated)\n',
+		},
+		1,
+		"published shell helper exposes machine startup input to the human-only tmux owner",
 	);
 	await runSelfTestFixture(
 		{ "docs/gjc-session-clawhip-routing.md": "scripts/gjc-session/tail.sh visible output\n" },

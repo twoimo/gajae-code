@@ -173,6 +173,61 @@ test("ACP lifecycle aliases forward caller idempotency keys outside operation in
 	);
 	await adapter.close();
 });
+test("ACP reverse dispatch requires exact current lease ownership and rejects in-flight duplicates", async () => {
+	const sdk = new FakeSdkClient();
+	const callbacks: Array<{ method: string; params: Record<string, unknown> }> = [];
+	const response = Promise.withResolvers<unknown>();
+	const adapter = new AcpSdkAdapter({
+		url: "ws://unused",
+		token: "secret",
+		client: sdk as never,
+		providers: [{ capability: "ui", definitions: [{ name: "select" }] }],
+		connection: {
+			request: async (method, params) => {
+				callbacks.push({ method, params });
+				return await response.promise;
+			},
+		},
+	});
+	const reverse = (id: string, connectionId: string, capability: string, leaseId: string) =>
+		sdk.emit({
+			type: "reverse_request",
+			id,
+			connectionId,
+			capability,
+			leaseId,
+			payload: { method: "ui.select", payload: { options: ["yes"] } },
+		});
+	await adapter.start();
+	try {
+		reverse("stale-connection", "stale-connection", "ui", "lease-1");
+		reverse("stale-lease", sdk.connectionId, "ui", "stale-lease");
+		reverse("wrong-capability", sdk.connectionId, "terminal", "lease-1");
+		expect(callbacks).toEqual([]);
+
+		reverse("in-flight", sdk.connectionId, "ui", "lease-1");
+		reverse("in-flight", sdk.connectionId, "ui", "lease-1");
+		expect(callbacks).toEqual([{ method: "ui.select", params: { options: ["yes"] } }]);
+
+		response.resolve({ selected: "yes" });
+		await waitFor(
+			() => sdk.frames.some(frame => frame.type === "reverse_response" && frame.id === "in-flight"),
+			"valid reverse response",
+		);
+		expect(sdk.frames.filter(frame => frame.type === "reverse_response")).toEqual([
+			{
+				type: "reverse_response",
+				id: "in-flight",
+				connectionId: sdk.connectionId,
+				leaseId: "lease-1",
+				ok: true,
+				result: { selected: "yes" },
+			},
+		]);
+	} finally {
+		await adapter.close();
+	}
+});
 
 test("ACP reverse cancellation and stale failures suppress responses over the real WebSocket transport", async () => {
 	let server!: ReturnType<typeof Bun.serve>;
@@ -213,6 +268,7 @@ test("ACP reverse cancellation and stale failures suppress responses over the re
 				type: "reverse_request",
 				id: "cancelled",
 				connectionId,
+				capability: "ui",
 				leaseId: "lease-1",
 				payload: { method: "ui.select", payload: {} },
 			}),
@@ -229,6 +285,7 @@ test("ACP reverse cancellation and stale failures suppress responses over the re
 				type: "reverse_request",
 				id: "stale-error",
 				connectionId,
+				capability: "ui",
 				leaseId: "lease-1",
 				payload: { method: "ui.select", payload: {} },
 			}),

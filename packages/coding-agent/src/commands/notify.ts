@@ -37,6 +37,9 @@ export default class Notify extends Command {
 		"slack-app-token": Flags.string({ description: "Slack app token (non-interactive Slack setup)" }),
 		"slack-workspace-id": Flags.string({ description: "Slack workspace id (non-interactive Slack setup)" }),
 		"slack-channel-id": Flags.string({ description: "Slack channel id (non-interactive Slack setup)" }),
+		"slack-authorized-user-id": Flags.string({
+			description: "Slack user id authorized for inbound replies and commands",
+		}),
 		redact: Flags.boolean({ description: "Enable redaction of remote notification content" }),
 		probe: Flags.boolean({ description: "notify health: probe Telegram reachability (getMe)" }),
 		message: Flags.string({ description: "notify test: custom message body" }),
@@ -83,6 +86,7 @@ export default class Notify extends Command {
 			slackAppToken: flagRec["slack-app-token"] as string | undefined,
 			slackWorkspaceId: flagRec["slack-workspace-id"] as string | undefined,
 			slackChannelId: flagRec["slack-channel-id"] as string | undefined,
+			slackAuthorizedUserId: flagRec["slack-authorized-user-id"] as string | undefined,
 			redact: Boolean(flags.redact),
 			probe: Boolean(flags.probe),
 			message: flags.message as string | undefined,

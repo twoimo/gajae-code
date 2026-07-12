@@ -540,7 +540,13 @@ describe("chat daemon worker", () => {
 			config: {
 				identity: "fingerprint-only",
 				notifications: {
-					slack: { botToken: "bot-token", appToken: "app-token", workspaceId: "team", channelId: "channel" },
+					slack: {
+						botToken: "bot-token",
+						appToken: "app-token",
+						workspaceId: "team",
+						channelId: "channel",
+						authorizedUserId: "human",
+					},
 				},
 			},
 		};
@@ -672,7 +678,13 @@ describe("chat daemon worker", () => {
 				config: {
 					identity: "fingerprint-only",
 					notifications: {
-						slack: { botToken: "bot-token", appToken: "app-token", workspaceId: "team", channelId: "channel" },
+						slack: {
+							botToken: "bot-token",
+							appToken: "app-token",
+							workspaceId: "team",
+							channelId: "channel",
+							authorizedUserId: "human",
+						},
 					},
 				},
 			},
@@ -715,19 +727,19 @@ describe("chat daemon worker", () => {
 			operation: "turn.abort",
 			input: {},
 			confirm: true,
-			idempotencyKey: "slack:team:channel:1.1:control-event:control-id",
+			idempotencyKey: "slack:team:channel:1.1:human:control-event:control-id",
 		});
 		expect(client.requests).toContainEqual({
 			type: "query_request",
 			query: "todo.list",
 			input: {},
-			idempotencyKey: "slack:team:channel:1.1:query-event:query-id",
+			idempotencyKey: "slack:team:channel:1.1:human:query-event:query-id",
 		});
 		expect(broker.requests).toContainEqual({
 			type: "broker_request",
 			operation: "session.list",
 			input: {},
-			idempotencyKey: "slack:team:channel:1.1:global-event:global-id",
+			idempotencyKey: "slack:team:channel:1.1:human:global-event:global-id",
 		});
 		await Bun.sleep(10);
 		expect(JSON.stringify(provider.posts)).not.toContain("daemon-result-secret");
@@ -884,7 +896,13 @@ describe("chat daemon worker", () => {
 		const config = {
 			identity: "fingerprint-only",
 			notifications: {
-				slack: { botToken: "bot-token", appToken: "app-token", workspaceId: "team", channelId: "channel" },
+				slack: {
+					botToken: "bot-token",
+					appToken: "app-token",
+					workspaceId: "team",
+					channelId: "channel",
+					authorizedUserId: "human",
+				},
 			},
 		};
 		const command = (eventId: string): SlackSocketEnvelope => ({

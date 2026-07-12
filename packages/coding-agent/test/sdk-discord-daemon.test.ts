@@ -13,6 +13,7 @@ import { ConversationStore } from "../src/sdk/bus/conversation-store";
 import type { DiscordConversation } from "../src/sdk/bus/discord-conversation";
 import {
 	type DiscordEndpointBinding,
+	DiscordEndpointBindingError,
 	DiscordNotificationDaemon,
 	type DiscordNotificationDaemonOptions,
 } from "../src/sdk/bus/discord-daemon";
@@ -22,6 +23,7 @@ import type {
 	DiscordProvider,
 	DiscordThread,
 } from "../src/sdk/bus/discord-provider";
+import { SdkClientError } from "../src/sdk/client/client";
 
 const actionCustomIds = new Map<string, string>();
 
@@ -138,7 +140,11 @@ async function withDaemon(
 			guildId: "guild",
 			parentChannelId: "parent",
 			provider,
-			resolveEndpoint: async () => ({ generation: 1, isCurrent: () => true, send: () => {} }),
+			resolveEndpoint: async (_sessionId, expectedGeneration = 1) => ({
+				generation: expectedGeneration,
+				isCurrent: () => true,
+				send: () => {},
+			}),
 			...overrides,
 		});
 		await run(daemon, provider, agentDir);
@@ -281,60 +287,72 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 	});
 
 	test("emits a real select component and rejects it after action resolution or restart", async () => {
-		await withDaemon(async (daemon, provider, agentDir) => {
-			const conversation = await daemon.notify({
-				sessionId: "session",
-				endpointGeneration: 4,
-				content: "Choose",
-				actionId: "ask",
-				options: ["Yes", "No"],
-			});
-			expect(provider.messages[0]?.components).toEqual([
-				{
-					type: 1,
-					components: [
-						{
-							type: 3,
-							customId: expect.stringMatching(/^gjc:4:ask:[0-9a-f-]{36}$/),
-							placeholder: "Choose an option",
-							minValues: 1,
-							maxValues: 1,
+		await withDaemon(
+			async (daemon, provider, agentDir) => {
+				const conversation = await daemon.notify({
+					sessionId: "session",
+					endpointGeneration: 4,
+					content: "Choose",
+					actionId: "ask",
+					options: ["Yes", "No"],
+				});
+				expect(provider.messages[0]?.components).toEqual([
+					{
+						type: 1,
+						components: [
+							{
+								type: 3,
+								customId: expect.stringMatching(/^gjc:4:ask:[0-9a-f-]{36}$/),
+								placeholder: "Choose an option",
+								minValues: 1,
+								maxValues: 1,
 
-							options: [
-								{ label: "Yes", value: "0" },
-								{ label: "No", value: "1" },
-							],
-						},
-					],
-				},
-			]);
-			const restarted = new DiscordNotificationDaemon({
-				agentDir,
-				repo: agentDir,
-				guildId: "guild",
-				parentChannelId: "parent",
-				provider,
+								options: [
+									{ label: "Yes", value: "0" },
+									{ label: "No", value: "1" },
+								],
+							},
+						],
+					},
+				]);
+				const restarted = new DiscordNotificationDaemon({
+					agentDir,
+					repo: agentDir,
+					guildId: "guild",
+					parentChannelId: "parent",
+					provider,
+					resolveEndpoint: async () => ({ generation: 4, isCurrent: () => true, send: () => {} }),
+				});
+				await restarted.resolveAction("session", "ask");
+				await restarted.handleInbound(inbound(conversation.threadId!, "resolved", 4));
+				expect(provider.messages.at(-1)).toEqual({
+					threadId: conversation.threadId!,
+					content: "This conversation is no longer available.",
+				});
+			},
+			{
 				resolveEndpoint: async () => ({ generation: 4, isCurrent: () => true, send: () => {} }),
-			});
-			await restarted.resolveAction("session", "ask");
-			await restarted.handleInbound(inbound(conversation.threadId!, "resolved", 4));
-			expect(provider.messages.at(-1)).toEqual({
-				threadId: conversation.threadId!,
-				content: "This conversation is no longer available.",
-			});
-		});
+			},
+		);
 	});
 
 	test("prefers an active replacement over an archived superseded mapping", async () => {
-		await withDaemon(async (daemon, provider) => {
-			const original = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });
-			await daemon.archive("session");
-			provider.failUnarchive = true;
-			const replacement = await daemon.resume("session", 2);
-			const selected = await daemon.notify({ sessionId: "session", endpointGeneration: 2, content: "new" });
-			expect(selected.threadId).toBe(replacement?.threadId);
-			expect(selected.threadId).not.toBe(original.threadId);
-		});
+		let generation = 1;
+		await withDaemon(
+			async (daemon, provider) => {
+				const original = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });
+				await daemon.archive("session");
+				provider.failUnarchive = true;
+				generation = 2;
+				const replacement = await daemon.resume("session", 2);
+				const selected = await daemon.notify({ sessionId: "session", endpointGeneration: 2, content: "new" });
+				expect(selected.threadId).toBe(replacement?.threadId);
+				expect(selected.threadId).not.toBe(original.threadId);
+			},
+			{
+				resolveEndpoint: async () => ({ generation, isCurrent: () => true, send: () => {} }),
+			},
+		);
 	});
 
 	test("coalesces simultaneous resumes into one replacement", async () => {
@@ -436,6 +454,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 		const frames: Record<string, unknown>[] = [];
 		const resolverRelease = Promise.withResolvers<void>();
 		const deferred = Promise.withResolvers<void>();
+		let blockResolver = false;
 		await withDaemon(
 			async (daemon, provider) => {
 				const conversation = await daemon.notify({
@@ -445,6 +464,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					actionId: "ask",
 					options: ["Yes"],
 				});
+				blockResolver = true;
 				provider.deferInteraction = async () => {
 					deferred.resolve();
 				};
@@ -459,7 +479,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 			},
 			{
 				resolveEndpoint: async () => {
-					await resolverRelease.promise;
+					if (blockResolver) await resolverRelease.promise;
 					return {
 						generation: 1,
 						isCurrent: () => true,
@@ -1046,6 +1066,118 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 			},
 		);
 	});
+	test("rejects stale generations before action mapping mutation or provider publication", async () => {
+		let generation = 1;
+		await withDaemon(
+			async (daemon, provider, agentDir) => {
+				const initial = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });
+				generation = 2;
+				await expect(
+					daemon.notify({
+						sessionId: "session",
+						endpointGeneration: 1,
+						content: "must not mutate",
+						actionId: "stale",
+						options: ["No"],
+					}),
+				).rejects.toBeInstanceOf(DiscordEndpointBindingError);
+				const store = new ConversationStore<DiscordConversation>({ agentDir, kind: "discord" });
+				const mapping = await store.read(`app:guild:parent:${initial.threadId}`);
+				expect(mapping).toMatchObject({ endpointGeneration: 1 });
+				expect(mapping?.pendingActionId).toBeUndefined();
+				expect(provider.messages).toEqual([{ threadId: initial.threadId!, content: "open" }]);
+
+				generation = 1;
+				provider.findMessageByNonce = async () => {
+					generation = 2;
+					return null;
+				};
+				await expect(
+					daemon.notify({
+						sessionId: "session",
+						endpointGeneration: 1,
+						content: "must not publish",
+						actionId: "raced",
+						options: ["No"],
+					}),
+				).rejects.toThrow("lost its fence");
+				expect(provider.messages).toEqual([{ threadId: initial.threadId!, content: "open" }]);
+				const raced = (await new ChatEffectJournal({ agentDir, transport: "discord" }).list()).find(
+					effect =>
+						effect.kind === "post-message" &&
+						(effect.payload as { content?: string }).content === "must not publish",
+				);
+				expect(raced?.state).toBe("leased");
+			},
+			{
+				resolveEndpoint: async (): Promise<DiscordEndpointBinding> => ({
+					generation,
+					isCurrent: () => generation === 1,
+					send: () => {},
+				}),
+			},
+		);
+	});
+
+	test("retries definite pre-send SDK and binding failures but preserves ambiguous sends", async () => {
+		const frames: Record<string, unknown>[] = [];
+		const failures: Error[] = [
+			new DiscordEndpointBindingError(),
+			new SdkClientError("connection_closed", "SDK unavailable before send"),
+		];
+		let ambiguous = false;
+		await withDaemon(
+			async (daemon, _provider, agentDir) => {
+				const conversation = await daemon.notify({
+					sessionId: "session",
+					endpointGeneration: 1,
+					content: "Choose",
+					actionId: "ask",
+					options: ["Yes"],
+				});
+				const retry = inbound(conversation.threadId!, "definite-pre-send", 1);
+				for (let attempt = 0; attempt < 2; attempt++) {
+					await daemon.handleInbound(retry);
+					const effect = await new ChatEffectJournal({ agentDir, transport: "discord" }).read(
+						`discord:app:guild:parent:${conversation.threadId}:definite-pre-send`,
+					);
+					expect(effect).toMatchObject({ state: "accepted", receipt: { status: "pre_send_failure" } });
+				}
+				const effectsPath = path.join(agentDir, "sdk", "daemons", "discord", "effects.json");
+				expect(await fs.readFile(effectsPath, "utf8")).not.toContain("token-definite-pre-send");
+				await daemon.handleInbound(retry);
+				expect(frames).toHaveLength(1);
+
+				const uncertain = await daemon.notify({
+					sessionId: "session",
+					endpointGeneration: 1,
+					content: "Again",
+					actionId: "ask",
+					options: ["Yes"],
+				});
+				ambiguous = true;
+				await daemon.handleInbound(inbound(uncertain.threadId!, "ambiguous-send", 1));
+				const uncertainEffect = await new ChatEffectJournal({ agentDir, transport: "discord" }).read(
+					`discord:app:guild:parent:${uncertain.threadId}:ambiguous-send`,
+				);
+				expect(uncertainEffect).toMatchObject({ state: "uncertain", receipt: { status: "uncertain" } });
+				await daemon.handleInbound(inbound(uncertain.threadId!, "ambiguous-send", 1));
+				expect(frames).toHaveLength(2);
+			},
+			{
+				resolveEndpoint: async (): Promise<DiscordEndpointBinding> => ({
+					generation: 1,
+					isCurrent: () => true,
+					send: frame => {
+						const failure = failures.shift();
+						if (failure) throw failure;
+						frames.push(frame);
+						if (ambiguous) throw new SdkClientError("unavailable", "SDK disconnected after send");
+					},
+				}),
+			},
+		);
+	});
 
 	test("replays only pre-send receipts across restart and fences a stale claimer", async () => {
 		const frames: Record<string, unknown>[] = [];
@@ -1180,9 +1312,11 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 
 	test("rejects stale commands before dispatch", async () => {
 		const commands: string[] = [];
+		let generation = 3;
 		await withDaemon(
 			async (daemon, provider) => {
 				const conversation = await daemon.notify({ sessionId: "session", endpointGeneration: 3, content: "open" });
+				generation = 4;
 				await daemon.handleInbound({
 					...inbound(conversation.threadId!, "stale-command"),
 					interaction: undefined,
@@ -1195,7 +1329,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 				});
 			},
 			{
-				resolveEndpoint: async () => ({ generation: 4, isCurrent: () => true, send: () => {} }),
+				resolveEndpoint: async () => ({ generation, isCurrent: () => true, send: () => {} }),
 				onCommand: async (_sessionId, content) => {
 					commands.push(content);
 					return true;

@@ -1086,8 +1086,8 @@ export interface ExtensionAPI {
 	/** Send a user message to the agent, or queue it when deliverAs is set. */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
-	): void;
+		options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
+	): Promise<void>;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
@@ -1269,8 +1269,8 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
-) => void;
+	options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
+) => void | Promise<void>;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 

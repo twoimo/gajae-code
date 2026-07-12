@@ -2,9 +2,17 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Agent, ThinkingLevel } from "@gajae-code/agent-core";
+import { getBundledModel } from "@gajae-code/ai";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import type { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
 import { createNotificationsExtension } from "../src/sdk/bus/index";
 import { readEndpoint } from "../src/sdk/bus/telegram-reference";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
 
 /**
@@ -123,6 +131,208 @@ async function startAndConnect(harness: ReturnType<typeof createHarness>): Promi
 	await waitFor(() => fs.existsSync(harness.endpoint()), 4000, "original endpoint file");
 	return connectFrames(harness.endpoint());
 }
+
+test("session_switch publishes successor SDK authority only after AgentSession restore commits", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notif-post-commit-switch-"));
+	tempDirs.push(cwd);
+	const authStorage = await AuthStorage.create(path.join(cwd, "testauth.db"));
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("Expected bundled model");
+	const currentSessionManager = SessionManager.create(cwd, cwd);
+	const targetSessionManager = SessionManager.create(cwd, cwd);
+	targetSessionManager.appendMessage({ role: "user", content: "restored target message", timestamp: Date.now() });
+	targetSessionManager.appendThinkingLevelChange("low");
+	await targetSessionManager.ensureOnDisk();
+	const targetSessionFile = targetSessionManager.getSessionFile();
+	const targetSessionId = targetSessionManager.getSessionId();
+	await targetSessionManager.close();
+	if (!targetSessionFile) throw new Error("Expected persisted target session");
+
+	const handlers = new Map<string, Handler>();
+	const api = {
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		registerCommand: () => {},
+		sendUserMessage: async () => {},
+	} as never;
+	createNotificationsExtension(api);
+	const ctx = { cwd, sessionManager: currentSessionManager } as never;
+	const predecessorSessionId = currentSessionManager.getSessionId();
+	const predecessorEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${predecessorSessionId}.json`);
+	const successorEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${targetSessionId}.json`);
+	let session: AgentSession | undefined;
+	let postCommitObserved = false;
+	const extensionRunner = {
+		hasHandlers: () => false,
+		emit: async (event: { type: string; previousSessionFile?: string }) => {
+			if (event.type !== "session_switch") return;
+			postCommitObserved = true;
+			expect(currentSessionManager.getSessionId()).toBe(targetSessionId);
+			expect(session?.agent.state.messages).toEqual(
+				expect.arrayContaining([expect.objectContaining({ role: "user", content: "restored target message" })]),
+			);
+			expect(session?.thinkingLevel).toBe(ThinkingLevel.Low);
+			expect(fs.existsSync(successorEndpoint)).toBe(false);
+			await handlers.get("session_switch")!(event, ctx);
+		},
+	} as unknown as ExtensionRunner;
+
+	try {
+		session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager: currentSessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage, path.join(cwd, "models.yml")),
+			extensionRunner,
+		});
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		await waitFor(() => fs.existsSync(predecessorEndpoint), 4000, "predecessor endpoint");
+
+		expect(await session.switchSession(targetSessionFile)).toBe(true);
+		expect(postCommitObserved).toBe(true);
+		await waitFor(() => fs.existsSync(successorEndpoint), 4000, "successor endpoint");
+		expect(fs.existsSync(predecessorEndpoint)).toBe(false);
+	} finally {
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+		await session?.dispose();
+		authStorage.close();
+	}
+}, 30000);
+
+test("turn.prompt preflight rejection returns a correlated failure without an accepted lifecycle", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notif-prompt-preflight-"));
+	tempDirs.push(cwd);
+	const handlers = new Map<string, Handler>();
+	createNotificationsExtension({
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		registerCommand: () => {},
+		sendUserMessage: async () => {
+			throw Object.assign(new Error("submission preflight rejected"), { code: "unavailable" });
+		},
+	} as never);
+	const sessionId = `preflight-${process.pid}-${Date.now()}`;
+	const ctx = {
+		cwd,
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getSessionName: () => "Preflight",
+			getArtifactsDir: () => cwd,
+			getCwd: () => cwd,
+		},
+	} as never;
+	await handlers.get("session_start")!({ type: "session_start" }, ctx);
+	const endpointPath = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointPath), 4000, "preflight endpoint");
+	const { url, token } = readEndpoint(endpointPath);
+	const frames: Array<Record<string, unknown>> = [];
+	const ws = new WebSocket(`${url}/?token=${encodeURIComponent(token)}`);
+	openSockets.push(ws);
+	ws.addEventListener("message", event => frames.push(JSON.parse(String((event as MessageEvent).data))));
+	await new Promise<void>((resolve, reject) => {
+		ws.addEventListener("open", () => resolve(), { once: true });
+		ws.addEventListener("error", () => reject(new Error("WebSocket error")), { once: true });
+	});
+	ws.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "preflight-request",
+			operation: "turn.prompt",
+			input: { text: "will be rejected" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "preflight-request"),
+		4000,
+		"preflight failure response",
+	);
+	expect(frames.find(frame => frame.type === "control_response" && frame.id === "preflight-request")).toMatchObject({
+		ok: false,
+		error: { code: "unavailable", message: "submission preflight rejected" },
+	});
+	ws.send(JSON.stringify({ type: "event_replay", id: "preflight-events", sinceGeneration: 1, sinceSeq: 0 }));
+	await waitFor(
+		() => frames.some(frame => frame.type === "event_replay_result" && frame.id === "preflight-events"),
+		4000,
+		"preflight lifecycle replay",
+	);
+	const replay = frames.find(frame => frame.type === "event_replay_result" && frame.id === "preflight-events");
+	expect((replay?.events as Array<Record<string, unknown>>).some(event => event.kind === "agent_start")).toBe(false);
+	expect((replay?.events as Array<Record<string, unknown>>).some(event => event.kind === "agent_end")).toBe(false);
+	expect((replay?.events as Array<Record<string, unknown>>).some(event => event.kind === "agent_failed")).toBe(false);
+	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, ctx);
+}, 30000);
+
+test("accepted turn.prompt submission failures emit a correlated terminal event", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notif-prompt-terminal-failure-"));
+	tempDirs.push(cwd);
+	const handlers = new Map<string, Handler>();
+	createNotificationsExtension({
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		registerCommand: () => {},
+		sendUserMessage: (_content: unknown, options: { onPreflightAccepted?: () => void } | undefined) => {
+			options?.onPreflightAccepted?.();
+			return Promise.reject(Object.assign(new Error("submission failed after acceptance"), { code: "unavailable" }));
+		},
+	} as never);
+	const sessionId = `terminal-failure-${process.pid}-${Date.now()}`;
+	const ctx = {
+		cwd,
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getSessionName: () => "Terminal failure",
+			getArtifactsDir: () => cwd,
+			getCwd: () => cwd,
+		},
+	} as never;
+	await handlers.get("session_start")!({ type: "session_start" }, ctx);
+	const endpointPath = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointPath), 4000, "terminal failure endpoint");
+	const { url, token } = readEndpoint(endpointPath);
+	const frames: Array<Record<string, unknown>> = [];
+	const ws = new WebSocket(`${url}/?token=${encodeURIComponent(token)}`);
+	openSockets.push(ws);
+	ws.addEventListener("message", event => frames.push(JSON.parse(String((event as MessageEvent).data))));
+	await new Promise<void>((resolve, reject) => {
+		ws.addEventListener("open", () => resolve(), { once: true });
+		ws.addEventListener("error", () => reject(new Error("WebSocket error")), { once: true });
+	});
+	ws.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "terminal-failure-request",
+			operation: "turn.prompt",
+			input: { text: "will fail after acknowledgement" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "terminal-failure-request"),
+		4000,
+		"accepted prompt response",
+	);
+	const response = frames.find(
+		frame => frame.type === "control_response" && frame.id === "terminal-failure-request",
+	) as { result?: { commandId?: string; turnId?: string } };
+	expect(response.result).toMatchObject({ accepted: true });
+	ws.send(JSON.stringify({ type: "event_replay", id: "terminal-failure-events", sinceGeneration: 1, sinceSeq: 0 }));
+	await waitFor(
+		() => frames.some(frame => frame.type === "event_replay_result" && frame.id === "terminal-failure-events"),
+		4000,
+		"terminal failure lifecycle replay",
+	);
+	const replay = frames.find(frame => frame.type === "event_replay_result" && frame.id === "terminal-failure-events");
+	expect(replay?.events).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				kind: "agent_failed",
+				payload: expect.objectContaining({
+					commandId: response.result?.commandId,
+					turnId: response.result?.turnId,
+					error: { code: "unavailable", message: "submission failed after acceptance" },
+				}),
+			}),
+		]),
+	);
+	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, ctx);
+}, 30000);
 
 test("session_switch rotates SDK authority while preserving topic identity", async () => {
 	const prevEnv = process.env.GJC_NOTIFICATIONS;

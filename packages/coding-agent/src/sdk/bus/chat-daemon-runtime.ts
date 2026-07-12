@@ -6,7 +6,7 @@ import { readSdkBrokerDiscovery, readSdkSessionEndpoint, type SdkSessionEndpoint
 import { createDiscordAdapter, createSlackAdapter } from "./chat-adapters";
 import { type ChatTransport, projectChatCommandOutcome, sendAuthorizedChatOperation } from "./chat-command-policy";
 import type { ChatDaemonKind } from "./chat-daemon-control";
-import { type DiscordEndpointBinding, DiscordNotificationDaemon } from "./discord-daemon";
+import { type DiscordEndpointBinding, DiscordEndpointBindingError, DiscordNotificationDaemon } from "./discord-daemon";
 import { DiscordLiveProvider } from "./discord-live-provider";
 import type { DiscordProvider } from "./discord-provider";
 import { type NotificationEvent, NotificationPresentationEngine } from "./engine";
@@ -18,7 +18,7 @@ export interface ChatDaemonRuntimeConfig {
 	identity: string;
 	notifications: {
 		discord?: { botToken: string; applicationId: string; guildId: string; parentChannelId: string };
-		slack?: { botToken: string; appToken: string; workspaceId: string; channelId: string };
+		slack?: { botToken: string; appToken: string; workspaceId: string; channelId: string; authorizedUserId?: string };
 	};
 	presentation?: { redact: boolean; verbosity: "lean" | "verbose" };
 }
@@ -121,7 +121,7 @@ export class ChatDaemonRuntime {
 				onCommand: async (sessionId, content, endpoint, idempotencyKey) => {
 					const attached = this.#sessions.get(sessionId);
 					if (!attached || !endpoint.isCurrent())
-						throw new Error("Discord session endpoint changed before command dispatch.");
+						throw new DiscordEndpointBindingError("Discord session endpoint changed before command dispatch.");
 					return await this.#runChatCommand("discord", sessionId, content, attached.client, idempotencyKey);
 				},
 			});
@@ -146,6 +146,7 @@ export class ChatDaemonRuntime {
 				teamId: config.workspaceId,
 				channelId: config.channelId,
 				provider: new SlackProvider(provider),
+				authorizeActor: async actorId => config.authorizedUserId === actorId,
 				createClient: endpoint => {
 					const attached = this.#sessions.get(endpoint.sessionId);
 					if (
@@ -303,8 +304,7 @@ export class ChatDaemonRuntime {
 			generation: attached.generation,
 			isCurrent: () => this.#sessions.get(sessionId) === attached,
 			send: frame => {
-				if (this.#sessions.get(sessionId) !== attached)
-					throw new Error("Discord session endpoint changed before reply.");
+				if (this.#sessions.get(sessionId) !== attached) throw new DiscordEndpointBindingError();
 				attached.client.send(frame);
 			},
 		};

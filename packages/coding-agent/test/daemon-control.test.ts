@@ -774,7 +774,7 @@ describe("ChatDaemonController ownership safety", () => {
 		);
 		const identity = crypto
 			.createHash("sha256")
-			.update(["slack-token", "app-token", "workspace", "channel", "false", "lean"].join("\0"))
+			.update(["slack-token", "app-token", "workspace", "channel", "", "false", "lean"].join("\0"))
 			.digest("hex")
 			.slice(0, 16);
 		const paths = chatDaemonPaths(agentDir, "slack");

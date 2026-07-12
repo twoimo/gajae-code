@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -45,7 +46,14 @@ async function createSdkControlServer(
 					page: { items: ["first assistant line\nlatest assistant line"], complete: true, revision: "test" },
 				},
 	brokerSessions: Array<Record<string, unknown>> = [
-		{ sessionId: "visible-session", locator: { repo: root }, live: true, endpointGeneration: 1 },
+		{
+			sessionId: "visible-session",
+			locator: { repo: root },
+			live: true,
+			endpointGeneration: 1,
+			pid: 101,
+			endpointMtimeMs: 1,
+		},
 	],
 	sessionCommand?: string,
 ) {
@@ -90,6 +98,12 @@ async function createSdkControlServer(
 								},
 							};
 						}
+						if (operation === "session.close") {
+							const sessionId = input.sessionId;
+							const index = brokerSessions.findIndex(session => session.sessionId === sessionId);
+							if (index >= 0) brokerSessions.splice(index, 1);
+							return { ok: true, result: { sessionId } };
+						}
 						if (operation === "session.create") {
 							const target = input.target as Record<string, unknown> | undefined;
 							const worktree = target?.worktree as Record<string, unknown> | undefined;
@@ -106,6 +120,8 @@ async function createSdkControlServer(
 								locator: { repo: sessionCwd },
 								live: true,
 								endpointGeneration: 1,
+								pid: 10_000 + createdSessions,
+								endpointMtimeMs: createdSessions,
 							});
 							return {
 								ok: true,
@@ -549,12 +565,117 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			summary: { reports: 1 },
 		});
 	});
+	it("fails closed when a same-generation successor has a different endpoint incarnation", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const sessions = [
+			{
+				sessionId: "visible-session",
+				locator: { repo: root },
+				live: true,
+				endpointGeneration: 1,
+				pid: 101,
+				endpointMtimeMs: 1,
+			},
+		];
+		const server = await createSdkControlServer(root, controls, undefined, undefined, sessions);
+		await registerSdkSession(server, root);
+		const recordPath = path.join(
+			root,
+			".gjc",
+			"coordinator-state",
+			"local",
+			"repo",
+			"sessions",
+			"visible-session.json",
+		);
+		const record = JSON.parse(await fs.readFile(recordPath, "utf8"));
+		await Bun.write(
+			recordPath,
+			JSON.stringify({ ...record, ephemeral: true, created_at: new Date(Date.now() - 31 * 60_000).toISOString() }),
+		);
+		sessions[0]!.endpointMtimeMs = 2;
+
+		await expect(
+			server.callTool("gjc_coordinator_send_prompt", {
+				session_id: "visible-session",
+				prompt: "stale successor",
+				idempotency_key: "stale-incarnation-prompt",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "endpoint_stale" } });
+		await expect(
+			server.callTool("gjc_coordinator_stop_session", {
+				session_id: "visible-session",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, reason: "endpoint_stale", closed: false });
+		expect(
+			controls.filter(control => control.operation === "turn.prompt" || control.operation === "session.close"),
+		).toEqual([]);
+	});
+	it("fails closed on corrupt or crash-left coordinator idempotency records", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		const corruptKey = "corrupt-report";
+		const corruptFile = path.join(
+			root,
+			".gjc",
+			"coordinator-state",
+			"local",
+			"repo",
+			"idempotency",
+			`${createHash("sha256").update(corruptKey).digest("hex")}.json`,
+		);
+		await fs.mkdir(path.dirname(corruptFile), { recursive: true });
+		await Bun.write(corruptFile, "{not-json");
+		await expect(
+			server.callTool("gjc_coordinator_report_status", {
+				status: "running",
+				summary: "must not write",
+				idempotency_key: corruptKey,
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "terminal_uncertain" } });
+		expect(
+			await fs.readdir(path.join(root, ".gjc", "coordinator-state", "local", "repo", "reports")).catch(() => []),
+		).toEqual([]);
+
+		await registerSdkSession(server, root);
+		const registerFile = path.join(
+			root,
+			".gjc",
+			"coordinator-state",
+			"local",
+			"repo",
+			"idempotency",
+			`${createHash("sha256").update("register-1").digest("hex")}.json`,
+		);
+		const completed = JSON.parse(await fs.readFile(registerFile, "utf8"));
+		await Bun.write(registerFile, JSON.stringify({ ...completed, state: "in_progress" }));
+		const endpointReads = controls.filter(control => control.operation === "session.get_endpoint").length;
+		await expect(registerSdkSession(server, root)).resolves.toMatchObject({
+			ok: false,
+			error: { code: "idempotency_in_progress" },
+		});
+		expect(controls.filter(control => control.operation === "session.get_endpoint")).toHaveLength(endpointReads);
+	});
 	it("fails closed on workspace and endpoint-generation binding changes", async () => {
 		const root = await tempRoot();
 		const otherWorkspace = path.join(root, "other-workspace");
 		await fs.mkdir(otherWorkspace);
 		const controls: SdkControl[] = [];
-		const sessions = [{ sessionId: "visible-session", locator: { repo: root }, live: true, endpointGeneration: 1 }];
+		const sessions = [
+			{
+				sessionId: "visible-session",
+				locator: { repo: root },
+				live: true,
+				endpointGeneration: 1,
+				pid: 101,
+				endpointMtimeMs: 1,
+			},
+		];
 		const server = await createSdkControlServer(root, controls, undefined, undefined, sessions);
 		await registerSdkSession(server, root);
 		sessions.push({
@@ -562,6 +683,8 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			locator: { repo: otherWorkspace },
 			live: true,
 			endpointGeneration: 1,
+			pid: 102,
+			endpointMtimeMs: 2,
 		});
 		await expect(
 			server.callTool("gjc_coordinator_register_session", {
@@ -590,6 +713,73 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				allow_mutation: true,
 			}),
 		).resolves.toMatchObject({ ok: false, error: { code: "workspace_mismatch" } });
+	});
+	it("uses an incarnation-bound close key for each reaped session incarnation", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const sessions = [
+			{
+				sessionId: "visible-session",
+				locator: { repo: root },
+				live: true,
+				endpointGeneration: 1,
+				pid: 101,
+				endpointMtimeMs: 1,
+			},
+		];
+		const server = await createSdkControlServer(root, controls, undefined, undefined, sessions);
+		const recordPath = path.join(
+			root,
+			".gjc",
+			"coordinator-state",
+			"local",
+			"repo",
+			"sessions",
+			"visible-session.json",
+		);
+		for (const [registrationKey, endpointMtimeMs] of [
+			["reap-first-registration", 1],
+			["reap-second-registration", 2],
+		] as const) {
+			if (sessions.length === 0)
+				sessions.push({
+					sessionId: "visible-session",
+					locator: { repo: root },
+					live: true,
+					endpointGeneration: 1,
+					pid: 101,
+					endpointMtimeMs,
+				});
+			else sessions[0]!.endpointMtimeMs = endpointMtimeMs;
+			await expect(
+				server.callTool("gjc_coordinator_register_session", {
+					session_id: "visible-session",
+					cwd: root,
+					idempotency_key: registrationKey,
+					allow_mutation: true,
+				}),
+			).resolves.toMatchObject({ ok: true });
+			const record = JSON.parse(await fs.readFile(recordPath, "utf8"));
+			await Bun.write(
+				recordPath,
+				JSON.stringify({
+					...record,
+					ephemeral: true,
+					created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+				}),
+			);
+			await expect(
+				server.callTool("gjc_coordinator_stop_session", { session_id: "visible-session", allow_mutation: true }),
+			).resolves.toMatchObject({ ok: true, closed: true });
+		}
+		const closes = controls.filter(control => control.operation === "session.close");
+		expect(closes).toHaveLength(2);
+		expect(closes.map(control => control.idempotencyKey)).toEqual([
+			expect.stringMatching(/^coordinator-reap:visible-session:[a-f0-9]{64}$/),
+			expect.stringMatching(/^coordinator-reap:visible-session:[a-f0-9]{64}$/),
+		]);
+		expect(closes[0]!.idempotencyKey).not.toBe(closes[1]!.idempotencyKey);
+		expect(closes[0]!.input.endpointIncarnation).not.toBe(closes[1]!.input.endpointIncarnation);
 	});
 	it("never returns credential-contaminated reused session records", async () => {
 		const root = await tempRoot();
@@ -838,10 +1028,11 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		]);
 		expect(lifecycleControls(controls)).toEqual([]);
 	});
-	it("closes an idle ephemeral coordinator session through broker lifecycle without terminal ownership", async () => {
+	it("closes an idle ephemeral coordinator session through incarnation-bound broker lifecycle authority", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
 		const server = await createSdkControlServer(root, controls);
+		await registerSdkSession(server, root);
 		const sessionFile = path.join(
 			root,
 			".gjc",
@@ -851,15 +1042,10 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			"sessions",
 			"visible-session.json",
 		);
-		await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+		const record = JSON.parse(await fs.readFile(sessionFile, "utf8"));
 		await Bun.write(
 			sessionFile,
-			JSON.stringify({
-				session_id: "visible-session",
-				cwd: root,
-				ephemeral: true,
-				created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
-			}),
+			JSON.stringify({ ...record, ephemeral: true, created_at: new Date(Date.now() - 31 * 60_000).toISOString() }),
 		);
 
 		expect(
@@ -868,31 +1054,49 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				allow_mutation: true,
 			}),
 		).toMatchObject({ ok: true, closed: true, session_id: "visible-session" });
-		expect(controls).toEqual([
+		expect(controls.filter(control => control.operation === "session.close")).toEqual([
 			expect.objectContaining({
-				operation: "session.close",
-				input: { sessionId: "visible-session" },
-				idempotencyKey: expect.any(String),
+				input: expect.objectContaining({
+					sessionId: "visible-session",
+					endpointGeneration: 1,
+					endpointIncarnation: expect.stringMatching(/^[a-f0-9]{64}$/),
+				}),
+				idempotencyKey: expect.stringMatching(/^coordinator-reap:visible-session:[a-f0-9]{64}$/),
 			}),
 		]);
 		expect(await Bun.file(sessionFile).exists()).toBe(false);
 	});
 
-	it("idle reaping selects only stale ephemeral coordinator records and uses SDK session.close", async () => {
+	it("idle reaping selects only stale ephemeral coordinator records and uses incarnation-bound session.close", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
-		const server = await createSdkControlServer(root, controls);
-		const sessionsDir = path.join(root, ".gjc", "coordinator-state", "local", "repo", "sessions");
-		await fs.mkdir(sessionsDir, { recursive: true });
-		await Bun.write(
-			path.join(sessionsDir, "idle-session.json"),
-			JSON.stringify({
+		const brokerSessions = [
+			{
+				sessionId: "idle-session",
+				locator: { repo: root },
+				live: true,
+				endpointGeneration: 1,
+				pid: 202,
+				endpointMtimeMs: 2,
+			},
+		];
+		const server = await createSdkControlServer(root, controls, undefined, undefined, brokerSessions);
+		await expect(
+			server.callTool("gjc_coordinator_register_session", {
 				session_id: "idle-session",
 				cwd: root,
-				ephemeral: true,
-				created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+				idempotency_key: "register-idle",
+				allow_mutation: true,
 			}),
+		).resolves.toMatchObject({ ok: true });
+		const sessionsDir = path.join(root, ".gjc", "coordinator-state", "local", "repo", "sessions");
+		const idleFile = path.join(sessionsDir, "idle-session.json");
+		const idle = JSON.parse(await fs.readFile(idleFile, "utf8"));
+		await Bun.write(
+			idleFile,
+			JSON.stringify({ ...idle, ephemeral: true, created_at: new Date(Date.now() - 31 * 60_000).toISOString() }),
 		);
+		await fs.rm(path.join(root, ".gjc", "coordinator-state", "local", "repo", "session-states", "idle-session.json"));
 		await Bun.write(
 			path.join(sessionsDir, "registered-session.json"),
 			JSON.stringify({
@@ -903,14 +1107,17 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		);
 
 		expect(await server.sessionReaper.sweepOnce()).toBe(1);
-		expect(controls).toEqual([
+		expect(controls.filter(control => control.operation === "session.close")).toEqual([
 			expect.objectContaining({
-				operation: "session.close",
-				input: { sessionId: "idle-session" },
-				idempotencyKey: expect.any(String),
+				input: expect.objectContaining({
+					sessionId: "idle-session",
+					endpointGeneration: 1,
+					endpointIncarnation: expect.stringMatching(/^[a-f0-9]{64}$/),
+				}),
+				idempotencyKey: expect.stringMatching(/^coordinator-reap:idle-session:[a-f0-9]{64}$/),
 			}),
 		]);
-		expect(await Bun.file(path.join(sessionsDir, "idle-session.json")).exists()).toBe(false);
+		expect(await Bun.file(idleFile).exists()).toBe(false);
 		expect(await Bun.file(path.join(sessionsDir, "registered-session.json")).exists()).toBe(true);
 	});
 });

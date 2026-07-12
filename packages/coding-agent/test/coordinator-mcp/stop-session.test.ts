@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,6 +14,22 @@ afterEach(async () => {
 
 type BrokerControl = { operation: string; input: Record<string, unknown>; idempotencyKey?: string };
 
+const ENDPOINT_GENERATION = 1;
+const ENDPOINT_MTIME_MS = 1;
+
+function endpointIncarnation(sessionId: string): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				endpointGeneration: ENDPOINT_GENERATION,
+				endpointMtimeMs: ENDPOINT_MTIME_MS,
+				pid: process.pid,
+				sessionId,
+			}),
+		)
+		.digest("hex");
+}
+
 async function createServer(
 	root: string,
 	options: { forceStop?: boolean; closeFails?: boolean; closeFailures?: number } = {},
@@ -21,6 +38,31 @@ async function createServer(
 	const agentDir = path.join(root, "agent-global");
 	const controls: BrokerControl[] = [];
 	let closeAttempts = 0;
+	const closedSessionIds = new Set<string>();
+
+	async function brokerSessions(): Promise<Array<Record<string, unknown>>> {
+		const sessionsDir = path.join(stateRoot, "local", "repo", "sessions");
+		const entries = await fs.readdir(sessionsDir).catch(() => []);
+		const sessions = await Promise.all(
+			entries
+				.filter(entry => entry.endsWith(".json"))
+				.map(async entry => {
+					const session = JSON.parse(await fs.readFile(path.join(sessionsDir, entry), "utf8")) as {
+						session_id?: unknown;
+					};
+					const sessionId = typeof session.session_id === "string" ? session.session_id : "";
+					return {
+						sessionId,
+						locator: { repo: root },
+						live: true,
+						endpointGeneration: ENDPOINT_GENERATION,
+						pid: process.pid,
+						endpointMtimeMs: ENDPOINT_MTIME_MS,
+					};
+				}),
+		);
+		return sessions.filter(session => !closedSessionIds.has(session.sessionId as string));
+	}
 	await fs.mkdir(path.join(agentDir, "sdk"), { recursive: true });
 	await Bun.write(
 		path.join(agentDir, "sdk", "broker.json"),
@@ -57,10 +99,12 @@ async function createServer(
 						opts: { idempotencyKey?: string } = {},
 					) => {
 						controls.push({ operation, input, idempotencyKey: opts.idempotencyKey });
+						if (operation === "session.list") return { ok: true, result: { sessions: await brokerSessions() } };
 						if (operation === "session.close") {
 							closeAttempts += 1;
 							if (options.closeFails || closeAttempts <= (options.closeFailures ?? 0))
 								return { ok: false, error: { code: "close_refused", message: "SDK refused close" } };
+							closedSessionIds.add(String(input.sessionId));
 						}
 						return { ok: true, result: { sessionId: input.sessionId } };
 					},
@@ -94,6 +138,9 @@ async function writeSession(
 			session_id: id,
 			cwd: root,
 			created_at: new Date(Date.now() - 31 * 60_000).toISOString(),
+			broker_workspace: await fs.realpath(root),
+			endpoint_generation: ENDPOINT_GENERATION,
+			endpoint_incarnation: endpointIncarnation(id),
 			...overrides,
 		}),
 	);
@@ -134,8 +181,15 @@ describe("gjc_coordinator_stop_session SDK lifecycle", () => {
 		expect(
 			await server.callTool("gjc_coordinator_stop_session", { session_id: "ephemeral", allow_mutation: true }),
 		).toMatchObject({ ok: true, closed: true, session_id: "ephemeral" });
-		expect(controls).toEqual([
-			expect.objectContaining({ operation: "session.close", input: { sessionId: "ephemeral" } }),
+		expect(controls.filter(control => control.operation === "session.close")).toEqual([
+			expect.objectContaining({
+				input: expect.objectContaining({
+					sessionId: "ephemeral",
+					endpointGeneration: ENDPOINT_GENERATION,
+					endpointIncarnation: endpointIncarnation("ephemeral"),
+				}),
+				idempotencyKey: `coordinator-reap:ephemeral:${endpointIncarnation("ephemeral")}`,
+			}),
 		]);
 		expect(await Bun.file(sessionFile("ephemeral")).exists()).toBe(false);
 	});
@@ -182,7 +236,16 @@ describe("gjc_coordinator_stop_session SDK lifecycle", () => {
 		await writeSession(sessionFile("registered"), root, "registered");
 
 		expect(await server.sessionReaper.sweepOnce()).toBe(1);
-		expect(controls).toEqual([expect.objectContaining({ operation: "session.close", input: { sessionId: "idle" } })]);
+		expect(controls.filter(control => control.operation === "session.close")).toEqual([
+			expect.objectContaining({
+				input: expect.objectContaining({
+					sessionId: "idle",
+					endpointGeneration: ENDPOINT_GENERATION,
+					endpointIncarnation: endpointIncarnation("idle"),
+				}),
+				idempotencyKey: `coordinator-reap:idle:${endpointIncarnation("idle")}`,
+			}),
+		]);
 		expect(await Bun.file(sessionFile("idle")).exists()).toBe(false);
 		expect(await Bun.file(sessionFile("registered")).exists()).toBe(true);
 	});
@@ -198,8 +261,8 @@ describe("gjc_coordinator_stop_session SDK lifecycle", () => {
 		const closeRequests = controls.filter(control => control.operation === "session.close");
 		expect(closeRequests).toHaveLength(2);
 		expect(closeRequests.map(control => control.idempotencyKey)).toEqual([
-			"coordinator-reap:retry",
-			"coordinator-reap:retry",
+			`coordinator-reap:retry:${endpointIncarnation("retry")}`,
+			`coordinator-reap:retry:${endpointIncarnation("retry")}`,
 		]);
 	});
 });

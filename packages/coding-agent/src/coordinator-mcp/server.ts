@@ -589,6 +589,7 @@ function normalizeSession(session: Record<string, unknown>): Record<string, unkn
 		["tmux_session", ["tmux_session", "tmuxSession"]],
 		["tmux_target", ["tmux_target", "tmuxTarget"]],
 		["broker_workspace", ["broker_workspace"]],
+		["endpoint_incarnation", ["endpoint_incarnation"]],
 	];
 	for (const [output, keys] of strings) {
 		const value = firstString(session, keys);
@@ -659,6 +660,50 @@ interface CoordinatorToolIdempotencyRecord {
 	response?: Record<string, unknown>;
 	created_at: string;
 	completed_at?: string;
+}
+
+type CoordinatorIdempotencyFile =
+	| { kind: "missing" }
+	| { kind: "record"; value: Record<string, unknown> }
+	| { kind: "corrupt" };
+
+async function readCoordinatorIdempotencyFile(file: string): Promise<CoordinatorIdempotencyFile> {
+	let source: string;
+	try {
+		source = await fs.readFile(file, "utf8");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" } : { kind: "corrupt" };
+	}
+	try {
+		const value = asRecord(JSON.parse(source));
+		return value ? { kind: "record", value } : { kind: "corrupt" };
+	} catch {
+		return { kind: "corrupt" };
+	}
+}
+
+async function writeCoordinatorIdempotencyFile(file: string, value: CoordinatorToolIdempotencyRecord): Promise<void> {
+	await ensureDir(path.dirname(file));
+	const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		const handle = await fs.open(temporary, "wx", 0o600);
+		try {
+			await handle.writeFile(`${JSON.stringify(value)}\n`);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		await fs.rename(temporary, file);
+		const directory = await fs.open(path.dirname(file), "r");
+		try {
+			await directory.sync();
+		} finally {
+			await directory.close();
+		}
+	} catch (error) {
+		await fs.rm(temporary, { force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 function canonicalJson(value: unknown): string {
@@ -1857,7 +1902,17 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			.digest("hex");
 		const file = idempotencyFile(idempotencyKey);
 		return await withSessionStateLock(file, async () => {
-			const existing = asRecord(await readJsonFile(file)) as Partial<CoordinatorToolIdempotencyRecord> | null;
+			const existingFile = await readCoordinatorIdempotencyFile(file);
+			if (existingFile.kind === "corrupt")
+				return {
+					ok: false,
+					error: {
+						code: "terminal_uncertain",
+						message: "coordinator idempotency ledger is corrupt; mutation outcome is uncertain",
+					},
+				};
+			const existing =
+				existingFile.kind === "record" ? (existingFile.value as Partial<CoordinatorToolIdempotencyRecord>) : null;
 			if (existing) {
 				if (
 					existing.schema_version !== 1 ||
@@ -1872,12 +1927,27 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				if (existing.state === "completed") {
 					const replay = asRecord(existing.response);
 					if (replay) return replay;
+					return {
+						ok: false,
+						error: {
+							code: "terminal_uncertain",
+							message: "completed coordinator idempotency record is corrupt; mutation outcome is uncertain",
+						},
+					};
 				}
+				if (existing.state === "in_progress")
+					return {
+						ok: false,
+						error: {
+							code: "idempotency_in_progress",
+							message: "prior coordinator mutation outcome is not replayable",
+						},
+					};
 				return {
 					ok: false,
 					error: {
-						code: "idempotency_in_progress",
-						message: "prior coordinator mutation outcome is not replayable",
+						code: "terminal_uncertain",
+						message: "coordinator idempotency record is corrupt; mutation outcome is uncertain",
 					},
 				};
 			}
@@ -1889,14 +1959,14 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				state: "in_progress",
 				created_at: new Date().toISOString(),
 			};
-			await writeJsonFile(file, started);
+			await writeCoordinatorIdempotencyFile(file, started);
 			const response = boundedPublicResponse(await operation().catch(error => sdkError(error)));
-			await writeJsonFile(file, {
+			await writeCoordinatorIdempotencyFile(file, {
 				...started,
 				state: "completed",
 				response,
 				completed_at: new Date().toISOString(),
-			} satisfies CoordinatorToolIdempotencyRecord);
+			});
 			return response;
 		});
 	}
@@ -1952,11 +2022,32 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				: null;
 	}
 
-	async function exactBrokerSessionBinding(
-		sessionId: string,
-		workspace: string,
-		idempotencyKey?: string,
-	): Promise<{ workspace: string; endpointGeneration: number; endpoint: { url: string; token: string } }> {
+	function brokerEndpointIncarnation(session: Record<string, unknown>, sessionId: string): string | null {
+		const endpointGeneration = brokerEndpointGeneration(session);
+		const pid = session.pid;
+		const endpointMtimeMs = session.endpointMtimeMs;
+		if (
+			endpointGeneration === null ||
+			typeof pid !== "number" ||
+			!Number.isSafeInteger(pid) ||
+			pid <= 0 ||
+			typeof endpointMtimeMs !== "number" ||
+			!Number.isFinite(endpointMtimeMs) ||
+			endpointMtimeMs <= 0
+		)
+			return null;
+		return createHash("sha256")
+			.update(canonicalJson({ endpointGeneration, endpointMtimeMs, pid, sessionId }))
+			.digest("hex");
+	}
+
+	type BrokerSessionAuthority = {
+		workspace: string;
+		endpointGeneration: number;
+		endpointIncarnation: string;
+	};
+
+	async function exactBrokerSessionAuthority(sessionId: string, workspace: string): Promise<BrokerSessionAuthority> {
 		const listing = brokerResult(await brokerSession(workspace, "session.list", { cwd: workspace }));
 		const matches: Array<{ session: Record<string, unknown>; workspace: string }> = [];
 		for (const session of jsonRecords(Array.isArray(listing.sessions) ? listing.sessions : [])) {
@@ -1978,16 +2069,31 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			);
 		const match = matches[0]!;
 		const endpointGeneration = brokerEndpointGeneration(match.session);
-		if (endpointGeneration === null)
-			throw new SdkClientError("endpoint_stale", "Broker session has no usable endpoint generation.");
+		const endpointIncarnation = brokerEndpointIncarnation(match.session, sessionId);
+		if (endpointGeneration === null || endpointIncarnation === null)
+			throw new SdkClientError("endpoint_stale", "Broker session has no usable endpoint incarnation.");
+		return { workspace: match.workspace, endpointGeneration, endpointIncarnation };
+	}
+
+	async function exactBrokerSessionBinding(
+		sessionId: string,
+		workspace: string,
+		idempotencyKey?: string,
+	): Promise<BrokerSessionAuthority & { endpoint: { url: string; token: string } }> {
+		const authority = await exactBrokerSessionAuthority(sessionId, workspace);
 		const endpointRecord = brokerResult(
-			await brokerSession(workspace, "session.get_endpoint", { sessionId, endpointGeneration }, idempotencyKey),
+			await brokerSession(
+				workspace,
+				"session.get_endpoint",
+				{ sessionId, endpointGeneration: authority.endpointGeneration },
+				idempotencyKey,
+			),
 		);
 		const url = optionalString(endpointRecord.url);
 		const token = optionalString(endpointRecord.token);
 		if (!url || !token)
 			throw new SdkClientError("endpoint_stale", "Broker returned an invalid generation-bound endpoint.");
-		return { workspace: match.workspace, endpointGeneration, endpoint: { url, token } };
+		return { ...authority, endpoint: { url, token } };
 	}
 
 	async function resolveSessionEndpoint(
@@ -2003,14 +2109,15 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			session.endpoint_generation > 0
 				? session.endpoint_generation
 				: null;
-		if (!sessionId || !cwd || !persistedWorkspace || persistedGeneration === null)
-			throw new SdkClientError("not_found", "Coordinator session has no generation-bound broker identity.");
+		const persistedIncarnation = optionalString(session.endpoint_incarnation);
+		if (!sessionId || !cwd || !persistedWorkspace || persistedGeneration === null || !persistedIncarnation)
+			throw new SdkClientError("not_found", "Coordinator session has no incarnation-bound broker identity.");
 		const workspace = await canonicalBrokerWorkspace(cwd);
 		if (workspace !== persistedWorkspace)
 			throw new SdkClientError("endpoint_stale", "Coordinator session workspace binding is stale.");
 		const binding = await exactBrokerSessionBinding(sessionId, workspace, idempotencyKey);
-		if (binding.endpointGeneration !== persistedGeneration)
-			throw new SdkClientError("endpoint_stale", "Coordinator session endpoint generation is stale.");
+		if (binding.endpointGeneration !== persistedGeneration || binding.endpointIncarnation !== persistedIncarnation)
+			throw new SdkClientError("endpoint_stale", "Coordinator session endpoint incarnation is stale.");
 		return binding.endpoint;
 	}
 
@@ -2040,9 +2147,38 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			const activeTurn = await readActiveTurn(namespaceDir, id);
 			if (activeTurn) return { ok: false, reason: "active_turn", closed: false, active_turn_id: activeTurn.turn_id };
 			const cwd = optionalString(session.cwd);
-			if (!cwd) return { ok: false, reason: "session_metadata_missing", closed: false };
+			const persistedWorkspace = optionalString(session.broker_workspace);
+			const persistedGeneration =
+				typeof session.endpoint_generation === "number" &&
+				Number.isSafeInteger(session.endpoint_generation) &&
+				session.endpoint_generation > 0
+					? session.endpoint_generation
+					: null;
+			const persistedIncarnation = optionalString(session.endpoint_incarnation);
+			if (!cwd || !persistedWorkspace || persistedGeneration === null || !persistedIncarnation)
+				return { ok: false, reason: "endpoint_stale", closed: false };
+			let workspace = "";
 			try {
-				brokerResult(await brokerSession(cwd, "session.close", { sessionId: id }, `coordinator-reap:${id}`));
+				workspace = await canonicalBrokerWorkspace(cwd);
+				const authority = await exactBrokerSessionAuthority(id, workspace);
+				if (
+					authority.workspace !== persistedWorkspace ||
+					authority.endpointGeneration !== persistedGeneration ||
+					authority.endpointIncarnation !== persistedIncarnation
+				)
+					return { ok: false, reason: "endpoint_stale", closed: false };
+				brokerResult(
+					await brokerSession(
+						cwd,
+						"session.close",
+						{
+							sessionId: id,
+							endpointGeneration: authority.endpointGeneration,
+							endpointIncarnation: authority.endpointIncarnation,
+						},
+						`coordinator-reap:${id}:${authority.endpointIncarnation}`,
+					),
+				);
 			} catch (error) {
 				return {
 					ok: false,
@@ -2050,6 +2186,18 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 					detail: error instanceof SdkClientError ? error.code : "unavailable",
 					closed: false,
 				};
+			}
+			try {
+				await exactBrokerSessionAuthority(id, workspace);
+				return { ok: false, reason: "endpoint_stale", closed: false };
+			} catch (error) {
+				if (!(error instanceof SdkClientError) || error.code !== "not_found")
+					return {
+						ok: false,
+						reason: "close_failed",
+						detail: error instanceof SdkClientError ? error.code : "unavailable",
+						closed: false,
+					};
 			}
 			await fs.rm(sessionFile(id), { force: true });
 			await fs.rm(sessionStateFile(namespaceDir, id), { force: true });
@@ -2360,6 +2508,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 							model: optionalString(args.model),
 							broker_workspace: binding.workspace,
 							endpoint_generation: binding.endpointGeneration,
+							endpoint_incarnation: binding.endpointIncarnation,
 						});
 						await writeJsonFile(sessionFile(sessionId), session);
 						const sessionState = await writeSessionState(namespaceDir, sessionId, "ready_for_input", {
@@ -2593,13 +2742,14 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 								const binding = await exactBrokerSessionBinding(sessionId, canonicalCwd, idempotencyKey);
 								if (
 									optionalString(existing.broker_workspace) !== canonicalCwd ||
-									existing.endpoint_generation !== binding.endpointGeneration
+									existing.endpoint_generation !== binding.endpointGeneration ||
+									optionalString(existing.endpoint_incarnation) !== binding.endpointIncarnation
 								)
 									return {
 										ok: false,
 										error: {
 											code: "endpoint_stale",
-											message: "Coordinator session generation binding is stale.",
+											message: "Coordinator session endpoint incarnation binding is stale.",
 										},
 									};
 								session = normalizeSession({
@@ -2608,6 +2758,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 									cwd: canonicalCwd,
 									broker_workspace: binding.workspace,
 									endpoint_generation: binding.endpointGeneration,
+									endpoint_incarnation: binding.endpointIncarnation,
 								});
 								reusedSession = true;
 							} else {
@@ -2634,6 +2785,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 									...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
 									broker_workspace: binding.workspace,
 									endpoint_generation: binding.endpointGeneration,
+									endpoint_incarnation: binding.endpointIncarnation,
 								});
 							}
 							await writeJsonFile(sessionFile(sessionId), session);
@@ -2769,6 +2921,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 							...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
 							broker_workspace: binding.workspace,
 							endpoint_generation: binding.endpointGeneration,
+							endpoint_incarnation: binding.endpointIncarnation,
 						});
 						await writeJsonFile(sessionFile(sessionId), session);
 						const lifecycle = publicLifecycleReceipt(created, sessionId);

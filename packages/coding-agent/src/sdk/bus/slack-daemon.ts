@@ -45,6 +45,8 @@ export interface SlackNotificationDaemonOptions {
 	channelId: string;
 	provider: SlackProvider;
 	botUserId?: string;
+	/** Fail-closed authorization for the paired Slack principal. */
+	authorizeActor?: (actorId: string) => boolean | Promise<boolean>;
 	store?: ConversationStore<SlackConversation>;
 	now?: () => number;
 	randomId?: () => string;
@@ -85,6 +87,7 @@ type SlackInboundRouting = {
 	teamId: string;
 	channelId: string;
 	rootTs: string;
+	actorId: string;
 	eventId: string;
 	interactionId: string;
 	retryKey: string;
@@ -211,15 +214,18 @@ export class SlackNotificationDaemon {
 			await this.options.provider.ack(envelope.envelope_id);
 			return false;
 		}
+		const actorId = text(inbound.event.user);
 		if (
 			inbound.event.bot_id ||
 			inbound.event.subtype === "bot_message" ||
-			inbound.event.user === this.options.botUserId
+			actorId === this.options.botUserId ||
+			!actorId ||
+			!(await this.#actorAuthorized(actorId))
 		) {
 			await this.options.provider.ack(envelope.envelope_id);
 			return false;
 		}
-		const claim = await this.#claimInbound(inbound);
+		const claim = await this.#claimInbound(inbound, actorId);
 		if (!claim) {
 			await this.options.provider.ack(envelope.envelope_id);
 			return false;
@@ -564,14 +570,17 @@ export class SlackNotificationDaemon {
 		return await this.postRoot(sessionId, body, endpointGeneration);
 	}
 
-	async #claimInbound(inbound: {
-		eventId: string;
-		eventContext?: string;
-		teamId: string;
-		channelId: string;
-		rootTs: string;
-		event: SlackEvent;
-	}): Promise<
+	async #claimInbound(
+		inbound: {
+			eventId: string;
+			eventContext?: string;
+			teamId: string;
+			channelId: string;
+			rootTs: string;
+			event: SlackEvent;
+		},
+		actorId: string,
+	): Promise<
 		{ key: string; endpoint: SlackEndpoint; sessionId: string; receipt: SlackInboundDispatchReceipt } | undefined
 	> {
 		const document = await this.store.load();
@@ -604,14 +613,15 @@ export class SlackNotificationDaemon {
 		const inboundText = text(inbound.event.text);
 		const command = inboundText?.startsWith("/sdk ") ?? false;
 
-		const idempotencyKey = `slack:${inbound.teamId}:${inbound.channelId}:${inbound.rootTs}:${inbound.eventId}:${interactionId}`;
-		const effectId = `inbound:${inbound.teamId}:${inbound.channelId}:${inbound.rootTs}:${inbound.eventId}:${interactionId}`;
+		const idempotencyKey = `slack:${inbound.teamId}:${inbound.channelId}:${inbound.rootTs}:${actorId}:${inbound.eventId}:${interactionId}`;
+		const effectId = `inbound:${inbound.teamId}:${inbound.channelId}:${inbound.rootTs}:${actorId}:${inbound.eventId}:${interactionId}`;
 		const routing: SlackInboundRouting = {
 			teamId: inbound.teamId,
 			channelId: inbound.channelId,
 			rootTs: inbound.rootTs,
 			eventId: inbound.eventId,
 			interactionId,
+			actorId,
 			retryKey,
 			eventContext: inbound.eventContext,
 			kind: command ? "command" : "action",
@@ -783,6 +793,7 @@ export class SlackNotificationDaemon {
 			acceptsSlackInbound(current, current.rootTs ?? "", claim.endpoint.generation) &&
 			claim.receipt.endpointGeneration === claim.endpoint.generation &&
 			this.#matchesInboundEffect(effect, claim.receipt) &&
+			(await this.#actorAuthorized(effect.payload.routing.actorId)) &&
 			(current.inboundDispatches ?? []).some(receipt => this.#sameInboundReceipt(receipt, claim.receipt))
 		);
 	}
@@ -874,11 +885,21 @@ export class SlackNotificationDaemon {
 		}
 	}
 
+	async #actorAuthorized(actorId: string): Promise<boolean> {
+		const authorizeActor = this.options.authorizeActor;
+		if (!authorizeActor || !text(actorId)) return false;
+		try {
+			return await authorizeActor(actorId);
+		} catch {
+			return false;
+		}
+	}
 	#validInboundRouting(routing: SlackInboundRouting): boolean {
 		return (
 			routing.teamId === this.options.teamId &&
 			routing.channelId === this.options.channelId &&
 			text(routing.rootTs) !== undefined &&
+			text(routing.actorId) !== undefined &&
 			text(routing.eventId) !== undefined &&
 			text(routing.interactionId) !== undefined &&
 			routing.retryKey === `${routing.eventId}:${routing.interactionId}` &&
@@ -897,8 +918,8 @@ export class SlackNotificationDaemon {
 			effect.endpointGeneration <= 0
 		)
 			return false;
-		const effectId = `inbound:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
-		const idempotencyKey = `slack:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
+		const effectId = `inbound:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.actorId}:${routing.eventId}:${routing.interactionId}`;
+		const idempotencyKey = `slack:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.actorId}:${routing.eventId}:${routing.interactionId}`;
 		return (
 			effect.id === effectId &&
 			payload.idempotencyKey === idempotencyKey &&
@@ -1015,7 +1036,7 @@ export class SlackNotificationDaemon {
 	): Promise<{ key: string; sessionId: string; receipt: SlackInboundDispatchReceipt } | undefined> {
 		const payload = effect.payload;
 		const routing = payload?.routing;
-		if (!routing || !this.#validInboundRouting(routing)) {
+		if (!routing || !this.#validInboundRouting(routing) || !(await this.#actorAuthorized(routing.actorId))) {
 			await this.#terminalizeRejectedInbound(effect.id);
 			return undefined;
 		}
@@ -1030,8 +1051,8 @@ export class SlackNotificationDaemon {
 			return undefined;
 		}
 		const key = matches[0]![0];
-		const expectedEffectId = `inbound:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
-		const expectedIdempotencyKey = `slack:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
+		const expectedEffectId = `inbound:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.actorId}:${routing.eventId}:${routing.interactionId}`;
+		const expectedIdempotencyKey = `slack:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.actorId}:${routing.eventId}:${routing.interactionId}`;
 		const validPayload =
 			effect.transport === "slack" &&
 			!!effect.sessionId &&

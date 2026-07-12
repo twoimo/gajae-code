@@ -62,7 +62,7 @@ export class ExtensionRuntime implements IExtensionRuntime {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
-	sendUserMessage(): void {
+	sendUserMessage(): Promise<void> {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
@@ -204,9 +204,9 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
-	): void {
-		this.runtime.sendUserMessage(content, options);
+		options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
+	): Promise<void> {
+		return Promise.resolve(this.runtime.sendUserMessage(content, options));
 	}
 
 	appendEntry(customType: string, data?: unknown): void {

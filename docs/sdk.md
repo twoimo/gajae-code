@@ -336,6 +336,7 @@ notifications:
     appToken: "<local Slack app-level token>"
     workspaceId: "<Slack workspace id>"
     channelId: "<Slack channel id>"
+    authorizedUserId: "<Slack user id authorized for inbound replies and commands>"
   redact: true
 ```
 

@@ -271,6 +271,7 @@ export const SETTINGS_SCHEMA = {
 	"notifications.slack.appToken": { type: "string", default: undefined },
 	"notifications.slack.workspaceId": { type: "string", default: undefined },
 	"notifications.slack.channelId": { type: "string", default: undefined },
+	"notifications.slack.authorizedUserId": { type: "string", default: undefined },
 	"notifications.redact": { type: "boolean", default: false },
 	"notifications.verbosity": {
 		type: "string",
