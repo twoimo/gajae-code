@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Added backward-compatible PTY direct executable/argv support without shell serialization.
 
 ## [0.10.0] - 2026-07-12
 ### Fixed

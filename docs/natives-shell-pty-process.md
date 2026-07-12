@@ -107,7 +107,13 @@ Common surfaced errors include:
 - `resize(cols, rows)`
 - `kill()`
 
-`PtyStartOptions` supports `command`, optional `cwd`, optional `env`, `timeoutMs`, `signal`, `cols`, and `rows`.
+`PtyStartOptions` requires exactly one execution mode:
+
+- **Shell command mode**: `command` is required and `shell` is optional. The command is interpreted by the selected shell (default `sh`).
+- **Direct executable mode**: `executable` is required and `args` is optional. This mode cannot specify `command` or `shell`; each `args` item is passed as one literal argv element without shell parsing, expansion, or serialization.
+- Both modes support optional `cwd`, `env`, `timeoutMs`, `signal`, `cols`, and `rows`.
+
+Validation rejects missing or mixed `command`/`executable` modes, `args` without `executable`, and `shell` with `executable`.
 
 ### Runtime lifecycle and state transitions
 
@@ -126,7 +132,8 @@ Concurrency guard:
 ### Spawn/attach/write/read/terminate patterns
 
 - PTY opened via `portable_pty::native_pty_system().openpty(...)`.
-- Command currently runs as `sh -lc <command>` with optional `cwd` and env overrides.
+- Shell command mode runs through the selected shell using its native command flag (`/c` for `cmd`, `-Command` for PowerShell, otherwise `-lc`) with optional `cwd` and env overrides.
+- Direct executable mode starts `executable` without a shell and passes `args` as literal argv entries.
 - Default size is `120x40`; dimensions are clamped (`cols 20..400`, `rows 5..200`).
 - `write()` sends raw bytes to PTY stdin.
 - `resize()` sends a control message and clamps dimensions again.
@@ -146,6 +153,7 @@ Termination path:
 ### Cancellation and timeout semantics
 
 - `timeoutMs` and `AbortSignal` feed a `CancelToken`.
+- Both shell command and direct executable modes use the same timeout, abort, `kill()`, drain, and process-tree termination lifecycle; their results use the same `cancelled` and `timedOut` flags.
 - Loop calls `ct.heartbeat()` periodically with a 16ms maximum wait cadence.
 - Timeout classification is based on the heartbeat error string containing `Timeout`.
 - Cancellation/kill starts a 300ms post-cancel drain window; normal child exit starts a 300ms post-exit drain window.

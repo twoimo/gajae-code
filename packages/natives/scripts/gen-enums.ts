@@ -107,6 +107,84 @@ function buildGeneratedBlock(dts: string): string {
 
 	return `${MARKER_START}\n${lines.join("\n")}\n${MARKER_END}`;
 }
+// N-API accepts one object shape at runtime; only its declarations need the
+// command/direct-executable discriminated union that Rust validates at runtime.
+const PTY_START_OPTIONS_MARKER_START = "// --- generated PtyStartOptions union (do not edit) ---";
+const PTY_START_OPTIONS_MARKER_END = "// --- end generated PtyStartOptions union ---";
+const PTY_START_OPTIONS_RE = /^export interface PtyStartOptions \{\n[\s\S]*?^\}$/m;
+
+function assertPtyStartModeFields(declaration: string): void {
+	for (const field of ["command", "executable", "args", "shell"]) {
+		if (!new RegExp(`^\\s*${field}\\??:`, "m").test(declaration)) {
+			throw new Error(`gen-enums: generated PtyStartOptions is missing '${field}'`);
+		}
+	}
+}
+
+function renderPtyStartOptionsUnion(generatedInterface: string): string {
+	assertPtyStartModeFields(generatedInterface);
+	const generatedOptions = generatedInterface.replace(
+		/^export interface PtyStartOptions \{/,
+		"interface PtyStartOptionsGenerated {",
+	);
+	return `${PTY_START_OPTIONS_MARKER_START}
+${generatedOptions}
+type PtyStartOptionsCommon = Omit<PtyStartOptionsGenerated, "command" | "executable" | "args" | "shell">
+
+export type PtyStartOptions =
+  | (PtyStartOptionsCommon & {
+      /** Command string to execute through a shell. */
+      command: NonNullable<PtyStartOptionsGenerated["command"]>
+      /** Direct executable mode is incompatible with command mode. */
+      executable?: never
+      /** Direct executable arguments are incompatible with command mode. */
+      args?: never
+      /** Shell binary to use (e.g. "sh", "bash", or an absolute path). */
+      shell?: PtyStartOptionsGenerated["shell"]
+    })
+  | (PtyStartOptionsCommon & {
+      /** Shell command mode is incompatible with direct executable mode. */
+      command?: never
+      /** Executable to invoke directly, without a shell. */
+      executable: NonNullable<PtyStartOptionsGenerated["executable"]>
+      /** Arguments to pass directly to executable. */
+      args?: PtyStartOptionsGenerated["args"]
+      /** Shell selection is incompatible with direct executable mode. */
+      shell?: never
+    })
+${PTY_START_OPTIONS_MARKER_END}`;
+}
+
+export function rewritePtyStartOptions(dts: string): string {
+	const markerStart = dts.indexOf(PTY_START_OPTIONS_MARKER_START);
+	const markerEnd = dts.indexOf(PTY_START_OPTIONS_MARKER_END);
+	if (markerStart !== -1 || markerEnd !== -1) {
+		if (markerStart === -1) {
+			throw new Error("gen-enums: generated PtyStartOptions union has an end marker without a start marker");
+		}
+		if (markerEnd === -1) {
+			throw new Error("gen-enums: generated PtyStartOptions union is missing its end marker");
+		}
+		if (markerEnd < markerStart) {
+			throw new Error("gen-enums: generated PtyStartOptions union end marker precedes its start marker");
+		}
+		if (
+			dts.indexOf(PTY_START_OPTIONS_MARKER_START, markerStart + PTY_START_OPTIONS_MARKER_START.length) !== -1 ||
+			dts.indexOf(PTY_START_OPTIONS_MARKER_END, markerEnd + PTY_START_OPTIONS_MARKER_END.length) !== -1
+		) {
+			throw new Error("gen-enums: generated PtyStartOptions union has duplicate markers");
+		}
+		const generatedDeclaration = dts.slice(markerStart, markerEnd + PTY_START_OPTIONS_MARKER_END.length);
+		assertPtyStartModeFields(generatedDeclaration);
+		return dts;
+	}
+
+	const generatedInterface = dts.match(PTY_START_OPTIONS_RE)?.[0];
+	if (generatedInterface === undefined) {
+		throw new Error("gen-enums: generated index.d.ts is missing PtyStartOptions");
+	}
+	return dts.replace(generatedInterface, renderPtyStartOptionsUnion(generatedInterface));
+}
 
 export async function generateEnumExports(): Promise<void> {
 	const dts = await Bun.file(dtsPath).text();
@@ -130,16 +208,19 @@ export async function generateEnumExports(): Promise<void> {
 	await Bun.write(jsPath, js);
 
 	// Also fix the .d.ts: replace `const enum` with `enum` so TS allows
-	// assigning string literals to enum types without casts.
+	// assigning string literals to enum types without casts, then turn the
+	// N-API PTY object declaration into an exact command/direct-executable union.
 	const constEnumCount = (dts.match(/export (?:declare )?const enum/g) ?? []).length;
-	const dtsContent = dts
-		.replaceAll("export const enum", "export declare enum")
-		.replaceAll("export declare const enum", "export declare enum");
+	const dtsContent = rewritePtyStartOptions(
+		dts
+			.replaceAll("export const enum", "export declare enum")
+			.replaceAll("export declare const enum", "export declare enum"),
+	);
 	await Bun.write(dtsPath, dtsContent);
 
 	const symbolCount = (generatedBlock.match(/^export const /gm) ?? []).length;
 	console.log(
-		`Generated ${symbolCount} explicit ESM exports in index.js, fixed ${constEnumCount} const enums in index.d.ts`,
+		`Generated ${symbolCount} explicit ESM exports, fixed ${constEnumCount} const enums, and regenerated PtyStartOptions.`,
 	);
 }
 

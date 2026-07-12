@@ -16,13 +16,34 @@ import {
 	listWorkspace,
 	MacOSPowerAssertion,
 	PtySession,
+	type PtyStartOptions,
 	summarizeCode,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "../native/index.js";
+import { rewritePtyStartOptions } from "../scripts/gen-enums";
 
 let testDir: string;
+const validPtyStartOptions = [
+	{ command: "echo legacy-shell", shell: "sh" },
+	{ executable: process.execPath, args: ["-e", "process.exit(0)"] },
+] satisfies Array<PtyStartOptions>;
+
+// @ts-expect-error PTY starts require exactly one execution mode.
+const missingPtyStartMode: PtyStartOptions = {};
+// @ts-expect-error Command mode cannot include a direct executable.
+const mixedPtyStartMode: PtyStartOptions = { command: "echo legacy-shell", executable: process.execPath };
+// @ts-expect-error Direct executable mode cannot select a shell.
+const executableWithShell: PtyStartOptions = { executable: process.execPath, shell: "sh" };
+// @ts-expect-error Direct executable arguments require an executable.
+const argsWithoutExecutable: PtyStartOptions = { args: ["orphaned"] };
+
+void validPtyStartOptions;
+void missingPtyStartMode;
+void mixedPtyStartMode;
+void executableWithShell;
+void argsWithoutExecutable;
 
 async function setupFixtures() {
 	testDir = await fs.mkdtemp(path.join(os.tmpdir(), "natives-test-"));
@@ -83,6 +104,65 @@ describe("pi-natives", () => {
 		return async () => {
 			await cleanupFixtures();
 		};
+	});
+	describe("PtyStartOptions declaration transformer", () => {
+		const freshDeclaration = `/** Options for running a command in a PTY session. */
+export interface PtyStartOptions {
+  /** Command string to execute through a shell. */
+  command?: string
+  /** Executable to invoke directly, without a shell. */
+  executable?: string
+  /** Arguments to pass directly to executable. */
+  args?: Array<string>
+  /** A future N-API option. */
+  futureOption?: { enabled: boolean }
+  /** Shell binary to use. */
+  shell?: string
+}
+`;
+
+		it("specializes execution modes while preserving generated common fields", () => {
+			const transformed = rewritePtyStartOptions(freshDeclaration);
+
+			expect(transformed).toContain("// --- generated PtyStartOptions union (do not edit) ---");
+			expect(transformed).toContain("interface PtyStartOptionsGenerated {");
+			expect(transformed).toContain("futureOption?: { enabled: boolean }");
+			expect(transformed).toContain(
+				'type PtyStartOptionsCommon = Omit<PtyStartOptionsGenerated, "command" | "executable" | "args" | "shell">',
+			);
+			expect(transformed).toContain('command: NonNullable<PtyStartOptionsGenerated["command"]>');
+			expect(transformed).toContain("executable?: never");
+			expect(transformed).toContain("args?: never");
+			expect(transformed).toContain("shell?: never");
+		});
+
+		it("leaves a marked declaration unchanged", () => {
+			const transformed = rewritePtyStartOptions(freshDeclaration);
+
+			expect(rewritePtyStartOptions(transformed)).toBe(transformed);
+		});
+
+		it("rejects malformed declaration markers", () => {
+			expect(() => rewritePtyStartOptions("// --- generated PtyStartOptions union (do not edit) ---")).toThrow(
+				"missing its end marker",
+			);
+			expect(() => rewritePtyStartOptions("// --- end generated PtyStartOptions union ---")).toThrow(
+				"end marker without a start marker",
+			);
+			expect(() =>
+				rewritePtyStartOptions(
+					"// --- end generated PtyStartOptions union ---\n// --- generated PtyStartOptions union (do not edit) ---",
+				),
+			).toThrow("end marker precedes its start marker");
+		});
+
+		it("rejects stale generated mode fields", () => {
+			const staleDeclaration = freshDeclaration.replace("  executable?: string\n", "");
+
+			expect(() => rewritePtyStartOptions(staleDeclaration)).toThrow(
+				"generated PtyStartOptions is missing 'executable'",
+			);
+		});
 	});
 
 	it("keeps native crash diagnostics opt-in", () => {
@@ -478,6 +558,124 @@ describe("pi-natives", () => {
 	});
 
 	describe("pty", () => {
+		it("preserves legacy shell commands and direct executable argv boundaries", async () => {
+			const outputPath = path.join(testDir, "pty-direct-argv.json");
+			const expectedArgs = ["with spaces", "'single quotes'", '"double quotes"', "Grüße 🌍", ""];
+			const script = `require("node:fs").writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(process.argv.slice(1)))`;
+			const directSession = new PtySession();
+
+			try {
+				const result = await directSession.start({
+					executable: process.execPath,
+					args: ["-e", script, ...expectedArgs],
+					cwd: testDir,
+				});
+
+				expect(result.exitCode).toBe(0);
+				expect(result.cancelled).toBe(false);
+				expect(result.timedOut).toBe(false);
+				expect(JSON.parse(await fs.readFile(outputPath, "utf8"))).toEqual(expectedArgs);
+			} finally {
+				try {
+					directSession.kill();
+				} catch {}
+				await fs.rm(outputPath, { force: true });
+			}
+
+			const legacySession = new PtySession();
+			let legacyOutput = "";
+			try {
+				const result = await legacySession.start(
+					{
+						command: "echo legacy-shell",
+						cwd: testDir,
+						shell: process.platform === "win32" ? "cmd.exe" : "sh",
+					},
+					(_error, chunk) => {
+						legacyOutput += chunk;
+					},
+				);
+
+				expect(result.exitCode).toBe(0);
+				expect(result.cancelled).toBe(false);
+				expect(result.timedOut).toBe(false);
+				expect(legacyOutput).toContain("legacy-shell");
+			} finally {
+				try {
+					legacySession.kill();
+				} catch {}
+			}
+		});
+
+		it("rejects invalid PTY start modes before opening a session", async () => {
+			const session = new PtySession();
+			const invalidStarts: Array<[Record<string, unknown>, string]> = [
+				[
+					{ command: "echo legacy-shell", executable: process.execPath },
+					"PTY start requires exactly one of 'command' or 'executable'.",
+				],
+				[{}, "PTY start requires exactly one of 'command' or 'executable'."],
+				[{ args: ["orphaned argument"] }, "PTY start option 'args' requires 'executable'."],
+				[
+					{ executable: process.execPath, shell: "sh" },
+					"PTY start option 'shell' cannot be used with 'executable'.",
+				],
+			];
+
+			try {
+				for (const [options, message] of invalidStarts) {
+					let thrown: unknown;
+					try {
+						await session.start(options as unknown as PtyStartOptions);
+					} catch (error) {
+						thrown = error;
+					}
+					expect(thrown).toBeInstanceOf(Error);
+					expect((thrown as Error).message).toContain(message);
+				}
+
+				const result = await session.start({
+					executable: process.execPath,
+					args: ["-e", "process.exit(0)"],
+					cwd: testDir,
+				});
+				expect(result.exitCode).toBe(0);
+			} finally {
+				try {
+					session.kill();
+				} catch {}
+			}
+		});
+
+		it("cancels a direct executable", async () => {
+			const session = new PtySession();
+
+			try {
+				const outcome = await Promise.race([
+					session
+						.start({
+							executable: process.execPath,
+							args: ["-e", "setInterval(() => {}, 1_000)"],
+							cwd: testDir,
+							timeoutMs: 2_000,
+						})
+						.then(result => ({ kind: "done" as const, result })),
+					Bun.sleep(10_000).then(() => ({ kind: "hang" as const })),
+				]);
+
+				expect(outcome.kind).toBe("done");
+				if (outcome.kind !== "done") {
+					return;
+				}
+
+				expect(outcome.result.timedOut).toBe(true);
+				expect(outcome.result.cancelled).toBe(false);
+			} finally {
+				try {
+					session.kill();
+				} catch {}
+			}
+		});
 		it("should time out detached background workloads without hanging", async () => {
 			if (process.platform === "win32" || !Bun.which("bash")) {
 				return;
