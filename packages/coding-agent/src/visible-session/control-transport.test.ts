@@ -614,7 +614,7 @@ describe.serial("visible session local control transport", () => {
 						encodeControlFrame(createRequest("a".repeat(64))),
 						CONTROL_REQUEST_END_MARKER,
 					]);
-					socket.end(message);
+					socket.write(message);
 				});
 				await closed.promise;
 				expect(calls).toBe(0);
@@ -1173,6 +1173,21 @@ describe.serial("visible session local control transport", () => {
 			const token = "a".repeat(64);
 			const releaseFirst = Promise.withResolvers<void>();
 			const firstStarted = Promise.withResolvers<void>();
+			const servers: net.Server[] = [];
+			const originalCreateServer = net.createServer;
+			const createServer = vi.spyOn(net, "createServer").mockImplementation(
+				(
+					options?: net.ServerOpts | ((socket: net.Socket) => void),
+					connectionListener?: (socket: net.Socket) => void,
+				): net.Server => {
+					const rawServer =
+						typeof options === "function"
+							? originalCreateServer(options)
+							: originalCreateServer(options, connectionListener);
+					servers.push(rawServer);
+					return rawServer;
+				},
+			);
 			let calls = 0;
 			const server = new LocalControlServer({
 				endpoint,
@@ -1189,41 +1204,58 @@ describe.serial("visible session local control transport", () => {
 					return { calls };
 				},
 			});
-			await server.listen();
-			const idleSockets = await Promise.all(
-				[0, 1].map(
-					() =>
-						new Promise<net.Socket>((resolve, reject) => {
-							const socket = net.createConnection({ path: endpoint });
-							socket.once("connect", () => resolve(socket));
-							socket.once("error", reject);
-						}),
-				),
-			);
-			const rejected = net.createConnection({ path: endpoint });
-			const rejectedClosed = Promise.withResolvers<void>();
-			rejected.once("close", rejectedClosed.resolve);
-			rejected.once("error", () => undefined);
-			await rejectedClosed.promise;
-			for (const socket of idleSockets) socket.destroy();
-			await Promise.all(idleSockets.map(socket => new Promise<void>(resolve => socket.once("close", resolve))));
-			const first = sendControlRequest(endpoint, createRequest(token));
-			await firstStarted.promise;
-			await expect(sendControlRequest(endpoint, { ...createRequest(token), id: "request-2" })).resolves.toEqual({
-				version: 1,
-				id: "request-2",
-				ok: false,
-				error: "timeout",
-			});
-			releaseFirst.resolve();
-			await expect(first).resolves.toEqual({ version: 1, id: "request-1", ok: true, result: { calls: 1 } });
-			await expect(sendControlRequest(endpoint, { ...createRequest(token), id: "request-3" })).resolves.toEqual({
-				version: 1,
-				id: "request-3",
-				ok: true,
-				result: { calls: 2 },
-			});
-			await server.close();
+			try {
+				await server.listen();
+				const rawServer = servers.at(0);
+				if (!rawServer) throw new Error("control_server_not_created");
+				const connectIdle = async (): Promise<{ client: net.Socket; peer: net.Socket }> => {
+					const accepted = Promise.withResolvers<net.Socket>();
+					rawServer.once("connection", socket => accepted.resolve(socket));
+					const connected = Promise.withResolvers<void>();
+					const client = net.createConnection({ path: endpoint });
+					client.on("data", () => undefined);
+					client.on("error", () => undefined);
+					client.once("connect", () => connected.resolve());
+					client.once("error", connected.reject);
+					const [peer] = await Promise.all([accepted.promise, connected.promise]);
+					return { client, peer };
+				};
+				const idleSockets = [await connectIdle(), await connectIdle()];
+				const rejected = net.createConnection({ path: endpoint });
+				const rejectedClosed = Promise.withResolvers<void>();
+				rejected.once("close", () => rejectedClosed.resolve());
+				rejected.on("error", () => undefined);
+				await rejectedClosed.promise;
+				await Promise.all(
+					idleSockets.map(({ client, peer }) => {
+						const clientClosed = Promise.withResolvers<void>();
+						const peerClosed = Promise.withResolvers<void>();
+						client.once("close", () => clientClosed.resolve());
+						peer.once("close", () => peerClosed.resolve());
+						client.end();
+						return Promise.all([clientClosed.promise, peerClosed.promise]);
+					}),
+				);
+				const first = sendControlRequest(endpoint, createRequest(token));
+				await firstStarted.promise;
+				await expect(sendControlRequest(endpoint, { ...createRequest(token), id: "request-2" })).resolves.toEqual({
+					version: 1,
+					id: "request-2",
+					ok: false,
+					error: "timeout",
+				});
+				releaseFirst.resolve();
+				await expect(first).resolves.toEqual({ version: 1, id: "request-1", ok: true, result: { calls: 1 } });
+				await expect(sendControlRequest(endpoint, { ...createRequest(token), id: "request-3" })).resolves.toEqual({
+					version: 1,
+					id: "request-3",
+					ok: true,
+					result: { calls: 2 },
+				});
+			} finally {
+				createServer.mockRestore();
+				await server.close();
+			}
 		});
 	});
 });
