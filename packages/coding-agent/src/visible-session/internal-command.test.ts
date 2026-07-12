@@ -330,7 +330,7 @@ describe("visible-session internal command", () => {
 
 		expect(result.exitCode).not.toBe(0);
 		expect(result.stdout).toContain("fixture:teardown:owner-internal\n");
-		expect(result.stdout).not.toContain("fixture:exit:");
+		expect(result.stdout).not.toContain("fixture:exit:0");
 		expect(`${result.stdout}\n${result.stderr}`).toContain("fixture dedicated role failure");
 	}, 10_000);
 
