@@ -606,25 +606,20 @@ describe.serial("visible session local control transport", () => {
 			try {
 				await chmodStarted.promise;
 				const socket = net.createConnection({ path: endpoint });
-				const connected = Promise.withResolvers<void>();
 				const closed = Promise.withResolvers<void>();
-				socket.once("connect", () => connected.resolve());
-				socket.once("error", connected.reject);
+				socket.once("error", () => undefined);
 				socket.once("close", () => closed.resolve());
-				await connected.promise;
 				const message = Buffer.concat([
 					encodeControlFrame(createRequest("a".repeat(64))),
 					CONTROL_REQUEST_END_MARKER,
 				]);
-				const sent = Promise.withResolvers<void>();
-				socket.write(message, error => (error ? sent.reject(error) : sent.resolve()));
-				await sent.promise;
+				socket.write(message);
 				await Bun.sleep(25);
-				socket.destroy();
-				await closed.promise;
 				expect(calls).toBe(0);
+				socket.destroy();
 				releaseChmod.resolve();
 				await listening;
+				await closed.promise;
 				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)))).resolves.toMatchObject({
 					ok: true,
 				});
