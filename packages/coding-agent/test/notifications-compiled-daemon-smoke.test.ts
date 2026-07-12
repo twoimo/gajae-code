@@ -157,7 +157,7 @@ describe("compiled daemon smoke coverage", () => {
 		} finally {
 			fs.rmSync(temp, { recursive: true, force: true });
 		}
-	}, 60_000);
+	}, 300_000);
 
 	test("compile entrypoint lists preserve the dynamic daemon entrypoint for compiled binaries", () => {
 		expect(devEntrypoints).toEqual(

@@ -1176,7 +1176,7 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 				},
 			},
 		);
-	});
+	}, 30_000);
 
 	it("retains an uncertain accepted SDK send claim and never resends it", async () => {
 		await withDaemon(

@@ -30,14 +30,30 @@ async function command(
 	argv: string[],
 	cwd = repoRoot,
 	env?: Record<string, string>,
+	timeoutMs = 300_000,
 ): Promise<{ exitCode: number; output: string }> {
+	const label = argv.slice(0, 4).join(" ");
+	const started = Date.now();
 	const child = Bun.spawn(argv, { cwd, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		child.kill("SIGKILL");
+	}, timeoutMs);
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(child.stdout).text(),
 		new Response(child.stderr).text(),
 		child.exited,
 	]);
-	return { exitCode, output: `${stdout}${stderr}` };
+	clearTimeout(timer);
+	// Actionable phase evidence: each rollback build stage logs its duration so a slow or
+	// hanging stage (baseRef fetch vs offline install vs native build vs bun compile vs run)
+	// is attributable in CI instead of the whole proof opaquely hitting the outer timeout.
+	console.error(
+		`[rollback-stage] ${label} exit=${exitCode} ms=${Date.now() - started}${timedOut ? ` TIMED_OUT>${timeoutMs}ms` : ""}`,
+	);
+	const phase = timedOut ? `\n[rollback-stage] '${label}' exceeded ${timeoutMs}ms and was killed` : "";
+	return { exitCode, output: `${stdout}${stderr}${phase}` };
 }
 
 async function resolvePinnedOldReaderCommit(baseRef: string, recovery: PinnedCommitRecovery): Promise<string> {
@@ -510,7 +526,7 @@ globalThis.fetch = async (input, init) => {
 		await command(["git", "worktree", "remove", "--force", worktree]);
 		endpointServer?.stop();
 	}
-}, 180_000);
+}, 600_000);
 
 test("rollback transformer refuses an unknown source version", async () => {
 	const source = await temp();

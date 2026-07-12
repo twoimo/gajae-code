@@ -383,6 +383,15 @@ test("broker close acknowledges before terminating the lifecycle child and recor
 	try {
 		await broker.start();
 		const { child, endpoint } = await liveLifecycleSession(root, agentDir, sessionId);
+		// The lifecycle child writes its endpoint file before the broker index records
+		// its host_registered event; wait for the session to be indexed so session.close
+		// does not race the registration (slow CI runners surfaced "session is not indexed").
+		await waitFor(async () => {
+			const listed = (await broker.handleRequest("session.list", {})) as {
+				result?: { sessions?: Array<{ sessionId?: string }> };
+			};
+			return listed.result?.sessions?.some(session => session.sessionId === sessionId) ? true : undefined;
+		}, "session indexed before close");
 		const closed = await broker.handleRequest("session.close", { sessionId }, "close-1");
 		expect(closed).toMatchObject({ ok: true, result: { sessionId } });
 		expect(await child.exited).toBe(0);
