@@ -196,7 +196,7 @@ describe("visible session registry", () => {
 			const persisted = JSON.parse(await readFile(file, "utf8")) as {
 				entries: Array<{ backend: string }>;
 			};
-			expect(persisted.entries.map(entry => entry.backend)).toEqual(backendIds);
+			expect(persisted.entries.map(entry => entry.backend)).toEqual([...backendIds]);
 			await expect(
 				registry.create({
 					...input("legacy", context.repository, context.worktree),
