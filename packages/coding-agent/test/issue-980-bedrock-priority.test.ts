@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Model } from "@gajae-code/ai";
-import {
-	resolveCliModel,
-	resolveModelFromSettings,
-	resolveModelRoleValue,
-} from "@gajae-code/coding-agent/config/model-resolver";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { resolveCliModel, resolveModelFromSettings, resolveModelRoleValue } from "../src/config/model-resolver";
+import { Settings } from "../src/config/settings";
 
 function model(provider: string, id: string): Model<"anthropic-messages"> {
 	return {

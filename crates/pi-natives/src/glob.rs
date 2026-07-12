@@ -14,7 +14,7 @@
 //! // JS: await native.glob({ pattern: "*.rs", path: "." })
 //! ```
 
-use std::path::Path;
+use std::{borrow::Cow, cmp::Ordering, collections::BinaryHeap, path::Path};
 
 use globset::GlobSet;
 use napi::{
@@ -116,7 +116,54 @@ fn apply_file_type_filter(entry: &GlobMatch, config: &GlobConfig) -> Option<File
 	}
 }
 
-/// Filter and collect matching entries from a pre-scanned list.
+/// Return the forward-slash form used by the scanner for deterministic
+/// ordering.
+fn normalized_path(path: &str) -> Cow<'_, str> {
+	if path.contains('\\') {
+		Cow::Owned(path.replace('\\', "/"))
+	} else {
+		Cow::Borrowed(path)
+	}
+}
+
+/// Order matches from newest to oldest, breaking mtime ties by normalized path.
+///
+/// This is intentionally a total ordering so heap replacement and final output
+/// cannot disagree on a tie.
+fn match_rank(left: &GlobMatch, right: &GlobMatch) -> Ordering {
+	right
+		.mtime
+		.unwrap_or(0.0)
+		.total_cmp(&left.mtime.unwrap_or(0.0))
+		.then_with(|| normalized_path(&left.path).cmp(&normalized_path(&right.path)))
+}
+
+/// A `BinaryHeap` whose root is the least desirable retained match.
+struct TopMatch(GlobMatch);
+
+impl Ord for TopMatch {
+	fn cmp(&self, other: &Self) -> Ordering {
+		match_rank(&self.0, &other.0)
+	}
+}
+
+impl PartialOrd for TopMatch {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl PartialEq for TopMatch {
+	fn eq(&self, other: &Self) -> bool {
+		self.cmp(other) == Ordering::Equal
+	}
+}
+
+impl Eq for TopMatch {}
+
+/// Filter matching entries, retaining at most `max_results` newest entries when
+/// mtime sorting is enabled. The scan/cache vector remains outside this bounded
+/// selection; this function never builds an all-match vector in sorted mode.
 fn filter_entries(
 	entries: &[GlobMatch],
 	glob_set: &GlobSet,
@@ -125,6 +172,7 @@ fn filter_entries(
 	ct: &task::CancelToken,
 ) -> Result<Vec<GlobMatch>> {
 	let mut matches = Vec::new();
+	let mut newest = BinaryHeap::new();
 	if config.max_results == 0 {
 		return Ok(matches);
 	}
@@ -147,11 +195,28 @@ fn filter_entries(
 			callback.call(Ok(matched_entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
 		}
 
-		matches.push(matched_entry);
-		// Only early-break when not sorting; mtime sort requires full candidate set.
-		if !config.sort_by_mtime && matches.len() >= config.max_results {
-			break;
+		if config.sort_by_mtime {
+			if newest.len() < config.max_results {
+				newest.push(TopMatch(matched_entry));
+			} else if newest
+				.peek()
+				.is_some_and(|worst| match_rank(&matched_entry, &worst.0).is_lt())
+			{
+				// The root is the oldest (or lexically last tied) retained match.
+				newest.pop();
+				newest.push(TopMatch(matched_entry));
+			}
+		} else {
+			matches.push(matched_entry);
+			if matches.len() >= config.max_results {
+				break;
+			}
 		}
+	}
+
+	if config.sort_by_mtime {
+		matches = newest.into_iter().map(|entry| entry.0).collect();
+		matches.sort_by(match_rank);
 	}
 	Ok(matches)
 }
@@ -180,7 +245,7 @@ fn run_glob(
 			fs_cache::ScanDetail::Minimal
 		},
 	};
-	let mut matches = if config.use_cache {
+	let matches = if config.use_cache {
 		let scan = fs_cache::get_or_scan(&config.root, scan_options, &ct)?;
 		let mut matches = filter_entries(&scan.entries, &glob_set, &config, on_match, &ct)?;
 		// Empty-result recheck: if we got zero matches from a cached scan that's old
@@ -195,17 +260,8 @@ fn run_glob(
 		filter_entries(&fresh, &glob_set, &config, on_match, &ct)?
 	};
 
-	if config.sort_by_mtime {
-		// Sorting mode: rank by mtime descending, then apply max-results truncation.
-		matches.sort_by(|a, b| {
-			let a_mtime = a.mtime.unwrap_or(0.0);
-			let b_mtime = b.mtime.unwrap_or(0.0);
-			b_mtime
-				.partial_cmp(&a_mtime)
-				.unwrap_or(std::cmp::Ordering::Equal)
-		});
-		matches.truncate(config.max_results);
-	}
+	// `filter_entries` already returns the bounded, deterministic top-K when
+	// sorting by mtime, so no full-match sort is retained here.
 	let total_matches = matches.len().min(u32::MAX as usize) as u32;
 	Ok(GlobResult { matches, total_matches })
 }
@@ -214,9 +270,8 @@ fn run_glob(
 ///
 /// Resolves the search root, scans entries, applies glob and optional file-type
 /// filters, and optionally streams each accepted match through `on_match`.
-///
-/// If `sortByMtime` is enabled, all matching entries are collected, sorted by
-/// descending mtime, then truncated to `maxResults`.
+/// If `sortByMtime` is enabled, returns the bounded newest `maxResults` matches
+/// using deterministic mtime/path ordering.
 ///
 /// # Errors
 /// Returns an error when the search path cannot be resolved, the path is not a
@@ -268,4 +323,89 @@ pub fn glob(
 			ct,
 		)
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn entry(path: &str, mtime: Option<f64>) -> GlobMatch {
+		GlobMatch { path: path.to_string(), file_type: FileType::File, mtime, size: None }
+	}
+
+	fn top_k(mut entries: Vec<GlobMatch>, limit: usize) -> Vec<GlobMatch> {
+		let mut heap = BinaryHeap::new();
+		for entry in entries.drain(..) {
+			if heap.len() < limit {
+				heap.push(TopMatch(entry));
+			} else if heap
+				.peek()
+				.is_some_and(|worst| match_rank(&entry, &worst.0).is_lt())
+			{
+				heap.pop();
+				heap.push(TopMatch(entry));
+			}
+		}
+		let mut selected: Vec<_> = heap.into_iter().map(|entry| entry.0).collect();
+		selected.sort_by(match_rank);
+		selected
+	}
+
+	#[test]
+	fn top_k_matches_full_sort_for_ties_unicode_and_missing_mtime() {
+		let entries = vec![
+			entry("zeta.rs", Some(10.0)),
+			entry("alpha.rs", Some(10.0)),
+			entry("über.rs", Some(10.0)),
+			entry("nested\\beta.rs", Some(11.0)),
+			entry("none.rs", None),
+		];
+		let mut oracle = entries.clone();
+		oracle.sort_by(match_rank);
+		oracle.truncate(4);
+		let actual = top_k(entries, 4);
+		assert_eq!(
+			actual.into_iter().map(|item| item.path).collect::<Vec<_>>(),
+			oracle.into_iter().map(|item| item.path).collect::<Vec<_>>(),
+		);
+	}
+
+	#[test]
+	fn top_k_handles_zero_and_fewer_than_limit() {
+		let entries = vec![entry("a", Some(1.0)), entry("b", Some(2.0))];
+		assert!(top_k(entries.clone(), 0).is_empty());
+		assert_eq!(
+			top_k(entries, 10)
+				.into_iter()
+				.map(|item| item.path)
+				.collect::<Vec<_>>(),
+			["b", "a"]
+		);
+	}
+
+	#[test]
+	fn top_k_has_exact_one_million_entry_parity() {
+		let mut state = 0x6a09_e667_u32;
+		let entries = (0..1_000_000)
+			.map(|index| {
+				state ^= state << 13;
+				state ^= state >> 17;
+				state ^= state << 5;
+				entry(
+					&format!("dir-{}/file-{index:07}.rs", state % 4096),
+					Some(f64::from(state % 10_000)),
+				)
+			})
+			.collect::<Vec<_>>();
+		let mut oracle = entries.clone();
+		oracle.sort_by(match_rank);
+		oracle.truncate(100);
+		assert_eq!(
+			top_k(entries, 100)
+				.into_iter()
+				.map(|item| item.path)
+				.collect::<Vec<_>>(),
+			oracle.into_iter().map(|item| item.path).collect::<Vec<_>>(),
+		);
+	}
 }

@@ -27,6 +27,7 @@ pub mod build_info;
 pub mod clipboard;
 pub mod computer;
 pub mod crash;
+pub mod durable_fs;
 pub mod edit_fuzzy;
 pub mod fd;
 pub mod fs_cache;
@@ -46,8 +47,11 @@ pub mod power;
 
 pub mod iso;
 pub mod prof;
+#[cfg(any(feature = "monolith", feature = "capability-shell"))]
 pub mod ps;
+#[cfg(any(feature = "monolith", feature = "capability-shell"))]
 pub mod pty;
+#[cfg(any(feature = "monolith", feature = "capability-shell"))]
 pub mod shell;
 pub mod summary;
 pub mod task;

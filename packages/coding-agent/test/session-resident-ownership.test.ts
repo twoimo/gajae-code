@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage, UserMessage } from "@gajae-code/ai";
-import { exportSessionToHtml } from "@gajae-code/coding-agent/export/html";
-import { SessionManager, type SessionMessageEntry } from "@gajae-code/coding-agent/session/session-manager";
+import { exportSessionToHtml } from "../src/export/html";
+import { SessionManager, type SessionMessageEntry } from "../src/session/session-manager";
 
 const tempDirs: string[] = [];
 afterEach(async () => {

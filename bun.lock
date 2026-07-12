@@ -17,13 +17,19 @@
       "version": "0.10.0",
       "dependencies": {
         "@gajae-code/ai": "catalog:",
-        "@gajae-code/natives": "catalog:",
         "@gajae-code/utils": "catalog:",
         "@opentelemetry/api": "catalog:",
       },
       "devDependencies": {
         "@opentelemetry/context-async-hooks": "catalog:",
         "@opentelemetry/sdk-trace-base": "catalog:",
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/agent-wire": {
+      "name": "@gajae-code/agent-wire",
+      "version": "0.10.0",
+      "devDependencies": {
         "@types/bun": "catalog:",
       },
     },
@@ -48,6 +54,9 @@
     "packages/bridge-client": {
       "name": "@gajae-code/bridge-client",
       "version": "0.10.0",
+      "dependencies": {
+        "@gajae-code/agent-wire": "catalog:",
+      },
       "devDependencies": {
         "@types/bun": "catalog:",
       },
@@ -62,6 +71,7 @@
         "@agentclientprotocol/sdk": "catalog:",
         "@babel/parser": "catalog:",
         "@gajae-code/agent-core": "catalog:",
+        "@gajae-code/agent-wire": "catalog:",
         "@gajae-code/ai": "catalog:",
         "@gajae-code/natives": "catalog:",
         "@gajae-code/stats": "catalog:",
@@ -247,6 +257,7 @@
     "@bufbuild/protobuf": "^2.12.0",
     "@bufbuild/protoc-gen-es": "^2.12.0",
     "@gajae-code/agent-core": "0.10.0",
+    "@gajae-code/agent-wire": "0.10.0",
     "@gajae-code/ai": "0.10.0",
     "@gajae-code/bridge-client": "0.10.0",
     "@gajae-code/coding-agent": "0.10.0",
@@ -430,6 +441,8 @@
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.21.5", "", { "os": "win32", "cpu": "x64" }, "sha512-tQd/1efJuzPC6rCFwEvLtci/xNFcTZknmXs98FYDfGE4wP9ClFV98nyKrzJKVPMhdDnjzLhdUyMX4PsQAPjwIw=="],
 
     "@gajae-code/agent-core": ["@gajae-code/agent-core@workspace:packages/agent"],
+
+    "@gajae-code/agent-wire": ["@gajae-code/agent-wire@workspace:packages/agent-wire"],
 
     "@gajae-code/ai": ["@gajae-code/ai@workspace:packages/ai"],
 

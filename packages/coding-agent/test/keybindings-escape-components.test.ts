@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { getBundledModel } from "@gajae-code/ai";
-import { KeybindingsManager } from "@gajae-code/coding-agent/config/keybindings";
-import type { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { ModelSelectorComponent } from "@gajae-code/coding-agent/modes/components/model-selector";
-import { SessionSelectorComponent } from "@gajae-code/coding-agent/modes/components/session-selector";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { SessionInfo } from "@gajae-code/coding-agent/session/session-manager";
 import { setKeybindings, type TUI } from "@gajae-code/tui";
+import { KeybindingsManager } from "../src/config/keybindings";
+import type { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { ModelSelectorComponent } from "../src/modes/components/model-selector";
+import { SessionSelectorComponent } from "../src/modes/components/session-selector";
+import { initTheme } from "../src/modes/theme/theme";
+import type { SessionInfo } from "../src/session/session-manager";
 
 beforeAll(() => {
 	initTheme();

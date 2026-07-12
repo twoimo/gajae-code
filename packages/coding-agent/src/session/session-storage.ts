@@ -483,28 +483,47 @@ export class FileSessionStorage implements SessionStorage {
 		return new FileSessionStorageWriter(path, options);
 	}
 
-	/**
-	 * Delete a session file and its artifacts directory.
-	 * Artifacts are stored in a sibling directory with the same name minus .jsonl extension.
-	 */
+	/** Delete every session-owned path only after it is safely staged in a private trash directory. */
 	async deleteSessionWithArtifacts(sessionPath: string): Promise<void> {
-		// Delete the session file itself
-		await this.unlink(sessionPath);
-
-		// Compute artifacts directory: /path/to/session.jsonl -> /path/to/session
-		const artifactsDir = sessionPath.slice(0, -6);
-
-		// Delete artifacts directory if it exists. Missing directories are fine, but
-		// surface real cleanup failures because the session file is already gone.
+		const paths = [sessionPath, sessionPath.slice(0, -6), `${sessionPath}.v2`];
+		const trashDir = path.join(
+			path.dirname(sessionPath),
+			`.${path.basename(sessionPath)}.${process.pid}.${Date.now()}.trash`,
+		);
+		const staged: Array<{ source: string; destination: string }> = [];
 		try {
-			await fsp.rm(artifactsDir, { recursive: true, force: true });
-		} catch (err) {
-			const error = toError(err);
+			await fsp.mkdir(trashDir, { recursive: true });
+			for (const source of paths) {
+				try {
+					await fsp.lstat(source);
+				} catch (error) {
+					if (isEnoent(error)) continue;
+					throw error;
+				}
+				const destination = path.join(trashDir, path.basename(source));
+				await fsp.rename(source, destination);
+				staged.push({ source, destination });
+			}
+			await fsp.rm(trashDir, { recursive: true, force: true });
+		} catch (error) {
+			const restoreErrors: Error[] = [];
+			for (const { source, destination } of staged.reverse()) {
+				try {
+					if (fs.existsSync(destination)) await fsp.rename(destination, source);
+				} catch (restoreError) {
+					restoreErrors.push(toError(restoreError));
+				}
+			}
+			try {
+				await fsp.rm(trashDir, { recursive: true, force: true });
+			} catch {
+				// A non-empty staging directory is preferable to deleting recoverable data.
+			}
+			const original = toError(error);
+			const restoration = restoreErrors.map(item => item.message).join("; ");
 			throw new Error(
-				`Session file deleted but failed to remove artifacts directory ${artifactsDir}: ${error.message}`,
-				{
-					cause: error,
-				},
+				`Failed to delete session tree ${sessionPath}${restoration ? `; rollback failed: ${restoration}` : ""}: ${original.message}`,
+				{ cause: original },
 			);
 		}
 	}

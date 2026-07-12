@@ -767,6 +767,26 @@
 					"description": "Maximum provider stream replay retries for replay-safe transient stream failures. Counts retries, not the first attempt. Set to 0 to disable provider stream retries.",
 					"default": 5
 				},
+				"maxTotalAttempts": {
+					"type": "number",
+					"description": "Maximum physical attempts in one turn, including the initial request and all retry layers.",
+					"default": 14
+				},
+				"maxElapsedMs": {
+					"type": "number",
+					"default": 900000
+				},
+				"maxCostUsd": {
+					"type": "number"
+				},
+				"unbounded": {
+					"type": "boolean",
+					"default": false
+				},
+				"allowUnboundedUnattended": {
+					"type": "boolean",
+					"default": false
+				},
 				"fallbackChains": {
 					"type": "object",
 					"additionalProperties": true,

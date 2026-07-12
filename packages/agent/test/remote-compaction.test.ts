@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { buildOpenAiNativeHistory, requestOpenAiRemoteCompaction } from "@gajae-code/agent-core/compaction/openai";
-import type { AssistantMessage, Model, ToolResultMessage } from "@gajae-code/ai/types";
+import {
+	buildOpenAiNativeHistory,
+	requestOpenAiRemoteCompaction,
+	requestRemoteCompaction,
+} from "@gajae-code/agent-core/compaction/openai";
+import {
+	type AssistantMessage,
+	AttemptBudgetExceededError,
+	type Model,
+	type ToolResultMessage,
+} from "@gajae-code/ai/types";
 import { hookFetch } from "@gajae-code/utils";
 
 function setEnvForTest(key: string, value: string): () => void {
@@ -30,6 +39,44 @@ function makeOpenAiModel(overrides: Partial<Model<"openai-responses">> = {}): Mo
 		...overrides,
 	};
 }
+
+describe("remote compaction attempt authority", () => {
+	for (const allowed of [0, 1]) {
+		test(`denies after ${allowed} remote requests before network activity`, async () => {
+			let claims = 0;
+			let networkRequests = 0;
+			using _hook = hookFetch(async () => {
+				networkRequests++;
+				return new Response(JSON.stringify({ summary: "ok" }), { status: 200 });
+			});
+			const consumeAttempt = () => {
+				if (claims >= allowed) throw new AttemptBudgetExceededError("attempts", "maintenance denied");
+				claims++;
+			};
+
+			const first = requestRemoteCompaction(
+				"https://compact.example.test",
+				{ systemPrompt: "system", prompt: "prompt" },
+				undefined,
+				consumeAttempt,
+			);
+			if (allowed === 0) {
+				await expect(first).rejects.toBeInstanceOf(AttemptBudgetExceededError);
+			} else {
+				await expect(first).resolves.toEqual({ summary: "ok" });
+				await expect(
+					requestRemoteCompaction(
+						"https://compact.example.test",
+						{ systemPrompt: "system", prompt: "prompt" },
+						undefined,
+						consumeAttempt,
+					),
+				).rejects.toBeInstanceOf(AttemptBudgetExceededError);
+			}
+			expect(networkRequests).toBe(allowed);
+		});
+	}
+});
 
 describe("buildOpenAiNativeHistory custom tool calls", () => {
 	test("serializes customWireName tool calls as custom_tool_call + custom_tool_call_output", () => {

@@ -53,6 +53,99 @@ describe("agentLoop with AgentMessage", () => {
 		expect(eventTypes).toContain("message_end");
 		expect(eventTypes).toContain("turn_end");
 		expect(eventTypes).toContain("agent_end");
+		expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(
+			1,
+		);
+	});
+
+	it("emits one assistant message_end when the provider iterator is exhausted", async () => {
+		const context: AgentContext = { systemPrompt: ["You are helpful."], messages: [], tools: [] };
+		const mock = createMockModel();
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const finalMessage = createAssistantMessage([{ type: "text", text: "exhausted" }]);
+		const streamFn = () => {
+			const response = new AssistantMessageEventStream();
+			response.end(finalMessage);
+			return response;
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, streamFn);
+		for await (const event of stream) events.push(event);
+
+		expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(
+			1,
+		);
+	});
+
+	it("emits one assistant message_end when the provider emits an error", async () => {
+		const context: AgentContext = { systemPrompt: ["You are helpful."], messages: [], tools: [] };
+		const mock = createMockModel();
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const finalMessage = createAssistantMessage([{ type: "text", text: "error" }], "error");
+		const streamFn = () => {
+			const response = new AssistantMessageEventStream();
+			response.push({ type: "error", reason: "error", error: finalMessage });
+			return response;
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, streamFn);
+		for await (const event of stream) events.push(event);
+
+		expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(
+			1,
+		);
+	});
+
+	it("finalizes one error assistant message when the provider fails before start", async () => {
+		const context: AgentContext = { systemPrompt: ["You are helpful."], messages: [], tools: [] };
+		const mock = createMockModel();
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const streamFn = () => {
+			const response = new AssistantMessageEventStream();
+			queueMicrotask(() => response.fail(new Error("gateway unavailable")));
+			return response;
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, streamFn);
+		for await (const event of stream) events.push(event);
+		const messages = await stream.result();
+
+		const assistantMessages = messages.filter(message => message.role === "assistant");
+
+		expect(assistantMessages).toHaveLength(1);
+		expect(assistantMessages[0]?.role === "assistant" && assistantMessages[0].errorMessage).toBe(
+			"gateway unavailable",
+		);
+		expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(
+			1,
+		);
+	});
+
+	it("finalizes one error assistant message preserving partial content when the provider fails", async () => {
+		const context: AgentContext = { systemPrompt: ["You are helpful."], messages: [], tools: [] };
+		const mock = createMockModel();
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const partial = createAssistantMessage([{ type: "text", text: "partial response" }]);
+		const streamFn = () => {
+			const response = new AssistantMessageEventStream();
+			response.push({ type: "start", partial });
+			queueMicrotask(() => response.fail(new Error("connection lost")));
+			return response;
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, streamFn);
+		for await (const event of stream) events.push(event);
+		const messages = await stream.result();
+
+		const assistantMessages = messages.filter(message => message.role === "assistant");
+		expect(assistantMessages).toHaveLength(1);
+		const finalized = assistantMessages[0];
+		if (finalized?.role !== "assistant") throw new Error("Expected assistant message");
+		expect(finalized.content).toEqual(partial.content);
+		expect(finalized.errorMessage).toBe("connection lost");
+		expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(
+			1,
+		);
 	});
 
 	it("emits an aborted assistant message when cancellation happens before provider events", async () => {
@@ -84,6 +177,9 @@ describe("agentLoop with AgentMessage", () => {
 		expect(finalMessage.stopReason).toBe("aborted");
 		expect(finalMessage.errorMessage).toBe("Request was aborted");
 		expect(events.map(event => event.type)).toContain("agent_end");
+		expect(events.filter(event => event.type === "message_end" && event.message.role === "assistant")).toHaveLength(
+			1,
+		);
 	});
 
 	it("should handle custom message types via convertToLlm", async () => {

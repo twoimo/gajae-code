@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { SessionManager, type SessionMessageEntry } from "@gajae-code/coding-agent/session/session-manager";
 import { getBlobsDir, TempDir } from "@gajae-code/utils";
+import { SessionManager, type SessionMessageEntry } from "../../src/session/session-manager";
 
 function isAssistantSessionEntry(entry: unknown): entry is SessionMessageEntry & { message: AssistantMessage } {
 	return (

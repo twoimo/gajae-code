@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import { AuthStorage, Effort, getBundledModel, type Model } from "@gajae-code/ai";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { CustomTool } from "@gajae-code/coding-agent/extensibility/custom-tools/types";
-import { createAgentSession } from "@gajae-code/coding-agent/sdk";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { Snowflake } from "@gajae-code/utils";
 import * as z from "zod/v4";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import type { CustomTool } from "../src/extensibility/custom-tools/types";
+import { createAgentSession } from "../src/sdk";
+import { SessionManager } from "../src/session/session-manager";
 
 function createMcpCustomTool(name: string, serverName: string, mcpToolName: string): CustomTool {
 	return {
@@ -340,6 +340,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				sessionManager: firstManager,
 				settings: Settings.isolated({
 					"mcp.discoveryMode": true,
+					"tools.discoveryMode": "all",
 					defaultThinkingLevel: "high",
 					serviceTier: "priority",
 				}),
@@ -351,17 +352,22 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				slashCommands: [],
 				enableMCP: false,
 				enableLsp: false,
-				toolNames: ["read", "search_tool_bm25"],
 				customTools: [
 					createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
 					createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
 				],
 			});
 			await firstSession.activateDiscoveredMCPTools(["mcp__slack_post_message"]);
+			await firstSession.activateDiscoveredTools(["todo_write"]);
 			firstSession.sessionManager.appendThinkingLevelChange(ThinkingLevel.Off);
 			firstSession.sessionManager.appendServiceTierChange("priority");
 			expect(firstSession.sessionManager.buildSessionContext().thinkingLevel).toBe(ThinkingLevel.Off);
-			expect(firstSession.getSelectedMCPToolNames()).toEqual(["mcp__slack_post_message"]);
+			expect(firstSession.getSelectedMCPToolNames()).toEqual(
+				expect.arrayContaining(["mcp__github_create_issue", "mcp__slack_post_message"]),
+			);
+			expect(firstSession.sessionManager.buildSessionContext().selectedDiscoveredBuiltinToolNames).toEqual([
+				"todo_write",
+			]);
 			const sessionFile = firstSession.sessionFile;
 			expect(sessionFile).toBeDefined();
 			await firstSession.sessionManager.rewriteEntries();
@@ -377,6 +383,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				sessionManager: resumedManager,
 				settings: Settings.isolated({
 					"mcp.discoveryMode": true,
+					"tools.discoveryMode": "all",
 					defaultThinkingLevel: "high",
 					serviceTier: "none",
 				}),
@@ -388,7 +395,6 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 				slashCommands: [],
 				enableMCP: false,
 				enableLsp: false,
-				toolNames: ["read", "search_tool_bm25"],
 				customTools: [
 					createMcpCustomTool("mcp__github_create_issue", "github", "create_issue"),
 					createMcpCustomTool("mcp__slack_post_message", "slack", "post_message"),
@@ -397,12 +403,18 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			try {
 				expect(resumedSession.thinkingLevel).toBe(ThinkingLevel.Off);
 				expect(resumedSession.serviceTier).toBe("priority");
-				expect(resumedSession.getSelectedMCPToolNames()).toEqual(["mcp__slack_post_message"]);
+				expect(resumedSession.getSelectedMCPToolNames()).toEqual(
+					expect.arrayContaining(["mcp__github_create_issue", "mcp__slack_post_message"]),
+				);
+				expect(resumedSession.getSelectedDiscoveredToolNames()).toContain("todo_write");
+				expect(resumedSession.getActiveToolNames()).toContain("todo_write");
+				expect(resumedSession.agent.state.tools.map(tool => tool.name)).toContain("todo_write");
 				expect(resumedSession.getActiveToolNames()).toEqual(
 					expect.arrayContaining(["read", "search_tool_bm25", "mcp__slack_post_message"]),
 				);
-				expect(resumedSession.getActiveToolNames()).not.toContain("mcp__github_create_issue");
+				expect(resumedSession.getActiveToolNames()).toContain("mcp__github_create_issue");
 				expect(resumedSession.systemPrompt.join("\n")).toContain("mcp__slack_post_message");
+				expect(resumedSession.systemPrompt.join("\n")).toContain("todo_write");
 				expect(fs.readFileSync(sessionFile!, "utf8")).toBe(persistedBeforeResume);
 				expect(fs.statSync(sessionFile!).mtimeMs).toBe(persistedMtimeBeforeResume);
 			} finally {

@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseArgs } from "../src/cli/args";
+import { getDefaultGjcDefinitions } from "../src/defaults/gjc-defaults";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
@@ -162,7 +163,7 @@ describe("GJC public CLI command surface", () => {
 
 			expect(result.exitCode, stderr).toBe(0);
 			const payload = JSON.parse(stdout) as { written?: number; targetRoot?: string };
-			expect(payload.written).toBe(9);
+			expect(payload.written).toBe(getDefaultGjcDefinitions().length);
 			expect(payload.targetRoot).toContain(path.join(home, ".gjc", "agent"));
 		} finally {
 			await fs.rm(home, { recursive: true, force: true });

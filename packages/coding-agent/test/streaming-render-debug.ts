@@ -5,10 +5,10 @@
  */
 import * as path from "node:path";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { AssistantMessageComponent } from "@gajae-code/coding-agent/modes/components/assistant-message";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 import { ProcessTerminal, TUI } from "@gajae-code/tui";
 import { sleep } from "bun";
+import { AssistantMessageComponent } from "../src/modes/components/assistant-message";
+import { initTheme } from "../src/modes/theme/theme";
 
 // Initialize dark theme with full color support
 Bun.env.COLORTERM = "truecolor";

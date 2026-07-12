@@ -83,6 +83,8 @@ describe("deobfuscateSessionContext", () => {
 			ttsrMessageCount: 0,
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredBuiltinToolNames: [],
+			hasPersistedDiscoveredToolSelection: false,
 			mode: "none",
 		};
 

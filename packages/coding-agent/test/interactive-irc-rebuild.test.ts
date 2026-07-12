@@ -1,11 +1,11 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import type { SessionContext } from "@gajae-code/coding-agent/session/session-manager";
 import { Container } from "@gajae-code/tui";
+import { EventController } from "../src/modes/controllers/event-controller";
+import { IrcObservationLedger } from "../src/modes/irc-observation-ledger";
+import { initTheme } from "../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../src/modes/types";
+import { UiHelpers } from "../src/modes/utils/ui-helpers";
+import type { SessionContext } from "../src/session/session-manager";
 
 beforeAll(() => initTheme());
 afterEach(() => vi.useRealTimers());

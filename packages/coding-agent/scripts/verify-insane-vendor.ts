@@ -1,94 +1,61 @@
 #!/usr/bin/env bun
-/**
- * Vendor verification for packages/coding-agent/vendor/insane-search.
- *
- * Asserts:
- *   1. Forbidden upstream paths/patterns are absent (install hooks, star-baiting,
- *      update-notifier, transcript-language scanner, .claude-plugin).
- *   2. MANIFEST.json exists and pins a full 40-char upstream commit SHA.
- *   3. The vendored runtime files are present.
- *   4. `npm pack --dry-run --json` includes the vendor tree (engine entrypoint,
- *      templates, LICENSE, manifest) in the published package.
- *
- * Exit code 0 on success, 1 on any failure.
- */
+/** Verify the checked insane-search archive, deterministic patch replay, and package payload. */
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkInsaneVendor, defaultVendorDir } from "./refresh-insane-vendor";
 
-const pkgDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const vendorDir = join(pkgDir, "vendor", "insane-search");
+const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failures: string[] = [];
+const fail = (message: string): void => {
+	failures.push(message);
+};
 
-function fail(msg: string): void {
-	failures.push(msg);
-}
+const checked = await checkInsaneVendor(defaultVendorDir);
+failures.push(...checked.failures);
 
-function walk(dir: string): string[] {
-	const out: string[] = [];
-	for (const entry of readdirSync(dir)) {
-		const full = join(dir, entry);
-		if (statSync(full).isDirectory()) out.push(...walk(full));
-		else out.push(full);
-	}
-	return out;
-}
-
-// 1. Forbidden paths / patterns
-if (!existsSync(vendorDir)) {
-	fail(`vendor tree missing at ${vendorDir}`);
-} else {
-	const files = walk(vendorDir).map(f => relative(vendorDir, f));
-	const forbiddenNames = ["setup.sh", "gptaku-update-check.cjs"];
-	const forbiddenSubpaths = [".claude-plugin/", "/references/", "/tests/coverage_battery"];
-	for (const f of files) {
-		const base = f.split("/").pop() ?? f;
-		if (forbiddenNames.includes(base)) fail(`forbidden file present: ${f}`);
-		for (const sub of forbiddenSubpaths) {
-			if (`/${f}`.includes(sub)) fail(`forbidden path present: ${f}`);
+async function walk(root: string): Promise<string[]> {
+	const files: string[] = [];
+	async function visit(dir: string): Promise<void> {
+		for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+			const full = path.join(dir, entry.name);
+			const rel = path.relative(root, full).split(path.sep).join("/");
+			if (entry.isSymbolicLink()) fail(`symlink is forbidden: ${rel}`);
+			else if (entry.isDirectory()) await visit(full);
+			else if (entry.isFile()) files.push(rel);
+			else fail(`non-regular vendor entry: ${rel}`);
 		}
 	}
-	// Scan for star-baiting / settings.json mutation / transcript scanning patterns.
+	await visit(root);
+	return files;
+}
+
+try {
+	const files = await walk(defaultVendorDir);
+	const forbiddenNames = new Set(["setup.sh", "gptaku-update-check.cjs"]);
+	const forbiddenSubpaths = [".claude-plugin/", "/references/", "/tests/coverage_battery"];
 	const forbiddenPatterns: Array<[RegExp, string]> = [
 		[/user\/starred/, "github star-baiting (user/starred)"],
 		[/gh\s+api\s+-X\s+PUT/, "gh api star write"],
 		[/SessionStart/, "settings.json SessionStart hook injection"],
 		[/\.claude\/projects/, "past-session transcript scanner"],
 	];
-	for (const f of files) {
-		if (f === "MANIFEST.json") continue; // manifest documents the excluded patterns by name
-		let body = "";
-		try {
-			body = readFileSync(join(vendorDir, f), "utf8");
-		} catch {
-			continue;
-		}
-		for (const [re, label] of forbiddenPatterns) {
-			if (re.test(body)) fail(`forbidden pattern (${label}) found in ${f}`);
-		}
+	for (const file of files) {
+		if (forbiddenNames.has(path.posix.basename(file))) fail(`forbidden file present: ${file}`);
+		if (forbiddenSubpaths.some(part => `/${file}`.includes(part))) fail(`forbidden path present: ${file}`);
+		if (file === "MANIFEST.json") continue;
+		const content = await Bun.file(path.join(defaultVendorDir, file))
+			.text()
+			.catch(() => "");
+		for (const [pattern, label] of forbiddenPatterns)
+			if (pattern.test(content)) fail(`forbidden pattern (${label}) found in ${file}`);
 	}
+} catch (error) {
+	fail(`vendor tree scan failed: ${(error as Error).message}`);
 }
 
-// 2. Manifest with pinned SHA
-const manifestPath = join(vendorDir, "MANIFEST.json");
-let commit = "";
-if (!existsSync(manifestPath)) {
-	fail("MANIFEST.json missing");
-} else {
-	try {
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-			upstream?: { commit?: string };
-		};
-		commit = manifest.upstream?.commit ?? "";
-		if (!/^[0-9a-f]{40}$/.test(commit)) fail(`MANIFEST upstream.commit is not a full 40-char SHA: "${commit}"`);
-	} catch (err) {
-		fail(`MANIFEST.json is not valid JSON: ${(err as Error).message}`);
-	}
-}
-
-// 3. Required runtime files present
-const requiredFiles = [
+for (const required of [
 	"engine/__main__.py",
 	"engine/__init__.py",
 	"engine/fetch_chain.py",
@@ -97,36 +64,31 @@ const requiredFiles = [
 	"engine/waf_profiles.yaml",
 	"LICENSE",
 	"MANIFEST.json",
-];
-for (const rel of requiredFiles) {
-	if (!existsSync(join(vendorDir, rel))) fail(`required vendored file missing: ${rel}`);
+]) {
+	if (!(await Bun.file(path.join(defaultVendorDir, required)).exists()))
+		fail(`required vendored file missing: ${required}`);
 }
 
-// 4. Package pack inclusion
 try {
-	const raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
-		cwd: pkgDir,
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-	});
-	const parsed = JSON.parse(raw) as Array<{ files?: Array<{ path: string }> }>;
-	const packed = new Set((parsed[0]?.files ?? []).map(f => f.path.replace(/\\/g, "/")));
-	const mustPack = [
+	const packed = JSON.parse(
+		execFileSync("npm", ["pack", "--dry-run", "--json"], {
+			cwd: packageDir,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}),
+	) as Array<{ files?: Array<{ path: string }> }>;
+	const files = new Set((packed[0]?.files ?? []).map(file => file.path.replace(/\\/g, "/")));
+	for (const required of [
 		"vendor/insane-search/engine/__main__.py",
 		"vendor/insane-search/engine/templates/playwright_real_chrome.js",
 		"vendor/insane-search/LICENSE",
 		"vendor/insane-search/MANIFEST.json",
-	];
-	for (const rel of mustPack) {
-		if (!packed.has(rel)) fail(`package pack does not include ${rel}`);
-	}
-} catch (err) {
-	fail(`npm pack --dry-run failed: ${(err as Error).message}`);
+	])
+		if (!files.has(required)) fail(`package pack does not include ${required}`);
+} catch (error) {
+	fail(`npm pack --dry-run failed: ${(error as Error).message}`);
 }
 
-if (failures.length > 0) {
-	console.error("insane-vendor verification FAILED:");
-	for (const f of failures) console.error(`  - ${f}`);
-	process.exit(1);
-}
-console.log(`insane-vendor verification passed (pinned ${commit}).`);
+if (failures.length > 0)
+	throw new Error(`insane-vendor verification FAILED:\n${failures.map(failure => `- ${failure}`).join("\n")}`);
+console.log(`insane-vendor verification passed (pinned ${checked.manifest?.upstream.commit}).`);

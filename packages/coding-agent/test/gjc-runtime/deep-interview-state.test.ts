@@ -4,8 +4,8 @@ import {
 	mergeDeepInterviewEnvelope,
 	mergeDeepInterviewRounds,
 	normalizeDeepInterviewEnvelope,
-} from "@gajae-code/coding-agent/gjc-runtime/deep-interview-state";
-import { deriveDeepInterviewHud } from "@gajae-code/coding-agent/skill-state/workflow-hud";
+} from "../../src/gjc-runtime/deep-interview-state";
+import { deriveDeepInterviewHud } from "../../src/skill-state/workflow-hud";
 
 function inner(envelope: { state?: Record<string, unknown> }): Record<string, unknown> {
 	return (envelope.state ?? {}) as Record<string, unknown>;

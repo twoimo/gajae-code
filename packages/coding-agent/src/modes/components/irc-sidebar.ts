@@ -1,15 +1,18 @@
 import {
-	type Component,
+	isViewportComponent,
 	padding,
-	renderComponentWithViewportAnchors,
+	recordFrameAllocationRowArray,
 	TERMINAL,
 	truncateToWidth,
-	type ViewportAnchorProvider,
-	type ViewportAnchorRender,
+	type ViewportComponent,
+	type ViewportRowComponent,
+	type ViewportRowMetadata,
+	type ViewportRowWindow,
 	visibleWidth,
 	withTerminalGraphicsFallback,
 	wrapTextWithAnsi,
 } from "@gajae-code/tui";
+
 import type { IrcObservationLedger, IrcObservationRecord } from "../irc-observation-ledger";
 import { formatIrcMessageBlock, projectIrcText } from "../utils/irc-message";
 
@@ -138,11 +141,12 @@ export interface IrcSidebarTheme {
 export type IrcSidebarThemeSource = IrcSidebarTheme | (() => IrcSidebarTheme);
 
 /** Read-only IRC history alongside the active transcript. */
-export class IrcSplitViewComponent implements ViewportAnchorProvider {
+export class IrcSplitViewComponent implements ViewportComponent {
 	#visible = false;
+	readonly isViewportSource = true as const;
 
 	constructor(
-		private readonly leftPane: Component,
+		private readonly leftPane: ViewportRowComponent,
 		private readonly ledger: IrcObservationLedger,
 		private readonly componentTheme: IrcSidebarThemeSource,
 	) {}
@@ -161,43 +165,102 @@ export class IrcSplitViewComponent implements ViewportAnchorProvider {
 		this.invalidate();
 	}
 
-	render(width: number): string[] {
-		return this.renderWithViewportAnchors(width).lines;
+	getLogicalRowCount(width: number): number {
+		if (!this.effectiveSidebarVisible(width)) return this.leftPane.getLogicalRowCount(width);
+		const { leftWidth, rightWidth } = computeIrcSplitWidths(width);
+		return Math.max(
+			this.#leftLogicalRowCountWithGraphicsFallback(leftWidth),
+			renderSidebarRecords(this.ledger, rightWidth, this.#theme()).length,
+		);
 	}
 
-	renderWithViewportAnchors(width: number): ViewportAnchorRender {
-		if (!this.#visible) return renderComponentWithViewportAnchors(this.leftPane, width);
+	renderRows(width: number, start: number, end: number): string[] {
+		return this.renderRowsWithMetadata(width, start, end).lines;
+	}
 
-		const componentTheme = typeof this.componentTheme === "function" ? this.componentTheme() : this.componentTheme;
+	#renderLeftRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
+		const rendered = this.leftPane.renderRowsWithMetadata?.(width, start, end);
+		if (rendered) return rendered;
+		const lines = this.leftPane.renderRows(width, start, end);
+		return { lines, metadata: Array<ViewportRowMetadata | null>(lines.length).fill(null) };
+	}
+
+	#leftLogicalRowCountWithGraphicsFallback(width: number): number {
+		return withTerminalGraphicsFallback(() => this.leftPane.getLogicalRowCount(width), {
+			allowCursorNeutralImages: true,
+		});
+	}
+
+	renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
+		if (!this.effectiveSidebarVisible(width)) return this.#renderLeftRowsWithMetadata(width, start, end);
+
+		const componentTheme = this.#theme();
 		const { leftWidth, separatorWidth, rightWidth } = computeIrcSplitWidths(width);
-		if (rightWidth === 0) return renderComponentWithViewportAnchors(this.leftPane, width);
-
-		const separatorText = componentTheme.fg("dim", ` ${componentTheme.boxSharp.vertical} `);
-		const separator = separatorWidth > 0 ? separatorText : "";
-		const leftRender = withTerminalGraphicsFallback(
-			() => renderComponentWithViewportAnchors(this.leftPane, leftWidth),
-			{ allowCursorNeutralImages: true },
-		);
+		const leftCount = this.#leftLogicalRowCountWithGraphicsFallback(leftWidth);
 		const rightLines = renderSidebarRecords(this.ledger, rightWidth, componentTheme);
-		const lineCount = Math.max(leftRender.lines.length, rightLines.length);
-		const lines: string[] = [];
-		const anchors: ViewportAnchorRender["anchors"] = [];
+		const lineCount = Math.max(leftCount, rightLines.length);
+		const from = Math.max(0, Math.min(start, lineCount));
+		const to = Math.max(from, Math.min(end, lineCount));
+		if (from === to) return { lines: [], metadata: [] };
 
-		const leftOffset = lineCount - leftRender.lines.length;
+		const leftOffset = lineCount - leftCount;
 		const rightOffset = lineCount - rightLines.length;
-		for (let index = 0; index < lineCount; index++) {
-			const leftIndex = index - leftOffset;
-			const leftRaw = leftRender.lines[leftIndex] ?? "";
-			const right = truncateToWidth(rightLines[index - rightOffset] ?? "", rightWidth);
+		const leftStart = Math.max(0, from - leftOffset);
+		const leftEnd = Math.min(leftCount, to - leftOffset);
+		const left =
+			leftStart < leftEnd
+				? withTerminalGraphicsFallback(() => this.#renderLeftRowsWithMetadata(leftWidth, leftStart, leftEnd), {
+						allowCursorNeutralImages: true,
+					})
+				: { lines: [], metadata: [] };
+		if (left.lines.length !== left.metadata.length)
+			throw new Error("IRC left-pane metadata does not match rendered rows");
+		const separator = separatorWidth > 0 ? componentTheme.fg("dim", ` ${componentTheme.boxSharp.vertical} `) : "";
+		const lines: string[] = [];
+		const metadata: Array<ViewportRowMetadata | null> = [];
+		for (let row = from; row < to; row++) {
+			const leftIndex = row - leftOffset;
+			const local = leftIndex - leftStart;
+			const leftRaw = left.lines[local] ?? "";
+			const right = truncateToWidth(rightLines[row - rightOffset] ?? "", rightWidth);
 			if (TERMINAL.isImageLine(leftRaw)) {
 				lines.push(leftRaw + padding(leftWidth) + separator + right);
 			} else {
-				const left = truncateToWidth(leftRaw, leftWidth);
-				lines.push(left + padding(Math.max(0, leftWidth - visibleWidth(left))) + separator + right);
+				const clipped = truncateToWidth(leftRaw, leftWidth);
+				lines.push(clipped + padding(Math.max(0, leftWidth - visibleWidth(clipped))) + separator + right);
 			}
-			anchors.push(leftRender.anchors[leftIndex] ?? null);
+			metadata.push(left.metadata[local] ?? null);
 		}
-		return { lines, anchors };
+		recordFrameAllocationRowArray(lines, "irc-split-output");
+		return { lines, metadata };
+	}
+
+	resolveViewportAnchor(sourceId: string, graphemeIndex: number, width: number): number | undefined {
+		const resolver = this.leftPane as Partial<ViewportComponent>;
+		if (typeof resolver.resolveViewportAnchor !== "function") return undefined;
+		const leftWidth = this.effectiveSidebarVisible(width) ? computeIrcSplitWidths(width).leftWidth : width;
+		const row = resolver.resolveViewportAnchor(sourceId, graphemeIndex, leftWidth);
+		if (row === undefined) return undefined;
+		if (!this.effectiveSidebarVisible(width)) return row;
+		return row + this.getLogicalRowCount(width) - this.leftPane.getLogicalRowCount(leftWidth);
+	}
+
+	prepareBottomViewport(width: number, rows: number): void {
+		if (!isViewportComponent(this.leftPane)) return;
+		const { leftWidth } = computeIrcSplitWidths(width);
+		this.leftPane.prepareBottomViewport?.(this.effectiveSidebarVisible(width) ? leftWidth : width, rows);
+	}
+
+	getViewportSourceIds(): readonly string[] {
+		return this.leftPane.getViewportSourceIds?.() ?? [];
+	}
+
+	#theme(): IrcSidebarTheme {
+		return typeof this.componentTheme === "function" ? this.componentTheme() : this.componentTheme;
+	}
+
+	render(width: number): string[] {
+		return this.renderRows(width, 0, this.getLogicalRowCount(width));
 	}
 
 	invalidate(): void {

@@ -244,10 +244,10 @@ describe("TUI terminal-state regressions", () => {
 				await settle(term);
 
 				const stats = tui.getLineRenderCacheStats();
-				expect(stats.normalizationSize).toBeLessThanOrEqual(stats.normalizationLimit);
-				expect(stats.truncationSize).toBeLessThanOrEqual(stats.truncationLimit);
-				expect(stats.normalizationLimit).toBe(2);
-				expect(stats.truncationLimit).toBe(2);
+				// G009: line caches are byte-weighted LRUs. Retained bytes must stay
+				// within the byte budget regardless of how many unique lines stream.
+				expect(stats.normalizationBytes).toBeLessThanOrEqual(stats.normalizationLimit);
+				expect(stats.truncationBytes).toBeLessThanOrEqual(stats.truncationLimit);
 			} finally {
 				tui.stop();
 			}

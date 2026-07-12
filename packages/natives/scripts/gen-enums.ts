@@ -74,6 +74,22 @@ function collectMatches(dts: string, re: RegExp): string[] {
 	return names;
 }
 
+/**
+ * Collect static method names declared on `export declare class <name>`.
+ * Classes with statics are emitted through `lazyNativeClass` so bun:test
+ * `vi.spyOn(Class, "staticMethod")` works (spies bypass Proxy traps).
+ */
+function collectStaticMethods(dts: string, className: string): string[] {
+	const block = dts.match(new RegExp(`^export declare class ${className} \\{([\\s\\S]*?)^\\}`, "m"));
+	if (!block) return [];
+	const names: string[] = [];
+	for (const line of block[1]!.split("\n")) {
+		const m = line.match(/^\s*static (\w+)\(/);
+		if (m) names.push(m[1]!);
+	}
+	return names;
+}
+
 function buildGeneratedBlock(dts: string): string {
 	const classes = collectMatches(dts, CLASS_RE);
 	const functions = collectMatches(dts, FUNCTION_RE);
@@ -87,14 +103,19 @@ function buildGeneratedBlock(dts: string): string {
 	if (classes.length > 0) {
 		lines.push("// classes");
 		for (const name of classes) {
-			lines.push(`export const ${name} = nativeBindings.${name};`);
+			const statics = collectStaticMethods(dts, name);
+			lines.push(
+				statics.length > 0
+					? `export const ${name} = lazyNativeClass(${JSON.stringify(name)}, ${JSON.stringify(statics)});`
+					: `export const ${name} = lazyNativeExport(${JSON.stringify(name)});`,
+			);
 		}
 	}
 	if (functions.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push("// functions");
 		for (const name of functions) {
-			lines.push(`export const ${name} = nativeBindings.${name};`);
+			lines.push(`export const ${name} = lazyNativeExport(${JSON.stringify(name)});`);
 		}
 	}
 	if (enums.length > 0) {
@@ -108,9 +129,11 @@ function buildGeneratedBlock(dts: string): string {
 	return `${MARKER_START}\n${lines.join("\n")}\n${MARKER_END}`;
 }
 
-export async function generateEnumExports(): Promise<void> {
-	const dts = await Bun.file(dtsPath).text();
-	const existing = await Bun.file(jsPath).text();
+export async function generateEnumExports(
+	paths: { dtsPath: string; jsPath: string } = { dtsPath, jsPath },
+): Promise<void> {
+	const dts = await Bun.file(paths.dtsPath).text();
+	const existing = await Bun.file(paths.jsPath).text();
 	const generatedBlock = buildGeneratedBlock(dts);
 
 	// Patch the generated block in place. `native/index.js` is the hand-edited
@@ -121,13 +144,13 @@ export async function generateEnumExports(): Promise<void> {
 	const blockEnd = existing.indexOf(MARKER_END);
 	if (blockStart === -1 || blockEnd === -1 || blockEnd < blockStart) {
 		throw new Error(
-			`gen-enums: ${jsPath} is missing the generated marker block. ` +
+			`gen-enums: ${paths.jsPath} is missing the generated marker block. ` +
 				`Add\n\n${MARKER_START}\n${MARKER_END}\n\nplaceholders before running.`,
 		);
 	}
 	const js = existing.slice(0, blockStart) + generatedBlock + existing.slice(blockEnd + MARKER_END.length);
 
-	await Bun.write(jsPath, js);
+	await Bun.write(paths.jsPath, js);
 
 	// Also fix the .d.ts: replace `const enum` with `enum` so TS allows
 	// assigning string literals to enum types without casts.
@@ -135,7 +158,7 @@ export async function generateEnumExports(): Promise<void> {
 	const dtsContent = dts
 		.replaceAll("export const enum", "export declare enum")
 		.replaceAll("export declare const enum", "export declare enum");
-	await Bun.write(dtsPath, dtsContent);
+	await Bun.write(paths.dtsPath, dtsContent);
 
 	const symbolCount = (generatedBlock.match(/^export const /gm) ?? []).length;
 	console.log(

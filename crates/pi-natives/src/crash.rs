@@ -32,6 +32,19 @@ pub fn init_native_crash_diagnostics() -> bool {
 	true
 }
 
+/// Verifies that a panic raised by native code unwinds to its Rust boundary and
+/// is converted to a normal N-API result rather than aborting the host.
+#[napi(js_name = "nativePanicUnwindProbe")]
+pub fn native_panic_unwind_probe() -> bool {
+	std::panic::catch_unwind(|| panic!("native unwind probe")).is_err()
+}
+
+/// Captures a symbolized Rust backtrace while the debug sidecar is loaded.
+#[napi(js_name = "nativeDebugSidecarBacktraceProbe")]
+pub fn native_debug_sidecar_backtrace_probe() -> String {
+	std::backtrace::Backtrace::force_capture().to_string()
+}
+
 fn enabled() -> bool {
 	matches!(std::env::var(ENABLE_ENV).ok().as_deref(), Some("1" | "true" | "yes"))
 }

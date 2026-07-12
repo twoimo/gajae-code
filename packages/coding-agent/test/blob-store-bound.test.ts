@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { MemoryBlobStore } from "@gajae-code/coding-agent/session/blob-store";
+import { MemoryBlobStore } from "../src/session/blob-store";
 
 describe("MemoryBlobStore byte/count LRU bound (W5 / F8)", () => {
 	it("evicts the least-recently-used blob beyond the count cap instead of growing unbounded", () => {

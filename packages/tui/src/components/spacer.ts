@@ -25,4 +25,12 @@ export class Spacer implements Component {
 		}
 		return result;
 	}
+
+	getLogicalRowCount(_width: number): number {
+		return this.#lines;
+	}
+
+	renderRows(_width: number, start: number, end: number): string[] {
+		return Array.from({ length: Math.max(0, Math.min(this.#lines, end) - Math.max(0, start)) }, () => "");
+	}
 }

@@ -1,7 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Chalk } from "chalk";
-import { clearRenderCache, Markdown, renderInlineMarkdown } from "../src/components/markdown.js";
+import {
+	__getMarkdownCacheRetainedBytesAuditForTest,
+	clearRenderCache,
+	configureMarkdownCacheBudget,
+	getMarkdownCacheRetainedBytes,
+	MARKDOWN_CACHE_DEFAULT_BUDGET_BYTES,
+	Markdown,
+	renderInlineMarkdown,
+} from "../src/components/markdown.js";
 import { TERMINAL } from "../src/terminal-capabilities.js";
 import { type Component, TUI } from "../src/tui.js";
 import { defaultMarkdownTheme } from "./test-themes.js";
@@ -1042,6 +1050,46 @@ bar`,
 		});
 	});
 
+	describe("terminal OSC shielding", () => {
+		const occurrences = (text: string, value: string): number => text.split(value).length - 1;
+
+		it("preserves literal private-use placeholder text without terminal controls", () => {
+			const literal = "literal \uE0000\uE001 and \uE000not-a-placeholder\uE001";
+			const output = new Markdown(literal, 0, 0, defaultMarkdownTheme).render(160).join("\n");
+
+			expect(output).toContain(literal);
+			expect(output).not.toContain("\x1b]");
+		});
+
+		it("preserves literal private-use text and restores only the authored OSC hyperlink", () => {
+			const literal = "\uE0000\uE001";
+			const open = "\x1b]8;;https://raw.example.test\x07";
+			const close = "\x1b]8;;\x07";
+			const output = new Markdown(`before ${literal} ${open}linked${close} after`, 0, 0, defaultMarkdownTheme)
+				.render(160)
+				.join("\n");
+
+			expect(output).toContain(literal);
+			expect(occurrences(output, open)).toBe(1);
+			expect(occurrences(output, close)).toBe(1);
+			expect(output.indexOf(literal)).toBeLessThan(output.indexOf(open));
+		});
+
+		it("keeps nested and malformed OSC bytes in source order without duplication", () => {
+			const literal = "\uE0000\uE001";
+			const malformed = "\x1b]broken-outer";
+			const nested = "\x1b]9;inner\x07";
+			const output = new Markdown(`before ${literal} ${malformed}${nested} after`, 0, 0, defaultMarkdownTheme)
+				.render(160)
+				.join("\n");
+
+			expect(output).toContain(literal);
+			expect(occurrences(output, malformed)).toBe(1);
+			expect(occurrences(output, nested)).toBe(1);
+			expect(output.indexOf(malformed)).toBeLessThan(output.indexOf(nested));
+		});
+	});
+
 	const stripTerminalSequences = (line: string): string =>
 		line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -1252,14 +1300,42 @@ describe("Module-level LRU render cache", () => {
 			},
 		};
 
-		// Exceed BOTH the L2 render cache (256) and the per-code-block highlight cache
-		// (512) so message 0 is evicted from each and a re-render must re-highlight it.
+		// Byte budgets replace the historical entry caps. Small entries remain
+		// reusable when their aggregate retained bytes fit in the highlight pool.
 		for (let i = 0; i < 600; i++) {
 			new Markdown(`message ${i}\n\n\`\`\`js\nconst value = ${i};\n\`\`\``, 0, 0, themeWithSpy).render(80);
 		}
 
 		new Markdown("message 0\n\n```js\nconst value = 0;\n```", 0, 0, themeWithSpy).render(80);
-		expect(highlightCallCount).toBe(601);
+		expect(highlightCallCount).toBe(600);
+	});
+
+	it("keeps byte counters within the 32 MiB session budget across streaming-sized content and width churn", () => {
+		const corpus = Array.from({ length: 10_000 }, (_value, index) => `token-${index} **bold**`).join(" ");
+		for (const width of [40, 60, 80, 100, 120, 160]) new Markdown(corpus, 0, 0, defaultMarkdownTheme).render(width);
+
+		const counters = getMarkdownCacheRetainedBytes();
+		expect(counters.render + counters.parse + counters.highlight).toBeLessThanOrEqual(
+			MARKDOWN_CACHE_DEFAULT_BUDGET_BYTES,
+		);
+		expect(__getMarkdownCacheRetainedBytesAuditForTest()).toEqual(counters);
+
+		clearRenderCache();
+		expect(getMarkdownCacheRetainedBytes()).toEqual({ render: 0, parse: 0, highlight: 0 });
+	});
+
+	it("enforces a configured session total and restores the default cache budget", () => {
+		configureMarkdownCacheBudget(12 * 1024);
+		try {
+			for (let index = 0; index < 16; index++) {
+				new Markdown(`entry-${index} ${"x".repeat(2_000)}`, 0, 0, defaultMarkdownTheme).render(80);
+			}
+			const counters = getMarkdownCacheRetainedBytes();
+			expect(counters.render + counters.parse + counters.highlight).toBeLessThanOrEqual(12 * 1024);
+			expect(__getMarkdownCacheRetainedBytesAuditForTest()).toEqual(counters);
+		} finally {
+			configureMarkdownCacheBudget();
+		}
 	});
 
 	it("never serves another message's render on content-key collision attempts", () => {

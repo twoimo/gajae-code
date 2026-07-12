@@ -1,0 +1,62 @@
+name: Release Tag
+# SECURITY: Repository administrators MUST protect refs/tags/v* with a ruleset that
+# permits tag creation only by this workflow's gated_release_tag job. Workflow code
+# cannot configure that server-side rule; without it, direct pushed tags remain possible.
+
+on:
+   workflow_dispatch:
+      inputs:
+         candidate_sha:
+            description: "Exact main-branch candidate SHA to gate and tag"
+            type: string
+            required: true
+         release_version:
+            description: "Semver version (without v) for the gated tag"
+            type: string
+            required: true
+
+concurrency:
+   group: release-tag-${{ inputs.candidate_sha }}
+   cancel-in-progress: false
+
+jobs:
+   gated_release_tag:
+      name: gated_release_tag
+      runs-on: ubuntu-22.04
+      permissions:
+         actions: read
+         contents: write
+      steps:
+         - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+           with:
+              ref: ${{ inputs.candidate_sha }}
+              fetch-depth: 0
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+           with:
+              bun-version: "1.3"
+         - name: Validate release inputs
+           env:
+              CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+              RELEASE_VERSION: ${{ inputs.release_version }}
+           run: |
+              test "$CANDIDATE_SHA" = "$(git rev-parse HEAD)"
+              git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main
+              printf '%s' "$RELEASE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
+              test "$(git tag -l "v$RELEASE_VERSION")" = ""
+         - name: Verify candidate version binding
+           run: bun scripts/verify-release-candidate-version.ts --version "${{ inputs.release_version }}"
+         - name: Collect fresh candidate evidence
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+           run: bun scripts/collect-release-check-evidence.ts --sha "${{ inputs.candidate_sha }}" --repo "${{ github.repository }}"
+         - name: Enforce exact-SHA release gate
+           run: bun scripts/release-ci-gate.ts --sha "${{ inputs.candidate_sha }}" --evidence "artifacts/release-check-evidence-${{ inputs.candidate_sha }}.json"
+         - name: Create immutable release tag
+           env:
+              RELEASE_VERSION: ${{ inputs.release_version }}
+              CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+           run: |
+              git config user.name github-actions[bot]
+              git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+              git tag "v$RELEASE_VERSION" "$CANDIDATE_SHA"
+              git push origin "v$RELEASE_VERSION"

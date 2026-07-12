@@ -2,11 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	activeSnapshotPath,
-	modeStatePath,
-	sessionStateDir,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { activeSnapshotPath, modeStatePath, sessionStateDir } from "../../src/gjc-runtime/session-layout";
 import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
 import { WORKFLOW_STATE_VERSION } from "../../src/skill-state/workflow-state-contract";
 

@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AgentEvent } from "@gajae-code/agent-core";
 import type { AssistantMessage, ToolCall } from "@gajae-code/ai";
-import {
-	getStreamingEditToolCallForEvent,
-	type StreamingEditParsedCacheEntry,
-} from "@gajae-code/coding-agent/session/agent-session";
+import { getStreamingEditToolCallForEvent, type StreamingEditParsedCacheEntry } from "../src/session/agent-session";
 
 function eventFor(argumentsValue: unknown): AgentEvent {
 	const toolCall: ToolCall = {

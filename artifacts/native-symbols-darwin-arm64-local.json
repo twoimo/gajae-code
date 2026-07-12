@@ -1,0 +1,29 @@
+{
+  "target": "darwin-arm64",
+  "profile": "dist-symbols",
+  "sourceSha": "3f60280717983c852b0689a3f0153597e95a53cd",
+  "unstrippedBytes": 35034832,
+  "strippedBytes": 33216384,
+  "reductionPercent": 5.1904,
+  "exports": [
+    "napi_register_module_v1"
+  ],
+  "unwind": "passed",
+  "debugSidecarBacktrace": "passed",
+  "crashId": "2710a7aa-a2e3-39bf-9991-e109a121ce89",
+  "toolVersions": {
+    "bun": "1.3.14",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14) (Homebrew)",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21) (Homebrew)",
+    "nm": "llvm-nm, compatible with GNU nm"
+  },
+  "status": "failed",
+  "candidates": [
+    {
+      "profile": "dist-symbols",
+      "status": "rejected",
+      "reason": "all-target gate unmet: 4 targets CI-deferred"
+    }
+  ],
+  "reason": "crash/build-ID mismatch"
+}

@@ -7,24 +7,24 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseArgs } from "@gajae-code/coding-agent/cli/args";
-import { readNotebookDocument } from "@gajae-code/coding-agent/edit/notebook";
-import type { CustomToolContext } from "@gajae-code/coding-agent/extensibility/custom-tools/types";
+import { parseArgs } from "../src/cli/args";
+import { readNotebookDocument } from "../src/edit/notebook";
+import type { CustomToolContext } from "../src/extensibility/custom-tools/types";
 import {
 	ensureRlmSessionDir,
 	generateRlmSessionId,
 	readRlmNotebookIfPresent,
 	resolveRlmArtifactPaths,
 	rlmSessionExists,
-} from "@gajae-code/coding-agent/rlm/artifacts";
+} from "../src/rlm/artifacts";
 import {
 	countSuccessfulNotebookRuns,
 	createRlmCompleteResearchTool,
 	summarizeNotebookForReplay,
-} from "@gajae-code/coding-agent/rlm/complete-research-tool";
-import { extractRlmFlags, isRlmAutonomousRun, prepareRlmLaunchMode } from "@gajae-code/coding-agent/rlm/index";
-import { RlmNotebookWriter } from "@gajae-code/coding-agent/rlm/notebook";
-import type { RlmCellResult } from "@gajae-code/coding-agent/rlm/types";
+} from "../src/rlm/complete-research-tool";
+import { extractRlmFlags, isRlmAutonomousRun, prepareRlmLaunchMode } from "../src/rlm/index";
+import { RlmNotebookWriter } from "../src/rlm/notebook";
+import type { RlmCellResult } from "../src/rlm/types";
 
 let tmp: string;
 let previousGjcSessionId: string | undefined;

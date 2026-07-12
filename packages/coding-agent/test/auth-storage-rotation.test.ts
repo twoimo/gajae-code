@@ -3,19 +3,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { UsageProvider } from "@gajae-code/ai";
+import { AttemptBudgetExceededError } from "@gajae-code/ai/types";
 import * as oauth from "@gajae-code/ai/utils/oauth";
 import type { OAuthCredentials } from "@gajae-code/ai/utils/oauth/types";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import { Snowflake } from "@gajae-code/utils";
+import { AuthStorage } from "../src/session/auth-storage";
 
 describe("AuthStorage account rotation", () => {
 	let tempDir: string;
 	let authStorage: AuthStorage;
 	let usageExhausted = false;
+	let usageFetch: ReturnType<typeof vi.fn>;
 
 	const usageProvider: UsageProvider = {
 		id: "openai-codex",
-		async fetchUsage(params) {
+		async fetchUsage(params, context) {
+			await context.fetch("https://usage.test/report");
 			const accountId = params.credential.accountId ?? "unknown";
 			return {
 				provider: "openai-codex",
@@ -37,9 +40,11 @@ describe("AuthStorage account rotation", () => {
 		tempDir = path.join(os.tmpdir(), `pi-test-auth-rotation-${Snowflake.next()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 		usageExhausted = false;
+		usageFetch = vi.fn(async () => new Response("{}", { status: 200 }));
 
 		authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"), {
 			usageProviderResolver: provider => (provider === "openai-codex" ? usageProvider : undefined),
+			usageFetch,
 		});
 
 		// Stub the refresh path so AuthStorage doesn't hit a real OAuth endpoint
@@ -94,5 +99,39 @@ describe("AuthStorage account rotation", () => {
 
 		const exhaustedFallbackKey = await authStorage.getApiKey("openai-codex", sessionId);
 		expect(exhaustedFallbackKey).toMatch(/^api-acct-/);
+	});
+
+	test("denies a usage-limit probe before the physical request", async () => {
+		await authStorage.set("openai-codex", [
+			{
+				type: "oauth",
+				access: "access-1",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+				accountId: "acct-1",
+			},
+			{
+				type: "oauth",
+				access: "access-2",
+				refresh: "refresh-2",
+				expires: Date.now() + 60_000,
+				accountId: "acct-2",
+			},
+		]);
+
+		const sessionId = "usage-probe-budget-session";
+		await authStorage.getApiKey("openai-codex", sessionId);
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000);
+		usageFetch.mockClear();
+		const exhaustion = new AttemptBudgetExceededError("attempts", "Maximum total attempts exceeded");
+
+		await expect(
+			authStorage.markUsageLimitReached("openai-codex", sessionId, {
+				consumeAttempt: () => {
+					throw exhaustion;
+				},
+			}),
+		).rejects.toBe(exhaustion);
+		expect(usageFetch).not.toHaveBeenCalled();
 	});
 });

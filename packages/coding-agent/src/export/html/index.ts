@@ -2,7 +2,13 @@ import * as path from "node:path";
 import type { AgentState } from "@gajae-code/agent-core";
 import { APP_NAME, isEnoent } from "@gajae-code/utils";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/theme/theme";
-import { type SessionEntry, type SessionHeader, SessionManager } from "../../session/session-manager";
+import {
+	pinV2SessionExport,
+	type SessionEntry,
+	type SessionHeader,
+	SessionManager,
+} from "../../session/session-manager";
+
 // Pre-generated template (created by scripts/generate-template.ts at publish time)
 import { TEMPLATE } from "./template.generated";
 
@@ -123,19 +129,22 @@ export async function exportSessionToHtml(
 	const sessionFile = sm.getSessionFile();
 	if (!sessionFile) throw new Error("Cannot export in-memory session to HTML");
 
-	const sessionData: SessionData = {
-		header: sm.getHeader(),
-		entries: sm.getEntriesForExport(),
-		leafId: sm.getLeafId(),
-		systemPrompt: state?.systemPrompt.join("\n\n"),
-		tools: state?.tools?.map(t => ({ name: t.name, description: t.description })),
-	};
-
-	const html = await generateHtml(sessionData, opts.themeName);
-	const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(sessionFile, ".jsonl")}.html`;
-
-	await Bun.write(outputPath, html);
-	return outputPath;
+	const exportPin = pinV2SessionExport(sessionFile);
+	try {
+		const sessionData: SessionData = {
+			header: sm.getHeader(),
+			entries: sm.getEntriesForExport(),
+			leafId: sm.getLeafId(),
+			systemPrompt: state?.systemPrompt.join("\n\n"),
+			tools: state?.tools?.map(t => ({ name: t.name, description: t.description })),
+		};
+		const html = await generateHtml(sessionData, opts.themeName);
+		const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(sessionFile, ".jsonl")}.html`;
+		await Bun.write(outputPath, html);
+		return outputPath;
+	} finally {
+		exportPin.close();
+	}
 }
 
 /** Export session file to HTML (standalone). */
@@ -150,19 +159,19 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		throw err;
 	}
 
+	const exportPin = pinV2SessionExport(inputPath);
 	try {
 		const sessionData: SessionData = {
 			header: sm.getHeader(),
 			entries: sm.getEntriesForExport(),
 			leafId: sm.getLeafId(),
 		};
-
 		const html = await generateHtml(sessionData, opts.themeName);
 		const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(inputPath, ".jsonl")}.html`;
-
 		await Bun.write(outputPath, html);
 		return outputPath;
 	} finally {
+		exportPin.close();
 		await sm.close();
 	}
 }

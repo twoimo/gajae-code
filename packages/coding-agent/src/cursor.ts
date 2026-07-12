@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
 import type {
 	AgentEvent,
 	AgentTool,
@@ -14,11 +13,10 @@ import type {
 	ToolResultMessage,
 } from "@gajae-code/ai";
 import { sanitizeText } from "@gajae-code/utils";
-import { resolveToCwd } from "./tools/path-utils";
 
 interface CursorExecBridgeOptions {
 	cwd: string;
-	tools: Map<string, AgentTool>;
+	resolveTool: (name: string) => AgentTool | undefined;
 	getToolContext?: () => AgentToolContext | undefined;
 	emitEvent?: (event: AgentEvent) => void;
 	createEventEmitter?: () => ((event: AgentEvent) => void) | undefined;
@@ -53,14 +51,15 @@ async function executeTool(
 	toolName: string,
 	toolCallId: string,
 	args: Record<string, unknown>,
+	reportedToolName = toolName,
 ): Promise<ToolResultMessage> {
-	const tool = options.tools.get(toolName);
+	const tool = options.resolveTool(toolName);
 	if (!tool) {
-		const result = buildToolErrorResult(`Tool "${toolName}" not available`);
-		return createToolResultMessage(toolCallId, toolName, result, true);
+		const result = buildToolErrorResult(`Tool "${reportedToolName}" not available`);
+		return createToolResultMessage(toolCallId, reportedToolName, result, true);
 	}
 
-	options.emitEvent?.({ type: "tool_execution_start", toolCallId, toolName, args });
+	options.emitEvent?.({ type: "tool_execution_start", toolCallId, toolName: reportedToolName, args });
 
 	let result: AgentToolResult<unknown>;
 	let isError = false;
@@ -74,7 +73,7 @@ async function executeTool(
 				options.emitEvent?.({
 					type: "tool_execution_update",
 					toolCallId,
-					toolName,
+					toolName: reportedToolName,
 					args,
 					partialResult: sanitizedResult,
 				});
@@ -99,43 +98,29 @@ async function executeTool(
 		content: result.content.map(c => (c.type === "text" ? { ...c, text: sanitizeText(c.text) } : c)),
 		details: result.details,
 	};
-	options.emitEvent?.({ type: "tool_execution_end", toolCallId, toolName, result: sanitizedFinalResult, isError });
+	options.emitEvent?.({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: reportedToolName,
+		result: sanitizedFinalResult,
+		isError,
+	});
 
-	return createToolResultMessage(toolCallId, toolName, result, isError);
+	return createToolResultMessage(toolCallId, reportedToolName, result, isError);
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 async function executeDelete(options: CursorExecBridgeOptions, pathArg: string, toolCallId: string) {
-	const toolName = "delete";
-	options.emitEvent?.({ type: "tool_execution_start", toolCallId, toolName, args: { path: pathArg } });
-
-	const absolutePath = resolveToCwd(pathArg, options.cwd);
-	let isError = false;
-	let result: AgentToolResult<unknown>;
-
-	try {
-		let fileStat: fs.Stats | undefined;
-		try {
-			fileStat = fs.statSync(absolutePath);
-		} catch {
-			throw new Error(`File not found: ${pathArg}`);
-		}
-		if (!fileStat.isFile()) {
-			throw new Error(`Path is not a file: ${pathArg}`);
-		}
-
-		fs.rmSync(absolutePath);
-
-		const sizeText = fileStat.size ? ` (${fileStat.size} bytes)` : "";
-		const message = `Deleted ${pathArg}${sizeText}`;
-		result = { content: [{ type: "text", text: message }], details: {} };
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		result = buildToolErrorResult(message);
-		isError = true;
-	}
-
-	options.emitEvent?.({ type: "tool_execution_end", toolCallId, toolName, result, isError });
-	return createToolResultMessage(toolCallId, toolName, result, isError);
+	return executeTool(
+		options,
+		"bash",
+		toolCallId,
+		{ command: `rm -- ${shellQuote(pathArg)}`, cwd: options.cwd },
+		"delete",
+	);
 }
 
 function decodeToolCallId(toolCallId?: string): string {
@@ -270,7 +255,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const options = this.#optionsForCall();
 		const toolCallId = decodeToolCallId(args.toolCallId);
 		const toolName = "bash";
-		const tool = options.tools.get(toolName);
+		const tool = options.resolveTool(toolName);
 		if (!tool) {
 			const result = buildToolErrorResult(`Tool "${toolName}" not available`);
 			return createToolResultMessage(toolCallId, toolName, result, true);
@@ -377,9 +362,9 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const options = this.#optionsForCall();
 		const toolName = call.toolName || call.name;
 		const toolCallId = decodeToolCallId(call.toolCallId);
-		const tool = options.tools.get(toolName);
+		const tool = options.resolveTool(toolName);
 		if (!tool) {
-			const availableTools = Array.from(options.tools.keys()).filter(name => name.startsWith("mcp__"));
+			const availableTools: string[] = [];
 			const message = formatMcpToolErrorMessage(toolName, availableTools);
 			const result = buildToolErrorResult(message);
 			return createToolResultMessage(toolCallId, toolName, result, true);

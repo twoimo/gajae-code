@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getConfigRootDir, getSessionsDir, Snowflake, setAgentDir } from "@gajae-code/utils";
 import {
 	type FileEntry,
 	findMostRecentSession,
@@ -10,8 +11,7 @@ import {
 	resolveResumableSession,
 	type SessionHeader,
 	SessionManager,
-} from "@gajae-code/coding-agent/session/session-manager";
-import { getConfigRootDir, getSessionsDir, Snowflake, setAgentDir } from "@gajae-code/utils";
+} from "../../src/session/session-manager";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;

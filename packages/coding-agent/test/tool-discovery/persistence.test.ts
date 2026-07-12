@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { SessionManager } from "../../src/session/session-manager";
 import type { DiscoverableTool } from "../../src/tool-discovery/tool-index";
 import { buildDiscoverableMCPSearchIndex, buildDiscoverableToolSearchIndex } from "../../src/tool-discovery/tool-index";
 
@@ -83,5 +84,36 @@ describe("generic index: DiscoverableTool round-trip", () => {
 		const ghResult = results.find((r: any) => r.tool.name === "mcp__gh_search");
 		expect(ghResult).toBeDefined();
 		expect(ghResult!.tool.source).toBe("mcp");
+	});
+});
+
+describe("discovered built-in selection persistence", () => {
+	it("keeps built-in selections separate from MCP selections across a branch context", () => {
+		const sessions = SessionManager.inMemory();
+		sessions.appendMCPToolSelection(["mcp__github_search"]);
+		sessions.appendDiscoveredToolSelection(["find", "mcp__github_search"]);
+		expect(sessions.buildSessionContext()).toMatchObject({
+			selectedMCPToolNames: ["mcp__github_search"],
+			hasPersistedMCPToolSelection: true,
+			selectedDiscoveredBuiltinToolNames: ["find"],
+			hasPersistedDiscoveredToolSelection: true,
+		});
+
+		sessions.branch(sessions.getBranch().at(-1)!.id);
+		sessions.appendDiscoveredToolSelection(["todo_write"]);
+		expect(sessions.buildSessionContext()).toMatchObject({
+			selectedMCPToolNames: ["mcp__github_search"],
+			selectedDiscoveredBuiltinToolNames: ["todo_write"],
+		});
+	});
+
+	it("leaves legacy contexts without a built-in selection entry unchanged", () => {
+		const sessions = SessionManager.inMemory();
+		sessions.appendMCPToolSelection(["mcp__github_search"]);
+		expect(sessions.buildSessionContext()).toMatchObject({
+			selectedMCPToolNames: ["mcp__github_search"],
+			hasPersistedDiscoveredToolSelection: false,
+			selectedDiscoveredBuiltinToolNames: [],
+		});
 	});
 });

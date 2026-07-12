@@ -6,9 +6,9 @@
  */
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import { disposeAllKernelSessions, executePythonWithKernel } from "@gajae-code/coding-agent/eval/py/executor";
-import { PythonKernel } from "@gajae-code/coding-agent/eval/py/kernel";
 import { TempDir } from "@gajae-code/utils";
+import { disposeAllKernelSessions, executePythonWithKernel } from "../../src/eval/py/executor";
+import { PythonKernel } from "../../src/eval/py/kernel";
 
 const SHOULD_RUN = Bun.env.PI_PYTHON_INTEGRATION === "1";
 

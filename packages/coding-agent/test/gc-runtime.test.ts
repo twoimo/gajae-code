@@ -9,7 +9,7 @@ import {
 	gcPidProbe,
 	gcProbeToLeasePidStatus,
 	runGjcGcCommand,
-} from "@gajae-code/coding-agent/gjc-runtime/gc-runtime";
+} from "../src/gjc-runtime/gc-runtime";
 
 const originalKill = process.kill.bind(process);
 

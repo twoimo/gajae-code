@@ -73,6 +73,7 @@ const resolvedSpecifierFallbacks = new Map<string, string>();
 const TYPEBOX_SPECIFIER = "@sinclair/typebox";
 const TYPEBOX_SPECIFIER_FILTER = /^@sinclair\/typebox$/;
 const TYPEBOX_SHIM_PATH = path.resolve(import.meta.dir, "../typebox.ts");
+const CANONICAL_EXTENSION_ENTRYPOINT = path.resolve(import.meta.dir, "../extensions/index.ts");
 
 let isLegacyPiSpecifierShimInstalled = false;
 
@@ -102,7 +103,10 @@ function getResolvedSpecifier(specifier: string): string {
 		return cached;
 	}
 
-	const resolved = Bun.resolveSync(specifier, import.meta.dir);
+	const resolved =
+		specifier === "@gajae-code/coding-agent/extensibility/extensions"
+			? CANONICAL_EXTENSION_ENTRYPOINT
+			: Bun.resolveSync(specifier, import.meta.dir);
 	resolvedSpecifierFallbacks.set(specifier, resolved);
 	return resolved;
 }

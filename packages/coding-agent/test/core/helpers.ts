@@ -1,5 +1,5 @@
-import type { PythonKernelExecutor } from "@gajae-code/coding-agent/eval/py/executor";
-import type { KernelExecuteOptions, KernelExecuteResult } from "@gajae-code/coding-agent/eval/py/kernel";
+import type { PythonKernelExecutor } from "../../src/eval/py/executor";
+import type { KernelExecuteOptions, KernelExecuteResult } from "../../src/eval/py/kernel";
 
 export class FakeKernel implements PythonKernelExecutor {
 	private result: KernelExecuteResult;

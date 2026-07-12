@@ -1,13 +1,13 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { AssistantMessageComponent } from "@gajae-code/coding-agent/modes/components/assistant-message";
-import { HookSelectorComponent } from "@gajae-code/coding-agent/modes/components/hook-selector";
-import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { getThemeByName, setThemeInstance, theme } from "@gajae-code/coding-agent/modes/theme/theme";
 import { Container, Text, TUI, visibleWidth } from "@gajae-code/tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { AssistantMessageComponent } from "../src/modes/components/assistant-message";
+import { HookSelectorComponent } from "../src/modes/components/hook-selector";
+import { IrcSplitViewComponent } from "../src/modes/components/irc-sidebar";
+import { IrcObservationLedger } from "../src/modes/irc-observation-ledger";
+import { getThemeByName, setThemeInstance, theme } from "../src/modes/theme/theme";
 
 const WIDTH = 20;
 const CONTENT_WIDTH = WIDTH - 2; // Assistant Markdown's left and right padding.

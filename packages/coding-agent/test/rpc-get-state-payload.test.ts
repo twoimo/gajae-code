@@ -1,10 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcResponse, RpcSessionState } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import {
-	dispatchRpcCommand,
-	type RpcCommandDispatchContext,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
-import { isRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-validation";
+import type { RpcResponse, RpcSessionState } from "../src/modes/rpc/rpc-types";
+import { dispatchRpcCommand, type RpcCommandDispatchContext } from "../src/modes/shared/agent-wire/command-dispatch";
+import { isRpcCommand } from "../src/modes/shared/agent-wire/command-validation";
 
 const toolSchema = {
 	type: "object",

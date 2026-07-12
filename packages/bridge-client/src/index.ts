@@ -1,3 +1,15 @@
+import {
+	type AgentWireCapability,
+	type AgentWireCommandScope,
+	type AgentWireHandshakeAccepted,
+	type AgentWireHandshakeRejected,
+	type AgentWireHandshakeRequest,
+	type AgentWireHandshakeResponse,
+	type AgentWireVersion,
+	type AgentWireVersionRange,
+	isAgentWireVersion,
+	parseAgentWireEnvelope,
+} from "@gajae-code/agent-wire";
 import type { BridgeClientCommand, BridgeCommandHelpers, BridgeCommandOptions } from "./commands";
 import type { BridgeFrame } from "./reference-consumer";
 
@@ -5,76 +17,25 @@ export * from "./commands";
 export * from "./reference-consumer";
 export * from "./workflow-gate";
 
-import type { UnattendedDeclaration, WorkflowGate, WorkflowGateResolver } from "./workflow-gate";
+import type { WorkflowGate, WorkflowGateResolver } from "./workflow-gate";
 import { isWorkflowGateFrame } from "./workflow-gate";
-export type BridgeCapability =
-	| "events"
-	| "prompt"
-	| "permission"
-	| "elicitation"
-	| "ui.declarative"
-	| "ui.editor"
-	| "ui.terminal_input"
-	| "host_tools"
-	| "host_uri"
-	| "client_bridge.read_text_file"
-	| "client_bridge.write_text_file"
-	| "client_bridge.create_terminal"
-	| "workflow_gate";
 
-export type BridgeCommandScope =
-	| "prompt"
-	| "control"
-	| "bash"
-	| "export"
-	| "session"
-	| "model"
-	| "message:read"
-	| "host_tools"
-	| "host_uri"
-	| "admin";
-
-export interface BridgeProtocolRange {
-	min: number;
-	max: number;
-}
-
-export interface BridgeHandshakeRequest {
-	protocol_version_range: BridgeProtocolRange;
-	capabilities: BridgeCapability[];
-	requested_scopes: BridgeCommandScope[];
-	last_seq?: number;
-	unattended?: UnattendedDeclaration;
-}
-
-export interface BridgeHandshakeAccepted {
-	status: "accepted";
-	protocol_version: number;
-	session_id: string;
-	accepted_capabilities: BridgeCapability[];
-	accepted_scopes: BridgeCommandScope[];
-	unsupported: BridgeCapability[];
-	endpoints: {
-		events: string;
-		commands: string;
-		uiResponses: string;
-		claimControl: string;
-		hostToolResults: string;
-		disconnectControl: string;
-		hostUriResults: string;
-	};
-	frame_types: string[];
-	accepted_unattended?: UnattendedDeclaration;
-}
-
-export interface BridgeHandshakeRejected {
-	status: "rejected";
-	reason: "incompatible_version" | "unauthorized" | "invalid_request";
-	message: string;
-}
+/** @deprecated Use AgentWireCapability from @gajae-code/agent-wire. */
+export type BridgeCapability = AgentWireCapability;
+/** @deprecated Use AgentWireCommandScope from @gajae-code/agent-wire. */
+export type BridgeCommandScope = AgentWireCommandScope;
+/** @deprecated Use AgentWireVersionRange from @gajae-code/agent-wire. */
+export type BridgeProtocolRange = AgentWireVersionRange;
+/** @deprecated Use AgentWireHandshakeRequest from @gajae-code/agent-wire. */
+export type BridgeHandshakeRequest = AgentWireHandshakeRequest;
+/** @deprecated Use AgentWireHandshakeAccepted from @gajae-code/agent-wire. */
+export type BridgeHandshakeAccepted = AgentWireHandshakeAccepted;
+/** @deprecated Use AgentWireHandshakeRejected from @gajae-code/agent-wire. */
+export type BridgeHandshakeRejected = AgentWireHandshakeRejected;
+/** @deprecated Use AgentWireHandshakeResponse from @gajae-code/agent-wire. */
+export type BridgeHandshakeResponse = AgentWireHandshakeResponse;
 
 export type BridgeFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-export type BridgeHandshakeResponse = BridgeHandshakeAccepted | BridgeHandshakeRejected;
 function parseSseData(buffer: string): { frames: BridgeFrame[]; rest: string } {
 	const frames: BridgeFrame[] = [];
 	let rest = buffer.replaceAll("\r\n", "\n");
@@ -84,7 +45,8 @@ function parseSseData(buffer: string): { frames: BridgeFrame[]; rest: string } {
 		rest = rest.slice(boundary + 2);
 		for (const line of block.split("\n")) {
 			if (!line.startsWith("data: ")) continue;
-			frames.push(JSON.parse(line.slice(6)) as BridgeFrame);
+			const frame = parseAgentWireEnvelope(JSON.parse(line.slice(6)));
+			frames.push(frame as BridgeFrame);
 		}
 		boundary = rest.indexOf("\n\n");
 	}
@@ -106,6 +68,7 @@ export class BridgeClient implements BridgeCommandHelpers {
 	readonly #baseUrl: URL;
 	readonly #token: string;
 	readonly #fetch: BridgeFetch;
+	readonly #negotiatedVersions = new Map<string, AgentWireVersion>();
 
 	constructor(options: BridgeClientOptions) {
 		this.#baseUrl = new URL(options.baseUrl);
@@ -122,11 +85,15 @@ export class BridgeClient implements BridgeCommandHelpers {
 	}
 
 	async handshake(request: BridgeHandshakeRequest): Promise<BridgeHandshakeResponse> {
-		return this.#json<BridgeHandshakeResponse>("/v1/handshake", {
+		const response = await this.#json<BridgeHandshakeResponse>("/v1/handshake", {
 			method: "POST",
 			body: JSON.stringify(request),
 			headers: { "Content-Type": "application/json" },
 		});
+		if (response.status === "accepted" && isAgentWireVersion(response.protocol_version)) {
+			this.#negotiatedVersions.set(response.session_id, response.protocol_version);
+		}
+		return response;
 	}
 
 	async command(command: BridgeClientCommand, sessionId: string, idempotencyKey: string): Promise<unknown> {
@@ -148,7 +115,9 @@ export class BridgeClient implements BridgeCommandHelpers {
 		prefix: string = type,
 	): Promise<unknown> {
 		return this.command(
-			{ id: options.id, type, ...fields },
+			// The client builds well-known command shapes from caller args; the server's
+			// agent-wire validator is the authoritative gate for the discriminated union.
+			{ id: options.id, type, ...fields } as BridgeClientCommand,
 			sessionId,
 			options.idempotencyKey ?? this.createIdempotencyKey(prefix),
 		);
@@ -171,7 +140,7 @@ export class BridgeClient implements BridgeCommandHelpers {
 				message,
 				images: options.images,
 				streamingBehavior: options.streamingBehavior,
-			},
+			} as BridgeClientCommand,
 			sessionId,
 			options.idempotencyKey ?? this.createIdempotencyKey("prompt"),
 		);
@@ -183,7 +152,7 @@ export class BridgeClient implements BridgeCommandHelpers {
 		options: { id?: string; images?: unknown[]; idempotencyKey?: string } = {},
 	): Promise<unknown> {
 		return this.command(
-			{ id: options.id, type: "steer", message, images: options.images },
+			{ id: options.id, type: "steer", message, images: options.images } as BridgeClientCommand,
 			sessionId,
 			options.idempotencyKey ?? this.createIdempotencyKey("steer"),
 		);
@@ -195,7 +164,7 @@ export class BridgeClient implements BridgeCommandHelpers {
 		options: { id?: string; images?: unknown[]; idempotencyKey?: string } = {},
 	): Promise<unknown> {
 		return this.command(
-			{ id: options.id, type: "follow_up", message, images: options.images },
+			{ id: options.id, type: "follow_up", message, images: options.images } as BridgeClientCommand,
 			sessionId,
 			options.idempotencyKey ?? this.createIdempotencyKey("follow-up"),
 		);
@@ -501,7 +470,11 @@ export class BridgeClient implements BridgeCommandHelpers {
 	}
 	connectEvents(sessionId: string, lastSeq?: number): Promise<Response> {
 		const path = `/v1/sessions/${encodeURIComponent(sessionId)}/events${lastSeq === undefined ? "" : `?last_seq=${lastSeq}`}`;
-		return this.#request(path, { method: "GET" });
+		const version = this.#negotiatedVersions.get(sessionId);
+		return this.#request(path, {
+			method: "GET",
+			headers: version === undefined ? undefined : { "X-GJC-Agent-Wire-Version": String(version) },
+		});
 	}
 
 	#request(pathname: string, init: RequestInit): Promise<Response> {

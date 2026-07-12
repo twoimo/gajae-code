@@ -11,7 +11,7 @@ import { getFileReadCache } from "../edit/file-read-cache";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import searchDescription from "../prompts/tools/search.md" with { type: "text" };
-import { DEFAULT_MAX_COLUMN, type TruncationResult, truncateHead } from "../session/streaming-output";
+import { DEFAULT_MAX_COLUMN, type TruncationResult } from "../session/streaming-output";
 import { Ellipsis, fileHyperlink, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
@@ -570,12 +570,9 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 					outputLines.push("", warningNote);
 				}
 				const rawOutput = outputLines.join("\n");
-				const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-				const output = truncation.content;
+				const output = rawOutput;
 				const displayText = displayLines.join("\n");
-				const truncated = Boolean(
-					fileLimitReached || perFileLimitReached || result.limitReached || truncation.truncated || linesTruncated,
-				);
+				const truncated = Boolean(fileLimitReached || perFileLimitReached || result.limitReached || linesTruncated);
 				const details: SearchToolDetails = {
 					scopePath,
 					searchPath,
@@ -592,14 +589,19 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 					displayContent: displayText,
 					missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 				};
-				if (truncation.truncated) details.truncation = truncation;
 				if (linesTruncated) details.linesTruncated = true;
+				const continuation = [
+					fileLimitReached
+						? `Use skip=${nextSkip} with the same paths and pattern for the next file page.`
+						: undefined,
+					perFileLimitReached
+						? `Showing at most ${perFileMatchCap} matches per file; narrow paths or pattern to inspect additional matches.`
+						: undefined,
+				].filter((instruction): instruction is string => instruction !== undefined);
 				const resultBuilder = toolResult(details)
 					.text(output)
-					.limits({ columnMax: linesTruncated ? DEFAULT_MAX_COLUMN : undefined });
-				if (truncation.truncated) {
-					resultBuilder.truncation(truncation, { direction: "head" });
-				}
+					.limits({ columnMax: linesTruncated ? DEFAULT_MAX_COLUMN : undefined })
+					.continuation(...continuation);
 				return resultBuilder.done();
 			} finally {
 				await cleanupArchiveScratch();

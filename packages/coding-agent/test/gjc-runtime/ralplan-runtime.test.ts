@@ -1,18 +1,18 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { runNativeRalplanCommand } from "@gajae-code/coding-agent/gjc-runtime/ralplan-runtime";
+import { runNativeRalplanCommand } from "../../src/gjc-runtime/ralplan-runtime";
 import {
 	GJC_RALPLAN_ARTIFACT_ENV,
 	GJC_RESTRICTED_ROLE_AGENT_BASH_ENV,
-} from "@gajae-code/coding-agent/gjc-runtime/restricted-role-agent-bash";
+} from "../../src/gjc-runtime/restricted-role-agent-bash";
 import {
 	activeEntryPath,
 	activeSnapshotPath,
 	modeStatePath,
 	sessionPlansDir,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { readVisibleSkillActiveState } from "@gajae-code/coding-agent/skill-state/active-state";
+} from "../../src/gjc-runtime/session-layout";
+import { readVisibleSkillActiveState } from "../../src/skill-state/active-state";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];

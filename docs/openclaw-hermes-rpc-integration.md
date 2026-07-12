@@ -4,7 +4,7 @@ GJC's supported integration boundary for OpenClaw- or Hermes-style hosts is the 
 
 ## Recommended boundary
 
-Use `@gajae-code/coding-agent/modes`:
+Use `@gajae-code/coding-agent`:
 
 - `RpcClient` to spawn and drive `gjc --mode rpc`
 - `defineRpcClientTool()` and `RpcClientOptions.customTools` to expose host-owned tools
@@ -13,7 +13,7 @@ Use `@gajae-code/coding-agent/modes`:
 OpenClaw/Hermes should map their own tools, MCP servers, and skills into RPC host tools. From GJC's point of view those are just host-owned tools; the host remains responsible for policy, credentials, approvals, and process lifetime.
 
 ```ts
-import { RpcClient, defineRpcClientTool } from "@gajae-code/coding-agent/modes";
+import { RpcClient, defineRpcClientTool } from "@gajae-code/coding-agent";
 
 const client = new RpcClient({
   cwd: repoPath,

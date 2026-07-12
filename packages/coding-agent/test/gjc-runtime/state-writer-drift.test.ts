@@ -2,18 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runNativeDeepInterviewCommand } from "@gajae-code/coding-agent/gjc-runtime/deep-interview-runtime";
-import { runNativeRalplanCommand } from "@gajae-code/coding-agent/gjc-runtime/ralplan-runtime";
-import { auditPath, modeStatePath, sessionStateDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { migrateAndPersistLegacyState } from "@gajae-code/coding-agent/gjc-runtime/state-migrations";
-import { runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
-import { RequiredOnWriteEnvelopeSchema } from "@gajae-code/coding-agent/gjc-runtime/state-schema";
-import { writeWorkflowEnvelopeAtomic } from "@gajae-code/coding-agent/gjc-runtime/state-writer";
-import {
-	type GjcTeamSnapshot,
-	persistGjcTeamModeStateSummary,
-} from "@gajae-code/coding-agent/gjc-runtime/team-runtime";
-import { WORKFLOW_STATE_VERSION } from "@gajae-code/coding-agent/skill-state/workflow-state-contract";
+import { runNativeDeepInterviewCommand } from "../../src/gjc-runtime/deep-interview-runtime";
+import { runNativeRalplanCommand } from "../../src/gjc-runtime/ralplan-runtime";
+import { auditPath, modeStatePath, sessionStateDir } from "../../src/gjc-runtime/session-layout";
+import { migrateAndPersistLegacyState } from "../../src/gjc-runtime/state-migrations";
+import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
+import { RequiredOnWriteEnvelopeSchema } from "../../src/gjc-runtime/state-schema";
+import { writeWorkflowEnvelopeAtomic } from "../../src/gjc-runtime/state-writer";
+import { type GjcTeamSnapshot, persistGjcTeamModeStateSummary } from "../../src/gjc-runtime/team-runtime";
+import { WORKFLOW_STATE_VERSION } from "../../src/skill-state/workflow-state-contract";
 
 const TEST_SESSION_ID = "test-session";
 

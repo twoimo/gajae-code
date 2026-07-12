@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+
+- The bridge SDK now consumes shared `@gajae-code/agent-wire` contracts and validates supported v1/v2 SSE envelopes.
 
 ## [0.5.1] - 2026-06-14
 

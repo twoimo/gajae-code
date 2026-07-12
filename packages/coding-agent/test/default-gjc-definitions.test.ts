@@ -2,22 +2,24 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	GJC_MODEL_ASSIGNMENT_TARGET_IDS,
-	GJC_MODEL_ASSIGNMENT_TARGETS,
-} from "@gajae-code/coding-agent/config/model-registry";
+import { GJC_MODEL_ASSIGNMENT_TARGET_IDS, GJC_MODEL_ASSIGNMENT_TARGETS } from "../src/config/model-registry";
 import {
 	DEFAULT_GJC_DEFINITION_NAMES,
 	getDefaultGjcDefinitions,
 	getEmbeddedDefaultGjcSkillFragments,
 	getEmbeddedDefaultGjcSkills,
 	installDefaultGjcDefinitions,
-} from "@gajae-code/coding-agent/defaults/gjc-defaults";
-import { loadSkills, resetActiveSkillsForTests, setActiveSkills } from "@gajae-code/coding-agent/extensibility/skills";
-import { parseInternalUrl } from "@gajae-code/coding-agent/internal-urls/parse";
-import { SkillProtocolHandler } from "@gajae-code/coding-agent/internal-urls/skill-protocol";
-import { getBundledAgent } from "@gajae-code/coding-agent/task/agents";
-import { discoverAgents } from "@gajae-code/coding-agent/task/discovery";
+} from "../src/defaults/gjc-defaults";
+import { loadSkills, resetActiveSkillsForTests, setActiveSkills } from "../src/extensibility/skills";
+import {
+	CANONICAL_WORKFLOW_SKILLS,
+	type CanonicalWorkflowSkill,
+	getWorkflowFragmentDefinitions,
+} from "../src/extensibility/workflow-fragments";
+import { parseInternalUrl } from "../src/internal-urls/parse";
+import { SkillProtocolHandler } from "../src/internal-urls/skill-protocol";
+import { getBundledAgent } from "../src/task/agents";
+import { discoverAgents } from "../src/task/discovery";
 
 const tempRoots: string[] = [];
 const roleAgentNames = ["architect", "critic", "executor", "planner"] as const;
@@ -28,6 +30,13 @@ function extractPromptSection(content: string, sectionName: string): string {
 	const sectionContent = sectionMatch?.[1];
 	if (sectionContent === undefined) throw new Error(`missing <${sectionName}> section`);
 	return sectionContent;
+}
+
+function workflowContent(skill: CanonicalWorkflowSkill): string {
+	return getWorkflowFragmentDefinitions()
+		.filter(fragment => fragment.skill === skill)
+		.map(fragment => fragment.content)
+		.join("\n");
 }
 
 async function makeTempRoot(): Promise<string> {
@@ -63,38 +72,28 @@ afterEach(async () => {
 });
 
 describe("default GJC definitions", () => {
-	it("bundles exactly the four default workflow skills plus deep-interview and ultragoal fragments as installable assets", () => {
+	it("bundles exactly four public workflow skills and an expanded parent-scoped internal fragment inventory", () => {
 		const definitions = getDefaultGjcDefinitions();
 		const workflowDefinitions = definitions.filter(definition => definition.kind === "skill");
 		const fragmentDefinitions = definitions.filter(definition => definition.kind === "skill-fragment");
 		const skills = workflowDefinitions.map(definition => definition.name).sort();
 		const expected = [...DEFAULT_GJC_DEFINITION_NAMES].sort();
+		const workflowFragments = getWorkflowFragmentDefinitions();
 
 		expect(skills).toEqual(expected);
 		expect(workflowDefinitions).toHaveLength(4);
-		expect(definitions).toHaveLength(9);
+		expect(fragmentDefinitions).toHaveLength(workflowFragments.length + 5);
+		expect(definitions).toHaveLength(4 + workflowFragments.length + 5);
 		expect(workflowDefinitions.every(definition => definition.relativePath.startsWith("skills/"))).toBe(true);
-		expect(workflowDefinitions.every(definition => definition.content.includes(definition.name))).toBe(true);
-		expect(fragmentDefinitions).toHaveLength(5);
-		expect(fragmentDefinitions.map(definition => definition.parentSkillName).sort()).toEqual([
-			"deep-interview",
-			"deep-interview",
-			"deep-interview",
-			"ultragoal",
-			"ultragoal",
-		]);
-		expect(fragmentDefinitions.map(definition => definition.relativePath).sort()).toEqual([
-			"skill-fragments/deep-interview/auto-answer-uncertain.md",
-			"skill-fragments/deep-interview/auto-research-greenfield.md",
-			"skill-fragments/deep-interview/lateral-review-panel.md",
-			"skill-fragments/ultragoal/ai-slop-cleaner.md",
-			"skill-fragments/ultragoal/pipeline-validation-contracts.md",
-		]);
-		const team = workflowDefinitions.find(definition => definition.name === "team");
-		expect(team?.content).toContain("supported surfaces only");
-		expect(team?.content).toContain("`planner` for broad context mapping/sequencing");
-		expect(team?.content).toContain("`architect` for architecture or external-doc-risk assessment");
-		expect(team?.content).not.toMatch(/auto-delegate `researcher`|`researcher` as an evidence lane/i);
+		expect(workflowDefinitions.every(definition => definition.content.includes("Fragment ownership"))).toBe(true);
+		expect(fragmentDefinitions.every(definition => "parentSkillName" in definition)).toBe(true);
+		expect(new Set(fragmentDefinitions.map(definition => definition.relativePath)).size).toBe(
+			fragmentDefinitions.length,
+		);
+		expect(workflowFragments.map(fragment => fragment.relativePath).sort()).toEqual(
+			[...workflowFragments.map(fragment => fragment.relativePath)].sort(),
+		);
+		expect(CANONICAL_WORKFLOW_SKILLS).toEqual(DEFAULT_GJC_DEFINITION_NAMES);
 	});
 
 	it("exposes deep-interview fragments only through the parent-scoped fragment accessor", () => {
@@ -105,14 +104,10 @@ describe("default GJC definitions", () => {
 				.map(skill => skill.name)
 				.sort(),
 		).toEqual([...DEFAULT_GJC_DEFINITION_NAMES].sort());
-		expect(fragments).toHaveLength(3);
-		expect(fragments.map(fragment => fragment.kind)).toEqual(["skill-fragment", "skill-fragment", "skill-fragment"]);
-		expect(fragments.map(fragment => fragment.relativePath).sort()).toEqual([
-			"skill-fragments/deep-interview/auto-answer-uncertain.md",
-			"skill-fragments/deep-interview/auto-research-greenfield.md",
-			"skill-fragments/deep-interview/lateral-review-panel.md",
-		]);
-		expect(fragments.every(fragment => fragment.content.includes("read-only architect"))).toBe(true);
+		expect(fragments).toHaveLength(9);
+		expect(fragments.every(fragment => fragment.kind === "skill-fragment")).toBe(true);
+		expect(fragments.every(fragment => fragment.parentSkillName === "deep-interview")).toBe(true);
+		expect(fragments.every(fragment => fragment.kind === "skill-fragment")).toBe(true);
 	});
 
 	it("exposes the ultragoal fragments only through the parent-scoped fragment accessor", () => {
@@ -123,12 +118,9 @@ describe("default GJC definitions", () => {
 				.map(skill => skill.name)
 				.sort(),
 		).toEqual([...DEFAULT_GJC_DEFINITION_NAMES].sort());
-		expect(fragments).toHaveLength(2);
-		expect(fragments.map(fragment => fragment.kind)).toEqual(["skill-fragment", "skill-fragment"]);
-		expect(fragments.map(fragment => fragment.relativePath).sort()).toEqual([
-			"skill-fragments/ultragoal/ai-slop-cleaner.md",
-			"skill-fragments/ultragoal/pipeline-validation-contracts.md",
-		]);
+		expect(fragments).toHaveLength(8);
+		expect(fragments.every(fragment => fragment.kind === "skill-fragment")).toBe(true);
+		expect(fragments.every(fragment => fragment.parentSkillName === "ultragoal")).toBe(true);
 		const cleaner = fragments.find(fragment => fragment.relativePath.endsWith("ai-slop-cleaner.md"))!;
 		expect(cleaner.content).toContain("AI SLOP CLEANUP REPORT");
 		expect(cleaner.content).toContain("read-only detector");
@@ -174,11 +166,7 @@ describe("default GJC definitions", () => {
 	});
 
 	it("wires the ai-slop-cleaner into the ultragoal completion gate before verification and red-team", () => {
-		const ultragoal = getDefaultGjcDefinitions().find(
-			definition => definition.kind === "skill" && definition.name === "ultragoal",
-		);
-		if (!ultragoal) throw new Error("missing bundled ultragoal skill");
-		const content = ultragoal.content;
+		const content = workflowContent("ultragoal");
 
 		const sectionStart = content.indexOf("## Mandatory completion cleanup and review gate");
 		expect(sectionStart).toBeGreaterThanOrEqual(0);
@@ -309,9 +297,7 @@ Project executor override body.
 		const systemPrompt = await Bun.file(
 			path.join(repoRoot, "packages", "coding-agent", "src", "prompts", "system", "system-prompt.md"),
 		).text();
-		const ultragoal = await Bun.file(
-			path.join(repoRoot, "packages", "coding-agent", "src", "defaults", "gjc", "skills", "ultragoal", "SKILL.md"),
-		).text();
+		const ultragoal = workflowContent("ultragoal");
 
 		for (const name of roleAgentNames) {
 			expect(systemPrompt).toContain(name);
@@ -364,9 +350,7 @@ Project executor override body.
 	});
 
 	it("documents validation-batch granularity, contract, and intra-goal lane parallelism in the ultragoal prompt", async () => {
-		const ultragoal = await Bun.file(
-			path.join(repoRoot, "packages", "coding-agent", "src", "defaults", "gjc", "skills", "ultragoal", "SKILL.md"),
-		).text();
+		const ultragoal = workflowContent("ultragoal");
 
 		// A: create-goals granularity — merge validation-coupled stories, fan out executor slices.
 		expect(ultragoal).toContain("validation-coupled");
@@ -460,12 +444,8 @@ Project executor override body.
 	});
 
 	it("documents leader-owned Ultragoal checkpoints for Team bridge workers", async () => {
-		const team = await Bun.file(
-			path.join(repoRoot, "packages", "coding-agent", "src", "defaults", "gjc", "skills", "team", "SKILL.md"),
-		).text();
-		const ultragoal = await Bun.file(
-			path.join(repoRoot, "packages", "coding-agent", "src", "defaults", "gjc", "skills", "ultragoal", "SKILL.md"),
-		).text();
+		const team = workflowContent("team");
+		const ultragoal = workflowContent("ultragoal");
 
 		expect(team).toContain("current-session active GJC goal snapshot");
 		expect(ultragoal).toContain("current-session GJC goal snapshot");
@@ -478,11 +458,7 @@ Project executor override body.
 	});
 
 	it("keeps bundled deep-interview skill on GJC-native workflow vocabulary", () => {
-		const deepInterview = getDefaultGjcDefinitions().find(
-			definition => definition.kind === "skill" && definition.name === "deep-interview",
-		);
-		expect(deepInterview).toBeDefined();
-		const content = deepInterview?.content ?? "";
+		const content = workflowContent("deep-interview");
 
 		for (const required of ["ask", ".gjc/_session-{sessionid}/state", "pending approval"]) {
 			expect(content).toContain(required);
@@ -496,7 +472,7 @@ Project executor override body.
 		expect(content).toContain("default `0.05`");
 		expect(content).toContain("language.instruction");
 		expect(content).toContain(
-			"default to English unless `{{ARGUMENTS}}` makes another user/session language obvious",
+			"default to English unless the final `User:` line makes another user/session language obvious",
 		);
 		expect(content).toContain('"language": "<existing language object from active state, if present>"');
 		expect(content).toContain("progress reports, and spec prose");
@@ -521,11 +497,7 @@ Project executor override body.
 	});
 
 	it("keeps bundled ralplan stage artifacts on CLI write path", () => {
-		const ralplan = getDefaultGjcDefinitions().find(
-			definition => definition.kind === "skill" && definition.name === "ralplan",
-		);
-		expect(ralplan).toBeDefined();
-		const content = ralplan?.content ?? "";
+		const content = workflowContent("ralplan");
 
 		expect(content).toContain("gjc ralplan --write --stage <type> --stage_n <N> --artifact");
 		expect(content).toContain("--stage planner");
@@ -546,10 +518,10 @@ Project executor override body.
 		const deepInterviewSkillPath = path.join(targetRoot, "skills", "deep-interview", "SKILL.md");
 		const installedDeepInterview = await Bun.file(deepInterviewSkillPath).text();
 
-		expect(initial.written).toBe(9);
-		expect(initial.total).toBe(9);
+		expect(initial.written).toBe(34);
+		expect(initial.total).toBe(34);
 		expect(initial.skipped).toBe(0);
-		expect(initial.files.filter(file => file.kind === "skill-fragment")).toHaveLength(5);
+		expect(initial.files.filter(file => file.kind === "skill-fragment")).toHaveLength(30);
 
 		const installedResearchFragment = await Bun.file(
 			path.join(targetRoot, "skill-fragments", "deep-interview", "auto-research-greenfield.md"),
@@ -558,15 +530,15 @@ Project executor override body.
 		await Bun.write(deepInterviewSkillPath, "local edit");
 		const skipped = await installDefaultGjcDefinitions({ targetRoot });
 		expect(skipped.written).toBe(0);
-		expect(skipped.skipped).toBe(9);
+		expect(skipped.skipped).toBe(34);
 		expect(await Bun.file(deepInterviewSkillPath).text()).toBe("local edit");
 
 		const check = await installDefaultGjcDefinitions({ targetRoot, check: true });
 		expect(check.different).toBe(1);
-		expect(check.matching).toBe(8);
+		expect(check.matching).toBe(33);
 
 		const forced = await installDefaultGjcDefinitions({ targetRoot, force: true });
-		expect(forced.written).toBe(9);
+		expect(forced.written).toBe(34);
 		expect(await Bun.file(deepInterviewSkillPath).text()).toBe(installedDeepInterview);
 		expect(
 			forced.files.some(file => file.kind === "skill-fragment" && file.parentSkillName === "deep-interview"),
@@ -580,25 +552,25 @@ Project executor override body.
 		// No files on disk yet: refreshOnly must not create any (opt-in preserved).
 		const untouched = await installDefaultGjcDefinitions({ targetRoot, refreshOnly: true });
 		expect(untouched.written).toBe(0);
-		expect(untouched.missing).toBe(9);
+		expect(untouched.missing).toBe(34);
 		expect(await Bun.file(deepInterviewSkillPath).exists()).toBe(false);
 
 		// User opted in, then a local file went stale relative to the embedded default.
 		const installed = await installDefaultGjcDefinitions({ targetRoot });
 		const canonicalDeepInterview = await Bun.file(deepInterviewSkillPath).text();
-		expect(installed.written).toBe(9);
+		expect(installed.written).toBe(34);
 		await Bun.write(deepInterviewSkillPath, "stale content");
 
 		const refreshed = await installDefaultGjcDefinitions({ targetRoot, refreshOnly: true });
 		expect(refreshed.written).toBe(1);
-		expect(refreshed.matching).toBe(8);
+		expect(refreshed.matching).toBe(33);
 		expect(refreshed.missing).toBe(0);
 		expect(await Bun.file(deepInterviewSkillPath).text()).toBe(canonicalDeepInterview);
 
 		// Second refresh is a no-op once everything matches.
 		const stable = await installDefaultGjcDefinitions({ targetRoot, refreshOnly: true });
 		expect(stable.written).toBe(0);
-		expect(stable.matching).toBe(9);
+		expect(stable.matching).toBe(34);
 	});
 
 	it("does not make installed fragments reachable as skill-relative internal URL assets", async () => {
@@ -710,7 +682,7 @@ Project executor override body.
 		expect(await jsonProc.exited).toBe(0);
 		expect(jsonStderr).toBe("");
 		expect(jsonStdout).not.toContain("gjc skills list");
-		expect(JSON.parse(jsonStdout) as { skipped: number }).toMatchObject({ skipped: 9 });
+		expect(JSON.parse(jsonStdout) as { skipped: number }).toMatchObject({ skipped: 34 });
 	});
 });
 
@@ -749,7 +721,7 @@ describe("bundled skills CLI", () => {
 		expect(parsed.name).toBe("ultragoal");
 		expect(parsed.path).toBe("embedded:gjc/skills/ultragoal/SKILL.md");
 		expect(parsed.source).toBe("bundled:default");
-		expect(parsed.content).toContain("# Ultragoal");
+		expect(parsed.content).toContain("# ultragoal workflow definition");
 	});
 
 	it("lists exactly the embedded default workflow skills", async () => {

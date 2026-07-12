@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { formatHashLine } from "@gajae-code/coding-agent/hashline/hash";
 import { h06FormatHashLines } from "../../../natives/native/index.js";
+import { formatHashLine } from "../../src/hashline/hash";
 
 function formatHashLinesTs(text: string, startLine = 1): string {
 	const lines = text.split("\n");

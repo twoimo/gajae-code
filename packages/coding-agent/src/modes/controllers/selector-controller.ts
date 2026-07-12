@@ -57,15 +57,11 @@ import {
 	MODEL_ONBOARDING_SETUP_COMMAND,
 } from "../../setup/model-onboarding-guidance";
 import { addApiCompatibleProvider, formatProviderSetupResult } from "../../setup/provider-onboarding";
-import {
-	isConfigurableSearchProviderId,
-	isSearchProviderPreference,
-	setPreferredImageProvider,
-	setPreferredSearchProvider,
-	setSearchFallbackProviders,
-	setSearchHardTimeoutMs,
-} from "../../tools";
+import { setPreferredImageProvider } from "../../tools/image-gen";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { setPreferredSearchProvider, setSearchFallbackProviders } from "../../web/search/provider";
+import { setSearchHardTimeoutMs } from "../../web/search/providers/utils";
+import { isConfigurableSearchProviderId, isSearchProviderPreference } from "../../web/search/types";
 import { AgentDashboard } from "../components/agent-dashboard";
 import { AssistantMessageComponent } from "../components/assistant-message";
 import {

@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
-import { normalizeFileDependencySpec, packages as publishPackages } from "./ci-release-publish";
+import { normalizeFileDependencySpec, packages as publishPackages, stageNativePlatformArtifacts } from "./ci-release-publish";
+import { publishOrder, releasePlatforms } from "./release-manifest";
 
 interface PackageManifest {
 	name: string;
@@ -16,6 +19,21 @@ interface PackageManifest {
 }
 
 const repoRoot = path.join(import.meta.dir, "..");
+const tempRoots: string[] = [];
+afterEach(async () => Promise.all(tempRoots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))));
+
+async function nativeArtifactFixture(): Promise<{ sourceDir: string; targetDir: string }> {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "release-native-artifacts-"));
+	tempRoots.push(root);
+	const sourceDir = path.join(root, "source");
+	const targetDir = path.join(root, "target");
+	await fs.mkdir(sourceDir, { recursive: true });
+	for (const filename of releasePlatforms.flatMap(target => target.nativeArtifacts)) {
+		await Bun.write(path.join(sourceDir, filename), filename);
+	}
+	return { sourceDir, targetDir };
+}
+
 
 async function readManifest(relativePath: string): Promise<PackageManifest> {
 	return (await Bun.file(path.join(repoRoot, relativePath, "package.json")).json()) as PackageManifest;
@@ -53,13 +71,20 @@ describe("unscoped gajae-code package publication", () => {
 		expect(normalizeFileDependencySpec("catalog:")).toBe("catalog:");
 	});
 
-	test("release publish order publishes the alias after its scoped dependency", async () => {
-		const releaseScript = await Bun.file(path.join(repoRoot, "scripts/ci-release-publish.ts")).text();
-		const codingAgentIndex = releaseScript.indexOf('dir: "packages/coding-agent"');
-		const aliasIndex = releaseScript.indexOf('dir: "packages/gajae-code"');
-
+	test("release publish order publishes the alias after its scoped dependency", () => {
+		const publishDirs = publishPackages.map(pkg => pkg.dir);
+		const codingAgentIndex = publishDirs.indexOf("packages/coding-agent");
+		const aliasIndex = publishDirs.indexOf("packages/gajae-code");
 		expect(codingAgentIndex).toBeGreaterThan(-1);
 		expect(aliasIndex).toBeGreaterThan(codingAgentIndex);
+	});
+	test("agent-wire publishes before both wire consumers", () => {
+		const publishDirs = publishPackages.map(pkg => pkg.dir);
+		const agentWireIndex = publishDirs.indexOf("packages/agent-wire");
+		expect(agentWireIndex).toBeGreaterThan(-1);
+		for (const consumer of ["packages/coding-agent", "packages/bridge-client"]) {
+			expect(publishDirs.indexOf(consumer)).toBeGreaterThan(agentWireIndex);
+		}
 	});
 
 	test("native platform packages publish before the stable loader package", () => {
@@ -118,6 +143,23 @@ describe("unscoped gajae-code package publication", () => {
 		}
 	});
 
+	test("native artifact staging requires every exact target file", async () => {
+		const target = releasePlatforms.find(candidate => candidate.id === "darwin-arm64")!;
+		const pkg = publishPackages.find(candidate => candidate.dir === "packages/natives-darwin-arm64")!;
+		for (const missing of target.nativeArtifacts) {
+			const { sourceDir, targetDir } = await nativeArtifactFixture();
+			await fs.rm(path.join(sourceDir, missing));
+			await expect(stageNativePlatformArtifacts(pkg, sourceDir, targetDir)).rejects.toThrow(missing);
+		}
+	});
+
+	test("native artifact staging rejects stray node files", async () => {
+		const pkg = publishPackages.find(candidate => candidate.dir === "packages/natives-darwin-arm64")!;
+		const { sourceDir, targetDir } = await nativeArtifactFixture();
+		await Bun.write(path.join(sourceDir, "stray.node"), "stray");
+		await expect(stageNativePlatformArtifacts(pkg, sourceDir, targetDir)).rejects.toThrow("stray.node");
+	});
+
 	test("release publish dry-run does not rewrite source manifests", async () => {
 		const manifestPaths = [
 			"packages/natives/package.json",
@@ -137,13 +179,31 @@ describe("unscoped gajae-code package publication", () => {
 		]);
 		expect(stderr).toBe("");
 		expect(exitCode).toBe(0);
-		expect(stdout).toContain("DRY RUN stage pi_natives.linux-x64 into packages/natives-linux-x64/native");
+		expect(stdout).toContain("DRY RUN stage pi_natives.linux-x64-baseline.node,pi_natives_core.linux-x64-baseline.node,pi_natives_shell.linux-x64-baseline.node into packages/natives-linux-x64/native");
 		expect(stdout).not.toContain("Building Tailwind CSS");
 		const after = await Promise.all(manifestPaths.map(async (relativePath) => await Bun.file(path.join(repoRoot, relativePath)).text()));
 		expect(after).toEqual(before);
 	});
 });
 
+describe("canonical release metadata and tag gate", () => {
+	test("publish and platform metadata come from the canonical release manifest", () => {
+		expect(publishPackages.map(pkg => pkg.dir)).toEqual([...publishOrder]);
+		expect(releasePlatforms).toHaveLength(5);
+	});
+
+	test("release script uses the server-side exact-SHA tag gate and never creates tags locally", async () => {
+		const release = await Bun.file(path.join(repoRoot, "scripts/release.ts")).text();
+		const workflow = await Bun.file(path.join(repoRoot, ".github/workflows/release-tag.yml")).text();
+		expect(release).toContain("gh workflow run release-tag.yml --ref main");
+		expect(release).not.toContain('git(["tag"');
+		expect(workflow.indexOf("verify-release-candidate-version.ts")).toBeLessThan(workflow.indexOf("collect-release-check-evidence.ts"));
+		expect(workflow.indexOf("release-ci-gate.ts")).toBeLessThan(workflow.indexOf('git tag "v$RELEASE_VERSION"'));
+		expect(workflow).toContain("Repository administrators MUST protect refs/tags/v*");
+		expect(release).not.toContain("tag -f");
+		expect(release).not.toContain("--force");
+	});
+});
 describe("release bump set equals publish set", () => {
 	test("every non-private packages/* manifest is published, and every published dir is non-private", async () => {
 		const { Glob } = await import("bun");

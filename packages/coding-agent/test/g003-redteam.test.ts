@@ -5,16 +5,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { discoverAndLoadExtensions } from "@gajae-code/coding-agent/extensibility/extensions/loader";
+import { getProjectAgentDir, logger, TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { discoverAndLoadExtensions } from "../src/extensibility/extensions/loader";
 import {
 	EXTENSION_HANDLER_TIMEOUT_MS,
 	ExtensionRunner,
 	testSetExtensionHandlerTimeoutMs,
-} from "@gajae-code/coding-agent/extensibility/extensions/runner";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { getProjectAgentDir, logger, TempDir } from "@gajae-code/utils";
+} from "../src/extensibility/extensions/runner";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 describe("G003 ExtensionRunner red-team", () => {
 	let tempDir: TempDir;

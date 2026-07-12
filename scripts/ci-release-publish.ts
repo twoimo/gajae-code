@@ -20,6 +20,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
+import { publishOrder, releasePlatforms } from "./release-manifest";
 
 interface PublishPackage {
 	dir: string;
@@ -30,8 +31,8 @@ interface PublishPackage {
 	extraFiles?: readonly string[];
 	/** Extra TypeScript declaration configs beyond `tsconfig.publish.json`. */
 	extraTypeConfigs?: readonly string[];
-	/** Native addon filename prefixes staged into a per-platform optional package. */
-	nativePrefixes?: readonly string[];
+	/** Exact native addon filenames staged into a per-platform optional package. */
+	nativeArtifacts?: readonly string[];
 }
 
 type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
@@ -48,32 +49,22 @@ interface PackageManifest {
 const repoRoot = path.join(import.meta.dir, "..");
 const isDryRun = process.argv.includes("--dry-run");
 const isTypeCheck = process.argv.includes("--check-types");
-const nativePlatformPackages: readonly PublishPackage[] = [
-	{ dir: "packages/natives-darwin-arm64", kind: "native-platform", nativePrefixes: ["pi_natives.darwin-arm64"] },
-	{ dir: "packages/natives-darwin-x64", kind: "native-platform", nativePrefixes: ["pi_natives.darwin-x64"] },
-	{ dir: "packages/natives-linux-arm64", kind: "native-platform", nativePrefixes: ["pi_natives.linux-arm64"] },
-	{ dir: "packages/natives-linux-x64", kind: "native-platform", nativePrefixes: ["pi_natives.linux-x64"] },
-	{ dir: "packages/natives-win32-x64", kind: "native-platform", nativePrefixes: ["pi_natives.win32-x64"] },
-];
-
-export const packages: PublishPackage[] = [
-	{ dir: "packages/utils", kind: "typescript" },
-	{ dir: "packages/ai", kind: "typescript" },
-	...nativePlatformPackages,
-	{ dir: "packages/natives", kind: "native" },
-	{ dir: "packages/tui", kind: "typescript" },
-	{
-		dir: "packages/stats",
-		kind: "typescript",
-		preBuild: [["bun", "run", "build"]],
-		extraFiles: ["dist/client"],
-		extraTypeConfigs: ["tsconfig.publish.client.json"],
-	},
-	{ dir: "packages/agent", kind: "typescript" },
-	{ dir: "packages/coding-agent", kind: "typescript" },
-	{ dir: "packages/bridge-client", kind: "typescript" },
-	{ dir: "packages/gajae-code", kind: "manifest" },
-];
+const nativePlatformPackages: readonly PublishPackage[] = releasePlatforms.map(target => ({
+	dir: `packages/natives-${target.id}`,
+	kind: "native-platform",
+	nativeArtifacts: target.nativeArtifacts,
+}));
+const packageOverrides = new Map<string, Omit<PublishPackage, "dir">>([
+	["packages/stats", { kind: "typescript", preBuild: [["bun", "run", "build"]], extraFiles: ["dist/client"], extraTypeConfigs: ["tsconfig.publish.client.json"] }],
+	...nativePlatformPackages.map(pkg => [pkg.dir, { kind: pkg.kind, nativeArtifacts: pkg.nativeArtifacts }] as const),
+	["packages/natives", { kind: "native" }],
+	["packages/gajae-code", { kind: "manifest" }],
+]);
+export const packages: PublishPackage[] = publishOrder.map(dir => ({
+	dir,
+	kind: "typescript",
+	...packageOverrides.get(dir),
+}));
 const dependencyFieldNames = [
 	"dependencies",
 	"devDependencies",
@@ -210,13 +201,15 @@ async function rewriteNativeManifest(pkgDir: string): Promise<PackageManifest> {
 	return manifest;
 }
 
-async function stageNativePlatformArtifacts(pkg: PublishPackage): Promise<void> {
-	const prefixes = pkg.nativePrefixes ?? [];
-	if (prefixes.length === 0) throw new Error(`Native platform package ${pkg.dir} has no nativePrefixes`);
-	const sourceDir = path.join(repoRoot, "packages", "natives", "native");
-	const targetDir = path.join(repoRoot, pkg.dir, "native");
+export async function stageNativePlatformArtifacts(
+	pkg: PublishPackage,
+	sourceDir = path.join(repoRoot, "packages", "natives", "native"),
+	targetDir = path.join(repoRoot, pkg.dir, "native"),
+): Promise<void> {
+	const expected = pkg.nativeArtifacts ?? [];
+	if (expected.length === 0) throw new Error(`Native platform package ${pkg.dir} has no nativeArtifacts`);
 	if (isDryRun) {
-		console.log(`DRY RUN stage ${prefixes.join(",")} into ${pkg.dir}/native`);
+		console.log(`DRY RUN stage ${expected.join(",")} into ${pkg.dir}/native`);
 		return;
 	}
 
@@ -224,14 +217,20 @@ async function stageNativePlatformArtifacts(pkg: PublishPackage): Promise<void> 
 		const message = err instanceof Error ? err.message : String(err);
 		throw new Error(`Cannot read native artifact directory ${sourceDir}: ${message}`);
 	});
-	const matching = entries.filter(entry => entry.endsWith(".node") && prefixes.some(prefix => entry.startsWith(prefix)));
-	if (matching.length === 0) {
-		throw new Error(`No native artifacts matching ${prefixes.join(", ")} found in ${sourceDir}`);
+	const nodeEntries = entries.filter(entry => entry.endsWith(".node"));
+	const allExpected = new Set(releasePlatforms.flatMap(target => target.nativeArtifacts));
+	const unexpected = nodeEntries.filter(entry => !allExpected.has(entry));
+	if (unexpected.length > 0) {
+		throw new Error(`Unexpected native artifact(s) in ${sourceDir}: ${unexpected.sort().join(", ")}`);
+	}
+	const missing = expected.filter(entry => !nodeEntries.includes(entry));
+	if (missing.length > 0) {
+		throw new Error(`Missing native artifact(s) for ${pkg.dir}: ${missing.join(", ")}`);
 	}
 
 	await fs.rm(targetDir, { recursive: true, force: true });
 	await fs.mkdir(targetDir, { recursive: true });
-	for (const entry of matching) {
+	for (const entry of expected) {
 		await fs.copyFile(path.join(sourceDir, entry), path.join(targetDir, entry));
 	}
 }

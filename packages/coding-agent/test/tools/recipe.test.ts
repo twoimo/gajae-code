@@ -2,18 +2,17 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { Settings } from "../../src/config/settings";
+import { createTools, type ToolSession } from "../../src/tools";
 import {
 	buildPromptModel,
 	commandFromOp,
-	createTools,
 	type DetectedRunner,
 	RecipeTool,
 	resolveCommand,
-	type ToolSession,
 	tasksFromCargoMetadata,
 	titleFromOp,
-} from "@gajae-code/coding-agent/tools";
+} from "../../src/tools/recipe";
 
 const detectedRunners: DetectedRunner[] = [
 	{

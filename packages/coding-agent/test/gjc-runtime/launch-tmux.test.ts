@@ -3,8 +3,8 @@ import { Buffer } from "node:buffer";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { VERSION } from "@gajae-code/coding-agent";
-import type { Args } from "@gajae-code/coding-agent/cli/args";
+import { postmortem, VERSION } from "@gajae-code/utils";
+import type { Args } from "../../src/cli/args";
 import {
 	applyGjcTmuxProfile,
 	buildDefaultTmuxLaunchPlan,
@@ -15,22 +15,21 @@ import {
 	launchDefaultTmuxIfNeeded as launchDefaultTmuxIfNeededRaw,
 	type TmuxLaunchContext,
 	type TmuxSpawnOptions,
-} from "@gajae-code/coding-agent/gjc-runtime/launch-tmux";
-import { __setBinaryResolverForTests } from "@gajae-code/coding-agent/gjc-runtime/psmux-detect";
-import { sessionRuntimeDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { persistCoordinatorRuntimeStateFromPostmortem } from "@gajae-code/coding-agent/gjc-runtime/session-state-sidecar";
+} from "../../src/gjc-runtime/launch-tmux";
+import { __setBinaryResolverForTests } from "../../src/gjc-runtime/psmux-detect";
+import { sessionRuntimeDir } from "../../src/gjc-runtime/session-layout";
+import { persistCoordinatorRuntimeStateFromPostmortem } from "../../src/gjc-runtime/session-state-sidecar";
 import {
 	captureOwnerGenerationBaselineSync,
 	isExactScopedBootstrapSuccessReceipt,
 	replaceOwnerGenerationSync,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation";
+} from "../../src/gjc-runtime/tmux-owner-isolation";
 import {
 	__setCreateOwnerIsolationForTests,
 	__setMutationServerProofForTests,
 	createGjcTmuxSession,
 	removeGjcTmuxSession,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-sessions";
-import { postmortem } from "@gajae-code/utils";
+} from "../../src/gjc-runtime/tmux-sessions";
 
 function args(overrides: Partial<Args> = {}): Args {
 	return {

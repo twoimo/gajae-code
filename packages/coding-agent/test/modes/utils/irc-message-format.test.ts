@@ -1,19 +1,12 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import {
-	formatIrcMessageBlock,
-	type ParsedIrcMessage,
-	parseIrcMessage,
-} from "@gajae-code/coding-agent/modes/utils/irc-message";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import {
-	associateSessionMessageObservationId,
-	buildSessionContext,
-} from "@gajae-code/coding-agent/session/session-manager";
 import { Container } from "@gajae-code/tui";
+import { IrcSplitViewComponent } from "../../../src/modes/components/irc-sidebar";
+import { IrcObservationLedger } from "../../../src/modes/irc-observation-ledger";
+import { initTheme, theme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
+import { formatIrcMessageBlock, type ParsedIrcMessage, parseIrcMessage } from "../../../src/modes/utils/irc-message";
+import { UiHelpers } from "../../../src/modes/utils/ui-helpers";
+import { associateSessionMessageObservationId, buildSessionContext } from "../../../src/session/session-manager";
 
 beforeEach(async () => {
 	await initTheme();

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadCapability } from "@gajae-code/coding-agent/discovery";
 import { type MCPServer, mcpCapability } from "../../src/capability/mcp";
+import { loadCapability } from "../../src/discovery";
 import { loadAllMCPConfigs } from "../../src/runtime-mcp/config";
 
 async function loadStandaloneMcpConfig(cwd: string): Promise<MCPServer[]> {

@@ -1,0 +1,10 @@
+{
+	"extends": "../tsconfig.workspace.json",
+	"compilerOptions": {
+		"composite": true,
+		"noEmit": false,
+		"emitDeclarationOnly": true,
+		"rootDir": "."
+	},
+	"include": ["src", "test"]
+}

@@ -444,9 +444,15 @@ export class WorkerCore {
 	}
 
 	async #init(payload: WorkerInitPayload): Promise<void> {
+		this.#mode = payload.mode;
+		let puppeteer: Awaited<ReturnType<typeof loadPuppeteerInWorker>>;
 		try {
-			this.#mode = payload.mode;
-			const puppeteer = await loadPuppeteerInWorker(payload.safeDir);
+			puppeteer = await loadPuppeteerInWorker(payload.safeDir);
+		} catch (error) {
+			this.#transport.send({ type: "init-failed", stage: "import", error: errorPayload(error) });
+			return;
+		}
+		try {
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
 				defaultViewport: null,
@@ -471,7 +477,7 @@ export class WorkerCore {
 			this.#targetId = await targetIdForPage(this.#page);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {
-			this.#transport.send({ type: "init-failed", error: errorPayload(error) });
+			this.#transport.send({ type: "init-failed", stage: "connect", error: errorPayload(error) });
 		}
 	}
 

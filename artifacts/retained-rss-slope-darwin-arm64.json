@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-07-11T06:06:48.212Z",
+  "status": "failed",
+  "durationMs": 20,
+  "intervalMs": 5,
+  "platform": "darwin",
+  "arch": "arm64",
+  "bunVersion": "1.3.14",
+  "samples": [
+    {
+      "timestampMs": 15.486999999999995,
+      "rssBytes": 255770624
+    },
+    {
+      "timestampMs": 26.70225000000002,
+      "rssBytes": 263127040
+    }
+  ],
+  "slopeBytesPerHour": 2361347058692.4,
+  "slopeMiBPerHour": 2251956.0419963836,
+  "gate": {
+    "name": "retained-rss-slope",
+    "actual": 2361347058692.4,
+    "limit": 2097152,
+    "pass": false
+  }
+}

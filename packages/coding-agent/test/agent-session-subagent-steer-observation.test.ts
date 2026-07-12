@@ -1,13 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentRegistry, MAIN_AGENT_ID } from "@gajae-code/coding-agent/registry/agent-registry";
-import {
-	AgentSession,
-	type AgentSessionConfig,
-	type AgentSessionEvent,
-} from "@gajae-code/coding-agent/session/agent-session";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { Settings } from "../src/config/settings";
+import { AgentRegistry, MAIN_AGENT_ID } from "../src/registry/agent-registry";
+import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../src/session/agent-session";
+import { SessionManager } from "../src/session/session-manager";
 
 type SteerDetails = {
 	observationId?: string;

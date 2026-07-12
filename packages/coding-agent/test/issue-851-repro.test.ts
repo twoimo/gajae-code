@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadCapability } from "@gajae-code/coding-agent/capability";
-import { clearCache as clearFsCache } from "@gajae-code/coding-agent/capability/fs";
-import { clearClaudePluginRootsCache } from "@gajae-code/coding-agent/discovery/helpers";
-import "@gajae-code/coding-agent/discovery/claude-plugins";
+import { loadCapability } from "../src/capability";
+import { clearCache as clearFsCache } from "../src/capability/fs";
+import { clearClaudePluginRootsCache } from "../src/discovery/helpers";
+import "../src/discovery/claude-plugins";
 import type { MCPServer } from "../src/capability/mcp";
 
 describe("issue-851: marketplace plugins load flat .mcp.json shape", () => {

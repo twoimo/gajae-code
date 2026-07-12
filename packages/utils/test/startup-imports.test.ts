@@ -37,11 +37,20 @@ console.log("ok");
 }
 
 describe("startup imports", () => {
-	it("importing utils does not synchronously load winston or handlebars", async () => {
+	it("importing the utils root does not synchronously load process or native code", async () => {
 		await expect(
-			runBunEval(importProbe("./packages/utils/src/index.ts", ["node_modules/winston", "node_modules/handlebars"]), {
-				GJC_CONFIG_DIR: `.gjc-startup-imports-${Date.now()}`,
-			}),
+			runBunEval(
+				importProbe("@gajae-code/utils", [
+					"packages/utils/src/procmgr",
+					"packages/utils/src/ptree",
+					"packages/natives/native/loader-state",
+					"packages/natives/native/embedded-addon",
+					".node",
+				]),
+				{
+					GJC_CONFIG_DIR: `.gjc-startup-imports-${Date.now()}`,
+				},
+			),
 		).resolves.toContain("ok");
 	});
 

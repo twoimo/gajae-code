@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileLocksGcAdapter } from "@gajae-code/coding-agent/config/file-lock-gc";
+import { fileLocksGcAdapter } from "../src/config/file-lock-gc";
 import {
 	collectGcReport,
 	computeExitCode,
@@ -12,9 +12,9 @@ import {
 	type GcStoreAdapter,
 	gcPidProbe,
 	runGjcGcCommand,
-} from "@gajae-code/coding-agent/gjc-runtime/gc-runtime";
-import { teamWorkersGcAdapter } from "@gajae-code/coding-agent/gjc-runtime/team-gc";
-import { harnessLeasesGcAdapter } from "@gajae-code/coding-agent/harness-control-plane/gc-adapter";
+} from "../src/gjc-runtime/gc-runtime";
+import { teamWorkersGcAdapter } from "../src/gjc-runtime/team-gc";
+import { harnessLeasesGcAdapter } from "../src/harness-control-plane/gc-adapter";
 
 const tempDirs: string[] = [];
 const originalKill = process.kill.bind(process);

@@ -4,13 +4,10 @@ import {
 	isFastLaneRpcCommand,
 	RPC_CANCELLATION_COMMANDS,
 	RPC_SAFE_READ_CONTROL_COMMANDS,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-mode";
-import type { RpcCommand } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import {
-	dispatchRpcCommand,
-	type RpcCommandDispatchContext,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
+} from "../src/modes/rpc/rpc-mode";
+import type { RpcCommand } from "../src/modes/rpc/rpc-types";
+import { dispatchRpcCommand, type RpcCommandDispatchContext } from "../src/modes/shared/agent-wire/command-dispatch";
+import type { AgentSession } from "../src/session/agent-session";
 
 const FAST_LANE_COMMANDS: RpcCommand["type"][] = [
 	// Cancellation (must interrupt in-flight work).

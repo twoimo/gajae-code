@@ -3,14 +3,14 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Args } from "@gajae-code/coding-agent/cli/args";
-import { buildDefaultTmuxLaunchPlan } from "@gajae-code/coding-agent/gjc-runtime/launch-tmux";
+import type { Args } from "../../src/cli/args";
+import { buildDefaultTmuxLaunchPlan } from "../../src/gjc-runtime/launch-tmux";
 import {
 	ensureLaunchWorktree,
 	parseLaunchWorktreeMode,
 	planLaunchWorktree,
 	prepareLaunchWorktree,
-} from "@gajae-code/coding-agent/gjc-runtime/launch-worktree";
+} from "../../src/gjc-runtime/launch-worktree";
 
 const cleanupRoots: string[] = [];
 

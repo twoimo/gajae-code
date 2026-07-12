@@ -95,6 +95,15 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 	selectedToolNames: string[];
 }
 
+/** Persisted built-in discovery selection state for a session branch. */
+export interface DiscoveredToolSelectionEntry extends SessionEntryBase {
+	type: "discovered_tool_selection";
+	/** Format version for independent evolution from MCP discovery selection state. */
+	version: 1;
+	/** Discoverable built-in tool names selected for visibility in discovery mode. */
+	selectedToolNames: string[];
+}
+
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
 	/** Full system prompt sent to the model */
@@ -129,9 +138,9 @@ export type SessionEntry =
 	| LabelEntry
 	| TtsrInjectionEntry
 	| MCPToolSelectionEntry
+	| DiscoveredToolSelectionEntry
 	| SessionInitEntry
-	| ModeChangeEntry
-	| CustomCompactionSessionEntries[keyof CustomCompactionSessionEntries];
+	| ModeChangeEntry;
 
 export interface ReadonlySessionManager {
 	getBranch(leafId?: string | null): SessionEntry[];

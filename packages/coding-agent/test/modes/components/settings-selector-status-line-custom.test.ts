@@ -2,14 +2,14 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { SettingPath } from "@gajae-code/coding-agent/config/settings";
-import { resetSettingsForTest, Settings, settings } from "@gajae-code/coding-agent/config/settings";
+import type { SettingPath } from "../../../src/config/settings";
+import { resetSettingsForTest, Settings, settings } from "../../../src/config/settings";
 import {
 	SettingsSelectorComponent,
 	type StatusLinePreviewSettings,
-} from "@gajae-code/coding-agent/modes/components/settings-selector";
-import { getPreset } from "@gajae-code/coding-agent/modes/components/status-line/presets";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
+} from "../../../src/modes/components/settings-selector";
+import { getPreset } from "../../../src/modes/components/status-line/presets";
+import { initTheme } from "../../../src/modes/theme/theme";
 
 interface ChangedSetting {
 	path: SettingPath;

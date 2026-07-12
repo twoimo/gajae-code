@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseGitUrl } from "@gajae-code/coding-agent/extensibility/plugins/git-url";
+import { parseGitUrl } from "../src/extensibility/plugins/git-url";
 
 describe("parseGitUrl", () => {
 	describe("protocol URLs (accepted without git: prefix)", () => {

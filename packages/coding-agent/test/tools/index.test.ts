@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { type SettingPath, Settings } from "@gajae-code/coding-agent/config/settings";
-import { BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, type ToolSession } from "@gajae-code/coding-agent/tools";
+import { type SettingPath, Settings } from "../../src/config/settings";
+import { BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, type ToolSession } from "../../src/tools";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -129,10 +129,7 @@ describe("createTools", () => {
 
 	it("still exposes eval when python kernel is unavailable (dispatches to js)", async () => {
 		const session = createTestSession();
-		vi.spyOn(
-			await import("@gajae-code/coding-agent/eval/py/kernel"),
-			"checkPythonKernelAvailability",
-		).mockResolvedValue({
+		vi.spyOn(await import("../../src/eval/py/kernel"), "checkPythonKernelAvailability").mockResolvedValue({
 			ok: false,
 			reason: "missing python",
 		});

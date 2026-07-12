@@ -1,14 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-
-import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { CommandController } from "@gajae-code/coding-agent/modes/controllers/command-controller";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import { getWelcomeTranscriptReservedRows } from "@gajae-code/coding-agent/modes/interactive-mode";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { getThemeByName, setThemeInstance, theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
 import { Container, Text } from "@gajae-code/tui";
+import { IrcSplitViewComponent } from "../src/modes/components/irc-sidebar";
+import { CommandController } from "../src/modes/controllers/command-controller";
+import { EventController } from "../src/modes/controllers/event-controller";
+import { getWelcomeTranscriptReservedRows } from "../src/modes/interactive-mode";
+import { IrcObservationLedger } from "../src/modes/irc-observation-ledger";
+import { getThemeByName, setThemeInstance, theme } from "../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../src/modes/types";
+import { UiHelpers } from "../src/modes/utils/ui-helpers";
 
 function createForkContext(fork: () => Promise<boolean>) {
 	const chatContainer = new Container();

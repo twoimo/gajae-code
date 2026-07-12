@@ -3,15 +3,9 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	__setBinaryResolverForTests,
-	clearPsmuxDetectionCache,
-} from "@gajae-code/coding-agent/gjc-runtime/psmux-detect";
-import {
-	buildGjcTmuxExactOptionTarget,
-	buildGjcTmuxExactSessionTarget,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-common";
-import { lifecyclePaths, observeOwnerTerminal } from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation";
+import { __setBinaryResolverForTests, clearPsmuxDetectionCache } from "../../src/gjc-runtime/psmux-detect";
+import { buildGjcTmuxExactOptionTarget, buildGjcTmuxExactSessionTarget } from "../../src/gjc-runtime/tmux-common";
+import { lifecyclePaths, observeOwnerTerminal } from "../../src/gjc-runtime/tmux-owner-isolation";
 import {
 	__setCreateOwnerIsolationForTests,
 	__setMutationServerProofForTests,
@@ -21,7 +15,7 @@ import {
 	listGjcTmuxSessions,
 	removeGjcTmuxSession,
 	statusGjcTmuxSession,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-sessions";
+} from "../../src/gjc-runtime/tmux-sessions";
 
 type SpawnSyncResult = Bun.SyncSubprocess<"pipe", "pipe">;
 type SpawnSyncCommandMock = (command: string[]) => SpawnSyncResult;

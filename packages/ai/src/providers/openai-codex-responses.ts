@@ -26,6 +26,7 @@ import {
 	type Api,
 	type AssistantMessage,
 	type Context,
+	claimAttempt,
 	type FetchImpl,
 	type Model,
 	type ProviderSessionState,
@@ -722,6 +723,7 @@ async function openInitialCodexEventStream(
 		const websocketRetryBudget = getCodexWebSocketRetryBudget(options);
 		let websocketRetries = 0;
 		while (true) {
+			claimAttempt(options?.consumeAttempt, "provider-websocket");
 			try {
 				return await openCodexWebSocketTransport(
 					requestContext,
@@ -849,6 +851,7 @@ async function reopenCodexWebSocketRuntimeStream(
 	runtime: CodexStreamRuntime,
 	state: CodexWebSocketSessionState,
 ): Promise<void> {
+	claimAttempt(context.options?.consumeAttempt, "provider-websocket");
 	try {
 		const next = await openCodexWebSocketTransport(
 			context.requestContext,

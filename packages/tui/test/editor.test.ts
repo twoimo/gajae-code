@@ -16,6 +16,97 @@ describe("Editor component", () => {
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 	});
 
+	describe("range-edit undo parity", () => {
+		it("restores the exact prior state for every editor mutation path", async () => {
+			const snapshots: Array<{ text: string; cursor: { line: number; col: number } }> = [];
+			const undo = (editor: Editor, operation: () => void): void => {
+				snapshots.push({ text: editor.getText(), cursor: editor.getCursor() });
+				operation();
+				editor.handleInput("\x1b[45;5u");
+				expect({ text: editor.getText(), cursor: editor.getCursor() }).toEqual(snapshots.pop()!);
+			};
+			const editorFor = (text: string): Editor => {
+				const editor = new Editor(defaultEditorTheme);
+				editor.setText(text);
+				return editor;
+			};
+
+			const character = editorFor("a");
+			undo(character, () => character.handleInput("b"));
+			const grapheme = editorFor("a");
+			undo(grapheme, () => grapheme.handleInput("🙂"));
+			const newline = editorFor("a");
+			undo(newline, () => newline.handleInput("\n"));
+			const paste = editorFor("a");
+			undo(paste, () => paste.handleInput("\x1b[200~ paste\x1b[201~"));
+			const backspace = editorFor("ab");
+			undo(backspace, () => backspace.handleInput("\x7f"));
+
+			const forwardDelete = editorFor("ab");
+			forwardDelete.handleInput("\x01");
+			undo(forwardDelete, () => forwardDelete.handleInput("\x1b[3~"));
+			const wordKill = editorFor("one two");
+			wordKill.handleInput("\x01");
+			undo(wordKill, () => wordKill.handleInput("\x1bd"));
+			const lineKill = editorFor("line");
+			lineKill.handleInput("\x01");
+			undo(lineKill, () => lineKill.handleInput("\x0b"));
+
+			const yank = editorFor("yank");
+			yank.handleInput("\x01");
+			yank.handleInput("\x0b");
+			yank.setText("");
+			undo(yank, () => yank.handleInput("\x19"));
+			const yankRotation = editorFor("first");
+			yankRotation.handleInput("\x01");
+			yankRotation.handleInput("\x0b");
+			yankRotation.setText("second");
+			yankRotation.handleInput("\x01");
+			yankRotation.handleInput("\x0b");
+			yankRotation.setText("");
+			yankRotation.handleInput("\x19");
+			undo(yankRotation, () => yankRotation.handleInput("\x1by"));
+
+			const imeCommit = editorFor("");
+			undo(imeCommit, () => imeCommit.handleInput("한"));
+			const inlineReplacement = editorFor("");
+			inlineReplacement.setAutocompleteProvider({
+				async getSuggestions() {
+					return null;
+				},
+				trySyncInlineReplace(text) {
+					return text === ":ok:" ? { replaceLen: 4, insert: "✓" } : null;
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+			});
+			inlineReplacement.handleInput(":");
+			inlineReplacement.handleInput("o");
+			inlineReplacement.handleInput("k");
+			undo(inlineReplacement, () => inlineReplacement.handleInput(":"));
+
+			const completion = editorFor("");
+			completion.setAutocompleteProvider({
+				async getSuggestions() {
+					return { items: [{ label: "/help", value: "help" }], prefix: "/" };
+				},
+				applyCompletion(_lines, _cursorLine, _cursorCol) {
+					return { lines: ["/help"], cursorLine: 0, cursorCol: 5 };
+				},
+			});
+			completion.handleInput("/");
+			await Bun.sleep(0);
+			undo(completion, () => completion.handleInput("\t"));
+
+			const history = editorFor("");
+			history.addToHistory("older");
+			history.addToHistory("remembered");
+			history.handleInput("\x1b[A");
+			undo(history, () => history.handleInput("\x1b[A"));
+		});
+	});
+
 	describe("Prompt history navigation", () => {
 		it("does nothing on Up arrow when history is empty", () => {
 			const editor = new Editor(defaultEditorTheme);
@@ -2663,6 +2754,63 @@ describe("Editor component", () => {
 			editor.setPromptGutter("> ");
 			const borderless = stripVTControlCharacters(editor.render(10).join("\n"));
 			expect(borderless).toContain("> ");
+		});
+		it("coalesces adjacent edits and bounds reversible undo bytes", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setText("x".repeat(1024 * 1024));
+			for (let i = 0; i < 10_000; i++) {
+				editor.handleInput("a");
+				const counters = editor.getRetainedMemoryCounters();
+				expect(counters.undoBytes).toBeLessThanOrEqual(counters.documentBytes * 2 + 16 * 1024 * 1024);
+			}
+			const counters = editor.getRetainedMemoryCounters();
+			expect(counters.recordCount).toBeLessThan(10);
+			expect(counters.coalesceCount).toBeGreaterThan(9_000);
+			expect(counters.documentBytes).toBe(1024 * 1024 + 10_000);
+		}, 30_000);
+
+		it("keeps wrapped and layout cache counters aligned with their audit across lifecycle changes", () => {
+			const editor = new Editor(defaultEditorTheme);
+			const expectCountersToMatchAudit = () => {
+				expect(editor.getRetainedMemoryCounters().editorCacheBuckets).toEqual(
+					editor.getRetainedMemoryCounterAudit(),
+				);
+			};
+
+			editor.setText("wrapped cache content ".repeat(12));
+			editor.render(20);
+			const counters = editor.getRetainedMemoryCounters().editorCacheBuckets;
+			expect(counters.wrappedLineBytes).toBeGreaterThan(0);
+			expect(counters.layoutBytes).toBeGreaterThan(0);
+			expectCountersToMatchAudit();
+
+			editor.handleInput("\x1b[D");
+			editor.render(20);
+			expectCountersToMatchAudit();
+
+			editor.invalidate();
+			expectCountersToMatchAudit();
+
+			editor.setText("replacement cache content ".repeat(12));
+			editor.render(20);
+			expectCountersToMatchAudit();
+
+			editor.onSubmit = () => {};
+			editor.handleInput("\r");
+			expect(editor.getRetainedMemoryCounters().editorCacheBuckets).toEqual({ wrappedLineBytes: 0, layoutBytes: 0 });
+			expectCountersToMatchAudit();
+		});
+
+		it("releases reversible undo bytes when replacing or submitting text", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.handleInput("retained");
+			expect(editor.getRetainedMemoryCounters().undoBytes).toBeGreaterThan(0);
+			editor.setText("replacement");
+			expect(editor.getRetainedMemoryCounters().undoBytes).toBe(0);
+			editor.onSubmit = () => {};
+			editor.handleInput("!");
+			editor.handleInput("\r");
+			expect(editor.getRetainedMemoryCounters().undoBytes).toBe(0);
 		});
 	});
 });

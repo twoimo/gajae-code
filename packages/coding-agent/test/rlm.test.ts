@@ -3,19 +3,20 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai/models";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { createEmptyNotebook, readNotebookDocument } from "@gajae-code/coding-agent/edit/notebook";
-import type { CustomTool } from "@gajae-code/coding-agent/extensibility/custom-tools/types";
-import { rlmArtifactRoot } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import * as z from "zod/v4";
+import { Settings } from "../src/config/settings";
+import { createEmptyNotebook, readNotebookDocument } from "../src/edit/notebook";
+import type { CustomTool } from "../src/extensibility/custom-tools/types";
+import { rlmArtifactRoot } from "../src/gjc-runtime/session-layout";
 import {
 	ensureRlmSessionDir,
 	generateRlmSessionId,
 	isValidRlmSessionId,
 	resolveRlmArtifactPaths,
-} from "@gajae-code/coding-agent/rlm/artifacts";
-import { loadRlmDataContext } from "@gajae-code/coding-agent/rlm/data-context";
-import { buildRlmGoalObjective, createRlmPreset, ensureRlmGjcSessionId } from "@gajae-code/coding-agent/rlm/index";
-import { RlmNotebookWriter } from "@gajae-code/coding-agent/rlm/notebook";
+} from "../src/rlm/artifacts";
+import { loadRlmDataContext } from "../src/rlm/data-context";
+import { buildRlmGoalObjective, createRlmPreset, ensureRlmGjcSessionId } from "../src/rlm/index";
+import { RlmNotebookWriter } from "../src/rlm/notebook";
 import {
 	assertRlmToolAllowlist,
 	buildRlmSystemPrompt,
@@ -23,16 +24,12 @@ import {
 	RLM_READ_ONLY_BASH_PREFIXES,
 	RLM_RESEARCH_PROMPT,
 	RLM_TOOL_ALLOWLIST,
-} from "@gajae-code/coding-agent/rlm/preset";
-import { synthesizeRlmReport } from "@gajae-code/coding-agent/rlm/report";
-import type { RlmCellResult } from "@gajae-code/coding-agent/rlm/types";
-import { type CreateAgentSessionOptions, createAgentSession } from "@gajae-code/coding-agent/sdk";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import {
-	checkBashAllowedPrefixes,
-	normalizeReadOnlyBashCommand,
-} from "@gajae-code/coding-agent/tools/bash-allowed-prefixes";
-import * as z from "zod/v4";
+} from "../src/rlm/preset";
+import { synthesizeRlmReport } from "../src/rlm/report";
+import type { RlmCellResult } from "../src/rlm/types";
+import { type CreateAgentSessionOptions, createAgentSession } from "../src/sdk";
+import { SessionManager } from "../src/session/session-manager";
+import { checkBashAllowedPrefixes, normalizeReadOnlyBashCommand } from "../src/tools/bash-allowed-prefixes";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 let tmp: string;

@@ -14,21 +14,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { readNotebookDocument } from "@gajae-code/coding-agent/edit/notebook";
-import { disposeKernelSessionsByOwner } from "@gajae-code/coding-agent/eval/py/executor";
-import {
-	ensureRlmSessionDir,
-	generateRlmSessionId,
-	resolveRlmArtifactPaths,
-} from "@gajae-code/coding-agent/rlm/artifacts";
-import { loadRlmDataContext } from "@gajae-code/coding-agent/rlm/data-context";
-import { createRlmPreset } from "@gajae-code/coding-agent/rlm/index";
-import { RlmNotebookWriter } from "@gajae-code/coding-agent/rlm/notebook";
-import { assertRlmToolAllowlist } from "@gajae-code/coding-agent/rlm/preset";
-import { createRlmPythonTool } from "@gajae-code/coding-agent/rlm/python-tool";
-import { synthesizeRlmReport } from "@gajae-code/coding-agent/rlm/report";
-import { type CreateAgentSessionOptions, createAgentSession } from "@gajae-code/coding-agent/sdk";
+import { Settings } from "../src/config/settings";
+import { readNotebookDocument } from "../src/edit/notebook";
+import { disposeKernelSessionsByOwner } from "../src/eval/py/executor";
+import { ensureRlmSessionDir, generateRlmSessionId, resolveRlmArtifactPaths } from "../src/rlm/artifacts";
+import { loadRlmDataContext } from "../src/rlm/data-context";
+import { createRlmPreset } from "../src/rlm/index";
+import { RlmNotebookWriter } from "../src/rlm/notebook";
+import { assertRlmToolAllowlist } from "../src/rlm/preset";
+import { createRlmPythonTool } from "../src/rlm/python-tool";
+import { synthesizeRlmReport } from "../src/rlm/report";
+import { type CreateAgentSessionOptions, createAgentSession } from "../src/sdk";
 
 const LIVE = process.env.GJC_RLM_LIVE === "1";
 const SALES_CSV = "region,amount\nnorth,100\nnorth,150\nsouth,200\nsouth,50\neast,300\n";

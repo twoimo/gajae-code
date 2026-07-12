@@ -1,4 +1,4 @@
-import type { ptree } from "@gajae-code/utils";
+import type * as ptree from "@gajae-code/utils/ptree";
 import * as z from "zod/v4";
 import type { OwnedProcess } from "../runtime/process-lifecycle";
 

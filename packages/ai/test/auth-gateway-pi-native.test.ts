@@ -1,13 +1,23 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { registerCustomApi, unregisterCustomApis } from "../src/api-registry";
+import { gatewayAttemptController, startAuthGateway } from "../src/auth-gateway/server";
+import type { AuthGatewayServerHandle } from "../src/auth-gateway/types";
+import type { AuthStorage } from "../src/auth-storage";
 import { Effort } from "../src/model-thinking";
+import { streamPiNative } from "../src/providers/pi-native-client";
 import { encodeStream, formatError, parseRequest } from "../src/providers/pi-native-server";
 import type {
+	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	Context,
+	Model,
+	SimpleStreamOptions,
 	Usage,
 } from "../src/types";
+import { AttemptBudgetExceededError } from "../src/types";
+import { AssistantMessageEventStream as EventStream } from "../src/utils/event-stream";
 
 function makeEventStream(events: AssistantMessageEvent[], final: AssistantMessage): AssistantMessageEventStream {
 	async function* iter() {
@@ -64,6 +74,69 @@ const baseContext: Context = {
 	systemPrompt: ["you are helpful"],
 	messages: [{ role: "user", content: "hi", timestamp: 0 }],
 };
+
+const GATEWAY_TEST_API = "auth-gateway-pi-native-test" as Api;
+const GATEWAY_TEST_SOURCE = "auth-gateway-pi-native-test";
+
+function gatewayTestModel(overrides: Partial<Model<Api>> = {}): Model<Api> {
+	return {
+		id: "gateway-test-model",
+		name: "gateway-test-model",
+		api: GATEWAY_TEST_API,
+		provider: "gateway-test-provider",
+		baseUrl: "mock://gateway-test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1024,
+		maxTokens: 1024,
+		...overrides,
+	};
+}
+
+function trackedAttemptController(turnBudgetId: string, maxAttempts: number): SimpleStreamOptions["consumeAttempt"] {
+	let remainingAttempts = maxAttempts;
+	return Object.assign(
+		() => {
+			if (remainingAttempts <= 0) throw new AttemptBudgetExceededError("attempts", "local attempt budget exhausted");
+			remainingAttempts -= 1;
+		},
+		{
+			snapshot: () => ({ turnBudgetId, remainingAttempts, remainingDurationMs: 60_000, maxAttempts }),
+			// Production-equivalent monotonic reconciliation: remote metadata can
+			// never restore locally consumed budget, and mismatched turn identity
+			// or attempt maxima are ignored.
+			reconcile: (snapshot: { turnBudgetId?: string; remainingAttempts: number; maxAttempts?: number }) => {
+				if (snapshot.turnBudgetId !== undefined && snapshot.turnBudgetId !== turnBudgetId) return;
+				if (snapshot.maxAttempts !== undefined && snapshot.maxAttempts !== maxAttempts) return;
+				remainingAttempts = Math.min(remainingAttempts, snapshot.remainingAttempts);
+			},
+		},
+	);
+}
+
+async function withPiNativeGateway(
+	storage: AuthStorage,
+	resolveModel: () => Model<Api>,
+	fn: (gateway: AuthGatewayServerHandle) => Promise<void>,
+): Promise<void> {
+	const gateway = startAuthGateway({
+		bind: "127.0.0.1:0",
+		bearerTokens: ["test-token"],
+		version: "test",
+		storage,
+		resolveModel,
+	});
+	try {
+		await fn(gateway);
+	} finally {
+		await gateway.close();
+	}
+}
+
+afterEach(() => {
+	unregisterCustomApis(GATEWAY_TEST_SOURCE);
+});
 
 describe("pi-native parseRequest", () => {
 	it("accepts modelId + context and returns canonical shape", () => {
@@ -179,6 +252,182 @@ describe("pi-native parseRequest", () => {
 		expect("temperature" in parsed.options).toBe(false);
 		expect("topP" in parsed.options).toBe(false);
 		expect(parsed.options.maxTokens).toBe(100);
+	});
+});
+
+describe("pi-native gateway turn authority", () => {
+	const envelope = (turnBudgetId: string, remainingAttempts: number, maxAttempts: number) => ({
+		turnBudgetId,
+		remainingAttempts,
+		remainingDurationMs: 60_000,
+		maxAttempts,
+		outerReservationId: crypto.randomUUID(),
+	});
+
+	function composedRequests(max: number, requests: readonly number[]): { physical: number; denied: number } {
+		const turnBudgetId = crypto.randomUUID();
+		let physical = 0;
+		let denied = 0;
+		for (const innerClaims of requests) {
+			try {
+				const controller = gatewayAttemptController(envelope(turnBudgetId, max, max));
+				physical += 1;
+				for (let i = 0; i < innerClaims; i += 1) {
+					controller?.("provider-http");
+					physical += 1;
+				}
+			} catch {
+				denied += 1;
+			}
+		}
+		return { physical, denied };
+	}
+
+	it("denies at 0 before upstream activity", () => {
+		expect(composedRequests(0, [1])).toEqual({ physical: 0, denied: 1 });
+	});
+
+	it("spends one attempt on the outer admission", () => {
+		expect(composedRequests(1, [1])).toEqual({ physical: 1, denied: 1 });
+	});
+
+	it("composes outer, credential, provider, and reconnect claims up to max", () => {
+		expect(composedRequests(4, [3])).toEqual({ physical: 4, denied: 0 });
+	});
+
+	it("denies max+1 inner activity before it becomes physical", () => {
+		expect(composedRequests(4, [4])).toEqual({ physical: 4, denied: 1 });
+	});
+
+	it("allows repeated outer retries after inner claims without exceeding max", () => {
+		expect(composedRequests(4, [1, 0, 1])).toEqual({ physical: 4, denied: 1 });
+	});
+
+	it("rejects replayed reservations but not stale client remaining snapshots", () => {
+		const turnBudgetId = crypto.randomUUID();
+		const first = envelope(turnBudgetId, 3, 3);
+		gatewayAttemptController(first);
+		expect(() => gatewayAttemptController(first)).toThrow(/replayed/);
+		expect(() => gatewayAttemptController(envelope(turnBudgetId, 3, 3))).not.toThrow();
+	});
+});
+
+describe("pi-native gateway production composition", () => {
+	it("reconciles admitted errors and SSE authority across shared outer and inner claims", async () => {
+		let storageFails = false;
+		let credentialActivity = 0;
+		let providerActivity = 0;
+		registerCustomApi(
+			GATEWAY_TEST_API,
+			(_model, _context, options) => {
+				options?.consumeAttempt?.("provider-http");
+				providerActivity += 1;
+				const stream = new EventStream();
+				queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: baseAssistant() }));
+				return stream;
+			},
+			GATEWAY_TEST_SOURCE,
+		);
+		const storage = {
+			getApiKey: (_provider: string, _credential: undefined, options?: SimpleStreamOptions) => {
+				options?.consumeAttempt?.("credential-refresh");
+				if (storageFails) throw new Error("unsupported gateway test option");
+				credentialActivity += 1;
+				return "test-key";
+			},
+		} as unknown as AuthStorage;
+		const gatewayModel = gatewayTestModel();
+
+		await withPiNativeGateway(
+			storage,
+			() => gatewayModel,
+			async gateway => {
+				const clientModel = gatewayTestModel({ baseUrl: gateway.url, transport: "pi-native" });
+				const controller = trackedAttemptController(crypto.randomUUID(), 6);
+				let clientFetches = 0;
+				const countingFetch: NonNullable<SimpleStreamOptions["fetch"]> = (input, init) => {
+					clientFetches += 1;
+					return fetch(input, init);
+				};
+
+				// A fresh equality envelope (remaining === max) is admitted. Each pass
+				// spends gateway outer admission plus credential and provider activity.
+				await streamPiNative(clientModel, baseContext, {
+					apiKey: "test-token",
+					consumeAttempt: controller,
+					fetch: countingFetch,
+				}).result();
+				// The reconciled snapshot proves the real SSE gateway_authority trailer
+				// reached and updated the client controller: 6 local minus gateway
+				// admission + credential + provider = 3.
+				expect(controller?.snapshot?.().remainingAttempts).toBe(3);
+				await streamPiNative(clientModel, baseContext, {
+					apiKey: "test-token",
+					consumeAttempt: controller,
+					fetch: countingFetch,
+				}).result();
+				expect(controller?.snapshot?.().remainingAttempts).toBe(0);
+				expect({ credentialActivity, providerActivity, clientFetches }).toEqual({
+					credentialActivity: 2,
+					providerActivity: 2,
+					clientFetches: 2,
+				});
+
+				// The third outer retry is denied locally from the authoritative SSE
+				// trailer snapshot, before any HTTP activity, let alone provider work.
+				await expect(
+					streamPiNative(clientModel, baseContext, {
+						apiKey: "test-token",
+						consumeAttempt: controller,
+						fetch: countingFetch,
+					}).result(),
+				).rejects.toThrow(/attempt budget exhausted/);
+				expect(clientFetches).toBe(2);
+				expect(providerActivity).toBe(2);
+
+				// Replaying an admitted reservation is rejected at the real HTTP route.
+				const replayEnvelope = {
+					turnBudgetId: crypto.randomUUID(),
+					remainingAttempts: 3,
+					remainingDurationMs: 60_000,
+					maxAttempts: 3,
+					outerReservationId: crypto.randomUUID(),
+				};
+				const replayBody = JSON.stringify({
+					modelId: gatewayModel.id,
+					context: baseContext,
+					attemptBudget: replayEnvelope,
+					stream: true,
+				});
+				const replayHeaders = { Authorization: "Bearer test-token", "Content-Type": "application/json" };
+				const first = await fetch(`${gateway.url}/v1/pi/stream`, {
+					method: "POST",
+					headers: replayHeaders,
+					body: replayBody,
+				});
+				await first.body?.cancel();
+				const replay = await fetch(`${gateway.url}/v1/pi/stream`, {
+					method: "POST",
+					headers: replayHeaders,
+					body: replayBody,
+				});
+				expect(replay.status).toBe(400);
+				expect(await replay.text()).toContain("replayed outer reservation");
+
+				// An admitted pre-stream credential failure carries the authority header,
+				// so the pi-native client reconciles before surfacing the error.
+				storageFails = true;
+				const failedController = trackedAttemptController(crypto.randomUUID(), 3);
+				await expect(
+					streamPiNative(clientModel, baseContext, {
+						apiKey: "test-token",
+						consumeAttempt: failedController,
+					}).result(),
+				).rejects.toThrow(/unsupported gateway test option/);
+				const snapshot = failedController?.snapshot?.();
+				expect(snapshot?.remainingAttempts).toBe(1);
+			},
+		);
 	});
 });
 describe("pi-native encodeStream", () => {

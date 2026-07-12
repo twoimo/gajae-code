@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-	BUILTIN_MODEL_PROFILES,
-	mergeModelProfiles,
-	resolveProfileBindings,
-} from "@gajae-code/coding-agent/config/model-profiles";
-import { ModelsConfigSchema, ProfileModelSelectorSchema } from "@gajae-code/coding-agent/config/models-config-schema";
+import { BUILTIN_MODEL_PROFILES, mergeModelProfiles, resolveProfileBindings } from "../src/config/model-profiles";
+import { ModelsConfigSchema, ProfileModelSelectorSchema } from "../src/config/models-config-schema";
 
 function issuePaths(error: { issues: Array<{ path: PropertyKey[] }> }): string[] {
 	return error.issues.map(issue => issue.path.join("."));

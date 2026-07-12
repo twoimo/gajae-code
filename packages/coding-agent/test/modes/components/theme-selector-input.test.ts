@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import { resetSettingsForTest, Settings, settings } from "@gajae-code/coding-agent/config/settings";
-import { ThemeSelectorComponent } from "@gajae-code/coding-agent/modes/components/theme-selector";
-import { SelectorController } from "@gajae-code/coding-agent/modes/controllers/selector-controller";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
+import { resetSettingsForTest, Settings, settings } from "../../../src/config/settings";
+import { ThemeSelectorComponent } from "../../../src/modes/components/theme-selector";
+import { SelectorController } from "../../../src/modes/controllers/selector-controller";
+import { initTheme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
 
 const THEMES = ["red-claw", "blue-crab"];
 

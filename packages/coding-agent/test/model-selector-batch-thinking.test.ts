@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import { Effort, type Model } from "@gajae-code/ai";
-import type { GjcModelAssignmentTargetId, ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { ModelSelectorComponent } from "@gajae-code/coding-agent/modes/components/model-selector";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { TUI } from "@gajae-code/tui";
+import type { GjcModelAssignmentTargetId, ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { ModelSelectorComponent } from "../src/modes/components/model-selector";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 
 const DOWN = "\x1b[B";
 

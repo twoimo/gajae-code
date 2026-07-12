@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { pruneStaleFileMentions } from "@gajae-code/coding-agent/session/file-mention-pruning";
-import type { SessionEntry } from "@gajae-code/coding-agent/session/session-manager";
+import { pruneStaleFileMentions } from "../../src/session/file-mention-pruning";
+import type { SessionEntry } from "../../src/session/session-manager";
 
 const resolveAbs = (p: string) => (p.startsWith("/") ? p : `/cwd/${p}`);
 

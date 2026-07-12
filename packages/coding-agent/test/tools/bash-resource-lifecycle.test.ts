@@ -2,18 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AsyncJobManager } from "@gajae-code/coding-agent/async";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import {
-	disposeAllShellSessions,
-	executeBash,
-	getShellSessionCount,
-} from "@gajae-code/coding-agent/exec/bash-executor";
-import { ArtifactManager } from "@gajae-code/coding-agent/session/artifacts";
-import { DEFAULT_ARTIFACT_MAX_BYTES, OutputSink } from "@gajae-code/coding-agent/session/streaming-output";
-import { BashTool, type ToolSession } from "@gajae-code/coding-agent/tools";
 import type { Shell } from "@gajae-code/natives";
 import * as piNatives from "@gajae-code/natives";
+import { AsyncJobManager } from "../../src/async";
+import { resetSettingsForTest, Settings } from "../../src/config/settings";
+import { disposeAllShellSessions, executeBash, getShellSessionCount } from "../../src/exec/bash-executor";
+import { ArtifactManager } from "../../src/session/artifacts";
+import { DEFAULT_ARTIFACT_MAX_BYTES, OutputSink } from "../../src/session/streaming-output";
+import type { ToolSession } from "../../src/tools";
+import { BashTool } from "../../src/tools/bash";
 
 function makeTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "gjc-bash-lifecycle-"));
@@ -173,7 +170,7 @@ describe("bash resource lifecycle", () => {
 		const artifact = fs.readFileSync(artifactPath, "utf8");
 
 		expect(summary.artifactId).toBe("cap");
-		expect(summary.artifactTruncatedBytes).toBeGreaterThan(0);
+		expect(summary.artifactOmittedBytes).toBeGreaterThan(0);
 		expect(artifact).toContain("artifact truncated after 16 bytes");
 		expect(Buffer.byteLength(artifact, "utf8")).toBeLessThan(DEFAULT_ARTIFACT_MAX_BYTES);
 		expect(artifact.length).toBeLessThan(120);
@@ -261,7 +258,7 @@ describe("bash resource lifecycle", () => {
 			allocateOutputArtifact: (toolType: string) => artifacts.allocatePath(toolType),
 		} as unknown as ToolSession;
 		const originalText = "x".repeat(DEFAULT_ARTIFACT_MAX_BYTES + 1024);
-		const bashModule = await import("@gajae-code/coding-agent/tools/bash");
+		const bashModule = await import("../../src/tools/bash");
 		const artifactId = await bashModule.saveBashOriginalArtifactForTests(session, originalText);
 
 		expect(artifactId).toBeString();

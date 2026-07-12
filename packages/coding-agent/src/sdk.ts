@@ -53,11 +53,13 @@ import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import type { BashRestrictionProfile } from "./tools/bash-allowed-prefixes";
+import { registerToolCapability, transferToolCapability } from "./tools/capabilities";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import { getEmbeddedDefaultGjcSkills } from "./defaults/gjc-defaults";
 import { BUNDLED_GROK_BUILD_EXTENSION_ID, getBundledGrokBuildExtensionFactory } from "./defaults/gjc-grok-cli";
 import { initializeWithSettings } from "./discovery";
+import { EditTool } from "./edit";
 import { disposeAllVmContexts, disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
 import { TtsrManager } from "./export/ttsr";
@@ -88,6 +90,7 @@ import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "./ex
 import type { FileSlashCommand } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
+import { discoverStartupLspServers, type LspStartupServerInfo, warmupLspServers } from "./lsp";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import { resolveMemoryBackend } from "./memory-backend";
 import { createNotificationsExtension } from "./notifications";
@@ -130,41 +133,37 @@ import {
 	isMCPToolName,
 } from "./tool-discovery/tool-index";
 import {
-	applyConfiguredSearchTimeout,
-	BashTool,
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
 	createTools,
-	discoverStartupLspServers,
-	EditTool,
-	EvalTool,
-	FindTool,
-	getConfiguredSearchProviderPreference,
-	getSearchTools,
 	HIDDEN_TOOLS,
-	isConfigurableSearchProviderId,
-	type LspStartupServerInfo,
-	loadSshTool,
-	ReadTool,
-	ResolveTool,
-	renderSearchToolBm25Description,
-	SearchTool,
-	setPreferredImageProvider,
-	setPreferredSearchProvider,
-	setSearchFallbackProviders,
 	type Tool,
 	type ToolSession,
-	WebSearchTool,
-	WriteTool,
-	warmupLspServers,
 } from "./tools";
+import { BashTool } from "./tools/bash";
 import { ToolContextStore } from "./tools/context";
-import { getImageGenTools } from "./tools/image-gen";
+import { EvalTool } from "./tools/eval";
+import { FindTool } from "./tools/find";
+import { getImageGenTools, setPreferredImageProvider } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
+import { ReadTool } from "./tools/read";
+import { ResolveTool } from "./tools/resolve";
+import { SearchTool } from "./tools/search";
+import { renderSearchToolBm25Description } from "./tools/search-tool-bm25";
+import { loadSshTool } from "./tools/ssh";
 import { guardToolForUltragoalAsk } from "./tools/ultragoal-ask-guard";
+import { WriteTool } from "./tools/write";
 import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice, buildNamedToolChoiceResult } from "./utils/tool-choice";
-import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
+import { getSearchTools, WebSearchTool } from "./web/search";
+import {
+	getConfiguredSearchProviderPreference,
+	setPreferredSearchProvider,
+	setSearchFallbackProviders,
+} from "./web/search/provider";
+import { applyConfiguredSearchTimeout } from "./web/search/providers/utils";
+import { isConfigurableSearchProviderId } from "./web/search/types";
+import { buildWorkspaceTree, createEmptyWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type AsyncResultEntry = {
 	jobId: string;
@@ -269,6 +268,8 @@ function resolveAgentRosterLabel(label: string | undefined, agentId: string, dis
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
+	/** Marks a client-driven/non-interactive session for retry safety policy. */
+	unattended?: boolean;
 	/** Global config directory. Default: ~/.gjc/agent */
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
@@ -429,6 +430,8 @@ export type { CustomTool, CustomToolFactory } from "./extensibility/custom-tools
 export type * from "./extensibility/extensions";
 export type { Skill } from "./extensibility/skills";
 export type { FileSlashCommand } from "./extensibility/slash-commands";
+export { computeLineHash } from "./hashline/hash";
+export { formatSessionDumpText } from "./session/session-dump-format";
 export type { Tool } from "./tools";
 export { buildDirectoryTree, buildWorkspaceTree, type DirectoryTree, type WorkspaceTree } from "./workspace-tree";
 
@@ -1211,36 +1214,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		return { ttsrManager, rulebookRules, alwaysApplyRules };
 	});
 
-	// Resolve contextFiles up-front (it's needed before tool creation). The
-	// workspace tree scan is slow on large repos and we MUST NOT block startup on
-	// it. On timeout we forward `undefined` to ToolSession; buildSystemPromptInternal
-	// will re-race the same promise through its own withDeadline path. Background
-	// work continues so caches still warm.
-	const raceWithDeadline = async <T>(name: string, work: Promise<T>): Promise<T | undefined> => {
-		let timedOut = false;
-		const result = await Promise.race([
-			work,
-			Bun.sleep(STARTUP_SCAN_DEADLINE_MS).then(() => {
-				timedOut = true;
-				return undefined;
-			}),
-		]);
-		if (timedOut) {
-			logger.warn("Startup scan exceeded deadline; deferring to system prompt fallback", {
-				name,
-				timeoutMs: STARTUP_SCAN_DEADLINE_MS,
-				cwd,
-			});
-		}
-		return result;
-	};
-	const [contextFiles, resolvedWorkspaceTree] = await Promise.all([
-		contextFilesPromise,
-		raceWithDeadline("buildWorkspaceTree", workspaceTreePromise),
-	]);
+	let session!: AgentSession;
+	// Start the repository scan without awaiting it. The first shell/frame and
+	// session construction use a cheap empty snapshot; the completed tree is
+	// published atomically for the next volatile context injection below.
+	let resolvedWorkspaceTree = options.workspaceTree ?? createEmptyWorkspaceTree(cwd);
+	const contextFiles = await contextFilesPromise;
 
 	let agent: Agent;
-	let session!: AgentSession;
 	let hasSession = false;
 	let hasRegistered = false;
 	const enableLsp = options.enableLsp ?? true;
@@ -1498,6 +1479,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					sessionId: logicalSessionId,
 					parent: skill.name,
 				});
+				if (!phase) continue;
 				const pluginTools = await loadActiveSubskillTools({
 					cwd,
 					sessionId: logicalSessionId,
@@ -1829,6 +1811,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const toolRegistry = new Map<string, Tool>();
 		for (const tool of builtinTools) {
 			toolRegistry.set(tool.name, tool);
+			registerToolCapability(tool, "builtin", tool.name);
 		}
 		const goalStateToolNames = ["goal"] as const;
 		if (settings.get("goal.enabled")) {
@@ -1836,16 +1819,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				if (toolRegistry.has(name)) continue;
 				const goalStateTool = await logger.time(`createTools:${name}:session`, BUILTIN_TOOLS[name], toolSession);
 				if (goalStateTool) {
-					toolRegistry.set(goalStateTool.name, wrapToolWithMetaNotice(goalStateTool));
+					const wrappedGoalStateTool = wrapToolWithMetaNotice(goalStateTool);
+					registerToolCapability(wrappedGoalStateTool, "builtin", goalStateTool.name);
+					toolRegistry.set(wrappedGoalStateTool.name, wrappedGoalStateTool);
 				}
 			}
 		}
 		for (const tool of wrappedExtensionTools) {
 			toolRegistry.set(tool.name, tool);
+			registerToolCapability(tool, "plugin");
 		}
 		if (extensionRunner) {
 			for (const tool of toolRegistry.values()) {
-				toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
+				const wrapped = new ExtensionToolWrapper(tool, extensionRunner);
+				transferToolCapability(tool, wrapped);
+				toolRegistry.set(tool.name, wrapped);
 			}
 		}
 		if (model?.provider === "cursor") {
@@ -1858,7 +1846,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		} else if (!toolRegistry.has("resolve")) {
 			const resolveTool = await logger.time("createTools:resolve:session", HIDDEN_TOOLS.resolve, toolSession);
 			if (resolveTool) {
-				toolRegistry.set(resolveTool.name, wrapToolWithMetaNotice(resolveTool));
+				const wrappedResolveTool = wrapToolWithMetaNotice(resolveTool);
+				registerToolCapability(wrappedResolveTool, "builtin", resolveTool.name);
+				toolRegistry.set(wrappedResolveTool.name, wrappedResolveTool);
 			}
 		}
 
@@ -1870,13 +1860,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			})) as unknown as AgentTool | null;
 			if (!sshTool) return null;
 			const wrapped = wrapToolWithMetaNotice(sshTool);
-			return (extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped) as AgentTool;
+			registerToolCapability(wrapped, "builtin", sshTool.name);
+			if (!extensionRunner) return wrapped;
+			const extensionWrapped = new ExtensionToolWrapper(wrapped, extensionRunner);
+			transferToolCapability(wrapped, extensionWrapped);
+			return extensionWrapped as AgentTool;
 		};
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
 		const cursorExecHandlers = new CursorExecHandlers({
 			cwd,
-			tools: toolRegistry,
+			resolveTool: name => session?.getPreparedToolForExecution(name),
 			getToolContext: () => toolContextStore.getContext(),
 			emitEvent: event => cursorEventEmitter?.(event),
 			createEventEmitter: () => agent.createExternalEventEmitterForCurrentRun(),
@@ -1967,7 +1961,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					.sort((a, b) => a.name.localeCompare(b.name)),
 				eagerTasks,
 				secretsEnabled,
-				workspaceTree: workspaceTreePromise,
+				workspaceTree: resolvedWorkspaceTree,
 				subagent: options.parentTaskPrefix !== undefined,
 			});
 
@@ -2011,6 +2005,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const discoveryDefaultServerToolNames: string[] = [];
 		let initialSelectedMCPToolNames: string[] = [];
 		let defaultSelectedMCPToolNames: string[] = [];
+		let initialSelectedDiscoveredBuiltinToolNames: string[] = [];
 		if (mcpDiscoveryEnabled) {
 			const defaultServerNames = new Set(settings.get("mcp.discoveryDefaultServers") ?? []);
 			for (const tool of toolRegistry.values()) {
@@ -2043,6 +2038,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				]),
 			];
 		}
+		if (effectiveDiscoveryMode === "all" && existingSession.hasPersistedDiscoveredToolSelection) {
+			initialSelectedDiscoveredBuiltinToolNames = existingSession.selectedDiscoveredBuiltinToolNames.filter(name => {
+				const tool = toolRegistry.get(name);
+				return !name.startsWith("mcp__") && tool?.loadMode === "discoverable";
+			});
+			initialToolNames = [...new Set([...initialToolNames, ...initialSelectedDiscoveredBuiltinToolNames])];
+		}
 
 		// Custom tools and extension-registered tools are always included regardless of toolNames filter
 		const alwaysInclude: string[] = [
@@ -2064,9 +2066,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (effectiveDiscoveryMode === "all") {
 			const essentialBuiltinNames = new Set(computeEssentialBuiltinNames(settings));
 			const explicitlyRequestedToolNames = new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []);
-			// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
-			// activation persistence is a follow-up). MCP names won't collide with built-in names.
-			const restoredDiscoveredNames = new Set(existingSession.selectedMCPToolNames);
+			const restoredDiscoveredNames = new Set(existingSession.selectedDiscoveredBuiltinToolNames);
 			initialToolNames = initialToolNames.filter(name => {
 				const tool = toolRegistry.get(name);
 				if (!tool?.loadMode) return true; // not a built-in — leave MCP/custom/extension to existing logic
@@ -2176,6 +2176,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						activeSkillState: session?.getActiveSkillState(),
 						sessionId: sessionManager.getSessionId?.() ?? null,
 					}),
+					transferToolCapability,
 				),
 			);
 
@@ -2248,10 +2249,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			shouldPause: options.shouldPause,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
-			getApiKey: async provider => {
+			getApiKey: async (provider, consumeAttempt) => {
 				// Read agent.sessionId at call time so credential selection stays aligned
 				// with metadataResolver after /new, fork, resume, or branch switches.
-				const key = await modelRegistry.getApiKeyForProvider(provider, agent.providerSessionId ?? agent.sessionId);
+				const key = await modelRegistry.getApiKeyForProvider(
+					provider,
+					agent.providerSessionId ?? agent.sessionId,
+					undefined,
+					{
+						consumeAttempt,
+					},
+				);
 				if (!key) {
 					throw new Error(`No API key found for provider "${provider}"`);
 				}
@@ -2271,7 +2279,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							provider,
 							error: error instanceof Error ? error.message : String(error),
 						});
-						return modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+						return modelRegistry.getApiKeyForProvider(provider, agent.sessionId, undefined, {
+							consumeAttempt: streamOptions?.consumeAttempt,
+						});
 					},
 				}),
 			cursorExecHandlers,
@@ -2337,6 +2347,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel,
 			sessionManager,
 			settings,
+			unattended: options.unattended,
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).
 			// AgentSession uses this to decide whether it may dispose the global
@@ -2384,6 +2395,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				: undefined,
 			mcpDiscoveryEnabled,
 			initialSelectedMCPToolNames,
+			initialSelectedDiscoveredBuiltinToolNames,
 			defaultSelectedMCPToolNames,
 			persistInitialMCPToolSelection: !hasExistingSession,
 			defaultSelectedMCPServerNames: settings.get("mcp.discoveryDefaultServers") ?? [],
@@ -2397,6 +2409,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			providerSessionState: options.providerSessionState,
 		});
 		hasSession = true;
+		void workspaceTreePromise
+			.then(async tree => {
+				resolvedWorkspaceTree = tree;
+				await session.setWorkspaceTree(tree);
+			})
+			.catch(error => {
+				logger.warn("Failed to publish startup workspace context", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => asyncJobManager.isDeliverySuppressed(entry.jobId),

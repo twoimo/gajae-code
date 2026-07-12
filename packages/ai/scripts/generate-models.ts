@@ -451,6 +451,15 @@ async function generateModels() {
 	// Generate JSON file
 	await Bun.write(path.join(packageRoot, "src/models.json"), JSON.stringify(MODELS, null, "	"));
 	console.log("Generated src/models.json");
+	const providerHeaderSource = `import type { KnownProvider } from "./types";\n\n/** Generated compact provider index. Run \`bun run generate-models\` to update. */\nexport const BUNDLED_PROVIDER_HEADERS = [\n${Object.keys(
+		MODELS,
+	)
+		.map(provider => `\t${JSON.stringify(provider)},`)
+		.join(
+			"\n",
+		)}\n] as const satisfies readonly KnownProvider[];\n\nexport type BundledProviderHeader = (typeof BUNDLED_PROVIDER_HEADERS)[number];\n`;
+	await Bun.write(path.join(packageRoot, "src/model-headers.ts"), providerHeaderSource);
+	console.log("Generated src/model-headers.ts");
 
 	// Print statistics
 	const totalModels = allModels.length;

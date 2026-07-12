@@ -1,16 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import {
-	disposeAllKernelSessions,
-	disposeKernelSessionsByOwner,
-	executePython,
-} from "@gajae-code/coding-agent/eval/py/executor";
+import { disposeAllKernelSessions, disposeKernelSessionsByOwner, executePython } from "../../src/eval/py/executor";
 import type {
 	KernelExecuteResult,
 	KernelShutdownResult,
 	PythonKernel as PythonKernelInstance,
-} from "@gajae-code/coding-agent/eval/py/kernel";
-import * as pythonKernel from "@gajae-code/coding-agent/eval/py/kernel";
-import { PythonKernel } from "@gajae-code/coding-agent/eval/py/kernel";
+} from "../../src/eval/py/kernel";
+import * as pythonKernel from "../../src/eval/py/kernel";
+import { PythonKernel } from "../../src/eval/py/kernel";
 
 const OK_RESULT: KernelExecuteResult = {
 	status: "ok",

@@ -3,11 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Effort, type Model, type OpenAICompat, type ThinkingConfig, writeModelCache } from "@gajae-code/ai";
-import { kNoAuth, MODEL_ROLE_IDS, ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { addApiCompatibleProvider } from "@gajae-code/coding-agent/setup/provider-onboarding";
 import { $credentialEnv, hookFetch, Snowflake } from "@gajae-code/utils";
+import { kNoAuth, MODEL_ROLE_IDS, ModelRegistry } from "../src/config/model-registry";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { AuthStorage } from "../src/session/auth-storage";
+import { addApiCompatibleProvider } from "../src/setup/provider-onboarding";
 
 describe("model roles", () => {
 	test("default is the only built-in model role", () => {

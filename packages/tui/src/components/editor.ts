@@ -1,4 +1,10 @@
-import { getProjectDir, logger, onDefaultTabWidthChange } from "@gajae-code/utils";
+import {
+	getProjectDir,
+	logger,
+	onDefaultTabWidthChange,
+	type RetainedMemoryRegistration,
+	type RetainedMemoryRegistryFacade,
+} from "@gajae-code/utils";
 import {
 	type AutocompleteProvider,
 	type CombinedAutocompleteProvider,
@@ -342,6 +348,37 @@ interface EditorState {
 	cursorCol: number;
 }
 
+type UndoKind = "insert" | "paste" | "backspace" | "delete" | "replace";
+
+interface CursorPosition {
+	line: number;
+	col: number;
+}
+
+/**
+ * A reversible document range. Byte accounting is UTF-8 payload bytes plus a
+ * conservative 64-byte record/header allowance; canonical document bytes and
+ * layout caches are intentionally accounted for separately.
+ */
+interface EditRecord {
+	sequence: number;
+	start: number;
+	deletedText: string;
+	insertedText: string;
+	beforeCursor: CursorPosition;
+	afterCursor: CursorPosition;
+	kind: UndoKind;
+	bytes: number;
+}
+
+export interface EditorRetainedMemoryCounters {
+	documentBytes: number;
+	undoBytes: number;
+	recordCount: number;
+	coalesceCount: number;
+	editorCacheBuckets: { wrappedLineBytes: number; layoutBytes: number };
+}
+
 interface LayoutLine {
 	text: string;
 	visibleWidth: number;
@@ -392,8 +429,6 @@ interface HistoryStorage {
 	getRecent(limit: number, cwd?: string): HistoryEntry[];
 }
 
-type HistoryCursorAnchor = "start" | "end";
-
 /** Test-only performance counters for advisory baseline tests. */
 export const __editorPerfCounters = {
 	layoutTextInvocations: 0,
@@ -437,8 +472,10 @@ export class Editor implements Component, Focusable {
 	#maxHeight?: number;
 	#scrollOffset: number = 0;
 	#wrappedLineCache: CachedWrappedLine[] = [];
+	#wrappedLineCacheBytes = 0;
 	#docVersion = 0;
 	#layoutCache: LayoutCache | undefined;
+	#layoutCacheBytes = 0;
 
 	// Emacs-style kill ring
 	#killRing = new KillRing();
@@ -474,8 +511,12 @@ export class Editor implements Component, Focusable {
 	#historyIndex: number = -1; // -1 = not browsing, 0 = most recent, 1 = older, etc.
 	#historyStorage?: HistoryStorage;
 
-	// Undo stack for editor state changes
-	#undoStack: EditorState[] = [];
+	// Byte-bounded reversible edit log. It never owns full editor snapshots.
+	#undoStack: EditRecord[] = [];
+	#undoRetainedBytes = 0;
+	#documentRetainedBytes = 0;
+	#undoCoalesceCount = 0;
+	#undoSequence = 0;
 	#suspendUndo = false;
 
 	// Debounce timer for autocomplete updates
@@ -674,50 +715,58 @@ export class Editor implements Component, Focusable {
 	}
 
 	#navigateHistory(direction: 1 | -1): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		if (this.#history.length === 0) return;
 		const newIndex = this.#historyIndex - direction; // Up(-1) increases index, Down(1) decreases
 		if (newIndex < -1 || newIndex >= this.#history.length) return;
 		this.#historyIndex = newIndex;
-		if (this.#historyIndex === -1) {
-			// Returned to "current" state - clear editor
-			this.#setTextInternal("", "end");
-		} else {
-			const cursorAnchor: HistoryCursorAnchor = direction === -1 ? "start" : "end";
-			this.#setTextInternal(this.#history[this.#historyIndex] || "", cursorAnchor);
-		}
+		const text = this.#historyIndex === -1 ? "" : this.#history[this.#historyIndex] || "";
+		const sanitized = sanitizeLoadedText(text);
+		const lines = sanitized.split("\n");
+		const afterCursor =
+			direction === -1 ? { line: 0, col: 0 } : { line: lines.length - 1, col: lines.at(-1)?.length || 0 };
+		this.#applyRangeEdit(0, this.getText().length, sanitized, afterCursor, "replace");
+		if (this.onChange) this.onChange(this.getText());
 	}
-	/** Internal setText that doesn't reset history state - used by navigateHistory */
-	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
-		this.#undoStack.length = 0;
+	/** Internal setText that resets undo history for external buffer replacement. */
+	#setTextInternal(text: string): void {
+		this.#clearUndo();
 		const lines = sanitizeLoadedText(text).split("\n");
 		this.#state.lines = lines.length === 0 ? [""] : lines;
-		if (cursorAnchor === "start") {
-			this.#state.cursorLine = 0;
-			this.#setCursorCol(0);
-		} else {
-			this.#state.cursorLine = this.#state.lines.length - 1;
-			this.#setCursorCol(this.#state.lines[this.#state.cursorLine]?.length || 0);
-		}
+		this.#documentRetainedBytes = Buffer.byteLength(this.#state.lines.join("\n"), "utf8");
+		this.#state.cursorLine = this.#state.lines.length - 1;
+		this.#setCursorCol(this.#state.lines[this.#state.cursorLine]?.length || 0);
+
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
-		this.#wrappedLineCache.length = 0;
+		this.#clearWrappedLineCache();
 		this.#bumpDocumentVersion();
 	}
 
-	invalidate(): void {
+	#clearWrappedLineCache(): void {
 		this.#wrappedLineCache.length = 0;
+		this.#wrappedLineCacheBytes = 0;
+	}
+
+	#clearLayoutCache(): void {
 		this.#layoutCache = undefined;
+		this.#layoutCacheBytes = 0;
+	}
+
+	invalidate(): void {
+		this.#clearWrappedLineCache();
+		this.#clearLayoutCache();
 	}
 
 	#bumpDocumentVersion(): void {
 		this.#docVersion += 1;
-		this.#layoutCache = undefined;
+		this.#clearLayoutCache();
 	}
 
 	#invalidateLayoutCache(): void {
-		this.#layoutCache = undefined;
+		this.#clearLayoutCache();
 	}
 
 	#getEditorPaddingX(): number {
@@ -1212,10 +1261,7 @@ export class Editor implements Component, Focusable {
 							this.#autocompletePrefix,
 						);
 
-						this.#state.lines = result.lines;
-						this.#bumpDocumentVersion();
-						this.#state.cursorLine = result.cursorLine;
-						this.#setCursorCol(result.cursorCol);
+						this.#applyCompletion(result.lines, result.cursorLine, result.cursorCol);
 
 						this.#cancelAutocomplete();
 						this.onAutocompleteUpdate?.();
@@ -1252,10 +1298,7 @@ export class Editor implements Component, Focusable {
 								this.#autocompletePrefix,
 							);
 
-							this.#state.lines = result.lines;
-							this.#bumpDocumentVersion();
-							this.#state.cursorLine = result.cursorLine;
-							this.#setCursorCol(result.cursorCol);
+							this.#applyCompletion(result.lines, result.cursorLine, result.cursorCol);
 							result.onApplied?.();
 						}
 						this.#cancelAutocomplete();
@@ -1274,10 +1317,7 @@ export class Editor implements Component, Focusable {
 							this.#autocompletePrefix,
 						);
 
-						this.#state.lines = result.lines;
-						this.#bumpDocumentVersion();
-						this.#state.cursorLine = result.cursorLine;
-						this.#setCursorCol(result.cursorCol);
+						this.#applyCompletion(result.lines, result.cursorLine, result.cursorCol);
 
 						this.#cancelAutocomplete();
 						this.onAutocompleteUpdate?.();
@@ -1395,10 +1435,7 @@ export class Editor implements Component, Focusable {
 							selected,
 							syncResult.prefix,
 						);
-						this.#state.lines = result.lines;
-						this.#bumpDocumentVersion();
-						this.#state.cursorLine = result.cursorLine;
-						this.#setCursorCol(result.cursorCol);
+						this.#applyCompletion(result.lines, result.cursorLine, result.cursorCol);
 						result.onApplied?.();
 					}
 				}
@@ -1510,11 +1547,36 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	#applyCompletion(lines: string[], cursorLine: number, cursorCol: number): void {
+		let first = 0;
+		while (first < this.#state.lines.length && first < lines.length && this.#state.lines[first] === lines[first])
+			first++;
+		let oldLast = this.#state.lines.length - 1;
+		let newLast = lines.length - 1;
+		while (oldLast >= first && newLast >= first && this.#state.lines[oldLast] === lines[newLast]) {
+			oldLast--;
+			newLast--;
+		}
+		if (first > oldLast && first > newLast) return;
+		const start = this.#documentOffset(first, 0);
+		const end = oldLast < first ? start : this.#documentOffset(oldLast, (this.#state.lines[oldLast] || "").length);
+		const inserted = newLast < first ? "" : lines.slice(first, newLast + 1).join("\n");
+		this.#applyRangeEdit(start, end, inserted, { line: cursorLine, col: cursorCol }, "replace");
+	}
+
+	#wrappedLineBytes(entry: CachedWrappedLine): number {
+		return (
+			48 +
+			Buffer.byteLength(entry.lineRef, "utf8") +
+			entry.chunks.reduce((bytes, chunk) => bytes + 24 + Buffer.byteLength(chunk.text, "utf8"), 0)
+		);
+	}
+
 	#getWrappedLine(lineIndex: number, contentWidth: number): WrappedLine {
 		const line = this.#state.lines[lineIndex] || "";
 		const cached = this.#wrappedLineCache[lineIndex];
 		if (cached?.lineRef === line && cached.contentWidth === contentWidth) return cached;
-
+		if (cached) this.#wrappedLineCacheBytes -= this.#wrappedLineBytes(cached);
 		const width = isPrintableAscii(line) ? line.length : visibleWidth(line);
 		const chunks =
 			width <= contentWidth
@@ -1522,6 +1584,7 @@ export class Editor implements Component, Focusable {
 				: wordWrapLine(line, contentWidth);
 		const wrapped = { lineRef: line, contentWidth, width, chunks };
 		this.#wrappedLineCache[lineIndex] = wrapped;
+		this.#wrappedLineCacheBytes += this.#wrappedLineBytes(wrapped);
 		return wrapped;
 	}
 
@@ -1639,7 +1702,10 @@ export class Editor implements Component, Focusable {
 		const start = cache.lineStarts[lineIndex] ?? cache.lines.length;
 		const oldCount = cache.lineCounts[lineIndex] ?? 0;
 		const replacement = this.#layoutLogicalLine(lineIndex, contentWidth);
-		cache.lines.splice(start, oldCount, ...replacement);
+		const removed = cache.lines.splice(start, oldCount, ...replacement);
+		this.#layoutCacheBytes +=
+			replacement.reduce((bytes, line) => bytes + 40 + Buffer.byteLength(line.text, "utf8"), 0) -
+			removed.reduce((bytes, line) => bytes + 40 + Buffer.byteLength(line.text, "utf8"), 0);
 		cache.lineCounts[lineIndex] = replacement.length;
 		const delta = replacement.length - oldCount;
 		if (delta !== 0) {
@@ -1677,7 +1743,7 @@ export class Editor implements Component, Focusable {
 		const lineCounts: number[] = [];
 
 		if (this.#state.lines.length === 0 || (this.#state.lines.length === 1 && this.#state.lines[0] === "")) {
-			this.#wrappedLineCache.length = this.#state.lines.length;
+			this.#clearWrappedLineCache();
 			lineStarts[0] = 0;
 			lineCounts[0] = 1;
 			layoutLines.push(this.#layoutLine("", 0, true, 0));
@@ -1689,8 +1755,10 @@ export class Editor implements Component, Focusable {
 				layoutLines.push(...logicalLayout);
 			}
 		}
-
-		this.#wrappedLineCache.length = this.#state.lines.length;
+		while (this.#wrappedLineCache.length > this.#state.lines.length) {
+			const removed = this.#wrappedLineCache.pop();
+			if (removed) this.#wrappedLineCacheBytes -= this.#wrappedLineBytes(removed);
+		}
 		this.#layoutCache = {
 			key,
 			cursorLine: this.#state.cursorLine,
@@ -1699,6 +1767,11 @@ export class Editor implements Component, Focusable {
 			lineStarts,
 			lineCounts,
 		};
+		this.#layoutCacheBytes =
+			96 +
+			lineStarts.length * 8 +
+			lineCounts.length * 8 +
+			layoutLines.reduce((bytes, line) => bytes + 40 + Buffer.byteLength(line.text, "utf8"), 0);
 		return layoutLines;
 	}
 
@@ -1764,39 +1837,41 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		const beforeTransient = currentLine.slice(0, transientStartCol);
-		const afterTransient = currentLine.slice(this.#state.cursorCol);
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
-		this.#state.lines[this.#state.cursorLine] = beforeTransient + afterTransient;
-		this.#bumpDocumentVersion();
-		this.#setCursorCol(transientStartCol);
+		const documentText = this.getText();
+		const transientStart = documentText.length - (currentLine.length - transientStartCol);
+		this.#withUndoSuspended(() =>
+			this.#applyRangeEdit(
+				transientStart,
+				transientStart + transientText.length,
+				"",
+				{ line: this.#state.cursorLine, col: transientStartCol },
+				"replace",
+			),
+		);
 
-		while (true) {
-			const snapshot = this.#undoStack.at(-1);
-			if (
-				!snapshot ||
-				!this.#matchesTransientUndoSnapshot(
-					snapshot,
-					transientText,
-					transientStartCol,
-					beforeTransient,
-					afterTransient,
-				)
-			) {
-				break;
+		const record = this.#undoStack.at(-1);
+		if (
+			record &&
+			record.deletedText.length === 0 &&
+			record.start + record.insertedText.length === transientStart + transientText.length &&
+			record.insertedText.endsWith(transientText)
+		) {
+			this.#undoRetainedBytes -= record.bytes;
+			record.insertedText = record.insertedText.slice(0, -transientText.length);
+			record.bytes = 64 + Buffer.byteLength(record.insertedText, "utf8");
+			this.#undoRetainedBytes += record.bytes;
+			if (record.insertedText.length === 0) {
+				this.#undoStack.pop();
+				this.#undoRetainedBytes -= record.bytes;
 			}
-			this.#undoStack.pop();
 		}
-
 		if (this.#undoStack.length === 0) {
-			if (this.onChange) {
-				this.onChange(this.getText());
-			}
+			if (this.onChange) this.onChange(this.getText());
 			return;
 		}
-
 		this.#applyUndo();
 	}
 
@@ -1826,17 +1901,31 @@ export class Editor implements Component, Focusable {
 	#insertCharacter(char: string): void {
 		this.#exitHistoryForEditing();
 		this.#resetKillSequence();
-		this.#recordUndoState();
-
+		const beforeInsertCursor = { line: this.#state.cursorLine, col: this.#state.cursorCol };
 		const line = this.#state.lines[this.#state.cursorLine] || "";
 		const inserted = insertTextNfcAt(line, this.#state.cursorCol, char);
 
-		this.#state.lines[this.#state.cursorLine] = inserted.line;
-		this.#setCursorCol(inserted.cursorCol);
+		let prefix = 0;
+		while (prefix < line.length && prefix < inserted.line.length && line[prefix] === inserted.line[prefix]) prefix++;
+		let suffix = 0;
+		while (
+			suffix < line.length - prefix &&
+			suffix < inserted.line.length - prefix &&
+			line[line.length - suffix - 1] === inserted.line[inserted.line.length - suffix - 1]
+		)
+			suffix++;
+		const start = this.#documentOffset(this.#state.cursorLine, prefix);
+		const end = this.#documentOffset(this.#state.cursorLine, line.length - suffix);
+		const insertedText = inserted.line.slice(prefix, inserted.line.length - suffix);
+		this.#applyRangeEdit(
+			start,
+			end,
+			insertedText,
+			{ line: this.#state.cursorLine, col: inserted.cursorCol },
+			"insert",
+		);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		if (this.onChange) this.onChange(this.getText());
 
 		// Synchronous inline replacement (e.g. emoji shortcodes `:joy:` → 😂).
 		// Runs before autocomplete trigger so the popup doesn't briefly chase a
@@ -1846,13 +1935,47 @@ export class Editor implements Component, Focusable {
 			const textBeforeCursor = replaceLine.slice(0, this.#state.cursorCol);
 			const replacement = this.#autocompleteProvider.trySyncInlineReplace(textBeforeCursor);
 			if (replacement) {
-				const before = replaceLine.slice(0, this.#state.cursorCol - replacement.replaceLen);
-				const after = replaceLine.slice(this.#state.cursorCol);
-				this.#state.lines[this.#state.cursorLine] = before + replacement.insert + after;
-				this.#setCursorCol(before.length + replacement.insert.length);
-				if (this.onChange) {
-					this.onChange(this.getText());
+				const start = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol - replacement.replaceLen);
+				const end = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
+				this.#applyRangeEdit(
+					start,
+					end,
+					replacement.insert,
+					{
+						line: this.#state.cursorLine,
+						col: this.#state.cursorCol - replacement.replaceLen + replacement.insert.length,
+					},
+					"replace",
+				);
+				const replacementRecord = this.#undoStack.at(-1);
+				const inputRecord = this.#undoStack.at(-2);
+				if (
+					replacementRecord &&
+					inputRecord &&
+					inputRecord.kind === "insert" &&
+					inputRecord.deletedText.length === 0 &&
+					inputRecord.insertedText.endsWith(insertedText) &&
+					inputRecord.start + inputRecord.insertedText.length === end &&
+					replacementRecord.deletedText.endsWith(insertedText)
+				) {
+					const retainedInsert = inputRecord.insertedText.slice(0, -insertedText.length);
+					this.#undoRetainedBytes -= inputRecord.bytes + replacementRecord.bytes;
+					if (retainedInsert) {
+						inputRecord.insertedText = retainedInsert;
+						inputRecord.afterCursor = beforeInsertCursor;
+						inputRecord.bytes = 64 + Buffer.byteLength(retainedInsert, "utf8");
+					} else {
+						this.#undoStack.splice(-2, 1);
+					}
+					replacementRecord.deletedText = replacementRecord.deletedText.slice(0, -insertedText.length);
+					replacementRecord.beforeCursor = beforeInsertCursor;
+					replacementRecord.bytes =
+						64 +
+						Buffer.byteLength(replacementRecord.deletedText, "utf8") +
+						Buffer.byteLength(replacementRecord.insertedText, "utf8");
+					this.#undoRetainedBytes += replacementRecord.bytes + (retainedInsert ? inputRecord.bytes : 0);
 				}
+				if (this.onChange) this.onChange(this.getText());
 				if (this.#autocompleteState) {
 					this.#cancelAutocomplete();
 					this.onAutocompleteUpdate?.();
@@ -1950,58 +2073,28 @@ export class Editor implements Component, Focusable {
 		// an undo snapshot — a no-op entry would make the next undo appear dead.
 		if (filteredText.length === 0) return;
 
-		this.#recordUndoState();
-		this.#withUndoSuspended(() => {
-			// Split into lines
-			const pastedLines = filteredText.split("\n");
-
-			// Check if this is a large paste (> 10 lines or > 1000 characters)
-			const totalChars = filteredText.length;
-			if (pastedLines.length > 10 || totalChars > 1000) {
-				// Store the paste and insert a marker
-				this.#pasteCounter++;
-				const pasteId = this.#pasteCounter;
-				this.#pastes.set(pasteId, filteredText);
-
-				// Insert marker like "[paste #1 +123 lines]" or "[paste #1 1234 chars]"
-				const marker =
-					pastedLines.length > 10
-						? `[paste #${pasteId} +${pastedLines.length} lines]`
-						: `[paste #${pasteId} ${totalChars} chars]`;
-				this.#insertTextAtCursor(marker);
-
-				return;
-			}
-
-			// Paste is literal input, not typed input. Insert atomically so leading
-			// trigger characters such as "/", "#", "@", ":", or path-like text do
-			// not open or update autocomplete lists while preserving normal typed
-			// trigger behavior.
-			this.#insertTextAtCursor(filteredText);
-		});
+		const pastedLines = filteredText.split("\n");
+		const totalChars = filteredText.length;
+		if (pastedLines.length > 10 || totalChars > 1000) {
+			this.#pasteCounter++;
+			const pasteId = this.#pasteCounter;
+			this.#pastes.set(pasteId, filteredText);
+			const marker =
+				pastedLines.length > 10
+					? `[paste #${pasteId} +${pastedLines.length} lines]`
+					: `[paste #${pasteId} ${totalChars} chars]`;
+			this.#insertTextAtCursor(marker, "paste");
+			return;
+		}
+		this.#insertTextAtCursor(filteredText, "paste");
 	}
 
 	#addNewLine(): void {
-		this.#historyIndex = -1; // Exit history browsing mode
+		this.#historyIndex = -1;
 		this.#resetKillSequence();
-		this.#recordUndoState();
-
-		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-
-		const before = currentLine.slice(0, this.#state.cursorCol);
-		const after = currentLine.slice(this.#state.cursorCol);
-
-		// Split current line
-		this.#state.lines[this.#state.cursorLine] = before;
-		this.#state.lines.splice(this.#state.cursorLine + 1, 0, after);
-
-		// Move cursor to start of new line
-		this.#state.cursorLine++;
-		this.#setCursorCol(0);
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		const start = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
+		this.#applyRangeEdit(start, start, "\n", { line: this.#state.cursorLine + 1, col: 0 }, "replace");
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#shouldSubmitOnBackslashEnter(data: string, kb: KeybindingsManager): boolean {
@@ -2026,48 +2119,41 @@ export class Editor implements Component, Focusable {
 		this.#pasteCounter = 0;
 		this.#historyIndex = -1;
 		this.#scrollOffset = 0;
-		this.#undoStack.length = 0;
-		this.#wrappedLineCache.length = 0;
+		this.#clearUndo();
+		this.#documentRetainedBytes = 0;
+		this.#clearWrappedLineCache();
 
 		if (this.onChange) this.onChange("");
 		if (this.onSubmit) this.onSubmit(result);
 	}
 
 	#handleBackspace(): void {
-		this.#historyIndex = -1; // Exit history browsing mode
+		this.#historyIndex = -1;
 		this.#resetKillSequence();
-		this.#recordUndoState();
-
 		if (this.#state.cursorCol > 0) {
-			// Delete grapheme before cursor (handles emojis, combining characters, etc.)
 			const line = this.#state.lines[this.#state.cursorLine] || "";
-			const beforeCursor = line.slice(0, this.#state.cursorCol);
-
-			// Find the last grapheme in the text before cursor
-			const graphemes = [...segmenter.segment(beforeCursor)];
-			const lastGrapheme = graphemes[graphemes.length - 1];
-			const graphemeLength = lastGrapheme ? lastGrapheme.segment.length : 1;
-
-			const before = line.slice(0, this.#state.cursorCol - graphemeLength);
-			const after = line.slice(this.#state.cursorCol);
-
-			this.#state.lines[this.#state.cursorLine] = before + after;
-			this.#setCursorCol(this.#state.cursorCol - graphemeLength);
+			const graphemes = [...segmenter.segment(line.slice(0, this.#state.cursorCol))];
+			const length = graphemes.at(-1)?.segment.length || 1;
+			const end = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
+			this.#applyRangeEdit(
+				end - length,
+				end,
+				"",
+				{ line: this.#state.cursorLine, col: this.#state.cursorCol - length },
+				"backspace",
+			);
 		} else if (this.#state.cursorLine > 0) {
-			// Merge with previous line
-			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 			const previousLine = this.#state.lines[this.#state.cursorLine - 1] || "";
-
-			this.#state.lines[this.#state.cursorLine - 1] = previousLine + currentLine;
-			this.#state.lines.splice(this.#state.cursorLine, 1);
-
-			this.#state.cursorLine--;
-			this.#setCursorCol(previousLine.length);
+			const start = this.#documentOffset(this.#state.cursorLine - 1, previousLine.length);
+			this.#applyRangeEdit(
+				start,
+				start + 1,
+				"",
+				{ line: this.#state.cursorLine - 1, col: previousLine.length },
+				"backspace",
+			);
 		}
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		if (this.onChange) this.onChange(this.getText());
 
 		// Update or re-trigger autocomplete after backspace
 		if (this.#autocompleteState) {
@@ -2173,27 +2259,35 @@ export class Editor implements Component, Focusable {
 	}
 
 	#moveToLineStart(): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		this.#setCursorCol(0);
 	}
 
 	#moveToLineEnd(): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 		this.#setCursorCol(currentLine.length);
 	}
 
 	#moveToMessageStart(): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		this.#state.cursorLine = 0;
 		this.#setCursorCol(0);
 	}
 
 	#moveToMessageEnd(): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		this.#state.cursorLine = this.#state.lines.length - 1;
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 		this.#setCursorCol(currentLine.length);
+	}
+
+	#breakUndoCoalescing(): void {
+		this.#undoSequence += 1;
 	}
 
 	#resetKillSequence(): void {
@@ -2210,63 +2304,188 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
-	#recordUndoState(): void {
-		if (this.#suspendUndo) return;
-		this.#undoStack.push(structuredClone(this.#state));
+	#documentOffset(line: number, col: number): number {
+		let offset = 0;
+		for (let index = 0; index < line; index++) offset += (this.#state.lines[index] || "").length + 1;
+		return offset + col;
+	}
+
+	#positionAtOffset(offset: number): CursorPosition {
+		let remaining = offset;
+		for (let line = 0; line < this.#state.lines.length; line++) {
+			const text = this.#state.lines[line] || "";
+			if (remaining <= text.length) return { line, col: remaining };
+			remaining -= text.length + 1;
+		}
+		const line = this.#state.lines.length - 1;
+		return { line, col: (this.#state.lines[line] || "").length };
+	}
+
+	#textInRange(start: number, end: number): string {
+		const from = this.#positionAtOffset(start);
+		const to = this.#positionAtOffset(end);
+		if (from.line === to.line) return (this.#state.lines[from.line] || "").slice(from.col, to.col);
+		const parts = [(this.#state.lines[from.line] || "").slice(from.col)];
+		for (let line = from.line + 1; line < to.line; line++) parts.push(this.#state.lines[line] || "");
+		parts.push((this.#state.lines[to.line] || "").slice(0, to.col));
+		return parts.join("\n");
+	}
+
+	/** Sole document mutation primitive: applies and records one reversible range edit. */
+	#applyRangeEdit(start: number, end: number, newText: string, afterCursor: CursorPosition, kind: UndoKind): void {
+		const beforeCursor = { line: this.#state.cursorLine, col: this.#state.cursorCol };
+		const deletedText = this.#textInRange(start, end);
+		if (deletedText === newText) return;
+		const from = this.#positionAtOffset(start);
+		const to = this.#positionAtOffset(end);
+		const before = (this.#state.lines[from.line] || "").slice(0, from.col);
+		const after = (this.#state.lines[to.line] || "").slice(to.col);
+		const replacements = newText.split("\n");
+		const lines =
+			replacements.length === 1
+				? [before + replacements[0] + after]
+				: [before + replacements[0], ...replacements.slice(1, -1), replacements.at(-1)! + after];
+		this.#state.lines.splice(from.line, to.line - from.line + 1, ...lines);
+		this.#state.cursorLine = afterCursor.line;
+		this.#setCursorCol(afterCursor.col);
+		this.#documentRetainedBytes += Buffer.byteLength(newText, "utf8") - Buffer.byteLength(deletedText, "utf8");
+		const record: EditRecord = {
+			sequence: this.#undoSequence,
+			start,
+			deletedText,
+			insertedText: newText,
+			beforeCursor,
+			afterCursor,
+			kind,
+			bytes: 64 + Buffer.byteLength(deletedText, "utf8") + Buffer.byteLength(newText, "utf8"),
+		};
+		if (!this.#suspendUndo) {
+			if (!this.#coalesceUndo(record)) {
+				this.#undoStack.push(record);
+				this.#undoRetainedBytes += record.bytes;
+			}
+			this.#evictUndo();
+		}
 		this.#bumpDocumentVersion();
+	}
+
+	#coalesceUndo(record: EditRecord): boolean {
+		const previous = this.#undoStack.at(-1);
+		if (!previous || previous.kind !== record.kind || previous.sequence !== record.sequence) return false;
+		if (
+			record.kind === "insert" || record.kind === "paste"
+				? previous.deletedText.length === 0 &&
+					record.deletedText.length === 0 &&
+					previous.start + previous.insertedText.length === record.start
+				: record.kind === "backspace"
+					? previous.insertedText.length === 0 &&
+						record.insertedText.length === 0 &&
+						record.start + record.deletedText.length === previous.start
+					: record.kind === "delete" &&
+						previous.insertedText.length === 0 &&
+						record.insertedText.length === 0 &&
+						previous.start === record.start
+		) {
+			this.#undoRetainedBytes -= previous.bytes;
+			if (record.kind === "backspace") {
+				previous.start = record.start;
+				previous.deletedText = record.deletedText + previous.deletedText;
+			} else if (record.kind === "insert" || record.kind === "paste") {
+				previous.insertedText += record.insertedText;
+			} else {
+				previous.deletedText += record.deletedText;
+			}
+			previous.afterCursor = record.afterCursor;
+			previous.bytes =
+				64 + Buffer.byteLength(previous.deletedText, "utf8") + Buffer.byteLength(previous.insertedText, "utf8");
+			this.#undoRetainedBytes += previous.bytes;
+			this.#undoCoalesceCount++;
+			return true;
+		}
+		return false;
+	}
+
+	#evictUndo(): void {
+		const budget = this.#documentRetainedBytes * 2 + 16 * 1024 * 1024;
+		while (this.#undoStack.length > 1 && this.#undoRetainedBytes > budget) {
+			const oldest = this.#undoStack.shift();
+			if (oldest) this.#undoRetainedBytes -= oldest.bytes;
+		}
+	}
+
+	#clearUndo(): void {
+		this.#undoStack.length = 0;
+		this.#undoRetainedBytes = 0;
+	}
+
+	getRetainedMemoryCounters(): EditorRetainedMemoryCounters {
+		return {
+			documentBytes: this.#documentRetainedBytes,
+			undoBytes: this.#undoRetainedBytes,
+			recordCount: this.#undoStack.length,
+			coalesceCount: this.#undoCoalesceCount,
+			editorCacheBuckets: { wrappedLineBytes: this.#wrappedLineCacheBytes, layoutBytes: this.#layoutCacheBytes },
+		};
+	}
+
+	/** Test-only slow audit for the incrementally maintained editor cache buckets. */
+	getRetainedMemoryCounterAudit(): EditorRetainedMemoryCounters["editorCacheBuckets"] {
+		const wrappedLineBytes = this.#wrappedLineCache.reduce(
+			(bytes, entry) => bytes + (entry ? this.#wrappedLineBytes(entry) : 0),
+			0,
+		);
+		const layout = this.#layoutCache;
+		const layoutBytes = layout
+			? 96 +
+				layout.lineStarts.length * 8 +
+				layout.lineCounts.length * 8 +
+				layout.lines.reduce((bytes, line) => bytes + 40 + Buffer.byteLength(line.text, "utf8"), 0)
+			: 0;
+		return { wrappedLineBytes, layoutBytes };
+	}
+
+	/** Slice 4 registry hook; sampling reads only incremental counters. */
+	registerRetainedMemory(registry: RetainedMemoryRegistryFacade, id = "tui.editor"): RetainedMemoryRegistration {
+		return registry.registerPool({
+			id,
+			bucketNames: ["document", "undo", "wrapped-line", "layout"],
+			sampleBytes: () => {
+				const counters = this.getRetainedMemoryCounters();
+				return (
+					counters.documentBytes +
+					counters.undoBytes +
+					counters.editorCacheBuckets.wrappedLineBytes +
+					counters.editorCacheBuckets.layoutBytes
+				);
+			},
+			sampleBuckets: () => {
+				const counters = this.getRetainedMemoryCounters();
+				return {
+					document: counters.documentBytes,
+					undo: counters.undoBytes,
+					"wrapped-line": counters.editorCacheBuckets.wrappedLineBytes,
+					layout: counters.editorCacheBuckets.layoutBytes,
+				};
+			},
+			onEvict: () => this.invalidate(),
+		});
 	}
 
 	#applyUndo(): void {
-		const snapshot = this.#undoStack.pop();
-		if (!snapshot) return;
-
+		const record = this.#undoStack.at(-1);
+		if (!record) return;
+		const end = record.start + record.insertedText.length;
+		// Validate before changing the stack so a stale record never disappears.
+		if (this.#textInRange(record.start, end) !== record.insertedText) return;
+		this.#undoStack.pop();
+		this.#undoRetainedBytes -= record.bytes;
+		this.#withUndoSuspended(() =>
+			this.#applyRangeEdit(record.start, end, record.deletedText, record.beforeCursor, "replace"),
+		);
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
-		Object.assign(this.#state, snapshot);
-		this.#bumpDocumentVersion();
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
-
-		if (this.#autocompleteState) {
-			this.#debouncedUpdateAutocomplete();
-		} else {
-			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
-			if (this.#isInSubmittedSlashCommandContext() || this.#isInSlashTokenContext()) {
-				this.#tryTriggerAutocomplete();
-			} else if (textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
-				this.#tryTriggerAutocomplete();
-			} else if (textBeforeCursor.match(/#[^\s#]*$/)) {
-				this.#tryTriggerAutocomplete();
-			}
-		}
-	}
-
-	#matchesTransientUndoSnapshot(
-		snapshot: EditorState,
-		transientText: string,
-		transientStartCol: number,
-		beforeTransient: string,
-		afterTransient: string,
-	): boolean {
-		if (snapshot.cursorLine !== this.#state.cursorLine) return false;
-		if (snapshot.lines.length !== this.#state.lines.length) return false;
-
-		const transientLength = snapshot.cursorCol - transientStartCol;
-		if (transientLength < 0 || transientLength >= transientText.length) return false;
-
-		for (let i = 0; i < snapshot.lines.length; i++) {
-			if (i === this.#state.cursorLine) continue;
-			if (snapshot.lines[i] !== this.#state.lines[i]) return false;
-		}
-
-		return (
-			snapshot.lines[snapshot.cursorLine] ===
-			beforeTransient + transientText.slice(0, transientLength) + afterTransient
-		);
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#recordKill(text: string, direction: "forward" | "backward", accumulate = this.#lastAction === "kill"): void {
@@ -2275,48 +2494,21 @@ export class Editor implements Component, Focusable {
 		this.#lastAction = "kill";
 	}
 
-	#insertTextAtCursor(text: string): void {
+	#insertTextAtCursor(text: string, kind: UndoKind = "replace"): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
-		this.#recordUndoState();
-
 		const normalized = text.replace(/\r\n?/g, "\n").normalize("NFC");
-		const lines = normalized.split("\n");
-
-		if (lines.length === 1) {
-			const line = this.#state.lines[this.#state.cursorLine] || "";
-			const inserted = insertTextNfcAt(line, this.#state.cursorCol, normalized);
-			this.#state.lines[this.#state.cursorLine] = inserted.line;
-			this.#setCursorCol(inserted.cursorCol);
-		} else {
-			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-			const beforeCursor = currentLine.slice(0, this.#state.cursorCol);
-			const afterCursor = currentLine.slice(this.#state.cursorCol);
-
-			const newLines: string[] = [];
-			for (let i = 0; i < this.#state.cursorLine; i++) {
-				newLines.push(this.#state.lines[i] || "");
-			}
-
-			newLines.push((beforeCursor + (lines[0] || "")).normalize("NFC"));
-			for (let i = 1; i < lines.length - 1; i++) {
-				newLines.push(lines[i] || "");
-			}
-			const finalLineBeforeAfter = (lines[lines.length - 1] || "").normalize("NFC");
-			newLines.push((finalLineBeforeAfter + afterCursor).normalize("NFC"));
-
-			for (let i = this.#state.cursorLine + 1; i < this.#state.lines.length; i++) {
-				newLines.push(this.#state.lines[i] || "");
-			}
-
-			this.#state.lines = newLines;
-			this.#state.cursorLine += lines.length - 1;
-			this.#setCursorCol(finalLineBeforeAfter.length);
-		}
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		const line = this.#state.lines[this.#state.cursorLine] || "";
+		const inserted = normalized.includes("\n")
+			? normalized
+			: insertTextNfcAt(line, this.#state.cursorCol, normalized).line.slice(this.#state.cursorCol);
+		const start = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
+		const cursorLine = this.#state.cursorLine + normalized.split("\n").length - 1;
+		const cursorCol = normalized.includes("\n")
+			? (normalized.split("\n").at(-1) || "").length
+			: this.#state.cursorCol + inserted.length;
+		this.#applyRangeEdit(start, start, inserted, { line: cursorLine, col: cursorCol }, kind);
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#yankFromKillRing(): void {
@@ -2327,222 +2519,184 @@ export class Editor implements Component, Focusable {
 	}
 
 	#yankPop(): void {
-		if (this.#lastAction !== "yank") return;
-		if (this.#killRing.length <= 1) return;
+		if (this.#lastAction !== "yank" || this.#killRing.length <= 1) return;
 
 		this.#historyIndex = -1;
-		this.#recordUndoState();
-
-		this.#withUndoSuspended(() => {
-			if (!this.#deleteYankedText()) return;
-			this.#killRing.rotate();
-			const text = this.#killRing.peek();
-			if (text) {
-				this.#insertTextAtCursor(text);
-			}
-		});
-
-		this.#lastAction = "yank";
-	}
-
-	/**
-	 * Delete the most recently yanked text from the buffer.
-	 *
-	 * This is a best-effort operation and assumes the cursor is still positioned
-	 * at the end of the yanked text.
-	 */
-	#deleteYankedText(): boolean {
 		const yankedText = this.#killRing.peek();
-		if (!yankedText) return false;
+		if (!yankedText) return;
+		const end = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
+		const start = end - yankedText.length;
+		if (start < 0 || this.#textInRange(start, end) !== yankedText) return;
 
-		const yankLines = yankedText.split("\n");
-		const endLine = this.#state.cursorLine;
-		const endCol = this.#state.cursorCol;
-		const startLine = endLine - (yankLines.length - 1);
-		if (startLine < 0) return false;
-
-		if (yankLines.length === 1) {
-			const line = this.#state.lines[endLine] ?? "";
-			const startCol = endCol - yankedText.length;
-			if (startCol < 0) return false;
-			if (line.slice(startCol, endCol) !== yankedText) return false;
-
-			this.#state.lines[endLine] = line.slice(0, startCol) + line.slice(endCol);
-			this.#state.cursorLine = endLine;
-			this.#setCursorCol(startCol);
-			return true;
-		}
-
-		const firstInserted = yankLines[0] ?? "";
-		const lastInserted = yankLines[yankLines.length - 1] ?? "";
-		const firstLineText = this.#state.lines[startLine] ?? "";
-		const lastLineText = this.#state.lines[endLine] ?? "";
-
-		if (!firstLineText.endsWith(firstInserted)) return false;
-		if (endCol !== lastInserted.length) return false;
-		if (lastLineText.slice(0, endCol) !== lastInserted) return false;
-
-		const startCol = firstLineText.length - firstInserted.length;
-		if (startCol < 0) return false;
-
-		const suffix = lastLineText.slice(endCol);
-		const newLine = firstLineText.slice(0, startCol) + suffix;
-
-		this.#state.lines.splice(startLine, yankLines.length, newLine);
-		this.#state.cursorLine = startLine;
-		this.#setCursorCol(startCol);
-		return true;
+		this.#killRing.rotate();
+		const replacement = this.#killRing.peek();
+		if (!replacement) return;
+		const from = this.#positionAtOffset(start);
+		const replacementLines = replacement.split("\n");
+		this.#applyRangeEdit(
+			start,
+			end,
+			replacement,
+			{
+				line: from.line + replacementLines.length - 1,
+				col: replacementLines.length === 1 ? from.col + replacement.length : replacementLines.at(-1)?.length || 0,
+			},
+			"replace",
+		);
+		this.#lastAction = "yank";
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#deleteToStartOfLine(): void {
 		this.#historyIndex = -1; // Exit history browsing mode
-		this.#recordUndoState();
 		if (process.platform === "darwin") this.#lastLineDeleteAt = Date.now();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-		let deletedText = "";
-
 		if (this.#state.cursorCol > 0) {
-			// Delete from start of line up to cursor
-			deletedText = currentLine.slice(0, this.#state.cursorCol);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(this.#state.cursorCol);
-			this.#setCursorCol(0);
+			const end = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
+			const deletedText = currentLine.slice(0, this.#state.cursorCol);
+			this.#applyRangeEdit(end - deletedText.length, end, "", { line: this.#state.cursorLine, col: 0 }, "replace");
+			this.#recordKill(deletedText, "backward");
 		} else if (this.#state.cursorLine > 0) {
-			// At start of line - merge with previous line
-			deletedText = "\n";
 			const previousLine = this.#state.lines[this.#state.cursorLine - 1] || "";
-			this.#state.lines[this.#state.cursorLine - 1] = previousLine + currentLine;
-			this.#state.lines.splice(this.#state.cursorLine, 1);
-			this.#state.cursorLine--;
-			this.#setCursorCol(previousLine.length);
+			const end = this.#documentOffset(this.#state.cursorLine, 0);
+			this.#applyRangeEdit(
+				end - 1,
+				end,
+				"",
+				{ line: this.#state.cursorLine - 1, col: previousLine.length },
+				"replace",
+			);
+			this.#recordKill("\n", "backward");
 		}
-
-		this.#recordKill(deletedText, "backward");
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#deleteToEndOfLine(): void {
 		this.#historyIndex = -1; // Exit history browsing mode
-		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-		let deletedText = "";
-
+		const start = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
 		if (this.#state.cursorCol < currentLine.length) {
-			// Delete from cursor to end of line
-			deletedText = currentLine.slice(this.#state.cursorCol);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(0, this.#state.cursorCol);
+			const deletedText = currentLine.slice(this.#state.cursorCol);
+			this.#applyRangeEdit(
+				start,
+				start + deletedText.length,
+				"",
+				{ line: this.#state.cursorLine, col: this.#state.cursorCol },
+				"replace",
+			);
+			this.#recordKill(deletedText, "forward");
 		} else if (this.#state.cursorLine < this.#state.lines.length - 1) {
-			// At end of line - merge with next line
-			const nextLine = this.#state.lines[this.#state.cursorLine + 1] || "";
-			deletedText = "\n";
-			this.#state.lines[this.#state.cursorLine] = currentLine + nextLine;
-			this.#state.lines.splice(this.#state.cursorLine + 1, 1);
+			this.#applyRangeEdit(
+				start,
+				start + 1,
+				"",
+				{ line: this.#state.cursorLine, col: this.#state.cursorCol },
+				"replace",
+			);
+			this.#recordKill("\n", "forward");
 		}
-
-		this.#recordKill(deletedText, "forward");
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#deleteWordBackwards(): void {
 		this.#historyIndex = -1; // Exit history browsing mode
-		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-
-		// If at start of line, behave like backspace at column 0 (merge with previous line)
 		if (this.#state.cursorCol === 0) {
 			if (this.#state.cursorLine > 0) {
-				this.#recordKill("\n", "backward");
 				const previousLine = this.#state.lines[this.#state.cursorLine - 1] || "";
-				this.#state.lines[this.#state.cursorLine - 1] = previousLine + currentLine;
-				this.#state.lines.splice(this.#state.cursorLine, 1);
-				this.#state.cursorLine--;
-				this.#setCursorCol(previousLine.length);
+				const end = this.#documentOffset(this.#state.cursorLine, 0);
+				this.#applyRangeEdit(
+					end - 1,
+					end,
+					"",
+					{ line: this.#state.cursorLine - 1, col: previousLine.length },
+					"replace",
+				);
+				this.#recordKill("\n", "backward");
 			}
 		} else {
 			const oldCursorCol = this.#state.cursorCol;
 			this.#moveWordBackwards();
 			const deleteFrom = this.#state.cursorCol;
 			this.#setCursorCol(oldCursorCol);
-
 			const deletedText = currentLine.slice(deleteFrom, oldCursorCol);
-			this.#state.lines[this.#state.cursorLine] =
-				currentLine.slice(0, deleteFrom) + currentLine.slice(this.#state.cursorCol);
-			this.#setCursorCol(deleteFrom);
+			const end = this.#documentOffset(this.#state.cursorLine, oldCursorCol);
+			this.#applyRangeEdit(
+				end - deletedText.length,
+				end,
+				"",
+				{ line: this.#state.cursorLine, col: deleteFrom },
+				"replace",
+			);
 			this.#recordKill(deletedText, "backward");
 		}
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#deleteWordForwards(): void {
 		this.#historyIndex = -1; // Exit history browsing mode
-		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-
+		const start = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
 		if (this.#state.cursorCol >= currentLine.length) {
 			if (this.#state.cursorLine < this.#state.lines.length - 1) {
+				this.#applyRangeEdit(
+					start,
+					start + 1,
+					"",
+					{ line: this.#state.cursorLine, col: this.#state.cursorCol },
+					"replace",
+				);
 				this.#recordKill("\n", "forward");
-				const nextLine = this.#state.lines[this.#state.cursorLine + 1] || "";
-				this.#state.lines[this.#state.cursorLine] = currentLine + nextLine;
-				this.#state.lines.splice(this.#state.cursorLine + 1, 1);
 			}
 		} else {
 			const oldCursorCol = this.#state.cursorCol;
 			this.#moveWordForwards();
 			const deleteTo = this.#state.cursorCol;
 			this.#setCursorCol(oldCursorCol);
-
 			const deletedText = currentLine.slice(oldCursorCol, deleteTo);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(0, oldCursorCol) + currentLine.slice(deleteTo);
+			this.#applyRangeEdit(
+				start,
+				start + deletedText.length,
+				"",
+				{ line: this.#state.cursorLine, col: oldCursorCol },
+				"replace",
+			);
 			this.#recordKill(deletedText, "forward");
 		}
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		if (this.onChange) this.onChange(this.getText());
 	}
 
 	#handleForwardDelete(): void {
 		this.#historyIndex = -1; // Exit history browsing mode
 		this.#resetKillSequence();
-		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
-
+		const start = this.#documentOffset(this.#state.cursorLine, this.#state.cursorCol);
 		if (this.#state.cursorCol < currentLine.length) {
-			// Delete grapheme at cursor position (handles emojis, combining characters, etc.)
 			const afterCursor = currentLine.slice(this.#state.cursorCol);
-
-			// Find the first grapheme at cursor
-			const graphemes = [...segmenter.segment(afterCursor)];
-			const firstGrapheme = graphemes[0];
+			const firstGrapheme = [...segmenter.segment(afterCursor)][0];
 			const graphemeLength = firstGrapheme ? firstGrapheme.segment.length : 1;
-
-			const before = currentLine.slice(0, this.#state.cursorCol);
-			const after = currentLine.slice(this.#state.cursorCol + graphemeLength);
-			this.#state.lines[this.#state.cursorLine] = before + after;
+			this.#applyRangeEdit(
+				start,
+				start + graphemeLength,
+				"",
+				{ line: this.#state.cursorLine, col: this.#state.cursorCol },
+				"delete",
+			);
 		} else if (this.#state.cursorLine < this.#state.lines.length - 1) {
-			// At end of line - merge with next line
-			const nextLine = this.#state.lines[this.#state.cursorLine + 1] || "";
-			this.#state.lines[this.#state.cursorLine] = currentLine + nextLine;
-			this.#state.lines.splice(this.#state.cursorLine + 1, 1);
+			this.#applyRangeEdit(
+				start,
+				start + 1,
+				"",
+				{ line: this.#state.cursorLine, col: this.#state.cursorCol },
+				"delete",
+			);
 		}
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
-
+		if (this.onChange) this.onChange(this.getText());
 		// Update or re-trigger autocomplete after forward delete
 		if (this.#autocompleteState) {
 			this.#debouncedUpdateAutocomplete();
@@ -2621,6 +2775,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#moveCursor(deltaLine: number, deltaCol: number): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 		const needsVisualLines = deltaLine !== 0 || (deltaCol > 0 && this.#state.cursorCol >= currentLine.length);
@@ -2682,6 +2837,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#pageScroll(direction: -1 | 1): void {
+		this.#breakUndoCoalescing();
 		this.#resetKillSequence();
 		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
 		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
@@ -2692,6 +2848,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#moveWordBackwards(): void {
+		this.#breakUndoCoalescing();
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 
 		// If at start of line, move to end of previous line
@@ -2748,6 +2905,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#moveWordForwards(): void {
+		this.#breakUndoCoalescing();
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 
 		// If at end of line, move to start of next line
@@ -2927,10 +3085,7 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 					suggestions.prefix,
 				);
 
-				this.#state.lines = result.lines;
-				this.#bumpDocumentVersion();
-				this.#state.cursorLine = result.cursorLine;
-				this.#setCursorCol(result.cursorCol);
+				this.#applyCompletion(result.lines, result.cursorLine, result.cursorCol);
 
 				if (this.onChange) {
 					this.onChange(this.getText());

@@ -49,7 +49,6 @@ import type { EditToolDetails, LspBatchRequest } from "../renderer";
 import {
 	type ContextLineResult,
 	DEFAULT_FUZZY_THRESHOLD,
-	findClosestSequenceMatch,
 	findContextLine,
 	findMatch,
 	type SequenceSearchResult,
@@ -1233,19 +1232,9 @@ function computeReplacements(
 						`${previewText}\n\nAdd more surrounding context or additional @@ anchors to make it unique.`,
 				);
 			}
-			const closest = findClosestSequenceMatch(originalLines, pattern, {
-				start: lineIndex,
-				eof: hunk.isEndOfFile,
-			});
-			if (closest.index !== undefined && closest.confidence > 0) {
-				const similarity = Math.round(closest.confidence * 100);
-				const preview = formatSequenceMatchPreview(originalLines, closest.index);
-				throw new ApplyPatchError(
-					`Failed to find expected lines in ${path}:\n${hunk.oldLines.join("\n")}\n\n` +
-						`Closest match (${similarity}% similar) near line ${closest.index + 1}:\n${preview}`,
-				);
-			}
-			throw new ApplyPatchError(`Failed to find expected lines in ${path}:\n${hunk.oldLines.join("\n")}`);
+			throw new ApplyPatchError(
+				`Native fuzzy matching did not find expected lines in ${path}:\n${hunk.oldLines.join("\n")}`,
+			);
 		}
 
 		const found = searchResult.index;

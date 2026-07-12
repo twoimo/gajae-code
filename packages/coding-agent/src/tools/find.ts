@@ -10,7 +10,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import type { Theme } from "../modes/theme/theme";
 import findDescription from "../prompts/tools/find.md" with { type: "text" };
-import { type TruncationResult, truncateHead } from "../session/streaming-output";
+import type { TruncationResult } from "../session/streaming-output";
 import { Ellipsis, fileHyperlink, renderFileList, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import { applyListLimit } from "./list-limit";
@@ -40,6 +40,10 @@ const findSchema = z
 		hidden: z.boolean().default(true).describe("include hidden files").optional(),
 		gitignore: z.boolean().default(true).describe("respect gitignore").optional(),
 		limit: z.number().default(1000).describe("max results").optional(),
+		skip: z
+			.number()
+			.optional()
+			.describe("results to skip before collecting this page; use the prior page's skip plus result count"),
 		timeout: z.number().min(0.5).max(60).default(5).describe("timeout in seconds (0.5–60)").optional(),
 	})
 	.strict();
@@ -139,7 +143,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<FindToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<FindToolDetails>> {
-		const { paths, limit, hidden, gitignore, timeout } = params;
+		const { paths, limit, skip, hidden, gitignore, timeout } = params;
 
 		return untilAborted(signal, async () => {
 			const formatScopePath = (targetPath: string): string => formatPathRelativeToCwd(targetPath, this.session.cwd);
@@ -198,6 +202,14 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 			if (!Number.isFinite(effectiveLimit) || effectiveLimit <= 0) {
 				throw new ToolError("Limit must be a positive number");
 			}
+			const normalizedSkip = skip === undefined ? 0 : Number.isFinite(skip) ? Math.floor(skip) : Number.NaN;
+			if (!Number.isFinite(normalizedSkip) || normalizedSkip < 0) {
+				throw new ToolError("Skip must be a non-negative number");
+			}
+			if (normalizedSkip > Number.MAX_SAFE_INTEGER - effectiveLimit) {
+				throw new ToolError("Skip is too large");
+			}
+			const requestedLimit = effectiveLimit + normalizedSkip;
 			const includeHidden = hidden ?? true;
 			const useGitignore = gitignore ?? true;
 			const requestedTimeoutMs = timeout != null ? Math.round(timeout * 1000) : DEFAULT_GLOB_TIMEOUT_MS;
@@ -217,10 +229,11 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 
 			const buildResult = (
 				files: string[],
-				opts?: { notice?: string; forceTruncated?: boolean },
+				opts?: { notice?: string; forceTruncated?: boolean; canContinue?: boolean },
 			): AgentToolResult<FindToolDetails> => {
 				const notice = opts?.notice;
 				const forceTruncated = opts?.forceTruncated ?? false;
+				const canContinue = opts?.canContinue ?? true;
 				if (files.length === 0) {
 					const details: FindToolDetails = {
 						scopePath,
@@ -244,27 +257,28 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 				if (notice) trailingNotes.push(notice);
 				if (missingPathsNote) trailingNotes.push(missingPathsNote);
 				const rawOutput = trailingNotes.length > 0 ? `${baseOutput}\n\n${trailingNotes.join("\n")}` : baseOutput;
-				const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 
 				const details: FindToolDetails = {
 					scopePath,
 					fileCount: limited.length,
 					files: limited,
-					truncated: Boolean(forceTruncated || limitMeta.resultLimit || truncation.truncated),
+					truncated: Boolean(forceTruncated || limitMeta.resultLimit),
 					resultLimitReached: limitMeta.resultLimit?.reached,
-					truncation: truncation.truncated ? truncation : undefined,
+
 					cwd: this.session.cwd,
 					missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 				};
 
-				const resultBuilder = toolResult(details)
-					.text(truncation.content)
-					.limits({ resultLimit: limitMeta.resultLimit?.reached });
-				if (truncation.truncated) {
-					resultBuilder.truncation(truncation, { direction: "head" });
-				}
-
-				return resultBuilder.done();
+				const continuation =
+					canContinue && limitMeta.resultLimit
+						? [
+								`Use skip=${normalizedSkip + limited.length} with the same limit to continue, increase limit, or narrow paths/pattern.`,
+							]
+						: [];
+				return toolResult(details)
+					.text(rawOutput)
+					.continuation(...continuation)
+					.done();
 			};
 
 			if (this.#customOps?.glob) {
@@ -281,11 +295,11 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 
 				const results = await this.#customOps.glob(globPattern, searchPath, {
 					ignore: ["**/node_modules/**", "**/.git/**"],
-					limit: effectiveLimit,
+					limit: requestedLimit,
 				});
 				const relativized = results.map(p => formatMatchPath(p));
 
-				return buildResult(relativized);
+				return buildResult(relativized.slice(normalizedSkip, normalizedSkip + effectiveLimit));
 			}
 
 			let searchStat: fs.Stats;
@@ -340,7 +354,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 							path: searchPath,
 							fileType: natives.FileType.File,
 							hidden: includeHidden,
-							maxResults: effectiveLimit,
+							maxResults: requestedLimit,
 							sortByMtime: true,
 							gitignore: useGitignore,
 							signal: combinedSignal,
@@ -352,9 +366,6 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 			let timedOut = false;
 			try {
 				const result = await doGlob(useGitignore);
-				// Sort by mtime descending (most recent first) in JS instead of native.
-				// This allows native glob to early-terminate at maxResults.
-				result.matches.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
 				matches = result.matches;
 			} catch (error) {
 				if (error instanceof Error && error.name === "AbortError") {
@@ -382,7 +393,11 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 				}
 				const seconds = timeoutMs % 1000 === 0 ? `${timeoutMs / 1000}` : (timeoutMs / 1000).toFixed(1);
 				const notice = `find timed out after ${seconds}s; returning ${partial.length} partial matches — increase timeout or narrow pattern`;
-				return buildResult(partial, { notice, forceTruncated: true });
+				return buildResult(partial.slice(normalizedSkip, normalizedSkip + effectiveLimit), {
+					notice,
+					forceTruncated: true,
+					canContinue: false,
+				});
 			}
 
 			const relativized: string[] = [];
@@ -395,7 +410,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 				relativized.push(formatMatchPath(match.path, match.fileType));
 			}
 
-			return buildResult(relativized);
+			return buildResult(relativized.slice(normalizedSkip, normalizedSkip + effectiveLimit));
 		});
 	}
 }
@@ -407,6 +422,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 interface FindRenderArgs {
 	paths?: string[];
 	limit?: number;
+	skip?: number;
 }
 
 const COLLAPSED_LIST_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
@@ -416,6 +432,7 @@ export const findToolRenderer = {
 	renderCall(args: FindRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		if (args.limit !== undefined) meta.push(`limit:${args.limit}`);
+		if (args.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
 
 		const text = renderStatusLine(
 			{ icon: "pending", title: "Find", description: args.paths?.join(", ") || "*", meta },

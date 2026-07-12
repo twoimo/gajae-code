@@ -1,0 +1,168 @@
+{
+  "topology": "N1",
+  "target": "darwin-arm64",
+  "measuredAt": "2026-07-10T14:08:01.464Z",
+  "status": "passed",
+  "addons": {
+    "monolith": {
+      "path": "packages/natives/native/pi_natives.darwin-arm64.node",
+      "uncompressedBytes": 35012832,
+      "compressedBytes": 8736856
+    },
+    "core": {
+      "path": "packages/natives/native/pi_natives_core.darwin-arm64.node",
+      "uncompressedBytes": 3236800,
+      "compressedBytes": 1450350
+    },
+    "shell": {
+      "path": "packages/natives/native/pi_natives_shell.darwin-arm64.node",
+      "uncompressedBytes": 8337456,
+      "compressedBytes": 3590411
+    },
+    "fullUncompressedBytes": 11574256,
+    "fullCompressedBytes": 5040761
+  },
+  "npmPackageBytes": 46812718,
+  "compiledBinary": {
+    "baseline": {
+      "path": "packages/coding-agent/binaries/gjc-darwin-arm64",
+      "bytes": 135949616
+    },
+    "core": {
+      "path": "packages/coding-agent/binaries/gjc-core-darwin-arm64",
+      "bytes": 82302128
+    }
+  },
+  "runtime": {
+    "baseline": {
+      "rssBytes": 74907648,
+      "wallP95Ms": 61.82404100000002,
+      "samples": [
+        {
+          "rssBytes": 74743808,
+          "wallMs": 61.82404100000002,
+          "loadedAddons": [
+            "pi_natives.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 74907648,
+          "wallMs": 60.694334000000026,
+          "loadedAddons": [
+            "pi_natives.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 74743808,
+          "wallMs": 56.38495799999998,
+          "loadedAddons": [
+            "pi_natives.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 74760192,
+          "wallMs": 55.05783399999996,
+          "loadedAddons": [
+            "pi_natives.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 74727424,
+          "wallMs": 55.33758399999999,
+          "loadedAddons": [
+            "pi_natives.darwin-arm64.node"
+          ]
+        }
+      ],
+      "warmups": 2,
+      "runs": 5
+    },
+    "core": {
+      "rssBytes": 58802176,
+      "wallP95Ms": 53.00258299999996,
+      "samples": [
+        {
+          "rssBytes": 58802176,
+          "wallMs": 50.07116600000006,
+          "loadedAddons": [
+            "pi_natives_core.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 58638336,
+          "wallMs": 49.828874999999925,
+          "loadedAddons": [
+            "pi_natives_core.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 58769408,
+          "wallMs": 50.64054199999998,
+          "loadedAddons": [
+            "pi_natives_core.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 58720256,
+          "wallMs": 51.2182499999999,
+          "loadedAddons": [
+            "pi_natives_core.darwin-arm64.node"
+          ]
+        },
+        {
+          "rssBytes": 58671104,
+          "wallMs": 53.00258299999996,
+          "loadedAddons": [
+            "pi_natives_core.darwin-arm64.node"
+          ]
+        }
+      ],
+      "warmups": 2,
+      "runs": 5
+    }
+  },
+  "gates": [
+    {
+      "name": "core-addon",
+      "actual": 3236800,
+      "limit": 21007699.2,
+      "pass": true
+    },
+    {
+      "name": "full-addons",
+      "actual": 11574256,
+      "limit": 38514115.2,
+      "pass": true
+    },
+    {
+      "name": "full-addons-compressed",
+      "actual": 5040761,
+      "limit": 9610541.600000001,
+      "pass": true
+    },
+    {
+      "name": "npm-package",
+      "actual": 46812718,
+      "limit": 51488910.00000001,
+      "pass": true
+    },
+    {
+      "name": "core-binary",
+      "actual": 82302128,
+      "limit": 108759692.80000001,
+      "pass": true
+    },
+    {
+      "name": "core-help-rss",
+      "actual": 58802176,
+      "limit": 63671500.8,
+      "pass": true
+    },
+    {
+      "name": "help-wall-p95",
+      "actual": 53.00258299999996,
+      "limit": 64.91524305000003,
+      "pass": true
+    }
+  ]
+}

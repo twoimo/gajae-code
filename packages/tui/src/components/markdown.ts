@@ -1,8 +1,11 @@
-import { LRUCache } from "lru-cache/raw";
+import * as crypto from "node:crypto";
+import type { RetainedMemoryRegistration, RetainedMemoryRegistryFacade } from "@gajae-code/utils";
+
 import { Marked, marked, type Token, Tokenizer, type Tokens } from "marked";
 import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
-import type { Component } from "../tui";
+import type { ViewportRowComponent, ViewportRowMetadata, ViewportRowWindow } from "../tui";
+
 import {
 	applyBackgroundToLine,
 	padding,
@@ -37,25 +40,132 @@ markdownParser.setOptions({
 });
 
 // ---------------------------------------------------------------------------
-// Module-level LRU render cache
+// Module-level byte-weighted caches
 // ---------------------------------------------------------------------------
-// Each session-tree navigation discards and recreates Markdown component
-// instances, so the per-instance #cachedLines field is always cold on first
-// render of a fresh component. This module-level cache survives across
-// component lifetimes and eliminates redundant marked.lexer + highlightCode
-// (Rust FFI) work for content/layout combinations already seen this session.
+//
+// Accounting model: UTF-8 payload bytes for keys, retained source, and rendered
+// output, plus fixed object/array/reference overhead. Parsed tokens additionally
+// include a conservative recursive estimate of their metadata and string fields.
+// This deliberately over-counts implementation details rather than treating JS
+// heap bytes as exactly measurable. Counters change only on cache mutation, so
+// registry sampling remains O(1).
+const MEBIBYTE = 1024 * 1024;
+export const MARKDOWN_CACHE_DEFAULT_BUDGET_BYTES = 32 * MEBIBYTE;
+const CACHE_ENTRY_OVERHEAD_BYTES = 96;
+const ARRAY_OVERHEAD_BYTES = 24;
+const ARRAY_ITEM_REFERENCE_BYTES = 8;
+const TOKEN_OBJECT_OVERHEAD_BYTES = 64;
+const TOKEN_PROPERTY_OVERHEAD_BYTES = 16;
 
-const RENDER_CACHE_MAX = 256; // sane cap: ~256 distinct message × width combos
-const renderCache = new LRUCache<
-	string,
-	{ source: string; lines: string[]; anchorSpans?: Array<ViewportAnchorSpan | null> }
->({
-	max: RENDER_CACHE_MAX,
-});
-const PARSE_CACHE_MAX = 128;
-const parseCache = new LRUCache<string, { source: string; tokens: Token[] }>({ max: PARSE_CACHE_MAX });
+export interface MarkdownCacheRetainedBytes {
+	readonly [name: string]: number;
+	render: number;
+	parse: number;
+	highlight: number;
+}
+
+interface ByteCacheEntry {
+	readonly bytes: number;
+}
+
+/** A compact LRU with exact incremental byte accounting for its own entries. */
+class ByteLru<K, V extends ByteCacheEntry> {
+	readonly #entries = new Map<K, V>();
+	readonly #maxBytes: number;
+	#bytes = 0;
+
+	constructor(maxBytes: number) {
+		this.#maxBytes = maxBytes;
+	}
+
+	get bytes(): number {
+		return this.#bytes;
+	}
+
+	get(key: K): V | undefined {
+		const entry = this.#entries.get(key);
+		if (entry === undefined) return undefined;
+		this.#entries.delete(key);
+		this.#entries.set(key, entry);
+		return entry;
+	}
+
+	set(key: K, entry: V): void {
+		const previous = this.#entries.get(key);
+		if (previous !== undefined) {
+			this.#entries.delete(key);
+			this.#bytes -= previous.bytes;
+		}
+		// An entry bigger than its pool cannot be retained without violating the
+		// session budget. The caller still receives the freshly computed result.
+		if (entry.bytes > this.#maxBytes) return;
+		this.#entries.set(key, entry);
+		this.#bytes += entry.bytes;
+		while (this.#bytes > this.#maxBytes) {
+			const oldest = this.#entries.entries().next().value;
+			if (oldest === undefined) break;
+			const [oldestKey, oldestEntry] = oldest;
+			this.#entries.delete(oldestKey);
+			this.#bytes -= oldestEntry.bytes;
+		}
+	}
+
+	clear(): void {
+		this.#entries.clear();
+		this.#bytes = 0;
+	}
+
+	/** Test-only audit oracle; production sampling must use bytes. */
+	entries(): IterableIterator<[K, V]> {
+		return this.#entries.entries();
+	}
+}
+
+interface RenderCacheEntry extends ByteCacheEntry {
+	readonly source: string;
+	readonly lines: string[];
+	readonly anchorSpans?: Array<ViewportAnchorSpan | null>;
+}
+
+interface TerminalOscShield {
+	readonly nonce: string;
+	readonly sequences: string[];
+}
+
+interface ParseCacheEntry extends ByteCacheEntry {
+	readonly source: string;
+	readonly tokens: Token[];
+	readonly terminalOscShield: TerminalOscShield;
+}
+
+interface HighlightCacheEntry extends ByteCacheEntry {
+	readonly source: string;
+	readonly lines: string[];
+}
+
+function splitMarkdownCacheBudget(totalBytes: number): MarkdownCacheRetainedBytes {
+	if (!Number.isSafeInteger(totalBytes) || totalBytes < 3) {
+		throw new Error("Markdown cache budget must be a safe integer of at least 3 bytes");
+	}
+	const render = Math.floor(totalBytes / 2);
+	const parse = Math.floor((totalBytes - render) / 2);
+	return { render, parse, highlight: totalBytes - render - parse };
+}
+
+let markdownCacheBudget = splitMarkdownCacheBudget(MARKDOWN_CACHE_DEFAULT_BUDGET_BYTES);
+let renderCache = new ByteLru<string, RenderCacheEntry>(markdownCacheBudget.render);
+let parseCache = new ByteLru<string, ParseCacheEntry>(markdownCacheBudget.parse);
+let highlightCache = new ByteLru<string, HighlightCacheEntry>(markdownCacheBudget.highlight);
 const MARKDOWN_STREAM_THROTTLE_MS = 64;
 let markdownNow = (): number => performance.now();
+
+/** Configure one session-wide cache budget with deterministic 1/2, 1/4, 1/4 splits. */
+export function configureMarkdownCacheBudget(totalBytes = MARKDOWN_CACHE_DEFAULT_BUDGET_BYTES): void {
+	markdownCacheBudget = splitMarkdownCacheBudget(totalBytes);
+	renderCache = new ByteLru<string, RenderCacheEntry>(markdownCacheBudget.render);
+	parseCache = new ByteLru<string, ParseCacheEntry>(markdownCacheBudget.parse);
+	highlightCache = new ByteLru<string, HighlightCacheEntry>(markdownCacheBudget.highlight);
+}
 
 // Viewport anchor offsets are numbered over each top-level token's width-invariant
 // source-text span (scaled to leave room for content rows) instead of the
@@ -72,15 +182,17 @@ export function __setMarkdownNowForTest(now: (() => number) | undefined): void {
 	markdownNow = now ?? (() => performance.now());
 }
 
-// Per-code-block highlight cache (F3): keyed by theme + lang + code so streaming
+// Per-code-block highlight cache (F3): keyed by theme + lang + hash so streaming
 // appends only highlight new/changed blocks instead of re-highlighting the whole
-// prefix on every chunk. Bounded LRU; cleared on theme change via clearRenderCache().
-const HIGHLIGHT_CACHE_MAX = 512;
-const highlightCache = new LRUCache<string, string[]>({ max: HIGHLIGHT_CACHE_MAX });
+// prefix on every chunk. Cleared on theme change via clearRenderCache().
+
+function utf8Bytes(value: string): number {
+	return Buffer.byteLength(value, "utf8");
+}
 
 function renderedLinesBytes(lines: readonly string[]): number {
-	let bytes = 0;
-	for (const line of lines) bytes += Buffer.byteLength(line, "utf8");
+	let bytes = ARRAY_OVERHEAD_BYTES + lines.length * ARRAY_ITEM_REFERENCE_BYTES;
+	for (const line of lines) bytes += utf8Bytes(line);
 	return bytes;
 }
 
@@ -92,6 +204,97 @@ function anchorSpansBytes(spans: readonly (ViewportAnchorSpan | null)[]): number
 	return bytes;
 }
 
+function tokenMetadataBytes(tokens: readonly Token[]): number {
+	let bytes = ARRAY_OVERHEAD_BYTES + tokens.length * ARRAY_ITEM_REFERENCE_BYTES;
+	const seen = new Set<object>();
+	const visit = (value: unknown): void => {
+		if (typeof value === "string") {
+			bytes += utf8Bytes(value) + TOKEN_PROPERTY_OVERHEAD_BYTES;
+			return;
+		}
+		if (value === null || typeof value !== "object" || seen.has(value)) return;
+		seen.add(value);
+		if (Array.isArray(value)) {
+			bytes += ARRAY_OVERHEAD_BYTES + value.length * ARRAY_ITEM_REFERENCE_BYTES;
+			for (const item of value) visit(item);
+			return;
+		}
+		bytes += TOKEN_OBJECT_OVERHEAD_BYTES;
+		for (const property of Object.values(value)) visit(property);
+	};
+	visit(tokens);
+	return bytes;
+}
+
+function cacheEntryBytes(key: string, source: string, payloadBytes: number): number {
+	return CACHE_ENTRY_OVERHEAD_BYTES + utf8Bytes(key) + utf8Bytes(source) + payloadBytes;
+}
+
+/** Drop all L2 cache entries. Call on theme change to prevent stale styled output. */
+export function clearRenderCache(): void {
+	renderCache.clear();
+	parseCache.clear();
+	highlightCache.clear();
+}
+
+/** Constant-time retained-byte counters for registry sampling and diagnostics. */
+export function getMarkdownCacheRetainedBytes(): MarkdownCacheRetainedBytes {
+	return { render: renderCache.bytes, parse: parseCache.bytes, highlight: highlightCache.bytes };
+}
+
+/** Constant-time total retained bytes for the Markdown caches. */
+export function getRenderCacheRetainedBytes(): number {
+	const { render, parse, highlight } = getMarkdownCacheRetainedBytes();
+	return render + parse + highlight;
+}
+
+/**
+ * Slow test audit oracle. It walks the cache and validates incremental counters;
+ * do not use it for production retained-memory sampling.
+ */
+export function __getMarkdownCacheRetainedBytesAuditForTest(): MarkdownCacheRetainedBytes {
+	const sum = <T extends ByteCacheEntry>(
+		entries: Iterable<[string, T]>,
+		calculate: (key: string, entry: T) => number,
+	): number => {
+		let bytes = 0;
+		for (const [key, entry] of entries) bytes += calculate(key, entry);
+		return bytes;
+	};
+	return {
+		render: sum(renderCache.entries(), (key, entry) =>
+			cacheEntryBytes(
+				key,
+				entry.source,
+				renderedLinesBytes(entry.lines) + (entry.anchorSpans ? anchorSpansBytes(entry.anchorSpans) : 0),
+			),
+		),
+		parse: sum(parseCache.entries(), (key, entry) =>
+			cacheEntryBytes(
+				key,
+				entry.source,
+				tokenMetadataBytes(entry.tokens) + terminalOscShieldBytes(entry.terminalOscShield),
+			),
+		),
+		highlight: sum(highlightCache.entries(), (key, entry) =>
+			cacheEntryBytes(key, entry.source, renderedLinesBytes(entry.lines)),
+		),
+	};
+}
+
+/** Registration hook for Slice 4. It samples only incremental cache counters. */
+export function registerMarkdownRetainedMemory(
+	registry: RetainedMemoryRegistryFacade,
+	id = "tui.markdown",
+): RetainedMemoryRegistration {
+	return registry.registerPool({
+		id,
+		bucketNames: ["render", "parse", "highlight"],
+		sampleBytes: getRenderCacheRetainedBytes,
+		sampleBuckets: getMarkdownCacheRetainedBytes,
+		onEvict: clearRenderCache,
+	});
+}
 // F18: cap synchronous (Rust FFI) syntax highlighting so a single huge fenced block
 // cannot stall the UI thread; oversized blocks render plain with a sanitized marker.
 const MAX_HIGHLIGHT_BYTES = 200_000;
@@ -122,27 +325,33 @@ function markdownContentKey(text: string): string {
 	return `${text.length}:${Bun.hash(text).toString(36)}`;
 }
 
+const MARKDOWN_OSC_SEQUENCE_REGEX = /\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)/gu;
+
+function shieldTerminalOscSequences(text: string): { text: string; terminalOscShield: TerminalOscShield } {
+	let nonce: string;
+	do {
+		nonce = crypto.randomUUID();
+	} while (text.includes(nonce));
+	const sequences: string[] = [];
+	return {
+		text: text.replaceAll(
+			MARKDOWN_OSC_SEQUENCE_REGEX,
+			sequence => `\uE000${nonce}:${sequences.push(sequence) - 1}\uE001`,
+		),
+		terminalOscShield: { nonce, sequences },
+	};
+}
+
+function terminalOscShieldBytes(terminalOscShield: TerminalOscShield): number {
+	return (
+		ARRAY_OVERHEAD_BYTES +
+		Buffer.byteLength(terminalOscShield.nonce) +
+		terminalOscShield.sequences.reduce((bytes, sequence) => bytes + Buffer.byteLength(sequence), 0)
+	);
+}
+
 function wrapTextIfNeeded(line: string, width: number): string[] {
 	return wrapTextWithAnsi(line, width);
-}
-
-/** Drop all L2 cache entries. Call on theme change to prevent stale styled output. */
-export function clearRenderCache(): void {
-	renderCache.clear();
-	parseCache.clear();
-	highlightCache.clear();
-}
-
-export function getRenderCacheRetainedBytes(): number {
-	let bytes = 0;
-	for (const entry of renderCache.values()) {
-		bytes += Buffer.byteLength(entry.source, "utf8");
-		bytes += renderedLinesBytes(entry.lines);
-		if (entry.anchorSpans) bytes += anchorSpansBytes(entry.anchorSpans);
-	}
-	for (const entry of parseCache.values()) bytes += Buffer.byteLength(entry.source, "utf8");
-	for (const lines of highlightCache.values()) bytes += renderedLinesBytes(lines);
-	return bytes;
 }
 
 // Stable numeric IDs for structural theme/style objects (no ID field on type).
@@ -252,7 +461,7 @@ function stripHtmlComments(raw: string): string {
 	return result;
 }
 
-export class Markdown implements Component {
+export class Markdown implements ViewportRowComponent {
 	#text: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
@@ -272,6 +481,7 @@ export class Markdown implements Component {
 	#lastFullParseAt = 0;
 	#onStaleThrottle?: () => void;
 	#staleThrottleTimer?: ReturnType<typeof setTimeout>;
+	#terminalOscShield: TerminalOscShield = { nonce: "", sequences: [] };
 
 	constructor(
 		text: string,
@@ -359,12 +569,16 @@ export class Markdown implements Component {
 	#highlightCodeBlock(code: string, lang: string): string[] | null {
 		if (!this.#theme.highlightCode) return null;
 		if (this.#exceedsHighlightCap(code)) return null;
-		const key = `${objectId(this.#theme)}\x00${lang}\x00${code}`;
+		const key = `${objectId(this.#theme)}\x00${lang}\x00${markdownContentKey(code)}`;
 		const cached = highlightCache.get(key);
-		if (cached) return cached;
+		if (cached !== undefined && cached.source === code) return cached.lines;
 		highlightCallCount += 1;
 		const result = this.#theme.highlightCode(code, lang || undefined);
-		highlightCache.set(key, result);
+		highlightCache.set(key, {
+			source: code,
+			lines: result,
+			bytes: cacheEntryBytes(key, code, renderedLinesBytes(result)),
+		});
 		return result;
 	}
 
@@ -390,6 +604,12 @@ export class Markdown implements Component {
 		return this.#render(width, false).lines;
 	}
 
+	#restoreTerminalOscSequences(text: string): string {
+		const { nonce, sequences } = this.#terminalOscShield;
+		return text.replaceAll(new RegExp(`\\uE000${nonce}:(\\d+)\\uE001`, "gu"), (_placeholder, index: string) => {
+			return sequences[Number(index)] ?? _placeholder;
+		});
+	}
 	#render(width: number, includeAnchors: boolean): { lines: string[]; spans?: Array<ViewportAnchorSpan | null> } {
 		// L1: per-instance cache — fastest path for repeated renders of the same
 		// instance at the same width (e.g. resize debounce, repeated redraws).
@@ -430,10 +650,12 @@ export class Markdown implements Component {
 			return { lines: result, spans: this.#cachedAnchorSpans };
 		}
 
-		// Replace tabs with 3 spaces for consistent rendering
-		const normalizedText = replaceTabs(this.#text);
+		// Shield OSC sequences while Marked tokenizes so URLs inside terminal controls
+		// cannot become a second, malformed Markdown hyperlink. Each shield nonce is
+		// absent from the source, so only placeholders created by this pass restore.
+		const sourceText = replaceTabs(this.#text);
 		this.#clearStaleThrottleTimer();
-		const contentKey = markdownContentKey(normalizedText);
+		const contentKey = markdownContentKey(sourceText);
 
 		// L2: module-level LRU — survives component disposal/recreation across
 		// session-tree navigations. Key encodes every dimension that affects the
@@ -446,7 +668,7 @@ export class Markdown implements Component {
 		const cached = renderCache.get(cacheKey);
 		if (
 			cached !== undefined &&
-			cached.source === normalizedText &&
+			cached.source === sourceText &&
 			(!includeAnchors || cached.anchorSpans !== undefined)
 		) {
 			// Populate L1 so subsequent calls from this instance are O(1) map lookup.
@@ -462,13 +684,25 @@ export class Markdown implements Component {
 		// final wrapped output must differ by width.
 		const cachedParse = parseCache.get(contentKey);
 		let tokens: Token[];
-		if (cachedParse !== undefined && cachedParse.source === normalizedText) {
+		if (cachedParse !== undefined && cachedParse.source === sourceText) {
 			tokens = cachedParse.tokens;
+			this.#terminalOscShield = cachedParse.terminalOscShield;
 		} else {
+			const { text: normalizedText, terminalOscShield } = shieldTerminalOscSequences(sourceText);
 			__markdownPerfCounters.lexerInvocations += 1;
 			__markdownPerfCounters.lexedBytes += normalizedText.length;
 			tokens = markdownParser.lexer(normalizedText);
-			parseCache.set(contentKey, { source: normalizedText, tokens });
+			this.#terminalOscShield = terminalOscShield;
+			parseCache.set(contentKey, {
+				source: sourceText,
+				tokens,
+				terminalOscShield,
+				bytes: cacheEntryBytes(
+					contentKey,
+					sourceText,
+					tokenMetadataBytes(tokens) + terminalOscShieldBytes(terminalOscShield),
+				),
+			});
 		}
 
 		// Convert tokens to styled terminal output. When anchoring, record each
@@ -488,7 +722,11 @@ export class Markdown implements Component {
 			const tokenLines = this.#renderToken(token, contentWidth, nextToken?.type, undefined, units);
 			renderedLines.push(...tokenLines);
 			if (includeAnchors) {
-				const rawLength = "raw" in token && typeof token.raw === "string" ? token.raw.length : 0;
+				const rawLength =
+					"raw" in token && typeof token.raw === "string"
+						? this.#restoreTerminalOscSequences(token.raw).length
+						: 0;
+
 				const srcLo = srcOffset;
 				srcOffset += Math.max(1, rawLength);
 				// units must align 1:1 with the token's rendered lines; if a renderer
@@ -624,24 +862,42 @@ export class Markdown implements Component {
 
 		// Update L2 module-level LRU so future instances with the same key skip
 		// the marked.lexer + highlightCode (Rust FFI) work entirely.
-		renderCache.set(cacheKey, { source: normalizedText, lines: result, ...(anchorSpans ? { anchorSpans } : {}) });
+		renderCache.set(cacheKey, {
+			source: sourceText,
+
+			lines: result,
+			...(anchorSpans ? { anchorSpans } : {}),
+			bytes: cacheEntryBytes(
+				cacheKey,
+				sourceText,
+				renderedLinesBytes(result) + (anchorSpans ? anchorSpansBytes(anchorSpans) : 0),
+			),
+		});
 
 		return { lines: result, spans: anchorSpans };
 	}
 
-	renderWithViewportAnchorSource(
-		width: number,
-		source: { id: string },
-	): {
-		lines: string[];
-		anchors: Array<({ id: string } & ViewportAnchorSpan) | null>;
-	} {
+	renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
 		const { lines, spans } = this.#render(width, true);
-		if (!spans) throw new Error("Viewport anchor source render completed without row spans");
+		if (!spans) throw new Error("Markdown bounded metadata render completed without row spans");
+		const from = Math.max(0, start);
+		const to = Math.max(from, end);
 		return {
-			lines,
-			anchors: spans.map(span => (span ? { id: source.id, ...span } : null)),
+			lines: lines.slice(from, to),
+			metadata: spans
+				.slice(from, to)
+				.map((span): ViewportRowMetadata | null =>
+					span ? { identity: undefined, revision: undefined, ...span } : null,
+				),
 		};
+	}
+
+	getLogicalRowCount(width: number): number {
+		return this.#render(width, false).lines.length;
+	}
+
+	renderRows(width: number, start: number, end: number): string[] {
+		return this.#render(width, false).lines.slice(Math.max(0, start), Math.max(0, end));
 	}
 
 	/**
@@ -903,7 +1159,7 @@ export class Markdown implements Component {
 		const resolvedStyleContext = styleContext ?? this.#getDefaultInlineStyleContext();
 		const { applyText, stylePrefix } = resolvedStyleContext;
 		const applyTextWithNewlines = (text: string): string => {
-			const segments: string[] = text.split("\n");
+			const segments: string[] = this.#restoreTerminalOscSequences(text).split("\n");
 			return segments.map((segment: string) => applyText(segment)).join("\n");
 		};
 
@@ -936,7 +1192,8 @@ export class Markdown implements Component {
 				}
 
 				case "codespan":
-					result += this.#theme.code(token.text) + stylePrefix;
+					result += this.#theme.code(this.#restoreTerminalOscSequences(token.text)) + stylePrefix;
+
 					break;
 
 				case "link": {
@@ -969,7 +1226,10 @@ export class Markdown implements Component {
 
 				case "html": {
 					// HTML comments are markup-only separators; keep other inline HTML visible as text.
-					const visibleHtml = "raw" in token && typeof token.raw === "string" ? stripHtmlComments(token.raw) : "";
+					const visibleHtml =
+						"raw" in token && typeof token.raw === "string"
+							? stripHtmlComments(this.#restoreTerminalOscSequences(token.raw))
+							: "";
 					if (visibleHtml.trim().length > 0) {
 						result += applyTextWithNewlines(visibleHtml);
 					}

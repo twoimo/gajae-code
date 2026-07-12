@@ -18,7 +18,7 @@ import {
 	REMOTE_REFRESH_SENTINEL,
 	type StoredAuthCredential,
 } from "../auth-storage";
-import type { Provider } from "../types";
+import { type AttemptController, isAttemptBudgetExceededError, type Provider } from "../types";
 import type { UsageReport } from "../usage";
 import type { OAuthCredentials } from "../utils/oauth/types";
 import { type AuthBrokerClient, AuthBrokerStreamUnsupportedError } from "./client";
@@ -281,11 +281,15 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return this.#generation !== previousGeneration;
 	}
 
-	async prepareForRequest(credentialId: number, opts: { signal?: AbortSignal } = {}): Promise<boolean> {
+	async prepareForRequest(
+		credentialId: number,
+		opts: { signal?: AbortSignal; consumeAttempt?: AttemptController } = {},
+	): Promise<boolean> {
 		const entry = this.#snapshot.credentials.find(candidate => candidate.id === credentialId);
 		if (entry?.credential.type !== "oauth" || entry.rotatesInMs === null) return false;
 		const remainingMs = this.#snapshotReceivedAt + entry.rotatesInMs - Date.now();
 		if (remainingMs > WAIT_THRESHOLD_MS) return false;
+		opts.consumeAttempt?.("credential-broker");
 		return this.waitForFreshSnapshot(MAX_WAIT_MS, opts);
 	}
 
@@ -490,8 +494,9 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		credentialId: number,
 		_credential: OAuthCredential,
 		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
 	): Promise<OAuthCredentials> {
-		const { entry } = await this.#client.refreshCredential(credentialId, signal);
+		const { entry } = await this.#client.refreshCredential(credentialId, signal, consumeAttempt);
 		if (!this.#streamingActive) {
 			await this.refreshSnapshot().catch(error => {
 				logger.debug("auth-broker snapshot refresh after credential refresh failed", { error: String(error) });
@@ -518,8 +523,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	 * rate-limited by Anthropic's per-IP `/usage` cap the way a heavy
 	 * residential laptop is, so all credentials surface every cycle.
 	 */
-	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
-		return this.#raceWithSignal(this.#loadUsageReports(), signal);
+	async fetchUsageReports(signal?: AbortSignal, consumeAttempt?: AttemptController): Promise<UsageReport[] | null> {
+		return this.#raceWithSignal(this.#loadUsageReports(consumeAttempt), signal);
 	}
 
 	/**
@@ -535,8 +540,9 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		provider: Provider,
 		credential: OAuthCredential,
 		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
 	): Promise<UsageReport | null> {
-		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
+		const reports = await this.#raceWithSignal(this.#loadUsageReports(consumeAttempt), signal);
 		if (!reports) return null;
 		return matchUsageReport(reports, provider, credential);
 	}
@@ -569,7 +575,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		});
 	}
 
-	#loadUsageReports(): Promise<UsageReport[] | null> {
+	#loadUsageReports(consumeAttempt?: AttemptController): Promise<UsageReport[] | null> {
 		const cached = this.#usageCache;
 		if (cached && Date.now() - cached.fetchedAt < USAGE_CACHE_TTL_MS) {
 			return Promise.resolve(cached.reports);
@@ -577,12 +583,13 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		if (this.#usageInflight) return this.#usageInflight;
 		const epoch = this.#usageCacheEpoch;
 		const inflight = this.#client
-			.fetchUsage()
+			.fetchUsage(undefined, consumeAttempt)
 			.then(body => {
 				if (this.#usageCacheEpoch === epoch) this.#usageCache = { reports: body.reports, fetchedAt: Date.now() };
 				return body.reports;
 			})
 			.catch(error => {
+				if (isAttemptBudgetExceededError(error)) throw error;
 				logger.warn("auth-broker usage fetch failed", { error: String(error) });
 				return null;
 			})

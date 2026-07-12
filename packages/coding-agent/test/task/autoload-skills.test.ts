@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "../../src/config/settings";
 import type { Skill } from "../../src/extensibility/skills";
-import * as skillsModule from "../../src/extensibility/skills";
 import type { CreateAgentSessionResult } from "../../src/sdk";
 import * as sdkModule from "../../src/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
@@ -116,6 +115,7 @@ describe("autoloadSkills in executor", () => {
 				filePath: "/skills/user-created-skill-a/SKILL.md",
 				baseDir: "/skills/user-created-skill-a",
 				source: "user",
+				content: "Content of user-created-skill-a",
 			},
 			{
 				name: "user-created-skill-b",
@@ -123,18 +123,9 @@ describe("autoloadSkills in executor", () => {
 				filePath: "/skills/user-created-skill-b/SKILL.md",
 				baseDir: "/skills/user-created-skill-b",
 				source: "user",
+				content: "Content of user-created-skill-b",
 			},
 		];
-
-		vi.spyOn(skillsModule, "buildSkillPromptMessage").mockImplementation(async skill => ({
-			message: `Content of ${skill.name}\n\n---\n\nSkill: ${skill.filePath}`,
-			details: {
-				name: skill.name,
-				path: skill.filePath,
-				args: undefined,
-				lineCount: 1,
-			},
-		}));
 
 		await runSubprocess({
 			...baseOptions,
@@ -152,7 +143,12 @@ describe("autoloadSkills in executor", () => {
 				customType: SKILL_PROMPT_MESSAGE_TYPE,
 				content: expect.stringContaining("Content of user-created-skill-a"),
 				display: false,
-				details: { name: "user-created-skill-a", path: "/skills/user-created-skill-a/SKILL.md" },
+				details: {
+					name: "user-created-skill-a",
+					path: "/skills/user-created-skill-a/SKILL.md",
+					args: undefined,
+					lineCount: 1,
+				},
 			},
 			{ triggerTurn: false },
 		);
@@ -164,7 +160,12 @@ describe("autoloadSkills in executor", () => {
 				customType: SKILL_PROMPT_MESSAGE_TYPE,
 				content: expect.stringContaining("Content of user-created-skill-b"),
 				display: false,
-				details: { name: "user-created-skill-b", path: "/skills/user-created-skill-b/SKILL.md" },
+				details: {
+					name: "user-created-skill-b",
+					path: "/skills/user-created-skill-b/SKILL.md",
+					args: undefined,
+					lineCount: 1,
+				},
 			},
 			{ triggerTurn: false },
 		);
@@ -249,12 +250,8 @@ describe("autoloadSkills in executor", () => {
 			filePath: "/skills/user-created-skill/SKILL.md",
 			baseDir: "/skills/user-created-skill",
 			source: "user",
+			content: "Skill content",
 		};
-
-		vi.spyOn(skillsModule, "buildSkillPromptMessage").mockResolvedValue({
-			message: "Skill content\n\n---\n\nSkill: /skills/user-created-skill/SKILL.md",
-			details: { name: "user-created-skill", path: "/skills/user-created-skill/SKILL.md", lineCount: 1 },
-		});
 
 		await runSubprocess({
 			...baseOptions,

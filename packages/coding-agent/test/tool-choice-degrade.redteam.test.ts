@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { AgentToolResult } from "@gajae-code/agent-core";
 import type { Api, Model, ToolChoice } from "@gajae-code/ai";
 import { clearToolChoiceIncapabilityRegistryForTests, markToolChoiceIncapability } from "@gajae-code/ai";
-import { ToolChoiceQueue } from "@gajae-code/coding-agent/session/tool-choice-queue";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { queueResolveHandler } from "@gajae-code/coding-agent/tools/resolve";
-import { ToolError } from "@gajae-code/coding-agent/tools/tool-errors";
-import { buildNamedToolChoiceResult } from "@gajae-code/coding-agent/utils/tool-choice";
+import { ToolChoiceQueue } from "../src/session/tool-choice-queue";
+import type { ToolSession } from "../src/tools";
+import { queueResolveHandler } from "../src/tools/resolve";
+import { ToolError } from "../src/tools/tool-errors";
+import { buildNamedToolChoiceResult } from "../src/utils/tool-choice";
 
 const forcedResolve = { type: "tool", name: "resolve" } as const satisfies ToolChoice;
 const forcedTodoWrite = { type: "tool", name: "todo_write" } as const satisfies ToolChoice;

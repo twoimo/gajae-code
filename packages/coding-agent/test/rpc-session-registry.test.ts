@@ -7,7 +7,7 @@ import {
 	type RpcSessionRecord,
 	registerRpcSession,
 	unregisterRpcSession,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/session-registry";
+} from "../src/modes/shared/agent-wire/session-registry";
 
 let agentDir: string;
 

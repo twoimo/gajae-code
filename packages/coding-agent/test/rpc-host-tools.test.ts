@@ -3,14 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentEvent } from "@gajae-code/agent-core";
-import { RpcHostToolBridge } from "@gajae-code/coding-agent/modes/rpc/host-tools";
-import { defineRpcClientTool, RpcClient } from "@gajae-code/coding-agent/modes/rpc/rpc-client";
+import { RpcHostToolBridge } from "../src/modes/rpc/host-tools";
+import { defineRpcClientTool, RpcClient } from "../src/modes/rpc/rpc-client";
 import type {
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
 	RpcHostToolUpdate,
 	RpcWorkflowGate,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-types";
+} from "../src/modes/rpc/rpc-types";
 
 const tempPaths: string[] = [];
 

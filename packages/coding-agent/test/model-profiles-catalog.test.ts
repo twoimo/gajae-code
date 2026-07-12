@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import modelsJson from "../../ai/src/models.json";
 import {
 	BUILTIN_MODEL_PROFILES,
 	formatAvailableProfileNames,
@@ -8,10 +9,9 @@ import {
 	mergeModelProfiles,
 	recommendModelProfileForProvider,
 	resolveProfileBindings,
-} from "@gajae-code/coding-agent/config/model-profiles";
-import { parseModelString } from "@gajae-code/coding-agent/config/model-resolver";
-import { ProfileModelSelectorSchema } from "@gajae-code/coding-agent/config/models-config-schema";
-import modelsJson from "../../ai/src/models.json";
+} from "../src/config/model-profiles";
+import { parseModelString } from "../src/config/model-resolver";
+import { ProfileModelSelectorSchema } from "../src/config/models-config-schema";
 
 type Role = "default" | "executor" | "planner" | "critic" | "architect";
 

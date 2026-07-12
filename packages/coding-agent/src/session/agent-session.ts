@@ -62,6 +62,8 @@ import {
 } from "@gajae-code/agent-core/compaction/pruning";
 import type {
 	AssistantMessage,
+	AttemptBudgetEnvelope,
+	AttemptKind,
 	Context,
 	Effort,
 	ImageContent,
@@ -81,6 +83,7 @@ import {
 	calculateRateLimitBackoffMs,
 	clearAnthropicFastModeFallback,
 	getSupportedEfforts,
+	isAttemptBudgetExceededError,
 	isContextOverflow,
 	isUsageLimitError,
 	modelsAreEqual,
@@ -88,6 +91,12 @@ import {
 	resolveServiceTier,
 	streamSimple,
 } from "@gajae-code/ai";
+import {
+	type RetainedMemoryRegistration,
+	RetainedMemoryRegistry,
+	type RetainedMemoryRegistryFacade,
+	type RetainedMemorySnapshot,
+} from "@gajae-code/utils/retained-memory";
 
 export interface ForkContextSeedMetadata {
 	sourceSessionId: string;
@@ -193,6 +202,7 @@ import { loadActiveSubskillTools } from "../extensibility/gjc-plugins/tools";
 import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
+import { getWorkflowRuntimeStateFragment } from "../extensibility/workflow-fragments";
 import { buildGjcRuntimeSessionEnv, consumePendingGoalModeRequest } from "../gjc-runtime/goal-mode-request";
 import {
 	assertNonEmptyGjcSessionId,
@@ -244,7 +254,9 @@ import {
 	readVisibleSkillActiveState,
 	syncSkillActiveState,
 } from "../skill-state/active-state";
-import { assertWorkflowMutationAllowed } from "../skill-state/deep-interview-mutation-guard";
+import { getWorkflowMutationDecision } from "../skill-state/deep-interview-mutation-guard";
+import { WORKFLOW_STATE_VERSION } from "../skill-state/workflow-state-version";
+
 import { invalidateHostMetadata } from "../ssh/connection-manager";
 import { buildVolatileProjectContext } from "../system-prompt";
 import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
@@ -262,9 +274,15 @@ import {
 } from "../tools/ask-answer-registry";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
+import {
+	registerToolCapability,
+	resolveToolCapability,
+	type ToolCapabilityDescriptor,
+	transferToolCapability,
+} from "../tools/capabilities";
 import type { CheckpointState } from "../tools/checkpoint";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
-import { normalizeLocalScheme, resolveReadPath, resolveToCwd } from "../tools/path-utils";
+import { normalizeLocalScheme, resolveReadPath, resolveToCwd, splitPathAndSel } from "../tools/path-utils";
 import { registerResourceGcSession } from "../tools/resource-gc";
 import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from "../tools/todo-write";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
@@ -284,6 +302,9 @@ import {
 	type ContributionPrepResult,
 	prepareContributionPrep,
 } from "./contribution-prep";
+import { RetryCoordinator, type RetryCoordinatorSettings } from "./coordinators/retry-coordinator";
+import { SessionStoreCoordinator } from "./coordinators/session-store-coordinator";
+import { ToolPolicyCoordinator } from "./coordinators/tool-policy-coordinator";
 import { pruneStaleFileMentions } from "./file-mention-pruning";
 import {
 	type BashExecutionMessage,
@@ -296,6 +317,7 @@ import {
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
 } from "./messages";
+import { evaluatePlanningCapability } from "./planning-capability-guard";
 import { isLegacyProviderSafetyStopMessage } from "./provider-safety-stop";
 import { formatSessionDumpText } from "./session-dump-format";
 import type {
@@ -303,6 +325,7 @@ import type {
 	CompactionEntry,
 	NewSessionOptions,
 	SessionContext,
+	SessionForkOptions,
 	SessionManager,
 	SessionManagerCloseOutcome,
 } from "./session-manager";
@@ -338,8 +361,15 @@ export type AgentSessionEvent =
 			delayMs: number;
 			errorMessage: string;
 			unbounded?: boolean;
+			diagnostics?: RetryBudgetDiagnostics;
 	  }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| {
+			type: "auto_retry_end";
+			success: boolean;
+			attempt: number;
+			finalError?: string;
+			diagnostics?: RetryBudgetDiagnostics;
+	  }
 	| { type: "retry_fallback_applied"; from: string; to: string; role: string }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
 	| { type: "ttsr_triggered"; rules: Rule[] }
@@ -350,6 +380,29 @@ export type AgentSessionEvent =
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| { type: "thinking_level_changed"; thinkingLevel: ThinkingLevel | undefined }
 	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
+
+export interface RetryBudgetDiagnostics {
+	outerRetryCount: number;
+	totalPhysicalAttempts: number;
+	attemptKind?: AttemptKind;
+	attemptLayer?: "provider" | "credential" | "maintenance" | "gateway";
+	provider?: string;
+	model?: string;
+	elapsedMs: number;
+	deadlineMs: number;
+	costKnown: boolean;
+	accumulatedCostUsd?: number;
+	costCeilingUsd?: number;
+	terminalReason?:
+		| "attempts"
+		| "deadline"
+		| "cost"
+		| "outer_retries"
+		| "cancelled"
+		| "recovery_failure"
+		| "non_retryable"
+		| "success";
+}
 
 function isUnderProjectGjc(cwd: string, targetPath: string): boolean {
 	const relative = path.relative(path.join(path.resolve(cwd), ".gjc"), path.resolve(targetPath));
@@ -382,6 +435,8 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
+	/** Whether the session is client-driven/non-interactive. */
+	unattended?: boolean;
 	/** Models to cycle through with Alt+N (from --models flag) */
 	scopedModels?: ScopedModelSelection[];
 	/** Initial session thinking selector. */
@@ -441,6 +496,8 @@ export interface AgentSessionConfig {
 	initialSelectedMCPToolNames?: string[];
 	/** Whether constructor-provided MCP defaults should be persisted immediately. */
 	persistInitialMCPToolSelection?: boolean;
+	/** Discoverable built-in tool names to activate for the current session. */
+	initialSelectedDiscoveredBuiltinToolNames?: string[];
 	/** MCP server names whose tools should seed discovery-mode sessions whenever those servers are connected. */
 	defaultSelectedMCPServerNames?: string[];
 	/** MCP tool names that should seed brand-new sessions created from this AgentSession. */
@@ -459,6 +516,8 @@ export interface AgentSessionConfig {
 	ownedAsyncJobManager?: AsyncJobManager;
 	/** Cheap TUI retained-memory counters; absent for headless sessions. */
 	retainedMemorySampler?: () => RetainedMemorySample;
+	/** Injected retained-memory authority; defaults to a session-local registry. */
+	retainedMemoryRegistry?: RetainedMemoryRegistry;
 	/**
 	 * MCPManager whose lifecycle this session owns (top-level sessions that
 	 * connected plugin-bundle MCP servers). Only the owned manager is
@@ -783,7 +842,7 @@ function createHandoffFileName(date = new Date()): string {
 // ============================================================================
 
 /** Tools that require user permission before execution when an ACP client is connected. */
-const PERMISSION_REQUIRED_TOOLS = new Set(["bash", "monitor", "edit", "delete", "move"]);
+const PERMISSION_REQUIRED_TOOLS = new Set(["bash", "monitor", "edit", "write", "delete", "move"]);
 
 function isShellExecutionPermissionTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "monitor";
@@ -847,10 +906,11 @@ function getEditDestructiveIntent(args: unknown): { kind: "delete" | "move"; pat
 	return undefined;
 }
 
-function getPermissionIntent(
+async function getPermissionIntent(
 	toolName: string,
 	args: unknown,
-): { toolName: string; title: string; paths?: string[]; cacheKey: string } | undefined {
+	cwd?: string,
+): Promise<{ toolName: string; title: string; paths?: string[]; cacheKey: string } | undefined> {
 	const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 	if (isShellExecutionPermissionTool(toolName)) {
 		const cmd = getStringProperty(a, "command")?.slice(0, 80);
@@ -870,6 +930,29 @@ function getPermissionIntent(
 			paths: from ? [from] : undefined,
 			cacheKey: toolName,
 		};
+	}
+	if (toolName === "write") {
+		const rawPath = getStringProperty(a, "path");
+		const content = getStringProperty(a, "content");
+		if (!rawPath) return undefined;
+		if (/\.(?:sqlite|sqlite3|db|db3):[^:]+:[^:]+$/i.test(rawPath) && content === "") {
+			return { toolName, title: `Delete ${rawPath}`, paths: [rawPath], cacheKey: "write:delete" };
+		}
+		let exists: boolean;
+		try {
+			const parsedPath = splitPathAndSel(rawPath).path;
+			fs.statSync(resolveToCwd(parsedPath, cwd ?? process.cwd()));
+			exists = true;
+		} catch (error) {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+				exists = false;
+			} else {
+				return { toolName, title: `Overwrite ${rawPath}`, paths: [rawPath], cacheKey: "write:overwrite" };
+			}
+		}
+		return exists
+			? { toolName, title: `Overwrite ${rawPath}`, paths: [rawPath], cacheKey: "write:overwrite" }
+			: undefined;
 	}
 	if (toolName === "edit") {
 		const intent = getEditDestructiveIntent(args);
@@ -1108,6 +1191,9 @@ export function buildContextInjectionSignature(kind: string, parts: readonly str
 
 const STREAMING_EDIT_FILE_CACHE_MAX_ENTRIES = 16;
 const STREAMING_EDIT_FILE_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+// Conservative structural estimate for the canonical session entry array plus ID/parent indexes;
+// provider-visible content is accounted separately and must not be double-counted here.
+const SESSION_HISTORY_ENTRY_OVERHEAD_BYTES = 128;
 
 type StreamingEditFileCacheEntry = {
 	content: string;
@@ -1222,16 +1308,19 @@ export class AgentSession {
 	#planReferencePath = "local://PLAN.md";
 	#clientBridge: ClientBridge | undefined;
 	#allowAcpAgentInitiatedTurns = false;
+	#unattended = false;
 	/** Per-session memory of allow_always / reject_always decisions for gated tools. */
 	#acpPermissionDecisions: Map<string, "allow_always" | "reject_always"> = new Map();
-	#guardedToolWrapperCache = new WeakMap<AgentTool, Map<string, AgentTool>>();
-	#acpPermissionWrapperVersion = 0;
+	readonly #toolPolicyCoordinator: ToolPolicyCoordinator;
 
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
 	#autoCompactionAbortController: AbortController | undefined = undefined;
 	#resourceSampler: () => EmergencyCompactionSample = () => this.#defaultResourceSample();
 	#retainedMemorySampler: (() => RetainedMemorySample) | undefined;
+	readonly #retainedMemoryRegistry: RetainedMemoryRegistry;
+	readonly #retainedMemoryRegistrations: RetainedMemoryRegistration[] = [];
+	#retainedMemorySampleTimer: NodeJS.Timeout | undefined;
 	#prePromptContextCheckPromise: Promise<void> | undefined = undefined;
 
 	// Branch summarization state
@@ -1248,6 +1337,8 @@ export class AgentSession {
 	#retryPromise: Promise<void> | undefined = undefined;
 	#retryResolve: (() => void) | undefined = undefined;
 	#activeRetryFallback: ActiveRetryFallbackState | undefined = undefined;
+	readonly #retryCoordinator = new RetryCoordinator();
+	readonly #sessionStoreCoordinator: SessionStoreCoordinator;
 	// Todo completion reminder state
 	#todoReminderCount = 0;
 	#lastGoalReminderAssistantTimestamp: number | undefined = undefined;
@@ -1308,7 +1399,7 @@ export class AgentSession {
 	#mcpPromptCommands: LoadedCustomCommand[] = [];
 
 	#skillsSettings: SkillsSettings | undefined;
-	#activeSkillState: { skill: string; sessionId?: string } | undefined;
+	#activeSkillState: { skill: string; sessionId?: string; phase?: string } | undefined;
 
 	// Model registry for API key resolution
 	#modelRegistry: ModelRegistry;
@@ -1516,6 +1607,17 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.#sessionStoreCoordinator = new SessionStoreCoordinator(this.sessionManager);
+		this.#unattended = config.unattended ?? false;
+		this.#toolPolicyCoordinator = new ToolPolicyCoordinator(
+			() => this.#guardedToolWrapperCacheKey(),
+			tool => this.#composeToolPolicies(tool),
+		);
+		this.agent.consumeAttempt = Object.assign((kind?: AttemptKind) => this.#consumeRetryAttempt(kind), {
+			snapshot: () => this.#retryAttemptBudgetSnapshot(),
+			reconcile: (snapshot: AttemptBudgetEnvelope) => this.#reconcileRetryAttemptBudget(snapshot),
+			reportCost: (costUsd?: number) => this.#reportRetryCost(costUsd),
+		});
 		this.taskDepth = config.taskDepth ?? 0;
 		// Register this session with the process-wide resource GC (idle/RSS browser-tab eviction
 		// + stale screenshot cleanup). Session-keyed so concurrent sessions share one timer safely.
@@ -1535,6 +1637,24 @@ export class AgentSession {
 		this.#evalKernelOwnerId = config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`;
 		this.#ownedAsyncJobManager = config.ownedAsyncJobManager;
 		this.#retainedMemorySampler = config.retainedMemorySampler;
+		this.#retainedMemoryRegistry = config.retainedMemoryRegistry ?? new RetainedMemoryRegistry();
+		this.#retainedMemoryRegistrations.push(
+			this.#retainedMemoryRegistry.registerPool({
+				id: `agent-loop:${this.#evalKernelOwnerId}`,
+				bucketNames: ["provider-messages"],
+				sampleBytes: () => this.agent.appendOnlyContext?.log.retainedContentBytes ?? 0,
+				sampleBuckets: () => ({
+					"provider-messages": this.agent.appendOnlyContext?.log.retainedContentBytes ?? 0,
+				}),
+			}),
+			this.#retainedMemoryRegistry.register({
+				id: `session-index-history:${this.#evalKernelOwnerId}`,
+				sampleBytes: () => this.state.messages.length * SESSION_HISTORY_ENTRY_OVERHEAD_BYTES,
+			}),
+		);
+		this.#sampleRetainedMemory();
+		this.#retainedMemorySampleTimer = setInterval(() => this.#sampleRetainedMemory(), 5_000);
+		this.#retainedMemorySampleTimer.unref();
 		this.#ownedMcpManager = config.ownedMcpManager;
 		this.#scopedModels = config.scopedModels ?? [];
 		this.#thinkingLevel = config.thinkingLevel;
@@ -1550,6 +1670,7 @@ export class AgentSession {
 			this.#providerSessionState = config.providerSessionState;
 		}
 		this.#validateRetryFallbackChains();
+		this.#validateUnboundedRetryContext();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
 		this.#workflowGateToolSession = config.workflowGateToolSession;
 		this.#requestedToolNames = config.requestedToolNames;
@@ -1580,7 +1701,7 @@ export class AgentSession {
 				};
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
-		this.#setGuardedAgentTools(this.agent.state.tools);
+		this.#setPreparedAgentTools(this.agent.state.tools);
 		this.yieldQueue = new YieldQueue({
 			isStreaming: () => this.isStreaming,
 			injectStreaming: message => this.agent.followUp(message),
@@ -1614,6 +1735,11 @@ export class AgentSession {
 		this.#defaultSelectedMCPServerNames = new Set(config.defaultSelectedMCPServerNames ?? []);
 		this.#defaultSelectedMCPToolNames = new Set(config.defaultSelectedMCPToolNames ?? []);
 		this.#pruneSelectedMCPToolNames();
+		this.#selectedDiscoveredToolNames = new Set(
+			(config.initialSelectedDiscoveredBuiltinToolNames ?? []).filter(name =>
+				this.#isSelectableDiscoveredBuiltinToolName(name),
+			),
+		);
 		const persistedSelectedMCPToolNames = this.buildDisplaySessionContext().selectedMCPToolNames;
 		const currentSelectedMCPToolNames = this.getSelectedMCPToolNames();
 		const persistInitialMCPToolSelection =
@@ -2241,6 +2367,9 @@ export class AgentSession {
 			});
 		}
 
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			this.agent.consumeAttempt?.reportCost?.(event.message.usage.cost.total);
+		}
 		await this.#emitSessionEvent(displayEvent);
 		if (
 			displayEvent !== event &&
@@ -2496,6 +2625,7 @@ export class AgentSession {
 						type: "auto_retry_end",
 						success: true,
 						attempt: this.#retryAttempt,
+						diagnostics: this.#retryBudgetDiagnostics("success"),
 					});
 					this.#retryAttempt = 0;
 					// Settle the retry gate here, colocated with the success event, rather
@@ -2628,12 +2758,14 @@ export class AgentSession {
 				// A prior retry ended on a non-retryable (terminal) message: emit
 				// the terminal retry-end and reset so observers clear retry state.
 				const attempt = this.#retryAttempt;
+				const diagnostics = this.#retryBudgetDiagnostics("non_retryable");
 				this.#retryAttempt = 0;
 				await this.#emitSessionEvent({
 					type: "auto_retry_end",
 					success: false,
 					attempt,
 					finalError: msg.errorMessage,
+					diagnostics,
 				});
 			}
 			this.#resolveRetry();
@@ -3680,6 +3812,7 @@ export class AgentSession {
 				delayMs: event.delayMs,
 				errorMessage: event.errorMessage,
 				unbounded: event.unbounded,
+				diagnostics: event.diagnostics,
 			});
 		} else if (event.type === "auto_retry_end") {
 			await this.#extensionRunner.emit({
@@ -3687,6 +3820,7 @@ export class AgentSession {
 				success: event.success,
 				attempt: event.attempt,
 				finalError: event.finalError,
+				diagnostics: event.diagnostics,
 			});
 		} else if (event.type === "ttsr_triggered") {
 			await this.#extensionRunner.emit({ type: "ttsr_triggered", rules: event.rules });
@@ -3841,6 +3975,10 @@ export class AgentSession {
 		this.#unregisterResourceGc = undefined;
 		this.#unregisterRuntimeStateFinalizer?.();
 		this.#unregisterRuntimeStateFinalizer = undefined;
+		if (this.#retainedMemorySampleTimer) clearInterval(this.#retainedMemorySampleTimer);
+		this.#retainedMemorySampleTimer = undefined;
+		for (const registration of this.#retainedMemoryRegistrations) registration.dispose();
+		this.#retainedMemoryRegistrations.length = 0;
 		await releaseTabsForOwner(this.sessionManager.getSessionId()).catch((error: unknown) =>
 			logger.warn("session dispose: releaseTabsForOwner failed", { error }),
 		);
@@ -4043,6 +4181,23 @@ export class AgentSession {
 
 	#selectedMCPToolNamesMatch(left: string[], right: string[]): boolean {
 		return left.length === right.length && left.every((name, index) => name === right[index]);
+	}
+
+	#isSelectableDiscoveredBuiltinToolName(name: string): boolean {
+		const tool = this.#toolRegistry.get(name);
+		return !isMCPToolName(name) && tool?.loadMode === "discoverable";
+	}
+
+	#selectedDiscoveredBuiltinToolNames(): string[] {
+		return Array.from(this.#selectedDiscoveredToolNames).filter(name =>
+			this.#isSelectableDiscoveredBuiltinToolName(name),
+		);
+	}
+
+	#persistSelectedDiscoveredBuiltinToolNamesIfChanged(previousSelectedToolNames: string[]): void {
+		const nextSelectedToolNames = this.#selectedDiscoveredBuiltinToolNames();
+		if (this.#selectedMCPToolNamesMatch(previousSelectedToolNames, nextSelectedToolNames)) return;
+		this.sessionManager.appendDiscoveredToolSelection(nextSelectedToolNames);
 	}
 
 	#rememberSessionDefaultSelectedMCPToolNames(
@@ -4279,17 +4434,14 @@ export class AgentSession {
 	getSelectedDiscoveredToolNames(): string[] {
 		// Union of MCP-selected and generic non-MCP selected. Non-MCP selections are only
 		// selected while they are still active; otherwise BM25 must be able to rediscover them.
-		const activeNames = new Set(this.getActiveToolNames());
 		const mcpSelected = this.getSelectedMCPToolNames();
-		const nonMcpSelected = Array.from(this.#selectedDiscoveredToolNames).filter(
-			name => activeNames.has(name) && this.#toolRegistry.has(name) && !isMCPToolName(name),
-		);
+		const nonMcpSelected = this.#selectedDiscoveredBuiltinToolNames();
 		return [...new Set([...mcpSelected, ...nonMcpSelected])];
 	}
 
 	async activateDiscoveredTools(toolNames: string[]): Promise<string[]> {
 		const mcpNames = toolNames.filter(name => this.#discoverableMCPTools.has(name));
-		const nonMcpNames = toolNames.filter(name => !this.#discoverableMCPTools.has(name));
+		const nonMcpNames = toolNames.filter(name => !this.#discoverableMCPTools.has(name) && !isMCPToolName(name));
 		const activated: string[] = [];
 
 		// Activate MCP tools via existing path
@@ -4301,10 +4453,15 @@ export class AgentSession {
 		// Activate non-MCP tools (built-ins that are in the registry but not currently active)
 		if (nonMcpNames.length > 0) {
 			const currentActiveNames = new Set(this.getActiveToolNames());
+			const previousSelectedToolNames = this.#selectedDiscoveredBuiltinToolNames();
 			const newlyAdded: string[] = [];
 			for (const name of nonMcpNames) {
-				if (this.#discoverableToolAllowedNames && !this.#discoverableToolAllowedNames.has(name)) continue;
-				if (this.#toolRegistry.has(name) && !currentActiveNames.has(name)) {
+				if (
+					!this.#isSelectableDiscoveredBuiltinToolName(name) ||
+					(this.#discoverableToolAllowedNames && !this.#discoverableToolAllowedNames.has(name))
+				)
+					continue;
+				if (!currentActiveNames.has(name)) {
 					newlyAdded.push(name);
 					this.#selectedDiscoveredToolNames.add(name);
 					activated.push(name);
@@ -4312,7 +4469,9 @@ export class AgentSession {
 			}
 			if (newlyAdded.length > 0) {
 				const nextActive = [...this.getActiveToolNames(), ...newlyAdded];
-				await this.setActiveToolsByName(nextActive);
+				await this.#applyActiveToolsByName(nextActive, {
+					previousSelectedDiscoveredBuiltinToolNames: previousSelectedToolNames,
+				});
 				this.#invalidateDiscoverableToolSearchIndex();
 			}
 		}
@@ -4340,7 +4499,7 @@ export class AgentSession {
 					onUpdate: never,
 					ctx: never,
 				) => {
-					const permissionIntent = getPermissionIntent(target.name, args);
+					const permissionIntent = await getPermissionIntent(target.name, args, this.sessionManager.getCwd());
 					if (!permissionIntent) {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
 					}
@@ -4418,13 +4577,20 @@ export class AgentSession {
 		}) as T;
 	}
 
-	/**
-	 * Wrap a tool with the deep-interview mutation guard. This guard is intentionally
-	 * outermost so active interviews reject product-code mutation before ACP permission
-	 * prompts or tool execution can run.
-	 */
-	#wrapToolForDeepInterviewMutationGuard<T extends AgentTool>(tool: T): T {
-		if (!["edit", "write", "ast_edit", "bash"].includes(tool.name)) return tool;
+	/** Planning capability guard. Kept outermost so blocked operations never reach ACP prompts. */
+	#wrapToolForDeepInterviewMutationGuard<T extends AgentTool>(tool: T, capability: ToolCapabilityDescriptor): T {
+		const provablyReadOnly =
+			capability.filesystem !== "write" &&
+			capability.filesystem !== "delete" &&
+			capability.filesystem !== "unknown" &&
+			capability.external !== "write" &&
+			capability.external !== "delete" &&
+			capability.external !== "unknown" &&
+			capability.execution === "none" &&
+			!capability.destructive &&
+			!capability.interactive &&
+			!capability.classifyOperation;
+		if (provablyReadOnly) return tool;
 		return new Proxy(tool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return Reflect.get(target, prop, target);
@@ -4435,12 +4601,25 @@ export class AgentSession {
 					onUpdate: never,
 					ctx: never,
 				) => {
-					await assertWorkflowMutationAllowed({
+					const liveDecision = evaluatePlanningCapability({
+						tool: target,
+						args,
+						capability,
+						activeSkill: this.#activeSkillState?.skill,
+						phase: this.#activeSkillState?.phase,
+					});
+					if (!liveDecision.allowed) throw new ToolError(`Planning capability blocked: ${liveDecision.reason}`);
+					const durableDecision = await getWorkflowMutationDecision({
 						cwd: this.sessionManager.getCwd(),
 						sessionId: this.sessionManager.getSessionId(),
 						tool: target,
 						args,
 					});
+					if (durableDecision.blocked) {
+						throw new ToolError(
+							durableDecision.message ?? durableDecision.reason ?? "Planning capability blocked",
+						);
+					}
 					return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
 				};
 			},
@@ -4453,48 +4632,57 @@ export class AgentSession {
 		const activeSkill = this.#activeSkillState?.skill ?? "";
 		const activeSkillSession = this.#activeSkillState?.sessionId ?? "";
 		return [
-			"deep-interview-mutation-v1",
+			"planning-capability-v2",
 			"ultragoal-ask-v1",
 			`active=${activeSkill}:${activeSkillSession}`,
-			`acp=${acpEnabled ? "on" : "off"}:${this.#acpPermissionWrapperVersion}`,
+			`acp=${acpEnabled ? "on" : "off"}`,
 		].join("|");
 	}
 
-	#prepareToolForExecution<T extends AgentTool>(tool: T): T {
-		const cacheKey = this.#guardedToolWrapperCacheKey();
-		let wrappersByVersion = this.#guardedToolWrapperCache.get(tool);
-		const cached = wrappersByVersion?.get(cacheKey);
-		if (cached) return cached as T;
-		const wrapped = this.#wrapToolForDeepInterviewMutationGuard(
-			this.#wrapToolForAcpPermission(
-				guardToolForUltragoalAsk(
-					tool,
-					() => this.sessionManager.getCwd(),
-					() => ({
-						activeSkillState: this.getActiveSkillState(),
-						sessionId: this.sessionManager.getSessionId(),
-					}),
-				),
-			),
+	#composeToolPolicies<T extends AgentTool>(tool: T): T {
+		const capability = resolveToolCapability(tool);
+		const askGuarded = guardToolForUltragoalAsk(
+			tool,
+			() => this.sessionManager.getCwd(),
+			() => ({
+				activeSkillState: this.getActiveSkillState(),
+				sessionId: this.sessionManager.getSessionId(),
+			}),
+			transferToolCapability,
 		);
-		if (!wrappersByVersion) {
-			wrappersByVersion = new Map();
-			this.#guardedToolWrapperCache.set(tool, wrappersByVersion);
-		}
-		wrappersByVersion.set(cacheKey, wrapped);
+		const acpGuarded = this.#wrapToolForAcpPermission(askGuarded);
+		transferToolCapability(askGuarded, acpGuarded);
+		const wrapped = this.#wrapToolForDeepInterviewMutationGuard(acpGuarded, capability);
+		transferToolCapability(acpGuarded, wrapped);
 		return wrapped;
 	}
 
-	#setGuardedAgentTools(tools: AgentTool[]): void {
-		this.agent.setTools(tools.map(tool => this.#prepareToolForExecution(tool)));
+	#prepareToolForExecution<T extends AgentTool>(tool: T): T {
+		return this.#toolPolicyCoordinator.prepareTool(tool);
+	}
+
+	getPreparedToolForExecution(name: string): AgentTool | undefined {
+		const tool = this.#toolRegistry.get(name);
+		return tool ? this.#prepareToolForExecution(tool) : undefined;
+	}
+
+	#setPreparedAgentTools(tools: AgentTool[]): void {
+		this.agent.setTools(this.#toolPolicyCoordinator.prepareTools(tools));
 	}
 
 	async #applyActiveToolsByName(
 		toolNames: string[],
-		options?: { persistMCPSelection?: boolean; previousSelectedMCPToolNames?: string[] },
+		options?: {
+			persistMCPSelection?: boolean;
+			persistDiscoveredBuiltinToolSelection?: boolean;
+			previousSelectedMCPToolNames?: string[];
+			previousSelectedDiscoveredBuiltinToolNames?: string[];
+		},
 	): Promise<void> {
 		toolNames = [...new Set(toolNames.map(name => name.toLowerCase()))];
 		const previousSelectedMCPToolNames = options?.previousSelectedMCPToolNames ?? this.getSelectedMCPToolNames();
+		const previousSelectedDiscoveredBuiltinToolNames =
+			options?.previousSelectedDiscoveredBuiltinToolNames ?? this.#selectedDiscoveredBuiltinToolNames();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const name of toolNames) {
@@ -4513,11 +4701,11 @@ export class AgentSession {
 		}
 		const activeNameSet = new Set(validToolNames);
 		for (const name of Array.from(this.#selectedDiscoveredToolNames)) {
-			if (!activeNameSet.has(name) || this.#discoverableMCPTools.has(name) || !this.#toolRegistry.has(name)) {
+			if (!activeNameSet.has(name) || !this.#isSelectableDiscoveredBuiltinToolName(name)) {
 				this.#selectedDiscoveredToolNames.delete(name);
 			}
 		}
-		this.#setGuardedAgentTools(tools);
+		this.#setPreparedAgentTools(tools);
 
 		// Active tool set changed → discoverable tool list (which excludes already-active tools)
 		// is now stale. Invalidate before any prompt-template hook reads the discovery list.
@@ -4539,6 +4727,9 @@ export class AgentSession {
 		}
 		if (options?.persistMCPSelection !== false) {
 			this.#persistSelectedMCPToolNamesIfChanged(previousSelectedMCPToolNames);
+		}
+		if (options?.persistDiscoveredBuiltinToolSelection !== false) {
+			this.#persistSelectedDiscoveredBuiltinToolNamesIfChanged(previousSelectedDiscoveredBuiltinToolNames);
 		}
 	}
 
@@ -4569,6 +4760,7 @@ export class AgentSession {
 		const refreshedTool = await this.#reloadSshTool();
 		if (refreshedTool) {
 			this.#toolRegistry.set(refreshedTool.name, refreshedTool);
+			registerToolCapability(refreshedTool, "builtin", refreshedTool.name);
 		} else {
 			this.#toolRegistry.delete("ssh");
 			this.#selectedDiscoveredToolNames.delete("ssh");
@@ -4595,20 +4787,48 @@ export class AgentSession {
 		sessionContext: SessionContext,
 		options?: { fallbackSelectedMCPToolNames?: Iterable<string> },
 	): Promise<void> {
-		if (!this.#mcpDiscoveryEnabled) return;
-		const nextActiveNonMCPToolNames = this.#getActiveNonMCPToolNames();
+		if (!this.#mcpDiscoveryEnabled && !sessionContext.hasPersistedDiscoveredToolSelection) return;
+		const nextActiveNonMCPToolNames = this.#getActiveNonMCPToolNames().filter(
+			name => !this.#selectedDiscoveredToolNames.has(name),
+		);
 		const fallbackSelectedMCPToolNames =
 			options?.fallbackSelectedMCPToolNames ?? this.#getConfiguredDefaultSelectedMCPToolNames();
-		const restoredMCPToolNames = sessionContext.hasPersistedMCPToolSelection
-			? this.#filterSelectableMCPToolNames(sessionContext.selectedMCPToolNames)
-			: this.#filterSelectableMCPToolNames(fallbackSelectedMCPToolNames);
+		const restoredMCPToolNames = this.#mcpDiscoveryEnabled
+			? sessionContext.hasPersistedMCPToolSelection
+				? this.#filterSelectableMCPToolNames(sessionContext.selectedMCPToolNames)
+				: this.#filterSelectableMCPToolNames(fallbackSelectedMCPToolNames)
+			: [];
+		const restoredBuiltinToolNames = sessionContext.hasPersistedDiscoveredToolSelection
+			? sessionContext.selectedDiscoveredBuiltinToolNames.filter(name =>
+					this.#isSelectableDiscoveredBuiltinToolName(name),
+				)
+			: [];
+		this.#selectedDiscoveredToolNames = new Set(restoredBuiltinToolNames);
 		this.#rememberSessionDefaultSelectedMCPToolNames(
 			this.sessionFile,
 			this.#getConfiguredDefaultSelectedMCPToolNames(),
 		);
-		await this.#applyActiveToolsByName([...nextActiveNonMCPToolNames, ...restoredMCPToolNames], {
-			persistMCPSelection: false,
-		});
+		await this.#applyActiveToolsByName(
+			[...nextActiveNonMCPToolNames, ...restoredMCPToolNames, ...restoredBuiltinToolNames],
+			{
+				persistMCPSelection: false,
+				persistDiscoveredBuiltinToolSelection: false,
+			},
+		);
+	}
+	/** Atomically publish a completed startup scan and its rebuilt base prompt. */
+	async setWorkspaceTree(tree: WorkspaceTree): Promise<void> {
+		let built: { systemPrompt: string[] } | undefined;
+		if (this.#rebuildSystemPrompt) {
+			built = await this.#rebuildSystemPrompt(this.getActiveToolNames(), this.#toolRegistry);
+		}
+		if (built) {
+			this.#baseSystemPrompt = built.systemPrompt;
+			this.agent.setSystemPrompt(this.#baseSystemPrompt);
+		}
+		this.#initialWorkspaceTree = tree;
+		this.#cachedWorkspaceTree = tree;
+		this.#cachedWorkspaceTreeAt = Date.now();
 	}
 	/** Rebuild the base system prompt using the current active tool set. */
 	async refreshBaseSystemPrompt(): Promise<void> {
@@ -4749,6 +4969,7 @@ export class AgentSession {
 			const finalTool = (
 				this.#extensionRunner ? new ExtensionToolWrapper(wrapped, this.#extensionRunner) : wrapped
 			) as AgentTool;
+			registerToolCapability(finalTool, "mcp");
 			this.#toolRegistry.set(finalTool.name, finalTool);
 		}
 
@@ -4799,6 +5020,7 @@ export class AgentSession {
 			const finalTool = (
 				this.#extensionRunner ? new ExtensionToolWrapper(tool, this.#extensionRunner) : tool
 			) as AgentTool;
+			registerToolCapability(finalTool, "plugin");
 			this.#toolRegistry.set(finalTool.name, finalTool);
 			this.#rpcHostToolNames.add(finalTool.name);
 		}
@@ -4824,6 +5046,7 @@ export class AgentSession {
 		if (!parent.trim()) return false;
 		const cwd = this.sessionManager.getCwd();
 		const phase = await resolveCurrentPhaseForParent({ cwd, sessionId, parent });
+		if (!phase) return false;
 		const entries = await readActiveSubskillsForParent({ cwd, sessionId, parent, phase });
 		return entries.some(entry => (entry.toolPaths ?? []).some(toolPath => toolPath.trim().length > 0));
 	}
@@ -4848,6 +5071,24 @@ export class AgentSession {
 			.join("\u0001");
 	}
 
+	async #clearGjcSubskillTools(): Promise<void> {
+		if (this.#gjcSubskillToolNames.size === 0) {
+			this.#gjcSubskillToolSignature = undefined;
+			return;
+		}
+		const previousGjcSubskillToolNames = new Set(this.#gjcSubskillToolNames);
+		const previousActiveToolNames = this.getActiveToolNames();
+		for (const name of previousGjcSubskillToolNames) {
+			this.#toolRegistry.delete(name);
+		}
+		this.#gjcSubskillToolNames.clear();
+		this.#gjcSubskillToolSignature = undefined;
+		this.#invalidateDiscoveryCaches();
+		await this.#applyActiveToolsByName(
+			previousActiveToolNames.filter(name => !previousGjcSubskillToolNames.has(name)),
+		);
+	}
+
 	/**
 	 * Refresh plugin sub-skill tools after workflow/sub-skill activation or phase changes.
 	 */
@@ -4862,17 +5103,7 @@ export class AgentSession {
 			activeState?.active_skills?.find(entry => entry.active !== false)?.skill;
 		const parent = activeSkill?.trim();
 		if (!parent) {
-			if (this.#gjcSubskillToolNames.size === 0) return;
-			const previousGjcSubskillToolNames = new Set(this.#gjcSubskillToolNames);
-			const previousActiveToolNames = this.getActiveToolNames();
-			for (const name of previousGjcSubskillToolNames) {
-				this.#toolRegistry.delete(name);
-			}
-			this.#gjcSubskillToolNames.clear();
-			this.#invalidateDiscoveryCaches();
-			await this.#applyActiveToolsByName(
-				previousActiveToolNames.filter(name => !previousGjcSubskillToolNames.has(name)),
-			);
+			await this.#clearGjcSubskillTools();
 			return;
 		}
 
@@ -4882,6 +5113,11 @@ export class AgentSession {
 		if (this.#gjcSubskillToolNames.size === 0 && !(await this.#hasActiveGjcSubskillTools(parent, sessionId))) return;
 
 		const phase = await resolveCurrentPhaseForParent({ cwd, sessionId, parent });
+		if (!phase) {
+			await this.#clearGjcSubskillTools();
+			return;
+		}
+
 		const reservedToolNames = Array.from(this.#toolRegistry.keys()).filter(
 			name => !this.#gjcSubskillToolNames.has(name),
 		);
@@ -4911,6 +5147,7 @@ export class AgentSession {
 			const finalTool = (
 				this.#extensionRunner ? new ExtensionToolWrapper(wrapped, this.#extensionRunner) : wrapped
 			) as AgentTool;
+			registerToolCapability(finalTool, "plugin");
 			this.#toolRegistry.set(finalTool.name, finalTool);
 			this.#gjcSubskillToolNames.add(finalTool.name);
 		}
@@ -4968,7 +5205,7 @@ export class AgentSession {
 	}
 
 	buildDisplaySessionContext(): SessionContext {
-		return deobfuscateSessionContext(this.sessionManager.buildSessionContext(), this.#obfuscator);
+		return deobfuscateSessionContext(this.sessionManager.buildSessionContextForDisplay(), this.#obfuscator);
 	}
 
 	/** Convert session messages using the same pre-LLM pipeline as the active session. */
@@ -5118,11 +5355,15 @@ export class AgentSession {
 		const finalTool: AgentTool = this.#extensionRunner
 			? new ExtensionToolWrapper(wrappedTool, this.#extensionRunner)
 			: wrappedTool;
+		registerToolCapability(finalTool, "builtin", finalTool.name);
 		this.#toolRegistry.set(finalTool.name, finalTool);
 
 		if (!this.getActiveToolNames().includes(finalTool.name)) {
-			const activeTools = [...this.agent.state.tools, finalTool];
-			this.#setGuardedAgentTools(activeTools);
+			const activeToolNames = [...this.getActiveToolNames(), finalTool.name];
+			const activeTools = activeToolNames
+				.map(name => this.#toolRegistry.get(name))
+				.filter((tool): tool is AgentTool => tool !== undefined);
+			this.#setPreparedAgentTools(activeTools);
 			this.#invalidateDiscoveryCaches();
 			void this.refreshBaseSystemPrompt().catch(error => {
 				logger.warn("Failed to refresh system prompt after workflow gate ask tool registration", {
@@ -5150,13 +5391,17 @@ export class AgentSession {
 
 	setClientBridge(bridge: ClientBridge | undefined): void {
 		this.#clientBridge = bridge;
+		if (bridge) {
+			this.#unattended = true;
+			this.#validateUnboundedRetryContext();
+		}
 		this.#acpPermissionDecisions.clear();
-		this.#acpPermissionWrapperVersion++;
+		this.#toolPolicyCoordinator.invalidate();
 		const activeToolNames = this.getActiveToolNames();
 		const activeTools = activeToolNames
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool !== undefined);
-		this.#setGuardedAgentTools(activeTools);
+		this.#setPreparedAgentTools(activeTools);
 	}
 
 	getCheckpointState(): CheckpointState | undefined {
@@ -5544,28 +5789,48 @@ export class AgentSession {
 		if (typeof name !== "string" || !name.trim()) return;
 		const skill = name.trim();
 		const sessionId = this.sessionManager.getSessionId();
-		// Canonical GJC workflow skills (deep-interview, ralplan, ultragoal, team)
-		// own their `.gjc/state/skill-active-state.json` row through the
-		// `gjc state handoff` and `gjc state clear` runtime verbs. The prompt
-		// observer must not overwrite an existing row (that clobbered handoff
-		// lineage `handoff_from`/`handoff_at` and desynced the HUD). But a fresh
-		// `/skill:<name>` invocation has no row yet, so seed `.gjc/state`
-		// idempotently here: `ensureWorkflowSkillActivationState` writes the
-		// initial mode-state + active row only when the skill is not already
-		// active, so the mutation guard and Stop hook engage immediately instead
-		// of relying on the skill prompt to run its own state-init steps.
+		const canonicalWorkflowSkill = isCanonicalGjcWorkflowSkill(skill);
+		const workflowResolution = (
+			details as {
+				workflowResolution?: {
+					skill?: string;
+					source?: string;
+					fragmentKind?: string;
+					phase?: string;
+					stateVersion?: number;
+				};
+			}
+		).workflowResolution;
+		const workflowResolutionSource = workflowResolution?.source;
+		const resolvedWorkflowPhase =
+			canonicalWorkflowSkill &&
+			workflowResolution?.skill === skill &&
+			workflowResolution?.fragmentKind === "phase" &&
+			(workflowResolutionSource === "explicit" ||
+				workflowResolutionSource === "live" ||
+				workflowResolutionSource === "durable") &&
+			workflowResolution.stateVersion === WORKFLOW_STATE_VERSION &&
+			workflowResolution.phase?.trim() &&
+			getWorkflowRuntimeStateFragment(skill, workflowResolution.phase.trim())
+				? workflowResolution.phase.trim()
+				: undefined;
+		this.#activeSkillState = active ? { skill, sessionId, phase: resolvedWorkflowPhase } : undefined;
 		if (active) {
-			await ensureWorkflowSkillActivationState({ cwd: this.sessionManager.getCwd(), skill, sessionId });
+			if (canonicalWorkflowSkill && resolvedWorkflowPhase) {
+				await ensureWorkflowSkillActivationState({ cwd: this.sessionManager.getCwd(), skill, sessionId });
+			}
 			const subskillDetails = details as {
 				subskillActivation?: LoadedSubskillActivation;
 				subskillActivationSet?: LoadedSubskillActivation[];
 			};
 			const subskillActivations =
-				subskillDetails.subskillActivationSet && subskillDetails.subskillActivationSet.length > 0
-					? subskillDetails.subskillActivationSet
-					: subskillDetails.subskillActivation
-						? [subskillDetails.subskillActivation]
-						: [];
+				!canonicalWorkflowSkill || resolvedWorkflowPhase
+					? subskillDetails.subskillActivationSet && subskillDetails.subskillActivationSet.length > 0
+						? subskillDetails.subskillActivationSet
+						: subskillDetails.subskillActivation
+							? [subskillDetails.subskillActivation]
+							: []
+					: [];
 			if (subskillActivations.length > 0) {
 				const skillBoundActivation = subskillDetails.subskillActivation ?? subskillActivations[0];
 				await syncSkillActiveState({
@@ -5578,8 +5843,7 @@ export class AgentSession {
 				});
 			}
 		}
-		// In-memory tracking keeps `getActiveSkillState` accurate for the chain guard.
-		this.#activeSkillState = active ? { skill, sessionId } : undefined;
+		// In-memory state is established before durable synchronization so guards fail closed during persistence errors.
 		if (active) {
 			await this.refreshGjcSubskillTools();
 		}
@@ -5648,6 +5912,7 @@ export class AgentSession {
 		},
 	): Promise<void> {
 		this.#beginInFlight();
+		this.#retryCoordinator.beginTurn();
 		const generation = this.#promptGeneration;
 		const rosterClaim = this.#claimIrcRosterCandidate();
 		try {
@@ -5667,7 +5932,9 @@ export class AgentSession {
 			}
 
 			// Validate API key
-			const apiKey = await this.#modelRegistry.getApiKey(this.model, this.sessionId);
+			const apiKey = await this.#modelRegistry.getApiKey(this.model, this.sessionId, {
+				consumeAttempt: this.agent.consumeAttempt,
+			});
 			if (!apiKey) {
 				throw new Error(formatNoCredentialOnboardingError(this.model.provider));
 			}
@@ -6727,9 +6994,9 @@ export class AgentSession {
 				logger.error("Failed to delete session during /drop", { err });
 			}
 		} else {
-			await this.sessionManager.flush();
+			await this.#sessionStoreCoordinator.flush();
 		}
-		await this.sessionManager.newSession(options);
+		await this.#sessionStoreCoordinator.newSession(options);
 		this.setTodoPhases([]);
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -6788,7 +7055,7 @@ export class AgentSession {
 		this.#pendingBackgroundExchanges = [];
 		this.#closeAllProviderSessions("context clear");
 		this.agent.reset();
-		await this.sessionManager.flush();
+		await this.#sessionStoreCoordinator.flush();
 		this.sessionManager.appendContextClearEntry({ sessionId });
 		this.setTodoPhases([]);
 		this.#syncAgentSessionId(sessionId);
@@ -6822,7 +7089,7 @@ export class AgentSession {
 	 * Unlike newSession(), this preserves all messages in the agent state.
 	 * @returns true if completed, false if cancelled by hook or not persisting
 	 */
-	async fork(): Promise<boolean> {
+	async fork(options?: SessionForkOptions): Promise<boolean> {
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "fork" (can be cancelled)
@@ -6837,11 +7104,7 @@ export class AgentSession {
 			}
 		}
 
-		// Flush current session to ensure all entries are written
-		await this.sessionManager.flush();
-
-		// Fork the session (creates new session file with same entries)
-		const forkResult = await this.sessionManager.fork();
+		const forkResult = await this.#sessionStoreCoordinator.fork(options);
 		if (!forkResult) {
 			return false;
 		}
@@ -7563,6 +7826,7 @@ export class AgentSession {
 							extraContext: compactionPrep.hookContext,
 							remoteInstructions: this.#baseSystemPrompt.join("\n\n"),
 							convertToLlm,
+							consumeAttempt: this.#retryCoordinator.hasActiveTurn() ? this.agent.consumeAttempt : undefined,
 						},
 					);
 					summary = result.summary;
@@ -7754,9 +8018,11 @@ export class AgentSession {
 
 			// Start a new session
 			const previousSessionFile = this.sessionFile;
-			await this.sessionManager.flush();
+			await this.#sessionStoreCoordinator.flush();
 			this.#cancelOwnAsyncJobs();
-			await this.sessionManager.newSession(previousSessionFile ? { parentSession: previousSessionFile } : undefined);
+			await this.#sessionStoreCoordinator.newSession(
+				previousSessionFile ? { parentSession: previousSessionFile } : undefined,
+			);
 			this.agent.reset();
 			this.#syncAgentSessionId();
 			this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -7953,10 +8219,24 @@ export class AgentSession {
 		this.#retainedMemorySampler = sampler;
 	}
 
+	/** Retained-memory registration authority for mode-owned recomputable pools. */
+	getRetainedMemoryRegistry(): RetainedMemoryRegistryFacade {
+		return this.#retainedMemoryRegistry;
+	}
+
+	getRetainedMemorySnapshot(): RetainedMemorySnapshot {
+		return this.#sampleRetainedMemory();
+	}
+
+	#sampleRetainedMemory(): RetainedMemorySnapshot {
+		return this.#retainedMemoryRegistry.sample();
+	}
+
 	#defaultResourceSample(): EmergencyCompactionSample {
 		let providerBytes = 0;
 		let imageBytes = 0;
 		const retainedMemory = this.#retainedMemorySampler?.() ?? {};
+		const registrySample = this.#sampleRetainedMemory();
 		for (const message of this.state.messages) {
 			const content = (message as { content?: unknown }).content;
 			if (typeof content === "string") {
@@ -7973,15 +8253,18 @@ export class AgentSession {
 				}
 			}
 		}
+		const tuiCachedRenderBytes = retainedMemory.tuiCachedRenderBytes ?? 0;
 		return {
 			heapUsedBytes: process.memoryUsage().heapUsed,
 			providerBytes,
 			messageCount: this.state.messages.length,
 			imageBytes,
 			sessionResidentImageBytes: this.sessionManager.getResidentImageBytes(),
-			materializedResidentBytes: this.#streamingEditFileCache.totalBytes,
 			tuiChatChildren: retainedMemory.tuiChatChildren ?? 0,
-			tuiCachedRenderBytes: retainedMemory.tuiCachedRenderBytes ?? 0,
+			tuiCachedRenderBytes,
+			materializedResidentBytes:
+				this.#streamingEditFileCache.totalBytes +
+				Math.max(0, registrySample.totalRetainedBytes - tuiCachedRenderBytes),
 		};
 	}
 
@@ -8784,7 +9067,9 @@ export class AgentSession {
 		const telemetry = resolveTelemetry(this.agent.telemetry, this.sessionId);
 
 		for (const candidate of candidates) {
-			const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
+			const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId, {
+				consumeAttempt: options?.consumeAttempt,
+			});
 			if (!apiKey) continue;
 
 			try {
@@ -8794,9 +9079,11 @@ export class AgentSession {
 					metadata: this.agent.metadataForProvider(candidate.provider),
 					convertToLlm,
 					telemetry,
+					consumeAttempt: options?.consumeAttempt,
 					authCredentialType: this.#modelRegistry.getSessionCredentialType(candidate.provider, this.sessionId),
 				});
 			} catch (error) {
+				if (isAttemptBudgetExceededError(error)) throw error;
 				if (!this.#isCompactionAuthFailure(error)) {
 					throw error;
 				}
@@ -9086,7 +9373,9 @@ export class AgentSession {
 				let lastError: unknown;
 
 				for (const candidate of candidates) {
-					const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
+					const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId, {
+						consumeAttempt: this.agent.consumeAttempt,
+					});
 					if (!apiKey) continue;
 
 					let attempt = 0;
@@ -9105,12 +9394,14 @@ export class AgentSession {
 									candidate.provider,
 									this.sessionId,
 								),
+								consumeAttempt: this.agent.consumeAttempt,
 							});
 							break;
 						} catch (error) {
 							if (autoCompactionSignal.aborted) {
 								throw error;
 							}
+							if (isAttemptBudgetExceededError(error)) throw error;
 
 							const message = error instanceof Error ? error.message : String(error);
 							if (this.#isCompactionAuthFailure(error)) {
@@ -9265,6 +9556,7 @@ export class AgentSession {
 						? `Context overflow recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`,
 			});
+			if (isAttemptBudgetExceededError(error)) throw error;
 		} finally {
 			if (this.#autoCompactionAbortController === autoCompactionAbortController) {
 				this.#autoCompactionAbortController = undefined;
@@ -9582,7 +9874,9 @@ export class AgentSession {
 		if (!candidate) {
 			throw new Error(`Retry fallback model not found: ${selector.raw}`);
 		}
-		const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
+		const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId, {
+			consumeAttempt: this.agent.consumeAttempt,
+		});
 		if (!apiKey) {
 			throw new Error(`No API key for retry fallback ${selector.raw}`);
 		}
@@ -9621,7 +9915,9 @@ export class AgentSession {
 			const candidate = this.#modelRegistry.find(selector.provider, selector.id);
 			if (!candidate) continue;
 			if (options?.requireNonLocal && isLocalModelEndpoint(candidate)) continue;
-			const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
+			const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId, {
+				consumeAttempt: this.agent.consumeAttempt,
+			});
 			if (!apiKey) continue;
 			await this.#applyRetryFallbackCandidate(role, selector, currentSelector);
 			return true;
@@ -9658,7 +9954,9 @@ export class AgentSession {
 
 		const primaryModel = this.#modelRegistry.find(originalSelector.provider, originalSelector.id);
 		if (!primaryModel) return;
-		const apiKey = await this.#modelRegistry.getApiKey(primaryModel, this.sessionId);
+		const apiKey = await this.#modelRegistry.getApiKey(primaryModel, this.sessionId, {
+			consumeAttempt: this.agent.consumeAttempt,
+		});
 		if (!apiKey) return;
 
 		const currentThinkingLevel = this.thinkingLevel;
@@ -9722,6 +10020,63 @@ export class AgentSession {
 		return undefined;
 	}
 
+	#validateUnboundedRetryContext(): void {
+		const retrySettings = this.settings.getGroup("retry");
+		if (!this.#unattended || !retrySettings.unbounded || retrySettings.allowUnboundedUnattended) return;
+		const message =
+			"retry.unbounded is disabled for unattended sessions; set retry.allowUnboundedUnattended=true to opt in.";
+		if (!this.configWarnings.includes(message)) {
+			logger.warn(message);
+			this.configWarnings.push(message);
+		}
+	}
+
+	#isRetryUnbounded(): boolean {
+		const retrySettings = this.settings.getGroup("retry");
+		return retrySettings.unbounded && (!this.#unattended || retrySettings.allowUnboundedUnattended);
+	}
+
+	#retryCoordinatorSettings(): RetryCoordinatorSettings {
+		const retrySettings = this.settings.getGroup("retry");
+		return {
+			unbounded: retrySettings.unbounded,
+			maxTotalAttempts: retrySettings.maxTotalAttempts,
+			maxElapsedMs: retrySettings.maxElapsedMs,
+			maxCostUsd: retrySettings.maxCostUsd,
+		};
+	}
+
+	#retryAttemptBudgetSnapshot(): AttemptBudgetEnvelope {
+		return this.#retryCoordinator.snapshot(this.#retryCoordinatorSettings(), this.#isRetryUnbounded());
+	}
+
+	#reconcileRetryAttemptBudget(snapshot: AttemptBudgetEnvelope): void {
+		this.#retryCoordinator.reconcile(snapshot, this.#retryCoordinatorSettings(), this.#isRetryUnbounded());
+	}
+
+	#retryBudgetDiagnostics(
+		terminalReason?: RetryBudgetDiagnostics["terminalReason"],
+		pendingKind?: AttemptKind,
+	): RetryBudgetDiagnostics {
+		return this.#retryCoordinator.diagnostics(
+			this.#retryCoordinatorSettings(),
+			this.#retryAttempt,
+			this.model,
+			terminalReason,
+			pendingKind,
+		);
+	}
+
+	#reportRetryCost(costUsd?: number): void {
+		this.#retryCoordinator.reportCost(costUsd);
+	}
+
+	#consumeRetryAttempt(kind?: AttemptKind): void {
+		this.#retryCoordinator.consume(kind, this.#retryCoordinatorSettings(), this.#isRetryUnbounded(), reason =>
+			this.#retryBudgetDiagnostics(reason, kind),
+		);
+	}
+
 	/**
 	 * Handle retryable errors with exponential backoff.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
@@ -9730,7 +10085,7 @@ export class AgentSession {
 		const retrySettings = this.settings.getGroup("retry");
 		if (!retrySettings.enabled) return false;
 		const retryClassification = this.#classifyErrorForRetry(message);
-		const unboundedClass = retryClassification === "transient" || retryClassification === "unknown";
+		const unboundedClass = this.#isRetryUnbounded();
 		const localUnavailable = retryClassification === "local_unavailable";
 
 		const generation = this.#promptGeneration;
@@ -9744,16 +10099,42 @@ export class AgentSession {
 			this.#retryResolve = resolve;
 		}
 
-		if (!unboundedClass && this.#retryAttempt > retrySettings.maxRetries) {
-			// Max retries exceeded, emit final failure and reset
+		const ledger = this.#retryCoordinator.ensureLedger(true);
+		const turnCost = ledger.knownCostUsd;
+		const elapsedMs = ledger.startedAt === undefined ? 0 : performance.now() - ledger.startedAt;
+		const outerLimitExceeded = !unboundedClass && this.#retryAttempt > retrySettings.maxRetries;
+		const totalLimitExceeded = !unboundedClass && ledger.attempts >= retrySettings.maxTotalAttempts;
+		const elapsedLimitExceeded = !unboundedClass && elapsedMs >= retrySettings.maxElapsedMs;
+		const costLimitExceeded =
+			!unboundedClass &&
+			ledger.costKnown &&
+			retrySettings.maxCostUsd !== undefined &&
+			turnCost >= retrySettings.maxCostUsd;
+		if (outerLimitExceeded || totalLimitExceeded || elapsedLimitExceeded || costLimitExceeded) {
+			const reason = totalLimitExceeded
+				? `Retry total-attempt budget exhausted (${ledger.attempts}/${retrySettings.maxTotalAttempts}).`
+				: elapsedLimitExceeded
+					? `Retry elapsed-time budget exhausted (${Math.round(elapsedMs)}ms/${retrySettings.maxElapsedMs}ms).`
+					: costLimitExceeded
+						? `Retry cost budget exhausted ($${turnCost}/${retrySettings.maxCostUsd}).`
+						: message.errorMessage;
 			await this.#emitSessionEvent({
 				type: "auto_retry_end",
 				success: false,
 				attempt: this.#retryAttempt - 1,
-				finalError: message.errorMessage,
+				finalError: reason,
+				diagnostics: this.#retryBudgetDiagnostics(
+					totalLimitExceeded
+						? "attempts"
+						: elapsedLimitExceeded
+							? "deadline"
+							: costLimitExceeded
+								? "cost"
+								: "outer_retries",
+				),
 			});
 			this.#retryAttempt = 0;
-			this.#resolveRetry(); // Resolve so waitForRetry() completes
+			this.#resolveRetry();
 			return false;
 		}
 
@@ -9771,6 +10152,7 @@ export class AgentSession {
 				{
 					retryAfterMs,
 					baseUrl: this.model.baseUrl,
+					consumeAttempt: this.agent.consumeAttempt,
 				},
 			);
 			if (switched) {
@@ -9793,31 +10175,26 @@ export class AgentSession {
 			}
 		}
 
-		// Fail-fast cap: if the provider asks us to wait longer than
-		// retry.maxDelayMs and we have no fallback credential or model to
-		// switch to, surface the error instead of sleeping. Defends against
-		// 3-hour Anthropic rate-limit windows that would otherwise leave a
-		// subagent (or interactive session) silently hung. The original
-		// assistant error message is preserved in agent state so the caller
-		// can act on it.
 		const maxDelayMs = retrySettings.maxDelayMs;
-		if (unboundedClass && !switchedCredential && !switchedModel) {
-			// Retry forever: honor a provider-supplied wait, otherwise cap the
-			// exponential backoff at the ceiling instead of giving up.
-			if (parsedRetryAfterMs !== undefined) {
-				delayMs = Math.max(delayMs, parsedRetryAfterMs);
-			} else if (maxDelayMs > 0) {
-				delayMs = Math.min(delayMs, maxDelayMs);
-			}
+		if (parsedRetryAfterMs !== undefined) {
+			delayMs = Math.max(delayMs, parsedRetryAfterMs);
+		} else if (maxDelayMs > 0) {
+			delayMs = Math.min(delayMs, maxDelayMs);
 		}
-		if (!unboundedClass && maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel) {
+		if (
+			!unboundedClass &&
+			(ledger.startedAt === undefined ? 0 : performance.now() - ledger.startedAt) + delayMs >
+				retrySettings.maxElapsedMs
+		) {
 			const attempt = this.#retryAttempt;
+			const diagnostics = this.#retryBudgetDiagnostics("deadline");
 			this.#retryAttempt = 0;
 			await this.#emitSessionEvent({
 				type: "auto_retry_end",
 				success: false,
 				attempt,
-				finalError: `Provider requested ${delayMs}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
+				finalError: `Retry delay would exceed retry.maxElapsedMs (${retrySettings.maxElapsedMs}ms). Original error: ${errorMessage}`,
+				diagnostics,
 			});
 			this.#resolveRetry();
 			return false;
@@ -9835,10 +10212,11 @@ export class AgentSession {
 		await this.#emitSessionEvent({
 			type: "auto_retry_start",
 			attempt: this.#retryAttempt,
-			maxAttempts: retrySettings.maxRetries,
+			maxAttempts: unboundedClass ? Number.POSITIVE_INFINITY : retrySettings.maxRetries,
 			delayMs,
 			errorMessage,
 			unbounded: unboundedClass,
+			diagnostics: this.#retryBudgetDiagnostics(),
 		});
 
 		// Remove error message from agent state (keep in session for history)
@@ -9862,12 +10240,14 @@ export class AgentSession {
 			} else {
 				// Aborted during sleep (cancel) - emit end event so UI can clean up
 				const attempt = this.#retryAttempt;
+				const diagnostics = this.#retryBudgetDiagnostics("cancelled");
 				this.#retryAttempt = 0;
 				await this.#emitSessionEvent({
 					type: "auto_retry_end",
 					success: false,
 					attempt,
 					finalError: "Retry cancelled",
+					diagnostics,
 				});
 				this.#resolveRetry();
 				return false;
@@ -9927,12 +10307,14 @@ export class AgentSession {
 	#failRetryRecovery(reason: string): void {
 		if (!this.#retryPromise) return;
 		const attempt = this.#retryAttempt;
+		const diagnostics = this.#retryBudgetDiagnostics("recovery_failure");
 		this.#retryAttempt = 0;
 		void this.#emitSessionEvent({
 			type: "auto_retry_end",
 			success: false,
 			attempt,
 			finalError: reason,
+			diagnostics,
 		});
 		this.#resolveRetry();
 	}
@@ -10807,13 +11189,15 @@ export class AgentSession {
 			}
 		}
 
+		const preparedTransition = this.#sessionStoreCoordinator.prepare(sessionPath);
+		const preparedSession = preparedTransition.lease;
 		this.#disconnectFromAgent();
 		await this.abort();
 
 		// Flush pending writes before switching so restore snapshots reflect committed state.
-		await this.sessionManager.flush();
-		const previousSessionState = this.sessionManager.captureState();
-		const previousSessionContext = this.buildDisplaySessionContext();
+		await this.#sessionStoreCoordinator.flush();
+		const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
+		const previousSessionState = this.#sessionStoreCoordinator.capture();
 		// switchSession replaces these arrays wholesale during load/rollback, so retaining
 		// the existing message objects is sufficient and avoids structured-clone failures for
 		// extension/custom metadata that is valid to persist but not cloneable.
@@ -10840,15 +11224,17 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
+		let preparedLeaseTransferred = false;
 		try {
-			await this.sessionManager.setSessionFile(sessionPath);
+			await this.#sessionStoreCoordinator.switch(sessionPath, preparedSession);
+			preparedLeaseTransferred = true;
 			this.#syncAgentSessionId();
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 
 			const sessionContext = this.buildDisplaySessionContext();
 			const didReloadConversationChange =
 				!switchingToDifferentSession &&
-				this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
+				this.#didSessionMessagesChange(previousSessionContext!.messages, sessionContext.messages);
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 
@@ -10883,29 +11269,29 @@ export class AgentSession {
 				if (slashIdx > 0) {
 					const provider = defaultModelStr.slice(0, slashIdx);
 					const modelId = defaultModelStr.slice(slashIdx + 1);
-					const availableModels = this.#modelRegistry.getAvailable();
-					const match = availableModels.find(m => m.provider === provider && m.id === modelId);
-					if (match) {
-						const currentModel = this.model;
-						const shouldResetProviderState =
-							switchingToDifferentSession ||
-							(currentModel !== undefined &&
-								(currentModel.provider !== match.provider ||
-									currentModel.id !== match.id ||
-									currentModel.api !== match.api));
-						if (shouldResetProviderState) {
-							this.#setModelWithProviderSessionReset(match);
-						} else {
-							this.agent.setModel(match);
+					const currentModel = this.model;
+					if (currentModel?.provider !== provider || currentModel.id !== modelId) {
+						const availableModels = this.#modelRegistry.getAvailable();
+						const match = availableModels.find(model => model.provider === provider && model.id === modelId);
+						if (match) {
+							const shouldResetProviderState =
+								switchingToDifferentSession ||
+								(currentModel !== undefined &&
+									(currentModel.provider !== match.provider ||
+										currentModel.id !== match.id ||
+										currentModel.api !== match.api));
+							if (shouldResetProviderState) {
+								this.#setModelWithProviderSessionReset(match);
+							} else {
+								this.agent.setModel(match);
+							}
 						}
 					}
 				}
 			}
 
-			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
-			const hasServiceTierEntry = this.sessionManager
-				.getBranch()
-				.some(entry => entry.type === "service_tier_change");
+			const hasThinkingEntry = this.sessionManager.hasActiveBranchEntryType("thinking_level_change");
+			const hasServiceTierEntry = this.sessionManager.hasActiveBranchEntryType("service_tier_change");
 			const defaultThinkingLevel = this.settings.get("defaultThinkingLevel");
 			const configuredServiceTier = this.settings.get("serviceTier");
 			const nextThinkingLevel = resolveThinkingLevelForModel(
@@ -10926,16 +11312,20 @@ export class AgentSession {
 			}
 
 			this.#reconnectToAgent();
+			this.#sessionStoreCoordinator.commit(previousSessionState);
 			return true;
 		} catch (error) {
-			this.sessionManager.restoreState(previousSessionState);
+			this.#sessionStoreCoordinator.rollback(previousSessionState);
 			this.#syncAgentSessionId(previousSessionState.sessionId);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			let restoreMcpError: unknown;
 			try {
-				await this.#restoreMCPSelectionsForSessionContext(previousSessionContext, {
-					fallbackSelectedMCPToolNames: previousFallbackSelectedMCPToolNames,
-				});
+				await this.#restoreMCPSelectionsForSessionContext(
+					previousSessionContext ?? this.buildDisplaySessionContext(),
+					{
+						fallbackSelectedMCPToolNames: previousFallbackSelectedMCPToolNames,
+					},
+				);
 			} catch (mcpError) {
 				restoreMcpError = mcpError;
 				logger.warn("Failed to restore MCP selections after switch error", {
@@ -10944,7 +11334,7 @@ export class AgentSession {
 					error: String(mcpError),
 				});
 				this.#selectedMCPToolNames = new Set(previousSelectedMCPToolNames);
-				this.#setGuardedAgentTools(previousTools);
+				this.#setPreparedAgentTools(previousTools);
 				this.#baseSystemPrompt = previousBaseSystemPrompt;
 				this.agent.setSystemPrompt(previousSystemPrompt);
 			}
@@ -10970,6 +11360,8 @@ export class AgentSession {
 				throw restoreMcpError;
 			}
 			throw error;
+		} finally {
+			if (!preparedLeaseTransferred) preparedSession?.lease.close();
 		}
 	}
 
@@ -11015,11 +11407,11 @@ export class AgentSession {
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
 		// Flush pending writes before branching
-		await this.sessionManager.flush();
+		await this.#sessionStoreCoordinator.flush();
 		this.#cancelOwnAsyncJobs();
 
 		if (!selectedEntry.parentId) {
-			await this.sessionManager.newSession({ parentSession: previousSessionFile });
+			await this.#sessionStoreCoordinator.newSession({ parentSession: previousSessionFile });
 		} else {
 			this.sessionManager.createBranchedSession(selectedEntry.parentId);
 		}
@@ -11137,7 +11529,8 @@ export class AgentSession {
 		let summaryDetails: unknown;
 		if (options.summarize && entriesToSummarize.length > 0 && !hookSummary) {
 			const model = this.model!;
-			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+			const consumeAttempt = this.#retryCoordinator.hasActiveTurn() ? this.agent.consumeAttempt : undefined;
+			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId, { consumeAttempt });
 			if (!apiKey) {
 				throw new Error(`No API key for ${model.provider}`);
 			}
@@ -11152,6 +11545,7 @@ export class AgentSession {
 				metadata: this.agent.metadataForProvider(model.provider),
 				convertToLlm,
 				telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
+				consumeAttempt,
 			});
 			this.#branchSummaryAbortController = undefined;
 			if (result.aborted) {

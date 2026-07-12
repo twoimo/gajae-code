@@ -21,21 +21,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai/models";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { getEmbeddedDefaultGjcSkills } from "@gajae-code/coding-agent/defaults/gjc-defaults";
-import { resolveSkillSlashCommands, type Skill } from "@gajae-code/coding-agent/extensibility/skills";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import { InputController } from "@gajae-code/coding-agent/modes/controllers/input-controller";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import { AgentSession, type AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { Container } from "@gajae-code/tui";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { getEmbeddedDefaultGjcSkills } from "../src/defaults/gjc-defaults";
+import { resolveSkillSlashCommands, type Skill } from "../src/extensibility/skills";
+import { EventController } from "../src/modes/controllers/event-controller";
+import { InputController } from "../src/modes/controllers/input-controller";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../src/modes/types";
+import { UiHelpers } from "../src/modes/utils/ui-helpers";
+import { AgentSession, type AgentSessionEvent } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
 
 // ============================================================================
 // Shared helpers

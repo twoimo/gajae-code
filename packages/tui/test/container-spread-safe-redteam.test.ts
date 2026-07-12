@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, Container } from "@gajae-code/tui";
+import { type Component, Container, type ViewportRowComponent } from "@gajae-code/tui";
 
 class FixedLines implements Component {
 	#lines: string[];
@@ -12,6 +12,32 @@ class FixedLines implements Component {
 
 	render(_width: number): string[] {
 		return this.#lines;
+	}
+}
+
+class SourceIds implements ViewportRowComponent {
+	#ids: string[];
+
+	constructor(ids: string[]) {
+		this.#ids = ids;
+	}
+
+	invalidate(): void {}
+
+	getLogicalRowCount(_width: number): number {
+		return 0;
+	}
+
+	renderRows(_width: number, _start: number, _end: number): string[] {
+		return [];
+	}
+
+	render(_width: number): string[] {
+		return [];
+	}
+
+	getViewportSourceIds(): readonly string[] {
+		return this.#ids;
 	}
 }
 
@@ -48,6 +74,17 @@ describe("Container spread-safe red-team composition", () => {
 		expect(output).toHaveLength(lineCount);
 		expect(output[0]).toBe("line-0");
 		expect(output[lineCount - 1]).toBe(`line-${lineCount - 1}`);
+	});
+
+	it("collects one million nested source IDs without RangeError", () => {
+		const sourceCount = 1_000_000;
+		const container = new Container();
+		container.addChild(new SourceIds(new Array<string>(sourceCount).fill("source")));
+
+		const ids = container.getViewportSourceIds();
+		expect(ids).toHaveLength(sourceCount);
+		expect(ids[0]).toBe("source");
+		expect(ids[sourceCount - 1]).toBe("source");
 	});
 
 	it("composes 1000 small children in child and line order", () => {

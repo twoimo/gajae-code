@@ -1,7 +1,7 @@
 /**
  * Shared types and utilities for web-fetch handlers
  */
-import { ptree } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 import type TurndownService from "turndown";
 
 import type { AgentStorage } from "../../session/agent-storage";

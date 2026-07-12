@@ -1,7 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { getAgentDir, isEnoent, logger, ptree, tryParseJson } from "@gajae-code/utils";
+import { getAgentDir, isEnoent, logger, tryParseJson } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 import { ToolAbortError } from "../../tools/tool-errors";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, MAX_BYTES } from "./types";

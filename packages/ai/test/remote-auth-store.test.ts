@@ -302,3 +302,26 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		clientStorage.close();
 	});
 });
+
+describe("AuthBrokerClient attempt authority", () => {
+	test("denies a broker retry before its second physical fetch", async () => {
+		const physicalFetch = vi.fn(async () => {
+			throw new Error("connection reset");
+		});
+		const client = new AuthBrokerClient({
+			url: "https://broker.example.test",
+			token: "token",
+			maxRetries: 2,
+			fetchImpl: physicalFetch,
+		});
+		let claims = 0;
+		const consumeAttempt = (): void => {
+			claims += 1;
+			if (claims > 1) throw new Error("attempt budget exhausted");
+		};
+
+		await expect(client.fetchUsage(undefined, consumeAttempt)).rejects.toThrow("attempt budget exhausted");
+		expect(physicalFetch).toHaveBeenCalledTimes(1);
+		expect(claims).toBe(2);
+	});
+});

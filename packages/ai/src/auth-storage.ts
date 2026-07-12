@@ -12,7 +12,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDbPath, logger } from "@gajae-code/utils";
 import { getEnvApiKey } from "./stream";
-import type { Provider } from "./types";
+import { type AttemptController, type FetchImpl, isAttemptBudgetExceededError, type Provider } from "./types";
 import type {
 	CredentialRankingStrategy,
 	UsageCredential,
@@ -123,6 +123,8 @@ export interface CheckCredentialsOptions {
 	timeoutMs?: number;
 	/** Provider → base URL override, same shape as {@link AuthStorage.fetchUsageReports}. */
 	baseUrlResolver?: (provider: Provider) => string | undefined;
+	/** Shared authority charged before each physical refresh or usage probe call. */
+	consumeAttempt?: AttemptController;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +231,7 @@ export interface AuthCredentialStore {
 		credentialId: number,
 		credential: OAuthCredential,
 		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
 	): Promise<OAuthCredentials>;
 	/**
 	 * Optional async pre-read hook invoked after AuthStorage selects a stored
@@ -236,7 +239,10 @@ export interface AuthCredentialStore {
 	 * Remote broker stores use this to wait out imminent rotations and refresh
 	 * their local snapshot before the caller sees a stale access token.
 	 */
-	prepareForRequest?(credentialId: number, opts?: { signal?: AbortSignal }): Promise<boolean | undefined>;
+	prepareForRequest?(
+		credentialId: number,
+		opts?: { signal?: AbortSignal; consumeAttempt?: AttemptController },
+	): Promise<boolean | undefined>;
 	/**
 	 * Optional store-supplied aggregate usage fetch. When present, `AuthStorage`
 	 * routes `fetchUsageReports()` here instead of fanning out per-credential.
@@ -247,7 +253,7 @@ export interface AuthCredentialStore {
 	 *
 	 * `signal` propagates the agent's cancel down to the broker fetch.
 	 */
-	fetchUsageReports?(signal?: AbortSignal): Promise<UsageReport[] | null>;
+	fetchUsageReports?(signal?: AbortSignal, consumeAttempt?: AttemptController): Promise<UsageReport[] | null>;
 	/**
 	 * Optional store-supplied per-credential usage report lookup. When present,
 	 * `AuthStorage` consults this before its own per-credential upstream fetch
@@ -263,7 +269,12 @@ export interface AuthCredentialStore {
 	 *
 	 * `signal` propagates the agent's cancel down to the broker fetch.
 	 */
-	getUsageReport?(provider: Provider, credential: OAuthCredential, signal?: AbortSignal): Promise<UsageReport | null>;
+	getUsageReport?(
+		provider: Provider,
+		credential: OAuthCredential,
+		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
+	): Promise<UsageReport | null>;
 	/**
 	 * Optional store hook to invalidate a specific credential after the upstream
 	 * provider returned 401 on a supposedly-fresh key. Remote stores force the
@@ -340,7 +351,7 @@ export type AuthStorageOptions = {
 	usageProviderResolver?: (provider: Provider) => UsageProvider | undefined;
 	rankingStrategyResolver?: (provider: Provider) => CredentialRankingStrategy | undefined;
 	credentialRankingMode?: CredentialRankingMode;
-	usageFetch?: typeof fetch;
+	usageFetch?: FetchImpl;
 	usageRequestTimeoutMs?: number;
 	usageLogger?: UsageLogger;
 	/**
@@ -371,6 +382,7 @@ export type AuthStorageOptions = {
 		credentialId: number,
 		credential: OAuthCredential,
 		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
 	) => Promise<OAuthCredentials>;
 	/**
 	 * Human-readable description of the credential store backing this
@@ -392,7 +404,7 @@ export type AuthStorageOptions = {
 	 * Implementations may return null when no usage data is available; the
 	 * AuthStorage caller surfaces that to its own consumer unchanged.
 	 */
-	fetchUsageReports?: (signal?: AbortSignal) => Promise<UsageReport[] | null>;
+	fetchUsageReports?: (signal?: AbortSignal, consumeAttempt?: AttemptController) => Promise<UsageReport[] | null>;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,6 +505,8 @@ type AuthApiKeyOptions = {
 	 * stranding the caller for `timeoutMs * (maxRetries + 1)`.
 	 */
 	signal?: AbortSignal;
+	/** Shared authority charged before credential-plane network activity. */
+	consumeAttempt?: AttemptController;
 	/** Pin selection to one stored credential instead of using round-robin/ranking. */
 	credentialSelector?: AuthCredentialSelector;
 };
@@ -717,7 +731,7 @@ export class AuthStorage {
 	#usageCache: UsageCache;
 	#usageRequestInFlight: Map<string, Promise<UsageReport | null>> = new Map();
 	#usageReportsInFlight: Map<string, Promise<UsageReport[] | null>> = new Map();
-	#usageFetch: typeof fetch;
+	#usageFetch: FetchImpl;
 	#usageRequestTimeoutMs: number;
 	#credentialRankingMode: CredentialRankingMode = "balanced";
 	#usageLogger?: UsageLogger;
@@ -2067,7 +2081,11 @@ export class AuthStorage {
 		});
 	}
 
-	async #fetchUsageUncached(request: UsageRequestDescriptor, timeoutMs?: number): Promise<UsageReport | null> {
+	async #fetchUsageUncached(
+		request: UsageRequestDescriptor,
+		timeoutMs?: number,
+		consumeAttempt?: AttemptController,
+	): Promise<UsageReport | null> {
 		const resolver = this.#usageProviderResolver;
 		if (!resolver) return null;
 
@@ -2097,6 +2115,7 @@ export class AuthStorage {
 						refreshableCredential,
 						refreshableCredentialId,
 						timeoutSignal,
+						consumeAttempt,
 					);
 					const refreshedCredential = this.#mergeRefreshedUsageCredential(request.credential, refreshed);
 					this.#persistRefreshedUsageCredential(request.provider, request.credential, refreshedCredential);
@@ -2117,10 +2136,14 @@ export class AuthStorage {
 
 		try {
 			return await providerImpl.fetchUsage(params, {
-				fetch: this.#usageFetch,
+				fetch: async (input, init) => {
+					consumeAttempt?.("credential-probe");
+					return this.#usageFetch(input, init);
+				},
 				logger: this.#usageLogger,
 			});
 		} catch (error) {
+			if (isAttemptBudgetExceededError(error)) throw error;
 			logger.debug("AuthStorage usage fetch failed", {
 				provider: request.provider,
 				error: String(error),
@@ -2129,7 +2152,11 @@ export class AuthStorage {
 		}
 	}
 
-	async #fetchUsageCached(request: UsageRequestDescriptor, timeoutMs?: number): Promise<UsageReport | null> {
+	async #fetchUsageCached(
+		request: UsageRequestDescriptor,
+		timeoutMs?: number,
+		consumeAttempt?: AttemptController,
+	): Promise<UsageReport | null> {
 		const cacheKey = this.#buildUsageReportCacheKey(request);
 		const now = Date.now();
 		const cached = this.#usageCache.get<UsageReport | null>(cacheKey);
@@ -2142,7 +2169,7 @@ export class AuthStorage {
 		if (inFlight) return inFlight;
 
 		const promise = (async () => {
-			const report = await this.#fetchUsageUncached(request, timeoutMs);
+			const report = await this.#fetchUsageUncached(request, timeoutMs, consumeAttempt);
 			const ttlJitter = USAGE_REPORT_TTL_MS * (Math.random() * 0.5 - 0.25);
 			if (report !== null) {
 				// Success: stagger per-credential cache expiry so all accounts don't
@@ -2365,7 +2392,7 @@ export class AuthStorage {
 	async #getUsageReport(
 		provider: Provider,
 		credential: OAuthCredential,
-		options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal },
+		options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal; consumeAttempt?: AttemptController },
 	): Promise<UsageReport | null> {
 		// Store-level hook (e.g. `RemoteAuthCredentialStore`) is authoritative
 		// when present: the broker already aggregates usage from a less-throttled
@@ -2373,11 +2400,12 @@ export class AuthStorage {
 		// whole point of routing through it.
 		const storeHook = this.#store.getUsageReport?.bind(this.#store);
 		if (storeHook) {
-			return storeHook(provider, credential, options?.signal);
+			return storeHook(provider, credential, options?.signal, options?.consumeAttempt);
 		}
 		return this.#fetchUsageCached(
 			this.#buildUsageRequestForOauth(provider, credential, options?.baseUrl),
 			options?.timeoutMs ?? this.#usageRequestTimeoutMs,
+			options?.consumeAttempt,
 		);
 	}
 
@@ -2385,6 +2413,7 @@ export class AuthStorage {
 		baseUrlResolver?: (provider: Provider) => string | undefined;
 		/** Caller's cancel signal; only rejects this caller, never the shared upstream fetch. */
 		signal?: AbortSignal;
+		consumeAttempt?: AttemptController;
 	}): Promise<UsageReport[] | null> {
 		// Caller override > store-level hook > local per-credential fan-out.
 		// `RemoteAuthCredentialStore` implements the store hook so a gateway
@@ -2401,7 +2430,7 @@ export class AuthStorage {
 			if (!shared) {
 				// Don't forward the caller signal into the shared fetch — first caller's
 				// abort would otherwise cancel the upstream for every peer.
-				shared = override().finally(() => {
+				shared = override(undefined, options?.consumeAttempt).finally(() => {
 					this.#usageReportsInFlight.delete(OVERRIDE_KEY);
 				});
 				this.#usageReportsInFlight.set(OVERRIDE_KEY, shared);
@@ -2439,7 +2468,9 @@ export class AuthStorage {
 			}
 
 			const results = await Promise.all(
-				requests.map(request => this.#fetchUsageCached(request, this.#usageRequestTimeoutMs)),
+				requests.map(request =>
+					this.#fetchUsageCached(request, this.#usageRequestTimeoutMs, options?.consumeAttempt),
+				),
 			);
 			const reports = results.filter((report): report is UsageReport => report !== null);
 			const deduped = this.#dedupeUsageReports(reports);
@@ -2495,7 +2526,13 @@ export class AuthStorage {
 		const stored = this.#store.listAuthCredentials();
 		const resolver = this.#usageProviderResolver;
 		const timeoutMs = options?.timeoutMs ?? this.#usageRequestTimeoutMs;
-		const ctx: UsageFetchContext = { fetch: this.#usageFetch, logger: this.#usageLogger };
+		const ctx: UsageFetchContext = {
+			fetch: async (input, init) => {
+				options?.consumeAttempt?.("credential-probe");
+				return this.#usageFetch(input, init);
+			},
+			logger: this.#usageLogger,
+		};
 
 		const results: CredentialHealthResult[] = [];
 		for (const row of stored) {
@@ -2553,6 +2590,7 @@ export class AuthStorage {
 							refreshable,
 							row.id,
 							probeSignal,
+							options?.consumeAttempt,
 						);
 						const refreshedCredential = this.#mergeRefreshedUsageCredential(initialRequest.credential, refreshed);
 						this.#persistRefreshedUsageCredential(
@@ -2602,7 +2640,7 @@ export class AuthStorage {
 	async markUsageLimitReached(
 		provider: string,
 		sessionId: string | undefined,
-		options?: { retryAfterMs?: number; baseUrl?: string; signal?: AbortSignal },
+		options?: { retryAfterMs?: number; baseUrl?: string; signal?: AbortSignal; consumeAttempt?: AttemptController },
 	): Promise<boolean> {
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
 		if (!sessionCredential) return false;
@@ -2891,6 +2929,7 @@ export class AuthStorage {
 						candidate.selection.credential,
 						credentialId,
 						options?.signal,
+						options?.consumeAttempt,
 					);
 					const updated: OAuthCredential = {
 						...candidate.selection.credential,
@@ -2899,7 +2938,9 @@ export class AuthStorage {
 					};
 					candidate.selection.credential = updated;
 					this.#replaceCredentialAt(provider, candidate.selection.index, updated);
-				} catch {}
+				} catch (error) {
+					if (isAttemptBudgetExceededError(error)) throw error;
+				}
 			}),
 		);
 
@@ -2946,6 +2987,7 @@ export class AuthStorage {
 		credential: OAuthCredential,
 		credentialId: number | undefined,
 		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
 	): Promise<OAuthCredentials> {
 		if (credentialId !== undefined) {
 			const existing = this.#oauthCredentialRefreshInFlight.get(credentialId);
@@ -2953,9 +2995,15 @@ export class AuthStorage {
 		}
 		if (Date.now() + OAUTH_REFRESH_SKEW_MS < credential.expires) return credential;
 		if (credentialId === undefined) {
-			return this.#refreshOAuthCredentialUnshared(provider, credential, undefined, signal);
+			return this.#refreshOAuthCredentialUnshared(provider, credential, undefined, signal, consumeAttempt);
 		}
-		const promise = this.#refreshOAuthCredentialUnshared(provider, credential, credentialId).finally(() => {
+		const promise = this.#refreshOAuthCredentialUnshared(
+			provider,
+			credential,
+			credentialId,
+			undefined,
+			consumeAttempt,
+		).finally(() => {
 			this.#oauthCredentialRefreshInFlight.delete(credentialId);
 		});
 		this.#oauthCredentialRefreshInFlight.set(credentialId, promise);
@@ -2967,6 +3015,7 @@ export class AuthStorage {
 		credential: OAuthCredential,
 		credentialId: number | undefined,
 		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
 	): Promise<OAuthCredentials> {
 		let refreshPromise: Promise<OAuthCredentials>;
 		// Caller override > store-level hook > local per-provider refresh.
@@ -2975,8 +3024,9 @@ export class AuthStorage {
 		const storeRefresh = this.#store.refreshOAuthCredential?.bind(this.#store);
 		const overrideRefresh = this.#refreshOAuthCredentialOverride ?? storeRefresh;
 		if (overrideRefresh && credentialId !== undefined) {
-			refreshPromise = overrideRefresh(provider, credentialId, credential, signal);
+			refreshPromise = overrideRefresh(provider, credentialId, credential, signal, consumeAttempt);
 		} else {
+			consumeAttempt?.("credential-refresh");
 			const customProvider = getOAuthProvider(provider);
 			if (customProvider) {
 				if (!customProvider.refreshToken) {
@@ -3024,7 +3074,10 @@ export class AuthStorage {
 		const selected = stored[selection.index];
 		if (selected?.credential.type !== "oauth") return false;
 
-		const prepared = await prepare(selected.id, { signal: options?.signal });
+		const prepared = await prepare(selected.id, {
+			signal: options?.signal,
+			consumeAttempt: options?.consumeAttempt,
+		});
 		if (!prepared) return true;
 		const latestRows = this.#store.listAuthCredentials(provider);
 		this.#setStoredCredentials(
@@ -3109,6 +3162,7 @@ export class AuthStorage {
 					selection.credential,
 					this.#getStoredCredentials(provider)[selection.index]?.id,
 					options?.signal,
+					options?.consumeAttempt,
 				);
 				const apiKey = customProvider.getApiKey
 					? customProvider.getApiKey(refreshedCredentials)
@@ -3125,6 +3179,7 @@ export class AuthStorage {
 					selection.credential,
 					this.#getStoredCredentials(provider)[selection.index]?.id,
 					options?.signal,
+					options?.consumeAttempt,
 				);
 				const oauthCreds: Record<string, OAuthCredentials> = {
 					[provider]: refreshedCredentials,
@@ -3168,6 +3223,7 @@ export class AuthStorage {
 			this.#recordSessionCredential(provider, sessionId, "oauth", selection.index);
 			return { apiKey: result.apiKey, credential: updated };
 		} catch (error) {
+			if (isAttemptBudgetExceededError(error)) throw error;
 			const errorMsg = String(error);
 			// Only remove credentials for definitive auth failures
 			// Keep credentials for transient errors (network, 5xx) and block temporarily

@@ -4,15 +4,16 @@ import * as path from "node:path";
 import { Agent, type AgentTool } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { syncSkillActiveState } from "@gajae-code/coding-agent/skill-state/active-state";
 import { TempDir } from "@gajae-code/utils";
 import * as z from "zod/v4";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { activeSnapshotPath, modeStatePath } from "../src/gjc-runtime/session-layout";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { convertToLlm, SKILL_PROMPT_MESSAGE_TYPE } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
+import { syncSkillActiveState } from "../src/skill-state/active-state";
 
 let tempDir: TempDir;
 let authStorage: AuthStorage | undefined;
@@ -35,7 +36,7 @@ async function writeCustomTool(fileName: string, toolName: string): Promise<stri
 	const toolPath = path.join(toolsDir, fileName);
 	await fs.writeFile(
 		toolPath,
-		`import type { CustomToolFactory } from "@gajae-code/coding-agent/extensibility/custom-tools/types";
+		`import type { CustomToolFactory } from "../src/extensibility/custom-tools/types";
 
 const factory: CustomToolFactory = pi => ({
 	name: ${JSON.stringify(toolName)},
@@ -137,6 +138,62 @@ describe("AgentSession GJC plugin sub-skill tool refresh", () => {
 		expect(session.getAllToolNames()).not.toContain("domain_note");
 		expect(session.getActiveToolNames()).not.toContain("domain_note");
 		expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+	});
+
+	test("revokes phase-bound tools when live and durable phase state conflict", async () => {
+		const toolPath = await writeCustomTool("domain-note.ts", "domain_note");
+		await activateSubskill([toolPath], "planner");
+		await session.refreshGjcSubskillTools();
+		expect(session.getAllToolNames()).toContain("domain_note");
+
+		const statePath = modeStatePath(tempDir.path(), sessionManager.getSessionId(), "ralplan");
+		await fs.mkdir(path.dirname(statePath), { recursive: true });
+		await fs.writeFile(
+			statePath,
+			JSON.stringify({
+				skill: "ralplan",
+				session_id: sessionManager.getSessionId(),
+				current_phase: "critic",
+				active: true,
+				version: 2,
+			}),
+		);
+
+		await session.refreshGjcSubskillTools();
+		expect(session.getAllToolNames()).not.toContain("domain_note");
+		expect(session.getActiveToolNames()).toEqual(["read", "bash"]);
+	});
+
+	test("dispatcher-only prompt consumption does not seed workflow state or an initial phase", async () => {
+		session.agent.emitExternalEvent({
+			type: "message_start",
+			message: {
+				role: "custom",
+				customType: SKILL_PROMPT_MESSAGE_TYPE,
+				content: "dispatcher only",
+				display: false,
+				attribution: "user",
+				timestamp: Date.now(),
+				details: {
+					name: "ralplan",
+					path: "/bundled/ralplan/SKILL.md",
+					lineCount: 1,
+					workflowResolution: {
+						skill: "ralplan",
+						source: "dispatcher-only",
+						fragmentKind: "dispatcher",
+						diagnostics: ["workflow phase absent"],
+						stateVersion: 2,
+					},
+				},
+			},
+		});
+		await Bun.sleep(0);
+
+		const sessionId = sessionManager.getSessionId();
+		expect(session.getActiveSkillPhase()).toBeUndefined();
+		await expect(fs.access(modeStatePath(tempDir.path(), sessionId, "ralplan"))).rejects.toThrow();
+		await expect(fs.access(activeSnapshotPath(tempDir.path(), sessionId))).rejects.toThrow();
 	});
 
 	test("rejects sub-skill tools whose names conflict with existing tools", async () => {

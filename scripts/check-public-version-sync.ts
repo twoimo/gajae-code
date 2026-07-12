@@ -3,6 +3,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Glob } from "bun";
+import { checkReleaseManifest } from "./release-manifest";
 
 interface PackageJson {
 	name?: string;
@@ -98,6 +99,11 @@ async function canonicalVersionForRepo(repoRoot: string): Promise<string | undef
 
 export async function checkPublicVersionSync(repoRoot = path.join(import.meta.dir, "..")): Promise<SyncViolation[]> {
 	const violations: SyncViolation[] = [];
+	if (await pathExists(path.join(repoRoot, "scripts/release-manifest.ts"))) {
+		for (const message of await checkReleaseManifest(repoRoot)) {
+			violations.push({ path: "scripts/release-manifest.ts", message });
+		}
+	}
 	const rootPackagePath = path.join(repoRoot, "package.json");
 	const rootPackage = await readJson<PackageJson>(rootPackagePath);
 	const catalog = rootPackage.workspaces?.catalog ?? {};

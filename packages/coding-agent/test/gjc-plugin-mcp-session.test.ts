@@ -3,10 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { createAgentSession } from "@gajae-code/coding-agent/sdk";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { Settings } from "../src/config/settings";
 import { installGjcPluginBundle } from "../src/extensibility/gjc-plugins";
+import { createAgentSession } from "../src/sdk";
+import { SessionManager } from "../src/session/session-manager";
 
 const fixturesRoot = path.join(import.meta.dir, "fixtures", "gjc-plugins");
 const mcpBundle = path.join(fixturesRoot, "valid-mcp-bundle");

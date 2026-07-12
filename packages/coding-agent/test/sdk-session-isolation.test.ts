@@ -3,16 +3,16 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type AssistantMessage, getBundledModel } from "@gajae-code/ai";
-import type { Rule } from "@gajae-code/coding-agent/capability/rule";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ExtensionFactory } from "@gajae-code/coding-agent/extensibility/extensions";
-import { LocalProtocolHandler, resolveLocalUrlToPath } from "@gajae-code/coding-agent/internal-urls";
-import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
-import { createAgentSession } from "@gajae-code/coding-agent/sdk";
-import { SecretObfuscator } from "@gajae-code/coding-agent/secrets";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { getSessionsDir, Snowflake } from "@gajae-code/utils";
+import type { Rule } from "../src/capability/rule";
+import { Settings } from "../src/config/settings";
+import type { ExtensionFactory } from "../src/extensibility/extensions";
+import { LocalProtocolHandler, resolveLocalUrlToPath } from "../src/internal-urls";
+import { AgentRegistry } from "../src/registry/agent-registry";
+import { createAgentSession } from "../src/sdk";
+import { SecretObfuscator } from "../src/secrets";
+import type { AgentSession } from "../src/session/agent-session";
+import { SessionManager } from "../src/session/session-manager";
 
 function createTtsrRule(name: string): Rule {
 	return {

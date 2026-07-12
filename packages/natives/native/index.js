@@ -14,68 +14,147 @@ import { loadNative } from "./loader-state.js";
  */
 
 const nativeBindings = loadNative();
-nativeBindings.initNativeCrashDiagnostics?.();
+function getNativeBinding(name) {
+	return nativeBindings[name];
+}
+function lazyNativeExport(name) {
+	let cached;
+	const binding = () => {
+		cached ??= getNativeBinding(name);
+		return cached;
+	};
+	return new Proxy(function () {}, {
+		apply(_target, thisArg, args) {
+			return Reflect.apply(binding(), thisArg, args);
+		},
+		construct(_target, args, newTarget) {
+			const b = binding();
+			return Reflect.construct(b, args, newTarget === _target ? b : newTarget);
+		},
+		get(_target, property, receiver) {
+			const b = binding();
+			return Reflect.get(b, property, receiver === _target ? b : receiver);
+		},
+		set(_target, property, value, receiver) {
+			const b = binding();
+			return Reflect.set(b, property, value, receiver === _target ? b : receiver);
+		},
+	});
+}
+/**
+ * Lazy class wrapper for native classes with static factories. Unlike the
+ * Proxy above, this is a plain JS class: its forwarding statics are
+ * configurable/writable, so bun:test `vi.spyOn(Class, "staticMethod")`
+ * works (JSC's spy machinery bypasses Proxy traps entirely), while the
+ * backing addon still loads only on first actual use.
+ *
+ * Native class identity is preserved lazily: `Symbol.hasInstance` delegates
+ * to the resolved native class, and the wrapper's `prototype` property is
+ * replaced with the native prototype on first access, so `instanceof`,
+ * prototype reflection, and factory-returned handles behave exactly like the
+ * direct native export.
+ */
+function lazyNativeClass(name, staticNames) {
+	let resolved;
+	function LazyNativeClass(...args) {
+		return new (resolve())(...args);
+	}
+	// `Function#prototype` is writable (not configurable), so the native
+	// prototype is adopted on first resolution. Instances can only exist
+	// after resolution, so `Object.getPrototypeOf(handle) === Class.prototype`
+	// and prototype reflection behave exactly like the direct native export.
+	function resolve() {
+		if (!resolved) {
+			resolved = getNativeBinding(name);
+			LazyNativeClass.prototype = resolved.prototype;
+		}
+		return resolved;
+	}
+	Object.defineProperty(LazyNativeClass, "name", { value: name, configurable: true });
+	Object.defineProperty(LazyNativeClass, Symbol.hasInstance, {
+		value: function (instance) {
+			return instance instanceof resolve();
+		},
+		configurable: true,
+	});
+	for (const staticName of staticNames) {
+		Object.defineProperty(LazyNativeClass, staticName, {
+			value: function (...args) {
+				return resolve()[staticName](...args);
+			},
+			writable: true,
+			enumerable: false,
+			configurable: true,
+		});
+	}
+	return LazyNativeClass;
+}
 // --- generated native exports (do not edit) ---
 // classes
-export const ComputerController = nativeBindings.ComputerController;
-export const MacAppearanceObserver = nativeBindings.MacAppearanceObserver;
-export const MacOSPowerAssertion = nativeBindings.MacOSPowerAssertion;
-export const NotificationControlServer = nativeBindings.NotificationControlServer;
-export const NotificationServer = nativeBindings.NotificationServer;
-export const Process = nativeBindings.Process;
-export const PtySession = nativeBindings.PtySession;
-export const Shell = nativeBindings.Shell;
+export const ComputerController = lazyNativeExport("ComputerController");
+export const MacAppearanceObserver = lazyNativeClass("MacAppearanceObserver", ["start"]);
+export const MacOSPowerAssertion = lazyNativeClass("MacOSPowerAssertion", ["start"]);
+export const NotificationControlServer = lazyNativeExport("NotificationControlServer");
+export const NotificationServer = lazyNativeExport("NotificationServer");
+export const Process = lazyNativeClass("Process", ["fromPid","fromPath"]);
+export const PtySession = lazyNativeExport("PtySession");
+export const Shell = lazyNativeExport("Shell");
 
 // functions
-export const __piNativesV0_10_0 = nativeBindings.__piNativesV0_10_0;
-export const applyBashFixups = nativeBindings.applyBashFixups;
-export const astEdit = nativeBindings.astEdit;
-export const astGrep = nativeBindings.astGrep;
-export const computerScreenshot = nativeBindings.computerScreenshot;
-export const copyToClipboard = nativeBindings.copyToClipboard;
-export const detectMacOSAppearance = nativeBindings.detectMacOSAppearance;
-export const diffLines = nativeBindings.diffLines;
-export const encodeSixel = nativeBindings.encodeSixel;
-export const executeShell = nativeBindings.executeShell;
-export const extractSegments = nativeBindings.extractSegments;
-export const fuzzyFind = nativeBindings.fuzzyFind;
-export const getSupportedLanguages = nativeBindings.getSupportedLanguages;
-export const getWorkProfile = nativeBindings.getWorkProfile;
-export const glob = nativeBindings.glob;
-export const grep = nativeBindings.grep;
-export const h01FindBestFuzzyMatch = nativeBindings.h01FindBestFuzzyMatch;
-export const h02ScoreSequenceFuzzy = nativeBindings.h02ScoreSequenceFuzzy;
-export const h06FormatHashLines = nativeBindings.h06FormatHashLines;
-export const hasMatch = nativeBindings.hasMatch;
-export const highlightCode = nativeBindings.highlightCode;
-export const htmlToMarkdown = nativeBindings.htmlToMarkdown;
-export const initNativeCrashDiagnostics = nativeBindings.initNativeCrashDiagnostics;
-export const invalidateFsScanCache = nativeBindings.invalidateFsScanCache;
-export const isoBackend = nativeBindings.isoBackend;
-export const isoDiff = nativeBindings.isoDiff;
-export const isoIsUnavailableError = nativeBindings.isoIsUnavailableError;
-export const isoProbe = nativeBindings.isoProbe;
-export const isoResolve = nativeBindings.isoResolve;
-export const isoStart = nativeBindings.isoStart;
-export const isoStop = nativeBindings.isoStop;
-export const listWorkspace = nativeBindings.listWorkspace;
-export const matchesKey = nativeBindings.matchesKey;
-export const matchesKittySequence = nativeBindings.matchesKittySequence;
-export const matchesLegacySequence = nativeBindings.matchesLegacySequence;
-export const nativeBuildInfo = nativeBindings.nativeBuildInfo;
-export const parseKey = nativeBindings.parseKey;
-export const parseKittySequence = nativeBindings.parseKittySequence;
-export const ptyTimeoutCount = nativeBindings.ptyTimeoutCount;
-export const readImageFromClipboard = nativeBindings.readImageFromClipboard;
-export const search = nativeBindings.search;
-export const sliceWithWidth = nativeBindings.sliceWithWidth;
-export const summarizeCode = nativeBindings.summarizeCode;
-export const supportsLanguage = nativeBindings.supportsLanguage;
-export const truncateLinesToWidth = nativeBindings.truncateLinesToWidth;
-export const truncateToWidth = nativeBindings.truncateToWidth;
-export const visibleWidth = nativeBindings.visibleWidth;
-export const visibleWidths = nativeBindings.visibleWidths;
-export const wrapTextWithAnsi = nativeBindings.wrapTextWithAnsi;
+export const __piNativesV0_10_0 = lazyNativeExport("__piNativesV0_10_0");
+export const applyBashFixups = lazyNativeExport("applyBashFixups");
+export const astEdit = lazyNativeExport("astEdit");
+export const astGrep = lazyNativeExport("astGrep");
+export const computerScreenshot = lazyNativeExport("computerScreenshot");
+export const copyToClipboard = lazyNativeExport("copyToClipboard");
+export const detectMacOSAppearance = lazyNativeExport("detectMacOSAppearance");
+export const diffLines = lazyNativeExport("diffLines");
+export const encodeSixel = lazyNativeExport("encodeSixel");
+export const executeShell = lazyNativeExport("executeShell");
+export const extractSegments = lazyNativeExport("extractSegments");
+export const fsyncDirectory = lazyNativeExport("fsyncDirectory");
+export const fuzzyFind = lazyNativeExport("fuzzyFind");
+export const getSupportedLanguages = lazyNativeExport("getSupportedLanguages");
+export const getWorkProfile = lazyNativeExport("getWorkProfile");
+export const glob = lazyNativeExport("glob");
+export const grep = lazyNativeExport("grep");
+export const h01FindBestFuzzyMatch = lazyNativeExport("h01FindBestFuzzyMatch");
+export const h02ScoreSequenceFuzzy = lazyNativeExport("h02ScoreSequenceFuzzy");
+export const h06FormatHashLines = lazyNativeExport("h06FormatHashLines");
+export const hasMatch = lazyNativeExport("hasMatch");
+export const highlightCode = lazyNativeExport("highlightCode");
+export const htmlToMarkdown = lazyNativeExport("htmlToMarkdown");
+export const initNativeCrashDiagnostics = lazyNativeExport("initNativeCrashDiagnostics");
+export const invalidateFsScanCache = lazyNativeExport("invalidateFsScanCache");
+export const isoBackend = lazyNativeExport("isoBackend");
+export const isoDiff = lazyNativeExport("isoDiff");
+export const isoIsUnavailableError = lazyNativeExport("isoIsUnavailableError");
+export const isoProbe = lazyNativeExport("isoProbe");
+export const isoResolve = lazyNativeExport("isoResolve");
+export const isoStart = lazyNativeExport("isoStart");
+export const isoStop = lazyNativeExport("isoStop");
+export const listWorkspace = lazyNativeExport("listWorkspace");
+export const matchesKey = lazyNativeExport("matchesKey");
+export const matchesKittySequence = lazyNativeExport("matchesKittySequence");
+export const matchesLegacySequence = lazyNativeExport("matchesLegacySequence");
+export const nativeBuildInfo = lazyNativeExport("nativeBuildInfo");
+export const nativeDebugSidecarBacktraceProbe = lazyNativeExport("nativeDebugSidecarBacktraceProbe");
+export const nativePanicUnwindProbe = lazyNativeExport("nativePanicUnwindProbe");
+export const parseKey = lazyNativeExport("parseKey");
+export const parseKittySequence = lazyNativeExport("parseKittySequence");
+export const ptyTimeoutCount = lazyNativeExport("ptyTimeoutCount");
+export const publishCreateFile = lazyNativeExport("publishCreateFile");
+export const publishReplaceFile = lazyNativeExport("publishReplaceFile");
+export const readImageFromClipboard = lazyNativeExport("readImageFromClipboard");
+export const search = lazyNativeExport("search");
+export const sliceWithWidth = lazyNativeExport("sliceWithWidth");
+export const summarizeCode = lazyNativeExport("summarizeCode");
+export const supportsLanguage = lazyNativeExport("supportsLanguage");
+export const truncateLinesToWidth = lazyNativeExport("truncateLinesToWidth");
+export const truncateToWidth = lazyNativeExport("truncateToWidth");
+export const visibleWidth = lazyNativeExport("visibleWidth");
+export const visibleWidths = lazyNativeExport("visibleWidths");
+export const wrapTextWithAnsi = lazyNativeExport("wrapTextWithAnsi");
 
 // string/numeric enums (napi-rs string_enum produces TS-only const enum)
 export const AstMatchStrictness = {
@@ -85,6 +164,16 @@ export const AstMatchStrictness = {
 	Relaxed: "relaxed",
 	Signature: "signature",
 	Template: "template",
+};
+export const DurableFsOutcomeCode = {
+	Ok: "OK",
+	SharingViolation: "SHARING_VIOLATION",
+	TargetMissing: "TARGET_MISSING",
+	CrossDirectoryUnsupported: "CROSS_DIRECTORY_UNSUPPORTED",
+	ReplaceFailedUnchanged: "REPLACE_FAILED_UNCHANGED",
+	ReplaceFailedTargetMayHaveChanged: "REPLACE_FAILED_TARGET_MAY_HAVE_CHANGED",
+	ReplaceFailedReplacementRetained: "REPLACE_FAILED_REPLACEMENT_RETAINED",
+	PublishedDurabilityUncertain: "PUBLISHED_DURABILITY_UNCERTAIN",
 };
 export const Ellipsis = {
 	Unicode: 0,

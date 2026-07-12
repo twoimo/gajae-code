@@ -3,19 +3,16 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
 	consumePendingGoalModeRequest,
+	defaultUltragoalObjective,
 	GJC_SESSION_FILE_ENV,
 	GJC_SESSION_ID_ENV,
 	isUltragoalCreateGoalsInvocation,
 	readUltragoalGjcObjective,
 	writeCurrentSessionGoalModeState,
 	writePendingGoalModeRequest,
-} from "@gajae-code/coding-agent/gjc-runtime/goal-mode-request";
-import { sessionStateDir, sessionUltragoalDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import {
-	buildSessionContext,
-	loadEntriesFromFile,
-	type SessionEntry,
-} from "@gajae-code/coding-agent/session/session-manager";
+} from "../../src/gjc-runtime/goal-mode-request";
+import { sessionStateDir, sessionUltragoalDir } from "../../src/gjc-runtime/session-layout";
+import { buildSessionContext, loadEntriesFromFile, type SessionEntry } from "../../src/session/session-manager";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];
@@ -54,11 +51,11 @@ describe("GJC ultragoal goal mode request", () => {
 		const root = await tempDir();
 		const goalsPath = path.join(sessionUltragoalDir(root, TEST_SESSION_ID), "goals.json");
 		await fs.mkdir(path.dirname(goalsPath), { recursive: true });
-		await Bun.write(goalsPath, JSON.stringify({ gjcObjective: "Complete .gjc/ultragoal/goals.json" }));
+		await Bun.write(goalsPath, JSON.stringify({ gjcObjective: defaultUltragoalObjective(goalsPath) }));
 
 		const result = await readUltragoalGjcObjective(root);
 
-		expect(result.objective).toBe("Complete .gjc/ultragoal/goals.json");
+		expect(result.objective).toBe(defaultUltragoalObjective(goalsPath));
 		expect(result.goalsPath).toBe(goalsPath);
 	});
 
@@ -278,7 +275,8 @@ describe("GJC ultragoal goal mode request", () => {
 		// leak into a concurrent independent session sharing the same cwd.
 		expect(await consumePendingGoalModeRequest(root, "other-session")).toBeNull();
 		const pending = await consumePendingGoalModeRequest(root, "session-owner");
-		expect(pending?.objective).toContain(".gjc/ultragoal/goals.json");
+		expect(pending?.objective).toContain(path.join(".gjc", "_session-session-owner", "ultragoal", "goals.json"));
+		expect(pending?.objective).not.toContain(path.join(".gjc", "ultragoal", "goals.json"));
 		expect(pending?.sessionId).toBe("session-owner");
 		const entries = (await loadEntriesFromFile(sessionFile)).filter(
 			(entry): entry is SessionEntry => entry.type !== "session",

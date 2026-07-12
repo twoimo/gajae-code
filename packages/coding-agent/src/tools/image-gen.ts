@@ -8,16 +8,8 @@ import {
 	OPENAI_HEADERS,
 	URL_PATHS,
 } from "@gajae-code/ai/providers/openai-codex/constants";
-import {
-	$env,
-	isEnoent,
-	parseImageMetadata,
-	prompt,
-	ptree,
-	readSseJson,
-	Snowflake,
-	untilAborted,
-} from "@gajae-code/utils";
+import { $env, isEnoent, parseImageMetadata, prompt, readSseJson, Snowflake, untilAborted } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 import * as z from "zod/v4";
 import packageJson from "../../package.json" with { type: "json" };
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";

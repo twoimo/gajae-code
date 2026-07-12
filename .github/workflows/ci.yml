@@ -129,7 +129,7 @@ jobs:
    check:
       timeout-minutes: 30
       needs: [relevance]
-      if: ${{ !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -185,7 +185,7 @@ jobs:
    windows_smoke:
       timeout-minutes: 60
       needs: [relevance]
-      if: ${{ !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       runs-on: windows-latest
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -263,7 +263,7 @@ jobs:
       runs-on: ubuntu-22.04
       needs: [native_linux, rust-hash, relevance]
       if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
-         !startsWith(github.ref, 'refs/tags/v') && needs.native_linux.result != 'failure' }}
+         needs.native_linux.result != 'failure' }}
       timeout-minutes: 60
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -316,10 +316,99 @@ jobs:
            if: needs.relevance.outputs.relevant == 'true'
            run: bun run ci:test:smoke
 
+   # Crash/recovery behavior and the fast memory budget must stay portable across
+   # the filesystems used by our supported desktop platforms.
+   session_storage_crash:
+      name: Session storage crash (${{ matrix.platform }})
+      timeout-minutes: 45
+      needs: [relevance]
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      strategy:
+         fail-fast: false
+         matrix:
+            include:
+               - { os: ubuntu-latest, platform: linux, native_variant: baseline }
+               - { os: macos-latest, platform: darwin, native_variant: "" }
+               - { os: windows-latest, platform: win32, native_variant: baseline }
+      runs-on: ${{ matrix.os }}
+      steps:
+         - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+           with:
+              bun-version: "1.3"
+         - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly
+           if: needs.relevance.outputs.relevant == 'true'
+           with:
+              toolchain: nightly-2026-04-29
+         - name: Prepend rustup toolchain bin to PATH
+           if: needs.relevance.outputs.relevant == 'true'
+           shell: bash
+           run: |
+              toolchain_bin="$(dirname "$(rustup which cargo)")"
+              echo "$toolchain_bin" >> "$GITHUB_PATH"
+         - name: Cache bun dependencies
+           if: needs.relevance.outputs.relevant == 'true'
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+           with:
+              path: ~/.bun/install/cache
+              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+         - if: needs.relevance.outputs.relevant == 'true'
+           run: bun install --frozen-lockfile
+         - name: Build native addon
+           if: needs.relevance.outputs.relevant == 'true'
+           env:
+              TARGET_VARIANTS: ${{ matrix.native_variant }}
+           run: bun run ci:build:native
+         - name: Run session storage crash and format tests
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun test packages/coding-agent/test/session-storage-crash.test.ts packages/coding-agent/test/session-manager-storage-v2.test.ts packages/coding-agent/test/session-storage-format.test.ts packages/coding-agent/test/session-storage-recovery.test.ts packages/coding-agent/test/session-storage-gc.test.ts packages/natives/test/durable-fs.test.ts
+         - name: Check fast session memory budget
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun scripts/measure-session-memory.ts --fast --check
+         - name: Upload session memory report
+           if: ${{ always() && needs.relevance.outputs.relevant == 'true' }}
+           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+           with:
+              name: session-memory-${{ matrix.platform }}
+              path: artifacts/session-memory-*.json
+              if-no-files-found: warn
+
+
+   tui_retention:
+      name: TUI retention (${{ matrix.platform }}-${{ matrix.arch }})
+      timeout-minutes: 30
+      needs: [relevance]
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      strategy:
+         fail-fast: false
+         matrix:
+            include:
+               - { os: macos-14, platform: darwin, arch: arm64 }
+               - { os: ubuntu-22.04, platform: linux, arch: x64 }
+      runs-on: ${{ matrix.os }}
+      steps:
+         - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+           with:
+              bun-version: "1.3"
+         - if: needs.relevance.outputs.relevant == 'true'
+           run: bun install --frozen-lockfile
+         # Darwin arm64 has a checked baseline and gates strictly. Linux x64 intentionally has no
+         # fabricated baseline: --check bootstraps and captures its measured artifact for maintainer review.
+         - name: Check fast TUI retention budget
+           if: needs.relevance.outputs.relevant == 'true'
+           run: bun scripts/measure-tui-retention.ts --fast --check
+         - name: Upload TUI retention report
+           if: ${{ always() && needs.relevance.outputs.relevant == 'true' }}
+           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+           with:
+              name: tui-retention-${{ matrix.platform }}-${{ matrix.arch }}
+              path: artifacts/tui-retention-${{ matrix.platform }}-${{ matrix.arch }}.json
+              if-no-files-found: warn
    install_methods:
       timeout-minutes: 45
       needs: [relevance]
-      if: ${{ !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -360,9 +449,10 @@ jobs:
    release_binary:
       timeout-minutes: 60
       if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
-         needs.native_linux.result == 'success' && needs.native_release.result ==
-         'success' && (needs.check.result == 'success' || needs.check.result == 'skipped') }}
-      needs: [check, native_linux, native_release, rust-hash]
+         needs.native_linux.result == 'success' && needs.native_release.result == 'success' &&
+         needs.check.result == 'success' && needs.test.result == 'success' &&
+         needs.windows_smoke.result == 'success' && needs.install_methods.result == 'success' }}
+      needs: [check, test, windows_smoke, install_methods, native_linux, native_release, rust-hash]
       strategy:
          fail-fast: false
          matrix:
@@ -373,6 +463,7 @@ jobs:
                     arch: x64,
                     target_id: linux-x64,
                     binary_path: packages/coding-agent/binaries/gjc-linux-x64,
+                    core_binary_path: packages/coding-agent/binaries/gjc-core-linux-x64,
                  }
                - {
                     os: ubuntu-24.04-arm,
@@ -380,6 +471,7 @@ jobs:
                     arch: arm64,
                     target_id: linux-arm64,
                     binary_path: packages/coding-agent/binaries/gjc-linux-arm64,
+                    core_binary_path: packages/coding-agent/binaries/gjc-core-linux-arm64,
                  }
                - {
                     os: macos-14,
@@ -387,6 +479,7 @@ jobs:
                     arch: arm64,
                     target_id: darwin-arm64,
                     binary_path: packages/coding-agent/binaries/gjc-darwin-arm64,
+                    core_binary_path: packages/coding-agent/binaries/gjc-core-darwin-arm64,
                  }
                - {
                     os: macos-15-intel,
@@ -394,6 +487,7 @@ jobs:
                     arch: x64,
                     target_id: darwin-x64,
                     binary_path: packages/coding-agent/binaries/gjc-darwin-x64,
+                    core_binary_path: packages/coding-agent/binaries/gjc-core-darwin-x64,
                  }
                - {
                     os: windows-latest,
@@ -401,6 +495,7 @@ jobs:
                     arch: x64,
                     target_id: win32-x64,
                     binary_path: packages/coding-agent/binaries/gjc-windows-x64.exe,
+                    core_binary_path: packages/coding-agent/binaries/gjc-core-windows-x64.exe,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -435,6 +530,9 @@ jobs:
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --smoke-test
+              bun scripts/verify-dynamic-import-runtime.ts --mode compiled --binary "${{ matrix.binary_path }}"
+              bun scripts/verify-dynamic-import-runtime.ts --mode compiled --binary "${{ matrix.core_binary_path }}" --cases help,session,web-search,manifest
+              bun scripts/measure-arch-review-footprint.ts --check --target "${{ matrix.target_id }}" --core-binary "${{ matrix.core_binary_path }}"
          - name: Smoke release binary (Windows)
            if: runner.os == 'Windows'
            shell: pwsh
@@ -445,24 +543,61 @@ jobs:
               $env:XDG_DATA_HOME = Join-Path $runtimeDir "xdg"
               & "${{ matrix.binary_path }}" --version
               & "${{ matrix.binary_path }}" --smoke-test
+              bun scripts/verify-dynamic-import-runtime.ts --mode compiled --binary "${{ matrix.binary_path }}"
+              bun scripts/verify-dynamic-import-runtime.ts --mode compiled --binary "${{ matrix.core_binary_path }}" --cases help,session,web-search,manifest
+              bun scripts/measure-arch-review-footprint.ts --check --target "${{ matrix.target_id }}" --core-binary "${{ matrix.core_binary_path }}"
          - name: Upload release binary artifact
            uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
            with:
               name: gjc-binary-${{ matrix.target_id }}
-              path: ${{ matrix.binary_path }}
+              path: |
+                 ${{ matrix.binary_path }}
+                 ${{ matrix.core_binary_path }}
+         - name: Upload final footprint report
+           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+           with:
+              name: arch-review-footprint-release-${{ matrix.target_id }}
+              path: artifacts/arch-review-footprint-N1-${{ matrix.target_id }}.json
+              if-no-files-found: error
+
+   footprint_release_gate:
+      timeout-minutes: 10
+      if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && !cancelled() && needs.release_binary.result == 'success' }}
+      needs: [release_binary]
+      runs-on: ubuntu-22.04
+      permissions:
+         contents: read
+      steps:
+         - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+           with:
+              bun-version: "1.3"
+         - name: Download final target footprint reports
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+           with:
+              pattern: arch-review-footprint-release-*
+              path: artifacts/release-footprints
+              merge-multiple: true
+         - name: Require all five release targets to pass
+           run: bun scripts/measure-arch-review-footprint.ts --merge artifacts/release-footprints/*.json --check
+
 
    release-github:
       timeout-minutes: 30
       if: ${{ (github.event_name != 'pull_request' ||
          github.event.pull_request.head.repo.full_name == github.repository) &&
          startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
-         needs.release_binary.result == 'success' }}
-      needs: [release_binary]
+         needs.footprint_release_gate.result == 'success' }}
+      needs: [release_binary, footprint_release_gate]
       runs-on: ubuntu-22.04
       permissions:
          contents: write
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+         - name: Verify tag resolves to release SHA
+           env:
+              RELEASE_SHA: ${{ github.sha }}
+           run: test "$(git rev-list -n 1 \"${GITHUB_REF_NAME}\")" = "$RELEASE_SHA"
          - name: Download release binaries
            uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
            with:
@@ -508,6 +643,10 @@ jobs:
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+         - name: Verify tag resolves to release SHA
+           env:
+              RELEASE_SHA: ${{ github.sha }}
+           run: test "$(git rev-list -n 1 \"${GITHUB_REF_NAME}\")" = "$RELEASE_SHA"
          - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
            with:
               node-version: "24"
@@ -521,12 +660,31 @@ jobs:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - run: bun install --frozen-lockfile
-         - name: Download native addons
+         - name: Download linux-x64 baseline native addons
            uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
            with:
-              pattern: pi-natives-*-h${{ needs.rust-hash.outputs.hash }}
+              name: pi-natives-linux-x64-baseline-h${{ needs.rust-hash.outputs.hash }}
               path: packages/natives/native
-              merge-multiple: true
+         - name: Download linux-arm64 native addons
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+           with:
+              name: pi-natives-linux-arm64-h${{ needs.rust-hash.outputs.hash }}
+              path: packages/natives/native
+         - name: Download darwin-arm64 native addons
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+           with:
+              name: pi-natives-darwin-arm64-h${{ needs.rust-hash.outputs.hash }}
+              path: packages/natives/native
+         - name: Download darwin-x64 baseline native addons
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+           with:
+              name: pi-natives-darwin-x64-baseline-h${{ needs.rust-hash.outputs.hash }}
+              path: packages/natives/native
+         - name: Download win32-x64 baseline native addons
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+           with:
+              name: pi-natives-win32-x64-baseline-h${{ needs.rust-hash.outputs.hash }}
+              path: packages/natives/native
          - name: Configure npm auth
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,10 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { type IrcSidebarTheme, IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { ToolExecutionComponent } from "@gajae-code/coding-agent/modes/components/tool-execution";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import * as themeModule from "@gajae-code/coding-agent/modes/theme/theme";
 import { ImageProtocol, TERMINAL, type TUI } from "@gajae-code/tui";
+import { resetSettingsForTest, Settings } from "../../../src/config/settings";
+import { type IrcSidebarTheme, IrcSplitViewComponent } from "../../../src/modes/components/irc-sidebar";
+import { ToolExecutionComponent } from "../../../src/modes/components/tool-execution";
+import { IrcObservationLedger } from "../../../src/modes/irc-observation-ledger";
+import * as themeModule from "../../../src/modes/theme/theme";
 
 beforeAll(async () => {
 	resetSettingsForTest();

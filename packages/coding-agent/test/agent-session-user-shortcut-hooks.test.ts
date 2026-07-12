@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import * as pythonExecutor from "@gajae-code/coding-agent/eval/py/executor";
-import * as bashExecutor from "@gajae-code/coding-agent/exec/bash-executor";
-import type { ExtensionRunner } from "@gajae-code/coding-agent/extensibility/extensions";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import * as pythonExecutor from "../src/eval/py/executor";
+import * as bashExecutor from "../src/exec/bash-executor";
+import type { ExtensionRunner } from "../src/extensibility/extensions";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 describe("AgentSession user shortcut hooks", () => {
 	let tempDir: TempDir;

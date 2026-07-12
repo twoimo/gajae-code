@@ -2,13 +2,13 @@ import { afterAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { sessionStateDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { sessionStateDir } from "../../src/gjc-runtime/session-layout";
 import {
 	updateJsonAtomic,
 	withWorkflowStateLock,
 	writeGuardedWorkflowEnvelopeAtomic,
-} from "@gajae-code/coding-agent/gjc-runtime/state-writer";
-import { WORKFLOW_STATE_VERSION } from "@gajae-code/coding-agent/skill-state/workflow-state-contract";
+} from "../../src/gjc-runtime/state-writer";
+import { WORKFLOW_STATE_VERSION } from "../../src/skill-state/workflow-state-contract";
 
 const tempRoots: string[] = [];
 

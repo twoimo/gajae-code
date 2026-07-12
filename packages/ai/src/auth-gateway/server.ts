@@ -25,7 +25,15 @@ import * as openaiChat from "../providers/openai-chat-server";
 import * as openaiResponses from "../providers/openai-responses-server";
 import * as piNative from "../providers/pi-native-server";
 import { streamSimple } from "../stream";
-import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "../types";
+import type {
+	Api,
+	AssistantMessageEventStream,
+	AttemptBudgetEnvelope,
+	Context,
+	Model,
+	SimpleStreamOptions,
+} from "../types";
+import { AttemptBudgetExceededError } from "../types";
 import { parseBind } from "../utils/parse-bind";
 import {
 	captureRequestHeaders,
@@ -43,6 +51,93 @@ import type {
 	AuthGatewayParsedRequest as ParsedFormatRequest,
 } from "./types";
 import { DEFAULT_AUTH_GATEWAY_BIND } from "./types";
+
+const TURN_BUDGET_TTL_MS = 10 * 60_000;
+const TURN_BUDGET_MAX_ENTRIES = 10_000;
+type GatewayTurnBudget = {
+	remainingAttempts: number;
+	maxAttempts: number;
+	startedAt: number;
+	durationMs: number;
+	expiresAt: number;
+	outerReservations: Set<string>;
+};
+const gatewayTurnBudgets = new Map<string, GatewayTurnBudget>();
+
+export function gatewayAttemptController(
+	envelope: NonNullable<piNative.PiNativeParsedRequest["attemptBudget"]>,
+): SimpleStreamOptions["consumeAttempt"] {
+	const now = performance.now();
+	for (const [id, candidate] of gatewayTurnBudgets) {
+		if (candidate.expiresAt <= now) gatewayTurnBudgets.delete(id);
+	}
+	let budget = gatewayTurnBudgets.get(envelope.turnBudgetId);
+	if (!budget) {
+		if (gatewayTurnBudgets.size >= TURN_BUDGET_MAX_ENTRIES) {
+			throw new AttemptBudgetExceededError("attempts", "Gateway turn-authority capacity exhausted.");
+		}
+		budget = {
+			remainingAttempts: envelope.remainingAttempts,
+			maxAttempts: envelope.maxAttempts,
+			startedAt: now,
+			durationMs: envelope.remainingDurationMs,
+			expiresAt: now + Math.max(TURN_BUDGET_TTL_MS, envelope.remainingDurationMs),
+			outerReservations: new Set(),
+		};
+		gatewayTurnBudgets.set(envelope.turnBudgetId, budget);
+	} else {
+		if (budget.maxAttempts !== envelope.maxAttempts) {
+			throw new Error("Mismatched attempt-budget envelope for existing turnBudgetId.");
+		}
+		const elapsed = now - budget.startedAt;
+		budget.durationMs = Math.min(budget.durationMs, elapsed + envelope.remainingDurationMs);
+	}
+	if (!envelope.outerReservationId || budget.outerReservations.has(envelope.outerReservationId)) {
+		throw new Error("Invalid or replayed outer reservation.");
+	}
+	budget.outerReservations.add(envelope.outerReservationId);
+	// A unique, admitted outer request consumes one gateway-authoritative attempt.
+	// Replays/invalid reservations are not charged; once admitted, failures and
+	// caller aborts remain charged because physical gateway activity has begun.
+	const claim = (): void => {
+		const claimNow = performance.now();
+		if (claimNow - budget.startedAt >= budget.durationMs) {
+			throw new AttemptBudgetExceededError("deadline", "Retry elapsed-time budget exhausted at gateway.");
+		}
+		if (budget.remainingAttempts <= 0) {
+			throw new AttemptBudgetExceededError("attempts", "Retry total-attempt budget exhausted at gateway.");
+		}
+		budget.remainingAttempts -= 1;
+		budget.expiresAt = Math.max(budget.expiresAt, claimNow + TURN_BUDGET_TTL_MS);
+	};
+	claim();
+	return Object.assign(claim, {
+		claim,
+		snapshot: () => ({
+			turnBudgetId: envelope.turnBudgetId,
+			remainingAttempts: budget.remainingAttempts,
+			remainingDurationMs: Math.max(0, budget.durationMs - (performance.now() - budget.startedAt)),
+			maxAttempts: envelope.maxAttempts,
+		}),
+	});
+}
+
+function gatewayAuthoritySnapshot(turnBudgetId: string): AttemptBudgetEnvelope | undefined {
+	const budget = gatewayTurnBudgets.get(turnBudgetId);
+	if (!budget) return undefined;
+	return {
+		turnBudgetId,
+		remainingAttempts: budget.remainingAttempts,
+		remainingDurationMs: Math.max(0, budget.durationMs - (performance.now() - budget.startedAt)),
+		maxAttempts: budget.maxAttempts,
+	};
+}
+
+function withGatewayAuthority(response: Response, turnBudgetId: string): Response {
+	const snapshot = gatewayAuthoritySnapshot(turnBudgetId);
+	if (snapshot) response.headers.set("X-GJC-Attempt-Budget", JSON.stringify(snapshot));
+	return response;
+}
 
 // ParsedFormatRequest / ParsedFormatOptions / FormatModule come from ./types.
 
@@ -249,6 +344,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 	signal: AbortSignal,
 	format: string,
 	peer: string,
+	consumeAttempt?: SimpleStreamOptions["consumeAttempt"],
 ): Promise<string | undefined> {
 	await storage.invalidateCredentialMatching(provider, oldKey, signal);
 	logger.debug("auth-gateway retrying provider request after credential invalidation", {
@@ -257,7 +353,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 		peer,
 		error: error instanceof Error ? error.message : String(error),
 	});
-	return storage.getApiKey(provider, undefined, { modelId: model.id, signal });
+	return storage.getApiKey(provider, undefined, { modelId: model.id, signal, consumeAttempt });
 }
 
 function clientClosedResponse(route: { module: FormatModule }): Response {
@@ -371,6 +467,7 @@ async function handleFormatEndpoint(
 			controller.signal,
 			route.label,
 			peer,
+			streamOpts.consumeAttempt,
 		);
 
 	logger.info("auth-gateway request", {
@@ -483,32 +580,51 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		return piNative.formatError(404, "invalid_request_error", `Unknown model: ${parsed.modelId}`);
 	}
 
+	let gatewayConsumeAttempt: SimpleStreamOptions["consumeAttempt"];
+	try {
+		gatewayConsumeAttempt = parsed.attemptBudget ? gatewayAttemptController(parsed.attemptBudget) : undefined;
+	} catch (error) {
+		const classified = classifyGatewayError(error);
+		const response = piNative.formatError(classified.status, classified.type, classified.message);
+		return parsed.attemptBudget ? withGatewayAuthority(response, parsed.attemptBudget.turnBudgetId) : response;
+	}
+	const withAuthority = (response: Response): Response =>
+		parsed.attemptBudget ? withGatewayAuthority(response, parsed.attemptBudget.turnBudgetId) : response;
+
 	let apiKey: string | undefined;
 	try {
 		apiKey = await bootOpts.storage.getApiKey(model.provider, undefined, {
 			modelId: model.id,
 			signal: controller.signal,
+			consumeAttempt: gatewayConsumeAttempt,
 		});
 	} catch (error) {
-		if (controller.signal.aborted) return aborted();
+		if (controller.signal.aborted) return withAuthority(aborted());
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway getApiKey threw", { provider: model.provider, peer, error: classified.message });
-		return piNative.formatError(classified.status, classified.type, classified.message);
+		const response = piNative.formatError(classified.status, classified.type, classified.message);
+		return withAuthority(response);
 	}
-	if (controller.signal.aborted) return aborted();
+	if (controller.signal.aborted) return withAuthority(aborted());
 	if (!apiKey) {
-		return piNative.formatError(
+		const response = piNative.formatError(
 			401,
 			"authentication_error",
 			`No credential available for provider ${model.provider}`,
 		);
+		return withAuthority(response);
 	}
 
 	// Build the SimpleStreamOptions actually handed to `streamSimple`. We
 	// trust the client's options (already allow-listed by `parseRequest`) and
 	// only inject server-controlled fields. The OpenAI code backend temperature/topP strip
 	// matches `buildStreamOptions` — OpenAI code backend rejects them with a 400.
-	const streamOpts: SimpleStreamOptions = { ...parsed.options, apiKey, signal: controller.signal };
+	const streamOpts: SimpleStreamOptions = {
+		...parsed.options,
+		apiKey,
+		signal: controller.signal,
+		consumeAttempt: gatewayConsumeAttempt,
+	};
 	streamOpts.onAuthError = (provider, oldKey, error) =>
 		refreshGatewayApiKeyAfterAuthError(
 			bootOpts.storage,
@@ -519,6 +635,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 			controller.signal,
 			"pi-native",
 			peer,
+			gatewayConsumeAttempt,
 		);
 	if (model.api === "openai-codex-responses") {
 		delete streamOpts.temperature;
@@ -544,17 +661,17 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 
 	let events: AssistantMessageEventStream;
 	try {
-		if (controller.signal.aborted) return aborted();
+		if (controller.signal.aborted) return withAuthority(aborted());
 		events = streamSimple(model, parsed.context, streamOpts);
 	} catch (error) {
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway streamSimple threw", { format: "pi-native", error: classified.message, peer });
-		return piNative.formatError(classified.status, classified.type, classified.message);
+		return withAuthority(piNative.formatError(classified.status, classified.type, classified.message));
 	}
 
 	if (!parsed.stream) {
 		try {
-			if (controller.signal.aborted) return aborted();
+			if (controller.signal.aborted) return withAuthority(aborted());
 			const message = await events.result();
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
@@ -567,22 +684,22 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 					peer,
 				});
 				if (message.stopReason === "aborted") {
-					return piNative.formatError(499, "request_aborted", errorMessage);
+					return withAuthority(piNative.formatError(499, "request_aborted", errorMessage));
 				}
 				const classified = classifyGatewayError(new Error(errorMessage));
-				return piNative.formatError(classified.status, classified.type, errorMessage);
+				return withAuthority(piNative.formatError(classified.status, classified.type, errorMessage));
 			}
-			return json(200, { message });
+			return withAuthority(json(200, { message }));
 		} catch (error) {
-			if (controller.signal.aborted) return aborted();
+			if (controller.signal.aborted) return withAuthority(aborted());
 			const classified = classifyGatewayError(error);
 			logger.warn("auth-gateway non-streaming aborted", { format: "pi-native", error: classified.message, peer });
-			return piNative.formatError(classified.status, classified.type, classified.message);
+			return withAuthority(piNative.formatError(classified.status, classified.type, classified.message));
 		}
 	}
-	if (controller.signal.aborted) return aborted();
+	if (controller.signal.aborted) return withAuthority(aborted());
 
-	const sseStream = piNative.encodeStream(events);
+	const sseStream = piNative.encodeStream(events, undefined, gatewayConsumeAttempt?.snapshot);
 	return new Response(sseStream, {
 		status: 200,
 		headers: {

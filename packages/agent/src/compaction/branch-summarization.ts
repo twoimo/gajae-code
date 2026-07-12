@@ -5,7 +5,7 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { Model, ProviderSessionState } from "@gajae-code/ai";
+import type { AttemptController, Model, ProviderSessionState } from "@gajae-code/ai";
 import { prompt } from "@gajae-code/utils";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import type { AgentMessage } from "../types";
@@ -95,6 +95,8 @@ export interface GenerateBranchSummaryOptions {
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
 	preferWebsockets?: boolean;
+	/** Turn-scoped authority charged by the physical provider transport. */
+	consumeAttempt?: AttemptController;
 }
 
 // ============================================================================
@@ -326,7 +328,16 @@ export async function generateBranchSummary(
 	const response = await instrumentedCompleteSimple(
 		model,
 		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
-		{ apiKey, signal, maxTokens: 2048, metadata, sessionId, providerSessionState, preferWebsockets },
+		{
+			apiKey,
+			signal,
+			maxTokens: 2048,
+			metadata,
+			sessionId,
+			providerSessionState,
+			preferWebsockets,
+			consumeAttempt: options.consumeAttempt,
+		},
 		{ telemetry: options.telemetry, oneshotKind: "branch_summary" },
 	);
 

@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { registerCustomApi, unregisterCustomApis } from "@gajae-code/ai";
 import { streamSimple } from "@gajae-code/ai/stream";
-import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@gajae-code/ai/types";
+import {
+	type Api,
+	type AssistantMessage,
+	AttemptBudgetExceededError,
+	type Context,
+	type Model,
+	type SimpleStreamOptions,
+	type Usage,
+} from "@gajae-code/ai/types";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
 
 const SOURCE_ID = "stream-auth-retry-test";
@@ -243,5 +251,90 @@ describe("streamSimple auth retry", () => {
 		expect((await stream.result()).content).toEqual([{ type: "text", text: "ok" }]);
 		expect(keys).toEqual(["old-key", "new-key"]);
 		expect(authCalls).toBe(1);
+	});
+	it("denies a 401 replay before the second physical transport with a one-attempt budget", async () => {
+		const fetchCalls: string[] = [];
+		let remainingAttempts = 1;
+		registerCustomApi(
+			API,
+			(_model, _context, options) => {
+				const stream = new AssistantMessageEventStream();
+				void (async () => {
+					try {
+						const response = await options!.fetch!("https://provider.test/messages", {
+							headers: { Authorization: `Bearer ${options?.apiKey}` },
+						});
+						fetchCalls.push(options?.apiKey ?? "");
+						if (response.status === 401) {
+							stream.fail(Object.assign(new Error("authentication failed"), { status: 401 }));
+							return;
+						}
+						const message = assistant(["ok"]);
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "done", reason: "stop", message });
+					} catch (error) {
+						stream.fail(error);
+					}
+				})();
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const transportFetch: NonNullable<SimpleStreamOptions["fetch"]> = async (_input, init) => {
+			const auth = new Headers(init?.headers).get("Authorization");
+			return new Response(null, { status: auth === "Bearer old-key" ? 401 : 200 });
+		};
+		const stream = streamSimple(model(), context, {
+			apiKey: "old-key",
+			fetch: transportFetch,
+			consumeAttempt: () => {
+				if (remainingAttempts <= 0) throw new Error("Maximum total attempts exceeded");
+				remainingAttempts -= 1;
+			},
+			onAuthError: async () => "new-key",
+		});
+
+		let caught: unknown;
+		try {
+			for await (const _event of stream) {
+				// drain
+			}
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toEqual(new Error("Maximum total attempts exceeded"));
+		expect(fetchCalls).toEqual(["old-key"]);
+	});
+	it("preserves typed exhaustion from auth credential replay", async () => {
+		const exhaustion = new AttemptBudgetExceededError("attempts", "Maximum total attempts exceeded");
+		registerCustomApi(
+			API,
+			() => {
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => stream.fail(authError()));
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const stream = streamSimple(model(), context, {
+			apiKey: "old-key",
+			onAuthError: async () => {
+				throw exhaustion;
+			},
+		});
+
+		let caught: unknown;
+		try {
+			for await (const _event of stream) {
+				// drain
+			}
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBe(exhaustion);
 	});
 });

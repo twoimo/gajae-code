@@ -507,6 +507,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 		}
 	}
 
+	ensureProductionTestPostcondition(tasks, paths, packages, []);
 	return Array.from(tasks.values());
 }
 
@@ -595,6 +596,9 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 			if (owner.manifest.scripts?.check) {
 				add(tasks, `check:${owner.name}`, `Check ${owner.name}`, packageScriptCommand("check"), resolvePackageCwd(owner.dir));
 			}
+			if (!isTestFilePath(changedPath) && isCodeIshPath(changedPath) && owner.manifest.scripts?.test) {
+				addPackageTestTasks(tasks, owner);
+			}
 			if (isCodingAgentRuntimePath(changedPath)) {
 				add(tasks, "cli-smoke", "GJC CLI smoke test", ["bun", "run", "ci:test:smoke"]);
 			}
@@ -619,6 +623,7 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 		add(tasks, "yaml-parse", "Workflow YAML parse check", ["bun", "scripts/check-workflow-yaml.ts"]);
 	}
 
+	ensureProductionTestPostcondition(tasks, relevant, packages, testFiles);
 	ensureNativeBuild(tasks);
 
 	return Array.from(tasks.values());
@@ -656,22 +661,19 @@ function addPackageTestTasks(tasks: Map<string, Task>, workspacePackage: Workspa
 	}
 }
 
-// Resolve the directly-named test(s) for a changed path: the changed file itself
-// if it is a test, otherwise test files whose basename is `<base>.test.ts(x)` and
-// which live within the changed file's owning package (or its directory for
-// root-level files). Returns [] when there is no direct mapping.
+// Resolve tests within the owning package. Prefer an exact source-relative
+// counterpart (src/edit/foo.ts -> test/edit/foo.test.ts), then allow the
+// basename convention within that same ownership boundary. The owning-package
+// fallback below covers import relationships that cannot be proven statically.
 function mappedTestsFor(changedPath: string, packages: readonly WorkspacePackage[], testFiles: readonly string[]): string[] {
-	if (isTestFilePath(changedPath)) {
-		return testFiles.includes(changedPath) ? [changedPath] : [];
-	}
-	const base = path.posix.basename(changedPath).replace(/\.(tsx?|jsx?|mts|cts)$/, "");
-	if (base === "") {
-		return [];
-	}
-	const wanted = new Set([`${base}.test.ts`, `${base}.test.tsx`]);
+	if (isTestFilePath(changedPath)) return testFiles.includes(changedPath) ? [changedPath] : [];
 	const owner = owningPackage(changedPath, packages);
-	const scopePrefix = owner ? `${owner.dir}/` : `${path.posix.dirname(changedPath)}/`;
-	return testFiles.filter(testFile => wanted.has(path.posix.basename(testFile)) && testFile.startsWith(scopePrefix));
+	const base = path.posix.basename(changedPath).replace(/\.(tsx?|jsx?|mts|cts)$/, "");
+	if (!owner || base === "") return [];
+	const relative = changedPath.slice(owner.dir.length + 1).replace(/^src\//, "").replace(/\.(tsx?|jsx?|mts|cts)$/, "");
+	const exact = new Set([`${owner.dir}/test/${relative}.test.ts`, `${owner.dir}/test/${relative}.test.tsx`]);
+	const basename = new Set([`${base}.test.ts`, `${base}.test.tsx`]);
+	return testFiles.filter(testFile => testFile.startsWith(`${owner.dir}/`) && (exact.has(testFile) || basename.has(path.posix.basename(testFile))));
 }
 
 // Resolve explicit behavioral-owner tests. Unlike mappedTestsFor(), these tests
@@ -695,6 +697,54 @@ function ensureNativeBuild(tasks: Map<string, Task>): void {
 	}
 }
 
+function ensureProductionTestPostcondition(
+	tasks: Map<string, Task>,
+	paths: readonly string[],
+	packages: readonly WorkspacePackage[],
+	testFiles: readonly string[],
+): void {
+	const productionSources = paths.filter(isProductionSourcePath);
+	if (productionSources.length === 0 || Array.from(tasks.keys()).some(isTestTaskKey)) return;
+	for (const source of productionSources) {
+		const adjacent = adjacentTestCandidates(source).find(candidate => testFiles.includes(candidate));
+		if (adjacent) addTestFileTask(tasks, adjacent);
+	}
+	if (Array.from(tasks.keys()).some(isTestTaskKey)) return;
+	const owners = new Set(productionSources.map(source => owningPackage(source, packages)).filter((owner): owner is WorkspacePackage => owner !== undefined));
+	for (const owner of owners) {
+		if (owner.manifest.scripts?.test) addPackageTestTasks(tasks, owner);
+	}
+	if (Array.from(tasks.keys()).some(isTestTaskKey)) return;
+	addPackageTestTasks(tasks, {
+		name: "@gajae-code/coding-agent",
+		dir: "packages/coding-agent",
+		manifest: { name: "@gajae-code/coding-agent", scripts: { test: "bun test" } },
+	});
+}
+
+function isTestTaskKey(key: string): boolean {
+	return key === "python-test" || key === "rust-test" || key.startsWith("test:") || key.startsWith("root-test:");
+}
+
+const NON_PRODUCTION_SCRIPT_PATHS = new Set([
+	"scripts/generate-gjc-plugins.ts",
+	"scripts/generate-gjc-skill-command-refs.ts",
+	"scripts/generate-gjc-workflow-manifest.ts",
+	"scripts/generate-json-schemas.ts",
+]);
+
+function isProductionSourcePath(changedPath: string): boolean {
+	if (isTestFilePath(changedPath) || isCiHarnessScriptPath(changedPath)) return false;
+	if (changedPath.startsWith("scripts/") && /\.(tsx?|mts|cts)$/.test(changedPath)) {
+		return !NON_PRODUCTION_SCRIPT_PATHS.has(changedPath);
+	}
+	return /(^|\/)src\/.*\.(tsx?|jsx?|mts|cts|mjs|cjs)$/.test(changedPath);
+}
+
+function adjacentTestCandidates(source: string): string[] {
+	const stem = source.replace(/\.(tsx?|jsx?|mts|cts|mjs|cjs)$/, "");
+	return [`${stem}.test.ts`, `${stem}.test.tsx`, stem.replace(/(^|\/)src\//, "$1test/") + ".test.ts", stem.replace(/(^|\/)src\//, "$1test/") + ".test.tsx"];
+}
 function isDocOrChangelogPath(changedPath: string): boolean {
 	return changedPath.endsWith(".md") || changedPath.startsWith("docs/") || changedPath.startsWith(".gjc/");
 }

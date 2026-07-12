@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { getThemeByName } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { ResolveTool, resolveToolRenderer } from "@gajae-code/coding-agent/tools/resolve";
 import { sanitizeText } from "@gajae-code/utils";
 import * as z from "zod/v4";
+import { Settings } from "../../src/config/settings";
+import { getThemeByName } from "../../src/modes/theme/theme";
+import type { ToolSession } from "../../src/tools";
+import { ResolveTool, resolveToolRenderer } from "../../src/tools/resolve";
 
 function createSession(handler?: (input: unknown) => Promise<unknown>): ToolSession {
 	return {

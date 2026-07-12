@@ -1,47 +1,83 @@
-import type { BridgeFrameEnvelope } from "../shared/agent-wire/protocol";
+import {
+	AGENT_WIRE_CURRENT_VERSION,
+	AGENT_WIRE_SUPPORTED_VERSIONS,
+	type AgentWireEnvelope,
+	type AgentWireVersion,
+} from "@gajae-code/agent-wire";
+import { AgentWireFrameSequencer } from "../shared/agent-wire/event-envelope";
 
 const encoder = new TextEncoder();
 const DEFAULT_REPLAY_LIMIT = 1_000;
 
-function encodeSseFrame(frame: BridgeFrameEnvelope): Uint8Array {
+function encodeSseFrame(frame: AgentWireEnvelope): Uint8Array {
 	return encoder.encode(`data: ${JSON.stringify(frame)}\n\n`);
 }
 
 export class BridgeEventStream {
-	#frames: BridgeFrameEnvelope[] = [];
-	#subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+	#sequencers: Map<AgentWireVersion, AgentWireFrameSequencer>;
+	#framesByVersion = new Map<AgentWireVersion, AgentWireEnvelope[]>(
+		AGENT_WIRE_SUPPORTED_VERSIONS.map(version => [version, []]),
+	);
+	#subscribersByVersion = new Map<AgentWireVersion, Set<ReadableStreamDefaultController<Uint8Array>>>(
+		AGENT_WIRE_SUPPORTED_VERSIONS.map(version => [version, new Set()]),
+	);
 	#replayLimit: number;
 
-	constructor(replayLimit = DEFAULT_REPLAY_LIMIT) {
-		this.#replayLimit = replayLimit;
+	constructor(sessionIdOrReplayLimit: string | number = "unknown", replayLimit = DEFAULT_REPLAY_LIMIT) {
+		const sessionId = typeof sessionIdOrReplayLimit === "string" ? sessionIdOrReplayLimit : "unknown";
+		this.#sequencers = new Map(
+			AGENT_WIRE_SUPPORTED_VERSIONS.map(version => [version, new AgentWireFrameSequencer(sessionId, version)]),
+		);
+		this.#replayLimit = typeof sessionIdOrReplayLimit === "number" ? sessionIdOrReplayLimit : replayLimit;
 	}
 	get frameCount(): number {
-		return this.#frames.length;
+		return this.#framesByVersion.get(AGENT_WIRE_CURRENT_VERSION)?.length ?? 0;
 	}
 
-	publish(frame: BridgeFrameEnvelope): void {
-		this.#frames.push(frame);
-		if (this.#frames.length > this.#replayLimit) this.#frames.splice(0, this.#frames.length - this.#replayLimit);
+	emit<TType extends AgentWireEnvelope["type"], TPayload>(
+		type: TType,
+		payload: TPayload,
+		correlationId?: string,
+	): void {
+		for (const version of AGENT_WIRE_SUPPORTED_VERSIONS) {
+			const sequencer = this.#sequencers.get(version);
+			if (!sequencer) continue;
+			this.publishVersioned(version, sequencer.next(type, payload, correlationId));
+		}
+	}
+
+	publish(frame: AgentWireEnvelope): void {
+		this.publishVersioned(frame.protocol_version, frame);
+	}
+
+	publishVersioned(version: AgentWireVersion, frame: AgentWireEnvelope): void {
+		const frames = this.#framesByVersion.get(version);
+		if (!frames) throw new Error(`Unsupported agent-wire version: ${version}`);
+		frames.push(frame);
+		if (frames.length > this.#replayLimit) frames.splice(0, frames.length - this.#replayLimit);
 		const encoded = encodeSseFrame(frame);
-		for (const controller of this.#subscribers) {
+		for (const controller of this.#subscribersByVersion.get(version) ?? []) {
 			try {
 				controller.enqueue(encoded);
 			} catch {
-				this.#subscribers.delete(controller);
+				this.#subscribersByVersion.get(version)?.delete(controller);
 			}
 		}
 	}
 
-	response(lastSeq = 0): Response {
+	response(lastSeq = 0, version: AgentWireVersion = AGENT_WIRE_CURRENT_VERSION): Response {
+		const frames = this.#framesByVersion.get(version);
+		const subscribers = this.#subscribersByVersion.get(version);
+		if (!frames || !subscribers) throw new Error(`Unsupported agent-wire version: ${version}`);
 		let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
 		const stream = new ReadableStream<Uint8Array>({
 			start: controller => {
 				streamController = controller;
-				const first = this.#frames[0];
+				const first = frames[0];
 				if (first && lastSeq > 0 && first.seq > lastSeq + 1) {
 					controller.enqueue(
 						encodeSseFrame({
-							protocol_version: first.protocol_version,
+							protocol_version: version,
 							session_id: first.session_id,
 							seq: first.seq - 1,
 							frame_id: `reset-${first.seq}`,
@@ -50,13 +86,13 @@ export class BridgeEventStream {
 						}),
 					);
 				}
-				for (const frame of this.#frames) {
+				for (const frame of frames) {
 					if (frame.seq > lastSeq) controller.enqueue(encodeSseFrame(frame));
 				}
-				this.#subscribers.add(controller);
+				subscribers.add(controller);
 			},
 			cancel: () => {
-				if (streamController) this.#subscribers.delete(streamController);
+				if (streamController) subscribers.delete(streamController);
 			},
 		});
 		return new Response(stream, {

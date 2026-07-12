@@ -10,6 +10,7 @@ const FLAG = "PI_TUI_VIRTUAL_VIEWPORT";
  * unchanged off-screen line keeps its reference, so its normalized form can be reused.
  */
 class CachedLines implements Component {
+	readonly isViewportSource = true as const;
 	#lines: string[];
 	constructor(lines: string[]) {
 		this.#lines = lines.slice();
@@ -25,6 +26,12 @@ class CachedLines implements Component {
 	invalidate(): void {}
 	render(_width: number): string[] {
 		return this.#lines; // stable array + stable string instances for unchanged lines
+	}
+	getLogicalRowCount(_width: number): number {
+		return this.#lines.length;
+	}
+	renderRows(_width: number, start: number, end: number): string[] {
+		return this.#lines.slice(start, end);
 	}
 }
 
@@ -150,10 +157,10 @@ describe("virtual viewport rendering (W1b / F1)", () => {
 		tui.addChild(content);
 		try {
 			tui.start();
-			await settle(term); // first render: full normalize (100k)
+			await settle(term); // first render must be bounded to the visible frame
 
 			const afterFirst = renderMetrics.snapshot().lineCounts;
-			expect(afterFirst.normalized?.max).toBeGreaterThanOrEqual(100_000);
+			expect(afterFirst.normalized?.max).toBeLessThanOrEqual(60);
 
 			// Change only the bottom line, then re-render: off-screen prefix is reused.
 			content.setLine(99_999, "row-99999-edited");
@@ -161,11 +168,10 @@ describe("virtual viewport rendering (W1b / F1)", () => {
 			await settle(term);
 
 			const lc = renderMetrics.snapshot().lineCounts;
-			// Visible window is 40 rows + 8 overscan; normalized/diffed last value must be bounded,
-			// not the full 100k transcript.
+			// Visible window is 40 rows + 8 overscan; normalized/diffed work remains bounded.
 			expect(lc.normalized?.last).toBeLessThanOrEqual(60);
 			expect(lc.diffed?.last).toBeLessThanOrEqual(60);
-			expect(lc.offscreenScan?.last).toBeGreaterThan(99_000);
+			expect(lc.offscreenScan).toBeUndefined();
 		} finally {
 			tui.stop();
 			renderMetrics.reset();

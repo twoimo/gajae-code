@@ -2,12 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	classifyProcessCrash,
-	formatCrashDiagnosticNotice,
-	writeCrashReport,
-} from "@gajae-code/coding-agent/debug/crash-diagnostics";
-import { executeBash } from "@gajae-code/coding-agent/exec/bash-executor";
+import { classifyProcessCrash, formatCrashDiagnosticNotice, writeCrashReport } from "../src/debug/crash-diagnostics";
+import { executeBash } from "../src/exec/bash-executor";
 
 const tempDirs: string[] = [];
 

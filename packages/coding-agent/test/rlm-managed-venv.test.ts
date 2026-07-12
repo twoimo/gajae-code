@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ensurePythonRuntime } from "@gajae-code/coding-agent/eval/py/runtime";
+import { ensurePythonRuntime } from "../src/eval/py/runtime";
 
 const PYTHON = Bun.which("python3") ?? Bun.which("python");
 const NO_AMBIENT_VENV = !process.env.VIRTUAL_ENV && !process.env.CONDA_PREFIX;

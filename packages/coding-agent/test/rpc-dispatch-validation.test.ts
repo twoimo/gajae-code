@@ -1,11 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { RpcCommand } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import {
-	dispatchRpcCommand,
-	type RpcCommandDispatchContext,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
+import type { RpcCommand } from "../src/modes/rpc/rpc-types";
+import { dispatchRpcCommand, type RpcCommandDispatchContext } from "../src/modes/shared/agent-wire/command-dispatch";
+import type { AgentSession } from "../src/session/agent-session";
 
 function ctx(session: Partial<AgentSession> = {}): RpcCommandDispatchContext {
 	return {

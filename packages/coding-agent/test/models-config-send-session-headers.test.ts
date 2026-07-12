@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ModelsConfigSchema } from "@gajae-code/coding-agent/config/models-config-schema";
+import { ModelsConfigSchema } from "../src/config/models-config-schema";
 
 describe("models config sendSessionHeaders", () => {
 	test("accepts sendSessionHeaders in provider and model compat", () => {

@@ -3,13 +3,10 @@ import type { Model, ServiceTier, ToolChoice } from "@gajae-code/ai";
 import { $env, $flag, logger } from "@gajae-code/utils";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
-import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
-import { GoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
-import { LspTool } from "../lsp";
 import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/unattended-session";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentRegistry } from "../registry/agent-registry";
@@ -23,87 +20,56 @@ import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import type { SkillActiveEntry } from "../skill-state/active-state";
-import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
 import type { DiscoverableTool, DiscoverableToolSearchIndex } from "../tool-discovery/tool-index";
 import type { EventBus } from "../utils/event-bus";
-import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
-import { AskTool } from "./ask";
-import { AstEditTool } from "./ast-edit";
-import { AstGrepTool } from "./ast-grep";
-import { BashTool } from "./bash";
 import type { BashRestrictionProfile } from "./bash-allowed-prefixes";
-import { BisectTool } from "./bisect";
-import { BrowserTool } from "./browser";
-import { CalculatorTool } from "./calculator";
-import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
-import { ComputerTool, isComputerCallable, isComputerLoadablePlatform } from "./computer";
-import { CronTool } from "./cron";
-import { DebugTool } from "./debug";
-import { EvalTool } from "./eval";
-import { FindTool } from "./find";
-import { GithubTool } from "./gh";
-import { IrcTool } from "./irc";
-import { JobTool } from "./job";
-import { MonitorTool } from "./monitor";
+import type { CheckpointState } from "./checkpoint";
 import { wrapToolWithMetaNotice } from "./output-meta";
-import { ReadTool } from "./read";
-import { RecipeTool } from "./recipe";
-import { RenderMermaidTool } from "./render-mermaid";
-import { ResolveTool } from "./resolve";
-import { reportFindingTool } from "./review";
-import { SearchTool } from "./search";
-import { SearchToolBm25Tool } from "./search-tool-bm25";
-import { SkillTool } from "./skill";
-import { SkillDiscoveryTool } from "./skill-discovery";
-import { loadSshTool } from "./ssh";
-import { SubagentTool } from "./subagent";
-import { TelegramSendTool } from "./telegram-send";
-import { type TodoPhase, TodoWriteTool } from "./todo-write";
-import { WriteTool } from "./write";
-import { YieldTool } from "./yield";
+import type { TodoPhase } from "./todo-write";
 
-export * from "../edit";
-export * from "../goals";
-export * from "../lsp";
+export type * from "../edit";
+export type * from "../goals";
+export type * from "../lsp";
 export * from "../session/streaming-output";
-export * from "../task";
-export * from "../web/search";
-export * from "./ask";
-export * from "./ast-edit";
-export * from "./ast-grep";
-export * from "./bash";
-export * from "./bisect";
-export * from "./browser";
-export * from "./calculator";
-export * from "./checkpoint";
-export * from "./computer";
-export * from "./cron";
-export * from "./debug";
-export * from "./eval";
-export * from "./find";
-export * from "./gh";
-export * from "./image-gen";
-export * from "./irc";
-export * from "./job";
-export * from "./monitor";
-export * from "./read";
-export * from "./recipe";
-export * from "./render-mermaid";
-export * from "./resolve";
-export * from "./review";
-export * from "./search";
-export * from "./search-tool-bm25";
-export * from "./skill";
-export * from "./skill-discovery";
-export * from "./ssh";
-export * from "./subagent";
-export * from "./telegram-send";
-export * from "./todo-write";
-export * from "./vim";
-export * from "./write";
-export * from "./yield";
+export type * from "../task";
+export type * from "../web/search";
+export type * from "./ask";
+export type * from "./ast-edit";
+export type * from "./ast-grep";
+export type * from "./bash";
+export type * from "./bisect";
+export type * from "./browser";
+export type * from "./calculator";
+export * from "./capabilities";
+export type * from "./checkpoint";
+export type * from "./computer";
+export type * from "./cron";
+export type * from "./debug";
+export type * from "./eval";
+export type * from "./find";
+export type * from "./gh";
+export type * from "./image-gen";
+export type * from "./irc";
+export type * from "./job";
+export type * from "./monitor";
+export type * from "./read";
+export type * from "./recipe";
+export type * from "./render-mermaid";
+export type * from "./resolve";
+export type * from "./review";
+export type * from "./search";
+export type * from "./search-tool-bm25";
+export type * from "./skill";
+export type * from "./skill-discovery";
+export type * from "./ssh";
+export type * from "./subagent";
+export type * from "./telegram-send";
+export type * from "./todo-write";
+export type * from "./vim";
+export type * from "./write";
+export type * from "./yield";
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any, any, any>;
@@ -443,64 +409,67 @@ export interface BuiltinCapabilityCatalogEntry {
 	defaultEnabled: boolean;
 }
 
-export const BUILTIN_CAPABILITY_CATALOG: readonly BuiltinCapabilityCatalogEntry[] = isComputerLoadablePlatform()
-	? [
-			{
-				name: "computer",
-				label: "Computer",
-				summary:
-					"Apple Silicon macOS desktop screenshot and input control; enabled by default on supported hosts and supervisor-gated.",
-				docsPath: "docs/tools/computer.md",
-				callableBuiltin: false,
-				defaultEnabled: true,
-			},
-		]
-	: [];
+export const BUILTIN_CAPABILITY_CATALOG: readonly BuiltinCapabilityCatalogEntry[] =
+	process.platform !== "win32"
+		? [
+				{
+					name: "computer",
+					label: "Computer",
+					summary:
+						"Apple Silicon macOS desktop screenshot and input control; enabled by default on supported hosts and supervisor-gated.",
+					docsPath: "docs/tools/computer.md",
+					callableBuiltin: false,
+					defaultEnabled: true,
+				},
+			]
+		: [];
 
 export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
-	read: s => new ReadTool(s),
-	bash: s => new BashTool(s),
-	edit: s => new EditTool(s),
-	ast_grep: s => new AstGrepTool(s),
-	ast_edit: s => new AstEditTool(s),
-	render_mermaid: s => new RenderMermaidTool(s),
-	ask: AskTool.createIf,
-	debug: DebugTool.createIf,
-	bisect: s => new BisectTool(s),
-	eval: s => new EvalTool(s),
-	calc: s => new CalculatorTool(s),
-	ssh: loadSshTool,
-	github: GithubTool.createIf,
-	find: s => new FindTool(s),
-	search: s => new SearchTool(s),
-	lsp: LspTool.createIf,
-	browser: s => new BrowserTool(s),
-	...(isComputerLoadablePlatform() ? { computer: ComputerTool.createIf } : {}),
-	checkpoint: CheckpointTool.createIf,
-	rewind: RewindTool.createIf,
-	task: s => TaskTool.create(s),
-	subagent: s => new SubagentTool(s),
-	job: JobTool.createIf,
-	monitor: MonitorTool.createIf,
-	cron: CronTool.createIf,
-	recipe: RecipeTool.createIf,
-	irc: IrcTool.createIf,
-	todo_write: s => new TodoWriteTool(s),
-	web_search: s => new WebSearchTool(s),
-	search_tool_bm25: SearchToolBm25Tool.createIf,
-	skill_discovery: SkillDiscoveryTool.createIf,
-	telegram_send: TelegramSendTool.createIf,
-	write: s => new WriteTool(s),
-	skill: SkillTool.createIf,
-	goal: s => new GoalTool(s),
+	read: async s => new (await import("./read")).ReadTool(s),
+	bash: async s => new (await import("./bash")).BashTool(s),
+	edit: async s => new (await import("../edit")).EditTool(s),
+	ast_grep: async s => new (await import("./ast-grep")).AstGrepTool(s),
+	ast_edit: async s => new (await import("./ast-edit")).AstEditTool(s),
+	render_mermaid: async s => new (await import("./render-mermaid")).RenderMermaidTool(s),
+	ask: async s => (await import("./ask")).AskTool.createIf(s),
+	debug: async s => (await import("./debug")).DebugTool.createIf(s),
+	bisect: async s => new (await import("./bisect")).BisectTool(s),
+	eval: async s => new (await import("./eval")).EvalTool(s),
+	calc: async s => new (await import("./calculator")).CalculatorTool(s),
+	ssh: async s => (await import("./ssh")).loadSshTool(s),
+	github: async s => (await import("./gh")).GithubTool.createIf(s),
+	find: async s => new (await import("./find")).FindTool(s),
+	search: async s => new (await import("./search")).SearchTool(s),
+	lsp: async s => (await import("../lsp")).LspTool.createIf(s),
+	browser: async s => new (await import("./browser")).BrowserTool(s),
+	...(process.platform !== "win32"
+		? { computer: async (s: ToolSession) => (await import("./computer")).ComputerTool.createIf(s) }
+		: {}),
+	checkpoint: async s => (await import("./checkpoint")).CheckpointTool.createIf(s),
+	rewind: async s => (await import("./checkpoint")).RewindTool.createIf(s),
+	task: async s => (await import("../task")).TaskTool.create(s),
+	subagent: async s => new (await import("./subagent")).SubagentTool(s),
+	job: async s => (await import("./job")).JobTool.createIf(s),
+	monitor: async s => (await import("./monitor")).MonitorTool.createIf(s),
+	cron: async s => (await import("./cron")).CronTool.createIf(s),
+	recipe: async s => (await import("./recipe")).RecipeTool.createIf(s),
+	irc: async s => (await import("./irc")).IrcTool.createIf(s),
+	todo_write: async s => new (await import("./todo-write")).TodoWriteTool(s),
+	web_search: async s => new (await import("../web/search")).WebSearchTool(s),
+	search_tool_bm25: async s => (await import("./search-tool-bm25")).SearchToolBm25Tool.createIf(s),
+	skill_discovery: async s => (await import("./skill-discovery")).SkillDiscoveryTool.createIf(s),
+	telegram_send: async s => (await import("./telegram-send")).TelegramSendTool.createIf(s),
+	write: async s => new (await import("./write")).WriteTool(s),
+	skill: async s => (await import("./skill")).SkillTool.createIf(s),
+	goal: async s => new (await import("../goals/tools/goal-tool")).GoalTool(s),
 };
 
 const GOAL_MODE_TOOL_NAMES = [] as const;
 
 export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
-	yield: s => new YieldTool(s),
-	report_finding: () => reportFindingTool,
-	resolve: s => new ResolveTool(s),
+	yield: async s => new (await import("./yield")).YieldTool(s),
+	report_finding: async () => (await import("./review")).reportFindingTool,
+	resolve: async s => new (await import("./resolve")).ResolveTool(s),
 };
 
 export type ToolName = keyof typeof BUILTIN_TOOLS;
@@ -650,7 +619,14 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "skill") return session.settings.get("skill.enabled");
 		if (name === "skill_discovery") return session.settings.get("skill.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
-		if (name === "computer") return isComputerCallable(session);
+		if (name === "computer") {
+			const enabled = session.settings.has("computer.enabled")
+				? Boolean(session.settings.get("computer.enabled"))
+				: session.settings.has("computer.alwaysOn")
+					? Boolean(session.settings.get("computer.alwaysOn"))
+					: true;
+			return process.platform === "darwin" && process.arch === "arm64" && enabled;
+		}
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");
 		if (name === "irc") {
 			if (!session.settings.get("irc.enabled")) return false;

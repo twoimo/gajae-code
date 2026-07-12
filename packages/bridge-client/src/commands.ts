@@ -1,51 +1,12 @@
-export const BRIDGE_CLIENT_COMMAND_TYPES = [
-	"prompt",
-	"steer",
-	"follow_up",
-	"abort",
-	"abort_and_prompt",
-	"new_session",
-	"get_state",
-	"set_todos",
-	"set_host_tools",
-	"set_host_uri_schemes",
-	"get_pending_workflow_gates",
-	"set_capabilities",
-	"workflow_gate_response",
-	"set_model",
-	"cycle_model",
-	"get_available_models",
-	"set_thinking_level",
-	"cycle_thinking_level",
-	"set_steering_mode",
-	"set_follow_up_mode",
-	"set_interrupt_mode",
-	"compact",
-	"set_auto_compaction",
-	"set_auto_retry",
-	"abort_retry",
-	"bash",
-	"abort_bash",
-	"get_session_stats",
-	"export_html",
-	"switch_session",
-	"branch",
-	"get_branch_messages",
-	"get_last_assistant_text",
-	"set_session_name",
-	"handoff",
-	"get_messages",
-	"get_login_providers",
-	"login",
-	"negotiate_unattended",
-] as const;
+import { AGENT_WIRE_COMMAND_TYPES, type AgentWireCommand, type AgentWireCommandType } from "@gajae-code/agent-wire";
 
-export type BridgeClientCommandType = (typeof BRIDGE_CLIENT_COMMAND_TYPES)[number];
-
-export type BridgeClientCommand<TType extends BridgeClientCommandType = BridgeClientCommandType> = {
-	id?: string;
-	type: TType;
-} & Record<string, unknown>;
+/** @deprecated Use AGENT_WIRE_COMMAND_TYPES from @gajae-code/agent-wire. */
+export const BRIDGE_CLIENT_COMMAND_TYPES = AGENT_WIRE_COMMAND_TYPES;
+/** @deprecated Use AgentWireCommandType from @gajae-code/agent-wire. */
+export type BridgeClientCommandType = AgentWireCommandType;
+/** @deprecated Use AgentWireCommand from @gajae-code/agent-wire. */
+export type BridgeClientCommand<TType extends BridgeClientCommandType = BridgeClientCommandType> =
+	AgentWireCommand<TType>;
 
 export interface BridgeCommandOptions {
 	id?: string;

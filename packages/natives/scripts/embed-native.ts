@@ -5,6 +5,8 @@ import { type BuildSidecar, type CandidateAddon, verifyDefaultLanguageSet } from
 export type EmbeddedAddonVariant = CandidateAddon["variant"];
 
 const validEmbedVariants = new Set<EmbeddedAddonVariant>(["modern", "baseline", "default"]);
+const validEmbedTopologies = new Set(["monolith", "core"] as const);
+type EmbedTopology = "monolith" | "core";
 const outputPath = path.join(import.meta.dir, "../native/embedded-addon.js");
 const packageJsonPath = path.join(import.meta.dir, "../package.json");
 const nativeDir = path.join(import.meta.dir, "../native");
@@ -52,13 +54,18 @@ export function parseEmbedVariants(value: string | undefined): Set<EmbeddedAddon
 	return new Set(variants as EmbeddedAddonVariant[]);
 }
 
-export function buildCandidateList(targetArch: string, platformTag: string): CandidateAddon[] {
+export function buildCandidateList(
+	targetArch: string,
+	platformTag: string,
+	topology: EmbedTopology = "monolith",
+): CandidateAddon[] {
+	const prefix = topology === "core" ? "pi_natives_core" : "pi_natives";
 	return targetArch === "x64"
 		? [
-				{ variant: "modern", filename: `pi_natives.${platformTag}-modern.node` },
-				{ variant: "baseline", filename: `pi_natives.${platformTag}-baseline.node` },
+				{ variant: "modern", filename: `${prefix}.${platformTag}-modern.node` },
+				{ variant: "baseline", filename: `${prefix}.${platformTag}-baseline.node` },
 			]
-		: [{ variant: "default", filename: `pi_natives.${platformTag}.node` }];
+		: [{ variant: "default", filename: `${prefix}.${platformTag}.node` }];
 }
 
 export function filterCandidatesByVariant(
@@ -99,6 +106,14 @@ async function fileExists(filePath: string): Promise<boolean> {
 	}
 }
 
+export function parseEmbedTopology(value: string | undefined): EmbedTopology {
+	const topology = value || "monolith";
+	if (!validEmbedTopologies.has(topology as EmbedTopology)) {
+		throw new Error(`Invalid EMBED_TOPOLOGY value: ${topology}. Valid values are: monolith, core.`);
+	}
+	return topology as EmbedTopology;
+}
+
 async function embedNative(): Promise<void> {
 	if (process.argv.includes("--reset")) {
 		await Bun.write(outputPath, stubContent);
@@ -109,8 +124,9 @@ async function embedNative(): Promise<void> {
 	const targetArch = Bun.env.TARGET_ARCH || process.arch;
 	const platformTag = `${targetPlatform}-${targetArch}`;
 	const hostPlatformTag = `${process.platform}-${process.arch}`;
+	const topology = parseEmbedTopology(Bun.env.EMBED_TOPOLOGY);
 	const candidates = filterCandidatesByVariant(
-		buildCandidateList(targetArch, platformTag),
+		buildCandidateList(targetArch, platformTag, topology),
 		parseEmbedVariants(Bun.env.EMBED_VARIANTS),
 		platformTag,
 	);
@@ -168,6 +184,7 @@ async function embedNative(): Promise<void> {
  * @typedef {Object} EmbeddedAddon
  * @property {string} platformTag
  * @property {string} version
+ * @property {"monolith" | "core"} topology
  * @property {EmbeddedAddonFile[]} files
  */
 
@@ -176,6 +193,7 @@ ${imports}
 export const embeddedAddon = {
 	platformTag: ${JSON.stringify(platformTag)},
 	version: ${JSON.stringify(packageJson.version)},
+	topology: ${JSON.stringify(topology)},
 	files: [
 ${files}
 	],

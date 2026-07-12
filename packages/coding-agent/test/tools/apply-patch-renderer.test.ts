@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { ToolExecutionComponent } from "@gajae-code/coding-agent/modes/components/tool-execution";
-import * as themeModule from "@gajae-code/coding-agent/modes/theme/theme";
-import { toolRenderers } from "@gajae-code/coding-agent/tools/renderers";
 import type { TUI } from "@gajae-code/tui";
+import { resetSettingsForTest, Settings } from "../../src/config/settings";
+import { ToolExecutionComponent } from "../../src/modes/components/tool-execution";
+import * as themeModule from "../../src/modes/theme/theme";
+import { toolRenderers } from "../../src/tools/renderers";
 
 async function getUiTheme() {
 	await themeModule.initTheme(false, undefined, undefined, "red-claw", "blue-crab");

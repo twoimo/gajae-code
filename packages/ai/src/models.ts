@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { BUNDLED_PROVIDER_HEADERS, type BundledProviderHeader } from "./model-headers";
 import { isRetiredModelKey } from "./model-retirements";
 import { applyGeneratedModelPolicies, enrichModelThinking } from "./model-thinking";
 // `with { type: "file" }` is embedded by `bun build --compile` and resolves to
@@ -21,10 +22,10 @@ import { isClaudeForcedToolChoiceIncapableModelId } from "./utils/tool-choice-ca
 type BundledCatalog = typeof import("./models.json");
 
 let bundledCatalog: BundledCatalog | undefined;
-let providerNames: KnownProvider[] | undefined;
 const providerModelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
 
 function getBundledCatalog(): BundledCatalog {
+	if (process.env.GJC_STARTUP_TRACE === "1") process.stderr.write("startup:models-catalog-parsed\n");
 	// TS types a .json import as its contents; at runtime `with { type: "file" }`
 	// yields the file path (bunfs path in compiled binaries, disk path in dev).
 	bundledCatalog ??= JSON.parse(readFileSync(modelsJsonPath as unknown as string, "utf8")) as BundledCatalog;
@@ -72,7 +73,7 @@ function applyBundledCompatDefaults(model: Model<Api>): Model<Api> {
 	return policyModels[0] ?? normalized;
 }
 
-export type GeneratedProvider = keyof BundledCatalog;
+export type GeneratedProvider = BundledProviderHeader;
 
 export function getBundledModel<TApi extends Api = Api>(provider: GeneratedProvider, modelId: string): Model<TApi> {
 	const providerModels = getProviderModels(provider);
@@ -80,10 +81,7 @@ export function getBundledModel<TApi extends Api = Api>(provider: GeneratedProvi
 }
 
 export function getBundledProviders(): KnownProvider[] {
-	// Defensive copy: the old eager path returned a fresh Array.from(...), so
-	// callers may freely mutate their result without corrupting enumeration.
-	providerNames ??= Object.keys(getBundledCatalog()) as KnownProvider[];
-	return providerNames.slice();
+	return [...BUNDLED_PROVIDER_HEADERS];
 }
 
 export function getBundledModels(provider: GeneratedProvider): Model<Api>[] {

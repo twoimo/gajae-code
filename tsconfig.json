@@ -1,3 +1,16 @@
 {
-	"files": []
+	"references": [
+		{ "path": "./packages/agent-wire" },
+		{ "path": "./packages/natives" },
+		{ "path": "./packages/orchestration-token-benchmark" },
+		{ "path": "./packages/utils" },
+		{ "path": "./packages/ai" },
+		{ "path": "./packages/agent" },
+		{ "path": "./packages/bridge-client" },
+		{ "path": "./packages/stats" },
+		{ "path": "./packages/tui" },
+		{ "path": "./packages/coding-agent" },
+		{ "path": "./packages/typescript-edit-benchmark" },
+		{ "path": "./tsconfig.tools.json" }
+	]
 }

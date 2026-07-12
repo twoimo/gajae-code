@@ -4,10 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import type { WorkflowGateEmitter } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-session";
-import type { OpenGateInput } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
-import { createAgentSession } from "@gajae-code/coding-agent/sdk";
 import { Settings } from "../src/config/settings";
+import type { WorkflowGateEmitter } from "../src/modes/shared/agent-wire/unattended-session";
+import type { OpenGateInput } from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { createAgentSession } from "../src/sdk";
 import { SessionManager } from "../src/session/session-manager";
 import { registerWorkflowGateEmitterListener } from "../src/tools/ask-answer-registry";
 

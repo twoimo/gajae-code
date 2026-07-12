@@ -4,12 +4,12 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Model } from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { Skill } from "@gajae-code/coding-agent/extensibility/skills";
-import { SKILL_PROMPT_MESSAGE_TYPE } from "@gajae-code/coding-agent/session/messages";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { SkillTool } from "@gajae-code/coding-agent/tools/skill";
-import { ToolError } from "@gajae-code/coding-agent/tools/tool-errors";
+import { Settings } from "../../src/config/settings";
+import type { Skill } from "../../src/extensibility/skills";
+import { SKILL_PROMPT_MESSAGE_TYPE } from "../../src/session/messages";
+import type { ToolSession } from "../../src/tools";
+import { SkillTool } from "../../src/tools/skill";
+import { ToolError } from "../../src/tools/tool-errors";
 
 async function makeSkill(name: string, content: string): Promise<Skill> {
 	const dir = await mkdtemp(path.join(os.tmpdir(), `skill-tool-${name}-`));
@@ -183,11 +183,17 @@ describe("SkillTool", () => {
 		expect(SkillTool.createIf(session)).toBeNull();
 	});
 
-	it("dispatches the chained skill same-turn without deliverAs nextTurn", async () => {
+	it("dispatches a chained canonical skill with its handoff phase in the same turn", async () => {
 		const cwd = await makeTempCwd();
+		await writeCallerModeState(cwd, "deep-interview", "handoff", "s1");
+		const deepInterview = await makeSkill("deep-interview", "---\nname: deep-interview\n---\nBody");
 		const ultragoal = await makeSkill("ultragoal", "---\nname: ultragoal\n---\n# Ultragoal\nTrack execution.");
 		const captured: CapturedSend[] = [];
-		const session = createSession(cwd, [ultragoal], captured);
+		const session = createSession(cwd, [deepInterview, ultragoal], captured, {
+			getActiveSkillState: () => ({ skill: "deep-interview", session_id: "s1" }),
+			getActiveSkillPhase: () => "handoff",
+			getSessionId: () => "s1",
+		});
 		const tool = SkillTool.createIf(session);
 		expect(tool).not.toBeNull();
 
@@ -207,9 +213,15 @@ describe("SkillTool", () => {
 		expect(sent.options?.deliverAs).toBeUndefined();
 
 		const content = sent.message.content as string;
-		expect(content).toContain("# Ultragoal");
-		expect(content).toContain("Track execution.");
+		expect(content).toContain("# Ultragoal Routing");
+		expect(content).toContain("## Create goals");
 		expect(content).toContain("User: go");
+		const details = sent.message.details as { workflowResolution?: unknown };
+		expect(details.workflowResolution).toMatchObject({
+			phase: "goal-planning",
+			source: "explicit",
+			fragmentKind: "phase",
+		});
 	});
 
 	it("omits the User: line when args are absent or whitespace", async () => {

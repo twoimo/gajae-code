@@ -56,8 +56,7 @@ export class CustomMessageComponent extends Container {
 		});
 
 		if (custom) {
-			this.#customComponent = custom;
-			this.addChild(custom);
+			this.#customComponent = this.addCappedChild(custom, 256);
 		} else {
 			this.addChild(this.#box);
 		}

@@ -1,9 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	providerSupportsAppendOnlyAuto,
-	resolveAppendOnlyMode,
-	resolveIntentTracingEnabled,
-} from "@gajae-code/coding-agent/sdk";
+import { providerSupportsAppendOnlyAuto, resolveAppendOnlyMode, resolveIntentTracingEnabled } from "../src/sdk";
 
 describe("append-only auto allowlist", () => {
 	it("auto-enables for DeepSeek and direct Anthropic only", () => {

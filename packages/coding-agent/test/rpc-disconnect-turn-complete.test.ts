@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { RpcClient } from "@gajae-code/coding-agent/modes/rpc/rpc-client";
+import { RpcClient } from "../src/modes/rpc/rpc-client";
 import { createHarnessCliEnv, type HarnessCliEnv } from "./harness-control-plane/cli-workspace-env";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");

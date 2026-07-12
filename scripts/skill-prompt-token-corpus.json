@@ -1,0 +1,113 @@
+{
+	"schemaVersion": 1,
+	"normalization": {
+		"absolutePath": "<ABSOLUTE_PATH>",
+		"date": "<DATE>",
+		"sessionId": "<SESSION_ID>",
+		"timestamp": "<TIMESTAMP>",
+		"uuid": "<UUID>",
+		"userArgs": "<USER_ARGS>"
+	},
+	"inputs": {
+		"args": "<USER_ARGS>",
+		"sessionId": "<SESSION_ID>"
+	},
+	"cases": [
+		{
+			"skill": "deep-interview",
+			"kind": "dispatcher",
+			"expectedFragmentIds": [
+				"deep-interview/dispatcher"
+			],
+			"measurement": {
+				"chars": 394,
+				"estimatedTokens": 99
+			}
+		},
+		{
+			"skill": "deep-interview",
+			"kind": "phase",
+			"phase": "interviewing",
+			"expectedFragmentIds": [
+				"deep-interview/dispatcher",
+				"deep-interview/interviewing"
+			],
+			"measurement": {
+				"chars": 26228,
+				"estimatedTokens": 6557
+			}
+		},
+		{
+			"skill": "ultragoal",
+			"kind": "dispatcher",
+			"expectedFragmentIds": [
+				"ultragoal/dispatcher"
+			],
+			"measurement": {
+				"chars": 389,
+				"estimatedTokens": 98
+			}
+		},
+		{
+			"skill": "ultragoal",
+			"kind": "phase",
+			"phase": "goal-planning",
+			"expectedFragmentIds": [
+				"ultragoal/dispatcher",
+				"ultragoal/goal-planning"
+			],
+			"measurement": {
+				"chars": 3614,
+				"estimatedTokens": 904
+			}
+		},
+		{
+			"skill": "team",
+			"kind": "dispatcher",
+			"expectedFragmentIds": [
+				"team/dispatcher"
+			],
+			"measurement": {
+				"chars": 384,
+				"estimatedTokens": 96
+			}
+		},
+		{
+			"skill": "team",
+			"kind": "phase",
+			"phase": "starting",
+			"expectedFragmentIds": [
+				"team/dispatcher",
+				"team/starting"
+			],
+			"measurement": {
+				"chars": 3461,
+				"estimatedTokens": 866
+			}
+		},
+		{
+			"skill": "ralplan",
+			"kind": "dispatcher",
+			"expectedFragmentIds": [
+				"ralplan/dispatcher"
+			],
+			"measurement": {
+				"chars": 387,
+				"estimatedTokens": 97
+			}
+		},
+		{
+			"skill": "ralplan",
+			"kind": "phase",
+			"phase": "planner",
+			"expectedFragmentIds": [
+				"ralplan/dispatcher",
+				"ralplan/planner"
+			],
+			"measurement": {
+				"chars": 2793,
+				"estimatedTokens": 699
+			}
+		}
+	]
+}

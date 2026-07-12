@@ -1266,7 +1266,7 @@ export class AcpAgent implements Agent {
 			if (!success) {
 				throw new Error(`ACP session fork was cancelled: ${params.sessionId}`);
 			}
-			const forked = await session.fork();
+			const forked = await session.fork({ includeTrailingUserInput: true });
 			if (!forked) {
 				throw new Error(`ACP session fork failed: ${params.sessionId}`);
 			}

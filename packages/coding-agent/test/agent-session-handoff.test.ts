@@ -5,13 +5,13 @@ import * as compactionModule from "@gajae-code/agent-core/compaction";
 import type { AssistantMessage, ToolCall } from "@gajae-code/ai";
 import { getBundledModel } from "@gajae-code/ai/models";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { ExtensionRunner, loadExtensions } from "@gajae-code/coding-agent/extensibility/extensions";
-import { AgentSession, type AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { ExtensionRunner, loadExtensions } from "../src/extensibility/extensions";
+import { AgentSession, type AgentSessionEvent } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 describe("AgentSession handoff", () => {
 	let tempDir: TempDir;

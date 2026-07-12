@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { InternalUrlRouter } from "@gajae-code/coding-agent/internal-urls";
-import { getMemoryRoot } from "@gajae-code/coding-agent/memories";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
 import { getAgentDir, setAgentDir } from "@gajae-code/utils";
+import { InternalUrlRouter } from "../../src/internal-urls";
+import { getMemoryRoot } from "../../src/memories";
 import { AgentRegistry } from "../../src/registry/agent-registry";
+import type { AgentSession } from "../../src/session/agent-session";
 
 interface MemoryFixture {
 	cwd: string;

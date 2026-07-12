@@ -8,8 +8,8 @@ import {
 	readGjcJson,
 	SkillActiveStateSchema,
 	WorkflowStateEnvelopeSchema,
-} from "@gajae-code/coding-agent/gjc-runtime/state-schema";
-import { WORKFLOW_STATE_VERSION } from "@gajae-code/coding-agent/skill-state/workflow-state-contract";
+} from "../../src/gjc-runtime/state-schema";
+import { WORKFLOW_STATE_VERSION } from "../../src/skill-state/workflow-state-contract";
 
 const roots: string[] = [];
 

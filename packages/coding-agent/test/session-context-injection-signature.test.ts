@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildContextInjectionSignature } from "@gajae-code/coding-agent/session/agent-session";
+import { buildContextInjectionSignature } from "../src/session/agent-session";
 
 describe("context injection signatures", () => {
 	it("is stable for identical activation identity and rendered content", () => {

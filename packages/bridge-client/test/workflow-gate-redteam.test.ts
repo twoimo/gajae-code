@@ -20,7 +20,7 @@ function frame(type: string, payload: unknown): BridgeFrame {
 		session_id: "sess-1",
 		seq: 1,
 		frame_id: `${type}-1`,
-		type,
+		type: type as BridgeFrame["type"],
 		payload,
 	};
 }

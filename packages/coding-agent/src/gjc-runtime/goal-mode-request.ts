@@ -17,8 +17,15 @@ export const GJC_SESSION_ID_ENV = "GJC_SESSION_ID";
 export const GJC_SESSION_CWD_ENV = "GJC_SESSION_CWD";
 
 const REQUEST_VERSION = 1;
+/** Legacy marker for plans written before objectives named concrete session paths. */
 export const DEFAULT_ULTRAGOAL_OBJECTIVE =
-	"Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.";
+	"Complete the durable session-scoped Ultragoal plan, including later accepted/appended stories, under the original brief constraints.";
+
+/** Build an objective that names the exact session-scoped state files it governs. */
+export function defaultUltragoalObjective(goalsPath: string): string {
+	const ledgerPath = path.join(path.dirname(goalsPath), "ledger.jsonl");
+	return `Complete the durable ultragoal plan in ${goalsPath}, including later accepted/appended stories, under the original brief constraints; use ${ledgerPath} as the audit trail.`;
+}
 
 export interface PendingGoalModeRequest {
 	version: typeof REQUEST_VERSION;
@@ -78,10 +85,10 @@ export async function readUltragoalGjcObjective(
 	try {
 		const plan = (await Bun.file(goalsPath).json()) as UltragoalPlanShape;
 		const objective = typeof plan.gjcObjective === "string" ? plan.gjcObjective.trim() : "";
-		return { objective: objective || DEFAULT_ULTRAGOAL_OBJECTIVE, goalsPath };
+		return { objective: objective || defaultUltragoalObjective(goalsPath), goalsPath };
 	} catch (error) {
 		if (isEnoent(error)) {
-			return { objective: DEFAULT_ULTRAGOAL_OBJECTIVE, goalsPath };
+			return { objective: defaultUltragoalObjective(goalsPath), goalsPath };
 		}
 		throw error;
 	}

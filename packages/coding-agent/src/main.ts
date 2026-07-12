@@ -27,7 +27,7 @@ import { runListModelsCommand } from "./cli/list-models";
 import { selectSession } from "./cli/session-picker";
 import { findConfigFile } from "./config";
 import { activateModelProfile } from "./config/model-profile-activation";
-import { ModelRegistry, ModelsConfigFile } from "./config/model-registry";
+import type { ModelRegistry } from "./config/model-registry";
 import { resolveCliModel, resolveModelRoleValue, resolveModelScope, type ScopedModel } from "./config/model-resolver";
 import { getDefault, type SettingPath, Settings, settings } from "./config/settings";
 import { BUNDLED_GROK_BUILD_EXTENSION_ID, getBundledGrokBuildExtensionFactory } from "./defaults/gjc-grok-cli";
@@ -474,6 +474,8 @@ export async function runInteractiveMode(
 	}
 
 	mode.renderInitialMessages(undefined, { preserveExistingChat: true });
+	if (process.env.GJC_STARTUP_TRACE === "1") process.stderr.write("startup:interactive-first-frame\n");
+	if (process.env.GJC_TEST_EXIT_AFTER_FIRST_FRAME === "1") return;
 
 	for (const notify of notifs) {
 		if (!notify) {
@@ -990,14 +992,28 @@ export async function runRootCommand(
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
 
-	// Create AuthStorage and ModelRegistry upfront
-	const authStorage = await logger.time("discoverModels", deps.discoverAuthStorage ?? discoverAuthStorage);
-	const modelRegistry = new ModelRegistry(authStorage);
-
 	if (parsedArgs.version) {
 		process.stdout.write(`${VERSION}\n`);
 		process.exit(0);
 	}
+
+	if (parsedArgs.export) {
+		let result: string;
+		try {
+			const outputPath = parsedArgs.messages.length > 0 ? parsedArgs.messages[0] : undefined;
+			result = await exportFromFile(parsedArgs.export, outputPath);
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : "Failed to export session";
+			process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
+			process.exit(1);
+		}
+		process.stdout.write(`Exported to: ${result}\n`);
+		process.exit(0);
+	}
+
+	const { ModelRegistry, ModelsConfigFile } = await import("./config/model-registry");
+	const authStorage = await logger.time("discoverModels", deps.discoverAuthStorage ?? discoverAuthStorage);
+	const modelRegistry = new ModelRegistry(authStorage);
 
 	if (parsedArgs.listModels !== undefined) {
 		await modelRegistry.refresh("online");
@@ -1013,20 +1029,6 @@ export async function runRootCommand(
 			disableExtensionDiscovery: true,
 			searchPattern,
 		});
-		process.exit(0);
-	}
-
-	if (parsedArgs.export) {
-		let result: string;
-		try {
-			const outputPath = parsedArgs.messages.length > 0 ? parsedArgs.messages[0] : undefined;
-			result = await exportFromFile(parsedArgs.export, outputPath);
-		} catch (error: unknown) {
-			const message = error instanceof Error ? error.message : "Failed to export session";
-			process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
-			process.exit(1);
-		}
-		process.stdout.write(`Exported to: ${result}\n`);
 		process.exit(0);
 	}
 

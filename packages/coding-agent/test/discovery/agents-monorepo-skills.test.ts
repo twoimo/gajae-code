@@ -10,16 +10,16 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { clearCache, readFile } from "@gajae-code/coding-agent/capability/fs";
-import type { Rule } from "@gajae-code/coding-agent/capability/rule";
-import type { LoadContext } from "@gajae-code/coding-agent/capability/types";
-import { getProjectPathCandidates } from "@gajae-code/coding-agent/discovery/agents";
+import { clearCache, readFile } from "../../src/capability/fs";
+import type { Rule } from "../../src/capability/rule";
+import type { LoadContext } from "../../src/capability/types";
+import { getProjectPathCandidates } from "../../src/discovery/agents";
 import {
 	buildRuleFromMarkdown,
 	calculateDepth,
 	loadFilesFromDir,
 	scanSkillsFromDir,
-} from "@gajae-code/coding-agent/discovery/helpers";
+} from "../../src/discovery/helpers";
 
 const PROVIDER_ID = "agents";
 

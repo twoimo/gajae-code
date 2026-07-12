@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { SessionManager } from "../src/session/session-manager";
 
 const tempDirs: string[] = [];
 
@@ -59,6 +59,25 @@ describe("SessionManager resident image materialized-entry cache", () => {
 			);
 		} finally {
 			await sm.close();
+		}
+	});
+});
+
+describe("SessionManager active-branch metadata", () => {
+	it("checks entry kinds without invoking the branch materializer", async () => {
+		const root = makeTempDir();
+		const manager = SessionManager.create(root, path.join(root, "sessions"));
+		try {
+			manager.appendThinkingLevelChange("high");
+			const before = manager.getObservabilityStatsForTests();
+
+			expect(manager.hasActiveBranchEntryType("thinking_level_change")).toBe(true);
+			expect(manager.hasActiveBranchEntryType("service_tier_change")).toBe(false);
+
+			const after = manager.getObservabilityStatsForTests();
+			expect(after.getBranchMaterializerCallCount).toBe(before.getBranchMaterializerCallCount);
+		} finally {
+			await manager.close();
 		}
 	});
 });

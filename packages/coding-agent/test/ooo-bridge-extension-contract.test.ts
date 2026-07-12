@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@gajae-code/ai";
-import type { ExecResult } from "@gajae-code/coding-agent/exec/exec";
+import type { ExecResult } from "../src/exec/exec";
 import {
 	createExactPrefixCommandBridge,
 	createOuroborosOooBridge,
@@ -8,7 +8,7 @@ import {
 	type InputEvent,
 	OOO_BRIDGE_RECURSION_ENV,
 	OOO_BRIDGE_TIMEOUT_ENV,
-} from "@gajae-code/coding-agent/extensibility/extensions";
+} from "../src/extensibility/extensions";
 
 function input(text: string, source?: InputEvent["source"], images?: ImageContent[]): InputEvent {
 	return { type: "input", text, source, images } as InputEvent;

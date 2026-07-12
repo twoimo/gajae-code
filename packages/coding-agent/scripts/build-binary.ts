@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 
 import * as path from "node:path";
-import { buildDevCompileArgs } from "./compile-args";
+import { buildCoreDevCompileArgs, buildDevCompileArgs } from "./compile-args";
 
 const packageDir = path.join(import.meta.dir, "..");
 const outputPath = path.join(packageDir, "dist", "gjc");
+const coreOutputPath = path.join(packageDir, "dist", "gjc-core");
 const nativeDir = path.join(packageDir, "..", "natives", "native");
 
 function shouldAdhocSignDarwinBinary(): boolean {
@@ -29,22 +30,27 @@ async function stageWorkspaceNativeAddons(): Promise<void> {
 	});
 }
 
+async function buildSku(topology: "monolith" | "core", output: string): Promise<void> {
+	const embedEnv = topology === "core" ? { ...Bun.env, EMBED_TOPOLOGY: "core" } : Bun.env;
+	await runCommand(["bun", "--cwd=../natives", "run", "embed:native"], embedEnv);
+	try {
+		const buildEnv = shouldAdhocSignDarwinBinary() ? { ...Bun.env, BUN_NO_CODESIGN_MACHO_BINARY: "1" } : Bun.env;
+		await runCommand(topology === "core" ? buildCoreDevCompileArgs() : buildDevCompileArgs(), buildEnv);
+		if (topology === "monolith") await stageWorkspaceNativeAddons();
+		// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
+		if (shouldAdhocSignDarwinBinary()) {
+			await runCommand(["codesign", "--force", "--sign", "-", output]);
+		}
+	} finally {
+		await runCommand(["bun", "--cwd=../natives", "run", "embed:native", "--reset"]);
+	}
+}
+
 async function main(): Promise<void> {
 	await runCommand(["bun", "--cwd=../stats", "scripts/generate-client-bundle.ts", "--generate"]);
 	try {
-		await runCommand(["bun", "--cwd=../natives", "run", "embed:native"]);
-		try {
-			const buildEnv = shouldAdhocSignDarwinBinary() ? { ...Bun.env, BUN_NO_CODESIGN_MACHO_BINARY: "1" } : Bun.env;
-			await runCommand(buildDevCompileArgs(), buildEnv);
-
-			await stageWorkspaceNativeAddons();
-			// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
-			if (shouldAdhocSignDarwinBinary()) {
-				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
-			}
-		} finally {
-			await runCommand(["bun", "--cwd=../natives", "run", "embed:native", "--reset"]);
-		}
+		await buildSku("monolith", outputPath);
+		await buildSku("core", coreOutputPath);
 	} finally {
 		await runCommand(["bun", "--cwd=../stats", "scripts/generate-client-bundle.ts", "--reset"]);
 	}

@@ -3,14 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type AgentTool, INTENT_FIELD } from "@gajae-code/agent-core";
-import {
-	buildSystemPrompt,
-	buildSystemPromptToolMetadata,
-	buildVolatileProjectContext,
-} from "@gajae-code/coding-agent/system-prompt";
 import { prompt } from "@gajae-code/utils";
 import Handlebars from "handlebars";
 import * as z from "zod/v4";
+import { buildSystemPrompt, buildSystemPromptToolMetadata, buildVolatileProjectContext } from "../src/system-prompt";
 
 const baseGitContext = {
 	isRepo: true,
@@ -172,9 +168,10 @@ describe("system Handlebars prompt templates", () => {
 		expect(neither).not.toContain("## Version Control");
 	});
 
-	test("subagent system owns shared context while user prompt only owns assignment", async () => {
+	test("subagent system owns the canonical child contract and shared context while user prompt only owns assignment", async () => {
 		const systemTemplate = await Bun.file(path.join(systemPromptsDir, "subagent-system-prompt.md")).text();
 		const userTemplate = await Bun.file(path.join(systemPromptsDir, "subagent-user-prompt.md")).text();
+		const reminderTemplate = await Bun.file(path.join(systemPromptsDir, "subagent-yield-reminder.md")).text();
 
 		const subagentSystem = prompt.render(systemTemplate, {
 			...baseRenderContext,
@@ -186,13 +183,19 @@ describe("system Handlebars prompt templates", () => {
 			context: "Shared task background",
 			assignment: "Do the task.",
 		});
+		const reminder = prompt.render(reminderTemplate, { ...baseRenderContext, retryCount: 1, maxRetries: 3 });
 
 		expect(subagentSystem).toContain("[CONTEXT]\nShared task background\n[/CONTEXT]");
 		expect(subagentSystem).toContain("[ROLE]");
+		expect(subagentSystem.match(/GJC_CANONICAL_CHILD_CONTRACT_V1/g)).toHaveLength(1);
+		expect(subagentSystem).toContain("are IMMUTABLE input");
 		expect(subagentUser).toContain("Complete the assignment below, thoroughly:");
 		expect(subagentUser).toContain("Do the task.");
 		expect(subagentUser).not.toContain("[CONTEXT]");
 		expect(subagentUser).not.toContain("Shared task background");
+		expect(subagentUser).not.toContain("GJC_CANONICAL_CHILD_CONTRACT_V1");
+		expect(reminder).not.toContain("GJC_CANONICAL_CHILD_CONTRACT_V1");
+		expect(reminder).toContain("canonical CHILD completion contract");
 	});
 
 	test("system-prompt trims workflow/soul blocks for subagents while retaining safety contracts", async () => {

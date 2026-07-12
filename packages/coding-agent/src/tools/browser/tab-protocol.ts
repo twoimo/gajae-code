@@ -91,7 +91,7 @@ export interface RunErrorPayload {
 
 export type WorkerOutbound =
 	| { type: "ready"; info: ReadyInfo }
-	| { type: "init-failed"; error: RunErrorPayload }
+	| { type: "init-failed"; stage?: "import" | "connect"; error: RunErrorPayload }
 	| { type: "result"; id: string; ok: true; payload: RunResultOk }
 	| { type: "result"; id: string; ok: false; error: RunErrorPayload }
 	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown }

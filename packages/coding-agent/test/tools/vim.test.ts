@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { ToolExecutionComponent } from "@gajae-code/coding-agent/modes/components/tool-execution";
-import * as themeModule from "@gajae-code/coding-agent/modes/theme/theme";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { resetVimRendererStateForTest, VimTool, vimToolRenderer } from "@gajae-code/coding-agent/tools/vim";
-import { VimBuffer } from "@gajae-code/coding-agent/vim/buffer";
-import { VimEngine } from "@gajae-code/coding-agent/vim/engine";
-import { parseKeySequences } from "@gajae-code/coding-agent/vim/parser";
 import type { TUI } from "@gajae-code/tui";
+import { resetSettingsForTest, Settings } from "../../src/config/settings";
+import { ToolExecutionComponent } from "../../src/modes/components/tool-execution";
+import * as themeModule from "../../src/modes/theme/theme";
+import type { ToolSession } from "../../src/tools";
+import { resetVimRendererStateForTest, VimTool, vimToolRenderer } from "../../src/tools/vim";
+import { VimBuffer } from "../../src/vim/buffer";
+import { VimEngine } from "../../src/vim/engine";
+import { parseKeySequences } from "../../src/vim/parser";
 
 function textResult(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content

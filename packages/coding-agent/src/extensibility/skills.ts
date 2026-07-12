@@ -7,10 +7,17 @@ import type { SkillsSettings } from "../config/settings";
 import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
 import type { SkillPromptDetails } from "../session/messages";
+import {
+	type ImmutableWorkflowContext,
+	isCanonicalWorkflowSkill,
+	resolveWorkflowPhase,
+} from "../skill-state/workflow-phase-resolver";
 import { expandTilde } from "../tools/path-utils";
 import type { LoadedSubskillActivation } from "./gjc-plugins";
 import { buildSubskillInjection } from "./gjc-plugins/injection";
 import { renderSkillAdvertisement } from "./gjc-plugins/runtime-adapters";
+import { assembleWorkflowFragments, type CanonicalWorkflowSkill } from "./workflow-fragments";
+
 export interface Skill {
 	name: string;
 	description: string;
@@ -286,7 +293,8 @@ export interface BuiltSkillPromptMessage {
 export interface BuildSkillPromptMessageContext {
 	subskillActivation?: LoadedSubskillActivation;
 	subskillActivationSet?: LoadedSubskillActivation[];
-	currentPhase?: string;
+	/** Immutable parent-selected workflow context. Invalid contexts fail closed. */
+	workflowContext?: ImmutableWorkflowContext;
 	cwd?: string;
 	sessionId?: string;
 }
@@ -411,23 +419,37 @@ export async function buildSkillPromptMessage(
 	args: string,
 	context?: BuildSkillPromptMessageContext,
 ): Promise<BuiltSkillPromptMessage> {
-	const content = typeof skill.content === "string" ? skill.content : await Bun.file(skill.filePath).text();
-	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+	const canonicalSkill = isCanonicalWorkflowSkill(skill.name) ? (skill.name as CanonicalWorkflowSkill) : undefined;
+	const resolution = canonicalSkill
+		? await resolveWorkflowPhase({
+				skill: canonicalSkill,
+				cwd: context?.cwd,
+				sessionId: context?.sessionId,
+				explicit: context?.workflowContext,
+			})
+		: undefined;
+	const body = canonicalSkill
+		? (() => {
+				const assembly = assembleWorkflowFragments(canonicalSkill, resolution?.phase);
+				return [assembly.dispatcher.content, assembly.phase?.content]
+					.filter((fragment): fragment is string => fragment !== undefined)
+					.join("\n\n")
+					.trim();
+			})()
+		: (typeof skill.content === "string" ? skill.content : await Bun.file(skill.filePath).text())
+				.replace(/^---\n[\s\S]*?\n---\n/, "")
+				.trim();
 	const metaLines = [`Skill: ${skill.filePath}`];
 	const trimmedArgs = args.trim();
-	if (trimmedArgs) {
-		metaLines.push(`User: ${trimmedArgs}`);
-	}
+	if (trimmedArgs) metaLines.push(`User: ${trimmedArgs}`);
 	let message = `${body}\n\n---\n\n${metaLines.join("\n")}`;
 	const details: SkillPromptDetails = {
 		name: skill.name,
 		path: skill.filePath,
 		args: trimmedArgs || undefined,
 		lineCount: body ? body.split("\n").length : 0,
+		...(resolution ? { workflowResolution: resolution } : {}),
 	};
-	if (context?.subskillActivationSet) {
-		details.subskillActivationSet = context.subskillActivationSet;
-	}
 	if (context) {
 		const injection = context.cwd
 			? await buildSubskillInjection({
@@ -435,14 +457,15 @@ export async function buildSkillPromptMessage(
 					sessionId: context.sessionId,
 					skillName: skill.name,
 					activation: context.subskillActivation,
-					currentPhase: context.currentPhase,
+					currentPhase: resolution?.phase,
 				})
 			: null;
 		if (injection) {
 			message += injection.block;
 			details.subskillActivation = injection.details ?? context.subskillActivation;
-		} else if (context.subskillActivation) {
-			details.subskillActivation = context.subskillActivation;
+			if (injection.details === context.subskillActivation && context.subskillActivationSet) {
+				details.subskillActivationSet = context.subskillActivationSet;
+			}
 		}
 		// Tier-1 advertisement: metadata-only list of installed sub-skills bound to
 		// this parent skill, so the agent can choose one contextually.
@@ -451,7 +474,7 @@ export async function buildSkillPromptMessage(
 				const advert = await renderSkillAdvertisement({
 					cwd: context.cwd,
 					skillName: skill.name,
-					phase: context.currentPhase,
+					phase: resolution?.phase,
 				});
 				if (advert) message += `\n\n${advert}`;
 			} catch {

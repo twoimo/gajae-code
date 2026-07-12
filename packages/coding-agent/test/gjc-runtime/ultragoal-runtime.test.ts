@@ -9,15 +9,16 @@ import {
 	modeStatePath as sessionModeStatePath,
 	sessionStateDir,
 	sessionUltragoalDir,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { reconcileWorkflowSkillState } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
-import { validateCompletionReceipt } from "@gajae-code/coding-agent/gjc-runtime/ultragoal-guard";
+} from "../../src/gjc-runtime/session-layout";
+import { reconcileWorkflowSkillState } from "../../src/gjc-runtime/state-runtime";
+import { validateCompletionReceipt } from "../../src/gjc-runtime/ultragoal-guard";
 
 import {
 	addUltragoalSubgoal,
 	buildUltragoalHudSummary,
 	checkpointUltragoalGoal,
 	createUltragoalPlan,
+	getUltragoalPaths,
 	getUltragoalStatus,
 	hashStructuredValue,
 	readUltragoalLedger,
@@ -28,8 +29,8 @@ import {
 	type UltragoalCommandResult,
 	validateExecutorQaRedTeamEvidenceForReview,
 	waitForReplayProcessWithTimeout,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
-import { readVisibleSkillActiveState } from "@gajae-code/coding-agent/skill-state/active-state";
+} from "../../src/gjc-runtime/ultragoal-runtime";
+import { readVisibleSkillActiveState } from "../../src/skill-state/active-state";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];
@@ -101,6 +102,25 @@ function captureStderrWrites(): { writes: string[]; restore: () => void } {
 	return { writes, restore: () => spy.mockRestore() };
 }
 
+function mandatoryComputerAdversarialCases(): Record<string, unknown>[] {
+	return [
+		"kill-switch-bypass",
+		"suspended-enforcement",
+		"permission-revoked",
+		"display-stale",
+		"out-of-bounds-drift",
+		"runaway-loop-halt",
+		"blast-radius",
+	].map(id => ({
+		id,
+		contractRef: "approved-plan:goal",
+		scenario: `Exercise the ${id} computer-control failure mode through the native surface`,
+		expectedBehavior: "The computer-control guard preserves the approved safety boundary",
+		verdict: "passed",
+		artifactRefs: ["computer-redteam-pty"],
+	}));
+}
+
 function passingQualityGate(): string {
 	return JSON.stringify({
 		architectReview: {
@@ -144,6 +164,12 @@ function passingQualityGate(): string {
 					inlineEvidence:
 						"Adversarial boundary cases exercised invalid input, missing state, and repeated submission without violating the contract.",
 				},
+				{
+					id: "computer-redteam-pty",
+					kind: "pty-capture",
+					path: "artifacts/pty-capture.txt",
+					description: "Live native terminal capture for mandatory computer red-team cases",
+				},
 			],
 			contractCoverage: [
 				{
@@ -152,7 +178,16 @@ function passingQualityGate(): string {
 					obligation: "The completed story satisfies the approved user-facing contract",
 					status: "covered",
 					surfaceEvidenceRefs: ["surface-gui"],
-					adversarialCaseRefs: ["case-invalid-input"],
+					adversarialCaseRefs: [
+						"case-invalid-input",
+						"kill-switch-bypass",
+						"suspended-enforcement",
+						"permission-revoked",
+						"display-stale",
+						"out-of-bounds-drift",
+						"runaway-loop-halt",
+						"blast-radius",
+					],
 				},
 			],
 			surfaceEvidence: [
@@ -174,6 +209,7 @@ function passingQualityGate(): string {
 					verdict: "passed",
 					artifactRefs: ["adversarial-report"],
 				},
+				...mandatoryComputerAdversarialCases(),
 			],
 			blockers: [],
 		},
@@ -297,8 +333,13 @@ async function writeStructuralArtifacts(root: string): Promise<void> {
 	);
 }
 
-function executorQaWithSurface(surface: string, artifactRefs: Record<string, unknown>[]): Record<string, unknown> {
+function executorQaWithSurface(
+	surface: string,
+	artifactRefs: Record<string, unknown>[],
+	includeMandatoryComputerCases = false,
+): Record<string, unknown> {
 	const artifactIds = artifactRefs.map(ref => String(ref.id));
+	const mandatoryCases = includeMandatoryComputerCases ? mandatoryComputerAdversarialCases() : [];
 	return {
 		status: "passed",
 		e2eStatus: "passed",
@@ -314,6 +355,16 @@ function executorQaWithSurface(surface: string, artifactRefs: Record<string, unk
 				path: "artifacts/adversarial-report.txt",
 				description: "Adversarial boundary and failure-mode test output",
 			},
+			...(mandatoryCases.length === 0
+				? []
+				: [
+						{
+							id: "computer-redteam-pty",
+							kind: "pty-capture",
+							path: "artifacts/pty-capture.txt",
+							description: "Live native terminal capture for mandatory computer red-team cases",
+						},
+					]),
 		],
 		contractCoverage: [
 			{
@@ -322,7 +373,7 @@ function executorQaWithSurface(surface: string, artifactRefs: Record<string, unk
 				obligation: "The completed story satisfies the approved user-facing contract",
 				status: "covered",
 				surfaceEvidenceRefs: ["surface-live"],
-				adversarialCaseRefs: ["case-invalid-input"],
+				adversarialCaseRefs: ["case-invalid-input", ...mandatoryCases.map(row => String(row.id))],
 			},
 		],
 		surfaceEvidence: [
@@ -344,6 +395,7 @@ function executorQaWithSurface(surface: string, artifactRefs: Record<string, unk
 				verdict: "passed",
 				artifactRefs: ["adversarial-report"],
 			},
+			...mandatoryCases,
 		],
 		blockers: [],
 	};
@@ -366,7 +418,7 @@ function cliReplayArtifact(overrides: Record<string, unknown> = {}): Record<stri
 }
 
 function cliExecutorQa(artifactRefs: Record<string, unknown>[]): Record<string, unknown> {
-	return executorQaWithSurface("cli", artifactRefs);
+	return executorQaWithSurface("cli", artifactRefs, true);
 }
 
 async function expectRejectedExecutorQa(root: string, executorQa: Record<string, unknown>): Promise<string> {
@@ -392,6 +444,7 @@ async function expectRejectedExecutorQa(root: string, executorQa: Record<string,
 
 async function expectAcceptedExecutorQa(root: string, executorQa: Record<string, unknown>): Promise<void> {
 	await createUltragoalPlan({ cwd: root, brief: "Ship CLI replay" });
+	await writeStructuralArtifacts(root);
 	await startNextUltragoalGoal({ cwd: root });
 	const result = await runNativeUltragoalCommand(
 		[
@@ -943,11 +996,41 @@ describe("native GJC ultragoal runtime", () => {
 		const ledgerRaw = await Bun.file(path.join(sessionUltragoalDir(root, TEST_SESSION_ID), "ledger.jsonl")).text();
 
 		expect(plan.gjcGoalMode).toBe("aggregate");
-		expect(plan.gjcObjective).toContain(".gjc/ultragoal/goals.json");
+		expect(plan.gjcObjective).toContain(path.join(".gjc", "_session-test-session", "ultragoal", "goals.json"));
 		expect(plan.goals).toHaveLength(1);
 		expect(plan.goals[0]).toMatchObject({ id: "G001", status: "pending" });
 		expect(goalsRaw).toContain("Fix native ultragoal status");
 		expect(ledgerRaw).toContain("plan_created");
+	});
+
+	it("fails closed without a session id and isolates paths for concurrent sessions", () => {
+		const cwd = "/project";
+		const originalSessionId = process.env.GJC_SESSION_ID;
+		delete process.env.GJC_SESSION_ID;
+		try {
+			expect(() => getUltragoalPaths(cwd)).toThrow(/non-empty GJC session id/);
+		} finally {
+			if (originalSessionId === undefined) delete process.env.GJC_SESSION_ID;
+			else process.env.GJC_SESSION_ID = originalSessionId;
+		}
+		const first = getUltragoalPaths(cwd, "session-A");
+		const second = getUltragoalPaths(cwd, "session-B");
+		expect(first.goalsPath).toBe(path.join(cwd, ".gjc", "_session-session-A", "ultragoal", "goals.json"));
+		expect(second.goalsPath).toBe(path.join(cwd, ".gjc", "_session-session-B", "ultragoal", "goals.json"));
+		expect(first.ledgerPath).not.toBe(second.ledgerPath);
+		expect(first.dir).not.toBe(path.join(cwd, ".gjc", "ultragoal"));
+	});
+
+	it("writes separate Ultragoal plans for explicit sessions sharing a cwd", async () => {
+		const root = await tempDir();
+		const first = await createUltragoalPlan({ cwd: root, brief: "First session", sessionId: "session-A" });
+		const second = await createUltragoalPlan({ cwd: root, brief: "Second session", sessionId: "session-B" });
+		const firstPaths = getUltragoalPaths(root, "session-A");
+		const secondPaths = getUltragoalPaths(root, "session-B");
+		expect(first.gjcObjective).toContain(firstPaths.goalsPath);
+		expect(second.gjcObjective).toContain(secondPaths.goalsPath);
+		expect(((await Bun.file(firstPaths.goalsPath).json()) as { brief: string }).brief).toBe("First session");
+		expect(((await Bun.file(secondPaths.goalsPath).json()) as { brief: string }).brief).toBe("Second session");
 	});
 
 	it("prints receipt-only json for create-goals", async () => {

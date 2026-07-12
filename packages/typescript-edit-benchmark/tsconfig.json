@@ -1,5 +1,17 @@
 {
 	"extends": "../tsconfig.workspace.json",
+	"compilerOptions": {
+		"composite": true,
+		"noEmit": false,
+		"emitDeclarationOnly": true
+	},
+	"references": [
+		{ "path": "../agent" },
+		{ "path": "../ai" },
+		{ "path": "../coding-agent" },
+		{ "path": "../tui" },
+		{ "path": "../utils" }
+	],
 	"include": [
 		"src",
 		"test"

@@ -1,17 +1,17 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ExtensionRunner } from "@gajae-code/coding-agent/extensibility/extensions";
-import { GoalTool } from "@gajae-code/coding-agent/goals/tools/goal-tool";
-import { InteractiveMode } from "@gajae-code/coding-agent/modes/interactive-mode";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { createTools, type Tool, type ToolSession } from "@gajae-code/coding-agent/tools";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../../src/config/model-registry";
+import { resetSettingsForTest, Settings } from "../../src/config/settings";
+import type { ExtensionRunner } from "../../src/extensibility/extensions";
+import { GoalTool } from "../../src/goals/tools/goal-tool";
+import { InteractiveMode } from "../../src/modes/interactive-mode";
+import { initTheme } from "../../src/modes/theme/theme";
+import { AgentSession } from "../../src/session/agent-session";
+import { AuthStorage } from "../../src/session/auth-storage";
+import { SessionManager } from "../../src/session/session-manager";
+import { createTools, type Tool, type ToolSession } from "../../src/tools";
 
 function createToolSession(cwd: string, settings: Settings, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -216,7 +216,8 @@ describe("InteractiveMode goal mode integration", () => {
 		);
 
 		expect(result.exitCode).toBe(0);
-		expect(harness.session.getGoalModeState()?.goal.objective).toContain(".gjc/ultragoal/goals.json");
+		expect(harness.session.getGoalModeState()?.goal.objective).toContain(`${path.sep}.gjc${path.sep}_session-`);
+		expect(harness.session.getGoalModeState()?.goal.objective).toContain(`${path.sep}ultragoal${path.sep}goals.json`);
 		expect(harness.session.getActiveToolNames()).toContain("goal");
 	});
 

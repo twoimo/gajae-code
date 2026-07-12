@@ -4,6 +4,10 @@
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
@@ -149,6 +153,30 @@ function hasRootVersionFlag(argv: string[]): boolean {
 	return hasRootFastFlag(argv, versionFlags);
 }
 
+function rootExportArgs(argv: string[]): { sessionPath: string; outputPath?: string } | undefined {
+	for (let i = 0; i < argv.length; i += 1) {
+		const arg = argv[i];
+		if (isSubcommand(arg)) return undefined;
+		if (arg === "--export") {
+			const sessionPath = argv[i + 1];
+			if (!sessionPath || sessionPath.startsWith("-")) return undefined;
+			return { sessionPath, outputPath: argv[i + 2] };
+		}
+		if (arg.startsWith("--export=")) {
+			const sessionPath = arg.slice("--export=".length);
+			if (!sessionPath) return undefined;
+			return { sessionPath, outputPath: argv[i + 1] };
+		}
+	}
+	return undefined;
+}
+
+async function runRootExportFastPath(args: { sessionPath: string; outputPath?: string }): Promise<void> {
+	const { exportFromFile } = await import("./export/html");
+	const result = await exportFromFile(args.sessionPath, args.outputPath);
+	process.stdout.write(`Exported to: ${result}\n`);
+}
+
 export class RootHelpCommand extends Command {
 	static description = "Red-claw AI coding assistant";
 	static hidden = true;
@@ -280,6 +308,48 @@ export function routeRootArgv(argv: readonly string[]): string[] {
 			? normalizedArgv
 			: ["launch", ...normalizedArgv];
 }
+export function assertBrowserWorkerProbeReachedConnect(message: unknown): void {
+	const result = message as { type?: string; stage?: string; error?: { message?: string } };
+	if (result.type !== "init-failed" || !result.error?.message) {
+		throw new Error(`browser-worker probe expected connect-stage init-failed, received ${JSON.stringify(message)}`);
+	}
+	if (result.stage === "import") {
+		throw new Error(`browser-worker probe failed to import puppeteer-core: ${result.error.message}`);
+	}
+	if (result.stage !== "connect") {
+		throw new Error(`browser-worker probe expected init-failed stage "connect", received ${JSON.stringify(message)}`);
+	}
+}
+
+async function runBrowserWorkerProbe(): Promise<void> {
+	const safeDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-browser-worker-probe-"));
+	const worker = new Worker("./packages/coding-agent/src/tools/browser/tab-worker-entry.ts", { type: "module" });
+	try {
+		const response = Promise.withResolvers<unknown>();
+		worker.onmessage = event => response.resolve(event.data);
+		worker.onerror = event => response.reject(new Error(event.message));
+		worker.postMessage({
+			type: "init",
+			payload: {
+				mode: "headless",
+				browserWSEndpoint: "ws://127.0.0.1:1/dynamic-import-probe",
+				safeDir,
+				timeoutMs: 1,
+			},
+		});
+		const message = await Promise.race([
+			response.promise,
+			Bun.sleep(10_000).then(() => {
+				throw new Error("browser-worker probe timed out waiting for init response");
+			}),
+		]);
+		assertBrowserWorkerProbeReachedConnect(message);
+		process.stdout.write("browser-worker-probe: ok\n");
+	} finally {
+		await worker.terminate();
+		await fs.rm(safeDir, { recursive: true, force: true });
+	}
+}
 
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
@@ -316,6 +386,10 @@ export async function runCli(argv: string[]): Promise<void> {
 		await runSmokeTest();
 		return;
 	}
+	if (argv[0] === "__probe-browser-worker") {
+		await runBrowserWorkerProbe();
+		return;
+	}
 	const fixtureArg = rootFixtureArg(argv);
 	if (fixtureArg.present) {
 		const id = fixtureArg.id;
@@ -343,6 +417,11 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 	if (hasRootVersionFlag(argv)) {
 		process.stdout.write(`${APP_NAME}/${VERSION}\n`);
+		return;
+	}
+	const exportArgs = rootExportArgs(argv);
+	if (exportArgs) {
+		await runRootExportFastPath(exportArgs);
 		return;
 	}
 	await installRuntimeGlobals();

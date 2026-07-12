@@ -6,7 +6,9 @@ import { generateEnumExports } from "./gen-enums";
 
 const repoRoot = path.join(import.meta.dir, "../../..");
 const rustDir = path.join(repoRoot, "crates/pi-natives");
-const nativeDir = path.join(import.meta.dir, "../native");
+const nativeDir = Bun.env.PI_NATIVE_OUTPUT_DIR
+	? path.resolve(repoRoot, Bun.env.PI_NATIVE_OUTPUT_DIR)
+	: path.join(import.meta.dir, "../native");
 const packageJsonPath = path.join(import.meta.dir, "../package.json");
 
 const crossTarget = Bun.env.CROSS_TARGET;
@@ -146,7 +148,7 @@ async function installGeneratedBindings(outputDir: string): Promise<void> {
 	}
 }
 
-type NativeBuildProfile = "local" | "ci" | "dist";
+export type NativeBuildProfile = "local" | "ci" | "dist" | "dist-symbols";
 
 export function resolveNativeBuildProfile(options: {
 	isCI: boolean;
@@ -157,11 +159,14 @@ export function resolveNativeBuildProfile(options: {
 		if (
 			options.explicitProfile === "local" ||
 			options.explicitProfile === "ci" ||
-			options.explicitProfile === "dist"
+			options.explicitProfile === "dist" ||
+			options.explicitProfile === "dist-symbols"
 		) {
 			return options.explicitProfile;
 		}
-		throw new Error(`Unsupported PI_NATIVE_PROFILE: ${options.explicitProfile}. Expected "local", "ci", or "dist".`);
+		throw new Error(
+			`Unsupported PI_NATIVE_PROFILE: ${options.explicitProfile}. Expected "local", "ci", "dist", or "dist-symbols".`,
+		);
 	}
 
 	return !options.isCI && !options.isCrossCompile ? "local" : "ci";
@@ -177,36 +182,8 @@ const profileSuffix = ` (${profileLabel})`;
 
 const buildOutputDirPrefix = resolveBuildOutputDirPrefix(profileLabel);
 
-// Build napi args
-const napiArgs = [
-	"build",
-	"--manifest-path",
-	path.join(rustDir, "Cargo.toml"),
-	"--package-json-path",
-	packageJsonPath,
-	"--platform",
-	"--no-js",
-	"--dts",
-	"index.d.ts",
-	"-o",
-	"",
-	"--profile",
-	profileLabel,
-];
-
-if (crossTarget) napiArgs.push("--target", crossTarget);
-if (languageSet === "full") napiArgs.push("--", "--features", "full-langs");
-
 const canonicalAddonFilename = `pi_natives.${targetPlatform}-${targetArch}${variantSuffix}.node`;
 const canonicalAddonPath = path.join(nativeDir, canonicalAddonFilename);
-
-console.log(`Building pi-natives for ${targetPlatform}-${targetArch}${variantSuffix}${profileSuffix}…`);
-
-await fs.mkdir(nativeDir, { recursive: true });
-await cleanupStaleTemps(nativeDir);
-await fs.mkdir(path.join(nativeDir, ".build"), { recursive: true });
-const buildOutputDir = await fs.mkdtemp(buildOutputDirPrefix);
-napiArgs[10] = buildOutputDir;
 
 // Resolve napi bin directly: `bunx @napi-rs/cli` can pick up the wrong bin on
 // systems where `cli` exists on PATH (e.g. Mono's /usr/bin/cli on Ubuntu).
@@ -217,29 +194,74 @@ if (!napiBin) {
 	throw new Error("Could not locate @napi-rs/cli `napi` binary in node_modules/.bin");
 }
 
-try {
-	const buildResult = await $`${napiBin} ${napiArgs}`.nothrow();
-	if (buildResult.exitCode !== 0) {
-		const stderr = buildResult.stderr?.toString("utf-8") ?? "";
-		throw new Error(`napi build failed${stderr ? `:\n${stderr}` : ""}`);
+async function buildAddon(
+	label: "monolith" | "core" | "shell",
+	features: string[],
+	destination: string,
+	installBindings: boolean,
+): Promise<void> {
+	const buildOutputDir = await fs.mkdtemp(`${buildOutputDirPrefix}${label}-`);
+	const napiArgs = [
+		"build",
+		"--manifest-path",
+		path.join(rustDir, "Cargo.toml"),
+		"--package-json-path",
+		packageJsonPath,
+		"--platform",
+		"--no-js",
+		"--dts",
+		"index.d.ts",
+		"-o",
+		buildOutputDir,
+		"--profile",
+		profileLabel,
+	];
+	if (crossTarget) napiArgs.push("--target", crossTarget);
+	if (features.length > 0 || languageSet === "full") {
+		napiArgs.push(
+			"--",
+			"--no-default-features",
+			"--features",
+			[...features, ...(languageSet === "full" ? ["full-langs"] : [])].join(","),
+		);
 	}
 
-	const builtAddonPath = await resolveBuiltAddonPath(buildOutputDir, canonicalAddonFilename);
-	if (builtAddonPath !== canonicalAddonPath) {
-		console.log(`Normalizing native addon filename: ${path.basename(builtAddonPath)} → ${canonicalAddonFilename}`);
-		await installBinary(builtAddonPath, canonicalAddonPath);
+	try {
+		console.log(`Building pi-natives ${label} for ${targetPlatform}-${targetArch}${variantSuffix}${profileSuffix}…`);
+		const buildResult = await $`${napiBin} ${napiArgs}`.nothrow();
+		if (buildResult.exitCode !== 0) {
+			const stderr = buildResult.stderr?.toString("utf-8") ?? "";
+			throw new Error(`napi ${label} build failed${stderr ? `:\n${stderr}` : ""}`);
+		}
+
+		const builtAddonPath = await resolveBuiltAddonPath(buildOutputDir, canonicalAddonFilename);
+		await installBinary(builtAddonPath, destination);
+		if (installBindings) await installGeneratedBindings(buildOutputDir);
+		await Bun.write(
+			`${destination}.build.json`,
+			`${JSON.stringify({ topology: label, languageSet, profile: profileLabel, builtAt: new Date().toISOString() }, null, 2)}\n`,
+		);
+	} finally {
+		await fs.rm(buildOutputDir, { recursive: true, force: true });
 	}
-
-	await installGeneratedBindings(buildOutputDir);
-
-	await Bun.write(
-		`${canonicalAddonPath}.build.json`,
-		`${JSON.stringify({ languageSet, profile: profileLabel, builtAt: new Date().toISOString() }, null, 2)}\n`,
-	);
-
-	await generateEnumExports();
-
-	console.log("Build complete.");
-} finally {
-	await fs.rm(buildOutputDir, { recursive: true, force: true });
 }
+
+await fs.mkdir(nativeDir, { recursive: true });
+await cleanupStaleTemps(nativeDir);
+await fs.mkdir(path.join(nativeDir, ".build"), { recursive: true });
+
+await buildAddon("monolith", [], canonicalAddonPath, true);
+await buildAddon(
+	"core",
+	["core"],
+	path.join(nativeDir, `pi_natives_core.${targetPlatform}-${targetArch}${variantSuffix}.node`),
+	false,
+);
+await buildAddon(
+	"shell",
+	["capability-shell"],
+	path.join(nativeDir, `pi_natives_shell.${targetPlatform}-${targetArch}${variantSuffix}.node`),
+	false,
+);
+if (!Bun.env.PI_NATIVE_OUTPUT_DIR) await generateEnumExports();
+console.log("Build complete.");

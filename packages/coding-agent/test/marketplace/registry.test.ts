@@ -7,7 +7,7 @@ import type {
 	InstalledPluginsRegistry,
 	MarketplaceRegistryEntry,
 	MarketplacesRegistry,
-} from "@gajae-code/coding-agent/extensibility/plugins/marketplace";
+} from "../../src/extensibility/plugins/marketplace";
 import {
 	addInstalledPlugin,
 	addMarketplaceEntry,
@@ -22,7 +22,7 @@ import {
 	removeMarketplaceEntry,
 	writeInstalledPluginsRegistry,
 	writeMarketplacesRegistry,
-} from "@gajae-code/coding-agent/extensibility/plugins/marketplace";
+} from "../../src/extensibility/plugins/marketplace";
 
 // Inline the parseAnthropic modelPluginsRegistry validation logic to avoid pulling
 // in discovery/helpers.ts which transitively imports @gajae-code/natives.

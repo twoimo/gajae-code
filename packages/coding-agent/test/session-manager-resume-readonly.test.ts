@@ -2,19 +2,19 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getSessionsDir } from "@gajae-code/utils";
 import {
 	type ResumeSessionIdentity,
 	SessionManager,
 	type StrictSessionOpenResult,
-} from "@gajae-code/coding-agent/session/session-manager";
+} from "../src/session/session-manager";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
 	type SessionStorageSnapshot,
 	type SessionStorageStat,
 	type SessionStorageWriter,
-} from "@gajae-code/coding-agent/session/session-storage";
-import { getSessionsDir } from "@gajae-code/utils";
+} from "../src/session/session-storage";
 
 const tempDirs: string[] = [];
 

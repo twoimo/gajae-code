@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { HookSelectorComponent } from "@gajae-code/coding-agent/modes/components/hook-selector";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
 import { CURSOR_MARKER, type TUI } from "@gajae-code/tui";
 import type { AutocompleteItem, AutocompleteProvider } from "@gajae-code/tui/autocomplete";
+import { HookSelectorComponent } from "../src/modes/components/hook-selector";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 
 beforeAll(async () => {
 	const themeInstance = await getThemeByName("red-claw");

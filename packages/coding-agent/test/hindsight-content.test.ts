@@ -8,7 +8,7 @@ import {
 	sliceLastTurnsByUserBoundary,
 	stripMemoryTags,
 	truncateRecallQuery,
-} from "@gajae-code/coding-agent/hindsight/content";
+} from "../src/hindsight/content";
 
 describe("stripMemoryTags", () => {
 	it("removes both <memories> and legacy memory blocks", () => {

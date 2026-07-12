@@ -1,11 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { migrateWorkflowState } from "@gajae-code/coding-agent/gjc-runtime/state-migrations";
-import {
-	RequiredOnWriteEnvelopeSchema,
-	WorkflowStateEnvelopeSchema,
-} from "@gajae-code/coding-agent/gjc-runtime/state-schema";
+import { migrateWorkflowState } from "../../src/gjc-runtime/state-migrations";
+import { RequiredOnWriteEnvelopeSchema, WorkflowStateEnvelopeSchema } from "../../src/gjc-runtime/state-schema";
 
 const fixturesRoot = path.join(import.meta.dir, "..", "fixtures", "gjc-state");
 

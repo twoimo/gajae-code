@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { getRoleInfo } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { getRoleInfo } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
 
 describe("getRoleInfo", () => {
 	test("returns built-in role info", () => {

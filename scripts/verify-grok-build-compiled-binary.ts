@@ -2,6 +2,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DYNAMIC_IMPORT_RUNTIME_CASES, verifyDynamicImportRuntime } from "./verify-dynamic-import-runtime";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 const binaryPath = path.resolve(repoRoot, process.argv[2] ?? "packages/coding-agent/dist/gjc");
@@ -36,6 +37,13 @@ try {
 		throw new Error(`compiled gjc did not list bundled Grok Build models:\n${combined}`);
 	}
 	console.log("PASS compiled Grok Build list-models smoke");
+	await verifyDynamicImportRuntime(DYNAMIC_IMPORT_RUNTIME_CASES, {
+		mode: "compiled",
+		binary: binaryPath,
+		repoRoot,
+		agentDir,
+	});
+	console.log(`PASS compiled dynamic-import runtime (${DYNAMIC_IMPORT_RUNTIME_CASES.join(", ")})`);
 } finally {
 	await fs.rm(agentDir, { recursive: true, force: true });
 }

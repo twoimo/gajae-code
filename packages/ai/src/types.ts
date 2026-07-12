@@ -127,7 +127,9 @@ export type KnownProvider =
 	| "glm-zcode"
 	| "mistral"
 	| "minimax"
+	| "minimax-cn"
 	| "opencode-go"
+	| "opencode"
 	| "opencode-zen"
 	| "synthetic"
 	| "cloudflare-ai-gateway"
@@ -284,6 +286,69 @@ export type FetchImpl = ((input: string | URL | Request, init?: RequestInit) => 
 	preconnect?: typeof globalThis.fetch.preconnect;
 };
 
+export type AttemptKind =
+	| "provider-http"
+	| "provider-websocket"
+	| "credential-refresh"
+	| "credential-probe"
+	| "credential-broker"
+	| "maintenance"
+	| "gateway-outer";
+
+export interface AttemptBudgetEnvelope {
+	turnBudgetId: string;
+	remainingAttempts: number;
+	remainingDurationMs: number;
+	maxAttempts: number;
+	outerReservationId?: string;
+}
+
+export interface AttemptBudgetExceededMetadata {
+	outerRetryCount: number;
+	totalPhysicalAttempts: number;
+	attemptKind?: AttemptKind;
+	attemptLayer?: "provider" | "credential" | "maintenance" | "gateway";
+	provider?: string;
+	model?: string;
+	elapsedMs: number;
+	deadlineMs: number;
+	costKnown: boolean;
+	accumulatedCostUsd?: number;
+	costCeilingUsd?: number;
+	terminalReason: "attempts" | "deadline" | "cost";
+}
+
+export class AttemptBudgetExceededError extends Error {
+	readonly code = "ATTEMPT_BUDGET_EXHAUSTED";
+	constructor(
+		readonly reason: "attempts" | "deadline" | "cost",
+		message: string,
+		readonly metadata?: AttemptBudgetExceededMetadata,
+	) {
+		super(message);
+		this.name = "AttemptBudgetExceededError";
+	}
+}
+
+export interface AttemptController {
+	(kind?: AttemptKind): void;
+	claim?: (kind: AttemptKind) => void;
+	snapshot?: () => AttemptBudgetEnvelope;
+	/** Reconciles a remote authority snapshot without ever restoring locally consumed budget. */
+	reconcile?: (snapshot: AttemptBudgetEnvelope) => void;
+	/** Reports one completed provider operation. Omit cost when the provider did not return authoritative pricing. */
+	reportCost?: (costUsd?: number) => void;
+}
+
+export function claimAttempt(controller: AttemptController | undefined, kind: AttemptKind): void {
+	if (!controller) return;
+	if (controller.claim) controller.claim(kind);
+	else controller(kind);
+}
+
+export function isAttemptBudgetExceededError(error: unknown): error is AttemptBudgetExceededError {
+	return error instanceof AttemptBudgetExceededError;
+}
 export interface StreamOptions {
 	temperature?: number;
 	topP?: number;
@@ -340,6 +405,12 @@ export interface StreamOptions {
 	 * Counts retries only, not the initial stream attempt. Providers keep their built-in default when unset.
 	 */
 	streamMaxRetries?: number;
+	/**
+	 * Shared per-turn physical-attempt authority. Consumed immediately before
+	 * each provider or credential-plane network attempt. Throwing denies the
+	 * attempt. A plain callback remains supported for backward compatibility.
+	 */
+	consumeAttempt?: AttemptController;
 	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.

@@ -1,4 +1,5 @@
-import { logger, ptree } from "@gajae-code/utils";
+import { logger } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 import { Settings } from "../config/settings";
 import { OutputSink } from "../session/streaming-output";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";

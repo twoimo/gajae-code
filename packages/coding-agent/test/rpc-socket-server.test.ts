@@ -214,7 +214,7 @@ describe("gjc --mode rpc --listen (UDS persistent server, issue 09)", () => {
 		);
 		try {
 			await waitForSocket(socketPath);
-			const { listRpcSessions } = await import("@gajae-code/coding-agent/modes/shared/agent-wire/session-registry");
+			const { listRpcSessions } = await import("../src/modes/shared/agent-wire/session-registry");
 			const sessions = await listRpcSessions(agentDir);
 			const socketRecord = sessions.find(s => s.transport === "socket");
 			expect(socketRecord).toBeDefined();

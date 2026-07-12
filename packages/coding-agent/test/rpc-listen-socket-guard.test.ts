@@ -3,8 +3,8 @@ import { chmod, mkdtemp, rm } from "node:fs/promises";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { isUnixSocketAlive, RpcListenRefusedError } from "@gajae-code/coding-agent/modes/rpc/rpc-mode";
-import { prepareRpcSocketPath } from "@gajae-code/coding-agent/modes/rpc/rpc-socket-security";
+import { isUnixSocketAlive, RpcListenRefusedError } from "../src/modes/rpc/rpc-mode";
+import { prepareRpcSocketPath } from "../src/modes/rpc/rpc-socket-security";
 
 let dir: string;
 

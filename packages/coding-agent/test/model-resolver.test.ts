@@ -12,8 +12,8 @@ import {
 	resolveModelRoleValue,
 	resolveModelScope,
 	restoreModelFromSession,
-} from "@gajae-code/coding-agent/config/model-resolver";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+} from "../src/config/model-resolver";
+import { Settings } from "../src/config/settings";
 
 // Mock models for testing
 const mockModels: Model<"anthropic-messages">[] = [

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 3,
+  "baselines": {
+    "darwin-arm64:full": {
+      "fixtureHash": "bd84781d4fd77552e1bd9dff5eda9d99ddffa47854f350f323d3f368c877023b",
+      "fullTranscriptAllocationBaselineBytes": 50000220,
+
+
+      "reviewNote": "Deterministic complete legacy full-transcript 80x24 per-frame allocation baseline on Darwin arm64; excludes retained viewport state."
+
+    },
+    "darwin-arm64:fast": {
+      "fixtureHash": "f4963fbc1ae8a067523e55ece505801ccc2fdfef20638e82d8c7ee8646340730",
+      "fullTranscriptAllocationBaselineBytes": 3440376,
+
+      "reviewNote": "Deterministic complete legacy full-transcript 80x24 per-frame allocation baseline on Darwin arm64 for the fast corpus; excludes retained viewport state."
+    }
+  }
+}

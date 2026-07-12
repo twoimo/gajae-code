@@ -4,15 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Model } from "@gajae-code/ai";
 import * as ai from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import {
-	buildMemoryToolDeveloperInstructions,
-	getMemoryRoot,
-	startMemoryStartupTask,
-} from "@gajae-code/coding-agent/memories";
-import * as memoryStorage from "@gajae-code/coding-agent/memories/storage";
-import { localBackend } from "@gajae-code/coding-agent/memory-backend";
 import { getAgentDbPath, Snowflake } from "@gajae-code/utils";
+import { Settings } from "../src/config/settings";
+import { buildMemoryToolDeveloperInstructions, getMemoryRoot, startMemoryStartupTask } from "../src/memories";
+import * as memoryStorage from "../src/memories/storage";
+import { localBackend } from "../src/memory-backend";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 interface SessionFixture {

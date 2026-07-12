@@ -15,7 +15,13 @@ import type { ImageContent, TextContent } from "@gajae-code/ai";
 import { getDefault, type Settings } from "../config/settings";
 import { formatGroupedDiagnosticMessages } from "../lsp/utils";
 import type { Theme } from "../modes/theme/theme";
-import { type OutputSummary, type TruncationResult, truncateMiddle, truncateTail } from "../session/streaming-output";
+import {
+	DEFAULT_ARTIFACT_MAX_BYTES,
+	type OutputSummary,
+	type TruncationResult,
+	truncateMiddle,
+	truncateTail,
+} from "../session/streaming-output";
 import { formatBytes, wrapBrackets } from "./render-utils";
 import { renderError } from "./tool-errors";
 
@@ -39,10 +45,22 @@ export interface TruncationMeta {
 	elidedBytes?: number;
 	/** Lines elided from the middle. */
 	elidedLines?: number;
-	/** Artifact ID if full output was saved */
+	/** Artifact ID for the retained output. */
 	artifactId?: string;
+	/** Whether the artifact contains all original output bytes. */
+	artifactComplete?: boolean;
+	/** Bytes of original output retained by the artifact. */
+	artifactRetainedBytes?: number;
+	/** Total original output bytes observed. */
+	artifactOriginalBytes?: number;
+	/** Bytes omitted from the artifact; lower bound when `artifactOmittedBytesExact` is false. */
+	artifactOmittedBytes?: number;
+	/** Whether omitted-byte accounting is exact rather than a lower bound. */
+	artifactOmittedBytesExact?: boolean;
 	/** Next offset for pagination (head truncation only) */
 	nextOffset?: number;
+	/** Tool-specific continuation instructions. These must be valid arguments for the emitting tool. */
+	continuation?: string[];
 }
 
 /**
@@ -79,6 +97,8 @@ export interface OutputMeta {
 	source?: SourceMeta;
 	diagnostics?: DiagnosticMeta;
 	limits?: LimitsMeta;
+	/** Tool-specific continuation instructions. These must be valid arguments for the emitting tool. */
+	continuation?: string[];
 }
 
 // =============================================================================
@@ -213,6 +233,11 @@ export class OutputMetaBuilder {
 				elidedBytes: summary.elidedBytes,
 				elidedLines,
 				artifactId: summary.artifactId,
+				artifactComplete: summary.artifactComplete,
+				artifactRetainedBytes: summary.artifactRetainedBytes,
+				artifactOriginalBytes: summary.artifactOriginalBytes,
+				artifactOmittedBytes: summary.artifactOmittedBytes,
+				artifactOmittedBytesExact: summary.artifactOmittedBytes !== undefined,
 			};
 			return this;
 		}
@@ -244,6 +269,11 @@ export class OutputMetaBuilder {
 			outputBytes: summary.outputBytes,
 			shownRange: { start: shownStart, end: shownEnd },
 			artifactId: summary.artifactId,
+			artifactComplete: summary.artifactComplete,
+			artifactRetainedBytes: summary.artifactRetainedBytes,
+			artifactOriginalBytes: summary.artifactOriginalBytes,
+			artifactOmittedBytes: summary.artifactOmittedBytes,
+			artifactOmittedBytesExact: summary.artifactOmittedBytes !== undefined,
 			nextOffset: direction === "head" ? shownEnd + 1 : undefined,
 		};
 
@@ -365,6 +395,12 @@ export class OutputMetaBuilder {
 		return this;
 	}
 
+	/** Add tool-specific continuation instructions. */
+	continuation(...instructions: string[]): this {
+		this.#meta.continuation = instructions.filter(Boolean);
+		return this;
+	}
+
 	/** Get the built OutputMeta, or undefined if empty. */
 	get(): OutputMeta | undefined {
 		return Object.keys(this.#meta).length > 0 ? this.#meta : undefined;
@@ -380,11 +416,20 @@ export function outputMeta(): OutputMetaBuilder {
 // Notice formatting
 // =============================================================================
 
-export function formatFullOutputReference(artifactId: string): string {
-	return `Read artifact://${artifactId} for full output`;
+export function formatFullOutputReference(
+	artifactId: string,
+	artifact: Pick<TruncationMeta, "artifactComplete" | "artifactOmittedBytes" | "artifactOmittedBytesExact"> = {},
+): string {
+	if (artifact.artifactComplete === true) return `Read artifact://${artifactId} for full output`;
+	const omitted = artifact.artifactOmittedBytes;
+	if (omitted === undefined) return `Read artifact://${artifactId} for retained output (omitted bytes unknown)`;
+	return `Read artifact://${artifactId} for retained output (${artifact.artifactOmittedBytesExact === false ? "omitted at least" : "omitted"} ${formatBytes(omitted)})`;
 }
 
-export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
+export function formatTruncationMetaNotice(
+	truncation: TruncationMeta,
+	options: { includeNextOffset?: boolean } = {},
+): string {
 	let notice: string;
 
 	if (truncation.direction === "middle") {
@@ -401,7 +446,7 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
 			notice = `Showing ${truncation.outputLines} of ${totalLines} lines; middle elided`;
 		}
 		if (truncation.artifactId != null) {
-			notice += `. ${formatFullOutputReference(truncation.artifactId)}`;
+			notice += `. ${formatFullOutputReference(truncation.artifactId, truncation)}`;
 		}
 		return notice;
 	}
@@ -418,12 +463,12 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
 		notice += ` (${formatBytes(maxBytes)} limit)`;
 	}
 
-	if (truncation.nextOffset != null) {
+	if (truncation.nextOffset != null && options.includeNextOffset !== false) {
 		notice += `. Use :${truncation.nextOffset} to continue`;
 	}
 
 	if (truncation.artifactId != null) {
-		notice += `. ${formatFullOutputReference(truncation.artifactId)}`;
+		notice += `. ${formatFullOutputReference(truncation.artifactId, truncation)}`;
 	}
 
 	return notice;
@@ -433,8 +478,12 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
  * Format styled artifact reference with warning color and brackets.
  * For TUI rendering of truncation warnings.
  */
-export function formatStyledArtifactReference(artifactId: string, theme: Theme): string {
-	return theme.fg("warning", formatFullOutputReference(artifactId));
+export function formatStyledArtifactReference(
+	artifactId: string,
+	theme: Theme,
+	artifact: Pick<TruncationMeta, "artifactComplete" | "artifactOmittedBytes" | "artifactOmittedBytesExact"> = {},
+): string {
+	return theme.fg("warning", formatFullOutputReference(artifactId, artifact));
 }
 
 /**
@@ -448,7 +497,7 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 
 	// Truncation notice
 	if (meta.truncation) {
-		parts.push(formatTruncationMetaNotice(meta.truncation));
+		parts.push(formatTruncationMetaNotice(meta.truncation, { includeNextOffset: !meta.continuation?.length }));
 	}
 
 	// Limit notices
@@ -466,6 +515,9 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 	}
 	if (meta.limits?.columnTruncated) {
 		parts.push(`Some lines truncated to ${meta.limits.columnTruncated.maxColumn} chars`);
+	}
+	if (meta.continuation) {
+		parts.push(...meta.continuation);
 	}
 
 	// Diagnostics
@@ -677,6 +729,11 @@ async function spillLargeResultToArtifact(
 			elidedLines,
 			elidedBytes,
 			artifactId,
+			artifactComplete: totalBytes <= DEFAULT_ARTIFACT_MAX_BYTES,
+			artifactRetainedBytes: Math.min(totalBytes, DEFAULT_ARTIFACT_MAX_BYTES),
+			artifactOriginalBytes: totalBytes,
+			artifactOmittedBytes: Math.max(0, totalBytes - DEFAULT_ARTIFACT_MAX_BYTES) || undefined,
+			artifactOmittedBytesExact: true,
 		};
 	} else {
 		const shownStart = truncated.totalLines - outputLines + 1;
@@ -690,6 +747,11 @@ async function spillLargeResultToArtifact(
 			maxBytes: tailBytes,
 			shownRange: { start: shownStart, end: truncated.totalLines },
 			artifactId,
+			artifactComplete: totalBytes <= DEFAULT_ARTIFACT_MAX_BYTES,
+			artifactRetainedBytes: Math.min(totalBytes, DEFAULT_ARTIFACT_MAX_BYTES),
+			artifactOriginalBytes: totalBytes,
+			artifactOmittedBytes: Math.max(0, totalBytes - DEFAULT_ARTIFACT_MAX_BYTES) || undefined,
+			artifactOmittedBytesExact: true,
 		};
 	}
 

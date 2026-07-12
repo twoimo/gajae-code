@@ -1,12 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { disposeAllKernelSessions, executePython } from "@gajae-code/coding-agent/eval/py/executor";
-import type {
-	KernelExecuteOptions,
-	KernelExecuteResult,
-	KernelShutdownResult,
-} from "@gajae-code/coding-agent/eval/py/kernel";
-import { PythonKernel } from "@gajae-code/coding-agent/eval/py/kernel";
 import { TempDir } from "@gajae-code/utils";
+import { disposeAllKernelSessions, executePython } from "../../src/eval/py/executor";
+import type { KernelExecuteOptions, KernelExecuteResult, KernelShutdownResult } from "../../src/eval/py/kernel";
+import { PythonKernel } from "../../src/eval/py/kernel";
 
 const originalStart = PythonKernel.start;
 

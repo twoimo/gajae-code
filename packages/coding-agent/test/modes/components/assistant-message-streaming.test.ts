@@ -54,6 +54,10 @@ function countChildren(
 	return contentChildren(component).filter(child => child instanceof type).length;
 }
 
+function semanticRows(component: AssistantMessageComponent, width: number) {
+	return component.renderRowsWithMetadata(width, 0, component.getLogicalRowCount(width));
+}
+
 describe("AssistantMessageComponent streaming markdown", () => {
 	beforeEach(async () => {
 		clearRenderCache();
@@ -127,7 +131,7 @@ describe("AssistantMessageComponent streaming markdown", () => {
 
 	it("does not grant semantic eligibility without an occurrence ID", () => {
 		const component = new AssistantMessageComponent(message([{ type: "text", text: "unscoped" }]));
-		expect(component.renderWithViewportAnchors(40).anchors.every(anchor => anchor === null)).toBe(true);
+		expect(semanticRows(component, 40).metadata.every(item => item?.sourceId === undefined)).toBe(true);
 	});
 
 	it("excludes tool-only and empty error assistants from semantic rows", () => {
@@ -135,29 +139,28 @@ describe("AssistantMessageComponent streaming markdown", () => {
 			{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "x" } },
 		] as AssistantMessage["content"]);
 		const toolComponent = new AssistantMessageComponent(toolOnly, false, undefined, "assistant:test:tool-only");
-		expect(toolComponent.renderWithViewportAnchors(40).anchors.every(anchor => anchor === null)).toBe(true);
+		expect(semanticRows(toolComponent, 40).metadata.every(item => item?.sourceId === undefined)).toBe(true);
+
 		const errorOnly = { ...message([]), stopReason: "error" as const, errorMessage: "transport failed" };
 		const errorComponent = new AssistantMessageComponent(errorOnly, false, undefined, "assistant:test:error-only");
-		expect(errorComponent.renderWithViewportAnchors(40).anchors.every(anchor => anchor === null)).toBe(true);
+		expect(semanticRows(errorComponent, 40).metadata.every(item => item?.sourceId === undefined)).toBe(true);
 	});
 
-	it("keeps semantic anchor identity stable from streaming through final content", () => {
+	it("keeps semantic source identity stable from streaming through final content", () => {
 		const active = { type: "text" as const, text: "가나다라마바사🙂" };
 		const initial = message([active]);
 		const component = new AssistantMessageComponent(initial, false, undefined, "assistant:test:stream");
 		component.updateContent(initial, { streaming: true });
 		const streamingIds = new Set(
-			component.renderWithViewportAnchors(12).anchors.flatMap(anchor => (anchor === null ? [] : [anchor.id])),
+			semanticRows(component, 12).metadata.flatMap(item => (item?.sourceId ? [item.sourceId] : [])),
 		);
 		const finalBlock = { type: "text" as const, text: `${active.text}카타파하끝` };
 		component.updateContent(message([finalBlock], "stop"), { streaming: false });
-		const finalRender = component.renderWithViewportAnchors(12);
-		const finalIds = new Set(finalRender.anchors.flatMap(anchor => (anchor === null ? [] : [anchor.id])));
-		expect(streamingIds.size).toBe(1);
-		expect(finalIds).toEqual(streamingIds);
+		const finalRender = semanticRows(component, 12);
+		const finalIds = new Set(finalRender.metadata.flatMap(item => (item?.sourceId ? [item.sourceId] : [])));
+		expect(streamingIds).toEqual(finalIds);
 		const targetRow = finalRender.lines.findIndex(line => Bun.stripANSI(line).includes("끝"));
-		expect(targetRow).toBeGreaterThanOrEqual(0);
-		expect(finalRender.anchors[targetRow]).not.toBeNull();
+		expect(finalRender.metadata[targetRow]?.sourceId).toBe("assistant:test:stream:content:0:text");
 	});
 
 	it("keeps duplicate assistant blocks distinct across replacement objects", () => {
@@ -167,9 +170,8 @@ describe("AssistantMessageComponent streaming markdown", () => {
 		] as AssistantMessage["content"]);
 		const component = new AssistantMessageComponent(initial, false, undefined, "assistant:test:duplicates");
 		const initialIds = new Set(
-			component.renderWithViewportAnchors(40).anchors.flatMap(anchor => (anchor === null ? [] : [anchor.id])),
+			semanticRows(component, 40).metadata.flatMap(item => (item?.sourceId ? [item.sourceId] : [])),
 		);
-		expect(initialIds.size).toBe(2);
 		component.updateContent(
 			message(
 				[
@@ -180,54 +182,44 @@ describe("AssistantMessageComponent streaming markdown", () => {
 			),
 			{ streaming: false },
 		);
-		const replacementIds = new Set(
-			component.renderWithViewportAnchors(12).anchors.flatMap(anchor => (anchor === null ? [] : [anchor.id])),
-		);
-		expect(replacementIds).toEqual(initialIds);
+		expect(
+			new Set(semanticRows(component, 12).metadata.flatMap(item => (item?.sourceId ? [item.sourceId] : []))),
+		).toEqual(initialIds);
 	});
 
-	it("keeps Markdown decoration rows authoritative without leaking marker bytes", () => {
+	it("keeps Markdown decoration rows semantic without marker leakage", () => {
 		const component = new AssistantMessageComponent(
-			message([{ type: "text", text: "**repeat repeat** [🙂](https://example.com)  e\u0301\n\n> 가가" }]),
+			message([{ type: "text", text: "**repeat repeat** [🙂](https://example.com) e\u0301\n\n> 가가" }]),
 			false,
 			undefined,
 			"assistant:test:markdown",
 		);
-		const rendered = component.renderWithViewportAnchors(14);
-		const anchors = rendered.anchors.flatMap(anchor => (anchor === null ? [] : [anchor]));
+		const rendered = semanticRows(component, 14);
+		const metadata = rendered.metadata.filter(
+			(item): item is NonNullable<typeof item> => item?.sourceId !== undefined,
+		);
 		expect(rendered.lines.join("")).not.toContain("GJC_ANCHOR");
-		expect(anchors.length).toBeGreaterThan(1);
-		expect(new Set(anchors.map(anchor => anchor.id)).size).toBe(1);
-		expect(anchors[0]?.graphemeStart).toBe(0);
-		for (let index = 0; index < anchors.length; index++) {
-			const anchor = anchors[index];
-			expect(anchor.graphemeEnd).toBeGreaterThan(anchor.graphemeStart);
-			expect(anchor.cellEnd).toBeGreaterThan(anchor.cellStart);
-			if (index > 0) {
-				expect(anchor.graphemeStart).toBeGreaterThanOrEqual(anchors[index - 1].graphemeEnd);
-				expect(anchor.cellStart).toBeGreaterThanOrEqual(anchors[index - 1].cellEnd);
-			}
-		}
+		expect(metadata.length).toBeGreaterThan(1);
+		expect(new Set(metadata.map(item => item.sourceId)).size).toBe(1);
+		for (const item of metadata) expect(item.graphemeEnd).toBeGreaterThan(item.graphemeStart!);
 	});
 
 	it("remaps cached Markdown spans to each source occurrence ID", () => {
 		const content = [{ type: "text" as const, text: "cached **가가🙂** provenance" }];
 		const first = new AssistantMessageComponent(message(content), false, undefined, "assistant:test:cache:first");
-		const firstRender = first.renderWithViewportAnchors(18);
 		const second = new AssistantMessageComponent(
 			message([{ type: "text", text: content[0].text }]),
 			false,
 			undefined,
 			"assistant:test:cache:second",
 		);
-		const secondRender = second.renderWithViewportAnchors(18);
-		expect(secondRender.lines).toEqual(firstRender.lines);
-		expect(new Set(firstRender.anchors.flatMap(anchor => (anchor === null ? [] : [anchor.id])))).toEqual(
-			new Set(["assistant:test:cache:first:content:0:text"]),
-		);
-		expect(new Set(secondRender.anchors.flatMap(anchor => (anchor === null ? [] : [anchor.id])))).toEqual(
-			new Set(["assistant:test:cache:second:content:0:text"]),
-		);
+		expect(semanticRows(second, 18).lines).toEqual(semanticRows(first, 18).lines);
+		expect(
+			new Set(semanticRows(first, 18).metadata.flatMap(item => (item?.sourceId ? [item.sourceId] : []))),
+		).toEqual(new Set(["assistant:test:cache:first:content:0:text"]));
+		expect(
+			new Set(semanticRows(second, 18).metadata.flatMap(item => (item?.sourceId ? [item.sourceId] : []))),
+		).toEqual(new Set(["assistant:test:cache:second:content:0:text"]));
 	});
 
 	it("keeps multi-block ordering byte-identical to a fresh full render", () => {

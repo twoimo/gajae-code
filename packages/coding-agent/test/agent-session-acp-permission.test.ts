@@ -10,19 +10,20 @@ import { Agent, type AgentTool } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
 import { createMockModel, type MockModelOptions } from "@gajae-code/ai/providers/mock";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { EditTool } from "@gajae-code/coding-agent/edit";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
+import { TempDir } from "@gajae-code/utils";
+import * as z from "zod/v4";
+import { Settings } from "../src/config/settings";
+import { EditTool } from "../src/edit";
+import { AgentSession } from "../src/session/agent-session";
 import type {
 	ClientBridge,
 	ClientBridgePermissionOutcome,
 	ClientBridgePermissionToolCall,
-} from "@gajae-code/coding-agent/session/client-bridge";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { TempDir } from "@gajae-code/utils";
-import * as z from "zod/v4";
+} from "../src/session/client-bridge";
+import { convertToLlm, SKILL_PROMPT_MESSAGE_TYPE } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
+import type { ToolSession } from "../src/tools";
+import { registerToolCapability } from "../src/tools/capabilities";
 
 // ---------------------------------------------------------------------------
 // Shared setup
@@ -249,6 +250,38 @@ it("edit, write, and ast_edit do not request ACP permission", async () => {
 	expect(editTool.executeCalls).toBe(1);
 	expect(writeTool.executeCalls).toBe(1);
 	expect(astEditTool.executeCalls).toBe(1);
+});
+
+it("write overwrite and SQLite empty-row delete request ACP permission", async () => {
+	const writeTool = makeFakeTool("write");
+	const requests: ClientBridgePermissionToolCall[] = [];
+	const bridge: ClientBridge = {
+		capabilities: { requestPermission: true },
+		async requestPermission(toolCall) {
+			requests.push(toolCall);
+			return { outcome: "selected", optionId: "allow_once", kind: "allow_once" };
+		},
+	};
+	await Bun.write(`${tempDir.path()}/existing.txt`, "old");
+	session = await createSession([writeTool], bridge);
+	await session.setActiveToolsByName(["write"]);
+	const wrapped = session.agent.state.tools.find(t => t.name === "write")!;
+	await wrapped.execute(
+		"overwrite",
+		{ path: "existing.txt", content: "new" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+	await wrapped.execute(
+		"sqlite-delete",
+		{ path: "data.sqlite:rows:1", content: "" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+	expect(requests.map(request => request.title)).toEqual(["Overwrite existing.txt", "Delete data.sqlite:rows:1"]);
+	expect(writeTool.executeCalls).toBe(2);
 });
 
 it("edit delete and move operations request ACP permission before executing", async () => {
@@ -833,4 +866,54 @@ it("read tool: requestPermission is never called for non-gated tools", async () 
 
 	expect(permissionSpy).toHaveBeenCalledTimes(0);
 	expect(readTool.executeCalls).toBe(1);
+});
+
+it("keeps registered ask and read usable through planning wrappers", async () => {
+	const askTool = makeFakeTool("ask");
+	const readTool = makeFakeTool("read");
+	registerToolCapability(askTool, "builtin", "ask");
+	registerToolCapability(readTool, "builtin", "read");
+	const bridge: ClientBridge = { capabilities: {} };
+	session = await createSessionWithMockModel([askTool, readTool], bridge, [
+		{
+			content: [
+				{ type: "toolCall", id: "call-ask", name: "ask", arguments: {} },
+				{ type: "toolCall", id: "call-read", name: "read", arguments: {} },
+			],
+		},
+		{ content: ["done"] },
+	]);
+
+	await session.promptCustomMessage({
+		customType: SKILL_PROMPT_MESSAGE_TYPE,
+		content: "plan",
+		display: false,
+		details: { name: "ralplan", path: "/skills/ralplan/SKILL.md" },
+	});
+
+	expect(askTool.executeCalls).toBe(1);
+	expect(readTool.executeCalls).toBe(1);
+});
+
+it("blocks mutation from live ultragoal phase when durable activation persistence fails", async () => {
+	const editTool = makeFakeTool("edit");
+	registerToolCapability(editTool, "builtin", "edit");
+	const bridge: ClientBridge = { capabilities: {} };
+	session = await createSessionWithMockModel([editTool], bridge, [
+		{
+			content: [{ type: "toolCall", id: "call-edit", name: "edit", arguments: { path: "victim" } }],
+		},
+		{ content: ["done"] },
+	]);
+	await tempDir.remove();
+	await Bun.write(tempDir.path(), "not a directory");
+
+	await session.promptCustomMessage({
+		customType: SKILL_PROMPT_MESSAGE_TYPE,
+		content: "plan",
+		display: false,
+		details: { name: "ultragoal", path: "/skills/ultragoal/SKILL.md" },
+	});
+
+	expect(editTool.executeCalls).toBe(0);
 });

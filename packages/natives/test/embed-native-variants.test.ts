@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
-import { buildCandidateList, filterCandidatesByVariant, parseEmbedVariants } from "../scripts/embed-native";
+import {
+	buildCandidateList,
+	filterCandidatesByVariant,
+	parseEmbedTopology,
+	parseEmbedVariants,
+} from "../scripts/embed-native";
 
 describe("embed native variant selection", () => {
 	it("parses valid EMBED_VARIANTS values", () => {
@@ -13,6 +18,15 @@ describe("embed native variant selection", () => {
 		expect(() => parseEmbedVariants("baseline,garbage")).toThrow(
 			/Invalid EMBED_VARIANTS value\(s\): garbage.*modern, baseline, default/,
 		);
+	});
+
+	it("selects core addon filenames for core compiled binaries", () => {
+		expect(parseEmbedTopology(undefined)).toBe("monolith");
+		expect(parseEmbedTopology("core")).toBe("core");
+		expect(() => parseEmbedTopology("shell")).toThrow(/Invalid EMBED_TOPOLOGY/);
+		expect(buildCandidateList("arm64", "darwin-arm64", "core")).toEqual([
+			{ variant: "default", filename: "pi_natives_core.darwin-arm64.node" },
+		]);
 	});
 
 	it("filters x64 candidates to baseline only when requested", () => {

@@ -15,8 +15,12 @@ export const compileAutoloadDisableFlags = [
 ];
 
 const compiledDefineFlags = ['process.env.PI_COMPILED="true"'];
-const releaseDefineFlags = [...compiledDefineFlags, 'process.env.GJC_BUILD_CHANNEL="release"'];
-const devDefineFlags = [...compiledDefineFlags, 'process.env.GJC_BUILD_CHANNEL="dev"'];
+const fullSkuDefineFlags = [...compiledDefineFlags, 'process.env.GJC_BUILD_SKU="full"'];
+const coreSkuDefineFlags = [...compiledDefineFlags, 'process.env.GJC_BUILD_SKU="core"'];
+const releaseDefineFlags = [...fullSkuDefineFlags, 'process.env.GJC_BUILD_CHANNEL="release"'];
+const coreReleaseDefineFlags = [...coreSkuDefineFlags, 'process.env.GJC_BUILD_CHANNEL="release"'];
+const devDefineFlags = [...fullSkuDefineFlags, 'process.env.GJC_BUILD_CHANNEL="dev"'];
+const coreDevDefineFlags = [...coreSkuDefineFlags, 'process.env.GJC_BUILD_CHANNEL="dev"'];
 
 export const compiledExternalPackages = ["mupdf"];
 
@@ -35,6 +39,8 @@ export const releaseEntrypoints = [
 	// releases at startup (#1939). It is bundled via the statically-traceable
 	// `require("handlebars")` in packages/utils/src/prompt.ts instead.
 ];
+
+export const coreReleaseEntrypoints = ["./packages/coding-agent/src/cli.ts", "./packages/natives/native/index.js"];
 
 export const devEntrypoints = [
 	"./src/cli.ts",
@@ -56,12 +62,33 @@ export function buildReleaseCompileArgs(target: string, outfile: string): string
 	});
 }
 
+export function buildCoreReleaseCompileArgs(target: string, outfile: string): string[] {
+	return buildCompileArgs({
+		root: ".",
+		entrypoints: coreReleaseEntrypoints,
+		outfile,
+		target,
+		defines: coreReleaseDefineFlags,
+		externals: compiledExternalPackages,
+	});
+}
+
 export function buildDevCompileArgs(outfile = "dist/gjc"): string[] {
 	return buildCompileArgs({
 		root: "../..",
 		entrypoints: devEntrypoints,
 		outfile,
 		defines: devDefineFlags,
+		externals: compiledExternalPackages,
+	});
+}
+
+export function buildCoreDevCompileArgs(outfile = "dist/gjc-core"): string[] {
+	return buildCompileArgs({
+		root: "../..",
+		entrypoints: ["./src/cli.ts"],
+		outfile,
+		defines: coreDevDefineFlags,
 		externals: compiledExternalPackages,
 	});
 }

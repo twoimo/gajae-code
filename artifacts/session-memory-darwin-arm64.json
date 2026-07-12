@@ -1,0 +1,2479 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-07-11T13:59:41.741Z",
+  "status": "passed",
+  "fast": false,
+  "platform": "darwin",
+  "arch": "arm64",
+  "bunVersion": "1.3.14",
+  "corpora": [
+    {
+      "journalBytes": 10485760,
+      "legacyResume": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 39.483000000000004,
+            "baselineRssBytes": 353697792,
+            "rssBytes": 404914176,
+            "metadataBytes": 51216384,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.388667,
+            "baselineRssBytes": 355860480,
+            "rssBytes": 406634496,
+            "metadataBytes": 50774016,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.74983299999997,
+            "baselineRssBytes": 354779136,
+            "rssBytes": 406339584,
+            "metadataBytes": 51560448,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.59295799999995,
+            "baselineRssBytes": 353796096,
+            "rssBytes": 401309696,
+            "metadataBytes": 47513600,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.13154199999997,
+            "baselineRssBytes": 358875136,
+            "rssBytes": 406765568,
+            "metadataBytes": 47890432,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 75.08045800000002,
+            "baselineRssBytes": 357122048,
+            "rssBytes": 407044096,
+            "metadataBytes": 49922048,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 44.728583000000015,
+            "baselineRssBytes": 347193344,
+            "rssBytes": 403226624,
+            "metadataBytes": 56033280,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.87320799999998,
+            "baselineRssBytes": 354942976,
+            "rssBytes": 404406272,
+            "metadataBytes": 49463296,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 43.12133299999999,
+            "baselineRssBytes": 356433920,
+            "rssBytes": 406896640,
+            "metadataBytes": 50462720,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 42.76529199999999,
+            "baselineRssBytes": 349421568,
+            "rssBytes": 406208512,
+            "metadataBytes": 56786944,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.95791600000001,
+            "baselineRssBytes": 360267776,
+            "rssBytes": 409206784,
+            "metadataBytes": 48939008,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.259000000000015,
+            "baselineRssBytes": 347914240,
+            "rssBytes": 402702336,
+            "metadataBytes": 54788096,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.51291599999996,
+            "baselineRssBytes": 348979200,
+            "rssBytes": 402079744,
+            "metadataBytes": 53100544,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.99066600000003,
+            "baselineRssBytes": 352845824,
+            "rssBytes": 404029440,
+            "metadataBytes": 51183616,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.081709000000046,
+            "baselineRssBytes": 355926016,
+            "rssBytes": 406372352,
+            "metadataBytes": 50446336,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.18354099999999,
+            "baselineRssBytes": 354795520,
+            "rssBytes": 404897792,
+            "metadataBytes": 50102272,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 40.05054100000001,
+            "baselineRssBytes": 352239616,
+            "rssBytes": 405487616,
+            "metadataBytes": 53248000,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.639666999999974,
+            "baselineRssBytes": 353386496,
+            "rssBytes": 406224896,
+            "metadataBytes": 52838400,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.91891700000002,
+            "baselineRssBytes": 352927744,
+            "rssBytes": 405028864,
+            "metadataBytes": 52101120,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.51054099999999,
+            "baselineRssBytes": 351174656,
+            "rssBytes": 407519232,
+            "metadataBytes": 56344576,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 40.928999999999974,
+            "baselineRssBytes": 357023744,
+            "rssBytes": 407830528,
+            "metadataBytes": 50806784,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.87049999999999,
+            "baselineRssBytes": 357711872,
+            "rssBytes": 406077440,
+            "metadataBytes": 48365568,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.31929200000002,
+            "baselineRssBytes": 352649216,
+            "rssBytes": 400834560,
+            "metadataBytes": 48185344,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.77883400000002,
+            "baselineRssBytes": 356401152,
+            "rssBytes": 405225472,
+            "metadataBytes": 48824320,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.717750000000024,
+            "baselineRssBytes": 356450304,
+            "rssBytes": 407044096,
+            "metadataBytes": 50593792,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 55.38737500000002,
+            "baselineRssBytes": 358924288,
+            "rssBytes": 411860992,
+            "metadataBytes": 52936704,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.34141599999998,
+            "baselineRssBytes": 354336768,
+            "rssBytes": 403849216,
+            "metadataBytes": 49512448,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.9096659999999,
+            "baselineRssBytes": 351191040,
+            "rssBytes": 406487040,
+            "metadataBytes": 55296000,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.66854200000006,
+            "baselineRssBytes": 361922560,
+            "rssBytes": 410828800,
+            "metadataBytes": 48906240,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.249750000000006,
+            "baselineRssBytes": 353599488,
+            "rssBytes": 401260544,
+            "metadataBytes": 47661056,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 40.18074999999999,
+            "baselineRssBytes": 358072320,
+            "rssBytes": 405389312,
+            "metadataBytes": 47316992,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.21787499999999,
+            "baselineRssBytes": 356450304,
+            "rssBytes": 408436736,
+            "metadataBytes": 51986432,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.88937499999997,
+            "baselineRssBytes": 362004480,
+            "rssBytes": 408027136,
+            "metadataBytes": 46022656,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.02041700000001,
+            "baselineRssBytes": 357482496,
+            "rssBytes": 408125440,
+            "metadataBytes": 50642944,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.95608299999998,
+            "baselineRssBytes": 355598336,
+            "rssBytes": 401309696,
+            "metadataBytes": 45711360,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.73758300000003,
+            "baselineRssBytes": 355696640,
+            "rssBytes": 405422080,
+            "metadataBytes": 49725440,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.178875000000005,
+            "baselineRssBytes": 361185280,
+            "rssBytes": 417366016,
+            "metadataBytes": 56180736,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.085375,
+            "baselineRssBytes": 351764480,
+            "rssBytes": 406274048,
+            "metadataBytes": 54509568,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.09499999999997,
+            "baselineRssBytes": 355713024,
+            "rssBytes": 405831680,
+            "metadataBytes": 50118656,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 38.86695899999995,
+            "baselineRssBytes": 354402304,
+            "rssBytes": 403914752,
+            "metadataBytes": 49512448,
+            "entryCount": 42
+          }
+        ],
+        "elapsedMs": {
+          "p50": 38.66854200000006,
+          "p95": 44.728583000000015
+        },
+        "baselineRssBytes": {
+          "p50": 354942976,
+          "p95": 361185280
+        },
+        "rssBytes": {
+          "p50": 406077440,
+          "p95": 410828800
+        },
+        "metadataBytes": {
+          "p50": 50462720,
+          "p95": 56180736,
+          "max": 56786944
+        }
+      },
+      "v2Resume": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 50.11470800000001,
+            "baselineRssBytes": 356319232,
+            "rssBytes": 363741184,
+            "metadataBytes": 7421952,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.51762500000001,
+            "baselineRssBytes": 358055936,
+            "rssBytes": 368279552,
+            "metadataBytes": 10223616,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.652417000000014,
+            "baselineRssBytes": 362856448,
+            "rssBytes": 366444544,
+            "metadataBytes": 3588096,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 41.03199999999998,
+            "baselineRssBytes": 357859328,
+            "rssBytes": 361185280,
+            "metadataBytes": 3325952,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.39512500000001,
+            "baselineRssBytes": 354598912,
+            "rssBytes": 371425280,
+            "metadataBytes": 16826368,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 37.38804200000004,
+            "baselineRssBytes": 346685440,
+            "rssBytes": 348504064,
+            "metadataBytes": 1818624,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 42.29150000000004,
+            "baselineRssBytes": 356679680,
+            "rssBytes": 370229248,
+            "metadataBytes": 13549568,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 55.70237499999996,
+            "baselineRssBytes": 353533952,
+            "rssBytes": 360710144,
+            "metadataBytes": 7176192,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 40.21666700000003,
+            "baselineRssBytes": 358318080,
+            "rssBytes": 374521856,
+            "metadataBytes": 16203776,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 40.293834000000004,
+            "baselineRssBytes": 358334464,
+            "rssBytes": 362217472,
+            "metadataBytes": 3883008,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.75191699999999,
+            "baselineRssBytes": 355106816,
+            "rssBytes": 369868800,
+            "metadataBytes": 14761984,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.808790999999985,
+            "baselineRssBytes": 353828864,
+            "rssBytes": 359235584,
+            "metadataBytes": 5406720,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.133208000000025,
+            "baselineRssBytes": 359776256,
+            "rssBytes": 368525312,
+            "metadataBytes": 8749056,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.358791999999994,
+            "baselineRssBytes": 355368960,
+            "rssBytes": 362332160,
+            "metadataBytes": 6963200,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.35787499999998,
+            "baselineRssBytes": 355336192,
+            "rssBytes": 364199936,
+            "metadataBytes": 8863744,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.15995799999996,
+            "baselineRssBytes": 347045888,
+            "rssBytes": 350863360,
+            "metadataBytes": 3817472,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.84108399999997,
+            "baselineRssBytes": 360611840,
+            "rssBytes": 363642880,
+            "metadataBytes": 3031040,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.68545900000004,
+            "baselineRssBytes": 352403456,
+            "rssBytes": 355254272,
+            "metadataBytes": 2850816,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.46191700000003,
+            "baselineRssBytes": 351453184,
+            "rssBytes": 366526464,
+            "metadataBytes": 15073280,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.297000000000025,
+            "baselineRssBytes": 353828864,
+            "rssBytes": 360497152,
+            "metadataBytes": 6668288,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.07770899999997,
+            "baselineRssBytes": 353370112,
+            "rssBytes": 356532224,
+            "metadataBytes": 3162112,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.15775000000002,
+            "baselineRssBytes": 354091008,
+            "rssBytes": 366641152,
+            "metadataBytes": 12550144,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.642041000000006,
+            "baselineRssBytes": 354861056,
+            "rssBytes": 368590848,
+            "metadataBytes": 13729792,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 66.491042,
+            "baselineRssBytes": 354467840,
+            "rssBytes": 356089856,
+            "metadataBytes": 1622016,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.32820800000002,
+            "baselineRssBytes": 356646912,
+            "rssBytes": 371490816,
+            "metadataBytes": 14843904,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.39262500000001,
+            "baselineRssBytes": 360136704,
+            "rssBytes": 376487936,
+            "metadataBytes": 16351232,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.61904199999998,
+            "baselineRssBytes": 349716480,
+            "rssBytes": 363184128,
+            "metadataBytes": 13467648,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.43083299999995,
+            "baselineRssBytes": 358252544,
+            "rssBytes": 361365504,
+            "metadataBytes": 3112960,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 39.59129200000001,
+            "baselineRssBytes": 357482496,
+            "rssBytes": 369655808,
+            "metadataBytes": 12173312,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.10895799999997,
+            "baselineRssBytes": 354861056,
+            "rssBytes": 360824832,
+            "metadataBytes": 5963776,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.98679099999998,
+            "baselineRssBytes": 352796672,
+            "rssBytes": 365281280,
+            "metadataBytes": 12484608,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.70995899999997,
+            "baselineRssBytes": 352190464,
+            "rssBytes": 365641728,
+            "metadataBytes": 13451264,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 35.158582999999965,
+            "baselineRssBytes": 354238464,
+            "rssBytes": 357335040,
+            "metadataBytes": 3096576,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.2115,
+            "baselineRssBytes": 357941248,
+            "rssBytes": 363413504,
+            "metadataBytes": 5472256,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.88295899999997,
+            "baselineRssBytes": 357957632,
+            "rssBytes": 372424704,
+            "metadataBytes": 14467072,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.65416700000003,
+            "baselineRssBytes": 355647488,
+            "rssBytes": 360742912,
+            "metadataBytes": 5095424,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 33.90712500000001,
+            "baselineRssBytes": 360775680,
+            "rssBytes": 364773376,
+            "metadataBytes": 3997696,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.62012500000003,
+            "baselineRssBytes": 357613568,
+            "rssBytes": 363233280,
+            "metadataBytes": 5619712,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 36.26520899999997,
+            "baselineRssBytes": 351600640,
+            "rssBytes": 363249664,
+            "metadataBytes": 11649024,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 34.56450000000001,
+            "baselineRssBytes": 359055360,
+            "rssBytes": 371097600,
+            "metadataBytes": 12042240,
+            "entryCount": 42
+          }
+        ],
+        "elapsedMs": {
+          "p50": 35.642041000000006,
+          "p95": 55.70237499999996
+        },
+        "baselineRssBytes": {
+          "p50": 355336192,
+          "p95": 360611840
+        },
+        "rssBytes": {
+          "p50": 363642880,
+          "p95": 372424704
+        },
+        "metadataBytes": {
+          "p50": 7176192,
+          "p95": 16203776,
+          "max": 16826368
+        }
+      },
+      "legacySwitch": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 58.15991700000001,
+            "baselineRssBytes": 383909888,
+            "rssBytes": 508952576,
+            "metadataBytes": 125042688,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 59.667291999999975,
+            "baselineRssBytes": 382189568,
+            "rssBytes": 514850816,
+            "metadataBytes": 132661248,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 61.063207999999975,
+            "baselineRssBytes": 378241024,
+            "rssBytes": 523386880,
+            "metadataBytes": 145145856,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 59.35633300000006,
+            "baselineRssBytes": 385302528,
+            "rssBytes": 514031616,
+            "metadataBytes": 128729088,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 70.892334,
+            "baselineRssBytes": 379666432,
+            "rssBytes": 513998848,
+            "metadataBytes": 134332416,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 63.48441600000001,
+            "baselineRssBytes": 377061376,
+            "rssBytes": 507068416,
+            "metadataBytes": 130007040,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 64.44891700000005,
+            "baselineRssBytes": 373194752,
+            "rssBytes": 502005760,
+            "metadataBytes": 128811008,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 62.50274999999999,
+            "baselineRssBytes": 383254528,
+            "rssBytes": 512212992,
+            "metadataBytes": 128958464,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 65.89491700000008,
+            "baselineRssBytes": 386727936,
+            "rssBytes": 518012928,
+            "metadataBytes": 131284992,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 105.85479099999998,
+            "baselineRssBytes": 382255104,
+            "rssBytes": 509362176,
+            "metadataBytes": 127107072,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 68.33791699999995,
+            "baselineRssBytes": 386318336,
+            "rssBytes": 514342912,
+            "metadataBytes": 128024576,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.79200000000003,
+            "baselineRssBytes": 383713280,
+            "rssBytes": 513409024,
+            "metadataBytes": 129695744,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 62.70416600000004,
+            "baselineRssBytes": 381435904,
+            "rssBytes": 518275072,
+            "metadataBytes": 136839168,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 60.28570899999994,
+            "baselineRssBytes": 378044416,
+            "rssBytes": 513015808,
+            "metadataBytes": 134971392,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.641624999999976,
+            "baselineRssBytes": 380043264,
+            "rssBytes": 515735552,
+            "metadataBytes": 135692288,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 59.12525000000005,
+            "baselineRssBytes": 373653504,
+            "rssBytes": 505348096,
+            "metadataBytes": 131694592,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.78104099999996,
+            "baselineRssBytes": 380715008,
+            "rssBytes": 516898816,
+            "metadataBytes": 136183808,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.552125000000046,
+            "baselineRssBytes": 374636544,
+            "rssBytes": 506052608,
+            "metadataBytes": 131416064,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.49416599999995,
+            "baselineRssBytes": 379994112,
+            "rssBytes": 512016384,
+            "metadataBytes": 132022272,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.35354099999995,
+            "baselineRssBytes": 389808128,
+            "rssBytes": 511410176,
+            "metadataBytes": 121602048,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 115.36108399999989,
+            "baselineRssBytes": 384745472,
+            "rssBytes": 513507328,
+            "metadataBytes": 128761856,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.065875000000005,
+            "baselineRssBytes": 381206528,
+            "rssBytes": 508968960,
+            "metadataBytes": 127762432,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 55.85079200000001,
+            "baselineRssBytes": 381829120,
+            "rssBytes": 517734400,
+            "metadataBytes": 135905280,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.24629199999998,
+            "baselineRssBytes": 374685696,
+            "rssBytes": 507723776,
+            "metadataBytes": 133038080,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.054915999999935,
+            "baselineRssBytes": 383418368,
+            "rssBytes": 518569984,
+            "metadataBytes": 135151616,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.25374999999997,
+            "baselineRssBytes": 379011072,
+            "rssBytes": 516915200,
+            "metadataBytes": 137904128,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 59.62825000000004,
+            "baselineRssBytes": 364314624,
+            "rssBytes": 505167872,
+            "metadataBytes": 140853248,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.80725000000001,
+            "baselineRssBytes": 377012224,
+            "rssBytes": 505249792,
+            "metadataBytes": 128237568,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.456582999999966,
+            "baselineRssBytes": 378830848,
+            "rssBytes": 515588096,
+            "metadataBytes": 136757248,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.748041,
+            "baselineRssBytes": 383336448,
+            "rssBytes": 514605056,
+            "metadataBytes": 131268608,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 55.810249999999996,
+            "baselineRssBytes": 387252224,
+            "rssBytes": 516276224,
+            "metadataBytes": 129024000,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 57.09333400000003,
+            "baselineRssBytes": 386842624,
+            "rssBytes": 518914048,
+            "metadataBytes": 132071424,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 56.42337500000002,
+            "baselineRssBytes": 380633088,
+            "rssBytes": 521175040,
+            "metadataBytes": 140541952,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 55.75958300000002,
+            "baselineRssBytes": 386646016,
+            "rssBytes": 512147456,
+            "metadataBytes": 125501440,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 60.01891699999999,
+            "baselineRssBytes": 381091840,
+            "rssBytes": 513212416,
+            "metadataBytes": 132120576,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.710959,
+            "baselineRssBytes": 384417792,
+            "rssBytes": 514326528,
+            "metadataBytes": 129908736,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.40633399999996,
+            "baselineRssBytes": 380518400,
+            "rssBytes": 509804544,
+            "metadataBytes": 129286144,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 56.91341600000004,
+            "baselineRssBytes": 383074304,
+            "rssBytes": 511246336,
+            "metadataBytes": 128172032,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 58.415832999999964,
+            "baselineRssBytes": 379207680,
+            "rssBytes": 513785856,
+            "metadataBytes": 134578176,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 56.695875,
+            "baselineRssBytes": 378404864,
+            "rssBytes": 521355264,
+            "metadataBytes": 142950400,
+            "entryCount": 42
+          }
+        ],
+        "elapsedMs": {
+          "p50": 58.49416599999995,
+          "p95": 70.892334
+        },
+        "baselineRssBytes": {
+          "p50": 381091840,
+          "p95": 386842624
+        },
+        "rssBytes": {
+          "p50": 513507328,
+          "p95": 521175040
+        },
+        "metadataBytes": {
+          "p50": 131416064,
+          "p95": 140853248,
+          "max": 145145856
+        }
+      },
+      "v2Switch": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 15.752749999999992,
+            "baselineRssBytes": 383696896,
+            "rssBytes": 391118848,
+            "metadataBytes": 7421952,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.909959000000015,
+            "baselineRssBytes": 380616704,
+            "rssBytes": 391872512,
+            "metadataBytes": 11255808,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 14.834959000000026,
+            "baselineRssBytes": 382713856,
+            "rssBytes": 391118848,
+            "metadataBytes": 8404992,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.718667000000039,
+            "baselineRssBytes": 383188992,
+            "rssBytes": 390119424,
+            "metadataBytes": 6930432,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 17.410042000000033,
+            "baselineRssBytes": 385941504,
+            "rssBytes": 395788288,
+            "metadataBytes": 9846784,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 18.970458000000008,
+            "baselineRssBytes": 379797504,
+            "rssBytes": 391151616,
+            "metadataBytes": 11354112,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 18.727959,
+            "baselineRssBytes": 383860736,
+            "rssBytes": 391249920,
+            "metadataBytes": 7389184,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.986041,
+            "baselineRssBytes": 381517824,
+            "rssBytes": 393117696,
+            "metadataBytes": 11599872,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 17.746375000000057,
+            "baselineRssBytes": 381173760,
+            "rssBytes": 392167424,
+            "metadataBytes": 10993664,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 19.56650000000002,
+            "baselineRssBytes": 379076608,
+            "rssBytes": 385646592,
+            "metadataBytes": 6569984,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 19.527500000000032,
+            "baselineRssBytes": 377241600,
+            "rssBytes": 381616128,
+            "metadataBytes": 4374528,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 24.55745799999994,
+            "baselineRssBytes": 384483328,
+            "rssBytes": 390135808,
+            "metadataBytes": 5652480,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 16.000791999999933,
+            "baselineRssBytes": 383729664,
+            "rssBytes": 391364608,
+            "metadataBytes": 7634944,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.925459000000046,
+            "baselineRssBytes": 377946112,
+            "rssBytes": 383647744,
+            "metadataBytes": 5701632,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.784125000000017,
+            "baselineRssBytes": 384368640,
+            "rssBytes": 392364032,
+            "metadataBytes": 7995392,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 16.357666999999992,
+            "baselineRssBytes": 383631360,
+            "rssBytes": 394854400,
+            "metadataBytes": 11223040,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.529042000000004,
+            "baselineRssBytes": 377962496,
+            "rssBytes": 387121152,
+            "metadataBytes": 9158656,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.109125000000006,
+            "baselineRssBytes": 378241024,
+            "rssBytes": 382828544,
+            "metadataBytes": 4587520,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.463040999999976,
+            "baselineRssBytes": 381992960,
+            "rssBytes": 395902976,
+            "metadataBytes": 13910016,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 14.562583000000018,
+            "baselineRssBytes": 386613248,
+            "rssBytes": 390529024,
+            "metadataBytes": 3915776,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 19.811750000000018,
+            "baselineRssBytes": 385286144,
+            "rssBytes": 392298496,
+            "metadataBytes": 7012352,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 18.720416999999998,
+            "baselineRssBytes": 380026880,
+            "rssBytes": 387252224,
+            "metadataBytes": 7225344,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.852792000000022,
+            "baselineRssBytes": 382976000,
+            "rssBytes": 390119424,
+            "metadataBytes": 7143424,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.304750000000013,
+            "baselineRssBytes": 383516672,
+            "rssBytes": 389545984,
+            "metadataBytes": 6029312,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 14.762917000000016,
+            "baselineRssBytes": 385433600,
+            "rssBytes": 392183808,
+            "metadataBytes": 6750208,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 28.35258300000004,
+            "baselineRssBytes": 378109952,
+            "rssBytes": 384335872,
+            "metadataBytes": 6225920,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 20.876292000000035,
+            "baselineRssBytes": 376258560,
+            "rssBytes": 388792320,
+            "metadataBytes": 12533760,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.361041999999998,
+            "baselineRssBytes": 386138112,
+            "rssBytes": 394362880,
+            "metadataBytes": 8224768,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 14.14383300000003,
+            "baselineRssBytes": 384417792,
+            "rssBytes": 393101312,
+            "metadataBytes": 8683520,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 16.372415999999987,
+            "baselineRssBytes": 386072576,
+            "rssBytes": 399949824,
+            "metadataBytes": 13877248,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.491167000000019,
+            "baselineRssBytes": 385548288,
+            "rssBytes": 393297920,
+            "metadataBytes": 7749632,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.349958000000015,
+            "baselineRssBytes": 386957312,
+            "rssBytes": 399540224,
+            "metadataBytes": 12582912,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.67674999999997,
+            "baselineRssBytes": 383451136,
+            "rssBytes": 396460032,
+            "metadataBytes": 13008896,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.118291999999997,
+            "baselineRssBytes": 380370944,
+            "rssBytes": 400621568,
+            "metadataBytes": 20250624,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 16.40795799999995,
+            "baselineRssBytes": 373194752,
+            "rssBytes": 378454016,
+            "metadataBytes": 5259264,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.584000000000003,
+            "baselineRssBytes": 379158528,
+            "rssBytes": 390086656,
+            "metadataBytes": 10928128,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.980833000000018,
+            "baselineRssBytes": 381583360,
+            "rssBytes": 397164544,
+            "metadataBytes": 15581184,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 14.926457999999968,
+            "baselineRssBytes": 380289024,
+            "rssBytes": 388808704,
+            "metadataBytes": 8519680,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.517875000000004,
+            "baselineRssBytes": 384270336,
+            "rssBytes": 390299648,
+            "metadataBytes": 6029312,
+            "entryCount": 42
+          },
+          {
+            "elapsedMs": 15.044250000000034,
+            "baselineRssBytes": 382582784,
+            "rssBytes": 396673024,
+            "metadataBytes": 14090240,
+            "entryCount": 42
+          }
+        ],
+        "elapsedMs": {
+          "p50": 15.784125000000017,
+          "p95": 20.876292000000035
+        },
+        "baselineRssBytes": {
+          "p50": 382713856,
+          "p95": 386138112
+        },
+        "rssBytes": {
+          "p50": 391151616,
+          "p95": 399540224
+        },
+        "metadataBytes": {
+          "p50": 7995392,
+          "p95": 14090240,
+          "max": 20250624
+        }
+      }
+    },
+    {
+      "journalBytes": 104857600,
+      "legacyResume": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 284.52675000000005,
+            "baselineRssBytes": 361775104,
+            "rssBytes": 789954560,
+            "metadataBytes": 428179456,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 292.76745800000003,
+            "baselineRssBytes": 358891520,
+            "rssBytes": 816562176,
+            "metadataBytes": 457670656,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 286.70649999999995,
+            "baselineRssBytes": 363249664,
+            "rssBytes": 822362112,
+            "metadataBytes": 459112448,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 282.091708,
+            "baselineRssBytes": 368066560,
+            "rssBytes": 804028416,
+            "metadataBytes": 435961856,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 288.04949999999997,
+            "baselineRssBytes": 360120320,
+            "rssBytes": 813170688,
+            "metadataBytes": 453050368,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 300.20824999999996,
+            "baselineRssBytes": 375586816,
+            "rssBytes": 820822016,
+            "metadataBytes": 445235200,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 287.360625,
+            "baselineRssBytes": 364118016,
+            "rssBytes": 810582016,
+            "metadataBytes": 446464000,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 290.270125,
+            "baselineRssBytes": 359809024,
+            "rssBytes": 813367296,
+            "metadataBytes": 453558272,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 292.52520899999996,
+            "baselineRssBytes": 375504896,
+            "rssBytes": 809959424,
+            "metadataBytes": 434454528,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 286.9605,
+            "baselineRssBytes": 365150208,
+            "rssBytes": 795787264,
+            "metadataBytes": 430637056,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 283.66133299999996,
+            "baselineRssBytes": 366657536,
+            "rssBytes": 808992768,
+            "metadataBytes": 442335232,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 287.235042,
+            "baselineRssBytes": 379994112,
+            "rssBytes": 817627136,
+            "metadataBytes": 437633024,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 292.54525000000007,
+            "baselineRssBytes": 372588544,
+            "rssBytes": 806666240,
+            "metadataBytes": 434077696,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 284.84720799999997,
+            "baselineRssBytes": 364920832,
+            "rssBytes": 814055424,
+            "metadataBytes": 449134592,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 287.767959,
+            "baselineRssBytes": 380059648,
+            "rssBytes": 792723456,
+            "metadataBytes": 412663808,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 293.76229200000006,
+            "baselineRssBytes": 362332160,
+            "rssBytes": 819478528,
+            "metadataBytes": 457146368,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 295.95629099999996,
+            "baselineRssBytes": 367345664,
+            "rssBytes": 812826624,
+            "metadataBytes": 445480960,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 288.78883399999995,
+            "baselineRssBytes": 360529920,
+            "rssBytes": 811073536,
+            "metadataBytes": 450543616,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 291.022542,
+            "baselineRssBytes": 367656960,
+            "rssBytes": 792854528,
+            "metadataBytes": 425197568,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 283.9675,
+            "baselineRssBytes": 368623616,
+            "rssBytes": 796082176,
+            "metadataBytes": 427458560,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 297.08637500000003,
+            "baselineRssBytes": 373948416,
+            "rssBytes": 796655616,
+            "metadataBytes": 422707200,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 281.85966700000006,
+            "baselineRssBytes": 367312896,
+            "rssBytes": 765100032,
+            "metadataBytes": 397787136,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 291.98970800000006,
+            "baselineRssBytes": 371179520,
+            "rssBytes": 812875776,
+            "metadataBytes": 441696256,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 320.627708,
+            "baselineRssBytes": 366870528,
+            "rssBytes": 813940736,
+            "metadataBytes": 447070208,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 288.693041,
+            "baselineRssBytes": 366428160,
+            "rssBytes": 793247744,
+            "metadataBytes": 426819584,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 289.20287499999995,
+            "baselineRssBytes": 363708416,
+            "rssBytes": 793788416,
+            "metadataBytes": 430080000,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 294.817541,
+            "baselineRssBytes": 363855872,
+            "rssBytes": 796082176,
+            "metadataBytes": 432226304,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 303.35854200000006,
+            "baselineRssBytes": 360103936,
+            "rssBytes": 795983872,
+            "metadataBytes": 435879936,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 416.933083,
+            "baselineRssBytes": 362430464,
+            "rssBytes": 798474240,
+            "metadataBytes": 436043776,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 298.08787500000005,
+            "baselineRssBytes": 372326400,
+            "rssBytes": 808173568,
+            "metadataBytes": 435847168,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 294.92375,
+            "baselineRssBytes": 365772800,
+            "rssBytes": 783122432,
+            "metadataBytes": 417349632,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 294.32658399999997,
+            "baselineRssBytes": 363773952,
+            "rssBytes": 790331392,
+            "metadataBytes": 426557440,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 293.570125,
+            "baselineRssBytes": 361168896,
+            "rssBytes": 797523968,
+            "metadataBytes": 436355072,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 296.929042,
+            "baselineRssBytes": 378519552,
+            "rssBytes": 812826624,
+            "metadataBytes": 434307072,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 298.14674999999994,
+            "baselineRssBytes": 369049600,
+            "rssBytes": 812335104,
+            "metadataBytes": 443285504,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 289.4936670000001,
+            "baselineRssBytes": 362954752,
+            "rssBytes": 801931264,
+            "metadataBytes": 438976512,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 291.472875,
+            "baselineRssBytes": 376487936,
+            "rssBytes": 788758528,
+            "metadataBytes": 412270592,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 294.09320799999995,
+            "baselineRssBytes": 373129216,
+            "rssBytes": 803880960,
+            "metadataBytes": 430751744,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 297.99791600000003,
+            "baselineRssBytes": 365903872,
+            "rssBytes": 821673984,
+            "metadataBytes": 455770112,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 287.824375,
+            "baselineRssBytes": 361578496,
+            "rssBytes": 800309248,
+            "metadataBytes": 438730752,
+            "entryCount": 402
+          }
+        ],
+        "elapsedMs": {
+          "p50": 291.472875,
+          "p95": 303.35854200000006
+        },
+        "baselineRssBytes": {
+          "p50": 365903872,
+          "p95": 378519552
+        },
+        "rssBytes": {
+          "p50": 804028416,
+          "p95": 820822016
+        },
+        "metadataBytes": {
+          "p50": 435961856,
+          "p95": 457146368,
+          "max": 459112448
+        }
+      },
+      "v2Resume": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 129.87520800000004,
+            "baselineRssBytes": 361725952,
+            "rssBytes": 372195328,
+            "metadataBytes": 10469376,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.67129199999994,
+            "baselineRssBytes": 366116864,
+            "rssBytes": 373637120,
+            "metadataBytes": 7520256,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 127.54554200000001,
+            "baselineRssBytes": 363872256,
+            "rssBytes": 372146176,
+            "metadataBytes": 8273920,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 134.30504199999996,
+            "baselineRssBytes": 380256256,
+            "rssBytes": 389627904,
+            "metadataBytes": 9371648,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.218709,
+            "baselineRssBytes": 369885184,
+            "rssBytes": 377372672,
+            "metadataBytes": 7487488,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 131.12570899999997,
+            "baselineRssBytes": 363692032,
+            "rssBytes": 371949568,
+            "metadataBytes": 8257536,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 125.39695799999998,
+            "baselineRssBytes": 383516672,
+            "rssBytes": 392364032,
+            "metadataBytes": 8847360,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 137.71779199999997,
+            "baselineRssBytes": 367067136,
+            "rssBytes": 374587392,
+            "metadataBytes": 7520256,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.78029199999997,
+            "baselineRssBytes": 363528192,
+            "rssBytes": 371376128,
+            "metadataBytes": 7847936,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 141.29370899999998,
+            "baselineRssBytes": 380846080,
+            "rssBytes": 392904704,
+            "metadataBytes": 12058624,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 141.00687499999998,
+            "baselineRssBytes": 367788032,
+            "rssBytes": 375226368,
+            "metadataBytes": 7438336,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 127.56495799999993,
+            "baselineRssBytes": 364314624,
+            "rssBytes": 372817920,
+            "metadataBytes": 8503296,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 128.51020799999998,
+            "baselineRssBytes": 357974016,
+            "rssBytes": 367443968,
+            "metadataBytes": 9469952,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 128.82012500000002,
+            "baselineRssBytes": 361889792,
+            "rssBytes": 369049600,
+            "metadataBytes": 7159808,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 128.56941599999993,
+            "baselineRssBytes": 369164288,
+            "rssBytes": 386662400,
+            "metadataBytes": 17498112,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 127.31979199999995,
+            "baselineRssBytes": 359792640,
+            "rssBytes": 366985216,
+            "metadataBytes": 7192576,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 128.82800000000003,
+            "baselineRssBytes": 366002176,
+            "rssBytes": 374554624,
+            "metadataBytes": 8552448,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 127.86479200000002,
+            "baselineRssBytes": 372047872,
+            "rssBytes": 384630784,
+            "metadataBytes": 12582912,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 128.585375,
+            "baselineRssBytes": 362545152,
+            "rssBytes": 372883456,
+            "metadataBytes": 10338304,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 127.51499999999993,
+            "baselineRssBytes": 372359168,
+            "rssBytes": 383074304,
+            "metadataBytes": 10715136,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.25187499999998,
+            "baselineRssBytes": 365445120,
+            "rssBytes": 385236992,
+            "metadataBytes": 19791872,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 129.60274999999996,
+            "baselineRssBytes": 365625344,
+            "rssBytes": 373522432,
+            "metadataBytes": 7897088,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 127.88666700000005,
+            "baselineRssBytes": 372768768,
+            "rssBytes": 382140416,
+            "metadataBytes": 9371648,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 132.52799999999996,
+            "baselineRssBytes": 366821376,
+            "rssBytes": 386678784,
+            "metadataBytes": 19857408,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 129.58445799999998,
+            "baselineRssBytes": 363937792,
+            "rssBytes": 382631936,
+            "metadataBytes": 18694144,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.37341600000008,
+            "baselineRssBytes": 366526464,
+            "rssBytes": 374423552,
+            "metadataBytes": 7897088,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 136.57262500000002,
+            "baselineRssBytes": 365494272,
+            "rssBytes": 374603776,
+            "metadataBytes": 9109504,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 135.069792,
+            "baselineRssBytes": 360775680,
+            "rssBytes": 369164288,
+            "metadataBytes": 8388608,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 129.31899999999996,
+            "baselineRssBytes": 361938944,
+            "rssBytes": 367869952,
+            "metadataBytes": 5931008,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 129.65958300000005,
+            "baselineRssBytes": 371539968,
+            "rssBytes": 382435328,
+            "metadataBytes": 10895360,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.00266700000003,
+            "baselineRssBytes": 362315776,
+            "rssBytes": 370425856,
+            "metadataBytes": 8110080,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.92058299999997,
+            "baselineRssBytes": 373358592,
+            "rssBytes": 392855552,
+            "metadataBytes": 19496960,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.72041700000005,
+            "baselineRssBytes": 360103936,
+            "rssBytes": 368263168,
+            "metadataBytes": 8159232,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.195583,
+            "baselineRssBytes": 371032064,
+            "rssBytes": 380764160,
+            "metadataBytes": 9732096,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 131.50525,
+            "baselineRssBytes": 361332736,
+            "rssBytes": 371130368,
+            "metadataBytes": 9797632,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 129.81975,
+            "baselineRssBytes": 363429888,
+            "rssBytes": 372948992,
+            "metadataBytes": 9519104,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 131.83412500000003,
+            "baselineRssBytes": 367394816,
+            "rssBytes": 376799232,
+            "metadataBytes": 9404416,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 130.36895799999996,
+            "baselineRssBytes": 369524736,
+            "rssBytes": 380354560,
+            "metadataBytes": 10829824,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 220.11462500000005,
+            "baselineRssBytes": 377044992,
+            "rssBytes": 386891776,
+            "metadataBytes": 9846784,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 128.770667,
+            "baselineRssBytes": 362692608,
+            "rssBytes": 371015680,
+            "metadataBytes": 8323072,
+            "entryCount": 402
+          }
+        ],
+        "elapsedMs": {
+          "p50": 130.00266700000003,
+          "p95": 141.00687499999998
+        },
+        "baselineRssBytes": {
+          "p50": 365625344,
+          "p95": 380256256
+        },
+        "rssBytes": {
+          "p50": 374554624,
+          "p95": 392364032
+        },
+        "metadataBytes": {
+          "p50": 9109504,
+          "p95": 19496960,
+          "max": 19857408
+        }
+      },
+      "legacySwitch": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 461.48016700000005,
+            "baselineRssBytes": 378421248,
+            "rssBytes": 1021771776,
+            "metadataBytes": 643350528,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 462.152292,
+            "baselineRssBytes": 398884864,
+            "rssBytes": 1057144832,
+            "metadataBytes": 658259968,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 476.4213329999999,
+            "baselineRssBytes": 385302528,
+            "rssBytes": 1033764864,
+            "metadataBytes": 648462336,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 472.52370800000006,
+            "baselineRssBytes": 377323520,
+            "rssBytes": 1243381760,
+            "metadataBytes": 866058240,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 463.8107090000001,
+            "baselineRssBytes": 386629632,
+            "rssBytes": 1048379392,
+            "metadataBytes": 661749760,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 460.944833,
+            "baselineRssBytes": 370245632,
+            "rssBytes": 1021313024,
+            "metadataBytes": 651067392,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 469.68091600000014,
+            "baselineRssBytes": 381583360,
+            "rssBytes": 1259683840,
+            "metadataBytes": 878100480,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 464.46445800000004,
+            "baselineRssBytes": 384057344,
+            "rssBytes": 1052803072,
+            "metadataBytes": 668745728,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 467.9469589999999,
+            "baselineRssBytes": 396689408,
+            "rssBytes": 1032585216,
+            "metadataBytes": 635895808,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 458.53575,
+            "baselineRssBytes": 382517248,
+            "rssBytes": 1065385984,
+            "metadataBytes": 682868736,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 468.40316700000005,
+            "baselineRssBytes": 372031488,
+            "rssBytes": 1124941824,
+            "metadataBytes": 752910336,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 460.17266699999993,
+            "baselineRssBytes": 383287296,
+            "rssBytes": 1051475968,
+            "metadataBytes": 668188672,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 470.31999999999994,
+            "baselineRssBytes": 380600320,
+            "rssBytes": 1079164928,
+            "metadataBytes": 698564608,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 468.90195800000015,
+            "baselineRssBytes": 393314304,
+            "rssBytes": 1045872640,
+            "metadataBytes": 652558336,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 463.4396250000001,
+            "baselineRssBytes": 390119424,
+            "rssBytes": 1057193984,
+            "metadataBytes": 667074560,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 470.6724160000001,
+            "baselineRssBytes": 380534784,
+            "rssBytes": 1092632576,
+            "metadataBytes": 712097792,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 468.74325,
+            "baselineRssBytes": 390889472,
+            "rssBytes": 1038794752,
+            "metadataBytes": 647905280,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 467.15095799999995,
+            "baselineRssBytes": 385875968,
+            "rssBytes": 1045676032,
+            "metadataBytes": 659800064,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 478.14766700000007,
+            "baselineRssBytes": 374341632,
+            "rssBytes": 1365409792,
+            "metadataBytes": 991068160,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 466.04437500000006,
+            "baselineRssBytes": 377257984,
+            "rssBytes": 1018920960,
+            "metadataBytes": 641662976,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 468.46412499999985,
+            "baselineRssBytes": 387203072,
+            "rssBytes": 1088389120,
+            "metadataBytes": 701186048,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 474.5551250000001,
+            "baselineRssBytes": 393396224,
+            "rssBytes": 1054883840,
+            "metadataBytes": 661487616,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 466.064625,
+            "baselineRssBytes": 384008192,
+            "rssBytes": 1037221888,
+            "metadataBytes": 653213696,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 479.2996670000001,
+            "baselineRssBytes": 402964480,
+            "rssBytes": 1043906560,
+            "metadataBytes": 640942080,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 477.1651250000001,
+            "baselineRssBytes": 378355712,
+            "rssBytes": 1029537792,
+            "metadataBytes": 651182080,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 485.339917,
+            "baselineRssBytes": 368263168,
+            "rssBytes": 1201635328,
+            "metadataBytes": 833372160,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 478.5079999999999,
+            "baselineRssBytes": 386957312,
+            "rssBytes": 1018642432,
+            "metadataBytes": 631685120,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 473.48204099999987,
+            "baselineRssBytes": 374145024,
+            "rssBytes": 1069203456,
+            "metadataBytes": 695058432,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 479.037959,
+            "baselineRssBytes": 391528448,
+            "rssBytes": 1040252928,
+            "metadataBytes": 648724480,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 479.2466669999999,
+            "baselineRssBytes": 385925120,
+            "rssBytes": 1071153152,
+            "metadataBytes": 685228032,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 484.242625,
+            "baselineRssBytes": 379273216,
+            "rssBytes": 1195196416,
+            "metadataBytes": 815923200,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 479.5947500000001,
+            "baselineRssBytes": 394903552,
+            "rssBytes": 1036025856,
+            "metadataBytes": 641122304,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 481.008791,
+            "baselineRssBytes": 378863616,
+            "rssBytes": 1209253888,
+            "metadataBytes": 830390272,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 477.867292,
+            "baselineRssBytes": 384434176,
+            "rssBytes": 1079623680,
+            "metadataBytes": 695189504,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 469.805833,
+            "baselineRssBytes": 386793472,
+            "rssBytes": 1036926976,
+            "metadataBytes": 650133504,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 474.5072499999999,
+            "baselineRssBytes": 394248192,
+            "rssBytes": 1228685312,
+            "metadataBytes": 834437120,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 471.377708,
+            "baselineRssBytes": 385220608,
+            "rssBytes": 1011449856,
+            "metadataBytes": 626229248,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 466.17158400000005,
+            "baselineRssBytes": 390397952,
+            "rssBytes": 1047166976,
+            "metadataBytes": 656769024,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 471.6435839999999,
+            "baselineRssBytes": 383336448,
+            "rssBytes": 1062436864,
+            "metadataBytes": 679100416,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 474.8405,
+            "baselineRssBytes": 386465792,
+            "rssBytes": 1042137088,
+            "metadataBytes": 655671296,
+            "entryCount": 402
+          }
+        ],
+        "elapsedMs": {
+          "p50": 470.31999999999994,
+          "p95": 481.008791
+        },
+        "baselineRssBytes": {
+          "p50": 384434176,
+          "p95": 396689408
+        },
+        "rssBytes": {
+          "p50": 1051475968,
+          "p95": 1243381760
+        },
+        "metadataBytes": {
+          "p50": 661487616,
+          "p95": 866058240,
+          "max": 991068160
+        }
+      },
+      "v2Switch": {
+        "warmups": 3,
+        "runs": 40,
+        "samples": [
+          {
+            "elapsedMs": 13.885625000000005,
+            "baselineRssBytes": 382009344,
+            "rssBytes": 392118272,
+            "metadataBytes": 10108928,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.091208000000051,
+            "baselineRssBytes": 403537920,
+            "rssBytes": 414285824,
+            "metadataBytes": 10747904,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.257582999999954,
+            "baselineRssBytes": 384827392,
+            "rssBytes": 393740288,
+            "metadataBytes": 8912896,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 16.681916,
+            "baselineRssBytes": 375390208,
+            "rssBytes": 384483328,
+            "metadataBytes": 9093120,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.541249999999991,
+            "baselineRssBytes": 393248768,
+            "rssBytes": 408158208,
+            "metadataBytes": 14909440,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.19337500000006,
+            "baselineRssBytes": 383352832,
+            "rssBytes": 393658368,
+            "metadataBytes": 10305536,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 16.521749999999997,
+            "baselineRssBytes": 384385024,
+            "rssBytes": 393936896,
+            "metadataBytes": 9551872,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.800833999999895,
+            "baselineRssBytes": 394346496,
+            "rssBytes": 405045248,
+            "metadataBytes": 10698752,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.117374999999925,
+            "baselineRssBytes": 373653504,
+            "rssBytes": 382779392,
+            "metadataBytes": 9125888,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.817750000000046,
+            "baselineRssBytes": 384434176,
+            "rssBytes": 393969664,
+            "metadataBytes": 9535488,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.055833000000007,
+            "baselineRssBytes": 387743744,
+            "rssBytes": 393904128,
+            "metadataBytes": 6160384,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.647333000000003,
+            "baselineRssBytes": 396754944,
+            "rssBytes": 407666688,
+            "metadataBytes": 10911744,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.630499999999984,
+            "baselineRssBytes": 386269184,
+            "rssBytes": 396099584,
+            "metadataBytes": 9830400,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.753375000000005,
+            "baselineRssBytes": 376864768,
+            "rssBytes": 386859008,
+            "metadataBytes": 9994240,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.513958000000002,
+            "baselineRssBytes": 390086656,
+            "rssBytes": 401522688,
+            "metadataBytes": 11436032,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.309333000000038,
+            "baselineRssBytes": 389201920,
+            "rssBytes": 403472384,
+            "metadataBytes": 14270464,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.25929199999996,
+            "baselineRssBytes": 379994112,
+            "rssBytes": 388300800,
+            "metadataBytes": 8306688,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.820582999999942,
+            "baselineRssBytes": 389005312,
+            "rssBytes": 403177472,
+            "metadataBytes": 14172160,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.464917000000014,
+            "baselineRssBytes": 386908160,
+            "rssBytes": 396820480,
+            "metadataBytes": 9912320,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 17.29470900000001,
+            "baselineRssBytes": 375373824,
+            "rssBytes": 384253952,
+            "metadataBytes": 8880128,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.968917000000033,
+            "baselineRssBytes": 383188992,
+            "rssBytes": 394248192,
+            "metadataBytes": 11059200,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 17.29287499999998,
+            "baselineRssBytes": 387825664,
+            "rssBytes": 396689408,
+            "metadataBytes": 8863744,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.904416999999967,
+            "baselineRssBytes": 377044992,
+            "rssBytes": 385630208,
+            "metadataBytes": 8585216,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 17.27441699999997,
+            "baselineRssBytes": 384237568,
+            "rssBytes": 392855552,
+            "metadataBytes": 8617984,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.052042000000029,
+            "baselineRssBytes": 401506304,
+            "rssBytes": 415596544,
+            "metadataBytes": 14090240,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.970624999999927,
+            "baselineRssBytes": 386613248,
+            "rssBytes": 397639680,
+            "metadataBytes": 11026432,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 16.136499999999955,
+            "baselineRssBytes": 384106496,
+            "rssBytes": 395739136,
+            "metadataBytes": 11632640,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.257041999999956,
+            "baselineRssBytes": 384319488,
+            "rssBytes": 394526720,
+            "metadataBytes": 10207232,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.155916000000047,
+            "baselineRssBytes": 385253376,
+            "rssBytes": 396656640,
+            "metadataBytes": 11403264,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.948958999999945,
+            "baselineRssBytes": 389382144,
+            "rssBytes": 398442496,
+            "metadataBytes": 9060352,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.868916000000013,
+            "baselineRssBytes": 385089536,
+            "rssBytes": 394674176,
+            "metadataBytes": 9584640,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.357167000000004,
+            "baselineRssBytes": 387153920,
+            "rssBytes": 399998976,
+            "metadataBytes": 12845056,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 16.518375000000106,
+            "baselineRssBytes": 385712128,
+            "rssBytes": 394870784,
+            "metadataBytes": 9158656,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 15.671042000000057,
+            "baselineRssBytes": 420757504,
+            "rssBytes": 456130560,
+            "metadataBytes": 35373056,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.864125000000058,
+            "baselineRssBytes": 379011072,
+            "rssBytes": 388382720,
+            "metadataBytes": 9371648,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.504083000000037,
+            "baselineRssBytes": 385089536,
+            "rssBytes": 391806976,
+            "metadataBytes": 6717440,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.259167000000048,
+            "baselineRssBytes": 386187264,
+            "rssBytes": 397852672,
+            "metadataBytes": 11665408,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 16.520334000000048,
+            "baselineRssBytes": 393478144,
+            "rssBytes": 401162240,
+            "metadataBytes": 7684096,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 13.878958000000011,
+            "baselineRssBytes": 387579904,
+            "rssBytes": 397459456,
+            "metadataBytes": 9879552,
+            "entryCount": 402
+          },
+          {
+            "elapsedMs": 14.140499999999975,
+            "baselineRssBytes": 374849536,
+            "rssBytes": 396165120,
+            "metadataBytes": 21315584,
+            "entryCount": 402
+          }
+        ],
+        "elapsedMs": {
+          "p50": 14.140499999999975,
+          "p95": 17.27441699999997
+        },
+        "baselineRssBytes": {
+          "p50": 385253376,
+          "p95": 401506304
+        },
+        "rssBytes": {
+          "p50": 395739136,
+          "p95": 414285824
+        },
+        "metadataBytes": {
+          "p50": 9912320,
+          "p95": 14909440,
+          "max": 35373056
+        }
+      }
+    }
+  ],
+  "gates": [
+    {
+      "name": "resume-rss-delta",
+      "actual": 0,
+      "limit": 281409945.59999996,
+      "pass": true
+    },
+    {
+      "name": "resume-p95",
+      "actual": 141.00687499999998,
+      "limit": 333.6943962000001,
+      "pass": true
+    },
+    {
+      "name": "switch-p95-v2-resume",
+      "actual": 17.27441699999997,
+      "limit": 176.25859375,
+      "pass": true
+    },
+    {
+      "name": "switch-p95-baseline",
+      "actual": 17.27441699999997,
+      "limit": 216.45395595,
+      "pass": true
+    },
+    {
+      "name": "metadata-retained",
+      "actual": 19857408,
+      "limit": 33554432,
+      "pass": true
+    },
+    {
+      "name": "metadata-probative",
+      "actual": 19857408,
+      "limit": null,
+      "pass": true
+    }
+  ]
+}

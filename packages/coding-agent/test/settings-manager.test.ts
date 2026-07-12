@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Effort } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { getCustomThemesDir, getProjectAgentDir, Snowflake } from "@gajae-code/utils";
 import { YAML } from "bun";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
 
 describe("Settings", () => {
 	let testDir: string;

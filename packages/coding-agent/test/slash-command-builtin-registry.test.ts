@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "bun:test";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
+import type { InteractiveModeContext } from "../src/modes/types";
 import {
 	BUILTIN_SLASH_COMMAND_DEFS,
 	BUILTIN_SLASH_COMMANDS_INTERNAL,
 	executeBuiltinSlashCommand,
 	lookupBuiltinSlashCommand,
-} from "@gajae-code/coding-agent/slash-commands/builtin-registry";
+} from "../src/slash-commands/builtin-registry";
 
 function createTuiRuntime() {
 	const handleCopyCommand = vi.fn();

@@ -250,15 +250,18 @@ export async function acquireTab(
 	try {
 		info = await initializeTabWorker(worker, initPayload, opts.timeoutMs + GRACE_MS);
 	} catch (error) {
-		// `BuildMessage`-class failures arrive asynchronously via the worker's `error` event,
-		// after `spawnTabWorker`'s synchronous try/catch has already returned. Fall back to
-		// the inline worker here so module-resolution failures don't poison every tab open.
 		await worker.terminate().catch(() => undefined);
 		if (worker.mode === "inline") {
 			if (browser.refCount === 0) await releaseBrowser(browser, { kill: false });
 			throw error;
 		}
-		logger.warn("Tab worker init failed; retrying with inline tab worker (no sync-loop guard)", {
+		try {
+			assertInlineTabWorkerEnabled(error);
+		} catch (policyError) {
+			if (browser.refCount === 0) await releaseBrowser(browser, { kill: false });
+			throw policyError;
+		}
+		logger.warn("Tab worker init failed; explicit inline tab worker opt-in is enabled (no sync-loop guard)", {
 			error: error instanceof Error ? error.message : String(error),
 		});
 		worker = await spawnInlineWorker();
@@ -629,12 +632,26 @@ async function spawnTabWorker(): Promise<WorkerHandle> {
 			? new Worker("./packages/coding-agent/src/tools/browser/tab-worker-entry.ts", { type: "module" })
 			: new Worker(new URL("./tab-worker-entry.ts", import.meta.url).href, { type: "module" });
 		return wrapBunWorker(worker);
-	} catch (err) {
-		logger.warn("Bun Worker spawn failed; using inline tab worker (no sync-loop guard)", {
-			error: err instanceof Error ? err.message : String(err),
+	} catch (error) {
+		assertInlineTabWorkerEnabled(error);
+		logger.warn("Bun Worker spawn failed; explicit inline tab worker opt-in is enabled (no sync-loop guard)", {
+			error: error instanceof Error ? error.message : String(error),
 		});
 		return spawnInlineWorker();
 	}
+}
+
+export function assertInlineTabWorkerEnabled(error: unknown): void {
+	if (process.env.GAJAE_CODE_BROWSER_INLINE_WORKER === "1") return;
+	const detail = error instanceof Error ? error.message : String(error);
+	if (process.env.GJC_BUILD_SKU === "core") {
+		throw new ToolError(
+			`Browser tab-worker isolation is unsupported in the CORE SKU because its worker entry is not bundled. Use the FULL SKU, or explicitly opt into lower-isolation inline mode with GAJAE_CODE_BROWSER_INLINE_WORKER=1. Worker failure: ${detail}`,
+		);
+	}
+	throw new ToolError(
+		`Browser tab worker is unavailable and inline fallback is disabled because it cannot interrupt synchronous user code. Set GAJAE_CODE_BROWSER_INLINE_WORKER=1 to explicitly opt into lower-isolation inline mode. Worker failure: ${detail}`,
+	);
 }
 
 function wrapBunWorker(worker: Worker): WorkerHandle {

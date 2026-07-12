@@ -2019,6 +2019,22 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			signal,
 		});
 		const details: ReadToolDetails = { resolvedPath: resource.sourcePath, contentType: resource.contentType };
+		if (scheme === "artifact" && resource.deferredContent && resource.sourcePath) {
+			const raw = isRawSelector(parsedSel);
+			const ranges = parsedSel.kind === "lines" ? parsedSel.ranges : [{ startLine: 1, endLine: this.#defaultLimit }];
+			const streamed = await this.#readLocalFileMultiRange(
+				resource.sourcePath,
+				ranges,
+				parsedSel,
+				resolveFileDisplayMode(this.session, { raw, immutable: resource.immutable }),
+				undefined,
+				signal,
+			);
+			if (streamed.bridgeResult) return streamed.bridgeResult;
+			const resultBuilder = toolResult(details).text(streamed.outputText).sourceInternal(url);
+			if (streamed.columnTruncated > 0) resultBuilder.limits({ columnMax: streamed.columnTruncated });
+			return resultBuilder.done();
+		}
 
 		// If extraction was used, return directly (no pagination)
 		if (hasExtraction) {

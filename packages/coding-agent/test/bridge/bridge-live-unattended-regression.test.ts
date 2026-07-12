@@ -1,12 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { createBridgeFetchHandler } from "@gajae-code/coding-agent/modes/bridge/bridge-mode";
-import { approvalGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
-import type {
-	BridgeHandshakeAccepted,
-	BridgeHandshakeRequest,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/handshake";
-import { UiRequestBroker } from "@gajae-code/coding-agent/modes/shared/agent-wire/ui-request-broker";
-import { UnattendedSessionControlPlane } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-session";
+import { createBridgeFetchHandler } from "../../src/modes/bridge/bridge-mode";
+import { approvalGate } from "../../src/modes/shared/agent-wire/approval-gate";
+import type { BridgeHandshakeAccepted, BridgeHandshakeRequest } from "../../src/modes/shared/agent-wire/handshake";
+import { UiRequestBroker } from "../../src/modes/shared/agent-wire/ui-request-broker";
+import { UnattendedSessionControlPlane } from "../../src/modes/shared/agent-wire/unattended-session";
 
 const declaration = {
 	actor: "bridge-agent",

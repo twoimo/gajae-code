@@ -6,8 +6,8 @@ import {
 	modeStatePath,
 	sessionStateDir,
 	transactionJournalPath,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
+} from "../../src/gjc-runtime/session-layout";
+import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
 
 const TEST_SESSION_ID = "test-session";
 

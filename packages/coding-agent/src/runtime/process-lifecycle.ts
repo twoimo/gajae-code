@@ -28,7 +28,8 @@
  * drain it, so a chatty child whose stdout is never read can still block on a
  * full pipe. That draining is the adopter's responsibility.
  */
-import { logger, postmortem, ptree } from "@gajae-code/utils";
+import { logger, postmortem } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 
 const DEFAULT_GRACEFUL_MS = 2_000;
 // Hard cap for how long `dispose()` waits after SIGKILL before giving up so a

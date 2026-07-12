@@ -4,7 +4,7 @@ import type { Message } from "@gajae-code/ai";
 
 describe("serializeConversation", () => {
 	it("truncates long tool results in serialized summaries", () => {
-		const longContent = "x".repeat(5000);
+		const longContent = `${"h".repeat(2500)}${"t".repeat(2470)}\nEXIT_CODE=0\nmodified: src/final.ts`;
 		const messages: Message[] = [
 			{
 				role: "toolResult",
@@ -19,9 +19,12 @@ describe("serializeConversation", () => {
 		const result = serializeConversation(messages);
 
 		expect(result).toContain("[Tool result]:");
-		expect(result).toContain("[... 3000 more characters truncated]");
-		expect(result).toContain("x".repeat(2000));
-		expect(result).not.toContain("x".repeat(3000));
+		expect(result).toContain("[... tool result truncated ...]");
+		expect(result).toContain("h".repeat(900));
+		expect(result).toContain("t".repeat(900));
+		expect(result).toContain("EXIT_CODE=0");
+		expect(result).toContain("modified: src/final.ts");
+		expect(result).not.toContain("h".repeat(1500));
 	});
 
 	it("does not truncate short tool results", () => {

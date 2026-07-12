@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 
+const repoRoot = path.resolve(import.meta.dir, "../../..");
 function runBunEval(script: string) {
 	const result = Bun.spawnSync({
 		cmd: [process.execPath, "-e", script],
-		cwd: path.join(import.meta.dir, ".."),
+		cwd: repoRoot,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -19,7 +20,7 @@ describe("internal-urls docs index loading", () => {
 		const stdout = runBunEval(`
 			const marker = Symbol.for("gjc.docs-index.generated.loaded");
 			Reflect.deleteProperty(globalThis, marker);
-			await import("@gajae-code/coding-agent/internal-urls");
+			await import("./packages/coding-agent/src/internal-urls");
 			const loaded = Reflect.get(globalThis, marker) === true;
 			console.log(JSON.stringify({ loaded }));
 		`);
@@ -30,7 +31,7 @@ describe("internal-urls docs index loading", () => {
 
 	it("loads the generated docs corpus when resolving gjc docs", () => {
 		const stdout = runBunEval(`
-			const { InternalUrlRouter } = await import("@gajae-code/coding-agent/internal-urls");
+			const { InternalUrlRouter } = await import("./packages/coding-agent/src/internal-urls");
 			const resource = await InternalUrlRouter.instance().resolve("gjc://");
 			console.log(JSON.stringify({
 				contentType: resource.contentType,

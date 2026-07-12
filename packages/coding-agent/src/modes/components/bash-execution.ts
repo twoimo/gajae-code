@@ -12,6 +12,7 @@ import {
 	Text,
 	type TUI,
 	truncateToWidth,
+	type ViewportRowWindow,
 	visibleWidth,
 } from "@gajae-code/tui";
 import { sanitizeText } from "@gajae-code/utils";
@@ -142,12 +143,31 @@ export class BashExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		this.#refreshDisplayForGraphicsFallback();
+		return super.render(width);
+	}
+
+	override getLogicalRowCount(width: number): number {
+		this.#refreshDisplayForGraphicsFallback();
+		return super.getLogicalRowCount(width);
+	}
+
+	override renderRows(width: number, start: number, end: number): string[] {
+		this.#refreshDisplayForGraphicsFallback();
+		return super.renderRows(width, start, end);
+	}
+
+	override renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
+		this.#refreshDisplayForGraphicsFallback();
+		return super.renderRowsWithMetadata(width, start, end);
+	}
+
+	#refreshDisplayForGraphicsFallback(): void {
 		const fallbackActive = isTerminalGraphicsFallbackActive();
 		if (this.#displayDirty || this.#displayBuiltWithGraphicsFallback !== fallbackActive) {
 			this.#displayDirty = false;
 			this.#updateDisplay();
 		}
-		return super.render(width);
 	}
 
 	#updateDisplay(): void {

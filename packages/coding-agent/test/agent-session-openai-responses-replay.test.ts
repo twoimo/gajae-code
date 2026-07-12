@@ -5,22 +5,18 @@ import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai/models";
 import type { AssistantMessage, Message, ProviderPayload, ProviderSessionState, Usage } from "@gajae-code/ai/types";
 import { createOpenAIResponsesHistoryPayload } from "@gajae-code/ai/utils";
-import * as asyncModule from "@gajae-code/coding-agent/async";
-import * as settingsModule from "@gajae-code/coding-agent/config/settings";
-import type { CreateAgentSessionResult } from "@gajae-code/coding-agent/sdk";
-import * as sdkModule from "@gajae-code/coding-agent/sdk";
-import type { AgentSession, ForkContextSeed } from "@gajae-code/coding-agent/session/agent-session";
-import type { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import {
-	type SessionEntry,
-	SessionManager,
-	type SessionMessageEntry,
-} from "@gajae-code/coding-agent/session/session-manager";
-import * as taskModule from "@gajae-code/coding-agent/task";
-import * as agentsModule from "@gajae-code/coding-agent/task/agents";
-import * as discoveryModule from "@gajae-code/coding-agent/task/discovery";
-import * as eventBusModule from "@gajae-code/coding-agent/utils/event-bus";
 import { Snowflake } from "@gajae-code/utils";
+import * as asyncModule from "../src/async";
+import * as settingsModule from "../src/config/settings";
+import type { CreateAgentSessionResult } from "../src/sdk";
+import * as sdkModule from "../src/sdk";
+import type { AgentSession, ForkContextSeed } from "../src/session/agent-session";
+import type { AuthStorage } from "../src/session/auth-storage";
+import { type SessionEntry, SessionManager, type SessionMessageEntry } from "../src/session/session-manager";
+import * as taskModule from "../src/task";
+import * as agentsModule from "../src/task/agents";
+import * as discoveryModule from "../src/task/discovery";
+import * as eventBusModule from "../src/utils/event-bus";
 
 function createUsage(): Usage {
 	return {
@@ -185,9 +181,9 @@ async function createSessionHarness(
 ): Promise<{ session: AgentSession; authStorage: AuthStorage }> {
 	const { provider = "openai", modelId = "gpt-5-mini" } = options;
 	const [{ createAgentSession }, { Settings }, { AuthStorage }] = await Promise.all([
-		import("@gajae-code/coding-agent/sdk"),
-		import("@gajae-code/coding-agent/config/settings"),
-		import("@gajae-code/coding-agent/session/auth-storage"),
+		import("../src/sdk"),
+		import("../src/config/settings"),
+		import("../src/session/auth-storage"),
 	]);
 	const authStorage = await AuthStorage.create(path.join(tempDir, `testauth-${Snowflake.next()}.db`));
 	authStorage.setRuntimeApiKey("openai", "test-key");
@@ -323,6 +319,15 @@ describe("AgentSession OpenAI Responses replay boundaries", () => {
 				timestamp: Date.now() - 2,
 			});
 			sessionManager.appendMessage(createStaleAssistantMessage(assistantText));
+			// Forks retain only complete turns, so close the fixture's tool call before forking.
+			sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: "tool_call_1",
+				toolName: "read",
+				content: [{ type: "text", text: "Forked tool result" }],
+				isError: false,
+				timestamp: Date.now() - 1,
+			});
 		});
 
 		const forkedSessionManager = await SessionManager.forkFrom(sessionFile, forkDir, forkDir);

@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { CommandController } from "@gajae-code/coding-agent/modes/controllers/command-controller";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
+import { CommandController } from "../../../src/modes/controllers/command-controller";
+import { getThemeByName, setThemeInstance } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
 
 function createContainer() {
 	return {

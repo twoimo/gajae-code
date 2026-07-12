@@ -7,7 +7,7 @@ GJC exposes the `ooo` bridge through the existing extension input-event surface.
 Extensions register an `input` handler:
 
 ```ts
-import { createOuroborosOooBridge } from "@gajae-code/coding-agent/extensibility/extensions";
+import { createOuroborosOooBridge } from "@gajae-code/coding-agent";
 
 export default function activate(gjc) {
   gjc.on("input", createOuroborosOooBridge());

@@ -44,6 +44,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	Context,
+	FetchImpl,
 	Model,
 	OptionsForApi,
 	SimpleStreamOptions,
@@ -51,6 +52,7 @@ import type {
 	ThinkingBudgets,
 	ToolChoice,
 } from "./types";
+import { claimAttempt, isAttemptBudgetExceededError } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { isFoundryEnabled } from "./utils/foundry";
 
@@ -271,11 +273,28 @@ export function formatMissingApiKeyError(provider: string): string {
 	return hint ? `${base} ${hint}` : base;
 }
 
+const ATTEMPT_BUDGET_WRAPPED = Symbol("attemptBudgetWrapped");
+type AttemptBudgetedOptions = StreamOptions & { [ATTEMPT_BUDGET_WRAPPED]?: true };
+
+function withSharedAttemptBudget<TOptions extends StreamOptions>(options: TOptions | undefined): TOptions | undefined {
+	if (!options?.consumeAttempt || (options as AttemptBudgetedOptions)[ATTEMPT_BUDGET_WRAPPED]) return options;
+	const baseFetch = options.fetch ?? globalThis.fetch;
+	const budgetedFetch: FetchImpl = Object.assign(
+		async (input: string | URL | Request, init?: RequestInit) => {
+			claimAttempt(options.consumeAttempt, "provider-http");
+			return baseFetch(input, init);
+		},
+		baseFetch.preconnect ? { preconnect: baseFetch.preconnect } : {},
+	);
+	return { ...options, fetch: budgetedFetch, [ATTEMPT_BUDGET_WRAPPED]: true } as TOptions;
+}
+
 export function stream<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
+	options = withSharedAttemptBudget(options as StreamOptions) as OptionsForApi<TApi> | undefined;
 	// Check custom API registry first (extension-provided APIs like "vertex-Anthropic model-api")
 	const customApiProvider = getCustomApi(model.api);
 	if (customApiProvider) {
@@ -395,6 +414,15 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	// Pi-native reserves its outer HTTP admission directly before constructing
+	// the gateway reservation envelope; a wrapped fetch would charge it twice.
+	if (model.transport === "pi-native") {
+		return streamFromLazyImport(async () => {
+			const { streamPiNative } = await import("./providers/pi-native-client");
+			return streamPiNative(model, context, options);
+		}, options?.signal);
+	}
+	options = withSharedAttemptBudget(options);
 	const retryApiKey = options?.onAuthError ? (options.apiKey ?? getEnvApiKey(model.provider)) : undefined;
 	if (retryApiKey) {
 		const outer = new AssistantMessageEventStream();
@@ -453,7 +481,11 @@ export function streamSimple<TApi extends Api>(
 			let nextKey: string | undefined;
 			try {
 				nextKey = await onAuthError(model.provider, retryApiKey, failure.error);
-			} catch {
+			} catch (error) {
+				if (isAttemptBudgetExceededError(error)) {
+					outer.fail(error);
+					return;
+				}
 				nextKey = undefined;
 			}
 			if (!nextKey || nextKey === retryApiKey) {
@@ -463,19 +495,6 @@ export function streamSimple<TApi extends Api>(
 			await runAttempt(nextKey, false);
 		})();
 		return outer;
-	}
-
-	// Pi-native transport short-circuits the per-provider dispatch entirely:
-	// the gateway resolves provider + credential server-side, so we don't
-	// need an `apiKey` from `getEnvApiKey` here — `options.apiKey` carries
-	// the gateway bearer instead. Comes BEFORE the custom-API check so
-	// extension-registered APIs can't accidentally override a configured
-	// pi-native transport.
-	if (model.transport === "pi-native") {
-		return streamFromLazyImport(async () => {
-			const { streamPiNative } = await import("./providers/pi-native-client");
-			return streamPiNative(model, context, options);
-		}, options?.signal);
 	}
 
 	// Check custom API registry (extension-provided APIs)
@@ -668,6 +687,8 @@ function mapOptionsForApi<TApi extends Api>(
 		maxRetryDelayMs: options?.maxRetryDelayMs,
 		requestMaxRetries: options?.requestMaxRetries,
 		streamMaxRetries: options?.streamMaxRetries,
+		fetch: options?.fetch,
+		consumeAttempt: options?.consumeAttempt,
 		metadata: options?.metadata,
 		sessionId: options?.sessionId,
 		providerSessionState: options?.providerSessionState,
@@ -675,6 +696,9 @@ function mapOptionsForApi<TApi extends Api>(
 		onResponse: options?.onResponse,
 		onSseEvent: options?.onSseEvent,
 		execHandlers: options?.execHandlers,
+		...((options as AttemptBudgetedOptions | undefined)?.[ATTEMPT_BUDGET_WRAPPED]
+			? { [ATTEMPT_BUDGET_WRAPPED]: true }
+			: {}),
 	};
 
 	switch (model.api) {

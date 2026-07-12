@@ -156,6 +156,18 @@ describe("task result receipts", () => {
 		expect(receipt.outputUnavailable).toBe(true);
 	});
 
+	it("reports a no-yield subprocess result as failed", () => {
+		const receipt = buildTaskReceipt(
+			makeRaw({
+				exitCode: 1,
+				stderr: "SYSTEM WARNING: Subagent exited without calling yield tool after 3 reminders.",
+			}),
+		);
+
+		expect(receipt.status).toBe("failed");
+		expect(receipt.exitCode).toBe(1);
+	});
+
 	it("surfaces model substitution warnings without raw output", () => {
 		const receipt = buildTaskReceipt(
 			makeRaw({

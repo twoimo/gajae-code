@@ -4,24 +4,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
+import type { TUI } from "@gajae-code/tui";
+import { YAML } from "bun";
 import {
 	materializeModelProfileForDeletion,
 	restoreMaterializedModelProfileForDeletion,
-} from "@gajae-code/coding-agent/config/model-profile-activation";
-import type { ModelProfileDefinition } from "@gajae-code/coding-agent/config/model-profiles";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import type { ModelProfileConfig } from "@gajae-code/coding-agent/config/models-config-schema";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { CustomModelPresetWizardComponent } from "@gajae-code/coding-agent/modes/components/custom-model-preset-wizard";
-import {
-	ModelSelectorComponent,
-	type ModelSelectorSelection,
-} from "@gajae-code/coding-agent/modes/components/model-selector";
-import { SelectorController } from "@gajae-code/coding-agent/modes/controllers/selector-controller";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import type { TUI } from "@gajae-code/tui";
-import { YAML } from "bun";
+} from "../src/config/model-profile-activation";
+import type { ModelProfileDefinition } from "../src/config/model-profiles";
+import { ModelRegistry } from "../src/config/model-registry";
+import type { ModelProfileConfig } from "../src/config/models-config-schema";
+import { Settings } from "../src/config/settings";
+import { CustomModelPresetWizardComponent } from "../src/modes/components/custom-model-preset-wizard";
+import { ModelSelectorComponent, type ModelSelectorSelection } from "../src/modes/components/model-selector";
+import { SelectorController } from "../src/modes/controllers/selector-controller";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
+import { AuthStorage } from "../src/session/auth-storage";
 
 let tempDir: string;
 let authStorage: AuthStorage;

@@ -254,3 +254,30 @@ describe("AuthStorage.checkCredentials", () => {
 		}
 	});
 });
+
+it("denies before physical usage probe activity", async () => {
+	const store = makeStore([oauthRow(21, "denied@example.com")]);
+	const physicalFetch = vi.fn(async () => new Response("{}", { status: 200 }));
+	const storage = new AuthStorage(store, {
+		usageProviderResolver: () => ({
+			id: "anthropic",
+			async fetchUsage(_params, ctx) {
+				await ctx.fetch("https://usage.example.test");
+				return null;
+			},
+		}),
+		usageFetch: physicalFetch,
+	});
+	await storage.reload();
+
+	const [result] = await storage.checkCredentials({
+		consumeAttempt: () => {
+			throw new Error("attempt budget exhausted");
+		},
+	});
+
+	expect(result.ok).toBe(false);
+	expect(result.reason).toContain("attempt budget exhausted");
+	expect(physicalFetch).not.toHaveBeenCalled();
+	storage.close();
+});

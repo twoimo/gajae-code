@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getThemeByName } from "@gajae-code/coding-agent/modes/theme/theme";
+import { getThemeByName } from "../../src/modes/theme/theme";
 import {
 	dedupeParseErrors,
 	formatCodeFrameLine,
@@ -10,7 +10,7 @@ import {
 	formatScreenshot,
 	getPreviewLines,
 	shortenPath,
-} from "@gajae-code/coding-agent/tools/render-utils";
+} from "../../src/tools/render-utils";
 
 describe("parse error formatting", () => {
 	it("deduplicates parse errors while preserving order", () => {

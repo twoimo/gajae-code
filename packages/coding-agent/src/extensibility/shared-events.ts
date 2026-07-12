@@ -207,6 +207,29 @@ export interface AutoCompactionStartEvent {
 	action: "context-full" | "handoff";
 }
 
+/** Structured, secret-free retry budget state forwarded unchanged to extensions and hooks. */
+export interface RetryBudgetDiagnostics {
+	outerRetryCount: number;
+	totalPhysicalAttempts: number;
+	attemptKind?: string;
+	attemptLayer?: "provider" | "credential" | "maintenance" | "gateway";
+	provider?: string;
+	model?: string;
+	elapsedMs: number;
+	deadlineMs: number;
+	costKnown: boolean;
+	accumulatedCostUsd?: number;
+	costCeilingUsd?: number;
+	terminalReason?:
+		| "attempts"
+		| "deadline"
+		| "cost"
+		| "outer_retries"
+		| "cancelled"
+		| "recovery_failure"
+		| "non_retryable"
+		| "success";
+}
 /** Fired when auto-compaction ends */
 export interface AutoCompactionEndEvent {
 	type: "auto_compaction_end";
@@ -228,6 +251,7 @@ export interface AutoRetryStartEvent {
 	delayMs: number;
 	errorMessage: string;
 	unbounded?: boolean;
+	diagnostics?: RetryBudgetDiagnostics;
 }
 
 /** Fired when auto-retry ends */
@@ -236,6 +260,7 @@ export interface AutoRetryEndEvent {
 	success: boolean;
 	attempt: number;
 	finalError?: string;
+	diagnostics?: RetryBudgetDiagnostics;
 }
 
 // ============================================================================

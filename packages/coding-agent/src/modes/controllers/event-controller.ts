@@ -30,7 +30,7 @@ import { consumeInjectedOptimisticSignature } from "../utils/injected-user-submi
 import { parseIrcMessage } from "../utils/irc-message";
 import { ringTerminalBell } from "../utils/terminal-bell";
 
-import { addChatChild, argsWithPartialJson } from "../utils/ui-helpers";
+import { addChatChild, argsWithPartialJson, markChatChildDirty } from "../utils/ui-helpers";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
@@ -390,6 +390,7 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			addChatChild(this.ctx, this.ctx.streamingComponent);
 			this.ctx.streamingComponent.updateContent(this.ctx.streamingMessage, { streaming: true });
+			markChatChildDirty(this.ctx, this.ctx.streamingComponent);
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -515,6 +516,7 @@ export class EventController {
 			}
 			this.ctx.streamingMessage = event.message;
 			this.ctx.streamingComponent.updateContent(this.ctx.streamingMessage, { streaming: true });
+			markChatChildDirty(this.ctx, this.ctx.streamingComponent);
 			const contentIndex = event.assistantMessageEvent?.contentIndex;
 			const changedContent =
 				typeof contentIndex === "number" && contentIndex >= 0
@@ -643,8 +645,10 @@ export class EventController {
 				// (the marker on errorMessage drives replay-side suppression).
 				const msgWithoutAbort = { ...this.ctx.streamingMessage, stopReason: "stop" as const };
 				this.ctx.streamingComponent.updateContent(msgWithoutAbort, { streaming: false });
+				markChatChildDirty(this.ctx, this.ctx.streamingComponent);
 			} else {
 				this.ctx.streamingComponent.updateContent(this.ctx.streamingMessage, { streaming: false });
+				markChatChildDirty(this.ctx, this.ctx.streamingComponent);
 			}
 
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {

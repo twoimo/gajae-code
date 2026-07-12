@@ -63,14 +63,16 @@ function isKnownUltragoalObjective(currentObjective: string): boolean {
 	const normalized = currentObjective.trim();
 	return (
 		normalized === DEFAULT_ULTRAGOAL_OBJECTIVE ||
-		(normalized.includes(".gjc/ultragoal/goals.json") && normalized.includes(".gjc/ultragoal/ledger.jsonl"))
+		(normalized.includes(".gjc/_session-") &&
+			normalized.includes("/ultragoal/goals.json") &&
+			normalized.includes("/ultragoal/ledger.jsonl"))
 	);
 }
 
 async function ultragoalReadPaths(
 	cwd: string,
 	options: { sessionId?: string | null } = {},
-): Promise<{ paths: UltragoalPaths; sessionId: string | null }> {
+): Promise<{ paths: UltragoalPaths; sessionId: string } | { paths: null; sessionId: null }> {
 	const explicitSessionId = options.sessionId?.trim() || process.env.GJC_SESSION_ID?.trim();
 	if (explicitSessionId) return { paths: getUltragoalPaths(cwd, explicitSessionId), sessionId: explicitSessionId };
 	try {
@@ -78,22 +80,22 @@ async function ultragoalReadPaths(
 		return { paths: getUltragoalPaths(cwd, session.gjcSessionId), sessionId: session.gjcSessionId };
 	} catch (error) {
 		if (error instanceof SessionResolutionError && error.code === "no_session") {
-			// No session could be resolved (no env, no auto-detectable active session).
-			// Surface the null session id so callers can decide; ask-guard treats it as inactive.
-			return { paths: getUltragoalPaths(cwd, null), sessionId: null };
+			// There is no durable Ultragoal root to inspect without a session identity.
+			return { paths: null, sessionId: null };
 		}
 		throw error;
 	}
 }
 
 async function hasDurableUltragoalState(cwd: string): Promise<boolean> {
-	let paths: UltragoalPaths;
+	let paths: UltragoalPaths | null;
 	try {
 		({ paths } = await ultragoalReadPaths(cwd));
 	} catch (error) {
 		if (error instanceof SessionResolutionError) return true;
 		throw error;
 	}
+	if (!paths) return false;
 	try {
 		await fs.stat(paths.dir);
 		return true;
@@ -314,7 +316,7 @@ export async function readUltragoalVerificationState(input: {
 		if (isKnownUltragoalObjective(currentObjective) || (await hasDurableUltragoalState(input.cwd))) {
 			return {
 				state: "unreadable_fail_closed",
-				message: "Active Ultragoal objective is missing durable .gjc/ultragoal/goals.json state.",
+				message: "Active Ultragoal objective is missing durable session-scoped ultragoal/goals.json state.",
 			};
 		}
 		return { state: "inactive", message: "No Ultragoal plan exists." };
@@ -374,7 +376,7 @@ export async function verifyUltragoalDurableCompletionState(input: {
 	cwd: string;
 	sessionId?: string | null;
 }): Promise<UltragoalGuardDiagnostic> {
-	let paths: UltragoalPaths;
+	let paths: UltragoalPaths | null;
 	let sessionId: string | null;
 	try {
 		({ paths, sessionId } = await ultragoalReadPaths(input.cwd, { sessionId: input.sessionId }));
@@ -384,15 +386,15 @@ export async function verifyUltragoalDurableCompletionState(input: {
 			message: `Unable to resolve durable Ultragoal state: ${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
-	if (sessionId === null)
+	if (sessionId === null || !paths)
 		return { state: "inactive", message: "No active GJC session resolved; ultragoal is inactive." };
 	try {
 		await fs.stat(paths.dir);
 	} catch (error) {
-		if (isEnoent(error)) return { state: "inactive", message: "No durable .gjc/ultragoal state exists." };
+		if (isEnoent(error)) return { state: "inactive", message: "No durable session-scoped ultragoal state exists." };
 		return {
 			state: "unreadable_fail_closed",
-			message: `Durable .gjc/ultragoal state is present but unreadable: ${error instanceof Error ? error.message : String(error)}`,
+			message: `Durable session-scoped ultragoal state is present but unreadable: ${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
 
@@ -488,7 +490,7 @@ export async function isUltragoalAskBlocked(
 	cwd: string,
 	options: { sessionId?: string | null } = {},
 ): Promise<UltragoalAskBlockDiagnostic> {
-	let paths: UltragoalPaths;
+	let paths: UltragoalPaths | null;
 	let sessionId: string | null;
 	try {
 		({ paths, sessionId } = await ultragoalReadPaths(cwd, options));
@@ -499,14 +501,11 @@ export async function isUltragoalAskBlocked(
 		});
 	}
 	// Ultragoal state is session-scoped. When no session can be resolved (no env,
-	// no auto-detectable active session) there is no active run to protect, so the
-	// ask guard must fall open rather than block on legacy/global durable state.
-	if (sessionId === null) {
+	// no auto-detectable active session) there is no active run to protect.
+	if (sessionId === null || !paths) {
 		return inactiveAskDiagnostic({
 			reason: "No active GJC session resolved; ultragoal is inactive.",
 			source: "absent",
-			goalsPath: paths.goalsPath,
-			ledgerPath: paths.ledgerPath,
 		});
 	}
 	try {
@@ -514,14 +513,14 @@ export async function isUltragoalAskBlocked(
 	} catch (error) {
 		if (isEnoent(error)) {
 			return inactiveAskDiagnostic({
-				reason: "No durable .gjc/ultragoal state exists.",
+				reason: "No durable session-scoped ultragoal state exists.",
 				source: "absent",
 				goalsPath: paths.goalsPath,
 				ledgerPath: paths.ledgerPath,
 			});
 		}
 		return activeAskDiagnostic({
-			reason: `Durable .gjc/ultragoal state is present but unreadable: ${error instanceof Error ? error.message : String(error)}`,
+			reason: `Durable session-scoped ultragoal state is present but unreadable: ${error instanceof Error ? error.message : String(error)}`,
 			source: "durable_state_unreadable",
 			goalsPath: paths.goalsPath,
 			ledgerPath: paths.ledgerPath,
@@ -546,7 +545,7 @@ export async function isUltragoalAskBlocked(
 		// durable state, not a clean "no run". Fail closed so the pause guard (which
 		// relies on this `durable_state_unreadable` signal) keeps blocking give-ups.
 		return activeAskDiagnostic({
-			reason: "Durable .gjc/ultragoal state exists but goals.json is missing or empty.",
+			reason: "Durable session-scoped ultragoal state exists but goals.json is missing or empty.",
 			source: "durable_state_unreadable",
 			goalsPath: paths.goalsPath,
 			ledgerPath: paths.ledgerPath,
@@ -802,7 +801,7 @@ export async function assertUltragoalDropAllowed(input: {
 	sessionId?: string | null;
 }): Promise<void> {
 	if (!input.cwd) return;
-	let paths: UltragoalPaths;
+	let paths: UltragoalPaths | null;
 	let sessionId: string | null;
 	try {
 		({ paths, sessionId } = await ultragoalReadPaths(input.cwd));
@@ -811,7 +810,7 @@ export async function assertUltragoalDropAllowed(input: {
 			`Unable to classify Ultragoal drop (durable state unreadable): ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
-	if (sessionId === null) return;
+	if (sessionId === null || !paths) return;
 	try {
 		await fs.stat(paths.dir);
 	} catch (error) {

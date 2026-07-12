@@ -3,17 +3,17 @@ import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import type { AssistantMessage, ToolCall } from "@gajae-code/ai";
 import { getBundledModel } from "@gajae-code/ai/models";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { logger, TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
 import {
 	GJC_COORDINATOR_SESSION_ID_ENV,
 	GJC_COORDINATOR_SESSION_STATE_FILE_ENV,
-} from "@gajae-code/coding-agent/gjc-runtime/session-state-sidecar";
-import type { GoalModeState } from "@gajae-code/coding-agent/goals/state";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { logger, TempDir } from "@gajae-code/utils";
+} from "../src/gjc-runtime/session-state-sidecar";
+import type { GoalModeState } from "../src/goals/state";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 describe("AgentSession active goal reminders", () => {

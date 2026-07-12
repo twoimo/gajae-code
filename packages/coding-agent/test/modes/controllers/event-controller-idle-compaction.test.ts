@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
+import { resetSettingsForTest, Settings } from "../../../src/config/settings";
+import { EventController } from "../../../src/modes/controllers/event-controller";
+import type { InteractiveModeContext } from "../../../src/modes/types";
 
 function createAssistantMessage(): AssistantMessage {
 	return {

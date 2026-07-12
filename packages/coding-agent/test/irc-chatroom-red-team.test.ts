@@ -2,22 +2,19 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Container, TUI, type ViewportRowComponent, visibleWidth } from "@gajae-code/tui";
+
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import {
 	computeIrcSplitWidths,
 	type IrcSidebarTheme,
 	IrcSplitViewComponent,
-} from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext, IrcArrivalSnapshot } from "@gajae-code/coding-agent/modes/types";
-import {
-	formatIrcMessageBlock,
-	type ParsedIrcMessage,
-	parseIrcMessage,
-} from "@gajae-code/coding-agent/modes/utils/irc-message";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import { type Component, Container, TUI, visibleWidth } from "@gajae-code/tui";
-import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+} from "../src/modes/components/irc-sidebar";
+import { IrcObservationLedger } from "../src/modes/irc-observation-ledger";
+import { initTheme } from "../src/modes/theme/theme";
+import type { InteractiveModeContext, IrcArrivalSnapshot } from "../src/modes/types";
+import { formatIrcMessageBlock, type ParsedIrcMessage, parseIrcMessage } from "../src/modes/utils/irc-message";
+import { UiHelpers } from "../src/modes/utils/ui-helpers";
 
 const artifactDirectory = path.join(os.tmpdir(), `gjc-irc-chatroom-red-team-${process.pid}`);
 const widths = Array.from({ length: 500 }, (_, index) => index + 1);
@@ -45,10 +42,16 @@ const plainTheme = {
 	boxSharp: { vertical: "|" },
 } satisfies IrcSidebarTheme;
 
-class Lines implements Component {
+class Lines implements ViewportRowComponent {
 	constructor(private readonly lines: string[]) {}
 	render(): string[] {
 		return this.lines;
+	}
+	getLogicalRowCount(): number {
+		return this.lines.length;
+	}
+	renderRows(_width: number, start: number, end: number): string[] {
+		return this.lines.slice(start, end);
 	}
 	invalidate(): void {}
 }

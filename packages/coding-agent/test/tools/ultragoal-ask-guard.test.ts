@@ -2,24 +2,20 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentTool, AgentToolContext } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import {
-	activeSnapshotPath,
-	modeStatePath,
-	sessionActivityPath,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { isUltragoalAskBlocked } from "@gajae-code/coding-agent/gjc-runtime/ultragoal-guard";
+import { Settings } from "../../src/config/settings";
+import { activeSnapshotPath, modeStatePath, sessionActivityPath } from "../../src/gjc-runtime/session-layout";
+import { isUltragoalAskBlocked } from "../../src/gjc-runtime/ultragoal-guard";
 import {
 	computeUltragoalPlanGeneration,
 	createUltragoalPlan,
 	getUltragoalPaths,
 	hashStructuredValue,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { AskTool } from "@gajae-code/coding-agent/tools/ask";
-import { ToolError } from "@gajae-code/coding-agent/tools/tool-errors";
-import { guardToolForUltragoalAsk } from "@gajae-code/coding-agent/tools/ultragoal-ask-guard";
+} from "../../src/gjc-runtime/ultragoal-runtime";
+import { initTheme } from "../../src/modes/theme/theme";
+import type { ToolSession } from "../../src/tools";
+import { AskTool } from "../../src/tools/ask";
+import { ToolError } from "../../src/tools/tool-errors";
+import { guardToolForUltragoalAsk } from "../../src/tools/ultragoal-ask-guard";
 
 const TEST_SESSION_ID = "ultragoal-ask-guard-test-session";
 const ORIGINAL_GJC_SESSION_ID = process.env.GJC_SESSION_ID;
@@ -139,7 +135,8 @@ describe("ultragoal ask guard", () => {
 			const diagnostic = await isUltragoalAskBlocked(cwd);
 			expect(diagnostic.active).toBe(false);
 			expect(diagnostic.source).toBe("absent");
-			expect(diagnostic.goalsPath).toBe(path.join(cwd, ".gjc", "ultragoal", "goals.json"));
+			// Session-scoped state cannot name a durable path without a resolved session identity.
+			expect(diagnostic.goalsPath).toBeUndefined();
 		} finally {
 			if (previousSessionId === undefined) delete process.env.GJC_SESSION_ID;
 			else process.env.GJC_SESSION_ID = previousSessionId;

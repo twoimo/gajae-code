@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { detectDeepInterviewPlaintextAskLeak } from "@gajae-code/coding-agent/deep-interview/plaintext-gate-guard";
+import { detectDeepInterviewPlaintextAskLeak } from "../src/deep-interview/plaintext-gate-guard";
 
 describe("detectDeepInterviewPlaintextAskLeak", () => {
 	it("detects Korean/English screenshot-like Restate gate plaintext with canonical options", () => {

@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import * as contextManager from "@gajae-code/coding-agent/eval/js/context-manager";
-import * as pyExecutor from "@gajae-code/coding-agent/eval/py/executor";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import * as tabSupervisor from "@gajae-code/coding-agent/tools/browser/tab-supervisor";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import * as contextManager from "../src/eval/js/context-manager";
+import * as pyExecutor from "../src/eval/py/executor";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
+import * as tabSupervisor from "../src/tools/browser/tab-supervisor";
 
 describe("AgentSession.disposeChildSubprocesses (#698 signal teardown)", () => {
 	let tempDir: TempDir | undefined;

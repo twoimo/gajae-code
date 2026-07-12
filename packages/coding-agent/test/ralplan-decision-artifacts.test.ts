@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { getDefaultGjcDefinitions } from "@gajae-code/coding-agent/defaults/gjc-defaults";
-import { getBundledAgent } from "@gajae-code/coding-agent/task/agents";
+import { getDefaultGjcDefinitions } from "../src/defaults/gjc-defaults";
+import { getBundledAgent } from "../src/task/agents";
 
 const rolePromptSectionContracts = [
 	{
@@ -75,11 +75,11 @@ describe("ralplan decision artifacts", () => {
 			}
 		}
 
-		const ralplan = getDefaultGjcDefinitions().find(
-			definition => definition.kind === "skill" && definition.name === "ralplan",
+		const ralplanDefinitions = getDefaultGjcDefinitions().filter(definition =>
+			definition.kind === "skill" ? definition.name === "ralplan" : definition.parentSkillName === "ralplan",
 		);
-		expect(ralplan).toBeDefined();
-		const content = ralplan?.content ?? "";
+		expect(ralplanDefinitions.some(definition => definition.kind === "skill")).toBe(true);
+		const content = ralplanDefinitions.map(definition => definition.content).join("\n");
 
 		for (const pattern of finalPlanContractPatterns) {
 			expect(content).toMatch(pattern);

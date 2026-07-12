@@ -2,14 +2,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "bu
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ModelRegistry, ProviderDiscoveryState } from "@gajae-code/coding-agent/config/model-registry";
-import { ModelRegistry as ModelRegistryImpl } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { ModelSelectorComponent } from "@gajae-code/coding-agent/modes/components/model-selector";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import type { TUI } from "@gajae-code/tui";
 import { hookFetch, Snowflake } from "@gajae-code/utils";
+import type { ModelRegistry, ProviderDiscoveryState } from "../src/config/model-registry";
+import { ModelRegistry as ModelRegistryImpl } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { ModelSelectorComponent } from "../src/modes/components/model-selector";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
+import { AuthStorage } from "../src/session/auth-storage";
 
 function normalizeRenderedText(text: string): string {
 	return text

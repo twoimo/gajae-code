@@ -38,8 +38,33 @@ function makeHandlers(): CursorExecHandlers {
 		["write", makeTool("write")],
 		["lsp", makeTool("lsp")],
 	]);
-	return new CursorExecHandlers({ cwd: process.cwd(), tools } as never);
+	return new CursorExecHandlers({ cwd: process.cwd(), resolveTool: name => tools.get(name) });
 }
+
+describe("CursorExecHandlers guarded execution seam", () => {
+	it("resolves write, delete, and shell through the guarded resolver before underlying execution", async () => {
+		let underlyingExecutions = 0;
+		const rawTool = makeTool("raw");
+		rawTool.execute = async () => {
+			underlyingExecutions++;
+			return { content: [{ type: "text", text: "unexpected" }], details: {} };
+		};
+		const handlers = new CursorExecHandlers({
+			cwd: process.cwd(),
+			resolveTool: name => {
+				if (name === "write" || name === "bash") throw new Error("Planning capability blocked");
+				return rawTool;
+			},
+		});
+
+		await expect(handlers.write({ path: "a", fileText: "x" } as never)).rejects.toThrow(
+			"Planning capability blocked",
+		);
+		await expect(handlers.delete({ path: "a" } as never)).rejects.toThrow("Planning capability blocked");
+		await expect(handlers.shell({ command: "echo x" } as never)).rejects.toThrow("Planning capability blocked");
+		expect(underlyingExecutions).toBe(0);
+	});
+});
 
 describe("CursorExecHandlers detached invocation (#484)", () => {
 	it("read works when called detached without losing #optionsForCall", async () => {
@@ -97,7 +122,7 @@ describe("CursorExecHandlers grep empty pattern guard (#501)", () => {
 			["search", searchTool],
 			["find", findTool],
 		]);
-		return new CursorExecHandlers({ cwd: process.cwd(), tools } as never);
+		return new CursorExecHandlers({ cwd: process.cwd(), resolveTool: name => tools.get(name) });
 	}
 
 	it("empty pattern does not call search and returns an actionable error", async () => {
@@ -162,7 +187,7 @@ describe("CursorExecHandlers shell timeout unit conversion", () => {
 			},
 		} as unknown as AgentTool;
 		const tools = new Map<string, AgentTool>([["bash", bashTool]]);
-		return new CursorExecHandlers({ cwd: process.cwd(), tools } as never);
+		return new CursorExecHandlers({ cwd: process.cwd(), resolveTool: name => tools.get(name) });
 	}
 
 	it("converts wire milliseconds to bash seconds (block_until_ms: 30000 → 30s, not 30000s)", async () => {

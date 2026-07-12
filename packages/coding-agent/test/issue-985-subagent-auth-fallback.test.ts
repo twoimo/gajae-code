@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Api, Model } from "@gajae-code/ai";
-import { kNoAuth } from "@gajae-code/coding-agent/config/model-registry";
-import {
-	type ModelLookupRegistry,
-	resolveModelOverrideWithAuthFallback,
-} from "@gajae-code/coding-agent/config/model-resolver";
+import { kNoAuth } from "../src/config/model-registry";
+import { type ModelLookupRegistry, resolveModelOverrideWithAuthFallback } from "../src/config/model-resolver";
 
 /**
  * Regression test for #985.

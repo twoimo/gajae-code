@@ -12,6 +12,7 @@ export declare class ComputerController {
   keypress(expectedEpoch: number | undefined | null, keys: Array<string>): void
   wait(expectedEpoch: number | undefined | null, ms: number): void
 }
+
 /**
  * Long-lived macOS appearance observer.
  *
@@ -626,6 +627,29 @@ export declare function detectMacOSAppearance(): MacOSAppearance | null
  */
 export declare function diffLines(oldStr: string, newStr: string): Array<LineDiffPart>
 
+/**
+ * A machine-readable filesystem publication outcome. `os_code` is the raw
+ * platform error code, or zero when no OS error was produced.
+ */
+export interface DurableFsOutcome {
+  ok: boolean
+  code: DurableFsOutcomeCode
+  osCode: number
+  operation: string
+}
+
+/** Stable outcome code for [`publish_replace_file`]. */
+export declare enum DurableFsOutcomeCode {
+  Ok = 'OK',
+  SharingViolation = 'SHARING_VIOLATION',
+  TargetMissing = 'TARGET_MISSING',
+  CrossDirectoryUnsupported = 'CROSS_DIRECTORY_UNSUPPORTED',
+  ReplaceFailedUnchanged = 'REPLACE_FAILED_UNCHANGED',
+  ReplaceFailedTargetMayHaveChanged = 'REPLACE_FAILED_TARGET_MAY_HAVE_CHANGED',
+  ReplaceFailedReplacementRetained = 'REPLACE_FAILED_REPLACEMENT_RETAINED',
+  PublishedDurabilityUncertain = 'PUBLISHED_DURABILITY_UNCERTAIN'
+}
+
 /** Ellipsis strategy for [`truncate_to_width`]. */
 export declare enum Ellipsis {
   /** Use a single Unicode ellipsis character ("…"). */
@@ -686,6 +710,13 @@ export declare enum FileType {
   Symlink = 3
 }
 
+/**
+ * Flush a directory's metadata to durable storage where the platform supports
+ * directory fsync. On Windows this is a successful no-op because there is no
+ * portable directory fsync API.
+ */
+export declare function fsyncDirectory(path: string): void
+
 /** Fuzzy file path search for autocomplete. */
 export declare function fuzzyFind(options: FuzzyFindOptions): Promise<FuzzyFindResult>
 
@@ -743,9 +774,8 @@ export declare function getWorkProfile(lastSeconds: number): WorkProfile
  *
  * Resolves the search root, scans entries, applies glob and optional file-type
  * filters, and optionally streams each accepted match through `on_match`.
- *
- * If `sortByMtime` is enabled, all matching entries are collected, sorted by
- * descending mtime, then truncated to `maxResults`.
+ * If `sortByMtime` is enabled, returns the bounded newest `maxResults` matches
+ * using deterministic mtime/path ordering.
  *
  * # Errors
  * Returns an error when the search path cannot be resolved, the path is not a
@@ -1379,6 +1409,15 @@ export interface MinimizerResult {
 
 export declare function nativeBuildInfo(): BuildInfo
 
+/** Captures a symbolized Rust backtrace while the debug sidecar is loaded. */
+export declare function nativeDebugSidecarBacktraceProbe(): string
+
+/**
+ * Verifies that a panic raised by native code unwinds to its Rust boundary and
+ * is converted to a normal N-API result rather than aborting the host.
+ */
+export declare function nativePanicUnwindProbe(): boolean
+
 /** Bound endpoint info returned from [`NotificationServer::start`]. */
 export interface NotificationEndpoint {
   /** Bind host (loopback). */
@@ -1484,6 +1523,32 @@ export interface PtyStartOptions {
 }
 
 export declare function ptyTimeoutCount(): bigint
+
+/**
+ * Create a new durable target from a flushed replacement file without ever
+ * overwriting an existing target. This is the first-publication counterpart to
+ * [`publish_replace_file`].
+ */
+export declare function publishCreateFile(replacementPath: string, targetPath: string): DurableFsOutcome
+
+/**
+ * Publish a flushed replacement file over an existing target.
+ *
+ * The replacement file is `FlushFileBuffers`/`fsync`'d before replacement.
+ * `ReplaceFileW` atomically swaps file identity on Windows. We request its
+ * `REPLACEFILE_WRITE_THROUGH` flag even though Microsoft documents that flag
+ * as unsupported; neither it nor this primitive guarantees a durable commit
+ * of the name swap. A caller must recover from dual slots and tolerate an
+ * indeterminate newest slot. The optional post-replace target flush on Windows
+ * is best-effort hardening only; its failure is not reported as a committed
+ * outcome.
+ *
+ * POSIX cross-directory publication is rejected. This makes the one flushed
+ * parent directory cover every changed publication entry. A requested backup
+ * is retained for compatibility and is flushed with its parent before the
+ * replacement; higher-level rollback policy should normally use dual slots.
+ */
+export declare function publishReplaceFile(replacementPath: string, targetPath: string, backupPath?: string | undefined | null): DurableFsOutcome
 
 /**
  * Read an image from the system clipboard.

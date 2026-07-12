@@ -50,21 +50,21 @@ describe("FileSessionStorage.deleteSessionWithArtifacts", () => {
 		expect(fs.existsSync(artifactsDir)).toBe(false);
 	});
 
-	it("throws when artifact cleanup fails after the session file is deleted", async () => {
+	it("restores every session-owned path when final trash cleanup fails", async () => {
 		const sessionPath = await createSessionFile("cleanup-failure");
 		const artifactsDir = sessionPath.slice(0, -6);
+		const v2Dir = `${sessionPath}.v2`;
 		await fsp.mkdir(artifactsDir, { recursive: true });
 		await Bun.write(path.join(artifactsDir, "artifact.txt"), "artifact payload");
-
+		await fsp.mkdir(v2Dir, { recursive: true });
+		await Bun.write(path.join(v2Dir, "root"), "v2 payload");
 		const rmError = new Error("permission denied");
 		const rmSpy = vi.spyOn(fsp, "rm").mockRejectedValueOnce(rmError);
-
-		await expect(storage.deleteSessionWithArtifacts(sessionPath)).rejects.toThrow(
-			`Session file deleted but failed to remove artifacts directory ${artifactsDir}: permission denied`,
-		);
-		expect(rmSpy).toHaveBeenCalledWith(artifactsDir, { recursive: true, force: true });
-		expect(fs.existsSync(sessionPath)).toBe(false);
+		await expect(storage.deleteSessionWithArtifacts(sessionPath)).rejects.toThrow("permission denied");
+		expect(rmSpy).toHaveBeenCalledTimes(2);
+		expect(fs.existsSync(sessionPath)).toBe(true);
 		expect(fs.existsSync(artifactsDir)).toBe(true);
+		expect(fs.existsSync(v2Dir)).toBe(true);
 	});
 });
 

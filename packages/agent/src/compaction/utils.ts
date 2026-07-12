@@ -30,29 +30,39 @@ export function createFileOps(): FileOperations {
  * Extract file operations from tool calls in an assistant message.
  */
 export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
-	if (message.role !== "assistant") return;
-	if (!("content" in message) || !Array.isArray(message.content)) return;
+	if (message.role === "toolResult") {
+		if (message.isError) return;
+		const details = message.details as Record<string, unknown> | undefined;
+		const sourceDetails = details?.sourceResultDetails as Record<string, unknown> | undefined;
+		const resultDetails = sourceDetails ?? details;
+		if (resultDetails?.applied !== true || !Array.isArray(resultDetails.files)) return;
+		for (const file of resultDetails.files) {
+			if (typeof file === "string") fileOps.edited.add(file);
+		}
+		return;
+	}
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return;
 
 	for (const block of message.content) {
-		if (typeof block !== "object" || block === null) continue;
-		if (!("type" in block) || block.type !== "toolCall") continue;
-		if (!("arguments" in block) || !("name" in block)) continue;
-
+		if (block.type !== "toolCall") continue;
 		const args = block.arguments as Record<string, unknown> | undefined;
 		if (!args) continue;
-
-		const path = typeof args.path === "string" ? args.path : undefined;
-		if (!path) continue;
+		const path = [args.path, args.file_path, args.filePath].find(
+			(value): value is string => typeof value === "string",
+		);
 
 		switch (block.name) {
 			case "read":
-				fileOps.read.add(path);
+				if (path) fileOps.read.add(path);
 				break;
 			case "write":
-				fileOps.written.add(path);
+				if (path) fileOps.written.add(path);
 				break;
 			case "edit":
-				fileOps.edited.add(path);
+			case "apply_patch":
+			case "ast_edit":
+			case "notebook":
+				if (path) fileOps.edited.add(path);
 				break;
 		}
 	}
@@ -110,12 +120,16 @@ const TOOL_RESULT_MAX_CHARS = 2000;
 
 /**
  * Truncate text to a maximum character length for summarization.
- * Keeps the beginning and appends a truncation marker.
+ * Tool results often put the final status, exit metadata, and changed-file list
+ * at the end, so retain both ends rather than discarding the tail.
  */
 function truncateForSummary(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
-	const truncatedChars = text.length - maxChars;
-	return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+	const marker = "\n\n[... tool result truncated ...]\n\n";
+	const available = Math.max(0, maxChars - marker.length);
+	const headChars = Math.ceil(available / 2);
+	const tailChars = Math.floor(available / 2);
+	return `${text.slice(0, headChars)}${marker}${text.slice(text.length - tailChars)}`;
 }
 
 /**

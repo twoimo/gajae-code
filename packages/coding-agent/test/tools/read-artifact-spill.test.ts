@@ -3,12 +3,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@gajae-code/agent-core";
-import { getDefault, Settings } from "@gajae-code/coding-agent/config/settings";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { wrapToolWithMetaNotice } from "@gajae-code/coding-agent/tools/output-meta";
-import { ReadTool } from "@gajae-code/coding-agent/tools/read";
 import { Snowflake } from "@gajae-code/utils";
+import { getDefault, Settings } from "../../src/config/settings";
+import { SessionManager } from "../../src/session/session-manager";
+import type { ToolSession } from "../../src/tools";
+import { wrapToolWithMetaNotice } from "../../src/tools/output-meta";
+import { ReadTool } from "../../src/tools/read";
 
 let artifactCounter = 0;
 

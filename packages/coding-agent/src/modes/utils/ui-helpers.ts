@@ -39,6 +39,7 @@ import {
 	type SessionContext,
 } from "../../session/session-manager";
 import { formatBytes, formatDuration } from "../../tools/render-utils";
+import { TranscriptContainer } from "../components/transcript-container";
 import { buildAbortDisplayMessage } from "./abort-message";
 import {
 	formatIrcMessageBlock,
@@ -184,6 +185,10 @@ export function addChatChild(ctx: InteractiveModeContext, component: Component):
 
 	chatChildAddedAt.set(component, Date.now());
 	trimChatChildren(ctx);
+}
+
+export function markChatChildDirty(ctx: InteractiveModeContext, component: Component): void {
+	if (ctx.chatContainer instanceof TranscriptContainer) ctx.chatContainer.markChildDirty(component);
 }
 
 export function trimChatChildren(ctx: InteractiveModeContext): void {

@@ -1,15 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentToolContext } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { RpcUnattendedDeclaration, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import { approvalGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
+import { Settings } from "../src/config/settings";
+import type { RpcUnattendedDeclaration, RpcWorkflowGate } from "../src/modes/rpc/rpc-types";
+import { approvalGate } from "../src/modes/shared/agent-wire/approval-gate";
 import {
 	UnattendedSessionControlPlane,
 	type WorkflowGateEmitter,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-session";
-import type { OpenGateInput } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { AskTool } from "@gajae-code/coding-agent/tools/ask";
+} from "../src/modes/shared/agent-wire/unattended-session";
+import type { OpenGateInput } from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import type { ToolSession } from "../src/tools";
+import { AskTool } from "../src/tools/ask";
 
 const DECL: RpcUnattendedDeclaration = {
 	actor: "hermes",

@@ -4,14 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { TodoWriteTool } from "@gajae-code/coding-agent/tools";
 import { Snowflake } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
+import type { ToolSession } from "../src/tools";
+import { TodoWriteTool } from "../src/tools/todo-write";
 
 /**
  * Regression test: /new (AgentSession.newSession) must fully switch to a new session file

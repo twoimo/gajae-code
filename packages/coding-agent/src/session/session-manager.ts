@@ -13,6 +13,8 @@ import type {
 	TextContent,
 	Usage,
 } from "@gajae-code/ai";
+import { publishCreateFile, publishReplaceFile } from "@gajae-code/natives";
+
 import { getTerminalId } from "@gajae-code/tui";
 import {
 	getBlobsDir,
@@ -51,6 +53,7 @@ import {
 	resolveResidentImageDataUrlSync,
 	resolveTextBlobSync,
 } from "./blob-store";
+import { selectCompleteTurnPrefix } from "./complete-turns";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -73,6 +76,28 @@ import type {
 	VerifiedSessionDeleteTarget,
 } from "./session-storage";
 import { FileSessionStorage, MemorySessionStorage } from "./session-storage";
+import {
+	createDurableExportPin,
+	FileRootRegistry,
+	FileSessionRecovery,
+	FileSessionRootResolver,
+	loadOrRebuildSessionSideIndex,
+	PosixSessionPublisher,
+	publishDurableRootFile,
+	readManifestHeader,
+	readRootReference,
+	removeDurableExportPin,
+	rootReferenceGcKey,
+	SegmentStore,
+	type SessionPager,
+	SessionStorageGc,
+	V1SessionReader,
+	V2SessionReader,
+	V2SessionWriter,
+	type ValidatedRootLease,
+	WindowsSessionPublisher,
+	writeSessionSideIndex,
+} from "./storage/index";
 
 export const CURRENT_SESSION_VERSION = 3;
 function isUnderProjectGjc(cwd: string, targetPath: string): boolean {
@@ -131,6 +156,11 @@ export interface EvictCompactedContentResult {
 	coldSpillReadCount: number;
 	residentTextReadCount: number;
 	residentImageReadCount: number;
+}
+
+export interface SessionForkOptions {
+	/** Preserve one idle, persisted user input after a completed turn. */
+	includeTrailingUserInput?: boolean;
 }
 
 export interface SessionManagerObservabilityStats {
@@ -291,6 +321,15 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 	selectedToolNames: string[];
 }
 
+/** Persisted built-in discovery selection state for a session branch. */
+export interface DiscoveredToolSelectionEntry extends SessionEntryBase {
+	type: "discovered_tool_selection";
+	/** Format version for independent evolution from MCP discovery selection state. */
+	version: 1;
+	/** Discoverable built-in tool names selected for visibility in discovery mode. */
+	selectedToolNames: string[];
+}
+
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
@@ -352,11 +391,18 @@ export type SessionEntry =
 	| LabelEntry
 	| TtsrInjectionEntry
 	| MCPToolSelectionEntry
+	| DiscoveredToolSelectionEntry
 	| SessionInitEntry
 	| ModeChangeEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
+
+type LazySessionEntry = SessionEntry & { __lazy: { index: number } };
+
+function isLazySessionEntry(entry: FileEntry): entry is LazySessionEntry {
+	return entry.type !== "session" && "__lazy" in entry;
+}
 
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
@@ -383,6 +429,10 @@ export interface SessionContext {
 	selectedMCPToolNames: string[];
 	/** Whether this branch contains an explicit persisted MCP selection entry. */
 	hasPersistedMCPToolSelection: boolean;
+	/** Discoverable built-in tool names selected through discovery for this session branch. */
+	selectedDiscoveredBuiltinToolNames: string[];
+	/** Whether this branch contains an explicit persisted built-in discovery selection entry. */
+	hasPersistedDiscoveredToolSelection: boolean;
 	/** Active mode (e.g. "plan") or "none" if no special mode is active */
 	mode: string;
 	/** Mode-specific data from the last mode_change entry */
@@ -787,6 +837,8 @@ export function buildSessionContext(
 
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredBuiltinToolNames: [],
+			hasPersistedDiscoveredToolSelection: false,
 			mode: "none",
 		};
 	}
@@ -809,6 +861,8 @@ export function buildSessionContext(
 			ttsrMessageCount: 0,
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredBuiltinToolNames: [],
+			hasPersistedDiscoveredToolSelection: false,
 			mode: "none",
 		};
 	}
@@ -836,6 +890,8 @@ export function buildSessionContext(
 
 	let selectedMCPToolNames: string[] = [];
 	let hasPersistedMCPToolSelection = false;
+	let selectedDiscoveredBuiltinToolNames: string[] = [];
+	let hasPersistedDiscoveredToolSelection = false;
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
 	// Track whether an explicit `model_change` with role="default" has been
@@ -890,6 +946,9 @@ export function buildSessionContext(
 		} else if (entry.type === "mcp_tool_selection") {
 			selectedMCPToolNames = [...entry.selectedToolNames];
 			hasPersistedMCPToolSelection = true;
+		} else if (entry.type === "discovered_tool_selection") {
+			selectedDiscoveredBuiltinToolNames = entry.selectedToolNames.filter(name => !name.startsWith("mcp__"));
+			hasPersistedDiscoveredToolSelection = true;
 		} else if (entry.type === "mode_change") {
 			mode = entry.mode;
 			modeData = entry.data;
@@ -1002,6 +1061,8 @@ export function buildSessionContext(
 
 		selectedMCPToolNames,
 		hasPersistedMCPToolSelection,
+		selectedDiscoveredBuiltinToolNames,
+		hasPersistedDiscoveredToolSelection,
 		mode,
 		modeData,
 	};
@@ -1019,6 +1080,7 @@ function cloneSessionContext(context: SessionContext): SessionContext {
 		ttsrMessageCount: context.ttsrMessageCount,
 
 		selectedMCPToolNames: [...context.selectedMCPToolNames],
+		selectedDiscoveredBuiltinToolNames: [...context.selectedDiscoveredBuiltinToolNames],
 		modeData: cloneJsonSemantic(context.modeData),
 	};
 }
@@ -1120,28 +1182,431 @@ async function readTerminalBreadcrumb(cwd: string): Promise<string | null> {
 	return null;
 }
 
-/** Exported for testing */
+function v2ManifestPath(sessionFile: string): string {
+	return path.join(`${sessionFile}.v2`, "manifest.json");
+}
+
+function v2ManifestSlotPaths(sessionFile: string): readonly [string, string] {
+	const root = `${sessionFile}.v2`;
+	return [path.join(root, "manifest-a.json"), path.join(root, "manifest-b.json")];
+}
+
+function v2ReferencePath(sessionFile: string): string {
+	return `${v2ManifestPath(sessionFile)}.root`;
+}
+
+function activeManifestPath(sessionFile: string, manifestId: string): string {
+	for (const slot of v2ManifestSlotPaths(sessionFile)) {
+		try {
+			if (readManifestHeader(slot).checksum === manifestId) return slot;
+		} catch {
+			/* invalid inactive slot is not authoritative */
+		}
+	}
+	const legacy = v2ManifestPath(sessionFile);
+	if (fs.existsSync(legacy) && readManifestHeader(legacy).checksum === manifestId) return legacy;
+	throw new Error("Active root does not name a valid manifest slot");
+}
+
+function validateSessionHeader(value: unknown): asserts value is SessionHeader {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Session header must be an object");
+	const header = value as Partial<SessionHeader>;
+	if (
+		header.type !== "session" ||
+		typeof header.id !== "string" ||
+		header.id.length === 0 ||
+		typeof header.timestamp !== "string" ||
+		typeof header.cwd !== "string" ||
+		(header.version !== undefined && (!Number.isInteger(header.version) || header.version < 1)) ||
+		(header.title !== undefined && typeof header.title !== "string") ||
+		(header.titleSource !== undefined && header.titleSource !== "auto" && header.titleSource !== "user") ||
+		(header.parentSession !== undefined && typeof header.parentSession !== "string")
+	)
+		throw new Error("Invalid session header");
+}
+
+const sessionEntryTypes = new Set<SessionEntry["type"]>([
+	"message",
+	"thinking_level_change",
+	"model_change",
+	"service_tier_change",
+	"compaction",
+	"branch_summary",
+	"custom",
+	"custom_message",
+	"label",
+	"ttsr_injection",
+	"mcp_tool_selection",
+	"discovered_tool_selection",
+	"session_init",
+	"mode_change",
+]);
+
+function validateSessionEntry(entry: FileEntry, header: SessionHeader): void {
+	const candidate = entry as SessionEntry;
+	const legacyEntrySchema = header.version === undefined || header.version < 2;
+	if (
+		!entry ||
+		typeof entry !== "object" ||
+		entry.type === "session" ||
+		(!legacyEntrySchema &&
+			(!sessionEntryTypes.has(candidate.type) ||
+				typeof candidate.id !== "string" ||
+				(candidate.parentId !== null && typeof candidate.parentId !== "string") ||
+				typeof candidate.timestamp !== "string"))
+	)
+		throw new Error("Invalid session entry");
+}
+
+function createV2EntryValidator(rootId: string): (entry: FileEntry, index: number) => void {
+	let header: SessionHeader | undefined;
+	return (entry, index) => {
+		if (index === 0) {
+			validateSessionHeader(entry);
+			if (entry.id !== rootId) throw new Error("Session rootId does not match session header ID");
+			header = entry;
+			return;
+		}
+		if (!header) throw new Error("Session root has no header");
+		validateSessionEntry(entry, header);
+	};
+}
+
+function validateFileEntries(entries: FileEntry[], rootId?: string): void {
+	if (entries.length === 0) return;
+	validateSessionHeader(entries[0]);
+	if (rootId !== undefined && entries[0].id !== rootId)
+		throw new Error("Session rootId does not match session header ID");
+	for (const entry of entries.slice(1)) validateSessionEntry(entry, entries[0]);
+}
+
+function recoverV2RootReference(filePath: string) {
+	const slots = [...v2ManifestSlotPaths(filePath), v2ManifestPath(filePath)];
+	const segments = new SegmentStore(path.join(`${filePath}.v2`, "segments"));
+	const rootIds = new Set<string>();
+	for (const slot of slots) {
+		try {
+			rootIds.add(readManifestHeader(slot).rootId);
+		} catch {
+			// Corrupt slot metadata cannot establish a recoverable root.
+		}
+	}
+	for (const rootId of rootIds) {
+		const recovered = new FileSessionRecovery(slots, segments).recover(rootId);
+		if (recovered)
+			return {
+				kind: "active" as const,
+				rootId: recovered.manifest.rootId,
+				generation: recovered.manifest.generation,
+				manifestId: recovered.manifest.checksum,
+			};
+	}
+	throw new Error("No valid v2 session root could be recovered");
+}
+
+function loadV2EntriesFromPort(filePath: string): FileEntry[] | undefined {
+	const referencePath = v2ReferencePath(filePath);
+	if (!fs.existsSync(referencePath)) return undefined;
+	const reference = recoverV2RootReference(filePath);
+	const manifestPath = activeManifestPath(filePath, reference.manifestId);
+	const reader = new V2SessionReader<FileEntry>(
+		manifestPath,
+		new SegmentStore(path.join(`${filePath}.v2`, "segments")),
+		createV2EntryValidator(reference.rootId),
+	);
+	const result = reader.readAll();
+	const validated = reader.validateRoot();
+	if (
+		validated.manifest.rootId !== reference.rootId ||
+		validated.manifest.generation !== reference.generation ||
+		validated.manifest.checksum !== reference.manifestId
+	)
+		throw new Error("Recovered root does not match manifest");
+	validateFileEntries(result.entries, validated.metadata.rootId);
+	return result.entries;
+}
+
+export interface PagedSessionLoad {
+	entries: FileEntry[];
+	lease: ValidatedRootLease<FileEntry>;
+	pager: SessionPager<FileEntry>;
+}
+
+export function prepareSessionLease(filePath: string): PagedSessionLoad | undefined {
+	const referencePath = v2ReferencePath(filePath);
+	if (!fs.existsSync(referencePath)) return undefined;
+	const reference = recoverV2RootReference(filePath);
+	const manifestPath = activeManifestPath(filePath, reference.manifestId);
+	const registry = new FileRootRegistry(path.join(`${filePath}.v2`, "roots.json"));
+	const resolver = new FileSessionRootResolver<FileEntry>(
+		new Map([[reference.manifestId, manifestPath]]),
+		new SegmentStore(path.join(`${filePath}.v2`, "segments")),
+		registry,
+		createV2EntryValidator(reference.rootId),
+	);
+	const lease = resolver.lease(reference);
+	const pager = lease.openPager();
+	const topology = Array.from(pager.topology());
+	const header = pager.readRange(0, 0)[0];
+	if (!header) {
+		lease.close();
+		throw new Error("Session root has no header");
+	}
+	validateFileEntries([header], lease.metadata.rootId);
+	const byId = new Map(topology.map(entry => [entry.id, entry]));
+	const eager = new Set<number>([0]);
+	// Labels feed the synchronous label index; all other historical metadata stays
+	// topology-only until its payload is requested.
+	for (const entry of topology) if (entry.type === "label") eager.add(entry.index);
+	let current = topology.at(-1);
+	while (current && current.type === "session") current = undefined;
+	const activePath: typeof topology = [];
+	for (let entry = current; entry; entry = entry.parentId ? byId.get(entry.parentId) : undefined) {
+		activePath.push(entry);
+		if (entry.type === "compaction") break;
+	}
+	if (activePath.some(entry => entry.type === "compaction")) {
+		for (const entry of activePath) eager.add(entry.index);
+	} else if (current) {
+		// Without a compaction boundary, defer historical messages until context is requested.
+		eager.add(current.index);
+	}
+	const resolved = new Map<number, FileEntry>();
+	for (const index of eager) {
+		const entry = pager.readRange(index, index)[0];
+		if (!entry) {
+			lease.close();
+			throw new Error(`Session entry ${index} could not be read`);
+		}
+		resolved.set(index, entry);
+	}
+	pager.release?.();
+	const entries = topology.map(entry => {
+		const materialized = resolved.get(entry.index);
+		if (materialized) return materialized;
+		return {
+			type: entry.type,
+			id: entry.id,
+			parentId: entry.parentId,
+			timestamp: "",
+			__lazy: { index: entry.index },
+		} as LazySessionEntry;
+	});
+	return { entries, lease, pager };
+}
+
+export function pinV2SessionExport(filePath: string): { close(): void } {
+	if (!fs.existsSync(v2ReferencePath(filePath))) return { close: () => {} };
+	const active = recoverV2RootReference(filePath);
+	const token = Snowflake.next();
+	const registryPath = path.join(`${filePath}.v2`, "roots.json");
+	createDurableExportPin(registryPath, { ...active, kind: "export", token });
+	let closed = false;
+	return {
+		close: () => {
+			if (closed) return;
+			closed = true;
+			removeDurableExportPin(registryPath, token);
+		},
+	};
+}
+
+function loadEntriesFromStoragePort(filePath: string, storage: SessionStorage): FileEntry[] {
+	if (storage instanceof FileSessionStorage) {
+		const v2Entries = loadV2EntriesFromPort(filePath);
+		if (v2Entries) return v2Entries;
+		if (!fs.existsSync(filePath)) return [];
+		const entries = new V1SessionReader<FileEntry>(filePath).readAll().entries;
+		validateFileEntries(entries);
+		return entries;
+	}
+	const entries = parseJsonlLenient<FileEntry>(storage.readTextSync(filePath));
+	validateFileEntries(entries);
+	return entries;
+}
+
+function fsyncDirectory(dir: string): void {
+	const fd = fs.openSync(dir, "r");
+	try {
+		fs.fsyncSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function ensureDurableDirectory(dir: string): void {
+	if (fs.existsSync(dir)) return;
+	fs.mkdirSync(dir, { recursive: true });
+	fsyncDirectory(path.dirname(dir));
+}
+
+function writeEntriesToV2Port(filePath: string, entries: FileEntry[]): void {
+	validateFileEntries(entries);
+	const header = entries[0] as SessionHeader;
+	if (!header) throw new Error("Cannot publish an empty session root");
+	const rootDir = `${filePath}.v2`;
+	const slots = v2ManifestSlotPaths(filePath);
+	const referencePath = v2ReferencePath(filePath);
+	const segmentsDir = path.join(rootDir, "segments");
+	const legacySource = fs.existsSync(filePath) && !fs.existsSync(referencePath);
+	ensureDurableDirectory(rootDir);
+	ensureDurableDirectory(segmentsDir);
+	const legacySourceMarker = path.join(rootDir, "legacy-v1-source");
+	if (legacySource) {
+		const marker = fs.openSync(legacySourceMarker, "wx");
+		try {
+			fs.writeFileSync(marker, "retained\n");
+			fs.fsyncSync(marker);
+		} finally {
+			fs.closeSync(marker);
+		}
+		fsyncDirectory(rootDir);
+		fs.utimesSync(filePath, new Date(), new Date());
+	} else if (!fs.existsSync(legacySourceMarker)) {
+		const source = `${entries.map(entry => JSON.stringify(entry)).join("\n")}\n`;
+		const sourceFd = fs.openSync(filePath, "w");
+		try {
+			fs.writeFileSync(sourceFd, source);
+			fs.fsyncSync(sourceFd);
+		} finally {
+			fs.closeSync(sourceFd);
+		}
+		fsyncDirectory(path.dirname(filePath));
+	}
+	let generation = 0;
+	let predecessorManifestChecksum: string | null = null;
+	if (fs.existsSync(referencePath)) {
+		const active = readRootReference(referencePath);
+		if (active.rootId !== header.id) throw new Error("Active rootId does not match session header ID");
+		generation = active.generation + 1;
+		predecessorManifestChecksum = active.manifestId;
+	}
+	const manifestPath = slots[generation % slots.length];
+	const registry = new FileRootRegistry(path.join(rootDir, "roots.json"));
+	const rollback =
+		generation === 0
+			? undefined
+			: {
+					kind: "rollback" as const,
+					rootId: header.id,
+					generation: generation - 1,
+					manifestId: predecessorManifestChecksum!,
+				};
+
+	const publisher =
+		process.platform === "win32"
+			? new WindowsSessionPublisher({
+					replaceFile: (replacementPath, targetPath) => publishReplaceFile(replacementPath, targetPath),
+					createFile: (replacementPath, targetPath) => publishCreateFile(replacementPath, targetPath),
+				})
+			: new PosixSessionPublisher();
+	const writer = new V2SessionWriter<FileEntry>(
+		manifestPath,
+		new SegmentStore(segmentsDir),
+		publisher,
+		referencePath,
+		active => {
+			const rollbackReference = rollback ?? { ...active, kind: "rollback" as const };
+			publishDurableRootFile(path.join(rootDir, "manifest.rollback.root"), `${JSON.stringify(rollbackReference)}\n`);
+			registry.replace(rollbackReference);
+			registry.replace(active);
+		},
+	);
+	const manifest = writer.write(entries, {
+		entrySchemaVersion: header.version ?? 1,
+		rootId: header.id,
+		generation,
+		predecessorManifestChecksum,
+	});
+	const publication = writer.lastPublicationResult;
+	if (!publication) throw new Error("Session publication result was not reported");
+	if (publication.durabilityUncertain) {
+		const resolved = loadV2EntriesFromPort(filePath);
+		if (resolved?.[0]?.type !== "session" || resolved[0].id !== header.id)
+			throw new Error("Session publication durability is uncertain and recovery validation failed");
+	}
+	if (manifest.rootId !== header.id) throw new Error("Published rootId does not match session header ID");
+}
+
+function collectSessionStorageGarbage(filePath: string): void {
+	const rootDir = `${filePath}.v2`;
+	if (!fs.existsSync(rootDir)) return;
+	const registry = new FileRootRegistry(path.join(rootDir, "roots.json"));
+	const manifestPaths = new Map<string, string>();
+	for (const slot of v2ManifestSlotPaths(filePath)) {
+		try {
+			manifestPaths.set(readManifestHeader(slot).checksum, slot);
+		} catch {
+			// A corrupt inactive slot is not a GC root.
+		}
+	}
+	const rootReferencePaths = new Map<string, string>();
+	for (const rootPath of [v2ReferencePath(filePath), path.join(rootDir, "manifest.rollback.root")]) {
+		try {
+			const root = readRootReference(rootPath);
+			registry.replace(root);
+			rootReferencePaths.set(rootReferenceGcKey(root), rootPath);
+		} catch {
+			// Invalid advisory references are excluded from collection authority.
+		}
+	}
+	const segments = new SegmentStore(path.join(rootDir, "segments"));
+	new SessionStorageGc({
+		registry,
+		resolver: new FileSessionRootResolver(manifestPaths, segments, registry),
+		segments,
+		statePath: path.join(rootDir, "gc-state.json"),
+		quarantineDir: path.join(rootDir, "quarantine"),
+		rootReferencePaths,
+	}).run();
+}
+
+function refreshV2SessionSideIndex(sessionDir: string): void {
+	const indexPath = path.join(sessionDir, "sessions.v2.index.json");
+	const roots: Array<{ root: string; reader: V2SessionReader }> = [];
+	for (const sessionFile of Array.from(new Bun.Glob("*.jsonl").scanSync(sessionDir), name =>
+		path.join(sessionDir, name),
+	)) {
+		const referencePath = v2ReferencePath(sessionFile);
+		if (!fs.existsSync(referencePath)) continue;
+		try {
+			const reference = readRootReference(referencePath);
+			const manifestPath = activeManifestPath(sessionFile, reference.manifestId);
+			roots.push({
+				root: sessionFile,
+				reader: new V2SessionReader(manifestPath, new SegmentStore(path.join(`${sessionFile}.v2`, "segments"))),
+			});
+			if (reference.rootId.length === 0) throw new Error("Invalid root reference");
+		} catch {
+			// The authoritative session scan below remains available when a projection candidate is invalid.
+		}
+	}
+	const index = loadOrRebuildSessionSideIndex(indexPath, roots);
+	writeSessionSideIndex(indexPath, index);
+}
+
+/** Exported compatibility materializer. SessionManager resumes through the streaming storage port. */
 export async function loadEntriesFromFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<FileEntry[]> {
-	let content: string;
 	try {
-		content = await storage.readText(filePath);
+		return loadEntriesFromStoragePort(filePath, storage);
 	} catch (err) {
 		if (isEnoent(err)) return [];
+		// Preserve legacy callers' historically lenient preview/import behavior. Production resume never takes this path.
+		if (
+			storage instanceof FileSessionStorage &&
+			fs.existsSync(filePath) &&
+			!fs.existsSync(`${v2ManifestPath(filePath)}.root`)
+		) {
+			const entries = parseJsonlLenient<FileEntry>(fs.readFileSync(filePath, "utf8"));
+			const [header] = entries;
+			if (header?.type !== "session" || typeof header.id !== "string") return [];
+			return entries;
+		}
 		throw err;
 	}
-	const entries = parseJsonlLenient<FileEntry>(content);
-
-	// Validate session header
-	if (entries.length === 0) return entries;
-	const header = entries[0] as SessionHeader;
-	if (header.type !== "session" || typeof header.id !== "string") {
-		return [];
-	}
-
-	return entries;
 }
 
 function sameResumeIdentity(left: ResumeSessionIdentity, right: ResumeSessionIdentity): boolean {
@@ -1858,6 +2323,53 @@ function externalizeResidentValueSync(obj: unknown, stores: ResidentBlobStores, 
 
 function prepareEntryForResidentSync(entry: FileEntry, stores: ResidentBlobStores): FileEntry {
 	return externalizeResidentValueSync(entry, stores) as FileEntry;
+}
+
+interface ResidentDisplayImageReference {
+	contentId: string;
+	mimeType?: string;
+	byteLength: number;
+	materializeSync: () => string | undefined;
+}
+
+function materializeResidentEntryForDisplaySync<T extends FileEntry | SessionEntry>(
+	entry: T,
+	stores: ResidentBlobStores,
+): T {
+	return materializeResidentValueForDisplaySync(entry, stores) as T;
+}
+
+function materializeResidentValueForDisplaySync(obj: unknown, stores: ResidentBlobStores): unknown {
+	if (obj === null || obj === undefined || typeof obj !== "object") return obj;
+	if (isResidentBlobSentinel(obj) && obj.kind === "text")
+		return resolveTextBlobSync(stores.textStore, obj.ref, stores);
+	if (Array.isArray(obj)) {
+		return obj.map(item => {
+			if (isImageBlock(item) && isResidentBlobSentinel(item.data)) {
+				const sentinel = item.data;
+				const reference: ResidentDisplayImageReference = {
+					contentId: sentinel.ref,
+					mimeType: item.mimeType,
+					byteLength: (() => {
+						const hash = parseBlobRef(sentinel.ref);
+						return hash ? (stores.imageStore.getByteLengthSync(hash) ?? 0) : 0;
+					})(),
+					materializeSync: () => {
+						try {
+							return resolveResidentImageDataSync(stores.imageStore, sentinel.ref, stores);
+						} catch {
+							return undefined;
+						}
+					},
+				};
+				return { ...item, data: "", __gjcResidentImageReference: reference };
+			}
+			return materializeResidentValueForDisplaySync(item, stores);
+		});
+	}
+	return Object.fromEntries(
+		Object.entries(obj).map(([key, value]) => [key, materializeResidentValueForDisplaySync(value, stores)]),
+	);
 }
 
 function materializeResidentValueSync(
@@ -3134,6 +3646,8 @@ interface SessionManagerStateSnapshot {
 	needsFullRewriteOnNextPersist: boolean;
 	fileEntries: FileEntry[];
 	materializedFileEntries: FileEntry[];
+	lazyPager: SessionPager<FileEntry> | undefined;
+	lazyLease: ValidatedRootLease<FileEntry> | undefined;
 }
 
 export class SessionManager {
@@ -3146,6 +3660,8 @@ export class SessionManager {
 	#flushed: boolean = false;
 	#needsFullRewriteOnNextPersist: boolean = false;
 	#ensuredOnDisk: boolean = false;
+	#lazyPager: SessionPager<FileEntry> | undefined;
+	#lazyLease: ValidatedRootLease<FileEntry> | undefined;
 	#fileEntries: FileEntry[] = [];
 	#byId: Map<string, SessionEntry> = new Map();
 	#labelsById: Map<string, string> = new Map();
@@ -3186,6 +3702,10 @@ export class SessionManager {
 	#materializedEntriesRevision = -1;
 	#materializedEntriesCache: SessionEntry[] | undefined;
 	#sessionContextCache: WeakRef<SessionContext> | undefined;
+	#providerSessionContextCache: WeakRef<SessionContext> | undefined;
+	#providerSessionContextEntryRevision = -1;
+	#providerSessionContextLeafRevision = -1;
+	#providerSessionContextReplayMetadataRevision = -1;
 	#sessionContextEntryRevision = -1;
 	#sessionContextLeafRevision = -1;
 	#sessionContextReplayMetadataRevision = -1;
@@ -3243,6 +3763,34 @@ export class SessionManager {
 			"resident-cache",
 			`${this.#sessionId || "pending"}-${process.pid}-${instance}`,
 		);
+	}
+
+	#closeLazyPager(): void {
+		this.#lazyPager = undefined;
+		const lease = this.#lazyLease;
+		this.#lazyLease = undefined;
+		lease?.close();
+	}
+
+	#materializeLazyEntry(entry: FileEntry): FileEntry {
+		if (!isLazySessionEntry(entry)) return entry;
+		const loaded = this.#lazyPager?.readRange(entry.__lazy.index, entry.__lazy.index)[0];
+		if (!loaded) throw new Error(`Lazy session entry ${entry.id} is unavailable`);
+		residentizePersistedBlobRefs(loaded);
+		const materialized = prepareEntryForResidentSync(loaded, this.#residentBlobStores()) as FileEntry;
+		const sanitized = this.#sanitizeLoadedOpenAIResponsesReplayEntry(materialized);
+		if (sanitized !== materialized) {
+			this.#bumpEntryRevision();
+			this.#replayMetadataRevision++;
+		}
+		const index = this.#fileEntries.indexOf(entry);
+		if (index >= 0) this.#fileEntries[index] = sanitized;
+		if (sanitized.type !== "session") this.#byId.set(sanitized.id, sanitized);
+		return sanitized;
+	}
+
+	#materializeAllLazyEntries(): void {
+		for (const entry of [...this.#fileEntries]) this.#materializeLazyEntry(entry);
 	}
 
 	#reexternalizeFileEntriesForResidentStore(): void {
@@ -3313,10 +3861,13 @@ export class SessionManager {
 	}
 
 	captureState(): SessionManagerStateSnapshot {
-		const materializedFileEntries = materializeResidentEntriesForReadSync(
-			this.#fileEntries,
-			this.#residentBlobStores(),
-		);
+		const lazyPager = this.#lazyPager;
+		const lazyLease = this.#lazyLease;
+		this.#lazyPager = undefined;
+		this.#lazyLease = undefined;
+		const materializedFileEntries = lazyPager
+			? []
+			: materializeResidentEntriesForReadSync(this.#fileEntries, this.#residentBlobStores());
 		return {
 			sessionId: this.#sessionId,
 			sessionName: this.#sessionName,
@@ -3324,17 +3875,22 @@ export class SessionManager {
 			sessionFile: this.#sessionFile,
 			flushed: this.#flushed,
 			needsFullRewriteOnNextPersist: this.#needsFullRewriteOnNextPersist,
-			// Snapshot entry objects by reference: switch/reload replaces the active entry array,
-			// so rollback does not need structured cloning of extension/custom details.
 			fileEntries: [...this.#fileEntries],
-			// Rollback snapshots must own resident data before another session reset disposes
-			// the ephemeral store backing the resident sentinels above.
 			materializedFileEntries,
+			lazyPager,
+			lazyLease,
 		};
 	}
 
+	discardState(snapshot: SessionManagerStateSnapshot): void {
+		snapshot.lazyLease?.close();
+	}
+
 	restoreState(snapshot: SessionManagerStateSnapshot): void {
-		const restoredFileEntries = [...snapshot.materializedFileEntries];
+		this.#closeLazyPager();
+		const restoredFileEntries = snapshot.lazyPager
+			? [...snapshot.fileEntries]
+			: [...snapshot.materializedFileEntries];
 		this.#sessionId = snapshot.sessionId;
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
@@ -3342,6 +3898,8 @@ export class SessionManager {
 		this.#flushed = snapshot.flushed;
 		this.#needsFullRewriteOnNextPersist = snapshot.needsFullRewriteOnNextPersist;
 		this.#fileEntries = restoredFileEntries;
+		this.#lazyPager = snapshot.lazyPager;
+		this.#lazyLease = snapshot.lazyLease;
 		this.#persistWriter = undefined;
 		this.#persistWriterPath = undefined;
 		this.#persistChain = Promise.resolve();
@@ -3351,7 +3909,8 @@ export class SessionManager {
 		this.#artifactManagerSessionFile = null;
 		this.#adoptedArtifactManager = null;
 		this.#resetResidentTextBlobStore();
-		this.#reexternalizeFileEntriesForResidentStore();
+		if (!snapshot.lazyPager) this.#reexternalizeFileEntriesForResidentStore();
+		else this.#buildIndex();
 		this.#bumpAllRevisions();
 		if (this.#sessionFile) {
 			writeTerminalBreadcrumb(this.cwd, this.#sessionFile);
@@ -3359,8 +3918,8 @@ export class SessionManager {
 	}
 
 	/** Initialize with a specific session file (used by factory methods) */
-	async #initSessionFile(sessionFile: string): Promise<void> {
-		await this.setSessionFile(sessionFile);
+	async #initSessionFile(sessionFile: string, entries?: FileEntry[], paged?: PagedSessionLoad): Promise<void> {
+		await this.setSessionFile(sessionFile, entries, paged);
 	}
 
 	async #hydrateExistingSession(sessionFile: string, entries: FileEntry[], migrationApplied: boolean): Promise<void> {
@@ -3389,30 +3948,54 @@ export class SessionManager {
 		this.#bumpAllRevisions();
 	}
 
+	/** Prepare a validated target lease. The caller owns it until transferred to setSessionFile(). */
+	prepareSessionLease(sessionFile: string): PagedSessionLoad | undefined {
+		return this.storage instanceof FileSessionStorage ? prepareSessionLease(path.resolve(sessionFile)) : undefined;
+	}
+
+	/** Validate a target storage root without changing the active session. */
+	validateSessionFile(sessionFile: string): void {
+		const prepared = this.prepareSessionLease(sessionFile);
+		try {
+			if (!prepared) loadEntriesFromStoragePort(path.resolve(sessionFile), this.storage);
+		} finally {
+			prepared?.lease.close();
+		}
+	}
+
 	/** Switch to a different session file (used for resume and branching) */
-	async setSessionFile(sessionFile: string): Promise<void> {
+	async setSessionFile(sessionFile: string, entries?: FileEntry[], paged?: PagedSessionLoad): Promise<void> {
 		await this.#closePersistWriter();
+		this.#closeLazyPager();
 		this.#persistError = undefined;
 		this.#persistErrorReported = false;
 		this.#sessionFile = path.resolve(sessionFile);
 		writeTerminalBreadcrumb(this.cwd, this.#sessionFile);
-		this.#fileEntries = await loadEntriesFromFile(this.#sessionFile, this.storage);
+		paged ??=
+			entries || !(this.storage instanceof FileSessionStorage) ? undefined : prepareSessionLease(this.#sessionFile);
+		this.#fileEntries = entries ?? paged?.entries ?? loadEntriesFromStoragePort(this.#sessionFile, this.storage);
+		this.#lazyLease = paged?.lease;
+		this.#lazyPager = paged?.pager;
 		if (this.#fileEntries.length > 0) {
 			const header = this.#fileEntries.find(e => e.type === "session") as SessionHeader | undefined;
 			this.#sessionId = header?.id ?? createSessionId();
 			this.#sessionName = header?.title;
 			this.#titleSource = header?.titleSource;
 
-			this.#needsFullRewriteOnNextPersist = migrateToCurrentVersion(this.#fileEntries);
-			await resolveBlobRefsInEntries(this.#fileEntries, this.#blobStore);
+			this.#needsFullRewriteOnNextPersist = this.#lazyPager ? false : migrateToCurrentVersion(this.#fileEntries);
+			if (!this.#lazyPager) await resolveBlobRefsInEntries(this.#fileEntries, this.#blobStore);
 			this.#resetResidentTextBlobStore();
 
-			this.#fileEntries = this.#fileEntries.map(entry =>
-				prepareEntryForResidentSync(entry, this.#residentBlobStores()),
-			);
+			this.#fileEntries = this.#fileEntries.map(entry => {
+				if (isLazySessionEntry(entry)) return entry;
+				residentizePersistedBlobRefs(entry);
+				return prepareEntryForResidentSync(entry, this.#residentBlobStores());
+			});
 			this.sanitizeLoadedOpenAIResponsesReplayMetadata();
 
 			this.#buildIndex();
+			if (this.#residentTextBlobStore instanceof EphemeralBlobStore)
+				this.#residentTextBlobStore.releaseMemoryCache();
 			this.#bumpAllRevisions();
 			this.#flushed = true;
 			this.#ensuredOnDisk = true;
@@ -3453,7 +4036,7 @@ export class SessionManager {
 	 * Returns both the old and new session file paths for artifact copying.
 	 * @returns { oldSessionFile, newSessionFile } or undefined if not persisting
 	 */
-	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
+	async fork(options?: SessionForkOptions): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
 		if (!this.persist || !this.#sessionFile) {
 			return undefined;
 		}
@@ -3490,7 +4073,10 @@ export class SessionManager {
 		this.#titleSource = newHeader.titleSource;
 
 		// Replace the header in fileEntries
-		const entries = materializedEntries.filter((e): e is SessionEntry => e.type !== "session");
+		const entries = selectCompleteTurnPrefix(
+			materializedEntries.filter((e): e is SessionEntry => e.type !== "session"),
+			options,
+		);
 		this.#fileEntries = [newHeader, ...entries];
 		this.#resetResidentTextBlobStore();
 		this.#reexternalizeFileEntriesForResidentStore();
@@ -3529,9 +4115,12 @@ export class SessionManager {
 			const newSessionFile = path.join(newSessionDir, path.basename(oldSessionFile));
 			const oldArtifactDir = oldSessionFile.slice(0, -6); // strip .jsonl
 			const newArtifactDir = newSessionFile.slice(0, -6);
+			const oldV2Dir = `${oldSessionFile}.v2`;
+			const newV2Dir = `${newSessionFile}.v2`;
 			hadSessionFile = this.storage.existsSync(oldSessionFile);
 			let movedSessionFile = false;
 			let movedArtifactDir = false;
+			let movedV2Dir = false;
 			const materializedEntries = materializeResidentEntriesForReadSync(
 				this.#fileEntries,
 				this.#residentBlobStores(),
@@ -3562,6 +4151,16 @@ export class SessionManager {
 				}
 
 				try {
+					const stat = await fs.promises.stat(oldV2Dir);
+					if (stat.isDirectory()) {
+						await movePathAcrossDevicesSafe(oldV2Dir, newV2Dir);
+						movedV2Dir = true;
+					}
+				} catch (err) {
+					if (!isEnoent(err)) throw err;
+				}
+
+				try {
 					const stat = await fs.promises.stat(oldArtifactDir);
 					if (stat.isDirectory()) {
 						await movePathAcrossDevicesSafe(oldArtifactDir, newArtifactDir);
@@ -3571,6 +4170,15 @@ export class SessionManager {
 					if (!isEnoent(err)) throw err;
 				}
 			} catch (err) {
+				if (movedV2Dir) {
+					try {
+						await fs.promises.rename(newV2Dir, oldV2Dir);
+					} catch (rollbackErr) {
+						restoreResidentStateAndThrow(
+							new Error(`Failed to move v2 root and rollback: ${toError(rollbackErr).message}`),
+						);
+					}
+				}
 				if (movedArtifactDir) {
 					try {
 						await fs.promises.rename(newArtifactDir, oldArtifactDir);
@@ -3678,6 +4286,7 @@ export class SessionManager {
 		for (const entry of this.#fileEntries) {
 			if (entry.type === "session") continue;
 			this.#byId.set(entry.id, entry);
+			if (isLazySessionEntry(entry)) continue;
 			this.#leafId = entry.id;
 			if (entry.type === "label") {
 				if (entry.label) {
@@ -3898,6 +4507,10 @@ export class SessionManager {
 
 	#writeEntriesAtomicallySync(entries: FileEntry[]): void {
 		if (!this.#sessionFile) return;
+		if (this.storage instanceof FileSessionStorage) {
+			writeEntriesToV2Port(this.#sessionFile, entries);
+			return;
+		}
 		const dir = path.resolve(this.#sessionFile, "..");
 		const tempPath = path.join(dir, `.${path.basename(this.#sessionFile)}.${Snowflake.next()}.tmp`);
 		const writer = new NdjsonFileWriter(this.storage, tempPath, { flags: "w" });
@@ -3923,6 +4536,10 @@ export class SessionManager {
 	}
 	async #writeEntriesAtomically(entries: FileEntry[]): Promise<void> {
 		if (!this.#sessionFile) return;
+		if (this.storage instanceof FileSessionStorage) {
+			writeEntriesToV2Port(this.#sessionFile, entries);
+			return;
+		}
 		const dir = path.resolve(this.#sessionFile, "..");
 		const tempPath = path.join(dir, `.${path.basename(this.#sessionFile)}.${Snowflake.next()}.tmp`);
 		const writer = new NdjsonFileWriter(this.storage, tempPath, { flags: "w" });
@@ -3953,6 +4570,7 @@ export class SessionManager {
 		if (!this.persist || !this.#sessionFile) return;
 		await this.#queuePersistTask(async () => {
 			await this.#closePersistWriterInternal();
+			this.#materializeAllLazyEntries();
 			const entries = await Promise.all(
 				materializeResidentEntriesForPersistenceSync(this.#fileEntries, this.#residentBlobStores()).map(entry =>
 					prepareEntryForPersistence(entry, this.#blobStore),
@@ -3968,6 +4586,7 @@ export class SessionManager {
 	#rewriteFileSync(): void {
 		if (!this.persist || !this.#sessionFile) return;
 		this.#closePersistWriterInternalSync();
+		this.#materializeAllLazyEntries();
 		const entries = materializeResidentEntriesForPersistenceSync(this.#fileEntries, this.#residentBlobStores()).map(
 			entry => prepareEntryForPersistenceSync(entry, this.#blobStore),
 		);
@@ -4012,7 +4631,10 @@ export class SessionManager {
 			}
 		});
 		this.#disposeResidentTextBlobStore();
+		this.#closeLazyPager();
 		if (this.#persistError) throw this.#persistError;
+		if (this.#sessionFile && this.storage instanceof FileSessionStorage)
+			collectSessionStorageGarbage(this.#sessionFile);
 	}
 	/** Flush while open, then strictly close; retryable close skips the invalid second flush. */
 	async flushAndCloseStrict(): Promise<SessionManagerCloseOutcome> {
@@ -4328,6 +4950,15 @@ export class SessionManager {
 			return;
 		}
 
+		if (this.storage instanceof FileSessionStorage) {
+			try {
+				this.#rewriteFileSync();
+			} catch (err) {
+				this.#recordPersistError(err);
+				throw this.#persistError ?? toError(err);
+			}
+			return;
+		}
 		// Hot path: synchronously truncate + append. `fs.writeSync` returns once the
 		// bytes are in the kernel page cache, so the entry survives an OOM/SIGKILL
 		// landing immediately after this call. Image externalization (rare) runs via
@@ -4655,6 +5286,20 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append a versioned built-in discovery selection entry for this branch. */
+	appendDiscoveredToolSelection(selectedToolNames: string[]): string {
+		const entry: DiscoveredToolSelectionEntry = {
+			type: "discovered_tool_selection",
+			version: 1,
+			id: generateId(this.#byId),
+			parentId: this.#leafId,
+			timestamp: new Date().toISOString(),
+			selectedToolNames: selectedToolNames.filter(name => !name.startsWith("mcp__")),
+		};
+		this.#appendEntry(entry);
+		return entry.id;
+	}
+
 	/**
 	 * Append a TTSR injection entry recording which rules were injected.
 	 * @param ruleNames Names of rules that were injected
@@ -4814,6 +5459,7 @@ export class SessionManager {
 				this.#materializedEntriesCache = undefined;
 				this.#materializedEntriesRevision = -1;
 				this.#sessionContextCache = undefined;
+				this.#providerSessionContextCache = undefined;
 			}
 		}
 		return {
@@ -4881,14 +5527,16 @@ export class SessionManager {
 
 	getCanonicalEntryForTests(id: string): SessionEntry | undefined {
 		const entry = this.#byId.get(id);
-		return entry ? cloneSessionEntry(entry) : undefined;
+		const materialized = entry ? this.#materializeLazyEntry(entry) : undefined;
+		return materialized && materialized.type !== "session" ? cloneSessionEntry(materialized) : undefined;
 	}
 
 	getEntryForFidelity(id: string): SessionEntry | undefined {
 		const entry = this.#byId.get(id);
-		return entry
+		const materialized = entry ? this.#materializeLazyEntry(entry) : undefined;
+		return materialized && materialized.type !== "session"
 			? rehydrateColdSpillEntry(
-					materializeResidentEntryForReadSync(entry, this.#residentBlobStores(), new Map()),
+					materializeResidentEntryForReadSync(materialized, this.#residentBlobStores(), new Map()),
 					this.#blobStore,
 					this.#residentBlobStoresForColdRehydrate(),
 				)
@@ -4919,12 +5567,16 @@ export class SessionManager {
 	#getCanonicalBranchClones(fromId?: string): SessionEntry[] {
 		const path: SessionEntry[] = [];
 		const visited = new Set<string>();
+		let firstKeptEntryId: string | undefined;
 		let current = (fromId ?? this.#leafId) ? this.#byId.get(fromId ?? this.#leafId ?? "") : undefined;
 		while (current) {
-			if (visited.has(current.id)) break;
-			visited.add(current.id);
-			path.push(cloneSessionEntry(current));
-			current = current.parentId ? this.#byId.get(current.parentId) : undefined;
+			const materialized = this.#readLazyEntryForProviderContext(current) as SessionEntry;
+			if (visited.has(materialized.id)) break;
+			visited.add(materialized.id);
+			path.push(cloneSessionEntry(materialized));
+			if (materialized.type === "compaction") firstKeptEntryId = materialized.firstKeptEntryId;
+			if (firstKeptEntryId === materialized.id) break;
+			current = materialized.parentId ? this.#byId.get(materialized.parentId) : undefined;
 		}
 		path.reverse();
 		return path;
@@ -4940,6 +5592,7 @@ export class SessionManager {
 	}
 
 	getEntriesForExport(): SessionEntry[] {
+		this.#materializeAllLazyEntries();
 		const cache = new Map<string, string>();
 		return this.#fileEntries
 			.filter((entry): entry is SessionEntry => entry.type !== "session")
@@ -4956,7 +5609,10 @@ export class SessionManager {
 		this.#publicMaterializerCallCount++;
 		this.#getEntryMaterializerCallCount++;
 		const entry = this.#byId.get(id);
-		return entry ? materializeResidentEntryForReadSync(entry, this.#residentBlobStores(), new Map()) : undefined;
+		const materialized = entry ? this.#materializeLazyEntry(entry) : undefined;
+		return materialized && materialized.type !== "session"
+			? materializeResidentEntryForReadSync(materialized, this.#residentBlobStores(), new Map())
+			: undefined;
 	}
 
 	/**
@@ -5020,6 +5676,7 @@ export class SessionManager {
 		const startId = fromId ?? this.#leafId;
 		let current = startId ? this.#byId.get(startId) : undefined;
 		while (current) {
+			current = this.#materializeLazyEntry(current) as SessionEntry;
 			if (visited.has(current.id)) break;
 			visited.add(current.id);
 			path.push(materializeResidentEntryForReadSync(current, this.#residentBlobStores(), cache));
@@ -5029,11 +5686,46 @@ export class SessionManager {
 		return path;
 	}
 
+	/** Checks active-branch entry kinds without materializing resident payloads. */
+	hasActiveBranchEntryType(type: SessionEntry["type"]): boolean {
+		const visited = new Set<string>();
+		let current = this.#leafId ? this.#byId.get(this.#leafId) : undefined;
+		while (current) {
+			if (visited.has(current.id)) return false;
+			if (current.type === type) return true;
+			visited.add(current.id);
+			current = current.parentId ? this.#byId.get(current.parentId) : undefined;
+		}
+		return false;
+	}
 	/**
 	 * Build the session context (what gets sent to the LLM).
 	 * Uses tree traversal from current leaf.
 	 */
 	buildSessionContext(): SessionContext {
+		const cached = this.#providerSessionContextCache?.deref();
+		if (
+			cached &&
+			this.#providerSessionContextEntryRevision === this.#entryRevision &&
+			this.#providerSessionContextLeafRevision === this.#leafRevision &&
+			this.#providerSessionContextReplayMetadataRevision === this.#replayMetadataRevision
+		) {
+			return cloneSessionContext(cached);
+		}
+		this.#pathOnlyContextBuildCount++;
+		const context = buildSessionContext(this.#getActivePathEntriesForProviderContext(), this.#leafId);
+		this.#providerSessionContextCache = new WeakRef(context);
+		this.#providerSessionContextEntryRevision = this.#entryRevision;
+		this.#providerSessionContextLeafRevision = this.#leafRevision;
+		this.#providerSessionContextReplayMetadataRevision = this.#replayMetadataRevision;
+		return cloneSessionContext(context);
+	}
+
+	/**
+	 * Returns the resident context for immediate display by AgentSession.
+	 * Unlike buildSessionContext(), this avoids copying large message payloads.
+	 */
+	buildSessionContextForDisplay(): SessionContext {
 		const cached = this.#sessionContextCache?.deref();
 		if (
 			cached &&
@@ -5041,11 +5733,11 @@ export class SessionManager {
 			this.#sessionContextLeafRevision === this.#leafRevision &&
 			this.#sessionContextReplayMetadataRevision === this.#replayMetadataRevision
 		) {
-			return cloneSessionContext(cached);
+			return cached;
 		}
 		this.#pathOnlyContextBuildCount++;
 		const context = buildSessionContext(
-			this.#getActivePathEntriesForProviderContext(),
+			this.#getActivePathEntriesForProviderContext(undefined, true),
 			this.#leafId,
 			undefined,
 			this.#sessionId,
@@ -5054,27 +5746,27 @@ export class SessionManager {
 		this.#sessionContextEntryRevision = this.#entryRevision;
 		this.#sessionContextLeafRevision = this.#leafRevision;
 		this.#sessionContextReplayMetadataRevision = this.#replayMetadataRevision;
-		return cloneSessionContext(context);
+		return context;
 	}
 
-	#getActivePathEntriesForProviderContext(fromId?: string | null): SessionEntry[] {
+	#getActivePathEntriesForProviderContext(fromId?: string | null, forDisplay = false): SessionEntry[] {
 		if (fromId === null || (fromId === undefined && this.#leafId === null)) return [];
-		const ids: string[] = [];
+		const pathEntries: SessionEntry[] = [];
 		const visited = new Set<string>();
+		let firstKeptEntryId: string | undefined;
 		let current = this.#byId.get(fromId ?? this.#leafId ?? "");
 		while (current) {
-			if (visited.has(current.id)) break;
-			visited.add(current.id);
-			ids.push(current.id);
-			current = current.parentId ? this.#byId.get(current.parentId) : undefined;
+			const materialized = this.#readLazyEntryForProviderContext(current) as SessionEntry;
+			if (visited.has(materialized.id)) break;
+			visited.add(materialized.id);
+			pathEntries.push(materialized);
+			if (materialized.type === "compaction") firstKeptEntryId = materialized.firstKeptEntryId;
+			if (firstKeptEntryId === materialized.id) break;
+			current = materialized.parentId ? this.#byId.get(materialized.parentId) : undefined;
 		}
-		ids.reverse();
-		const pathEntries = ids
-			.map(id => this.#byId.get(id))
-			.filter((entry): entry is SessionEntry => entry !== undefined);
-		let compaction: CompactionEntry | undefined;
-		for (const entry of pathEntries) if (entry.type === "compaction") compaction = entry;
-		if (!compaction) return pathEntries.map(entry => this.#entryForProviderContext(entry, undefined));
+		pathEntries.reverse();
+		const compaction = pathEntries.find(entry => entry.type === "compaction") as CompactionEntry | undefined;
+		if (!compaction) return pathEntries.map(entry => this.#entryForProviderContext(entry, undefined, forDisplay));
 		const compactionIndex = pathEntries.findIndex(entry => entry.id === compaction.id);
 		const firstKeptIndex = pathEntries.findIndex(entry => entry.id === compaction.firstKeptEntryId);
 		const remote = compaction.preserveData?.openaiRemoteCompaction;
@@ -5082,17 +5774,34 @@ export class SessionManager {
 		return pathEntries.map((entry, index) => {
 			const covered =
 				index < compactionIndex && (hasRemoteReplacement || (firstKeptIndex >= 0 && index < firstKeptIndex));
-			return this.#entryForProviderContext(entry, covered ? "covered" : undefined);
+			return this.#entryForProviderContext(entry, covered ? "covered" : undefined, forDisplay);
 		});
 	}
 
-	#entryForProviderContext(entry: SessionEntry, coldSpillPolicy: "covered" | undefined): SessionEntry {
+	#readLazyEntryForProviderContext(entry: FileEntry): FileEntry {
+		if (!isLazySessionEntry(entry)) return entry;
+		const loaded = this.#lazyPager?.readRange(entry.__lazy.index, entry.__lazy.index)[0];
+		if (!loaded) throw new Error(`Lazy session entry ${entry.id} is unavailable`);
+		residentizePersistedBlobRefs(loaded);
+		const materialized = prepareEntryForResidentSync(loaded, this.#residentBlobStores()) as FileEntry;
+		const sanitized = this.#sanitizeLoadedOpenAIResponsesReplayEntry(materialized);
+		if (sanitized !== materialized) this.#replayMetadataRevision++;
+		return sanitized;
+	}
+
+	#entryForProviderContext(
+		entry: SessionEntry,
+		coldSpillPolicy: "covered" | undefined,
+		forDisplay = false,
+	): SessionEntry {
 		if (coldSpillPolicy === "covered" && (entry.type === "message" || entry.type === "custom_message")) {
 			return cloneSessionEntry(entry);
 		}
 		if (entry.type !== "message" && entry.type !== "custom_message")
 			return materializeProviderVisibleEntrySync(entry, this.#residentBlobStores());
-		const materialized = materializeResidentEntryForReadSync(entry, this.#residentBlobStores(), new Map());
+		const materialized = forDisplay
+			? materializeResidentEntryForDisplaySync(entry, this.#residentBlobStores())
+			: materializeResidentEntryForReadSync(entry, this.#residentBlobStores(), new Map());
 		const rehydrated = rehydrateColdSpillEntry(
 			materialized,
 			this.#blobStore,
@@ -5112,25 +5821,26 @@ export class SessionManager {
 	/** Strip stale OpenAI Responses assistant replay metadata from loaded in-memory entries. */
 	sanitizeLoadedOpenAIResponsesReplayMetadata(): boolean {
 		let didSanitize = false;
-		for (const entry of this.#fileEntries) {
-			if (entry.type !== "message" || entry.message.role !== "assistant") {
-				continue;
-			}
-
-			const sanitizedMessage = sanitizeRehydratedOpenAIResponsesAssistantMessage(entry.message);
-			if (sanitizedMessage === entry.message) {
-				continue;
-			}
-
-			entry.message = sanitizedMessage;
+		for (let index = 0; index < this.#fileEntries.length; index++) {
+			const entry = this.#fileEntries[index]!;
+			if (isLazySessionEntry(entry)) continue;
+			const sanitized = this.#sanitizeLoadedOpenAIResponsesReplayEntry(entry);
+			if (sanitized === entry) continue;
+			this.#fileEntries[index] = sanitized;
+			if (sanitized.type !== "session") this.#byId.set(sanitized.id, sanitized);
 			didSanitize = true;
 		}
 		if (didSanitize) {
 			this.#bumpEntryRevision();
 			this.#replayMetadataRevision++;
 		}
-
 		return didSanitize;
+	}
+
+	#sanitizeLoadedOpenAIResponsesReplayEntry(entry: FileEntry): FileEntry {
+		if (entry.type !== "message" || entry.message.role !== "assistant") return entry;
+		const message = sanitizeRehydratedOpenAIResponsesAssistantMessage(entry.message);
+		return message === entry.message ? entry : { ...entry, message };
 	}
 
 	/**
@@ -5150,6 +5860,7 @@ export class SessionManager {
 		if (this.#materializedEntriesRevision === this.#entryRevision && this.#materializedEntriesCache) {
 			return this.#materializedEntriesCache;
 		}
+		this.#materializeAllLazyEntries();
 		this.#materializedEntriesCachePopulateCount++;
 		const resolvedTextBlobCache = new Map<string, string>();
 		const sourceEntries = this.#fileEntries.filter((e): e is SessionEntry => e.type !== "session");
@@ -5163,6 +5874,9 @@ export class SessionManager {
 		return materializedEntries;
 	}
 
+	getEntryCount(): number {
+		return this.#fileEntries.length - (this.#fileEntries[0]?.type === "session" ? 1 : 0);
+	}
 	getEntries(): SessionEntry[] {
 		this.#publicMaterializerCallCount++;
 		this.#getEntriesMaterializerCallCount++;
@@ -5366,6 +6080,11 @@ export class SessionManager {
 				parentId = labelEntry.id;
 			}
 			this.storage.writeTextSync(newSessionFile, `${lines.join("\n")}\n`);
+			if (this.storage instanceof FileSessionStorage)
+				writeEntriesToV2Port(
+					newSessionFile,
+					lines.map(line => JSON.parse(line) as FileEntry),
+				);
 			this.#sessionId = newSessionId;
 			this.#sessionFile = newSessionFile;
 			this.#resetResidentTextBlobStore();
@@ -5446,12 +6165,14 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
-		const forkEntries = structuredClone(await loadEntriesFromFile(sourcePath, storage)) as FileEntry[];
+		const forkEntries = structuredClone(loadEntriesFromStoragePort(sourcePath, storage)) as FileEntry[];
 		migrateToCurrentVersion(forkEntries);
 		await resolveBlobRefsInEntries(forkEntries, manager.#blobStore);
 		manager.#fileEntries = forkEntries;
 		const sourceHeader = manager.#fileEntries.find(e => e.type === "session") as SessionHeader | undefined;
-		const historyEntries = manager.#fileEntries.filter(entry => entry.type !== "session") as SessionEntry[];
+		const historyEntries = selectCompleteTurnPrefix(
+			manager.#fileEntries.filter((entry): entry is SessionEntry => entry.type !== "session"),
+		);
 		manager.#newSessionSync({ parentSession: sourceHeader?.id });
 		manager.#resetResidentTextBlobStore();
 		const newHeader = manager.#fileEntries[0] as SessionHeader;
@@ -5482,14 +6203,15 @@ export class SessionManager {
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionManager> {
-		// Extract cwd from session header if possible, otherwise use getProjectDir()
-		const entries = await loadEntriesFromFile(filePath, storage);
+		// Extract cwd from the validated header without materializing the v2 journal.
+		const paged = storage instanceof FileSessionStorage ? prepareSessionLease(path.resolve(filePath)) : undefined;
+		const entries = paged?.entries ?? loadEntriesFromStoragePort(filePath, storage);
 		const header = entries.find(e => e.type === "session") as SessionHeader | undefined;
 		const cwd = header?.cwd ?? getProjectDir();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ?? path.resolve(filePath, "..");
 		const manager = new SessionManager(cwd, dir, true, storage);
-		await manager.#initSessionFile(filePath);
+		await manager.#initSessionFile(filePath, entries, paged);
 		return manager;
 	}
 
@@ -5577,14 +6299,20 @@ export class SessionManager {
 			// `--worktree` session lives in a linked worktree whose path differs from
 			// the invocation cwd; binding the manager (and HUD) to `cwd` would leave
 			// it on the main checkout instead of the worktree it was created in.
-			const header = (await loadEntriesFromFile(mostRecent, storage)).find(e => e.type === "session") as
-				| SessionHeader
-				| undefined;
-			const resumeCwd = header?.cwd || cwd;
-			const resumeDir = sessionDir ?? path.resolve(mostRecent, "..");
-			const manager = new SessionManager(resumeCwd, resumeDir, true, storage);
-			await manager.#initSessionFile(mostRecent);
-			return manager;
+			const paged =
+				storage instanceof FileSessionStorage ? prepareSessionLease(path.resolve(mostRecent)) : undefined;
+			try {
+				const entries = paged?.entries ?? loadEntriesFromStoragePort(mostRecent, storage);
+				const header = entries.find(e => e.type === "session") as SessionHeader | undefined;
+				const resumeCwd = header?.cwd || cwd;
+				const resumeDir = sessionDir ?? path.resolve(mostRecent, "..");
+				const manager = new SessionManager(resumeCwd, resumeDir, true, storage);
+				await manager.#initSessionFile(mostRecent, entries, paged);
+				return manager;
+			} catch (error) {
+				paged?.lease.close();
+				throw error;
+			}
 		}
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#initNewSession();
@@ -5614,6 +6342,13 @@ export class SessionManager {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		try {
 			await recoverOrphanedBackups(dir, storage);
+			if (storage instanceof FileSessionStorage) {
+				try {
+					refreshV2SessionSideIndex(dir);
+				} catch {
+					// A non-authoritative index failure must not affect the authoritative scan.
+				}
+			}
 			const files = storage.listFilesSync(dir, "*.jsonl");
 			return await collectSessionsFromFiles(files, storage);
 		} catch {

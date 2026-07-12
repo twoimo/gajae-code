@@ -3,11 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { createAgentSession } from "@gajae-code/coding-agent/sdk";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { registerAskAnswerSource } from "@gajae-code/coding-agent/tools/ask-answer-registry";
+import { Settings } from "../src/config/settings";
+import { initTheme } from "../src/modes/theme/theme";
+import { createAgentSession } from "../src/sdk";
+import { SessionManager } from "../src/session/session-manager";
+import { registerAskAnswerSource } from "../src/tools/ask-answer-registry";
 
 /**
  * Regression for the "ask buttons only appear after finalize" report: the

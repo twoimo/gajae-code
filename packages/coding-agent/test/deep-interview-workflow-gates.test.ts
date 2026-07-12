@@ -5,11 +5,8 @@ import {
 	gateAnswerToResult,
 	questionsToGates,
 	questionToGate,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
+} from "../src/modes/shared/agent-wire/deep-interview-gate";
+import { MemoryGateStore, WorkflowGateBroker } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 
 const singleQ: AskGateQuestion = {
 	id: "q1",

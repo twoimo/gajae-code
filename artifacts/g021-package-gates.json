@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "package-consumer-report",
+  "commit": "21fc8380",
+  "gates": {
+    "inventory-coding-agent-exports --check": "passed",
+    "verify-coding-agent-package --check": "passed",
+    "package-reference-graph --check": "passed",
+    "check-package-boundaries": "passed",
+    "refresh-brush-vendor --check": "passed",
+    "verify:insane-vendor": "passed",
+    "measure-skill-prompt-tokens --check": "passed",
+    "check:rs": "passed",
+    "export-map-compatibility + package-files tests": "3 pass / 0 fail"
+  },
+  "source": "subagent 255-G021QA2 frozen-tree gate suite + parent bun check CLEAN on 21fc8380"
+}

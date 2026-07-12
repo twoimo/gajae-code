@@ -1,4 +1,7 @@
 import { resolveGjcSessionForRead, SessionResolutionError } from "../../gjc-runtime/session-resolution";
+import { isCanonicalWorkflowSkill, resolveWorkflowPhase } from "../../skill-state/workflow-phase-resolver";
+import { readActiveSubskillsForParent } from "./state";
+import { GJC_SUBSKILL_PARENT_AGENTS, type LoadedSubskillActivation } from "./types";
 
 async function resolveBoundarySessionId(cwd: string, sessionId?: string): Promise<string | undefined> {
 	const normalizedSessionId = sessionId?.trim();
@@ -10,11 +13,6 @@ async function resolveBoundarySessionId(cwd: string, sessionId?: string): Promis
 		throw error;
 	}
 }
-
-import { readVisibleSkillActiveState } from "../../skill-state/active-state";
-import { initialPhaseForSkill } from "../../skill-state/initial-phase";
-import { readActiveSubskillsForParent } from "./state";
-import { GJC_SUBSKILL_PARENT_AGENTS, type LoadedSubskillActivation } from "./types";
 
 export async function readSubskillBody(filePath: string): Promise<string> {
 	const content = await Bun.file(filePath).text();
@@ -44,21 +42,20 @@ export async function resolveCurrentPhaseForParent(input: {
 	sessionId?: string;
 	parent: string;
 	explicitPhase?: string;
-}): Promise<string> {
-	const explicitPhase = input.explicitPhase?.trim();
-	if (explicitPhase) return explicitPhase;
-
-	const resolvedSessionId = await resolveBoundarySessionId(input.cwd, input.sessionId);
-	const state = resolvedSessionId ? await readVisibleSkillActiveState(input.cwd, resolvedSessionId) : null;
-	const persistedPhase = state?.active_skills?.find(entry => entry.skill === input.parent)?.phase?.trim();
-	if (persistedPhase) return persistedPhase;
-
-	if (state?.skill === input.parent) {
-		const statePhase = state.phase?.trim();
-		if (statePhase) return statePhase;
-	}
-
-	return initialPhaseForSkill(input.parent);
+}): Promise<string | undefined> {
+	if ((GJC_SUBSKILL_PARENT_AGENTS as readonly string[]).includes(input.parent)) return "prompt";
+	if (!isCanonicalWorkflowSkill(input.parent)) return undefined;
+	const sessionId = await resolveBoundarySessionId(input.cwd, input.sessionId);
+	const resolution = await resolveWorkflowPhase({
+		skill: input.parent,
+		cwd: input.cwd,
+		sessionId,
+		explicit:
+			input.explicitPhase && sessionId
+				? { skill: input.parent, phase: input.explicitPhase, sessionId, stateVersion: 2 }
+				: undefined,
+	});
+	return resolution.phase;
 }
 
 export async function buildSubskillInjection(input: {
@@ -75,6 +72,7 @@ export async function buildSubskillInjection(input: {
 		parent: input.skillName,
 		explicitPhase: input.currentPhase,
 	});
+	if (!resolvedPhase) return null;
 
 	const directActivation = input.activation;
 	if (directActivation?.parent === input.skillName && directActivation.phase === resolvedPhase) {

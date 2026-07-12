@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@gajae-code/agent-core";
 import type { Message } from "@gajae-code/ai";
 import { inferCopilotInitiator } from "@gajae-code/ai/providers/github-copilot-headers";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
+import { convertToLlm } from "../src/session/messages";
 
 function expectAttribution(message: Message | undefined, expected: "user" | "agent" | undefined): void {
 	expect(message).toBeDefined();

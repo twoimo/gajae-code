@@ -1,18 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { sessionUltragoalDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import {
-	type UltragoalGuardState,
-	verifyUltragoalDurableCompletionState,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-guard";
+import { sessionUltragoalDir } from "../../src/gjc-runtime/session-layout";
+import { type UltragoalGuardState, verifyUltragoalDurableCompletionState } from "../../src/gjc-runtime/ultragoal-guard";
 import {
 	addUltragoalSubgoal,
 	checkpointUltragoalGoal,
 	createUltragoalPlan,
 	readUltragoalPlan,
 	startNextUltragoalGoal,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
+} from "../../src/gjc-runtime/ultragoal-runtime";
 
 const TEST_SESSION_ID = "ultragoal-durable-completion-release-test-session";
 const tempRoots: string[] = [];
@@ -43,6 +40,25 @@ async function tempDir(): Promise<string> {
 
 function isReleaseAllowed(state: UltragoalGuardState): boolean {
 	return state === "inactive" || state === "active_verified_complete";
+}
+
+function mandatoryComputerAdversarialCases(): Record<string, unknown>[] {
+	return [
+		"kill-switch-bypass",
+		"suspended-enforcement",
+		"permission-revoked",
+		"display-stale",
+		"out-of-bounds-drift",
+		"runaway-loop-halt",
+		"blast-radius",
+	].map(id => ({
+		id,
+		contractRef: "approved-plan:goal",
+		scenario: `Exercise the ${id} computer-control failure mode through the native surface`,
+		expectedBehavior: "The computer-control guard preserves the approved safety boundary",
+		verdict: "passed",
+		artifactRefs: ["computer-redteam-pty"],
+	}));
 }
 
 function passingQualityGate(): string {
@@ -76,6 +92,12 @@ function passingQualityGate(): string {
 					path: "artifacts/adversarial-report.txt",
 					description: "Adversarial boundary test report",
 				},
+				{
+					id: "computer-redteam-pty",
+					kind: "pty-capture",
+					path: "artifacts/computer-redteam-pty.txt",
+					description: "Live native terminal capture for mandatory computer red-team cases",
+				},
 			],
 			contractCoverage: [
 				{
@@ -84,7 +106,10 @@ function passingQualityGate(): string {
 					obligation: "The completed goal satisfies the approved API/package contract",
 					status: "covered",
 					surfaceEvidenceRefs: ["surface-api"],
-					adversarialCaseRefs: ["case-boundary"],
+					adversarialCaseRefs: [
+						"case-boundary",
+						...mandatoryComputerAdversarialCases().map(row => String(row.id)),
+					],
 				},
 			],
 			surfaceEvidence: [
@@ -106,6 +131,7 @@ function passingQualityGate(): string {
 					verdict: "passed",
 					artifactRefs: ["adversarial-report"],
 				},
+				...mandatoryComputerAdversarialCases(),
 			],
 			blockers: [],
 		},
@@ -125,6 +151,10 @@ async function passingLiveQualityGate(root: string): Promise<string> {
 	await fs.writeFile(
 		path.join(root, "artifacts", "adversarial-report.txt"),
 		"Boundary and adversarial tests passed\n",
+	);
+	await fs.writeFile(
+		path.join(root, "artifacts", "computer-redteam-pty.txt"),
+		"\x1b[2J\x1b[Hcomputer red-team native terminal capture passed\n".repeat(16),
 	);
 	return passingQualityGate();
 }

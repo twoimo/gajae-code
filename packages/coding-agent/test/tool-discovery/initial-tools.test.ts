@@ -2,21 +2,21 @@ import { describe, expect, it } from "bun:test";
 import { Settings } from "../../src/config/settings";
 import { type GoalModeState, GoalRuntime } from "../../src/goals";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../src/registry/agent-registry";
+import { AskTool } from "../../src/tools/ask";
+import { ComputerTool } from "../../src/tools/computer";
 import type { ToolSession } from "../../src/tools/index";
 import {
-	AskTool,
 	BUILTIN_CAPABILITY_CATALOG,
 	BUILTIN_TOOLS,
-	ComputerTool,
 	computeEssentialBuiltinNames,
 	createTools,
 	DEFAULT_ESSENTIAL_TOOL_NAMES,
-	IrcTool,
-	JobTool,
-	RecipeTool,
-	SshTool,
-	TelegramSendTool,
 } from "../../src/tools/index";
+import { IrcTool } from "../../src/tools/irc";
+import { JobTool } from "../../src/tools/job";
+import { RecipeTool } from "../../src/tools/recipe";
+import { SshTool } from "../../src/tools/ssh";
+import { TelegramSendTool } from "../../src/tools/telegram-send";
 
 const allToolsSettings = Settings.isolated({
 	"astGrep.enabled": true,

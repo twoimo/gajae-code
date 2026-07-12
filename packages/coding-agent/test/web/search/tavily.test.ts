@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AuthStorage } from "@gajae-code/ai";
-import {
-	buildRequestBody,
-	searchTavily,
-	type TavilySearchParams,
-} from "@gajae-code/coding-agent/web/search/providers/tavily";
 import { hookFetch } from "@gajae-code/utils";
+import { buildRequestBody, searchTavily, type TavilySearchParams } from "../../../src/web/search/providers/tavily";
 
 describe("Tavily buildRequestBody", () => {
 	afterEach(() => {

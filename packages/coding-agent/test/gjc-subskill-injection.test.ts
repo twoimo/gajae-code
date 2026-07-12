@@ -57,7 +57,8 @@ describe("GJC sub-skill prompt injection", () => {
 
 		const built = await buildSkillPromptMessage(ralplanSkill, "requirements", {
 			cwd,
-			currentPhase: "planner",
+			sessionId: "test-session",
+			workflowContext: { skill: "ralplan", phase: "planner", sessionId: "test-session", stateVersion: 2 },
 			subskillActivation: activation,
 		});
 
@@ -92,8 +93,30 @@ describe("GJC sub-skill prompt injection", () => {
 			active_subskills: [toActiveSubskillEntry(activation)],
 		});
 
-		const built = await buildSkillPromptMessage(ralplanSkill, "", { cwd, currentPhase: "architect" });
+		const built = await buildSkillPromptMessage(ralplanSkill, "", { cwd });
 		expect(built.message).not.toContain("<gjc-subskill");
 		expect(built.details.subskillActivation).toBeUndefined();
+	});
+
+	test("dispatcher-only and mismatched phase contexts omit sub-skill activation metadata", async () => {
+		const cwd = await tempProject();
+		const activation = await activationFromFixture(cwd);
+		const contexts = [
+			undefined,
+			{ skill: "ralplan", phase: "architect", sessionId: "test-session", stateVersion: 2 },
+		] as const;
+
+		for (const workflowContext of contexts) {
+			const built = await buildSkillPromptMessage(ralplanSkill, "", {
+				cwd,
+				sessionId: "test-session",
+				workflowContext,
+				subskillActivation: activation,
+				subskillActivationSet: [activation],
+			});
+			expect(built.message).not.toContain("<gjc-subskill");
+			expect(built.details.subskillActivation).toBeUndefined();
+			expect(built.details.subskillActivationSet).toBeUndefined();
+		}
 	});
 });

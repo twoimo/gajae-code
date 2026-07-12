@@ -1,19 +1,19 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { AssistantMessageComponent } from "@gajae-code/coding-agent/modes/components/assistant-message";
-import { BashExecutionComponent } from "@gajae-code/coding-agent/modes/components/bash-execution";
-import { CustomEditor } from "@gajae-code/coding-agent/modes/components/custom-editor";
-import { EvalExecutionComponent } from "@gajae-code/coding-agent/modes/components/eval-execution";
-import { FooterComponent } from "@gajae-code/coding-agent/modes/components/footer";
-import { STATUS_LINE_PRESETS } from "@gajae-code/coding-agent/modes/components/status-line/presets";
-import { UserMessageComponent } from "@gajae-code/coding-agent/modes/components/user-message";
-import { WelcomeComponent } from "@gajae-code/coding-agent/modes/components/welcome";
-import { resolveWelcomeLogoMode } from "@gajae-code/coding-agent/modes/interactive-mode";
-import { getEditorTheme, initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
 import { type TUI, visibleWidth } from "@gajae-code/tui";
+import { resetSettingsForTest, Settings } from "../../../src/config/settings";
+import { AssistantMessageComponent } from "../../../src/modes/components/assistant-message";
+import { BashExecutionComponent } from "../../../src/modes/components/bash-execution";
+import { CustomEditor } from "../../../src/modes/components/custom-editor";
+import { EvalExecutionComponent } from "../../../src/modes/components/eval-execution";
+import { FooterComponent } from "../../../src/modes/components/footer";
 import { StatusLineComponent } from "../../../src/modes/components/status-line";
+import { STATUS_LINE_PRESETS } from "../../../src/modes/components/status-line/presets";
+import { UserMessageComponent } from "../../../src/modes/components/user-message";
+import { WelcomeComponent } from "../../../src/modes/components/welcome";
+import { resolveWelcomeLogoMode } from "../../../src/modes/interactive-mode";
+import { getEditorTheme, initTheme } from "../../../src/modes/theme/theme";
+import type { AgentSession } from "../../../src/session/agent-session";
 
 function createFooterSession(): AgentSession {
 	return {

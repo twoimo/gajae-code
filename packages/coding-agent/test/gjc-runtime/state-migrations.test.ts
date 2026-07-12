@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { WorkflowStateEnvelopeSchema } from "@gajae-code/coding-agent/gjc-runtime/state-schema";
 import { migrateWorkflowState, normalizeLegacyState } from "../../src/gjc-runtime/state-migrations";
+import { WorkflowStateEnvelopeSchema } from "../../src/gjc-runtime/state-schema";
 import { WORKFLOW_STATE_VERSION } from "../../src/skill-state/workflow-state-contract";
 
 describe("state migrations", () => {

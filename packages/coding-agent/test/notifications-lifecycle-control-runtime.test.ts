@@ -3,9 +3,8 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-
-import { parseLaunchWorktreeMode } from "@gajae-code/coding-agent/gjc-runtime/launch-worktree";
-import type { SessionCreateFrame } from "@gajae-code/coding-agent/notifications/index";
+import { parseLaunchWorktreeMode } from "../src/gjc-runtime/launch-worktree";
+import type { SessionCreateFrame } from "../src/notifications/index";
 import {
 	attachLifecycleControl,
 	buildCreateArgv,
@@ -16,8 +15,8 @@ import {
 	daemonSpawnCreate,
 	fileLedgerStore,
 	outcomeToResponse,
-} from "@gajae-code/coding-agent/notifications/lifecycle-control-runtime";
-import type { LedgerEntry, OrchestratorDeps } from "@gajae-code/coding-agent/notifications/lifecycle-orchestrator";
+} from "../src/notifications/lifecycle-control-runtime";
+import type { LedgerEntry, OrchestratorDeps } from "../src/notifications/lifecycle-orchestrator";
 
 const PAIRED = "42";
 

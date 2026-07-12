@@ -4,11 +4,7 @@ import * as net from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { AgentEvent } from "@gajae-code/agent-core";
-import {
-	defineRpcClientTool,
-	RpcClient,
-	type RpcSessionEventListener,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-client";
+import { defineRpcClientTool, RpcClient, type RpcSessionEventListener } from "../src/modes/rpc/rpc-client";
 import { AGENT_WIRE_EVENT_TYPES } from "../src/modes/shared/agent-wire/event-contract";
 import { AgentWireFrameSequencer, toAgentWireEventFrame } from "../src/modes/shared/agent-wire/event-envelope";
 import type { AgentSessionEvent } from "../src/session/agent-session";

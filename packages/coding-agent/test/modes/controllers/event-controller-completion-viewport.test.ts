@@ -1,19 +1,19 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { AssistantMessageComponent } from "@gajae-code/coding-agent/modes/components/assistant-message";
-import { IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
+import { Container, shouldUseViewportRepaintForHost, Text, TUI } from "@gajae-code/tui";
+import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
+import { resetSettingsForTest, Settings } from "../../../src/config/settings";
+import { AssistantMessageComponent } from "../../../src/modes/components/assistant-message";
+import { IrcSplitViewComponent } from "../../../src/modes/components/irc-sidebar";
+import { EventController } from "../../../src/modes/controllers/event-controller";
+import { IrcObservationLedger } from "../../../src/modes/irc-observation-ledger";
+import { initTheme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
+import { UiHelpers } from "../../../src/modes/utils/ui-helpers";
 import {
 	associateSessionMessageViewportAnchorId,
 	getSessionMessageViewportAnchorId,
-} from "@gajae-code/coding-agent/session/session-manager";
-import { Container, shouldUseViewportRepaintForHost, Text, TUI } from "@gajae-code/tui";
-import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
+} from "../../../src/session/session-manager";
 
 function assistantMessage(text: string): AssistantMessage {
 	return {

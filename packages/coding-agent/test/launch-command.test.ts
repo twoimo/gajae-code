@@ -3,12 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { persistCoordinatorLaunchFailure } from "@gajae-code/coding-agent/commands/launch";
+import { persistCoordinatorLaunchFailure } from "../src/commands/launch";
 import {
 	GJC_COORDINATOR_SESSION_ID_ENV,
 	GJC_COORDINATOR_SESSION_STATE_FILE_ENV,
 	GJC_TMUX_OWNER_GENERATION_ENV,
-} from "@gajae-code/coding-agent/gjc-runtime/session-state-sidecar";
+} from "../src/gjc-runtime/session-state-sidecar";
 
 describe("persistCoordinatorLaunchFailure", () => {
 	it("persists the exact managed owner generation without normalizing it", async () => {

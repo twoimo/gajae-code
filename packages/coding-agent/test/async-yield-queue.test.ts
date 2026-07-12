@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@gajae-code/agent-core";
-import { type AsyncJob, AsyncJobManager } from "@gajae-code/coding-agent/async";
-import type { CustomMessage } from "@gajae-code/coding-agent/session/messages";
-import { YieldQueue } from "@gajae-code/coding-agent/session/yield-queue";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { JobTool } from "@gajae-code/coding-agent/tools/job";
+import { type AsyncJob, AsyncJobManager } from "../src/async";
+import type { CustomMessage } from "../src/session/messages";
+import { YieldQueue } from "../src/session/yield-queue";
+import type { ToolSession } from "../src/tools";
+import { JobTool } from "../src/tools/job";
 
 type AsyncEntry = {
 	jobId: string;

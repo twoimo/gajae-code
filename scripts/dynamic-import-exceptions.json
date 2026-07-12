@@ -1,0 +1,1528 @@
+[
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./anthropic",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./azure-openai-responses",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./google",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./google-gemini-cli",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./google-vertex",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./openai-codex-responses",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./openai-completions",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./openai-responses",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./ollama",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./cursor",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/providers/register-builtins.ts",
+		"target": "./amazon-bedrock",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/anthropic",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/alibaba-coding-plan",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/github-copilot",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/google-gemini-cli",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/google-antigravity",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/openai-codex",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/gitlab-duo",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/kimi",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/kilo",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/cursor",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/perplexity",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/huggingface",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/opencode",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/lm-studio",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/ollama",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/ollama-cloud",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/cerebras",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/xai",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/glm-zcode",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/fireworks",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/firepass",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/fugu",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/zai",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/qianfan",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/minimax-code",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/minimax-code",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/synthetic",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/tavily",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/venice",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/litellm",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/moonshot",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/kagi",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/nanogpt",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/together",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/cloudflare-ai-gateway",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/vercel-ai-gateway",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/vllm",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/parallel",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/qwen-portal",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/nvidia",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/xiaomi",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/xiaomi",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/xiaomi",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/xiaomi",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/auth-storage.ts",
+		"target": "./utils/oauth/zenmux",
+		"reason": "Loads the selected OAuth provider implementation only when that provider login flow is requested.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/provider-models/special.ts",
+		"target": "../utils/discovery/cursor",
+		"reason": "Defers Cursor model discovery until the special-provider model resolver is invoked.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/stream.ts",
+		"target": "./providers/gitlab-duo",
+		"reason": "Defers the provider-specific streaming implementation until a model using that provider is invoked.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/stream.ts",
+		"target": "./providers/pi-native-client",
+		"reason": "Defers the provider-specific streaming implementation until a model using that provider is invoked.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/stream.ts",
+		"target": "./providers/gitlab-duo",
+		"reason": "Defers the provider-specific streaming implementation until a model using that provider is invoked.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/stream.ts",
+		"target": "./providers/kimi",
+		"reason": "Defers the provider-specific streaming implementation until a model using that provider is invoked.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/stream.ts",
+		"target": "./providers/synthetic",
+		"reason": "Defers the provider-specific streaming implementation until a model using that provider is invoked.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./anthropic",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./github-copilot",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./google-gemini-cli",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./google-antigravity",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./openai-codex",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./kimi",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./gitlab-duo",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./cursor",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./xai",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/ai/src/utils/oauth/index.ts",
+		"target": "./glm-zcode",
+		"reason": "Loads the selected built-in OAuth implementation only when its login helper is resolved.",
+		"smokeCase": "web-search",
+		"owner": "ai",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/codex-native-hook",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/state",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/setup",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/acp",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/skills",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/session",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "session",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/harness",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/coordinator",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/team",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/ultragoal",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/gc",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/ralplan",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/config",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/stats",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/notify",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/daemon",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/web-search",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/local-provider",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/mcp-serve",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/mcp",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/contribution-prep",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/deep-interview",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/migrate",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/rlm",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/update",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/plugin",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/completion",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./commands/launch",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "@gajae-code/utils/cli",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./cli/fast-help",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "@gajae-code/ai/utils/h2-fetch",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./cli/nofile-limit",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./cli/notify-cli",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "@gajae-code/stats",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "@gajae-code/natives",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "@gajae-code/utils/cli",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./cli/fast-help",
+		"reason": "Keeps root CLI startup lightweight by loading this command or runtime helper only when selected.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli/notify-cli.ts",
+		"target": "../notifications/telegram-daemon-cli",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli/notify-cli.ts",
+		"target": "../config/settings",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli/setup-cli.ts",
+		"target": "../stt/setup",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli/setup-cli.ts",
+		"target": "../stt/transcriber",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli/stats-cli.ts",
+		"target": "@gajae-code/stats",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli/stats-cli.ts",
+		"target": "@gajae-code/stats",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/commands/contribution-prep.ts",
+		"target": "../session/contribution-prep",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/commands/stats.ts",
+		"target": "../modes/theme/theme",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/commands/stats.ts",
+		"target": "../cli/stats-cli",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/debug/profiler.ts",
+		"target": "node:v8",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/debug/profiler.ts",
+		"target": "node:inspector/promises",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/eval/js/shared/runtime.ts",
+		"target": "expression:target",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/eval/js/shared/runtime.ts",
+		"target": "expression:target",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/export/custom-share.ts",
+		"target": "expression:scriptPath",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/custom-commands/loader.ts",
+		"target": "expression:commandPath",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/custom-commands/loader.ts",
+		"target": "@gajae-code/coding-agent",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/custom-tools/loader.ts",
+		"target": "expression:resolvedPath",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/custom-tools/loader.ts",
+		"target": "@gajae-code/coding-agent",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/extensions/loader.ts",
+		"target": "@gajae-code/coding-agent",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/extensions/loader.ts",
+		"target": "@gajae-code/coding-agent",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/constrained-hooks.ts",
+		"target": "expression:declared.relativePath",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/runtime-adapters.ts",
+		"target": "./prompt-appendix",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/runtime-adapters.ts",
+		"target": "./prompt-appendix",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/runtime-adapters.ts",
+		"target": "./injection",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/runtime-adapters.ts",
+		"target": "./injection",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/runtime-adapters.ts",
+		"target": "./mcp-policy",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/gjc-plugins/runtime-adapters.ts",
+		"target": "node:path",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/hooks/loader.ts",
+		"target": "@gajae-code/coding-agent",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/hooks/loader.ts",
+		"target": "expression:resolvedPath",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts",
+		"target": "expression:`${toImportSpecifier(mirroredEntry)}?mtime=${Date.now()}`",
+		"reason": "Loads a user-selected runtime extension/module path that cannot be a static import.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/gjc-runtime/gc-runtime.ts",
+		"target": "../harness-control-plane/gc-adapter",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/gjc-runtime/gc-runtime.ts",
+		"target": "../config/file-lock-gc",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/gjc-runtime/gc-runtime.ts",
+		"target": "./team-gc",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/gjc-runtime/gc-runtime.ts",
+		"target": "./tmux-gc",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/gjc-runtime/state-writer.ts",
+		"target": "./workflow-manifest",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/hashline/hash.ts",
+		"target": "@gajae-code/natives",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/internal-urls/gjc-protocol.ts",
+		"target": "./docs-index.generated",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./modes/interactive-mode",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./modes/acp",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./modes/rpc/rpc-mode",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./modes/bridge/bridge-mode",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./modes/print-mode",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./cli",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/notifications/telegram-daemon-cli.ts",
+		"target": "./telegram-daemon-control",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/notifications/telegram-daemon-cli.ts",
+		"target": "./telegram-daemon",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/setup/credential-import.ts",
+		"target": "bun",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/tools/archive-reader.ts",
+		"target": "fflate",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/tools/bash-interactive.ts",
+		"target": "@xterm/headless",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/tools/browser/launch.ts",
+		"target": "puppeteer-core",
+		"reason": "Defers browser-only code until browser tooling starts.",
+		"smokeCase": "browser-worker",
+		"owner": "coding-agent",
+		"probe": "handshake"
+	},
+	{
+		"importer": "packages/coding-agent/src/tools/browser/launch.ts",
+		"target": "puppeteer-core",
+		"reason": "Defers browser-only code until browser tooling starts.",
+		"smokeCase": "browser-worker",
+		"owner": "coding-agent",
+		"probe": "handshake"
+	},
+	{
+		"importer": "packages/coding-agent/src/tools/browser/tab-supervisor.ts",
+		"target": "./tab-worker",
+		"reason": "Defers browser-only code until browser tooling starts.",
+		"smokeCase": "browser-worker",
+		"owner": "coding-agent",
+		"probe": "resolve-only"
+	},
+	{
+		"importer": "packages/coding-agent/src/tools/write.ts",
+		"target": "fflate",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/utils/linkedom.ts",
+		"target": "linkedom",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/utils/markit.ts",
+		"target": "markit-ai",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/insane/bridge.ts",
+		"target": "node:fs",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/scrapers/types.ts",
+		"target": "turndown",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/scrapers/types.ts",
+		"target": "turndown-plugin-gfm",
+		"reason": "Defers cold-path or optional implementation code until the owning feature is invoked.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/exa",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/brave",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/jina",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/perplexity",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/kimi",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/zai",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/anthropic",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/gemini",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/codex",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/xai",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/tavily",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/parallel",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/kagi",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/synthetic",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/searxng",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/duckduckgo",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/insane",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/web/search/provider.ts",
+		"target": "./providers/openai-compatible",
+		"reason": "Defers provider/search implementation loading until the web-search path is used.",
+		"smokeCase": "web-search",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/main.ts",
+		"target": "./config/model-registry",
+		"reason": "Keeps model catalog parsing out of model-independent command paths such as export.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{
+		"importer": "packages/coding-agent/src/cli.ts",
+		"target": "./export/html",
+		"reason": "Routes root export before interactive startup and model catalog initialization.",
+		"smokeCase": "help",
+		"owner": "coding-agent",
+		"probe": "load"
+	},
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./read", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./bash", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "../edit", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./ast-grep", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./ast-edit", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./render-mermaid", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./ask", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./debug", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./bisect", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./eval", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./calculator", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./ssh", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./gh", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./find", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./search", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "../lsp", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./browser", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./computer", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./checkpoint", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./checkpoint", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "../task", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./subagent", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./job", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./monitor", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./cron", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./recipe", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./irc", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./todo-write", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "../web/search", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./search-tool-bm25", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./skill-discovery", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./telegram-send", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./write", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./skill", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "../goals/tools/goal-tool", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./yield", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./review", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" },
+	{ "importer": "packages/coding-agent/src/tools/index.ts", "target": "./resolve", "reason": "Loads enabled tool implementations only when constructed.", "smokeCase": "help", "owner": "coding-agent", "probe": "load" }
+]

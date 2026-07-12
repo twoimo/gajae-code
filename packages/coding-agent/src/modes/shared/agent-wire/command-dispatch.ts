@@ -1,5 +1,11 @@
 import type { AgentTool } from "@gajae-code/agent-core";
 import { ThinkingLevel } from "@gajae-code/agent-core";
+import type {
+	AgentWireActionDenied,
+	AgentWireBudgetExceeded,
+	AgentWireScopeDenied,
+	AgentWireUnattendedRefused,
+} from "@gajae-code/agent-wire";
 import { getOAuthProviders } from "@gajae-code/ai/utils/oauth";
 import { Snowflake } from "@gajae-code/utils";
 import type { ExtensionUIContext } from "../../../extensibility/extensions";
@@ -13,6 +19,7 @@ import type {
 	RpcSessionState,
 	RpcUnattendedAccepted,
 	RpcUnattendedDeclaration,
+	RpcWorkflowGate,
 	RpcWorkflowGateResolution,
 	RpcWorkflowGateResponse,
 } from "../../rpc/rpc-types";
@@ -46,7 +53,7 @@ export interface RpcUnattendedControlPlane {
 	/** Resolve a pending workflow gate with the agent's answer. */
 	resolveGate(response: RpcWorkflowGateResponse): Promise<RpcWorkflowGateResolution>;
 	/** List unresolved durable workflow gates for reconnect replay. */
-	listPendingGates?(): import("../../rpc/rpc-types").RpcWorkflowGate[];
+	listPendingGates?(): RpcWorkflowGate[];
 	isUnattended?(): boolean;
 	preflightCommand?(command: RpcCommand): void;
 	reconcileUsage?(phase?: string): void;
@@ -85,7 +92,15 @@ export function normalizeHostToolDefinitions(tools: RpcHostToolDefinition[]): Rp
 	});
 }
 
-function serializeRpcDispatchError(err: unknown): string | object {
+function serializeRpcDispatchError(
+	err: unknown,
+):
+	| string
+	| AgentWireActionDenied
+	| AgentWireBudgetExceeded
+	| AgentWireScopeDenied
+	| AgentWireUnattendedRefused
+	| object {
 	if (
 		err instanceof ScopeDeniedError ||
 		err instanceof ActionDeniedError ||

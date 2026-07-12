@@ -7,7 +7,7 @@ import {
 	createUltragoalPlan,
 	runNativeUltragoalCommand,
 	startNextUltragoalGoal,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
+} from "../../src/gjc-runtime/ultragoal-runtime";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];
@@ -115,6 +115,29 @@ async function writeDogfoodArtifacts(
 			recordedStdout: options.recordedStdout ?? "ultragoal-cli-ok\n",
 		}),
 	);
+	await Bun.write(
+		path.join(root, "artifacts", "computer-redteam-pty.txt"),
+		"\x1b[2J\x1b[Hcomputer red-team native terminal capture passed\n".repeat(16),
+	);
+}
+
+function mandatoryComputerAdversarialCases(): Record<string, unknown>[] {
+	return [
+		"kill-switch-bypass",
+		"suspended-enforcement",
+		"permission-revoked",
+		"display-stale",
+		"out-of-bounds-drift",
+		"runaway-loop-halt",
+		"blast-radius",
+	].map(id => ({
+		id,
+		contractRef: "AC-26",
+		scenario: `Exercise the ${id} computer-control failure mode through the native surface`,
+		expectedBehavior: "The computer-control guard preserves the approved safety boundary",
+		verdict: "passed",
+		artifactRefs: ["computer-redteam-pty"],
+	}));
 }
 
 function qualityGate(): Record<string, unknown> {
@@ -160,6 +183,12 @@ function qualityGate(): Record<string, unknown> {
 					path: "artifacts/adversarial-report.txt",
 					description: "Adversarial result artifact for contract coverage",
 				},
+				{
+					id: "computer-redteam-pty",
+					kind: "pty-capture",
+					path: "artifacts/computer-redteam-pty.txt",
+					description: "Live native terminal capture for mandatory computer red-team cases",
+				},
 			],
 			contractCoverage: [
 				{
@@ -168,7 +197,10 @@ function qualityGate(): Record<string, unknown> {
 					obligation: "The red-team gate proves a browser/web surface with structural live artifacts",
 					status: "covered",
 					surfaceEvidenceRefs: ["surface-web"],
-					adversarialCaseRefs: ["case-invalid-input"],
+					adversarialCaseRefs: [
+						"case-invalid-input",
+						...mandatoryComputerAdversarialCases().map(row => String(row.id)),
+					],
 				},
 				{
 					id: "contract-cli",
@@ -176,7 +208,10 @@ function qualityGate(): Record<string, unknown> {
 					obligation: "The red-team gate replays the deterministic CLI argv command and matches recorded stdout",
 					status: "covered",
 					surfaceEvidenceRefs: ["surface-cli"],
-					adversarialCaseRefs: ["case-invalid-input"],
+					adversarialCaseRefs: [
+						"case-invalid-input",
+						...mandatoryComputerAdversarialCases().map(row => String(row.id)),
+					],
 				},
 			],
 			surfaceEvidence: [
@@ -206,6 +241,7 @@ function qualityGate(): Record<string, unknown> {
 					verdict: "passed",
 					artifactRefs: ["adversarial-report"],
 				},
+				...mandatoryComputerAdversarialCases(),
 			],
 			blockers: [],
 		},

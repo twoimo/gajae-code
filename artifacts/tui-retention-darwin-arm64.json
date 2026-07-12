@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 3,
+  "measuredAt": "2026-07-12T10:17:36.379Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "bun": "1.3.14",
+  "corpus": "full",
+  "fixtureHash": "bd84781d4fd77552e1bd9dff5eda9d99ddffa47854f350f323d3f368c877023b",
+  "warmups": 2,
+  "runs": 5,
+  "baseline": {
+    "fixtureHash": "bd84781d4fd77552e1bd9dff5eda9d99ddffa47854f350f323d3f368c877023b",
+    "fullTranscriptAllocationBaselineBytes": 50000220,
+    "reviewNote": "Deterministic complete legacy full-transcript 80x24 per-frame allocation baseline on Darwin arm64; excludes retained viewport state."
+  },
+  "wouldBeBaseline": {
+    "fixtureHash": "bd84781d4fd77552e1bd9dff5eda9d99ddffa47854f350f323d3f368c877023b",
+    "fullTranscriptAllocationBaselineBytes": 17200068,
+    "reviewNote": "Measured on darwin-arm64; review this captured value before committing it as a checked baseline."
+  },
+  "measuredFullTranscriptAllocationBaselineBytes": 17200068,
+  "editor": {
+    "documentBytes": 1058583,
+    "undoBytes": 650455,
+    "editP95Ms": 0.04316700000001106
+  },
+  "frames": {
+    "tenK": {
+      "p95Ms": 0.21287499999999682,
+      "allocationBytes": 7584,
+      "viewportRetainedBytes": 2352,
+      "dirtyWriteBytes": 0
+    },
+    "hundredK": {
+      "p95Ms": 0.09212500000001,
+      "allocationBytes": 7616,
+      "viewportRetainedBytes": 2376,
+      "dirtyWriteBytes": 0
+    },
+    "frameGrowthPercent": 0
+  },
+  "markdownRegisteredBytes": 778888,
+  "images": {
+    "uniqueImageBytes": 104860800,
+    "duplicateImageOwnershipBytes": 0,
+    "terminalProtocolCacheBytes": 640
+  },
+  "gates": [
+    {
+      "name": "editor undo",
+      "actual": 650455,
+      "limit": 18894382,
+      "pass": true
+    },
+    {
+      "name": "edit p95",
+      "actual": 0.04316700000001106,
+      "limit": 20,
+      "pass": true
+    },
+    {
+      "name": "frame p95",
+      "actual": 0.09212500000001,
+      "limit": 16,
+      "pass": true
+    },
+    {
+      "name": "allocs/frame",
+      "actual": 7616,
+      "limit": 12500055,
+      "pass": true
+    },
+    {
+      "name": "10K->100K off-screen frame-time growth",
+      "actual": 0,
+      "limit": 10,
+      "pass": true
+    },
+    {
+      "name": "markdown registered",
+      "actual": 778888,
+      "limit": 33554432,
+      "pass": true
+    },
+    {
+      "name": "duplicate image ownership",
+      "actual": 0,
+      "limit": 5243040,
+      "pass": true
+    },
+    {
+      "name": "terminal protocol cache",
+      "actual": 640,
+      "limit": 33554432,
+      "pass": true
+    }
+  ],
+  "status": "passed"
+}

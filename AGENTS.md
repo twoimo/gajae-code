@@ -10,7 +10,7 @@ GJC intentionally exposes exactly four default workflow skills. Do not add, docu
 | --- | --- | --- |
 | `deep-interview` | Socratic requirements interview; writes approved specs under `.gjc/specs/`. | `packages/coding-agent/src/defaults/gjc/skills/deep-interview/SKILL.md` |
 | `ralplan` | Consensus planning and approval gate; writes plans under `.gjc/plans/`. | `packages/coding-agent/src/defaults/gjc/skills/ralplan/SKILL.md` |
-| `ultragoal` | Durable multi-goal execution ledger under `.gjc/ultragoal/`. | `packages/coding-agent/src/defaults/gjc/skills/ultragoal/SKILL.md` |
+| `ultragoal` | Durable multi-goal execution ledger under `.gjc/_session-<id>/ultragoal/`. `.gjc/settings.json` remains global configuration. | `packages/coding-agent/src/defaults/gjc/skills/ultragoal/SKILL.md` |
 | `team` | Tmux-backed parallel execution using `.gjc/state/team/`. | `packages/coding-agent/src/defaults/gjc/skills/team/SKILL.md` |
 
 | Role agent | Purpose | Bundled source file |
@@ -64,7 +64,7 @@ When the user says "agent" or asks why the agent behaves a certain way, they mea
 
 - No `any` unless absolutely necessary.
 - Never use `ReturnType<>`; write the actual type name.
-- No inline imports: no `await import()`, no `import("pkg").Type`, no dynamic type imports. Use top-level imports.
+- No inline imports by default: no `await import()`, no `import("pkg").Type`, and no dynamic type imports. Use top-level imports. Intentional runtime `import()` expressions are permitted only when enumerated in `scripts/dynamic-import-exceptions.json`; update and verify that manifest through `bun scripts/check-dynamic-import-policy.ts`.
 - Check `node_modules` for external API types instead of guessing.
 - Prefer `export * from "./module"` in barrel files. If star exports create ambiguity, remove the redundant path.
 - Use ES `#private` fields. Do not use `private`, `protected`, or `public` on fields/methods except constructor parameter properties where TypeScript requires it.

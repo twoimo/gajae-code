@@ -1049,6 +1049,7 @@ export class ModelRegistry {
 		readonly authStorage: AuthStorage,
 		modelsPath?: string,
 	) {
+		if (process.env.GJC_STARTUP_TRACE === "1") process.stderr.write("startup:model-registry-constructed\n");
 		this.#modelsConfigFile = ModelsConfigFile.relocate(modelsPath);
 		this.#cacheDbPath = modelsPath ? path.join(path.dirname(modelsPath), "models.db") : undefined;
 		// Set up fallback resolver for custom provider API keys
@@ -2671,7 +2672,10 @@ export class ModelRegistry {
 	async getApiKey(
 		model: Model<Api>,
 		sessionId?: string,
-		options: { credentialSelector?: AuthCredentialSelector } = {},
+		options: {
+			credentialSelector?: AuthCredentialSelector;
+			consumeAttempt?: SimpleStreamOptions["consumeAttempt"];
+		} = {},
 	): Promise<string | undefined> {
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
 			return kNoAuth;
@@ -2680,6 +2684,7 @@ export class ModelRegistry {
 			baseUrl: model.baseUrl,
 			modelId: model.id,
 			credentialSelector: options.credentialSelector,
+			consumeAttempt: options.consumeAttempt,
 		});
 	}
 
@@ -2690,7 +2695,10 @@ export class ModelRegistry {
 		provider: string,
 		sessionId?: string,
 		baseUrl?: string,
-		options: { credentialSelector?: AuthCredentialSelector } = {},
+		options: {
+			credentialSelector?: AuthCredentialSelector;
+			consumeAttempt?: SimpleStreamOptions["consumeAttempt"];
+		} = {},
 	): Promise<string | undefined> {
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
@@ -2698,6 +2706,7 @@ export class ModelRegistry {
 		return this.authStorage.getApiKey(provider, sessionId, {
 			baseUrl,
 			credentialSelector: options.credentialSelector,
+			consumeAttempt: options.consumeAttempt,
 		});
 	}
 

@@ -3,11 +3,11 @@ import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { Agent } from "@gajae-code/agent-core";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { CURSOR_MARKER, Text, visibleWidth } from "@gajae-code/tui";
+import { CURSOR_MARKER, Text, type ViewportRowComponent, type ViewportRowWindow, visibleWidth } from "@gajae-code/tui";
+
 import { TempDir } from "@gajae-code/utils";
 import { ModelRegistry } from "../src/config/model-registry";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
 import type {
 	ExtensionActions,
 	ExtensionCommandContextActions,
@@ -17,9 +17,20 @@ import type {
 import { CustomEditor } from "../src/modes/components/custom-editor";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import { InteractiveMode } from "../src/modes/interactive-mode";
+import { initTheme, theme } from "../src/modes/theme/theme";
+
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { associateSessionMessageEntryId, type SessionContext, SessionManager } from "../src/session/session-manager";
+
+function boundedRows(component: ViewportRowComponent, width: number): ViewportRowWindow {
+	return (
+		component.renderRowsWithMetadata?.(width, 0, component.getLogicalRowCount(width)) ?? {
+			lines: component.renderRows(width, 0, component.getLogicalRowCount(width)),
+			metadata: Array(component.getLogicalRowCount(width)).fill(null),
+		}
+	);
+}
 
 class TestModalEditor extends CustomEditor {}
 function stripRenderControls(line: string): string {
@@ -94,6 +105,8 @@ describe("InteractiveMode.setEditorComponent", () => {
 			injectedTtsrRules: [],
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredBuiltinToolNames: [],
+			hasPersistedDiscoveredToolSelection: false,
 			mode: "none",
 		});
 		expect(reconcile).toHaveBeenCalledTimes(1);
@@ -251,59 +264,61 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode.addMessageToChat({ role: "user", content: "synthetic replay row", synthetic: true, timestamp: 2 });
 		mode.showStatus("ephemeral status row");
 
-		const rendered = mode.chatContainer.renderWithViewportAnchors(48);
+		const rendered = boundedRows(mode.chatContainer, 48);
 		const plainLines = rendered.lines.map(line => Bun.stripANSI(line));
 		const durableRow = plainLines.findIndex(line => line.includes("durable semantic user"));
 		const syntheticRow = plainLines.findIndex(line => line.includes("synthetic replay row"));
 		const statusRow = plainLines.findIndex(line => line.includes("ephemeral status row"));
 		expect(durableRow).toBeGreaterThanOrEqual(0);
-		expect(rendered.anchors[durableRow]).not.toBeNull();
-		const durableId = rendered.anchors[durableRow]?.id;
+		expect(rendered.metadata[durableRow]).not.toBeNull();
+		const durableId = rendered.metadata[durableRow]?.sourceId;
 		expect(durableId).toBeDefined();
 		const userLabelRow = plainLines.findIndex(line => line.trim() === "user");
 		expect(userLabelRow).toBeGreaterThanOrEqual(0);
-		expect(rendered.anchors[userLabelRow]).toBeNull();
+		expect(rendered.metadata[userLabelRow]?.sourceId).toBeUndefined();
+
 		expect(rendered.lines.join("")).toContain("\x1b]133;A\x07");
 		expect(rendered.lines.join("")).toContain("\x1b]133;B\x07\x1b]133;C\x07");
 		expect(syntheticRow).toBeGreaterThanOrEqual(0);
-		expect(rendered.anchors[syntheticRow]).toBeNull();
+		expect(rendered.metadata[syntheticRow]?.sourceId).toBeUndefined();
+
 		expect(statusRow).toBeGreaterThanOrEqual(0);
-		expect(rendered.anchors[statusRow]).toBeNull();
+		expect(rendered.metadata[statusRow]?.sourceId).toBeUndefined();
 
 		mode.settings.set("irc.enabled", true);
 		mode.settings.set("irc.sidebar.enabled", true);
 		mode.applyIrcSidebarAvailability(true);
 		mode.toggleIrcSidebar();
-		const visibleSplit = mode.ui.renderWithViewportAnchors(80);
-		const visibleDurable = visibleSplit.anchors.findIndex(anchor => anchor?.id === durableId);
+		const visibleSplit = boundedRows(mode.ui, 80);
+		const visibleDurable = visibleSplit.metadata.findIndex(item => item?.sourceId === durableId);
 		expect(visibleDurable).toBeGreaterThanOrEqual(0);
-		expect(visibleSplit.anchors[visibleDurable]).not.toBeNull();
+		expect(visibleSplit.metadata[visibleDurable]).not.toBeNull();
 
 		mode.applyIrcSidebarAvailability(false);
-		const temporarilyUnavailable = mode.ui.renderWithViewportAnchors(80);
-		const temporaryRow = temporarilyUnavailable.anchors.findIndex(anchor => anchor?.id === durableId);
+		const temporarilyUnavailable = boundedRows(mode.ui, 80);
+		const temporaryRow = temporarilyUnavailable.metadata.findIndex(item => item?.sourceId === durableId);
 		expect(temporaryRow).toBeGreaterThanOrEqual(0);
-		expect(temporarilyUnavailable.anchors[temporaryRow]).not.toBeNull();
+		expect(temporarilyUnavailable.metadata[temporaryRow]).not.toBeNull();
 		mode.applyIrcSidebarAvailability(true);
-		const restoredVisible = mode.ui.renderWithViewportAnchors(80);
-		const restoredRow = restoredVisible.anchors.findIndex(anchor => anchor?.id === durableId);
+		const restoredVisible = boundedRows(mode.ui, 80);
+		const restoredRow = restoredVisible.metadata.findIndex(item => item?.sourceId === durableId);
 		expect(restoredRow).toBeGreaterThanOrEqual(0);
-		expect(restoredVisible.anchors[restoredRow]).not.toBeNull();
+		expect(restoredVisible.metadata[restoredRow]).not.toBeNull();
 
 		mode.settings.set("irc.sidebar.enabled", false);
 		mode.applyIrcSidebarAvailability(false);
-		const hiddenSplit = mode.ui.renderWithViewportAnchors(80);
-		const hiddenDurable = hiddenSplit.anchors.findIndex(anchor => anchor?.id === durableId);
+		const hiddenSplit = boundedRows(mode.ui, 80);
+		const hiddenDurable = hiddenSplit.metadata.findIndex(item => item?.sourceId === durableId);
 		expect(hiddenDurable).toBeGreaterThanOrEqual(0);
-		expect(hiddenSplit.anchors[hiddenDurable]).not.toBeNull();
+		expect(hiddenSplit.metadata[hiddenDurable]).not.toBeNull();
 
 		mode.settings.set("irc.enabled", false);
 		mode.settings.set("irc.sidebar.enabled", true);
 		mode.applyIrcSidebarAvailability(false);
-		const unavailable = mode.ui.renderWithViewportAnchors(80);
-		const unavailableRow = unavailable.anchors.findIndex(anchor => anchor?.id === durableId);
+		const unavailable = boundedRows(mode.ui, 80);
+		const unavailableRow = unavailable.metadata.findIndex(item => item?.sourceId === durableId);
 		expect(unavailableRow).toBeGreaterThanOrEqual(0);
-		expect(unavailable.anchors[unavailableRow]).not.toBeNull();
+		expect(unavailable.metadata[unavailableRow]).not.toBeNull();
 	});
 
 	it("keeps duplicate transcript occurrences distinct and stable across rebuild", () => {
@@ -334,17 +349,22 @@ describe("InteractiveMode.setEditorComponent", () => {
 		associateSessionMessageEntryId(assistantMessages[0], "assistant-a");
 		associateSessionMessageEntryId(assistantMessages[1], "assistant-b");
 		for (const message of [...userMessages, ...assistantMessages]) mode.addMessageToChat(message);
-		const orderedOccurrenceIds = (anchors: ReadonlyArray<{ id: string } | null>, prefix: string): string[] => {
+		const orderedOccurrenceIds = (
+			metadata: ReadonlyArray<{ sourceId?: string } | null>,
+			prefix: string,
+		): string[] => {
 			const ids: string[] = [];
 			const seen = new Set<string>();
-			for (const anchor of anchors) {
-				if (anchor === null || !anchor.id.startsWith(prefix) || seen.has(anchor.id)) continue;
-				seen.add(anchor.id);
-				ids.push(anchor.id);
+			for (const item of metadata) {
+				const id = item?.sourceId;
+				if (!id?.startsWith(prefix) || seen.has(id)) continue;
+				seen.add(id);
+				ids.push(id);
 			}
 			return ids;
 		};
-		const initial = mode.chatContainer.renderWithViewportAnchors(80).anchors;
+		const initial = boundedRows(mode.chatContainer, 80).metadata;
+
 		const initialUserIds = orderedOccurrenceIds(initial, "user:");
 		const initialAssistantIds = orderedOccurrenceIds(initial, "assistant:");
 		expect(initialUserIds).toHaveLength(2);
@@ -364,7 +384,8 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode.renderSessionContext({
 			messages: [insertedUser, rebuiltUserA, rebuiltUserB, rebuiltAssistantA, rebuiltAssistantB],
 		} as unknown as SessionContext);
-		const inserted = mode.chatContainer.renderWithViewportAnchors(80).anchors;
+		const inserted = boundedRows(mode.chatContainer, 80).metadata;
+
 		expect(orderedOccurrenceIds(inserted, "user:")).toEqual(["user:entry:user-inserted", ...initialUserIds]);
 		expect(orderedOccurrenceIds(inserted, "assistant:")).toEqual(initialAssistantIds);
 
@@ -372,7 +393,8 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode.renderSessionContext({
 			messages: [rebuiltUserA, rebuiltUserB, rebuiltAssistantA, rebuiltAssistantB],
 		} as unknown as SessionContext);
-		const afterDeletion = mode.chatContainer.renderWithViewportAnchors(80).anchors;
+		const afterDeletion = boundedRows(mode.chatContainer, 80).metadata;
+
 		expect(orderedOccurrenceIds(afterDeletion, "user:")).toEqual(initialUserIds);
 		expect(orderedOccurrenceIds(afterDeletion, "assistant:")).toEqual(initialAssistantIds);
 	});
@@ -399,9 +421,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(liveId).toContain(":occurrence:");
 		mode.addMessageToChat(liveMessage);
 		expect(
-			mode.chatContainer
-				.renderWithViewportAnchors(80)
-				.anchors.some(anchor => anchor?.id === `${liveId}:content:0:text`),
+			boundedRows(mode.chatContainer, 80).metadata.some(item => item?.sourceId === `${liveId}:content:0:text`),
 		).toBe(true);
 
 		session.sessionManager.appendMessage(liveMessage);
@@ -414,9 +434,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode.chatContainer.clear();
 		mode.renderSessionContext(rebuiltContext);
 		expect(
-			mode.chatContainer
-				.renderWithViewportAnchors(80)
-				.anchors.some(anchor => anchor?.id === `${liveId}:content:0:text`),
+			boundedRows(mode.chatContainer, 80).metadata.some(item => item?.sourceId === `${liveId}:content:0:text`),
 		).toBe(true);
 	});
 	function expectedNewlineShortcutHint(): string {

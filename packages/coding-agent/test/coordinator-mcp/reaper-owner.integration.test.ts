@@ -4,16 +4,10 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	buildGjcTmuxExactOptionTarget,
-	buildGjcTmuxProfileCommands,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-common";
-import {
-	observeOwnerTerminal,
-	replaceOwnerGeneration,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation";
-import { forceCloseGjcTmuxSession } from "@gajae-code/coding-agent/gjc-runtime/tmux-sessions";
 import { createCoordinatorMcpServer } from "../../src/coordinator-mcp/server";
+import { buildGjcTmuxExactOptionTarget, buildGjcTmuxProfileCommands } from "../../src/gjc-runtime/tmux-common";
+import { observeOwnerTerminal, replaceOwnerGeneration } from "../../src/gjc-runtime/tmux-owner-isolation";
+import { forceCloseGjcTmuxSession } from "../../src/gjc-runtime/tmux-sessions";
 
 // BLOCKER 1 (#2044): prove the reaper terminates a *genuine* GJC-managed owned session by driving
 // the reaper's real path through the coordinator's stop_session tool. The reaper's injectable

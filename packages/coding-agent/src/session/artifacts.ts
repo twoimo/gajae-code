@@ -12,6 +12,13 @@ export interface ArtifactSaveOptions {
 	maxBytes?: number;
 }
 
+export interface ArtifactMetadata {
+	complete: boolean;
+	retainedBytes: number;
+	originalBytes: number;
+	omittedBytes: number;
+}
+
 /**
  * Manages artifact storage for a session.
  *
@@ -103,15 +110,23 @@ export class ArtifactManager {
 		const { id, path } = await this.allocatePath(toolType);
 		const maxBytes = Math.max(0, options.maxBytes ?? DEFAULT_ARTIFACT_MAX_BYTES);
 		const contentBytes = Buffer.byteLength(content, "utf-8");
-		if (contentBytes > maxBytes) {
-			const truncated = truncateHeadBytes(content, maxBytes);
+		const retained =
+			contentBytes > maxBytes ? truncateHeadBytes(content, maxBytes) : { text: content, bytes: contentBytes };
+		const metadata: ArtifactMetadata = {
+			complete: contentBytes <= maxBytes,
+			retainedBytes: retained.bytes,
+			originalBytes: contentBytes,
+			omittedBytes: Math.max(0, contentBytes - retained.bytes),
+		};
+		if (metadata.complete) {
+			await Bun.write(path, content);
+		} else {
 			await Bun.write(
 				path,
-				`${truncated.text}\n[artifact truncated after ${truncated.bytes} bytes; omitted at least ${contentBytes - truncated.bytes} bytes]\n`,
+				`${retained.text}\n[artifact truncated after ${retained.bytes} bytes; omitted ${metadata.omittedBytes} bytes]\n`,
 			);
-		} else {
-			await Bun.write(path, content);
 		}
+		await Bun.write(`${path}.meta.json`, JSON.stringify(metadata));
 		return id;
 	}
 
@@ -144,7 +159,7 @@ export class ArtifactManager {
 	 */
 	async getPath(id: string): Promise<string | null> {
 		const files = await this.listFiles();
-		const match = files.find(f => f.startsWith(`${id}.`));
+		const match = files.find(f => f.startsWith(`${id}.`) && !f.endsWith(".meta.json"));
 		return match ? path.join(this.#dir, match) : null;
 	}
 }

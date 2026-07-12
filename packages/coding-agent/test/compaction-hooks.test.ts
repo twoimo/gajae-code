@@ -8,21 +8,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { Snowflake } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
 import {
 	HookRunner,
 	type LoadedHook,
 	type SessionBeforeCompactEvent,
 	type SessionCompactEvent,
 	type SessionEvent,
-} from "@gajae-code/coding-agent/extensibility/hooks";
-import { theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { createTools, type ToolSession } from "@gajae-code/coding-agent/tools";
-import { Snowflake } from "@gajae-code/utils";
+} from "../src/extensibility/hooks";
+import { theme } from "../src/modes/theme/theme";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
+import { createTools, type ToolSession } from "../src/tools";
 import { e2eApiKey } from "./utilities";
 
 describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("Compaction hooks", () => {

@@ -101,7 +101,7 @@ describe("text utils", () => {
 		expect(visibleWidths(["a\tb"])).toEqual([7]);
 	});
 
-	it("normalizes transcript frames with batched native calls instead of per-line truncation calls", async () => {
+	it("normalizes transcript frames without redundant per-line truncation calls", async () => {
 		const term = new VirtualTerminal(16, 100);
 		const tui = new TUI(term);
 		tui.start();
@@ -116,6 +116,8 @@ describe("text utils", () => {
 		__textHelperPerfCounters.reset();
 		tui.requestRender(true, "batch-count-test");
 		await term.waitForRender();
+		// The native width oracle must measure each uncached non-ASCII batch before deciding
+		// whether truncation is needed; it is one batch call, never per-line work.
 		expect(__textHelperPerfCounters.visibleWidthsCalls).toBe(1);
 		expect(__textHelperPerfCounters.truncateLinesToWidthCalls).toBe(1);
 		expect(__textHelperPerfCounters.truncateToWidthCalls).toBe(0);

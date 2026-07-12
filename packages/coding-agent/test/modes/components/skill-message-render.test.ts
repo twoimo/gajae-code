@@ -1,12 +1,8 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { SkillMessageComponent } from "@gajae-code/coding-agent/modes/components/skill-message";
-import * as themeModule from "@gajae-code/coding-agent/modes/theme/theme";
-import {
-	type CustomMessage,
-	SKILL_PROMPT_MESSAGE_TYPE,
-	type SkillPromptDetails,
-} from "@gajae-code/coding-agent/session/messages";
+import { resetSettingsForTest, Settings } from "../../../src/config/settings";
+import { SkillMessageComponent } from "../../../src/modes/components/skill-message";
+import * as themeModule from "../../../src/modes/theme/theme";
+import { type CustomMessage, SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../../src/session/messages";
 
 beforeAll(async () => {
 	resetSettingsForTest();

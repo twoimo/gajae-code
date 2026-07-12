@@ -1,5 +1,10 @@
 import * as path from "node:path";
 import { getAgentDir, isEnoent, parseFrontmatter } from "@gajae-code/utils";
+import {
+	CANONICAL_WORKFLOW_SKILLS,
+	type CanonicalWorkflowSkill,
+	getWorkflowFragmentDefinitions,
+} from "../extensibility/workflow-fragments";
 import autoAnswerUncertainFragment from "./gjc/skills/deep-interview/auto-answer-uncertain.md" with { type: "text" };
 import autoResearchGreenfieldFragment from "./gjc/skills/deep-interview/auto-research-greenfield.md" with {
 	type: "text",
@@ -14,8 +19,8 @@ import pipelineValidationContractsFragment from "./gjc/skills/ultragoal/pipeline
 };
 import ultragoalSkill from "./gjc/skills/ultragoal/SKILL.md" with { type: "text" };
 
-export const DEFAULT_GJC_DEFINITION_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"] as const;
-export type DefaultGjcDefinitionName = (typeof DEFAULT_GJC_DEFINITION_NAMES)[number];
+export const DEFAULT_GJC_DEFINITION_NAMES = CANONICAL_WORKFLOW_SKILLS;
+export type DefaultGjcDefinitionName = CanonicalWorkflowSkill;
 export type DefaultGjcDefinitionKind = "skill" | "skill-fragment";
 export type EmbeddedDefaultGjcSkill = {
 	name: DefaultGjcDefinitionName;
@@ -122,6 +127,12 @@ const DEFAULT_GJC_DEFINITIONS: readonly DefaultGjcDefinition[] = [
 		relativePath: "skill-fragments/ultragoal/pipeline-validation-contracts.md",
 		content: pipelineValidationContractsFragment,
 	},
+	...getWorkflowFragmentDefinitions().map(fragment => ({
+		kind: "skill-fragment" as const,
+		parentSkillName: fragment.skill,
+		relativePath: fragment.relativePath,
+		content: fragment.content,
+	})),
 ];
 
 export function getDefaultGjcDefinitions(): readonly DefaultGjcDefinition[] {

@@ -2,12 +2,12 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { Skill } from "@gajae-code/coding-agent/extensibility/skills";
-import { buildSystemPrompt } from "@gajae-code/coding-agent/system-prompt";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { SkillTool } from "@gajae-code/coding-agent/tools/skill";
-import { SkillDiscoveryTool } from "@gajae-code/coding-agent/tools/skill-discovery";
+import { Settings } from "../../src/config/settings";
+import type { Skill } from "../../src/extensibility/skills";
+import { buildSystemPrompt } from "../../src/system-prompt";
+import type { ToolSession } from "../../src/tools";
+import { SkillTool } from "../../src/tools/skill";
+import { SkillDiscoveryTool } from "../../src/tools/skill-discovery";
 
 async function makeSkill(root: string, name: string, description: string, body = "Skill body"): Promise<string> {
 	const dir = path.join(root, name);

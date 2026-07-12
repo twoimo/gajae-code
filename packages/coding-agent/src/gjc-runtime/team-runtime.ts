@@ -6,6 +6,15 @@ import { SPAWN_PROVENANCE_ENV } from "../notifications/config";
 import type { WorkflowHudSummary } from "../skill-state/active-state";
 import { buildTeamHudSummary as buildWorkflowTeamHudSummary } from "../skill-state/workflow-hud";
 import { WORKFLOW_STATE_VERSION } from "../skill-state/workflow-state-contract";
+import {
+	deriveTeamPhase as deriveTeamCorePhase,
+	isLeaseActive as isTeamCoreLeaseActive,
+	isReplayEligibleNotification as isTeamCoreReplayEligibleNotification,
+	lifecycleStateForWorkerStatus as lifecycleStateForCoreWorkerStatus,
+	summarizeNotifications as summarizeCoreNotifications,
+	taskClaimEligibilityReason as taskCoreClaimEligibilityReason,
+	validateTaskTransition as validateTeamCoreTaskTransition,
+} from "./core/team-core";
 import type { GcPidProbe, GcRecord } from "./gc-runtime";
 import { applyGjcTmuxProfile } from "./launch-tmux";
 import { modeStatePath, sessionIdFromDirName, sessionReportsDir, teamStateRoot } from "./session-layout";
@@ -1130,20 +1139,7 @@ function parseRequiredGjcWorkerStatusState(value: unknown): GjcWorkerStatusState
 }
 
 function lifecycleStateForWorkerStatus(status: GjcWorkerStatusState): GjcTeamWorkerLifecycleState {
-	switch (status) {
-		case "working":
-			return "working";
-		case "draining":
-			return "draining";
-		case "failed":
-			return "failed";
-		case "unknown":
-			return "unknown";
-		case "idle":
-		case "blocked":
-		case "done":
-			return "ready";
-	}
+	return lifecycleStateForCoreWorkerStatus(status);
 }
 
 function parseGjcTeamShutdownMode(value: unknown): GjcTeamShutdownMode {
@@ -1495,9 +1491,11 @@ async function resolveGjcTeamSnapshotPhase(
 	tasks: GjcTeamTask[],
 	monitor: GjcTeamMonitorSnapshot | null,
 ): Promise<GjcTeamPhase> {
-	if (storedPhase !== "running") return storedPhase;
-	if (tasks.length === 0 || !tasks.every(isGjcTeamTaskCompletionVerified)) return storedPhase;
-	return (await hasPendingGjcTeamIntegration(dir, config, monitor)) ? "awaiting_integration" : storedPhase;
+	return deriveTeamCorePhase({
+		storedPhase,
+		tasks,
+		hasPendingIntegration: await hasPendingGjcTeamIntegration(dir, config, monitor),
+	});
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1643,41 +1641,19 @@ function getGjcTeamTaskCompletionEvidenceFailure(task: GjcTeamTask): string | nu
 function isGjcTeamTaskCompletionVerified(task: GjcTeamTask): boolean {
 	return getGjcTeamTaskCompletionEvidenceFailure(task) == null;
 }
-function roleValuesForWorker(worker: GjcTeamWorker): Set<string> {
-	return new Set([worker.role, worker.agent_type].map(value => value.trim()).filter(value => value.length > 0));
-}
-
 function getGjcTeamTaskClaimEligibilityReason(
 	task: GjcTeamTask,
 	worker: GjcTeamWorker,
 	tasks: GjcTeamTask[],
 ): string | null {
-	if (task.status !== "pending") return `task_not_pending:${task.id}`;
-	if (task.owner && task.owner !== worker.id) return `task_owner_mismatch:${task.id}:${task.owner}`;
-	if (task.assignee && task.assignee !== worker.id) return `task_assignee_mismatch:${task.id}:${task.assignee}`;
-
-	const workerRoles = roleValuesForWorker(worker);
-	if (task.required_role && !workerRoles.has(task.required_role))
-		return `task_role_mismatch:${task.id}:${task.required_role}`;
-	if (task.allowed_roles?.length && !task.allowed_roles.some(role => workerRoles.has(role)))
-		return `task_role_mismatch:${task.id}:${task.allowed_roles.join(",")}`;
-
-	if (task.blocked_by?.length) return `task_blocked:${task.id}:${task.blocked_by.join(",")}`;
-	for (const dependencyId of task.depends_on ?? []) {
-		const dependency = tasks.find(candidate => candidate.id === dependencyId);
-		if (!dependency || !isGjcTeamTaskCompletionVerified(dependency))
-			return `task_dependency_incomplete:${task.id}:${dependencyId}`;
-	}
-
-	return null;
+	return taskCoreClaimEligibilityReason(task, worker, tasks);
 }
 
 async function getActiveClaimReason(dir: string, task: GjcTeamTask): Promise<string | null> {
 	const claimPath = path.join(dir, "claims", `${task.id}.json`);
 	const diskClaim = readClaimRecord(await readJsonFile<unknown>(claimPath));
 	const claim = task.claim ?? diskClaim;
-	if (!claim || isPastTimestamp(claim.leased_until)) return null;
-	return `task_already_claimed:${task.id}`;
+	return isTeamCoreLeaseActive(claim, now()) ? `task_already_claimed:${task.id}` : null;
 }
 function isGjcTeamTaskRecord(value: unknown): value is GjcTeamTask {
 	return (
@@ -3717,17 +3693,15 @@ export async function transitionGjcTeamTaskStatus(
 	const config = await readConfig(dir);
 	const task = await readGjcTeamTask(teamName, taskId, cwd, env);
 	if (workerId) assertKnownWorker(config, workerId);
-	if (status === "pending") throw new Error(`invalid_task_transition:${taskId}:pending_requires_release`);
-	if (task.status === "completed" || task.status === "failed") throw new Error(`task_terminal:${taskId}`);
-	if (!task.claim) throw new Error(`claim_token_required:${taskId}`);
-	if (!claimToken) throw new Error(`claim_token_required:${taskId}`);
-	if (task.claim.token !== claimToken) throw new Error(`claim_token_mismatch:${taskId}`);
-	if (workerId && task.claim.owner !== workerId) throw new Error(`claim_owner_mismatch:${taskId}`);
+	const transitionError = validateTeamCoreTaskTransition({ task, status, claimToken, workerId });
+	if (transitionError) throw new Error(transitionError);
+	const claim = task.claim;
+	if (!claim) throw new Error(`claim_token_required:${taskId}`);
 	const terminal = status === "completed" || status === "failed";
 	const transitionedAt = now();
 	const completionEvidence =
 		status === "completed"
-			? normalizeGjcTeamTaskCompletionEvidence(taskId, task.claim.owner, completionEvidenceInput, transitionedAt)
+			? normalizeGjcTeamTaskCompletionEvidence(taskId, claim.owner, completionEvidenceInput, transitionedAt)
 			: undefined;
 	const updated: GjcTeamTask = {
 		...task,
@@ -3815,32 +3789,11 @@ export async function releaseGjcTeamTaskClaim(
 	return updated;
 }
 
-function emptyNotificationSummary(): GjcTeamNotificationSummary {
-	return {
-		total: 0,
-		replay_eligible: 0,
-		by_state: {
-			pending: 0,
-			sent: 0,
-			queued: 0,
-			deferred: 0,
-			failed: 0,
-			delivered: 0,
-			acknowledged: 0,
-		},
-	};
-}
 function isReplayEligibleNotification(state: GjcTeamNotificationDeliveryState): boolean {
-	return state === "pending" || state === "queued" || state === "deferred" || state === "failed";
+	return isTeamCoreReplayEligibleNotification(state);
 }
 function summarizeNotifications(notifications: GjcTeamNotification[]): GjcTeamNotificationSummary {
-	const summary = emptyNotificationSummary();
-	for (const notification of notifications) {
-		summary.total += 1;
-		summary.by_state[notification.delivery_state] += 1;
-		if (isReplayEligibleNotification(notification.delivery_state)) summary.replay_eligible += 1;
-	}
-	return summary;
+	return summarizeCoreNotifications(notifications);
 }
 async function listNotificationRecords(dir: string): Promise<GjcTeamNotification[]> {
 	const notificationsDir = path.join(dir, "notifications");

@@ -4,6 +4,7 @@
  */
 import {
 	type AutocompleteProvider,
+	type Component,
 	Container,
 	Editor,
 	Markdown,
@@ -76,13 +77,15 @@ export interface HookSelectorOptions {
 	acceleratorMap?: Readonly<Record<string, string>>;
 }
 
-class OutlinedList extends Container {
+class OutlinedList implements Component {
 	#lines: string[] = [];
 
 	setLines(lines: string[]): void {
 		this.#lines = lines;
 		this.invalidate();
 	}
+
+	invalidate(): void {}
 
 	render(width: number): string[] {
 		const borderColor = (text: string) => theme.fg("border", text);
@@ -98,16 +101,19 @@ class OutlinedList extends Container {
 	}
 }
 
-class ScrollableTitle extends Container {
+class ScrollableTitle implements Component {
 	#markdown: Markdown;
 	#maxRows: number;
 	#scrollOffset = 0;
 	#lastMaxScrollOffset = 0;
 
 	constructor(title: string, maxRows: number) {
-		super();
 		this.#maxRows = Math.max(1, Math.floor(maxRows));
 		this.#markdown = new Markdown(title, 1, 0, getMarkdownTheme(), { color: t => theme.fg("accent", t) });
+	}
+
+	invalidate(): void {
+		this.#markdown.invalidate();
 	}
 
 	setText(text: string): void {
@@ -196,16 +202,17 @@ class ScrollableTitle extends Container {
  * exceed the remaining budget, it is compacted to contextual rows plus an
  * omitted-rows marker so controls stay reachable for untrusted long labels.
  */
-class FocusAwareList extends Container {
+class FocusAwareList implements Component {
 	#options: string[] = [];
 	#selectedIndex = 0;
 	#maxVisibleRows = 0;
 	#outline: boolean;
 
 	constructor(outline: boolean) {
-		super();
 		this.#outline = outline;
 	}
+
+	invalidate(): void {}
 
 	setState(options: string[], selectedIndex: number, maxVisibleRows: number): void {
 		this.#options = options;

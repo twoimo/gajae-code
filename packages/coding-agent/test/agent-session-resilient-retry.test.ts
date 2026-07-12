@@ -5,12 +5,12 @@ import { Agent } from "@gajae-code/agent-core";
 import { type AssistantMessage, getBundledModel, type Model } from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession, type AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { AgentSession, type AgentSessionEvent } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
@@ -193,6 +193,7 @@ describe("AgentSession resilient retry", () => {
 				{ content: ["recovered"] },
 			],
 			requestedModels,
+			settingsOverrides: { "retry.unbounded": true },
 		});
 		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { retryStartEvents, retryEndEvents } = track(session);
@@ -221,7 +222,7 @@ describe("AgentSession resilient retry", () => {
 		await session.waitForIdle();
 
 		expect(retryStartEvents).toHaveLength(1);
-		expect(retryStartEvents[0].unbounded).toBe(true);
+		expect(retryStartEvents[0].unbounded).toBe(false);
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true });
 		expect(lastAssistant(session).stopReason).toBe("stop");
@@ -668,6 +669,7 @@ describe("AgentSession resilient retry", () => {
 				{ content: ["recovered"] },
 			],
 			requestedModels,
+			settingsOverrides: { "retry.unbounded": true },
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { retryStartEvents, retryEndEvents } = track(session);

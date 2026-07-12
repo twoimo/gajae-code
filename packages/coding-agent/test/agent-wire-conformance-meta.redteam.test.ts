@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import type { AgentWireEventType } from "../src/modes/shared/agent-wire/event-contract";
 import { AGENT_WIRE_EVENT_TYPES, AGENT_WIRE_PROTOCOL_VERSION } from "../src/modes/shared/agent-wire/event-contract";
 import { AgentWireFrameSequencer, toAgentWireEventFrame } from "../src/modes/shared/agent-wire/event-envelope";
 import { observeAgentSessionEvent } from "../src/modes/shared/agent-wire/event-observation";
+import type { AgentSessionEvent } from "../src/session/agent-session";
 import { EVENT_FIXTURES, RAW_SECRET } from "./agent-wire/fixtures";
 
 const PINNED_EVENT_FRAME_KEYS = ["frame_id", "payload", "protocol_version", "seq", "session_id", "type"];
@@ -27,7 +29,7 @@ describe("agent-wire conformance matrix meta red-team", () => {
 		expect(() => expectFixtureCoverageEqualsRegistry(EVENT_FIXTURES)).not.toThrow();
 
 		const [omittedType] = AGENT_WIRE_EVENT_TYPES;
-		const deliberatelyBrokenFixtures = { ...EVENT_FIXTURES };
+		const deliberatelyBrokenFixtures: Partial<Record<AgentWireEventType, AgentSessionEvent>> = { ...EVENT_FIXTURES };
 		delete deliberatelyBrokenFixtures[omittedType];
 
 		expect(() => expectFixtureCoverageEqualsRegistry(deliberatelyBrokenFixtures)).toThrow();

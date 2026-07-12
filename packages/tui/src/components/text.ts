@@ -1,4 +1,4 @@
-import type { Component } from "../tui";
+import type { ViewportRowComponent, ViewportRowMetadata, ViewportRowWindow } from "../tui";
 
 import {
 	annotateViewportAnchorGraphemes,
@@ -14,7 +14,7 @@ import {
 /**
  * Text component - displays multi-line text with word wrapping
  */
-export class Text implements Component {
+export class Text implements ViewportRowComponent {
 	#text: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
@@ -95,6 +95,11 @@ export class Text implements Component {
 		} else {
 			wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
 		}
+		if (!normalizedText.includes("\n") && !normalizedText.includes("\r")) {
+			const coalesced = this.#coalesceWrappedRows(contentWidth, wrappedLines, wrappedSpans);
+			wrappedLines = coalesced.lines;
+			wrappedSpans = coalesced.spans;
+		}
 
 		const leftMargin = padding(this.#paddingX);
 		const rightMargin = padding(this.#paddingX);
@@ -117,18 +122,67 @@ export class Text implements Component {
 		return { lines: result.length > 0 ? result : [""], spans };
 	}
 
-	renderWithViewportAnchorSource(
+	#coalesceWrappedRows(
 		width: number,
-		source: { id: string },
-	): {
-		lines: string[];
-		anchors: Array<({ id: string } & ViewportAnchorSpan) | null>;
-	} {
+		lines: string[],
+		spans: Array<ViewportAnchorSpan | null> | undefined,
+	): { lines: string[]; spans: Array<ViewportAnchorSpan | null> | undefined } {
+		if (lines.length < 2) return { lines, spans };
+		const coalescedLines: string[] = [];
+		const coalescedSpans = spans ? ([] as Array<ViewportAnchorSpan | null>) : undefined;
+		let currentLine = lines[0] ?? "";
+		let currentSpan = spans?.[0] ?? null;
+		for (let index = 1; index < lines.length; index++) {
+			const nextLine = lines[index] ?? "";
+			const nextSpan = spans?.[index] ?? null;
+			if (
+				currentLine.length > 0 &&
+				nextLine.length > 0 &&
+				visibleWidth(currentLine) + visibleWidth(nextLine) <= width
+			) {
+				currentLine += nextLine;
+				if (currentSpan && nextSpan) {
+					currentSpan = {
+						graphemeStart: Math.min(currentSpan.graphemeStart, nextSpan.graphemeStart),
+						graphemeEnd: Math.max(currentSpan.graphemeEnd, nextSpan.graphemeEnd),
+						cellStart: Math.min(currentSpan.cellStart, nextSpan.cellStart),
+						cellEnd: Math.max(currentSpan.cellEnd, nextSpan.cellEnd),
+					};
+				} else {
+					currentSpan ??= nextSpan;
+				}
+				continue;
+			}
+			coalescedLines.push(currentLine);
+			coalescedSpans?.push(currentSpan);
+			currentLine = nextLine;
+			currentSpan = nextSpan;
+		}
+		coalescedLines.push(currentLine);
+		coalescedSpans?.push(currentSpan);
+		return { lines: coalescedLines, spans: coalescedSpans };
+	}
+
+	renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
 		const { lines, spans } = this.#render(width, true);
-		if (!spans) throw new Error("Viewport anchor source render completed without row spans");
+		if (!spans) throw new Error("Text bounded metadata render completed without row spans");
+		const from = Math.max(0, start);
+		const to = Math.max(from, end);
 		return {
-			lines,
-			anchors: spans.map(span => (span ? { id: source.id, ...span } : null)),
+			lines: lines.slice(from, to),
+			metadata: spans
+				.slice(from, to)
+				.map((span): ViewportRowMetadata | null =>
+					span ? { identity: undefined, revision: undefined, ...span } : null,
+				),
 		};
+	}
+
+	getLogicalRowCount(width: number): number {
+		return this.#render(width, false).lines.length;
+	}
+
+	renderRows(width: number, start: number, end: number): string[] {
+		return this.#render(width, false).lines.slice(Math.max(0, start), Math.max(0, end));
 	}
 }

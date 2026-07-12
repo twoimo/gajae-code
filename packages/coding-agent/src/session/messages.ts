@@ -28,7 +28,9 @@ export {
 } from "@gajae-code/agent-core/compaction/messages";
 
 import type { LoadedSubskillActivation } from "../extensibility/gjc-plugins";
+import type { WorkflowPhaseResolution } from "../skill-state/workflow-phase-resolver";
 import type { OutputMeta } from "../tools/output-meta";
+
 import { formatOutputNotice } from "../tools/output-meta";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
@@ -40,6 +42,7 @@ export interface SkillPromptDetails {
 	lineCount: number;
 	subskillActivation?: LoadedSubskillActivation;
 	subskillActivationSet?: LoadedSubskillActivation[];
+	workflowResolution?: WorkflowPhaseResolution;
 	/** Internal: tag used by AgentSession to remove the pending-display chip
 	 *  from `#steeringMessages` / `#followUpMessages` when the agent consumes
 	 *  this message. Not surfaced to renderers; the `__` prefix signals

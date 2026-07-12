@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@gajae-code/agent-core";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { editToolRenderer } from "@gajae-code/coding-agent/edit/renderer";
-import { ToolExecutionComponent } from "@gajae-code/coding-agent/modes/components/tool-execution";
-import * as themeModule from "@gajae-code/coding-agent/modes/theme/theme";
 import type { TUI } from "@gajae-code/tui";
+import { resetSettingsForTest, Settings } from "../../src/config/settings";
+import { editToolRenderer } from "../../src/edit/renderer";
+import { ToolExecutionComponent } from "../../src/modes/components/tool-execution";
+import * as themeModule from "../../src/modes/theme/theme";
 
 beforeAll(async () => {
 	resetSettingsForTest();

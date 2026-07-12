@@ -4,7 +4,7 @@ import {
 	type ResumeDescriptor,
 	type SubagentRecord,
 	type SubagentRunOutcome,
-} from "@gajae-code/coding-agent/async/job-manager";
+} from "../../src/async/job-manager";
 
 setDefaultTimeout(10_000);
 

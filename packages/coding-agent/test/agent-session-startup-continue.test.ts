@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@gajae-code/agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@gajae-code/ai";
 import { getBundledModel } from "@gajae-code/ai/models";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 function testModel() {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");

@@ -2,9 +2,20 @@ import { describe, expect, it } from "bun:test";
 
 import * as path from "node:path";
 
-import { buildDevCompileArgs, buildReleaseCompileArgs, releaseEntrypoints } from "../scripts/compile-args";
+import {
+	buildCoreDevCompileArgs,
+	buildCoreReleaseCompileArgs,
+	buildDevCompileArgs,
+	buildReleaseCompileArgs,
+	coreReleaseEntrypoints,
+	releaseEntrypoints,
+} from "../scripts/compile-args";
 
 const releaseArgs = buildReleaseCompileArgs("bun-darwin-arm64", "packages/coding-agent/binaries/gjc-darwin-arm64");
+const coreReleaseArgs = buildCoreReleaseCompileArgs(
+	"bun-darwin-arm64",
+	"packages/coding-agent/binaries/gjc-core-darwin-arm64",
+);
 
 function valuesAfter(args: string[], flag: string): string[] {
 	const values: string[] = [];
@@ -25,6 +36,8 @@ describe("release build compile args", () => {
 	it("minifies both dev and release builds", () => {
 		expect(buildDevCompileArgs()).toContain("--minify");
 		expect(releaseArgs).toContain("--minify");
+		expect(buildCoreDevCompileArgs()).toContain("--minify");
+		expect(coreReleaseArgs).toContain("--minify");
 	});
 
 	it("does not ship handlebars as a bunfs extra entrypoint (#1939)", () => {
@@ -33,7 +46,10 @@ describe("release build compile args", () => {
 		// handlebars is bundled via a statically-traceable require instead.
 		expect(releaseEntrypoints).not.toContain("./node_modules/handlebars/lib/index.js");
 		expect(releaseArgs).not.toContain("./node_modules/handlebars/lib/index.js");
+		expect(coreReleaseEntrypoints).not.toContain("./node_modules/handlebars/lib/index.js");
+		expect(coreReleaseArgs).not.toContain("./node_modules/handlebars/lib/index.js");
 		expect(buildDevCompileArgs()).not.toContain("../../node_modules/handlebars/lib/index.js");
+		expect(buildCoreDevCompileArgs()).not.toContain("../../node_modules/handlebars/lib/index.js");
 	});
 
 	it("marks release binaries with release build metadata", () => {
@@ -48,7 +64,14 @@ describe("release build compile args", () => {
 		expect(devDefines).toContain('process.env.GJC_BUILD_CHANNEL="dev"');
 	});
 
-	it("includes worker entrypoints in release args", () => {
+	it("embeds an explicit SKU marker in full and core builds", () => {
+		expect(valuesAfter(releaseArgs, "--define")).toContain('process.env.GJC_BUILD_SKU="full"');
+		expect(valuesAfter(coreReleaseArgs, "--define")).toContain('process.env.GJC_BUILD_SKU="core"');
+		expect(valuesAfter(buildDevCompileArgs(), "--define")).toContain('process.env.GJC_BUILD_SKU="full"');
+		expect(valuesAfter(buildCoreDevCompileArgs(), "--define")).toContain('process.env.GJC_BUILD_SKU="core"');
+	});
+
+	it("includes worker and lazy CommonJS entrypoints in release args", () => {
 		expect(releaseEntrypoints).toContain("./packages/stats/src/sync-worker.ts");
 		expect(releaseEntrypoints).toContain("./packages/coding-agent/src/tools/browser/tab-worker-entry.ts");
 		expect(releaseEntrypoints).toContain("./packages/coding-agent/src/eval/js/worker-entry.ts");
@@ -67,6 +90,20 @@ describe("release build compile args", () => {
 		expect(buildDevCompileArgs()).not.toContain("../ai/src/models.json");
 	});
 
+	it("keeps the core SKU entrypoint set minimal", () => {
+		expect(coreReleaseEntrypoints).toEqual([
+			"./packages/coding-agent/src/cli.ts",
+			"./packages/natives/native/index.js",
+		]);
+		expect(coreReleaseArgs).not.toContain("./packages/stats/src/sync-worker.ts");
+		expect(coreReleaseArgs).not.toContain("./packages/coding-agent/src/tools/browser/tab-worker-entry.ts");
+		expect(coreReleaseArgs).not.toContain("./packages/coding-agent/src/eval/js/worker-entry.ts");
+		expect(coreReleaseArgs).not.toContain("./packages/coding-agent/src/notifications/telegram-daemon-cli.ts");
+	});
+
+	it("does not add lazy CommonJS modules as dev compile entrypoints", () => {
+		expect(buildDevCompileArgs()).not.toContain("../../node_modules/handlebars/lib/index.js");
+	});
 	it("has exactly one target and outfile", () => {
 		expect(valuesAfter(releaseArgs, "--target")).toEqual(["bun-darwin-arm64"]);
 		expect(valuesAfter(releaseArgs, "--outfile")).toEqual(["packages/coding-agent/binaries/gjc-darwin-arm64"]);
@@ -86,11 +123,15 @@ describe("release build compile args", () => {
 		const buildLines = stdout.split("\n").filter(line => line.includes("bun build --compile"));
 		expect(buildLines.length).toBeGreaterThan(0);
 		for (const line of buildLines) {
-			const target = valuesAfter(line.replace(/^DRY RUN /, "").split(" "), "--target")[0];
-			const outfile = valuesAfter(line.replace(/^DRY RUN /, "").split(" "), "--outfile")[0];
+			const argv = line.replace(/^DRY RUN /, "").split(" ");
+			const target = valuesAfter(argv, "--target")[0];
+			const outfile = valuesAfter(argv, "--outfile")[0];
 			expect(target).toBeDefined();
 			expect(outfile).toBeDefined();
-			expect(line).toBe(`DRY RUN ${buildReleaseCompileArgs(target as string, outfile as string).join(" ")}`);
+			const expected = outfile?.includes("gjc-core-")
+				? buildCoreReleaseCompileArgs(target as string, outfile)
+				: buildReleaseCompileArgs(target as string, outfile as string);
+			expect(line).toBe(`DRY RUN ${expected.join(" ")}`);
 		}
 	});
 });

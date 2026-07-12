@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { hookFetch } from "@gajae-code/utils";
 import type { AgentStorage } from "../../../src/session/agent-storage";
 import type { ToolSession } from "../../../src/tools";
-import { ToolAbortError } from "../../../src/tools/tool-errors";
+import { ToolAbortError, ToolError } from "../../../src/tools/tool-errors";
 import { WebSearchTool } from "../../../src/web/search";
 import * as provider from "../../../src/web/search/provider";
 import { searchAnthropic } from "../../../src/web/search/providers/anthropic";
@@ -167,10 +167,7 @@ describe("executeSearch abort propagation", () => {
 		expect(secondProviderSearch).not.toHaveBeenCalled();
 	});
 
-	it("still reports provider failures as a tool result when the caller has not aborted", async () => {
-		// Defensive: the abort re-throw must NOT alter normal provider-error
-		// flow. A genuine provider error should still produce an error result
-		// rather than throwing.
+	it("throws a tool error for provider failures when the caller has not aborted", async () => {
 		vi.spyOn(provider, "resolveProviderChain").mockResolvedValue([
 			fakeProvider(async () => {
 				throw new Error("upstream 500");
@@ -178,10 +175,8 @@ describe("executeSearch abort propagation", () => {
 		]);
 
 		const tool = new WebSearchTool(FAKE_SESSION);
-		const result = await tool.execute("test-id", { query: "anything" });
-		const block = result.content[0];
-		expect(block?.type).toBe("text");
-		expect(block && "text" in block ? block.text : "").toContain("upstream 500");
-		expect(result.details?.error).toContain("upstream 500");
+		const search = tool.execute("test-id", { query: "anything" });
+		await expect(search).rejects.toBeInstanceOf(ToolError);
+		await expect(search).rejects.toThrow("upstream 500");
 	});
 });

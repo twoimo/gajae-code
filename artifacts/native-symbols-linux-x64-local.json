@@ -1,0 +1,27 @@
+{
+  "target": "linux-x64",
+  "profile": "dist-symbols",
+  "sourceSha": "3f60280717983c852b0689a3f0153597e95a53cd",
+  "unstrippedBytes": 0,
+  "strippedBytes": 0,
+  "reductionPercent": 0,
+  "exports": [],
+  "unwind": "deferred",
+  "debugSidecarBacktrace": "deferred",
+  "crashId": "deferred",
+  "toolVersions": {
+    "bun": "1.3.14",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14) (Homebrew)",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21) (Homebrew)",
+    "nm": "llvm-nm, compatible with GNU nm"
+  },
+  "status": "deferred",
+  "reason": "CI evidence required: host darwin-arm64 cannot execute linux-x64.",
+  "candidates": [
+    {
+      "profile": "dist-symbols",
+      "status": "rejected",
+      "reason": "all-target gate unmet: 4 targets CI-deferred"
+    }
+  ]
+}

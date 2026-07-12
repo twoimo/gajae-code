@@ -554,6 +554,10 @@ async function summarizeFinal(
 		outputLines,
 		outputBytes,
 		artifactId: rawSummary.artifactId,
+		artifactComplete: rawSummary.artifactComplete,
+		artifactRetainedBytes: rawSummary.artifactRetainedBytes,
+		artifactOriginalBytes: rawSummary.artifactOriginalBytes,
+		artifactOmittedBytes: rawSummary.artifactOmittedBytes,
 	};
 }
 

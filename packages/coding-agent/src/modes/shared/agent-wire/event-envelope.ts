@@ -8,19 +8,22 @@
  * The canonical sequencer + frame builders live here; the historical `Bridge*`
  * names are retained as thin aliases for callers that have not yet migrated.
  */
+
 import { randomUUID } from "node:crypto";
+import { AGENT_WIRE_CURRENT_VERSION, type AgentWireVersion } from "@gajae-code/agent-wire";
 import type { AgentSessionEvent } from "../../../session/agent-session";
-import {
-	AGENT_WIRE_PROTOCOL_VERSION,
-	type AgentWireCompactAssistantMessageEvent,
-	type AgentWireCompactEventFrame,
-	type AgentWireCompactMessageUpdatePayload,
-	type AgentWireEventFrame,
-	type AgentWireEventPayload,
-	type AgentWireEventType,
-	type AgentWireFrameEnvelope,
-	type AgentWireFrameType,
+import type { RpcWorkflowGate } from "../../rpc/rpc-types";
+import type {
+	AgentWireCompactAssistantMessageEvent,
+	AgentWireCompactEventFrame,
+	AgentWireCompactMessageUpdatePayload,
+	AgentWireEventFrame,
+	AgentWireEventPayload,
+	AgentWireEventType,
+	AgentWireFrameEnvelope,
+	AgentWireFrameType,
 } from "./event-contract";
+import type { BridgeWorkflowGateFrame } from "./protocol";
 
 export const AGENT_WIRE_COMPACT_MESSAGE_UPDATE_CHECKPOINT_INTERVAL = 32;
 
@@ -90,14 +93,24 @@ export function agentSessionEventType(event: AgentSessionEvent): AgentWireEventT
 export class AgentWireFrameSequencer {
 	readonly #sessionId: string;
 	#seq = 0;
+	#version: AgentWireVersion;
 
-	constructor(sessionId: string) {
+	constructor(sessionId: string, version: AgentWireVersion = AGENT_WIRE_CURRENT_VERSION) {
 		this.#sessionId = sessionId;
+		this.#version = version;
 	}
 
 	/** The session id stamped onto every frame this sequencer produces. */
 	get sessionId(): string {
 		return this.#sessionId;
+	}
+
+	get version(): AgentWireVersion {
+		return this.#version;
+	}
+
+	setVersion(version: AgentWireVersion): void {
+		this.#version = version;
 	}
 
 	/** The seq assigned to the most recently produced frame (0 before any). */
@@ -113,7 +126,7 @@ export class AgentWireFrameSequencer {
 	): AgentWireFrameEnvelope<TType, TPayload> {
 		this.#seq += 1;
 		const frame: AgentWireFrameEnvelope<TType, TPayload> = {
-			protocol_version: AGENT_WIRE_PROTOCOL_VERSION,
+			protocol_version: this.#version,
 			session_id: this.#sessionId,
 			seq: this.#seq,
 			frame_id: randomUUID(),
@@ -178,6 +191,9 @@ export class AgentWireCompactEventEncoder {
 
 	constructor(sequencer: AgentWireFrameSequencer, options: AgentWireCompactMessageUpdateOptions = {}) {
 		this.#sequencer = sequencer;
+		if (sequencer.version === 1) {
+			throw new Error("compact_message_update is unsupported by agent-wire v1");
+		}
 		this.#checkpointInterval = options.checkpointInterval ?? AGENT_WIRE_COMPACT_MESSAGE_UPDATE_CHECKPOINT_INTERVAL;
 	}
 
@@ -216,8 +232,8 @@ export const toBridgeEventFrame = toAgentWireEventFrame;
  * while `frame_id` + gate_id give idempotency.
  */
 export function toBridgeWorkflowGateFrame(
-	gate: import("../../rpc/rpc-types").RpcWorkflowGate,
+	gate: RpcWorkflowGate,
 	sequencer: AgentWireFrameSequencer,
-): import("./protocol").BridgeWorkflowGateFrame {
+): BridgeWorkflowGateFrame {
 	return sequencer.next("workflow_gate", gate, gate.gate_id);
 }

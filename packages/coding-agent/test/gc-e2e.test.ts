@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runGjcGcCommand } from "@gajae-code/coding-agent/gjc-runtime/gc-runtime";
-import { harnessLeasesGcAdapter } from "@gajae-code/coding-agent/harness-control-plane/gc-adapter";
+import { runGjcGcCommand } from "../src/gjc-runtime/gc-runtime";
+import { harnessLeasesGcAdapter } from "../src/harness-control-plane/gc-adapter";
 
 const tempDirs: string[] = [];
 

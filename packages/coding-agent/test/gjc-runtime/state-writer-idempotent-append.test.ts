@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { appendJsonlIdempotent } from "@gajae-code/coding-agent/gjc-runtime/state-writer";
+import { appendJsonlIdempotent } from "../../src/gjc-runtime/state-writer";
 
 const tempRoots: string[] = [];
 

@@ -3,10 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import {
-	MarketplaceManager,
-	readInstalledPluginsRegistry,
-} from "@gajae-code/coding-agent/extensibility/plugins/marketplace";
+import { MarketplaceManager, readInstalledPluginsRegistry } from "../../src/extensibility/plugins/marketplace";
 
 // Fixture: the valid-marketplace directory used across all tests.
 const FIXTURE_DIR = path.join(import.meta.dir, "fixtures", "valid-marketplace");

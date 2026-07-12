@@ -2,17 +2,17 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { resolveLocalUrlToPath } from "@gajae-code/coding-agent/internal-urls";
-import { AssistantMessageComponent } from "@gajae-code/coding-agent/modes/components/assistant-message";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { SILENT_ABORT_MARKER } from "@gajae-code/coding-agent/session/messages";
 import { Text } from "@gajae-code/tui";
 import { TempDir } from "@gajae-code/utils";
 import { ModelRegistry } from "../src/config/model-registry";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { resolveLocalUrlToPath } from "../src/internal-urls";
+import { AssistantMessageComponent } from "../src/modes/components/assistant-message";
 import { InteractiveMode } from "../src/modes/interactive-mode";
+import { initTheme } from "../src/modes/theme/theme";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
+import { SILENT_ABORT_MARKER } from "../src/session/messages";
 import { SessionManager } from "../src/session/session-manager";
 
 /**

@@ -2,17 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { getRuntimeResourceCounts } from "@gajae-code/coding-agent/debug/runtime-gauges";
-import {
-	disposeAllShellSessions,
-	executeBash,
-	getShellSessionCount,
-} from "@gajae-code/coding-agent/exec/bash-executor";
-import { DEFAULT_MAX_BYTES } from "@gajae-code/coding-agent/session/streaming-output";
-import * as shellSnapshot from "@gajae-code/coding-agent/utils/shell-snapshot";
 import type { Shell } from "@gajae-code/natives";
 import * as piNatives from "@gajae-code/natives";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { getRuntimeResourceCounts } from "../src/debug/runtime-gauges";
+import { disposeAllShellSessions, executeBash, getShellSessionCount } from "../src/exec/bash-executor";
+import { DEFAULT_MAX_BYTES } from "../src/session/streaming-output";
+import * as shellSnapshot from "../src/utils/shell-snapshot";
 
 // Matches the schema default for `tools.artifactHeadBytes` (20 KB) used by
 // OutputSink when bash-executor pulls settings via resolveOutputSinkHeadBytes.

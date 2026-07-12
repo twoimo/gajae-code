@@ -5,18 +5,18 @@ import * as path from "node:path";
 import { Agent, type AgentMessage } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
 import {
 	createStarReminderBeforeAgentStartContributor,
 	type GhResult,
 	recordDeclinedAfterNo,
 	STAR_REMINDER_CUSTOM_TYPE,
-} from "@gajae-code/coding-agent/reminders/star-reminder";
-import { AgentSession, type BeforeAgentStartContributor } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import { TempDir } from "@gajae-code/utils";
+} from "../src/reminders/star-reminder";
+import { AgentSession, type BeforeAgentStartContributor } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 const notFound = (): GhResult => ({ exitCode: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" });
 const starred = (): GhResult => ({ exitCode: 0, stdout: "", stderr: "" });

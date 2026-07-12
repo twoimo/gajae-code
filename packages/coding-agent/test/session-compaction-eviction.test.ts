@@ -5,18 +5,18 @@ import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import type { AssistantMessage, TextContent, ToolCall, UserMessage } from "@gajae-code/ai";
 import { getBundledModel } from "@gajae-code/ai";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
+import { getBlobsDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
 import {
 	type ColdSpillRef,
 	type CustomMessageEntry,
 	SessionManager,
 	type SessionMessageEntry,
-} from "@gajae-code/coding-agent/session/session-manager";
-import { MemorySessionStorage } from "@gajae-code/coding-agent/session/session-storage";
-import { getBlobsDir } from "@gajae-code/utils";
+} from "../src/session/session-manager";
+import { MemorySessionStorage } from "../src/session/session-storage";
 
 const TURN_PAYLOAD_CHARS = 200_000;
 const ONE_MIB_CHARS = 1_048_576;

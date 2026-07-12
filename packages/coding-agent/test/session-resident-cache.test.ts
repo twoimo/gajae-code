@@ -4,9 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage, UserMessage } from "@gajae-code/ai";
 
-import { exportFromFile, exportSessionToHtml } from "@gajae-code/coding-agent/export/html";
-import { BlobStore, EphemeralBlobStore, externalizeImageDataSync } from "@gajae-code/coding-agent/session/blob-store";
-import { SessionManager, type SessionMessageEntry } from "@gajae-code/coding-agent/session/session-manager";
+import { exportFromFile, exportSessionToHtml } from "../src/export/html";
+import { BlobStore, EphemeralBlobStore, externalizeImageDataSync } from "../src/session/blob-store";
+import { SessionManager, type SessionMessageEntry } from "../src/session/session-manager";
 
 const tempDirs: string[] = [];
 afterEach(async () => {

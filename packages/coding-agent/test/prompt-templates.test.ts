@@ -9,9 +9,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { expandPromptTemplate, type PromptTemplate } from "@gajae-code/coding-agent/config/prompt-templates";
-import { expandSlashCommand, type FileSlashCommand } from "@gajae-code/coding-agent/extensibility/slash-commands";
-import { parseCommandArgs, substituteArgs } from "@gajae-code/coding-agent/utils/command-args";
+import { expandPromptTemplate, type PromptTemplate } from "../src/config/prompt-templates";
+import { expandSlashCommand, type FileSlashCommand } from "../src/extensibility/slash-commands";
+import { parseCommandArgs, substituteArgs } from "../src/utils/command-args";
 
 // ============================================================================
 // substituteArgs

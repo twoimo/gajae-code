@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "bun:test";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { executeBuiltinSlashCommand } from "@gajae-code/coding-agent/slash-commands/builtin-registry";
+import type { InteractiveModeContext } from "../../src/modes/types";
+import { executeBuiltinSlashCommand } from "../../src/slash-commands/builtin-registry";
 
 function createRuntime(didRetry: boolean) {
 	const retry = vi.fn(async () => didRetry);

@@ -1,0 +1,18 @@
+{
+	"version": 2,
+	"trustedWorkflows": [
+		{ "id": "CI", "path": ".github/workflows/ci.yml", "events": ["push"], "refs": ["refs/heads/main"] }
+	],
+	"requiredJobs": [
+		"check",
+		{ "group": "native_linux", "selector": { "exact": "native_linux", "prefix": "native_linux (" }, "minCount": 1, "allSuccess": true },
+		"test",
+		"windows_smoke",
+		"install_methods"
+	],
+	"requiredConclusions": ["success"],
+	"rerunPolicy": "latest-attempt-only",
+	"supersessionPolicy": "latest-run-per-workflow",
+	"nameCollisionPolicy": "reject",
+	"trustedSource": { "repositoryOwnerMatches": true, "headRepositoryMatches": true }
+}

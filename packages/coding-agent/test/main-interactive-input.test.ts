@@ -3,16 +3,16 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runInteractiveMode, StartupUpdateOrchestrator, submitInteractiveInput } from "@gajae-code/coding-agent/main";
-import type { InteractiveMode } from "@gajae-code/coding-agent/modes/interactive-mode";
-import type { SubmittedUserInput } from "@gajae-code/coding-agent/modes/types";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
 import {
 	GJC_COORDINATOR_SESSION_ID_ENV,
 	GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV,
 	GJC_COORDINATOR_SESSION_READINESS_FILE_ENV,
 	GJC_COORDINATOR_SESSION_STATE_FILE_ENV,
 } from "../src/gjc-runtime/session-state-sidecar";
+import { runInteractiveMode, StartupUpdateOrchestrator, submitInteractiveInput } from "../src/main";
+import type { InteractiveMode } from "../src/modes/interactive-mode";
+import type { SubmittedUserInput } from "../src/modes/types";
+import type { AgentSession } from "../src/session/agent-session";
 
 function createInput(overrides: Partial<SubmittedUserInput> = {}): SubmittedUserInput {
 	return {

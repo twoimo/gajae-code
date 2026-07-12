@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	AttemptBudgetExceededError,
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
 	AuthStorage,
@@ -108,5 +109,31 @@ describe("RemoteAuthCredentialStore SSE integration", () => {
 		expect(disabled).toBe(true);
 		await waitUntil(() => remote!.snapshot.credentials.length === 1);
 		expect(remote!.snapshot.credentials[0].id).not.toBe(bId);
+	});
+
+	test("preserves broker-backed usage exhaustion before a physical fetch", async () => {
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		remote = new RemoteAuthCredentialStore({ client });
+		await waitUntil(() => remote!.snapshot.credentials.length === 1);
+		storage!.upsertCredential("anthropic", mintOAuthCredential("b", Date.now() + 120_000));
+		await waitUntil(() => remote!.snapshot.credentials.length === 2);
+
+		const remoteStorage = new AuthStorage(remote);
+		await remoteStorage.reload();
+		const sessionId = "broker-usage-budget-session";
+		await remoteStorage.getApiKey("anthropic", sessionId);
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000);
+		const physicalFetch = vi.spyOn(globalThis, "fetch");
+		const exhaustion = new AttemptBudgetExceededError("attempts", "Maximum total attempts exceeded");
+
+		await expect(
+			remoteStorage.markUsageLimitReached("anthropic", sessionId, {
+				consumeAttempt: () => {
+					throw exhaustion;
+				},
+			}),
+		).rejects.toBe(exhaustion);
+		expect(physicalFetch).not.toHaveBeenCalled();
+		remoteStorage.close();
 	});
 });

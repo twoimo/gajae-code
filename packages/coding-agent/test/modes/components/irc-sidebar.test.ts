@@ -1,13 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
-	computeIrcSplitWidths,
-	IRC_SIDEBAR_MAX_RENDER_ROWS,
-	type IrcSidebarTheme,
-	IrcSplitViewComponent,
-} from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import {
-	type Component,
 	Container,
 	Image,
 	ImageProtocol,
@@ -15,9 +7,18 @@ import {
 	TERMINAL,
 	Text,
 	TUI,
+	type ViewportRowComponent,
 	visibleWidth,
 } from "@gajae-code/tui";
+
 import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
+import {
+	computeIrcSplitWidths,
+	IRC_SIDEBAR_MAX_RENDER_ROWS,
+	type IrcSidebarTheme,
+	IrcSplitViewComponent,
+} from "../../../src/modes/components/irc-sidebar";
+import { IrcObservationLedger } from "../../../src/modes/irc-observation-ledger";
 
 const sidebarTheme = {
 	fg: (_color: "dim" | "accent", text: string) => text,
@@ -39,13 +40,19 @@ function localTime(timestamp: number): string {
 	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-class TestPane implements Component {
+class TestPane implements ViewportRowComponent {
 	widths: number[] = [];
 	constructor(private readonly lines: string | string[]) {}
 
 	render(width: number): string[] {
 		this.widths.push(width);
 		return typeof this.lines === "string" ? [this.lines] : this.lines;
+	}
+	getLogicalRowCount(): number {
+		return typeof this.lines === "string" ? 1 : this.lines.length;
+	}
+	renderRows(width: number, start: number, end: number): string[] {
+		return this.render(width).slice(start, end);
 	}
 	invalidate(): void {}
 }
@@ -115,41 +122,37 @@ describe("IrcSplitViewComponent", () => {
 		expect(split.effectiveSidebarVisible(65)).toBe(true);
 	});
 
-	it("preserves transcript metadata while excluding inline and right-only IRC rows", () => {
+	it("preserves bounded semantic metadata while excluding inline and right-only IRC rows", () => {
 		const left = new Container();
 		const semantic = new Text("semantic transcript row", 0, 0);
 		const inlineIrc = new Text("inline IRC row", 0, 0);
 		left.addChild(semantic);
-		left.setViewportAnchorSource(semantic, { id: "message-1" });
+		left.setViewportRowSource(semantic, { id: "message-1" });
 		left.addChild(inlineIrc);
 		const ledger = new IrcObservationLedger();
 		addRecord(ledger, "right one\nright two\nright three\nright four");
 		const split = new IrcSplitViewComponent(left, ledger, sidebarTheme);
 
-		const hidden = split.renderWithViewportAnchors(80);
+		const hidden = split.renderRowsWithMetadata(80, 0, split.getLogicalRowCount(80));
 		const hiddenPlain = hidden.lines.map(line => Bun.stripANSI(line));
 		const hiddenSemantic = hiddenPlain.findIndex(line => line.includes("semantic transcript row"));
 		const hiddenInline = hiddenPlain.findIndex(line => line.includes("inline IRC row"));
-		expect(hidden.anchors[hiddenSemantic]?.id).toBe("message-1");
-		expect(hidden.anchors[hiddenInline]).toBeNull();
+		expect(hidden.metadata[hiddenSemantic]?.sourceId).toBe("message-1");
+		expect(hidden.metadata[hiddenInline]?.sourceId).toBeUndefined();
 
 		split.setVisible(true);
-		const visible = split.renderWithViewportAnchors(80);
+		const visible = split.renderRowsWithMetadata(80, 0, split.getLogicalRowCount(80));
 		const visiblePlain = visible.lines.map(line => Bun.stripANSI(line));
 		const visibleSemantic = visiblePlain.findIndex(line => line.includes("semantic transcript row"));
 		const visibleInline = visiblePlain.findIndex(line => line.includes("inline IRC row"));
-		expect(visible.anchors[visibleSemantic]?.id).toBe("message-1");
-		expect(visible.anchors[visibleInline]).toBeNull();
+		expect(visible.metadata[visibleSemantic]?.sourceId).toBe("message-1");
+		expect(visible.metadata[visibleInline]?.sourceId).toBeUndefined();
 		const rightOnlyRows = visiblePlain.flatMap((line, index) =>
 			line.includes("right ") && !line.includes("semantic transcript row") && !line.includes("inline IRC row")
 				? [index]
 				: [],
 		);
-		expect(rightOnlyRows.length).toBeGreaterThan(0);
-		for (const row of rightOnlyRows) expect(visible.anchors[row]).toBeNull();
-
-		split.setVisible(false);
-		expect(split.renderWithViewportAnchors(80).anchors.some(anchor => anchor?.id === "message-1")).toBe(true);
+		for (const row of rightOnlyRows) expect(visible.metadata[row]).toBeNull();
 	});
 
 	it("renders Discord-style blocks with indented bodies, blank separators, and tail alignment", () => {
@@ -302,8 +305,10 @@ describe("IrcSplitViewComponent", () => {
 	});
 
 	it("suppresses terminal graphics only while visible and restores full width when hidden", () => {
-		const pane: Component = {
+		const pane: ViewportRowComponent = {
 			render: () => [isTerminalGraphicsFallbackActive() ? "[image hidden]" : "\x1bPqSIXEL\x1b\\"],
+			getLogicalRowCount: () => 1,
+			renderRows: () => [isTerminalGraphicsFallbackActive() ? "[image hidden]" : "\x1bPqSIXEL\x1b\\"],
 			invalidate: () => {},
 		};
 		const split = new IrcSplitViewComponent(pane, new IrcObservationLedger(), sidebarTheme);

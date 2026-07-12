@@ -233,6 +233,16 @@ export class BlobStore {
 		}
 	}
 
+	/** Return the canonical resident byte length without materializing the blob. */
+	getByteLengthSync(hash: string): number | null {
+		try {
+			return fs.statSync(path.join(this.dir, hash)).size;
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			throw err;
+		}
+	}
+
 	/** Read blob by hash and verify its content hash; returns null if not found. */
 	async getChecked(hash: string): Promise<Buffer | null> {
 		return this.getCheckedSync(hash);
@@ -329,6 +339,10 @@ export class EphemeralBlobStore extends BlobStore {
 		return data;
 	}
 
+	releaseMemoryCache(): void {
+		this.#bufferCache.clear();
+		this.#bufferCacheBytes = 0;
+	}
 	clear(): void {
 		this.#bufferCache.clear();
 		this.#bufferCacheBytes = 0;
@@ -341,6 +355,14 @@ export class EphemeralBlobStore extends BlobStore {
 		this.#bufferCacheBytes = 0;
 		fs.rmSync(this.dir, { recursive: true, force: true });
 	}
+}
+
+/** Constant-time resident-owner accounting; excludes recomputable protocol caches. */
+export interface ResidentBlobOwnershipAudit {
+	uniqueSourceBytes: number;
+	duplicatedRetainedBytes: number;
+	decodeConversionBytes: number;
+	protocolBytes: number;
 }
 
 export class MemoryBlobStore extends BlobStore {
@@ -401,12 +423,34 @@ export class MemoryBlobStore extends BlobStore {
 	}
 
 	getSync(hash: string): Buffer | null {
+		const data = this.getSharedSync(hash);
+		return data ? Buffer.from(data) : null;
+	}
+
+	/**
+	 * Non-copying materialization seam for display-only consumers. Callers MUST
+	 * treat the returned buffer as immutable; ordinary `getSync` keeps its
+	 * defensive-copy behavior for mutable persistence consumers.
+	 */
+	getSharedSync(hash: string): Buffer | null {
 		const data = this.#blobs.get(hash);
 		if (!data) return null;
-		// Refresh LRU recency on hit so hot blobs survive eviction.
 		this.#blobs.delete(hash);
 		this.#blobs.set(hash, data);
-		return Buffer.from(data);
+		return data;
+	}
+
+	override getByteLengthSync(hash: string): number | null {
+		return this.#blobs.get(hash)?.byteLength ?? null;
+	}
+
+	getOwnershipAudit(): ResidentBlobOwnershipAudit {
+		return {
+			uniqueSourceBytes: this.#bytes,
+			duplicatedRetainedBytes: 0,
+			decodeConversionBytes: 0,
+			protocolBytes: 0,
+		};
 	}
 
 	async getChecked(hash: string): Promise<Buffer | null> {

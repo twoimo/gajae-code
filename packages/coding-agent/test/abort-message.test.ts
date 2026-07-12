@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildAbortDisplayMessage } from "@gajae-code/coding-agent/modes/utils/abort-message";
+import { buildAbortDisplayMessage } from "../src/modes/utils/abort-message";
 
 describe("buildAbortDisplayMessage", () => {
 	it("keeps the legacy generic abort labels when there is no useful cause", () => {

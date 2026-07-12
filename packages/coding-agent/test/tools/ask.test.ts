@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, spyOn, vi } from "bun:test";
 import type { AgentToolContext } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { AppendOrMergeResult } from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
-import * as deepInterviewRecorder from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
-import { getThemeByName, initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { AskAnswerRequest, AskAnswerSource, AskRemoteReceipt, ToolSession } from "@gajae-code/coding-agent/tools";
-import { AskTool, askSchema, askToolRenderer } from "@gajae-code/coding-agent/tools/ask";
-import { ToolAbortError } from "@gajae-code/coding-agent/tools/tool-errors";
 import { logger } from "@gajae-code/utils";
+import { Settings } from "../../src/config/settings";
+import type { AppendOrMergeResult } from "../../src/gjc-runtime/deep-interview-recorder";
+import * as deepInterviewRecorder from "../../src/gjc-runtime/deep-interview-recorder";
+import { getThemeByName, initTheme } from "../../src/modes/theme/theme";
+import type { AskAnswerRequest, AskAnswerSource, AskRemoteReceipt, ToolSession } from "../../src/tools";
+import { AskTool, askSchema, askToolRenderer } from "../../src/tools/ask";
+import { ToolAbortError } from "../../src/tools/tool-errors";
 
 function createSession(overrides: Partial<ToolSession> = {}): ToolSession {
 	return {

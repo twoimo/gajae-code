@@ -3,16 +3,16 @@ import * as path from "node:path";
 import { Agent, type AgentMessage, type AgentTool } from "@gajae-code/agent-core";
 import { type AssistantMessage, getBundledModel, type TextContent, type ToolCall } from "@gajae-code/ai";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { TodoWriteTool } from "@gajae-code/coding-agent/tools";
 import { TempDir } from "@gajae-code/utils";
 import * as z from "zod/v4";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { convertToLlm } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
+import type { ToolSession } from "../src/tools";
+import { TodoWriteTool } from "../src/tools/todo-write";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 type ObservedPromptCall = {

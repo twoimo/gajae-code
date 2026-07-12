@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings, settings } from "@gajae-code/coding-agent/config/settings";
-import { SettingsSelectorComponent } from "@gajae-code/coding-agent/modes/components/settings-selector";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
+import { resetSettingsForTest, Settings, settings } from "../../../src/config/settings";
+import { SettingsSelectorComponent } from "../../../src/modes/components/settings-selector";
+import { initTheme } from "../../../src/modes/theme/theme";
 
 beforeAll(async () => {
 	await initTheme();

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { Agent, type AgentTool, ThinkingLevel } from "@gajae-code/agent-core";
+import { Agent, type AgentMessage, type AgentTool, ThinkingLevel } from "@gajae-code/agent-core";
 import type { ImageContent, SimpleStreamOptions } from "@gajae-code/ai";
 import { z } from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
+import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
 import { createAssistantMessage } from "./helpers";
 
 describe("Agent", () => {
@@ -45,6 +46,109 @@ describe("Agent", () => {
 
 		expect(hasQueuedFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+	});
+
+	it("appends one finalized assistant message per provider response", async () => {
+		const mock = createMockModel({ responses: [{ content: ["once"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
+		const ended: AgentMessage[] = [];
+		agent.subscribe(event => {
+			if (event.type === "message_end" && event.message.role === "assistant") ended.push(event.message);
+		});
+
+		await agent.prompt("hello");
+
+		expect(agent.state.messages.filter(message => message.role === "assistant")).toHaveLength(1);
+		expect(ended).toHaveLength(1);
+	});
+
+	it("appends and emits one error assistant message when the provider fails before start", async () => {
+		const mock = createMockModel();
+		const agent = new Agent({
+			streamFn: () => {
+				const response = new AssistantMessageEventStream();
+				queueMicrotask(() => response.fail(new Error("gateway unavailable")));
+				return response;
+			},
+			initialState: { model: mock.model, systemPrompt: [], messages: [], tools: [] },
+		});
+		const ended: AgentMessage[] = [];
+		agent.subscribe(event => {
+			if (event.type === "message_end" && event.message.role === "assistant") ended.push(event.message);
+		});
+
+		await agent.prompt("hello");
+
+		const assistantMessages = agent.state.messages.filter(message => message.role === "assistant");
+		expect(assistantMessages).toHaveLength(1);
+		expect(ended).toHaveLength(1);
+		expect(agent.state.error).toBe("gateway unavailable");
+	});
+
+	it("appends and emits one error assistant message preserving partial content", async () => {
+		const mock = createMockModel();
+		const partial = createAssistantMessage([{ type: "text", text: "partial response" }]);
+		const agent = new Agent({
+			streamFn: () => {
+				const response = new AssistantMessageEventStream();
+				response.push({ type: "start", partial });
+				queueMicrotask(() => response.fail(new Error("connection lost")));
+				return response;
+			},
+			initialState: { model: mock.model, systemPrompt: [], messages: [], tools: [] },
+		});
+		const ended: AgentMessage[] = [];
+		agent.subscribe(event => {
+			if (event.type === "message_end" && event.message.role === "assistant") ended.push(event.message);
+		});
+
+		await agent.prompt("hello");
+
+		const assistantMessages = agent.state.messages.filter(message => message.role === "assistant");
+		expect(assistantMessages).toHaveLength(1);
+		expect(ended).toHaveLength(1);
+		const finalized = assistantMessages[0];
+		if (finalized?.role !== "assistant") throw new Error("Expected assistant message");
+		expect(finalized.content).toEqual(partial.content);
+		expect(agent.state.error).toBe("connection lost");
+	});
+
+	it("uses Cursor splitting instead of appending the finalized assistant message", async () => {
+		const preamble = createAssistantMessage([{ type: "text", text: "Before tools" }]);
+		const finalMessage = createAssistantMessage([{ type: "text", text: "Before tools after tools" }]);
+		const toolResult = {
+			role: "toolResult" as const,
+			toolCallId: "cursor-tool",
+			toolName: "read",
+			content: [{ type: "text" as const, text: "tool output" }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		const agent = new Agent({
+			cursorOnToolResult: async () => undefined,
+			streamFn: async (_model, _context, options) => {
+				const response = new AssistantMessageEventStream();
+				void (async () => {
+					response.push({ type: "start", partial: preamble });
+					response.push({ type: "text_delta", contentIndex: 0, delta: "Before tools", partial: preamble });
+					await Bun.sleep(0);
+					await options?.cursorOnToolResult?.(toolResult);
+					response.push({ type: "done", reason: "stop", message: finalMessage });
+				})();
+				return response;
+			},
+		});
+
+		await agent.prompt("hello");
+
+		expect(agent.state.messages.filter(message => message.role === "assistant")).toHaveLength(2);
+		expect(agent.state.messages.map(message => message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+			"assistant",
+		]);
+		expect(agent.state.messages).not.toContain(finalMessage);
 	});
 
 	it("continue() honors forced one-at-a-time follow-ups even when batching is enabled", async () => {

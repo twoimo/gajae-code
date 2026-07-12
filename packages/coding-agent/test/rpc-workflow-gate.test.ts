@@ -1,12 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import type { RpcJsonSchema, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import { isRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-validation";
-import { isRpcCommandType, scopeForRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/scopes";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
-import { schemaHash } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-schema";
+import type { RpcJsonSchema, RpcWorkflowGate } from "../src/modes/rpc/rpc-types";
+import { isRpcCommand } from "../src/modes/shared/agent-wire/command-validation";
+import { isRpcCommandType, scopeForRpcCommand } from "../src/modes/shared/agent-wire/scopes";
+import { MemoryGateStore, WorkflowGateBroker } from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { schemaHash } from "../src/modes/shared/agent-wire/workflow-gate-schema";
 
 describe("RPC workflow_gate contract", () => {
 	it("recognizes and scopes the new commands", () => {

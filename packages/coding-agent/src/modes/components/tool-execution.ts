@@ -14,6 +14,7 @@ import {
 	TERMINAL,
 	Text,
 	type TUI,
+	type ViewportRowWindow,
 } from "@gajae-code/tui";
 import { getProjectDir, logger, sanitizeText } from "@gajae-code/utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
@@ -466,11 +467,23 @@ export class ToolExecutionComponent extends Container {
 		this.#updateDisplay();
 	}
 
+	#refreshDisplayForGraphicsFallback(): void {
+		if (this.#displayBuiltWithGraphicsFallback !== isTerminalGraphicsFallbackActive()) this.#updateDisplay();
+	}
+
 	override render(width: number): string[] {
-		if (this.#displayBuiltWithGraphicsFallback !== isTerminalGraphicsFallbackActive()) {
-			this.#updateDisplay();
-		}
+		this.#refreshDisplayForGraphicsFallback();
 		return super.render(width);
+	}
+
+	override renderRows(width: number, start: number, end: number): string[] {
+		this.#refreshDisplayForGraphicsFallback();
+		return super.renderRows(width, start, end);
+	}
+
+	override renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
+		this.#refreshDisplayForGraphicsFallback();
+		return super.renderRowsWithMetadata(width, start, end);
 	}
 
 	#updateDisplay(): void {
@@ -501,7 +514,7 @@ export class ToolExecutionComponent extends Container {
 				try {
 					const callComponent = tool.renderCall(this.#getCallArgsForRender(), this.#renderState, theme);
 					if (callComponent) {
-						this.#contentBox.addChild(ensureInvalidate(callComponent));
+						this.#contentBox.addCappedChild(ensureInvalidate(callComponent), 256);
 					}
 				} catch (err) {
 					logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
@@ -533,7 +546,7 @@ export class ToolExecutionComponent extends Container {
 						this.#args,
 					);
 					if (resultComponent) {
-						this.#contentBox.addChild(ensureInvalidate(resultComponent));
+						this.#contentBox.addCappedChild(ensureInvalidate(resultComponent), 256);
 					}
 				} catch (err) {
 					logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
@@ -590,7 +603,7 @@ export class ToolExecutionComponent extends Container {
 							theme,
 						);
 						if (resultComponent) {
-							fileBox.addChild(ensureInvalidate(resultComponent));
+							fileBox.addCappedChild(ensureInvalidate(resultComponent), 256);
 						}
 					} catch (err) {
 						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
@@ -636,7 +649,7 @@ export class ToolExecutionComponent extends Container {
 					try {
 						const callComponent = renderer.renderCall(this.#getCallArgsForRender(), this.#renderState, theme);
 						if (callComponent) {
-							this.#contentBox.addChild(ensureInvalidate(callComponent));
+							this.#contentBox.addCappedChild(ensureInvalidate(callComponent), 256);
 						}
 					} catch (err) {
 						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
@@ -659,7 +672,7 @@ export class ToolExecutionComponent extends Container {
 							this.#getCallArgsForRender(),
 						);
 						if (resultComponent) {
-							this.#contentBox.addChild(ensureInvalidate(resultComponent));
+							this.#contentBox.addCappedChild(ensureInvalidate(resultComponent), 256);
 						}
 					} catch (err) {
 						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });

@@ -246,6 +246,74 @@ describe("bridge mode fetch handler", () => {
 		);
 		expect(numericPrefixCursor.status).toBe(400);
 	});
+	it("keeps event replay and live subscribers bound to their negotiated protocol version", async () => {
+		const eventStream = new BridgeEventStream("sess-1", 1);
+		const handle = createBridgeFetchHandler({
+			sessionId: "sess-1",
+			token: "secret",
+			eventStream,
+			endpointMatrix: { events: true, commands: true },
+			commandDispatcher: async command => rpcSuccess(command.id, "prompt"),
+		});
+		const auth = { Authorization: "Bearer secret" };
+		const handshake = (min: number, max: number) =>
+			handle(
+				new Request("https://bridge.test/v1/handshake", {
+					method: "POST",
+					headers: auth,
+					body: JSON.stringify({
+						protocol_version_range: { min, max },
+						capabilities: ["events"],
+						requested_scopes: ["prompt"],
+					}),
+				}),
+			);
+		const v1Handshake = await handshake(1, 1);
+		const v1Accepted = (await v1Handshake.json()) as { protocol_version: number };
+		const v2Handshake = await handshake(2, 2);
+		const v2Accepted = (await v2Handshake.json()) as { protocol_version: number };
+		expect(v1Accepted.protocol_version).toBe(1);
+		expect(v2Accepted.protocol_version).toBe(2);
+
+		const events = (version: number, lastSeq?: number) =>
+			handle(
+				new Request(
+					`https://bridge.test/v1/sessions/sess-1/events${lastSeq === undefined ? "" : `?last_seq=${lastSeq}`}`,
+					{
+						headers: { ...auth, "X-GJC-Agent-Wire-Version": String(version) },
+					},
+				),
+			);
+		const v1Response = await events(v1Accepted.protocol_version);
+		const v2Response = await events(v2Accepted.protocol_version);
+		const v1Reader = v1Response.body?.getReader();
+		const v2Reader = v2Response.body?.getReader();
+		if (!v1Reader || !v2Reader) throw new Error("missing event stream body");
+
+		eventStream.emit("event", { event_type: "agent_start", event: { type: "agent_start" } });
+		const [v1Frame, v2Frame] = await Promise.all([v1Reader.read(), v2Reader.read()]);
+		const decode = (frame: { value?: Uint8Array }) => new TextDecoder().decode(frame.value);
+		expect(decode(v1Frame)).toContain('"protocol_version":1');
+		expect(decode(v1Frame)).not.toContain('"protocol_version":2');
+		expect(decode(v2Frame)).toContain('"protocol_version":2');
+		await v1Reader.cancel();
+		await v2Reader.cancel();
+
+		eventStream.emit("event", { event_type: "agent_end", event: { type: "agent_end" } });
+		eventStream.emit("event", { event_type: "agent_end", event: { type: "agent_end" } });
+		const v1Replay = await events(1, 1);
+		const v1ReplayReader = v1Replay.body?.getReader();
+		if (!v1ReplayReader) throw new Error("missing v1 replay stream body");
+		const replay = await v1ReplayReader.read();
+		await v1ReplayReader.cancel();
+		expect(decode(replay)).toContain('"type":"reset"');
+		expect(decode(replay)).toContain('"protocol_version":1');
+		expect(decode(replay)).not.toContain('"protocol_version":2');
+
+		const unknownVersion = await events(99);
+		expect(unknownVersion.status).toBe(400);
+		expect(await unknownVersion.json()).toEqual({ error: "invalid_protocol_version" });
+	});
 	it("dispatches authorized commands with idempotency", async () => {
 		let calls = 0;
 		const handle = createBridgeFetchHandler({

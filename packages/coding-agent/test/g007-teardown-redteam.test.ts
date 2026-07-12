@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { disposeCursorConversation } from "@gajae-code/ai/providers/cursor";
-import { waitForProjectLoaded } from "@gajae-code/coding-agent/lsp/client";
+import { waitForProjectLoaded } from "../src/lsp/client";
 
 type LspClient = Parameters<typeof waitForProjectLoaded>[0];
 

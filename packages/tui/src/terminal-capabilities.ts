@@ -361,12 +361,42 @@ export function encodeKitty(
 	return chunks.join("");
 }
 
-/** Kitty image ids already uploaded to the terminal in this process. */
-const transmittedKittyImageIds = new Set<number>();
+/**
+ * Kitty image ids uploaded to the terminal in this process. This is metadata,
+ * not pixel payload: each entry is conservatively charged at 32 bytes and LRU
+ * bounded so long-lived sessions cannot retain an unbounded id registry.
+ */
+const KITTY_TRANSMISSION_METADATA_MAX_BYTES = 32 * 1024 * 1024;
+const KITTY_TRANSMISSION_METADATA_BYTES = 32;
+const transmittedKittyImageIds = new Map<number, true>();
+let transmittedKittyImageIdBytes = 0;
+
+function noteKittyTransmission(imageId: number): boolean {
+	if (transmittedKittyImageIds.has(imageId)) {
+		transmittedKittyImageIds.delete(imageId);
+		transmittedKittyImageIds.set(imageId, true);
+		return false;
+	}
+	transmittedKittyImageIds.set(imageId, true);
+	transmittedKittyImageIdBytes += KITTY_TRANSMISSION_METADATA_BYTES;
+	while (transmittedKittyImageIdBytes > KITTY_TRANSMISSION_METADATA_MAX_BYTES) {
+		const oldest = transmittedKittyImageIds.keys().next().value as number | undefined;
+		if (oldest === undefined) break;
+		transmittedKittyImageIds.delete(oldest);
+		transmittedKittyImageIdBytes -= KITTY_TRANSMISSION_METADATA_BYTES;
+	}
+	return true;
+}
+
+/** Constant-time protocol metadata audit for retained-memory aggregation. */
+export function getKittyTransmissionRetainedBytes(): number {
+	return transmittedKittyImageIdBytes;
+}
 
 /** Test hook: forget which kitty image ids were transmitted. */
 export function resetKittyTransmissions(): void {
 	transmittedKittyImageIds.clear();
+	transmittedKittyImageIdBytes = 0;
 }
 
 let kittyTransmitWriter: (sequence: string) => void = sequence => {
@@ -681,8 +711,7 @@ export function renderImage(
 		// re-sending data (a=T/a=t) for an existing id would delete the image
 		// and ALL of its placements (breaking sibling components showing the
 		// same content) and would re-send multi-MB payloads on every repaint.
-		if (!transmittedKittyImageIds.has(imageId)) {
-			transmittedKittyImageIds.add(imageId);
+		if (noteKittyTransmission(imageId)) {
 			(options.onTransmit ?? kittyTransmitWriter)(encodeKittyTransmit(base64Data, imageId));
 		}
 		const sequence = encodeKittyPlacement({ imageId, placementId, columns: fit.columns, rows: fit.rows });

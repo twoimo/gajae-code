@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { renderCommandRefBlock } from "@gajae-code/coding-agent/gjc-runtime/workflow-command-ref";
-import { CANONICAL_GJC_WORKFLOW_SKILLS } from "@gajae-code/coding-agent/skill-state/canonical-skills";
+import { renderCommandRefBlock } from "../../src/gjc-runtime/workflow-command-ref";
+import { CANONICAL_GJC_WORKFLOW_SKILLS } from "../../src/skill-state/canonical-skills";
 
 interface FileSnapshot {
 	bytes: Buffer;

@@ -23,6 +23,8 @@ export interface InternalResource {
 	sourcePath?: string;
 	/** Additional notes about resolution */
 	notes?: string[];
+	/** True when content is intentionally deferred to a file-backed consumer. */
+	deferredContent?: boolean;
 	/**
 	 * True when the resolved content cannot be edited by the agent (e.g. sealed
 	 * artifacts, harness docs, machine-generated memory summaries). Hashline

@@ -26,6 +26,8 @@ import { runNativeStateCommand } from "../gjc-runtime/state-runtime";
 import skillDescription from "../prompts/tools/skill.md" with { type: "text" };
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 import { isCanonicalGjcWorkflowSkill } from "../skill-state/active-state";
+import { initialPhaseForSkill } from "../skill-state/initial-phase";
+import { WORKFLOW_STATE_VERSION } from "../skill-state/workflow-state-version";
 import type { ToolSession } from ".";
 import { ToolError } from "./tool-errors";
 
@@ -135,6 +137,7 @@ export class SkillTool implements AgentTool<typeof skillSchema, SkillToolDetails
 			// Phase guard + atomic native handoff only apply to canonical workflow
 			// skills. Runtime project/user skills do not have a native mode-state,
 			// so there is no `gjc state <skill>` command to run for them.
+			let workflowContext: { skill: string; phase: string; sessionId: string; stateVersion: number } | undefined;
 			if (activeSkill && isCanonicalGjcWorkflowSkill(activeSkill)) {
 				const phase = (this.#session.getActiveSkillPhase?.() ?? "running").trim().toLowerCase();
 				if (!TERMINAL_PHASES.has(phase)) {
@@ -154,6 +157,14 @@ export class SkillTool implements AgentTool<typeof skillSchema, SkillToolDetails
 						`skill tool: handoff failed (status=${handoff.status}): ${(handoff.stderr ?? "").trim() || "no detail"}`,
 					);
 				}
+				if (sessionId && isCanonicalGjcWorkflowSkill(requestedName)) {
+					workflowContext = {
+						skill: requestedName,
+						phase: initialPhaseForSkill(requestedName),
+						sessionId,
+						stateVersion: WORKFLOW_STATE_VERSION,
+					};
+				}
 			}
 
 			const args = (input.args ?? "").trim();
@@ -166,6 +177,7 @@ export class SkillTool implements AgentTool<typeof skillSchema, SkillToolDetails
 			const built = await buildSkillPromptMessage(skill, activationResult.cleanedArgs, {
 				subskillActivation: activationResult.activation,
 				subskillActivationSet: activationResult.activeSubskillsToPersist,
+				workflowContext,
 				cwd: this.#session.cwd,
 				sessionId: this.#session.getSessionId?.() ?? activeState?.session_id?.trim() ?? undefined,
 			});

@@ -2,15 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type SettingPath, Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { ReadTool } from "@gajae-code/coding-agent/tools/read";
-import * as imageResize from "@gajae-code/coding-agent/utils/image-resize";
-import * as toolsManager from "@gajae-code/coding-agent/utils/tools-manager";
-import * as scrapers from "@gajae-code/coding-agent/web/scrapers/types";
-import * as scraperUtils from "@gajae-code/coding-agent/web/scrapers/utils";
 import * as natives from "@gajae-code/natives";
-import { hookFetch, ptree, Snowflake } from "@gajae-code/utils";
+import { hookFetch, Snowflake } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
+import { type SettingPath, Settings } from "../../src/config/settings";
+import type { ToolSession } from "../../src/tools";
+import { ReadTool } from "../../src/tools/read";
+import * as imageResize from "../../src/utils/image-resize";
+import * as toolsManager from "../../src/utils/tools-manager";
+import * as scrapers from "../../src/web/scrapers/types";
+import * as scraperUtils from "../../src/web/scrapers/utils";
 
 const withMissingSystemPython = () => {
 	const whichSpy = vi.spyOn(Bun, "which").mockImplementation(() => null);

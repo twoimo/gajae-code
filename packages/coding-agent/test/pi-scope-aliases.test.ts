@@ -9,7 +9,7 @@
  * Reported failures the test covers:
  *   - `@juicesharp/rpiv-ask-user-question` ⇒ `@earendil-works/pi-tui`
  *   - `@plannotator/pi-extension`         ⇒ `@gajae-code/agent-core`
- *   - `@runfusion/fusion`                 ⇒ `@gajae-code/coding-agent/...`
+ *   - `@runfusion/fusion`                 ⇒ `../src/...`
  *
  * Plus the two upstream-only surfaces that turned up via real-plugin E2E:
  *   - `Key` runtime helper from `pi-tui` (used by plannotator + rpiv-*).
@@ -18,14 +18,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { loadExtensions } from "@gajae-code/coding-agent/extensibility/extensions/loader";
 import { TempDir } from "@gajae-code/utils";
+import { loadExtensions } from "../src/extensibility/extensions/loader";
 
 const canonicalCodingAgent = Bun.resolveSync("@gajae-code/coding-agent", import.meta.dir);
-const canonicalCodingAgentExtensions = Bun.resolveSync(
-	"@gajae-code/coding-agent/extensibility/extensions",
-	import.meta.dir,
-);
+const canonicalCodingAgentExtensions = Bun.resolveSync("../src/extensibility/extensions", import.meta.dir);
 const canonicalUtils = Bun.resolveSync("@gajae-code/utils", import.meta.dir);
 const canonicalTui = Bun.resolveSync("@gajae-code/tui", import.meta.dir);
 // Subpath remap: upstream `pi-ai/oauth` re-exported `utils/oauth/index`; the

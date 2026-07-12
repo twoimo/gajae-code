@@ -159,7 +159,10 @@ export interface AgentOptions {
 	 * Resolves an API key dynamically for each LLM call.
 	 * Useful for expiring tokens (e.g., GitHub Copilot OAuth).
 	 */
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (
+		provider: string,
+		consumeAttempt?: SimpleStreamOptions["consumeAttempt"],
+	) => Promise<string | undefined> | string | undefined;
 	getAuthCredentialType?: (provider: string) => "api_key" | "oauth" | undefined;
 
 	/**
@@ -221,6 +224,8 @@ export interface AgentOptions {
 	requestMaxRetries?: number;
 	/** Provider stream replay retry budget. Counts retries, not the initial attempt. */
 	streamMaxRetries?: number;
+	/** Shared per-turn physical provider-attempt budget. */
+	consumeAttempt?: SimpleStreamOptions["consumeAttempt"];
 
 	/**
 	 * Provides tool execution context, resolved per tool call.
@@ -324,6 +329,7 @@ export class Agent {
 	#maxRetryDelayMs?: number;
 	#requestMaxRetries?: number;
 	#streamMaxRetries?: number;
+	#consumeAttempt?: SimpleStreamOptions["consumeAttempt"];
 	#getToolContext?: (toolCall?: ToolCallContext) => AgentToolContext | undefined;
 	#cursorExecHandlers?: CursorExecHandlers;
 	#cursorOnToolResult?: CursorToolResultHandler;
@@ -355,7 +361,10 @@ export class Agent {
 	#cursorToolResultBuffer: CursorToolResultEntry[] = [];
 
 	streamFn: StreamFn;
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (
+		provider: string,
+		consumeAttempt?: SimpleStreamOptions["consumeAttempt"],
+	) => Promise<string | undefined> | string | undefined;
 	getAuthCredentialType?: (provider: string) => "api_key" | "oauth" | undefined;
 	/**
 	 * Hook invoked after tool arguments are validated and before execution.
@@ -391,6 +400,7 @@ export class Agent {
 		this.#maxRetryDelayMs = opts.maxRetryDelayMs;
 		this.#requestMaxRetries = opts.requestMaxRetries;
 		this.#streamMaxRetries = opts.streamMaxRetries;
+		this.#consumeAttempt = opts.consumeAttempt;
 		this.getApiKey = opts.getApiKey;
 		this.getAuthCredentialType = opts.getAuthCredentialType;
 		this.#onPayload = opts.onPayload;
@@ -634,6 +644,14 @@ export class Agent {
 
 	set streamMaxRetries(value: number | undefined) {
 		this.#streamMaxRetries = value;
+	}
+
+	get consumeAttempt(): SimpleStreamOptions["consumeAttempt"] {
+		return this.#consumeAttempt;
+	}
+
+	set consumeAttempt(value: SimpleStreamOptions["consumeAttempt"]) {
+		this.#consumeAttempt = value;
 	}
 
 	get state(): AgentState {
@@ -1275,6 +1293,7 @@ export class Agent {
 			maxRetryDelayMs: this.#maxRetryDelayMs,
 			requestMaxRetries: this.#requestMaxRetries,
 			streamMaxRetries: this.#streamMaxRetries,
+			consumeAttempt: this.#consumeAttempt,
 			kimiApiFormat: this.#kimiApiFormat,
 			preferWebsockets: this.#preferWebsockets,
 			convertToLlm: this.#convertToLlm,
@@ -1366,8 +1385,6 @@ export class Agent {
 			telemetry: this.#telemetry,
 		};
 
-		let partial: AgentMessage | null = null;
-
 		try {
 			const stream = messages
 				? agentLoop(messages, context, config, abortController.signal, this.streamFn)
@@ -1381,17 +1398,15 @@ export class Agent {
 				// Update internal state based on events
 				switch (event.type) {
 					case "message_start":
-						partial = event.message;
 						this.#state.streamMessage = event.message;
 						break;
 
 					case "message_update":
-						partial = event.message;
 						this.#state.streamMessage = event.message;
 						break;
 
 					case "message_end":
-						partial = null;
+						// Provider responses are finalized exactly once by agent-loop.
 						// Check if this is an assistant message with buffered Cursor tool results.
 						// If so, split the message to emit tool results at the correct position.
 						if (event.message.role === "assistant" && this.#cursorToolResultBuffer.length > 0) {
@@ -1435,50 +1450,6 @@ export class Agent {
 			if (this.#activeRunId !== runId) {
 				return;
 			}
-
-			// Handle any remaining partial message
-			if (partial && partial.role === "assistant" && Array.isArray(partial.content) && partial.content.length > 0) {
-				const onlyEmpty = !partial.content.some(
-					c =>
-						(c.type === "thinking" && c.thinking.trim().length > 0) ||
-						(c.type === "text" && c.text.trim().length > 0) ||
-						(c.type === "toolCall" && c.name.trim().length > 0),
-				);
-				if (!onlyEmpty) {
-					this.appendMessage(partial);
-				} else {
-					if (abortController.signal.aborted) {
-						throw new Error("Request was aborted");
-					}
-				}
-			}
-		} catch (err: any) {
-			if (this.#activeRunId !== runId) {
-				return;
-			}
-
-			const errorMsg: AgentMessage = {
-				role: "assistant",
-				content: [{ type: "text", text: "" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: abortController.signal.aborted ? "aborted" : "error",
-				errorMessage: err?.message || String(err),
-				timestamp: Date.now(),
-			} as AgentMessage;
-
-			this.appendMessage(errorMsg);
-			this.#state.error = err?.message || String(err);
-			this.#emit({ type: "agent_end", messages: [errorMsg] });
 		} finally {
 			if (this.#activeRunId === runId) {
 				this.#state.isStreaming = false;

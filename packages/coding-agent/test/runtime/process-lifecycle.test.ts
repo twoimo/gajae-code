@@ -6,7 +6,7 @@ import {
 	registerResourceOwner,
 	resourceOwnerCount,
 	spawnOwnedProcess,
-} from "@gajae-code/coding-agent/runtime/process-lifecycle";
+} from "../../src/runtime/process-lifecycle";
 
 const isPosix = process.platform !== "win32";
 

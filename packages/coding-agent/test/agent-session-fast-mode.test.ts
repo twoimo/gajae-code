@@ -3,13 +3,13 @@ import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import type { AssistantMessage } from "@gajae-code/ai";
 import { getBundledModel } from "@gajae-code/ai/models";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import type { AgentSessionEvent } from "../src/session/agent-session";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 /** Build an assistant `message_end` payload signalling the provider auto-dropped fast mode. */

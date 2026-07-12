@@ -280,9 +280,14 @@ export function extractViewportAnchorRows(
 	}
 	return { lines: cleanLines, spans };
 }
+// Bidi formatting controls are default-ignorable and render zero-width in
+// terminals. They are grapheme boundaries in the native implementation, so
+// measure the original spans around them independently rather than removing
+// them and allowing NFC/grapheme sequences to join across the boundary.
+const BIDI_CONTROL_REGEX = /[\u061c\u202a-\u202e\u2066-\u2069]/;
+const BIDI_CONTROL_GLOBAL_REGEX = /[\u061c\u202a-\u202e\u2066-\u2069]/g;
 function normalizeForWidth(str: string): string {
-	const normalized = str.normalize("NFC");
-	return normalized === str ? str : normalized;
+	return str.normalize("NFC");
 }
 
 function hasUnpairedSurrogate(str: string): boolean {
@@ -299,6 +304,14 @@ function hasUnpairedSurrogate(str: string): boolean {
 		if (code >= 0xdc00 && code <= 0xdfff) return true;
 	}
 	return false;
+}
+
+function widthOfBidiSeparatedSpan(span: string, tabReplacement: string | undefined): number {
+	const normalized = normalizeForWidth(span);
+	return nativeVisibleWidth(
+		tabReplacement === undefined ? normalized : normalized.replaceAll("\t", tabReplacement),
+		getCachedTabWidth(),
+	);
 }
 export function visibleWidthRaw(str: string): number {
 	if (!str) {
@@ -323,9 +336,38 @@ export function visibleWidthRaw(str: string): number {
 	if (isPureAscii) {
 		return str.length + tabCount * (getCachedTabWidth() - 1);
 	}
+	if (BIDI_CONTROL_REGEX.test(str)) {
+		const tabReplacement = tabCount === 0 ? undefined : " ".repeat(getCachedTabWidth());
+		if (str.includes("\x1b")) {
+			// Strip complete escape sequences before splitting so controls inside ANSI
+			// payloads disappear with the sequence while controls in visible text remain
+			// grapheme boundaries, matching the native scanner.
+			const visibleText = Bun.stripANSI(str);
+			let width = 0;
+			for (const span of visibleText.split(BIDI_CONTROL_GLOBAL_REGEX)) {
+				width += widthOfBidiSeparatedSpan(span, tabReplacement);
+			}
+			// Native decoding preserves each interrupted UTF-16 surrogate as a
+			// replacement-width cell. They originated as one pair, so retain the
+			// pair's single-cell width without allowing it to become an emoji grapheme.
+			if (/[\ud800-\udbff][\u061c\u202a-\u202e\u2066-\u2069]+[\udc00-\udfff]/.test(visibleText)) width -= 1;
+			return width;
+		}
+		let width = 0;
+		for (const span of str.split(BIDI_CONTROL_GLOBAL_REGEX)) {
+			width += widthOfBidiSeparatedSpan(span, tabReplacement);
+		}
+		// Native decoding preserves each interrupted UTF-16 surrogate as a
+		// replacement-width cell. They originated as one pair, so retain the
+		// pair's single-cell width without allowing it to become an emoji grapheme.
+		if (/[\ud800-\udbff][\u061c\u202a-\u202e\u2066-\u2069]+[\udc00-\udfff]/.test(str)) width -= 1;
+		return width;
+	}
 	const normalized = normalizeForWidth(str);
-	const text = tabCount === 0 ? normalized : normalized.replaceAll("\t", " ".repeat(getCachedTabWidth()));
-	return nativeVisibleWidth(text, getCachedTabWidth());
+	return nativeVisibleWidth(
+		tabCount === 0 ? normalized : normalized.replaceAll("\t", " ".repeat(getCachedTabWidth())),
+		getCachedTabWidth(),
+	);
 }
 
 /**

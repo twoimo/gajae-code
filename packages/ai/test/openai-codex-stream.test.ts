@@ -6,7 +6,8 @@ import {
 	prewarmOpenAICodexResponses,
 	streamOpenAICodexResponses,
 } from "@gajae-code/ai/providers/openai-codex-responses";
-import type { Context, Model, ProviderSessionState } from "@gajae-code/ai/types";
+import { stream } from "@gajae-code/ai/stream";
+import { AttemptBudgetExceededError, type Context, type Model, type ProviderSessionState } from "@gajae-code/ai/types";
 import { getAgentDir, setAgentDir, TempDir } from "@gajae-code/utils";
 
 const originalFetch = global.fetch;
@@ -2895,5 +2896,241 @@ describe("openai-codex streaming", () => {
 
 		expect(requestTurnStates[0]).toBeNull();
 		expect(requestTurnStates[1]).toBe("turn-state-1");
+	});
+	describe("consumeAttempt claim matrix", () => {
+		function attemptController(budget: number, claims: string[]): (kind?: string) => void {
+			let remaining = budget;
+			return kind => {
+				claims.push(kind ?? "unknown");
+				if (remaining <= 0) throw new AttemptBudgetExceededError("attempts", "attempt budget denied");
+				remaining -= 1;
+			};
+		}
+
+		function trackedAttemptController(
+			budget: number,
+			claims: string[],
+			denials: AttemptBudgetExceededError[],
+			activity: string[],
+		): (kind?: string) => void {
+			let remaining = budget;
+			return kind => {
+				const claim = kind ?? "unknown";
+				claims.push(claim);
+				activity.push(`claim:${claim}`);
+				if (remaining <= 0) {
+					const denial = new AttemptBudgetExceededError("attempts", "attempt budget denied");
+					denials.push(denial);
+					throw denial;
+				}
+				remaining -= 1;
+			};
+		}
+
+		for (const fixture of [
+			{ name: "connection-limit", code: "websocket_connection_limit_reached" },
+			{ name: "stale previous_response_id", code: "previous_response_not_found" },
+			{ name: "retryable provider-error", code: "server_error" },
+		]) {
+			for (const budget of [1, 2]) {
+				it(`claims before ${fixture.name} runtime reopen and denies before socket at budget ${budget}`, async () => {
+					const claims: string[] = [];
+					const denials: AttemptBudgetExceededError[] = [];
+					const activity: string[] = [];
+					let sockets = 0;
+					let sends = 0;
+					let fetches = 0;
+					class RuntimeReopenWebSocket extends MockWebSocket {
+						constructor(url: string, options?: { headers?: WsHeaders }) {
+							super(url, options);
+							sockets += 1;
+							activity.push("socket");
+							this.scheduleOpen();
+						}
+						send(): void {
+							activity.push("send");
+							sends += 1;
+							if (sends === 1) {
+								this.sendJson({ type: "error", code: fixture.code, message: "temporary provider failure" });
+								return;
+							}
+							this.emitCodexResponse({ messageId: "msg_reopen", responseId: "resp_reopen", text: "reopened" });
+						}
+					}
+					global.WebSocket = RuntimeReopenWebSocket as unknown as typeof WebSocket;
+					const result = await stream(createCodexTestModel(), createCodexTestContext(), {
+						apiKey: createCodexTestToken(),
+						sessionId: `${fixture.name}-${budget}`,
+						providerSessionState: new Map<string, ProviderSessionState>(),
+						streamMaxRetries: 1,
+						requestMaxRetries: 0,
+						fetch: (async () => {
+							fetches += 1;
+							activity.push("fetch");
+							return new Response(createCompletedCodexSse("fallback"), {
+								headers: { "content-type": "text/event-stream" },
+							});
+						}) as unknown as typeof fetch,
+						consumeAttempt: trackedAttemptController(budget, claims, denials, activity),
+					}).result();
+
+					expect(claims).toEqual(["provider-websocket", "provider-websocket"]);
+					expect(activity).toEqual([
+						"claim:provider-websocket",
+						"socket",
+						"send",
+						"claim:provider-websocket",
+						...(budget === 2
+							? fixture.code === "websocket_connection_limit_reached"
+								? ["socket", "send"]
+								: ["send"]
+							: []),
+					]);
+					expect(sockets).toBe(budget === 2 && fixture.code === "websocket_connection_limit_reached" ? 2 : 1);
+					expect(fetches).toBe(0);
+					expect(denials).toHaveLength(budget === 1 ? 1 : 0);
+					if (budget === 1) expect(denials[0]).toBeInstanceOf(AttemptBudgetExceededError);
+					expect(result.stopReason).toBe(budget === 2 ? "stop" : "error");
+				});
+			}
+		}
+
+		for (const budget of [2, 3]) {
+			it(`claims before failed runtime reopen SSE fallback and denies before fetch at budget ${budget}`, async () => {
+				Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "1";
+				Bun.env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS = "1";
+				const claims: string[] = [];
+				const denials: AttemptBudgetExceededError[] = [];
+				const activity: string[] = [];
+				let sockets = 0;
+				let fetches = 0;
+				class FailedRuntimeReopenWebSocket extends MockWebSocket {
+					constructor(url: string, options?: { headers?: WsHeaders }) {
+						super(url, options);
+						sockets += 1;
+						activity.push("socket");
+						if (sockets === 2)
+							throw new Error("Codex websocket transport error: runtime reopen handshake failed");
+						this.scheduleOpen();
+					}
+					send(): void {
+						this.readyState = MockWebSocket.CLOSED;
+						this.emit("close", { code: 1012 } as unknown as Event);
+					}
+				}
+				global.WebSocket = FailedRuntimeReopenWebSocket as unknown as typeof WebSocket;
+				const result = await stream(createCodexTestModel(), createCodexTestContext(), {
+					apiKey: createCodexTestToken(),
+					sessionId: `failed-runtime-reopen-${budget}`,
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					requestMaxRetries: 0,
+					fetch: (async () => {
+						fetches += 1;
+						activity.push("fetch");
+						return new Response(createCompletedCodexSse("fallback"), {
+							headers: { "content-type": "text/event-stream" },
+						});
+					}) as unknown as typeof fetch,
+					consumeAttempt: trackedAttemptController(budget, claims, denials, activity),
+				}).result();
+
+				expect(claims).toEqual(["provider-websocket", "provider-websocket", "provider-http"]);
+				expect(activity).toEqual([
+					"claim:provider-websocket",
+					"socket",
+					"claim:provider-websocket",
+					"socket",
+					"claim:provider-http",
+					...(budget === 3 ? ["fetch"] : []),
+				]);
+				expect(sockets).toBe(2);
+				expect(fetches).toBe(budget === 3 ? 1 : 0);
+				expect(denials).toHaveLength(budget === 2 ? 1 : 0);
+				if (budget === 2) expect(denials[0]).toBeInstanceOf(AttemptBudgetExceededError);
+				expect(result.stopReason).toBe(budget === 3 ? "stop" : "error");
+			});
+		}
+
+		for (const budget of [0, 1, 2]) {
+			it(`claims initial websocket and websocket-to-SSE fallback before network at budget ${budget}`, async () => {
+				const tempDir = TempDir.createSync("@pi-codex-claims-");
+				setAgentDir(tempDir.path());
+				Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "0";
+				const claims: string[] = [];
+				let sockets = 0;
+				let fetches = 0;
+				global.WebSocket = class {
+					static readonly CONNECTING = 0;
+					static readonly OPEN = 1;
+					static readonly CLOSING = 2;
+					static readonly CLOSED = 3;
+					constructor() {
+						sockets += 1;
+						throw new Error("websocket closed before open");
+					}
+				} as unknown as typeof WebSocket;
+				const result = await stream(createCodexTestModel(), createCodexTestContext(), {
+					apiKey: createCodexTestToken(),
+					sessionId: `claim-${budget}`,
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					requestMaxRetries: 0,
+					fetch: (async () => {
+						fetches += 1;
+						return new Response(createCompletedCodexSse("fallback"), {
+							headers: { "content-type": "text/event-stream" },
+						});
+					}) as unknown as typeof fetch,
+					consumeAttempt: attemptController(budget, claims),
+				}).result();
+
+				expect(claims).toEqual(budget === 0 ? ["provider-websocket"] : ["provider-websocket", "provider-http"]);
+				expect(sockets).toBe(budget === 0 ? 0 : 1);
+				expect(fetches).toBe(budget === 2 ? 1 : 0);
+				expect(result.stopReason).toBe(budget === 2 ? "stop" : "error");
+			});
+		}
+
+		for (const budget of [0, 1, 2, 3]) {
+			it(`claims every websocket connect retry and denies before construction at budget ${budget}`, async () => {
+				const tempDir = TempDir.createSync("@pi-codex-retry-claims-");
+				setAgentDir(tempDir.path());
+				Bun.env.PI_CODEX_WEBSOCKET_RETRY_BUDGET = "2";
+				Bun.env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS = "1";
+				const claims: string[] = [];
+				let sockets = 0;
+				let fetches = 0;
+				global.WebSocket = class {
+					static readonly CONNECTING = 0;
+					static readonly OPEN = 1;
+					static readonly CLOSING = 2;
+					static readonly CLOSED = 3;
+					constructor() {
+						sockets += 1;
+						throw new Error("temporary handshake failure");
+					}
+				} as unknown as typeof WebSocket;
+				const result = await stream(createCodexTestModel(), createCodexTestContext(), {
+					apiKey: createCodexTestToken(),
+					sessionId: `retry-claim-${budget}`,
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					requestMaxRetries: 0,
+					fetch: (async () => {
+						fetches += 1;
+						return new Response(createCompletedCodexSse("fallback"), {
+							headers: { "content-type": "text/event-stream" },
+						});
+					}) as unknown as typeof fetch,
+					consumeAttempt: attemptController(budget, claims),
+				}).result();
+
+				const expectedSocketClaims = Math.min(budget + 1, 3);
+				expect(claims.slice(0, expectedSocketClaims)).toEqual(
+					Array.from({ length: expectedSocketClaims }, () => "provider-websocket"),
+				);
+				expect(sockets).toBe(Math.min(budget, 3));
+				expect(fetches).toBe(0);
+				expect(result.stopReason).toBe("error");
+			});
+		}
 	});
 });

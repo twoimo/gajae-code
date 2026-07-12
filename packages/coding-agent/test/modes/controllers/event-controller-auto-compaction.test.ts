@@ -1,7 +1,7 @@
 import { describe, expect, it, type Mock, vi } from "bun:test";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import type { AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
+import { EventController } from "../../../src/modes/controllers/event-controller";
+import type { InteractiveModeContext } from "../../../src/modes/types";
+import type { AgentSessionEvent } from "../../../src/session/agent-session";
 
 type AutoCompactionEndEvent = Extract<AgentSessionEvent, { type: "auto_compaction_end" }>;
 

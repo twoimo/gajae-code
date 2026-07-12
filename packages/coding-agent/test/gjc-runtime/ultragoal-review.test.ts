@@ -2,14 +2,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { deflateSync } from "node:zlib";
-import { modeStatePath as sessionModeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { modeStatePath as sessionModeStatePath } from "../../src/gjc-runtime/session-layout";
 import {
 	createUltragoalPlan,
 	readUltragoalLedger,
 	readUltragoalPlan,
 	runNativeUltragoalCommand,
 	startNextUltragoalGoal,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
+} from "../../src/gjc-runtime/ultragoal-runtime";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];

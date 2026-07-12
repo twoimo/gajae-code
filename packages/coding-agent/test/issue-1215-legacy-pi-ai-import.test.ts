@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { loadExtensions } from "@gajae-code/coding-agent/extensibility/extensions/loader";
 import { TempDir } from "@gajae-code/utils";
+import { loadExtensions } from "../src/extensibility/extensions/loader";
 
 // Tool name registered by the synthetic extension below.
 const TOOL_NAME = "schedule_prompt_test";

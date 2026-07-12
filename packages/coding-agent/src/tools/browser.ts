@@ -1,3 +1,5 @@
+if (process.env.GJC_STARTUP_TRACE === "1") process.stderr.write("startup:tool-module:browser\n");
+
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@gajae-code/agent-core";
 import { prompt, untilAborted } from "@gajae-code/utils";
 import * as z from "zod/v4";

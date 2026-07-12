@@ -120,6 +120,64 @@ describe("streamPiNative request shape", () => {
 		expect(body.options.temperature).toBe(0.7);
 	});
 
+	it("sends an opaque turn authority envelope without a wall-clock deadline", async () => {
+		let body: Record<string, unknown> | undefined;
+		const fetchImpl: FetchImpl = (async (_input, init) => {
+			body = JSON.parse(init?.body as string) as Record<string, unknown>;
+			return fakeResponse([{ type: "done", reason: "stop", message: baseAssistant() }]);
+		}) as FetchImpl;
+		let remainingAttempts = 3;
+		const consumeAttempt = Object.assign(
+			() => {
+				remainingAttempts -= 1;
+			},
+			{
+				snapshot: () => ({
+					turnBudgetId: "opaque-turn-budget",
+					remainingAttempts,
+					remainingDurationMs: 12_345,
+					maxAttempts: 4,
+				}),
+			},
+		);
+
+		await streamPiNative(fakeModel(), baseContext, { apiKey: "k", fetch: fetchImpl, consumeAttempt }).result();
+
+		expect(body?.attemptBudget).toMatchObject({
+			turnBudgetId: "opaque-turn-budget",
+			remainingAttempts: 3,
+			remainingDurationMs: 12_345,
+			maxAttempts: 4,
+		});
+		expect((body?.attemptBudget as { outerReservationId?: string }).outerReservationId).toBeString();
+		expect(JSON.stringify(body)).not.toContain("deadlineEpochMs");
+	});
+
+	it("reconciles gateway-authoritative remaining attempts from the stream trailer event", async () => {
+		const snapshot = {
+			turnBudgetId: "opaque-turn-budget",
+			remainingAttempts: 1,
+			remainingDurationMs: 10_000,
+			maxAttempts: 4,
+		};
+		let reconciled: typeof snapshot | undefined;
+		const consumeAttempt = Object.assign(() => {}, {
+			snapshot: () => ({ ...snapshot, remainingAttempts: 4 }),
+			reconcile: (value: typeof snapshot) => {
+				reconciled = value;
+			},
+		});
+		const fetchImpl: FetchImpl = (async () =>
+			fakeResponse([
+				{ type: "done", reason: "stop", message: baseAssistant() },
+				{ type: "gateway_authority", attemptBudget: snapshot } as never,
+			])) as FetchImpl;
+
+		await streamPiNative(fakeModel(), baseContext, { apiKey: "k", fetch: fetchImpl, consumeAttempt }).result();
+		await Bun.sleep(0);
+		expect(reconciled).toEqual(snapshot);
+	});
+
 	it("strips non-wire fields (signal, apiKey, fetch, callbacks) from `options`", async () => {
 		// `apiKey` must ride in the Authorization header, never the body — sending
 		// it twice would let a logged request leak the gateway bearer. The other
@@ -233,6 +291,35 @@ describe("streamPiNative event flow", () => {
 
 		const stream = streamPiNative(fakeModel(), baseContext, { apiKey: "k", fetch: fetchImpl });
 		await expect(stream.result()).rejects.toThrow(/no credential/);
+	});
+
+	it("reconciles attempt authority from a non-2xx response before surfacing its error", async () => {
+		const snapshot = {
+			turnBudgetId: "opaque-turn-budget",
+			remainingAttempts: 1,
+			remainingDurationMs: 10_000,
+			maxAttempts: 4,
+		};
+		let reconciled: typeof snapshot | undefined;
+		const consumeAttempt = Object.assign(() => {}, {
+			snapshot: () => ({ ...snapshot, remainingAttempts: 4 }),
+			reconcile: (value: typeof snapshot) => {
+				reconciled = value;
+			},
+		});
+		const fetchImpl: FetchImpl = (async () =>
+			new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "unsupported option" } }), {
+				status: 400,
+				headers: {
+					"Content-Type": "application/json",
+					"X-GJC-Attempt-Budget": JSON.stringify(snapshot),
+				},
+			})) as FetchImpl;
+
+		await expect(
+			streamPiNative(fakeModel(), baseContext, { apiKey: "k", fetch: fetchImpl, consumeAttempt }).result(),
+		).rejects.toThrow(/unsupported option/);
+		expect(reconciled).toEqual(snapshot);
 	});
 
 	it("falls back to plain text on a non-JSON error body", async () => {

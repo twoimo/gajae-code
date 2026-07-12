@@ -1,15 +1,14 @@
 import {
 	type Component,
 	Container,
-	isViewportAnchorSourceRenderer,
+	isViewportRowComponent,
 	Markdown,
 	Spacer,
 	Text,
-	type ViewportAnchorProvider,
-	type ViewportAnchorRender,
-	type ViewportAnchorSource,
-	type ViewportAnchorSourceRenderer,
+	type ViewportRowMetadata,
+	type ViewportRowWindow,
 } from "@gajae-code/tui";
+
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 
 interface RoundQuestionModel {
@@ -59,57 +58,56 @@ interface ThresholdModel {
 
 type DeepInterviewModel = RoundQuestionModel | TopologyQuestionModel | ProgressModel | ThresholdModel;
 
-class DeepInterviewSemanticContainer extends Container implements ViewportAnchorProvider, ViewportAnchorSourceRenderer {
-	#nextSource = 0;
-
-	override addChild(component: Component): void {
-		super.addChild(component);
-		if (isViewportAnchorSourceRenderer(component)) {
-			this.setViewportAnchorSource(component, { id: `deep-interview-part:${this.#nextSource++}` });
-		}
-	}
-
-	override renderWithViewportAnchors(width: number): ViewportAnchorRender {
-		const lines = super.renderWithViewportAnchors(width).lines;
-		return { lines, anchors: lines.map(() => null) };
-	}
-
-	renderWithViewportAnchorSource(width: number, source: ViewportAnchorSource): ViewportAnchorRender {
-		const rendered = super.renderWithViewportAnchors(width);
-		const extents = new Map<string, { graphemeEnd: number; cellEnd: number }>();
-		for (const anchor of rendered.anchors) {
-			if (anchor === null) continue;
-			const extent = extents.get(anchor.id);
-			if (extent) {
-				extent.graphemeEnd = Math.max(extent.graphemeEnd, anchor.graphemeEnd);
-				extent.cellEnd = Math.max(extent.cellEnd, anchor.cellEnd);
-			} else {
-				extents.set(anchor.id, { graphemeEnd: anchor.graphemeEnd, cellEnd: anchor.cellEnd });
+class DeepInterviewSemanticContainer extends Container {
+	override renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
+		const lines: string[] = [];
+		const metadata: Array<ViewportRowMetadata | null> = [];
+		let graphemeOffset = 0;
+		let cellOffset = 0;
+		for (const child of this.children) {
+			const count = isViewportRowComponent(child) ? child.getLogicalRowCount(width) : child.render(width).length;
+			const rendered = isViewportRowComponent(child)
+				? (child.renderRowsWithMetadata?.(width, 0, count) ?? {
+						lines: child.renderRows(width, 0, count),
+						metadata: Array<ViewportRowMetadata | null>(count).fill(null),
+					})
+				: (() => {
+						const childLines = child.render(width);
+						return {
+							lines: childLines,
+							metadata: Array<ViewportRowMetadata | null>(childLines.length).fill(null),
+						};
+					})();
+			let graphemeExtent = 0;
+			let cellExtent = 0;
+			for (let row = 0; row < rendered.lines.length; row++) {
+				lines.push(rendered.lines[row]!);
+				const item = rendered.metadata[row];
+				if (
+					item?.graphemeStart === undefined ||
+					item.graphemeEnd === undefined ||
+					item.cellStart === undefined ||
+					item.cellEnd === undefined
+				) {
+					metadata.push(item ?? null);
+					continue;
+				}
+				graphemeExtent = Math.max(graphemeExtent, item.graphemeEnd);
+				cellExtent = Math.max(cellExtent, item.cellEnd);
+				metadata.push({
+					...item,
+					graphemeStart: graphemeOffset + item.graphemeStart,
+					graphemeEnd: graphemeOffset + item.graphemeEnd,
+					cellStart: cellOffset + item.cellStart,
+					cellEnd: cellOffset + item.cellEnd,
+				});
 			}
+			graphemeOffset += graphemeExtent;
+			cellOffset += cellExtent;
 		}
-		const offsets = new Map<string, { grapheme: number; cell: number }>();
-		let grapheme = 0;
-		let cell = 0;
-		for (const [id, extent] of extents) {
-			offsets.set(id, { grapheme, cell });
-			grapheme += extent.graphemeEnd;
-			cell += extent.cellEnd;
-		}
-		return {
-			lines: rendered.lines,
-			anchors: rendered.anchors.map(anchor => {
-				if (anchor === null) return null;
-				const offset = offsets.get(anchor.id);
-				if (!offset) throw new Error(`Missing deep-interview anchor offset for ${anchor.id}`);
-				return {
-					id: source.id,
-					graphemeStart: offset.grapheme + anchor.graphemeStart,
-					graphemeEnd: offset.grapheme + anchor.graphemeEnd,
-					cellStart: offset.cell + anchor.cellStart,
-					cellEnd: offset.cell + anchor.cellEnd,
-				};
-			}),
-		};
+		const from = Math.max(0, start);
+		const to = Math.max(from, end);
+		return { lines: lines.slice(from, to), metadata: metadata.slice(from, to) };
 	}
 }
 

@@ -13,6 +13,10 @@
 
 - Added transparent Sixel and Kitty real-pixel encoders plus animated 16x16 frame art for the Gajae composer pet.
 - Added an opt-in IRC sidebar split (`alt+i`, remappable): a responsive 70:30 vertical right-hand split that renders Discord-style IRC message blocks through a shared inline/sidebar formatter, with unbounded session backfill and tail-aligned panes. Kitty terminals render inline images inside the split via a cursor-neutral graphics fallback; cursor-advancing protocols (iTerm2, raw Sixel) keep the textual placeholder (#2018).
+### Fixed
+
+- Removed a discarded native visible-width batch from transcript rendering after parity coverage and benchmarking showed the existing JavaScript width loop was faster.
+- Bidi formatting controls (U+061C, U+202A–U+202E, U+2066–U+2069) are now zero-width grapheme boundaries in the scalar width path, preventing Hangul, emoji ZWJ/variation-selector sequences, and UTF-16 surrogate pairs from joining across removed controls while matching native width semantics.
 
 ## [0.9.4] - 2026-07-09
 

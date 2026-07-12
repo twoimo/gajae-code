@@ -25,13 +25,14 @@
  *   200 JSON (stream=false): { message: AssistantMessage }
  *   4xx/5xx: { error: { type, message } }
  */
-import type { AssistantMessageEventStream, Context, SimpleStreamOptions } from "../types";
+import type { AssistantMessageEventStream, AttemptBudgetEnvelope, Context, SimpleStreamOptions } from "../types";
 
 export interface PiNativeParsedRequest {
 	modelId: string;
 	context: Context;
 	options: SimpleStreamOptions;
 	stream: boolean;
+	attemptBudget?: AttemptBudgetEnvelope;
 }
 /**
  * Subset of {@link SimpleStreamOptions} accepted from the wire. Function-valued
@@ -128,6 +129,38 @@ export function parseRequest(body: unknown, _headers?: Headers): PiNativeParsedR
 			optsBag[k] = v;
 		}
 	}
+	let attemptBudget: AttemptBudgetEnvelope | undefined;
+	const rawBudget = obj.attemptBudget;
+	if (typeof rawBudget === "object" && rawBudget !== null && !Array.isArray(rawBudget)) {
+		const budget = rawBudget as Record<string, unknown>;
+		if (
+			typeof budget.turnBudgetId !== "string" ||
+			budget.turnBudgetId.length === 0 ||
+			budget.turnBudgetId.length > 256 ||
+			typeof budget.remainingAttempts !== "number" ||
+			!Number.isSafeInteger(budget.remainingAttempts) ||
+			budget.remainingAttempts < 0 ||
+			typeof budget.remainingDurationMs !== "number" ||
+			!Number.isSafeInteger(budget.remainingDurationMs) ||
+			budget.remainingDurationMs < 0 ||
+			typeof budget.maxAttempts !== "number" ||
+			!Number.isSafeInteger(budget.maxAttempts) ||
+			budget.maxAttempts < 0 ||
+			budget.remainingAttempts > budget.maxAttempts ||
+			typeof budget.outerReservationId !== "string" ||
+			budget.outerReservationId.length === 0 ||
+			budget.outerReservationId.length > 256
+		) {
+			throw new Error("Invalid `attemptBudget` envelope");
+		}
+		attemptBudget = {
+			turnBudgetId: budget.turnBudgetId,
+			remainingAttempts: budget.remainingAttempts,
+			remainingDurationMs: budget.remainingDurationMs,
+			maxAttempts: budget.maxAttempts,
+			outerReservationId: budget.outerReservationId,
+		};
+	}
 
 	// `stream` defaults to true — pi-native clients overwhelmingly stream, and
 	// matching `streamProxy`'s implicit-stream behavior avoids a one-flag papercut.
@@ -137,6 +170,7 @@ export function parseRequest(body: unknown, _headers?: Headers): PiNativeParsedR
 		modelId,
 		context: context as Context,
 		options,
+		attemptBudget,
 		stream,
 	};
 }
@@ -159,13 +193,33 @@ const SSE_DONE = SSE_ENCODER.encode("data: [DONE]\n\n");
  * and the client gets to feed the events straight into its existing
  * `AssistantMessageEventStream.push()` plumbing with zero translation.
  */
-export function encodeStream(events: AssistantMessageEventStream): ReadableStream<Uint8Array> {
+export function encodeStream(
+	events: AssistantMessageEventStream,
+	onSuccessfulTerminal?: () => void,
+	authoritySnapshot?: () => AttemptBudgetEnvelope,
+): ReadableStream<Uint8Array> {
 	return new ReadableStream<Uint8Array>({
 		async start(controller) {
+			const emitAuthority = (): void => {
+				if (!authoritySnapshot) return;
+				controller.enqueue(
+					SSE_ENCODER.encode(
+						`data: ${JSON.stringify({ type: "gateway_authority", attemptBudget: authoritySnapshot() })}\n\n`,
+					),
+				);
+			};
 			try {
 				for await (const event of events) {
+					// The authoritative budget snapshot must precede the terminal
+					// event: the client resolves `.result()` on `done`/`error`, so a
+					// trailing snapshot could race behind caller-visible completion.
+					if (event.type === "done" || event.type === "error") emitAuthority();
 					controller.enqueue(SSE_ENCODER.encode(`data: ${JSON.stringify(event)}\n\n`));
-					if (event.type === "done" || event.type === "error") break;
+					if (event.type === "done") {
+						onSuccessfulTerminal?.();
+						break;
+					}
+					if (event.type === "error") break;
 				}
 				controller.enqueue(SSE_DONE);
 				controller.close();
@@ -175,6 +229,7 @@ export function encodeStream(events: AssistantMessageEventStream): ReadableStrea
 				// canonical `error` event minus the unrecoverable `error:
 				// AssistantMessage` payload (we don't have a usable one here).
 				const message = err instanceof Error ? err.message : String(err);
+				emitAuthority();
 				controller.enqueue(
 					SSE_ENCODER.encode(
 						`data: ${JSON.stringify({ type: "error", reason: "error", errorMessage: message })}\n\n`,

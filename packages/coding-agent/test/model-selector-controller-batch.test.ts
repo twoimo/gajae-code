@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ModelSelectorComponent } from "@gajae-code/coding-agent/modes/components/model-selector";
-import { SelectorController } from "@gajae-code/coding-agent/modes/controllers/selector-controller";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
+import { Settings } from "../src/config/settings";
+import type { ModelSelectorComponent } from "../src/modes/components/model-selector";
+import { SelectorController } from "../src/modes/controllers/selector-controller";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 
 let testTheme = await getThemeByName("red-claw");
 

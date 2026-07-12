@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import type { UsageLimit, UsageReport } from "@gajae-code/ai";
-import { renderUsageReports } from "@gajae-code/coding-agent/modes/controllers/command-controller";
-import { getThemeByName, setThemeInstance, theme } from "@gajae-code/coding-agent/modes/theme/theme";
+import { renderUsageReports } from "../src/modes/controllers/command-controller";
+import { getThemeByName, setThemeInstance, theme } from "../src/modes/theme/theme";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*m/g, "");

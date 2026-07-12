@@ -2,15 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { RpcClient } from "@gajae-code/coding-agent/modes/rpc/rpc-client";
-import type { RpcCommand } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import { approvalGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
-import {
-	dispatchRpcCommand,
-	type RpcCommandDispatchContext,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
-import { UnattendedSessionControlPlane } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-session";
-import { FileGateStore } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
+import { RpcClient } from "../src/modes/rpc/rpc-client";
+import type { RpcCommand } from "../src/modes/rpc/rpc-types";
+import { approvalGate } from "../src/modes/shared/agent-wire/approval-gate";
+import { dispatchRpcCommand, type RpcCommandDispatchContext } from "../src/modes/shared/agent-wire/command-dispatch";
+import { UnattendedSessionControlPlane } from "../src/modes/shared/agent-wire/unattended-session";
+import { FileGateStore } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 
 const unattendedDeclaration = {
 	actor: "rpc-pending-gates-test",

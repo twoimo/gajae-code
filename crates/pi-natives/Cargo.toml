@@ -63,6 +63,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [features]
-default = []
+default = ["monolith"]
+monolith = []
+core = []
+capability-shell = []
 full-langs = ["pi-ast/full-langs"]
 prof-flamegraph = ["dep:inferno"]

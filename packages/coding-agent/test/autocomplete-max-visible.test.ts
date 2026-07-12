@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { SelectorController } from "@gajae-code/coding-agent/modes/controllers/selector-controller";
 import { getProjectAgentDir, Snowflake } from "@gajae-code/utils";
 import { YAML } from "bun";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { SelectorController } from "../src/modes/controllers/selector-controller";
 
 describe("autocompleteMaxVisible setting", () => {
 	let testDir: string;

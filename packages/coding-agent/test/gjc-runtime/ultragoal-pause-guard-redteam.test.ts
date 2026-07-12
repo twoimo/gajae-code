@@ -1,14 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import {
-	assertUltragoalPauseAllowed,
-	isUltragoalPauseBlocked,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-guard";
-import {
-	createUltragoalPlan,
-	recordUltragoalBlockerClassification,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
+import { assertUltragoalPauseAllowed, isUltragoalPauseBlocked } from "../../src/gjc-runtime/ultragoal-guard";
+import { createUltragoalPlan, recordUltragoalBlockerClassification } from "../../src/gjc-runtime/ultragoal-runtime";
 
 const TEST_SESSION_ID = "ultragoal-pause-guard-redteam-session";
 const ORIGINAL_GJC_SESSION_ID = process.env.GJC_SESSION_ID;

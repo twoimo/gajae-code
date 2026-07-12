@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, Usage } from "@gajae-code/ai";
-import { BtwController } from "@gajae-code/coding-agent/modes/controllers/btw-controller";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
 import { Container, type TUI } from "@gajae-code/tui";
+import { BtwController } from "../../../src/modes/controllers/btw-controller";
+import { initTheme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
 
 const usage: Usage = {
 	input: 0,

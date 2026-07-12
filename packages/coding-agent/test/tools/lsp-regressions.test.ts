@@ -2,18 +2,14 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { RenderResultOptions } from "@gajae-code/agent-core";
-import { LspTool } from "@gajae-code/coding-agent/lsp";
-import * as lspClient from "@gajae-code/coding-agent/lsp/client";
-import * as lspConfig from "@gajae-code/coding-agent/lsp/config";
-import { getServersForFile, loadConfig } from "@gajae-code/coding-agent/lsp/config";
-import { renderCall, renderResult } from "@gajae-code/coding-agent/lsp/render";
-import type {
-	CodeAction,
-	Diagnostic,
-	LspClient,
-	ServerConfig,
-	SymbolInformation,
-} from "@gajae-code/coding-agent/lsp/types";
+import * as piUtils from "@gajae-code/utils";
+import { sanitizeText, TempDir } from "@gajae-code/utils";
+import { LspTool } from "../../src/lsp";
+import * as lspClient from "../../src/lsp/client";
+import * as lspConfig from "../../src/lsp/config";
+import { getServersForFile, loadConfig } from "../../src/lsp/config";
+import { renderCall, renderResult } from "../../src/lsp/render";
+import type { CodeAction, Diagnostic, LspClient, ServerConfig, SymbolInformation } from "../../src/lsp/types";
 import {
 	applyCodeAction,
 	collectGlobMatches,
@@ -24,12 +20,10 @@ import {
 	hasGlobPattern,
 	resolveDiagnosticTargets,
 	resolveSymbolColumn,
-} from "@gajae-code/coding-agent/lsp/utils";
-import { getThemeByName } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { clampTimeout } from "@gajae-code/coding-agent/tools/tool-timeouts";
-import * as piUtils from "@gajae-code/utils";
-import { sanitizeText, TempDir } from "@gajae-code/utils";
+} from "../../src/lsp/utils";
+import { getThemeByName } from "../../src/modes/theme/theme";
+import type { ToolSession } from "../../src/tools";
+import { clampTimeout } from "../../src/tools/tool-timeouts";
 
 describe("lsp regressions", () => {
 	afterEach(() => {

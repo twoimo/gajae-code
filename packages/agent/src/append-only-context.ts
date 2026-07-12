@@ -140,6 +140,11 @@ export class StablePrefix {
  */
 export class AppendOnlyLog {
 	#entries: Message[] = [];
+	#retainedContentBytes = 0;
+
+	get retainedContentBytes(): number {
+		return this.#retainedContentBytes;
+	}
 
 	get length(): number {
 		return this.#entries.length;
@@ -147,16 +152,20 @@ export class AppendOnlyLog {
 
 	append(message: any): void {
 		this.#entries.push(message);
+		this.#retainedContentBytes += retainedMessageContentBytes(message);
 	}
 
 	extend(messages: any[]): void {
-		for (const m of messages) this.#entries.push(m);
+		for (const message of messages) this.append(message);
 	}
 
 	/** Replace the last entry — only legal for compaction. */
 	replaceTail(replacement: any): void {
 		const idx = this.#entries.length - 1;
-		if (idx >= 0) this.#entries[idx] = replacement;
+		if (idx < 0) return;
+		this.#retainedContentBytes -= retainedMessageContentBytes(this.#entries[idx]);
+		this.#entries[idx] = replacement;
+		this.#retainedContentBytes += retainedMessageContentBytes(replacement);
 	}
 
 	/** Returns a shallow copy of all entries. */
@@ -171,7 +180,23 @@ export class AppendOnlyLog {
 
 	clear(): void {
 		this.#entries = [];
+		this.#retainedContentBytes = 0;
 	}
+}
+
+function retainedMessageContentBytes(message: unknown): number {
+	if (!message || typeof message !== "object") return 0;
+	const content = (message as { content?: unknown }).content;
+	if (typeof content === "string") return Buffer.byteLength(content);
+	if (!Array.isArray(content)) return 0;
+	let bytes = 0;
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		const typed = block as { text?: unknown; data?: unknown };
+		if (typeof typed.text === "string") bytes += Buffer.byteLength(typed.text);
+		if (typeof typed.data === "string") bytes += Buffer.byteLength(typed.data);
+	}
+	return bytes;
 }
 
 // ---------------------------------------------------------------------------

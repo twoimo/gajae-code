@@ -110,7 +110,10 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Useful for short-lived OAuth tokens (e.g., GitHub Copilot) that may expire
 	 * during long-running tool execution phases.
 	 */
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (
+		provider: string,
+		consumeAttempt?: SimpleStreamOptions["consumeAttempt"],
+	) => Promise<string | undefined> | string | undefined;
 
 	/** Returns the credential type selected by the most recent getApiKey call for this session/provider. */
 	getAuthCredentialType?: (provider: string) => "api_key" | "oauth" | undefined;

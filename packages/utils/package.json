@@ -24,7 +24,7 @@
 	"types": "./src/index.ts",
 	"scripts": {
 		"check": "biome check . && bun run check:types",
-		"check:types": "tsc -p tsconfig.json --noEmit",
+		"check:types": "tsgo -p tsconfig.test.json --noEmit",
 		"lint": "biome lint .",
 		"test": "bun test",
 		"fix": "biome check --write --unsafe .",
@@ -50,6 +50,18 @@
 		".": {
 			"types": "./src/index.ts",
 			"import": "./src/index.ts"
+		},
+		"./procmgr": {
+			"types": "./src/procmgr.ts",
+			"import": "./src/procmgr.ts"
+		},
+		"./ptree": {
+			"types": "./src/ptree.ts",
+			"import": "./src/ptree.ts"
+		},
+		"./retained-memory": {
+			"types": "./src/retained-memory.ts",
+			"import": "./src/retained-memory.ts"
 		},
 		"./*": {
 			"types": "./src/*.ts",

@@ -50,6 +50,7 @@
 
 ## [0.9.6] - 2026-07-10
 ### Changed
+- Bridge and RPC wire contracts now consume the shared `@gajae-code/agent-wire` protocol package, including bounded v1/v2 negotiation.
 
 - Moved the `codex-eco`/`codex-medium`/`codex-pro` presets and the `opus-codex`/`codex-opencodego`/`fable-opus-codex` combo presets from `gpt-5.5` onto the GPT-5.6 tier family: Sol drives `default` and `architect` on every codex preset (eco `sol:medium`, medium `sol:high`, pro `sol:xhigh`/`sol:max`), with Luna/Terra covering the lighter executor/planner/critic roles by tier.
 ### Fixed
@@ -59,6 +60,11 @@
 ### Fixed
 
 - Fixed v0.9.3–v0.9.6 compiled release binaries crashing at first real launch with `Cannot find module '/$bunfs/root/node_modules/handlebars/lib/index.js'` while `--version`/`--help` still worked (#1939). `--minify` silently dropped the handlebars bunfs extra entrypoint; handlebars is now bundled through a statically-traceable `require("handlebars")` in `@gajae-code/utils` prompt rendering (still lazy at runtime), and the fragile extra entrypoint is gone from both release and dev compile args. `--minify` and its startup-RSS win are retained.
+
+### Fixed
+
+- Web search now preserves explicit years in queries instead of silently replacing years from 2020 through 2029 with the current year.
+- Web search now reports an all-provider failure as a failed tool call with per-provider diagnostics instead of returning successful `Error:` text.
 
 ## [0.9.5] - 2026-07-09
 ### Fixed

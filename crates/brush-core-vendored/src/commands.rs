@@ -991,3 +991,16 @@ pub fn child_session_action(
 
 	ChildSessionAction::DetachSession
 }
+
+#[cfg(test)]
+mod child_session_action_tests {
+	use super::{ChildSessionAction, child_session_action};
+
+	#[test]
+	fn preserves_embedded_foreground_and_pipeline_contracts() {
+		assert_eq!(child_session_action(false, false, false), ChildSessionAction::DetachSession);
+		assert_eq!(child_session_action(false, false, true), ChildSessionAction::None);
+		assert_eq!(child_session_action(false, true, false), ChildSessionAction::None);
+		assert_eq!(child_session_action(true, true, false), ChildSessionAction::TakeForeground);
+	}
+}

@@ -149,14 +149,29 @@ export function streamPiNative<TApi extends Api>(
 			const url = resolveStreamUrl(model as Model<Api>);
 			const fetchImpl = options?.fetch ?? globalThis.fetch;
 			const headers = buildHeaders(model as Model<Api>, options?.apiKey);
+			const attemptController = options?.consumeAttempt;
+			const attemptBudgetSnapshot = attemptController?.snapshot?.();
+			attemptController?.("gateway-outer");
+			const attemptBudget = attemptBudgetSnapshot
+				? { ...attemptBudgetSnapshot, outerReservationId: crypto.randomUUID() }
+				: undefined;
 			const body = JSON.stringify({
 				modelId: model.id,
 				context,
 				options: buildWireOptions(options),
+				attemptBudget,
 				stream: true,
 			});
 
 			response = await fetchImpl(url, { method: "POST", headers, body, signal });
+			const authorityHeader = response.headers.get("X-GJC-Attempt-Budget");
+			if (authorityHeader && attemptController?.reconcile) {
+				try {
+					attemptController.reconcile(JSON.parse(authorityHeader));
+				} catch {
+					// Malformed authority metadata cannot grant budget; retain local state.
+				}
+			}
 			if (!response.ok) {
 				stream.fail(await decodeGatewayError(response));
 				return;
@@ -167,10 +182,14 @@ export function streamPiNative<TApi extends Api>(
 			}
 
 			let sawTerminal = false;
-			for await (const event of readSseJson<AssistantMessageEvent>(
-				response.body as ReadableStream<Uint8Array>,
-				signal,
-			)) {
+			for await (const event of readSseJson<
+				| AssistantMessageEvent
+				| { type: "gateway_authority"; attemptBudget: NonNullable<typeof attemptBudgetSnapshot> }
+			>(response.body as ReadableStream<Uint8Array>, signal)) {
+				if (event.type === "gateway_authority") {
+					attemptController?.reconcile?.(event.attemptBudget);
+					continue;
+				}
 				if (event.type === "done" || event.type === "error") sawTerminal = true;
 				stream.push(event);
 				// `stream.push` resolves `.result()` on `done`/`error`; subsequent

@@ -9,7 +9,7 @@ import {
 	RpcListenRefusedError,
 	RpcSocketSecurityError,
 	verifyRpcSocketAfterListen,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-socket-security";
+} from "../src/modes/rpc/rpc-socket-security";
 
 let dir: string;
 

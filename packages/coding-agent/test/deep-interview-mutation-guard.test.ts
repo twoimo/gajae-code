@@ -3,21 +3,17 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentTool } from "@gajae-code/agent-core";
-import {
-	activeSnapshotPath,
-	modeStatePath,
-	sessionStateDir,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
+import { logger } from "@gajae-code/utils";
+import { activeSnapshotPath, modeStatePath, sessionStateDir } from "../src/gjc-runtime/session-layout";
+import { runNativeStateCommand } from "../src/gjc-runtime/state-runtime";
 import {
 	assertDeepInterviewMutationRawPathsAllowed,
 	DEEP_INTERVIEW_MUTATION_BLOCK_MESSAGE,
 	getDeepInterviewMutationDecision,
 	RALPLAN_MUTATION_BLOCK_MESSAGE,
 	ULTRAGOAL_GOAL_PLANNING_MUTATION_BLOCK_MESSAGE,
-} from "@gajae-code/coding-agent/skill-state/deep-interview-mutation-guard";
-import { ToolError } from "@gajae-code/coding-agent/tools/tool-errors";
-import { logger } from "@gajae-code/utils";
+} from "../src/skill-state/deep-interview-mutation-guard";
+import { ToolError } from "../src/tools/tool-errors";
 
 const tempRoots: string[] = [];
 
@@ -253,7 +249,7 @@ describe("deep-interview mutation guard", () => {
 		expect(mixed.blocked).toBe(true);
 	});
 
-	it("allows read-only bash during active deep-interview when no mutation target is extracted", async () => {
+	it("allows non-executing read-only bash during active deep-interview when no mutation target is extracted", async () => {
 		const cwd = await makeTempRoot();
 		await writeActiveDeepInterview(cwd);
 
@@ -261,8 +257,6 @@ describe("deep-interview mutation guard", () => {
 			"git status --short",
 			"rg deep-interview packages/coding-agent/src",
 			"cat packages/coding-agent/package.json",
-			"sed -n '1,80p' packages/coding-agent/src/skill-state/deep-interview-mutation-guard.ts",
-			"bun test packages/coding-agent/test/deep-interview-mutation-guard.test.ts",
 		]) {
 			const decision = await getDeepInterviewMutationDecision({
 				cwd,
@@ -375,7 +369,7 @@ describe("deep-interview mutation guard", () => {
 		expect(afterClear.blocked).toBe(false);
 	});
 
-	it("allows writes and logs when deep-interview mode state is invalid", async () => {
+	it("blocks writes and logs when deep-interview mode state is invalid", async () => {
 		const cwd = await makeTempRoot();
 		await writeActiveDeepInterview(cwd);
 		await Bun.write(
@@ -390,7 +384,8 @@ describe("deep-interview mutation guard", () => {
 				tool: tool("write"),
 				args: { path: "src/product.ts", content: "x" },
 			});
-			expect(decision.blocked).toBe(false);
+			expect(decision.blocked).toBe(true);
+			expect(decision.message).toContain("gjc state clear");
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(String(warn.mock.calls[0]?.[0] ?? "")).toContain("gjc skill-state: invalid mode-state at");
 		} finally {
@@ -398,7 +393,7 @@ describe("deep-interview mutation guard", () => {
 		}
 	});
 
-	it("allows writes and logs when deep-interview mode state is corrupt JSON", async () => {
+	it("blocks writes and logs when deep-interview mode state is corrupt JSON", async () => {
 		const cwd = await makeTempRoot();
 		await writeActiveDeepInterview(cwd);
 		await Bun.write(modeStatePath(cwd, "session-a", "deep-interview"), "{");
@@ -410,7 +405,8 @@ describe("deep-interview mutation guard", () => {
 				tool: tool("write"),
 				args: { path: "src/product.ts", content: "x" },
 			});
-			expect(decision.blocked).toBe(false);
+			expect(decision.blocked).toBe(true);
+			expect(decision.message).toContain("gjc state clear");
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(String(warn.mock.calls[0]?.[0] ?? "")).toContain("invalid JSON");
 		} finally {

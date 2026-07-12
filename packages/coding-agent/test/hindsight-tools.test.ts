@@ -9,14 +9,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { HindsightApi } from "@gajae-code/coding-agent/hindsight/client";
-import type { HindsightConfig } from "@gajae-code/coding-agent/hindsight/config";
-import { HindsightSessionState } from "@gajae-code/coding-agent/hindsight/state";
-import { HindsightRecallTool } from "@gajae-code/coding-agent/tools/hindsight-recall";
-import { HindsightReflectTool } from "@gajae-code/coding-agent/tools/hindsight-reflect";
-import { HindsightRetainTool } from "@gajae-code/coding-agent/tools/hindsight-retain";
-import type { ToolSession } from "@gajae-code/coding-agent/tools/index";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { HindsightApi } from "../src/hindsight/client";
+import type { HindsightConfig } from "../src/hindsight/config";
+import { HindsightSessionState } from "../src/hindsight/state";
+import { HindsightRecallTool } from "../src/tools/hindsight-recall";
+import { HindsightReflectTool } from "../src/tools/hindsight-reflect";
+import { HindsightRetainTool } from "../src/tools/hindsight-retain";
+import type { ToolSession } from "../src/tools/index";
 
 const TEST_SESSION_ID = "test-session-id";
 let registeredState: HindsightSessionState | undefined;

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Snowflake } from "@gajae-code/utils";
 import {
 	claimStage1Jobs,
 	clearMemoryData,
@@ -12,8 +13,7 @@ import {
 	openMemoryDb,
 	tryClaimGlobalPhase2Job,
 	upsertThreads,
-} from "@gajae-code/coding-agent/memories/storage";
-import { Snowflake } from "@gajae-code/utils";
+} from "../src/memories/storage";
 
 const GLOBAL_KIND = "memory_consolidate_global";
 const PROJECT_CWD = "/repo";

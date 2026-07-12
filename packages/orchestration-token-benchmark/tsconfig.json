@@ -1,4 +1,9 @@
 {
 	"extends": "../tsconfig.workspace.json",
+	"compilerOptions": {
+		"composite": true,
+		"noEmit": false,
+		"emitDeclarationOnly": true
+	},
 	"include": ["src", "test"]
 }

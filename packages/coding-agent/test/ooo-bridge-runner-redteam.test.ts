@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@gajae-code/ai";
-import type { ExecResult } from "@gajae-code/coding-agent/exec/exec";
+import type { ExecResult } from "../src/exec/exec";
 import {
 	createExactPrefixCommandBridge,
 	type Extension,
@@ -8,7 +8,7 @@ import {
 	type ExtensionRuntime,
 	OOO_BRIDGE_RECURSION_ENV,
 	OOO_BRIDGE_TIMEOUT_ENV,
-} from "@gajae-code/coding-agent/extensibility/extensions";
+} from "../src/extensibility/extensions";
 
 function extensionWith(handler: ReturnType<typeof createExactPrefixCommandBridge>): Extension {
 	return {

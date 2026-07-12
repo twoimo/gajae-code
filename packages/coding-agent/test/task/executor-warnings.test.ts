@@ -23,6 +23,8 @@ describe("subagent warning injection", () => {
 
 		expect(result.rawOutput).toBe(`${SUBAGENT_WARNING_NULL_YIELD}\n\npartial output`);
 		expect(result.hasYield).toBe(true);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_NULL_YIELD);
 	});
 
 	it("injects missing-submit warning when subagent exits cleanly without yield", () => {
@@ -38,9 +40,11 @@ describe("subagent warning injection", () => {
 
 		expect(result.rawOutput).toBe(SUBAGENT_WARNING_MISSING_YIELD);
 		expect(result.hasYield).toBe(false);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
 	});
 
-	it("does not inject missing-submit warning when fallback completion is recoverable", () => {
+	it("rejects parseable JSON fallback when subagent exits without yield", () => {
 		const result = finalizeSubprocessOutput({
 			rawOutput: '{"data":{"ok":true}}',
 			exitCode: 0,
@@ -51,8 +55,9 @@ describe("subagent warning injection", () => {
 			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
 		});
 
-		expect(result.rawOutput).toBe('{\n  "ok": true\n}');
-		expect(result.rawOutput.includes("SYSTEM WARNING")).toBe(false);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
+		expect(result.rawOutput).toBe(`${SUBAGENT_WARNING_MISSING_YIELD}\n\n{"data":{"ok":true}}`);
 	});
 
 	it("prefixes missing-submit warning on stop outputs", () => {
@@ -67,6 +72,8 @@ describe("subagent warning injection", () => {
 		});
 
 		expect(result.rawOutput).toBe(`${SUBAGENT_WARNING_MISSING_YIELD}\n\nagent stopped after writing analysis`);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
 	});
 
 	it("does not inject missing-submit warning when execution exits non-zero", () => {
@@ -168,7 +175,7 @@ describe("subagent warning injection", () => {
 		expect(result.rawOutput).toBe('{\n  "summary": "The image is returned inline by the read tool."\n}');
 	});
 
-	it("rejects fallback completion data that points at omitted message body", () => {
+	it("rejects parseable placeholder fallback because no yield was submitted", () => {
 		const result = finalizeSubprocessOutput({
 			rawOutput: JSON.stringify({
 				data: {
@@ -184,12 +191,11 @@ describe("subagent warning injection", () => {
 		});
 
 		expect(result.exitCode).toBe(1);
-		expect(result.stderr).toContain(SUBAGENT_WARNING_PLACEHOLDER_YIELD);
-		expect(result.stderr).toContain("$.planMarkdown");
-		expect(result.rawOutput).toContain('"error": "schema_violation"');
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
+		expect(result.rawOutput).toContain(SUBAGENT_WARNING_MISSING_YIELD);
 	});
 
-	it("does not inject missing-submit warning when no schema and raw text exists", () => {
+	it("rejects prose output when subagent exits without yield", () => {
 		const result = finalizeSubprocessOutput({
 			rawOutput: "plain text notes",
 			exitCode: 0,
@@ -200,8 +206,41 @@ describe("subagent warning injection", () => {
 			outputSchema: undefined,
 		});
 
-		expect(result.rawOutput).toBe("plain text notes");
-		expect(result.rawOutput.includes("SYSTEM WARNING")).toBe(false);
-		expect(result.exitCode).toBe(0);
+		expect(result.rawOutput).toBe(`${SUBAGENT_WARNING_MISSING_YIELD}\n\nplain text notes`);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
+	});
+
+	it("rejects unserializable yield data", () => {
+		const circular: { self?: unknown } = {};
+		circular.self = circular;
+		const result = finalizeSubprocessOutput({
+			rawOutput: "",
+			exitCode: 0,
+			stderr: "",
+			doneAborted: false,
+			signalAborted: false,
+			yieldItems: [{ status: "success", data: circular }],
+			outputSchema: undefined,
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain("Failed to serialize yield data");
+	});
+
+	it("rejects yield data that does not satisfy its output schema", () => {
+		const result = finalizeSubprocessOutput({
+			rawOutput: "",
+			exitCode: 0,
+			stderr: "",
+			doneAborted: false,
+			signalAborted: false,
+			yieldItems: [{ status: "success", data: { ok: "yes" } }],
+			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain("schema_violation");
+		expect(result.hasValidYield).toBe(false);
 	});
 });

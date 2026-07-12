@@ -45,7 +45,7 @@ describe("build metadata", () => {
 	it("classifies unmarked user installs as package installs instead of dev", () => {
 		delete process.env.GJC_BUILD_CHANNEL;
 
-		expect(resolveBuildMetadata("/opt/homebrew/lib/node_modules/@gajae-code/coding-agent/src")).toEqual({
+		expect(resolveBuildMetadata("/opt/homebrew/lib/node_modules/../src/src")).toEqual({
 			channel: "package-install",
 			label: "package install",
 		});
@@ -58,7 +58,7 @@ describe("build metadata", () => {
 		await Bun.write(path.join(consumerRoot, "bun.lock"), "");
 		await Bun.write(path.join(consumerRoot, "package.json"), JSON.stringify({ name: "consumer-app" }));
 
-		expect(resolveBuildMetadata(path.join(consumerRoot, "node_modules/@gajae-code/coding-agent/src"))).toEqual({
+		expect(resolveBuildMetadata(path.join(consumerRoot, "node_modules/../src/src"))).toEqual({
 			channel: "package-install",
 			label: "package install",
 		});

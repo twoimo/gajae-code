@@ -4,12 +4,12 @@ import type { AgentMessage } from "@gajae-code/agent-core";
 import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel, type TextContent } from "@gajae-code/ai";
 import { createMockModel, type MockHandler } from "@gajae-code/ai/providers/mock";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { SessionManager } from "../src/session/session-manager";
 
 function isRetryableRemoveError(error: unknown): boolean {
 	if (typeof error !== "object" || error === null) return false;

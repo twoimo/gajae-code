@@ -139,6 +139,23 @@ describe("markdown highlight cache + cap red-team", () => {
 		expect(renderedWithB).not.toContain("THEME-A:ts:const theme = 'must invalidate';");
 	});
 
+	it("does not serve another code block when a compact highlight hash collides", () => {
+		const realHash = Bun.hash;
+		const stub = Object.assign((..._args: unknown[]) => 0xdeadbeefn, realHash);
+		(Bun as { hash: typeof Bun.hash }).hash = stub as typeof Bun.hash;
+		try {
+			const theme = makeSpyTheme("COLLISION");
+			const first = joined("```ts\nconst value = 'AAAA';\n```", theme);
+			const second = joined("```ts\nconst value = 'BBBB';\n```", theme);
+			expect(first).toContain("COLLISION:ts:const value = 'AAAA';");
+			expect(second).toContain("COLLISION:ts:const value = 'BBBB';");
+			expect(theme.calls).toHaveLength(2);
+		} finally {
+			(Bun as { hash: typeof Bun.hash }).hash = realHash;
+			clearRenderCache();
+		}
+	});
+
 	it("applies cache and cap behavior to code blocks nested in list items", () => {
 		const theme = makeSpyTheme("LIST");
 		const nestedNormal = ["- item with code", "", "  ```ts", "  const nested = true;", "  ```"].join("\n");

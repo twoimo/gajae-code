@@ -10,7 +10,7 @@ import {
 	parseApplyPatch,
 	parseDiffHunks,
 	seekSequence,
-} from "@gajae-code/coding-agent/edit";
+} from "../../src/edit";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test-local adapters over the production OpenAI code backend envelope API.

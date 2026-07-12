@@ -2,14 +2,10 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@gajae-code/agent-core";
 import type { Message, Model, SimpleStreamOptions } from "@gajae-code/ai";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { __sessionStateSidecarPerfCounters } from "@gajae-code/coding-agent/gjc-runtime/session-state-sidecar";
-import {
-	__agentSessionPerfCounters,
-	AgentSession,
-	type AgentSessionEvent,
-} from "@gajae-code/coding-agent/session/agent-session";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { Settings } from "../src/config/settings";
+import { __sessionStateSidecarPerfCounters } from "../src/gjc-runtime/session-state-sidecar";
+import { __agentSessionPerfCounters, AgentSession, type AgentSessionEvent } from "../src/session/agent-session";
+import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 function eventDelta(event: AgentSessionEvent): string {

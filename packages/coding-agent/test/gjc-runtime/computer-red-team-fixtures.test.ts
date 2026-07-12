@@ -3,12 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { deflateSync } from "node:zlib";
-import { sessionUltragoalDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { sessionUltragoalDir } from "../../src/gjc-runtime/session-layout";
 import {
 	createUltragoalPlan,
 	runNativeUltragoalCommand,
 	startNextUltragoalGoal,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
+} from "../../src/gjc-runtime/ultragoal-runtime";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];

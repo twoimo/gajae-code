@@ -2,9 +2,11 @@
  * Agent loop that works with AgentMessage throughout.
  * Transforms to Message[] only at the LLM call boundary.
  */
+import * as crypto from "node:crypto";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type AssistantMessageEventStream,
 	type Context,
 	EventStream,
 	isContextOverflow,
@@ -343,7 +345,7 @@ export function normalizeMessagesForProvider(
 }
 
 interface ConvertedContextCacheEntry {
-	messageHashes: string[];
+	messageDigests: string[];
 	modelKey: string;
 	toolKey: string;
 	intentTracing: boolean;
@@ -366,33 +368,31 @@ function stableCacheString(value: unknown): string | undefined {
 }
 
 /**
- * Hash a message by full content serialization.
+ * Produce a fixed-size digest of a message's serialized content.
  *
- * Deliberately NOT memoized by object identity: callers mutate messages in
- * place (compaction rewrites, obfuscation, abort markers) and the cache's
- * correctness contract requires detecting those mutations. The per-turn
- * serialization cost is the price of that contract; the win is skipping
- * convertToLlm + normalize on stable contexts, which dominates for
- * image-heavy histories.
+ * Callers can mutate messages in place, so object identity alone is not a safe
+ * revision signal. Hashing preserves mutation detection without retaining a
+ * second serialized copy of the complete message history in the cache.
  */
-function hashMessageContent(message: AgentMessage): string | undefined {
-	return stableCacheString(message);
+function digestMessageContent(message: AgentMessage): string | undefined {
+	const serialized = stableCacheString(message);
+	return serialized === undefined ? undefined : crypto.createHash("sha256").update(serialized).digest("hex");
 }
 
 function buildConvertedContextCacheKeys(
 	messages: AgentMessage[],
 	context: AgentContext,
 	config: AgentLoopConfig,
-): Pick<ConvertedContextCacheEntry, "messageHashes" | "modelKey" | "toolKey" | "intentTracing"> | undefined {
+): Pick<ConvertedContextCacheEntry, "messageDigests" | "modelKey" | "toolKey" | "intentTracing"> | undefined {
 	const intentTracing = !!config.intentTracing;
-	const messageHashes = messages.map(hashMessageContent);
+	const messageDigests = messages.map(digestMessageContent);
 	const modelKey = stableCacheString(config.model);
 	const toolKey = stableCacheString(normalizeTools(context.tools, intentTracing) ?? []);
-	if (messageHashes.some(hash => hash === undefined) || modelKey === undefined || toolKey === undefined) {
+	if (messageDigests.some(digest => digest === undefined) || modelKey === undefined || toolKey === undefined) {
 		return undefined;
 	}
 	return {
-		messageHashes: messageHashes as string[],
+		messageDigests: messageDigests as string[],
 		modelKey,
 		toolKey,
 		intentTracing,
@@ -425,8 +425,8 @@ async function convertAndNormalizeMessages(
 		previous.intentTracing === keys.intentTracing;
 
 	if (canReuse) {
-		const stablePrefixLength = findStablePrefixLength(previous.messageHashes, keys.messageHashes);
-		if (stablePrefixLength === keys.messageHashes.length && stablePrefixLength === previous.messageHashes.length) {
+		const stablePrefixLength = findStablePrefixLength(previous.messageDigests, keys.messageDigests);
+		if (stablePrefixLength === keys.messageDigests.length && stablePrefixLength === previous.messageDigests.length) {
 			return previous.normalizedMessages;
 		}
 		// Append-only fast path: convert only the new suffix and concatenate.
@@ -439,8 +439,8 @@ async function convertAndNormalizeMessages(
 		// agent-loop-context-cache.test.ts.
 		if (
 			config.appendOnlyContext &&
-			stablePrefixLength === previous.messageHashes.length &&
-			keys.messageHashes.length > previous.messageHashes.length
+			stablePrefixLength === previous.messageDigests.length &&
+			keys.messageDigests.length > previous.messageDigests.length
 		) {
 			const suffix = messages.slice(stablePrefixLength);
 			const convertedSuffix = await config.convertToLlm(suffix);
@@ -862,7 +862,8 @@ async function streamAssistantResponse(
 	// metadata so that the session-sticky credential recorded by getApiKey is
 	// visible to metadataResolver (e.g. for the correct account_uuid in metadata.user_id).
 	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+		(config.getApiKey ? await config.getApiKey(config.model.provider, config.consumeAttempt) : undefined) ||
+		config.apiKey;
 
 	// Re-resolve metadata after credential selection so the per-request value
 	// reflects the credential actually used, not the snapshot from AgentLoopConfig construction.
@@ -925,21 +926,35 @@ async function streamAssistantResponse(
 
 	try {
 		return await runInActiveSpan(chatSpan, async () => {
-			const response = await streamFunction(config.model, llmContext, {
-				...config,
-				apiKey: resolvedApiKey,
-				authCredentialType,
-				metadata: resolvedMetadata,
-				sessionId: config.providerSessionId ?? config.sessionId,
-				toolChoice: effectiveToolChoice,
-				reasoning: effectiveReasoning,
-				temperature: effectiveTemperature,
-				signal: requestSignal,
-				onResponse: captureOnResponse,
-			});
-
 			let partialMessage: AssistantMessage | null = null;
 			let addedPartial = false;
+			let response: AssistantMessageEventStream;
+
+			try {
+				response = await streamFunction(config.model, llmContext, {
+					...config,
+					apiKey: resolvedApiKey,
+					authCredentialType,
+					metadata: resolvedMetadata,
+					sessionId: config.providerSessionId ?? config.sessionId,
+					toolChoice: effectiveToolChoice,
+					reasoning: effectiveReasoning,
+					temperature: effectiveTemperature,
+					signal: requestSignal,
+					onResponse: captureOnResponse,
+				});
+			} catch (err) {
+				return await emitErroredAssistantMessage(
+					partialMessage,
+					addedPartial,
+					context,
+					config,
+					stream,
+					finishChat,
+					err,
+					requestSignal,
+				);
+			}
 
 			const responseIterator = response[Symbol.asyncIterator]();
 
@@ -950,8 +965,14 @@ async function streamAssistantResponse(
 			let detachAbortListener: (() => void) | undefined;
 			if (requestSignal) {
 				if (requestSignal.aborted) {
-					const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
-					await finishChat(aborted);
+					const aborted = await emitAbortedAssistantMessage(
+						partialMessage,
+						addedPartial,
+						context,
+						config,
+						stream,
+						finishChat,
+					);
 					return aborted;
 				}
 				const { promise, resolve } = Promise.withResolvers<typeof ABORTED>();
@@ -964,21 +985,47 @@ async function streamAssistantResponse(
 			try {
 				while (true) {
 					let next: IteratorResult<AssistantMessageEvent>;
-					if (abortRacePromise) {
-						const result = await Promise.race([responseIterator.next(), abortRacePromise]);
-						if (result === ABORTED) {
-							responseIterator.return?.()?.catch(() => {});
-							const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
-							await finishChat(aborted);
-							return aborted;
+					try {
+						if (abortRacePromise) {
+							const result = await Promise.race([responseIterator.next(), abortRacePromise]);
+							if (result === ABORTED) {
+								responseIterator.return?.()?.catch(() => {});
+								const aborted = await emitAbortedAssistantMessage(
+									partialMessage,
+									addedPartial,
+									context,
+									config,
+									stream,
+									finishChat,
+								);
+								return aborted;
+							}
+							next = result;
+						} else {
+							next = await responseIterator.next();
 						}
-						next = result;
-					} else {
-						next = await responseIterator.next();
+					} catch (err) {
+						return await emitErroredAssistantMessage(
+							partialMessage,
+							addedPartial,
+							context,
+							config,
+							stream,
+							finishChat,
+							err,
+							requestSignal,
+						);
 					}
+
 					if (requestSignal?.aborted) {
-						const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
-						await finishChat(aborted);
+						const aborted = await emitAbortedAssistantMessage(
+							partialMessage,
+							addedPartial,
+							context,
+							config,
+							stream,
+							finishChat,
+						);
 						return aborted;
 					}
 					if (next.done) break;
@@ -1023,18 +1070,22 @@ async function streamAssistantResponse(
 
 						case "done":
 						case "error": {
-							const finalMessage = await response.result();
-							if (addedPartial) {
-								context.messages[context.messages.length - 1] = finalMessage;
-							} else {
-								context.messages.push(finalMessage);
+							let finalMessage: AssistantMessage;
+							try {
+								finalMessage = await response.result();
+							} catch (err) {
+								return await emitErroredAssistantMessage(
+									partialMessage,
+									addedPartial,
+									context,
+									config,
+									stream,
+									finishChat,
+									err,
+									requestSignal,
+								);
 							}
-							if (!addedPartial) {
-								stream.push({ type: "message_start", message: { ...finalMessage } });
-							}
-							stream.push({ type: "message_end", message: finalMessage });
-							await finishChat(finalMessage);
-							return finalMessage;
+							return await finalizeAssistantMessage(finalMessage, addedPartial, context, stream, finishChat);
 						}
 					}
 				}
@@ -1042,9 +1093,22 @@ async function streamAssistantResponse(
 				detachAbortListener?.();
 			}
 
-			const trailing = await response.result();
-			await finishChat(trailing);
-			return trailing;
+			let trailing: AssistantMessage;
+			try {
+				trailing = await response.result();
+			} catch (err) {
+				return await emitErroredAssistantMessage(
+					partialMessage,
+					addedPartial,
+					context,
+					config,
+					stream,
+					finishChat,
+					err,
+					requestSignal,
+				);
+			}
+			return await finalizeAssistantMessage(trailing, addedPartial, context, stream, finishChat);
 		});
 	} catch (err) {
 		failChatSpan(telemetry, chatSpan, {
@@ -1056,13 +1120,70 @@ async function streamAssistantResponse(
 	}
 }
 
-function emitAbortedAssistantMessage(
+async function finalizeAssistantMessage(
+	message: AssistantMessage,
+	addedPartial: boolean,
+	context: AgentContext,
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	finishChat: (message: AssistantMessage) => Promise<void>,
+	options?: { discardPartial?: boolean },
+): Promise<AssistantMessage> {
+	if (addedPartial && options?.discardPartial) {
+		context.messages.pop();
+	} else if (addedPartial) {
+		context.messages[context.messages.length - 1] = message;
+	} else {
+		context.messages.push(message);
+		stream.push({ type: "message_start", message: { ...message } });
+	}
+	stream.push({ type: "message_end", message });
+	await finishChat(message);
+	return message;
+}
+
+async function emitErroredAssistantMessage(
 	partialMessage: AssistantMessage | null,
 	addedPartial: boolean,
 	context: AgentContext,
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
-): AssistantMessage {
+	finishChat: (message: AssistantMessage) => Promise<void>,
+	err: unknown,
+	signal: AbortSignal | undefined,
+): Promise<AssistantMessage> {
+	if (signal?.aborted) {
+		return await emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream, finishChat);
+	}
+	const errorMessage = err instanceof Error ? err.message : String(err);
+	const erroredMessage: AssistantMessage = {
+		role: "assistant",
+		content: partialMessage ? structuredClone(partialMessage.content) : [],
+		api: config.model.api,
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage,
+		timestamp: Date.now(),
+	};
+	return await finalizeAssistantMessage(erroredMessage, addedPartial, context, stream, finishChat);
+}
+
+async function emitAbortedAssistantMessage(
+	partialMessage: AssistantMessage | null,
+	addedPartial: boolean,
+	context: AgentContext,
+	config: AgentLoopConfig,
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	finishChat: (message: AssistantMessage) => Promise<void>,
+): Promise<AssistantMessage> {
 	const errorMessage = "Request was aborted";
 	const now = Date.now();
 	const abortedMessage: AssistantMessage = {
@@ -1083,13 +1204,9 @@ function emitAbortedAssistantMessage(
 		errorMessage,
 		timestamp: now,
 	};
-	if (addedPartial) {
-		context.messages.pop();
-	} else {
-		stream.push({ type: "message_start", message: { ...abortedMessage } });
-	}
-	stream.push({ type: "message_end", message: abortedMessage });
-	return abortedMessage;
+	return await finalizeAssistantMessage(abortedMessage, addedPartial, context, stream, finishChat, {
+		discardPartial: true,
+	});
 }
 
 /**

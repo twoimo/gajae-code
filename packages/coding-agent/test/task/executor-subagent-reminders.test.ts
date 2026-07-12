@@ -248,6 +248,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(systemPrompt?.[1]).toBe("project");
 		expect(systemPrompt?.[2]).toContain("[CONTEXT]\nShared task background\n[/CONTEXT]");
 		expect(systemPrompt?.[2]).toContain("[ROLE]\ntest\n[/ROLE]");
+		expect(systemPrompt?.[2].match(/GJC_CANONICAL_CHILD_CONTRACT_V1/g)).toHaveLength(1);
 		expect(systemPrompt?.[3]).toBe("now");
 		expect(userPrompt).not.toContain("[CONTEXT]");
 		expect(userPrompt).not.toContain("Shared task background");
@@ -379,6 +380,8 @@ describe("runSubprocess yield reminders", () => {
 		expect(promptOptions[0]?.attribution).toBe("agent");
 		expect(promptOptions[1]?.attribution).toBe("agent");
 		expect(prompts[1]).toContain("Your last turn ended without a tool call");
+		expect(prompts[1]).toContain("canonical CHILD completion contract");
+		expect(prompts[1]).not.toContain("GJC_CANONICAL_CHILD_CONTRACT_V1");
 		expect(result.output).toContain('"done": true');
 		expect(result.output.includes("SYSTEM WARNING")).toBe(false);
 	});
@@ -410,6 +413,8 @@ describe("runSubprocess yield reminders", () => {
 		expect(promptOptions).toHaveLength(4);
 		expect(promptOptions[3]?.toolChoice).toBeUndefined();
 		expect(result.output).toContain("stopped 4");
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
 	});
 
 	it("keeps null yield warning when subagent submits success without data", async () => {

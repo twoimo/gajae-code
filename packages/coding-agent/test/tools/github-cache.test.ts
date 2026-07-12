@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { getOrFetchIssue, getOrFetchPr } from "@gajae-code/coding-agent/tools/gh";
+import { Settings } from "../../src/config/settings";
+import { getOrFetchIssue, getOrFetchPr } from "../../src/tools/gh";
 import {
 	clearAll,
 	getCached,
@@ -18,8 +18,8 @@ import {
 	openDb,
 	putCached,
 	resetForTests as resetCacheForTests,
-} from "@gajae-code/coding-agent/tools/github-cache";
-import * as git from "@gajae-code/coding-agent/utils/git";
+} from "../../src/tools/github-cache";
+import * as git from "../../src/utils/git";
 
 const TEST_REPO = "owner/example";
 const TEST_AUTH_KEY = "test-auth";

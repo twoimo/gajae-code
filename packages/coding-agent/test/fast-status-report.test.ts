@@ -6,7 +6,7 @@ import {
 	FAST_STATUS_TITLE,
 	type FastStatusSessionLike,
 	formatFastStatusReport,
-} from "@gajae-code/coding-agent/slash-commands/helpers/fast-status-report";
+} from "../src/slash-commands/helpers/fast-status-report";
 
 const ICON = "\u26a1";
 

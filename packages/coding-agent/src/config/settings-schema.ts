@@ -1096,6 +1096,19 @@ export const SETTINGS_SCHEMA = {
 				"Maximum provider stream replay retries for replay-safe transient stream failures. Counts retries, not the first attempt. Set to 0 to disable provider stream retries.",
 		},
 	},
+	"retry.maxTotalAttempts": {
+		type: "number",
+		default: 14,
+		ui: {
+			tab: "model",
+			label: "Total Attempt Limit",
+			description: "Maximum physical attempts in one turn, including the initial request and all retry layers.",
+		},
+	},
+	"retry.maxElapsedMs": { type: "number", default: 900_000 },
+	"retry.maxCostUsd": { type: "number", default: undefined },
+	"retry.unbounded": { type: "boolean", default: false },
+	"retry.allowUnboundedUnattended": { type: "boolean", default: false },
 	"retry.fallbackChains": { type: "record", default: {} as Record<string, string[]> },
 	"retry.fallbackRevertPolicy": {
 		type: "enum",
@@ -3341,6 +3354,11 @@ export interface RetrySettings {
 	maxDelayMs: number;
 	requestMaxRetries: number;
 	streamMaxRetries: number;
+	maxTotalAttempts: number;
+	maxElapsedMs: number;
+	maxCostUsd: number | undefined;
+	unbounded: boolean;
+	allowUnboundedUnattended: boolean;
 }
 
 export interface MemoriesSettings {

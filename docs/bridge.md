@@ -102,7 +102,7 @@ and requested scopes. Version mismatch returns `status: "rejected"`,
 In the default fail-closed configuration, a successful authenticated
 handshake returns:
 
-- `protocol_version` — the server protocol version (`BRIDGE_PROTOCOL_VERSION`, `2`).
+- `protocol_version` — the highest mutually supported agent-wire version (`2` when the client offers `1..2`, otherwise bounded previous version `1`); v1 rejects v2-only compact message updates.
 - `session_id` — the single session id this bridge serves.
 - `accepted_capabilities` — empty.
 - `accepted_scopes` — empty.
@@ -132,11 +132,12 @@ Authenticated requests to disabled endpoints return:
 The `endpoint` value is one of `events`, `commands`, `control`, `uiResponses`,
 `hostToolResults`, or `hostUriResults`.
 
-## Protocol Catalog Kept for Internal Compatibility
+## Shared Protocol Catalog
 
-The bridge protocol module still defines the v1 command and scope catalog so
-existing internal tests can validate the dormant implementation and future
-re-enable work has a stable baseline.
+Handshake, envelope, command, scope, workflow-gate, and frame contracts are owned by `@gajae-code/agent-wire`. Consumers accept only supported versions 1 and 2; unknown versions fail closed.
+
+For source compatibility, `BRIDGE_PROTOCOL_VERSION` remains a deprecated alias
+of `AGENT_WIRE_CURRENT_VERSION`; both identify the negotiated protocol version.
 
 When internally enabled for compatibility tests, event replay still uses `last_seq` and the bounded replay reset marker `replay_window_exceeded`; command and UI response retries still use `Idempotency-Key`. These mechanisms are dormant for default external bridge clients because the endpoint matrix rejects the endpoints before they reach replay, body parsing, idempotency, scope, or dispatch logic.
 
@@ -245,11 +246,11 @@ explicitly enabled.
 
 `BridgeClient.respondGate(sessionId, gateId, ownerToken, answer, options)` posts to the fail-closed UI-response endpoint and returns the gate resolution envelope emitted by the bridge. It deliberately does not send `workflow_gate_response` through `/commands`. Gate answers are authorized by bearer auth, the `control` scope on the (by-default-disabled) `ui-responses` endpoint, and the current controller owner token; unauthorized owner-token attempts return `403 not_controller` without resolving the gate.
 
-> Response typing: in this experimental version, `command()` and the typed
-> command helpers return `Promise<unknown>`. Callers narrow the response
-> themselves. Importing `@gajae-code/coding-agent` internal `rpc-types` into the
-> SDK is intentionally avoided to preserve the package boundary; stable shared
-> protocol response types are tracked as follow-up work.
+> Response typing: `command()` and the typed command helpers return
+> `Promise<unknown>`, so callers narrow their returned values themselves. The
+> transport-neutral request and response DTOs, including serialized RPC error
+> DTOs, are owned by `@gajae-code/agent-wire`; the SDK deliberately does not
+> import `@gajae-code/coding-agent` internals.
 
 ## Limitations
 

@@ -12,9 +12,10 @@ import {
 	sessionIdFromDirName,
 	sessionRoot,
 	sessionStateDir,
+	sessionUltragoalDir,
 	tmuxRuntimeSessionPath,
 	transactionJournalPath,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+} from "../../src/gjc-runtime/session-layout";
 import {
 	detectLatestSession,
 	resolveGjcSessionForRead,
@@ -22,7 +23,7 @@ import {
 	resolveSessionIdFromSources,
 	SessionResolutionError,
 	writeSessionActivityMarker,
-} from "@gajae-code/coding-agent/gjc-runtime/session-resolution";
+} from "../../src/gjc-runtime/session-resolution";
 
 const tempRoots: string[] = [];
 
@@ -52,6 +53,16 @@ describe("session-layout (pure)", () => {
 		expect(transactionJournalPath("/proj", "abc", "m:1")).toBe(
 			path.join(root, "state", "transactions", `${encodeSessionSegment("m:1")}.json`),
 		);
+	});
+
+	it("keeps Ultragoal roots isolated for sessions sharing a cwd", () => {
+		const cwd = "/proj";
+		const first = sessionUltragoalDir(cwd, "first");
+		const second = sessionUltragoalDir(cwd, "second");
+		expect(first).toBe(path.join(cwd, ".gjc", "_session-first", "ultragoal"));
+		expect(second).toBe(path.join(cwd, ".gjc", "_session-second", "ultragoal"));
+		expect(first).not.toBe(second);
+		expect(first).not.toBe(path.join(cwd, ".gjc", "ultragoal"));
 	});
 
 	it("rejects a blank session id at path-build time", () => {

@@ -20,7 +20,13 @@ import {
 } from "@gajae-code/ai/providers/openai-codex/constants";
 import { parseTextSignature } from "@gajae-code/ai/providers/openai-responses-shared";
 import { transformMessages } from "@gajae-code/ai/providers/transform-messages";
-import type { AssistantMessage, Message, Model } from "@gajae-code/ai/types";
+import {
+	type AssistantMessage,
+	type AttemptController,
+	claimAttempt,
+	type Message,
+	type Model,
+} from "@gajae-code/ai/types";
 import {
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
@@ -474,7 +480,7 @@ export async function requestOpenAiRemoteCompaction(
 	compactInput: Array<Record<string, unknown>>,
 	instructions: string,
 	signal?: AbortSignal,
-	options?: { authCredentialType?: "api_key" | "oauth" },
+	options?: { authCredentialType?: "api_key" | "oauth"; consumeAttempt?: AttemptController },
 ): Promise<OpenAiRemoteCompactionResponse> {
 	const endpoint = resolveOpenAiCompactEndpoint(model, options?.authCredentialType);
 	const request: OpenAiRemoteCompactionRequest = {
@@ -502,6 +508,7 @@ export async function requestOpenAiRemoteCompaction(
 		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;
 	}
 
+	claimAttempt(options?.consumeAttempt, "maintenance");
 	const response = await fetch(endpoint, {
 		method: "POST",
 		headers,
@@ -552,7 +559,9 @@ export async function requestRemoteCompaction(
 	endpoint: string,
 	request: RemoteCompactionRequest,
 	signal?: AbortSignal,
+	consumeAttempt?: AttemptController,
 ): Promise<RemoteCompactionResponse> {
+	claimAttempt(consumeAttempt, "maintenance");
 	const response = await fetch(endpoint, {
 		method: "POST",
 		headers: { "content-type": "application/json" },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ReferenceBridgeConsumer, renderBridgeFrame } from "../src/reference-consumer";
+import { type BridgeFrame, ReferenceBridgeConsumer, renderBridgeFrame } from "../src/reference-consumer";
 
 describe("reference bridge consumer", () => {
 	it("renders event, permission, and response frames as semantic HTML", () => {
@@ -42,7 +42,8 @@ describe("reference bridge consumer", () => {
 			session_id: "sess-1",
 			seq: 1,
 			frame_id: "frame-1",
-			type: "event<script>",
+			// Adversarial: intentionally invalid frame type to exercise HTML escaping.
+			type: "event<script>" as BridgeFrame["type"],
 			payload: { event_type: "message_update<script>" },
 		});
 		expect(rendered.html).toContain("message_update&lt;script&gt;");

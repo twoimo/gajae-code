@@ -2,18 +2,17 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as url from "node:url";
-import { runNativeDeepInterviewCommand } from "@gajae-code/coding-agent/gjc-runtime/deep-interview-runtime";
-import { runNativeRalplanCommand } from "@gajae-code/coding-agent/gjc-runtime/ralplan-runtime";
+import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
+import { resetSettingsForTest } from "../../src/config/settings";
+import { runNativeDeepInterviewCommand } from "../../src/gjc-runtime/deep-interview-runtime";
+import { runNativeRalplanCommand } from "../../src/gjc-runtime/ralplan-runtime";
 import {
 	activeSnapshotPath,
 	auditPath,
 	modeStatePath,
 	sessionPlansDir,
 	sessionSpecsDir,
-} from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-
-import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
-import { resetSettingsForTest } from "../../src/config/settings";
+} from "../../src/gjc-runtime/session-layout";
 
 const tempRoots: string[] = [];
 const codingAgentRoot = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "../..");

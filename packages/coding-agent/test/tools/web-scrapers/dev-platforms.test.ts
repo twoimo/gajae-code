@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { handleDevTo } from "@gajae-code/coding-agent/web/scrapers/devto";
-import { handleGitLab } from "@gajae-code/coding-agent/web/scrapers/gitlab";
-import { handleHackerNews } from "@gajae-code/coding-agent/web/scrapers/hackernews";
-import { handleLobsters } from "@gajae-code/coding-agent/web/scrapers/lobsters";
+import { handleDevTo } from "../../../src/web/scrapers/devto";
+import { handleGitLab } from "../../../src/web/scrapers/gitlab";
+import { handleHackerNews } from "../../../src/web/scrapers/hackernews";
+import { handleLobsters } from "../../../src/web/scrapers/lobsters";
 
 const SKIP = !Bun.env.WEB_FETCH_INTEGRATION;
 

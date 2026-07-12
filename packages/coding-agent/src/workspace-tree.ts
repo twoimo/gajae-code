@@ -78,12 +78,19 @@ export async function buildDirectoryTree(cwd: string, options: BuildDirectoryTre
 	});
 }
 
+/** Cheap placeholder used while the initial workspace scan completes in the background. */
+export function createEmptyWorkspaceTree(cwd: string): WorkspaceTree {
+	return { ...emptyTree(path.resolve(cwd)), agentsMdFiles: [] };
+}
 /**
  * Build the workspace tree shown in the system prompt. Returns the rendered
  * tree plus the AGENTS.md files surfaced by the same native walk so callers
  * never need to do a second filesystem scan.
  */
 export async function buildWorkspaceTree(cwd: string, options: BuildWorkspaceTreeOptions = {}): Promise<WorkspaceTree> {
+	if (process.env.GJC_STARTUP_TRACE === "1") process.stderr.write("startup:workspace-scan-started\n");
+	const testDelayMs = Number(process.env.GJC_TEST_DELAY_WORKSPACE_SCAN_MS ?? 0);
+	if (Number.isFinite(testDelayMs) && testDelayMs > 0) await Bun.sleep(testDelayMs);
 	const rootPath = path.resolve(cwd);
 	try {
 		const result = await listWorkspace({
@@ -100,6 +107,7 @@ export async function buildWorkspaceTree(cwd: string, options: BuildWorkspaceTre
 			lineCap: WORKSPACE_DEFAULTS.lineCap,
 			nativeTruncated: result.truncated,
 		});
+		if (process.env.GJC_STARTUP_TRACE === "1") process.stderr.write("startup:workspace-scan-completed\n");
 		return { ...tree, agentsMdFiles: result.agentsMdFiles };
 	} catch {
 		return { ...emptyTree(rootPath), agentsMdFiles: [] };

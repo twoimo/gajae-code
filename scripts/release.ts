@@ -1,18 +1,25 @@
 #!/usr/bin/env bun
 /**
- * Release script for pi-mono
+ * Release script for pi-mono.
+ *
+ * Canonical release path: this script pushes the candidate commit, then dispatches
+ * the dedicated release-tag.yml workflow. That server-side workflow re-collects
+ * exact-SHA evidence, runs release-ci-gate.ts, and creates the tag only on success.
+ * Repository admins MUST also restrict refs/tags/v* creation to that workflow via
+ * a GitHub ruleset.
  *
  * Usage:
- *   bun scripts/release.ts <version>   Full release (preflight, version, changelog, commit, push, watch)
+ *   bun scripts/release.ts <version>   Full release (preflight, version, changelog, commit, push, gated dispatch)
  *   bun scripts/release.ts watch       Watch CI for current commit
  *
  * Example: bun scripts/release.ts 3.10.0
  */
 
 import { $, Glob } from "bun";
+import { versionSurfaceDescriptors } from "./release-manifest";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
-const packageJsonGlob = new Glob("packages/*/package.json");
+const packageJsonGlob = new Glob(versionSurfaceDescriptors.packageGlob);
 const cargoTomlGlob = new Glob("crates/*/Cargo.toml");
 
 function git(args: readonly string[]) {
@@ -280,11 +287,7 @@ async function cmdRelease(version: string): Promise<void> {
 	console.log(`Bumping pi-natives version sentinel to v${version}…`);
 	const sentinelJsId = version.replace(/[^A-Za-z0-9]/g, "_");
 	const sentinelName = `__piNativesV${sentinelJsId}`;
-	const sentinelFiles = [
-		"crates/pi-natives/src/lib.rs",
-		"packages/natives/native/index.d.ts",
-		"packages/natives/native/index.js",
-	];
+	const sentinelFiles = [...versionSurfaceDescriptors.nativeSentinel];
 	await $`sd '__piNativesV[A-Za-z0-9_]+' ${sentinelName} ${sentinelFiles}`;
 	const libRs = await Bun.file("crates/pi-natives/src/lib.rs").text();
 	if (!libRs.includes(`js_name = "${sentinelName}"`)) {
@@ -326,33 +329,25 @@ async function cmdRelease(version: string): Promise<void> {
 	await $`bun run check`;
 	console.log();
 
-	// 7. Commit and tag
-	console.log("Committing and tagging...");
+	// 7. Commit and push the candidate SHA. The tag is intentionally absent until
+	// trusted full CI evidence for this exact commit has passed the release gate.
+	console.log("Committing release candidate...");
 	await git(["add", "."]);
 	await git(["commit", "-m", `chore: bump version to ${version}`]);
-	await git(["tag", `v${version}`]);
-	console.log();
-
-	// 8. Push
-	console.log("Pushing to remote...");
+	const releaseSha = (await git(["rev-parse", "HEAD"]).text()).trim();
 	await git(["push", "origin", "main"]);
-	await git(["push", "origin", `v${version}`]);
-	console.log();
+	console.log(`  Candidate SHA: ${releaseSha}\n`);
 
-	// 9. Watch CI
-	console.log("Watching CI...");
-	const success = await watchCI();
-
-	if (success) {
-		console.log(`=== Released v${version} ===`);
-	} else {
-		console.log("\nTo retry after fixing (repeat until CI passes):");
-		console.log("  git commit -m \"fix: <brief description>\"");
-		console.log("  git push origin main");
-		console.log(`  git tag -f v${version} && git push origin v${version} --force`);
-		console.log("  bun scripts/release.ts watch");
+	// 8. Wait for candidate CI, then ask the server-side gated workflow to collect
+	// fresh evidence and create the immutable tag. Do not create release tags locally.
+	console.log("Watching candidate CI...");
+	if (!(await watchCI())) {
+		console.error("Release candidate CI failed. Fix the failure and retry with a new version and commit.");
 		process.exit(1);
 	}
+	console.log("Dispatching server-side exact-SHA release gate...");
+	await $`gh workflow run release-tag.yml --ref main -f candidate_sha=${releaseSha} -f release_version=${version}`;
+	console.log(`=== Gated release tag v${version} requested for ${releaseSha} ===`);
 }
 
 // =============================================================================

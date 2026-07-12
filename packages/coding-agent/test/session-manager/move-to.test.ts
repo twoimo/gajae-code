@@ -3,13 +3,9 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	loadEntriesFromFile,
-	type SessionHeader,
-	SessionManager,
-} from "@gajae-code/coding-agent/session/session-manager";
-import { stripOuterDoubleQuotes } from "@gajae-code/coding-agent/tools/path-utils";
 import { getConfigRootDir, setAgentDir } from "@gajae-code/utils";
+import { loadEntriesFromFile, type SessionHeader, SessionManager } from "../../src/session/session-manager";
+import { stripOuterDoubleQuotes } from "../../src/tools/path-utils";
 
 // -- helpers ----------------------------------------------------------------
 

@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type SettingPath, Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { tryInsaneFallback } from "@gajae-code/coding-agent/tools/fetch";
-import { ReadTool } from "@gajae-code/coding-agent/tools/read";
-import * as bridge from "@gajae-code/coding-agent/web/insane/bridge";
-import * as urlGuard from "@gajae-code/coding-agent/web/insane/url-guard";
-import * as scrapers from "@gajae-code/coding-agent/web/scrapers/types";
 import { Snowflake } from "@gajae-code/utils";
+import { type SettingPath, Settings } from "../../src/config/settings";
+import type { ToolSession } from "../../src/tools";
+import { tryInsaneFallback } from "../../src/tools/fetch";
+import { ReadTool } from "../../src/tools/read";
+import * as bridge from "../../src/web/insane/bridge";
+import * as urlGuard from "../../src/web/insane/url-guard";
+import * as scrapers from "../../src/web/scrapers/types";
 
 const baseArgs = {
 	url: "https://example.com/x",

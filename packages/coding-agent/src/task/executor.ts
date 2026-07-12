@@ -296,25 +296,6 @@ function findPlaceholderYieldPath(value: unknown, path = "$", depth = 0, inspect
 	return undefined;
 }
 
-function tryParseJsonOutput(text: string): unknown | undefined {
-	const trimmed = text.trim();
-	if (!trimmed) return undefined;
-	try {
-		return JSON.parse(trimmed);
-	} catch {
-		return undefined;
-	}
-}
-
-function extractCompletionData(parsed: unknown): unknown {
-	if (!parsed || typeof parsed !== "object") return parsed;
-	const record = parsed as Record<string, unknown>;
-	if ("data" in record) {
-		return record.data;
-	}
-	return parsed;
-}
-
 function normalizeCompleteData(data: unknown, reportFindings?: ReviewFinding[]): unknown {
 	let normalized = parseStringifiedJson(data ?? null);
 	if (
@@ -332,15 +313,16 @@ function normalizeCompleteData(data: unknown, reportFindings?: ReviewFinding[]):
 	return normalized;
 }
 
-function resolveFallbackCompletion(rawOutput: string, outputSchema: unknown): { data: unknown } | null {
-	const parsed = tryParseJsonOutput(rawOutput);
-	if (parsed === undefined) return null;
-	const candidate = parseStringifiedJson(extractCompletionData(parsed));
-	if (candidate === undefined) return null;
-	const { validator, error } = buildOutputValidator(outputSchema);
-	if (error) return null;
-	if (validator && !validator.validate(candidate).ok) return null;
-	return { data: candidate };
+function extractYieldItem(result: unknown): YieldItem | undefined {
+	const details = (result as { details?: unknown } | undefined)?.details;
+	if (!details || typeof details !== "object") return undefined;
+	const record = details as Record<string, unknown>;
+	if (record.status !== "success" && record.status !== "aborted") return undefined;
+	return {
+		data: record.data,
+		status: record.status,
+		error: typeof record.error === "string" ? record.error : undefined,
+	};
 }
 
 export interface YieldItem {
@@ -358,6 +340,8 @@ interface FinalizeSubprocessOutputArgs {
 	yieldItems?: YieldItem[];
 	reportFindings?: ReviewFinding[];
 	outputSchema: unknown;
+	/** A paused subagent is suspended/resumable, not a terminal no-yield failure. */
+	paused?: boolean;
 }
 
 interface FinalizeSubprocessOutputResult {
@@ -366,6 +350,7 @@ interface FinalizeSubprocessOutputResult {
 	stderr: string;
 	abortedViaYield: boolean;
 	hasYield: boolean;
+	hasValidYield: boolean;
 }
 
 export const SUBAGENT_WARNING_NULL_YIELD = "SYSTEM WARNING: Subagent called yield with null data.";
@@ -416,9 +401,10 @@ function buildPlaceholderYieldOutcome(
 
 export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): FinalizeSubprocessOutputResult {
 	let { rawOutput, exitCode, stderr } = args;
-	const { yieldItems, reportFindings, doneAborted, signalAborted, outputSchema } = args;
+	const { yieldItems, reportFindings, outputSchema } = args;
 	let abortedViaYield = false;
 	const hasYield = Array.isArray(yieldItems) && yieldItems.length > 0;
+	let hasValidYield = false;
 
 	if (hasYield) {
 		const lastYield = yieldItems[yieldItems.length - 1];
@@ -435,6 +421,8 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 			const submitData = lastYield?.data;
 			if (submitData === null || submitData === undefined) {
 				rawOutput = rawOutput ? `${SUBAGENT_WARNING_NULL_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_NULL_YIELD;
+				exitCode = 1;
+				stderr = SUBAGENT_WARNING_NULL_YIELD;
 			} else {
 				const completeData = normalizeCompleteData(submitData, reportFindings);
 				const { validator, error: schemaError } = buildOutputValidator(outputSchema);
@@ -459,63 +447,27 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 						} else {
 							try {
 								rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
+								exitCode = 0;
+								stderr = "";
+								hasValidYield = true;
 							} catch (err) {
 								const errorMessage = err instanceof Error ? err.message : String(err);
 								rawOutput = `{"error":"Failed to serialize yield data: ${errorMessage}"}`;
+								stderr = `Failed to serialize yield data: ${errorMessage}`;
+								exitCode = 1;
 							}
-							exitCode = 0;
-							stderr = "";
 						}
 					}
 				}
 			}
 		}
-	} else {
-		const allowFallback = exitCode === 0 && !doneAborted && !signalAborted;
-		const { normalized: normalizedSchema, error: schemaError } = normalizeSchema(outputSchema);
-		const hasOutputSchema = normalizedSchema !== undefined && !schemaError;
-		const fallback = allowFallback ? resolveFallbackCompletion(rawOutput, outputSchema) : null;
-		if (fallback) {
-			const completeData = normalizeCompleteData(fallback.data, reportFindings);
-			const { validator } = buildOutputValidator(outputSchema);
-			const placeholderPath = findPlaceholderYieldPath(completeData);
-			if (placeholderPath) {
-				const outcome = buildPlaceholderYieldOutcome(placeholderPath, completeData);
-				rawOutput = outcome.rawOutput;
-				stderr = outcome.stderr;
-				exitCode = outcome.exitCode;
-			} else {
-				const verdict = validator ? validator.validate(completeData) : { ok: true as const };
-				if (!verdict.ok) {
-					const outcome = buildSchemaViolationOutcome(verdict, completeData);
-					rawOutput = outcome.rawOutput;
-					stderr = outcome.stderr;
-					exitCode = outcome.exitCode;
-				} else {
-					try {
-						rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
-					} catch (err) {
-						const errorMessage = err instanceof Error ? err.message : String(err);
-						rawOutput = `{"error":"Failed to serialize fallback completion: ${errorMessage}"}`;
-					}
-					exitCode = 0;
-					stderr = "";
-				}
-			}
-		} else if (!hasOutputSchema && allowFallback && rawOutput.trim().length > 0) {
-			exitCode = 0;
-			stderr = "";
-		} else if (exitCode === 0) {
-			const hasRawOutput = rawOutput.trim().length > 0;
-			rawOutput = rawOutput ? `${SUBAGENT_WARNING_MISSING_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_MISSING_YIELD;
-			if (hasOutputSchema || !hasRawOutput) {
-				exitCode = 1;
-				stderr = SUBAGENT_WARNING_MISSING_YIELD;
-			}
-		}
+	} else if (exitCode === 0 && !args.paused) {
+		rawOutput = rawOutput ? `${SUBAGENT_WARNING_MISSING_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_MISSING_YIELD;
+		stderr = SUBAGENT_WARNING_MISSING_YIELD;
+		exitCode = 1;
 	}
 
-	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield };
+	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield, hasValidYield };
 }
 
 /**
@@ -982,6 +934,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				// Check for registered subagent tool handler
 				const handler = subprocessToolRegistry.getHandler(event.toolName);
 				const eventArgs = (event as { args?: Record<string, unknown> }).args ?? {};
+				if (event.toolName === "yield" && !handler?.extractData) {
+					const yieldItem = extractYieldItem(event.result);
+					if (yieldItem) {
+						progress.extractedToolData = progress.extractedToolData || {};
+						const yields = progress.extractedToolData.yield || [];
+						yields.push(yieldItem);
+						progress.extractedToolData.yield = yields;
+						yieldCalled = true;
+					}
+				}
 				if (handler) {
 					// Extract data using handler
 					if (handler.extractData) {
@@ -1597,13 +1559,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
 			if (options.autoloadSkills?.length) {
 				for (const skill of options.autoloadSkills) {
-					const { message } = await buildSkillPromptMessage(skill, "");
+					const built = await buildSkillPromptMessage(skill, "");
 					await session.sendCustomMessage(
 						{
 							customType: SKILL_PROMPT_MESSAGE_TYPE,
-							content: message,
+							content: built.message,
 							display: false,
-							details: { name: skill.name, path: skill.filePath },
+							details: built.details,
 						},
 						{ triggerTurn: false },
 					);
@@ -1767,13 +1729,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		yieldItems,
 		reportFindings,
 		outputSchema,
+		paused,
 	});
 	rawOutput = finalized.rawOutput;
 	exitCode = finalized.exitCode;
 	stderr = finalized.stderr;
 	const lastYield = yieldItems?.[yieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
-	const { abortedViaYield, hasYield } = finalized;
+	const { abortedViaYield, hasYield, hasValidYield } = finalized;
 	const { content: truncatedOutput, truncated } = truncateTail(rawOutput, {
 		maxBytes: MAX_OUTPUT_BYTES,
 		maxLines: MAX_OUTPUT_LINES,
@@ -1834,7 +1797,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? yieldAbortReason
 				: (done.abortReason ?? (signal?.aborted ? resolveSignalAbortReason() : resolveAbortReasonText()))
 		: undefined;
-	progress.status = paused ? "paused" : wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	progress.status = paused
+		? "paused"
+		: wasAborted
+			? "aborted"
+			: exitCode === 0 && hasValidYield
+				? "completed"
+				: "failed";
 	scheduleProgress(true);
 
 	// Emit lifecycle end event after finalization so yield status is reflected

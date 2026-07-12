@@ -11,9 +11,9 @@ import {
 	enrichDeepInterviewRoundScoring,
 	readDeepInterviewStateCompact,
 	validateDeepInterviewScoredTransition,
-} from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
-import { modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { askSchema } from "@gajae-code/coding-agent/tools/ask";
+} from "../../src/gjc-runtime/deep-interview-recorder";
+import { modeStatePath } from "../../src/gjc-runtime/session-layout";
+import { askSchema } from "../../src/tools/ask";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];

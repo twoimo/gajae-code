@@ -10,18 +10,18 @@ import { Agent, AgentBusyError, type AgentTool } from "@gajae-code/agent-core";
 import { type AssistantMessage, getBundledModel, type Message, type ToolCall } from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { AsyncJobManager } from "@gajae-code/coding-agent/async";
-import type { Rule } from "@gajae-code/coding-agent/capability/rule";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { TtsrManager } from "@gajae-code/coding-agent/export/ttsr";
-import type { ExtensionRunner } from "@gajae-code/coding-agent/extensibility/extensions/runner";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { Snowflake } from "@gajae-code/utils";
 import * as z from "zod/v4";
+import { AsyncJobManager } from "../src/async";
+import type { Rule } from "../src/capability/rule";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { TtsrManager } from "../src/export/ttsr";
+import type { ExtensionRunner } from "../src/extensibility/extensions/runner";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { convertToLlm } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 // Mock stream that mimics AssistantMessageEventStream

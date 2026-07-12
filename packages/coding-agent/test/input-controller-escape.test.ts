@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
-import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
-import { InputController } from "@gajae-code/coding-agent/modes/controllers/input-controller";
-import type { InteractiveModeContext, SubmittedUserInput } from "@gajae-code/coding-agent/modes/types";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { InputController } from "../src/modes/controllers/input-controller";
+import type { InteractiveModeContext, SubmittedUserInput } from "../src/modes/types";
 
 beforeAll(async () => {
 	resetSettingsForTest();

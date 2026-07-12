@@ -1,3 +1,12 @@
+import {
+	AGENT_WIRE_CURRENT_VERSION,
+	AGENT_WIRE_FRAME_TYPES,
+	type AgentWireCapability,
+	type AgentWireCommandScope,
+	type AgentWireFrameType,
+	type AgentWireVersion,
+	isAgentWireVersion,
+} from "@gajae-code/agent-wire";
 import type { ExtensionUIContext } from "../../extensibility/extensions";
 import { workflowGatePath } from "../../gjc-runtime/session-layout";
 import type { AgentSession } from "../../session/agent-session";
@@ -5,12 +14,7 @@ import type { ClientBridgePermissionOutcome } from "../../session/client-bridge"
 import type { RpcCommand, RpcResponse, RpcWorkflowGateResponse } from "../rpc/rpc-types";
 import { dispatchRpcCommand } from "../shared/agent-wire/command-dispatch";
 import { isRpcCommand } from "../shared/agent-wire/command-validation";
-import {
-	BridgeFrameSequencer,
-	toBridgeEventFrame,
-	toBridgeWorkflowGateFrame,
-} from "../shared/agent-wire/event-envelope";
-import type { BridgeCapability } from "../shared/agent-wire/handshake";
+import { toAgentWireEventPayload } from "../shared/agent-wire/event-envelope";
 import {
 	type BridgeHandshakeRequest,
 	isBridgeHandshakeRequest,
@@ -18,10 +22,8 @@ import {
 } from "../shared/agent-wire/handshake";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "../shared/agent-wire/host-tool-bridge";
 import { isRpcHostUriResult, RpcHostUriBridge } from "../shared/agent-wire/host-uri-bridge";
-import type { BridgeFrameType } from "../shared/agent-wire/protocol";
 import {
 	BRIDGE_COMMAND_SCOPES,
-	type BridgeCommandScope,
 	isRpcCommandAllowed,
 	isRpcCommandType,
 	scopeForRpcCommand,
@@ -39,7 +41,7 @@ import { BridgeEventStream } from "./event-stream";
 const DEFAULT_BRIDGE_HOST = "127.0.0.1";
 const DEFAULT_BRIDGE_PORT = 4077;
 
-const SERVER_CAPABILITIES: readonly BridgeCapability[] = [
+const SERVER_CAPABILITIES: readonly AgentWireCapability[] = [
 	"events",
 	"prompt",
 	"permission",
@@ -50,7 +52,7 @@ const SERVER_CAPABILITIES: readonly BridgeCapability[] = [
 	"workflow_gate",
 ];
 
-const DEFAULT_BRIDGE_SCOPES: readonly BridgeCommandScope[] = ["prompt"];
+const DEFAULT_BRIDGE_SCOPES: readonly AgentWireCommandScope[] = ["prompt"];
 interface BridgeEndpointMatrix {
 	events: boolean;
 	commands: boolean;
@@ -71,25 +73,15 @@ const FAIL_CLOSED_BRIDGE_ENDPOINTS: BridgeEndpointMatrix = {
 
 const MAX_IDEMPOTENCY_RECORDS = 1_000;
 
-const SERVER_FRAME_TYPES: readonly BridgeFrameType[] = [
-	"ready",
-	"event",
-	"response",
-	"ui_request",
-	"permission_request",
-	"host_tool_call",
-	"host_uri_request",
-	"reset",
-	"workflow_gate",
-	"error",
-];
+/** Server emits every canonical agent-wire frame; keep this subset derived from the leaf catalog. */
+const SERVER_FRAME_TYPES: readonly AgentWireFrameType[] = AGENT_WIRE_FRAME_TYPES;
 
 interface BridgeFetchHandlerOptions {
 	sessionId: string;
 	token: string;
 	eventStream?: BridgeEventStream;
 	commandDispatcher?: (command: RpcCommand) => Promise<RpcResponse>;
-	commandScopes?: readonly BridgeCommandScope[];
+	commandScopes?: readonly AgentWireCommandScope[];
 	idempotencyCache?: BridgeIdempotencyCache;
 	permissionBroker?: UiRequestBroker<BridgePermissionRequestPayload, ClientBridgePermissionOutcome>;
 	uiBroker?: UiRequestBroker<BridgeUiRequestPayload, BridgeUiResult<unknown>>;
@@ -108,6 +100,14 @@ interface BridgeIdempotencyRecord {
 }
 
 type BridgeIdempotencyCache = Map<string, BridgeIdempotencyRecord>;
+
+function eventStreamVersion(request: Request): AgentWireVersion | undefined {
+	const value = request.headers.get("X-GJC-Agent-Wire-Version");
+	if (value === null) return AGENT_WIRE_CURRENT_VERSION;
+	if (!/^\d+$/.test(value)) return undefined;
+	const version = Number.parseInt(value, 10);
+	return isAgentWireVersion(version) ? version : undefined;
+}
 
 function idempotencyConflict(): Response {
 	return jsonResponse(409, { error: "idempotency_conflict" });
@@ -161,15 +161,15 @@ function isBridgeControllerOwner(options: BridgeFetchHandlerOptions, ownerToken:
 	return ownerTokens.length > 0 && ownerTokens.every(token => token === ownerToken);
 }
 
-function parseBridgeScopes(value: string | undefined): readonly BridgeCommandScope[] {
+function parseBridgeScopes(value: string | undefined): readonly AgentWireCommandScope[] {
 	if (!value?.trim()) return DEFAULT_BRIDGE_SCOPES;
 	const allowed = new Set(BRIDGE_COMMAND_SCOPES);
-	const scopes = new Set<BridgeCommandScope>(DEFAULT_BRIDGE_SCOPES);
+	const scopes = new Set<AgentWireCommandScope>(DEFAULT_BRIDGE_SCOPES);
 	for (const raw of value.split(",")) {
 		const scope = raw.trim();
 		if (!scope) continue;
-		if (!allowed.has(scope as BridgeCommandScope)) throw new Error(`Invalid GJC_BRIDGE_SCOPES entry: ${scope}`);
-		scopes.add(scope as BridgeCommandScope);
+		if (!allowed.has(scope as AgentWireCommandScope)) throw new Error(`Invalid GJC_BRIDGE_SCOPES entry: ${scope}`);
+		scopes.add(scope as AgentWireCommandScope);
 	}
 	return [...scopes];
 }
@@ -193,7 +193,7 @@ export function parseBridgeEndpoints(value: string | undefined): Partial<BridgeE
 	return matrix;
 }
 
-function hasScope(scopes: readonly BridgeCommandScope[] | undefined, scope: BridgeCommandScope): boolean {
+function hasScope(scopes: readonly AgentWireCommandScope[] | undefined, scope: AgentWireCommandScope): boolean {
 	return new Set(scopes ?? DEFAULT_BRIDGE_SCOPES).has(scope);
 }
 function bridgeEndpointMatrix(options: BridgeFetchHandlerOptions): BridgeEndpointMatrix {
@@ -221,7 +221,7 @@ function auditOutcomeFor(event: string): "accepted" | "rejected" | "denied" | "e
 	return "info";
 }
 
-function frameTypeForDispatchOutput(obj: RpcResponse | object): BridgeFrameType {
+function frameTypeForDispatchOutput(obj: RpcResponse | object): AgentWireFrameType {
 	const type = typeof obj === "object" && obj !== null && "type" in obj ? (obj as { type?: unknown }).type : undefined;
 	if (type === "host_tool_call" || type === "host_tool_cancel") return "host_tool_call";
 	if (type === "host_uri_request" || type === "host_uri_cancel") return "host_uri_request";
@@ -248,8 +248,10 @@ export function createBridgeFetchHandler(options: BridgeFetchHandlerOptions): (r
 			if (!endpointMatrix.events) return disabledEndpointResponse("events");
 			const lastSeqRaw = url.searchParams.get("last_seq");
 			if (lastSeqRaw !== null && !/^\d+$/.test(lastSeqRaw)) return jsonResponse(400, { error: "invalid_last_seq" });
+			const version = eventStreamVersion(request);
+			if (version === undefined) return jsonResponse(400, { error: "invalid_protocol_version" });
 			const lastSeq = lastSeqRaw === null ? 0 : Number.parseInt(lastSeqRaw, 10);
-			return options.eventStream?.response(lastSeq) ?? jsonResponse(503, { error: "events_unavailable" });
+			return options.eventStream?.response(lastSeq, version) ?? jsonResponse(503, { error: "events_unavailable" });
 		}
 
 		if (!isBridgeTokenAuthorized(request.headers.get("Authorization"), { token: options.token })) {
@@ -284,33 +286,29 @@ export function createBridgeFetchHandler(options: BridgeFetchHandlerOptions): (r
 					return jsonResponse(403, error);
 				}
 			}
-			return jsonResponse(
-				200,
-				negotiateBridgeHandshake(payload, {
-					sessionId: options.sessionId,
-					capabilities: endpointMatrix.events ? SERVER_CAPABILITIES : [],
-					scopes: endpointMatrix.commands ? (options.commandScopes ?? DEFAULT_BRIDGE_SCOPES) : [],
-					endpoints: {
-						events: endpointMatrix.events ? `/v1/sessions/${options.sessionId}/events` : "",
-						commands: endpointMatrix.commands ? `/v1/sessions/${options.sessionId}/commands` : "",
-						uiResponses: endpointMatrix.uiResponses
-							? `/v1/sessions/${options.sessionId}/ui-responses/{correlation_id}`
-							: "",
-						claimControl: endpointMatrix.control ? `/v1/sessions/${options.sessionId}/control:claim` : "",
-						disconnectControl: endpointMatrix.control
-							? `/v1/sessions/${options.sessionId}/control:disconnect`
-							: "",
-						hostToolResults: endpointMatrix.hostToolResults
-							? `/v1/sessions/${options.sessionId}/host-tool-results/{correlation_id}`
-							: "",
-						hostUriResults: endpointMatrix.hostUriResults
-							? `/v1/sessions/${options.sessionId}/host-uri-results/{correlation_id}`
-							: "",
-					},
-					frameTypes: endpointMatrix.events ? SERVER_FRAME_TYPES : [],
-					acceptedUnattended,
-				}),
-			);
+			const handshake = negotiateBridgeHandshake(payload, {
+				sessionId: options.sessionId,
+				capabilities: endpointMatrix.events ? SERVER_CAPABILITIES : [],
+				scopes: endpointMatrix.commands ? (options.commandScopes ?? DEFAULT_BRIDGE_SCOPES) : [],
+				endpoints: {
+					events: endpointMatrix.events ? `/v1/sessions/${options.sessionId}/events` : "",
+					commands: endpointMatrix.commands ? `/v1/sessions/${options.sessionId}/commands` : "",
+					uiResponses: endpointMatrix.uiResponses
+						? `/v1/sessions/${options.sessionId}/ui-responses/{correlation_id}`
+						: "",
+					claimControl: endpointMatrix.control ? `/v1/sessions/${options.sessionId}/control:claim` : "",
+					disconnectControl: endpointMatrix.control ? `/v1/sessions/${options.sessionId}/control:disconnect` : "",
+					hostToolResults: endpointMatrix.hostToolResults
+						? `/v1/sessions/${options.sessionId}/host-tool-results/{correlation_id}`
+						: "",
+					hostUriResults: endpointMatrix.hostUriResults
+						? `/v1/sessions/${options.sessionId}/host-uri-results/{correlation_id}`
+						: "",
+				},
+				frameTypes: endpointMatrix.events ? SERVER_FRAME_TYPES : [],
+				acceptedUnattended,
+			});
+			return jsonResponse(200, handshake);
 		}
 
 		if (request.method === "POST" && url.pathname === `/v1/sessions/${options.sessionId}/commands`) {
@@ -565,27 +563,26 @@ export async function runBridgeMode(
 			}
 		: undefined;
 
-	const eventStream = new BridgeEventStream();
-	const sequencer = new BridgeFrameSequencer(session.sessionId);
+	const eventStream = new BridgeEventStream(session.sessionId);
 	const permissionBroker = new UiRequestBroker<BridgePermissionRequestPayload, ClientBridgePermissionOutcome>({
 		emitRequest: (correlationId, request) => {
-			eventStream.publish(sequencer.next("permission_request", request, correlationId));
+			eventStream.emit("permission_request", request, correlationId);
 		},
 	});
 	const uiBroker = new UiRequestBroker<BridgeUiRequestPayload, BridgeUiResult<unknown>>({
 		emitRequest: (correlationId, request) => {
-			eventStream.publish(sequencer.next("ui_request", request, correlationId));
+			eventStream.emit("ui_request", request, correlationId);
 		},
 	});
 	const uiContext = new BridgeExtensionUIContext({
 		broker: uiBroker,
-		emit: payload => eventStream.publish(sequencer.next("ui_request", payload)),
+		emit: payload => eventStream.emit("ui_request", payload),
 	});
 	setToolUIContext?.(uiContext, true);
 	session.setClientBridge(createBridgeClientBridge(permissionBroker));
-	session.subscribe(event => eventStream.publish(toBridgeEventFrame(event, sequencer)));
+	session.subscribe(event => eventStream.emit("event", toAgentWireEventPayload(event)));
 	const output = (obj: RpcResponse | object) => {
-		eventStream.publish(sequencer.next(frameTypeForDispatchOutput(obj), obj));
+		eventStream.emit(frameTypeForDispatchOutput(obj), obj);
 	};
 	const hostToolBridge = new RpcHostToolBridge(output);
 	const hostUriBridge = new RpcHostUriBridge(output);
@@ -627,7 +624,7 @@ export async function runBridgeMode(
 	const unattendedControlPlane = new UnattendedSessionControlPlane({
 		runId: session.sessionId,
 		sessionId: session.sessionId,
-		emitFrame: gate => eventStream.publish(toBridgeWorkflowGateFrame(gate, sequencer)),
+		emitFrame: gate => eventStream.emit("workflow_gate", gate, gate.gate_id),
 		store: gateStore,
 		audit: recordAudit,
 		providerSupportsTokenCostMetrics: modelSupportsTokenCostMetrics(session.model),
@@ -639,9 +636,7 @@ export async function runBridgeMode(
 	session.setWorkflowGateEmitter(unattendedControlPlane);
 	unattendedControlPlane
 		.recover()
-		.catch(err =>
-			eventStream.publish(sequencer.next("error", { error: err instanceof Error ? err.message : String(err) })),
-		);
+		.catch(err => eventStream.emit("error", { error: err instanceof Error ? err.message : String(err) }));
 
 	Bun.serve({
 		hostname,

@@ -3,10 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai";
-import { createAgentSession } from "@gajae-code/coding-agent/sdk";
 import { createAutoresearchExtension } from "../src/autoresearch/index";
 import { Settings } from "../src/config/settings";
 import type { ExtensionAPI, RegisteredCommand } from "../src/extensibility/extensions";
+import { createAgentSession } from "../src/sdk";
 import { SessionManager } from "../src/session/session-manager";
 
 const EXPERIMENT_TOOL_NAMES = ["init_experiment", "run_experiment", "log_experiment", "update_notes"];

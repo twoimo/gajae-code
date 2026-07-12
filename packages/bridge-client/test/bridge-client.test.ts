@@ -118,7 +118,7 @@ describe("BridgeClient", () => {
 						start(controller) {
 							controller.enqueue(
 								new TextEncoder().encode(
-									'data: {"protocol_version":2,"session_id":"sess-1","seq":1,"frame_id":"frame-1","type":"event","payload":{"event_type":"agent_start"}}\r\n\r\n',
+									'data: {"protocol_version":2,"session_id":"sess-1","seq":1,"frame_id":"frame-1","type":"event","payload":{"event_type":"agent_start","event":{"type":"agent_start"}}}\r\n\r\n',
 								),
 							);
 							controller.close();
@@ -132,5 +132,89 @@ describe("BridgeClient", () => {
 		for await (const frame of client.events("sess-1")) frames.push(frame);
 		expect(frames).toHaveLength(1);
 		expect(frames[0]?.seq).toBe(1);
+	});
+
+	it("negotiates and consumes bounded v1 envelopes", async () => {
+		const client = new BridgeClient({
+			baseUrl: "https://bridge.test",
+			token: "secret",
+			fetch: async (input, init) => {
+				if (String(input).endsWith("/events")) {
+					return new Response(
+						`data: {"protocol_version":1,"session_id":"sess-v1","seq":1,"frame_id":"frame-v1","type":"event","payload":{"event_type":"agent_start","event":{"type":"agent_start"}}}\n\n`,
+					);
+				}
+				if (String(input).endsWith("/handshake")) {
+					expect(init?.body?.toString()).toContain('"max":1');
+					return new Response(
+						JSON.stringify({
+							status: "accepted",
+							protocol_version: 1,
+							session_id: "sess-v1",
+							accepted_capabilities: ["events"],
+							accepted_scopes: ["prompt"],
+							unsupported: ["compact_message_update"],
+							endpoints: {},
+							frame_types: ["event"],
+						}),
+					);
+				}
+				return new Response(JSON.stringify({ type: "response", success: true }), { status: 200 });
+			},
+		});
+		const handshake = await client.handshake({
+			protocol_version_range: { min: 1, max: 1 },
+			capabilities: ["events", "compact_message_update"],
+			requested_scopes: ["prompt"],
+		});
+		expect(handshake.status).toBe("accepted");
+		await client.command({ type: "prompt", message: "v1" }, "sess-v1", "v1-command");
+		const frames: BridgeFrame[] = [];
+		for await (const frame of client.events("sess-v1")) frames.push(frame);
+		expect(frames[0]?.protocol_version).toBe(1);
+	});
+	it("sends each session's negotiated version when subscribing to events", async () => {
+		const eventVersions = new Map<string, string | null>();
+		const client = new BridgeClient({
+			baseUrl: "https://bridge.test",
+			token: "secret",
+			fetch: async (input, init) => {
+				const url = new URL(String(input));
+				if (url.pathname === "/v1/handshake") {
+					const { protocol_version_range: range } = JSON.parse(String(init?.body));
+					const version = range.max;
+					return new Response(
+						JSON.stringify({
+							status: "accepted",
+							protocol_version: version,
+							session_id: `sess-v${version}`,
+							accepted_capabilities: ["events"],
+							accepted_scopes: ["prompt"],
+							unsupported: [],
+							endpoints: {},
+							frame_types: ["event"],
+						}),
+					);
+				}
+				eventVersions.set(url.pathname, new Headers(init?.headers).get("X-GJC-Agent-Wire-Version"));
+				return new Response(null, { status: 200 });
+			},
+		});
+
+		await client.handshake({
+			protocol_version_range: { min: 1, max: 1 },
+			capabilities: ["events"],
+			requested_scopes: [],
+		});
+		await client.handshake({
+			protocol_version_range: { min: 2, max: 2 },
+			capabilities: ["events"],
+			requested_scopes: [],
+		});
+		await client.connectEvents("sess-v1");
+		await client.connectEvents("sess-v2");
+
+		expect(eventVersions.get("/v1/sessions/sess-v1/events")).toBe("1");
+		expect(eventVersions.get("/v1/sessions/sess-v2/events")).toBe("2");
 	});
 });

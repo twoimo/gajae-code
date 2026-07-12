@@ -19,13 +19,18 @@ type PendingHostToolCall = {
 	onUpdate?: AgentToolUpdateCallback<unknown>;
 };
 
-function isAgentToolResult(value: unknown): value is AgentToolResult<unknown> {
-	if (!value || typeof value !== "object") return false;
+function fromWireToolResult(value: unknown): AgentToolResult<unknown> | undefined {
+	if (!value || typeof value !== "object") return undefined;
 	const content = (value as { content?: unknown }).content;
-	return (
-		Array.isArray(content) &&
-		content.every(item => !!item && typeof item === "object" && typeof (item as { type?: unknown }).type === "string")
-	);
+	if (
+		!Array.isArray(content) ||
+		!content.every(
+			item => !!item && typeof item === "object" && typeof (item as { type?: unknown }).type === "string",
+		)
+	) {
+		return undefined;
+	}
+	return value as AgentToolResult<unknown>;
 }
 
 export function isRpcHostToolResult(value: unknown): value is RpcHostToolResult {
@@ -34,7 +39,7 @@ export function isRpcHostToolResult(value: unknown): value is RpcHostToolResult 
 	return (
 		frame.type === "host_tool_result" &&
 		typeof frame.id === "string" &&
-		isAgentToolResult(frame.result) &&
+		fromWireToolResult(frame.result) !== undefined &&
 		(frame.isError === undefined || typeof frame.isError === "boolean")
 	);
 }
@@ -42,7 +47,11 @@ export function isRpcHostToolResult(value: unknown): value is RpcHostToolResult 
 export function isRpcHostToolUpdate(value: unknown): value is RpcHostToolUpdate {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as { type?: unknown; id?: unknown; partialResult?: unknown };
-	return frame.type === "host_tool_update" && typeof frame.id === "string" && isAgentToolResult(frame.partialResult);
+	return (
+		frame.type === "host_tool_update" &&
+		typeof frame.id === "string" &&
+		fromWireToolResult(frame.partialResult) !== undefined
+	);
 }
 
 class RpcHostToolAdapter<TParams extends TSchema = TSchema, TTheme extends Theme = Theme>
@@ -101,11 +110,13 @@ export class RpcHostToolBridge {
 	}
 
 	handleResult(frame: RpcHostToolResult): boolean {
+		const result = fromWireToolResult(frame.result);
+		if (!result) return false;
 		const pending = this.#pendingCalls.get(frame.id);
 		if (!pending) return false;
 		this.#pendingCalls.delete(frame.id);
 		if (frame.isError) {
-			const text = frame.result.content
+			const text = result.content
 				.filter(
 					(item): item is { type: "text"; text: string } => item.type === "text" && typeof item.text === "string",
 				)
@@ -115,14 +126,16 @@ export class RpcHostToolBridge {
 			pending.reject(new Error(text || "Host tool execution failed"));
 			return true;
 		}
-		pending.resolve(frame.result);
+		pending.resolve(result);
 		return true;
 	}
 
 	handleUpdate(frame: RpcHostToolUpdate): boolean {
+		const partialResult = fromWireToolResult(frame.partialResult);
+		if (!partialResult) return false;
 		const pending = this.#pendingCalls.get(frame.id);
 		if (!pending) return false;
-		pending.onUpdate?.(frame.partialResult);
+		pending.onUpdate?.(partialResult);
 		return true;
 	}
 

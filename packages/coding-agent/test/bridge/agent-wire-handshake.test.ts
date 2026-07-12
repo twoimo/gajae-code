@@ -52,4 +52,20 @@ describe("agent-wire bridge handshake", () => {
 		expect(response.reason).toBe("incompatible_version");
 		expect(response.message).toContain("outside client range");
 	});
+
+	it("negotiates bounded v1 and rejects v2-only compact capability", () => {
+		const response = negotiateBridgeHandshake(
+			{
+				protocol_version_range: { min: 1, max: 1 },
+				capabilities: ["events", "compact_message_update"],
+				requested_scopes: ["prompt"],
+			},
+			server,
+		);
+		expect(response.status).toBe("accepted");
+		if (response.status !== "accepted") throw new Error("handshake was rejected");
+		expect(response.protocol_version).toBe(1);
+		expect(response.accepted_capabilities).toEqual(["events"]);
+		expect(response.unsupported).toEqual(["compact_message_update"]);
+	});
 });

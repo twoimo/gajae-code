@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTool, AgentToolContext, AgentToolResult } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { wrapToolWithMetaNotice } from "@gajae-code/coding-agent/tools/output-meta";
+import { Settings } from "../../src/config/settings";
+import { wrapToolWithMetaNotice } from "../../src/tools/output-meta";
 
 const HEAD_MARKER = "HEAD_MARKER_START";
 const TAIL_MARKER = "TAIL_MARKER_END";

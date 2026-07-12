@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { disposeAllKernelSessions, executePython } from "@gajae-code/coding-agent/eval/py/executor";
-import type { KernelExecuteResult } from "@gajae-code/coding-agent/eval/py/kernel";
-import * as pythonKernel from "@gajae-code/coding-agent/eval/py/kernel";
 import { getProjectDir } from "@gajae-code/utils";
+import { disposeAllKernelSessions, executePython } from "../../src/eval/py/executor";
+import type { KernelExecuteResult } from "../../src/eval/py/kernel";
+import * as pythonKernel from "../../src/eval/py/kernel";
 
 class FakeKernel {
 	execute = vi.fn(async () => this.result);

@@ -2,13 +2,9 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { exportFromFile } from "@gajae-code/coding-agent/export/html";
-import {
-	type ColdSpillRef,
-	SessionManager,
-	type SessionMessageEntry,
-} from "@gajae-code/coding-agent/session/session-manager";
 import { getBlobsDir, Snowflake } from "@gajae-code/utils";
+import { exportFromFile } from "../src/export/html";
+import { type ColdSpillRef, SessionManager, type SessionMessageEntry } from "../src/session/session-manager";
 
 function largeMarker(label: string): string {
 	return `${label}-${"x".repeat(520_000)}-end`;

@@ -1,15 +1,12 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
-import type { ModelProfileDefinition } from "@gajae-code/coding-agent/config/model-profiles";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import {
-	ModelSelectorComponent,
-	type ModelSelectorSelection,
-} from "@gajae-code/coding-agent/modes/components/model-selector";
-import { SelectorController } from "@gajae-code/coding-agent/modes/controllers/selector-controller";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { TUI } from "@gajae-code/tui";
+import type { ModelProfileDefinition } from "../src/config/model-profiles";
+import { Settings } from "../src/config/settings";
+import { ModelSelectorComponent, type ModelSelectorSelection } from "../src/modes/components/model-selector";
+import { SelectorController } from "../src/modes/controllers/selector-controller";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 
 const model = (provider: string, id: string): Model =>
 	({ provider, id, name: id, api: "openai-responses", contextWindow: 1000, maxTokens: 1000 }) as Model;

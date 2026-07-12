@@ -6,7 +6,8 @@
 import type { AgentEvent, AgentMessage, AgentToolResult, ThinkingLevel } from "@gajae-code/agent-core";
 import type { CompactionResult } from "@gajae-code/agent-core/compaction";
 import type { ImageContent, Model } from "@gajae-code/ai";
-import { isRecord, ptree, readJsonl } from "@gajae-code/utils";
+import { isRecord, readJsonl } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import { AGENT_WIRE_EVENT_TYPES, type AgentWireEventType } from "../shared/agent-wire/event-contract";

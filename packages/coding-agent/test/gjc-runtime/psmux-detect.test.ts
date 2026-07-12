@@ -9,8 +9,8 @@ import {
 	PSMUX_BINARY_NAMES,
 	probePsmux,
 	resolveGjcTmuxBinary,
-} from "@gajae-code/coding-agent/gjc-runtime/psmux-detect";
-import { resolveGjcTmuxCommand } from "@gajae-code/coding-agent/gjc-runtime/tmux-common";
+} from "../../src/gjc-runtime/psmux-detect";
+import { resolveGjcTmuxCommand } from "../../src/gjc-runtime/tmux-common";
 
 function psmuxVersionOutput(): string {
 	return "psmux 3.3.0\n";

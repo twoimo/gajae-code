@@ -1,14 +1,14 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { Settings } from "../../../src/config/settings";
 import {
 	formatDeepInterviewSelectorPrompt,
 	isDeepInterviewAskQuestion,
 	renderDeepInterviewAskQuestion,
-} from "@gajae-code/coding-agent/deep-interview/render-middleware";
-import { AssistantMessageComponent } from "@gajae-code/coding-agent/modes/components/assistant-message";
-import { initTheme, theme } from "@gajae-code/coding-agent/modes/theme/theme";
-import { askToolRenderer } from "@gajae-code/coding-agent/tools/ask";
+} from "../../../src/deep-interview/render-middleware";
+import { AssistantMessageComponent } from "../../../src/modes/components/assistant-message";
+import { initTheme, theme } from "../../../src/modes/theme/theme";
+import { askToolRenderer } from "../../../src/tools/ask";
 
 function createAssistantMessage(text: string): AssistantMessage {
 	return {
@@ -132,32 +132,38 @@ describe("deep-interview assistant render middleware", () => {
 			undefined,
 			"assistant:entry:deep-interview-progress",
 		);
-		const rendered = component.renderWithViewportAnchors(40);
+		const rendered = component.renderRowsWithMetadata(40, 0, component.getLogicalRowCount(40));
 		const titleRow = rendered.lines.findIndex(line => Bun.stripANSI(line).includes("Round 6 complete"));
 		const koreanRow = rendered.lines.findIndex(line => Bun.stripANSI(line).includes("한국어 기준 유지"));
 		expect(titleRow).toBeGreaterThanOrEqual(0);
 		expect(koreanRow).toBeGreaterThanOrEqual(0);
-		expect(rendered.anchors[titleRow]?.id).toBe("assistant:entry:deep-interview-progress:content:0:text");
-		expect(rendered.anchors[koreanRow]?.id).toBe("assistant:entry:deep-interview-progress:content:0:text");
-		const semanticRows = rendered.anchors.filter(anchor => anchor !== null);
+		expect(rendered.metadata[titleRow]?.sourceId).toBe("assistant:entry:deep-interview-progress:content:0:text");
+		expect(rendered.metadata[koreanRow]?.sourceId).toBe("assistant:entry:deep-interview-progress:content:0:text");
+		const semanticRows = rendered.metadata.filter(
+			(item): item is NonNullable<typeof item> =>
+				item?.sourceId === "assistant:entry:deep-interview-progress:content:0:text",
+		);
 		expect(semanticRows.length).toBeGreaterThan(3);
 		for (let index = 1; index < semanticRows.length; index++) {
-			expect(semanticRows[index].graphemeStart).toBeGreaterThanOrEqual(semanticRows[index - 1].graphemeEnd);
-			expect(semanticRows[index].cellStart).toBeGreaterThanOrEqual(semanticRows[index - 1].cellEnd);
+			expect(semanticRows[index].graphemeStart).toBeGreaterThanOrEqual(semanticRows[index - 1].graphemeEnd!);
+			expect(semanticRows[index].cellStart).toBeGreaterThanOrEqual(semanticRows[index - 1].cellEnd!);
 		}
-		const selected = rendered.anchors[koreanRow];
-		if (!selected) throw new Error("Expected semantic Korean row");
-		const narrow = component.renderWithViewportAnchors(18);
-		const resolved = narrow.anchors.find(
-			anchor =>
-				anchor?.id === selected.id &&
-				anchor.graphemeStart <= selected.graphemeStart &&
-				anchor.graphemeEnd > selected.graphemeStart &&
-				anchor.cellStart <= selected.cellStart &&
-				anchor.cellEnd > selected.cellStart,
-		);
-		expect(resolved).not.toBeNull();
-		expect(resolved).not.toBeUndefined();
+		const selected = rendered.metadata[koreanRow];
+		if (!selected?.sourceId || selected.graphemeStart === undefined || selected.cellStart === undefined) {
+			throw new Error("Expected semantic Korean row");
+		}
+		const narrow = component.renderRowsWithMetadata(18, 0, component.getLogicalRowCount(18));
+		expect(
+			narrow.metadata.some(
+				item =>
+					item !== null &&
+					item.sourceId === selected.sourceId &&
+					item.graphemeStart !== undefined &&
+					item.graphemeEnd !== undefined &&
+					item.graphemeStart <= selected.graphemeStart! &&
+					item.graphemeEnd > selected.graphemeStart!,
+			),
+		).toBe(true);
 	});
 });
 

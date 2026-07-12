@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { executePythonWithKernel } from "@gajae-code/coding-agent/eval/py/executor";
-import type { KernelDisplayOutput } from "@gajae-code/coding-agent/eval/py/kernel";
+import { executePythonWithKernel } from "../../src/eval/py/executor";
+import type { KernelDisplayOutput } from "../../src/eval/py/kernel";
 import { FakeKernel } from "./helpers";
 
 describe("executePythonWithKernel display outputs", () => {

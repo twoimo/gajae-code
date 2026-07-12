@@ -4,10 +4,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@gajae-code/agent-core";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import type { ReadToolDetails } from "@gajae-code/coding-agent/tools/read";
-import { ReadTool } from "@gajae-code/coding-agent/tools/read";
+import { Settings } from "../src/config/settings";
+import type { ToolSession } from "../src/tools";
+import type { ReadToolDetails } from "../src/tools/read";
+import { ReadTool } from "../src/tools/read";
 
 let artifactCounter = 0;
 

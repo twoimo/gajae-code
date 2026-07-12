@@ -2,15 +2,21 @@ import type { AssistantMessage, ImageContent, Usage } from "@gajae-code/ai";
 import {
 	type Component,
 	Container,
+	createImageSourceFromMaterializer,
+	getImageProtocolRepresentation,
+	getOrCreateImageProtocolRepresentation,
 	Image,
 	ImageProtocol,
-	isViewportAnchorSourceRenderer,
+	type ImageSource,
+	imageContentId,
+	isViewportRowComponent,
 	Markdown,
 	Spacer,
 	TERMINAL,
 	Text,
-	type ViewportAnchorSource,
+	type ViewportRowSource,
 } from "@gajae-code/tui";
+
 import { formatNumber } from "@gajae-code/utils";
 import { settings } from "../../config/settings";
 import { renderDeepInterviewAssistantText } from "../../deep-interview/render-middleware";
@@ -73,7 +79,21 @@ interface AssistantMessageUpdateOptions {
 type AssistantChildDescriptor = {
 	key: string;
 	component: Component;
-	anchorSource?: ViewportAnchorSource;
+	rowSource?: ViewportRowSource;
+};
+
+type ToolImage = {
+	source: ImageSource;
+	mimeType: string;
+};
+
+type ResidentImageContent = ImageContent & {
+	__gjcResidentImageReference?: {
+		contentId: string;
+		mimeType: string;
+		byteLength: number;
+		materializeSync: () => string | undefined;
+	};
 };
 
 /**
@@ -82,9 +102,8 @@ type AssistantChildDescriptor = {
 export class AssistantMessageComponent extends Container {
 	#contentContainer: Container;
 	#lastMessage?: AssistantMessage;
-	#toolImagesByCallId = new Map<string, ImageContent[]>();
+	#toolImagesByCallId = new Map<string, ToolImage[]>();
 	#usageInfo?: Usage;
-	#convertedKittyImages = new Map<string, ImageContent>();
 	#kittyConversionsInFlight = new Set<string>();
 	#responseHeader = new Text(theme.bold(theme.fg("statusLineModel", "gajae")), 1, 0);
 	#contentBlocksCache = new WeakMap<object, { source: string; component: Component }>();
@@ -111,10 +130,7 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	#contentAnchorSource(
-		index: number,
-		kind: "text" | "thinking" | "thinking-hidden",
-	): ViewportAnchorSource | undefined {
+	#contentRowSource(index: number, kind: "text" | "thinking" | "thinking-hidden"): ViewportRowSource | undefined {
 		return this.#viewportAnchorId ? { id: `${this.#viewportAnchorId}:content:${index}:${kind}` } : undefined;
 	}
 
@@ -131,16 +147,11 @@ export class AssistantMessageComponent extends Container {
 
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
 		if (!toolCallId) return;
-		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
-		for (const key of Array.from(this.#convertedKittyImages.keys())) {
-			if (key.startsWith(`${toolCallId}:`)) {
-				this.#convertedKittyImages.delete(key);
-			}
-		}
+		const validImages = images
+			.filter(image => image.type === "image" && image.data && image.mimeType)
+			.map(image => this.#toolImageSource(image));
 		for (const key of Array.from(this.#kittyConversionsInFlight)) {
-			if (key.startsWith(`${toolCallId}:`)) {
-				this.#kittyConversionsInFlight.delete(key);
-			}
+			if (key.startsWith(`${toolCallId}:`)) this.#kittyConversionsInFlight.delete(key);
 		}
 		if (validImages.length === 0) {
 			this.#toolImagesByCallId.delete(toolCallId);
@@ -153,32 +164,66 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	#convertToolImagesForKitty(toolCallId: string, images: ImageContent[]): void {
+	#toolImageSource(image: ImageContent): ToolImage {
+		const residentReference = (image as ResidentImageContent).__gjcResidentImageReference;
+		if (residentReference) {
+			return {
+				mimeType: residentReference.mimeType,
+				source: createImageSourceFromMaterializer(
+					residentReference.contentId,
+					residentReference.mimeType,
+					residentReference.byteLength,
+					{ materializeSync: residentReference.materializeSync },
+				),
+			};
+		}
+		const imageReference = new WeakRef(image);
+		const data = image.data;
+		return {
+			mimeType: image.mimeType,
+			source: createImageSourceFromMaterializer(
+				imageContentId(data),
+				image.mimeType,
+				Buffer.byteLength(data, "base64"),
+				{ materializeSync: () => imageReference.deref()?.data },
+			),
+		};
+	}
+
+	#kittyConversionKey(source: ImageSource): string {
+		return `${source.contentId}:kitty:image/png`;
+	}
+
+	#convertToolImagesForKitty(toolCallId: string, images: ToolImage[]): void {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		for (let index = 0; index < images.length; index++) {
 			const image = images[index];
 			if (!image || image.mimeType === "image/png") continue;
+			const source = image.source;
 			const key = `${toolCallId}:${index}`;
-			if (this.#convertedKittyImages.has(key) || this.#kittyConversionsInFlight.has(key)) continue;
+			const conversionKey = this.#kittyConversionKey(source);
+			if (getImageProtocolRepresentation(conversionKey)) {
+				queueMicrotask(() => this.onImageUpdate?.());
+				continue;
+			}
+			if (this.#kittyConversionsInFlight.has(key)) continue;
+			const data = source.materializeSync?.();
+			if (!data) continue;
 			this.#kittyConversionsInFlight.add(key);
-			new Bun.Image(Buffer.from(image.data, "base64"))
-				.png()
-				.toBase64()
-				.then(data => {
+			// Retain the source only until this asynchronous conversion completes. Tool-image
+			// sources are weak by design, so deferring materialization can otherwise lose it.
+			getOrCreateImageProtocolRepresentation(conversionKey, async () =>
+				new Bun.Image(Buffer.from(data, "base64")).png().toBase64(),
+			)
+				.then(() => {
 					this.#kittyConversionsInFlight.delete(key);
-					this.#convertedKittyImages.set(key, {
-						type: "image",
-						data,
-						mimeType: "image/png",
-					});
-					if (this.#lastMessage) {
-						this.updateContent(this.#lastMessage, { streaming: this.#lastStreaming });
+					try {
+						if (this.#lastMessage) this.updateContent(this.#lastMessage, { streaming: this.#lastStreaming });
+					} finally {
+						this.onImageUpdate?.();
 					}
-					this.onImageUpdate?.();
 				})
-				.catch(() => {
-					this.#kittyConversionsInFlight.delete(key);
-				});
+				.catch(() => this.#kittyConversionsInFlight.delete(key));
 		}
 	}
 
@@ -274,22 +319,32 @@ export class AssistantMessageComponent extends Container {
 			{ key: "tool-images:spacer", component: this.#cachedChild("tool-images:spacer", () => new Spacer(1)) },
 		];
 		for (const { image, key } of imageEntries) {
-			const displayImage =
-				TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png"
-					? this.#convertedKittyImages.get(key)
-					: image;
-			if (TERMINAL.imageProtocol && displayImage) {
-				const imageKey = `tool-image:${key}:${displayImage.mimeType}:${displayImage.data}`;
+			const source = image.source;
+			const converted = TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png";
+			const conversionKey = this.#kittyConversionKey(source);
+			const convertedData = getImageProtocolRepresentation(conversionKey);
+			const displaySource: ImageSource | undefined = converted
+				? convertedData
+					? createImageSourceFromMaterializer(
+							`${source.contentId}:kitty-png`,
+							"image/png",
+							Buffer.byteLength(convertedData, "base64"),
+							{ materializeSync: () => getImageProtocolRepresentation(conversionKey) },
+						)
+					: undefined
+				: source;
+			if (TERMINAL.imageProtocol && displaySource) {
+				const imageKey = `tool-image:${key}:${displaySource.contentId}:${displaySource.mimeType}`;
 				descriptors.push({
 					key: imageKey,
 					component: this.#cachedChild(
 						imageKey,
 						() =>
 							new Image(
-								displayImage.data,
-								displayImage.mimeType,
+								displaySource,
+								displaySource.mimeType,
 								{ fallbackColor: (text: string) => theme.fg("toolOutput", text) },
-								{ ...resolveImageOptions(), refetch: () => displayImage.data },
+								resolveImageOptions(),
 							),
 					),
 				});
@@ -304,14 +359,24 @@ export class AssistantMessageComponent extends Container {
 				),
 			});
 		}
+		const activeKeys = new Set(descriptors.map(descriptor => descriptor.key));
+		for (const [childKey, child] of this.#childComponents) {
+			if (
+				(childKey.startsWith("tool-image:") || childKey.startsWith("tool-image-fallback:")) &&
+				!activeKeys.has(childKey)
+			) {
+				child.dispose?.();
+				this.#childComponents.delete(childKey);
+			}
+		}
 		return descriptors;
 	}
 
 	#reconcileChildren(descriptors: AssistantChildDescriptor[]): void {
-		for (const child of this.#contentContainer.children) this.#contentContainer.setViewportAnchorSource(child, null);
+		for (const child of this.#contentContainer.children) this.#contentContainer.setViewportRowSource(child, null);
 		for (const descriptor of descriptors) {
-			if (descriptor.anchorSource && isViewportAnchorSourceRenderer(descriptor.component)) {
-				this.#contentContainer.setViewportAnchorSource(descriptor.component, descriptor.anchorSource);
+			if (descriptor.rowSource && isViewportRowComponent(descriptor.component)) {
+				this.#contentContainer.setViewportRowSource(descriptor.component, descriptor.rowSource);
 			}
 		}
 		const nextChildren = descriptors.map(descriptor => descriptor.component);
@@ -372,7 +437,7 @@ export class AssistantMessageComponent extends Container {
 				descriptors.push({
 					key: `${blockKey}:text`,
 					component: this.#renderTextBlock(content, streaming && i === activeContentIndex),
-					anchorSource: this.#contentAnchorSource(i, "text"),
+					rowSource: this.#contentRowSource(i, "text"),
 				});
 			} else if (content.type === "thinking" && content.thinking.trim()) {
 				// Add spacing only when another visible assistant content block follows.
@@ -385,13 +450,13 @@ export class AssistantMessageComponent extends Container {
 							`${blockKey}:thinking-hidden`,
 							() => new Text(theme.italic(theme.fg("thinkingText", "Thinking...")), 1, 0),
 						),
-						anchorSource: this.#contentAnchorSource(i, "thinking-hidden"),
+						rowSource: this.#contentRowSource(i, "thinking-hidden"),
 					});
 				} else {
 					descriptors.push({
 						key: `${blockKey}:thinking`,
 						component: this.#renderThinkingBlock(content, streaming && i === activeContentIndex),
-						anchorSource: this.#contentAnchorSource(i, "thinking"),
+						rowSource: this.#contentRowSource(i, "thinking"),
 					});
 				}
 				if (visibleContentAfter[i]) {

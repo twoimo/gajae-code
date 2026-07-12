@@ -4,11 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@gajae-code/agent-core";
 import { createMockModel, type MockModel, registerMockApi } from "@gajae-code/ai/providers/mock";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { Settings } from "../src/config/settings";
+import { AgentRegistry } from "../src/registry/agent-registry";
+import { AgentSession } from "../src/session/agent-session";
+import { convertToLlm } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
 
 registerMockApi();
 

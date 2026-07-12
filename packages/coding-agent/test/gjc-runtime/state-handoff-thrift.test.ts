@@ -2,16 +2,16 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { Skill } from "@gajae-code/coding-agent/extensibility/skills";
-import { runNativeDeepInterviewCommand } from "@gajae-code/coding-agent/gjc-runtime/deep-interview-runtime";
-import { runNativeRalplanCommand } from "@gajae-code/coding-agent/gjc-runtime/ralplan-runtime";
-import { modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
-import { createUltragoalPlan, runNativeUltragoalCommand } from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
-import { SKILL_PROMPT_MESSAGE_TYPE } from "@gajae-code/coding-agent/session/messages";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { SkillTool } from "@gajae-code/coding-agent/tools/skill";
+import { Settings } from "../../src/config/settings";
+import type { Skill } from "../../src/extensibility/skills";
+import { runNativeDeepInterviewCommand } from "../../src/gjc-runtime/deep-interview-runtime";
+import { runNativeRalplanCommand } from "../../src/gjc-runtime/ralplan-runtime";
+import { modeStatePath } from "../../src/gjc-runtime/session-layout";
+import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
+import { createUltragoalPlan, runNativeUltragoalCommand } from "../../src/gjc-runtime/ultragoal-runtime";
+import { SKILL_PROMPT_MESSAGE_TYPE } from "../../src/session/messages";
+import type { ToolSession } from "../../src/tools";
+import { SkillTool } from "../../src/tools/skill";
 
 const TEST_SESSION_ID = "test-session";
 const INITIAL_SESSION_ID = process.env.GJC_SESSION_ID;
@@ -46,12 +46,12 @@ afterEach(async () => {
 	restoreSessionId(INITIAL_SESSION_ID);
 });
 
-const escapedTempRoot = os.tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const activeTempArtifact = new RegExp(`${escapedTempRoot}/(?:skill-tool|gjc)-[^\\n"]+`, "g");
-
 function scrub(text: string): string {
 	return text
-		.replaceAll(activeTempArtifact, "/tmp/SCRUBBED")
+		.replaceAll(
+			/(?:\/var\/folders|\/private\/var\/folders|\/tmp)\/[^,\n"]+\/\.gjc\/_session-test-session\/ultragoal\/(goals\.json|ledger\.jsonl)/g,
+			"/tmp/SCRUBBED/.gjc/_session-test-session/ultragoal/$1",
+		)
 		.replaceAll(/\/var\/folders\/[^\n"]+/g, "/tmp/SCRUBBED")
 		.replaceAll(/\/private\/var\/[^\n"]+/g, "/tmp/SCRUBBED")
 		.replaceAll(/[0-9a-f]{64}/g, "<sha256>")
@@ -213,7 +213,7 @@ describe("CONSUMER/KEY-FIELD MATRIX for compact handoff payloads", () => {
 		expect(scrub(ultragoalHandoff.stdout ?? "")).toMatchInlineSnapshot(`
 			"ultragoal next-action=execute-goal goal-id=G001
 			objective=Ship the compact output
-			gjc-objective=Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.
+			gjc-objective=Complete the durable ultragoal plan in /tmp/SCRUBBED/.gjc/_session-test-session/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use /tmp/SCRUBBED/.gjc/_session-test-session/ultragoal/ledger.jsonl as the audit trail.
 			checkpoint requires=architectReview:CLEAR+APPROVE,executorQa:passed
 			"
 			`);

@@ -174,7 +174,8 @@ describe("GJC plugin roots never surface through legacy claude plugin providers"
 		};
 		const built = await buildSkillPromptMessage(skill, activation.cleanedArgs, {
 			cwd: tempCwd,
-			currentPhase: "planner",
+			sessionId: "test-session",
+			workflowContext: { skill: "ralplan", phase: "planner", sessionId: "test-session", stateVersion: 2 },
 			subskillActivation: activation.activation,
 		});
 		expect(built.message).toContain("<gjc-subskill");

@@ -18,16 +18,28 @@ import type { Component, EditorTheme, SlashCommand } from "@gajae-code/tui";
 import {
 	Container,
 	clearRenderCache,
-	getRenderCacheRetainedBytes,
 	Loader,
 	Markdown,
 	ProcessTerminal,
+	registerImageRetainedMemory,
+	registerMarkdownRetainedMemory,
 	Spacer,
 	Text,
 	TUI,
 	visibleWidth,
 } from "@gajae-code/tui";
-import { APP_NAME, adjustHsv, getProjectDir, hsvToRgb, isEnoent, logger, postmortem, prompt } from "@gajae-code/utils";
+import {
+	APP_NAME,
+	adjustHsv,
+	getProjectDir,
+	hsvToRgb,
+	isEnoent,
+	logger,
+	postmortem,
+	prompt,
+	type RetainedMemoryRegistration,
+} from "@gajae-code/utils";
+
 import chalk from "chalk";
 import { AsyncJobManager } from "../async";
 import { type AppKeybinding, KeybindingsManager } from "../config/keybindings";
@@ -88,6 +100,7 @@ import type { HookSelectorComponent } from "./components/hook-selector";
 import { IrcSplitViewComponent } from "./components/irc-sidebar";
 import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
+import { TranscriptContainer } from "./components/transcript-container";
 import {
 	WelcomeComponent,
 	type WelcomeLogoMode,
@@ -127,6 +140,22 @@ import type {
 	TranscriptRebuildPolicy,
 } from "./types";
 import type { ParsedIrcMessage } from "./utils/irc-message";
+
+/**
+ * Canonical production inventory of long-lived TUI pools. Keep registrations and
+ * retained-memory completeness checks derived from this list.
+ */
+export const TUI_RETAINED_MEMORY_CACHE_CLASSES = [
+	{ id: "tui.editor", buckets: ["document", "undo", "wrapped-line", "layout"] },
+	{ id: "tui.viewport-frame", buckets: ["frame"] },
+	{ id: "tui.line-caches", buckets: ["normalization", "truncation", "emit-width"] },
+	{ id: "tui.markdown", buckets: ["render", "parse", "highlight"] },
+	{
+		id: "tui.images",
+		buckets: ["source", "duplicate", "protocol", "decode-conversion", "kitty-transmission-metadata"],
+	},
+] as const;
+
 import { addChatChild, prepareTranscriptRebuild, UiHelpers } from "./utils/ui-helpers";
 
 const INTERACTIVE_ABORT_CLEANUP_TIMEOUT_MS = 5_000;
@@ -315,7 +344,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly ircLedger = new IrcObservationLedger();
 
 	ui: TUI;
-	chatContainer: Container;
+	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
 	todoContainer: Container;
@@ -425,6 +454,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#ircSplitView: IrcSplitViewComponent;
 	#ircSidebarAvailable = false;
 	#ircSidebarRequestedVisible = false;
+	readonly #tuiRetainedMemoryRegistrations: RetainedMemoryRegistration[] = [];
 
 	constructor(
 		session: AgentSession,
@@ -437,10 +467,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
-		this.session.setRetainedMemorySampler(() => ({
-			tuiChatChildren: this.chatContainer.children.length,
-			tuiCachedRenderBytes: getRenderCacheRetainedBytes(),
-		}));
+
 		this.settings = session.settings;
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
@@ -460,13 +487,25 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setClearOnShrink(settings.get("clearOnShrink"));
-		this.chatContainer = new Container();
+		this.chatContainer = new TranscriptContainer();
 		this.#ircSplitView = new IrcSplitViewComponent(this.chatContainer, this.ircLedger, () => theme);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.todoContainer = new Container();
 		this.btwContainer = new Container();
 		this.editor = new CustomEditor(getEditorTheme());
+		const retainedMemoryRegistry = this.session.getRetainedMemoryRegistry();
+		this.#tuiRetainedMemoryRegistrations.push(
+			this.editor.registerRetainedMemory(retainedMemoryRegistry, TUI_RETAINED_MEMORY_CACHE_CLASSES[0].id),
+			...this.ui.registerRetainedMemory(retainedMemoryRegistry),
+			registerMarkdownRetainedMemory(retainedMemoryRegistry, TUI_RETAINED_MEMORY_CACHE_CLASSES[3].id),
+			registerImageRetainedMemory(retainedMemoryRegistry, TUI_RETAINED_MEMORY_CACHE_CLASSES[4].id),
+		);
+		this.session.setRetainedMemorySampler(() => ({
+			tuiChatChildren: this.chatContainer.children.length,
+			tuiCachedRenderBytes: this.#getTuiCachedRenderBytes(),
+		}));
+
 		configureDefaultComposerChrome(this.editor);
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
@@ -2073,6 +2112,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	#getTuiCachedRenderBytes(): number {
+		const snapshot = this.session.getRetainedMemorySnapshot();
+		let bytes = 0;
+		for (const pool of snapshot.pools) {
+			if (
+				pool.id === "tui.viewport-frame" ||
+				pool.id === "tui.line-caches" ||
+				pool.id === "tui.markdown" ||
+				pool.id === "tui.images"
+			) {
+				bytes += pool.bytes;
+			} else if (pool.id === "tui.editor") {
+				bytes += (pool.buckets["wrapped-line"] ?? 0) + (pool.buckets.layout ?? 0);
+			}
+		}
+		return bytes;
+	}
+
 	stop(): void {
 		this.petWidget?.dispose();
 		this.petWidget = undefined;
@@ -2099,6 +2156,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine.dispose();
 		this.#jobsObserver?.dispose();
 		this.editor.dispose();
+		for (const registration of this.#tuiRetainedMemoryRegistrations) registration.dispose();
+		this.#tuiRetainedMemoryRegistrations.length = 0;
+		this.session.setRetainedMemorySampler(undefined);
 		if (this.#resizeHandler) {
 			process.stdout.removeListener("resize", this.#resizeHandler);
 			this.#resizeHandler = undefined;
@@ -2206,12 +2266,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		nextEditor.setText(previousText);
 		previousEditor.dispose();
+		const editorRegistrationIndex = this.#tuiRetainedMemoryRegistrations.findIndex(
+			registration => registration.id === "tui.editor",
+		);
+		if (editorRegistrationIndex >= 0) {
+			this.#tuiRetainedMemoryRegistrations[editorRegistrationIndex]?.dispose();
+			this.#tuiRetainedMemoryRegistrations.splice(editorRegistrationIndex, 1);
+		}
 
 		const petMode = this.petWidget?.mode ?? settings.get("pet.mode");
 		this.petWidget?.dispose();
 
 		this.editorContainer.clear();
 		this.editor = nextEditor;
+		this.#tuiRetainedMemoryRegistrations.push(
+			this.editor.registerRetainedMemory(this.session.getRetainedMemoryRegistry()),
+		);
 		this.editorContainer.addChild(nextEditor);
 		this.ui.setFocus(nextEditor);
 

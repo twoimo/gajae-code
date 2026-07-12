@@ -1,4 +1,5 @@
-import { isRecord, ptree } from "@gajae-code/utils";
+import { isRecord } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 
 export { isRecord };
 

@@ -1,0 +1,4 @@
+{
+	"npmPackageBytes": 46808100,
+	"_comment": "Frozen pre-N1 npm package baseline. Update only after measuring the published packages/natives plus matching packages/natives-<target> payload with scripts/measure-arch-review-footprint.ts and recording the reviewed byte count here."
+}

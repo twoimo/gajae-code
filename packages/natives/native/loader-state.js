@@ -40,6 +40,10 @@ const OPTIONAL_PACKAGE_BY_PLATFORM_TAG = {
 };
 
 
+function reportLoadedAddon(candidate) {
+	const reportPath = process.env.GJC_NATIVE_LOADER_REPORT;
+	if (reportPath) fs.appendFileSync(reportPath, `${JSON.stringify({ path: candidate })}\n`);
+}
 function getNativesDir() {
 	const xdgDataHome = process.env.XDG_DATA_HOME;
 	if (xdgDataHome && fs.existsSync(path.join(xdgDataHome, "gjc"))) {
@@ -54,7 +58,7 @@ function getNativesDir() {
 
 /**
  * @param {{
- *   embeddedAddon: { platformTag: string; version: string; files: unknown[] } | null | undefined;
+ *   embeddedAddon: { platformTag: string; version: string; topology?: "monolith" | "core"; files: unknown[] } | null | undefined;
  *   env: Record<string, string | undefined>;
  *   importMetaUrl: string | null | undefined;
  * }} input
@@ -85,6 +89,90 @@ export function getAddonFilenames({ tag, arch, variant }) {
 	}
 	return [baselineFilename, defaultFilename];
 }
+
+/**
+ * @param {{ tag: string; arch: string; variant: "modern" | "baseline" | null | undefined; capability: "core" | "shell" }} input
+ * @returns {string[]}
+ */
+export function getSplitAddonFilenames({ tag, arch, variant, capability }) {
+	const prefix = `pi_natives_${capability}`;
+	if (arch !== "x64") return [`${prefix}.${tag}.node`];
+	if (variant === "modern") return [`${prefix}.${tag}-modern.node`, `${prefix}.${tag}-baseline.node`];
+	return [`${prefix}.${tag}-baseline.node`];
+}
+
+/**
+ * Load the N1 prototype topology. Core is required eagerly; shell is required
+ * only when a shell/PTY export is first read. Returns null when core is absent
+ * or unusable so the caller can fall back to one validated monolith.
+ * @param {{ require_: NodeRequire; directories: string[]; tag: string; arch: string; variant: "modern" | "baseline" | null; validate?: (bindings: object, candidate: string) => void; loadFallback?: () => object; onError?: (candidate: string, error: unknown) => void }} input
+ */
+export function loadSplitNative({ require_, directories, tag, arch, variant, validate, loadFallback, onError }) {
+	const resolve = capability => {
+		for (const filename of getSplitAddonFilenames({ tag, arch, variant, capability })) {
+			for (const directory of directories) {
+				const candidate = path.join(directory, filename);
+				if (fs.existsSync(candidate)) return candidate;
+			}
+		}
+		return null;
+	};
+	const load = candidate => {
+		const bindings = require_(candidate);
+		validate?.(bindings, candidate);
+		reportLoadedAddon(candidate);
+		return bindings;
+	};
+	const corePath = resolve("core");
+	if (!corePath) return null;
+	let core;
+	try {
+		core = load(corePath);
+	} catch (error) {
+		onError?.(corePath, error);
+		return null;
+	}
+	let shell;
+	let fallback;
+	let useFallback = false;
+	const shellExports = new Set(["Shell", "Process", "PtySession", "applyBashFixups", "executeShell", "ptyTimeoutCount"]);
+	return new Proxy(core, {
+		get(target, property, receiver) {
+			if (useFallback) return fallback[property];
+			if (Reflect.has(target, property) || typeof property !== "string") {
+				return Reflect.get(target, property, receiver);
+			}
+			if (shellExports.has(property)) {
+				if (!shell) {
+					const shellPath = resolve("shell");
+					try {
+						if (!shellPath) throw new Error("No split shell addon candidate was found.");
+						shell = load(shellPath);
+					} catch (error) {
+						onError?.(shellPath ?? "split shell", error);
+						if (!loadFallback) return undefined;
+						try {
+							fallback = loadFallback();
+						} catch (fallbackError) {
+							const splitMessage = error instanceof Error ? error.message : String(error);
+							const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+							throw new Error(`Optional split shell addon is unavailable (${splitMessage}); monolithic fallback also failed (${fallbackMessage}).`);
+						}
+						useFallback = true;
+						return fallback[property];
+					}
+				}
+				return shell[property];
+			}
+			if (!loadFallback) return undefined;
+			fallback ??= loadFallback();
+			useFallback = true;
+			return fallback[property];
+		},
+	});
+}
+
+
 
 /**
  * @param {string} platformTag
@@ -460,14 +548,46 @@ export function loadNative() {
 
 	const errors = [];
 	const embeddedCandidate = maybeExtractEmbeddedAddon(ctx, errors);
-	const stagedCandidate = embeddedCandidate ? null : maybeStageNodeModulesAddon(ctx, errors);
-	const prepended = [embeddedCandidate, stagedCandidate].filter(c => typeof c === "string");
+	const embeddedCoreCandidate = embeddedAddon?.topology === "core" ? embeddedCandidate : null;
+	const embeddedMonolithCandidate = embeddedAddon?.topology === "core" ? null : embeddedCandidate;
+	const stagedCandidate = embeddedMonolithCandidate ? null : maybeStageNodeModulesAddon(ctx, errors);
+	const prepended = [embeddedMonolithCandidate, stagedCandidate].filter(c => typeof c === "string");
 	const runtimeCandidates = prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;
+
+	const loadMonolith = () => {
+		for (const candidate of runtimeCandidates) {
+			try {
+				const bindings = require_(candidate);
+				validateLoadedBindings(ctx, bindings, candidate);
+				reportLoadedAddon(candidate);
+				return bindings;
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				errors.push(`${candidate}: ${message}`);
+			}
+		}
+		throw new Error("No monolithic native addon candidate could be loaded.");
+	};
+	const splitBindings = process.env.GJC_NATIVE_TOPOLOGY === "monolith" ? null : loadSplitNative({
+		require_,
+		directories: [...(embeddedCoreCandidate ? [ctx.versionedDir] : []), ...ctx.optionalPackageNativeDirs, ctx.nativeDir],
+		tag: ctx.platformTag,
+		arch: process.arch,
+		variant: ctx.selectedVariant,
+		validate: (bindings, candidate) => validateLoadedBindings(ctx, bindings, candidate),
+		loadFallback: loadMonolith,
+		onError: (candidate, error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			errors.push(`${candidate}: ${message}`);
+		},
+	});
+	if (splitBindings) return splitBindings;
 
 	for (const candidate of runtimeCandidates) {
 		try {
 			const bindings = require_(candidate);
 			validateLoadedBindings(ctx, bindings, candidate);
+			reportLoadedAddon(candidate);
 			return bindings;
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);

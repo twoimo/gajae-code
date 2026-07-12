@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ModelsConfigSchema } from "@gajae-code/coding-agent/config/models-config-schema";
+import { ModelsConfigSchema } from "../src/config/models-config-schema";
 
 describe("models config toolChoiceSupport", () => {
 	test("accepts toolChoiceSupport alongside legacy booleans in provider and model compat", () => {

@@ -3,11 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import {
-	classifySource,
-	fetchMarketplace,
-	parseMarketplaceCatalog,
-} from "@gajae-code/coding-agent/extensibility/plugins/marketplace";
+import { classifySource, fetchMarketplace, parseMarketplaceCatalog } from "../../src/extensibility/plugins/marketplace";
 
 // Fixture lives at test/marketplace/fixtures/valid-marketplace/
 const FIXTURE_DIR = path.join(import.meta.dir, "fixtures", "valid-marketplace");

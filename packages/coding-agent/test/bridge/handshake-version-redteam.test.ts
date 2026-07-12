@@ -36,15 +36,17 @@ function eventOfType(type: AgentSessionEvent["type"]): AgentSessionEvent {
 	return { type } as unknown as AgentSessionEvent;
 }
 
-describe("bridge handshake v2 red-team", () => {
-	it("rejects pure v1 clients with no back-compat", () => {
+describe("bridge handshake version-negotiation red-team", () => {
+	// Phase 6A: v1 is now the supported PREVIOUS version. Pure v1 clients are
+	// accepted and negotiate v1; only ranges excluding both v1 and v2 are rejected.
+	it("accepts pure v1 clients and negotiates v1", () => {
 		const response = handshake({ min: 1, max: 1 });
-		expect(response.status).toBe("rejected");
-		if (response.status !== "rejected") throw new Error("pure v1 handshake was accepted");
-		expect(response.reason).toBe("incompatible_version");
+		expect(response.status).toBe("accepted");
+		if (response.status !== "accepted") throw new Error("pure v1 handshake was rejected");
+		expect(response.protocol_version).toBe(1);
 	});
 
-	it("accepts ranges that include v2", () => {
+	it("accepts ranges that include v2 and negotiates the highest supported version", () => {
 		for (const range of [
 			{ min: 1, max: 2 },
 			{ min: 2, max: 2 },
@@ -52,13 +54,22 @@ describe("bridge handshake v2 red-team", () => {
 		]) {
 			const response = handshake(range);
 			expect(response.status).toBe("accepted");
+			if (response.status !== "accepted") throw new Error(`range ${range.min}..${range.max} was rejected`);
+			expect(response.protocol_version).toBe(2);
 		}
 	});
 
-	it("rejects ranges that exclude v2", () => {
+	it("accepts a range whose only supported member is v1", () => {
+		const response = handshake({ min: 0, max: 1 });
+		expect(response.status).toBe("accepted");
+		if (response.status !== "accepted") throw new Error("range 0..1 was rejected");
+		expect(response.protocol_version).toBe(1);
+	});
+
+	it("rejects ranges that exclude every supported version", () => {
 		for (const range of [
 			{ min: 3, max: 4 },
-			{ min: 0, max: 1 },
+			{ min: 5, max: 9 },
 		]) {
 			const response = handshake(range);
 			expect(response.status).toBe("rejected");

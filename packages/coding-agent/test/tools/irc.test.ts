@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
-import type { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import type { ToolSession } from "@gajae-code/coding-agent/tools";
-import { IrcTool } from "@gajae-code/coding-agent/tools/irc";
+import { Settings } from "../../src/config/settings";
+import { AgentRegistry } from "../../src/registry/agent-registry";
+import type { AgentSession } from "../../src/session/agent-session";
+import type { ToolSession } from "../../src/tools";
+import { IrcTool } from "../../src/tools/irc";
 
 interface FakeSession {
 	session: AgentSession;

@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, APP_NAME, getToolsDir, logger, ptree, TempDir } from "@gajae-code/utils";
+import { $which, APP_NAME, getToolsDir, logger, TempDir } from "@gajae-code/utils";
+import * as ptree from "@gajae-code/utils/ptree";
 
 const TOOLS_DIR = getToolsDir();
 const TOOL_DOWNLOAD_TIMEOUT_MS = 120_000;

@@ -15,7 +15,7 @@ import webSearchDescription from "../../prompts/tools/web-search.md" with { type
 import { discoverAuthStorage } from "../../sdk";
 import type { ToolSession } from "../../tools";
 import { formatAge } from "../../tools/render-utils";
-import { throwIfAborted } from "../../tools/tool-errors";
+import { ToolError, throwIfAborted } from "../../tools/tool-errors";
 import { getSearchProviderLabel, prewarmSearchProviders, resolveProviderChain, type SearchProvider } from "./provider";
 import { renderSearchCall, renderSearchResult, type SearchRenderDetails } from "./render";
 import type { ActiveSearchModelContext, SearchProviderId, SearchResponse } from "./types";
@@ -183,7 +183,7 @@ async function executeSearch(
 	});
 
 	const baseSearchParams = {
-		query: params.query.replace(/202\d/g, String(new Date().getFullYear())), // LUL
+		query: params.query,
 		limit: params.limit,
 		recency: params.recency,
 		systemPrompt: webSearchSystemPrompt,
@@ -278,10 +278,12 @@ async function executeSearch(
 			? `All web search providers failed: ${failures.map(f => formatProviderFailure(f.error, f.provider)).join("; ")}`
 			: baseMessage;
 
-	return {
-		content: [{ type: "text" as const, text: `Error: ${message}` }],
-		details: { response: { provider: lastProvider.id, sources: [] }, error: message },
-	};
+	throw new ToolError(message, {
+		providers: failures.map(({ provider, error }) => ({
+			provider: provider.id,
+			error: formatProviderError(error, provider),
+		})),
+	});
 }
 
 /**

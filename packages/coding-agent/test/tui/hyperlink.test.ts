@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings, settings } from "@gajae-code/coding-agent/config/settings";
-import { LocalProtocolHandler } from "@gajae-code/coding-agent/internal-urls";
-import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
-import { fileHyperlink, isHyperlinkEnabled, tryResolveInternalUrlSync } from "@gajae-code/coding-agent/tui/hyperlink";
 import * as terminalCaps from "@gajae-code/tui";
+import { resetSettingsForTest, Settings, settings } from "../../src/config/settings";
+import { LocalProtocolHandler } from "../../src/internal-urls";
+import { AgentRegistry } from "../../src/registry/agent-registry";
+import { fileHyperlink, isHyperlinkEnabled, tryResolveInternalUrlSync } from "../../src/tui/hyperlink";
 
 // OSC 8 sequence markers
 const OSC = "\x1b]";

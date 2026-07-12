@@ -1,5 +1,6 @@
 import type { TextContent } from "@gajae-code/ai";
-import type { Component } from "@gajae-code/tui";
+import type { Component, ViewportRowWindow } from "@gajae-code/tui";
+
 import {
 	Box,
 	Container,
@@ -42,13 +43,32 @@ export class SkillMessageComponent extends Container {
 		this.#rebuild();
 	}
 
+	override getLogicalRowCount(width: number): number {
+		this.#ensurePreviewWidth(width);
+		return super.getLogicalRowCount(width);
+	}
+
+	override renderRows(width: number, start: number, end: number): string[] {
+		this.#ensurePreviewWidth(width);
+		return super.renderRows(width, start, end);
+	}
+
+	override renderRowsWithMetadata(width: number, start: number, end: number): ViewportRowWindow {
+		this.#ensurePreviewWidth(width);
+		return super.renderRowsWithMetadata(width, start, end);
+	}
+
 	override render(width: number): string[] {
+		this.#ensurePreviewWidth(width);
+		return super.render(width);
+	}
+
+	#ensurePreviewWidth(width: number): void {
 		const contentWidth = Math.max(1, width - SKILL_BOX_HORIZONTAL_PADDING * 2);
 		if (this.#argsPreviewWidth !== contentWidth) {
 			this.#argsPreviewWidth = contentWidth;
 			this.#rebuild();
 		}
-		return super.render(width);
 	}
 
 	#rebuild(): void {

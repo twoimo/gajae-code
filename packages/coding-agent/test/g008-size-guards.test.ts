@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { MAX_EDIT_FILE_BYTES, readEditFileText } from "@gajae-code/coding-agent/edit/read-file";
-import { executeReadQuery } from "@gajae-code/coding-agent/tools/sqlite-reader";
+import { MAX_EDIT_FILE_BYTES, readEditFileText } from "../src/edit/read-file";
+import { executeReadQuery } from "../src/tools/sqlite-reader";
 
 const tmpFiles: string[] = [];
 

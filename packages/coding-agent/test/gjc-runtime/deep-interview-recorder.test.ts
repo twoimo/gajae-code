@@ -16,8 +16,8 @@ import {
 	questionHash,
 	readDeepInterviewStateCompact,
 	validateDeepInterviewScoredTransition,
-} from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
-import { modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+} from "../../src/gjc-runtime/deep-interview-recorder";
+import { modeStatePath } from "../../src/gjc-runtime/session-layout";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];

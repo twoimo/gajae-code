@@ -15,10 +15,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Model } from "@gajae-code/ai";
 import * as ai from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { startMemoryStartupTask } from "@gajae-code/coding-agent/memories";
-import * as memoryStorage from "@gajae-code/coding-agent/memories/storage";
 import { getAgentDbPath, logger, Snowflake } from "@gajae-code/utils";
+import { Settings } from "../src/config/settings";
+import { startMemoryStartupTask } from "../src/memories";
+import * as memoryStorage from "../src/memories/storage";
 
 interface SessionLike {
 	sessionManager: {

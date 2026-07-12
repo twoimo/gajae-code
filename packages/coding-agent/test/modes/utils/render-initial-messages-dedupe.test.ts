@@ -17,11 +17,11 @@
  */
 
 import { beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
-import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { UiHelpers } from "@gajae-code/coding-agent/modes/utils/ui-helpers";
-import type { SessionContext } from "@gajae-code/coding-agent/session/session-manager";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { initTheme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
+import { UiHelpers } from "../../../src/modes/utils/ui-helpers";
+import type { SessionContext } from "../../../src/session/session-manager";
+import { SessionManager } from "../../../src/session/session-manager";
 
 beforeAll(() => {
 	initTheme();
@@ -37,6 +37,8 @@ function makeEmptyContext(): SessionContext {
 		injectedTtsrRules: [],
 		selectedMCPToolNames: [],
 		hasPersistedMCPToolSelection: false,
+		selectedDiscoveredBuiltinToolNames: [],
+		hasPersistedDiscoveredToolSelection: false,
 		mode: "none",
 	};
 }

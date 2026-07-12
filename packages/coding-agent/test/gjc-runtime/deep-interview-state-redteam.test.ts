@@ -5,15 +5,15 @@ import * as path from "node:path";
 import {
 	appendOrMergeDeepInterviewRound,
 	enrichDeepInterviewRoundScoring,
-} from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
+} from "../../src/gjc-runtime/deep-interview-recorder";
 import {
 	mergeDeepInterviewEnvelope,
 	mergeDeepInterviewRounds,
 	normalizeDeepInterviewEnvelope,
-} from "@gajae-code/coding-agent/gjc-runtime/deep-interview-state";
-import { activeSnapshotPath, modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { reconcileWorkflowSkillState, runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
-import { deriveDeepInterviewHud } from "@gajae-code/coding-agent/skill-state/workflow-hud";
+} from "../../src/gjc-runtime/deep-interview-state";
+import { activeSnapshotPath, modeStatePath } from "../../src/gjc-runtime/session-layout";
+import { reconcileWorkflowSkillState, runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
+import { deriveDeepInterviewHud } from "../../src/skill-state/workflow-hud";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];

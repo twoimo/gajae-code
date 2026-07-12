@@ -11,18 +11,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readNotebookDocument } from "@gajae-code/coding-agent/edit/notebook";
-import { disposeKernelSessionsByOwner } from "@gajae-code/coding-agent/eval/py/executor";
-import type { CustomToolContext } from "@gajae-code/coding-agent/extensibility/custom-tools/types";
-import {
-	ensureRlmSessionDir,
-	generateRlmSessionId,
-	resolveRlmArtifactPaths,
-} from "@gajae-code/coding-agent/rlm/artifacts";
-import { loadRlmDataContext } from "@gajae-code/coding-agent/rlm/data-context";
-import { RlmNotebookWriter } from "@gajae-code/coding-agent/rlm/notebook";
-import { createRlmPythonTool } from "@gajae-code/coding-agent/rlm/python-tool";
-import { synthesizeRlmReport } from "@gajae-code/coding-agent/rlm/report";
+import { readNotebookDocument } from "../src/edit/notebook";
+import { disposeKernelSessionsByOwner } from "../src/eval/py/executor";
+import type { CustomToolContext } from "../src/extensibility/custom-tools/types";
+import { ensureRlmSessionDir, generateRlmSessionId, resolveRlmArtifactPaths } from "../src/rlm/artifacts";
+import { loadRlmDataContext } from "../src/rlm/data-context";
+import { RlmNotebookWriter } from "../src/rlm/notebook";
+import { createRlmPythonTool } from "../src/rlm/python-tool";
+import { synthesizeRlmReport } from "../src/rlm/report";
 
 const SALES_CSV = `region,amount
 north,100

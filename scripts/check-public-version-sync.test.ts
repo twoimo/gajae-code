@@ -118,4 +118,17 @@ describe("public docs/site/version sync guard", () => {
 			},
 		]);
 	});
+
+	test("reports stale release-manifest generated surfaces when manifest integration is enabled", async () => {
+		const root = await createRepo({
+			"package.json": rootPackage(),
+			"packages/coding-agent/package.json": packageJson("@gajae-code/coding-agent"),
+			"scripts/release-manifest.ts": "canonical\n",
+			"packages/natives/package.json": JSON.stringify({ optionalDependencies: {} }),
+			"packages/natives/native/loader-state.js": "",
+			".github/workflows/ci.yml": "",
+		});
+		const violations = await checkPublicVersionSync(root);
+		expect(violations.some(violation => violation.path === "scripts/release-manifest.ts" && violation.message.includes("stale"))).toBe(true);
+	});
 });

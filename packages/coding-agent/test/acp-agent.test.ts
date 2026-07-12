@@ -375,9 +375,9 @@ class FakeAgentSession {
 
 	async compact(_instructions?: string, _options?: unknown): Promise<void> {}
 
-	async fork(): Promise<boolean> {
+	async fork(options?: { includeTrailingUserInput?: boolean }): Promise<boolean> {
 		await this.sessionManager.flush();
-		const forked = await this.sessionManager.fork();
+		const forked = await this.sessionManager.fork(options);
 		if (!forked) {
 			return false;
 		}

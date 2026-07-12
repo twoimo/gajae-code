@@ -1,0 +1,29 @@
+{
+	"schemaVersion": 1,
+	"normalization": {
+		"absolutePath": "<ABSOLUTE_PATH>",
+		"date": "<DATE>",
+		"sessionId": "<SESSION_ID>",
+		"timestamp": "<TIMESTAMP>",
+		"uuid": "<UUID>",
+		"userArgs": "<USER_ARGS>"
+	},
+	"skills": {
+		"deep-interview": {
+			"chars": 78969,
+			"estimatedTokens": 19743
+		},
+		"ultragoal": {
+			"chars": 39167,
+			"estimatedTokens": 9792
+		},
+		"team": {
+			"chars": 33023,
+			"estimatedTokens": 8256
+		},
+		"ralplan": {
+			"chars": 17287,
+			"estimatedTokens": 4322
+		}
+	}
+}

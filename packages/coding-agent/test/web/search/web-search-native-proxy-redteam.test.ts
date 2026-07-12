@@ -219,23 +219,24 @@ describe("native-over-proxy provider red-team", () => {
 			}),
 		).rejects.toMatchObject({ provider: "gemini", status: 424 });
 
-		const result = await runSearchQuery(
-			{ query: "hello" },
-			{
-				authStorage: keyAuth({ proxy: "sk-active" }),
-				activeModelContext: {
-					provider: "proxy",
-					modelId: "gemini-2.5-pro",
-					api: "google-generative-ai",
-					baseUrl: "https://proxy.example",
+		await expect(
+			runSearchQuery(
+				{ query: "hello" },
+				{
+					authStorage: keyAuth({ proxy: "sk-active" }),
+					activeModelContext: {
+						provider: "proxy",
+						modelId: "gemini-2.5-pro",
+						api: "google-generative-ai",
+						baseUrl: "https://proxy.example",
+					},
 				},
-			},
+			),
+		).rejects.toThrow(
+			"All web search providers failed: Gemini native search returned no grounding sources; DuckDuckGo error (502)",
 		);
 
 		expect(urls.some(url => url.includes("/v1beta/models/gemini-2.5-pro:generateContent"))).toBe(true);
-		expect(result.details.response.provider).toBe("duckduckgo");
-		expect(result.details.error).toContain("All web search providers failed");
-		expect(result.details.error).toContain("Gemini native search returned no grounding sources");
 	});
 
 	it("canonical Gemini OAuth still uses Cloud Code instead of the active Generative Language fallback", async () => {

@@ -27,7 +27,7 @@
 	"types": "./src/index.ts",
 	"scripts": {
 		"check": "biome check . && bun run check:types",
-		"check:types": "tsc -p tsconfig.json --noEmit",
+		"check:types": "tsgo -p tsconfig.test.json --noEmit",
 		"lint": "biome lint .",
 		"test": "bun test test/*.test.ts",
 		"test:perf": "PI_TUI_PERF_GATES=1 bun test test/perf-gates.test.ts",

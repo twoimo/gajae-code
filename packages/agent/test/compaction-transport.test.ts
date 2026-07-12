@@ -19,8 +19,15 @@ import {
 	generateSummary,
 } from "@gajae-code/agent-core/compaction";
 import type { AgentMessage } from "@gajae-code/agent-core/types";
-import type { AssistantMessage, Model, ProviderSessionState, SimpleStreamOptions, Usage } from "@gajae-code/ai";
 import * as ai from "@gajae-code/ai";
+import {
+	type AssistantMessage,
+	AttemptBudgetExceededError,
+	type Model,
+	type ProviderSessionState,
+	type SimpleStreamOptions,
+	type Usage,
+} from "@gajae-code/ai";
 
 const MODEL: Model = {
 	id: "mock-model",
@@ -190,6 +197,42 @@ describe("maintenance call transport forwarding (#736)", () => {
 			expect(options.preferWebsockets).toBe(true);
 		}
 	});
+});
+describe("attempt authority", () => {
+	for (const allowed of [0, 1, 3]) {
+		it(`denies split compaction after ${allowed} of 3 maintenance requests`, async () => {
+			let claims = 0;
+			let physicalRequests = 0;
+			vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, _context, options) => {
+				options?.consumeAttempt?.("maintenance");
+				physicalRequests++;
+				return makeAssistantMessage("summary text");
+			});
+			const consumeAttempt = () => {
+				if (claims >= allowed) throw new AttemptBudgetExceededError("attempts", "maintenance denied");
+				claims++;
+			};
+
+			const result = compact(
+				makePreparation({
+					isSplitTurn: true,
+					turnPrefixMessages: [makeUserMessage("Inline mid-turn instruction")],
+				}),
+				MODEL,
+				"k",
+				undefined,
+				undefined,
+				{ consumeAttempt },
+			);
+
+			if (allowed < 3) {
+				await expect(result).rejects.toBeInstanceOf(AttemptBudgetExceededError);
+			} else {
+				await expect(result).resolves.toMatchObject({ summary: expect.any(String) });
+			}
+			expect(physicalRequests).toBe(allowed);
+		});
+	}
 });
 
 describe("split-turn compaction sequencing (#736)", () => {

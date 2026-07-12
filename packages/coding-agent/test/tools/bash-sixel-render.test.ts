@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RenderResultOptions } from "@gajae-code/agent-core";
-import { type IrcSidebarTheme, IrcSplitViewComponent } from "@gajae-code/coding-agent/modes/components/irc-sidebar";
-import { IrcObservationLedger } from "@gajae-code/coding-agent/modes/irc-observation-ledger";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
-import { bashToolRenderer } from "@gajae-code/coding-agent/tools/bash";
-import { ImageProtocol, TERMINAL } from "@gajae-code/tui";
+import { capViewportRows, ImageProtocol, TERMINAL } from "@gajae-code/tui";
+
 import { sanitizeText } from "@gajae-code/utils";
+import { type IrcSidebarTheme, IrcSplitViewComponent } from "../../src/modes/components/irc-sidebar";
+import { IrcObservationLedger } from "../../src/modes/irc-observation-ledger";
+import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
+import { bashToolRenderer } from "../../src/tools/bash";
 
 type MutableTerminalInfo = {
 	imageProtocol: ImageProtocol | null;
@@ -136,7 +137,11 @@ describe("bashToolRenderer", () => {
 			theme!,
 			{ command: "echo sixel" },
 		);
-		const split = new IrcSplitViewComponent(component, new IrcObservationLedger(), sidebarTheme);
+		const split = new IrcSplitViewComponent(
+			capViewportRows(component, 256),
+			new IrcObservationLedger(),
+			sidebarTheme,
+		);
 
 		expect(split.render(160).join("\n")).toContain(sixel);
 		split.setVisible(true);

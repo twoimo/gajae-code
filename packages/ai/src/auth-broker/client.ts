@@ -8,6 +8,7 @@
 import { readSseEvents } from "@gajae-code/utils";
 import type { ZodType, infer as zInfer } from "zod/v4";
 import type { AuthCredential } from "../auth-storage";
+import type { AttemptController, FetchImpl } from "../types";
 import type {
 	CredentialDisableRequest,
 	CredentialDisableResponse,
@@ -41,7 +42,7 @@ export interface AuthBrokerClientOptions {
 	/** Retry connection errors this many times. Default 1. */
 	maxRetries?: number;
 	/** Override fetch (used in tests). Default global `fetch`. */
-	fetchImpl?: typeof fetch;
+	fetchImpl?: FetchImpl;
 }
 
 export class AuthBrokerError extends Error {
@@ -97,7 +98,7 @@ export class AuthBrokerClient {
 	readonly #token: string;
 	readonly #timeoutMs: number;
 	readonly #maxRetries: number;
-	readonly #fetch: typeof fetch;
+	readonly #fetch: FetchImpl;
 
 	constructor(opts: AuthBrokerClientOptions) {
 		this.#baseUrl = opts.url.replace(/\/+$/, "");
@@ -227,18 +228,27 @@ export class AuthBrokerClient {
 		}
 	}
 
-	fetchUsage(signal?: AbortSignal): Promise<UsageResponse> {
+	fetchUsage(signal?: AbortSignal, consumeAttempt?: AttemptController): Promise<UsageResponse> {
 		// Validates the envelope (`generatedAt`, `reports[].provider`, `limits`,
 		// `metadata`) but leaves provider-specific extension fields permissive so
 		// the broker can ship new shapes ahead of the client. `raw` is accepted
 		// but normally stripped by the broker before send.
-		return this.#request("GET", "/v1/usage", { schema: usageResponseSchema, signal }) as Promise<UsageResponse>;
+		return this.#request("GET", "/v1/usage", {
+			schema: usageResponseSchema,
+			signal,
+			consumeAttempt,
+		}) as Promise<UsageResponse>;
 	}
 
-	async refreshCredential(id: number, signal?: AbortSignal): Promise<CredentialRefreshResponse> {
+	async refreshCredential(
+		id: number,
+		signal?: AbortSignal,
+		consumeAttempt?: AttemptController,
+	): Promise<CredentialRefreshResponse> {
 		return this.#request("POST", `/v1/credential/${id}/refresh`, {
 			schema: credentialRefreshResponseSchema,
 			signal,
+			consumeAttempt,
 		}) as Promise<CredentialRefreshResponse>;
 	}
 
@@ -280,7 +290,13 @@ export class AuthBrokerClient {
 	async #request<TSchema extends ZodType>(
 		method: "GET" | "POST",
 		path: string,
-		opts: { schema: TSchema; auth?: boolean; body?: unknown; signal?: AbortSignal },
+		opts: {
+			schema: TSchema;
+			auth?: boolean;
+			body?: unknown;
+			signal?: AbortSignal;
+			consumeAttempt?: AttemptController;
+		},
 	): Promise<zInfer<TSchema>> {
 		const response = await this.#fetchRaw(method, path, opts);
 		const text = await response.text();
@@ -316,6 +332,7 @@ export class AuthBrokerClient {
 			signal?: AbortSignal;
 			headers?: Record<string, string>;
 			timeoutMs?: number;
+			consumeAttempt?: AttemptController;
 		},
 	): Promise<Response> {
 		const auth = opts.auth ?? true;
@@ -336,6 +353,7 @@ export class AuthBrokerClient {
 
 		let lastError: unknown;
 		for (let attempt = 0; attempt <= this.#maxRetries; attempt += 1) {
+			opts.consumeAttempt?.("credential-broker");
 			const timeoutSignal = AbortSignal.timeout(opts.timeoutMs ?? this.#timeoutMs);
 			const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
 			try {

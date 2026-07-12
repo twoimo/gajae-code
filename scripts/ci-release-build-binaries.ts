@@ -2,57 +2,30 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { buildReleaseCompileArgs } from "../packages/coding-agent/scripts/compile-args";
+import { buildCoreReleaseCompileArgs, buildReleaseCompileArgs } from "../packages/coding-agent/scripts/compile-args";
+import { releasePlatforms } from "./release-manifest";
 
 interface BinaryTarget {
 	id: string;
-	platform: string;
+	platform: NodeJS.Platform;
 	arch: string;
 	target: string;
 	outfile: string;
+	coreOutfile: string;
 }
 
 const repoRoot = path.join(import.meta.dir, "..");
 const binariesDir = path.join(repoRoot, "packages", "coding-agent", "binaries");
 
 const isDryRun = process.argv.includes("--dry-run");
-const targets: BinaryTarget[] = [
-	{
-		id: "darwin-arm64",
-		platform: "darwin",
-		arch: "arm64",
-		target: "bun-darwin-arm64",
-		outfile: "packages/coding-agent/binaries/gjc-darwin-arm64",
-	},
-	{
-		id: "darwin-x64",
-		platform: "darwin",
-		arch: "x64",
-		target: "bun-darwin-x64-baseline",
-		outfile: "packages/coding-agent/binaries/gjc-darwin-x64",
-	},
-	{
-		id: "linux-x64",
-		platform: "linux",
-		arch: "x64",
-		target: "bun-linux-x64-baseline",
-		outfile: "packages/coding-agent/binaries/gjc-linux-x64",
-	},
-	{
-		id: "linux-arm64",
-		platform: "linux",
-		arch: "arm64",
-		target: "bun-linux-arm64",
-		outfile: "packages/coding-agent/binaries/gjc-linux-arm64",
-	},
-	{
-		id: "win32-x64",
-		platform: "win32",
-		arch: "x64",
-		target: "bun-windows-x64-modern",
-		outfile: "packages/coding-agent/binaries/gjc-windows-x64.exe",
-	},
-];
+const targets: BinaryTarget[] = releasePlatforms.map(target => ({
+	id: target.id,
+	platform: target.platform,
+	arch: target.arch,
+	target: target.bunTarget,
+	outfile: target.binaryPath,
+	coreOutfile: target.coreBinaryPath,
+}));
 
 function parseRequestedTargets(): Set<string> | null {
 	const flagIndex = process.argv.findIndex(arg => arg === "--targets");
@@ -100,9 +73,9 @@ async function runCommand(command: string[], cwd: string, env: NodeJS.ProcessEnv
 	}
 }
 
-async function embedNative(target: BinaryTarget): Promise<void> {
+async function embedNative(target: BinaryTarget, topology: "monolith" | "core"): Promise<void> {
 	if (isDryRun) {
-		console.log(`DRY RUN bun --cwd=packages/natives run embed:native [${target.platform}/${target.arch}]`);
+		console.log(`DRY RUN bun --cwd=packages/natives run embed:native [${target.platform}/${target.arch}/${topology}]`);
 		return;
 	}
 
@@ -111,15 +84,19 @@ async function embedNative(target: BinaryTarget): Promise<void> {
 		TARGET_PLATFORM: target.platform,
 		TARGET_ARCH: target.arch,
 		...(target.arch === "x64" ? { EMBED_VARIANTS: "baseline" } : {}),
+		...(topology === "core" ? { EMBED_TOPOLOGY: "core" } : {}),
 	};
 
 	await runCommand(["bun", "--cwd=packages/natives", "run", "embed:native"], repoRoot, embedEnv);
 }
 
-async function buildBinary(target: BinaryTarget): Promise<void> {
-	console.log(`Building ${target.outfile}...`);
-	await embedNative(target);
-	const compileArgs = buildReleaseCompileArgs(target.target, target.outfile);
+async function buildBinary(target: BinaryTarget, topology: "monolith" | "core"): Promise<void> {
+	const outfile = topology === "core" ? target.coreOutfile : target.outfile;
+	console.log(`Building ${outfile}...`);
+	await embedNative(target, topology);
+	const compileArgs = topology === "core"
+		? buildCoreReleaseCompileArgs(target.target, outfile)
+		: buildReleaseCompileArgs(target.target, outfile);
 	if (isDryRun) {
 		console.log(`DRY RUN ${compileArgs.join(" ")}`);
 		return;
@@ -132,7 +109,7 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 
 	// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
 	if (shouldAdhocSignDarwinBinary(target)) {
-		await runCommand(["codesign", "--force", "--sign", "-", path.join(repoRoot, target.outfile)], repoRoot);
+		await runCommand(["codesign", "--force", "--sign", "-", path.join(repoRoot, outfile)], repoRoot);
 	}
 }
 
@@ -183,7 +160,8 @@ async function main(): Promise<void> {
 	await generateBundle();
 	try {
 		for (const target of selectedTargets) {
-			await buildBinary(target);
+			await buildBinary(target, "monolith");
+			await buildBinary(target, "core");
 		}
 	} finally {
 		await resetArtifacts();

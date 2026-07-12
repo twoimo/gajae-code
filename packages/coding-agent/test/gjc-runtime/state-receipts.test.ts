@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { auditPath, modeStatePath } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { auditPath, modeStatePath } from "../../src/gjc-runtime/session-layout";
 import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
 
 const TEST_SESSION_ID = "test-session";

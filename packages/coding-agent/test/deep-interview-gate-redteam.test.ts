@@ -4,13 +4,10 @@ import {
 	DeepInterviewGateError,
 	gateAnswerToResult,
 	questionToGate,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
-import { schemaHash } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-schema";
-import { askSchema } from "@gajae-code/coding-agent/tools/ask";
+} from "../src/modes/shared/agent-wire/deep-interview-gate";
+import { MemoryGateStore, WorkflowGateBroker } from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { schemaHash } from "../src/modes/shared/agent-wire/workflow-gate-schema";
+import { askSchema } from "../src/tools/ask";
 
 const singleQ: AskGateQuestion = {
 	id: "single-auth",

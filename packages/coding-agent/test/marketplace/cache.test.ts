@@ -11,7 +11,7 @@ import {
 	isCached,
 	isValidVersionForCache,
 	removeCachedPlugin,
-} from "@gajae-code/coding-agent/extensibility/plugins/marketplace";
+} from "../../src/extensibility/plugins/marketplace";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

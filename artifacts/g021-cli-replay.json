@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "cli-replay",
+  "replaySafe": true,
+  "command": [
+    "bun",
+    "-e",
+    "console.log(\"g021-hybrid-rebase-ok\")"
+  ],
+  "cwd": ".",
+  "env": {
+    "LC_ALL": "C"
+  },
+  "timeoutMs": 30000,
+  "expectedExitCode": 0,
+  "recordedStdout": "g021-hybrid-rebase-ok\n",
+  "recordedStderr": "",
+  "invariants": [
+    {
+      "type": "substring",
+      "value": "g021-hybrid-rebase-ok"
+    },
+    {
+      "type": "not_substring",
+      "value": "error"
+    }
+  ]
+}

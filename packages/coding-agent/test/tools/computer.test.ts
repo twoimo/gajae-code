@@ -2,22 +2,20 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
+import { zlibSync } from "fflate";
+import { Settings } from "../../src/config/settings";
+import { BUILTIN_CAPABILITY_CATALOG, createTools, type ToolSession } from "../../src/tools";
 import {
-	BUILTIN_CAPABILITY_CATALOG,
 	ComputerTool,
 	computerSchema,
-	createTools,
 	isComputerCallable,
 	isComputerLoadablePlatform,
 	setComputerArchForTests,
 	setComputerControllerFactoryForTests,
 	setComputerPlatformForTests,
-	type ToolSession,
-} from "@gajae-code/coding-agent/tools";
-import { summarizeComputerDetails } from "@gajae-code/coding-agent/tools/computer/render";
-import { toolRenderers } from "@gajae-code/coding-agent/tools/renderers";
-import { zlibSync } from "fflate";
+} from "../../src/tools/computer";
+import { summarizeComputerDetails } from "../../src/tools/computer/render";
+import { toolRenderers } from "../../src/tools/renderers";
 
 function createSession(settings = Settings.isolated(), sessionFile: string | null = null): ToolSession {
 	return {

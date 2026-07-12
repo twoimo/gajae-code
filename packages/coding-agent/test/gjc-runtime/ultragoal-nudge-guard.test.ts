@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { DEFAULT_ULTRAGOAL_OBJECTIVE } from "@gajae-code/coding-agent/gjc-runtime/goal-mode-request";
+import { DEFAULT_ULTRAGOAL_OBJECTIVE } from "../../src/gjc-runtime/goal-mode-request";
 import {
 	assertCanCompleteCurrentGoal,
 	assertUltragoalDropAllowed,
@@ -10,7 +10,7 @@ import {
 	isUltragoalAskBlocked,
 	isUltragoalBypassPrompt,
 	isUltragoalPauseBlocked,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-guard";
+} from "../../src/gjc-runtime/ultragoal-guard";
 import {
 	countUltragoalNudges,
 	createUltragoalPlan,
@@ -22,8 +22,8 @@ import {
 	resolveUltragoalNudgeBudget,
 	selectUltragoalNudgeTarget,
 	type UltragoalNudgeSurface,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
-import { assertUltragoalAskAllowed } from "@gajae-code/coding-agent/tools/ultragoal-ask-guard";
+} from "../../src/gjc-runtime/ultragoal-runtime";
+import { assertUltragoalAskAllowed } from "../../src/tools/ultragoal-ask-guard";
 
 const TEST_SESSION_ID = "ultragoal-nudge-guard-test-session";
 const ORIGINAL_GJC_SESSION_ID = process.env.GJC_SESSION_ID;

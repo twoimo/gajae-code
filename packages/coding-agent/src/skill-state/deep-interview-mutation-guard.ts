@@ -21,6 +21,8 @@ export const DEEP_INTERVIEW_MUTATION_BLOCK_MESSAGE =
 	"Deep-interview phase boundary: continue gathering context/questions/risks and emit a handoff/spec before code edits. Mutation tools and patch execution are blocked while deep-interview is active; finalize specs through `gjc deep-interview --write --stage final` or hand off to an execution phase.";
 export const WORKFLOW_STATE_MUTATION_BLOCK_MESSAGE =
 	".gjc workflow state and artifacts are runtime-owned. Agent mutation tools cannot edit `.gjc/**`; use the sanctioned `gjc` CLI instead.";
+export const WORKFLOW_STATE_RECOVERY_BLOCK_MESSAGE =
+	"Planning workflow state is missing, unreadable, corrupt, or does not match the live session. Mutation remains blocked; recover with `gjc state clear` (or the workflow doctor/force recovery command).";
 export const RALPLAN_MUTATION_BLOCK_MESSAGE =
 	"Ralplan planning phase boundary: keep refining the consensus plan and persist plan artifacts through `gjc ralplan --write` (stage scratch files under a temp dir if needed). Product-code mutation tools and patch execution are blocked while ralplan is active; mutate only after the plan is approved and execution begins.";
 export const ULTRAGOAL_GOAL_PLANNING_MUTATION_BLOCK_MESSAGE =
@@ -171,6 +173,7 @@ function isBlockingPlanningPhase(skill: "deep-interview" | "ralplan" | "ultragoa
 interface ActivePlanningSkill {
 	skill: "deep-interview" | "ralplan" | "ultragoal";
 	phase: string;
+	stateInvalid?: boolean;
 }
 
 /**
@@ -210,10 +213,9 @@ function resolveCurrentWorkflowEntry(entries: SkillActiveEntry[], topLevelSkill:
  * governs, so a stale planning entry can never block while an executor runs and
  * a resumed planning phase reliably re-blocks.
  *
- * Fail-open contract: a missing or invalid durable mode-state releases the block
- * (a corrupt state file must not lock all mutation), matching the guard's
- * historical behavior — this is intentionally looser than the Stop hook, which
- * fails closed for handoff-required skills.
+ * Fail-closed contract: once live active state identifies a planning workflow,
+ * missing, invalid, inactive, or context-mismatched durable mode state cannot
+ * release the planning boundary.
  */
 async function getActivePlanningSkill(
 	cwd: string,
@@ -231,9 +233,12 @@ async function getActivePlanningSkill(
 	const current = resolveCurrentWorkflowEntry(activeEntries, safeString(skillState.skill).trim());
 	if (!isPlanningSkill(current.skill)) return null;
 	const modeState = await readVisibleModeState(cwd, current.skill, resolvedSessionId);
-	if (!modeState) return null;
-	if (modeState.active !== true) return null;
-	if (!modeStateMatchesContext(modeState, resolvedSessionId, threadId)) return null;
+	const validModeState = modeState?.active === true && modeStateMatchesContext(modeState, resolvedSessionId, threadId);
+	if (!validModeState) {
+		const fallbackPhase = String(current.phase ?? "").trim();
+		if (!isBlockingPlanningPhase(current.skill, fallbackPhase)) return null;
+		return { skill: current.skill, phase: fallbackPhase, stateInvalid: true };
+	}
 	const phase = String(modeState.current_phase ?? current.phase ?? "").trim();
 	if (!isBlockingPlanningPhase(current.skill, phase)) return null;
 	return { skill: current.skill, phase };
@@ -576,7 +581,9 @@ export async function assertDeepInterviewMutationRawPathsAllowed(input: {
 	if (input.forceOverride) return;
 	const planning = await getActivePlanningSkill(input.cwd, input.sessionId, input.threadId);
 	if (!planning) return;
-	const message = planningPhaseBlockMessage(planning.skill);
+	const message = planning.stateInvalid
+		? WORKFLOW_STATE_RECOVERY_BLOCK_MESSAGE
+		: planningPhaseBlockMessage(planning.skill);
 	if (input.rawPaths.length === 0) throw new ToolError(message);
 	const blocked = await planningBlockedTargets(input.cwd, targets);
 	if (blocked.length > 0) throw new ToolError(message);
@@ -603,7 +610,9 @@ export async function getDeepInterviewMutationDecision(
 		return { blocked: false, targets: [] };
 	}
 	if (input.forceOverride) return { blocked: false, targets: [] };
-	const message = planningPhaseBlockMessage(planning.skill);
+	const message = planning.stateInvalid
+		? WORKFLOW_STATE_RECOVERY_BLOCK_MESSAGE
+		: planningPhaseBlockMessage(planning.skill);
 	if (targets.unknown) {
 		return {
 			blocked: true,

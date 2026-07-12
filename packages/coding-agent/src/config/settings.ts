@@ -21,9 +21,9 @@ import {
 	getProjectDir,
 	isEnoent,
 	logger,
-	procmgr,
 	setDefaultTabWidth,
 } from "@gajae-code/utils";
+import * as procmgr from "@gajae-code/utils/procmgr";
 import { YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-registry";

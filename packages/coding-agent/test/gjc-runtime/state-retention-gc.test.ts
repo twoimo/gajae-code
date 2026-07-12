@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { auditPath, sessionStateDir } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
-import { runNativeStateCommand } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
+import { auditPath, sessionStateDir } from "../../src/gjc-runtime/session-layout";
+import { runNativeStateCommand } from "../../src/gjc-runtime/state-runtime";
 
 const TEST_SESSION_ID = "test-session";
 

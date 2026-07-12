@@ -1,13 +1,10 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
 import { Effort, type Model } from "@gajae-code/ai";
-import type { ModelProfileDefinition } from "@gajae-code/coding-agent/config/model-profiles";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import {
-	ModelSelectorComponent,
-	type ModelSelectorSelection,
-} from "@gajae-code/coding-agent/modes/components/model-selector";
-import { getThemeByName, setThemeInstance } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { TUI } from "@gajae-code/tui";
+import type { ModelProfileDefinition } from "../src/config/model-profiles";
+import { Settings } from "../src/config/settings";
+import { ModelSelectorComponent, type ModelSelectorSelection } from "../src/modes/components/model-selector";
+import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 
 function normalizeRenderedText(text: string): string {
 	return text

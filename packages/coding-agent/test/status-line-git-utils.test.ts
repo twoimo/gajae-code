@@ -6,7 +6,7 @@ import {
 	parseDefaultBranch,
 	parseGitHubRepo,
 	resolveCurrentBranch,
-} from "@gajae-code/coding-agent/modes/components/status-line/git-utils";
+} from "../src/modes/components/status-line/git-utils";
 
 describe("parseGitHubRepo", () => {
 	test("parses HTTPS URL", () => {

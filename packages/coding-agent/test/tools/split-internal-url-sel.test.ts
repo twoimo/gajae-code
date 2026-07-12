@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { splitInternalUrlSel } from "@gajae-code/coding-agent/tools/path-utils";
+import { splitInternalUrlSel } from "../../src/tools/path-utils";
 
 describe("splitInternalUrlSel", () => {
 	it("returns the input unchanged when there is no selector tail", () => {

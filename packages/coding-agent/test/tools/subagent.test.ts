@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AsyncJobManager } from "../../src/async";
 import { Settings } from "../../src/config/settings";
-import { SubagentTool, type ToolSession } from "../../src/tools";
+import type { ToolSession } from "../../src/tools";
+import { SubagentTool } from "../../src/tools/subagent";
 
 function createSession(agentId = "0-Main"): ToolSession {
 	return {

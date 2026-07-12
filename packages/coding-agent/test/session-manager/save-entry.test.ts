@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type CustomEntry, SessionManager } from "@gajae-code/coding-agent/session/session-manager";
+import { type CustomEntry, SessionManager } from "../../src/session/session-manager";
 
 function hasUndefinedPlainObjectField(value: unknown): boolean {
 	if (value === undefined) return true;

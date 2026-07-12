@@ -5,7 +5,7 @@
  * Eliminates ~2-3s CLI startup overhead per task by creating sessions
  * in-process and sharing auth/model infrastructure across tasks.
  */
-import type { AgentEvent, AgentMessage, ResolvedThinkingLevel, ThinkingLevel } from "@gajae-code/agent-core";
+import type { AgentEvent, AgentMessage, AgentTool, ResolvedThinkingLevel, ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
 import type { AgentSession, AgentSessionEvent, AuthStorage, SessionStats } from "@gajae-code/coding-agent";
 import {
@@ -173,7 +173,7 @@ export class InProcessClient {
 			systemPrompt: session.systemPrompt,
 			model: session.model,
 			thinkingLevel: session.thinkingLevel,
-			dumpTools: session.agent.state.tools.map(tool => ({
+			dumpTools: session.agent.state.tools.map((tool: AgentTool) => ({
 				name: tool.name,
 				description: tool.description,
 				parameters: tool.parameters,

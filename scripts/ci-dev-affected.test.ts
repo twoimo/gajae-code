@@ -359,12 +359,31 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		]);
 	});
 
-	test("a source file with no mapped test runs the owning package check, not its test suite", () => {
+	test("a production source file with no mapped test runs the owning package check and conservative test shards", () => {
 		const tasks = targeted(["packages/coding-agent/src/edit/unmapped.ts"]);
 		const keys = tasks.map(task => task.key);
 		expect(keys).toContain("check:@gajae-code/coding-agent");
-		expect(keys).toContain("cli-smoke"); // coding-agent runtime smoke
-		expect(keys.some(key => key.startsWith("test:"))).toBe(false);
+		expect(keys).toContain("cli-smoke");
+		expect(keys.filter(key => key.startsWith("test:@gajae-code/coding-agent:shard-"))).toHaveLength(8);
+	});
+
+	test("new package source cannot produce a zero-test plan", () => {
+		const tasks = targeted(["packages/new-package/src/index.ts"]);
+		expect(tasks.filter(task => task.key.startsWith("test:@gajae-code/coding-agent:shard-"))).toHaveLength(8);
+	});
+
+	test("root-level src/odd-root.ts cannot produce a zero-test plan", () => {
+		const tasks = targeted(["src/odd-root.ts"]);
+		expect(tasks.map(task => task.key)).toContain("root-check");
+		expect(tasks.filter(task => task.key.startsWith("test:@gajae-code/coding-agent:shard-"))).toHaveLength(8);
+	});
+	test("release gate script maps to its adjacent test in targeted planning", () => {
+		const tasks = planTargetedTasks(
+			["scripts/release-ci-gate.ts"],
+			targetingPackages,
+			[...testFiles, "scripts/release-ci-gate.test.ts"],
+		);
+		expect(tasks.map(task => task.key)).toContain("test:scripts/release-ci-gate.test.ts");
 	});
 
 	test("main entrypoint adds its behavioral contract test without replacing owner fallback coverage", () => {
@@ -471,6 +490,10 @@ describe("push-mode broad planning still runs the fuller suite", () => {
 
 		const entries = describeTasks(tasks);
 		expect(entries.find(entry => entry.key === "test:@gajae-code/coding-agent:shard-1-of-8")?.native).toBe(true);
+	});
+	test("release gate script cannot produce a zero-test broad plan", () => {
+		const tasks = planTasks(["scripts/release-ci-gate.ts"], [codingAgent]);
+		expect(tasks.some(task => task.key.startsWith("test:") || task.key.startsWith("root-test:"))).toBe(true);
 	});
 
 	test("full-workspace changes partition root tests into matrix shards", () => {

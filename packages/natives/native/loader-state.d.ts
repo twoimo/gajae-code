@@ -26,6 +26,22 @@ export interface GetAddonFilenamesInput {
 
 export function getAddonFilenames(input: GetAddonFilenamesInput): string[];
 
+export interface GetSplitAddonFilenamesInput extends GetAddonFilenamesInput {
+	capability: "core" | "shell";
+}
+
+export function getSplitAddonFilenames(input: GetSplitAddonFilenamesInput): string[];
+
+export interface LoadSplitNativeInput extends GetAddonFilenamesInput {
+	require_: NodeRequire;
+	directories: string[];
+	validate?: (bindings: object, candidate: string) => void;
+	loadFallback?: () => object;
+	onError?: (candidate: string, error: unknown) => void;
+}
+
+export function loadSplitNative(input: LoadSplitNativeInput): Record<string, unknown> | null;
+
 export function getOptionalPackageNames(platformTag: string): string[];
 
 export interface ResolveOptionalPackageNativeDirsInput {

@@ -11,20 +11,17 @@ import type {
 	RpcUnattendedDeclaration,
 	RpcWorkflowGate,
 	RpcWorkflowGateResolution,
-} from "@gajae-code/coding-agent/modes/rpc/rpc-types";
-import { approvalGate, executionGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/approval-gate";
+} from "../../src/modes/rpc/rpc-types";
+import { approvalGate, executionGate } from "../../src/modes/shared/agent-wire/approval-gate";
 import {
 	dispatchRpcCommand,
 	type RpcCommandDispatchContext,
 	type RpcUnattendedControlPlane,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/command-dispatch";
-import { isRpcCommand } from "@gajae-code/coding-agent/modes/shared/agent-wire/command-validation";
-import { questionToGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
-import { UnattendedRunController } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-run-controller";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
+} from "../../src/modes/shared/agent-wire/command-dispatch";
+import { isRpcCommand } from "../../src/modes/shared/agent-wire/command-validation";
+import { questionToGate } from "../../src/modes/shared/agent-wire/deep-interview-gate";
+import { UnattendedRunController } from "../../src/modes/shared/agent-wire/unattended-run-controller";
+import { MemoryGateStore, WorkflowGateBroker } from "../../src/modes/shared/agent-wire/workflow-gate-broker";
 
 const DECLARATION: RpcUnattendedDeclaration = {
 	actor: "hermes",

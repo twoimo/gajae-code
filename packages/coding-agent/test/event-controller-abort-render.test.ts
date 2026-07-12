@@ -16,10 +16,10 @@
  */
 import { describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@gajae-code/ai";
-import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
-import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import type { AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
-import { SILENT_ABORT_MARKER } from "@gajae-code/coding-agent/session/messages";
+import { EventController } from "../src/modes/controllers/event-controller";
+import type { InteractiveModeContext } from "../src/modes/types";
+import type { AgentSessionEvent } from "../src/session/agent-session";
+import { SILENT_ABORT_MARKER } from "../src/session/messages";
 
 function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {

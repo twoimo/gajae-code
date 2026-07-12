@@ -57,6 +57,8 @@ describe("Editor hash autocomplete actions", () => {
 
 		expect(editor.getText()).toBe("");
 		expect(provider.calls).toBe(1);
+		editor.handleInput("\x1b[45;5u"); // Ctrl+- undo
+		expect(editor.getText()).toBe("#");
 	});
 });
 class SyncSlashProvider implements AutocompleteProvider {

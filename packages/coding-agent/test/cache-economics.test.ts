@@ -7,7 +7,7 @@ import {
 	type CacheEconomicsUsage,
 	computeCacheMissCostSummary,
 	formatCacheWarningLine,
-} from "@gajae-code/coding-agent/session/cache-economics";
+} from "../src/session/cache-economics";
 
 function usage(overrides: Partial<Usage>): Usage {
 	return {

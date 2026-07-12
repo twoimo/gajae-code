@@ -47,9 +47,17 @@ export interface OutputSummary {
 	columnDroppedBytes?: number;
 	/** Number of distinct lines that hit the per-line column cap. */
 	columnTruncatedLines?: number;
-	/** Artifact ID for internal URL access (artifact://<id>) when truncated */
+	/** Artifact ID for internal URL access (artifact://<id>) when output is spilled. */
 	artifactId?: string;
-	/** Bytes omitted from artifact storage after the artifact hard cap was reached. */
+	/** Whether the artifact retains all observed source bytes. */
+	artifactComplete?: boolean;
+	/** Source bytes retained in the artifact, excluding its explanatory footer. */
+	artifactRetainedBytes?: number;
+	/** Total source bytes observed by the sink. */
+	artifactOriginalBytes?: number;
+	/** Source bytes omitted after the artifact hard cap. */
+	artifactOmittedBytes?: number;
+	/** @deprecated Use artifactOmittedBytes. */
 	artifactTruncatedBytes?: number;
 }
 
@@ -1186,8 +1194,12 @@ export class OutputSink {
 			elidedLines,
 			columnDroppedBytes: this.#columnDroppedBytes > 0 ? this.#columnDroppedBytes : undefined,
 			columnTruncatedLines: this.#columnTruncatedLines > 0 ? this.#columnTruncatedLines : undefined,
-			artifactTruncatedBytes: this.#artifactTruncatedBytes > 0 ? this.#artifactTruncatedBytes : undefined,
 			artifactId,
+			artifactComplete: artifactId !== undefined ? this.#artifactTruncatedBytes === 0 : undefined,
+			artifactRetainedBytes: artifactId !== undefined ? this.#artifactBytes : undefined,
+			artifactOriginalBytes: artifactId !== undefined ? this.#totalBytes : undefined,
+			artifactOmittedBytes: this.#artifactTruncatedBytes > 0 ? this.#artifactTruncatedBytes : undefined,
+			artifactTruncatedBytes: this.#artifactTruncatedBytes > 0 ? this.#artifactTruncatedBytes : undefined,
 		};
 	}
 }

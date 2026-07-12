@@ -3,14 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import * as pythonExecutor from "@gajae-code/coding-agent/eval/py/executor";
-import type { PythonKernel as PythonKernelInstance } from "@gajae-code/coding-agent/eval/py/kernel";
-import * as pythonKernel from "@gajae-code/coding-agent/eval/py/kernel";
-import { AgentRegistry } from "@gajae-code/coding-agent/registry/agent-registry";
-import { createAgentSession, type ExtensionFactory, type WorkspaceTree } from "@gajae-code/coding-agent/sdk";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { Snowflake } from "@gajae-code/utils";
+import { Settings } from "../src/config/settings";
+import * as pythonExecutor from "../src/eval/py/executor";
+import type { PythonKernel as PythonKernelInstance } from "../src/eval/py/kernel";
+import * as pythonKernel from "../src/eval/py/kernel";
+import { AgentRegistry } from "../src/registry/agent-registry";
+import { createAgentSession, type ExtensionFactory, type WorkspaceTree } from "../src/sdk";
+import { SessionManager } from "../src/session/session-manager";
 
 const OK_EXECUTION = { status: "ok", cancelled: false, timedOut: false, stdinRequested: false } as const;
 

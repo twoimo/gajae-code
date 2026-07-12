@@ -1,5 +1,19 @@
 {
 	"extends": "../tsconfig.workspace.json",
+	"compilerOptions": {
+		"composite": true,
+		"noEmit": false,
+		"emitDeclarationOnly": true
+	},
+	"references": [
+		{ "path": "../agent" },
+		{ "path": "../agent-wire" },
+		{ "path": "../ai" },
+		{ "path": "../natives" },
+		{ "path": "../stats" },
+		{ "path": "../tui" },
+		{ "path": "../utils" }
+	],
 	"include": [
 		"src",
 		"test",

@@ -47,6 +47,11 @@ export class ToolResultBuilder<TDetails extends DetailsWithMeta> {
 		return this;
 	}
 
+	continuation(...instructions: string[]): this {
+		this.#meta.continuation(...instructions);
+		return this;
+	}
+
 	sourceUrl(value: string): this {
 		this.#meta.sourceUrl(value);
 		return this;

@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	AsyncJobManager,
-	type ResumeDescriptor,
-	type SubagentRecord,
-} from "@gajae-code/coding-agent/async/job-manager";
+import { AsyncJobManager, type ResumeDescriptor, type SubagentRecord } from "../../src/async/job-manager";
 
 function subagentRecord(subagentId: string, currentJobId: string, status: SubagentRecord["status"]): SubagentRecord {
 	return {

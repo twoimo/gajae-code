@@ -4,14 +4,14 @@ import { Agent, type AgentMessage } from "@gajae-code/agent-core";
 import { getBundledModel, type Message } from "@gajae-code/ai";
 import { inferCopilotInitiator } from "@gajae-code/ai/providers/github-copilot-headers";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import type { ExtensionRunner } from "@gajae-code/coding-agent/extensibility/extensions";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import type { ExtensionRunner } from "../src/extensibility/extensions";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { convertToLlm } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
 
 describe("AgentSession before_agent_start attribution fallback", () => {
 	let tempDir: TempDir;

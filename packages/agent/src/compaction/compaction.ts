@@ -8,7 +8,9 @@
 import * as os from "node:os";
 import {
 	type AssistantMessage,
+	type AttemptController,
 	Effort,
+	isAttemptBudgetExceededError,
 	type Message,
 	type MessageAttribution,
 	type Model,
@@ -698,11 +700,11 @@ export function findCutPoint(
 
 	for (let i = endIndex - 1; i >= startIndex; i--) {
 		const entry = entries[i];
-		if (entry.type !== "message") continue;
 
-		// Estimate this message's size
-		const messageTokens = estimateEntryTokens(entry);
-		accumulatedTokens += messageTokens;
+		// Count every entry that materializes into provider-visible context, not
+		// only persisted message entries (custom and branch-summary entries are
+		// visible too). Non-visible bookkeeping entries estimate to zero.
+		accumulatedTokens += estimateEntryTokens(entry);
 
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
@@ -799,6 +801,8 @@ export interface SummaryOptions {
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
 	preferWebsockets?: boolean;
+	/** Turn-scoped authority charged immediately before each physical maintenance model request. */
+	consumeAttempt?: AttemptController;
 }
 
 /**
@@ -921,7 +925,9 @@ export async function generateSummary(
 				prompt: promptText,
 			},
 			signal,
+			options.consumeAttempt,
 		);
+		options.consumeAttempt?.reportCost?.();
 		return remote.summary;
 	}
 
@@ -938,9 +944,11 @@ export async function generateSummary(
 			sessionId: options?.sessionId,
 			providerSessionState: options?.providerSessionState,
 			preferWebsockets: options?.preferWebsockets,
+			consumeAttempt: options?.consumeAttempt,
 		},
 		{ telemetry: options?.telemetry, oneshotKind: "compaction_summary" },
 	);
+	options?.consumeAttempt?.reportCost?.(response.usage.cost.total);
 
 	if (response.stopReason === "error") {
 		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
@@ -1068,7 +1076,9 @@ async function generateShortSummary(
 				prompt: promptText,
 			},
 			signal,
+			options?.consumeAttempt,
 		);
+		options?.consumeAttempt?.reportCost?.();
 		return remote.summary;
 	}
 
@@ -1088,9 +1098,11 @@ async function generateShortSummary(
 			sessionId: options?.sessionId,
 			providerSessionState: options?.providerSessionState,
 			preferWebsockets: options?.preferWebsockets,
+			consumeAttempt: options?.consumeAttempt,
 		},
 		{ telemetry: options?.telemetry, oneshotKind: "compaction_short_summary" },
 	);
+	options?.consumeAttempt?.reportCost?.(response.usage.cost.total);
 
 	if (response.stopReason === "error") {
 		throw new Error(`Short summary failed: ${response.errorMessage || "Unknown error"}`);
@@ -1305,6 +1317,7 @@ export async function compact(
 		sessionId: options?.sessionId,
 		providerSessionState: options?.providerSessionState,
 		preferWebsockets: options?.preferWebsockets,
+		consumeAttempt: options?.consumeAttempt,
 	};
 
 	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
@@ -1328,10 +1341,12 @@ export async function compact(
 					remoteHistory,
 					summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT,
 					signal,
-					{ authCredentialType: options?.authCredentialType },
+					{ authCredentialType: options?.authCredentialType, consumeAttempt: summaryOptions.consumeAttempt },
 				);
+				summaryOptions.consumeAttempt?.reportCost?.();
 				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
 			} catch (err) {
+				if (isAttemptBudgetExceededError(err)) throw err;
 				logger.warn("OpenAI remote compaction failed, falling back to local summarization", {
 					error: err instanceof Error ? err.message : String(err),
 					model: model.id,
@@ -1422,6 +1437,7 @@ export async function compact(
 			sessionId: summaryOptions.sessionId,
 			providerSessionState: summaryOptions.providerSessionState,
 			preferWebsockets: summaryOptions.preferWebsockets,
+			consumeAttempt: summaryOptions.consumeAttempt,
 		},
 	);
 
@@ -1480,9 +1496,11 @@ async function generateTurnPrefixSummary(
 			sessionId: options?.sessionId,
 			providerSessionState: options?.providerSessionState,
 			preferWebsockets: options?.preferWebsockets,
+			consumeAttempt: options?.consumeAttempt,
 		},
 		{ telemetry: options?.telemetry, oneshotKind: "compaction_turn_prefix" },
 	);
+	options?.consumeAttempt?.reportCost?.(response.usage.cost.total);
 
 	if (response.stopReason === "error") {
 		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);

@@ -60,6 +60,7 @@ export function guardToolForUltragoalAsk<T extends AgentTool>(
 	tool: T,
 	getCwd: () => string,
 	getContext: () => UltragoalAskGuardContext = () => ({}),
+	transferCapability?: (source: AgentTool, target: AgentTool) => void,
 ): T {
 	if (tool.name !== "ask") return tool;
 	const candidate = tool as GuardedTool;
@@ -75,5 +76,6 @@ export function guardToolForUltragoalAsk<T extends AgentTool>(
 		},
 	}) as T & GuardedTool;
 	wrapped[ULTRAGOAL_ASK_GUARD] = true;
+	transferCapability?.(tool, wrapped);
 	return wrapped as T;
 }

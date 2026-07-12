@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { Rule } from "@gajae-code/coding-agent/capability/rule";
-import { type TtsrInjectionRecord, TtsrManager } from "@gajae-code/coding-agent/export/ttsr";
+import type { Rule } from "../src/capability/rule";
+import { type TtsrInjectionRecord, TtsrManager } from "../src/export/ttsr";
 
 function makeRule(partial: Partial<Rule>): Rule {
 	return {

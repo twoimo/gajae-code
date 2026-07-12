@@ -4,20 +4,14 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	buildGjcTmuxExactOptionTarget,
-	buildGjcTmuxProfileCommands,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-common";
-import {
-	observeOwnerTerminal,
-	replaceOwnerGeneration,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation";
+import { buildGjcTmuxExactOptionTarget, buildGjcTmuxProfileCommands } from "../../src/gjc-runtime/tmux-common";
+import { observeOwnerTerminal, replaceOwnerGeneration } from "../../src/gjc-runtime/tmux-owner-isolation";
 import {
 	forceCloseGjcTmuxSession,
 	listGjcTmuxSessions,
 	readTmuxSessionTagsForGc,
 	statusGjcTmuxSession,
-} from "@gajae-code/coding-agent/gjc-runtime/tmux-sessions";
+} from "../../src/gjc-runtime/tmux-sessions";
 
 const tmux = Bun.which("tmux");
 const systemdRun = Bun.which("systemd-run");

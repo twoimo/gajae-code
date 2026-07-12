@@ -31,19 +31,22 @@ function parseTomlSections(source: string): Record<string, TomlSection> {
 }
 
 describe("native build Cargo profiles", () => {
-	it("defines an unwind-safe dist profile that only inherits size settings from release", async () => {
+	it("defines the selected unwind-safe dist policy and isolates the symbols candidate", async () => {
 		const cargoToml = await Bun.file(path.join(repoRoot, "Cargo.toml")).text();
 		const sections = parseTomlSections(cargoToml);
 
 		expect(sections["profile.release"]?.panic).toBe('"abort"');
-		expect(sections["profile.dist"]).toEqual(
+		const selectedPolicy = sections["profile.dist"];
+		expect(selectedPolicy).toEqual(
 			expect.objectContaining({
 				inherits: '"release"',
 				panic: '"unwind"',
-				strip: '"debuginfo"',
 			}),
 		);
-		expect(sections["profile.dist"]?.panic).toBe('"unwind"');
+		expect(selectedPolicy?.strip).toBe('"debuginfo"');
+		expect(sections["profile.dist-symbols"]).toEqual(
+			expect.objectContaining({ inherits: '"dist"', strip: '"symbols"' }),
+		);
 	});
 
 	it("rejects unsupported PI_NATIVE_PROFILE overrides before running a native build", async () => {

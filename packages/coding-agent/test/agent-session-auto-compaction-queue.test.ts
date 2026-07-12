@@ -6,15 +6,15 @@ import { estimateMessageTokensHeuristic } from "@gajae-code/agent-core/compactio
 import type { AssistantMessage, ToolResultMessage } from "@gajae-code/ai";
 import { getBundledModel } from "@gajae-code/ai/models";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
-import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
-import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { loadExtensions } from "@gajae-code/coding-agent/extensibility/extensions/loader";
-import { ExtensionRunner } from "@gajae-code/coding-agent/extensibility/extensions/runner";
-import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
-import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
-import { convertToLlm } from "@gajae-code/coding-agent/session/messages";
-import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir, withTimeout } from "@gajae-code/utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { loadExtensions } from "../src/extensibility/extensions/loader";
+import { ExtensionRunner } from "../src/extensibility/extensions/runner";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { convertToLlm } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
 
 const runtimeSignalStoreKey = "__gjcRuntimeSignals";
 

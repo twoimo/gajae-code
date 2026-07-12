@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { Rule } from "@gajae-code/coding-agent/capability/rule";
-import { TtsrManager } from "@gajae-code/coding-agent/export/ttsr";
+import type { Rule } from "../src/capability/rule";
+import { TtsrManager } from "../src/export/ttsr";
 import { eventAffectsCoordinatorRuntimeState, stateForEvent } from "../src/gjc-runtime/session-state-sidecar";
 
 function makeRule(partial: Partial<Rule>): Rule {
