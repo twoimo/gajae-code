@@ -130,14 +130,13 @@ describe("ACP initialize conformance", () => {
 		expect(response.agentInfo!.version).toBe(pkg.version);
 	});
 
-	it("preserves the agentCapabilities contract clients depend on", async () => {
+	it("advertises only SDK-backed ACP capabilities", async () => {
 		const agent = await createAgent();
 		const response = await agent.initialize(buildInitializeRequest());
 		expectAcpStructure(zInitializeResponse, response);
 		expect(response.agentCapabilities).toEqual(
 			expect.objectContaining({
 				loadSession: true,
-				mcpCapabilities: expect.objectContaining({ http: true, sse: true }),
 				promptCapabilities: expect.objectContaining({ embeddedContext: true, image: true }),
 				sessionCapabilities: expect.objectContaining({
 					list: expect.any(Object),
@@ -148,5 +147,6 @@ describe("ACP initialize conformance", () => {
 				}),
 			}),
 		);
+		expect(response.agentCapabilities).not.toHaveProperty("mcpCapabilities");
 	});
 });

@@ -13,12 +13,17 @@ afterEach(async () => {
 
 type BrokerControl = { operation: string; input: Record<string, unknown>; idempotencyKey?: string };
 
-async function createServer(root: string, options: { forceStop?: boolean; closeFails?: boolean } = {}) {
+async function createServer(
+	root: string,
+	options: { forceStop?: boolean; closeFails?: boolean; closeFailures?: number } = {},
+) {
 	const stateRoot = path.join(root, ".gjc", "coordinator-state");
+	const agentDir = path.join(root, "agent-global");
 	const controls: BrokerControl[] = [];
-	await fs.mkdir(path.join(root, ".gjc", "agent", "sdk"), { recursive: true });
+	let closeAttempts = 0;
+	await fs.mkdir(path.join(agentDir, "sdk"), { recursive: true });
 	await Bun.write(
-		path.join(root, ".gjc", "agent", "sdk", "broker.json"),
+		path.join(agentDir, "sdk", "broker.json"),
 		JSON.stringify({
 			version: 1,
 			protocolVersion: 3,
@@ -43,6 +48,7 @@ async function createServer(root: string, options: { forceStop?: boolean; closeF
 			...(options.forceStop ? { GJC_COORDINATOR_MCP_FORCE_STOP: "1" } : {}),
 		},
 		services: {
+			getAgentDir: () => agentDir,
 			connectSdk: async () =>
 				({
 					global: async (
@@ -51,8 +57,11 @@ async function createServer(root: string, options: { forceStop?: boolean; closeF
 						opts: { idempotencyKey?: string } = {},
 					) => {
 						controls.push({ operation, input, idempotencyKey: opts.idempotencyKey });
-						if (operation === "session.close" && options.closeFails)
-							return { ok: false, error: { code: "close_refused", message: "SDK refused close" } };
+						if (operation === "session.close") {
+							closeAttempts += 1;
+							if (options.closeFails || closeAttempts <= (options.closeFailures ?? 0))
+								return { ok: false, error: { code: "close_refused", message: "SDK refused close" } };
+						}
 						return { ok: true, result: { sessionId: input.sessionId } };
 					},
 					close: async () => {},
@@ -176,5 +185,21 @@ describe("gjc_coordinator_stop_session SDK lifecycle", () => {
 		expect(controls).toEqual([expect.objectContaining({ operation: "session.close", input: { sessionId: "idle" } })]);
 		expect(await Bun.file(sessionFile("idle")).exists()).toBe(false);
 		expect(await Bun.file(sessionFile("registered")).exists()).toBe(true);
+	});
+
+	it("reuses the close idempotency key when the idle reaper retries", async () => {
+		const root = await tempRoot();
+		const { server, controls, sessionFile } = await createServer(root, { closeFailures: 1 });
+		await writeSession(sessionFile("retry"), root, "retry", { ephemeral: true });
+
+		expect(await server.sessionReaper.sweepOnce()).toBe(0);
+		expect(await Bun.file(sessionFile("retry")).exists()).toBe(true);
+		expect(await server.sessionReaper.sweepOnce()).toBe(1);
+		const closeRequests = controls.filter(control => control.operation === "session.close");
+		expect(closeRequests).toHaveLength(2);
+		expect(closeRequests.map(control => control.idempotencyKey)).toEqual([
+			"coordinator-reap:retry",
+			"coordinator-reap:retry",
+		]);
 	});
 });

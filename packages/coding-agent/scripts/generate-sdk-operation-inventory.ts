@@ -177,6 +177,7 @@ const SEAM_TO_SDK: Readonly<Record<string, string>> = {
 	"agent_session:getQueuedMessages": "queue.messages.list",
 	"agent_session:getTodoPhases": "todo.list",
 	"agent_session:getContextUsage": "context.get",
+	"agent_session:getSdkConfigItems": "config.list/get",
 	"agent_session:getTranscript": "transcript.list",
 	"agent_session:getTranscriptBody": "transcript.body",
 	"agent_session:getSessionStats": "session.stats",

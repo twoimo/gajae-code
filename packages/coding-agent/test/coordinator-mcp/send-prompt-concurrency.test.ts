@@ -26,7 +26,7 @@ describe("send_prompt same-session concurrency", () => {
 			const sessionId = "sdk-race-session";
 			const brokerUrl = "ws://127.0.0.1:4312";
 			const sessionUrl = "ws://127.0.0.1:4313";
-			const agentDir = path.join(root, ".gjc", "agent");
+			const agentDir = path.join(root, "agent-global");
 			await writeBrokerDiscovery(agentDir, {
 				version: 1,
 				protocolVersion: 3,
@@ -55,6 +55,7 @@ describe("send_prompt same-session concurrency", () => {
 					GJC_COORDINATOR_MCP_REPO: "repo-race",
 				},
 				services: {
+					getAgentDir: () => agentDir,
 					connectSdk: async url =>
 						url === brokerUrl
 							? ({

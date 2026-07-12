@@ -1,4 +1,5 @@
 import path from "node:path";
+import { getAgentDir } from "@gajae-code/utils";
 import { ensureBroker } from "../broker/ensure";
 import { SdkClient, SdkClientError } from "../client/client";
 import {
@@ -150,6 +151,15 @@ function isLifecycleOperation(operation: string): boolean {
 		operation === "session.delete"
 	);
 }
+function redactLifecycleCredentials(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(redactLifecycleCredentials);
+	if (!isObject(value)) return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.filter(([key]) => key !== "endpoint" && key !== "token")
+			.map(([key, nested]) => [key, redactLifecycleCredentials(nested)]),
+	);
+}
 
 function textResult(
 	payload: unknown,
@@ -161,7 +171,7 @@ function textResult(
 /** Creates the model-facing MCP adapter using only SDK discovery records and v3 WebSockets. */
 export function createSdkMcpServer(options: SdkMcpServerOptions = {}) {
 	const repo = options.repo ?? process.cwd();
-	const agentDir = options.agentDir ?? path.join(repo, ".gjc", "agent");
+	const agentDir = options.agentDir ?? getAgentDir();
 	const connect = options.connect ?? ((url, token) => SdkClient.connect(url, token));
 
 	async function withSession(sessionId: string, action: (client: SdkClient) => Promise<unknown>): Promise<unknown> {
@@ -243,7 +253,8 @@ export function createSdkMcpServer(options: SdkMcpServerOptions = {}) {
 				const broker = await readSdkBrokerDiscovery(agentDir);
 				if (!broker) return { ok: false, error: { code: "not_found", message: "SDK broker not found" } };
 				client = await connect(broker.url, broker.token);
-				return await client.global(operation, input, { idempotencyKey });
+				const response = await client.global(operation, input, { idempotencyKey });
+				return isLifecycleOperation(operation) ? redactLifecycleCredentials(response) : response;
 			} catch (error) {
 				return resultError(error);
 			} finally {

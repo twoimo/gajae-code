@@ -68,6 +68,52 @@ test("MCP SDK schemas exclude endpoint credentials and reject G02 before any Web
 	expect(sent()).toBe(0);
 });
 
+test("MCP lifecycle responses never expose broker endpoint credentials", async () => {
+	const { repo } = fixture();
+	const agentDir = path.join(repo, "agent");
+	const brokerDir = path.join(agentDir, "sdk");
+	fs.mkdirSync(brokerDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(brokerDir, "broker.json"),
+		JSON.stringify({
+			version: 1,
+			protocolVersion: 3,
+			packageGeneration: "test",
+			ownerId: "mcp-owner",
+			pid: process.pid,
+			host: "127.0.0.1",
+			port: 1,
+			url: "ws://broker.example.test",
+			token: "broker-discovery-secret",
+			startedAt: Date.now(),
+			heartbeatAt: Date.now(),
+		}),
+	);
+	const mcp = createSdkMcpServer({
+		repo,
+		agentDir,
+		connect: async () =>
+			({
+				global: async () => ({
+					ok: true,
+					result: {
+						sessionId: "created-session",
+						endpoint: { url: "ws://session.example.test?token=url-secret", token: "session-secret" },
+						token: "result-secret",
+					},
+				}),
+				close: async () => {},
+			}) as never,
+	});
+	const result = await mcp.callTool("gjc_session_global", {
+		operation: "session.create",
+		input: { cwd: repo },
+		idempotencyKey: "create-1",
+	});
+	expect(result).toEqual({ ok: true, result: { sessionId: "created-session" } });
+	expect(JSON.stringify(result)).not.toContain("secret");
+});
+
 test("MCP global schema exposes and requires caller lifecycle idempotency keys", async () => {
 	const { repo } = fixture();
 	const mcp = createSdkMcpServer({ repo });

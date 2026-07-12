@@ -185,7 +185,7 @@ describe("tmux GC safety", () => {
 			});
 			expect(await tmuxSessionsGcAdapter.prune(record!, ctx())).toEqual({
 				removed: false,
-				error: "gjc_tmux_owner_isolation_server_unverifiable",
+				error: "gjc_tmux_cleanup_target_changed",
 			});
 			expect(calls).not.toContainEqual(["tmux-test", "kill-session", "-t", "=gajae_code_done"]);
 		} finally {

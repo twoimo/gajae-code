@@ -1207,8 +1207,16 @@ function sdkControlSurface(
 	};
 	const surface: ControlSurface = {
 		prompt: (text, images) => {
+			const promptImages = Array.isArray(images) ? (images as { data: string; mime?: string }[]) : [];
 			const content: string | (TextContent | ImageContent)[] =
-				Array.isArray(images) && images.length > 0 ? [{ type: "text", text } as TextContent] : text;
+				promptImages.length > 0
+					? [
+							...(text ? [{ type: "text", text } as TextContent] : []),
+							...promptImages.map(
+								img => ({ type: "image", data: img.data, mimeType: img.mime ?? "image/jpeg" }) as ImageContent,
+							),
+						]
+					: text;
 			api.sendUserMessage(content, isBusy() ? { deliverAs: "steer" } : undefined);
 			return { commandId: crypto.randomUUID(), accepted: true };
 		},

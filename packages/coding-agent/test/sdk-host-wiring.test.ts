@@ -51,13 +51,14 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 function start(
 	ctx: Record<string, unknown>,
 	settings?: Settings,
+	sendUserMessage: ExtensionActions["sendUserMessage"] = () => {},
 ): Map<string, (event: unknown, context: unknown) => unknown> {
 	const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
 	createNotificationsExtension(
 		{
 			on: (event: string, handler: (event: unknown, context: unknown) => unknown) => handlers.set(event, handler),
 			registerCommand: () => {},
-			sendUserMessage: () => {},
+			sendUserMessage,
 		} as never,
 		settings ? { settings } : undefined,
 	);
@@ -359,6 +360,64 @@ test("SDK host replays event frames over direct v3 ingress and routes queries th
 		ok: false,
 		error: { code: "unknown_operation" },
 	});
+});
+
+test("SDK host preserves ordered prompt image blocks in the host payload", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-images-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-prompt-images-${Date.now()}`;
+	const sent: Parameters<ExtensionActions["sendUserMessage"]>[] = [];
+	const sessionContext = context(cwd, sessionId);
+	const handlers = start(sessionContext, undefined, (...args) => sent.push(args));
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+
+	const prompt = async (requestId: string, input: Record<string, unknown>) => {
+		socket.send(
+			JSON.stringify({
+				type: "control_command",
+				sessionId,
+				token: endpoint.token,
+				requestId,
+				command: { type: "control_request", id: requestId, operation: "turn.prompt", input },
+			}),
+		);
+		await waitFor(
+			() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === requestId),
+			`${requestId} response`,
+		);
+	};
+
+	await prompt("text-and-images", {
+		text: "Compare these screenshots.",
+		images: [{ data: "cG5nLWJ5dGVz", mime: "image/png" }, { data: "ZGVmYXVsdC1taW1l" }],
+	});
+	await prompt("images-only", {
+		text: "",
+		images: [{ data: "d2VicC1ieXRlcw", mime: "image/webp" }],
+	});
+
+	expect(sent).toEqual([
+		[
+			[
+				{ type: "text", text: "Compare these screenshots." },
+				{ type: "image", data: "cG5nLWJ5dGVz", mimeType: "image/png" },
+				{ type: "image", data: "ZGVmYXVsdC1taW1l", mimeType: "image/jpeg" },
+			],
+			{ deliverAs: "steer" },
+		],
+		[[{ type: "image", data: "d2VicC1ieXRlcw", mimeType: "image/webp" }], { deliverAs: "steer" }],
+	]);
 });
 
 test("SDK host binds session query and control seams and excludes uninstalled resources", async () => {

@@ -21,9 +21,16 @@ function result(value: unknown): { ok: boolean; result?: Record<string, unknown>
 	return value as { ok: boolean; result?: Record<string, unknown>; error?: { code?: string } };
 }
 
-async function mcpGlobal(repo: string, operation: string, input: Record<string, unknown>, idempotencyKey: string) {
+async function mcpGlobal(
+	repo: string,
+	agentDir: string,
+	operation: string,
+	input: Record<string, unknown>,
+	idempotencyKey: string,
+) {
 	const child = Bun.spawn([process.execPath, "run", cliEntrypoint, "mcp-serve", "sdk"], {
 		cwd: repo,
+		env: { ...process.env, GJC_CODING_AGENT_DIR: agentDir, GJC_AGENT_DIR: agentDir },
 		stdin: "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -149,7 +156,7 @@ test("shipped gjc --mode acp stdio/NDJSON drives authenticated G03-G07 lifecycle
 test("shipped mcp-serve sdk stdio drives authenticated G03-G07 lifecycle topology with durable effects", async () => {
 	const life = await fixture();
 	await life.invokeScenario((operation, input, idempotencyKey) =>
-		mcpGlobal(life.repo, operation, input, idempotencyKey),
+		mcpGlobal(life.repo, life.agentDir, operation, input, idempotencyKey),
 	);
 }, 120_000);
 

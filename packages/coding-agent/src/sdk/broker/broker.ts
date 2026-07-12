@@ -80,6 +80,16 @@ function lifecycleTarget(operation: string, input: Record<string, unknown>): unk
 	}
 }
 
+const BROKER_LOCK_RECORD = "owner.json";
+const BROKER_LOCK_STARTUP_WAIT_MS = 1_000;
+const BROKER_LOCK_RETRY_MS = 10;
+
+type BrokerLockSnapshot = {
+	ownerId?: string;
+	pid: number;
+	identity: string;
+};
+
 export class Broker {
 	readonly settings: Required<BrokerSettings>;
 	readonly index: SessionIndex;
@@ -98,6 +108,96 @@ export class Broker {
 		this.ledger = new LifecycleLedger(settings.agentDir);
 		this.#lock = path.join(settings.agentDir, "sdk", "broker.lock");
 	}
+	#lockRecordPath(): string {
+		return path.join(this.#lock, BROKER_LOCK_RECORD);
+	}
+	#lockSnapshot(raw: string): BrokerLockSnapshot {
+		try {
+			const lock = JSON.parse(raw) as { ownerId?: unknown; pid?: unknown };
+			if (
+				typeof lock.ownerId === "string" &&
+				lock.ownerId.length > 0 &&
+				typeof lock.pid === "number" &&
+				Number.isInteger(lock.pid) &&
+				lock.pid > 0
+			)
+				return { ownerId: lock.ownerId, pid: lock.pid, identity: `owner:${lock.ownerId}` };
+		} catch {}
+		return { pid: 0, identity: `contents:${createHash("sha256").update(raw).digest("hex")}` };
+	}
+	async #readLock(): Promise<BrokerLockSnapshot | null> {
+		try {
+			return this.#lockSnapshot(await fs.readFile(this.#lockRecordPath(), "utf8"));
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			if (code === "ENOTDIR") {
+				try {
+					return this.#lockSnapshot(await fs.readFile(this.#lock, "utf8"));
+				} catch (legacyError) {
+					if ((legacyError as NodeJS.ErrnoException).code === "ENOENT") return null;
+					throw legacyError;
+				}
+			}
+			if (code !== "ENOENT") throw e;
+		}
+		try {
+			const lock = await fs.stat(this.#lock);
+			return lock.isDirectory() ? { pid: 0, identity: `directory:${lock.dev}:${lock.ino}` } : null;
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw e;
+		}
+	}
+	async #createLock(): Promise<void> {
+		await fs.mkdir(this.#lock, { mode: 0o700 });
+		try {
+			await fs.writeFile(
+				this.#lockRecordPath(),
+				JSON.stringify({ version: 1, ownerId: this.#owner, pid: process.pid, acquiredAt: Date.now() }),
+				{ flag: "wx", mode: 0o600 },
+			);
+		} catch (e) {
+			try {
+				await fs.rmdir(this.#lock);
+			} catch {}
+			throw e;
+		}
+	}
+	async #waitForBrokerDiscovery(): Promise<BrokerDiscovery | null> {
+		const deadline = Date.now() + BROKER_LOCK_STARTUP_WAIT_MS;
+		while (Date.now() < deadline) {
+			const live = await readBrokerDiscovery(this.settings.agentDir, this.settings.heartbeatTtlMs);
+			if (live) return live;
+			await Bun.sleep(BROKER_LOCK_RETRY_MS);
+		}
+		return readBrokerDiscovery(this.settings.agentDir, this.settings.heartbeatTtlMs);
+	}
+	async #reclaimStaleLock(snapshot: BrokerLockSnapshot): Promise<void> {
+		const current = await this.#readLock();
+		if (!current || current.identity !== snapshot.identity || (current.pid > 0 && isPidAlive(current.pid))) return;
+
+		// Keep the tombstone: its immutable-owner-derived pathname prevents a contender
+		// holding an old snapshot from renaming a newly-created directory lock.
+		const tombstone = path.join(
+			path.dirname(this.#lock),
+			`.broker.lock.stale-${createHash("sha256").update(snapshot.identity).digest("hex")}`,
+		);
+		try {
+			await fs.rename(this.#lock, tombstone);
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			if (["ENOENT", "EEXIST", "ENOTEMPTY", "EISDIR", "ENOTDIR"].includes(code ?? "")) return;
+			if (code === "EPERM") {
+				try {
+					await fs.lstat(tombstone);
+					return;
+				} catch (statError) {
+					if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
+				}
+			}
+			throw e;
+		}
+	}
 	async start(): Promise<BrokerDiscovery> {
 		this.#stopping = false;
 		await Promise.all([
@@ -106,25 +206,33 @@ export class Broker {
 			readBrokerDiscovery(this.settings.agentDir),
 		]);
 		await fs.mkdir(path.dirname(this.#lock), { recursive: true, mode: 0o700 });
-		try {
-			await fs.writeFile(this.#lock, JSON.stringify({ pid: process.pid, ownerId: this.#owner, ts: Date.now() }), {
-				flag: "wx",
-				mode: 0o600,
-			});
-		} catch (e) {
-			if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+		for (;;) {
+			try {
+				await this.#createLock();
+				break;
+			} catch (e) {
+				if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+			}
+
 			const live = await readBrokerDiscovery(this.settings.agentDir, this.settings.heartbeatTtlMs);
 			if (live) {
 				this.discovery = live;
 				return live;
 			}
-			let ownerPid = 0;
-			try {
-				ownerPid = (JSON.parse(await fs.readFile(this.#lock, "utf8")) as { pid?: number }).pid ?? 0;
-			} catch {}
-			if (isPidAlive(ownerPid)) throw new Error("Broker lock is held by a live owner");
-			await fs.rm(this.#lock, { force: true });
-			return this.start();
+			const snapshot = await this.#readLock();
+			if (!snapshot) continue;
+			if (snapshot.pid > 0 && isPidAlive(snapshot.pid)) {
+				const starting = await this.#waitForBrokerDiscovery();
+				if (starting) {
+					this.discovery = starting;
+					return starting;
+				}
+				const current = await this.#readLock();
+				if (current && current.identity === snapshot.identity && current.pid > 0 && isPidAlive(current.pid))
+					throw new Error("Broker lock is held by a live owner");
+				continue;
+			}
+			await this.#reclaimStaleLock(snapshot);
 		}
 		await this.index.open();
 		await this.ledger.open();
@@ -180,13 +288,16 @@ export class Broker {
 				const disk = JSON.parse(await fs.readFile(brokerDiscoveryPath(this.settings.agentDir), "utf8")) as {
 					ownerId?: string;
 				};
-				if (disk.ownerId === this.#owner) await fs.rm(brokerDiscoveryPath(this.settings.agentDir), { force: true });
+				if (disk.ownerId === this.#owner) await fs.unlink(brokerDiscoveryPath(this.settings.agentDir));
 			} catch (e) {
 				if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			}
 			try {
-				const lock = JSON.parse(await fs.readFile(this.#lock, "utf8")) as { ownerId?: string };
-				if (lock.ownerId === this.#owner) await fs.rm(this.#lock, { force: true });
+				const lock = await this.#readLock();
+				if (lock?.ownerId === this.#owner) {
+					await fs.unlink(this.#lockRecordPath());
+					await fs.rmdir(this.#lock);
+				}
 			} catch (e) {
 				if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			}

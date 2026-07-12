@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { getAgentDir } from "@gajae-code/utils";
 import { VERSION } from "@gajae-code/utils/dirs";
 import {
 	COORDINATOR_MCP_PROTOCOL_VERSION,
@@ -67,6 +68,7 @@ interface RuntimeSessionStatePayload extends CoordinatorSessionState {
 
 interface CoordinatorServices {
 	connectSdk?: (url: string, token: string) => Promise<SdkClient>;
+	getAgentDir?: () => string;
 	resolveModelProfiles?: CoordinatorModelProfileLoader;
 }
 
@@ -612,6 +614,65 @@ function firstString(record: Record<string, unknown>, keys: string[]): string | 
 		if (typeof value === "string" && value.length > 0) return value;
 	}
 	return null;
+}
+
+function brokerSessionId(record: Record<string, unknown>): string | null {
+	return firstString(record, ["sessionId", "session_id"]);
+}
+
+function brokerSessionScope(record: Record<string, unknown>): string | null {
+	return firstString(asRecord(record.locator) ?? {}, ["repo"]) ?? firstString(record, ["cwd"]);
+}
+
+function scopedBrokerSessions(values: unknown[], cwd: string): Array<Record<string, unknown>> {
+	const scope = path.resolve(cwd);
+	return jsonRecords(values).filter(session => {
+		const sessionScope = brokerSessionScope(session);
+		return sessionScope !== null && path.resolve(sessionScope) === scope;
+	});
+}
+
+function brokerLiveness(session: Record<string, unknown> | null): Record<string, unknown> {
+	if (!session) return { authority: "sdk_broker", live: false, reason: "not_indexed" };
+	if (typeof session.live === "boolean") return { authority: "sdk_broker", live: session.live };
+	return { authority: "sdk_broker", reason: "liveness_unreported" };
+}
+
+function publicBrokerSession(session: Record<string, unknown>): Record<string, unknown> {
+	const sessionId = brokerSessionId(session);
+	return {
+		...(sessionId ? { session_id: sessionId } : {}),
+		...(typeof session.live === "boolean" ? { live: session.live } : {}),
+		...(session.terminalUncertain === true || session.terminal_uncertain === true
+			? { terminal_uncertain: true }
+			: {}),
+	};
+}
+
+function publicCoordinatorSession(session: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = {
+		session_id: firstString(session, ["session_id", "sessionId"]) ?? "unknown",
+	};
+	for (const key of ["cwd", "created_at"]) {
+		const value = session[key];
+		if (typeof value === "string") result[key] = value;
+	}
+	if (typeof session.ephemeral === "boolean") result.ephemeral = session.ephemeral;
+	if (typeof session.visible === "boolean") result.visible = session.visible;
+	return result;
+}
+
+function publicCoordinatorSessionState(state: CoordinatorSessionState | null): Record<string, unknown> | null {
+	if (!state) return null;
+	return {
+		session_id: state.session_id,
+		state: state.state,
+		ready_for_input: state.ready_for_input,
+		current_turn_id: state.current_turn_id,
+		last_turn_id: state.last_turn_id,
+		updated_at: state.updated_at,
+		...(typeof state.live === "boolean" ? { live: state.live } : {}),
+	};
 }
 
 function eventTimestamp(record: Record<string, unknown>): string | null {
@@ -1643,13 +1704,13 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 	}
 
 	async function brokerSession(
-		cwd: string,
+		_cwd: string,
 		operation: string,
 		input: Record<string, unknown>,
 		idempotencyKey?: string,
 	): Promise<unknown> {
-		const discovery = await readSdkBrokerDiscovery(path.join(cwd, ".gjc", "agent"));
-		if (!discovery) throw new SdkClientError("not_found", `SDK broker not found for coordinator workdir: ${cwd}`);
+		const discovery = await readSdkBrokerDiscovery(services.getAgentDir?.() ?? getAgentDir());
+		if (!discovery) throw new SdkClientError("not_found", "SDK broker discovery is unavailable.");
 		const client = await (services.connectSdk ?? ((url, token) => SdkClient.connect(url, token)))(
 			discovery.url,
 			discovery.token,
@@ -1673,12 +1734,12 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		return asRecord(response?.result) ?? response ?? {};
 	}
 
-	async function listSessions(cwd?: string): Promise<unknown[]> {
+	async function listSessions(cwd?: string): Promise<Array<Record<string, unknown>>> {
 		const roots = cwd ? [cwd] : config.allowedRoots;
 		const listings = await Promise.all(
 			roots.map(async root => {
-				const listing = brokerResult(await brokerSession(root, "session.list", {}));
-				return Array.isArray(listing.sessions) ? listing.sessions : [];
+				const listing = brokerResult(await brokerSession(root, "session.list", { cwd: root }));
+				return scopedBrokerSessions(Array.isArray(listing.sessions) ? listing.sessions : [], root);
 			}),
 		);
 		return listings.flat();
@@ -1701,9 +1762,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			const cwd = optionalString(session.cwd);
 			if (!cwd) return { ok: false, reason: "session_metadata_missing", closed: false };
 			try {
-				brokerResult(
-					await brokerSession(cwd, "session.close", { sessionId: id }, `coordinator-reap-${randomUUID()}`),
-				);
+				brokerResult(await brokerSession(cwd, "session.close", { sessionId: id }, `coordinator-reap:${id}`));
 			} catch (error) {
 				return {
 					ok: false,
@@ -2029,7 +2088,8 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			if (name === "gjc_coordinator_read_status") {
 				const sessionId = args.session_id;
 				if (sessionId) {
-					const session = asRecord(await readJsonFile(sessionFile(sessionId)));
+					const canonicalSessionId = safeExternalId("session", sessionId);
+					const session = asRecord(await readJsonFile(sessionFile(canonicalSessionId)));
 					const cwd = optionalString(session?.cwd);
 					if (!session || !cwd)
 						return {
@@ -2037,16 +2097,16 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 							error: { code: "not_found", message: `Coordinator session not found: ${String(sessionId)}` },
 						};
 					try {
-						const endpoint = brokerResult(
-							await brokerSession(cwd, "session.get_endpoint", {
-								sessionId: safeExternalId("session", sessionId),
-							}),
+						const indexedSession = (await listSessions(cwd)).find(
+							candidate => brokerSessionId(candidate) === canonicalSessionId,
 						);
 						return {
 							ok: true,
-							session,
-							status: { live: true, authority: "sdk", endpoint },
-							session_state: await readSessionState(namespaceDir, safeExternalId("session", sessionId)),
+							session: publicCoordinatorSession(session),
+							status: brokerLiveness(indexedSession ?? null),
+							session_state: publicCoordinatorSessionState(
+								await readSessionState(namespaceDir, canonicalSessionId),
+							),
 						};
 					} catch (error) {
 						return sdkError(error);
@@ -2054,10 +2114,14 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				}
 				try {
 					const sessions = await listSessions();
+					const publicSessions = sessions.map(publicBrokerSession);
 					return {
 						ok: true,
-						sessions,
-						statuses: sessions.map(session => ({ session, status: { live: true, authority: "sdk" } })),
+						sessions: publicSessions,
+						statuses: sessions.map((session, index) => ({
+							session: publicSessions[index],
+							status: brokerLiveness(session),
+						})),
 					};
 				} catch (error) {
 					return sdkError(error);

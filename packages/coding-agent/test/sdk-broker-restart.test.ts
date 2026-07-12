@@ -14,4 +14,23 @@ describe("SDK broker restart", () => {
 		expect(second.token).not.toBe(first.token);
 		await b.stop();
 	});
+
+	it("allows one owner during simultaneous stale-lock takeover", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-restart-race-"));
+		const lock = path.join(dir, "sdk", "broker.lock");
+		await fs.mkdir(path.dirname(lock), { recursive: true });
+		await fs.writeFile(lock, JSON.stringify({ ownerId: "stale-owner", pid: 999_999_999, ts: 0 }));
+
+		const a = new Broker({ agentDir: dir });
+		const b = new Broker({ agentDir: dir });
+		try {
+			const [first, second] = await Promise.all([a.start(), b.start()]);
+			expect(first.ownerId).toBe(second.ownerId);
+			expect(first.token).toBe(second.token);
+			expect([a, b].filter(broker => broker.ownsDiscovery)).toHaveLength(1);
+		} finally {
+			await a.stop();
+			await b.stop();
+		}
+	});
 });

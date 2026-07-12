@@ -37,8 +37,12 @@ async function createSdkControlServer(
 					ok: true,
 					page: { items: ["first assistant line\nlatest assistant line"], complete: true, revision: "test" },
 				},
+	brokerSessions: Array<Record<string, unknown>> = [
+		{ sessionId: "visible-session", locator: { repo: root }, live: true },
+	],
 ) {
 	const stateRoot = path.join(root, ".gjc", "coordinator-state");
+	const agentDir = path.join(root, "agent-global");
 	let createdSessions = 0;
 	const server = createCoordinatorMcpServer({
 		env: {
@@ -49,6 +53,7 @@ async function createSdkControlServer(
 			GJC_COORDINATOR_MCP_REPO: "repo",
 		},
 		services: {
+			getAgentDir: () => agentDir,
 			resolveModelProfiles: () => new Map([["codex-eco", { name: "codex-eco" }]]),
 			connectSdk: async () =>
 				({
@@ -66,6 +71,16 @@ async function createSdkControlServer(
 						options: { idempotencyKey?: string } = {},
 					) => {
 						controls.push({ operation, input, idempotencyKey: options.idempotencyKey });
+						if (operation === "session.list") return { ok: true, result: { sessions: brokerSessions } };
+						if (operation === "session.get_endpoint") {
+							return {
+								ok: true,
+								result: {
+									url: "ws://broker.example.test/endpoint?token=broker-endpoint-secret",
+									token: "Bearer broker-endpoint-secret",
+								},
+							};
+						}
 						if (operation === "session.create") {
 							const sessionId = `created-session-${++createdSessions}`;
 							await Bun.write(
@@ -85,9 +100,9 @@ async function createSdkControlServer(
 		},
 	});
 	await fs.mkdir(path.join(root, ".gjc", "state", "sdk"), { recursive: true });
-	await fs.mkdir(path.join(root, ".gjc", "agent", "sdk"), { recursive: true });
+	await fs.mkdir(path.join(agentDir, "sdk"), { recursive: true });
 	await Bun.write(
-		path.join(root, ".gjc", "agent", "sdk", "broker.json"),
+		path.join(agentDir, "sdk", "broker.json"),
 		JSON.stringify({
 			version: 1,
 			protocolVersion: 3,
@@ -97,14 +112,14 @@ async function createSdkControlServer(
 			host: "127.0.0.1",
 			port: 1,
 			url: "ws://sdk.example.test",
-			token: "test-token",
+			token: "broker-discovery-secret",
 			startedAt: Date.now(),
 			heartbeatAt: Date.now(),
 		}),
 	);
 	await Bun.write(
 		path.join(root, ".gjc", "state", "sdk", "visible-session.json"),
-		JSON.stringify({ url: "ws://sdk.example.test", token: "test-token" }),
+		JSON.stringify({ url: "ws://sdk.example.test", token: "session-endpoint-secret" }),
 	);
 	return server;
 }
@@ -121,18 +136,87 @@ async function registerSdkSession(server: ReturnType<typeof createCoordinatorMcp
 }
 
 describe("Coordinator MCP canonical SDK controls", () => {
-	it("uses SDK discovery for registered-session authority and leaves tmux as advisory metadata", async () => {
+	it("uses agent-global SDK discovery and returns credential-free broker status", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
 		const server = await createSdkControlServer(root, controls);
 		const registered = await registerSdkSession(server, root);
 		expect(registered).toMatchObject({ ok: true, registered: true, session_state: { state: "ready_for_input" } });
+		await Bun.write(
+			path.join(root, ".gjc", "coordinator-state", "local", "repo", "sessions", "visible-session.json"),
+			JSON.stringify({
+				session_id: "visible-session",
+				cwd: root,
+				endpoint: { url: "ws://broker.example.test/endpoint?token=session-record-secret" },
+				token: "Bearer session-record-secret",
+			}),
+		);
+		await Bun.write(
+			path.join(root, ".gjc", "coordinator-state", "local", "repo", "session-states", "visible-session.json"),
+			JSON.stringify({
+				schema_version: 1,
+				session_id: "visible-session",
+				state: "ready_for_input",
+				ready_for_input: true,
+				current_turn_id: null,
+				last_turn_id: null,
+				updated_at: new Date().toISOString(),
+				source: "coordinator",
+				live: true,
+				reason: "Bearer session-state-secret",
+			}),
+		);
 		const status = await server.callTool("gjc_coordinator_read_status", { session_id: "visible-session" });
-		expect(status).toMatchObject({ ok: true, status: { live: true } });
+		expect(status).toMatchObject({
+			ok: true,
+			session: { session_id: "visible-session", cwd: root },
+			status: { authority: "sdk_broker", live: true },
+		});
+		const publicResult = JSON.stringify(status);
+		expect(publicResult).not.toContain("broker-endpoint-secret");
+		expect(publicResult).not.toContain("broker-discovery-secret");
+		expect(publicResult).not.toContain("session-endpoint-secret");
+		expect(publicResult).not.toContain("session-record-secret");
+		expect(publicResult).not.toContain("session-state-secret");
 		expect(controls).toEqual([
 			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
-			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: undefined },
+			{ operation: "session.list", input: { cwd: root }, idempotencyKey: undefined },
 		]);
+	});
+
+	it("derives aggregate liveness from scoped broker records", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls, [], undefined, [
+			{ sessionId: "live-session", locator: { repo: root }, live: true },
+			{
+				sessionId: "stale-session",
+				locator: { repo: root },
+				live: false,
+				endpoint: { url: "ws://broker.example.test/endpoint?token=stale-secret", token: "Bearer stale-secret" },
+			},
+			{ sessionId: "other-workdir", locator: { repo: path.join(root, "other") }, live: true },
+		]);
+		const status = await server.callTool("gjc_coordinator_read_status");
+		expect(status).toEqual({
+			ok: true,
+			sessions: [
+				{ session_id: "live-session", live: true },
+				{ session_id: "stale-session", live: false },
+			],
+			statuses: [
+				{
+					session: { session_id: "live-session", live: true },
+					status: { authority: "sdk_broker", live: true },
+				},
+				{
+					session: { session_id: "stale-session", live: false },
+					status: { authority: "sdk_broker", live: false },
+				},
+			],
+		});
+		expect(JSON.stringify(status)).not.toContain("stale-secret");
+		expect(controls).toEqual([{ operation: "session.list", input: { cwd: root }, idempotencyKey: undefined }]);
 	});
 	it("reads bounded tail output through the SDK", async () => {
 		const root = await tempRoot();
