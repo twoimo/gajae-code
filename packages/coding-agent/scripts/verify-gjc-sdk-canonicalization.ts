@@ -34,10 +34,8 @@ const machineTmuxDocumentationPaths = new Set([
 	"packages/coding-agent/src/setup/hermes/templates/operator-instructions.v1.md",
 ]);
 const machineTmuxDocumentationPattern =
-	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b)/g;
-const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b/g;
-const tmuxMachineStartupIngressPattern =
-	/\bGJC_SESSION_FLAGS\b|(?:GJC_SESSION_GJC_BIN|GJC_BIN)[^\n]*(?:--print\b|-p(?:\s|["'])|--prompt\b|--message\b|--file\b|--mode\b|--continue\b|--resume\b|--fork\b|--session\b)/g;
+	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
+const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b/g;
 
 function isWorkspacePackageManifest(file: string): boolean {
 	return file === "package.json" || (file.startsWith("packages/") && file.endsWith("/package.json"));
@@ -227,6 +225,33 @@ const sanctionedTmuxPaths = new Map<string, string>([
 const coordinatorMcpRoot = "packages/coding-agent/src/coordinator-mcp/server.ts";
 function isPublishedGjcSessionShellHelper(file: string): boolean {
 	return file.startsWith("scripts/gjc-session/") && file.endsWith(".sh");
+}
+
+function tmuxCreateStartupViolations(file: string, contents: string): string[] {
+	if (file !== "scripts/gjc-session/create.sh") return [];
+	const violations: string[] = [];
+	const violation = (offset: number, detail: string) =>
+		violations.push(`${file}:${lineNumber(contents, offset)}: ${detail}`);
+	const arity = contents.match(/^\s*\[\[\s+\$#\s+-eq\s+2\s+\]\]/m);
+	if (!arity) violation(0, "human-only tmux owner must accept exactly two startup operands");
+	const canonicalCommand = /^\s*command = \[os\.environ\["GJC_SESSION_GJC_BIN"\]\]\s*$/gm;
+	const canonicalCommands = [...contents.matchAll(canonicalCommand)];
+	const commandAssignments = [...contents.matchAll(/^\s*(?:command|argv|args|startup)\s*=\s*[[(]/gim)];
+	if (canonicalCommands.length !== 1 || commandAssignments.length !== 1) {
+		violation(
+			commandAssignments[0]?.index ?? 0,
+			"human-only tmux owner must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
+		);
+	}
+	for (const match of contents.matchAll(/\bGJC_SESSION_FLAGS\b/g)) {
+		violation(match.index ?? 0, "human-only tmux owner exposes caller-provided startup arguments");
+	}
+	for (const match of contents.matchAll(
+		/^\s*["']?\$(?:GJC_BIN|GJC_SESSION_GJC_BIN)["']?\s+(?!--internal-tmux-owner-isolation\b)\S+/gm,
+	)) {
+		violation(match.index ?? 0, "human-only tmux owner invokes GJC with a non-lifecycle startup argument");
+	}
+	return violations;
 }
 
 const canonicalSdkClientModule = "packages/coding-agent/src/sdk/client/client.ts";
@@ -474,11 +499,7 @@ async function scan(): Promise<string[]> {
 					`${file}:${lineNumber(contents, match.index ?? 0)}: published shell helper performs tmux machine prompt injection or pane viewing`,
 				);
 			}
-			for (const match of contents.matchAll(tmuxMachineStartupIngressPattern)) {
-				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: published shell helper exposes machine startup input to the human-only tmux owner`,
-				);
-			}
+			violations.push(...tmuxCreateStartupViolations(file, contents));
 		}
 		if (file === scannerPath || !isSource(file)) continue;
 
@@ -793,15 +814,50 @@ async function selfTest(): Promise<void> {
 		"published shell helper performs tmux machine prompt injection or pane viewing",
 	);
 	await runSelfTestFixture(
+		{ "scripts/gjc-session/create.sh": "#!/usr/bin/env bash\nGJC_SESSION_FLAGS=unsafe\n" },
+		1,
+		"exposes caller-provided startup arguments",
+	);
+	await runSelfTestFixture(
 		{
 			"scripts/gjc-session/create.sh":
-				'#!/usr/bin/env bash\nGJC_SESSION_FLAGS=unsafe\ncommand=("$GJC_BIN" -p automated)\n',
+				'#!/usr/bin/env bash\n[[ $# -eq 2 ]]\ncommand = [\n  os.environ["GJC_SESSION_GJC_BIN"],\n  "--file",\n  "task.md",\n]\n',
 		},
 		1,
-		"published shell helper exposes machine startup input to the human-only tmux owner",
+		"must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh":
+				'#!/usr/bin/env bash\n[[ $# -ge 2 ]]\ncommand = [os.environ["GJC_SESSION_GJC_BIN"]]\n',
+		},
+		1,
+		"must accept exactly two startup operands",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh":
+				'#!/usr/bin/env bash\n[[ $# -eq 2 ]]\ncommand = [os.environ["GJC_SESSION_GJC_BIN"]]\n"$GJC_BIN" --internal-tmux-owner-isolation\n',
+		},
+		0,
+	);
+	await runSelfTestFixture(
+		{ "scripts/gjc-session/watch-output.sh": "#!/usr/bin/env bash\ntmux pipe-pane -t session 'sink'\n" },
+		1,
+		"published shell helper performs tmux machine prompt injection or pane viewing",
 	);
 	await runSelfTestFixture(
 		{ "docs/gjc-session-clawhip-routing.md": "scripts/gjc-session/tail.sh visible output\n" },
+		1,
+		"published machine documentation directs tmux prompt or viewing access",
+	);
+	await runSelfTestFixture(
+		{ "docs/gjc-session-clawhip-routing.md": "tmux pipe-pane -t owner 'sink'\n" },
+		1,
+		"published machine documentation directs tmux prompt or viewing access",
+	);
+	await runSelfTestFixture(
+		{ "docs/gjc-session-clawhip-routing.md": './scripts/gjc-session/create.sh bot /repo --print "task"\n' },
 		1,
 		"published machine documentation directs tmux prompt or viewing access",
 	);

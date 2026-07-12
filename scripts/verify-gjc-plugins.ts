@@ -171,9 +171,24 @@ for (const tool of delegateTools) {
 gate("docs reference delegate tools", docsReferenceTools, "command/skill docs mention each delegate tool");
 
 const machineTmuxRoutePattern =
-	/(?:\btmux\s+(?:watch|load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:scripts\/)?gjc-session\/(?:prompt|tail|watch)(?:\.sh)?\b|\bgjc-session\s+(?:prompt|tail|watch)\b)/g;
+	/(?:\btmux\s+(?:watch|load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:scripts\/)?gjc-session\/(?:prompt|tail|watch)(?:\.sh)?\b|\bgjc-session\s+(?:prompt|tail|watch)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3}|\bgjc-session\s+create(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
 const installableMachineRouteReferences = [...files].flatMap(([rel, text]) =>
 	[...text.matchAll(machineTmuxRoutePattern)].map(match => `${rel}:${match[0]}`),
+);
+const machineTmuxRouteRegressionFixtures = [
+	"tmux pipe-pane -t owner 'sink'",
+	'./scripts/gjc-session/create.sh bot /repo --print "task"',
+	"scripts/gjc-session/create.sh bot /repo positional-prompt",
+	"gjc-session create bot /repo --file task.md",
+	"gjc-session create bot /repo resume",
+];
+const uncoveredMachineTmuxRoutes = machineTmuxRouteRegressionFixtures.filter(
+	fixture => !new RegExp(machineTmuxRoutePattern.source).test(fixture),
+);
+gate(
+	"tmux machine-ingress matcher covers regression fixtures",
+	uncoveredMachineTmuxRoutes.length === 0,
+	uncoveredMachineTmuxRoutes.join(", ") || "all covered",
 );
 gate(
 	"all generated installable files omit tmux machine ingress",
