@@ -9,6 +9,10 @@ import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@g
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
 import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
+import {
+	isVisibleSessionInternalFastPath,
+	runVisibleSessionInternalCommandIfReserved,
+} from "./visible-session/internal-command";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -282,8 +286,49 @@ export function routeRootArgv(argv: readonly string[]): string[] {
 			: ["launch", ...normalizedArgv];
 }
 
+export type CliRunner = (argv: string[]) => Promise<void>;
+export type CliTerminator = (exitCode: number) => void;
+
+export interface VisibleSessionDedicatedRoleMainDependencies {
+	runCli?: CliRunner;
+	terminate?: CliTerminator;
+	getExitCode?: () => number | undefined;
+	setExitCode?: (exitCode: number) => void;
+}
+
+/**
+ * Terminates detached visible-session roles at the Bun/native-addon boundary
+ * after their role teardown has completed.
+ */
+export async function runVisibleSessionDedicatedRoleMain(
+	argv: string[],
+	dependencies: VisibleSessionDedicatedRoleMainDependencies = {},
+): Promise<boolean> {
+	if (!isVisibleSessionInternalFastPath(argv)) return false;
+
+	const runDedicatedRole = dependencies.runCli ?? runCli;
+	const terminate = dependencies.terminate ?? (exitCode => process.exit(exitCode));
+	const getExitCode =
+		dependencies.getExitCode ?? (() => (typeof process.exitCode === "number" ? process.exitCode : undefined));
+	const setExitCode =
+		dependencies.setExitCode ??
+		(exitCode => {
+			process.exitCode = exitCode;
+		});
+	try {
+		await runDedicatedRole(argv);
+	} catch (error) {
+		if (!getExitCode()) setExitCode(1);
+		throw error;
+	}
+	terminate(getExitCode() ?? 0);
+	return true;
+}
+
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
+	if (await runVisibleSessionInternalCommandIfReserved(argv)) return;
+
 	// macOS malloc-env launch boundary. Re-exec once with a scrubbed environment
 	// BEFORE any fast path or subprocess spawn, so the startup env snapshot Bun hands
 	// to every child lane (Bun.spawn defaults, node:child_process, native PTY, tmux
@@ -354,5 +399,6 @@ export async function runCli(argv: string[]): Promise<void> {
 }
 
 if (import.meta.main) {
-	await runCli(process.argv.slice(2));
+	const argv = process.argv.slice(2);
+	if (!(await runVisibleSessionDedicatedRoleMain(argv))) await runCli(argv);
 }
