@@ -132,13 +132,16 @@ export function sendControlRequest(
 		socket.once("connect", () => {
 			connected = true;
 			const message = Buffer.concat([encoded, CONTROL_REQUEST_END_MARKER]);
-			if (process.platform === "win32") socket.write(message);
-			else socket.end(message);
+			// The explicit marker completes request framing without depending on half-close behavior.
+			socket.write(message);
 		});
 		socket.on("data", (chunk: Buffer) => {
+			if (settled) return;
 			try {
-				const frames = decoder.push(chunk);
-				if (frames.length === 1) response = decodeControlResponseFrame(frames[0]);
+				const [frame] = decoder.push(chunk);
+				if (!frame) return;
+				if (response) throw new ControlClientError("bad_response");
+				response = decodeControlResponseFrame(frame);
 			} catch {
 				finish(() => deferred.reject(new ControlClientError("bad_response")));
 			}
@@ -157,7 +160,7 @@ export function sendControlRequest(
 				);
 			}
 		};
-		socket.once("end", finalizeResponse);
+		socket.once("end", () => socket.end());
 		socket.once("close", finalizeResponse);
 		socket.once("error", error => {
 			const transient = !connected && TRANSIENT_PRE_CONNECT_CODES.has((error as NodeJS.ErrnoException).code ?? "");

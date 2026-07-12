@@ -131,10 +131,7 @@ it(
 			output = Promise.all([drainBounded(child.stdout, child), drainBounded(child.stderr, child)]);
 			const timedOut = Promise.withResolvers<true>();
 			wallTimeout = setTimeout(() => timedOut.resolve(true), WALL_TIMEOUT_MS);
-			const timeout = await Promise.race([
-				child.exited.then(() => false as const),
-				timedOut.promise,
-			]);
+			const timeout = await Promise.race([child.exited.then(() => false as const), timedOut.promise]);
 			clearTimeout(wallTimeout);
 			wallTimeout = undefined;
 			if (timeout) stopChild(child);

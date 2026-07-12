@@ -75,7 +75,7 @@ async function sendRawFrameChunks(endpoint: string, chunks: readonly Buffer[]): 
 		const frames = decoder.push(chunk);
 		if (frames.length === 1) response = decodeControlResponseFrame(frames[0]);
 	});
-	socket.once("end", () => {
+	socket.once("close", () => {
 		try {
 			decoder.finish();
 			deferred.resolve(response);
