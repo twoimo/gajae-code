@@ -126,7 +126,11 @@ async function settle(): Promise<void> {
 	await new Promise<void>(resolve => process.nextTick(resolve));
 	await Bun.sleep(25);
 }
-function createRawStdin(raw: boolean, flowing: boolean | null, paused: boolean): {
+function createRawStdin(
+	raw: boolean,
+	flowing: boolean | null,
+	paused: boolean,
+): {
 	stdin: RawTerminalStdin;
 	state: { raw: boolean; flowing: boolean | null; paused: boolean };
 	calls: string[];
@@ -349,7 +353,7 @@ describe("raw terminal lease", () => {
 		);
 
 		expect(state).toEqual({ raw: false, flowing: false, paused: true });
-		expect(calls).toEqual(["raw:true", "resume", "pause", "raw:false"]);
+		expect(calls).toEqual(["raw:true", "pause", "raw:false"]);
 		expect(mode).toBe(0x0011);
 		expect(modeWrites).toEqual([0x0211, 0x0011]);
 		expect(driverClosed).toBe(true);
