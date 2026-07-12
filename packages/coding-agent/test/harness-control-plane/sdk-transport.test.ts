@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it, mock } from "bun:test";
 
 type Responses = {
 	metadata: unknown;
@@ -37,10 +37,20 @@ const client = {
 	close: async (): Promise<void> => {},
 };
 
+const realClientModule = await import("../../src/sdk/client");
+
 mock.module("../../src/sdk/client", () => ({
 	SdkClient: { connect: async () => client },
 	readSdkSessionEndpoint: async () => ({ url: "ws://sdk.test", token: "token" }),
 }));
+
+afterAll(() => {
+	// Restore the real module so this process-global mock.module does not leak
+	// SdkClient (a non-constructor stub) into sibling shard tests that construct
+	// the real SdkClient (e.g. sdk-acp-two-client-race, sdk-chat-daemon-worker).
+	mock.module("../../src/sdk/client", () => realClientModule);
+	mock.restore();
+});
 
 const { createSdkSessionTransport } = await import("../../src/harness-control-plane/sdk-transport");
 
