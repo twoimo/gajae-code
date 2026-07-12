@@ -159,7 +159,7 @@ describe("SelectorController model batch assignments", () => {
 		});
 
 		expect(setModelTemporary).toHaveBeenCalledWith(selectedModel, ThinkingLevel.Low, {
-			cause: "user-selection",
+			cause: "temporary-operation",
 			reason: "other",
 		});
 		expect(setDefaultFallbackRuntimeModel).toHaveBeenCalledWith("provider-a/selected:low");

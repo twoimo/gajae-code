@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "bun:test";
-import { Agent } from "@gajae-code/agent-core";
+import { Agent, type AgentOptions } from "@gajae-code/agent-core";
+import { createMockModel } from "@gajae-code/ai/providers/mock";
 import type { Model, ProviderSessionState } from "@gajae-code/ai";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { AgentSession } from "@gajae-code/coding-agent/session/agent-session";
@@ -7,13 +8,13 @@ import { SessionManager } from "@gajae-code/coding-agent/session/session-manager
 
 const model = { provider: "test", id: "model", api: "openai-responses", name: "model" } as Model;
 
-function createSession(): AgentSession {
-	const agent = new Agent({ initialState: { model, systemPrompt: [], tools: [], messages: [] } });
+function createSession(streamFn?: AgentOptions["streamFn"]): AgentSession {
+	const agent = new Agent({ initialState: { model, systemPrompt: [], tools: [], messages: [] }, streamFn });
 	return new AgentSession({
 		agent,
 		sessionManager: SessionManager.inMemory(),
 		settings: Settings.isolated(),
-		modelRegistry: { getAvailable: () => [], getApiKey: async () => "key" } as never,
+		modelRegistry: { getAvailable: () => [model], getApiKey: async () => "key" } as never,
 	});
 }
 
@@ -108,5 +109,25 @@ describe("temporary provider-session suspension", () => {
 
 		await session.setModel(model, "default", { cause: "user-selection" });
 		expect(originalClose).toHaveBeenCalledTimes(1);
+	});
+
+	test("temporary model picks suspend provider state and replace the runtime fallback chain", async () => {
+		const fallbackManaged: Array<boolean | undefined> = [];
+		const session = createSession((selected, context, options) => {
+			fallbackManaged.push(options?.fallbackManaged);
+			return createMockModel({ responses: [{ content: ["ok"] }] }).stream(selected, context, options);
+		});
+		const originalClose = vi.fn();
+		session.providerSessionState.set("original", state(originalClose));
+		session.setConfiguredModelChain("default", ["test/model", "test/fallback"], "test");
+
+		await session.setModelTemporary(model, undefined, { cause: "temporary-operation", reason: "other" });
+		session.setDefaultFallbackRuntimeModel("test/model");
+		await session.prompt("temporary pick");
+		await session.waitForIdle();
+
+		expect(originalClose).not.toHaveBeenCalled();
+		expect(fallbackManaged).toEqual([undefined]);
+		await session.dispose();
 	});
 });

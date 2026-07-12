@@ -5671,8 +5671,8 @@ export class AgentSession {
 		this.#beginInFlight();
 		const generation = this.#promptGeneration;
 		if (message.role === "user") {
-			await this.#ensureDefaultFallbackResolution();
 			await this.#resetDefaultFallbackForNewTurn();
+			await this.#ensureDefaultFallbackResolution();
 			this.#defaultFallbackChain().resetAttemptBudget();
 		}
 		const rosterClaim = this.#claimIrcRosterCandidate();

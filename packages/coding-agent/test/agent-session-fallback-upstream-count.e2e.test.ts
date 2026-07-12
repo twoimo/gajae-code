@@ -150,6 +150,39 @@ describe("AgentSession managed fallback upstream request counts", () => {
 		]);
 	});
 
+	it("emits one switch when an exhausted chain restarts with an unavailable head", async () => {
+		const events: Array<Extract<AgentSessionEvent, { type: "model_fallback_switched" }>> = [];
+		let headUnavailable = false;
+		let streamAttempts = 0;
+		const { primary, fallback } = createSession(1, (_model, _context, _options) => {
+			streamAttempts += 1;
+			return streamAttempts <= 2 ? rateLimitStream(_model) : successfulStream(_model, "Recovered next turn");
+		});
+		vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async requested =>
+			selector(requested) === selector(primary) && headUnavailable ? undefined : "test-key",
+		);
+		session!.subscribe(event => {
+			if (event.type === "model_fallback_switched") events.push(event);
+		});
+
+		await session!.prompt("Exhaust every fallback");
+		await session!.waitForIdle();
+		expect(events).toHaveLength(1);
+		events.length = 0;
+		headUnavailable = true;
+
+		await session!.prompt("Start a new turn");
+		await session!.waitForIdle();
+
+		expect(events).toEqual([
+			expect.objectContaining({
+				from: selector(primary),
+				to: selector(fallback),
+				reason: "new_turn",
+			}),
+		]);
+	});
+
 	it("uses one managed, tokenized upstream request for a scheduled continuation", async () => {
 		const calls: StreamCall[] = [];
 		const { primary } = createSession(1, (model, _context, options) => {

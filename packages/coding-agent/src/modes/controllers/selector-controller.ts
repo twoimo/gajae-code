@@ -907,7 +907,7 @@ export class SelectorController {
 						if (role === null) {
 							// Temporary: update agent state but don't persist to settings
 							await this.ctx.session.setModelTemporary(model, thinkingLevel, {
-								cause: "user-selection",
+								cause: "temporary-operation",
 								reason: "other",
 							});
 							this.ctx.session.setDefaultFallbackRuntimeModel(
