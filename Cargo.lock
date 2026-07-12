@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "git-daemon"
-version = "0.8.2"
+version = "0.10.0"
 dependencies = [
  "hmac",
  "reqwest",
