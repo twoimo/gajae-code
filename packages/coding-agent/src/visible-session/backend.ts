@@ -1,3 +1,5 @@
+import type { VisibleSessionGeneration, VisibleSessionRegistryEntry } from "./types";
+
 export const VISIBLE_SESSION_BACKEND_IDS = ["conpty", "tmux", "wsl-tmux"] as const;
 export type VisibleSessionBackendId = (typeof VISIBLE_SESSION_BACKEND_IDS)[number];
 export interface VisibleSessionBackendCapabilities {
@@ -15,6 +17,39 @@ export interface VisibleSessionBackendTerminal {
 	kind: "terminal";
 	backend: VisibleSessionBackendId;
 	status: VisibleSessionBackendTerminalStatus;
+}
+export interface VisibleSessionBackendContext {
+	entry: VisibleSessionRegistryEntry;
+	generation: VisibleSessionGeneration;
+}
+export interface VisibleSessionBackendSessionCommandInput {
+	context: VisibleSessionBackendContext;
+	readOnly?: boolean;
+}
+export interface VisibleSessionBackendRunning {
+	kind: "running";
+	backend: VisibleSessionBackendId;
+}
+export interface VisibleSessionBackendCancelAccepted {
+	kind: "accepted";
+	backend: VisibleSessionBackendId;
+}
+export type VisibleSessionBackendProbe =
+	| VisibleSessionBackendRunning
+	| VisibleSessionBackendTerminal
+	| VisibleSessionBackendUnavailable;
+export type VisibleSessionBackendCancelResult =
+	| VisibleSessionBackendCancelAccepted
+	| VisibleSessionBackendTerminal
+	| VisibleSessionBackendUnavailable;
+export interface VisibleSessionBackendPort {
+	readonly id: VisibleSessionBackendId;
+	readonly capabilities: VisibleSessionBackendCapabilities;
+	sessionCommand(
+		input: VisibleSessionBackendSessionCommandInput,
+	): Promise<readonly string[] | VisibleSessionBackendUnavailable>;
+	probe(context: VisibleSessionBackendContext): Promise<VisibleSessionBackendProbe>;
+	cancel(context: VisibleSessionBackendContext): Promise<VisibleSessionBackendCancelResult>;
 }
 export interface VisibleSessionSupportedBackendId {
 	kind: "supported";

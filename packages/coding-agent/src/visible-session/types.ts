@@ -5,6 +5,12 @@ export type VisibleSessionBackend = VisibleSessionBackendId;
 export type VisibleSessionStoredBackend = VisibleSessionBackend | VisibleSessionUnsupportedBackendId;
 export type VisibleSessionPlatform = "win32" | "posix";
 export type VisibleSessionGenerationStatus = "prepared" | "active";
+export interface VisibleSessionTmuxOwnership {
+	socketKey: string;
+	sessionName: string;
+	stateFilePath: string;
+	ownerGeneration: string;
+}
 export interface VisibleSessionName {
 	displayName: string;
 	key: string;
@@ -33,6 +39,7 @@ export interface VisibleSessionGeneration {
 	process?: VisibleSessionProcessIdentity;
 	tokenFilePath: string;
 	tokenSha256: string;
+	tmux?: VisibleSessionTmuxOwnership;
 }
 export interface VisibleSessionRegistryEntry {
 	name: VisibleSessionName;

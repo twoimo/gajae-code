@@ -367,6 +367,56 @@ test("uses public lifecycle markers only and excludes all private capture mechan
 		expect(await Bun.file(timeoutLog).text()).toStartWith("10s ");
 		expect(Bun.spawnSync(["tmux", "-L", `gjc-${name}`, "has-session", "-t", `${name}-owner-monitor`]).exitCode).not.toBe(0);
 	});
+	test("registers the exact router watch matrix when router skipping is disabled", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-router-matrix-"));
+		roots.push(root);
+		const dir = await worktree(root);
+		const state = path.join(root, "state");
+		const bin = await fixture(root);
+		const router = path.join(root, "router");
+		const argsLog = path.join(root, "router-args.log");
+		const skipLog = path.join(root, "router-skip.log");
+		await executable(router, `#!/usr/bin/env bash
+printf '%s\n' "$@" >"$GJC_FIXTURE_ROUTER_ARGS"
+printf '%s\n' "$GJC_SESSION_SKIP_ROUTER" >"$GJC_FIXTURE_ROUTER_SKIP"
+`);
+		const name = `router-matrix-${Date.now()}`;
+		sessions.push({ name, socket: `gjc-${name}` });
+		const created = Bun.spawnSync(["bash", createScript, name, dir, "C-router-matrix", "@router-matrix"], {
+			env: env({
+				GJC_BIN: bin,
+				GJC_SESSION_STATE_DIR: state,
+				GJC_SESSION_ROUTER: router,
+				GJC_SESSION_SKIP_ROUTER: "0",
+				GJC_SESSION_STALE_MINUTES: "23",
+				GJC_SESSION_KEYWORDS: "legacy keyword,second keyword",
+				GJC_FIXTURE_ROUTER_ARGS: argsLog,
+				GJC_FIXTURE_ROUTER_SKIP: skipLog,
+			}),
+			stderr: "pipe",
+		});
+		expect(created.exitCode).toBe(0);
+		expect(await Bun.file(argsLog).text()).toBe(
+			[
+				"tmux",
+				"watch",
+				"--session",
+				name,
+				"--stale-minutes",
+				"23",
+				"--format",
+				"compact",
+				"--keywords",
+				"legacy keyword,second keyword",
+				"--channel",
+				"C-router-matrix",
+				"--mention",
+				"@router-matrix",
+				"",
+			].join("\n"),
+		);
+		expect(await Bun.file(skipLog).text()).toBe("0\n");
+	});
 
 test("records router watch failures without failing creation", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-watch-failure-")); roots.push(root);

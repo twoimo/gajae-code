@@ -7,6 +7,14 @@ import {
 	type VisibleSessionAttachDependencies,
 	type VisibleSessionAttachResult,
 } from "./attach";
+import type {
+	VisibleSessionBackendCancelResult,
+	VisibleSessionBackendCapabilities,
+	VisibleSessionBackendContext,
+	VisibleSessionBackendId,
+	VisibleSessionBackendPort,
+	VisibleSessionBackendProbe,
+} from "./backend";
 import { LocalControlClient } from "./control-client";
 import {
 	type ControlErrorCode,
@@ -70,6 +78,7 @@ export interface VisibleSessionCommandServiceDependencies {
 	registry: VisibleSessionRegistry;
 	launch?: typeof launchVisibleSession;
 	attach?: typeof runVisibleSessionAttach;
+	backendPorts?: ReadonlyMap<VisibleSessionBackendId, VisibleSessionBackendPort>;
 	createReader?: (
 		publicRoot: string,
 		generationId: string,
@@ -125,6 +134,12 @@ function error(code: VisibleSessionCommandErrorCode): VisibleSessionCommandError
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isStringArray(value: unknown): value is readonly string[] {
+	return Array.isArray(value) && value.every(argument => typeof argument === "string");
+}
+function isVisibleSessionBackendTerminalStatus(value: unknown): boolean {
+	return value === "completed" || value === "failed" || value === "cancelled" || value === "vanished";
+}
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
 	return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 }
@@ -174,6 +189,7 @@ export class VisibleSessionCommandService {
 		privateRoot: string,
 		identity: VisibleSessionRoleIdentity,
 	) => Promise<VisibleSessionTerminalRecord | VisibleSessionVanishedRecord | null>;
+	readonly #backendPorts: ReadonlyMap<VisibleSessionBackendId, VisibleSessionBackendPort> | undefined;
 
 	constructor(dependencies: VisibleSessionCommandServiceDependencies) {
 		this.#registry = dependencies.registry;
@@ -188,6 +204,7 @@ export class VisibleSessionCommandService {
 		this.#createClient = dependencies.createClient ?? (options => new LocalControlClient(options));
 		this.#sleep = dependencies.sleep ?? (milliseconds => Bun.sleep(milliseconds));
 		this.#readPrivateTerminal = dependencies.readPrivateTerminal ?? readVisibleSessionPrivateTerminal;
+		this.#backendPorts = dependencies.backendPorts;
 	}
 
 	async create(request: VisibleSessionCreateRequest): Promise<VisibleSessionLaunchReceipt> {
@@ -248,6 +265,17 @@ export class VisibleSessionCommandService {
 			request.dependencies,
 		);
 	}
+	async sessionCommand(name: string, options: { readOnly?: boolean } = {}): Promise<readonly string[]> {
+		if (
+			!options ||
+			typeof options !== "object" ||
+			Array.isArray(options) ||
+			(options.readOnly !== undefined && typeof options.readOnly !== "boolean")
+		)
+			throw error("invalid_input");
+		const current = await this.#current(name);
+		return this.#backendSessionCommand(current, options.readOnly);
+	}
 
 	async tail(
 		name: string,
@@ -291,8 +319,19 @@ export class VisibleSessionCommandService {
 		if (status.phase === "terminal") return { cancelled: false, phase: "terminal" };
 		if (status.phase === "stale") return { cancelled: false, phase: "stale" };
 		await this.#validateCurrentGeneration(current);
-		await this.#call(current, { action: "cancel" });
-		return { cancelled: true, phase: "live" };
+		if (current.backend === "conpty") {
+			await this.#call(current, { action: "cancel" });
+			return { cancelled: true, phase: "live" };
+		}
+		const result = await this.#backendCancel(current);
+		switch (result.kind) {
+			case "accepted":
+				return { cancelled: true, phase: "live" };
+			case "terminal":
+				return { cancelled: false, phase: "terminal" };
+			case "unavailable":
+				throw error("control_unavailable");
+		}
 	}
 
 	async recreate(request: VisibleSessionRecreateRequest): Promise<VisibleSessionLaunchReceipt> {
@@ -320,8 +359,97 @@ export class VisibleSessionCommandService {
 			throw error(this.#isLaunchConflict(caught) ? "conflict" : "startup_failed");
 		}
 	}
+	async #backendStatus(current: CurrentVisibleSession): Promise<VisibleSessionStatusReceipt> {
+		const probe = await this.#backendProbe(current);
+		switch (probe.kind) {
+			case "running":
+				return this.#receipt(current, "running", null, false);
+			case "terminal":
+				return this.#receipt(current, "terminal", probe.status === "vanished" ? "vanished" : "final", false);
+			case "unavailable":
+				throw error("control_unavailable");
+		}
+	}
+	async #backendSessionCommand(
+		entry: VisibleSessionRegistryEntry,
+		readOnly: boolean | undefined,
+	): Promise<readonly string[]> {
+		const port = this.#backendPort(entry, "interactiveAttach");
+		try {
+			const result = await port.sessionCommand({
+				context: this.#backendContext(entry),
+				readOnly,
+			});
+			if (isStringArray(result)) return result;
+			if (!result || result.kind !== "unavailable" || result.backend !== port.id) throw error("control_unavailable");
+			throw error("control_unavailable");
+		} catch (caught) {
+			if (caught instanceof VisibleSessionCommandError) throw caught;
+			throw error("control_unavailable");
+		}
+	}
+	async #backendProbe(entry: VisibleSessionRegistryEntry): Promise<VisibleSessionBackendProbe> {
+		const port = this.#backendPort(entry, "routerWatch");
+		try {
+			const result = await port.probe(this.#backendContext(entry));
+			if (!result || result.backend !== port.id || !this.#isBackendProbeResult(result))
+				throw error("control_unavailable");
+			return result;
+		} catch (caught) {
+			if (caught instanceof VisibleSessionCommandError) throw caught;
+			throw error("control_unavailable");
+		}
+	}
+	async #backendCancel(entry: VisibleSessionRegistryEntry): Promise<VisibleSessionBackendCancelResult> {
+		const port = this.#backendPort(entry, "localControl");
+		try {
+			const result = await port.cancel(this.#backendContext(entry));
+			if (!result || result.backend !== port.id || !this.#isBackendCancelResult(result))
+				throw error("control_unavailable");
+			return result;
+		} catch (caught) {
+			if (caught instanceof VisibleSessionCommandError) throw caught;
+			throw error("control_unavailable");
+		}
+	}
+	#backendPort(
+		entry: VisibleSessionRegistryEntry,
+		capability: keyof VisibleSessionBackendCapabilities,
+	): VisibleSessionBackendPort {
+		const backend = entry.backend;
+		if (typeof backend !== "string" || backend === "conpty") throw error("control_unavailable");
+		const port = this.#backendPorts?.get(backend);
+		if (!port || port.id !== backend || !port.capabilities[capability]) throw error("control_unavailable");
+		return port;
+	}
+	#backendContext(entry: VisibleSessionRegistryEntry): VisibleSessionBackendContext {
+		return { entry, generation: entry.active };
+	}
+	#isBackendProbeResult(result: VisibleSessionBackendProbe): boolean {
+		switch (result.kind) {
+			case "running":
+			case "unavailable":
+				return true;
+			case "terminal":
+				return isVisibleSessionBackendTerminalStatus(result.status);
+			default:
+				return false;
+		}
+	}
+	#isBackendCancelResult(result: VisibleSessionBackendCancelResult): boolean {
+		switch (result.kind) {
+			case "accepted":
+			case "unavailable":
+				return true;
+			case "terminal":
+				return isVisibleSessionBackendTerminalStatus(result.status);
+			default:
+				return false;
+		}
+	}
 
 	async #status(current: CurrentVisibleSession): Promise<VisibleSessionStatusReceipt> {
+		if (current.backend !== "conpty") return this.#backendStatus(current);
 		const publicState = await this.#publicState(current.active);
 		const privateTerminal = await this.#privateTerminal(current.active);
 		const ownerEvidence = publicState ? this.#publicStateOwnerEvidence(publicState, current.active) : null;
