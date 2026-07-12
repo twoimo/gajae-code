@@ -7,10 +7,10 @@ import { join, relative } from "node:path";
 import { MAX_VISIBLE_SESSION_PANE_TAIL_BYTES, VisibleSessionPublicStateReader } from "./public-state-reader";
 import {
 	type ProjectionFiles,
-	type VisibleSessionRoleIdentity,
-	VisibleSessionStateOwner,
 	VISIBLE_SESSION_PROJECTED_STATE_SCHEMA_VERSION,
 	VISIBLE_SESSION_PUBLIC_STATE_SCHEMA_VERSION,
+	type VisibleSessionRoleIdentity,
+	VisibleSessionStateOwner,
 	visibleSessionStatePaths,
 } from "./state";
 

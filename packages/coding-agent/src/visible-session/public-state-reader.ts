@@ -548,10 +548,7 @@ function hasProjectedOwner(value: unknown): value is {
 	);
 }
 
-function consistentProjection(
-	metadata: VisibleSessionMetadataRead,
-	values: readonly unknown[],
-): boolean {
+function consistentProjection(metadata: VisibleSessionMetadataRead, values: readonly unknown[]): boolean {
 	if (metadata.schemaVersion !== VISIBLE_SESSION_PROJECTED_STATE_SCHEMA_VERSION) return true;
 	return values.every(value => {
 		if (value === null) return true;
