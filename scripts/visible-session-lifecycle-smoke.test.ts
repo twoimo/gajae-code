@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,11 +15,27 @@ import {
 
 const sourceHead = "a".repeat(40);
 const binarySha256 = "b".repeat(64);
+const attachOutput = Buffer.from("\u001b[?25lvisible-session-attach-smoke\u001b[?25h");
+const attachOutputSha256 = crypto.createHash("sha256").update(attachOutput).digest("hex");
+
+function successfulAttachReceipt() {
+	return {
+		reason: "session-ended" as const,
+		bytesReplayed: attachOutput.length,
+		bytesFollowed: 0,
+		initialReplayTruncated: false,
+		liveTruncationCount: 0,
+		outputBytes: attachOutput.length,
+		outputSha256: attachOutputSha256,
+	};
+}
 
 function successfulEvidence(compiled = false): VisibleSessionLifecycleSmokeEvidence {
 	return {
 		sourceHead,
 		binarySha256: compiled ? binarySha256 : null,
+		sourceAttach: null,
+		compiledAttach: null,
 		ownerPid: 101,
 		monitorPid: 102,
 		terminalKind: "final",
@@ -34,7 +51,7 @@ function successfulEvidence(compiled = false): VisibleSessionLifecycleSmokeEvide
 
 function successfulReport(): VisibleSessionLifecycleReport {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		scenario: "source",
 		...successfulEvidence(),
 		durationMs: 12,
@@ -44,6 +61,8 @@ function successfulReport(): VisibleSessionLifecycleReport {
 describe("visible-session lifecycle smoke argv", () => {
 	test("requires exactly one explicit scenario and report path", () => {
 		const parsed = parseVisibleSessionLifecycleSmokeArgv(["--report", "./receipt.json", "--scenario", "hard-kill"]);
+		const attach = parseVisibleSessionLifecycleSmokeArgv(["--scenario", "attach", "--report", "./receipt.json"]);
+		expect(attach).toEqual({ scenario: "attach", reportPath: path.resolve("./receipt.json") });
 		expect(parsed).toEqual({ scenario: "hard-kill", reportPath: path.resolve("./receipt.json") });
 		for (const argv of [
 			["--scenario", "source", "--report", "receipt.json"],
@@ -67,6 +86,8 @@ describe("visible-session lifecycle report", () => {
 			"scenario",
 			"sourceHead",
 			"binarySha256",
+			"sourceAttach",
+			"compiledAttach",
 			"ownerPid",
 			"monitorPid",
 			"terminalKind",
@@ -81,6 +102,7 @@ describe("visible-session lifecycle report", () => {
 		]);
 		expect(() => validateVisibleSessionLifecycleReport({ ...report, unexpected: true })).toThrow("schema");
 		expect(() => validateVisibleSessionLifecycleReport({ ...report, failures: ["control-token-value"] })).toThrow("schema");
+		expect(() => validateVisibleSessionLifecycleReport({ ...report, sourceAttach: successfulAttachReceipt() })).toThrow("incomplete");
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-visible-report-test-"));
 		try {
 			const file = path.join(root, "report.json");
@@ -107,6 +129,27 @@ describe("visible-session lifecycle report", () => {
 		expect(report.failures).toEqual([]);
 		expect(report.binarySha256).toBe(binarySha256);
 		expect(report.sourceHead).toBe(sourceHead);
+	});
+	test("requires source and compiled attach receipts with bound provenance", async () => {
+		const report = await runVisibleSessionLifecycleSmoke(
+			{ scenario: "attach" },
+			{
+				execute: async () => ({
+					...successfulEvidence(true),
+					sourceAttach: successfulAttachReceipt(),
+					compiledAttach: successfulAttachReceipt(),
+					finalCount: 2,
+				}),
+			},
+		);
+		expect(report.failures).toEqual([]);
+		expect(report).toMatchObject({
+			sourceHead,
+			binarySha256,
+			sourceAttach: successfulAttachReceipt(),
+			compiledAttach: successfulAttachReceipt(),
+			finalCount: 2,
+		});
 	});
 
 	test("turns hermetic cleanup failures into static, token-free failure codes", async () => {

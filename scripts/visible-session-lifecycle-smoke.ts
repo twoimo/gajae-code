@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
+import * as events from "node:events";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -10,11 +11,16 @@ import {
 	type VisibleSessionLaunchReceipt,
 } from "../packages/coding-agent/src/visible-session/launch";
 import { VisibleSessionRegistry } from "../packages/coding-agent/src/visible-session/registry";
+import type {
+	VisibleSessionAttachDependencies,
+	VisibleSessionAttachResult,
+} from "../packages/coding-agent/src/visible-session/attach";
+import { VisibleSessionCommandService } from "../packages/coding-agent/src/visible-session/command-service";
 import type { GjcRuntimeSpawnInfo } from "../packages/coding-agent/src/daemon/runtime";
 import type { VisibleSessionGeneration, VisibleSessionRegistryFile } from "../packages/coding-agent/src/visible-session/types";
 
-export const VISIBLE_SESSION_LIFECYCLE_REPORT_SCHEMA_VERSION = 1 as const;
-const SCENARIOS = ["source", "compiled", "hard-kill"] as const;
+export const VISIBLE_SESSION_LIFECYCLE_REPORT_SCHEMA_VERSION = 2 as const;
+const SCENARIOS = ["source", "compiled", "hard-kill", "attach"] as const;
 const FAILURE_CODES = [
 	"compiled_binary_unavailable",
 	"source_head_unavailable",
@@ -30,6 +36,7 @@ const FAILURE_CODES = [
 	"role_process_survived",
 	"runtime_binding_invalid",
 	"internal_failure",
+	"attach_failed",
 ] as const;
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const ROLE_READY_TIMEOUT_MS = 8_000;
@@ -38,10 +45,33 @@ const CLEANUP_TIMEOUT_MS = 2_000;
 const POLL_INTERVAL_MS = 100;
 const MAX_BINARY_BYTES = 128 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 4 * 1024;
+const MAX_ATTACH_OUTPUT_BYTES = 4 * 1024;
+const ATTACH_OUTPUT = Buffer.from("\u001b[?25lvisible-session-attach-smoke\u001b[?25h");
+const ATTACH_OUTPUT_SHA256 = createHash("sha256").update(ATTACH_OUTPUT).digest("hex");
 
 type FailureCode = (typeof FAILURE_CODES)[number];
 export type VisibleSessionLifecycleScenario = (typeof SCENARIOS)[number];
 type TerminalKind = "final" | "vanished" | null;
+const ATTACH_RECEIPT_KEYS = [
+	"reason",
+	"bytesReplayed",
+	"bytesFollowed",
+	"initialReplayTruncated",
+	"liveTruncationCount",
+	"outputBytes",
+	"outputSha256",
+] as const;
+type AttachReason = "detached" | "session-ended" | "control-disconnected" | "aborted" | "output-error";
+
+export interface VisibleSessionLifecycleAttachReceipt {
+	reason: AttachReason;
+	bytesReplayed: number;
+	bytesFollowed: number;
+	initialReplayTruncated: boolean;
+	liveTruncationCount: number;
+	outputBytes: number;
+	outputSha256: string;
+}
 
 export interface VisibleSessionLifecycleSmokeInput {
 	scenario: VisibleSessionLifecycleScenario;
@@ -54,6 +84,8 @@ export interface VisibleSessionLifecycleReport {
 	scenario: VisibleSessionLifecycleScenario;
 	sourceHead: string | null;
 	binarySha256: string | null;
+	sourceAttach: VisibleSessionLifecycleAttachReceipt | null;
+	compiledAttach: VisibleSessionLifecycleAttachReceipt | null;
 	ownerPid: number | null;
 	monitorPid: number | null;
 	terminalKind: TerminalKind;
@@ -88,7 +120,7 @@ function isExplicitPath(value: string): boolean {
 
 /** Accepts only one scenario and one intentionally explicit report destination. */
 export function parseVisibleSessionLifecycleSmokeArgv(argv: readonly string[]): VisibleSessionLifecycleSmokeInput {
-	if (argv.length !== 4) throw new Error("Expected exactly --scenario <source|compiled|hard-kill> --report <path>");
+	if (argv.length !== 4) throw new Error("Expected exactly --scenario <source|compiled|hard-kill|attach> --report <path>");
 	let scenario: VisibleSessionLifecycleScenario | undefined;
 	let reportPath: string | undefined;
 	for (let index = 0; index < argv.length; index += 2) {
@@ -118,6 +150,45 @@ function isPid(value: unknown): value is number {
 function isFailureCode(value: unknown): value is FailureCode {
 	return typeof value === "string" && (FAILURE_CODES as readonly string[]).includes(value);
 }
+function isAttachReceipt(value: unknown): value is VisibleSessionLifecycleAttachReceipt {
+	if (
+		!isRecord(value) ||
+		Object.keys(value).length !== ATTACH_RECEIPT_KEYS.length ||
+		!ATTACH_RECEIPT_KEYS.every(key => Object.hasOwn(value, key))
+	)
+		return false;
+	return (
+		isAttachReason(value.reason) &&
+		[value.bytesReplayed, value.bytesFollowed, value.liveTruncationCount, value.outputBytes].every(
+			entry => typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0,
+		) &&
+		typeof value.initialReplayTruncated === "boolean" &&
+		typeof value.outputSha256 === "string" &&
+		/^[a-f0-9]{64}$/.test(value.outputSha256)
+	);
+}
+
+function isAttachReason(value: unknown): value is AttachReason {
+	return (
+		value === "detached" ||
+		value === "session-ended" ||
+		value === "control-disconnected" ||
+		value === "aborted" ||
+		value === "output-error"
+	);
+}
+
+function isSuccessfulAttachReceipt(receipt: VisibleSessionLifecycleAttachReceipt | null): boolean {
+	return (
+		receipt !== null &&
+		receipt.reason === "session-ended" &&
+		!receipt.initialReplayTruncated &&
+		receipt.liveTruncationCount === 0 &&
+		receipt.bytesReplayed + receipt.bytesFollowed === ATTACH_OUTPUT.length &&
+		receipt.outputBytes === ATTACH_OUTPUT.length &&
+		receipt.outputSha256 === ATTACH_OUTPUT_SHA256
+	);
+}
 
 /** Rejects unknown fields and any value that could expose a secret in the receipt. */
 export function validateVisibleSessionLifecycleReport(value: unknown): VisibleSessionLifecycleReport {
@@ -126,6 +197,8 @@ export function validateVisibleSessionLifecycleReport(value: unknown): VisibleSe
 		"scenario",
 		"sourceHead",
 		"binarySha256",
+		"sourceAttach",
+		"compiledAttach",
 		"ownerPid",
 		"monitorPid",
 		"terminalKind",
@@ -146,6 +219,8 @@ export function validateVisibleSessionLifecycleReport(value: unknown): VisibleSe
 		!isScenario(value.scenario) ||
 		!(value.sourceHead === null || isDigest(value.sourceHead)) ||
 		!(value.binarySha256 === null || (typeof value.binarySha256 === "string" && /^[a-f0-9]{64}$/.test(value.binarySha256))) ||
+		!(value.sourceAttach === null || isAttachReceipt(value.sourceAttach)) ||
+		!(value.compiledAttach === null || isAttachReceipt(value.compiledAttach)) ||
 		!(value.ownerPid === null || isPid(value.ownerPid)) ||
 		!(value.monitorPid === null || isPid(value.monitorPid)) ||
 		!(value.terminalKind === null || value.terminalKind === "final" || value.terminalKind === "vanished") ||
@@ -162,18 +237,26 @@ export function validateVisibleSessionLifecycleReport(value: unknown): VisibleSe
 		new Set(value.failures).size !== value.failures.length
 	)
 		throw new Error("Visible session lifecycle report schema is invalid");
-	const report = value as VisibleSessionLifecycleReport;
+	const report = value as unknown as VisibleSessionLifecycleReport;
 	if (report.failures.length === 0) {
-		const sourceBound =
-			report.sourceHead !== null && (report.scenario === "compiled" ? report.binarySha256 !== null : report.binarySha256 === null);
+		const requiresBinary = report.scenario === "compiled" || report.scenario === "attach";
+		const sourceBound = report.sourceHead !== null && (requiresBinary ? report.binarySha256 !== null : report.binarySha256 === null);
 		const terminalCount = report.finalCount + report.vanishedCount;
+		const expectedTerminalCount = report.scenario === "attach" ? 2 : 1;
+		const attachComplete =
+			report.scenario === "attach"
+				? isSuccessfulAttachReceipt(report.sourceAttach) && isSuccessfulAttachReceipt(report.compiledAttach)
+				: report.sourceAttach === null && report.compiledAttach === null;
 		if (
 			!sourceBound ||
+			!attachComplete ||
 			report.ownerPid === null ||
 			report.monitorPid === null ||
-			terminalCount !== 1 ||
+			terminalCount !== expectedTerminalCount ||
 			report.terminalKind === null ||
-			(report.terminalKind === "final" ? report.finalCount !== 1 : report.vanishedCount !== 1) ||
+			(report.terminalKind === "final"
+				? report.finalCount !== expectedTerminalCount
+				: report.vanishedCount !== expectedTerminalCount) ||
 			report.tokenPresentAfter ||
 			report.manifestPresentAfter ||
 			report.endpointReachableAfter ||
@@ -192,6 +275,8 @@ export function canonicalVisibleSessionLifecycleReport(report: VisibleSessionLif
 		scenario: checked.scenario,
 		sourceHead: checked.sourceHead,
 		binarySha256: checked.binarySha256,
+		sourceAttach: checked.sourceAttach,
+		compiledAttach: checked.compiledAttach,
 		ownerPid: checked.ownerPid,
 		monitorPid: checked.monitorPid,
 		terminalKind: checked.terminalKind,
@@ -214,6 +299,8 @@ function emptyEvidence(): VisibleSessionLifecycleSmokeEvidence {
 	return {
 		sourceHead: null,
 		binarySha256: null,
+		sourceAttach: null,
+		compiledAttach: null,
 		ownerPid: null,
 		monitorPid: null,
 		terminalKind: null,
@@ -239,12 +326,21 @@ function safeFailures(values: readonly unknown[]): FailureCode[] {
 
 function invariantFailures(scenario: VisibleSessionLifecycleScenario, evidence: VisibleSessionLifecycleSmokeEvidence): FailureCode[] {
 	const failures: FailureCode[] = [];
-	if (evidence.sourceHead === null || (scenario === "compiled" && evidence.binarySha256 === null))
+	if (evidence.sourceHead === null || ((scenario === "compiled" || scenario === "attach") && evidence.binarySha256 === null))
 		failures.push("runtime_binding_invalid");
-	if (evidence.finalCount + evidence.vanishedCount !== 1 || evidence.terminalKind === null)
+	const expectedTerminalCount = scenario === "attach" ? 2 : 1;
+	if (evidence.finalCount + evidence.vanishedCount !== expectedTerminalCount || evidence.terminalKind === null)
 		failures.push("terminal_record_count_invalid");
-	else if ((scenario === "hard-kill" && evidence.terminalKind !== "vanished") || (scenario !== "hard-kill" && evidence.terminalKind !== "final"))
+	else if (
+		(scenario === "hard-kill" && evidence.terminalKind !== "vanished") ||
+		(scenario !== "hard-kill" && evidence.terminalKind !== "final")
+	)
 		failures.push("unexpected_terminal_kind");
+	if (
+		(scenario === "attach" && (!isSuccessfulAttachReceipt(evidence.sourceAttach) || !isSuccessfulAttachReceipt(evidence.compiledAttach))) ||
+		(scenario !== "attach" && (evidence.sourceAttach !== null || evidence.compiledAttach !== null))
+	)
+		failures.push("attach_failed");
 	if (evidence.tokenPresentAfter) failures.push("private_token_survived");
 	if (evidence.manifestPresentAfter) failures.push("private_manifest_survived");
 	if (evidence.endpointReachableAfter) failures.push("control_endpoint_survived");
@@ -441,10 +537,16 @@ async function sourceHead(deadline: number): Promise<string> {
 	}
 }
 
+interface LifecycleRuntime {
+	runtime: GjcRuntimeSpawnInfo;
+	sourceHead: string;
+	binarySha256: string | null;
+}
+
 async function runtimeFor(
-	scenario: VisibleSessionLifecycleScenario,
+	scenario: Exclude<VisibleSessionLifecycleScenario, "attach">,
 	deadline: number,
-): Promise<{ runtime: GjcRuntimeSpawnInfo; sourceHead: string; binarySha256: string | null }> {
+): Promise<LifecycleRuntime> {
 	const head = await sourceHead(deadline);
 	if (scenario !== "compiled") {
 		return {
@@ -472,6 +574,177 @@ function payloadFor(): VisibleSessionExecutableSpec {
 		'process.stdout.write("Working lifecycle smoke\\n"); const parent = process.ppid; const guard = setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 25); await Bun.sleep(10000); clearInterval(guard);';
 	return { executable: process.execPath, args: ["-e", body], cwd: REPO_ROOT, env: {} };
 }
+function attachPayloadFor(): VisibleSessionExecutableSpec {
+	const body = `process.stdout.write(${JSON.stringify(ATTACH_OUTPUT.toString("utf8"))}); await Bun.sleep(2000);`;
+	return { executable: process.execPath, args: ["-e", body], cwd: REPO_ROOT, env: {} };
+}
+
+function attachCapture(): { dependencies: VisibleSessionAttachDependencies; output(): Buffer } {
+	const chunks: Uint8Array[] = [];
+	let outputBytes = 0;
+	const stdout = Object.assign(new events.EventEmitter(), {
+		columns: 80,
+		rows: 24,
+		write(bytes: Uint8Array): boolean {
+			if (bytes.length > MAX_ATTACH_OUTPUT_BYTES - outputBytes) throw new Error("attach output exceeded limit");
+			outputBytes += bytes.length;
+			chunks.push(Uint8Array.from(bytes));
+			return true;
+		},
+	});
+	const stdin = Object.assign(new events.EventEmitter(), {
+		isTTY: true,
+		columns: 80,
+		rows: 24,
+		pause(): void {},
+		resume(): void {},
+	});
+	return {
+		dependencies: {
+			stdin,
+			stdout,
+			terminal: stdout,
+			createRawTerminalLease: () => ({ close(): void {} }),
+		},
+		output: () => Buffer.concat(chunks),
+	};
+}
+
+interface AttachVariant {
+	attach: VisibleSessionLifecycleAttachReceipt;
+	launch: VisibleSessionLaunchReceipt;
+	observation: ObservedCleanup;
+}
+
+async function executeAttachVariant(
+	registry: VisibleSessionRegistry,
+	publicBase: string,
+	name: string,
+	bound: LifecycleRuntime,
+	deadline: number,
+	owned: VisibleSessionLaunchReceipt[],
+): Promise<AttachVariant> {
+	const launch = await launchVisibleSession(
+		{
+			registry,
+			input: { name, repository: REPO_ROOT, worktree: REPO_ROOT, backend: "conpty", publicBase },
+			executable: attachPayloadFor(),
+			ownerReadyTimeoutMs: ROLE_READY_TIMEOUT_MS,
+		},
+		{ runtime: bound.runtime },
+	);
+	owned.push(launch);
+	const capture = attachCapture();
+	const abort = new AbortController();
+	const remaining = deadline - Date.now();
+	if (remaining <= 0) throw new Error("attach deadline exceeded");
+	const timer = setTimeout(() => abort.abort(), remaining);
+	let result: VisibleSessionAttachResult;
+	try {
+		result = await new VisibleSessionCommandService({ registry }).attach({
+			name,
+			readOnly: true,
+			replayBytes: MAX_ATTACH_OUTPUT_BYTES,
+			pollBytes: MAX_ATTACH_OUTPUT_BYTES,
+			pollIntervalMs: 25,
+			columns: 80,
+			rows: 24,
+			signal: abort.signal,
+			dependencies: capture.dependencies,
+		});
+	} finally {
+		clearTimeout(timer);
+	}
+	const output = capture.output();
+	const attach: VisibleSessionLifecycleAttachReceipt = {
+		...result,
+		outputBytes: output.length,
+		outputSha256: createHash("sha256").update(output).digest("hex"),
+	};
+	if (!isSuccessfulAttachReceipt(attach) || !output.equals(ATTACH_OUTPUT)) throw new Error("attach receipt is invalid");
+	const generation = activeGeneration(await registry.read(), launch.generationId);
+	return { attach, launch, observation: await waitForCleanup(generation, launch, deadline) };
+}
+
+function applyAttachObservation(evidence: VisibleSessionLifecycleSmokeEvidence, observation: ObservedCleanup): void {
+	evidence.finalCount += observation.finalCount;
+	evidence.vanishedCount += observation.vanishedCount;
+	evidence.terminalKind =
+		evidence.finalCount > 0 && evidence.vanishedCount === 0
+			? "final"
+			: evidence.finalCount === 0 && evidence.vanishedCount > 0
+				? "vanished"
+				: null;
+	evidence.tokenPresentAfter ||= observation.tokenPresentAfter;
+	evidence.manifestPresentAfter ||= observation.manifestPresentAfter;
+	evidence.endpointReachableAfter ||= observation.endpointReachableAfter;
+	evidence.survivingPids = [...new Set([...evidence.survivingPids, ...observation.survivingPids])];
+	if (!observation.terminalValid) evidence.failures.push("terminal_record_invalid");
+	if (!cleanupSatisfied(observation)) evidence.failures.push("lifecycle_deadline_exceeded");
+}
+
+async function executeVisibleSessionAttachScenario(deadline: number): Promise<VisibleSessionLifecycleSmokeEvidence> {
+	const evidence = emptyEvidence();
+	let agentDir: string | null = null;
+	let publicBase: string | null = null;
+	const owned: VisibleSessionLaunchReceipt[] = [];
+	try {
+		let source: LifecycleRuntime;
+		let compiled: LifecycleRuntime;
+		try {
+			source = await runtimeFor("source", deadline);
+		} catch {
+			evidence.failures.push("source_head_unavailable");
+			return evidence;
+		}
+		try {
+			compiled = await runtimeFor("compiled", deadline);
+		} catch {
+			evidence.failures.push("compiled_binary_unavailable");
+			return evidence;
+		}
+		evidence.sourceHead = source.sourceHead;
+		evidence.binarySha256 = compiled.binarySha256;
+		if (source.sourceHead !== compiled.sourceHead) {
+			evidence.failures.push("runtime_binding_invalid");
+			return evidence;
+		}
+		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-visible-lifecycle-agent-"));
+		publicBase = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-visible-lifecycle-public-"));
+		const registry = new VisibleSessionRegistry({ agentDir });
+		for (const [mode, bound] of [
+			["source", source],
+			["compiled", compiled],
+		] as const) {
+			try {
+				const attached = await executeAttachVariant(
+					registry,
+					publicBase,
+					`smoke-attach-${mode}-${process.pid}-${Date.now()}`,
+					bound,
+					deadline,
+					owned,
+				);
+				evidence.ownerPid = attached.launch.ownerPid;
+				evidence.monitorPid = attached.launch.monitorPid;
+				if (mode === "source") evidence.sourceAttach = attached.attach;
+				else evidence.compiledAttach = attached.attach;
+				applyAttachObservation(evidence, attached.observation);
+			} catch {
+				evidence.failures.push("attach_failed");
+			}
+		}
+	} catch {
+		evidence.failures.push("attach_failed");
+	} finally {
+		await terminateOwned(owned.flatMap(receipt => [receipt.ownerPid, receipt.monitorPid]));
+		await Promise.all([
+			agentDir ? fs.rm(agentDir, { recursive: true, force: true }) : Promise.resolve(),
+			publicBase ? fs.rm(publicBase, { recursive: true, force: true }) : Promise.resolve(),
+		]);
+	}
+	return evidence;
+}
 
 function activeGeneration(registry: VisibleSessionRegistryFile, generationId: string): VisibleSessionGeneration {
 	for (const entry of registry.entries) if (entry.active.generationId === generationId) return entry.active;
@@ -494,6 +767,7 @@ async function executeVisibleSessionLifecycleScenario(
 	scenario: VisibleSessionLifecycleScenario,
 	deadline: number,
 ): Promise<VisibleSessionLifecycleSmokeEvidence> {
+	if (scenario === "attach") return executeVisibleSessionAttachScenario(deadline);
 	const evidence = emptyEvidence();
 	let agentDir: string | null = null;
 	let publicBase: string | null = null;
