@@ -70,13 +70,18 @@ async function startInteractiveNotifications() {
 function socketMessages(ws: WebSocket): {
 	next(type: string): Promise<Record<string, unknown>>;
 	all: Record<string, unknown>[];
+	seen: Record<string, unknown>[];
 } {
 	const all: Record<string, unknown>[] = [];
+	const seen: Record<string, unknown>[] = [];
 	ws.addEventListener("message", event => {
-		all.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+		const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+		all.push(message);
+		seen.push(message);
 	});
 	return {
 		all,
+		seen,
 		next: type =>
 			waitFor(() => {
 				const index = all.findIndex(message => message.type === type);
@@ -358,6 +363,89 @@ async function startUnattendedGate(opts: {
 	};
 }
 
+/** Stand up one unattended multi-select gate with capable v3 and non-capable v2 clients. */
+async function startMixedUnattendedGate(onResolve: (options: NotificationGateResolutionOptions) => Promise<void>) {
+	const harness = await startInteractiveNotifications();
+	const endpoint = `${harness.endpoint.url}/?token=${encodeURIComponent(harness.endpoint.token)}`;
+	const v3 = new WebSocket(endpoint);
+	const v2 = new WebSocket(endpoint);
+	const v3Messages = socketMessages(v3);
+	const v2Messages = socketMessages(v2);
+	await Promise.all(
+		[v3, v2].map(
+			ws =>
+				new Promise<void>((resolve, reject) => {
+					ws.addEventListener("open", () => resolve(), { once: true });
+					ws.addEventListener("error", () => reject(new Error("websocket failed")), { once: true });
+				}),
+		),
+	);
+	await Promise.all([v3Messages.next("hello"), v2Messages.next("hello")]);
+	v3.send(
+		JSON.stringify({
+			type: "hello",
+			protocolVersion: 3,
+			capabilities: ["ask_controls_v1", "ask_selected_ack_v1"],
+		}),
+	);
+	v2.send(JSON.stringify({ type: "hello", protocolVersion: 2, capabilities: [] }));
+
+	const calls: ResolveCall[] = [];
+	let emitGate: ((gate: RpcWorkflowGate) => void) | undefined;
+	const gate = {
+		isUnattended: () => true,
+		emitGate: async () => undefined,
+		onGateEmitted: (listener: (value: RpcWorkflowGate) => void) => {
+			emitGate = listener;
+			return () => {
+				emitGate = undefined;
+			};
+		},
+		resolveGate: async () => ({ gate_id: "gate-1", status: "accepted", answer_hash: "", resolved_at: "now" }),
+		resolveGateFromNotification: async (
+			response: RpcWorkflowGateResponse,
+			resolveOptions: NotificationGateResolutionOptions,
+		): Promise<RpcWorkflowGateResolution> => {
+			calls.push({ answer: response.answer });
+			await onResolve(resolveOptions);
+			return { gate_id: response.gate_id, status: "accepted", answer_hash: "", resolved_at: "now" };
+		},
+		registerGateTerminalController: () => () => {},
+		setAckRecoveryParticipant: () => {},
+	};
+	notifyWorkflowGateEmitterChanged(harness.sessionId, gate as never);
+	emitGate?.({
+		type: "workflow_gate",
+		gate_id: "gate-1",
+		stage: "deep-interview",
+		kind: "question",
+		schema: { type: "object" },
+		schema_hash: "hash",
+		options: ["a", "b"].map(value => ({ value, label: value })),
+		context: {
+			prompt: "Proceed?",
+			stage_state: { multi: true, navigation_label: "Done" },
+		},
+		created_at: new Date().toISOString(),
+		required: true,
+	});
+	return {
+		harness,
+		v3,
+		v2,
+		v3Messages,
+		v2Messages,
+		calls,
+		token: harness.endpoint.token,
+		restore: async () => {
+			v3.close();
+			v2.close();
+			notifyWorkflowGateEmitterChanged(harness.sessionId, undefined);
+			await harness.restore();
+		},
+	};
+}
+
 test("unattended out-of-range numeric reply closes the claim and reissues without a success ack", async () => {
 	const gate = await startUnattendedGate({ options: ["yes", "no"] });
 	try {
@@ -436,6 +524,97 @@ test("unattended stale/replayed out-of-range reply never resolves the gate", asy
 		gate.ws.send(JSON.stringify({ type: "reply", id: reissued.id, answer: 1, token: gate.token }));
 		expect(await gate.messages.next("action_resolved")).toMatchObject({ id: reissued.id });
 		expect(gate.calls).toEqual([{ answer: { selected: ["no"] } }]);
+	} finally {
+		await gate.restore();
+	}
+}, 20_000);
+
+test("mixed v2/v3 clients tailor and complete an unattended multi-select gate", async () => {
+	const gate = await startMixedUnattendedGate(async options => {
+		await options.requestSelectedAck({
+			replyReceiptId: options.replyReceiptId,
+			actionId: options.interactionActionId,
+			commitKey: "mixed-commit-1",
+			daemonDeadlineAt: Date.now() + 8_000,
+			hostTimeoutMs: 10_000,
+		});
+		options.resolveClaim();
+	});
+	try {
+		const [firstUnavailable, firstAction] = await Promise.all([
+			gate.v2Messages.next("action_unavailable"),
+			gate.v3Messages.next("action_needed"),
+		]);
+		const firstActionId = String(firstAction.id);
+		expect(firstUnavailable).toMatchObject({
+			id: firstActionId,
+			sessionId: gate.harness.sessionId,
+			reason: "missing_capability",
+		});
+		expect(firstUnavailable.requiredCapabilities).toEqual(expect.arrayContaining(["ask_controls_v1"]));
+		expect(
+			gate.v2Messages.seen.filter(message => message.type === "action_unavailable" && message.id === firstActionId),
+		).toHaveLength(1);
+		expect(
+			gate.v2Messages.seen.some(message => message.type === "action_needed" && message.id === firstActionId),
+		).toBe(false);
+		expect(firstAction).toMatchObject({
+			id: firstActionId,
+			kind: "ask",
+			options: ["a", "b"],
+			controls: [{ id: "navigation_forward", kind: "navigation", label: "Done", enabled: false }],
+		});
+
+		expect(gate.calls).toHaveLength(0);
+		gate.v3.send(JSON.stringify({ type: "reply", id: firstActionId, answer: 0, token: gate.token }));
+		expect(await gate.v3Messages.next("action_resolved")).toMatchObject({ id: firstActionId, resolvedBy: "client" });
+		expect(gate.calls).toHaveLength(0);
+
+		const [secondUnavailable, secondAction] = await Promise.all([
+			gate.v2Messages.next("action_unavailable"),
+			gate.v3Messages.next("action_needed"),
+		]);
+		const secondActionId = String(secondAction.id);
+		expect(secondActionId).not.toBe(firstActionId);
+		expect(secondUnavailable).toMatchObject({
+			id: secondActionId,
+			sessionId: gate.harness.sessionId,
+			reason: "missing_capability",
+		});
+		expect(secondUnavailable.requiredCapabilities).toEqual(expect.arrayContaining(["ask_controls_v1"]));
+		expect(
+			gate.v2Messages.seen.filter(message => message.type === "action_unavailable" && message.id === secondActionId),
+		).toHaveLength(1);
+		expect(
+			gate.v2Messages.seen.some(message => message.type === "action_needed" && message.id === secondActionId),
+		).toBe(false);
+		expect(secondAction).toMatchObject({
+			id: secondActionId,
+			question: "(1 selected) Proceed?",
+			options: ["a", "b"],
+			controls: [{ id: "navigation_forward", kind: "navigation", label: "Done", enabled: true }],
+		});
+
+		gate.v3.send(
+			JSON.stringify({
+				type: "reply",
+				id: secondActionId,
+				answer: { controlId: "navigation_forward" },
+				token: gate.token,
+			}),
+		);
+		const ackRequest = await gate.v3Messages.next("ask_selected_ack_request");
+		expect(gate.calls).toEqual([{ answer: { selected: ["a"] } }]);
+		gate.v3.send(
+			JSON.stringify({
+				type: "ask_selected_ack_result",
+				requestId: ackRequest.requestId,
+				commitKey: ackRequest.commitKey,
+				outcome: { status: "delivered", messageId: 84 },
+			}),
+		);
+		expect(await gate.v3Messages.next("action_resolved")).toMatchObject({ id: secondActionId, resolvedBy: "client" });
+		expect(gate.calls).toHaveLength(1);
 	} finally {
 		await gate.restore();
 	}
