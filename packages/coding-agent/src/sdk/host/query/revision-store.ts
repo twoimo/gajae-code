@@ -506,10 +506,12 @@ export class RevisionStore {
 		const hash = createHash("sha256");
 		let bytes = 0;
 		let buffer = "";
+		let bufferBytes = 0;
 		const flush = async () => {
 			if (buffer.length === 0) return;
 			const data = Buffer.from(buffer);
 			buffer = "";
+			bufferBytes = 0;
 			const chunkHash = createHash("sha256").update(data).digest("hex");
 			const file = join(directory, "objects", chunkHash);
 			await this.#writeAtomic(file, data);
@@ -518,7 +520,7 @@ export class RevisionStore {
 		};
 		const append = async (text: string) => {
 			for (let offset = 0; offset < text.length; ) {
-				let remaining = CHUNK_BYTES - Buffer.byteLength(buffer);
+				let remaining = CHUNK_BYTES - bufferBytes;
 				if (remaining === 0) {
 					await flush();
 					remaining = CHUNK_BYTES;
@@ -541,10 +543,12 @@ export class RevisionStore {
 				const part = text.slice(offset, end);
 				buffer += part;
 				hash.update(part);
-				bytes += Buffer.byteLength(part);
-				this.#peakBufferedBytes = Math.max(this.#peakBufferedBytes, Buffer.byteLength(buffer));
+				const partBytes = Buffer.byteLength(part);
+				bytes += partBytes;
+				bufferBytes += partBytes;
+				this.#peakBufferedBytes = Math.max(this.#peakBufferedBytes, bufferBytes);
 				offset = end;
-				if (Buffer.byteLength(buffer) === CHUNK_BYTES) await flush();
+				if (bufferBytes === CHUNK_BYTES) await flush();
 			}
 		};
 		const index: RevisionIndex = {};
