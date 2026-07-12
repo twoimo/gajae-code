@@ -8,6 +8,7 @@ import "@gajae-code/utils/postmortem";
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
+import VisibleSession from "./commands/visible-session";
 import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
 import {
 	isVisibleSessionInternalFastPath,
@@ -36,6 +37,7 @@ export const commands: CommandEntry[] = [
 	{ name: "acp", load: () => import("./commands/acp").then(m => m.default) },
 	{ name: "skills", load: () => import("./commands/skills").then(m => m.default) },
 	{ name: "session", load: () => import("./commands/session").then(m => m.default) },
+	{ name: "visible-session", load: async () => VisibleSession },
 	{ name: "harness", load: () => import("./commands/harness").then(m => m.default) },
 	{ name: "coordinator", load: () => import("./commands/coordinator").then(m => m.default) },
 	{ name: "team", load: () => import("./commands/team").then(m => m.default) },

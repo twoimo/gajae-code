@@ -148,6 +148,22 @@
 			"description": "Automatically resume the most recent session in the current directory",
 			"default": false
 		},
+		"session": {
+			"type": "object",
+			"properties": {
+				"backend": {
+					"type": "string",
+					"enum": [
+						"auto",
+						"conpty",
+						"tmux"
+					],
+					"description": "Backend selector for visible sessions; unsupported resolved backends fail without fallback.",
+					"default": "auto"
+				}
+			},
+			"additionalProperties": false
+		},
 		"power": {
 			"type": "object",
 			"properties": {

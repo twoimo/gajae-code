@@ -331,6 +331,12 @@ export const SETTINGS_SCHEMA = {
 			description: "Automatically resume the most recent session in the current directory",
 		},
 	},
+	"session.backend": {
+		type: "enum",
+		values: ["auto", "conpty", "tmux"] as const,
+		default: "auto",
+		description: "Backend selector for visible sessions; unsupported resolved backends fail without fallback.",
+	},
 
 	// macOS power assertions (caffeinate flags). No-op on other platforms.
 	"power.preventIdleSleep": {
@@ -3435,6 +3441,10 @@ export interface BashInterceptorRule {
 	allowSubcommands?: string[];
 }
 
+export interface SessionSettings {
+	backend: "auto" | "conpty" | "tmux";
+}
+
 export interface ShellMinimizerSettings {
 	enabled: boolean;
 	settingsPath: string | undefined;
@@ -3490,6 +3500,7 @@ export interface GroupTypeMap {
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];
 	shellMinimizer: ShellMinimizerSettings;
+	session: SessionSettings;
 	notifications: NotificationsSettings;
 }
 

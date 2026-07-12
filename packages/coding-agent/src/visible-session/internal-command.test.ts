@@ -334,7 +334,7 @@ describe("visible-session internal command", () => {
 		expect(`${result.stdout}\n${result.stderr}`).toContain("fixture dedicated role failure");
 	}, 10_000);
 
-	it("does not terminate ordinary visible-session input at the entrypoint", async () => {
+	it("routes ordinary visible-session input through the public command without dedicated-role termination", async () => {
 		const preload = ordinaryChildFixturePath;
 		if (!preload) throw new Error("ordinary entrypoint child fixture was not created");
 
@@ -342,9 +342,9 @@ describe("visible-session internal command", () => {
 			preload,
 		});
 
-		expect(result.exitCode, result.stderr).toBe(0);
-		expect(result.stderr).toBe("");
-		expect(result.stdout).toMatch(/^gjc\/\d+\.\d+\.\d+\n$/);
-		expect(result.stdout).not.toContain("fixture:exit:");
+		expect(result.exitCode).toBe(2);
+		expect(result.stderr).toBe("INVALID_INPUT: Invalid command input.\n");
+		expect(result.stdout).toBe("");
+		expect(`${result.stdout}\n${result.stderr}`).not.toContain("fixture:exit:");
 	});
 });

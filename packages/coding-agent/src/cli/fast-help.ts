@@ -6,6 +6,7 @@ export function getExtraHelpText(): string {
   ${APP_NAME} launch               - Start an explicit launch/session workflow
   ${APP_NAME} setup                - Install GJC defaults or optional dependencies
   ${APP_NAME} session              - List, inspect, create, remove, or attach sessions
+  ${APP_NAME} visible-session      - Create and control named visible coding sessions
   ${APP_NAME} state                - Inspect or manage persisted GJC state
   ${APP_NAME} harness              - Run harness control-plane commands
   ${APP_NAME} coordinator          - Manage coordinator/runtime coordination helpers
@@ -29,6 +30,17 @@ export function getExtraHelpText(): string {
   ${APP_NAME} codex-native-hook    - Run Codex native hook integration
   ${APP_NAME} gc                   - Run garbage-collection/cleanup helpers
   ${APP_NAME} <command> --help     - Show command-specific help
+
+Visible sessions:
+  ${APP_NAME} visible-session create NAME WORKTREE [--backend auto|conpty|tmux] [--state-dir PATH] [router options] [--json]
+  ${APP_NAME} visible-session prompt NAME TEXT|@FILE [--json]
+  ${APP_NAME} visible-session tail NAME [LINES] [--json]     - LINES default 200; 1..1000
+  ${APP_NAME} visible-session status|monitor|cancel NAME [--json]
+  ${APP_NAME} visible-session attach NAME [--read-only]
+  ${APP_NAME} visible-session recreate NAME [--backend auto|conpty|tmux] [router options] [--json]
+  Router options: [--router PATH | --skip-router] [--stale-minutes N] [--keywords CSV] [--channel VALUE] [--mention VALUE]
+  --stale-minutes defaults to 60 and accepts 1..10080.
+  Backend values: auto|conpty|tmux. auto resolves to conpty on Windows and tmux elsewhere; unavailable resolved backends fail without fallback.
 
 Environment Variables:
   # Core Providers
@@ -85,6 +97,15 @@ Environment Variables:
   GJC_TMUX_SESSION            - Explicit tmux session name override for --tmux startup
   GJC_TMUX_PROFILE            - Apply GJC tmux scroll/mouse/clipboard profile to --tmux sessions (set 0/off to skip)
   GJC_MOUSE                   - Mouse-wheel scroll in --tmux sessions (set 0/off to let the host terminal scroll)
+
+  # Visible Sessions
+  GJC_SESSION_BACKEND            - Visible-session backend selector (auto|conpty|tmux)
+  GJC_SESSION_ROUTER             - Router executable path
+  GJC_SESSION_SKIP_ROUTER        - Skip router execution
+  GJC_SESSION_STALE_MINUTES      - Router staleness limit in minutes
+  GJC_SESSION_KEYWORDS           - Router keyword CSV
+  GJC_SESSION_CHANNEL            - Router channel value
+  GJC_SESSION_MENTION            - Router mention value
 
   For complete environment variable reference, see:
   docs/environment-variables.md
