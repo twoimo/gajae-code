@@ -102,8 +102,14 @@ test("ACP SDK adapter exposes SDK event frames and forwards lifecycle idempotenc
 	const received: Record<string, unknown>[] = [];
 	const unsubscribe = adapter.onFrame(frame => received.push(frame));
 	await adapter.start();
-	await expect(adapter.handle("_gjc/sdk/global", { operation: "session.create", input: { cwd: "/workspace" } })).rejects.toMatchObject({ code: "invalid_input" });
-	await adapter.handle("_gjc/sdk/global", { operation: "session.create", input: { cwd: "/workspace" }, idempotencyKey: "generic-lifecycle-key" });
+	await expect(
+		adapter.handle("_gjc/sdk/global", { operation: "session.create", input: { cwd: "/workspace" } }),
+	).rejects.toMatchObject({ code: "invalid_input" });
+	await adapter.handle("_gjc/sdk/global", {
+		operation: "session.create",
+		input: { cwd: "/workspace" },
+		idempotencyKey: "generic-lifecycle-key",
+	});
 	await adapter.global("session.create", { cwd: "/workspace" }, "lifecycle-key");
 	sdk.emit({ type: "event", payload: { type: "turn_end" } });
 	expect(sdk.frames).toContainEqual({

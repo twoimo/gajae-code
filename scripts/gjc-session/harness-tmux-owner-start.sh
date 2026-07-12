@@ -62,10 +62,8 @@ input="$(node -e 'const [workspace, branch, base, issueOrPr, sessionId] = proces
 ) >"/tmp/${session_name}.gjc-start.json"
 
 tmux kill-session -t "$session_name" 2>/dev/null || true
-tmux new-session -d -s "$session_name" -n owner
-cmd="cd '$workspace' && export GJC_HARNESS_STATE_ROOT='$root' && echo 'GJC tmux owner starting: $sid' && gjc harness __owner --session '$sid'"
-tmux send-keys -t "$session_name":0.0 -l -- "$cmd"
-tmux send-keys -t "$session_name":0.0 Enter
+printf -v owner_command '%q ' env "GJC_HARNESS_STATE_ROOT=$root" gjc harness __owner --session "$sid"
+tmux new-session -d -s "$session_name" -n owner -c "$workspace" "exec $owner_command"
 
 for _ in $(seq 1 30); do
   if GJC_HARNESS_STATE_ROOT="$root" gjc harness observe --session "$sid" --json >"/tmp/${session_name}.gjc-observe.json" 2>/dev/null; then

@@ -11,7 +11,6 @@ const checkedInManifest = path.join(packageRoot, "test", "manifests", "telegram-
 const tempDirs: string[] = [];
 const sdkAdapterParityManifestPath = path.join(packageRoot, "test", "manifests", "sdk-adapter-parity-v1.json");
 
-
 interface SpawnResult {
 	exitCode: number | null;
 	stdout?: { toString(): string };
@@ -28,7 +27,6 @@ interface BaselineManifest {
 interface SdkAdapterParityManifest extends BaselineManifest {
 	rows: { argv: string[] }[];
 }
-
 
 async function tempDir(): Promise<string> {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-telegram-manifest-"));
@@ -105,7 +103,9 @@ describe("telegram baseline manifest generator", () => {
 			},
 			{
 				mutate: manifest => {
-					manifest.commands = manifest.commands.filter(command => !command.argv[2].endsWith("notifications-config.test.ts"));
+					manifest.commands = manifest.commands.filter(
+						command => !command.argv[2].endsWith("notifications-config.test.ts"),
+					);
 				},
 				message: "notifications-config.test.ts",
 			},
@@ -117,7 +117,9 @@ describe("telegram baseline manifest generator", () => {
 			},
 			{
 				mutate: manifest => {
-					manifest.commands = manifest.commands.filter(command => !command.argv[2].endsWith("notifications-chat-adapters.test.ts"));
+					manifest.commands = manifest.commands.filter(
+						command => !command.argv[2].endsWith("notifications-chat-adapters.test.ts"),
+					);
 				},
 				message: "notifications-chat-adapters.test.ts",
 			},
@@ -141,7 +143,9 @@ describe("telegram baseline manifest generator", () => {
 		const manifestPath = await writeManifest(directory, manifest);
 		const result = run(generator, ["--check"], { GJC_TELEGRAM_BASELINE_MANIFEST: manifestPath });
 		expect(result.exitCode, output(result)).toBe(1);
-		expect(output(result)).toContain("stale command: bun test packages/coding-agent/test/stale-telegram-baseline.test.ts");
+		expect(output(result)).toContain(
+			"stale command: bun test packages/coding-agent/test/stale-telegram-baseline.test.ts",
+		);
 	});
 
 	it("rejects an unapproved exclusion even with a non-empty reason", async () => {
@@ -205,7 +209,11 @@ describe("test manifest runner", () => {
 	});
 
 	it("rejects an exit-zero command that does not report tests", async () => {
-		const manifestPath = await writeManifest(await tempDir(), { version: 1, commands: [{ argv: ["bun", "-e", ""] }], excluded: [] });
+		const manifestPath = await writeManifest(await tempDir(), {
+			version: 1,
+			commands: [{ argv: ["bun", "-e", ""] }],
+			excluded: [],
+		});
 		const result = run(runner, [manifestPath]);
 		expect(result.exitCode, output(result)).toBe(1);
 		expect(output(result)).toContain("did not report at least one test");
@@ -215,8 +223,14 @@ describe("test manifest runner", () => {
 		const directory = await tempDir();
 		const passingTest = path.join(directory, "passing.test.ts");
 		const failingTest = path.join(directory, "failing.test.ts");
-		await Bun.write(passingTest, 'import { expect, test } from "bun:test"; test("passes", () => expect(true).toBe(true));\n');
-		await Bun.write(failingTest, 'import { expect, test } from "bun:test"; test("fails", () => expect(true).toBe(false));\n');
+		await Bun.write(
+			passingTest,
+			'import { expect, test } from "bun:test"; test("passes", () => expect(true).toBe(true));\n',
+		);
+		await Bun.write(
+			failingTest,
+			'import { expect, test } from "bun:test"; test("fails", () => expect(true).toBe(false));\n',
+		);
 
 		const missingRequiredManifest = await writeManifest(directory, {
 			version: 1,
@@ -238,7 +252,11 @@ describe("test manifest runner", () => {
 		expect(passing.exitCode, output(passing)).toBe(0);
 		expect(output(passing)).toContain(`receipt: bun test ${passingTest} exit=0 tests=1`);
 
-		const failingManifest = await writeManifest(path.join(directory, "failure"), { version: 1, commands: [{ argv: ["bun", "test", failingTest] }], excluded: [] });
+		const failingManifest = await writeManifest(path.join(directory, "failure"), {
+			version: 1,
+			commands: [{ argv: ["bun", "test", failingTest] }],
+			excluded: [],
+		});
 		const failing = run(runner, [failingManifest]);
 		expect(failing.exitCode, output(failing)).toBe(1);
 		expect(output(failing)).toContain("Manifest receipt failed");
@@ -248,7 +266,10 @@ describe("test manifest runner", () => {
 	it("rejects a required file that appears only as a non-positional argv token", async () => {
 		const directory = await tempDir();
 		const requiredTest = path.join(directory, "required.test.ts");
-		await Bun.write(requiredTest, 'import { expect, test } from "bun:test"; test("passes", () => expect(true).toBe(true));\n');
+		await Bun.write(
+			requiredTest,
+			'import { expect, test } from "bun:test"; test("passes", () => expect(true).toBe(true));\n',
+		);
 		const manifestPath = await writeManifest(directory, {
 			version: 1,
 			commands: [{ argv: ["bun", "test", "--timeout", requiredTest] }],
@@ -288,7 +309,9 @@ describe("test manifest runner", () => {
 
 		expect(result.exitCode, output(result)).toBe(0);
 		expect(output(result)).toContain(`manifest command receipts complete: ${manifest.commands.length}`);
-		expect(output(result)).toContain("manifest row receipts complete: 546 (telegram=91, discord=91, slack=91, mcp=91, acp=91, daemonCli=91)");
+		expect(output(result)).toContain(
+			"manifest row receipts complete: 546 (telegram=91, discord=91, slack=91, mcp=91, acp=91, daemonCli=91)",
+		);
 		const invocations = (await Bun.file(fake.log).text()).trim().split("\n");
 		expect(invocations).toHaveLength(manifest.commands.length + manifest.rows.length);
 		expect(invocations[0]).toBe(`test ${manifest.commands[0]?.argv.slice(2).join(" ")}`);
@@ -349,21 +372,25 @@ describe("gjc-sdk rename scanner", () => {
 		git("config", "user.name", "Test");
 		await Bun.write(
 			path.join(scanRoot, "clean.txt"),
-			[["Notifications", "SDK"].join(" "), ["NOTIFICATIONS", "SDK"].join("-")].join("\n") + "\n",
+			`${[["Notifications", "SDK"].join(" "), ["NOTIFICATIONS", "SDK"].join("-")].join("\n")}\n`,
 		);
 		git("add", "clean.txt");
 		git("commit", "-m", "initial");
 
 		const legacyPath = path.join("src", "notifications", "legacy.ts");
 		await fs.mkdir(path.join(scanRoot, path.dirname(legacyPath)), { recursive: true });
-		await Bun.write(path.join(scanRoot, legacyPath), ["use", ["gjc", "notifications"].join("_")].join(" ") + "\n");
+		await Bun.write(path.join(scanRoot, legacyPath), `${["use", ["gjc", "notifications"].join("_")].join(" ")}\n`);
 		const scanner = path.join(packageRoot, "scripts", "verify-gjc-sdk-rename.ts");
 		const result = run(scanner, [], { GJC_SDK_RENAME_SCAN_ROOT: scanRoot });
 
 		expect(result.exitCode, output(result)).toBe(1);
 		expect(output(result)).toContain(`clean.txt:1: forbidden ${JSON.stringify(["notifications", "SDK"].join(" "))}`);
 		expect(output(result)).toContain(`clean.txt:2: forbidden ${JSON.stringify(["notifications", "SDK"].join(" "))}`);
-		expect(output(result)).toContain(`${legacyPath}: forbidden filename ${JSON.stringify(["src", "notifications", ""].join("/"))}`);
-		expect(output(result)).toContain(`${legacyPath}:1: forbidden ${JSON.stringify(["gjc", "notifications"].join("_"))}`);
+		expect(output(result)).toContain(
+			`${legacyPath}: forbidden filename ${JSON.stringify(["src", "notifications", ""].join("/"))}`,
+		);
+		expect(output(result)).toContain(
+			`${legacyPath}:1: forbidden ${JSON.stringify(["gjc", "notifications"].join("_"))}`,
+		);
 	});
 });

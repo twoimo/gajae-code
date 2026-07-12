@@ -1,4 +1,9 @@
-import type { SlackMessageSearchResult, SlackPostedMessage, SlackProviderClient, SlackSocketEnvelope } from "./slack-provider";
+import type {
+	SlackMessageSearchResult,
+	SlackPostedMessage,
+	SlackProviderClient,
+	SlackSocketEnvelope,
+} from "./slack-provider";
 
 const SLACK_API = "https://slack.com/api";
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
@@ -69,7 +74,9 @@ function string(value: unknown): string | undefined {
 }
 
 function messages(value: unknown): SlackApiMessage[] {
-	return Array.isArray(value) ? value.filter((item): item is SlackApiMessage => !!item && typeof item === "object") : [];
+	return Array.isArray(value)
+		? value.filter((item): item is SlackApiMessage => !!item && typeof item === "object")
+		: [];
 }
 
 function retryAfterMilliseconds(response: Response, body: SlackApiResponse, maximum: number): number {
@@ -109,7 +116,8 @@ export class SlackLiveProvider implements SlackProviderClient {
 	get transportHealthy(): boolean {
 		const socket = this.#socket;
 		if (this.#stopped || !socket || socket.readyState !== 1 || !this.#callbackHealthy) return false;
-		if (this.#lastActivityAt === undefined || this.#now() - this.#lastActivityAt <= this.#activityTimeoutMs) return true;
+		if (this.#lastActivityAt === undefined || this.#now() - this.#lastActivityAt <= this.#activityTimeoutMs)
+			return true;
 		socket.close();
 		return false;
 	}
@@ -122,7 +130,8 @@ export class SlackLiveProvider implements SlackProviderClient {
 		this.#fetch = options.fetch ?? fetch;
 		this.#webSocket = options.webSocket ?? socketFromGlobal;
 		this.#now = options.now ?? Date.now;
-		this.#sleep = options.sleep ?? (async milliseconds => await new Promise<void>(resolve => setTimeout(resolve, milliseconds)));
+		this.#sleep =
+			options.sleep ?? (async milliseconds => await new Promise<void>(resolve => setTimeout(resolve, milliseconds)));
 		this.#reconnectDelayMs = Math.max(0, options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS);
 		this.#maxRateLimitRetries = Math.max(0, options.maxRateLimitRetries ?? MAX_RATE_LIMIT_RETRIES);
 		this.#maxRetryAfterMs = Math.max(0, options.maxRetryAfterMs ?? MAX_RETRY_AFTER_MS);
@@ -161,7 +170,12 @@ export class SlackLiveProvider implements SlackProviderClient {
 		this.#envelopeSockets.delete(envelopeId);
 	}
 
-	async postMessage(input: { channel: string; text: string; threadTs?: string; clientMsgId: string }): Promise<SlackPostedMessage> {
+	async postMessage(input: {
+		channel: string;
+		text: string;
+		threadTs?: string;
+		clientMsgId: string;
+	}): Promise<SlackPostedMessage> {
 		const response = await this.#api("chat.postMessage", {
 			channel: input.channel,
 			text: input.text,
@@ -173,7 +187,11 @@ export class SlackLiveProvider implements SlackProviderClient {
 		return message;
 	}
 
-	async findMessageByClientMsgId(input: { channel: string; clientMsgId: string; threadTs?: string }): Promise<SlackMessageSearchResult | null> {
+	async findMessageByClientMsgId(input: {
+		channel: string;
+		clientMsgId: string;
+		threadTs?: string;
+	}): Promise<SlackMessageSearchResult | null> {
 		const response = await this.#api("conversations.history", { channel: input.channel });
 		const fromHistory = this.#findMessage(response, input.clientMsgId, input.channel);
 		if (fromHistory || !input.threadTs) return fromHistory;
@@ -283,7 +301,12 @@ export class SlackLiveProvider implements SlackProviderClient {
 		throw new SlackProviderError("web_api", operation);
 	}
 
-	async #request(operation: string, token: string, body: Record<string, string | undefined>, retryRateLimit = false): Promise<SlackApiResponse> {
+	async #request(
+		operation: string,
+		token: string,
+		body: Record<string, string | undefined>,
+		retryRateLimit = false,
+	): Promise<SlackApiResponse> {
 		for (let attempt = 0; ; attempt++) {
 			let response: Response;
 			try {
@@ -331,7 +354,11 @@ export class SlackLiveProvider implements SlackProviderClient {
 		return channel && ts ? { channel, ts, client_msg_id: string(candidate.client_msg_id) } : undefined;
 	}
 
-	#findMessage(response: SlackApiResponse, clientMsgId: string, requestedChannel: string): SlackMessageSearchResult | null {
+	#findMessage(
+		response: SlackApiResponse,
+		clientMsgId: string,
+		requestedChannel: string,
+	): SlackMessageSearchResult | null {
 		for (const candidate of messages(response.messages)) {
 			const ts = string(candidate.ts);
 			if (ts && string(candidate.client_msg_id) === clientMsgId) {

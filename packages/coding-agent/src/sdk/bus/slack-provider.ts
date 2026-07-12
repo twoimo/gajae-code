@@ -20,7 +20,12 @@ export interface SlackProviderClient {
 	start(onEnvelope: (envelope: SlackSocketEnvelope) => void | Promise<void>): Promise<void>;
 	stop?(): Promise<void>;
 	ack(envelopeId: string): Promise<void>;
-	postMessage(input: { channel: string; text: string; threadTs?: string; clientMsgId: string }): Promise<SlackPostedMessage>;
+	postMessage(input: {
+		channel: string;
+		text: string;
+		threadTs?: string;
+		clientMsgId: string;
+	}): Promise<SlackPostedMessage>;
 	findMessageByClientMsgId?(input: {
 		channel: string;
 		clientMsgId: string;
@@ -52,7 +57,12 @@ export class SlackProvider {
 		await this.client.ack(envelopeId);
 	}
 
-	async postMessage(input: { channel: string; text: string; threadTs?: string; clientMsgId: string }): Promise<SlackPostedMessage> {
+	async postMessage(input: {
+		channel: string;
+		text: string;
+		threadTs?: string;
+		clientMsgId: string;
+	}): Promise<SlackPostedMessage> {
 		return await this.client.postMessage(input);
 	}
 

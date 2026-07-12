@@ -57,7 +57,13 @@ const SESSION_GLOBALS: Record<string, string> = {
 };
 
 function isLifecycleOperation(operation: string): boolean {
-	return operation === "session.create" || operation === "session.fork" || operation === "session.resume" || operation === "session.close" || operation === "session.delete";
+	return (
+		operation === "session.create" ||
+		operation === "session.fork" ||
+		operation === "session.resume" ||
+		operation === "session.close" ||
+		operation === "session.delete"
+	);
 }
 
 /**
@@ -115,7 +121,6 @@ export class AcpSdkAdapter {
 		this.#frameHandlers.add(handler);
 		return () => this.#frameHandlers.delete(handler);
 	}
-
 
 	async start(): Promise<void> {
 		if (this.#closed) throw new AcpSdkAdapterError("connection_closed");

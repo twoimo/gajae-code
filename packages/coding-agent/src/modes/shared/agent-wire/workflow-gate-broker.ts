@@ -383,7 +383,9 @@ interface FileState {
 export class FileGateStore implements GateStore {
 	private state: FileState;
 	constructor(private readonly filePath: string) {
-		mkdirSync(path.dirname(filePath), { recursive: true });
+		// Load eagerly so a corrupt store fails closed at construction, but defer
+		// directory creation to the first write so constructing a store under a
+		// non-writable cwd (e.g. a session that never emits a gate) never throws.
 		this.state = this.load();
 	}
 	private load(): FileState {
@@ -411,6 +413,7 @@ export class FileGateStore implements GateStore {
 		}
 	}
 	private flush(): void {
+		mkdirSync(path.dirname(this.filePath), { recursive: true });
 		// Atomic write: serialize to a temp file, fsync, then rename over the target.
 		const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
 		const fd = openSync(tmp, "w");

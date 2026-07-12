@@ -301,7 +301,15 @@ function skipBlockComment(sourceText: string, start: number): number {
 function decodeEscape(sourceText: string, index: number): { next: number; value: string } {
 	const char = sourceText[index];
 	if (char === undefined) return { next: index, value: "" };
-	const simpleEscapes: Readonly<Record<string, string>> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "0": "\0" };
+	const simpleEscapes: Readonly<Record<string, string>> = {
+		b: "\b",
+		f: "\f",
+		n: "\n",
+		r: "\r",
+		t: "\t",
+		v: "\v",
+		"0": "\0",
+	};
 	if (char in simpleEscapes) return { next: index + 1, value: simpleEscapes[char]! };
 	if (char === "\r") return { next: sourceText[index + 1] === "\n" ? index + 2 : index + 1, value: "" };
 	if (char === "\n") return { next: index + 1, value: "" };
@@ -314,7 +322,10 @@ function decodeEscape(sourceText: string, index: number): { next: number; value:
 		const end = braced ? sourceText.indexOf("}", index + 2) : index + 5;
 		const hex = braced ? sourceText.slice(index + 2, end) : sourceText.slice(index + 1, end);
 		const code = Number.parseInt(hex, 16);
-		return { next: braced ? (end === -1 ? index + 2 : end + 1) : end, value: Number.isNaN(code) ? "" : String.fromCodePoint(code) };
+		return {
+			next: braced ? (end === -1 ? index + 2 : end + 1) : end,
+			value: Number.isNaN(code) ? "" : String.fromCodePoint(code),
+		};
 	}
 	return { next: index + 1, value: char };
 }
@@ -327,9 +338,9 @@ function readQuotedToken(sourceText: string, start: number): { next: number; val
 		const char = sourceText[index]!;
 		if (char === quote) return { next: index + 1, value };
 		if (char === "\\") {
-			const escape = decodeEscape(sourceText, index + 1);
-			value += escape.value;
-			index = escape.next;
+			const escapeSequence = decodeEscape(sourceText, index + 1);
+			value += escapeSequence.value;
+			index = escapeSequence.next;
 			continue;
 		}
 		value += char;
@@ -352,14 +363,16 @@ function skipRegularExpression(sourceText: string, start: number): number {
 			index++;
 			while (isIdentifierPart(sourceText[index] ?? "")) index++;
 			return index;
-		}
-		else if (char === "\n" || char === "\r") return index;
+		} else if (char === "\n" || char === "\r") return index;
 	}
 	return sourceText.length;
 }
 
 function tokenCanPrecedeRegularExpression(token: Token | undefined): boolean {
-	return !token || ["(", "[", "{", "=", ":", ",", ";", "!", "?", "&&", "||", "=>", "return", "case", "throw"].includes(token.text);
+	return (
+		!token ||
+		["(", "[", "{", "=", ":", ",", ";", "!", "?", "&&", "||", "=>", "return", "case", "throw"].includes(token.text)
+	);
 }
 
 function skipTemplateExpression(sourceText: string, start: number): number {
@@ -388,7 +401,10 @@ function skipTemplateExpression(sourceText: string, start: number): number {
 	return sourceText.length;
 }
 
-function readTemplateToken(sourceText: string, start: number): { next: number; value: string; hasSubstitution: boolean } {
+function readTemplateToken(
+	sourceText: string,
+	start: number,
+): { next: number; value: string; hasSubstitution: boolean } {
 	let hasSubstitution = false;
 	let index = start + 1;
 	let value = "";
@@ -396,9 +412,9 @@ function readTemplateToken(sourceText: string, start: number): { next: number; v
 		const char = sourceText[index]!;
 		if (char === "`") return { next: index + 1, value, hasSubstitution };
 		if (char === "\\") {
-			const escape = decodeEscape(sourceText, index + 1);
-			value += escape.value;
-			index = escape.next;
+			const escapeSequence = decodeEscape(sourceText, index + 1);
+			value += escapeSequence.value;
+			index = escapeSequence.next;
 			continue;
 		}
 		if (char === "$" && sourceText[index + 1] === "{") {
@@ -414,7 +430,7 @@ function readTemplateToken(sourceText: string, start: number): { next: number; v
 
 function tokenize(sourceText: string): Token[] {
 	const tokens: Token[] = [];
-	for (let index = 0; index < sourceText.length;) {
+	for (let index = 0; index < sourceText.length; ) {
 		const char = sourceText[index]!;
 		if (/\s/.test(char)) {
 			index++;
@@ -436,7 +452,12 @@ function tokenize(sourceText: string): Token[] {
 		}
 		if (char === "`") {
 			const token = readTemplateToken(sourceText, index);
-			tokens.push({ kind: "template", text: sourceText.slice(index, token.next), value: token.value, hasSubstitution: token.hasSubstitution });
+			tokens.push({
+				kind: "template",
+				text: sourceText.slice(index, token.next),
+				value: token.value,
+				hasSubstitution: token.hasSubstitution,
+			});
 			index = token.next;
 			continue;
 		}
@@ -456,7 +477,12 @@ function tokenize(sourceText: string): Token[] {
 			tokens.push({ kind: "number", text: sourceText.slice(start, index) });
 			continue;
 		}
-		const punctuation = sourceText.slice(index, index + 3) === "..." ? "..." : sourceText.slice(index, index + 2) === "=>" ? "=>" : char;
+		const punctuation =
+			sourceText.slice(index, index + 3) === "..."
+				? "..."
+				: sourceText.slice(index, index + 2) === "=>"
+					? "=>"
+					: char;
 		tokens.push({ kind: "punctuation", text: punctuation });
 		index += punctuation.length;
 	}
@@ -488,7 +514,11 @@ function isMemberName(token: Token | undefined): boolean {
 }
 
 function memberName(token: Token): string | undefined {
-	return token.kind === "string" ? token.value : token.kind === "identifier" || token.kind === "number" ? token.text : undefined;
+	return token.kind === "string"
+		? token.value
+		: token.kind === "identifier" || token.kind === "number"
+			? token.text
+			: undefined;
 }
 
 function skipDecorators(tokens: readonly Token[], start: number): number {
@@ -533,15 +563,18 @@ function nextMemberStart(tokens: readonly Token[], start: number, classEnd: numb
 		else if (token === "}" && braceDepth > 0) {
 			braceDepth--;
 			if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) return index + 1;
-		}
-		else if (token === ";" && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) return index + 1;
+		} else if (token === ";" && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) return index + 1;
 	}
 	return classEnd;
 }
 
 type MethodDeclaration = { end: number; name?: string };
 
-function scanMethodDeclaration(tokens: readonly Token[], start: number, classEnd: number): MethodDeclaration | undefined {
+function scanMethodDeclaration(
+	tokens: readonly Token[],
+	start: number,
+	classEnd: number,
+): MethodDeclaration | undefined {
 	let index = skipDecorators(tokens, start);
 	while (tokens[index]?.kind === "identifier" && METHOD_MODIFIERS.has(tokens[index]!.text)) index++;
 	if (tokens[index]?.text === "async" && tokens[index + 1]?.text !== "(") index++;
@@ -549,7 +582,7 @@ function scanMethodDeclaration(tokens: readonly Token[], start: number, classEnd
 	const candidate = tokens[index];
 	if (!isMemberName(candidate)) return undefined;
 
-	let afterName = skipTypeParameters(tokens, index + 1);
+	const afterName = skipTypeParameters(tokens, index + 1);
 	if ((candidate!.text === "get" || candidate!.text === "set") && isMemberName(tokens[afterName])) {
 		const accessorEnd = skipTypeParameters(tokens, afterName + 1);
 		if (tokens[accessorEnd]?.text === "(") {
@@ -582,7 +615,7 @@ export function scanAgentSessionMethods(sourceText: string): string[] {
 		if (bodyEnd === undefined) return [];
 
 		const methods: string[] = [];
-		for (let memberStart = bodyStart + 1; memberStart < bodyEnd;) {
+		for (let memberStart = bodyStart + 1; memberStart < bodyEnd; ) {
 			const declaration = scanMethodDeclaration(tokens, memberStart, bodyEnd);
 			if (declaration) {
 				if (declaration.name) methods.push(`agent_session:${declaration.name}`);
@@ -602,7 +635,13 @@ export function scanAcpMethods(sourceText: string): string[] {
 	for (let index = 0; index < tokens.length - 4; index++) {
 		if (tokens[index]!.text !== "switch" || tokens[index + 1]?.text !== "(") continue;
 		const expressionEnd = matchingToken(tokens, index + 1, "(", ")");
-		if (expressionEnd === undefined || expressionEnd !== index + 3 || tokens[index + 2]?.text !== "method" || tokens[expressionEnd + 1]?.text !== "{") continue;
+		if (
+			expressionEnd === undefined ||
+			expressionEnd !== index + 3 ||
+			tokens[index + 2]?.text !== "method" ||
+			tokens[expressionEnd + 1]?.text !== "{"
+		)
+			continue;
 		const switchEnd = matchingToken(tokens, expressionEnd + 1, "{", "}");
 		if (switchEnd === undefined) continue;
 		let braceDepth = 0;

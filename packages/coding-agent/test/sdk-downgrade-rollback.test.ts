@@ -1,26 +1,36 @@
-import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { transformSdkStateForRollback } from "../../../scripts/transform-sdk-state-for-rollback";
 import { readBrokerDiscovery, writeBrokerDiscovery } from "../src/sdk/broker/discovery";
 import { LifecycleLedger } from "../src/sdk/broker/lifecycle-ledger";
 import { SessionIndex } from "../src/sdk/broker/session-index";
-import { transformSdkStateForRollback } from "../../../scripts/transform-sdk-state-for-rollback";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const pretrainManifest = path.join(import.meta.dir, "manifests", "sdk-pretrain-binary.json");
 class PinnedOldReaderCommitUnavailableError extends Error {
 	constructor(baseRef: string) {
-		super(`Pinned old-reader git object ${baseRef} is unavailable; the rollback acceptance proof requires this commit.`);
+		super(
+			`Pinned old-reader git object ${baseRef} is unavailable; the rollback acceptance proof requires this commit.`,
+		);
 		this.name = "PinnedOldReaderCommitUnavailableError";
 	}
 }
 
 const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-sdk-rollback-"));
 
-async function command(argv: string[], cwd = repoRoot, env?: Record<string, string>): Promise<{ exitCode: number; output: string }> {
+async function command(
+	argv: string[],
+	cwd = repoRoot,
+	env?: Record<string, string>,
+): Promise<{ exitCode: number; output: string }> {
 	const child = Bun.spawn(argv, { cwd, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+		child.exited,
+	]);
 	return { exitCode, output: `${stdout}${stderr}` };
 }
 
@@ -33,10 +43,17 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: numbe
 	throw new Error(`Timed out waiting for ${description}.`);
 }
 
-function expandProductCommand(command: readonly string[], values: Readonly<Record<"executable" | "ownerId" | "agentDir" | "transportShim", string>>): string[] {
-	return command.map(arg => arg.replace(/\{(executable|ownerId|agentDir|transportShim)\}/g, (_match, name: keyof typeof values) => values[name]));
+function expandProductCommand(
+	command: readonly string[],
+	values: Readonly<Record<"executable" | "ownerId" | "agentDir" | "transportShim", string>>,
+): string[] {
+	return command.map(arg =>
+		arg.replace(
+			/\{(executable|ownerId|agentDir|transportShim)\}/g,
+			(_match, name: keyof typeof values) => values[name],
+		),
+	);
 }
-
 
 async function jsonFile(pathname: string): Promise<Record<string, unknown> | undefined> {
 	try {
@@ -47,13 +64,19 @@ async function jsonFile(pathname: string): Promise<Record<string, unknown> | und
 	}
 }
 
-function startOldFormatFakeEndpoint(token: string): { url: string; port: number; frames: Record<string, unknown>[]; stop: () => void } {
+function startOldFormatFakeEndpoint(token: string): {
+	url: string;
+	port: number;
+	frames: Record<string, unknown>[];
+	stop: () => void;
+} {
 	const frames: Record<string, unknown>[] = [];
 	const server = Bun.serve({
 		port: 0,
 		fetch(request, server) {
 			const url = new URL(request.url);
-			if (url.pathname !== "/" || url.searchParams.get("token") !== token) return new Response("unauthorized", { status: 401 });
+			if (url.pathname !== "/" || url.searchParams.get("token") !== token)
+				return new Response("unauthorized", { status: 401 });
 			if (server.upgrade(request)) return;
 			return new Response("upgrade failed", { status: 500 });
 		},
@@ -62,14 +85,16 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 				const frame = JSON.parse(String(message)) as Record<string, unknown>;
 				frames.push(frame);
 				if (frame.type === "hello") {
-					socket.send(JSON.stringify({
-						type: "action_needed",
-						sessionId: "rollback-session",
-						id: "rollback-action",
-						kind: "ask",
-						question: "Approve transformed rollback state?",
-						options: ["approve"],
-					}));
+					socket.send(
+						JSON.stringify({
+							type: "action_needed",
+							sessionId: "rollback-session",
+							id: "rollback-action",
+							kind: "ask",
+							question: "Approve transformed rollback state?",
+							options: ["approve"],
+						}),
+					);
 				}
 			},
 		},
@@ -77,23 +102,40 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 	return { url: `ws://127.0.0.1:${server.port!}`, port: server.port!, frames, stop: () => server.stop(true) };
 }
 
-
-	test("v1 SDK state transforms to a rollback directory and is executable by the pinned pre-Phase-B notifications product", async () => {
+test("v1 SDK state transforms to a rollback directory and is executable by the pinned pre-Phase-B notifications product", async () => {
 	const source = await temp();
 	const output = path.join(await temp(), "rollback");
 	const agentDir = source;
 	const endpointDir = path.join(source, "state", "sdk");
 	await fs.mkdir(endpointDir, { recursive: true });
 
-	await writeBrokerDiscovery(agentDir, { version: 1, protocolVersion: 3, packageGeneration: "rollback-proof", ownerId: "proof", pid: process.pid, host: "127.0.0.1", port: 4312, url: "ws://127.0.0.1:4312", token: "broker-token", startedAt: 1, heartbeatAt: Date.now() });
+	await writeBrokerDiscovery(agentDir, {
+		version: 1,
+		protocolVersion: 3,
+		packageGeneration: "rollback-proof",
+		ownerId: "proof",
+		pid: process.pid,
+		host: "127.0.0.1",
+		port: 4312,
+		url: "ws://127.0.0.1:4312",
+		token: "broker-token",
+		startedAt: 1,
+		heartbeatAt: Date.now(),
+	});
 	const index = await new SessionIndex(agentDir).open();
-	await index.append({ type: "host_registered", sessionId: "rollback-session", locator: { repo: source, stateRoot: path.join(source, "state") }, endpointGeneration: 1, pid: process.pid });
+	await index.append({
+		type: "host_registered",
+		sessionId: "rollback-session",
+		locator: { repo: source, stateRoot: path.join(source, "state") },
+		endpointGeneration: 1,
+		pid: process.pid,
+	});
 	const ledger = await new LifecycleLedger(agentDir).open();
 	const begun = await ledger.begin("rollback-proof", "request-hash");
 	if (begun.kind !== "new") throw new Error("Expected new lifecycle entry");
 	await ledger.transition("rollback-proof", "terminal_ok", { response: { sessionId: "rollback-session" } });
 
-	const manifest = await Bun.file(pretrainManifest).json() as {
+	const manifest = (await Bun.file(pretrainManifest).json()) as {
 		baseRef: string;
 		strategy: string;
 		sourceEntrypoints: string[];
@@ -101,16 +143,26 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 		artifactSha256Scope: string;
 		platform: string;
 		arch: string;
-		toolchain: { runtime: string; version: string; dependencyInstall: string[]; nativeBuild: string[]; nativeEmbed: string[]; compile: string[]; sign: string[] };
+		toolchain: {
+			runtime: string;
+			version: string;
+			dependencyInstall: string[];
+			nativeBuild: string[];
+			nativeEmbed: string[];
+			compile: string[];
+			sign: string[];
+		};
 
 		productCommand: string[];
 		shutdownCommand: string[];
 		runtimeEnvironment: { BUN_OPTIONS: string };
-
 	};
 	expect(manifest.strategy).toBe("isolated-worktree-offline-install-compile");
 	expect(manifest.baseRef).toMatch(/^[0-9a-f]{40}$/);
-	expect(manifest.sourceEntrypoints).toEqual(["packages/coding-agent/src/cli.ts", "packages/coding-agent/src/notifications/telegram-daemon-cli.ts"]);
+	expect(manifest.sourceEntrypoints).toEqual([
+		"packages/coding-agent/src/cli.ts",
+		"packages/coding-agent/src/notifications/telegram-daemon-cli.ts",
+	]);
 	expect(manifest.artifactPath).toBe("packages/coding-agent/dist/gjc-rollback");
 	expect(manifest.artifactSha256Scope).toContain("executable bytes");
 	expect(manifest.platform).toBe(process.platform);
@@ -118,12 +170,29 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 	expect(manifest.toolchain.runtime).toBe("bun");
 	expect(manifest.toolchain.version).toBe(Bun.version);
 	expect(manifest.runtimeEnvironment).toEqual({ BUN_OPTIONS: "--preload {transportShim}" });
-	expect(manifest.productCommand).toEqual(["{executable}", "notify", "daemon-internal", "--owner-id", "{ownerId}", "--agent-dir", "{agentDir}"]);
-	expect(manifest.shutdownCommand).toEqual(["{executable}", "daemon", "stop", "telegram", "--json", "--graceful-timeout-ms", "5000"]);
-
+	expect(manifest.productCommand).toEqual([
+		"{executable}",
+		"notify",
+		"daemon-internal",
+		"--owner-id",
+		"{ownerId}",
+		"--agent-dir",
+		"{agentDir}",
+	]);
+	expect(manifest.shutdownCommand).toEqual([
+		"{executable}",
+		"daemon",
+		"stop",
+		"telegram",
+		"--json",
+		"--graceful-timeout-ms",
+		"5000",
+	]);
 
 	const worktree = await temp();
-	let endpointServer: { url: string; port: number; frames: Array<Record<string, unknown>>; stop: () => void } | undefined;
+	let endpointServer:
+		| { url: string; port: number; frames: Array<Record<string, unknown>>; stop: () => void }
+		| undefined;
 	const available = await command(["git", "cat-file", "-e", `${manifest.baseRef}^{commit}`]);
 	if (available.exitCode !== 0) throw new PinnedOldReaderCommitUnavailableError(manifest.baseRef);
 	const added = await command(["git", "worktree", "add", "--detach", worktree, manifest.baseRef]);
@@ -143,7 +212,9 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 		const nativeEmbed = await command(manifest.toolchain.nativeEmbed, worktree);
 		expect(nativeEmbed.exitCode, nativeEmbed.output).toBe(0);
 		const productDirectory = path.join(worktree, "packages", "coding-agent");
-		const compiled = await command(manifest.toolchain.compile, productDirectory, { BUN_NO_CODESIGN_MACHO_BINARY: "1" });
+		const compiled = await command(manifest.toolchain.compile, productDirectory, {
+			BUN_NO_CODESIGN_MACHO_BINARY: "1",
+		});
 		expect(compiled.exitCode, compiled.output).toBe(0);
 		const signed = await command(manifest.toolchain.sign, productDirectory);
 		expect(signed.exitCode, signed.output).toBe(0);
@@ -151,19 +222,40 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 		const executableStat = await fs.stat(executable);
 		expect(executableStat.isFile()).toBe(true);
 		expect(executableStat.mode & 0o111).not.toBe(0);
-		const artifactSha256 = createHash("sha256").update(await fs.readFile(executable)).digest("hex");
+		const artifactSha256 = createHash("sha256")
+			.update(await fs.readFile(executable))
+			.digest("hex");
 		expect(artifactSha256).toMatch(/^[0-9a-f]{64}$/);
-		console.log(`Pinned pretrain executable commit=${commit} platform=${manifest.platform} arch=${manifest.arch} artifact=${manifest.artifactPath} sha256=${artifactSha256}`);
+		console.log(
+			`Pinned pretrain executable commit=${commit} platform=${manifest.platform} arch=${manifest.arch} artifact=${manifest.artifactPath} sha256=${artifactSha256}`,
+		);
 		endpointServer = startOldFormatFakeEndpoint("endpoint-token");
 		const activeEndpointServer = endpointServer;
-		const endpoint = { version: 1, sessionId: "rollback-session", pid: process.pid, host: "127.0.0.1", port: activeEndpointServer.port, url: activeEndpointServer.url, token: "endpoint-token", startedAt: 1, updatedAt: 1, stale: false };
+		const endpoint = {
+			version: 1,
+			sessionId: "rollback-session",
+			pid: process.pid,
+			host: "127.0.0.1",
+			port: activeEndpointServer.port,
+			url: activeEndpointServer.url,
+			token: "endpoint-token",
+			startedAt: 1,
+			updatedAt: 1,
+			stale: false,
+		};
 		await fs.writeFile(path.join(endpointDir, "rollback-session.json"), JSON.stringify(endpoint));
 
 		const report = await transformSdkStateForRollback({
 			from: source,
 			out: output,
 			to: 1,
-			pretrainBinary: { baseRef: manifest.baseRef, commit, artifactPath: manifest.artifactPath, artifactSha256, artifactSha256Scope: manifest.artifactSha256Scope },
+			pretrainBinary: {
+				baseRef: manifest.baseRef,
+				commit,
+				artifactPath: manifest.artifactPath,
+				artifactSha256,
+				artifactSha256Scope: manifest.artifactSha256Scope,
+			},
 		});
 		expect(report).toEqual({
 			schemaVersion: 1,
@@ -171,7 +263,13 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 			targetVersion: 1,
 			omissions: [],
 			copied: expect.any(Array),
-			pretrainBinary: { baseRef: manifest.baseRef, commit: manifest.baseRef, artifactPath: manifest.artifactPath, artifactSha256, artifactSha256Scope: manifest.artifactSha256Scope },
+			pretrainBinary: {
+				baseRef: manifest.baseRef,
+				commit: manifest.baseRef,
+				artifactPath: manifest.artifactPath,
+				artifactSha256,
+				artifactSha256Scope: manifest.artifactSha256Scope,
+			},
 		});
 
 		expect(report.copied).toContain("state/notifications/rollback-session.json");
@@ -180,7 +278,13 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 
 		const transformedEndpointFile = path.join(output, "state", "notifications", "rollback-session.json");
 		const frozenOldEndpoint = JSON.parse(await fs.readFile(transformedEndpointFile, "utf8"));
-		expect(frozenOldEndpoint).toMatchObject({ version: 1, url: endpoint.url, token: endpoint.token, pid: endpoint.pid, stale: false });
+		expect(frozenOldEndpoint).toMatchObject({
+			version: 1,
+			url: endpoint.url,
+			token: endpoint.token,
+			pid: endpoint.pid,
+			stale: false,
+		});
 		await fs.mkdir(path.join(output, "notifications"), { recursive: true });
 		await fs.writeFile(
 			path.join(output, "notifications", "telegram-daemon.roots.json"),
@@ -189,7 +293,16 @@ function startOldFormatFakeEndpoint(token: string): { url: string; port: number;
 
 		await fs.writeFile(
 			path.join(output, "config.yml"),
-			["notifications:", "  enabled: true", "  telegram:", "    botToken: test-token", "    chatId: \"1\"", "  daemon:", "    idleTimeoutMs: 5000", ""].join("\n"),
+			[
+				"notifications:",
+				"  enabled: true",
+				"  telegram:",
+				"    botToken: test-token",
+				'    chatId: "1"',
+				"  daemon:",
+				"    idleTimeoutMs: 5000",
+				"",
+			].join("\n"),
 		);
 		const transportShim = path.join(output, "rollback-telegram-preload.ts");
 		const transportLog = path.join(output, "rollback-telegram-requests.jsonl");
@@ -227,19 +340,48 @@ globalThis.fetch = async (input, init) => {
 `,
 		);
 		const ownerId = `${process.pid}-rollback-proof`;
-		const productCommand = expandProductCommand(manifest.productCommand, { executable, ownerId, agentDir: output, transportShim });
+		const productCommand = expandProductCommand(manifest.productCommand, {
+			executable,
+			ownerId,
+			agentDir: output,
+			transportShim,
+		});
 		expect(productCommand).toEqual([
-			executable, "notify", "daemon-internal", "--owner-id", ownerId, "--agent-dir", output,
+			executable,
+			"notify",
+			"daemon-internal",
+			"--owner-id",
+			ownerId,
+			"--agent-dir",
+			output,
 		]);
 
-		expect(createHash("sha256").update(await fs.readFile(executable)).digest("hex")).toBe(artifactSha256);
+		expect(
+			createHash("sha256")
+				.update(await fs.readFile(executable))
+				.digest("hex"),
+		).toBe(artifactSha256);
 		const daemonDir = path.join(output, "notifications");
-		await fs.writeFile(path.join(daemonDir, "telegram-daemon.state.json"), JSON.stringify({
-			version: 1, ownerId, pid: 0, tokenFingerprint: "4c5dc9b77089", chatId: "1", startedAt: 1, heartbeatAt: 1, roots: [path.join(output, "state")],
-		}));
+		await fs.writeFile(
+			path.join(daemonDir, "telegram-daemon.state.json"),
+			JSON.stringify({
+				version: 1,
+				ownerId,
+				pid: 0,
+				tokenFingerprint: "4c5dc9b77089",
+				chatId: "1",
+				startedAt: 1,
+				heartbeatAt: 1,
+				roots: [path.join(output, "state")],
+			}),
+		);
 		const oldProduct = Bun.spawn(productCommand, {
 			cwd: output,
-			env: { ...process.env, GJC_CODING_AGENT_DIR: output, BUN_OPTIONS: manifest.runtimeEnvironment.BUN_OPTIONS.replace("{transportShim}", transportShim) },
+			env: {
+				...process.env,
+				GJC_CODING_AGENT_DIR: output,
+				BUN_OPTIONS: manifest.runtimeEnvironment.BUN_OPTIONS.replace("{transportShim}", transportShim),
+			},
 
 			stdout: "pipe",
 			stderr: "pipe",
@@ -250,7 +392,11 @@ globalThis.fetch = async (input, init) => {
 		let readinessError: unknown;
 		try {
 			const daemonStatePath = path.join(output, "notifications", "telegram-daemon.state.json");
-			await waitFor(async () => (await jsonFile(daemonStatePath))?.pid === oldProduct.pid, 5_000, "old product daemon readiness and ownership mutation");
+			await waitFor(
+				async () => (await jsonFile(daemonStatePath))?.pid === oldProduct.pid,
+				5_000,
+				"old product daemon readiness and ownership mutation",
+			);
 			const daemonState = await jsonFile(daemonStatePath);
 			expect(daemonState).toMatchObject({ ownerId, pid: oldProduct.pid });
 			await waitFor(
@@ -259,33 +405,68 @@ globalThis.fetch = async (input, init) => {
 				"old product discovery of transformed notification endpoint",
 			);
 			await waitFor(
-				() => activeEndpointServer.frames.some(frame => frame.type === "reply" && frame.id === "rollback-action" && frame.answer === 0 && frame.token === endpoint.token),
+				() =>
+					activeEndpointServer.frames.some(
+						frame =>
+							frame.type === "reply" &&
+							frame.id === "rollback-action" &&
+							frame.answer === 0 &&
+							frame.token === endpoint.token,
+					),
 				5_000,
 				"old product Telegram mutation forwarded to transformed session endpoint",
 			);
-			const telegramCalls = (await fs.readFile(transportLog, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { method: string });
-			expect(telegramCalls.map(call => call.method)).toEqual(expect.arrayContaining(["getMe", "getUpdates", "sendMessage"]));
-			const shutdownCommand = expandProductCommand(manifest.shutdownCommand, { executable, ownerId, agentDir: output, transportShim });
-			expect(createHash("sha256").update(await fs.readFile(executable)).digest("hex")).toBe(artifactSha256);
-			const shutdown = await command(shutdownCommand, output, { GJC_CODING_AGENT_DIR: output, BUN_OPTIONS: manifest.runtimeEnvironment.BUN_OPTIONS.replace("{transportShim}", transportShim) });
+			const telegramCalls = (await fs.readFile(transportLog, "utf8"))
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line) as { method: string });
+			expect(telegramCalls.map(call => call.method)).toEqual(
+				expect.arrayContaining(["getMe", "getUpdates", "sendMessage"]),
+			);
+			const shutdownCommand = expandProductCommand(manifest.shutdownCommand, {
+				executable,
+				ownerId,
+				agentDir: output,
+				transportShim,
+			});
+			expect(
+				createHash("sha256")
+					.update(await fs.readFile(executable))
+					.digest("hex"),
+			).toBe(artifactSha256);
+			const shutdown = await command(shutdownCommand, output, {
+				GJC_CODING_AGENT_DIR: output,
+				BUN_OPTIONS: manifest.runtimeEnvironment.BUN_OPTIONS.replace("{transportShim}", transportShim),
+			});
 			expect(shutdown.exitCode, shutdown.output).toBe(0);
 			const controlPath = path.join(daemonDir, "telegram-daemon.control.json");
-			await waitFor(async () => (await jsonFile(controlPath)) === undefined, 5_000, "old product control acknowledgement");
-			await waitFor(async () => {
-				try {
-					await fs.access(path.join(daemonDir, "telegram-daemon.lock"));
-					return false;
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-					throw error;
-				}
-			}, 5_000, "old product ownership release");
+			await waitFor(
+				async () => (await jsonFile(controlPath)) === undefined,
+				5_000,
+				"old product control acknowledgement",
+			);
+			await waitFor(
+				async () => {
+					try {
+						await fs.access(path.join(daemonDir, "telegram-daemon.lock"));
+						return false;
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+						throw error;
+					}
+				},
+				5_000,
+				"old product ownership release",
+			);
 		} catch (error) {
 			readinessError = error;
 			oldProduct.kill("SIGKILL");
 		}
 		const [exitCode, oldStdout, oldStderr] = await Promise.all([oldProduct.exited, stdout, stderr]);
-		if (readinessError) throw new Error(`${readinessError instanceof Error ? readinessError.message : String(readinessError)}\n${oldStdout}${oldStderr}`);
+		if (readinessError)
+			throw new Error(
+				`${readinessError instanceof Error ? readinessError.message : String(readinessError)}\n${oldStdout}${oldStderr}`,
+			);
 		expect(exitCode, `${oldStdout}${oldStderr}`).toBe(128 + 15);
 	} finally {
 		await command(["git", "worktree", "remove", "--force", worktree]);
@@ -298,7 +479,9 @@ test("rollback transformer refuses an unknown source version", async () => {
 	const output = path.join(await temp(), "rollback");
 	await fs.mkdir(path.join(source, "sdk"), { recursive: true });
 	await fs.writeFile(path.join(source, "sdk", "broker.json"), JSON.stringify({ version: 99 }));
-	await expect(transformSdkStateForRollback({ from: source, out: output, to: 1 })).rejects.toThrow("Unsupported source state version");
+	await expect(transformSdkStateForRollback({ from: source, out: output, to: 1 })).rejects.toThrow(
+		"Unsupported source state version",
+	);
 	await expect(fs.stat(output)).rejects.toThrow();
 });
 
@@ -309,7 +492,20 @@ test("rollback transformer rejects a malformed or misplaced legacy endpoint", as
 	await fs.mkdir(endpointDir, { recursive: true });
 	await fs.writeFile(
 		path.join(endpointDir, "wrong-name.json"),
-		JSON.stringify({ version: 1, sessionId: "rollback-session", pid: process.pid, host: "127.0.0.1", port: 4313, url: "ws://127.0.0.1:4313", token: "endpoint-token", startedAt: 1, updatedAt: 1, stale: false }),
+		JSON.stringify({
+			version: 1,
+			sessionId: "rollback-session",
+			pid: process.pid,
+			host: "127.0.0.1",
+			port: 4313,
+			url: "ws://127.0.0.1:4313",
+			token: "endpoint-token",
+			startedAt: 1,
+			updatedAt: 1,
+			stale: false,
+		}),
 	);
-	await expect(transformSdkStateForRollback({ from: source, out: output, to: 1 })).rejects.toThrow("Invalid rollback endpoint path");
+	await expect(transformSdkStateForRollback({ from: source, out: output, to: 1 })).rejects.toThrow(
+		"Invalid rollback endpoint path",
+	);
 });

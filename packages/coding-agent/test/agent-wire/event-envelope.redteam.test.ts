@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { AGENT_WIRE_EVENT_TYPES, AGENT_WIRE_PROTOCOL_VERSION } from "../../src/modes/shared/agent-wire/event-contract";
+import * as envelope from "../../src/modes/shared/agent-wire/event-envelope";
 import {
 	AgentWireFrameSequencer,
 	agentSessionEventType,
 	toAgentWireEventFrame,
 } from "../../src/modes/shared/agent-wire/event-envelope";
-import * as envelope from "../../src/modes/shared/agent-wire/event-envelope";
 import { EVENT_FIXTURES } from "./fixtures";
 
 const PINNED_EVENT_FRAME_KEYS = ["frame_id", "payload", "protocol_version", "seq", "session_id", "type"];
@@ -14,14 +14,6 @@ const PINNED_CORRELATED_FRAME_KEYS = [...PINNED_EVENT_FRAME_KEYS, "correlation_i
 
 function sortedKeys(value: object): string[] {
 	return Object.keys(value).sort();
-}
-
-function normalizeVolatileFrameFields(frame: ReturnType<typeof toAgentWireEventFrame>) {
-	return {
-		...frame,
-		frame_id: "<frame-id>",
-		seq: "<seq>",
-	};
 }
 
 describe("canonical agent-wire envelope red-team", () => {

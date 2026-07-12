@@ -118,9 +118,15 @@ export declare class NotificationServer {
    * config commands). Must be called before [`Self::start`].
    */
   onInbound(callback: (err: null | Error, msg: InboundEvent) => void): void
-  /** Register the raw v3 SDK frame callback. Must be called before [`Self::start`]. */
+  /**
+   * Register the raw v3 SDK frame callback. Must be called before
+   * [`Self::start`].
+   */
   onSdkFrame(callback: (err: null | Error, frame: SdkFrameEvent) => void): void
-  /** Register the connection-close callback. Must be called before [`Self::start`]. */
+  /**
+   * Register the connection-close callback. Must be called before
+   * [`Self::start`].
+   */
   onConnectionClose(callback: (err: null | Error, connectionId: string) => void): void
   /**
    * Bind the loopback endpoint and start serving. Resolves with the bound
@@ -133,7 +139,8 @@ export declare class NotificationServer {
   /**
    * Broadcast an `action_needed` ask. `needed_json` is a JSON `ActionNeeded`.
    *
-   * `repliable` should be `true` only when an SDK workflow-gate resolver is available.
+   * `repliable` should be `true` only when an SDK workflow-gate resolver is
+   * available.
    *
    * # Errors
    * Fails if not started or `needed_json` is invalid.

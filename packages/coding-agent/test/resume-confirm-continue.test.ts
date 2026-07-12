@@ -128,7 +128,9 @@ describe("bare resume startup gating", () => {
 	});
 
 	it("rejects the TTY-backed print route before startup work", async () => {
-		expect(await expectEarlyBareResumeRejection(bareArgs({ print: true }), true)).toBe(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
+		expect(await expectEarlyBareResumeRejection(bareArgs({ print: true }), true)).toBe(
+			`${BARE_RESUME_INTERACTIVE_ERROR}\n`,
+		);
 	});
 
 	it("preserves undefined, zero, and nonzero exit codes in isolated route probes", async () => {

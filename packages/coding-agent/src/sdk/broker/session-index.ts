@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { withFileLock } from "../../config/file-lock";
-import { SDK_STATE_VERSION, UnsupportedStateVersionError, assertSupportedStateVersion } from "./state-version";
+import { assertSupportedStateVersion, SDK_STATE_VERSION, UnsupportedStateVersionError } from "./state-version";
 
 export type SessionIndexEventType =
 	| "host_registered"
@@ -162,7 +162,8 @@ export class SessionIndex {
 		return this.#events.at(-1)?.indexSeq ?? 0;
 	}
 	async append(
-		input: Omit<SessionIndexEvent, "version" | "indexSeq" | "checksum" | "ts"> & Partial<Pick<SessionIndexEvent, "ts">>,
+		input: Omit<SessionIndexEvent, "version" | "indexSeq" | "checksum" | "ts"> &
+			Partial<Pick<SessionIndexEvent, "ts">>,
 	): Promise<SessionIndexEvent> {
 		await fs.mkdir(dirFor(this.#agentDir), { recursive: true, mode: 0o700 });
 		return withFileLock(logFor(this.#agentDir), async () => {
@@ -182,7 +183,11 @@ export class SessionIndex {
 	async snapshot(): Promise<void> {
 		const file = snapshotFor(this.#agentDir);
 		const tmp = `${file}.${process.pid}.tmp`;
-		await fs.writeFile(tmp, JSON.stringify({ version: SDK_STATE_VERSION, indexSeq: this.indexSeq, events: this.#events }), { mode: 0o600 });
+		await fs.writeFile(
+			tmp,
+			JSON.stringify({ version: SDK_STATE_VERSION, indexSeq: this.indexSeq, events: this.#events }),
+			{ mode: 0o600 },
+		);
 		const h = await fs.open(tmp, "r");
 		try {
 			await h.sync();
@@ -195,14 +200,23 @@ export class SessionIndex {
 		const files = [snapshotFor(this.#agentDir), logFor(this.#agentDir)];
 		for (const file of files) {
 			let source: string;
-			try { source = await fs.readFile(file, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+			try {
+				source = await fs.readFile(file, "utf8");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw error;
+			}
 			if (file.endsWith(".json")) {
 				assertSupportedStateVersion(file, JSON.parse(source));
 				continue;
 			}
 			for (const line of source.split("\n")) {
 				if (!line) continue;
-				try { assertSupportedStateVersion(file, JSON.parse(line)); } catch (error) { if (error instanceof UnsupportedStateVersionError) throw error; }
+				try {
+					assertSupportedStateVersion(file, JSON.parse(line));
+				} catch (error) {
+					if (error instanceof UnsupportedStateVersionError) throw error;
+				}
 			}
 		}
 	}
@@ -235,11 +249,12 @@ export class SessionIndex {
 	}
 
 	hasHostUnregistered(sessionId: string, endpointGeneration: number, pid: number): boolean {
-		return this.#events.some(event =>
-			event.type === "host_unregistered" &&
-			event.sessionId === sessionId &&
-			event.endpointGeneration === endpointGeneration &&
-			event.pid === pid,
+		return this.#events.some(
+			event =>
+				event.type === "host_unregistered" &&
+				event.sessionId === sessionId &&
+				event.endpointGeneration === endpointGeneration &&
+				event.pid === pid,
 		);
 	}
 }

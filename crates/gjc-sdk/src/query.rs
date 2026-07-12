@@ -21,76 +21,77 @@ pub const MAX_CURSORS_PER_CONNECTION: usize = 32;
 pub const MAX_CURSORS_PER_SESSION: usize = 128;
 
 /// A typed bounded query invocation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
-	pub id: String,
-	pub query: String,
-	pub input: Value,
+	pub id:     String,
+	pub query:  String,
+	pub input:  Value,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cursor: Option<String>,
 }
 
 /// A paginated query result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryPage {
-	pub items: Vec<Value>,
-	pub complete: bool,
+	pub items:               Vec<Value>,
+	pub complete:            bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub continuation_cursor: Option<String>,
-	pub revision: String,
+	pub revision:            String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub preview: Option<bool>,
+	pub preview:             Option<bool>,
 }
 
 /// A query failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryError {
-	pub code: String,
-	pub message: String,
+	pub code:             String,
+	pub message:          String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub current_revision: Option<String>,
 }
 
 /// A typed query response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
-	pub id: String,
-	pub ok: bool,
+	pub id:     String,
+	pub ok:     bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub result: Option<Value>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub page: Option<QueryPage>,
+	pub page:   Option<QueryPage>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub error: Option<QueryError>,
+	pub error:  Option<QueryError>,
 }
 
 /// The authenticated contents of an opaque continuation cursor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorEnvelope {
 	pub cursor_version: u32,
 	pub protocol_major: u32,
-	pub session_id: String,
-	pub resource: String,
-	pub revision: String,
+	pub session_id:     String,
+	pub resource:       String,
+	pub revision:       String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub high_watermark: Option<Value>,
-	pub position: Value,
-	pub direction: String,
-	pub page_shape: Value,
+	pub position:       Value,
+	pub direction:      String,
+	pub page_shape:     Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SignedCursor {
 	envelope: CursorEnvelope,
-	mac: String,
+	mac:      String,
 }
 
-/// Sign a cursor envelope with the session token and return its opaque encoding.
+/// Sign a cursor envelope with the session token and return its opaque
+/// encoding.
 pub fn sign_cursor(
 	envelope: CursorEnvelope,
 	session_token: &[u8],
@@ -99,7 +100,8 @@ pub fn sign_cursor(
 	serde_json::to_string(&SignedCursor { envelope, mac })
 }
 
-/// Verify an opaque cursor encoding and return its envelope when its MAC matches.
+/// Verify an opaque cursor encoding and return its envelope when its MAC
+/// matches.
 pub fn verify_cursor(cursor: &str, session_token: &[u8]) -> Option<CursorEnvelope> {
 	let signed: SignedCursor = serde_json::from_str(cursor).ok()?;
 	let expected = cursor_mac(&signed.envelope, session_token).ok()?;
@@ -157,7 +159,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 /// Query frames sent to a session endpoint.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryClientFrame {
 	QueryRequest(QueryRequest),
@@ -166,39 +168,40 @@ pub enum QueryClientFrame {
 }
 
 /// Query frames sent by a session endpoint.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryServerFrame {
-	QueryResponse(QueryResponse),
+	QueryResponse(Box<QueryResponse>),
 	#[serde(other)]
 	Unknown,
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde_json::json;
+
+	use super::*;
 
 	fn envelope() -> CursorEnvelope {
 		CursorEnvelope {
 			cursor_version: 1,
 			protocol_major: 3,
-			session_id: "s1".into(),
-			resource: "transcript".into(),
-			revision: "r1".into(),
+			session_id:     "s1".into(),
+			resource:       "transcript".into(),
+			revision:       "r1".into(),
 			high_watermark: Some(json!(12)),
-			position: json!({"offset": 4}),
-			direction: "forward".into(),
-			page_shape: json!({"limit": 10}),
+			position:       json!({"offset": 4}),
+			direction:      "forward".into(),
+			page_shape:     json!({"limit": 10}),
 		}
 	}
 
 	#[test]
 	fn query_frames_round_trip_with_wire_names_and_unknown_fields() {
 		let frame = QueryClientFrame::QueryRequest(QueryRequest {
-			id: "q1".into(),
-			query: "todo.list".into(),
-			input: json!({}),
+			id:     "q1".into(),
+			query:  "todo.list".into(),
+			input:  json!({}),
 			cursor: Some("cursor".into()),
 		});
 		let value = serde_json::to_value(&frame).unwrap();
@@ -217,19 +220,19 @@ mod tests {
 
 	#[test]
 	fn query_response_round_trips_page() {
-		let frame = QueryServerFrame::QueryResponse(QueryResponse {
-			id: "q1".into(),
-			ok: true,
+		let frame = QueryServerFrame::QueryResponse(Box::new(QueryResponse {
+			id:     "q1".into(),
+			ok:     true,
 			result: None,
-			page: Some(QueryPage {
-				items: vec![json!({"id":"one"})],
-				complete: false,
+			page:   Some(QueryPage {
+				items:               vec![json!({"id":"one"})],
+				complete:            false,
 				continuation_cursor: Some("next".into()),
-				revision: "r1".into(),
-				preview: Some(true),
+				revision:            "r1".into(),
+				preview:             Some(true),
 			}),
-			error: None,
-		});
+			error:  None,
+		}));
 		let value = serde_json::to_value(&frame).unwrap();
 		assert_eq!(value["type"], "query_response");
 		assert_eq!(value["page"]["continuationCursor"], "next");

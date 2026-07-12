@@ -29,11 +29,11 @@ use parking_lot::Mutex;
 #[napi(object)]
 pub struct NotificationEndpoint {
 	/// Bind host (loopback).
-	pub host: String,
+	pub host:       String,
 	/// Bound port.
-	pub port: u32,
+	pub port:       u32,
 	/// `ws://host:port` URL.
-	pub url: String,
+	pub url:        String,
 	/// The session id this endpoint serves.
 	pub session_id: String,
 }
@@ -42,11 +42,11 @@ pub struct NotificationEndpoint {
 #[napi(object)]
 pub struct ReplyEvent {
 	/// The action id being answered (the real broker `gate_id` for asks).
-	pub id: String,
+	pub id:               String,
 	/// JSON-encoded `ReplyAnswer` (number, string, or `{selected,custom}`).
-	pub answer_json: String,
+	pub answer_json:      String,
 	/// Optional idempotency key supplied by the client.
-	pub idempotency_key: Option<String>,
+	pub idempotency_key:  Option<String>,
 	/// One-shot receipt binding this callback to the atomically claimed reply.
 	pub reply_receipt_id: String,
 }
@@ -54,22 +54,24 @@ pub struct ReplyEvent {
 /// Typed terminal acknowledgement result returned by acknowledgement promises.
 #[napi(object)]
 pub struct AskSelectedAckOutcomeEvent {
-	pub status: String,
+	pub status:     String,
 	pub message_id: Option<i64>,
-	pub reason: Option<String>,
+	pub reason:     Option<String>,
 }
 
 impl From<gjc_sdk::protocol::AskSelectedAckOutcome> for AskSelectedAckOutcomeEvent {
 	fn from(outcome: gjc_sdk::protocol::AskSelectedAckOutcome) -> Self {
 		use gjc_sdk::protocol::AskSelectedAckOutcome;
 		match outcome {
-			AskSelectedAckOutcome::Delivered { message_id } => {
-				Self { status: "delivered".to_owned(), message_id: Some(message_id), reason: None }
+			AskSelectedAckOutcome::Delivered { message_id } => Self {
+				status:     "delivered".to_owned(),
+				message_id: Some(message_id),
+				reason:     None,
 			},
 			AskSelectedAckOutcome::Failed { reason } => Self {
-				status: "failed".to_owned(),
+				status:     "failed".to_owned(),
 				message_id: None,
-				reason: Some(
+				reason:     Some(
 					serde_json::to_value(reason)
 						.expect("ack reason serializes")
 						.as_str()
@@ -78,9 +80,9 @@ impl From<gjc_sdk::protocol::AskSelectedAckOutcome> for AskSelectedAckOutcomeEve
 				),
 			},
 			AskSelectedAckOutcome::Unknown { reason } => Self {
-				status: "unknown".to_owned(),
+				status:     "unknown".to_owned(),
 				message_id: None,
-				reason: Some(
+				reason:     Some(
 					serde_json::to_value(reason)
 						.expect("ack reason serializes")
 						.as_str()
@@ -97,26 +99,26 @@ impl From<gjc_sdk::protocol::AskSelectedAckOutcome> for AskSelectedAckOutcomeEve
 #[napi(object)]
 pub struct InboundEvent {
 	/// Inbound kind (`user_message`, `config_command`, or `control_command`).
-	pub kind: String,
+	pub kind:         String,
 	/// The session this inbound belongs to.
-	pub session_id: String,
+	pub session_id:   String,
 	/// Free-text body (`user_message` only).
-	pub text: Option<String>,
+	pub text:         Option<String>,
 	/// Telegram update id for dedupe (`user_message` only).
-	pub update_id: Option<i64>,
+	pub update_id:    Option<i64>,
 	/// Originating thread/topic id (`user_message` only).
-	pub thread_id: Option<String>,
+	pub thread_id:    Option<String>,
 	/// Requested verbosity `"lean"|"verbose"` (`config_command` only).
-	pub verbosity: Option<String>,
+	pub verbosity:    Option<String>,
 	/// Requested redaction state (`config_command` only).
-	pub redact: Option<bool>,
+	pub redact:       Option<bool>,
 	/// Client-generated request id (`control_command` only).
-	pub request_id: Option<String>,
+	pub request_id:   Option<String>,
 	/// JSON-encoded command payload (`control_command` only).
 	pub command_json: Option<String>,
 	/// Inline image attachments forwarded with the message (`user_message`
 	/// only).
-	pub images: Option<Vec<InboundImageEvent>>,
+	pub images:       Option<Vec<InboundImageEvent>>,
 }
 
 /// One inline image attachment forwarded with an inbound user message.
@@ -132,17 +134,17 @@ pub struct InboundImageEvent {
 #[napi(object)]
 pub struct SdkFrameEvent {
 	pub connection_id: String,
-	pub json: String,
+	pub json:          String,
 }
 
 /// In-process notification server handle exposed to TypeScript.
 #[napi]
 pub struct NotificationServer {
-	config: Mutex<Option<ServerConfig>>,
-	handle: Mutex<Option<ServerHandle>>,
-	on_reply: Mutex<Option<ThreadsafeFunction<ReplyEvent>>>,
-	on_inbound: Mutex<Option<ThreadsafeFunction<InboundEvent>>>,
-	on_frame: Mutex<Option<ThreadsafeFunction<SdkFrameEvent>>>,
+	config:              Mutex<Option<ServerConfig>>,
+	handle:              Mutex<Option<ServerHandle>>,
+	on_reply:            Mutex<Option<ThreadsafeFunction<ReplyEvent>>>,
+	on_inbound:          Mutex<Option<ThreadsafeFunction<InboundEvent>>>,
+	on_frame:            Mutex<Option<ThreadsafeFunction<SdkFrameEvent>>>,
 	on_connection_close: Mutex<Option<ThreadsafeFunction<String>>>,
 }
 
@@ -166,11 +168,11 @@ impl NotificationServer {
 		// TS always owns gate resolution, so the core forwards replies.
 		config.forward_replies = true;
 		Self {
-			config: Mutex::new(Some(config)),
-			handle: Mutex::new(None),
-			on_reply: Mutex::new(None),
-			on_inbound: Mutex::new(None),
-			on_frame: Mutex::new(None),
+			config:              Mutex::new(Some(config)),
+			handle:              Mutex::new(None),
+			on_reply:            Mutex::new(None),
+			on_inbound:          Mutex::new(None),
+			on_frame:            Mutex::new(None),
 			on_connection_close: Mutex::new(None),
 		}
 	}
@@ -188,13 +190,15 @@ impl NotificationServer {
 		*self.on_inbound.lock() = Some(callback);
 	}
 
-	/// Register the raw v3 SDK frame callback. Must be called before [`Self::start`].
+	/// Register the raw v3 SDK frame callback. Must be called before
+	/// [`Self::start`].
 	#[napi(ts_args_type = "callback: (err: null | Error, frame: SdkFrameEvent) => void")]
 	pub fn on_sdk_frame(&self, callback: ThreadsafeFunction<SdkFrameEvent>) {
 		*self.on_frame.lock() = Some(callback);
 	}
 
-	/// Register the connection-close callback. Must be called before [`Self::start`].
+	/// Register the connection-close callback. Must be called before
+	/// [`Self::start`].
 	#[napi(ts_args_type = "callback: (err: null | Error, connectionId: string) => void")]
 	pub fn on_connection_close(&self, callback: ThreadsafeFunction<String>) {
 		*self.on_connection_close.lock() = Some(callback);
@@ -236,10 +240,10 @@ impl NotificationServer {
 			napi::tokio::spawn(async move {
 				while let Some(reply) = rx.recv().await {
 					let event = ReplyEvent {
-						id: reply.reply.id,
-						answer_json: serde_json::to_string(&reply.reply.answer)
+						id:               reply.reply.id,
+						answer_json:      serde_json::to_string(&reply.reply.answer)
 							.unwrap_or_else(|_| "null".to_owned()),
-						idempotency_key: reply.reply.idempotency_key,
+						idempotency_key:  reply.reply.idempotency_key,
 						reply_receipt_id: reply.reply_receipt_id,
 					};
 					tsfn.call(Ok(event), ThreadsafeFunctionCallMode::NonBlocking);
@@ -255,12 +259,12 @@ impl NotificationServer {
 				while let Some(msg) = rx.recv().await {
 					let event = match msg {
 						ClientMessage::UserMessage(u) => InboundEvent {
-							kind: "user_message".to_owned(),
-							session_id: u.session_id,
-							text: Some(u.text),
-							update_id: u.update_id,
-							thread_id: u.thread_id,
-							images: if u.images.is_empty() {
+							kind:         "user_message".to_owned(),
+							session_id:   u.session_id,
+							text:         Some(u.text),
+							update_id:    u.update_id,
+							thread_id:    u.thread_id,
+							images:       if u.images.is_empty() {
 								None
 							} else {
 								Some(
@@ -270,39 +274,39 @@ impl NotificationServer {
 										.collect(),
 								)
 							},
-							verbosity: None,
-							redact: None,
-							request_id: None,
+							verbosity:    None,
+							redact:       None,
+							request_id:   None,
 							command_json: None,
 						},
 						ClientMessage::ConfigCommand(c) => InboundEvent {
-							kind: "config_command".to_owned(),
-							session_id: c.session_id,
-							text: None,
-							update_id: None,
-							thread_id: None,
-							verbosity: c.verbosity.map(|v| match v {
+							kind:         "config_command".to_owned(),
+							session_id:   c.session_id,
+							text:         None,
+							update_id:    None,
+							thread_id:    None,
+							verbosity:    c.verbosity.map(|v| match v {
 								Verbosity::Lean => "lean".to_owned(),
 								Verbosity::Verbose => "verbose".to_owned(),
 							}),
-							redact: c.redact,
-							request_id: None,
+							redact:       c.redact,
+							request_id:   None,
 							command_json: None,
-							images: None,
+							images:       None,
 						},
 						ClientMessage::ControlCommand(c) => InboundEvent {
-							kind: "control_command".to_owned(),
-							session_id: c.session_id,
-							text: None,
-							update_id: c.update_id,
-							thread_id: c.thread_id,
-							verbosity: None,
-							redact: None,
-							request_id: Some(c.request_id),
+							kind:         "control_command".to_owned(),
+							session_id:   c.session_id,
+							text:         None,
+							update_id:    c.update_id,
+							thread_id:    c.thread_id,
+							verbosity:    None,
+							redact:       None,
+							request_id:   Some(c.request_id),
 							command_json: Some(
 								serde_json::to_string(&c.command).unwrap_or_else(|_| "null".to_owned()),
 							),
-							images: None,
+							images:       None,
 						},
 						_ => continue,
 					};
@@ -340,7 +344,8 @@ impl NotificationServer {
 
 	/// Broadcast an `action_needed` ask. `needed_json` is a JSON `ActionNeeded`.
 	///
-	/// `repliable` should be `true` only when an SDK workflow-gate resolver is available.
+	/// `repliable` should be `true` only when an SDK workflow-gate resolver is
+	/// available.
 	///
 	/// # Errors
 	/// Fails if not started or `needed_json` is invalid.
@@ -384,10 +389,7 @@ impl NotificationServer {
 	/// Send raw JSON to one connected v3 SDK client.
 	#[napi]
 	pub fn send_to(&self, connection_id: String, json: String) -> Result<()> {
-		let guard = self.handle.lock();
-		let handle = guard
-			.as_ref()
-			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		let handle = self.handle()?;
 		if handle.send_to(&connection_id, json) {
 			Ok(())
 		} else {
@@ -488,12 +490,7 @@ impl NotificationServer {
 		if !matches!(request, gjc_sdk::protocol::AskSelectedAckRequest::Live { .. }) {
 			return Err(Error::from_reason("requestAskSelectedAck requires mode=live"));
 		}
-		let handle = self
-			.handle
-			.lock()
-			.as_ref()
-			.cloned()
-			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		let handle = self.handle()?;
 		Ok(handle
 			.request_ask_selected_ack(&reply_receipt_id, request)
 			.await
@@ -514,12 +511,7 @@ impl NotificationServer {
 		if !matches!(request, gjc_sdk::protocol::AskSelectedAckRequest::Recovery { .. }) {
 			return Err(Error::from_reason("requestRecoveredAskSelectedAck requires mode=recovery"));
 		}
-		let handle = self
-			.handle
-			.lock()
-			.as_ref()
-			.cloned()
-			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		let handle = self.handle()?;
 		Ok(handle
 			.request_recovered_ask_selected_ack(request)
 			.await
@@ -538,12 +530,7 @@ impl NotificationServer {
 			Error::from_reason(format!("invalid acknowledgement cancellation reason: {e}"))
 		})?;
 		let cancel = gjc_sdk::protocol::AskSelectedAckCancel { request_id, commit_key, reason };
-		let handle = self
-			.handle
-			.lock()
-			.as_ref()
-			.cloned()
-			.ok_or_else(|| Error::from_reason("notification server not started"))?;
+		let handle = self.handle()?;
 		Ok(handle.cancel_ask_selected_ack(cancel).into())
 	}
 
@@ -577,26 +564,32 @@ impl NotificationServer {
 	#[napi]
 	pub fn client_count(&self) -> u32 {
 		self
-			.handle
-			.lock()
-			.as_ref()
-			.map_or(0, |h| u32::try_from(h.client_count()).unwrap_or(u32::MAX))
+			.handle()
+			.map_or(0, |handle| u32::try_from(handle.client_count()).unwrap_or(u32::MAX))
 	}
 
 	/// Stop the server (idempotent) and remove the endpoint discovery file.
 	#[napi]
 	pub fn stop(&self) {
-		if let Some(handle) = self.handle.lock().as_ref() {
+		if let Ok(handle) = self.handle() {
 			handle.stop();
 		}
 	}
 
 	fn with_handle<T, F: FnOnce(&ServerHandle) -> T>(&self, f: F) -> Result<T> {
-		let guard = self.handle.lock();
-		let handle = guard
+		let handle = self.handle()?;
+		Ok(f(&handle))
+	}
+
+	fn handle(&self) -> Result<ServerHandle> {
+		// Host callbacks may synchronously reenter this object. Keep no native
+		// mutex guard alive while invoking an operation that can trigger them.
+		self
+			.handle
+			.lock()
 			.as_ref()
-			.ok_or_else(|| Error::from_reason("notification server not started"))?;
-		Ok(f(handle))
+			.cloned()
+			.ok_or_else(|| Error::from_reason("notification server not started"))
 	}
 }
 
@@ -604,11 +597,11 @@ impl NotificationServer {
 #[napi(object)]
 pub struct ControlEndpoint {
 	/// Bind host (loopback).
-	pub host: String,
+	pub host:     String,
 	/// Bound port.
-	pub port: u32,
+	pub port:     u32,
 	/// `ws://host:port` URL.
-	pub url: String,
+	pub url:      String,
 	/// The daemon owner id this control endpoint serves.
 	pub owner_id: String,
 }
@@ -617,9 +610,9 @@ pub struct ControlEndpoint {
 #[napi(object)]
 pub struct LifecycleRequestEvent {
 	/// One of `"session_create"`, `"session_close"`, `"session_resume"`.
-	pub kind: String,
+	pub kind:         String,
 	/// The request correlation id to echo in the response.
-	pub request_id: String,
+	pub request_id:   String,
 	/// JSON-encoded `LifecycleClientMessage` with the control `token` stripped.
 	/// The ingress already authenticated the frame, so the secret is never
 	/// forwarded into JS; all other (non-token) fields are preserved.
@@ -636,8 +629,8 @@ pub struct LifecycleRequestEvent {
 /// [`Self::start`].
 #[napi]
 pub struct NotificationControlServer {
-	config: Mutex<Option<ControlServerConfig>>,
-	handle: Mutex<Option<ControlServerHandle>>,
+	config:     Mutex<Option<ControlServerConfig>>,
+	handle:     Mutex<Option<ControlServerHandle>>,
 	on_request: Mutex<Option<ThreadsafeFunction<LifecycleRequestEvent>>>,
 }
 
@@ -653,8 +646,8 @@ impl NotificationControlServer {
 		let mut config = ControlServerConfig::new(token, owner_id);
 		config.agent_dir = agent_dir.map(PathBuf::from);
 		Self {
-			config: Mutex::new(Some(config)),
-			handle: Mutex::new(None),
+			config:     Mutex::new(Some(config)),
+			handle:     Mutex::new(None),
 			on_request: Mutex::new(None),
 		}
 	}

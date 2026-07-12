@@ -9,7 +9,6 @@ import {
 const builtinLoader: CoordinatorModelProfileLoader = () =>
 	new Map<string, CoordinatorModelProfile>([["codex-eco", { name: "codex-eco" }]]);
 
-
 function customProfile(name: string): CoordinatorModelProfile {
 	return { name };
 }

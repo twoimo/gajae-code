@@ -6,10 +6,7 @@ import {
 	decodeExecution,
 	executionGate,
 } from "../src/modes/shared/agent-wire/approval-gate";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { MemoryGateStore, WorkflowGateBroker } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 
 function expectApprovalError(answer: unknown, code: ApprovalGateError["code"]): void {
 	try {

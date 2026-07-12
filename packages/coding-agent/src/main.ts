@@ -120,9 +120,11 @@ export class StartupUpdateOrchestrator {
 	}
 
 	attachAfterInteractiveInitialization(notify: (version: string) => void): void {
-		this.#versionCheckPromise?.then(version => {
-			if (version && this.#enabled()) notify(version);
-		}).catch(() => {});
+		this.#versionCheckPromise
+			?.then(version => {
+				if (version && this.#enabled()) notify(version);
+			})
+			.catch(() => {});
 	}
 }
 

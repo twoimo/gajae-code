@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { AGENT_WIRE_EVENT_TYPES, AGENT_WIRE_PROTOCOL_VERSION } from "../../src/modes/shared/agent-wire/event-contract";
+import * as envelope from "../../src/modes/shared/agent-wire/event-envelope";
 import {
 	AgentWireFrameSequencer,
 	agentSessionEventType,
 	toAgentWireEventFrame,
 } from "../../src/modes/shared/agent-wire/event-envelope";
-import * as envelope from "../../src/modes/shared/agent-wire/event-envelope";
 import { EVENT_FIXTURES } from "./fixtures";
 
 describe("canonical agent-wire envelope", () => {

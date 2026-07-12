@@ -2,10 +2,10 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { getBundledModel } from "@gajae-code/ai";
 import { Settings } from "../../src/config/settings";
-import { createNotificationsExtension } from "../../src/sdk/bus";
-import { createAgentSession } from "../../src/sdk";
-import { SessionManager } from "../../src/session/session-manager";
 import { initializeExtensions } from "../../src/modes/runtime-init";
+import { createAgentSession } from "../../src/sdk";
+import { createNotificationsExtension } from "../../src/sdk/bus";
+import { SessionManager } from "../../src/session/session-manager";
 
 export async function startProductionSdkHost(cwd: string): Promise<{
 	endpoint: { url: string; token: string };
@@ -23,13 +23,16 @@ export async function startProductionSdkHost(cwd: string): Promise<{
 		settings,
 		model: getBundledModel("openai", "gpt-4o-mini"),
 		disableExtensionDiscovery: true,
-		extensions: [api => createNotificationsExtension(api, {
-			settings,
-			onSdkRequest: (kind, _connectionId, frame) => {
-				const operation = kind === "control" ? frame.operation : frame.query;
-				if (typeof operation === "string") observed.push({ kind, operation });
-			},
-		})],
+		extensions: [
+			api =>
+				createNotificationsExtension(api, {
+					settings,
+					onSdkRequest: (kind, _connectionId, frame) => {
+						const operation = kind === "control" ? frame.operation : frame.query;
+						if (typeof operation === "string") observed.push({ kind, operation });
+					},
+				}),
+		],
 		skills: [],
 		contextFiles: [],
 		promptTemplates: [],

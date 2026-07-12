@@ -7,18 +7,14 @@ import {
 	validateCompletionReceipt,
 	verifyUltragoalDurableCompletionState,
 } from "@gajae-code/coding-agent/gjc-runtime/ultragoal-guard";
+import { computeUltragoalPlanGeneration } from "@gajae-code/coding-agent/gjc-runtime/ultragoal-receipt-freshness";
 import {
 	addUltragoalSubgoal,
 	checkpointUltragoalGoal,
 	createUltragoalPlan,
+	hashStructuredValue,
 	readUltragoalPlan,
 	startNextUltragoalGoal,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-runtime";
-import {
-	computeUltragoalPlanGeneration,
-} from "@gajae-code/coding-agent/gjc-runtime/ultragoal-receipt-freshness";
-import {
-	hashStructuredValue,
 	type UltragoalCompletionVerification,
 	type UltragoalGoal,
 	type UltragoalLedgerEvent,
@@ -155,7 +151,14 @@ function reviewedBatchReplacementFixture(options: { multiple?: boolean; staleRep
 	plan: UltragoalPlan;
 	ledger: UltragoalLedgerEvent[];
 } {
-	const batch = { schemaVersion: 1 as const, batchId: "VB004", memberIds: ["G002", "G003", "G004"], finalGoalId: "G004", mode: "aggregate-only" as const, metadataHash: "batch-metadata" };
+	const batch = {
+		schemaVersion: 1 as const,
+		batchId: "VB004",
+		memberIds: ["G002", "G003", "G004"],
+		finalGoalId: "G004",
+		mode: "aggregate-only" as const,
+		metadataHash: "batch-metadata",
+	};
 	const ids = ["G001", "G002", "G003", "G004", "G005", "G006", "G007", "G008", ...(options.multiple ? ["G009"] : [])];
 	const plan: UltragoalPlan = {
 		version: 1,
@@ -164,16 +167,18 @@ function reviewedBatchReplacementFixture(options: { multiple?: boolean; staleRep
 		gjcObjective: "Complete reviewed batch",
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
-		goals: ids.map((id, index): UltragoalGoal => ({
-			id,
-			title: id,
-			objective: id,
-			status: id === "G004" ? "superseded" : "complete",
-			createdAt: "2026-01-01T00:00:00.000Z",
-			updatedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
-			...(batch.memberIds.includes(id) ? { validationBatch: { ...batch } } : {}),
-			...(id === "G008" || id === "G009" ? { steering: { kind: "review_blocker", blockedGoalId: "G004" } } : {}),
-		})),
+		goals: ids.map(
+			(id, index): UltragoalGoal => ({
+				id,
+				title: id,
+				objective: id,
+				status: id === "G004" ? "superseded" : "complete",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+				...(batch.memberIds.includes(id) ? { validationBatch: { ...batch } } : {}),
+				...(id === "G008" || id === "G009" ? { steering: { kind: "review_blocker", blockedGoalId: "G004" } } : {}),
+			}),
+		),
 	};
 	const ledger: UltragoalLedgerEvent[] = [];
 	const receiptFor = (goalId: string, receiptKind: "per-goal" | "final-aggregate") => {
@@ -206,12 +211,20 @@ function reviewedBatchReplacementFixture(options: { multiple?: boolean; staleRep
 				: {}),
 		};
 		goal.completionVerification = receipt;
-		ledger.push({ eventId, event: "goal_checkpointed", goalId, status: "complete", qualityGateJson: {}, completionVerification: receipt });
+		ledger.push({
+			eventId,
+			event: "goal_checkpointed",
+			goalId,
+			status: "complete",
+			qualityGateJson: {},
+			completionVerification: receipt,
+		});
 	};
 	for (const goalId of ["G001", "G002", "G003", "G005", "G007", "G008", ...(options.multiple ? ["G009"] : [])])
 		receiptFor(goalId, "per-goal");
 	receiptFor("G006", "final-aggregate");
-	if (options.staleReplacement) plan.goals.find(goal => goal.id === "G008")!.completionVerification!.qualityGateHash = "stale";
+	if (options.staleReplacement)
+		plan.goals.find(goal => goal.id === "G008")!.completionVerification!.qualityGateHash = "stale";
 	return { plan, ledger };
 }
 
@@ -319,28 +332,48 @@ describe("ultragoal durable completion release state", () => {
 	it("accepts deferred G002/G003 receipts only for a fresh G008 review-blocker replacement of superseded G004 during G006 final aggregation", () => {
 		const { plan, ledger } = reviewedBatchReplacementFixture();
 
-		expect(validateCompletionReceipt({ plan, ledger, goal: plan.goals.find(goal => goal.id === "G002")!, receiptKind: "per-goal" }).state).toBe(
-			"active_missing_final_receipt",
-		);
-		expect(validateCompletionReceipt({ plan, ledger, goal: plan.goals.find(goal => goal.id === "G006")!, receiptKind: "final-aggregate" }).state).toBe(
-			"active_verified_complete",
-		);
+		expect(
+			validateCompletionReceipt({
+				plan,
+				ledger,
+				goal: plan.goals.find(goal => goal.id === "G002")!,
+				receiptKind: "per-goal",
+			}).state,
+		).toBe("active_missing_final_receipt");
+		expect(
+			validateCompletionReceipt({
+				plan,
+				ledger,
+				goal: plan.goals.find(goal => goal.id === "G006")!,
+				receiptKind: "final-aggregate",
+			}).state,
+		).toBe("active_verified_complete");
 	});
 
 	it("fails closed when the sole review-blocker replacement receipt is stale", () => {
 		const { plan, ledger } = reviewedBatchReplacementFixture({ staleReplacement: true });
 
-		expect(validateCompletionReceipt({ plan, ledger, goal: plan.goals.find(goal => goal.id === "G006")!, receiptKind: "final-aggregate" }).state).not.toBe(
-			"active_verified_complete",
-		);
+		expect(
+			validateCompletionReceipt({
+				plan,
+				ledger,
+				goal: plan.goals.find(goal => goal.id === "G006")!,
+				receiptKind: "final-aggregate",
+			}).state,
+		).not.toBe("active_verified_complete");
 	});
 
 	it("fails closed when multiple completed review-blocker replacements target the superseded batch final", () => {
 		const { plan, ledger } = reviewedBatchReplacementFixture({ multiple: true });
 
-		expect(validateCompletionReceipt({ plan, ledger, goal: plan.goals.find(goal => goal.id === "G006")!, receiptKind: "final-aggregate" }).state).not.toBe(
-			"active_verified_complete",
-		);
+		expect(
+			validateCompletionReceipt({
+				plan,
+				ledger,
+				goal: plan.goals.find(goal => goal.id === "G006")!,
+				receiptKind: "final-aggregate",
+			}).state,
+		).not.toBe("active_verified_complete");
 	});
 
 	it("documents the complete release predicate matrix", () => {

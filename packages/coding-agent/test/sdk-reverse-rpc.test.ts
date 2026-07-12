@@ -3,15 +3,27 @@ import { ReverseLeaseError, ReverseLeaseRuntime } from "../src/sdk/host";
 
 describe("directed reverse RPC leases", () => {
 	test("bootstraps atomically, conflicts, reclaims, and hands off", () => {
-		let now = 0; const installed: string[] = []; const removed: string[] = [];
-		const runtime = new ReverseLeaseRuntime({ now: () => now, sendFrame: () => {}, installDefinitions: capability => installed.push(capability), onDefinitionsRemoved: capability => removed.push(capability) });
+		let now = 0;
+		const installed: string[] = [];
+		const removed: string[] = [];
+		const runtime = new ReverseLeaseRuntime({
+			now: () => now,
+			sendFrame: () => {},
+			installDefinitions: capability => installed.push(capability),
+			onDefinitionsRemoved: capability => removed.push(capability),
+		});
 		const first = runtime.registerProvider("a", "terminal", { commands: [] }, undefined, "key");
 		expect(runtime.registerProvider("a", "terminal", { commands: [] }, undefined, "key").leaseId).toBe(first.leaseId);
-		expect(() => runtime.registerProvider("a", "terminal", { ignored: true }, undefined, "key")).toThrow("idempotency_conflict");
-		expect(() => runtime.registerProvider("a", "ui", { commands: [] }, undefined, "key")).toThrow("idempotency_conflict");
+		expect(() => runtime.registerProvider("a", "terminal", { ignored: true }, undefined, "key")).toThrow(
+			"idempotency_conflict",
+		);
+		expect(() => runtime.registerProvider("a", "ui", { commands: [] }, undefined, "key")).toThrow(
+			"idempotency_conflict",
+		);
 		expect(installed).toEqual(["terminal"]);
 		expect(() => runtime.registerProvider("b", "terminal", {})).toThrow(ReverseLeaseError);
-		runtime.disconnect("a"); now = 1;
+		runtime.disconnect("a");
+		now = 1;
 		expect(runtime.registerProvider("b", "terminal", {}, first.leaseId).leaseId).toBe(first.leaseId);
 		const reclaimed = runtime.getLease("terminal")!;
 		runtime.release("b", reclaimed.leaseId, "c");
@@ -19,33 +31,68 @@ describe("directed reverse RPC leases", () => {
 		expect(() => runtime.request("terminal", "run", {})).toThrow("lease_unavailable");
 		expect(removed).toEqual(["terminal", "terminal"]);
 		expect(() => runtime.registerProvider("c", "terminal", {})).toThrow("provider_lease_conflict");
-		const handedOff = runtime.registerProvider("c", "terminal", { commands: [{ name: "replacement" }] }, reclaimed.leaseId);
-		expect(handedOff).toMatchObject({ leaseId: reclaimed.leaseId, connectionId: "c", active: true, definitions: { commands: [{ name: "replacement" }] } });
-		runtime.release("c", handedOff.leaseId, "d"); now += 15_000;
+		const handedOff = runtime.registerProvider(
+			"c",
+			"terminal",
+			{ commands: [{ name: "replacement" }] },
+			reclaimed.leaseId,
+		);
+		expect(handedOff).toMatchObject({
+			leaseId: reclaimed.leaseId,
+			connectionId: "c",
+			active: true,
+			definitions: { commands: [{ name: "replacement" }] },
+		});
+		runtime.release("c", handedOff.leaseId, "d");
+		now += 15_000;
 		expect(() => runtime.request("terminal", "run", {})).toThrow("provider_required");
 		expect(runtime.registerProvider("d", "terminal", {}).leaseId).not.toBe(handedOff.leaseId);
 		expect(() => runtime.release("b", reclaimed.leaseId)).toThrow("not_lease_owner");
 	});
 
 	test("directs responses to lease owner and cancels on disconnect", async () => {
-		const sent: Array<{ connectionId: string; frame: Record<string, unknown> }> = []; const cancelled: string[] = [];
-		const runtime = new ReverseLeaseRuntime({ sendFrame: (connectionId, frame) => { sent.push({ connectionId, frame }); }, onCancel: requestId => cancelled.push(requestId) });
+		const sent: Array<{ connectionId: string; frame: Record<string, unknown> }> = [];
+		const cancelled: string[] = [];
+		const runtime = new ReverseLeaseRuntime({
+			sendFrame: (connectionId, frame) => {
+				sent.push({ connectionId, frame });
+			},
+			onCancel: requestId => cancelled.push(requestId),
+		});
 		runtime.registerProvider("owner", "ui", {});
 		const pending = runtime.request("ui", "select", { options: ["yes"] });
-		const requestId = String(sent[0].frame.id); const leaseId = runtime.getLease("ui")!.leaseId; expect(sent[0].connectionId).toBe("owner");
-		expect(sent[0].frame).toMatchObject({ type: "reverse_request", id: requestId, connectionId: "owner", leaseId, payload: { method: "select", payload: { options: ["yes"] } } });
+		const requestId = String(sent[0].frame.id);
+		const leaseId = runtime.getLease("ui")!.leaseId;
+		expect(sent[0].connectionId).toBe("owner");
+		expect(sent[0].frame).toMatchObject({
+			type: "reverse_request",
+			id: requestId,
+			connectionId: "owner",
+			leaseId,
+			payload: { method: "select", payload: { options: ["yes"] } },
+		});
 		expect(() => runtime.respond("other", requestId, leaseId, {})).toThrow("not_lease_owner");
-		runtime.respond("owner", requestId, leaseId, { selected: "yes" }); await expect(pending).resolves.toEqual({ selected: "yes" });
-		const cancelledRequest = runtime.request("ui", "select", {}); runtime.disconnect("owner");
-		await expect(cancelledRequest).rejects.toThrow("request_cancelled"); expect(cancelled).toHaveLength(1);
+		runtime.respond("owner", requestId, leaseId, { selected: "yes" });
+		await expect(pending).resolves.toEqual({ selected: "yes" });
+		const cancelledRequest = runtime.request("ui", "select", {});
+		runtime.disconnect("owner");
+		await expect(cancelledRequest).rejects.toThrow("request_cancelled");
+		expect(cancelled).toHaveLength(1);
 	});
 
 	test("accepts structured error responses without a result payload", async () => {
 		const sent: Array<Record<string, unknown>> = [];
-		const runtime = new ReverseLeaseRuntime({ sendFrame: (_connectionId, frame) => { sent.push(frame); } });
+		const runtime = new ReverseLeaseRuntime({
+			sendFrame: (_connectionId, frame) => {
+				sent.push(frame);
+			},
+		});
 		runtime.registerProvider("owner", "ui", {});
 		const pending = runtime.request("ui", "select", {});
-		runtime.respond("owner", String(sent[0].id), String(sent[0].leaseId), undefined, { code: "lease_expired", message: "Lease expired." });
+		runtime.respond("owner", String(sent[0].id), String(sent[0].leaseId), undefined, {
+			code: "lease_expired",
+			message: "Lease expired.",
+		});
 		await expect(pending).rejects.toThrow("Lease expired.");
 	});
 

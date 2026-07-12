@@ -9,8 +9,9 @@
  *
  * This is the pure mapping primitive used by SDK-native workflow gate emitters.
  */
-import type { JsonSchema, WorkflowGateKind, WorkflowStage } from "./workflow-gate-types";
+
 import type { OpenGateInput } from "./workflow-gate-broker";
+import type { JsonSchema, WorkflowGateKind, WorkflowStage } from "./workflow-gate-types";
 
 /** "Other (type your own)" sentinel, mirroring the interactive ask tool. */
 export const GATE_OTHER_OPTION = "Other (type your own)";

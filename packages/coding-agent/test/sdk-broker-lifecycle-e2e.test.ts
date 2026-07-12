@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { AcpAgent } from "../src/modes/acp/acp-agent";
+import { Broker } from "../src/sdk/broker/broker";
+import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
+import { runSdkSessionCli } from "../src/sdk/cli";
 import { SdkClient } from "../src/sdk/client";
 import { readSdkBrokerDiscovery } from "../src/sdk/client/discovery";
-import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
-import { Broker } from "../src/sdk/broker/broker";
-import { AcpAgent } from "../src/modes/acp/acp-agent";
-import { runSdkSessionCli } from "../src/sdk/cli";
 import { createSdkMcpServer } from "../src/sdk/mcp";
 
 const cliEntrypoint = path.resolve(import.meta.dir, "../src/cli.ts");
@@ -33,7 +33,12 @@ async function waitFor<T>(read: () => Promise<T | undefined>, label: string): Pr
 async function incarnation(pid: number): Promise<string> {
 	if (process.platform === "linux") {
 		const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
-		return `linux:${stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[19]}`;
+		return `linux:${
+			stat
+				.slice(stat.lastIndexOf(")") + 2)
+				.trim()
+				.split(/\s+/)[19]
+		}`;
 	}
 	const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)]);
 	return `darwin:${new TextDecoder().decode(result.stdout).trim().replace(/\s+/g, " ")}`;
@@ -69,21 +74,31 @@ async function liveLifecycleSession(root: string, agentDir: string, sessionId: s
 			}
 		}, "session endpoint");
 		if (!child.pid) throw new Error("session host has no pid");
-		await fs.writeFile(path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`), JSON.stringify({ pid: child.pid, effectMarker: "subprocess-proof", incarnation: await incarnation(child.pid) }));
+		await fs.writeFile(
+			path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`),
+			JSON.stringify({
+				pid: child.pid,
+				effectMarker: "subprocess-proof",
+				incarnation: await incarnation(child.pid),
+			}),
+		);
 		return { child, endpoint };
 	} catch (error) {
 		if (child.exitCode === null) child.kill("SIGTERM");
 		await child.exited;
-		throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode}; stdout=${await new Response(child.stdout).text()}; stderr=${await new Response(child.stderr).text()}`);
+		throw new Error(
+			`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode}; stdout=${await new Response(child.stdout).text()}; stderr=${await new Response(child.stderr).text()}`,
+		);
 	}
 }
-
 
 test("broker rejects an endpoint-only lifecycle child that never authenticates session_ready", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-life-"));
 	const stateRoot = path.join(agentDir, "state");
 	const fixture = path.join(agentDir, "fixture.js");
-	await fs.writeFile(fixture, `
+	await fs.writeFile(
+		fixture,
+		`
 const fs=require('fs'), path=require('path'), crypto=require('crypto');
 const root=process.env.GJC_STATE_ROOT, id=process.env.GJC_SESSION_ID, agent=process.env.GJC_AGENT_DIR;
 fs.mkdirSync(path.join(root,'sdk'),{recursive:true});
@@ -95,7 +110,8 @@ const log=path.join(agent,'sdk','sessions','index.jsonl');fs.mkdirSync(path.dirn
 const event={type:'host_registered',sessionId:id,locator:{repo:'fixture',stateRoot:root},endpointGeneration:1,pid:process.pid,endpointMtimeMs:m,version:1,indexSeq,ts:Date.now()};
 event.checksum=crypto.createHash('sha256').update(JSON.stringify(event)).digest('hex');fs.appendFileSync(log,JSON.stringify(event)+'\\n');
 setInterval(()=>{},1000);
-`);
+`,
+	);
 	const previous = process.env.GJC_SDK_SESSION_COMMAND;
 	process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
 	const broker = new Broker({ agentDir });
@@ -116,7 +132,6 @@ setInterval(()=>{},1000);
 		expect(listed.ok).toBe(true);
 		if (!listed.ok) throw new Error(listed.error.message);
 		expect(listed.result).toMatchObject({ sessions: [] });
-
 	} finally {
 		await broker.stop();
 		process.env.GJC_SDK_SESSION_COMMAND = previous;
@@ -126,44 +141,121 @@ setInterval(()=>{},1000);
 
 test("broker refuses a stale registered PID when no durable effect marker proves ownership", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-stale-"));
-	const stateRoot = path.join(agentDir, "state"); const broker = new Broker({ agentDir });
+	const stateRoot = path.join(agentDir, "state");
+	const broker = new Broker({ agentDir });
 	try {
-		await broker.start(); await broker.index.append({ type: "host_registered", sessionId: "stale", locator: { repo: "fixture", stateRoot }, endpointGeneration: 1, pid: process.pid });
-		expect(await broker.handleRequest("session.close", { sessionId: "stale" }, "stale-close")).toEqual({ ok: false, error: { code: "close_refused", message: "Session endpoint is unavailable and its durable process identity could not be verified." } });
+		await broker.start();
+		await broker.index.append({
+			type: "host_registered",
+			sessionId: "stale",
+			locator: { repo: "fixture", stateRoot },
+			endpointGeneration: 1,
+			pid: process.pid,
+		});
+		expect(await broker.handleRequest("session.close", { sessionId: "stale" }, "stale-close")).toEqual({
+			ok: false,
+			error: {
+				code: "close_refused",
+				message: "Session endpoint is unavailable and its durable process identity could not be verified.",
+			},
+		});
 		expect(process.pid).toBeGreaterThan(0);
-	} finally { await broker.stop(); await fs.rm(agentDir, { recursive: true, force: true }); }
+	} finally {
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
 });
 test("broker never signals a PID reused after its lifecycle marker was written", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-reused-"));
-	const stateRoot = path.join(agentDir, "state"); const sessionId = "reused"; const endpoint = path.join(stateRoot, "sdk", `${sessionId}.json`); const marker = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`);
+	const stateRoot = path.join(agentDir, "state");
+	const sessionId = "reused";
+	const endpoint = path.join(stateRoot, "sdk", `${sessionId}.json`);
+	const marker = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`);
 	const broker = new Broker({ agentDir });
 	try {
-		await broker.start(); await fs.mkdir(path.dirname(endpoint), { recursive: true });
-		await fs.writeFile(endpoint, JSON.stringify({ sessionId, pid: process.pid, url: "ws://127.0.0.1:1", token: "stale" }));
-		await fs.writeFile(marker, JSON.stringify({ pid: process.pid, effectMarker: "old-effect", incarnation: "reused-process-incarnation" }));
-		await broker.index.append({ type: "host_registered", sessionId, locator: { repo: "fixture", stateRoot }, endpointGeneration: 7, pid: process.pid, endpointMtimeMs: (await fs.stat(endpoint)).mtimeMs });
-		expect(await broker.handleRequest("session.close", { sessionId }, "reused-close")).toEqual({ ok: false, error: { code: "close_refused", message: "Session endpoint is unavailable and its durable process identity could not be verified." } });
+		await broker.start();
+		await fs.mkdir(path.dirname(endpoint), { recursive: true });
+		await fs.writeFile(
+			endpoint,
+			JSON.stringify({ sessionId, pid: process.pid, url: "ws://127.0.0.1:1", token: "stale" }),
+		);
+		await fs.writeFile(
+			marker,
+			JSON.stringify({ pid: process.pid, effectMarker: "old-effect", incarnation: "reused-process-incarnation" }),
+		);
+		await broker.index.append({
+			type: "host_registered",
+			sessionId,
+			locator: { repo: "fixture", stateRoot },
+			endpointGeneration: 7,
+			pid: process.pid,
+			endpointMtimeMs: (await fs.stat(endpoint)).mtimeMs,
+		});
+		expect(await broker.handleRequest("session.close", { sessionId }, "reused-close")).toEqual({
+			ok: false,
+			error: {
+				code: "close_refused",
+				message: "Session endpoint is unavailable and its durable process identity could not be verified.",
+			},
+		});
 		expect(await fs.readFile(endpoint, "utf8")).toContain("stale");
 		expect(await fs.readFile(marker, "utf8")).toContain("reused-process-incarnation");
-	} finally { await broker.stop(); await fs.rm(agentDir, { recursive: true, force: true }); }
+	} finally {
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
 });
 test("broker preserves endpoint and marker when a durably identified child remains unkillable", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-uncertain-"));
-	const stateRoot = path.join(agentDir, "state"); const sessionId = "unkillable"; const endpoint = path.join(stateRoot, "sdk", `${sessionId}.json`); const marker = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`);
-	const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
-	const originalKill = process.kill; const broker = new Broker({ agentDir });
+	const stateRoot = path.join(agentDir, "state");
+	const sessionId = "unkillable";
+	const endpoint = path.join(stateRoot, "sdk", `${sessionId}.json`);
+	const marker = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`);
+	const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	const originalKill = process.kill;
+	const broker = new Broker({ agentDir });
 	try {
 		if (!child.pid) throw new Error("fixture child has no pid");
-		await broker.start(); await fs.mkdir(path.dirname(endpoint), { recursive: true });
-		await fs.writeFile(endpoint, JSON.stringify({ sessionId, pid: child.pid, url: "ws://127.0.0.1:1", token: "unreachable" }));
-		await fs.writeFile(marker, JSON.stringify({ pid: child.pid, effectMarker: "fixture", incarnation: await incarnation(child.pid) }));
-		await broker.index.append({ type: "host_registered", sessionId, locator: { repo: "fixture", stateRoot }, endpointGeneration: 9, pid: child.pid, endpointMtimeMs: (await fs.stat(endpoint)).mtimeMs });
-		process.kill = ((pid: number, signal?: NodeJS.Signals | number) => signal === 0 || signal === undefined ? originalKill(pid, signal) : undefined) as typeof process.kill;
-		expect(await broker.handleRequest("session.close", { sessionId }, "unkillable-close")).toMatchObject({ ok: false, error: { code: "terminal_uncertain" } });
+		await broker.start();
+		await fs.mkdir(path.dirname(endpoint), { recursive: true });
+		await fs.writeFile(
+			endpoint,
+			JSON.stringify({ sessionId, pid: child.pid, url: "ws://127.0.0.1:1", token: "unreachable" }),
+		);
+		await fs.writeFile(
+			marker,
+			JSON.stringify({ pid: child.pid, effectMarker: "fixture", incarnation: await incarnation(child.pid) }),
+		);
+		await broker.index.append({
+			type: "host_registered",
+			sessionId,
+			locator: { repo: "fixture", stateRoot },
+			endpointGeneration: 9,
+			pid: child.pid,
+			endpointMtimeMs: (await fs.stat(endpoint)).mtimeMs,
+		});
+		process.kill = ((pid: number, signal?: NodeJS.Signals | number) =>
+			signal === 0 || signal === undefined ? originalKill(pid, signal) : undefined) as typeof process.kill;
+		expect(await broker.handleRequest("session.close", { sessionId }, "unkillable-close")).toMatchObject({
+			ok: false,
+			error: { code: "terminal_uncertain" },
+		});
 		expect(await fs.readFile(endpoint, "utf8")).toContain("unreachable");
 		expect(await fs.readFile(marker, "utf8")).toContain('"fixture"');
-		expect(await broker.handleRequest("session.list", {})).toMatchObject({ ok: true, result: { sessions: [expect.objectContaining({ sessionId, terminalUncertain: true })] } });
-	} finally { process.kill = originalKill; if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; await broker.stop(); await fs.rm(agentDir, { recursive: true, force: true }); }
+		expect(await broker.handleRequest("session.list", {})).toMatchObject({
+			ok: true,
+			result: { sessions: [expect.objectContaining({ sessionId, terminalUncertain: true })] },
+		});
+	} finally {
+		process.kill = originalKill;
+		if (child.exitCode === null) child.kill("SIGKILL");
+		await child.exited;
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
 }, 10_000);
 
 test("broker starts from the production broker entrypoint with no sessions", async () => {
@@ -172,14 +264,18 @@ test("broker starts from the production broker entrypoint with no sessions", asy
 	try {
 		const discovery = await broker.start();
 		expect(discovery.url).toStartWith("ws://127.0.0.1:");
-		expect(await broker.handleRequest("session.list", {})).toEqual({ ok: true, result: { indexSeq: 0, sessions: [], warnings: [] }, indexSeq: 0 });
+		expect(await broker.handleRequest("session.list", {})).toEqual({
+			ok: true,
+			result: { indexSeq: 0, sessions: [], warnings: [] },
+			indexSeq: 0,
+		});
 	} finally {
 		await broker.stop();
 		await fs.rm(agentDir, { recursive: true, force: true });
 	}
 });
 
-	test("shipped sdk session-host-internal stays alive only after a semantic ready event and serves real requests", async () => {
+test("shipped sdk session-host-internal stays alive only after a semantic ready event and serves real requests", async () => {
 	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-sdk-subprocess-"));
 	const agentDir = path.join(root, "agent");
 	const sessionId = "shipped-subprocess";
@@ -204,7 +300,10 @@ test("broker starts from the production broker entrypoint with no sessions", asy
 		child.kill("SIGTERM");
 		expect(await child.exited).toBe(0);
 		spawned.splice(spawned.indexOf(child), 1);
-		const broker = await waitFor(async () => (await readSdkBrokerDiscovery(agentDir)) ?? undefined, "broker discovery");
+		const broker = await waitFor(
+			async () => (await readSdkBrokerDiscovery(agentDir)) ?? undefined,
+			"broker discovery",
+		);
 		expect(broker.url).toStartWith("ws://127.0.0.1:");
 	} finally {
 		await fs.rm(root, { recursive: true, force: true });
@@ -226,7 +325,9 @@ test("broker close acknowledges before terminating the lifecycle child and recor
 			ok: false,
 			error: { code: "resource_gone" },
 		});
-		await expect(SdkClient.connect(endpoint.url, endpoint.token, { timeoutMs: 250, reconnectAttempts: 0 })).rejects.toThrow();
+		await expect(
+			SdkClient.connect(endpoint.url, endpoint.token, { timeoutMs: 250, reconnectAttempts: 0 }),
+		).rejects.toThrow();
 		expect(await broker.handleRequest("session.list", {})).toMatchObject({ ok: true, result: { sessions: [] } });
 		expect(
 			(await fs.readFile(path.join(agentDir, "sdk", "sessions", "index.jsonl"), "utf8"))
@@ -259,7 +360,10 @@ test("ACP, MCP, and daemon global requests bootstrap a broker with zero sessions
 		expect(await readSdkBrokerDiscovery(agentDirs[1])).not.toBeNull();
 
 		const output: unknown[] = [];
-		await runSdkSessionCli({ action: "global", operation: "session.list", agentDir: agentDirs[2], repo: path.join(root, "daemon") }, value => output.push(value));
+		await runSdkSessionCli(
+			{ action: "global", operation: "session.list", agentDir: agentDirs[2], repo: path.join(root, "daemon") },
+			value => output.push(value),
+		);
 		expect(output).toMatchObject([{ ok: true, result: { sessions: [] } }]);
 		expect(await readSdkBrokerDiscovery(agentDirs[2])).not.toBeNull();
 	} finally {

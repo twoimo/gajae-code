@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { readBrokerDiscovery, type BrokerDiscovery } from "./discovery";
-export interface EnsureBrokerSettings { agentDir: string; heartbeatTtlMs?: number; }
+import { type BrokerDiscovery, readBrokerDiscovery } from "./discovery";
+export interface EnsureBrokerSettings {
+	agentDir: string;
+	heartbeatTtlMs?: number;
+}
 
 const DISCOVERY_TIMEOUT_MS = 10_000;
 const owners = new Map<string, { stop: () => Promise<void> }>();
@@ -11,7 +14,9 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export async function ensureBroker(settings: EnsureBrokerSettings): Promise<BrokerDiscovery> {
 	const existing = await readBrokerDiscovery(settings.agentDir, settings.heartbeatTtlMs);
 	if (existing) return existing;
-	const entrypoint = process.argv[1]?.endsWith("cli.ts") ? process.argv[1] : path.resolve(import.meta.dir, "../../cli.ts");
+	const entrypoint = process.argv[1]?.endsWith("cli.ts")
+		? process.argv[1]
+		: path.resolve(import.meta.dir, "../../cli.ts");
 	const child = spawn(process.execPath, [entrypoint, "sdk", "broker-internal", "--agent-dir", settings.agentDir], {
 		detached: true,
 		stdio: "ignore",

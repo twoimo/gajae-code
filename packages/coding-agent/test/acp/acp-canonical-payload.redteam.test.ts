@@ -1,6 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import {
 	mapAgentSessionEventToAcpSessionUpdates,
 	mapAgentWireEventPayloadToAcpSessionUpdates,
@@ -157,5 +155,4 @@ describe("ACP canonical payload red-team", () => {
 		expect(ended).toEqual([]);
 		expect(chunks).toEqual(["final assistant answer"]);
 	});
-
 });

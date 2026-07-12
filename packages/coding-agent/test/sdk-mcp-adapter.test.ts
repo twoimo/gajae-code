@@ -18,15 +18,39 @@ function fixture() {
 	const token = "sdk-mcp-test-token";
 	let sends = 0;
 	const server = Bun.serve({
-		hostname: "127.0.0.1", port: 0,
-		fetch(request) { if (new URL(request.url).searchParams.get("token") !== token) return new Response("Unauthorized", { status: 401 }); if (!server.upgrade(request, { data: undefined })) return new Response("Upgrade failed", { status: 400 }); },
-		websocket: { open(socket) { socket.send(JSON.stringify({ type: "server_hello", protocolVersion: 3, connectionId: "mcp-test-conn" })); }, message(socket, raw) { sends++; const frame = JSON.parse(String(raw)) as Record<string, unknown>; socket.send(JSON.stringify({ type: frame.type === "query_request" ? "query_response" : "control_response", id: frame.id, ok: true, echoed: frame })); } },
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request) {
+			if (new URL(request.url).searchParams.get("token") !== token)
+				return new Response("Unauthorized", { status: 401 });
+			if (!server.upgrade(request, { data: undefined })) return new Response("Upgrade failed", { status: 400 });
+		},
+		websocket: {
+			open(socket) {
+				socket.send(JSON.stringify({ type: "server_hello", protocolVersion: 3, connectionId: "mcp-test-conn" }));
+			},
+			message(socket, raw) {
+				sends++;
+				const frame = JSON.parse(String(raw)) as Record<string, unknown>;
+				socket.send(
+					JSON.stringify({
+						type: frame.type === "query_request" ? "query_response" : "control_response",
+						id: frame.id,
+						ok: true,
+						echoed: frame,
+					}),
+				);
+			},
+		},
 	});
 	servers.push(server);
 	const sessionId = "live-session";
 	const dir = path.join(repo, ".gjc", "state", "sdk");
 	fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(path.join(dir, `${sessionId}.json`), JSON.stringify({ url: `ws://127.0.0.1:${server.port}`, token }));
+	fs.writeFileSync(
+		path.join(dir, `${sessionId}.json`),
+		JSON.stringify({ url: `ws://127.0.0.1:${server.port}`, token }),
+	);
 	return { repo, sessionId, sent: () => sends };
 }
 
@@ -34,8 +58,13 @@ test("MCP SDK schemas exclude endpoint credentials and reject G02 before any Web
 	const { repo, sessionId, sent } = fixture();
 	const mcp = createSdkMcpServer({ repo });
 	expect(JSON.stringify(mcp.tools)).not.toContain("get_endpoint");
-	await expect(mcp.callTool("gjc_session_control", { sessionId, operation: "session.get_endpoint" })).resolves.toEqual({ ok: false, error: expect.objectContaining({ code: "unknown_operation" }) });
-	await expect(mcp.callTool("gjc_session_global", { operation: "session.get_endpoint" })).resolves.toEqual({ ok: false, error: expect.objectContaining({ code: "endpoint_credential_forbidden" }) });
+	await expect(mcp.callTool("gjc_session_control", { sessionId, operation: "session.get_endpoint" })).resolves.toEqual(
+		{ ok: false, error: expect.objectContaining({ code: "unknown_operation" }) },
+	);
+	await expect(mcp.callTool("gjc_session_global", { operation: "session.get_endpoint" })).resolves.toEqual({
+		ok: false,
+		error: expect.objectContaining({ code: "endpoint_credential_forbidden" }),
+	});
 	expect(sent()).toBe(0);
 });
 
@@ -44,7 +73,9 @@ test("MCP global schema exposes and requires caller lifecycle idempotency keys",
 	const mcp = createSdkMcpServer({ repo });
 	const global = mcp.tools.find(tool => tool.name === "gjc_session_global")!;
 	expect(global.inputSchema).toMatchObject({ properties: { idempotencyKey: { type: "string" } } });
-	await expect(mcp.callTool("gjc_session_global", { operation: "session.create", input: { cwd: repo } })).resolves.toMatchObject({
+	await expect(
+		mcp.callTool("gjc_session_global", { operation: "session.create", input: { cwd: repo } }),
+	).resolves.toMatchObject({
 		ok: false,
 		error: { code: "invalid_input" },
 	});
@@ -73,7 +104,10 @@ test("MCP preserves corrupt endpoint discovery errors with a relative path", asy
 	const { repo, sessionId } = fixture();
 	const endpoint = path.join(repo, ".gjc", "state", "sdk", `${sessionId}.json`);
 	fs.writeFileSync(endpoint, "not-json");
-	const result = await createSdkMcpServer({ repo }).callTool("gjc_session_query", { sessionId, query: "session.metadata" });
+	const result = await createSdkMcpServer({ repo }).callTool("gjc_session_query", {
+		sessionId,
+		query: "session.metadata",
+	});
 	expect(result).toMatchObject({ ok: false, error: { code: "discovery_error", path: `${sessionId}.json` } });
 });
 
@@ -83,7 +117,10 @@ test("MCP preserves unreadable endpoint discovery errors", async () => {
 	const endpoint = path.join(repo, ".gjc", "state", "sdk", `${sessionId}.json`);
 	fs.chmodSync(endpoint, 0o000);
 	try {
-		const result = await createSdkMcpServer({ repo }).callTool("gjc_session_query", { sessionId, query: "session.metadata" });
+		const result = await createSdkMcpServer({ repo }).callTool("gjc_session_query", {
+			sessionId,
+			query: "session.metadata",
+		});
 		expect(result).toMatchObject({ ok: false, error: { code: "discovery_error", path: `${sessionId}.json` } });
 	} finally {
 		fs.chmodSync(endpoint, 0o600);
@@ -100,9 +137,10 @@ test("MCP rejects every registry-prohibited operation without sending a frame or
 	);
 	for (const operation of blocked) {
 		const tool = operation.kind === "global" ? "gjc_session_global" : "gjc_session_control";
-		const args = operation.kind === "global"
-			? { operation: operation.sdkId, input: { token: "mcp-secret" } }
-			: { sessionId, operation: operation.sdkId, input: { token: "mcp-secret" } };
+		const args =
+			operation.kind === "global"
+				? { operation: operation.sdkId, input: { token: "mcp-secret" } }
+				: { sessionId, operation: operation.sdkId, input: { token: "mcp-secret" } };
 		const result = await mcp.callTool(tool, args);
 		expect(result).toMatchObject({ ok: false, error: expect.any(Object) });
 		expect(JSON.stringify(result)).not.toContain("mcp-secret");
@@ -125,7 +163,13 @@ test("MCP rejects secret-bearing config patches before endpoint discovery", asyn
 test("MCP SDK control/query tools use discovered live session endpoints and unknown sessions are typed", async () => {
 	const { repo, sessionId } = fixture();
 	const mcp = createSdkMcpServer({ repo });
-	await expect(mcp.callTool("gjc_session_control", { sessionId, operation: "turn.prompt", input: { text: "hello" } })).resolves.toMatchObject({ ok: true, echoed: { operation: "turn.prompt" } });
-	await expect(mcp.callTool("gjc_session_query", { sessionId, query: "session.metadata", cursor: "next" })).resolves.toMatchObject({ ok: true, echoed: { query: "session.metadata", cursor: "next" } });
-	await expect(mcp.callTool("gjc_session_query", { sessionId: "missing", query: "session.metadata" })).resolves.toEqual({ ok: false, error: expect.objectContaining({ code: "not_found" }) });
+	await expect(
+		mcp.callTool("gjc_session_control", { sessionId, operation: "turn.prompt", input: { text: "hello" } }),
+	).resolves.toMatchObject({ ok: true, echoed: { operation: "turn.prompt" } });
+	await expect(
+		mcp.callTool("gjc_session_query", { sessionId, query: "session.metadata", cursor: "next" }),
+	).resolves.toMatchObject({ ok: true, echoed: { query: "session.metadata", cursor: "next" } });
+	await expect(
+		mcp.callTool("gjc_session_query", { sessionId: "missing", query: "session.metadata" }),
+	).resolves.toEqual({ ok: false, error: expect.objectContaining({ code: "not_found" }) });
 });

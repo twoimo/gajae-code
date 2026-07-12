@@ -1,16 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { askSchema } from "@gajae-code/coding-agent/tools/ask";
 import {
 	type AskGateQuestion,
 	DeepInterviewGateError,
 	gateAnswerToResult,
 	questionToGate,
 } from "../src/modes/shared/agent-wire/deep-interview-gate";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { MemoryGateStore, WorkflowGateBroker } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import { schemaHash } from "../src/modes/shared/agent-wire/workflow-gate-schema";
-import { askSchema } from "@gajae-code/coding-agent/tools/ask";
 
 const singleQ: AskGateQuestion = {
 	id: "single-auth",

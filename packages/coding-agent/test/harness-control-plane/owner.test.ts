@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { callEndpoint } from "../../src/harness-control-plane/control-endpoint";
 import { RuntimeOwner, resolveOwner, resolveOwnerLive } from "../../src/harness-control-plane/owner";
-import type { HarnessSessionTransport, SessionStateSnapshot } from "../../src/harness-control-plane/session-transport";
 import { acquireLease } from "../../src/harness-control-plane/session-lease";
+import type { HarnessSessionTransport, SessionStateSnapshot } from "../../src/harness-control-plane/session-transport";
 import {
 	controlSocketPath,
 	readEvents,

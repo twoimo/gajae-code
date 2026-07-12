@@ -1,6 +1,7 @@
-import { createInterface } from "node:readline/promises";
 import * as fs from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 import { getAgentDir } from "@gajae-code/utils";
+import { ensureBroker } from "../broker/ensure";
 import {
 	listSdkSessionEndpoints,
 	readSdkBrokerDiscovery,
@@ -9,7 +10,6 @@ import {
 	SdkClientError,
 	SdkDiscoveryError,
 } from "../client";
-import { ensureBroker } from "../broker/ensure";
 import { validateAdapterControl } from "../protocol/adapter-validation";
 import { adapterDispositionError, findOperation, type OperationKind } from "../protocol/operation-registry";
 
@@ -69,12 +69,20 @@ function containsSecretField(value: unknown): boolean {
 }
 
 async function inputFromArgs(args: SdkSessionCliArgs): Promise<JsonRecord> {
-	const sources = [args.jsonInput !== undefined, args.jsonInputFile !== undefined, args.jsonInputStdin === true].filter(Boolean).length;
+	const sources = [
+		args.jsonInput !== undefined,
+		args.jsonInputFile !== undefined,
+		args.jsonInputStdin === true,
+	].filter(Boolean).length;
 	if (sources > 1) throw new SdkSessionCliError("usage", "Use only one JSON input source.", 2);
 	if (args.jsonInput !== undefined) {
 		const input = parseInput(args.jsonInput, "--json-input");
 		if (containsSecretField(input))
-			throw new SdkSessionCliError("secret_field_forbidden", "Secret values must use --json-input-file or --json-input-stdin.", 2);
+			throw new SdkSessionCliError(
+				"secret_field_forbidden",
+				"Secret values must use --json-input-file or --json-input-stdin.",
+				2,
+			);
 		return input;
 	}
 	if (args.jsonInputFile !== undefined) {
@@ -85,7 +93,11 @@ async function inputFromArgs(args: SdkSessionCliArgs): Promise<JsonRecord> {
 			throw new SdkSessionCliError("input_file_unavailable", "Unable to read --json-input-file.", 2);
 		}
 		if (!stat.isFile() || (stat.mode & 0o077) !== 0)
-			throw new SdkSessionCliError("input_file_permissions", "--json-input-file must be a regular file with 0600 permissions.", 2);
+			throw new SdkSessionCliError(
+				"input_file_permissions",
+				"--json-input-file must be a regular file with 0600 permissions.",
+				2,
+			);
 		try {
 			return parseInput(await fs.readFile(args.jsonInputFile, "utf8"), "--json-input-file");
 		} catch (error) {
@@ -110,12 +122,21 @@ function cliOperationError(kind: OperationKind, operation: string): { code: stri
 	const error = adapterDispositionError("daemonCli", kind, operation);
 	if (!error) return undefined;
 	if (row?.adapterDispositions.daemonCli === "prohibited")
-		return { code: error.code, message: `${operation} is unavailable through the ordinary CLI; provider mode is out of scope this phase.` };
+		return {
+			code: error.code,
+			message: `${operation} is unavailable through the ordinary CLI; provider mode is out of scope this phase.`,
+		};
 	return error;
 }
 
 function isLifecycleOperation(operation: string): boolean {
-	return operation === "session.create" || operation === "session.fork" || operation === "session.resume" || operation === "session.close" || operation === "session.delete";
+	return (
+		operation === "session.create" ||
+		operation === "session.fork" ||
+		operation === "session.resume" ||
+		operation === "session.close" ||
+		operation === "session.delete"
+	);
 }
 
 async function confirmEndpointCredentialOutput(): Promise<boolean> {
@@ -145,7 +166,11 @@ function brokerAbsent(error: unknown): boolean {
 	if (error instanceof SdkSessionCliError) return error.code === "broker_unavailable";
 	const details = error instanceof SdkClientError ? error.details : error;
 	const code = (details as { code?: unknown } | undefined)?.code;
-	return code === "ENOENT" || code === "ECONNREFUSED" || /(?:ENOENT|ECONNREFUSED|connection refused)/i.test(error instanceof Error ? error.message : "");
+	return (
+		code === "ENOENT" ||
+		code === "ECONNREFUSED" ||
+		/(?:ENOENT|ECONNREFUSED|connection refused)/i.test(error instanceof Error ? error.message : "")
+	);
 }
 
 async function runList(repo: string, agentDir: string): Promise<unknown> {
@@ -161,7 +186,10 @@ async function runList(repo: string, agentDir: string): Promise<unknown> {
 		const { endpoints, warnings } = await listSdkSessionEndpoints(repo);
 		return {
 			sessions: endpoints.map(({ sessionId, path }) => ({ sessionId, path })),
-			warnings: [{ code: "broker_unavailable", message: "Listed endpoint files because the broker is unavailable." }, ...warnings],
+			warnings: [
+				{ code: "broker_unavailable", message: "Listed endpoint files because the broker is unavailable." },
+				...warnings,
+			],
 		};
 	}
 }
@@ -190,9 +218,17 @@ export async function runSdkSessionCli(
 		if (dispositionError) throw new SdkSessionCliError(dispositionError.code, dispositionError.message, 1);
 		if (isEndpointOperation(operation)) {
 			if (!args.showEndpointCredential)
-				throw new SdkSessionCliError("endpoint_credential_forbidden", "session.get_endpoint requires --show-endpoint-credential.", 1);
+				throw new SdkSessionCliError(
+					"endpoint_credential_forbidden",
+					"session.get_endpoint requires --show-endpoint-credential.",
+					1,
+				);
 			if (process.stdout.isTTY && !args.yes && !(await confirmEndpointCredentialOutput()))
-				throw new SdkSessionCliError("endpoint_credential_confirmation_required", "Endpoint credential output was not confirmed.", 1);
+				throw new SdkSessionCliError(
+					"endpoint_credential_confirmation_required",
+					"Endpoint credential output was not confirmed.",
+					1,
+				);
 		}
 		const input = await inputFromArgs(args);
 		if (kind === "control") {
@@ -214,7 +250,8 @@ export async function runSdkSessionCli(
 		const sessionId = requireValue(args.sessionId, "<sessionId>");
 		const client = await connectSession(repo, sessionId);
 		try {
-			if (action === "control") writeOutput(await client.control(operation, input, { confirm: args.confirm === true }));
+			if (action === "control")
+				writeOutput(await client.control(operation, input, { confirm: args.confirm === true }));
 			else writeOutput(await client.query(operation, input, args.cursor));
 		} finally {
 			await client.close();
@@ -227,7 +264,11 @@ export async function runSdkSessionCli(
 					? new SdkSessionCliError(error.code, error.message, 1)
 					: error instanceof SdkDiscoveryError
 						? new SdkSessionCliError(error.code, error.message, 1)
-						: new SdkSessionCliError("operation_failed", error instanceof Error ? error.message : "SDK operation failed.", 1);
+						: new SdkSessionCliError(
+								"operation_failed",
+								error instanceof Error ? error.message : "SDK operation failed.",
+								1,
+							);
 		writeOutput({ ok: false, error: { code: cliError.code, message: cliError.message } });
 		setExitCode(cliError.exitCode);
 	}

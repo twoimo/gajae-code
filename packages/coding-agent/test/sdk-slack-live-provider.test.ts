@@ -50,7 +50,10 @@ function response(body: object, status = 200, headers?: Record<string, string>):
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 }
 
-function setup(responses: Array<Response | Error>, options: { sleep?: (milliseconds: number) => Promise<void> } = {}): {
+function setup(
+	responses: Array<Response | Error>,
+	options: { sleep?: (milliseconds: number) => Promise<void> } = {},
+): {
 	provider: SlackLiveProvider;
 	sockets: FakeSocket[];
 	requests: RecordedRequest[];
@@ -102,14 +105,15 @@ describe("SlackLiveProvider fake Socket Mode protocol", () => {
 		expect(order).toEqual(["processed"]);
 	});
 
-
 	it("reconnects after disconnect and accepts Socket Mode redelivery without storing a cursor", async () => {
 		const fixture = setup([
 			response({ ok: true, url: "wss://one.test" }),
 			response({ ok: true, url: "wss://two.test" }),
 		]);
 		const received: string[] = [];
-		await fixture.provider.start(envelope => { received.push(envelope.envelope_id); });
+		await fixture.provider.start(envelope => {
+			received.push(envelope.envelope_id);
+		});
 		fixture.sockets[0]?.disconnect();
 		await flushAsyncWork();
 		expect(fixture.sleeps).toEqual([1_000]);
@@ -141,12 +145,16 @@ describe("SlackLiveProvider fake Socket Mode protocol", () => {
 			response({ ok: true, messages: [] }),
 			response({ ok: true, messages: [{ ts: "2.0", client_msg_id: "client-1" }] }),
 		]);
-		await expect(fixture.provider.postMessage({ channel: "C1", text: "hello", threadTs: "0.0", clientMsgId: "client-1" })).resolves.toEqual({
+		await expect(
+			fixture.provider.postMessage({ channel: "C1", text: "hello", threadTs: "0.0", clientMsgId: "client-1" }),
+		).resolves.toEqual({
 			channel: "C1",
 			ts: "1.0",
 			client_msg_id: "client-1",
 		});
-		await expect(fixture.provider.findMessageByClientMsgId({ channel: "C1", threadTs: "0.0", clientMsgId: "client-1" })).resolves.toEqual({
+		await expect(
+			fixture.provider.findMessageByClientMsgId({ channel: "C1", threadTs: "0.0", clientMsgId: "client-1" }),
+		).resolves.toEqual({
 			channel: "C1",
 			ts: "2.0",
 			client_msg_id: "client-1",
@@ -167,7 +175,10 @@ describe("SlackLiveProvider fake Socket Mode protocol", () => {
 		await fixture.provider.postMessage({ channel: "C1", text: "hello", clientMsgId: "client-1" });
 		expect(fixture.sleeps).toEqual([60_000]);
 
-		const limited = setup([response({ ok: false }, 429, { "retry-after": "1" }), response({ ok: false }, 429, { "retry-after": "1" })]);
+		const limited = setup([
+			response({ ok: false }, 429, { "retry-after": "1" }),
+			response({ ok: false }, 429, { "retry-after": "1" }),
+		]);
 		let error: unknown;
 		try {
 			await limited.provider.postMessage({ channel: "C1", text: "hello", clientMsgId: "client-1" });
@@ -185,10 +196,10 @@ describe("SlackLiveProvider fake Socket Mode protocol", () => {
 		const sleepStarted = new Promise<void>(resolve => {
 			releaseSleep = resolve;
 		});
-		const fixture = setup([
-			response({ ok: true, url: "wss://socket.test" }),
-			response({ ok: true, url: "wss://replacement.test" }),
-		], { sleep: async () => await sleepStarted });
+		const fixture = setup(
+			[response({ ok: true, url: "wss://socket.test" }), response({ ok: true, url: "wss://replacement.test" })],
+			{ sleep: async () => await sleepStarted },
+		);
 		await fixture.provider.start(() => {});
 		fixture.sockets[0]?.disconnect();
 		await Promise.resolve();
@@ -260,5 +271,4 @@ describe("SlackLiveProvider fake Socket Mode protocol", () => {
 		sockets[0]?.disconnect();
 		await expect(started).rejects.toMatchObject({ code: "connection", operation: "socket_connect" });
 	});
-
 });

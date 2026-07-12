@@ -63,7 +63,11 @@ export function normalizeDiscordConversation(record: DiscordConversation): Disco
 	};
 }
 
-export function acceptsDiscordInbound(record: DiscordConversation, threadId: string, endpointGeneration: number): boolean {
+export function acceptsDiscordInbound(
+	record: DiscordConversation,
+	threadId: string,
+	endpointGeneration: number,
+): boolean {
 	return (
 		record.state === "active" &&
 		record.threadId === threadId &&

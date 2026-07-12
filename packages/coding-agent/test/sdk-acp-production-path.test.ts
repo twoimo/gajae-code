@@ -1,9 +1,8 @@
-import type { AgentSideConnection } from "@agentclientprotocol/sdk";
-
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { AgentSideConnection } from "@agentclientprotocol/sdk";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
 
 type TestServer = {
@@ -31,7 +30,8 @@ test("production ACP routes zero-session SDK globals through the broker adapter"
 		hostname: "127.0.0.1",
 		port: 0,
 		fetch(request) {
-			if (new URL(request.url).searchParams.get("token") !== token) return new Response("Unauthorized", { status: 401 });
+			if (new URL(request.url).searchParams.get("token") !== token)
+				return new Response("Unauthorized", { status: 401 });
 			if (!server.upgrade(request)) return new Response("Upgrade failed", { status: 400 });
 		},
 		websocket: {

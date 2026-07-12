@@ -1,7 +1,12 @@
 import path from "node:path";
-import { SdkClient, SdkClientError } from "../client/client";
-import { listSdkSessionEndpoints, readSdkBrokerDiscovery, readSdkSessionEndpoint, SdkDiscoveryError } from "../client/discovery";
 import { ensureBroker } from "../broker/ensure";
+import { SdkClient, SdkClientError } from "../client/client";
+import {
+	listSdkSessionEndpoints,
+	readSdkBrokerDiscovery,
+	readSdkSessionEndpoint,
+	SdkDiscoveryError,
+} from "../client/discovery";
 import { validateAdapterControl, validateAdapterSecretFields } from "../protocol/adapter-validation";
 import { adapterDispositionError, findOperation } from "../protocol/operation-registry";
 
@@ -74,7 +79,11 @@ function schema(name: (typeof SDK_MCP_TOOL_NAMES)[number]): Record<string, unkno
 					properties: {
 						operation: { type: "string" },
 						input: { type: "object" },
-						idempotencyKey: { type: "string", description: "Required for session.create, session.fork, session.resume, session.close, and session.delete." },
+						idempotencyKey: {
+							type: "string",
+							description:
+								"Required for session.create, session.fork, session.resume, session.close, and session.delete.",
+						},
 					},
 				},
 			};
@@ -122,7 +131,10 @@ function invalidControl(error: { code: string; message: string }): {
 	return { ok: false, error };
 }
 
-function mcpOperationError(kind: "control" | "global" | "query", operation: string): { code: string; message: string } | undefined {
+function mcpOperationError(
+	kind: "control" | "global" | "query",
+	operation: string,
+): { code: string; message: string } | undefined {
 	const row = findOperation(kind, operation);
 	if (!row) return adapterDispositionError("mcp", kind, operation, true);
 	if (kind === "global" && operation === ENDPOINT_CREDENTIAL_OPERATION) return endpointCredentialForbidden().error;
@@ -130,7 +142,13 @@ function mcpOperationError(kind: "control" | "global" | "query", operation: stri
 }
 
 function isLifecycleOperation(operation: string): boolean {
-	return operation === "session.create" || operation === "session.fork" || operation === "session.resume" || operation === "session.close" || operation === "session.delete";
+	return (
+		operation === "session.create" ||
+		operation === "session.fork" ||
+		operation === "session.resume" ||
+		operation === "session.close" ||
+		operation === "session.delete"
+	);
 }
 
 function textResult(
@@ -150,7 +168,8 @@ export function createSdkMcpServer(options: SdkMcpServerOptions = {}) {
 		let client: SdkClient | undefined;
 		try {
 			const endpoint = await readSdkSessionEndpoint(repo, sessionId);
-			if (!endpoint) return { ok: false, error: { code: "not_found", message: `SDK session not found: ${sessionId}` } };
+			if (!endpoint)
+				return { ok: false, error: { code: "not_found", message: `SDK session not found: ${sessionId}` } };
 			client = await connect(endpoint.url, endpoint.token);
 			return await action(client);
 		} catch (error) {
@@ -181,7 +200,9 @@ export function createSdkMcpServer(options: SdkMcpServerOptions = {}) {
 			if (secretError) return invalidControl(secretError);
 			const invalid = validateAdapterControl(operation, input);
 			if (invalid) return invalidControl(invalid);
-			return await withSession(sessionId, client => client.control(operation, input, { confirm: args.confirm === true }));
+			return await withSession(sessionId, client =>
+				client.control(operation, input, { confirm: args.confirm === true }),
+			);
 		}
 		if (name === "gjc_session_query") {
 			const sessionId = asString(args, "sessionId");
@@ -204,11 +225,18 @@ export function createSdkMcpServer(options: SdkMcpServerOptions = {}) {
 			if (dispositionError) return invalidControl(dispositionError);
 			const secretError = validateAdapterSecretFields(operation, input);
 			if (secretError) return invalidControl(secretError);
-			const idempotencyKey = args.idempotencyKey === undefined ? undefined : (asString(args, "idempotencyKey") ?? undefined);
+			const idempotencyKey =
+				args.idempotencyKey === undefined ? undefined : (asString(args, "idempotencyKey") ?? undefined);
 			if (args.idempotencyKey !== undefined && !idempotencyKey)
-				return { ok: false, error: { code: "invalid_input", message: "idempotencyKey must be a non-empty string" } };
+				return {
+					ok: false,
+					error: { code: "invalid_input", message: "idempotencyKey must be a non-empty string" },
+				};
 			if (isLifecycleOperation(operation) && !idempotencyKey)
-				return { ok: false, error: { code: "invalid_input", message: "idempotencyKey is required for lifecycle operations" } };
+				return {
+					ok: false,
+					error: { code: "invalid_input", message: "idempotencyKey is required for lifecycle operations" },
+				};
 			let client: SdkClient | undefined;
 			try {
 				await ensureBroker({ agentDir });

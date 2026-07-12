@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ADAPTERS, OPERATIONS } from "../src/sdk/protocol/operation-registry";
 import {
 	pendingReviewErrors,
 	scanAcpMethods,
 	scanAgentSessionMethods,
 	scanSlashCommands,
 } from "../scripts/generate-sdk-operation-inventory";
+import { ADAPTERS, OPERATIONS } from "../src/sdk/protocol/operation-registry";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const generator = path.join(repoRoot, "packages/coding-agent/scripts/generate-sdk-operation-inventory.ts");
@@ -42,8 +42,23 @@ describe("SDK operation inventory", () => {
 			expect(Object.keys(operation.adapterDispositions).sort()).toEqual([...ADAPTERS].sort());
 			expect(operation.testIds.length).toBeGreaterThan(0);
 		}
-		expect(OPERATIONS.find(operation => operation.id === "G02")?.adapterDispositions).toEqual({ telegram: "prohibited", discord: "prohibited", slack: "prohibited", mcp: "prohibited", acp: "machine_only", daemonCli: "machine_only" });
-		for (const id of ["C39", "C40"]) expect(OPERATIONS.find(operation => operation.id === id)?.adapterDispositions).toEqual({ telegram: "prohibited", discord: "prohibited", slack: "prohibited", mcp: "prohibited", acp: "provider_only", daemonCli: "prohibited" });
+		expect(OPERATIONS.find(operation => operation.id === "G02")?.adapterDispositions).toEqual({
+			telegram: "prohibited",
+			discord: "prohibited",
+			slack: "prohibited",
+			mcp: "prohibited",
+			acp: "machine_only",
+			daemonCli: "machine_only",
+		});
+		for (const id of ["C39", "C40"])
+			expect(OPERATIONS.find(operation => operation.id === id)?.adapterDispositions).toEqual({
+				telegram: "prohibited",
+				discord: "prohibited",
+				slack: "prohibited",
+				mcp: "prohibited",
+				acp: "provider_only",
+				daemonCli: "prohibited",
+			});
 	});
 
 	it("accepts the committed generated matrix", () => {
@@ -163,7 +178,7 @@ describe("SDK operation inventory", () => {
 		const seams = scanAcpMethods(`
 			switch (method) {
 				case "escaped\\nmethod":
-					const decoy = "case \\\"ignored\\\": {";
+					const decoy = "case \\"ignored\\": {";
 					break;
 				case \`literal/method\`:
 					break;
@@ -182,7 +197,7 @@ describe("SDK operation inventory", () => {
 	it("rejects an unmapped action seam found in a fixture scan root", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-sdk-seam-"));
 		tempDirs.push(directory);
-		await Bun.write(path.join(directory, "fixture.ts"), "switch (action) { case \"unmapped_action\": break; }");
+		await Bun.write(path.join(directory, "fixture.ts"), 'switch (action) { case "unmapped_action": break; }');
 		const result = run(["--check"], { GJC_SDK_SEAM_SCAN_ROOT: directory });
 		expect(result.exitCode, output(result)).toBe(1);
 		expect(output(result)).toContain("Pending review source seam: controller:fixture.ts:unmapped_action");

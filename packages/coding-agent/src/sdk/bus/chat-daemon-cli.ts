@@ -2,20 +2,20 @@ import * as crypto from "node:crypto";
 import * as path from "node:path";
 import {
 	acquireChatDaemonOwnership,
+	type ChatDaemonKind,
 	clearChatDaemonControlRequest,
-	readChatDaemonState,
 	readChatDaemonControlRequest,
+	readChatDaemonState,
 	releaseChatDaemonOwnership,
 	renewChatDaemonHeartbeat,
-	type ChatDaemonKind,
 } from "./chat-daemon-control";
+import { type ChatDaemonRuntimeConfig, ChatDaemonRuntime as DefaultChatDaemonRuntime } from "./chat-daemon-runtime";
 import {
 	isDiscordConfigured,
 	isSlackConfigured,
 	loadNotificationConfigFile,
 	notificationConfigFromFile,
 } from "./config";
-import { ChatDaemonRuntime as DefaultChatDaemonRuntime, type ChatDaemonRuntimeConfig } from "./chat-daemon-runtime";
 
 export interface ChatDaemonRuntimeHandle {
 	start(): Promise<void>;
@@ -26,7 +26,11 @@ export interface ChatDaemonRuntimeHandle {
 export interface RunChatDaemonInternalDeps {
 	processPid?: number;
 	pidAlive?: (pid: number) => boolean;
-	createRuntime?: (input: { kind: ChatDaemonKind; agentDir: string; config: ChatDaemonConfig }) => Promise<ChatDaemonRuntimeHandle> | ChatDaemonRuntimeHandle;
+	createRuntime?: (input: {
+		kind: ChatDaemonKind;
+		agentDir: string;
+		config: ChatDaemonConfig;
+	}) => Promise<ChatDaemonRuntimeHandle> | ChatDaemonRuntimeHandle;
 	setInterval?: typeof setInterval;
 	clearInterval?: typeof clearInterval;
 }
@@ -66,9 +70,20 @@ async function loadConfig(agentDir: string, kind: ChatDaemonKind): Promise<ChatD
 		) {
 			throw new Error("Discord notifications are enabled but configuration is incomplete");
 		}
-		const discord = config.discord as { botToken: string; applicationId: string; guildId: string; parentChannelId: string };
+		const discord = config.discord as {
+			botToken: string;
+			applicationId: string;
+			guildId: string;
+			parentChannelId: string;
+		};
 		const { botToken, applicationId, guildId, parentChannelId } = discord;
-		const identity = crypto.createHash("sha256").update([botToken, applicationId, guildId, parentChannelId, String(config.redact), config.verbosity].join("\0")).digest("hex").slice(0, 16);
+		const identity = crypto
+			.createHash("sha256")
+			.update(
+				[botToken, applicationId, guildId, parentChannelId, String(config.redact), config.verbosity].join("\0"),
+			)
+			.digest("hex")
+			.slice(0, 16);
 		return {
 			identity,
 			notifications: { discord: { botToken, applicationId, guildId, parentChannelId } },
@@ -89,7 +104,11 @@ async function loadConfig(agentDir: string, kind: ChatDaemonKind): Promise<ChatD
 	}
 	const slack = config.slack as { botToken: string; appToken: string; workspaceId: string; channelId: string };
 	const { botToken, appToken, workspaceId, channelId } = slack;
-	const identity = crypto.createHash("sha256").update([botToken, appToken, workspaceId, channelId, String(config.redact), config.verbosity].join("\0")).digest("hex").slice(0, 16);
+	const identity = crypto
+		.createHash("sha256")
+		.update([botToken, appToken, workspaceId, channelId, String(config.redact), config.verbosity].join("\0"))
+		.digest("hex")
+		.slice(0, 16);
 	return {
 		identity,
 		notifications: { slack: { botToken, appToken, workspaceId, channelId } },
@@ -103,36 +122,59 @@ function ownerPid(ownerId: string): number | undefined {
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-function defaultRuntime(input: { kind: ChatDaemonKind; agentDir: string; config: ChatDaemonConfig }): ChatDaemonRuntimeHandle {
+function defaultRuntime(input: {
+	kind: ChatDaemonKind;
+	agentDir: string;
+	config: ChatDaemonConfig;
+}): ChatDaemonRuntimeHandle {
 	return new DefaultChatDaemonRuntime(input);
 }
 
 /** Hidden worker entrypoint. It owns only lock/state/control lifecycle; transport creation remains injectable. */
-export async function runChatDaemonInternal(kind: ChatDaemonKind, argv: string[], deps: RunChatDaemonInternalDeps = {}): Promise<void> {
-	const agentDir = argValue(argv, "--agent-dir") ?? process.env.GJC_CODING_AGENT_DIR ?? path.join(process.cwd(), ".gjc", "agent");
+export async function runChatDaemonInternal(
+	kind: ChatDaemonKind,
+	argv: string[],
+	deps: RunChatDaemonInternalDeps = {},
+): Promise<void> {
+	const agentDir =
+		argValue(argv, "--agent-dir") ?? process.env.GJC_CODING_AGENT_DIR ?? path.join(process.cwd(), ".gjc", "agent");
 	const ownerId = argValue(argv, "--owner-id");
 	if (!ownerId) throw new Error("missing --owner-id");
 	const pid = ownerPid(ownerId);
 	if (pid !== undefined && !(deps.pidAlive ?? defaultPidAlive)(pid)) return;
 	const config = await loadConfig(agentDir, kind);
 	if (!config) return;
-	if (!(await acquireChatDaemonOwnership({ agentDir, kind, ownerId, pid: deps.processPid, identity: config.identity }))) return;
+	if (
+		!(await acquireChatDaemonOwnership({ agentDir, kind, ownerId, pid: deps.processPid, identity: config.identity }))
+	)
+		return;
 
 	let incarnation: string | undefined;
 	let runtime: ChatDaemonRuntimeHandle | undefined;
 	let interval: ReturnType<typeof setInterval> | undefined;
 	let stopping = false;
-	const stop = (): void => { stopping = true; };
+	const stop = (): void => {
+		stopping = true;
+	};
 	try {
 		incarnation = (await readChatDaemonState(agentDir, kind))?.incarnation;
 		if (!incarnation) throw new Error("chat daemon ownership state is missing an incarnation");
 		runtime = await (deps.createRuntime?.({ kind, agentDir, config }) ?? defaultRuntime({ kind, agentDir, config }));
 		const renewHeartbeat = async (): Promise<void> => {
-			await renewChatDaemonHeartbeat({ agentDir, kind, ownerId, pid: deps.processPid, incarnation, transportHealthy: runtime?.transportHealthy?.() ?? true });
+			await renewChatDaemonHeartbeat({
+				agentDir,
+				kind,
+				ownerId,
+				pid: deps.processPid,
+				incarnation,
+				transportHealthy: runtime?.transportHealthy?.() ?? true,
+			});
 		};
 		process.once("SIGTERM", stop);
 		process.once("SIGINT", stop);
-		interval = (deps.setInterval ?? setInterval)(() => { void renewHeartbeat(); }, 5_000);
+		interval = (deps.setInterval ?? setInterval)(() => {
+			void renewHeartbeat();
+		}, 5_000);
 		await runtime.start();
 		await renewHeartbeat();
 		while (!stopping) {

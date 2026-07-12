@@ -28,7 +28,6 @@ import {
 	type AgentTool,
 	assertImagePlaceholdersHavePayload,
 	canContinuePersistedHistory,
-	type ResolvedThinkingLevel,
 	resolveTelemetry,
 	type StablePrefixSnapshot,
 	ThinkingLevel,
@@ -187,7 +186,10 @@ import type {
 } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
-import { resolveSubskillActivationForSkillInvocation, type LoadedSubskillActivation } from "../extensibility/gjc-plugins";
+import {
+	type LoadedSubskillActivation,
+	resolveSubskillActivationForSkillInvocation,
+} from "../extensibility/gjc-plugins";
 import { resolveCurrentPhaseForParent } from "../extensibility/gjc-plugins/injection";
 import { readActiveSubskillsForParent, toActiveSubskillEntry } from "../extensibility/gjc-plugins/state";
 import { loadActiveSubskillTools } from "../extensibility/gjc-plugins/tools";
@@ -214,7 +216,11 @@ import { ensureWorkflowSkillActivationState } from "../hooks/skill-state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { shutdownAll as shutdownAllLspClients } from "../lsp/client";
 import { resolveMemoryBackend } from "../memory-backend";
-import { BrokerWorkflowGateEmitter, FileGateStore, type WorkflowGateEmitter } from "../modes/shared/agent-wire/workflow-gate-broker";
+import {
+	BrokerWorkflowGateEmitter,
+	FileGateStore,
+	type WorkflowGateEmitter,
+} from "../modes/shared/agent-wire/workflow-gate-broker";
 import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
@@ -280,7 +286,12 @@ import { buildNamedToolChoice, buildNamedToolChoiceResult } from "../utils/tool-
 import { buildWorkflowIntentDiff, WORKFLOW_INTENT_DIFF_CUSTOM_TYPE } from "../workflow/workflow-intent-diff";
 import { buildWorkspaceTree, type WorkspaceTree } from "../workspace-tree";
 import type { AuthStorage } from "./auth-storage";
-import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome, ClientBridgePermissionToolCall } from "./client-bridge";
+import type {
+	ClientBridge,
+	ClientBridgePermissionOption,
+	ClientBridgePermissionOutcome,
+	ClientBridgePermissionToolCall,
+} from "./client-bridge";
 
 import {
 	type ContributionPrepOptions,
@@ -1230,8 +1241,13 @@ export class AgentSession {
 	/** SDK-controlled permission policy applied before ACP client prompting. */
 	#sdkPermissionMode: "prompt" | "allow" | "deny" = "prompt";
 	/** Permission provider registered by a live SDK reverse lease. */
-	#sdkPermissionProvider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined;
-
+	#sdkPermissionProvider:
+		| ((
+				toolCall: ClientBridgePermissionToolCall,
+				options: ClientBridgePermissionOption[],
+				signal?: AbortSignal,
+		  ) => Promise<ClientBridgePermissionOutcome>)
+		| undefined;
 
 	#guardedToolWrapperCache = new WeakMap<AgentTool, Map<string, AgentTool>>();
 	#acpPermissionWrapperVersion = 0;
@@ -1594,7 +1610,9 @@ export class AgentSession {
 		this.setWorkflowGateEmitter(
 			new BrokerWorkflowGateEmitter(
 				workflowGateSessionId,
-				new FileGateStore(path.join(sessionStateDir(this.sessionManager.getCwd(), workflowGateSessionId), "workflow-gates.json")),
+				new FileGateStore(
+					path.join(sessionStateDir(this.sessionManager.getCwd(), workflowGateSessionId), "workflow-gates.json"),
+				),
 			),
 		);
 		this.yieldQueue = new YieldQueue({
@@ -4154,7 +4172,15 @@ export class AgentSession {
 	}
 
 	/** Register or clear the SDK reverse permission provider for this session. */
-	setSdkPermissionProvider(provider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined): void {
+	setSdkPermissionProvider(
+		provider:
+			| ((
+					toolCall: ClientBridgePermissionToolCall,
+					options: ClientBridgePermissionOption[],
+					signal?: AbortSignal,
+			  ) => Promise<ClientBridgePermissionOutcome>)
+			| undefined,
+	): void {
 		this.#sdkPermissionProvider = provider;
 		this.#acpPermissionDecisions.clear();
 		this.#acpPermissionWrapperVersion++;
@@ -4163,8 +4189,6 @@ export class AgentSession {
 			.filter((tool): tool is AgentTool => tool !== undefined);
 		this.#setGuardedAgentTools(activeTools);
 	}
-
-
 
 	/**
 	 * Ask the active managed foreground bash call to return as a background job.
@@ -4368,13 +4392,16 @@ export class AgentSession {
 	/** Wrap guarded tools so SDK permission modes remain fail-closed without a reverse provider. */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
 		const bridge = this.#clientBridge;
-		const requestPermission = this.#sdkPermissionProvider ?? (
-			bridge?.capabilities.requestPermission && bridge.requestPermission
-				? (toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => bridge.requestPermission!(toolCall, options, signal)
-				: undefined
-		);
+		const requestPermission =
+			this.#sdkPermissionProvider ??
+			(bridge?.capabilities.requestPermission && bridge.requestPermission
+				? (
+						toolCall: ClientBridgePermissionToolCall,
+						options: ClientBridgePermissionOption[],
+						signal?: AbortSignal,
+					) => bridge.requestPermission!(toolCall, options, signal)
+				: undefined);
 		if (!PERMISSION_REQUIRED_TOOLS.has(tool.name)) return tool;
-
 
 		return new Proxy(tool, {
 			get: (target, prop) => {
@@ -4405,7 +4432,9 @@ export class AgentSession {
 						throw new ToolError(`Tool call rejected by session permission policy (${target.name})`);
 					}
 					if (!requestPermission) {
-						throw new ToolError(`Tool call rejected because no permission provider is connected (${target.name})`);
+						throw new ToolError(
+							`Tool call rejected because no permission provider is connected (${target.name})`,
+						);
 					}
 					// Short-circuit on persisted decisions.
 					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
@@ -4427,7 +4456,6 @@ export class AgentSession {
 					let raced: PermissionRaceResult;
 					try {
 						const permissionPromise = requestPermission(
-
 							{
 								toolCallId,
 								toolName: target.name,
@@ -4826,7 +4854,6 @@ export class AgentSession {
 		await this.#applyActiveToolsByName(nextActive, { previousSelectedMCPToolNames });
 	}
 
-
 	async #hasActiveGjcSubskillTools(parent: string, sessionId: string | undefined): Promise<boolean> {
 		if (!parent.trim()) return false;
 		const cwd = this.sessionManager.getCwd();
@@ -5090,10 +5117,14 @@ export class AgentSession {
 		}
 	}
 
-	async invokeSkill(name: string, args = ""): Promise<{ name: string; path: string; args?: string; lineCount?: number }> {
+	async invokeSkill(
+		name: string,
+		args = "",
+	): Promise<{ name: string; path: string; args?: string; lineCount?: number }> {
 		const skillName = name.trim();
 		if (!skillName) throw Object.assign(new Error("skill.invoke requires a skill name."), { code: "invalid_input" });
-		if (typeof args !== "string") throw Object.assign(new Error("skill.invoke args must be a string."), { code: "invalid_input" });
+		if (typeof args !== "string")
+			throw Object.assign(new Error("skill.invoke args must be a string."), { code: "invalid_input" });
 		const skill = this.skills.find(candidate => candidate.name === skillName);
 		if (!skill) throw Object.assign(new Error(`Skill ${skillName} was not found.`), { code: "invalid_input" });
 		const activation = await resolveSubskillActivationForSkillInvocation({
@@ -5115,11 +5146,17 @@ export class AgentSession {
 			details: built.details,
 			attribution: "user",
 		});
-		return { name: skill.name, path: skill.filePath, args: activation.cleanedArgs || undefined, lineCount: built.details.lineCount };
+		return {
+			name: skill.name,
+			path: skill.filePath,
+			args: activation.cleanedArgs || undefined,
+			lineCount: built.details.lineCount,
+		};
 	}
 
 	setSdkPlanMode(on: boolean): PlanModeState | undefined {
-		if (typeof on !== "boolean") throw Object.assign(new Error("mode.plan.set requires a boolean on value."), { code: "invalid_input" });
+		if (typeof on !== "boolean")
+			throw Object.assign(new Error("mode.plan.set requires a boolean on value."), { code: "invalid_input" });
 		if (!on) {
 			this.setPlanModeState(undefined);
 			return undefined;
@@ -5129,18 +5166,29 @@ export class AgentSession {
 		return state;
 	}
 
-	async operateGoal(op: "create" | "get" | "resume" | "pause" | "complete" | "drop", objective?: string): Promise<unknown> {
+	async operateGoal(
+		op: "create" | "get" | "resume" | "pause" | "complete" | "drop",
+		objective?: string,
+	): Promise<unknown> {
 		try {
 			switch (op) {
-				case "create": return await this.#goalRuntime.createGoal({ objective: objective ?? "" });
-				case "get": return this.getGoalModeState();
-				case "resume": return await this.#goalRuntime.resumeGoal();
-				case "pause": return await this.#goalRuntime.pauseGoal();
-				case "complete": return await this.#goalRuntime.completeGoalFromTool();
-				case "drop": return await this.#goalRuntime.dropGoal();
+				case "create":
+					return await this.#goalRuntime.createGoal({ objective: objective ?? "" });
+				case "get":
+					return this.getGoalModeState();
+				case "resume":
+					return await this.#goalRuntime.resumeGoal();
+				case "pause":
+					return await this.#goalRuntime.pauseGoal();
+				case "complete":
+					return await this.#goalRuntime.completeGoalFromTool();
+				case "drop":
+					return await this.#goalRuntime.dropGoal();
 			}
 		} catch (error) {
-			throw Object.assign(new Error(error instanceof Error ? error.message : "Goal operation failed."), { code: "invalid_input" });
+			throw Object.assign(new Error(error instanceof Error ? error.message : "Goal operation failed."), {
+				code: "invalid_input",
+			});
 		}
 	}
 
@@ -5148,15 +5196,28 @@ export class AgentSession {
 		return this.sessionManager.getEntries().flatMap(entry => {
 			if (entry.type !== "message") return [];
 			const message = entry.message as unknown as { role?: unknown; content?: unknown };
-			const body = typeof message.content === "string"
-				? message.content
-				: Array.isArray(message.content)
+			const body =
+				typeof message.content === "string"
 					? message.content
-						.map(part => typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? part.text : "")
-						.filter(Boolean)
-						.join("\n")
-					: "";
-			return [{ id: entry.id, role: typeof message.role === "string" ? message.role : "unknown", textSummary: body.slice(0, 500), ts: entry.timestamp, body }];
+					: Array.isArray(message.content)
+						? message.content
+								.map(part =>
+									typeof part === "object" && part !== null && "text" in part && typeof part.text === "string"
+										? part.text
+										: "",
+								)
+								.filter(Boolean)
+								.join("\n")
+						: "";
+			return [
+				{
+					id: entry.id,
+					role: typeof message.role === "string" ? message.role : "unknown",
+					textSummary: body.slice(0, 500),
+					ts: entry.timestamp,
+					body,
+				},
+			];
 		});
 	}
 
@@ -5993,12 +6054,24 @@ export class AgentSession {
 			setPlanMode: on => this.setSdkPlanMode(on),
 			operateGoal: (op, objective) => this.operateGoal(op, objective),
 			getSkillState: () => this.skills.map(skill => ({ name: skill.name, description: skill.description })),
-			getConfigItems: () => ({ steeringMode: this.steeringMode, followUpMode: this.followUpMode, interruptMode: this.interruptMode }),
+			getConfigItems: () => ({
+				steeringMode: this.steeringMode,
+				followUpMode: this.followUpMode,
+				interruptMode: this.interruptMode,
+			}),
 			getBranchCandidates: () => this.sessionManager.getTree(),
 			getExtensions: () => this.#extensionRunner?.getExtensionPaths() ?? [],
 			getArtifact: () => undefined,
 			getJobs: () => undefined,
-			sdkBindings: () => ["cycleModel", "cycleThinkingLevel", "setQueueMode", "getSkillState", "getConfigItems", "getBranchCandidates", "getExtensions"],
+			sdkBindings: () => [
+				"cycleModel",
+				"cycleThinkingLevel",
+				"setQueueMode",
+				"getSkillState",
+				"getConfigItems",
+				"getBranchCandidates",
+				"getExtensions",
+			],
 			clearContext: () => this.clearContext(),
 			shutdown: () => {
 				void this.dispose();

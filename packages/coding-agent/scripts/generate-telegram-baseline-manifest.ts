@@ -94,7 +94,6 @@ function describeMismatch(expected: Manifest, actual: Manifest): string {
 	return differences.length > 0 ? differences.join("\n") : "- manifest fields differ";
 }
 
-
 async function checkManifest(expected: Manifest): Promise<void> {
 	let manifest: Manifest;
 	try {

@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
 import { createNotificationsExtension } from "../src/sdk/bus/index";
 import { readEndpoint } from "../src/sdk/bus/telegram-reference";
-import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
 import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
 
 /**
@@ -401,7 +401,9 @@ test("session_switch keeps notification resources inactive until notify on rebin
 		expect(getTelegramFileSink(newId)).toBeUndefined();
 
 		process.env.GJC_NOTIFICATIONS = "1";
-		await harness.commands.get("notify")!.handler("on", { ...(harness.ctx as Record<string, unknown>), ui: { notify: () => {} } });
+		await harness.commands
+			.get("notify")!
+			.handler("on", { ...(harness.ctx as Record<string, unknown>), ui: { notify: () => {} } });
 		expect(getAskAnswerSource(originalId)).toBeUndefined();
 		expect(getTelegramFileSink(originalId)).toBeUndefined();
 		expect(getAskAnswerSource(newId)).toBeDefined();

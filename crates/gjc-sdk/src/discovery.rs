@@ -27,40 +27,40 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct EndpointRecord {
 	/// Schema version.
-	pub version: u32,
+	pub version:              u32,
 	/// The session id this endpoint serves.
-	pub session_id: String,
+	pub session_id:           String,
 	/// The OS process id hosting the server (for dead-PID stale cleanup).
-	pub pid: u32,
+	pub pid:                  u32,
 	/// Bind host (always loopback in practice).
-	pub host: String,
+	pub host:                 String,
 	/// Bound port.
-	pub port: u16,
+	pub port:                 u16,
 	/// Full `ws://host:port` URL.
-	pub url: String,
+	pub url:                  String,
 	/// The per-session token. Required by clients; never log it raw.
-	pub token: String,
+	pub token:                String,
 	/// Epoch-millis when the server started.
-	pub started_at: u64,
+	pub started_at:           u64,
 	/// Epoch-millis of the last update.
-	pub updated_at: u64,
+	pub updated_at:           u64,
 	/// Set true when the server stopped but the file could not be removed.
 	#[serde(default)]
-	pub stale: bool,
+	pub stale:                bool,
 	/// Epoch-millis when the server stopped, if known.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub stopped_at: Option<u64>,
+	pub stopped_at:           Option<u64>,
 	/// Lifecycle marker echoed when this session was spawned by the control
 	/// ingress, so a `session_create` matches by marker (never "newest").
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub lifecycle_request_id: Option<String>,
 	/// Startup-prompt reference echoed when spawned by the control ingress.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub startup_prompt_ref: Option<String>,
+	pub startup_prompt_ref:   Option<String>,
 	/// The preallocated intended session id propagated to the child, when the
 	/// session was spawned by the control ingress.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub intended_session_id: Option<String>,
+	pub intended_session_id:  Option<String>,
 }
 
 impl EndpointRecord {
@@ -154,24 +154,24 @@ pub fn endpoint_path(state_root: &Path, session_id: &str) -> PathBuf {
 #[serde(rename_all = "camelCase")]
 pub struct ControlEndpointRecord {
 	/// Schema version.
-	pub version: u32,
+	pub version:    u32,
 	/// The OS process id hosting the control server (for dead-PID cleanup).
-	pub pid: u32,
+	pub pid:        u32,
 	/// Bind host (always loopback in practice).
-	pub host: String,
+	pub host:       String,
 	/// Bound port.
-	pub port: u16,
+	pub port:       u16,
 	/// Full `ws://host:port` URL.
-	pub url: String,
+	pub url:        String,
 	/// Identifier of the daemon that owns this endpoint.
-	pub owner_id: String,
+	pub owner_id:   String,
 	/// Epoch-millis when the control server started.
 	pub started_at: u64,
 	/// Epoch-millis of the last update.
 	pub updated_at: u64,
 	/// Set true when the server stopped but the file could not be removed.
 	#[serde(default)]
-	pub stale: bool,
+	pub stale:      bool,
 	/// Epoch-millis when the server stopped, if known.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stopped_at: Option<u64>,

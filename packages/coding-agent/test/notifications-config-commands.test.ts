@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { parseNotifyArgs, runNotifyCommand } from "../src/cli/notify-cli";
+import { Settings } from "../src/config/settings";
 import {
 	parseInThreadConfigCommand,
 	parseRichToggleCommand,
 	parseTelegramControlCommand,
 } from "../src/sdk/bus/config-commands";
-import { Settings } from "../src/config/settings";
-import { parseNotifyArgs, runNotifyCommand } from "../src/cli/notify-cli";
 
 describe("parseInThreadConfigCommand", () => {
 	test("/verbose and /lean toggle verbosity", () => {
@@ -129,10 +129,19 @@ describe("notify Discord and Slack setup", () => {
 	test("parses provider-specific setup flags while bare setup remains Telegram", () => {
 		expect(parseNotifyArgs(["notify", "setup"])?.provider).toBeUndefined();
 		expect(
-		parseNotifyArgs([
-			"notify", "setup", "discord", "--discord-bot-token", "discord-secret", "--discord-application-id", "app",
-			"--discord-guild-id", "guild", "--discord-parent-channel-id", "parent",
-		]),
+			parseNotifyArgs([
+				"notify",
+				"setup",
+				"discord",
+				"--discord-bot-token",
+				"discord-secret",
+				"--discord-application-id",
+				"app",
+				"--discord-guild-id",
+				"guild",
+				"--discord-parent-channel-id",
+				"parent",
+			]),
 		).toMatchObject({ provider: "discord", discordBotToken: "discord-secret", discordApplicationId: "app" });
 	});
 
@@ -141,10 +150,21 @@ describe("notify Discord and Slack setup", () => {
 		const discordToken = "discord-secret-token";
 		await runNotifyCommand(
 			{
-				action: "setup", rawArgs: ["discord"], provider: "discord", discordBotToken: discordToken,
-				discordApplicationId: "app", discordGuildId: "guild", discordParentChannelId: "parent",
+				action: "setup",
+				rawArgs: ["discord"],
+				provider: "discord",
+				discordBotToken: discordToken,
+				discordApplicationId: "app",
+				discordGuildId: "guild",
+				discordParentChannelId: "parent",
 			},
-			{ settings, ensureProviderDaemon: async provider => { expect(provider).toBe("discord"); return "owner_spawned"; } },
+			{
+				settings,
+				ensureProviderDaemon: async provider => {
+					expect(provider).toBe("discord");
+					return "owner_spawned";
+				},
+			},
 		);
 		expect(settings.get("notifications.discord.botToken")).toBe(discordToken);
 		expect(settings.get("notifications.enabled")).toBe(true);
@@ -154,13 +174,32 @@ describe("notify Discord and Slack setup", () => {
 		const slackAppToken = "xapp-slack-app-secret-token";
 		const setupWrites: string[] = [];
 		const originalSetupWrite = process.stdout.write;
-		process.stdout.write = ((chunk: string | Uint8Array) => { setupWrites.push(String(chunk)); return true; }) as typeof process.stdout.write;
+		process.stdout.write = ((chunk: string | Uint8Array) => {
+			setupWrites.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write;
 		try {
-			await runNotifyCommand({ action: "setup", rawArgs: ["slack"], provider: "slack", slackBotToken, slackAppToken, slackWorkspaceId: "workspace", slackChannelId: "channel" }, {
-				settings,
-				ensureProviderDaemon: async provider => { expect(provider).toBe("slack"); return "owner_spawned"; },
-			});
-		} finally { process.stdout.write = originalSetupWrite; }
+			await runNotifyCommand(
+				{
+					action: "setup",
+					rawArgs: ["slack"],
+					provider: "slack",
+					slackBotToken,
+					slackAppToken,
+					slackWorkspaceId: "workspace",
+					slackChannelId: "channel",
+				},
+				{
+					settings,
+					ensureProviderDaemon: async provider => {
+						expect(provider).toBe("slack");
+						return "owner_spawned";
+					},
+				},
+			);
+		} finally {
+			process.stdout.write = originalSetupWrite;
+		}
 		expect(settings.get("notifications.slack.botToken")).toBe(slackBotToken);
 		expect(setupWrites.join("")).toContain("daemon=owner_spawned");
 		expect(setupWrites.join("")).not.toContain(slackBotToken);
@@ -168,7 +207,10 @@ describe("notify Discord and Slack setup", () => {
 
 		const partialSettings = Settings.isolated({ "modelProfile.default": "preserve" });
 		await expect(
-			runNotifyCommand({ action: "setup", rawArgs: ["slack"], provider: "slack", slackBotToken: "bot" }, { settings: partialSettings }),
+			runNotifyCommand(
+				{ action: "setup", rawArgs: ["slack"], provider: "slack", slackBotToken: "bot" },
+				{ settings: partialSettings },
+			),
 		).rejects.toThrow("--slack-app-token is required");
 		expect(partialSettings.get("notifications.slack.botToken")).toBeUndefined();
 

@@ -20,7 +20,7 @@ export interface HostEndpointAdapters {
 	stateRoot: string;
 	token: string;
 	sendFrame: (connectionId: string, frame: SdkFrame) => void | Promise<void>;
-	onFrame: (handler: (connectionId: string, frame: SdkFrame) => void) => void | (() => void);
+	onFrame: (handler: (connectionId: string, frame: SdkFrame) => void) => undefined | (() => void);
 }
 
 export interface BrokerIndexWriter {

@@ -28,16 +28,24 @@ test("napi NotificationServer permits synchronous reentrant host calls during in
 	let inbound = 0;
 	let replies = 0;
 	server.onInbound((_error, message) => {
-		if (!message || message.kind !== "user_message") return;
+		if (message?.kind !== "user_message") return;
 		inbound += 1;
-		server.pushFrame(JSON.stringify({ type: "turn_stream", sessionId, phase: "live", text: "inbound", messageRef: `inbound-${message.updateId}` }));
+		server.pushFrame(
+			JSON.stringify({
+				type: "turn_stream",
+				sessionId,
+				phase: "live",
+				text: "inbound",
+				messageRef: `inbound-${message.updateId}`,
+			}),
+		);
 	});
 	server.onReply((_error, reply) => {
 		if (!reply) return;
 		replies += 1;
-		// This runs synchronously in the threadsafe callback: it must not wait on
-		// the native callback lock held by the reply dispatcher.
-		server.resolveLocal(reply.id, reply.answerJson);
+		// This runs synchronously in the threadsafe callback. The native handle
+		// mutex must be released before this receipt-bound reentrant resolution.
+		server.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey);
 	});
 
 	const endpoint = await server.start();
@@ -45,7 +53,12 @@ test("napi NotificationServer permits synchronous reentrant host calls during in
 	const markers = new Set<string>();
 	let actionResolved = false;
 	ws.addEventListener("message", event => {
-		const message = JSON.parse(String(event.data)) as { type?: string; messageRef?: string; id?: string; kind?: string };
+		const message = JSON.parse(String(event.data)) as {
+			type?: string;
+			messageRef?: string;
+			id?: string;
+			kind?: string;
+		};
 		if (message.type === "turn_stream" && message.messageRef) markers.add(message.messageRef);
 		if (message.type === "action_needed" && message.id === "reply-ask" && message.kind === "ask") {
 			ws.send(JSON.stringify({ type: "reply", id: "reply-ask", answer: 0, token }));
@@ -58,9 +71,14 @@ test("napi NotificationServer permits synchronous reentrant host calls during in
 		const count = 100;
 		for (let i = 0; i < count; i++) {
 			ws.send(JSON.stringify({ type: "user_message", sessionId, text: `message-${i}`, token, updateId: i }));
-			server.pushFrame(JSON.stringify({ type: "turn_stream", sessionId, phase: "live", text: "flood", messageRef: `flood-${i}` }));
+			server.pushFrame(
+				JSON.stringify({ type: "turn_stream", sessionId, phase: "live", text: "flood", messageRef: `flood-${i}` }),
+			);
 		}
-		server.registerAsk(JSON.stringify({ id: "reply-ask", kind: "ask", sessionId, question: "Reentrant?", options: ["yes"] }), true);
+		server.registerAsk(
+			JSON.stringify({ id: "reply-ask", kind: "ask", sessionId, question: "Reentrant?", options: ["yes"] }),
+			true,
+		);
 		await waitFor(() => inbound === count, "all inbound callbacks");
 		await waitFor(() => markers.size === count * 2, "all interleaved frames");
 		await waitFor(() => replies === 1 && actionResolved, "reentrant reply resolution");
@@ -79,7 +97,15 @@ test("napi NotificationServer stops cleanly when an inbound callback is in fligh
 	server.onInbound((_error, message) => {
 		if (!message) return;
 		callbackEntered = true;
-		server.pushFrame(JSON.stringify({ type: "turn_stream", sessionId, phase: "finalized", text: "before stop", messageRef: "before-stop" }));
+		server.pushFrame(
+			JSON.stringify({
+				type: "turn_stream",
+				sessionId,
+				phase: "finalized",
+				text: "before stop",
+				messageRef: "before-stop",
+			}),
+		);
 		server.stop();
 		server.stop();
 	});

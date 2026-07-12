@@ -90,18 +90,17 @@ import type { HindsightSessionState } from "../hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "../internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import { resolveMemoryBackend } from "../memory-backend";
+import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { MCPManager } from "../runtime-mcp";
 import { createNotificationsExtension } from "../sdk/bus";
-import { shouldHostSdk } from "../sdk/host";
-
 import {
 	getNotificationConfig,
 	type NotificationConfig,
 	SPAWN_PROVENANCE_ENV,
 	shouldRegisterNotificationsExtension,
 } from "../sdk/bus/config";
-import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { MCPManager } from "../runtime-mcp";
+import { shouldHostSdk } from "../sdk/host";
 import {
 	collectEnvSecrets,
 	deobfuscateSessionContext,

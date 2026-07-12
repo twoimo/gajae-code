@@ -12,8 +12,9 @@
  *
  * This is the pure mapping primitive used by SDK-native workflow gate emitters.
  */
-import type { JsonSchema, WorkflowGateContext } from "./workflow-gate-types";
+
 import type { OpenGateInput } from "./workflow-gate-broker";
+import type { JsonSchema, WorkflowGateContext } from "./workflow-gate-types";
 
 export type ApprovalDecision = "approve" | "request-changes" | "reject";
 export type ExecutionDecision = "approve" | "decline";

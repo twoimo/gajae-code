@@ -8,17 +8,17 @@ export interface EventFrame extends SdkFrame {
 
 export type EventReplayGap =
 	| {
-		kind: "generation_reset";
-		fromGeneration: number;
-		toGeneration: number;
-		resyncQueries: string[];
-	}
+			kind: "generation_reset";
+			fromGeneration: number;
+			toGeneration: number;
+			resyncQueries: string[];
+	  }
 	| {
-		kind: "sequence_gap";
-		fromSeq: number;
-		toSeq: number;
-		resyncQueries: string[];
-	};
+			kind: "sequence_gap";
+			fromSeq: number;
+			toSeq: number;
+			resyncQueries: string[];
+	  };
 
 export interface EventReplay {
 	events: EventFrame[];
@@ -38,8 +38,12 @@ export class SessionEventStream {
 		this.#resyncQueries = options.resyncQueryIds ?? ["Q01", "Q02", "Q03"];
 	}
 
-	get generation(): number { return this.#generation; }
-	get sequence(): number { return this.#seq; }
+	get generation(): number {
+		return this.#generation;
+	}
+	get sequence(): number {
+		return this.#seq;
+	}
 
 	restart(): number {
 		this.#generation += 1;

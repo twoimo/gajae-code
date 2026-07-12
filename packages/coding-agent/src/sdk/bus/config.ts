@@ -91,25 +91,36 @@ export function getNotificationConfig(settings: Settings): NotificationConfig {
 	};
 }
 
-const notificationConfigSchema = z.object({
-	notifications: z.object({
-		enabled: z.boolean().optional(),
-		discord: z.object({
-			botToken: z.string().optional(),
-			applicationId: z.string().optional(),
-			guildId: z.string().optional(),
-			parentChannelId: z.string().optional(),
-		}).passthrough().optional(),
-		slack: z.object({
-			botToken: z.string().optional(),
-			appToken: z.string().optional(),
-			workspaceId: z.string().optional(),
-			channelId: z.string().optional(),
-		}).passthrough().optional(),
-		redact: z.boolean().optional(),
-		verbosity: z.enum(["lean", "verbose"]).optional(),
-	}).passthrough().optional(),
-}).passthrough();
+const notificationConfigSchema = z
+	.object({
+		notifications: z
+			.object({
+				enabled: z.boolean().optional(),
+				discord: z
+					.object({
+						botToken: z.string().optional(),
+						applicationId: z.string().optional(),
+						guildId: z.string().optional(),
+						parentChannelId: z.string().optional(),
+					})
+					.passthrough()
+					.optional(),
+				slack: z
+					.object({
+						botToken: z.string().optional(),
+						appToken: z.string().optional(),
+						workspaceId: z.string().optional(),
+						channelId: z.string().optional(),
+					})
+					.passthrough()
+					.optional(),
+				redact: z.boolean().optional(),
+				verbosity: z.enum(["lean", "verbose"]).optional(),
+			})
+			.passthrough()
+			.optional(),
+	})
+	.passthrough();
 
 type NotificationConfigFile = z.infer<typeof notificationConfigSchema>;
 
@@ -118,7 +129,9 @@ export function loadNotificationConfigFile(agentDir: string): LoadResult<Notific
 	return new ConfigFile("config", notificationConfigSchema, path.join(agentDir, "config.yml")).tryLoad();
 }
 
-export function notificationConfigFromFile(value: NotificationConfigFile): Pick<NotificationConfig, "enabled" | "discord" | "slack" | "redact" | "verbosity"> {
+export function notificationConfigFromFile(
+	value: NotificationConfigFile,
+): Pick<NotificationConfig, "enabled" | "discord" | "slack" | "redact" | "verbosity"> {
 	const notifications = value.notifications;
 	return {
 		enabled: notifications?.enabled ?? false,
@@ -141,10 +154,8 @@ export function isTelegramConfigured(
 }
 
 /** Is Discord configured with all credentials and routing identifiers required by its daemon. */
-export function isDiscordConfigured(
-	cfg: NotificationConfig,
-): cfg is NotificationConfig & {
-discord: { botToken: string; applicationId: string; guildId: string; parentChannelId: string };
+export function isDiscordConfigured(cfg: NotificationConfig): cfg is NotificationConfig & {
+	discord: { botToken: string; applicationId: string; guildId: string; parentChannelId: string };
 } {
 	return (
 		cfg.enabled &&
@@ -156,9 +167,7 @@ discord: { botToken: string; applicationId: string; guildId: string; parentChann
 }
 
 /** Is Slack configured with both SDK tokens and its workspace/channel routing identifiers. */
-export function isSlackConfigured(
-	cfg: NotificationConfig,
-): cfg is NotificationConfig & {
+export function isSlackConfigured(cfg: NotificationConfig): cfg is NotificationConfig & {
 	slack: { botToken: string; appToken: string; workspaceId: string; channelId: string };
 } {
 	return (

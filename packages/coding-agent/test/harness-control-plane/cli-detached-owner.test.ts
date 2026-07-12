@@ -38,22 +38,46 @@ async function startSdkFixture(): Promise<void> {
 			return new Response("Not found", { status: 404 });
 		},
 		websocket: {
-			open(ws) { ws.send(JSON.stringify({ type: "hello", connectionId: "fixture" })); },
+			open(ws) {
+				ws.send(JSON.stringify({ type: "hello", connectionId: "fixture" }));
+			},
 			message(ws, message) {
 				const frame = JSON.parse(String(message)) as Record<string, unknown>;
 				const id = frame.id as string;
 				if (frame.type === "query_request") {
-					const item = frame.query === "session.metadata" ? { sessionId: SID, name: "Fixture", cwd: workspace, kind: "main" } : frame.query === "session.last_assistant" ? { text: "" } : { usage: {}, isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
-					ws.send(JSON.stringify({ type: "query_response", id, ok: true, page: { items: [item], complete: true, revision: "1" } }));
+					const item =
+						frame.query === "session.metadata"
+							? { sessionId: SID, name: "Fixture", cwd: workspace, kind: "main" }
+							: frame.query === "session.last_assistant"
+								? { text: "" }
+								: { usage: {}, isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
+					ws.send(
+						JSON.stringify({
+							type: "query_response",
+							id,
+							ok: true,
+							page: { items: [item], complete: true, revision: "1" },
+						}),
+					);
 					return;
 				}
 				if (frame.type === "event_replay") {
-					ws.send(JSON.stringify({ type: "event_replay_result", id, ok: true, events: [], generation: 1, lastSeq: 0 }));
+					ws.send(
+						JSON.stringify({ type: "event_replay_result", id, ok: true, events: [], generation: 1, lastSeq: 0 }),
+					);
 					return;
 				}
 				if (frame.type === "control_request") {
-					ws.send(JSON.stringify({ type: "control_response", id, ok: true, result: { commandId: "fixture-command", accepted: true } }));
-					for (const type of ["agent_start", "tool_execution_start", "agent_end"]) ws.send(JSON.stringify({ type: "event", payload: { type } }));
+					ws.send(
+						JSON.stringify({
+							type: "control_response",
+							id,
+							ok: true,
+							result: { commandId: "fixture-command", accepted: true },
+						}),
+					);
+					for (const type of ["agent_start", "tool_execution_start", "agent_end"])
+						ws.send(JSON.stringify({ type: "event", payload: { type } }));
 				}
 			},
 		},
@@ -274,7 +298,6 @@ describe.skipIf(process.platform !== "linux")("gjc harness start --detach (detac
 		}
 		expect(after.live).toBe(false);
 	}, 60_000);
-
 
 	it("blocks without a detached fallback when tmux starts but never routes the owner", async () => {
 		tmuxCommand = await createFakeTmuxBin(root, { skipOwnerLaunch: true });

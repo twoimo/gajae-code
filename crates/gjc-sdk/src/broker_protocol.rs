@@ -14,12 +14,12 @@ pub struct BrokerHello {
 }
 
 /// Global session-index and lifecycle request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerRequest {
-	pub id: String,
-	pub operation: BrokerOperation,
-	pub input: Value,
+	pub id:              String,
+	pub operation:       BrokerOperation,
+	pub input:           Value,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub idempotency_key: Option<String>,
 }
@@ -44,30 +44,30 @@ pub enum BrokerOperation {
 }
 
 /// Global broker request result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerResponse {
-	pub id: String,
-	pub ok: bool,
+	pub id:        String,
+	pub ok:        bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub result: Option<Value>,
+	pub result:    Option<Value>,
 	/// `session.list` responses include the index snapshot sequence.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub index_seq: Option<u64>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub error: Option<BrokerError>,
+	pub error:     Option<BrokerError>,
 }
 
 /// A broker-level error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerError {
-	pub code: String,
+	pub code:    String,
 	pub message: String,
 }
 
 /// Frames sent to the broker.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrokerClientFrame {
 	BrokerHello(BrokerHello),
@@ -77,7 +77,7 @@ pub enum BrokerClientFrame {
 }
 
 /// Frames sent by the broker.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrokerServerFrame {
 	BrokerResponse(BrokerResponse),
@@ -93,8 +93,9 @@ pub mod error_codes {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use serde_json::json;
+
+	use super::*;
 
 	#[test]
 	fn hello_round_trips_with_protocol_version() {
@@ -107,9 +108,9 @@ mod tests {
 	#[test]
 	fn broker_request_and_response_round_trip_with_wire_names() {
 		let request = BrokerClientFrame::BrokerRequest(BrokerRequest {
-			id: "g1".into(),
-			operation: BrokerOperation::SessionCreate,
-			input: json!({"path":"/repo"}),
+			id:              "g1".into(),
+			operation:       BrokerOperation::SessionCreate,
+			input:           json!({"path":"/repo"}),
 			idempotency_key: Some("key".into()),
 		});
 		let value = serde_json::to_value(&request).unwrap();
@@ -127,12 +128,12 @@ mod tests {
 		assert!(matches!(decoded, BrokerClientFrame::BrokerRequest(_)));
 
 		let response = BrokerServerFrame::BrokerResponse(BrokerResponse {
-			id: "g1".into(),
-			ok: false,
-			result: None,
+			id:        "g1".into(),
+			ok:        false,
+			result:    None,
 			index_seq: Some(22),
-			error: Some(BrokerError {
-				code: error_codes::ENDPOINT_STALE.into(),
+			error:     Some(BrokerError {
+				code:    error_codes::ENDPOINT_STALE.into(),
 				message: "endpoint changed".into(),
 			}),
 		});

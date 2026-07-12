@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { JsonSchema, WorkflowGate } from "../src/modes/shared/agent-wire/workflow-gate-types";
 import {
 	FileGateStore,
 	type GateAuditEvent,
@@ -17,6 +16,7 @@ import {
 	validateGateAnswer,
 	WorkflowGateSchemaError,
 } from "../src/modes/shared/agent-wire/workflow-gate-schema";
+import type { JsonSchema, WorkflowGate } from "../src/modes/shared/agent-wire/workflow-gate-types";
 
 function makeBroker() {
 	const audit: GateAuditEvent[] = [];

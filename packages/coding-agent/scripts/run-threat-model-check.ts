@@ -2,10 +2,10 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { Broker } from "../src/sdk/broker/broker";
-import { brokerIdentityPath, getBrokerIdentityKey } from "../src/sdk/broker/identity";
-import { brokerDiscoveryPath } from "../src/sdk/broker/discovery";
 import { NotificationServer } from "../../natives/native/index.js";
+import { Broker } from "../src/sdk/broker/broker";
+import { brokerDiscoveryPath } from "../src/sdk/broker/discovery";
+import { brokerIdentityPath, getBrokerIdentityKey } from "../src/sdk/broker/identity";
 
 type Check = { id: string; description: string; kind: "assertion" | "negative-test"; command?: string };
 type Manifest = { version: 1; checks: Check[] };
@@ -18,9 +18,31 @@ async function rejectedWebSocket(url: string): Promise<void> {
 	const ws = new WebSocket(url);
 	await new Promise<void>((resolve, reject) => {
 		const timeout = setTimeout(() => reject(new Error("unauthorized WebSocket was not rejected")), 2_000);
-		ws.addEventListener("close", () => { clearTimeout(timeout); resolve(); }, { once: true });
-		ws.addEventListener("open", () => { clearTimeout(timeout); ws.close(); reject(new Error("unauthorized WebSocket connected")); }, { once: true });
-		ws.addEventListener("error", () => { clearTimeout(timeout); resolve(); }, { once: true });
+		ws.addEventListener(
+			"close",
+			() => {
+				clearTimeout(timeout);
+				resolve();
+			},
+			{ once: true },
+		);
+		ws.addEventListener(
+			"open",
+			() => {
+				clearTimeout(timeout);
+				ws.close();
+				reject(new Error("unauthorized WebSocket connected"));
+			},
+			{ once: true },
+		);
+		ws.addEventListener(
+			"error",
+			() => {
+				clearTimeout(timeout);
+				resolve();
+			},
+			{ once: true },
+		);
 	});
 }
 
@@ -35,8 +57,14 @@ async function main(): Promise<void> {
 	assert(manifest.version === 1 && Array.isArray(manifest.checks), "Invalid threat-model manifest");
 	const ids = new Set<string>();
 	for (const check of manifest.checks) {
-		assert(typeof check.id === "string" && check.id.length > 0 && !ids.has(check.id), "Invalid or duplicate check id");
-		assert(typeof check.description === "string" && (check.kind === "assertion" || check.kind === "negative-test"), `Invalid check ${check.id}`);
+		assert(
+			typeof check.id === "string" && check.id.length > 0 && !ids.has(check.id),
+			"Invalid or duplicate check id",
+		);
+		assert(
+			typeof check.description === "string" && (check.kind === "assertion" || check.kind === "negative-test"),
+			`Invalid check ${check.id}`,
+		);
 		ids.add(check.id);
 	}
 
@@ -53,12 +81,13 @@ async function main(): Promise<void> {
 			},
 			"broker-discovery-file-permissions": async () => {
 				if (process.platform !== "win32") {
-					assert(await mode(brokerDiscoveryPath(agentDir)) === 0o600, "broker.json is not mode 0600");
-					assert(await mode(path.join(agentDir, "sdk")) === 0o700, "sdk directory is not mode 0700");
+					assert((await mode(brokerDiscoveryPath(agentDir))) === 0o600, "broker.json is not mode 0600");
+					assert((await mode(path.join(agentDir, "sdk"))) === 0o700, "sdk directory is not mode 0700");
 				}
 			},
 			"broker-identity-file-permissions": async () => {
-				if (process.platform !== "win32") assert(await mode(brokerIdentityPath(agentDir)) === 0o600, "broker.identity is not mode 0600");
+				if (process.platform !== "win32")
+					assert((await mode(brokerIdentityPath(agentDir))) === 0o600, "broker.identity is not mode 0600");
 			},
 			"broker-loopback-only": async () => {
 				assert(discovery.host === "127.0.0.1", "broker advertised a non-loopback host");

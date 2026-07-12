@@ -1,7 +1,5 @@
 import { boundedDedupe, type ConversationRecord } from "./conversation-store";
 
-
-
 export interface SlackInboundDispatchReceipt {
 	key: string;
 	eventId: string;
@@ -52,7 +50,6 @@ export interface SlackConversation extends ConversationRecord {
 	seenInteractionIds: string[];
 	/** Durable inbound effect identifiers. The protected journal owns replay payloads. */
 	inboundDispatches?: SlackInboundDispatchReceipt[];
-
 }
 
 export function slackConversationKey(input: { teamId: string; channelId: string; rootTs: string }): string {

@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { boundedDedupe, ConversationLockTimeoutError, ConversationStore, conversationStorePath, MAX_DEDUPE_IDS, type ConversationRecord } from "../src/sdk/bus/conversation-store";
-import { MemoryConversationStoreFs } from "./fixtures/chat-daemon-stores";
 import { ChatEffectJournal, MAX_TERMINAL_CHAT_EFFECTS } from "../src/sdk/bus/chat-effect-journal";
+import {
+	boundedDedupe,
+	ConversationLockTimeoutError,
+	type ConversationRecord,
+	ConversationStore,
+	conversationStorePath,
+	MAX_DEDUPE_IDS,
+} from "../src/sdk/bus/conversation-store";
 import type { SlackConversation } from "../src/sdk/bus/slack-conversation";
-
+import { MemoryConversationStoreFs } from "./fixtures/chat-daemon-stores";
 
 interface TestConversation extends ConversationRecord {
 	state: "creating" | "active";
@@ -51,12 +57,26 @@ describe("ConversationStore", () => {
 			}
 		}
 		const fs = new PausingFs();
-		const first = new ConversationStore<TestConversation>({ agentDir: "/agent", kind: "discord", fs, pid: 101, pidAlive: () => true });
-		const second = new ConversationStore<TestConversation>({ agentDir: "/agent", kind: "discord", fs, pid: 202, pidAlive: () => true });
+		const first = new ConversationStore<TestConversation>({
+			agentDir: "/agent",
+			kind: "discord",
+			fs,
+			pid: 101,
+			pidAlive: () => true,
+		});
+		const second = new ConversationStore<TestConversation>({
+			agentDir: "/agent",
+			kind: "discord",
+			fs,
+			pid: 202,
+			pidAlive: () => true,
+		});
 		const firstWrite = first.write("mapping", undefined, record(1));
 		await entered.promise;
 		let secondSettled = false;
-		const secondWrite = second.write("mapping", undefined, record(1)).finally(() => { secondSettled = true; });
+		const secondWrite = second.write("mapping", undefined, record(1)).finally(() => {
+			secondSettled = true;
+		});
 		await observedEmptyLock.promise;
 		expect(secondSettled).toBe(false);
 		release.resolve();
@@ -65,7 +85,13 @@ describe("ConversationStore", () => {
 
 	test("recovers a lock whose recorded owner is dead", async () => {
 		const fs = new MemoryConversationStoreFs();
-		const store = new ConversationStore<TestConversation>({ agentDir: "/agent", kind: "discord", fs, pid: 202, pidAlive: pid => pid === 202 });
+		const store = new ConversationStore<TestConversation>({
+			agentDir: "/agent",
+			kind: "discord",
+			fs,
+			pid: 202,
+			pidAlive: pid => pid === 202,
+		});
 		fs.files.set(`${store.filePath}.lock`, JSON.stringify({ pid: 101, incarnation: "old", timestamp: 1 }));
 		expect(await store.write("mapping", undefined, record(1))).toBe(true);
 	});
@@ -77,7 +103,7 @@ describe("ConversationStore", () => {
 			fs,
 			pid: 202,
 			pidAlive: () => true,
-			pidIncarnation: pid => pid === 101 ? "current" : "writer",
+			pidIncarnation: pid => (pid === 101 ? "current" : "writer"),
 		});
 		fs.files.set(`${store.filePath}.lock`, JSON.stringify({ pid: 101, incarnation: "old", timestamp: 1 }));
 		fs.files.set(`${store.filePath}.lock.reclaim`, JSON.stringify({ pid: 101, incarnation: "old", timestamp: 1 }));
@@ -93,23 +119,22 @@ describe("ConversationStore", () => {
 			fs,
 			pid: 202,
 			pidAlive: pid => pid !== 101,
-			pidIncarnation: pid => pid === 303 ? "live" : "writer",
+			pidIncarnation: pid => (pid === 303 ? "live" : "writer"),
 			lockTimeoutMs: 0,
 		});
 		fs.files.set(`${store.filePath}.lock`, JSON.stringify({ pid: 101, incarnation: "dead", timestamp: 1 }));
 		fs.files.set(`${store.filePath}.lock.reclaim`, JSON.stringify({ pid: 303, incarnation: "live", timestamp: 1 }));
 		await expect(store.write("mapping", undefined, record(1))).rejects.toBeInstanceOf(ConversationLockTimeoutError);
-		expect(fs.files.get(`${store.filePath}.lock.reclaim`)).toBe(JSON.stringify({ pid: 303, incarnation: "live", timestamp: 1 }));
+		expect(fs.files.get(`${store.filePath}.lock.reclaim`)).toBe(
+			JSON.stringify({ pid: 303, incarnation: "live", timestamp: 1 }),
+		);
 	});
 
 	test("serializes separate store instances so independent mapping updates do not overwrite one another", async () => {
 		const fs = new MemoryConversationStoreFs();
 		const first = new ConversationStore<TestConversation>({ agentDir: "/agent", kind: "slack", fs, now: () => 2 });
 		const second = new ConversationStore<TestConversation>({ agentDir: "/agent", kind: "slack", fs, now: () => 2 });
-		await Promise.all([
-			first.write("one", undefined, record(1)),
-			second.write("two", undefined, record(1)),
-		]);
+		await Promise.all([first.write("one", undefined, record(1)), second.write("two", undefined, record(1))]);
 		expect((await first.load()).conversations).toEqual({ one: record(1), two: record(1) });
 	});
 
@@ -119,7 +144,12 @@ describe("ConversationStore", () => {
 		expect(await initial.write("mapping", undefined, record(1))).toBe(true);
 		expect(await initial.write("mapping", 1, record(2, "active"))).toBe(true);
 		expect(await initial.write("mapping", 1, record(2, "active"))).toBe(false);
-		const restarted = new ConversationStore<TestConversation>({ agentDir: "/agent", kind: "slack", fs, now: () => 3 });
+		const restarted = new ConversationStore<TestConversation>({
+			agentDir: "/agent",
+			kind: "slack",
+			fs,
+			now: () => 3,
+		});
 		expect(await restarted.read("mapping")).toEqual(record(2, "active"));
 	});
 
@@ -143,7 +173,6 @@ describe("ConversationStore", () => {
 		expect(await store.read("mapping")).toEqual(record(1));
 		expect(fs.calls.some(call => call.startsWith("sync:/agent/sdk/daemons/discord/conversations.json."))).toBe(true);
 	});
-
 });
 
 describe("ChatEffectJournal", () => {
@@ -151,39 +180,93 @@ describe("ChatEffectJournal", () => {
 		const fs = new MemoryConversationStoreFs();
 		const mappings = new ConversationStore<SlackConversation>({ agentDir: "/agent", kind: "slack", fs });
 		const journal = new ChatEffectJournal({ agentDir: "/agent", transport: "slack", fs, now: () => 1 });
-		await journal.enqueue({ id: "inbound:evt-1", kind: "command", transport: "slack", sessionId: "session", endpointGeneration: 4, payload: { content: "/sdk secret-command", token: "super-secret" } });
+		await journal.enqueue({
+			id: "inbound:evt-1",
+			kind: "command",
+			transport: "slack",
+			sessionId: "session",
+			endpointGeneration: 4,
+			payload: { content: "/sdk secret-command", token: "super-secret" },
+		});
 		await mappings.write("team:channel:root", undefined, {
-			generation: 1, state: "active", teamId: "team", channelId: "channel", rootTs: "root", sessionId: "session", endpointGeneration: 4, updatedAt: 1,
-			seenEventIds: [], seenContextIds: [], seenRetryKeys: [], seenInteractionIds: [],
-			inboundDispatches: [{ key: "evt-1", eventId: "evt-1", interactionId: "interaction", retryKey: "retry", kind: "command", endpointGeneration: 4, effectId: "inbound:evt-1", idempotencyKey: "inbound:evt-1" }],
+			generation: 1,
+			state: "active",
+			teamId: "team",
+			channelId: "channel",
+			rootTs: "root",
+			sessionId: "session",
+			endpointGeneration: 4,
+			updatedAt: 1,
+			seenEventIds: [],
+			seenContextIds: [],
+			seenRetryKeys: [],
+			seenInteractionIds: [],
+			inboundDispatches: [
+				{
+					key: "evt-1",
+					eventId: "evt-1",
+					interactionId: "interaction",
+					retryKey: "retry",
+					kind: "command",
+					endpointGeneration: 4,
+					effectId: "inbound:evt-1",
+					idempotencyKey: "inbound:evt-1",
+				},
+			],
 		});
 		const mappingBody = fs.files.get(mappings.filePath) ?? "";
 		expect(mappingBody).not.toContain("secret-command");
 		expect(mappingBody).not.toContain("super-secret");
 		expect(fs.modes.get(journal.filePath)).toBe(0o600);
 		const restarted = new ChatEffectJournal({ agentDir: "/agent", transport: "slack", fs, now: () => 2 });
-		expect(await restarted.replayable("slack", 4)).toEqual([expect.objectContaining({ id: "inbound:evt-1", payload: { content: "/sdk secret-command", token: "super-secret" } })]);
+		expect(await restarted.replayable("slack", 4)).toEqual([
+			expect.objectContaining({
+				id: "inbound:evt-1",
+				payload: { content: "/sdk secret-command", token: "super-secret" },
+			}),
+		]);
 	});
 
 	test("takes over expired leases and fences stale owners from terminal commits", async () => {
 		const fs = new MemoryConversationStoreFs();
 		const first = new ChatEffectJournal({ agentDir: "/agent", transport: "discord", fs, now: () => 1 });
-		await first.enqueue({ id: "effect", kind: "reply", transport: "discord", endpointGeneration: 2, payload: { answer: "body" } });
+		await first.enqueue({
+			id: "effect",
+			kind: "reply",
+			transport: "discord",
+			endpointGeneration: 2,
+			payload: { answer: "body" },
+		});
 		const oldLease = await first.claim("effect", "old", 5);
 		expect(oldLease).toMatchObject({ state: "leased", epoch: 1 });
 		const second = new ChatEffectJournal({ agentDir: "/agent", transport: "discord", fs, now: () => 7 });
 		const newLease = await second.claim("effect", "new", 5);
 		expect(newLease).toMatchObject({ state: "leased", owner: "new", epoch: 2 });
 		expect(await first.record("effect", { owner: "old", epoch: oldLease!.epoch }, "terminal")).toBeUndefined();
-		expect(await second.record("effect", { owner: "new", epoch: newLease!.epoch }, "terminal", { messageId: "remote" })).toMatchObject({ state: "terminal", receipt: { messageId: "remote" } });
+		expect(
+			await second.record("effect", { owner: "new", epoch: newLease!.epoch }, "terminal", { messageId: "remote" }),
+		).toMatchObject({ state: "terminal", receipt: { messageId: "remote" } });
 	});
 
 	test("retains more than 128 nonterminal effects while bounding terminal history", async () => {
 		const fs = new MemoryConversationStoreFs();
 		const journal = new ChatEffectJournal({ agentDir: "/agent", transport: "discord", fs, now: () => 1 });
-		for (let index = 0; index < 130; index++) await journal.enqueue({ id: `pending-${index}`, kind: "reply", transport: "discord", endpointGeneration: 1, payload: { index } });
+		for (let index = 0; index < 130; index++)
+			await journal.enqueue({
+				id: `pending-${index}`,
+				kind: "reply",
+				transport: "discord",
+				endpointGeneration: 1,
+				payload: { index },
+			});
 		for (let index = 0; index < 130; index++) {
-			await journal.enqueue({ id: `terminal-${index}`, kind: "reply", transport: "discord", endpointGeneration: 1, payload: { index } });
+			await journal.enqueue({
+				id: `terminal-${index}`,
+				kind: "reply",
+				transport: "discord",
+				endpointGeneration: 1,
+				payload: { index },
+			});
 			const lease = await journal.claim(`terminal-${index}`, "owner", 10);
 			await journal.record(`terminal-${index}`, { owner: "owner", epoch: lease!.epoch }, "terminal");
 		}

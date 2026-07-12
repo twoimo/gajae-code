@@ -1,11 +1,11 @@
 import { Args, Command, Flags } from "@gajae-code/utils/cli";
-import { createSessionManager } from "../main";
-import { SessionManager } from "../session/session-manager";
-import { createAgentSession } from "../sdk";
-import { readSessionLifecycleLaunchRequest, type SessionLifecycleLaunchRequest } from "../sdk/broker/lifecycle";
 import type { Args as ParsedArgs } from "../cli/args";
-import { Broker } from "../sdk/broker/broker";
+import { createSessionManager } from "../main";
 import { initializeExtensions } from "../modes/runtime-init";
+import { createAgentSession } from "../sdk";
+import { Broker } from "../sdk/broker/broker";
+import { readSessionLifecycleLaunchRequest, type SessionLifecycleLaunchRequest } from "../sdk/broker/lifecycle";
+import { SessionManager } from "../session/session-manager";
 
 function lifecycleArgs(request: SessionLifecycleLaunchRequest, cwd: string, agentDir: string): ParsedArgs {
 	return {
@@ -13,7 +13,12 @@ function lifecycleArgs(request: SessionLifecycleLaunchRequest, cwd: string, agen
 		fileArgs: [],
 		unknownFlags: new Map(),
 		...(request.operation === "session.resume" ? { resume: request.sessionPath } : {}),
-		...(request.operation === "session.fork" ? { fork: request.sourceSessionPath ?? request.sourceSessionId, sessionDir: SessionManager.getDefaultSessionDir(cwd, agentDir) } : {}),
+		...(request.operation === "session.fork"
+			? {
+					fork: request.sourceSessionPath ?? request.sourceSessionId,
+					sessionDir: SessionManager.getDefaultSessionDir(cwd, agentDir),
+				}
+			: {}),
 	};
 }
 
@@ -38,7 +43,9 @@ async function runSessionHost(): Promise<void> {
 		onShutdown: stop,
 	});
 	if (session.sessionManager.getSessionId() !== request.sessionId)
-		throw new Error(`Lifecycle session id mismatch: expected ${request.sessionId}, got ${session.sessionManager.getSessionId()}.`);
+		throw new Error(
+			`Lifecycle session id mismatch: expected ${request.sessionId}, got ${session.sessionManager.getSessionId()}.`,
+		);
 	await session.sessionManager.ensureOnDisk();
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);

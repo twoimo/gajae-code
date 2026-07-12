@@ -42,22 +42,22 @@ pub enum ReplyClassification {
 #[derive(Debug, Clone)]
 struct PendingAction {
 	repliable: bool,
-	claim: Option<Claim>,
+	claim:     Option<Claim>,
 }
 
 #[derive(Debug, Clone)]
 struct Claim {
-	receipt_id: String,
-	connection_id: String,
-	generation: String,
-	answer: ReplyAnswer,
+	receipt_id:      String,
+	connection_id:   String,
+	generation:      String,
+	answer:          ReplyAnswer,
 	idempotency_key: Option<String>,
 }
 
 /// An atomically claimed reply that may be forwarded to the host exactly once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedReply {
-	pub reply: Reply,
+	pub reply:            Reply,
 	pub reply_receipt_id: String,
 }
 
@@ -65,7 +65,7 @@ pub struct ClaimedReply {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplyOrigin {
 	pub connection_id: String,
-	pub generation: String,
+	pub generation:    String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,17 +91,17 @@ pub struct ActionIdentity {
 /// rejection.
 #[derive(Debug, Clone)]
 struct ResolvedRecord {
-	answer: Option<ReplyAnswer>,
+	answer:          Option<ReplyAnswer>,
 	idempotency_key: Option<String>,
 }
 
 /// Tracks action lifecycle for a single session.
 #[derive(Debug, Default)]
 pub struct ActionRegistry {
-	pending: HashMap<String, PendingAction>,
-	resolved: HashMap<String, ResolvedRecord>,
-	receipts: HashMap<String, String>,
-	origins: HashMap<String, ReplyOrigin>,
+	pending:      HashMap<String, PendingAction>,
+	resolved:     HashMap<String, ResolvedRecord>,
+	receipts:     HashMap<String, String>,
+	origins:      HashMap<String, ReplyOrigin>,
 	next_receipt: AtomicU64,
 	/// The single currently-pending `ask`, replayed to clients that connect
 	/// late. Idle pings are intentionally ephemeral and never buffered.
@@ -120,9 +120,9 @@ impl ActionRegistry {
 	/// Register an `ask` action. It becomes the canonical buffered ask used by
 	/// tailored connection delivery. Every registration receives a fresh epoch.
 	///
-	/// `repliable` is `false` when the session has no SDK workflow-gate resolver,
-	/// so the ask is broadcast as notify-only and any reply is rejected with
-	/// [`RejectReason::ResolverUnavailable`].
+	/// `repliable` is `false` when the session has no SDK workflow-gate
+	/// resolver, so the ask is broadcast as notify-only and any reply is
+	/// rejected with [`RejectReason::ResolverUnavailable`].
 	pub fn register_ask(&mut self, needed: ActionNeeded, repliable: bool) {
 		debug_assert_eq!(needed.kind, ActionKind::Ask);
 		self.epoch = self
@@ -366,18 +366,21 @@ impl ActionRegistry {
 		}
 		let receipt_id = format!("reply:{}", self.next_receipt.fetch_add(1, Ordering::Relaxed));
 		pending.claim = Some(Claim {
-			receipt_id: receipt_id.clone(),
-			connection_id: connection_id.to_owned(),
-			generation: generation.to_owned(),
-			answer: reply.answer.clone(),
+			receipt_id:      receipt_id.clone(),
+			connection_id:   connection_id.to_owned(),
+			generation:      generation.to_owned(),
+			answer:          reply.answer.clone(),
 			idempotency_key: reply.idempotency_key.clone(),
 		});
 		self.receipts.insert(receipt_id.clone(), reply.id.clone());
-		self.origins.insert(
-			receipt_id.clone(),
-			ReplyOrigin { connection_id: connection_id.to_owned(), generation: generation.to_owned() },
-		);
-		ClaimOutcome::Forward(ClaimedReply { reply: reply.clone(), reply_receipt_id: receipt_id })
+		self.origins.insert(receipt_id.clone(), ReplyOrigin {
+			connection_id: connection_id.to_owned(),
+			generation:    generation.to_owned(),
+		});
+		ClaimOutcome::Forward(ClaimedReply {
+			reply:            reply.clone(),
+			reply_receipt_id: receipt_id,
+		})
 	}
 
 	/// Atomically compare a controlled reply's delivered identity before
@@ -515,13 +518,13 @@ mod tests {
 
 	fn ask(id: &str) -> ActionNeeded {
 		ActionNeeded {
-			id: id.into(),
-			kind: ActionKind::Ask,
+			id:         id.into(),
+			kind:       ActionKind::Ask,
 			session_id: "s".into(),
-			question: Some("?".into()),
-			options: Some(vec!["Yes".into(), "No".into()]),
-			controls: vec![],
-			summary: None,
+			question:   Some("?".into()),
+			options:    Some(vec!["Yes".into(), "No".into()]),
+			controls:   vec![],
+			summary:    None,
 		}
 	}
 
@@ -538,13 +541,13 @@ mod tests {
 
 	fn idle(id: &str) -> ActionNeeded {
 		ActionNeeded {
-			id: id.into(),
-			kind: ActionKind::Idle,
+			id:         id.into(),
+			kind:       ActionKind::Idle,
 			session_id: "s".into(),
-			question: None,
-			options: None,
-			controls: vec![],
-			summary: Some("idle".into()),
+			question:   None,
+			options:    None,
+			controls:   vec![],
+			summary:    Some("idle".into()),
 		}
 	}
 
@@ -635,9 +638,9 @@ mod tests {
 		let mut reg = ActionRegistry::new();
 		reg.register_ask(ask("a1"), true);
 		let r1 = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "t".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "t".into(),
 			idempotency_key: Some("k1".into()),
 		};
 		assert!(matches!(reg.apply_reply(&r1, true, true), ReplyOutcome::Resolved(_)));
@@ -650,15 +653,15 @@ mod tests {
 		let mut reg = ActionRegistry::new();
 		reg.register_ask(ask("a1"), true);
 		let r1 = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "t".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "t".into(),
 			idempotency_key: Some("k1".into()),
 		};
 		let r2 = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(1),
-			token: "t".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(1),
+			token:           "t".into(),
 			idempotency_key: Some("k1".into()),
 		};
 		assert!(matches!(reg.apply_reply(&r1, true, true), ReplyOutcome::Resolved(_)));

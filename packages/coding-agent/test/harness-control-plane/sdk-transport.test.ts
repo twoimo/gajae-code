@@ -92,13 +92,23 @@ describe("SDK harness transport response validation", () => {
 	it("rejects a control result whose accepted field is false, missing, or non-boolean", async () => {
 		responses = validResponses();
 		const sdkTransport = await transport();
-		responses.control = { type: "control_response", id: "control-id", ok: true, result: { commandId: "command-id", accepted: false } };
+		responses.control = {
+			type: "control_response",
+			id: "control-id",
+			ok: true,
+			result: { commandId: "command-id", accepted: false },
+		};
 		await expectInvalidResponse(() => sdkTransport.sendPrompt("hello"));
 
 		responses.control = { type: "control_response", id: "control-id", ok: true, result: { commandId: "command-id" } };
 		await expectInvalidResponse(() => sdkTransport.sendPrompt("hello"));
 
-		responses.control = { type: "control_response", id: "control-id", ok: true, result: { commandId: "command-id", accepted: "true" } };
+		responses.control = {
+			type: "control_response",
+			id: "control-id",
+			ok: true,
+			result: { commandId: "command-id", accepted: "true" },
+		};
 		await expectInvalidResponse(() => sdkTransport.sendPrompt("hello"));
 	});
 

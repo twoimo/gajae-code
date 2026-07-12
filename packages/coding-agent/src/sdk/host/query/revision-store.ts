@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,15 +10,22 @@ export const SNAPSHOT_TTL_MS = 15 * 60 * 1000;
 const CHUNK_BYTES = 4 * 1024 * 1024;
 
 export class RevisionStoreError extends Error {
-	constructor(readonly code: "resource_gone" | "snapshot_capacity_exceeded", message: string = code) {
+	constructor(
+		readonly code: "resource_gone" | "snapshot_capacity_exceeded",
+		message: string = code,
+	) {
 		super(message);
 	}
 }
 
 interface RevisionIndex {
-	items?: { start: number; end: number; entryId?: string; fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }> }[];
+	items?: {
+		start: number;
+		end: number;
+		entryId?: string;
+		fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }>;
+	}[];
 	fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }>;
-
 }
 
 interface Revision {
@@ -61,7 +68,7 @@ class ChunkJsonParser {
 	async parse(): Promise<unknown> {
 		const value = await this.#value();
 		await this.#whitespace();
-		if (await this.#peek() !== undefined) throw new SyntaxError("unexpected data after JSON value");
+		if ((await this.#peek()) !== undefined) throw new SyntaxError("unexpected data after JSON value");
 		return value;
 	}
 
@@ -70,8 +77,10 @@ class ChunkJsonParser {
 			const chunk = this.chunks[this.#chunkIndex]!;
 			const data = await readFile(join(this.directory, "objects", chunk));
 			const expectedLength = this.lengths[this.#chunkIndex];
-			if (expectedLength !== undefined && data.length !== expectedLength) throw new SyntaxError("snapshot chunk length does not match manifest");
-			if (createHash("sha256").update(data).digest("hex") !== chunk) throw new SyntaxError("snapshot chunk hash does not match manifest");
+			if (expectedLength !== undefined && data.length !== expectedLength)
+				throw new SyntaxError("snapshot chunk length does not match manifest");
+			if (createHash("sha256").update(data).digest("hex") !== chunk)
+				throw new SyntaxError("snapshot chunk hash does not match manifest");
 			this.#chunkIndex++;
 			this.#text = this.#decoder.decode(data, { stream: this.#chunkIndex < this.chunks.length });
 			this.#offset = 0;
@@ -80,32 +89,64 @@ class ChunkJsonParser {
 		return this.#offset < this.#text.length;
 	}
 
-	async #peek(): Promise<string | undefined> { return await this.#fill() ? this.#text[this.#offset] : undefined; }
-	async #take(): Promise<string> { const character = await this.#peek(); if (character === undefined) throw new SyntaxError("unexpected end of JSON snapshot"); this.#offset++; return character; }
-	async #expect(expected: string): Promise<void> { if (await this.#take() !== expected) throw new SyntaxError(`expected ${expected} in JSON snapshot`); }
-	async #whitespace(): Promise<void> { while (/\s/.test((await this.#peek()) ?? "")) this.#offset++; }
+	async #peek(): Promise<string | undefined> {
+		return (await this.#fill()) ? this.#text[this.#offset] : undefined;
+	}
+	async #take(): Promise<string> {
+		const character = await this.#peek();
+		if (character === undefined) throw new SyntaxError("unexpected end of JSON snapshot");
+		this.#offset++;
+		return character;
+	}
+	async #expect(expected: string): Promise<void> {
+		if ((await this.#take()) !== expected) throw new SyntaxError(`expected ${expected} in JSON snapshot`);
+	}
+	async #whitespace(): Promise<void> {
+		while (/\s/.test((await this.#peek()) ?? "")) this.#offset++;
+	}
 
 	async #value(): Promise<unknown> {
 		await this.#whitespace();
 		switch (await this.#peek()) {
-			case "{": return this.#object();
-			case "[": return this.#array();
-			case '"': return this.#string();
-			case "t": await this.#literal("true"); return true;
-			case "f": await this.#literal("false"); return false;
-			case "n": await this.#literal("null"); return null;
-			default: return this.#number();
+			case "{":
+				return this.#object();
+			case "[":
+				return this.#array();
+			case '"':
+				return this.#string();
+			case "t":
+				await this.#literal("true");
+				return true;
+			case "f":
+				await this.#literal("false");
+				return false;
+			case "n":
+				await this.#literal("null");
+				return null;
+			default:
+				return this.#number();
 		}
 	}
 
 	async #object(): Promise<Record<string, unknown>> {
 		const result: Record<string, unknown> = {};
-		await this.#expect("{"); await this.#whitespace();
-		if (await this.#peek() === "}") { this.#offset++; return result; }
+		await this.#expect("{");
+		await this.#whitespace();
+		if ((await this.#peek()) === "}") {
+			this.#offset++;
+			return result;
+		}
 		while (true) {
-			if (await this.#peek() !== '"') throw new SyntaxError("expected object key in JSON snapshot");
-			const key = await this.#string(); await this.#whitespace(); await this.#expect(":");
-			Object.defineProperty(result, key, { configurable: true, enumerable: true, value: await this.#value(), writable: true });
+			if ((await this.#peek()) !== '"') throw new SyntaxError("expected object key in JSON snapshot");
+			const key = await this.#string();
+			await this.#whitespace();
+			await this.#expect(":");
+			Object.defineProperty(result, key, {
+				configurable: true,
+				enumerable: true,
+				value: await this.#value(),
+				writable: true,
+			});
 			await this.#whitespace();
 			const separator = await this.#take();
 			if (separator === "}") return result;
@@ -116,10 +157,15 @@ class ChunkJsonParser {
 
 	async #array(): Promise<unknown[]> {
 		const result: unknown[] = [];
-		await this.#expect("["); await this.#whitespace();
-		if (await this.#peek() === "]") { this.#offset++; return result; }
+		await this.#expect("[");
+		await this.#whitespace();
+		if ((await this.#peek()) === "]") {
+			this.#offset++;
+			return result;
+		}
 		while (true) {
-			result.push(await this.#value()); await this.#whitespace();
+			result.push(await this.#value());
+			await this.#whitespace();
 			const separator = await this.#take();
 			if (separator === "]") return result;
 			if (separator !== ",") throw new SyntaxError("expected array separator in JSON snapshot");
@@ -131,37 +177,78 @@ class ChunkJsonParser {
 		await this.#expect('"');
 		const parts: string[] = [];
 		let output = "";
-		const append = (value: string): void => { output += value; if (output.length >= 64 * 1024) { parts.push(output); output = ""; } };
+		const append = (value: string): void => {
+			output += value;
+			if (output.length >= 64 * 1024) {
+				parts.push(output);
+				output = "";
+			}
+		};
 		while (true) {
-			if (!await this.#fill()) throw new SyntaxError("unexpected end of JSON snapshot");
+			if (!(await this.#fill())) throw new SyntaxError("unexpected end of JSON snapshot");
 			const start = this.#offset;
 			while (this.#offset < this.#text.length) {
 				const character = this.#text[this.#offset]!;
 				if (character === '"' || character === "\\" || character < " ") break;
 				this.#offset++;
 			}
-			if (this.#offset > start) { append(this.#text.slice(start, this.#offset)); continue; }
+			if (this.#offset > start) {
+				append(this.#text.slice(start, this.#offset));
+				continue;
+			}
 			const character = await this.#take();
 			if (character === '"') return parts.length === 0 ? output : `${parts.join("")}${output}`;
 			if (character < " ") throw new SyntaxError("unescaped control character in JSON snapshot");
 			switch (await this.#take()) {
-				case '"': append('"'); break; case "\\": append("\\"); break; case "/": append("/"); break;
-				case "b": append("\b"); break; case "f": append("\f"); break; case "n": append("\n"); break; case "r": append("\r"); break; case "t": append("\t"); break;
+				case '"':
+					append('"');
+					break;
+				case "\\":
+					append("\\");
+					break;
+				case "/":
+					append("/");
+					break;
+				case "b":
+					append("\b");
+					break;
+				case "f":
+					append("\f");
+					break;
+				case "n":
+					append("\n");
+					break;
+				case "r":
+					append("\r");
+					break;
+				case "t":
+					append("\t");
+					break;
 				case "u": {
-					let hex = ""; for (let index = 0; index < 4; index++) hex += await this.#take();
+					let hex = "";
+					for (let index = 0; index < 4; index++) hex += await this.#take();
 					if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new SyntaxError("invalid Unicode escape in JSON snapshot");
-					append(String.fromCharCode(Number.parseInt(hex, 16))); break;
+					append(String.fromCharCode(Number.parseInt(hex, 16)));
+					break;
 				}
-				default: throw new SyntaxError("invalid string escape in JSON snapshot");
+				default:
+					throw new SyntaxError("invalid string escape in JSON snapshot");
 			}
 		}
 	}
 
-	async #literal(expected: string): Promise<void> { for (const character of expected) await this.#expect(character); }
+	async #literal(expected: string): Promise<void> {
+		for (const character of expected) await this.#expect(character);
+	}
 	async #number(): Promise<number> {
 		let text = "";
-		while (true) { const character = await this.#peek(); if (character === undefined || /[\s,}\]]/.test(character)) break; text += await this.#take(); }
-		if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(text)) throw new SyntaxError("invalid number in JSON snapshot");
+		while (true) {
+			const character = await this.#peek();
+			if (character === undefined || /[\s,}\]]/.test(character)) break;
+			text += await this.#take();
+		}
+		if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(text))
+			throw new SyntaxError("invalid number in JSON snapshot");
 		return Number(text);
 	}
 }
@@ -178,7 +265,7 @@ export class RevisionStore {
 	#peakReadBufferedBytes = 0;
 
 	constructor(
-		private readonly sessionId: string,
+		readonly sessionId: string,
 		private readonly now: () => number = Date.now,
 		options?: { storageDir?: string },
 	) {
@@ -214,7 +301,7 @@ export class RevisionStore {
 		if (revision.payload) this.#memoryBytes += revision.bytes;
 		await this.#enforceMemory();
 		while (revisions.length > MAX_REVISIONS_PER_RESOURCE) {
-			const candidate = revisions.find((item) => item.pins.size === 0);
+			const candidate = revisions.find(item => item.pins.size === 0);
 			if (!candidate) break;
 			revisions.splice(revisions.indexOf(candidate), 1);
 			this.#drop(candidate);
@@ -223,21 +310,29 @@ export class RevisionStore {
 	}
 
 	async readRevision(resourceKind: string, resourceId: string, id: string): Promise<unknown> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) return undefined;
 		revision.lastAccessed = this.now();
 		if (revision.payload !== undefined) return JSON.parse(revision.payload);
-		return revision.chunks === undefined ? undefined : this.#parseChunks(revision.chunks, revision.chunkLengths ?? []);
+		return revision.chunks === undefined
+			? undefined
+			: this.#parseChunks(revision.chunks, revision.chunkLengths ?? []);
 	}
 	async revisionByteLength(resourceKind: string, resourceId: string, id: string): Promise<number | undefined> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) return undefined;
 		revision.lastAccessed = this.now();
 		return revision.bytes;
 	}
 
-	async readPage(resourceKind: string, resourceId: string, id: string, offset: number, targetBytes: number): Promise<{ items: unknown[]; complete: boolean } | undefined> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+	async readPage(
+		resourceKind: string,
+		resourceId: string,
+		id: string,
+		offset: number,
+		targetBytes: number,
+	): Promise<{ items: unknown[]; complete: boolean } | undefined> {
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) return undefined;
 		revision.lastAccessed = this.now();
 		if (!revision.index?.items) return undefined;
@@ -254,12 +349,22 @@ export class RevisionStore {
 		return { items, complete: offset + items.length >= revision.index.items.length };
 	}
 	/** Returns canonical root JSON in a UTF-8-safe bounded range without parsing it. */
-	async readRootRange(resourceKind: string, resourceId: string, id: string, offset: number, length: number): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+	async readRootRange(
+		resourceKind: string,
+		resourceId: string,
+		id: string,
+		offset: number,
+		length: number,
+	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision || offset < 0 || length <= 0) return undefined;
 		revision.lastAccessed = this.now();
 		const requestedStart = Math.min(offset, revision.bytes);
-		const source = await this.#readBytes(revision, requestedStart, Math.min(revision.bytes, requestedStart + length + 7));
+		const source = await this.#readBytes(
+			revision,
+			requestedStart,
+			Math.min(revision.bytes, requestedStart + length + 7),
+		);
 		const skipped = utf8ContinuationPrefixLength(source);
 		const start = requestedStart + skipped;
 		const body = source.subarray(skipped);
@@ -268,36 +373,69 @@ export class RevisionStore {
 		return { body: body.subarray(0, end).toString("utf8"), complete: start + end === revision.bytes, offset: start };
 	}
 
-	async readStringRange(resourceKind: string, resourceId: string, id: string, field: string, offset: number, length: number): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+	async readStringRange(
+		resourceKind: string,
+		resourceId: string,
+		id: string,
+		field: string,
+		offset: number,
+		length: number,
+	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) return undefined;
 		revision.lastAccessed = this.now();
 		const range = revision.index?.fields?.[field];
 		return range ? this.#readStringRange(revision, range, offset, length) : undefined;
 	}
-	async readIndexedStringRange(resourceKind: string, resourceId: string, id: string, itemId: string, field: string, offset: number, length: number): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+	async readIndexedStringRange(
+		resourceKind: string,
+		resourceId: string,
+		id: string,
+		itemId: string,
+		field: string,
+		offset: number,
+		length: number,
+	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) return undefined;
 		revision.lastAccessed = this.now();
-		const item = revision.index?.items?.find((candidate) => candidate.entryId === itemId);
+		const item = revision.index?.items?.find(candidate => candidate.entryId === itemId);
 		const range = item?.fields?.[field];
 		return range ? this.#readStringRange(revision, range, offset, length) : undefined;
 	}
-	async describeIndexedItem(resourceKind: string, resourceId: string, id: string, offset: number): Promise<{ itemId?: string; fields: string[] } | undefined> {
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+	async describeIndexedItem(
+		resourceKind: string,
+		resourceId: string,
+		id: string,
+		offset: number,
+	): Promise<{ itemId?: string; fields: string[] } | undefined> {
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		const item = revision?.index?.items?.[offset];
 		if (!item) return undefined;
-		return { itemId: item.entryId, fields: Object.entries(item.fields ?? {}).filter(([, range]) => range.isString).map(([field]) => field) };
+		return {
+			itemId: item.entryId,
+			fields: Object.entries(item.fields ?? {})
+				.filter(([, range]) => range.isString)
+				.map(([field]) => field),
+		};
 	}
-	async readTranscriptBodyRange(resourceId: string, id: string, entryId: string, offset: number, length: number): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
-		return await this.readIndexedStringRange("transcript", resourceId, id, entryId, "body", offset, length)
-			?? await this.readIndexedStringRange("transcript", resourceId, id, entryId, "content", offset, length);
+	async readTranscriptBodyRange(
+		resourceId: string,
+		id: string,
+		entryId: string,
+		offset: number,
+		length: number,
+	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
+		return (
+			(await this.readIndexedStringRange("transcript", resourceId, id, entryId, "body", offset, length)) ??
+			(await this.readIndexedStringRange("transcript", resourceId, id, entryId, "content", offset, length))
+		);
 	}
 
 	async pin(cursorId: string, resourceKind: string, resourceId: string, id: string): Promise<void> {
 		if (this.#pinIndex.has(cursorId)) return;
 		if (this.#pinIndex.size >= MAX_PINNED_REVISIONS) throw new RevisionStoreError("snapshot_capacity_exceeded");
-		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find((item) => item.id === id);
+		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) throw new RevisionStoreError("snapshot_capacity_exceeded", "snapshot is unavailable");
 		revision.pins.add(cursorId);
 		this.#pinIndex.set(cursorId, revision);
@@ -333,16 +471,27 @@ export class RevisionStore {
 		if (this.#directory) await rm(this.#directory, { recursive: true, force: true });
 	}
 
-	get pinnedCount(): number { return this.#pinIndex.size; }
-	get memoryBytes(): number { return this.#memoryBytes; }
+	get pinnedCount(): number {
+		return this.#pinIndex.size;
+	}
+	get memoryBytes(): number {
+		return this.#memoryBytes;
+	}
 	/** Test-only accounting for the bounded serializer's staging buffer. */
-	get peakBufferedBytes(): number { return this.#peakBufferedBytes; }
+	get peakBufferedBytes(): number {
+		return this.#peakBufferedBytes;
+	}
 	/** Test-only accounting for a spilled reader's raw chunk and decoded-text buffers. */
-	get peakReadBufferedBytes(): number { return this.#peakReadBufferedBytes; }
+	get peakReadBufferedBytes(): number {
+		return this.#peakReadBufferedBytes;
+	}
 
 	async #enforceMemory(): Promise<void> {
 		while (this.#memoryBytes > MAX_MEMORY_BYTES) {
-			const candidates = [...this.#resources.values()].flat().filter((item) => item.payload).sort((a, b) => a.pins.size - b.pins.size || a.lastAccessed - b.lastAccessed);
+			const candidates = [...this.#resources.values()]
+				.flat()
+				.filter(item => item.payload)
+				.sort((a, b) => a.pins.size - b.pins.size || a.lastAccessed - b.lastAccessed);
 			const candidate = candidates[0];
 			if (!candidate) break;
 			candidate.payload = undefined;
@@ -368,13 +517,27 @@ export class RevisionStore {
 			chunkLengths.push(data.length);
 		};
 		const append = async (text: string) => {
-			for (let offset = 0; offset < text.length;) {
+			for (let offset = 0; offset < text.length; ) {
 				let remaining = CHUNK_BYTES - Buffer.byteLength(buffer);
-				if (remaining === 0) { await flush(); remaining = CHUNK_BYTES; }
+				if (remaining === 0) {
+					await flush();
+					remaining = CHUNK_BYTES;
+				}
 				let end = Math.min(text.length, offset + Math.max(1, remaining));
 				while (end > offset && Buffer.byteLength(text.slice(offset, end)) > remaining) end--;
-				if (end > offset && end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
-				if (end === offset) { await flush(); continue; }
+				if (
+					end > offset &&
+					end < text.length &&
+					text.charCodeAt(end - 1) >= 0xd800 &&
+					text.charCodeAt(end - 1) <= 0xdbff &&
+					text.charCodeAt(end) >= 0xdc00 &&
+					text.charCodeAt(end) <= 0xdfff
+				)
+					end--;
+				if (end === offset) {
+					await flush();
+					continue;
+				}
 				const part = text.slice(offset, end);
 				buffer += part;
 				hash.update(part);
@@ -385,7 +548,10 @@ export class RevisionStore {
 			}
 		};
 		const index: RevisionIndex = {};
-		const root = value && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function" ? (value as { toJSON: (key: string) => unknown }).toJSON("") : value;
+		const root =
+			value && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function"
+				? (value as { toJSON: (key: string) => unknown }).toJSON("")
+				: value;
 		if (Array.isArray(root)) {
 			index.items = [];
 			await append("[");
@@ -398,13 +564,25 @@ export class RevisionStore {
 			await append("]");
 		} else if (root && typeof root === "object") {
 			index.fields = {};
-			await append("{"); let first = true;
+			await append("{");
+			let first = true;
 			for (const [key, child] of Object.entries(root as Record<string, unknown>)) {
 				if (child === undefined || typeof child === "function" || typeof child === "symbol") continue;
-				if (!first) await append(","); first = false;
-				await this.#encodeString(key, append); await append(":");
-				const start = bytes; await this.#encode(child, append, false); index.fields[key] = { start, end: bytes, ...(isPlainJsonString(child) ? { plainStringBytes: Buffer.byteLength(child), isString: true } : typeof child === "string" ? { isString: true } : {}) };
-
+				if (!first) await append(",");
+				first = false;
+				await this.#encodeString(key, append);
+				await append(":");
+				const start = bytes;
+				await this.#encode(child, append, false);
+				index.fields[key] = {
+					start,
+					end: bytes,
+					...(isPlainJsonString(child)
+						? { plainStringBytes: Buffer.byteLength(child), isString: true }
+						: typeof child === "string"
+							? { isString: true }
+							: {}),
+				};
 			}
 			await append("}");
 		} else await this.#encode(root, append, false);
@@ -413,7 +591,15 @@ export class RevisionStore {
 		const manifest = join(directory, "manifests", `${revisionHash}.json`);
 		const manifestChunks = chunks.map((hash, index) => ({ hash, length: chunkLengths[index]! }));
 		await this.#writeAtomic(manifest, Buffer.from(JSON.stringify({ chunks: manifestChunks, index })));
-		return { hash: revisionHash, bytes, payload: bytes <= MAX_MEMORY_BYTES ? await this.#readChunks(chunks, chunkLengths) : undefined, manifest, chunks, chunkLengths, index };
+		return {
+			hash: revisionHash,
+			bytes,
+			payload: bytes <= MAX_MEMORY_BYTES ? await this.#readChunks(chunks, chunkLengths) : undefined,
+			manifest,
+			chunks,
+			chunkLengths,
+			index,
+		};
 	}
 
 	async #encode(value: unknown, append: (text: string) => Promise<void>, inArray: boolean): Promise<void> {
@@ -422,11 +608,16 @@ export class RevisionStore {
 		if (typeof value === "number") return append(Number.isFinite(value) ? String(value) : "null");
 		if (typeof value === "boolean") return append(value ? "true" : "false");
 		if (typeof value === "bigint") throw new TypeError("Do not know how to serialize a BigInt");
-		if (value === undefined || typeof value === "function" || typeof value === "symbol") return append(inArray ? "null" : "null");
-		if (typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") return this.#encode((value as { toJSON: (key: string) => unknown }).toJSON(""), append, inArray);
+		if (value === undefined || typeof value === "function" || typeof value === "symbol")
+			return append(inArray ? "null" : "null");
+		if (typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function")
+			return this.#encode((value as { toJSON: (key: string) => unknown }).toJSON(""), append, inArray);
 		if (Array.isArray(value)) {
 			await append("[");
-			for (let index = 0; index < value.length; index++) { if (index) await append(","); await this.#encode(value[index], append, true); }
+			for (let index = 0; index < value.length; index++) {
+				if (index) await append(",");
+				await this.#encode(value[index], append, true);
+			}
 			return append("]");
 		}
 		if (typeof value === "object") {
@@ -457,26 +648,50 @@ export class RevisionStore {
 			else if (code === 0x0a) output += "\\n";
 			else if (code === 0x0d) output += "\\r";
 			else if (code === 0x09) output += "\\t";
-			else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) output += value[index] + value[++index];
-			else if (code < 0x20 || (code >= 0xd800 && code <= 0xdfff)) output += `\\u${code.toString(16).padStart(4, "0")}`;
+			else if (
+				code >= 0xd800 &&
+				code <= 0xdbff &&
+				index + 1 < value.length &&
+				value.charCodeAt(index + 1) >= 0xdc00 &&
+				value.charCodeAt(index + 1) <= 0xdfff
+			)
+				output += value[index] + value[++index];
+			else if (code < 0x20 || (code >= 0xd800 && code <= 0xdfff))
+				output += `\\u${code.toString(16).padStart(4, "0")}`;
 			else output += value[index];
-			if (output.length >= 64 * 1024) { await append(output); output = ""; }
+			if (output.length >= 64 * 1024) {
+				await append(output);
+				output = "";
+			}
 		}
 		if (output) await append(output);
 		await append('"');
 	}
 
-	async #readStringRange(revision: Revision, range: { start: number; end: number; plainStringBytes?: number }, offset: number, length: number): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
+	async #readStringRange(
+		revision: Revision,
+		range: { start: number; end: number; plainStringBytes?: number },
+		offset: number,
+		length: number,
+	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
 		if (offset < 0 || length <= 0) return undefined;
 		if (range.plainStringBytes !== undefined) {
 			const requestedStart = Math.min(offset, range.plainStringBytes);
-			const source = await this.#readBytes(revision, range.start + 1 + requestedStart, range.start + 1 + Math.min(range.plainStringBytes, requestedStart + length + 7));
+			const source = await this.#readBytes(
+				revision,
+				range.start + 1 + requestedStart,
+				range.start + 1 + Math.min(range.plainStringBytes, requestedStart + length + 7),
+			);
 			const skipped = utf8ContinuationPrefixLength(source);
 			const start = requestedStart + skipped;
 			const body = source.subarray(skipped);
 			const end = utf8BoundaryAtOrBefore(body, Math.min(body.length, length));
 			if (end === 0 && start < range.plainStringBytes) return undefined;
-			return { body: body.subarray(0, end).toString("utf8"), complete: start + end === range.plainStringBytes, offset: start };
+			return {
+				body: body.subarray(0, end).toString("utf8"),
+				complete: start + end === range.plainStringBytes,
+				offset: start,
+			};
 		}
 		const value = JSON.parse(await this.#readRange(revision, range));
 		if (typeof value !== "string") return undefined;
@@ -487,19 +702,43 @@ export class RevisionStore {
 		return { body: bytes.subarray(start, end).toString("utf8"), complete: end === bytes.length, offset: start };
 	}
 
-	async #encodeIndexedItem(value: unknown, append: (text: string) => Promise<void>, position: () => number): Promise<{ entryId?: string; fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }> }> {
-		const root = value && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function" ? (value as { toJSON: (key: string) => unknown }).toJSON("") : value;
-		if (!root || typeof root !== "object" || Array.isArray(root)) { await this.#encode(root, append, true); return {}; }
+	async #encodeIndexedItem(
+		value: unknown,
+		append: (text: string) => Promise<void>,
+		position: () => number,
+	): Promise<{
+		entryId?: string;
+		fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }>;
+	}> {
+		const root =
+			value && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function"
+				? (value as { toJSON: (key: string) => unknown }).toJSON("")
+				: value;
+		if (!root || typeof root !== "object" || Array.isArray(root)) {
+			await this.#encode(root, append, true);
+			return {};
+		}
 		const fields: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }> = {};
 		let entryId: string | undefined;
-		await append("{"); let first = true;
+		await append("{");
+		let first = true;
 		for (const [key, child] of Object.entries(root as Record<string, unknown>)) {
 			if (child === undefined || typeof child === "function" || typeof child === "symbol") continue;
-			if (!first) await append(","); first = false;
-			await this.#encodeString(key, append); await append(":");
+			if (!first) await append(",");
+			first = false;
+			await this.#encodeString(key, append);
+			await append(":");
 			const start = position();
 			await this.#encode(child, append, false);
-			fields[key] = { start, end: position(), ...(isPlainJsonString(child) ? { plainStringBytes: Buffer.byteLength(child), isString: true } : typeof child === "string" ? { isString: true } : {}) };
+			fields[key] = {
+				start,
+				end: position(),
+				...(isPlainJsonString(child)
+					? { plainStringBytes: Buffer.byteLength(child), isString: true }
+					: typeof child === "string"
+						? { isString: true }
+						: {}),
+			};
 			if (key === "id") entryId = String(child ?? "");
 		}
 		await append("}");
@@ -508,29 +747,38 @@ export class RevisionStore {
 
 	async #readBytes(revision: Revision, start: number, end: number): Promise<Buffer> {
 		if (revision.payload !== undefined) return Buffer.from(revision.payload).subarray(start, end);
-		if (!this.#directory || !revision.chunks || !revision.chunkLengths) throw new SyntaxError("snapshot range is unavailable");
-		const values: Buffer[] = []; let position = 0;
+		if (!this.#directory || !revision.chunks || !revision.chunkLengths)
+			throw new SyntaxError("snapshot range is unavailable");
+		const values: Buffer[] = [];
+		let position = 0;
 		for (const [index, chunk] of revision.chunks.entries()) {
-			const length = revision.chunkLengths[index]!; const chunkEnd = position + length;
+			const length = revision.chunkLengths[index]!;
+			const chunkEnd = position + length;
 			if (chunkEnd > start && position < end) {
 				const data = await readFile(join(this.#directory, "objects", chunk));
-				if (data.length !== length || createHash("sha256").update(data).digest("hex") !== chunk) throw new SyntaxError("snapshot chunk does not match manifest");
-				const sliceStart = Math.max(0, start - position); const sliceEnd = Math.min(length, end - position);
-				values.push(data.subarray(sliceStart, sliceEnd)); this.#peakReadBufferedBytes = Math.max(this.#peakReadBufferedBytes, data.length + sliceEnd - sliceStart);
+				if (data.length !== length || createHash("sha256").update(data).digest("hex") !== chunk)
+					throw new SyntaxError("snapshot chunk does not match manifest");
+				const sliceStart = Math.max(0, start - position);
+				const sliceEnd = Math.min(length, end - position);
+				values.push(data.subarray(sliceStart, sliceEnd));
+				this.#peakReadBufferedBytes = Math.max(this.#peakReadBufferedBytes, data.length + sliceEnd - sliceStart);
 			}
 			position = chunkEnd;
 			if (position >= end) break;
 		}
 		return Buffer.concat(values);
 	}
-	async #readRange(revision: Revision, range: { start: number; end: number }): Promise<string> { return (await this.#readBytes(revision, range.start, range.end)).toString("utf8"); }
+	async #readRange(revision: Revision, range: { start: number; end: number }): Promise<string> {
+		return (await this.#readBytes(revision, range.start, range.end)).toString("utf8");
+	}
 
 	async #readChunks(chunks: string[], lengths: number[]): Promise<string | undefined> {
 		if (!this.#directory || chunks.length === 0) return undefined;
 		const values: string[] = [];
 		for (const [index, chunk] of chunks.entries()) {
 			const data = await readFile(join(this.#directory, "objects", chunk));
-			if (data.length !== lengths[index] || createHash("sha256").update(data).digest("hex") !== chunk) throw new SyntaxError("snapshot chunk does not match manifest");
+			if (data.length !== lengths[index] || createHash("sha256").update(data).digest("hex") !== chunk)
+				throw new SyntaxError("snapshot chunk does not match manifest");
 			values.push(data.toString("utf8"));
 		}
 		return values.join("");
@@ -538,7 +786,9 @@ export class RevisionStore {
 
 	async #parseChunks(chunks: string[], lengths: number[]): Promise<unknown> {
 		if (!this.#directory || chunks.length === 0) return undefined;
-		return new ChunkJsonParser(this.#directory, chunks, lengths, (bytes) => { this.#peakReadBufferedBytes = Math.max(this.#peakReadBufferedBytes, bytes); }).parse();
+		return new ChunkJsonParser(this.#directory, chunks, lengths, bytes => {
+			this.#peakReadBufferedBytes = Math.max(this.#peakReadBufferedBytes, bytes);
+		}).parse();
 	}
 
 	async #spillDirectory(): Promise<string> {
@@ -552,13 +802,19 @@ export class RevisionStore {
 	async #writeAtomic(file: string, data: Buffer): Promise<void> {
 		const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
 		const handle = await open(temporary, "w", 0o600);
-		try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
+		try {
+			await handle.writeFile(data);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
 		await chmod(temporary, 0o600);
 		await rename(temporary, file);
 	}
 
 	#retainSpill(revision: Revision): void {
-		if (revision.manifest) this.#manifestRefs.set(revision.manifest, (this.#manifestRefs.get(revision.manifest) ?? 0) + 1);
+		if (revision.manifest)
+			this.#manifestRefs.set(revision.manifest, (this.#manifestRefs.get(revision.manifest) ?? 0) + 1);
 		for (const chunk of revision.chunks ?? []) this.#chunkRefs.set(chunk, (this.#chunkRefs.get(chunk) ?? 0) + 1);
 	}
 
@@ -572,22 +828,46 @@ export class RevisionStore {
 	#releaseChunk(chunk: string): void {
 		const refs = (this.#chunkRefs.get(chunk) ?? 1) - 1;
 		if (refs > 0) this.#chunkRefs.set(chunk, refs);
-		else { this.#chunkRefs.delete(chunk); if (this.#directory) void unlink(join(this.#directory, "objects", chunk)).catch(() => undefined); }
+		else {
+			this.#chunkRefs.delete(chunk);
+			if (this.#directory) void unlink(join(this.#directory, "objects", chunk)).catch(() => undefined);
+		}
 	}
 
 	#releaseManifest(manifest: string): void {
 		const refs = (this.#manifestRefs.get(manifest) ?? 1) - 1;
 		if (refs > 0) this.#manifestRefs.set(manifest, refs);
-		else { this.#manifestRefs.delete(manifest); void unlink(manifest).catch(() => undefined); }
+		else {
+			this.#manifestRefs.delete(manifest);
+			void unlink(manifest).catch(() => undefined);
+		}
 	}
 
 	async #discardUnreferenced(chunks: string[], manifest: string): Promise<void> {
-		await Promise.all(chunks.filter((chunk) => !this.#chunkRefs.has(chunk)).map((chunk) => this.#directory ? unlink(join(this.#directory, "objects", chunk)).catch(() => undefined) : undefined));
+		await Promise.all(
+			chunks
+				.filter(chunk => !this.#chunkRefs.has(chunk))
+				.map(chunk =>
+					this.#directory ? unlink(join(this.#directory, "objects", chunk)).catch(() => undefined) : undefined,
+				),
+		);
 		if (!this.#manifestRefs.has(manifest)) await unlink(manifest).catch(() => undefined);
 	}
 }
 
-function isPlainJsonString(value: unknown): value is string { return typeof value === "string" && !/["\\\u0000-\u001f\ud800-\udfff]/.test(value); }
-function utf8BoundaryAtOrAfter(bytes: Buffer, offset: number): number { while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++; return offset; }
-function utf8BoundaryAtOrBefore(bytes: Buffer, offset: number): number { while (offset > 0 && offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset--; return offset; }
-function utf8ContinuationPrefixLength(bytes: Buffer): number { let offset = 0; while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++; return offset; }
+function isPlainJsonString(value: unknown): value is string {
+	return typeof value === "string" && !/["\\\u0000-\u001f\ud800-\udfff]/.test(value);
+}
+function utf8BoundaryAtOrAfter(bytes: Buffer, offset: number): number {
+	while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++;
+	return offset;
+}
+function utf8BoundaryAtOrBefore(bytes: Buffer, offset: number): number {
+	while (offset > 0 && offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset--;
+	return offset;
+}
+function utf8ContinuationPrefixLength(bytes: Buffer): number {
+	let offset = 0;
+	while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++;
+	return offset;
+}

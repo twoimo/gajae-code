@@ -54,24 +54,24 @@ use crate::{
 #[derive(Debug)]
 pub struct ServerConfig {
 	/// The session this endpoint belongs to.
-	pub session_id: String,
+	pub session_id:         String,
 	/// The per-session token clients must present (as `?token=` on connect).
-	pub token: String,
+	pub token:              String,
 	/// Bind host. Defaults to loopback via [`ServerConfig::new`].
-	pub host: IpAddr,
+	pub host:               IpAddr,
 	/// Bind port. `0` selects an ephemeral port; the bound port is read back.
-	pub port: u16,
+	pub port:               u16,
 	/// Whether an SDK workflow-gate resolver is available for ask round-trips.
 	/// When `false`, asks are notify-only and replies are rejected.
 	pub resolver_available: bool,
 	/// Optional GJC state root. When set, the server writes/removes the endpoint
 	/// discovery file at `<state_root>/sdk/<session_id>.json`.
-	pub state_root: Option<PathBuf>,
+	pub state_root:         Option<PathBuf>,
 	/// When `true`, accepted client replies are forwarded to the host (via
 	/// [`ServerHandle::take_reply_receiver`]) instead of resolving internally,
 	/// so the host resolves the real gate then calls
 	/// [`ServerHandle::resolve_client`].
-	pub forward_replies: bool,
+	pub forward_replies:    bool,
 }
 
 impl ServerConfig {
@@ -79,13 +79,13 @@ impl ServerConfig {
 	#[must_use]
 	pub fn new(session_id: impl Into<String>, token: impl Into<String>) -> Self {
 		Self {
-			session_id: session_id.into(),
-			token: token.into(),
-			host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-			port: 0,
+			session_id:         session_id.into(),
+			token:              token.into(),
+			host:               IpAddr::V4(Ipv4Addr::LOCALHOST),
+			port:               0,
 			resolver_available: true,
-			state_root: None,
-			forward_replies: false,
+			state_root:         None,
+			forward_replies:    false,
 		}
 	}
 }
@@ -130,7 +130,7 @@ struct Delivered {
 
 #[derive(Debug, Clone)]
 struct Connection {
-	generation: String,
+	generation:   String,
 	capabilities: Vec<String>,
 	negotiation:  Negotiation,
 	delivered:    Option<Delivered>,
@@ -164,16 +164,16 @@ type AckFinish = (AskSelectedAckOutcome, Option<FinishedAck>);
 #[derive(Debug)]
 struct AckPending {
 	commit_key: String,
-	origin: Option<AckOrigin>,
+	origin:     Option<AckOrigin>,
 	dispatched: bool,
-	waiter: oneshot::Sender<AskSelectedAckOutcome>,
+	waiter:     oneshot::Sender<AskSelectedAckOutcome>,
 }
 
 #[derive(Debug, Default)]
 struct AckRegistry {
-	pending: HashMap<String, AckPending>,
-	commits: HashMap<String, String>,
-	terminal: HashMap<String, (AskSelectedAckOutcome, Instant)>,
+	pending:   HashMap<String, AckPending>,
+	commits:   HashMap<String, String>,
+	terminal:  HashMap<String, (AskSelectedAckOutcome, Instant)>,
 	completed: HashMap<String, (String, AskSelectedAckOutcome, Instant)>,
 }
 
@@ -273,42 +273,44 @@ impl AckRegistry {
 
 #[derive(Debug)]
 struct ServerState {
-	token: String,
-	registry: Mutex<ActionRegistry>,
-	tx: broadcast::Sender<ServerMessage>,
-	resolver_available: AtomicBool,
+	token:               String,
+	registry:            Mutex<ActionRegistry>,
+	tx:                  broadcast::Sender<ServerMessage>,
+	resolver_available:  AtomicBool,
 	/// Present in forward mode: accepted replies are sent here for the host.
-	reply_tx: Option<mpsc::UnboundedSender<crate::actions::ClaimedReply>>,
+	reply_tx:            Option<mpsc::UnboundedSender<crate::actions::ClaimedReply>>,
 	/// Always present: inbound free-text injections / in-thread config commands
 	/// forwarded to the host (token-authorized).
-	inbound_tx: mpsc::UnboundedSender<ClientMessage>,
+	inbound_tx:          mpsc::UnboundedSender<ClientMessage>,
 	/// v3 frames, kept raw so the SDK host owns their protocol semantics.
-	frame_tx: mpsc::UnboundedSender<(String, String)>,
+	frame_tx:            mpsc::UnboundedSender<(String, String)>,
 	/// Connection lifecycle notifications for provider lease cleanup.
-	close_tx: mpsc::UnboundedSender<String>,
-	connections: Mutex<HashMap<String, Connection>>,
-	acks: Mutex<AckRegistry>,
-	closing: AtomicBool,
+	close_tx:            mpsc::UnboundedSender<String>,
+	connections:         Mutex<HashMap<String, Connection>>,
+	acks:                Mutex<AckRegistry>,
+	closing:             AtomicBool,
 	/// Buffered last readiness frame, replayed to late-connecting clients so a
 	/// lifecycle control client can wait for readiness deterministically.
-	session_ready: Mutex<Option<SessionReady>>,
+	session_ready:       Mutex<Option<SessionReady>>,
 	connection_sequence: AtomicU64,
 }
+
+type FrameReceiver = mpsc::UnboundedReceiver<(String, String)>;
 
 /// Handle to a running server. Dropping it does not stop the server; call
 /// [`ServerHandle::stop`] (idempotent) for deterministic shutdown.
 #[derive(Debug, Clone)]
 pub struct ServerHandle {
-	addr: SocketAddr,
-	state: Arc<ServerState>,
-	cancel: CancellationToken,
+	addr:        SocketAddr,
+	state:       Arc<ServerState>,
+	cancel:      CancellationToken,
 	accept_task: Arc<tokio::task::JoinHandle<()>>,
-	session_id: String,
-	state_root: Option<PathBuf>,
+	session_id:  String,
+	state_root:  Option<PathBuf>,
 	reply_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::actions::ClaimedReply>>>>,
-	inbound_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ClientMessage>>>>,
-	frame_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<(String, String)>>>>,
-	close_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
+	inbound_rx:  Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ClientMessage>>>>,
+	frame_rx:    Arc<Mutex<Option<FrameReceiver>>>,
+	close_rx:    Arc<Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
 }
 
 impl ServerHandle {
@@ -417,13 +419,15 @@ impl ServerHandle {
 		self.frame_rx.lock().take()
 	}
 
-	/// Take connection-close notifications paired with the disconnected connection id.
+	/// Take connection-close notifications paired with the disconnected
+	/// connection id.
 	#[must_use]
 	pub fn take_close_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
 		self.close_rx.lock().take()
 	}
 
-	/// Send raw JSON to one connected client. Returns false after that client has disconnected.
+	/// Send raw JSON to one connected client. Returns false after that client
+	/// has disconnected.
 	pub fn send_to(&self, connection_id: &str, json: String) -> bool {
 		let sender = self
 			.state
@@ -650,10 +654,12 @@ impl ServerHandle {
 				return AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Cancelled };
 			}
 			acks.commits.insert(commit_key.clone(), request_id.clone());
-			acks.pending.insert(
-				request_id.clone(),
-				AckPending { commit_key, origin: origin.clone(), dispatched: false, waiter: tx },
-			);
+			acks.pending.insert(request_id.clone(), AckPending {
+				commit_key,
+				origin: origin.clone(),
+				dispatched: false,
+				waiter: tx,
+			});
 		}
 		let (dispatch_tx, dispatch_rx) = oneshot::channel();
 		let direct_tx = origin.as_ref().and_then(|(id, generation)| {
@@ -934,7 +940,7 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 	let (mut write, mut read) = ws.split();
 	let hello = ServerMessage::Hello(ServerHello {
 		protocol_version: PROTOCOL_VERSION,
-		capabilities: vec![
+		capabilities:     vec![
 			capabilities::THREADED.into(),
 			capabilities::CONTEXT.into(),
 			capabilities::TURN_STREAM.into(),
@@ -945,7 +951,7 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 			capabilities::ASK_CONTROLS_V1.into(),
 			capabilities::ASK_SELECTED_ACK_V1.into(),
 		],
-		connection_id: Some(connection_id.clone()),
+		connection_id:    Some(connection_id.clone()),
 	});
 	if send_msg(&mut write, &hello).await.is_err() {
 		return;
@@ -998,7 +1004,7 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 							sent
 						},
 						DirectCommand::RawJson(json) => {
-							write.send(Message::Text(json.into())).await.is_ok()
+							write.send(Message::Text(json)).await.is_ok()
 						},
 						DirectCommand::ReevaluateAsk => true,
 					};
@@ -1072,7 +1078,7 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 						}
 					},
 					DirectCommand::RawJson(json) => {
-						if write.send(Message::Text(json.into())).await.is_err() {
+						if write.send(Message::Text(json)).await.is_err() {
 							break;
 						}
 					},
@@ -1420,13 +1426,13 @@ mod tests {
 
 	fn ask(id: &str) -> ActionNeeded {
 		ActionNeeded {
-			id: id.into(),
-			kind: ActionKind::Ask,
+			id:         id.into(),
+			kind:       ActionKind::Ask,
 			session_id: "s".into(),
-			question: Some("Proceed?".into()),
-			options: Some(vec!["Yes".into(), "No".into()]),
-			controls: vec![],
-			summary: None,
+			question:   Some("Proceed?".into()),
+			options:    Some(vec!["Yes".into(), "No".into()]),
+			controls:   vec![],
+			summary:    None,
 		}
 	}
 
@@ -1517,7 +1523,6 @@ mod tests {
 		}
 	}
 
-
 	async fn connect(
 		handle: &ServerHandle,
 		token: &str,
@@ -1579,9 +1584,9 @@ mod tests {
 		);
 
 		let reply = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "secret".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "secret".into(),
 			idempotency_key: None,
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -1961,9 +1966,9 @@ mod tests {
 		wait_for_clients(&handle, 1).await;
 
 		let reply = Reply {
-			id: "ghost".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "secret".into(),
+			id:              "ghost".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "secret".into(),
 			idempotency_key: None,
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -2001,20 +2006,17 @@ mod tests {
 
 		let mut ws = connect(&handle, "secret").await;
 		let hello = next_server_hello(&mut ws).await;
-		assert_eq!(
-			hello.capabilities,
-			vec![
-				capabilities::THREADED,
-				capabilities::CONTEXT,
-				capabilities::TURN_STREAM,
-				capabilities::IMAGES,
-				capabilities::CONFIG,
-				capabilities::CLIENT_PING_PONG,
-				capabilities::SESSION_READY,
-				capabilities::ASK_CONTROLS_V1,
-				capabilities::ASK_SELECTED_ACK_V1,
-			]
-		);
+		assert_eq!(hello.capabilities, vec![
+			capabilities::THREADED,
+			capabilities::CONTEXT,
+			capabilities::TURN_STREAM,
+			capabilities::IMAGES,
+			capabilities::CONFIG,
+			capabilities::CLIENT_PING_PONG,
+			capabilities::SESSION_READY,
+			capabilities::ASK_CONTROLS_V1,
+			capabilities::ASK_SELECTED_ACK_V1,
+		]);
 
 		match next_server_msg(&mut ws).await {
 			ServerMessage::ActionNeeded(a) => assert_eq!(a.id, "a1"),
@@ -2094,9 +2096,9 @@ mod tests {
 		let _needed = next_server_msg(&mut ws).await;
 
 		let reply = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(1),
-			token: "secret".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(1),
+			token:           "secret".into(),
 			idempotency_key: None,
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -2134,7 +2136,7 @@ mod tests {
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::Hello(ClientHello {
 				protocol_version: PROTOCOL_VERSION,
-				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+				capabilities:     vec![capabilities::ASK_SELECTED_ACK_V1.into()],
 			}))
 			.unwrap(),
 		))
@@ -2144,9 +2146,9 @@ mod tests {
 		handle.register_ask(ask("a1"), true);
 		let _ = next_server_msg(&mut ws).await;
 		let reply = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "secret".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "secret".into(),
 			idempotency_key: Some("k1".into()),
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -2154,9 +2156,9 @@ mod tests {
 			.unwrap();
 		let claim = replies.recv().await.expect("claimed reply");
 		let request = AskSelectedAckRequest::Live {
-			request_id: "r1".into(),
-			commit_key: "c1".into(),
-			action_id: "a1".into(),
+			request_id:  "r1".into(),
+			commit_key:  "c1".into(),
+			action_id:   "a1".into(),
 			deadline_at: (std::time::SystemTime::now()
 				.duration_since(std::time::UNIX_EPOCH)
 				.unwrap()
@@ -2182,7 +2184,7 @@ mod tests {
 					crate::protocol::AskSelectedAckResult {
 						request_id: "r1".into(),
 						commit_key: "c1".into(),
-						outcome: AskSelectedAckOutcome::Delivered { message_id: 99 },
+						outcome:    AskSelectedAckOutcome::Delivered { message_id: 99 },
 					},
 				))
 				.unwrap(),
@@ -2196,7 +2198,7 @@ mod tests {
 				crate::protocol::AskSelectedAckResult {
 					request_id: "r1".into(),
 					commit_key: "c1".into(),
-					outcome: AskSelectedAckOutcome::Delivered { message_id: 42 },
+					outcome:    AskSelectedAckOutcome::Delivered { message_id: 42 },
 				},
 			))
 			.unwrap(),
@@ -2220,7 +2222,7 @@ mod tests {
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::Hello(ClientHello {
 				protocol_version: PROTOCOL_VERSION,
-				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+				capabilities:     vec![capabilities::ASK_SELECTED_ACK_V1.into()],
 			}))
 			.unwrap(),
 		))
@@ -2230,9 +2232,9 @@ mod tests {
 		let _ = next_server_msg(&mut ws).await;
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::Reply(Reply {
-				id: "a1".into(),
-				answer: ReplyAnswer::Index(0),
-				token: "secret".into(),
+				id:              "a1".into(),
+				answer:          ReplyAnswer::Index(0),
+				token:           "secret".into(),
 				idempotency_key: Some("k1".into()),
 			}))
 			.unwrap(),
@@ -2245,27 +2247,23 @@ mod tests {
 			let receipt = claim.reply_receipt_id.clone();
 			tokio::spawn(async move {
 				handle
-					.request_ask_selected_ack(
-						&receipt,
-						AskSelectedAckRequest::Live {
-							request_id: "disconnect-request".into(),
-							commit_key: "disconnect-commit".into(),
-							action_id: "a1".into(),
-							deadline_at: (std::time::SystemTime::now()
-								.duration_since(std::time::UNIX_EPOCH)
-								.unwrap()
-								.as_millis() + 5_000) as i64,
-						},
-					)
+					.request_ask_selected_ack(&receipt, AskSelectedAckRequest::Live {
+						request_id:  "disconnect-request".into(),
+						commit_key:  "disconnect-commit".into(),
+						action_id:   "a1".into(),
+						deadline_at: (std::time::SystemTime::now()
+							.duration_since(std::time::UNIX_EPOCH)
+							.unwrap()
+							.as_millis() + 5_000) as i64,
+					})
 					.await
 			})
 		};
 		assert!(matches!(next_server_msg(&mut ws).await, ServerMessage::AskSelectedAckRequest(_)));
 		ws.close(None).await.unwrap();
-		assert_eq!(
-			task.await.unwrap(),
-			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::OriginDisconnected }
-		);
+		assert_eq!(task.await.unwrap(), AskSelectedAckOutcome::Unknown {
+			reason: AskSelectedAckUnknownReason::OriginDisconnected,
+		});
 		handle.stop();
 	}
 
@@ -2277,7 +2275,7 @@ mod tests {
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::Hello(ClientHello {
 				protocol_version: PROTOCOL_VERSION,
-				capabilities: vec![capabilities::ASK_SELECTED_ACK_V1.into()],
+				capabilities:     vec![capabilities::ASK_SELECTED_ACK_V1.into()],
 			}))
 			.unwrap(),
 		))
@@ -2290,10 +2288,10 @@ mod tests {
 			tokio::spawn(async move {
 				handle
 					.request_recovered_ask_selected_ack(AskSelectedAckRequest::Recovery {
-						request_id: "shutdown-request".into(),
-						commit_key: "shutdown-commit".into(),
-						session_id: "s".into(),
-						action_id: "a1".into(),
+						request_id:  "shutdown-request".into(),
+						commit_key:  "shutdown-commit".into(),
+						session_id:  "s".into(),
+						action_id:   "a1".into(),
 						deadline_at: (std::time::SystemTime::now()
 							.duration_since(std::time::UNIX_EPOCH)
 							.unwrap()
@@ -2304,18 +2302,17 @@ mod tests {
 		};
 		assert!(matches!(next_server_msg(&mut ws).await, ServerMessage::AskSelectedAckRequest(_)));
 		handle.stop();
-		assert_eq!(
-			task.await.unwrap(),
-			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::Shutdown }
-		);
+		assert_eq!(task.await.unwrap(), AskSelectedAckOutcome::Unknown {
+			reason: AskSelectedAckUnknownReason::Shutdown,
+		});
 		assert_eq!(
 			handle
 				.request_ack(
 					AskSelectedAckRequest::Recovery {
-						request_id: "after-stop-request".into(),
-						commit_key: "after-stop-commit".into(),
-						session_id: "s".into(),
-						action_id: "a2".into(),
+						request_id:  "after-stop-request".into(),
+						commit_key:  "after-stop-commit".into(),
+						session_id:  "s".into(),
+						action_id:   "a2".into(),
 						deadline_at: (std::time::SystemTime::now()
 							.duration_since(std::time::UNIX_EPOCH)
 							.unwrap()
@@ -2347,9 +2344,9 @@ mod tests {
 		handle.register_ask(ask("a1"), true);
 		let _ = next_server_msg(&mut ws).await;
 		let reply = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "secret".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "secret".into(),
 			idempotency_key: None,
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -2357,20 +2354,16 @@ mod tests {
 			.unwrap();
 		let claim = replies.recv().await.expect("claimed reply");
 		let outcome = handle
-			.request_ask_selected_ack(
-				&claim.reply_receipt_id,
-				AskSelectedAckRequest::Live {
-					request_id: "r1".into(),
-					commit_key: "c1".into(),
-					action_id: "a1".into(),
-					deadline_at: 123,
-				},
-			)
+			.request_ask_selected_ack(&claim.reply_receipt_id, AskSelectedAckRequest::Live {
+				request_id:  "r1".into(),
+				commit_key:  "c1".into(),
+				action_id:   "a1".into(),
+				deadline_at: 123,
+			})
 			.await;
-		assert_eq!(
-			outcome,
-			AskSelectedAckOutcome::Failed { reason: AskSelectedAckFailedReason::Unsupported }
-		);
+		assert_eq!(outcome, AskSelectedAckOutcome::Failed {
+			reason: AskSelectedAckFailedReason::Unsupported,
+		});
 		handle.stop();
 	}
 
@@ -2386,9 +2379,9 @@ mod tests {
 		handle.register_ask(ask("a1"), true);
 		let _ = next_server_msg(&mut ws).await;
 		let reply = Reply {
-			id: "a1".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "secret".into(),
+			id:              "a1".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "secret".into(),
 			idempotency_key: None,
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -2412,9 +2405,9 @@ mod tests {
 		wait_for_clients(&handle, 1).await;
 
 		let reply = Reply {
-			id: "ghost".into(),
-			answer: ReplyAnswer::Index(0),
-			token: "secret".into(),
+			id:              "ghost".into(),
+			answer:          ReplyAnswer::Index(0),
+			token:           "secret".into(),
 			idempotency_key: None,
 		};
 		ws.send(Message::Text(serde_json::to_string(&ClientMessage::Reply(reply)).unwrap()))
@@ -2474,11 +2467,11 @@ mod tests {
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::UserMessage(crate::protocol::UserMessage {
 				session_id: "s".into(),
-				text: "keep going".into(),
-				token: "secret".into(),
-				update_id: Some(7),
-				thread_id: Some("topic-1".into()),
-				images: vec![],
+				text:       "keep going".into(),
+				token:      "secret".into(),
+				update_id:  Some(7),
+				thread_id:  Some("topic-1".into()),
+				images:     vec![],
 			}))
 			.unwrap()
 			.into(),
@@ -2510,11 +2503,11 @@ mod tests {
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::ControlCommand(crate::protocol::ControlCommand {
 				session_id: "s".into(),
-				token: "secret".into(),
+				token:      "secret".into(),
 				request_id: "r1".into(),
-				update_id: Some(8),
-				thread_id: Some("topic-1".into()),
-				command: serde_json::json!({ "name": "context" }),
+				update_id:  Some(8),
+				thread_id:  Some("topic-1".into()),
+				command:    serde_json::json!({ "name": "context" }),
 			}))
 			.unwrap()
 			.into(),
@@ -2546,11 +2539,11 @@ mod tests {
 		ws.send(Message::Text(
 			serde_json::to_string(&ClientMessage::UserMessage(crate::protocol::UserMessage {
 				session_id: "s".into(),
-				text: "x".into(),
-				token: "WRONG".into(),
-				update_id: None,
-				thread_id: None,
-				images: vec![],
+				text:       "x".into(),
+				token:      "WRONG".into(),
+				update_id:  None,
+				thread_id:  None,
+				images:     vec![],
 			}))
 			.unwrap()
 			.into(),
@@ -2577,12 +2570,12 @@ mod tests {
 		wait_for_clients(&handle, 1).await;
 
 		handle.push_session_ready(SessionReady {
-			session_id: "s".into(),
+			session_id:           "s".into(),
 			lifecycle_request_id: Some("lc_01".into()),
-			startup_prompt_ref: Some("prompt_lc_01".into()),
-			repo: Some("gajae-code".into()),
-			branch: Some("feat/x".into()),
-			title: None,
+			startup_prompt_ref:   Some("prompt_lc_01".into()),
+			repo:                 Some("gajae-code".into()),
+			branch:               Some("feat/x".into()),
+			title:                None,
 		});
 		match next_server_msg(&mut early).await {
 			ServerMessage::SessionReady(r) => {
@@ -2709,18 +2702,17 @@ mod tests {
 				negotiation: Negotiation::Negotiated,
 				delivered: None,
 				tx,
-			},
-		);
+			});
 		let task = {
 			let handle = handle.clone();
 			tokio::spawn(async move {
 				handle
 					.request_ack(
 						AskSelectedAckRequest::Recovery {
-							request_id: "send-failure-request".into(),
-							commit_key: "send-failure-commit".into(),
-							session_id: "s".into(),
-							action_id: "a1".into(),
+							request_id:  "send-failure-request".into(),
+							commit_key:  "send-failure-commit".into(),
+							session_id:  "s".into(),
+							action_id:   "a1".into(),
 							deadline_at: (std::time::SystemTime::now()
 								.duration_since(std::time::UNIX_EPOCH)
 								.unwrap()
@@ -2747,10 +2739,12 @@ mod tests {
 		let mut registry = AckRegistry::default();
 		let (waiter, receiver) = oneshot::channel();
 		registry.commits.insert("commit".into(), "request".into());
-		registry.pending.insert(
-			"request".into(),
-			AckPending { commit_key: "commit".into(), origin: None, dispatched: false, waiter },
-		);
+		registry.pending.insert("request".into(), AckPending {
+			commit_key: "commit".into(),
+			origin: None,
+			dispatched: false,
+			waiter,
+		});
 		let delivered = AskSelectedAckOutcome::Delivered { message_id: 42 };
 		let unknown =
 			AskSelectedAckOutcome::Unknown { reason: AskSelectedAckUnknownReason::HostTimeout };

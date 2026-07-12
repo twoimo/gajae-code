@@ -1,21 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { type IndexedSession, SessionIndex } from "../broker/session-index";
 import { SdkClient, SdkClientError } from "../client/client";
 import { readSdkBrokerDiscovery, readSdkSessionEndpoint, type SdkSessionEndpoint } from "../client/discovery";
-import { SessionIndex, type IndexedSession } from "../broker/session-index";
 
 import { createDiscordAdapter, createSlackAdapter } from "./chat-adapters";
-import { NotificationPresentationEngine, type NotificationEvent } from "./engine";
-import { projectChatCommandOutcome, sendAuthorizedChatOperation, type ChatTransport } from "./chat-command-policy";
-import { DiscordNotificationDaemon, type DiscordEndpointBinding } from "./discord-daemon";
+import { type ChatTransport, projectChatCommandOutcome, sendAuthorizedChatOperation } from "./chat-command-policy";
+import type { ChatDaemonKind } from "./chat-daemon-control";
+import { type DiscordEndpointBinding, DiscordNotificationDaemon } from "./discord-daemon";
 import { DiscordLiveProvider } from "./discord-live-provider";
 import type { DiscordProvider } from "./discord-provider";
-
-import { SlackEndpointBindingError, SlackNotificationDaemon, type SlackEndpoint } from "./slack-daemon";
-
+import { type NotificationEvent, NotificationPresentationEngine } from "./engine";
+import { type SlackEndpoint, SlackEndpointBindingError, SlackNotificationDaemon } from "./slack-daemon";
 import { SlackLiveProvider } from "./slack-live-provider";
 import { SlackProvider, type SlackProviderClient } from "./slack-provider";
-
-import type { ChatDaemonKind } from "./chat-daemon-control";
 
 export interface ChatDaemonRuntimeConfig {
 	identity: string;
@@ -31,13 +28,16 @@ export interface ChatDaemonSdkClient {
 	request(frame: Record<string, unknown>): Promise<Record<string, unknown>>;
 	close(): Promise<void>;
 	send(frame: Record<string, unknown>): void;
-
 }
 
 export interface ChatDaemonRuntimeDeps {
-	createDiscordProvider?: (config: NonNullable<ChatDaemonRuntimeConfig["notifications"]["discord"]>) => DiscordProvider;
+	createDiscordProvider?: (
+		config: NonNullable<ChatDaemonRuntimeConfig["notifications"]["discord"]>,
+	) => DiscordProvider;
 
-	createSlackProvider?: (config: NonNullable<ChatDaemonRuntimeConfig["notifications"]["slack"]>) => SlackProviderClient;
+	createSlackProvider?: (
+		config: NonNullable<ChatDaemonRuntimeConfig["notifications"]["slack"]>,
+	) => SlackProviderClient;
 	createClient?: (endpoint: SdkSessionEndpoint) => Promise<ChatDaemonSdkClient>;
 	createIndex?: (agentDir: string) => SessionIndex;
 	createBrokerClient?: (endpoint: { url: string; token: string }) => Promise<ChatDaemonSdkClient>;
@@ -45,8 +45,14 @@ export interface ChatDaemonRuntimeDeps {
 	clearInterval?: typeof clearInterval;
 }
 
- type AttachedSession = Readonly<{ id: string; sessionId: string; endpoint: SdkSessionEndpoint; generation: number; client: ChatDaemonSdkClient; dispose: () => void }>;
-
+type AttachedSession = Readonly<{
+	id: string;
+	sessionId: string;
+	endpoint: SdkSessionEndpoint;
+	generation: number;
+	client: ChatDaemonSdkClient;
+	dispose: () => void;
+}>;
 
 function eventName(frame: Record<string, unknown>): string | undefined {
 	return frame.type === "event" && typeof frame.name === "string" ? frame.name : undefined;
@@ -61,7 +67,6 @@ function generationFrom(frame: Record<string, unknown>): number | undefined {
 		? frame.generation
 		: undefined;
 }
-
 
 /**
  * Worker-owned session discovery and event fanout. It connects only through the
@@ -92,12 +97,19 @@ export class ChatDaemonRuntime {
 		if (this.input.kind === "discord") {
 			const config = this.input.config.notifications.discord;
 			if (!config) throw new Error("Discord chat daemon provider configuration is unavailable.");
-			const provider = (this.deps.createDiscordProvider ?? ((value: NonNullable<ChatDaemonRuntimeConfig["notifications"]["discord"]>) => new DiscordLiveProvider(value)))(config);
+			const provider = (
+				this.deps.createDiscordProvider ??
+				((value: NonNullable<ChatDaemonRuntimeConfig["notifications"]["discord"]>) =>
+					new DiscordLiveProvider(value))
+			)(config);
 			this.#transportHealthy = () => this.#reconcileReady && (provider.transportHealthy ?? true);
-			this.#presentation = new NotificationPresentationEngine([createDiscordAdapter({ channelId: config.parentChannelId })], {
-				redact: this.input.config.presentation?.redact ?? true,
-				sessionTag: sessionId => sessionId.slice(-6),
-			});
+			this.#presentation = new NotificationPresentationEngine(
+				[createDiscordAdapter({ channelId: config.parentChannelId })],
+				{
+					redact: this.input.config.presentation?.redact ?? true,
+					sessionTag: sessionId => sessionId.slice(-6),
+				},
+			);
 			this.#discord = new DiscordNotificationDaemon({
 				agentDir: this.input.agentDir,
 				repo: "",
@@ -107,19 +119,26 @@ export class ChatDaemonRuntime {
 				resolveEndpoint: async sessionId => this.#discordEndpoint(sessionId),
 				onCommand: async (sessionId, content, endpoint, idempotencyKey) => {
 					const attached = this.#sessions.get(sessionId);
-					if (!attached || !endpoint.isCurrent()) throw new Error("Discord session endpoint changed before command dispatch.");
+					if (!attached || !endpoint.isCurrent())
+						throw new Error("Discord session endpoint changed before command dispatch.");
 					return await this.#runChatCommand("discord", sessionId, content, attached.client, idempotencyKey);
 				},
 			});
 		} else {
 			const config = this.input.config.notifications.slack;
 			if (!config) throw new Error("Slack chat daemon provider configuration is unavailable.");
-			const provider = (this.deps.createSlackProvider ?? ((value: NonNullable<ChatDaemonRuntimeConfig["notifications"]["slack"]>) => new SlackLiveProvider(value)))(config);
+			const provider = (
+				this.deps.createSlackProvider ??
+				((value: NonNullable<ChatDaemonRuntimeConfig["notifications"]["slack"]>) => new SlackLiveProvider(value))
+			)(config);
 			this.#transportHealthy = () => this.#reconcileReady && (provider.transportHealthy ?? true);
-			this.#presentation = new NotificationPresentationEngine([createSlackAdapter({ channelId: config.channelId })], {
-				redact: this.input.config.presentation?.redact ?? true,
-				sessionTag: sessionId => sessionId.slice(-6),
-			});
+			this.#presentation = new NotificationPresentationEngine(
+				[createSlackAdapter({ channelId: config.channelId })],
+				{
+					redact: this.input.config.presentation?.redact ?? true,
+					sessionTag: sessionId => sessionId.slice(-6),
+				},
+			);
 			this.#slack = new SlackNotificationDaemon({
 				agentDir: this.input.agentDir,
 				repo: "",
@@ -128,16 +147,30 @@ export class ChatDaemonRuntime {
 				provider: new SlackProvider(provider),
 				createClient: endpoint => {
 					const attached = this.#sessions.get(endpoint.sessionId);
-					if (!attached || attached.generation !== endpoint.generation || attached.endpoint.url !== endpoint.url || attached.endpoint.token !== endpoint.token) throw new SlackEndpointBindingError();
-					return { send: frame => {
-						if (this.#sessions.get(endpoint.sessionId) !== attached) throw new SlackEndpointBindingError();
-						attached.client.send(frame);
-					} };
+					if (
+						!attached ||
+						attached.generation !== endpoint.generation ||
+						attached.endpoint.url !== endpoint.url ||
+						attached.endpoint.token !== endpoint.token
+					)
+						throw new SlackEndpointBindingError();
+					return {
+						send: frame => {
+							if (this.#sessions.get(endpoint.sessionId) !== attached) throw new SlackEndpointBindingError();
+							attached.client.send(frame);
+						},
+					};
 				},
 				resolveEndpoint: async sessionId => await this.resolveEndpoint(sessionId),
 				onCommand: async (sessionId, content, endpoint, idempotencyKey) => {
 					const attached = this.#sessions.get(sessionId);
-					if (!attached || attached.generation !== endpoint.generation || attached.endpoint.url !== endpoint.url || attached.endpoint.token !== endpoint.token) throw new SlackEndpointBindingError("Slack session endpoint changed before command dispatch.");
+					if (
+						!attached ||
+						attached.generation !== endpoint.generation ||
+						attached.endpoint.url !== endpoint.url ||
+						attached.endpoint.token !== endpoint.token
+					)
+						throw new SlackEndpointBindingError("Slack session endpoint changed before command dispatch.");
 					return await this.#runChatCommand("slack", sessionId, content, attached.client, idempotencyKey);
 				},
 			});
@@ -146,24 +179,24 @@ export class ChatDaemonRuntime {
 			await this.#serialReconcile();
 			if (this.#discord) await this.#discord.start();
 			if (this.#slack) await this.#slack.start();
-			const timer = (this.deps.setInterval ?? setInterval)(() => { this.schedule(this.#serialReconcile()); }, 2_000);
+			const timer = (this.deps.setInterval ?? setInterval)(() => {
+				this.schedule(this.#serialReconcile());
+			}, 2_000);
 			this.#stopTimer = () => (this.deps.clearInterval ?? clearInterval)(timer);
-
 		} catch (error) {
 			await this.stop();
 			throw error;
 		}
 	}
 
-	transportHealthy(): boolean { return this.#transportHealthy?.() ?? false; }
+	transportHealthy(): boolean {
+		return this.#transportHealthy?.() ?? false;
+	}
 
 	async stop(): Promise<void> {
 		if (this.#stopTimer) this.#stopTimer();
 		this.#stopTimer = undefined;
-		await Promise.all([
-			this.#discord?.stop(),
-			this.#slack?.stop(),
-		]);
+		await Promise.all([this.#discord?.stop(), this.#slack?.stop()]);
 		this.#discord = undefined;
 		this.#slack = undefined;
 		this.#presentation = undefined;
@@ -178,15 +211,17 @@ export class ChatDaemonRuntime {
 	}
 
 	#serialReconcile(): Promise<void> {
-		const task = this.#reconcileTail.catch(() => undefined).then(async () => {
-			try {
-				await this.reconcile();
-				this.#reconcileReady = true;
-			} catch (error) {
-				this.#reconcileReady = false;
-				throw error;
-			}
-		});
+		const task = this.#reconcileTail
+			.catch(() => undefined)
+			.then(async () => {
+				try {
+					await this.reconcile();
+					this.#reconcileReady = true;
+				} catch (error) {
+					this.#reconcileReady = false;
+					throw error;
+				}
+			});
 		this.#reconcileTail = task;
 		return task;
 	}
@@ -209,25 +244,50 @@ export class ChatDaemonRuntime {
 		const endpoint = await readSdkSessionEndpoint(indexed.locator.repo, indexed.sessionId);
 		if (!endpoint) return;
 		const existing = this.#sessions.get(indexed.sessionId);
-		if (existing && existing.endpoint.url === endpoint.url && existing.endpoint.token === endpoint.token && existing.generation === indexed.endpointGeneration) return;
+		if (
+			existing &&
+			existing.endpoint.url === endpoint.url &&
+			existing.endpoint.token === endpoint.token &&
+			existing.generation === indexed.endpointGeneration
+		)
+			return;
 		if (existing) {
 			this.#sessions.delete(indexed.sessionId);
 			existing.dispose();
 			await existing.client.close();
 		}
-		const client = await (this.deps.createClient ?? (async value => await SdkClient.connect(value.url, value.token)))(endpoint);
+		const client = await (this.deps.createClient ?? (async value => await SdkClient.connect(value.url, value.token)))(
+			endpoint,
+		);
 		let attached: AttachedSession | undefined;
 		const dispose = client.onFrame(frame => {
 			if (attached) this.schedule(this.enqueueFrame(attached, frame));
 		});
-		attached = Object.freeze({ id: randomUUID(), sessionId: indexed.sessionId, endpoint, generation: indexed.endpointGeneration, client, dispose });
+		attached = Object.freeze({
+			id: randomUUID(),
+			sessionId: indexed.sessionId,
+			endpoint,
+			generation: indexed.endpointGeneration,
+			client,
+			dispose,
+		});
 		this.#sessions.set(indexed.sessionId, attached);
-		this.#presentation?.connectSession(indexed.sessionId, { sendReply: route => {
-			if (this.#sessions.get(indexed.sessionId) !== attached) throw new Error("Session endpoint changed before reply.");
-			attached.client.send({ type: "reply", id: route.actionId, answer: route.answer });
-		} });
-		const replay = await client.request({ type: "event_replay", sinceGeneration: indexed.endpointGeneration, sinceSeq: 0 });
-		if (Array.isArray(replay.events)) for (const event of replay.events) if (event && typeof event === "object" && !Array.isArray(event)) await this.enqueueFrame(attached, event as Record<string, unknown>);
+		this.#presentation?.connectSession(indexed.sessionId, {
+			sendReply: route => {
+				if (this.#sessions.get(indexed.sessionId) !== attached)
+					throw new Error("Session endpoint changed before reply.");
+				attached.client.send({ type: "reply", id: route.actionId, answer: route.answer });
+			},
+		});
+		const replay = await client.request({
+			type: "event_replay",
+			sinceGeneration: indexed.endpointGeneration,
+			sinceSeq: 0,
+		});
+		if (Array.isArray(replay.events))
+			for (const event of replay.events)
+				if (event && typeof event === "object" && !Array.isArray(event))
+					await this.enqueueFrame(attached, event as Record<string, unknown>);
 	}
 
 	private async resolveEndpoint(sessionId: string): Promise<SlackEndpoint | null> {
@@ -241,7 +301,8 @@ export class ChatDaemonRuntime {
 			generation: attached.generation,
 			isCurrent: () => this.#sessions.get(sessionId) === attached,
 			send: frame => {
-				if (this.#sessions.get(sessionId) !== attached) throw new Error("Discord session endpoint changed before reply.");
+				if (this.#sessions.get(sessionId) !== attached)
+					throw new Error("Discord session endpoint changed before reply.");
 				attached.client.send(frame);
 			},
 		};
@@ -259,8 +320,12 @@ export class ChatDaemonRuntime {
 		const current = previous.catch(() => undefined).then(async () => await this.handleFrame(attached, frame));
 		this.#frameTails.set(attached.sessionId, current);
 		void current.then(
-			() => { if (this.#frameTails.get(attached.sessionId) === current) this.#frameTails.delete(attached.sessionId); },
-			() => { if (this.#frameTails.get(attached.sessionId) === current) this.#frameTails.delete(attached.sessionId); },
+			() => {
+				if (this.#frameTails.get(attached.sessionId) === current) this.#frameTails.delete(attached.sessionId);
+			},
+			() => {
+				if (this.#frameTails.get(attached.sessionId) === current) this.#frameTails.delete(attached.sessionId);
+			},
 		);
 		return current;
 	}
@@ -290,17 +355,28 @@ export class ChatDaemonRuntime {
 		if (!notification) return;
 		const payload = this.#presentation?.fanout(notification)[0];
 		const body = payload?.body;
-		const content = body && typeof body === "object" && !Array.isArray(body)
-			? (typeof (body as Record<string, unknown>).content === "string" ? (body as Record<string, unknown>).content : (body as Record<string, unknown>).text)
-			: undefined;
+		const content =
+			body && typeof body === "object" && !Array.isArray(body)
+				? typeof (body as Record<string, unknown>).content === "string"
+					? (body as Record<string, unknown>).content
+					: (body as Record<string, unknown>).text
+				: undefined;
 		if (typeof content !== "string") return;
-		if (this.#discord) await this.#discord.notify({
-			sessionId,
-			endpointGeneration: attached.generation,
-			content,
-			...(notification.type === "action_needed" ? { actionId: notification.id, options: notification.options } : {}),
-		});
-		if (this.#slack) await this.#slack.notify(sessionId, content, notification.type === "action_needed" ? notification.id : undefined);
+		if (this.#discord)
+			await this.#discord.notify({
+				sessionId,
+				endpointGeneration: attached.generation,
+				content,
+				...(notification.type === "action_needed"
+					? { actionId: notification.id, options: notification.options }
+					: {}),
+			});
+		if (this.#slack)
+			await this.#slack.notify(
+				sessionId,
+				content,
+				notification.type === "action_needed" ? notification.id : undefined,
+			);
 	}
 
 	private async close(sessionId: string): Promise<void> {
@@ -315,45 +391,74 @@ export class ChatDaemonRuntime {
 		}
 		if (this.#slack) await this.#slack.resume(sessionId, content, generation);
 	}
-	async #runChatCommand(transport: ChatTransport, sessionId: string, content: string, boundClient?: ChatDaemonSdkClient, idempotencyKey: string = randomUUID()): Promise<boolean> {
+	async #runChatCommand(
+		transport: ChatTransport,
+		sessionId: string,
+		content: string,
+		boundClient?: ChatDaemonSdkClient,
+		idempotencyKey: string = randomUUID(),
+	): Promise<boolean> {
 		const match = /^\/sdk\s+(control|query|global)\s+([^\s]+)(?:\s+(.+))?\s*$/.exec(content);
 		if (!match) return false;
 		const kind = match[1] as "control" | "query" | "global";
 		let input: unknown = {};
 		if (match[3]) {
-			try { input = JSON.parse(match[3]); } catch { return false; }
+			try {
+				input = JSON.parse(match[3]);
+			} catch {
+				return false;
+			}
 		}
 		if (!input || typeof input !== "object" || Array.isArray(input)) return false;
 		const operation = match[2]!;
 		try {
 			const outcome = await sendAuthorizedChatOperation(transport, { kind, operation, input }, async () => {
-				if (kind === "global") return await this.#runGlobalCommand(operation, input as Record<string, unknown>, idempotencyKey);
+				if (kind === "global")
+					return await this.#runGlobalCommand(operation, input as Record<string, unknown>, idempotencyKey);
 				const client = boundClient ?? this.#sessions.get(sessionId)?.client;
 				if (!client) throw new SdkClientError("unavailable", "Session SDK client is unavailable.");
-				return await client.request(kind === "control"
-					? { type: "control_request", operation, input, confirm: true, idempotencyKey }
-					: { type: "query_request", query: operation, input, idempotencyKey });
+				return await client.request(
+					kind === "control"
+						? { type: "control_request", operation, input, confirm: true, idempotencyKey }
+						: { type: "query_request", query: operation, input, idempotencyKey },
+				);
 			});
 			await this.#postCommandOutcome(transport, sessionId, { kind, operation }, outcome);
 			return outcome.ok;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Command request failed.";
 			const code = error instanceof SdkClientError ? error.code : "unavailable";
-			await this.#postCommandOutcome(transport, sessionId, { kind, operation }, { ok: false, error: { code, message } });
+			await this.#postCommandOutcome(
+				transport,
+				sessionId,
+				{ kind, operation },
+				{ ok: false, error: { code, message } },
+			);
 			return false;
 		}
 	}
-	async #runGlobalCommand(operation: string, input: Record<string, unknown>, idempotencyKey: string): Promise<Record<string, unknown>> {
+	async #runGlobalCommand(
+		operation: string,
+		input: Record<string, unknown>,
+		idempotencyKey: string,
+	): Promise<Record<string, unknown>> {
 		const discovery = await readSdkBrokerDiscovery(this.input.agentDir);
 		if (!discovery) throw new SdkClientError("unavailable", "SDK broker discovery is unavailable.");
-		const client = await (this.deps.createBrokerClient ?? (async endpoint => await SdkClient.connect(endpoint.url, endpoint.token)))({ url: discovery.url, token: discovery.token });
+		const client = await (
+			this.deps.createBrokerClient ?? (async endpoint => await SdkClient.connect(endpoint.url, endpoint.token))
+		)({ url: discovery.url, token: discovery.token });
 		try {
 			return await client.request({ type: "broker_request", operation, input, idempotencyKey });
 		} finally {
 			await client.close();
 		}
 	}
-	async #postCommandOutcome(transport: ChatTransport, sessionId: string, request: Pick<import("./chat-command-policy").ChatOperationRequest, "kind" | "operation">, outcome: { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }): Promise<void> {
+	async #postCommandOutcome(
+		transport: ChatTransport,
+		sessionId: string,
+		request: Pick<import("./chat-command-policy").ChatOperationRequest, "kind" | "operation">,
+		outcome: { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } },
+	): Promise<void> {
 		const content = JSON.stringify(projectChatCommandOutcome(request, outcome));
 		if (transport === "discord") await this.#discord?.postCommandResult(sessionId, content);
 		else await this.#slack?.postCommandResult(sessionId, content);
@@ -361,13 +466,19 @@ export class ChatDaemonRuntime {
 	#notificationEvent(sessionId: string, frame: Record<string, unknown>): NotificationEvent {
 		if (frame.type === "action_needed" && typeof frame.id === "string" && typeof frame.kind === "string") {
 			return {
-				type: "action_needed", id: frame.id, kind: frame.kind, sessionId,
+				type: "action_needed",
+				id: frame.id,
+				kind: frame.kind,
+				sessionId,
 				...(typeof frame.question === "string" ? { question: frame.question } : {}),
-				...(Array.isArray(frame.options) && frame.options.every(option => typeof option === "string") ? { options: frame.options.filter((option): option is string => typeof option === "string") } : {}),
+				...(Array.isArray(frame.options) && frame.options.every(option => typeof option === "string")
+					? { options: frame.options.filter((option): option is string => typeof option === "string") }
+					: {}),
 				...(typeof frame.summary === "string" ? { summary: frame.summary } : {}),
 			};
 		}
-		if (frame.type === "action_resolved" && typeof frame.id === "string") return { type: "action_resolved", id: frame.id, sessionId };
+		if (frame.type === "action_resolved" && typeof frame.id === "string")
+			return { type: "action_resolved", id: frame.id, sessionId };
 		return { type: "frame", sessionId, frame };
 	}
 }

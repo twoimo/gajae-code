@@ -30,7 +30,6 @@ function isAllowed(file: string): boolean {
 	);
 }
 
-
 const filesResult = Bun.spawnSync(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
 	cwd: repoRoot,
 	stdout: "pipe",

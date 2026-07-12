@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -20,7 +20,6 @@ export interface ConversationStoreFileHandle {
 	sync(): Promise<void>;
 	close(): Promise<void>;
 	writeFile(data: string, encoding: "utf8"): Promise<void>;
-
 }
 
 /** Minimal persistence seam; callers can inject it to make durability failures deterministic. */
@@ -36,7 +35,10 @@ export interface ConversationStoreFs {
 }
 
 export class ConversationLockTimeoutError extends Error {
-	constructor(readonly lockFile: string, readonly timeoutMs: number) {
+	constructor(
+		readonly lockFile: string,
+		readonly timeoutMs: number,
+	) {
 		super(`Timed out waiting ${timeoutMs}ms for conversation store lock: ${lockFile}`);
 		this.name = "ConversationLockTimeoutError";
 	}
@@ -46,7 +48,6 @@ interface ConversationStoreLock {
 	pid: number;
 	incarnation: string;
 	timestamp: number;
-
 }
 
 const nodeFs: ConversationStoreFs = fs;
@@ -93,8 +94,18 @@ export class ConversationStore<T extends ConversationRecord> {
 	readonly #sleep: (ms: number) => Promise<void>;
 	readonly #lockTimeoutMs: number;
 
-
-	constructor(input: { agentDir: string; kind: string; fileName?: string; fs?: ConversationStoreFs; now?: () => number; pid?: number; pidIncarnation?: (pid: number) => string | undefined; pidAlive?: (pid: number) => boolean; sleep?: (ms: number) => Promise<void>; lockTimeoutMs?: number }) {
+	constructor(input: {
+		agentDir: string;
+		kind: string;
+		fileName?: string;
+		fs?: ConversationStoreFs;
+		now?: () => number;
+		pid?: number;
+		pidIncarnation?: (pid: number) => string | undefined;
+		pidAlive?: (pid: number) => boolean;
+		sleep?: (ms: number) => Promise<void>;
+		lockTimeoutMs?: number;
+	}) {
 		this.#file = conversationStorePath(input.agentDir, input.kind, input.fileName);
 		this.#directory = path.dirname(this.#file);
 		this.#fs = input.fs ?? nodeFs;
@@ -105,7 +116,6 @@ export class ConversationStore<T extends ConversationRecord> {
 		this.#sleep = input.sleep ?? (async ms => await Bun.sleep(ms));
 		this.#lockTimeoutMs = input.lockTimeoutMs ?? 1_000;
 	}
-
 
 	get filePath(): string {
 		return this.#file;
@@ -181,7 +191,10 @@ export class ConversationStore<T extends ConversationRecord> {
 		} finally {
 			try {
 				await fileLock?.close();
-				if (fileLock) await this.#fs.unlink(`${this.#file}.lock`).catch(error => { if (!isMissing(error)) throw error; });
+				if (fileLock)
+					await this.#fs.unlink(`${this.#file}.lock`).catch(error => {
+						if (!isMissing(error)) throw error;
+					});
 			} finally {
 				gate.resolve();
 				if (this.#locks.get(this.#file) === tail) this.#locks.delete(this.#file);
@@ -197,7 +210,11 @@ export class ConversationStore<T extends ConversationRecord> {
 			try {
 				const handle = await this.#fs.open(lockFile, "wx");
 				try {
-					const lock: ConversationStoreLock = { pid: this.#pid, incarnation: this.#pidIncarnation(this.#pid) ?? "unavailable", timestamp: this.#clock() };
+					const lock: ConversationStoreLock = {
+						pid: this.#pid,
+						incarnation: this.#pidIncarnation(this.#pid) ?? "unavailable",
+						timestamp: this.#clock(),
+					};
 					await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
 					await handle.sync();
 					return handle;
@@ -246,7 +263,11 @@ export class ConversationStore<T extends ConversationRecord> {
 	async #createLockFile(lockFile: string): Promise<ConversationStoreFileHandle> {
 		const handle = await this.#fs.open(lockFile, "wx");
 		try {
-			const lock: ConversationStoreLock = { pid: this.#pid, incarnation: this.#pidIncarnation(this.#pid) ?? "unavailable", timestamp: this.#clock() };
+			const lock: ConversationStoreLock = {
+				pid: this.#pid,
+				incarnation: this.#pidIncarnation(this.#pid) ?? "unavailable",
+				timestamp: this.#clock(),
+			};
 			await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
 			await handle.sync();
 			return handle;
@@ -266,13 +287,17 @@ export class ConversationStore<T extends ConversationRecord> {
 		}
 		if (!isConversationStoreLock(parsed)) return await this.#isExpiredUnpublishedLock(lockFile);
 		const currentIncarnation = this.#pidIncarnation(parsed.pid);
-		return !this.#pidAlive(parsed.pid) || (currentIncarnation !== undefined && parsed.incarnation !== "unavailable" && currentIncarnation !== parsed.incarnation);
+		return (
+			!this.#pidAlive(parsed.pid) ||
+			(currentIncarnation !== undefined &&
+				parsed.incarnation !== "unavailable" &&
+				currentIncarnation !== parsed.incarnation)
+		);
 	}
 	async #isExpiredUnpublishedLock(lockFile: string): Promise<boolean> {
 		const stat = this.#fs.stat ? await this.#fs.stat(lockFile).catch(() => undefined) : undefined;
 		return Boolean(stat && this.#clock() - stat.mtimeMs >= UNPUBLISHED_LOCK_STALE_MS);
 	}
-
 
 	async #readDocument(): Promise<ConversationStoreDocument<T>> {
 		try {
@@ -336,8 +361,15 @@ function defaultPidIncarnation(pid: number): string | undefined {
 	if (process.platform === "linux") {
 		try {
 			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-			return `linux:${stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[19]}`;
-		} catch { return undefined; }
+			return `linux:${
+				stat
+					.slice(stat.lastIndexOf(")") + 2)
+					.trim()
+					.split(/\s+/)[19]
+			}`;
+		} catch {
+			return undefined;
+		}
 	}
 	if (process.platform === "darwin") {
 		const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
@@ -348,5 +380,12 @@ function defaultPidIncarnation(pid: number): string | undefined {
 }
 
 function isConversationStoreLock(value: unknown): value is ConversationStoreLock {
-	return isRecord(value) && typeof value.pid === "number" && Number.isSafeInteger(value.pid) && value.pid > 0 && typeof value.incarnation === "string" && typeof value.timestamp === "number";
+	return (
+		isRecord(value) &&
+		typeof value.pid === "number" &&
+		Number.isSafeInteger(value.pid) &&
+		value.pid > 0 &&
+		typeof value.incarnation === "string" &&
+		typeof value.timestamp === "number"
+	);
 }

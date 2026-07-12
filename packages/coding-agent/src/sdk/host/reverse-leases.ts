@@ -8,7 +8,21 @@ export const MAX_REVERSE_OUTSTANDING = 64;
 export const MAX_REVERSE_PAYLOAD_BYTES = 256 * 1024;
 
 export class ReverseLeaseError extends Error {
-	constructor(readonly code: "lease_unavailable" | "lease_expired" | "provider_lease_conflict" | "provider_required" | "not_lease_owner" | "payload_too_large" | "too_many_outstanding" | "unknown_request" | "idempotency_conflict", message = code) { super(message); }
+	constructor(
+		readonly code:
+			| "lease_unavailable"
+			| "lease_expired"
+			| "provider_lease_conflict"
+			| "provider_required"
+			| "not_lease_owner"
+			| "payload_too_large"
+			| "too_many_outstanding"
+			| "unknown_request"
+			| "idempotency_conflict",
+		message = code,
+	) {
+		super(message);
+	}
 }
 
 export interface ProviderLease {
@@ -21,7 +35,13 @@ export interface ProviderLease {
 	active: boolean;
 }
 
-interface Outstanding { connectionId: string; capability: string; leaseId: string; resolve: (value: unknown) => void; reject: (reason: Error) => void; }
+interface Outstanding {
+	connectionId: string;
+	capability: string;
+	leaseId: string;
+	resolve: (value: unknown) => void;
+	reject: (reason: Error) => void;
+}
 
 export interface ReverseLeaseOptions {
 	now?: () => number;
@@ -74,7 +94,13 @@ export class ReverseLeaseRuntime {
 		this.#sweepTimer.unref?.();
 	}
 
-	registerProvider(connectionId: string, capability: string, definitions: unknown, expectedLeaseId?: string, idempotencyKey?: string): ProviderLease {
+	registerProvider(
+		connectionId: string,
+		capability: string,
+		definitions: unknown,
+		expectedLeaseId?: string,
+		idempotencyKey?: string,
+	): ProviderLease {
 		const key = `${connectionId}\u0000${idempotencyKey ?? ""}`;
 		const fingerprint = registrationFingerprint(capability, definitions, expectedLeaseId);
 		const replay = idempotencyKey ? this.#idempotency.get(key) : undefined;
@@ -83,23 +109,41 @@ export class ReverseLeaseRuntime {
 			const current = this.#leases.get(capability);
 			if (replay.lease === current && current?.active && current.expiresAt > this.#now()) return { ...replay.lease };
 		}
-		const now = this.#now(); const existing = this.#leases.get(capability);
+		const now = this.#now();
+		const existing = this.#leases.get(capability);
 		if (existing && existing.expiresAt <= now) this.#removeDefinitions(existing.capability);
 		const pendingHandoff = existing?.active === false && existing.expiresAt > now;
 		if (pendingHandoff) {
 			if (existing!.connectionId !== connectionId || existing!.leaseId !== expectedLeaseId)
 				throw new ReverseLeaseError("provider_lease_conflict");
 			this.#installDefinitionsFor(capability, definitions);
-			const lease: ProviderLease = { leaseId: existing!.leaseId, connectionId, capability, definitions, expiresAt: now + this.#leaseTtlMs, active: true };
+			const lease: ProviderLease = {
+				leaseId: existing!.leaseId,
+				connectionId,
+				capability,
+				definitions,
+				expiresAt: now + this.#leaseTtlMs,
+				active: true,
+			};
 			this.#leases.set(capability, lease);
 			if (idempotencyKey) this.#idempotency.set(key, { fingerprint, lease });
 			return { ...lease };
 		}
-		const reclaiming = existing?.leaseId === expectedLeaseId && existing?.graceUntil !== undefined && now <= existing.graceUntil;
-		const refreshing = existing?.active !== false && existing?.connectionId === connectionId && existing.expiresAt > now;
-		if (existing && !reclaiming && !refreshing && existing.connectionId !== connectionId && existing.expiresAt > now) throw new ReverseLeaseError("provider_lease_conflict");
+		const reclaiming =
+			existing?.leaseId === expectedLeaseId && existing?.graceUntil !== undefined && now <= existing.graceUntil;
+		const refreshing =
+			existing?.active !== false && existing?.connectionId === connectionId && existing.expiresAt > now;
+		if (existing && !reclaiming && !refreshing && existing.connectionId !== connectionId && existing.expiresAt > now)
+			throw new ReverseLeaseError("provider_lease_conflict");
 		this.#installDefinitionsFor(capability, definitions);
-		const lease: ProviderLease = { leaseId: reclaiming || refreshing ? existing!.leaseId : randomUUID(), connectionId, capability, definitions, expiresAt: now + this.#leaseTtlMs, active: true };
+		const lease: ProviderLease = {
+			leaseId: reclaiming || refreshing ? existing!.leaseId : randomUUID(),
+			connectionId,
+			capability,
+			definitions,
+			expiresAt: now + this.#leaseTtlMs,
+			active: true,
+		};
 		this.#leases.set(capability, lease);
 		if (idempotencyKey) this.#idempotency.set(key, { fingerprint, lease });
 		return { ...lease };
@@ -120,39 +164,92 @@ export class ReverseLeaseRuntime {
 		const lease = this.#owner(connectionId, leaseId);
 		this.#cancelForConnection(connectionId, "lease_released");
 		this.#removeDefinitions(lease.capability);
-		if (handoffTo) { lease.connectionId = handoffTo; lease.expiresAt = this.#now() + REVERSE_RECLAIM_GRACE_MS; lease.graceUntil = undefined; lease.active = false; return { ...lease }; }
+		if (handoffTo) {
+			lease.connectionId = handoffTo;
+			lease.expiresAt = this.#now() + REVERSE_RECLAIM_GRACE_MS;
+			lease.graceUntil = undefined;
+			lease.active = false;
+			return { ...lease };
+		}
 		this.#leases.delete(lease.capability);
 		return { ...lease };
 	}
 
 	disconnect(connectionId: string): void {
-		const now = this.#now(); for (const lease of this.#leases.values()) if (lease.connectionId === connectionId) { lease.expiresAt = now; lease.graceUntil = now + REVERSE_RECLAIM_GRACE_MS; this.#removeDefinitions(lease.capability); }
+		const now = this.#now();
+		for (const lease of this.#leases.values())
+			if (lease.connectionId === connectionId) {
+				lease.expiresAt = now;
+				lease.graceUntil = now + REVERSE_RECLAIM_GRACE_MS;
+				this.#removeDefinitions(lease.capability);
+			}
 		this.#cancelForConnection(connectionId, "provider_disconnected");
 	}
 
 	request(capability: string, method: string, payload: unknown): Promise<unknown> {
-		this.#assertPayload(payload); const lease = this.#liveLease(capability); if (!lease) { const reservation = this.#leases.get(capability); if (reservation?.active === false && reservation.expiresAt > this.#now()) throw new ReverseLeaseError("lease_unavailable"); throw new ReverseLeaseError("provider_required"); }
+		this.#assertPayload(payload);
+		const lease = this.#liveLease(capability);
+		if (!lease) {
+			const reservation = this.#leases.get(capability);
+			if (reservation?.active === false && reservation.expiresAt > this.#now())
+				throw new ReverseLeaseError("lease_unavailable");
+			throw new ReverseLeaseError("provider_required");
+		}
 		if (this.#outstanding.size >= MAX_REVERSE_OUTSTANDING) throw new ReverseLeaseError("too_many_outstanding");
 		const id = randomUUID();
 		return new Promise((resolve, reject) => {
-			this.#outstanding.set(id, { connectionId: lease.connectionId, capability, leaseId: lease.leaseId, resolve, reject });
-			Promise.resolve(this.#sendFrame(lease.connectionId, { type: "reverse_request", id, capability, connectionId: lease.connectionId, leaseId: lease.leaseId, payload: { method, payload } })).catch(error => {
-				this.#outstanding.delete(id); reject(error instanceof Error ? error : new Error(String(error)));
+			this.#outstanding.set(id, {
+				connectionId: lease.connectionId,
+				capability,
+				leaseId: lease.leaseId,
+				resolve,
+				reject,
+			});
+			Promise.resolve(
+				this.#sendFrame(lease.connectionId, {
+					type: "reverse_request",
+					id,
+					capability,
+					connectionId: lease.connectionId,
+					leaseId: lease.leaseId,
+					payload: { method, payload },
+				}),
+			).catch(error => {
+				this.#outstanding.delete(id);
+				reject(error instanceof Error ? error : new Error(String(error)));
 			});
 		});
 	}
 
-	respond(connectionId: string, id: string, leaseId: string, result: unknown, error?: { code: string; message: string }): void {
-		this.#assertPayload(result); const request = this.#outstanding.get(id); if (!request) throw new ReverseLeaseError("unknown_request");
-		if (request.connectionId !== connectionId || request.leaseId !== leaseId) throw new ReverseLeaseError("not_lease_owner");
+	respond(
+		connectionId: string,
+		id: string,
+		leaseId: string,
+		result: unknown,
+		error?: { code: string; message: string },
+	): void {
+		this.#assertPayload(result);
+		const request = this.#outstanding.get(id);
+		if (!request) throw new ReverseLeaseError("unknown_request");
+		if (request.connectionId !== connectionId || request.leaseId !== leaseId)
+			throw new ReverseLeaseError("not_lease_owner");
 		this.#outstanding.delete(id);
-		if (error) { const rejection = new Error(error.message); rejection.name = error.code; request.reject(rejection); } else request.resolve(result);
+		if (error) {
+			const rejection = new Error(error.message);
+			rejection.name = error.code;
+			request.reject(rejection);
+		} else request.resolve(result);
 	}
 
-	getLease(capability: string): ProviderLease | undefined { const lease = this.#liveLease(capability); return lease && { ...lease }; }
+	getLease(capability: string): ProviderLease | undefined {
+		const lease = this.#liveLease(capability);
+		return lease && { ...lease };
+	}
 
 	/** Installed definitions are observable only while their provider lease is live. */
-	getInstalledDefinitions(capability: string): unknown | undefined { return this.#liveLease(capability)?.definitions; }
+	getInstalledDefinitions(capability: string): unknown | undefined {
+		return this.#liveLease(capability)?.definitions;
+	}
 
 	dispose(): void {
 		clearInterval(this.#sweepTimer);
@@ -160,11 +257,42 @@ export class ReverseLeaseRuntime {
 		this.#leases.clear();
 	}
 
-	#owner(connectionId: string, leaseId: string): ProviderLease { const lease = [...this.#leases.values()].find(candidate => candidate.leaseId === leaseId); if (!lease || !lease.active || lease.connectionId !== connectionId) throw new ReverseLeaseError("not_lease_owner"); return lease; }
-	#liveLease(capability: string): ProviderLease | undefined { const lease = this.#leases.get(capability); if (!lease || !lease.active || lease.expiresAt <= this.#now()) { if (lease?.expiresAt !== undefined && lease.expiresAt <= this.#now()) this.#removeDefinitions(capability); return undefined; } return lease; }
-	#expireStaleLeases(): void { for (const lease of this.#leases.values()) if (lease.expiresAt <= this.#now()) this.#removeDefinitions(lease.capability); }
-	#cancelForConnection(connectionId: string, reason: "provider_disconnected" | "lease_released"): void { for (const [id, request] of this.#outstanding) if (request.connectionId === connectionId) { this.#outstanding.delete(id); request.reject(new Error("request_cancelled")); this.#onCancel?.(id, reason); } }
-	#installDefinitionsFor(capability: string, definitions: unknown): void { this.#installDefinitions?.(capability, definitions); this.#installedCapabilities.add(capability); }
-	#removeDefinitions(capability: string): void { if (!this.#installedCapabilities.delete(capability)) return; this.#onDefinitionsRemoved?.(capability); }
-	#assertPayload(payload: unknown): void { const encoded = JSON.stringify(payload); if (encoded !== undefined && Buffer.byteLength(encoded) > MAX_REVERSE_PAYLOAD_BYTES) throw new ReverseLeaseError("payload_too_large"); }
+	#owner(connectionId: string, leaseId: string): ProviderLease {
+		const lease = [...this.#leases.values()].find(candidate => candidate.leaseId === leaseId);
+		if (!lease?.active || lease.connectionId !== connectionId) throw new ReverseLeaseError("not_lease_owner");
+		return lease;
+	}
+	#liveLease(capability: string): ProviderLease | undefined {
+		const lease = this.#leases.get(capability);
+		if (!lease?.active || lease.expiresAt <= this.#now()) {
+			if (lease?.expiresAt !== undefined && lease.expiresAt <= this.#now()) this.#removeDefinitions(capability);
+			return undefined;
+		}
+		return lease;
+	}
+	#expireStaleLeases(): void {
+		for (const lease of this.#leases.values())
+			if (lease.expiresAt <= this.#now()) this.#removeDefinitions(lease.capability);
+	}
+	#cancelForConnection(connectionId: string, reason: "provider_disconnected" | "lease_released"): void {
+		for (const [id, request] of this.#outstanding)
+			if (request.connectionId === connectionId) {
+				this.#outstanding.delete(id);
+				request.reject(new Error("request_cancelled"));
+				this.#onCancel?.(id, reason);
+			}
+	}
+	#installDefinitionsFor(capability: string, definitions: unknown): void {
+		this.#installDefinitions?.(capability, definitions);
+		this.#installedCapabilities.add(capability);
+	}
+	#removeDefinitions(capability: string): void {
+		if (!this.#installedCapabilities.delete(capability)) return;
+		this.#onDefinitionsRemoved?.(capability);
+	}
+	#assertPayload(payload: unknown): void {
+		const encoded = JSON.stringify(payload);
+		if (encoded !== undefined && Buffer.byteLength(encoded) > MAX_REVERSE_PAYLOAD_BYTES)
+			throw new ReverseLeaseError("payload_too_large");
+	}
 }

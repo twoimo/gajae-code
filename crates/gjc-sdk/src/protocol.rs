@@ -66,9 +66,9 @@ pub enum ActionUnavailableReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AskControl {
-	pub id: String,
-	pub kind: String,
-	pub label: String,
+	pub id:      String,
+	pub kind:    String,
+	pub label:   String,
 	pub enabled: bool,
 }
 
@@ -85,7 +85,7 @@ pub struct StructuredReply {
 	pub selected: Vec<AnswerSelector>,
 	/// Optional free-text "other" value.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub custom: Option<String>,
+	pub custom:   Option<String>,
 }
 
 /// A client-supplied answer to a pending `ask` action.
@@ -122,25 +122,25 @@ pub enum AnswerSelector {
 pub struct ActionNeeded {
 	/// Stable action id. For an answerable `ask`, this is the durable broker
 	/// `gate_id`.
-	pub id: String,
+	pub id:         String,
 	/// Whether this is an answerable ask or a notify-only idle ping.
-	pub kind: ActionKind,
+	pub kind:       ActionKind,
 	/// The session this action belongs to.
 	pub session_id: String,
 	/// The ask question text (present for `ask`).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub question: Option<String>,
+	pub question:   Option<String>,
 	/// The selectable options for an ask (present for `ask` when offered).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub options: Option<Vec<String>>,
+	pub options:    Option<Vec<String>>,
 	/// Typed deterministic controls. Senders emit controls only after this
 	/// connection has negotiated [`capabilities::ASK_CONTROLS_V1`]; non-capable
 	/// or timed-out connections receive `action_unavailable` instead.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub controls: Vec<AskControl>,
+	pub controls:   Vec<AskControl>,
 	/// A short summary (e.g. truncated last assistant message for `idle`).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub summary: Option<String>,
+	pub summary:    Option<String>,
 }
 
 /// Sent when a controlled action cannot be presented to this connection.
@@ -166,12 +166,12 @@ pub struct ActionUnavailable {
 #[serde(rename_all = "camelCase")]
 pub struct ActionResolved {
 	/// The resolved action id.
-	pub id: String,
+	pub id:          String,
 	/// Who resolved it.
 	pub resolved_by: ResolvedBy,
 	/// The accepted answer, when one applies.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub answer: Option<ReplyAnswer>,
+	pub answer:      Option<ReplyAnswer>,
 }
 
 /// Sent to a single client when its reply could not be accepted.
@@ -179,7 +179,7 @@ pub struct ActionResolved {
 #[serde(rename_all = "camelCase")]
 pub struct ReplyRejected {
 	/// The action id the rejected reply targeted.
-	pub id: String,
+	pub id:     String,
 	/// Why the reply was rejected.
 	pub reason: RejectReason,
 }
@@ -232,16 +232,16 @@ pub enum AskSelectedAckUnknownReason {
 )]
 pub enum AskSelectedAckRequest {
 	Live {
-		request_id: String,
-		commit_key: String,
-		action_id: String,
+		request_id:  String,
+		commit_key:  String,
+		action_id:   String,
 		deadline_at: i64,
 	},
 	Recovery {
-		request_id: String,
-		commit_key: String,
-		session_id: String,
-		action_id: String,
+		request_id:  String,
+		commit_key:  String,
+		session_id:  String,
+		action_id:   String,
 		deadline_at: i64,
 	},
 }
@@ -274,7 +274,7 @@ impl AskSelectedAckRequest {
 pub struct AskSelectedAckResult {
 	pub request_id: String,
 	pub commit_key: String,
-	pub outcome: AskSelectedAckOutcome,
+	pub outcome:    AskSelectedAckOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,7 +282,7 @@ pub struct AskSelectedAckResult {
 pub struct AskSelectedAckCancel {
 	pub request_id: String,
 	pub commit_key: String,
-	pub reason: AskSelectedAckCancelReason,
+	pub reason:     AskSelectedAckCancelReason,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,11 +300,11 @@ pub enum AskSelectedAckCancelReason {
 #[serde(rename_all = "camelCase")]
 pub struct Reply {
 	/// The action id being answered.
-	pub id: String,
+	pub id:              String,
 	/// The answer payload.
-	pub answer: ReplyAnswer,
+	pub answer:          ReplyAnswer,
 	/// The per-session token authorizing this client.
-	pub token: String,
+	pub token:           String,
 	/// Optional idempotency key so retried replies are not double-applied.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub idempotency_key: Option<String>,
@@ -412,14 +412,14 @@ pub struct IdentityHeader {
 	/// The session this header describes.
 	pub session_id: String,
 	/// Repository name/path.
-	pub repo: String,
+	pub repo:       String,
 	/// Active branch.
-	pub branch: String,
+	pub branch:     String,
 	/// Host machine tag.
-	pub machine: String,
+	pub machine:    String,
 	/// Optional session title (also used as the topic title).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub title: Option<String>,
+	pub title:      Option<String>,
 }
 
 /// A streamed dynamic context update for a session thread.
@@ -427,29 +427,29 @@ pub struct IdentityHeader {
 #[serde(rename_all = "camelCase")]
 pub struct ContextUpdate {
 	/// The session this update belongs to.
-	pub session_id: String,
+	pub session_id:   String,
 	/// Compact current working directory label; never the full host path by
 	/// default.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub cwd: Option<String>,
+	pub cwd:          Option<String>,
 	/// Last assistant message text.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub last_message: Option<String>,
 	/// Current task/todo summary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub task: Option<String>,
+	pub task:         Option<String>,
 	/// Goal status summary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub goal: Option<String>,
+	pub goal:         Option<String>,
 	/// Token/context-window usage summary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub token_usage: Option<String>,
+	pub token_usage:  Option<String>,
 	/// Active model.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub model: Option<String>,
+	pub model:        Option<String>,
 	/// Latest diff snippet.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub diff: Option<String>,
+	pub diff:         Option<String>,
 }
 
 /// A streamed turn output chunk (live throttled edit or finalized).
@@ -457,18 +457,18 @@ pub struct ContextUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct TurnStream {
 	/// The session this chunk belongs to.
-	pub session_id: String,
+	pub session_id:   String,
 	/// Whether this is a live (throttled) edit or the finalized output.
-	pub phase: TurnPhase,
+	pub phase:        TurnPhase,
 	/// The rendered text for this chunk.
-	pub text: String,
+	pub text:         String,
 	/// True only for the distinct final-answer chunk of a turn (never for
 	/// pre-ask lead-ins); consumers treat absence as false.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub final_answer: Option<bool>,
 	/// Opaque ref to coalesce live edits onto one rendered message.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub message_ref: Option<String>,
+	pub message_ref:  Option<String>,
 }
 
 /// An agent-produced image artifact for a session thread.
@@ -478,14 +478,14 @@ pub struct ImageAttachment {
 	/// The session this image belongs to.
 	pub session_id: String,
 	/// Image source: "computer", "browser", or a tool name.
-	pub source: String,
+	pub source:     String,
 	/// MIME type, e.g. "image/png".
-	pub mime: String,
+	pub mime:       String,
 	/// Base64-encoded image bytes.
-	pub data: String,
+	pub data:       String,
 	/// Optional caption.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub caption: Option<String>,
+	pub caption:    Option<String>,
 }
 
 /// An agent-produced file artifact to deliver as a chat document.
@@ -495,15 +495,15 @@ pub struct FileAttachment {
 	/// The session this file belongs to.
 	pub session_id: String,
 	/// Suggested file name (with extension when known).
-	pub name: String,
+	pub name:       String,
 	/// MIME type, e.g. "application/pdf".
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub mime: Option<String>,
+	pub mime:       Option<String>,
 	/// Base64-encoded file bytes.
-	pub data: String,
+	pub data:       String,
 	/// Optional caption.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub caption: Option<String>,
+	pub caption:    Option<String>,
 }
 
 /// A pushed configuration update reflecting current verbosity/redaction.
@@ -514,10 +514,10 @@ pub struct ConfigUpdate {
 	pub session_id: String,
 	/// Current streaming verbosity.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub verbosity: Option<Verbosity>,
+	pub verbosity:  Option<Verbosity>,
 	/// Whether redaction is enabled.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub redact: Option<bool>,
+	pub redact:     Option<bool>,
 }
 
 /// Session endpoint teardown signal.
@@ -535,10 +535,10 @@ pub struct ServerHello {
 	/// Protocol version the server speaks.
 	pub protocol_version: u32,
 	/// Capability tokens the server supports.
-	pub capabilities: Vec<String>,
+	pub capabilities:     Vec<String>,
 	/// Stable identifier for this WebSocket connection.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub connection_id: Option<String>,
+	pub connection_id:    Option<String>,
 }
 
 /// Client capability/version advertisement.
@@ -548,7 +548,7 @@ pub struct ClientHello {
 	/// Protocol version the client speaks.
 	pub protocol_version: u32,
 	/// Capability tokens the client supports.
-	pub capabilities: Vec<String>,
+	pub capabilities:     Vec<String>,
 }
 
 /// Application-level liveness ping.
@@ -585,18 +585,18 @@ pub struct UserMessage {
 	/// The session to inject into.
 	pub session_id: String,
 	/// The free-text message body.
-	pub text: String,
+	pub text:       String,
 	/// The per-session token authorizing this client.
-	pub token: String,
+	pub token:      String,
 	/// Telegram update id for inbound dedupe/idempotency.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub update_id: Option<i64>,
+	pub update_id:  Option<i64>,
 	/// Originating thread/topic id, for fail-closed routing.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub thread_id: Option<String>,
+	pub thread_id:  Option<String>,
 	/// Inline image attachments to forward as image content blocks.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub images: Vec<InboundImage>,
+	pub images:     Vec<InboundImage>,
 }
 
 /// An in-thread configuration command (verbosity/redact toggles).
@@ -606,13 +606,13 @@ pub struct ConfigCommand {
 	/// The session to configure.
 	pub session_id: String,
 	/// The per-session token authorizing this client.
-	pub token: String,
+	pub token:      String,
 	/// Requested verbosity, if changing.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub verbosity: Option<Verbosity>,
+	pub verbosity:  Option<Verbosity>,
 	/// Requested redaction state, if changing.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub redact: Option<bool>,
+	pub redact:     Option<bool>,
 }
 
 /// A deterministic transport control command forwarded to the host session.
@@ -622,17 +622,17 @@ pub struct ControlCommand {
 	/// The session to control.
 	pub session_id: String,
 	/// The per-session token authorizing this client.
-	pub token: String,
+	pub token:      String,
 	/// Client-generated request id, echoed in the result.
 	pub request_id: String,
 	/// Telegram update id for inbound dedupe/idempotency.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub update_id: Option<i64>,
+	pub update_id:  Option<i64>,
 	/// Originating thread/topic id, for fail-closed routing.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub thread_id: Option<String>,
+	pub thread_id:  Option<String>,
 	/// Command payload as a small JSON object owned by the TypeScript executor.
-	pub command: serde_json::Value,
+	pub command:    serde_json::Value,
 }
 
 /// Result status for a transport control command.
@@ -657,11 +657,11 @@ pub struct ControlCommandResult {
 	pub request_id: String,
 	/// Telegram update id this result corresponds to, when known.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub update_id: Option<i64>,
+	pub update_id:  Option<i64>,
 	/// Terminal command status.
-	pub status: ControlCommandStatus,
+	pub status:     ControlCommandStatus,
 	/// Short deterministic Telegram-visible text.
-	pub message: String,
+	pub message:    String,
 }
 
 /// Agent loop activity state, driving the client's live typing indicator.
@@ -682,7 +682,7 @@ pub struct Activity {
 	/// The session this activity belongs to.
 	pub session_id: String,
 	/// Whether the agent is currently busy or idle.
-	pub state: ActivityState,
+	pub state:      ActivityState,
 }
 
 /// Delivery state of a previously-injected inbound user message.
@@ -704,9 +704,9 @@ pub struct InboundAck {
 	/// The session that received the inbound message.
 	pub session_id: String,
 	/// The Telegram update id this acknowledgement refers to.
-	pub update_id: i64,
+	pub update_id:  i64,
 	/// The delivery state now reached.
-	pub state: InboundAckState,
+	pub state:      InboundAckState,
 }
 
 /// A replayable per-session readiness signal.
@@ -720,22 +720,22 @@ pub struct InboundAck {
 #[serde(rename_all = "camelCase")]
 pub struct SessionReady {
 	/// The session that is now ready.
-	pub session_id: String,
+	pub session_id:           String,
 	/// The lifecycle marker that spawned this session, when applicable.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub lifecycle_request_id: Option<String>,
 	/// The startup-prompt reference consumed by this session, when applicable.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub startup_prompt_ref: Option<String>,
+	pub startup_prompt_ref:   Option<String>,
 	/// Repository/project name, when known.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub repo: Option<String>,
+	pub repo:                 Option<String>,
 	/// Branch name, when known.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub branch: Option<String>,
+	pub branch:               Option<String>,
 	/// A short session title, when known.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub title: Option<String>,
+	pub title:                Option<String>,
 }
 
 /// Current protocol version emitted in [`ServerHello`].
@@ -776,13 +776,13 @@ mod tests {
 	#[test]
 	fn action_needed_ask_serializes_camelcase_with_snake_type() {
 		let msg = ServerMessage::ActionNeeded(ActionNeeded {
-			id: "wg_run_stage_1".into(),
-			kind: ActionKind::Ask,
+			id:         "wg_run_stage_1".into(),
+			kind:       ActionKind::Ask,
 			session_id: "sess-1".into(),
-			question: Some("Proceed?".into()),
-			options: Some(vec!["Yes".into(), "No".into()]),
-			controls: vec![],
-			summary: None,
+			question:   Some("Proceed?".into()),
+			options:    Some(vec!["Yes".into(), "No".into()]),
+			controls:   vec![],
+			summary:    None,
 		});
 		let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "action_needed");
@@ -836,13 +836,13 @@ mod tests {
 	#[test]
 	fn idle_action_omits_ask_fields() {
 		let msg = ServerMessage::ActionNeeded(ActionNeeded {
-			id: "idle-sess-1-7".into(),
-			kind: ActionKind::Idle,
+			id:         "idle-sess-1-7".into(),
+			kind:       ActionKind::Idle,
 			session_id: "sess-1".into(),
-			question: None,
-			options: None,
-			controls: vec![],
-			summary: Some("done refactoring".into()),
+			question:   None,
+			options:    None,
+			controls:   vec![],
+			summary:    Some("done refactoring".into()),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["kind"], "idle");
@@ -911,9 +911,9 @@ mod tests {
 	#[test]
 	fn action_resolved_serializes_resolved_by() {
 		let msg = ServerMessage::ActionResolved(ActionResolved {
-			id: "a1".into(),
+			id:          "a1".into(),
 			resolved_by: ResolvedBy::Local,
-			answer: None,
+			answer:      None,
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "action_resolved");
@@ -924,7 +924,7 @@ mod tests {
 	#[test]
 	fn reply_rejected_serializes_reason() {
 		let msg = ServerMessage::ReplyRejected(ReplyRejected {
-			id: "a1".into(),
+			id:     "a1".into(),
 			reason: RejectReason::AlreadyAnswered,
 		});
 		let v = serde_json::to_value(&msg).unwrap();
@@ -936,10 +936,10 @@ mod tests {
 	fn identity_header_serializes_camelcase() {
 		let msg = ServerMessage::IdentityHeader(IdentityHeader {
 			session_id: "sess-1".into(),
-			repo: "gajae-code".into(),
-			branch: "feat/notification-surface".into(),
-			machine: "mac-studio".into(),
-			title: Some("Rebuild notifications".into()),
+			repo:       "gajae-code".into(),
+			branch:     "feat/notification-surface".into(),
+			machine:    "mac-studio".into(),
+			title:      Some("Rebuild notifications".into()),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "identity_header");
@@ -961,14 +961,14 @@ mod tests {
 	#[test]
 	fn context_update_omits_absent_fields() {
 		let msg = ServerMessage::ContextUpdate(ContextUpdate {
-			session_id: "sess-1".into(),
+			session_id:   "sess-1".into(),
 			last_message: Some("done".into()),
-			task: None,
-			goal: None,
-			token_usage: Some("12k/200k".into()),
-			model: Some("opus".into()),
-			diff: None,
-			cwd: Some("repo-worktree".into()),
+			task:         None,
+			goal:         None,
+			token_usage:  Some("12k/200k".into()),
+			model:        Some("opus".into()),
+			diff:         None,
+			cwd:          Some("repo-worktree".into()),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "context_update");
@@ -982,11 +982,11 @@ mod tests {
 	#[test]
 	fn turn_stream_phase_serializes_snake_case() {
 		let msg = ServerMessage::TurnStream(TurnStream {
-			session_id: "sess-1".into(),
-			phase: TurnPhase::Finalized,
-			text: "final output".into(),
+			session_id:   "sess-1".into(),
+			phase:        TurnPhase::Finalized,
+			text:         "final output".into(),
 			final_answer: Some(true),
-			message_ref: Some("m-7".into()),
+			message_ref:  Some("m-7".into()),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "turn_stream");
@@ -999,10 +999,10 @@ mod tests {
 	fn image_attachment_serializes() {
 		let msg = ServerMessage::ImageAttachment(ImageAttachment {
 			session_id: "sess-1".into(),
-			source: "computer".into(),
-			mime: "image/png".into(),
-			data: "AAAA".into(),
-			caption: None,
+			source:     "computer".into(),
+			mime:       "image/png".into(),
+			data:       "AAAA".into(),
+			caption:    None,
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "image_attachment");
@@ -1014,8 +1014,8 @@ mod tests {
 	fn config_update_serializes_verbosity() {
 		let msg = ServerMessage::ConfigUpdate(ConfigUpdate {
 			session_id: "sess-1".into(),
-			verbosity: Some(Verbosity::Verbose),
-			redact: Some(false),
+			verbosity:  Some(Verbosity::Verbose),
+			redact:     Some(false),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "config_update");
@@ -1027,8 +1027,8 @@ mod tests {
 	fn server_hello_roundtrips_with_capabilities() {
 		let hello = ServerMessage::Hello(ServerHello {
 			protocol_version: PROTOCOL_VERSION,
-			capabilities: vec![capabilities::THREADED.into(), capabilities::IMAGES.into()],
-			connection_id: None,
+			capabilities:     vec![capabilities::THREADED.into(), capabilities::IMAGES.into()],
+			connection_id:    None,
 		});
 		let raw = serde_json::to_string(&hello).unwrap();
 		let back: ServerMessage = serde_json::from_str(&raw).unwrap();
@@ -1057,8 +1057,8 @@ mod tests {
 	fn server_hello_serializes_client_ping_pong_capability() {
 		let msg = ServerMessage::Hello(ServerHello {
 			protocol_version: PROTOCOL_VERSION,
-			capabilities: vec![capabilities::CLIENT_PING_PONG.into()],
-			connection_id: None,
+			capabilities:     vec![capabilities::CLIENT_PING_PONG.into()],
+			connection_id:    None,
 		});
 		let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "hello");
@@ -1075,9 +1075,9 @@ mod tests {
 	#[test]
 	fn ask_selected_ack_frames_use_camel_case_fields() {
 		let request = ServerMessage::AskSelectedAckRequest(AskSelectedAckRequest::Live {
-			request_id: "r1".into(),
-			commit_key: "c1".into(),
-			action_id: "a1".into(),
+			request_id:  "r1".into(),
+			commit_key:  "c1".into(),
+			action_id:   "a1".into(),
 			deadline_at: 123,
 		});
 		assert_eq!(
@@ -1192,9 +1192,9 @@ mod tests {
 		let msg = ServerMessage::ControlCommandResult(ControlCommandResult {
 			session_id: "s1".into(),
 			request_id: "r1".into(),
-			update_id: Some(42),
-			status: ControlCommandStatus::Ok,
-			message: "Context: 1/2 (50.0%)".into(),
+			update_id:  Some(42),
+			status:     ControlCommandStatus::Ok,
+			message:    "Context: 1/2 (50.0%)".into(),
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "control_command_result");
@@ -1327,7 +1327,7 @@ mod tests {
 	fn activity_serializes_snake_type_and_state() {
 		let msg = ServerMessage::Activity(Activity {
 			session_id: "sess-1".into(),
-			state: ActivityState::Busy,
+			state:      ActivityState::Busy,
 		});
 		let v = serde_json::to_value(&msg).unwrap();
 		assert_eq!(v["type"], "activity");

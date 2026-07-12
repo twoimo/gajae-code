@@ -36,7 +36,9 @@ describe("canonical SDK coordinator compatibility handler", () => {
 				},
 			});
 			const listed = await handleCoordinatorMcpRequest({ jsonrpc: "2.0", id: 2, method: "tools/list" }, { env });
-			expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([...COORDINATOR_MCP_TOOL_NAMES]);
+			expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+				...COORDINATOR_MCP_TOOL_NAMES,
+			]);
 			const promptTool = listed.result.tools.find(
 				(tool: { name: string }) => tool.name === "gjc_coordinator_send_prompt",
 			);

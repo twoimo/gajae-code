@@ -56,10 +56,7 @@ export default class McpServe extends Command {
 							tools: [...COORDINATOR_MCP_TOOL_NAMES],
 						};
 			if (flags.json) writeJson(payload);
-			else
-				process.stdout.write(
-					`server: ${payload.server.name}\ntools: ${payload.tools.length}\n`,
-				);
+			else process.stdout.write(`server: ${payload.server.name}\ntools: ${payload.tools.length}\n`);
 			return;
 		}
 

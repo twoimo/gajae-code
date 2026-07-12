@@ -7954,7 +7954,7 @@
 			"adapterTestId": "AD-T-Q23",
 			"sdkId": "resource.body",
 			"adapter": "telegram",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-T-Q23",
 			"argv": [
@@ -7964,13 +7964,13 @@
 				"--test-name-pattern",
 				"^AD-T-Q23:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-D-Q23",
 			"sdkId": "resource.body",
 			"adapter": "discord",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-D-Q23",
 			"argv": [
@@ -7980,13 +7980,13 @@
 				"--test-name-pattern",
 				"^AD-D-Q23:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-S-Q23",
 			"sdkId": "resource.body",
 			"adapter": "slack",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-S-Q23",
 			"argv": [
@@ -7996,7 +7996,7 @@
 				"--test-name-pattern",
 				"^AD-S-Q23:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-M-Q23",
@@ -8050,7 +8050,7 @@
 			"adapterTestId": "AD-T-Q24",
 			"sdkId": "artifact.read",
 			"adapter": "telegram",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-T-Q24",
 			"argv": [
@@ -8060,13 +8060,13 @@
 				"--test-name-pattern",
 				"^AD-T-Q24:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-D-Q24",
 			"sdkId": "artifact.read",
 			"adapter": "discord",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-D-Q24",
 			"argv": [
@@ -8076,13 +8076,13 @@
 				"--test-name-pattern",
 				"^AD-D-Q24:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-S-Q24",
 			"sdkId": "artifact.read",
 			"adapter": "slack",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-S-Q24",
 			"argv": [
@@ -8092,7 +8092,7 @@
 				"--test-name-pattern",
 				"^AD-S-Q24:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-M-Q24",
@@ -8146,7 +8146,7 @@
 			"adapterTestId": "AD-T-Q25",
 			"sdkId": "runtime.jobs.list",
 			"adapter": "telegram",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-T-Q25",
 			"argv": [
@@ -8156,13 +8156,13 @@
 				"--test-name-pattern",
 				"^AD-T-Q25:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-D-Q25",
 			"sdkId": "runtime.jobs.list",
 			"adapter": "discord",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-D-Q25",
 			"argv": [
@@ -8172,13 +8172,13 @@
 				"--test-name-pattern",
 				"^AD-D-Q25:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-S-Q25",
 			"sdkId": "runtime.jobs.list",
 			"adapter": "slack",
-			"disposition": "generic_safe",
+			"disposition": "prohibited",
 			"testFile": "packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 			"testNamePattern": "AD-S-Q25",
 			"argv": [
@@ -8188,7 +8188,7 @@
 				"--test-name-pattern",
 				"^AD-S-Q25:"
 			],
-			"expected": "forwarded"
+			"expected": "rejected_before_send"
 		},
 		{
 			"adapterTestId": "AD-M-Q25",

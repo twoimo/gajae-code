@@ -1,4 +1,9 @@
-import { ConversationStore, conversationStorePath, type ConversationStoreFs, type ConversationRecord } from "./conversation-store";
+import {
+	type ConversationRecord,
+	ConversationStore,
+	type ConversationStoreFs,
+	conversationStorePath,
+} from "./conversation-store";
 
 export const CHAT_EFFECT_JOURNAL_VERSION = 1;
 export const MAX_TERMINAL_CHAT_EFFECTS = 128;
@@ -59,7 +64,12 @@ function nonEmpty(value: string, name: string): void {
 }
 
 function canClaim(effect: ChatEffect, now: number): boolean {
-	return effect.state === "pending" || effect.state === "accepted" || (effect.state === "uncertain" && !effect.kind.includes(".inbound.")) || (effect.state === "leased" && (effect.leaseExpiresAt ?? 0) <= now);
+	return (
+		effect.state === "pending" ||
+		effect.state === "accepted" ||
+		(effect.state === "uncertain" && !effect.kind.includes(".inbound.")) ||
+		(effect.state === "leased" && (effect.leaseExpiresAt ?? 0) <= now)
+	);
 }
 
 /**
@@ -87,10 +97,12 @@ export class ChatEffectJournal {
 		this.#now = input.now ?? Date.now;
 	}
 
-	get filePath(): string { return this.#store.filePath; }
+	get filePath(): string {
+		return this.#store.filePath;
+	}
 
 	async read<TPayload = unknown>(id: string): Promise<ChatEffect<TPayload> | undefined> {
-		return await this.#store.read(id) as ChatEffect<TPayload> | undefined;
+		return (await this.#store.read(id)) as ChatEffect<TPayload> | undefined;
 	}
 
 	async list(): Promise<ChatEffect[]> {
@@ -99,7 +111,10 @@ export class ChatEffectJournal {
 
 	async replayable(transport: "discord" | "slack", endpointGeneration: number): Promise<ChatEffect[]> {
 		const now = this.#now();
-		return (await this.list()).filter(effect => effect.transport === transport && effect.endpointGeneration === endpointGeneration && canClaim(effect, now));
+		return (await this.list()).filter(
+			effect =>
+				effect.transport === transport && effect.endpointGeneration === endpointGeneration && canClaim(effect, now),
+		);
 	}
 
 	async enqueue<TPayload>(input: EnqueueChatEffect<TPayload>): Promise<ChatEffect<TPayload>> {
@@ -122,37 +137,73 @@ export class ChatEffectJournal {
 		return raced;
 	}
 
-	async claim<TPayload = unknown>(id: string, owner: string, leaseMs: number): Promise<ChatEffect<TPayload> | undefined> {
+	async claim<TPayload = unknown>(
+		id: string,
+		owner: string,
+		leaseMs: number,
+	): Promise<ChatEffect<TPayload> | undefined> {
 		nonEmpty(owner, "owner");
 		if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error("Chat effect lease duration must be positive");
 		let claimed: ChatEffect<TPayload> | undefined;
 		const now = this.#now();
 		await this.#store.transact(id, current => {
 			if (!current || !canClaim(current, now)) return current;
-			claimed = { ...current, generation: current.generation + 1, state: "leased", owner, epoch: current.epoch + 1, leaseExpiresAt: now + leaseMs, updatedAt: now } as ChatEffect<TPayload>;
+			claimed = {
+				...current,
+				generation: current.generation + 1,
+				state: "leased",
+				owner,
+				epoch: current.epoch + 1,
+				leaseExpiresAt: now + leaseMs,
+				updatedAt: now,
+			} as ChatEffect<TPayload>;
 			return claimed;
 		});
 		return claimed;
 	}
 
-	async renew<TPayload = unknown>(id: string, lease: ChatEffectLease, leaseMs: number): Promise<ChatEffect<TPayload> | undefined> {
+	async renew<TPayload = unknown>(
+		id: string,
+		lease: ChatEffectLease,
+		leaseMs: number,
+	): Promise<ChatEffect<TPayload> | undefined> {
 		if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error("Chat effect lease duration must be positive");
 		let renewed: ChatEffect<TPayload> | undefined;
 		const now = this.#now();
 		await this.#store.transact(id, current => {
-			if (!current || current.state !== "leased" || current.owner !== lease.owner || current.epoch !== lease.epoch || (current.leaseExpiresAt ?? 0) <= now) return current;
-			renewed = { ...current, generation: current.generation + 1, leaseExpiresAt: now + leaseMs, updatedAt: now } as ChatEffect<TPayload>;
+			if (current?.state !== "leased" || current.owner !== lease.owner || current.epoch !== lease.epoch)
+				return current;
+			renewed = {
+				...current,
+				generation: current.generation + 1,
+				leaseExpiresAt: now + leaseMs,
+				updatedAt: now,
+			} as ChatEffect<TPayload>;
 			return renewed;
 		});
 		return renewed;
 	}
 
-	async record<TPayload = unknown>(id: string, lease: ChatEffectLease, state: Exclude<ChatEffectState, "pending" | "leased">, receipt?: ChatEffectReceipt): Promise<ChatEffect<TPayload> | undefined> {
+	async record<TPayload = unknown>(
+		id: string,
+		lease: ChatEffectLease,
+		state: Exclude<ChatEffectState, "pending" | "leased">,
+		receipt?: ChatEffectReceipt,
+	): Promise<ChatEffect<TPayload> | undefined> {
 		let recorded: ChatEffect<TPayload> | undefined;
 		const now = this.#now();
 		await this.#store.transact(id, current => {
-			if (!current || current.state !== "leased" || current.owner !== lease.owner || current.epoch !== lease.epoch || (current.leaseExpiresAt ?? 0) <= now) return current;
-			recorded = { ...current, generation: current.generation + 1, state, owner: undefined, leaseExpiresAt: undefined, receipt, updatedAt: now } as ChatEffect<TPayload>;
+			if (current?.state !== "leased" || current.owner !== lease.owner || current.epoch !== lease.epoch)
+				return current;
+			recorded = {
+				...current,
+				generation: current.generation + 1,
+				state,
+				owner: undefined,
+				leaseExpiresAt: undefined,
+				receipt,
+				updatedAt: now,
+			} as ChatEffect<TPayload>;
 			return recorded;
 		});
 		if (recorded?.state === "terminal") await this.#pruneTerminal();
@@ -165,7 +216,15 @@ export class ChatEffectJournal {
 		const now = this.#now();
 		await this.#store.transact(id, current => {
 			if (!current || current.state === "terminal") return current;
-			terminalized = { ...current, generation: current.generation + 1, state: "terminal", owner: undefined, leaseExpiresAt: undefined, receipt, updatedAt: now };
+			terminalized = {
+				...current,
+				generation: current.generation + 1,
+				state: "terminal",
+				owner: undefined,
+				leaseExpiresAt: undefined,
+				receipt,
+				updatedAt: now,
+			};
 			return terminalized;
 		});
 		if (terminalized) await this.#pruneTerminal();
@@ -173,7 +232,9 @@ export class ChatEffectJournal {
 	}
 
 	async #pruneTerminal(): Promise<void> {
-		const terminal = (await this.list()).filter(effect => effect.state === "terminal").sort((left, right) => left.updatedAt - right.updatedAt);
+		const terminal = (await this.list())
+			.filter(effect => effect.state === "terminal")
+			.sort((left, right) => left.updatedAt - right.updatedAt);
 		for (const effect of terminal.slice(0, Math.max(0, terminal.length - MAX_TERMINAL_CHAT_EFFECTS))) {
 			await this.#store.delete(effect.id, effect.generation);
 		}

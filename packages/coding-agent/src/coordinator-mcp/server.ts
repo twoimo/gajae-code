@@ -1758,7 +1758,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				for (const raw of sessions) {
 					const session = asRecord(raw);
 					const sessionId = optionalString(session?.session_id);
-					if (!session || session.ephemeral !== true || !sessionId) continue;
+					if (session?.ephemeral !== true || !sessionId) continue;
 					const state = await readSessionState(namespaceDir, sessionId);
 					const stamp = optionalString(state?.updated_at) ?? optionalString(session.created_at);
 					const lastActivityMs = stamp ? Date.parse(stamp) : Number.NaN;

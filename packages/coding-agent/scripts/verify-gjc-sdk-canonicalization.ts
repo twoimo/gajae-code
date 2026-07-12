@@ -53,7 +53,9 @@ function exportTargetStrings(target: unknown): string[] {
 }
 
 function retiredIngressSource(file: string): boolean {
-	return /\/src\/(?:modes\/(?:rpc|bridge|unattended)(?:\/|$)|(?:rpc|bridge|unattended)(?:\/|\.[cm]?[jt]sx?$))/.test(file);
+	return /\/src\/(?:modes\/(?:rpc|bridge|unattended)(?:\/|$)|(?:rpc|bridge|unattended)(?:\/|\.[cm]?[jt]sx?$))/.test(
+		file,
+	);
 }
 
 function broadExportReachesSource(
@@ -72,7 +74,6 @@ function broadExportReachesSource(
 	}
 	return false;
 }
-
 
 function isPython(file: string): boolean {
 	return file.endsWith(".py");
@@ -142,7 +143,8 @@ function isExecutableSource(file: string): boolean {
 }
 
 function rpcModeInvocationViolations(file: string, contents: string): string[] {
-	if (isGeneratedDocumentationIndex(file) || !isExecutableSource(file) || allowedRpcModeInvocationTests.has(file)) return [];
+	if (isGeneratedDocumentationIndex(file) || !isExecutableSource(file) || allowedRpcModeInvocationTests.has(file))
+		return [];
 	return modeRpcInvocationPatterns.flatMap(pattern =>
 		[...contents.matchAll(pattern)].map(
 			match => `${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`,
@@ -413,9 +415,9 @@ async function scan(): Promise<string[]> {
 				`Unable to scan tracked file ${file}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-	violations.push(...rpcModeInvocationViolations(file, contents));
-	if (isActiveLegacyPythonRpcTarget(file)) violations.push(...legacyPythonRpcViolations(file, contents));
-	if (file === packageManifestPath) violations.push(...scanPackageExports(contents, files));
+		violations.push(...rpcModeInvocationViolations(file, contents));
+		if (isActiveLegacyPythonRpcTarget(file)) violations.push(...legacyPythonRpcViolations(file, contents));
+		if (file === packageManifestPath) violations.push(...scanPackageExports(contents, files));
 		const bridgeClientMetadataViolation = bridgeClientPackageMetadataViolation(file, contents);
 		if (bridgeClientMetadataViolation) violations.push(bridgeClientMetadataViolation);
 		if (isProductionTypeScript(file)) contentsByFile.set(file, contents);
@@ -576,8 +578,7 @@ async function selfTest(): Promise<void> {
 	);
 	await runSelfTestFixture(
 		{
-			"packages/coding-agent/package.json":
-				'{"exports":{"./modes/*":{"import":"./src/modes/*.ts"}}}\n',
+			"packages/coding-agent/package.json": '{"exports":{"./modes/*":{"import":"./src/modes/*.ts"}}}\n',
 		},
 		1,
 		"retired agent-wire surface remains externally exported",
@@ -663,8 +664,7 @@ async function selfTest(): Promise<void> {
 	);
 	await runSelfTestFixture(
 		{
-			"packages/coding-agent/test/fixtures/neutral-name.ts":
-				'Bun.spawnSync(["gjc", "--mode", "rpc"]);\n',
+			"packages/coding-agent/test/fixtures/neutral-name.ts": 'Bun.spawnSync(["gjc", "--mode", "rpc"]);\n',
 		},
 		1,
 		"invokes removed --mode rpc",

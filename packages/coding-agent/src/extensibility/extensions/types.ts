@@ -7,7 +7,6 @@
  * - Register commands, keyboard shortcuts, and CLI flags
  * - Interact with the user via UI primitives
  */
-import type { ClientBridgePermissionOption, ClientBridgePermissionOutcome, ClientBridgePermissionToolCall } from "../../session/client-bridge";
 
 import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback, ThinkingLevel } from "@gajae-code/agent-core";
 import type { CompactionResult } from "@gajae-code/agent-core/compaction";
@@ -36,6 +35,11 @@ import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { WorkflowGateEmitter } from "../../modes/shared/agent-wire/workflow-gate-broker";
 import type { Theme } from "../../modes/theme/theme";
+import type {
+	ClientBridgePermissionOption,
+	ClientBridgePermissionOutcome,
+	ClientBridgePermissionToolCall,
+} from "../../session/client-bridge";
 import type { CustomMessage } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
 import type {
@@ -354,7 +358,14 @@ export interface ExtensionContext {
 	getBranchCandidates(): unknown;
 	getExtensions(): unknown;
 	getArtifact(id: string): Uint8Array | string | undefined | Promise<Uint8Array | string | undefined>;
-	getArtifactRange?(id: string, offset: number, length: number): { bytes: Uint8Array; totalBytes: number } | undefined | Promise<{ bytes: Uint8Array; totalBytes: number } | undefined>;
+	getArtifactRange?(
+		id: string,
+		offset: number,
+		length: number,
+	):
+		| { bytes: Uint8Array; totalBytes: number }
+		| undefined
+		| Promise<{ bytes: Uint8Array; totalBytes: number } | undefined>;
 
 	getJobs(): unknown;
 	/** Typed skill and mode controls exposed to the SDK host. */
@@ -365,10 +376,17 @@ export interface ExtensionContext {
 	/** Typed nonvisual session controls exposed to the SDK host. */
 	sdkControl?(operation: string, input: Record<string, unknown>): unknown | Promise<unknown>;
 	/** Install a permission callback backed by a live SDK reverse provider lease. */
-	setSdkPermissionProvider?(provider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined): void;
+	setSdkPermissionProvider?(
+		provider:
+			| ((
+					toolCall: ClientBridgePermissionToolCall,
+					options: ClientBridgePermissionOption[],
+					signal?: AbortSignal,
+			  ) => Promise<ClientBridgePermissionOutcome>)
+			| undefined,
+	): void;
 	/** Names of session SDK seams actually installed by the active runtime. */
 	sdkBindings?(): readonly string[];
-
 
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
@@ -1326,13 +1344,31 @@ export interface ExtensionContextActions {
 	getBranchCandidates?: () => unknown;
 	getExtensions?: () => unknown;
 	getArtifact?: (id: string) => Uint8Array | string | undefined | Promise<Uint8Array | string | undefined>;
-	getArtifactRange?: (id: string, offset: number, length: number) => { bytes: Uint8Array; totalBytes: number } | undefined | Promise<{ bytes: Uint8Array; totalBytes: number } | undefined>;
+	getArtifactRange?: (
+		id: string,
+		offset: number,
+		length: number,
+	) =>
+		| { bytes: Uint8Array; totalBytes: number }
+		| undefined
+		| Promise<{ bytes: Uint8Array; totalBytes: number } | undefined>;
 	getJobs?: () => unknown;
-	setSdkPermissionProvider?: (provider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined) => void;
+	setSdkPermissionProvider?: (
+		provider:
+			| ((
+					toolCall: ClientBridgePermissionToolCall,
+					options: ClientBridgePermissionOption[],
+					signal?: AbortSignal,
+			  ) => Promise<ClientBridgePermissionOutcome>)
+			| undefined,
+	) => void;
 	sdkControl?: (operation: string, input: Record<string, unknown>) => unknown | Promise<unknown>;
 	invokeSkill?: (name: string, args?: string) => Promise<unknown>;
 	setPlanMode?: (on: boolean) => unknown;
-	operateGoal?: (op: "create" | "get" | "resume" | "pause" | "complete" | "drop", objective?: string) => Promise<unknown>;
+	operateGoal?: (
+		op: "create" | "get" | "resume" | "pause" | "complete" | "drop",
+		objective?: string,
+	) => Promise<unknown>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */

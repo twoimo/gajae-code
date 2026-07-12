@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import type { JsonSchema } from "../src/modes/shared/agent-wire/workflow-gate-types";
 import {
 	assertSupportedGateSchema,
 	compileGateSchema,
@@ -8,6 +7,7 @@ import {
 	validateGateAnswer,
 	WorkflowGateSchemaError,
 } from "../src/modes/shared/agent-wire/workflow-gate-schema";
+import type { JsonSchema } from "../src/modes/shared/agent-wire/workflow-gate-types";
 
 describe("workflow-gate-schema", () => {
 	it("rejects unsupported keywords at construction", () => {

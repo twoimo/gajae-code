@@ -153,7 +153,13 @@ describe("SDK daemon session CLI", () => {
 	});
 
 	it("requires a caller lifecycle idempotency key before broker connection", async () => {
-		const result = await runCli(root, agentDir, ["global", "--op", "session.create", "--json-input", `{\"cwd\":${JSON.stringify(root)}}`]);
+		const result = await runCli(root, agentDir, [
+			"global",
+			"--op",
+			"session.create",
+			"--json-input",
+			`{"cwd":${JSON.stringify(root)}}`,
+		]);
 		expect(result.exitCode).toBe(2);
 		expect(JSON.parse(result.stdout)).toMatchObject({ error: { code: "invalid_input" } });
 	});

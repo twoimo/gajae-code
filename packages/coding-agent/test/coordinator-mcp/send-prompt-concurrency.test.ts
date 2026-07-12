@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { writeBrokerDiscovery } from "../../src/sdk/broker/discovery";
 import { createCoordinatorMcpServer } from "../../src/coordinator-mcp/server";
+import { writeBrokerDiscovery } from "../../src/sdk/broker/discovery";
 
 async function withTempRoot(run: (root: string) => Promise<void>): Promise<void> {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-coord-race-"));

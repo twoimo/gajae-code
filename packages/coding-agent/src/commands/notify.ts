@@ -30,7 +30,9 @@ export default class Notify extends Command {
 		"discord-bot-token": Flags.string({ description: "Discord bot token (non-interactive Discord setup)" }),
 		"discord-application-id": Flags.string({ description: "Discord application id (non-interactive Discord setup)" }),
 		"discord-guild-id": Flags.string({ description: "Discord guild id (non-interactive Discord setup)" }),
-		"discord-parent-channel-id": Flags.string({ description: "Discord parent channel id (non-interactive Discord setup)" }),
+		"discord-parent-channel-id": Flags.string({
+			description: "Discord parent channel id (non-interactive Discord setup)",
+		}),
 		"slack-bot-token": Flags.string({ description: "Slack bot token (non-interactive Slack setup)" }),
 		"slack-app-token": Flags.string({ description: "Slack app token (non-interactive Slack setup)" }),
 		"slack-workspace-id": Flags.string({ description: "Slack workspace id (non-interactive Slack setup)" }),
@@ -56,7 +58,13 @@ export default class Notify extends Command {
 			...extra,
 		];
 		const provider = extra[0];
-		if (action === "setup" && provider !== undefined && provider !== "telegram" && provider !== "discord" && provider !== "slack") {
+		if (
+			action === "setup" &&
+			provider !== undefined &&
+			provider !== "telegram" &&
+			provider !== "discord" &&
+			provider !== "slack"
+		) {
 			throw new Error(`Unknown notification provider: ${provider}`);
 		}
 

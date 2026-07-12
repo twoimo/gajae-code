@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { acceptsSlackInbound, normalizeSlackConversation, slackConversationKey, type SlackConversation } from "../src/sdk/bus/slack-conversation";
+import {
+	acceptsSlackInbound,
+	normalizeSlackConversation,
+	type SlackConversation,
+	slackConversationKey,
+} from "../src/sdk/bus/slack-conversation";
 
 const active: SlackConversation = {
 	generation: 3,
@@ -26,7 +31,13 @@ describe("Slack thread state", () => {
 
 	it("bounds durable identifier-only dedupe fields", () => {
 		const ids = Array.from({ length: 140 }, (_, index) => `event-${index}`);
-		const normalized = normalizeSlackConversation({ ...active, seenEventIds: ids, seenContextIds: ids, seenRetryKeys: ids, seenInteractionIds: ids });
+		const normalized = normalizeSlackConversation({
+			...active,
+			seenEventIds: ids,
+			seenContextIds: ids,
+			seenRetryKeys: ids,
+			seenInteractionIds: ids,
+		});
 		expect(normalized.seenEventIds).toHaveLength(128);
 		expect(normalized.seenEventIds[0]).toBe("event-12");
 	});

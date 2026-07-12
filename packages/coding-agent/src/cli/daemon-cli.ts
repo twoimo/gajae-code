@@ -7,7 +7,6 @@
 
 import { Settings } from "../config/settings";
 import { BUILT_IN_DAEMON_KINDS, selectDaemonControllers } from "../daemon/builtin";
-import { runChatDaemonInternal } from "../sdk/bus/chat-daemon-cli";
 import type {
 	BuiltInDaemonController,
 	DaemonKind,
@@ -21,13 +20,17 @@ import {
 	formatDaemonStatus,
 	resolveDaemonAction,
 } from "../daemon/operator-contract";
+import { runChatDaemonInternal } from "../sdk/bus/chat-daemon-cli";
 
 export type DaemonCliAction = "list" | "status" | "stop" | "reload";
 export type DaemonInternalCliAction = "discord-internal" | "slack-internal";
 export type DaemonCommandAction = DaemonCliAction | DaemonInternalCliAction;
 
 export class UnknownDaemonKindError extends Error {
-	constructor(readonly kinds: readonly string[], readonly knownKinds: readonly DaemonKind[]) {
+	constructor(
+		readonly kinds: readonly string[],
+		readonly knownKinds: readonly DaemonKind[],
+	) {
 		super(`Unknown daemon kind(s): ${kinds.join(", ")}. Known kinds: ${knownKinds.join(", ")}.`);
 		this.name = "UnknownDaemonKindError";
 	}
@@ -58,7 +61,6 @@ export interface DaemonCommandDeps {
 	controllers?: BuiltInDaemonController[];
 }
 
-const KNOWN_ACTIONS: DaemonCliAction[] = ["list", "status", "stop", "reload"];
 const INTERNAL_ACTIONS: DaemonInternalCliAction[] = ["discord-internal", "slack-internal"];
 const KNOWN_KINDS = BUILT_IN_DAEMON_KINDS;
 
@@ -68,7 +70,9 @@ export function parseDaemonArgs(argv: string[]): DaemonCommandArgs | undefined {
 	const actionToken = rest[0];
 	const resolved = resolveDaemonAction(actionToken);
 	const action = (resolved ??
-		((INTERNAL_ACTIONS as readonly string[]).includes(actionToken ?? "") ? actionToken : "status")) as DaemonCommandAction;
+		((INTERNAL_ACTIONS as readonly string[]).includes(actionToken ?? "")
+			? actionToken
+			: "status")) as DaemonCommandAction;
 	const isActionToken =
 		(DAEMON_ACTION_TOKENS as readonly string[]).includes(actionToken ?? "") ||
 		(INTERNAL_ACTIONS as readonly string[]).includes(actionToken ?? "");

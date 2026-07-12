@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -10,7 +10,6 @@ type TestServer = {
 	stop(closeActiveConnections?: boolean): void;
 };
 
-
 test("shipped MCP stdio advertises confirm and forwards confirmed destructive controls", async () => {
 	const repo = await mkdtemp(path.join(tmpdir(), "gjc-sdk-mcp-stdio-"));
 	const token = "mcp-stdio-token";
@@ -20,7 +19,8 @@ test("shipped MCP stdio advertises confirm and forwards confirmed destructive co
 		hostname: "127.0.0.1",
 		port: 0,
 		fetch(request) {
-			if (new URL(request.url).searchParams.get("token") !== token) return new Response("Unauthorized", { status: 401 });
+			if (new URL(request.url).searchParams.get("token") !== token)
+				return new Response("Unauthorized", { status: 401 });
 			if (!server.upgrade(request)) return new Response("Upgrade failed", { status: 400 });
 		},
 		websocket: {
@@ -66,8 +66,13 @@ test("shipped MCP stdio advertises confirm and forwards confirmed destructive co
 		const exitCode = await child.exited;
 		expect(exitCode, stderr).toBe(0);
 
-		const responses = stdout.trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
-		const toolList = responses.find(response => response.id === 1)?.result as { tools?: Array<Record<string, unknown>> };
+		const responses = stdout
+			.trim()
+			.split("\n")
+			.map(line => JSON.parse(line) as Record<string, unknown>);
+		const toolList = responses.find(response => response.id === 1)?.result as {
+			tools?: Array<Record<string, unknown>>;
+		};
 		const control = toolList.tools?.find(tool => tool.name === "gjc_session_control");
 		expect(control).toMatchObject({
 			inputSchema: {
@@ -75,7 +80,9 @@ test("shipped MCP stdio advertises confirm and forwards confirmed destructive co
 				properties: { confirm: { type: "boolean" } },
 			},
 		});
-		const controlPayload = responses.find(response => response.id === 2)?.result as { content?: Array<{ text?: string }> };
+		const controlPayload = responses.find(response => response.id === 2)?.result as {
+			content?: Array<{ text?: string }>;
+		};
 		expect(JSON.parse(controlPayload.content?.[0]?.text ?? "{}")).toMatchObject({ ok: true, cleared: true });
 		expect(received).toEqual([
 			expect.objectContaining({ type: "control_request", operation: "context.clear", input: {}, confirm: true }),

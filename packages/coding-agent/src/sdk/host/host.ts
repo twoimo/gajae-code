@@ -1,12 +1,8 @@
-import { SessionEventStream, type EventFrame } from "./events";
-import { ReverseLeaseError, ReverseLeaseRuntime, type ProviderLease } from "./reverse-leases";
+import { type EventFrame, SessionEventStream } from "./events";
+import { type ProviderLease, ReverseLeaseError, ReverseLeaseRuntime } from "./reverse-leases";
 import type { BrokerIndexWriter, HostEndpointAdapters, SdkFrame } from "./types";
 
-export type SdkRequestObserver = (
-	kind: "control" | "query",
-	connectionId: string,
-	frame: SdkFrame,
-) => void;
+export type SdkRequestObserver = (kind: "control" | "query", connectionId: string, frame: SdkFrame) => void;
 
 export interface SessionSdkHostOptions extends HostEndpointAdapters {
 	control?: (connectionId: string, frame: SdkFrame) => unknown | Promise<unknown>;
@@ -91,7 +87,7 @@ function requireConnection(connectionId: string, frame: SdkFrame): void {
 		throw invalidFrame("connectionId does not match the transport connection.");
 }
 function has(frame: SdkFrame, field: string): boolean {
-	return Object.prototype.hasOwnProperty.call(frame, field);
+	return Object.hasOwn(frame, field);
 }
 
 /** Adapter-based session host; bus wiring owns NotificationServer creation and transport framing. */
@@ -194,7 +190,8 @@ export class SessionSdkHost {
 				}
 				case "event_replay": {
 					const id = requiredString(frame, "id");
-					const rawGeneration = frame.sinceGeneration === undefined ? this.events.generation : frame.sinceGeneration;
+					const rawGeneration =
+						frame.sinceGeneration === undefined ? this.events.generation : frame.sinceGeneration;
 					const rawSeq = frame.sinceSeq === undefined ? 0 : frame.sinceSeq;
 					if (typeof rawGeneration !== "number" || !Number.isSafeInteger(rawGeneration) || rawGeneration < 0)
 						throw invalidFrame("sinceGeneration must be a non-negative integer.");

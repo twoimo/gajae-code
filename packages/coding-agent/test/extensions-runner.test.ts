@@ -808,7 +808,13 @@ describe("ExtensionRunner", () => {
 			};
 
 			// Wired: the counted provider is surfaced verbatim on the created context.
-			const wired = new ExtensionRunner(result.extensions, result.runtime, tempDir.path(), sessionManager, modelRegistry);
+			const wired = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
 			wired.initialize(runtimeActions, {
 				...baseContextActions,
 				getPendingMessageCounts: () => ({ steering: 2, followUp: 1, nextTurn: 3 }),

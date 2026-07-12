@@ -1,5 +1,5 @@
 import { validateAdapterSecretFields } from "../protocol/adapter-validation";
-import { OPERATIONS, type Adapter, type Operation, type OperationKind } from "../protocol/operation-registry";
+import { type Adapter, OPERATIONS, type Operation, type OperationKind } from "../protocol/operation-registry";
 
 export type ChatTransport = Extract<Adapter, "telegram" | "discord" | "slack">;
 export type ChatOperationDisposition = "allowed" | "unsupported_on_chat";
@@ -20,8 +20,11 @@ export interface ChatOperationRequest {
 const EXPLICITLY_PROHIBITED_OPERATION_IDS = new Set(["C25", "C39", "C40", "G02"]);
 
 function isAllowedOnChat(transport: ChatTransport, operation: Operation): boolean {
-	return !EXPLICITLY_PROHIBITED_OPERATION_IDS.has(operation.id) &&
-		(operation.adapterDispositions[transport] === "generic_safe" || operation.adapterDispositions[transport] === "native_alias");
+	return (
+		!EXPLICITLY_PROHIBITED_OPERATION_IDS.has(operation.id) &&
+		(operation.adapterDispositions[transport] === "generic_safe" ||
+			operation.adapterDispositions[transport] === "native_alias")
+	);
 }
 
 function buildChatOperationPolicy(transport: ChatTransport): Readonly<Record<string, ChatOperationDisposition>> {
@@ -36,12 +39,13 @@ function buildChatOperationPolicy(transport: ChatTransport): Readonly<Record<str
  * Explicit policy prohibitions remain as defense in depth for shell execution,
  * callback-provider registration, and endpoint credentials.
  */
-export const CHAT_OPERATION_POLICY: Readonly<Record<ChatTransport, Readonly<Record<string, ChatOperationDisposition>>>> = {
+export const CHAT_OPERATION_POLICY: Readonly<
+	Record<ChatTransport, Readonly<Record<string, ChatOperationDisposition>>>
+> = {
 	telegram: buildChatOperationPolicy("telegram"),
 	discord: buildChatOperationPolicy("discord"),
 	slack: buildChatOperationPolicy("slack"),
 };
-
 
 function unsupported(): ChatCommandDecision {
 	return { ok: false, error: { code: "unsupported_on_chat", message: "This operation is not supported on chat." } };
@@ -49,10 +53,15 @@ function unsupported(): ChatCommandDecision {
 
 /** Reject unsafe or unknown commands before their SDK request can be sent. */
 export function authorizeChatOperation(transport: ChatTransport, request: ChatOperationRequest): ChatCommandDecision {
-	const operation = OPERATIONS.find(candidate => candidate.kind === request.kind && candidate.sdkId === request.operation);
+	const operation = OPERATIONS.find(
+		candidate => candidate.kind === request.kind && candidate.sdkId === request.operation,
+	);
 	if (!operation) return unsupported();
 	if (validateAdapterSecretFields(operation.sdkId, (request.input ?? {}) as Record<string, unknown>)) {
-		return { ok: false, error: { code: "secret_input_forbidden", message: "Secret configuration input is forbidden on chat." } };
+		return {
+			ok: false,
+			error: { code: "secret_input_forbidden", message: "Secret configuration input is forbidden on chat." },
+		};
 	}
 	return CHAT_OPERATION_POLICY[transport][operation.id] === "allowed" ? { ok: true } : unsupported();
 }
@@ -77,14 +86,20 @@ const BODY_BEARING_QUERY_OPERATIONS = new Set([
 	"artifact.read",
 ]);
 
-export type ChatCommandOutcome = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
+export type ChatCommandOutcome =
+	| { ok: true; result: unknown }
+	| { ok: false; error: { code: string; message: string } };
 
 /**
  * The chat transport is an untrusted presentation surface, not a general SDK
  * result renderer. Never serialize SDK result bodies or provider error text.
  */
-export function projectChatCommandOutcome(request: Pick<ChatOperationRequest, "kind" | "operation">, outcome: ChatCommandOutcome): Record<string, unknown> {
-	if (!outcome.ok) return { ok: false, error: { code: outcome.error.code, message: "Command could not be completed." } };
+export function projectChatCommandOutcome(
+	request: Pick<ChatOperationRequest, "kind" | "operation">,
+	outcome: ChatCommandOutcome,
+): Record<string, unknown> {
+	if (!outcome.ok)
+		return { ok: false, error: { code: outcome.error.code, message: "Command could not be completed." } };
 	if (request.kind === "query" && BODY_BEARING_QUERY_OPERATIONS.has(request.operation)) {
 		return { ok: true, result: { operation: request.operation, status: "content_withheld" } };
 	}

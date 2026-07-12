@@ -186,7 +186,7 @@ function hasFreshReviewedBatchFinalReplacement(input: {
 }): boolean {
 	const finalGoalId = input.deferredGoal.completionVerification?.validationBatch?.finalGoalId;
 	const finalGoal = finalGoalId ? input.plan.goals.find(goal => goal.id === finalGoalId) : undefined;
-	if (!finalGoal || finalGoal.status !== "superseded") return false;
+	if (finalGoal?.status !== "superseded") return false;
 	const replacements = input.plan.goals.filter(
 		goal =>
 			goal.status === "complete" &&
@@ -196,7 +196,7 @@ function hasFreshReviewedBatchFinalReplacement(input: {
 	if (replacements.length !== 1) return false;
 	const replacement = replacements[0]!;
 	const receipt = replacement.completionVerification;
-	if (!receipt || receipt.receiptKind !== "per-goal") return false;
+	if (receipt?.receiptKind !== "per-goal") return false;
 	return (
 		validateCompletionReceipt({
 			plan: input.plan,

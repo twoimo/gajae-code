@@ -1,14 +1,16 @@
 #!/usr/bin/env bun
 
 import * as path from "node:path";
-import { type ManifestAdapterRow, type Manifest, validateManifest } from "./manifest-schema";
 import { CHAT_OPERATION_POLICY } from "../src/sdk/bus/chat-command-policy";
 import { ADAPTERS, OPERATIONS } from "../src/sdk/protocol/operation-registry";
+import { type Manifest, type ManifestAdapterRow, validateManifest } from "./manifest-schema";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 
 function usage(): never {
-	process.stderr.write("Usage: bun run packages/coding-agent/scripts/run-test-manifest.ts <manifest.json> [--check]\n");
+	process.stderr.write(
+		"Usage: bun run packages/coding-agent/scripts/run-test-manifest.ts <manifest.json> [--check]\n",
+	);
 	process.exit(2);
 }
 
@@ -37,7 +39,8 @@ function validateRowReceipts(rows: ManifestAdapterRow[]): void {
 	for (const row of rows) {
 		if (ids.has(row.adapterTestId)) throw new Error(`Duplicate adapter test ID: ${row.adapterTestId}`);
 		ids.add(row.adapterTestId);
-		if (/placeholder|todo|tbd|example/i.test(row.testNamePattern)) throw new Error(`${row.adapterTestId} has a placeholder test pattern.`);
+		if (/placeholder|todo|tbd|example/i.test(row.testNamePattern))
+			throw new Error(`${row.adapterTestId} has a placeholder test pattern.`);
 		if (row.argv[4] === undefined || !row.argv[4].includes(row.adapterTestId))
 			throw new Error(`${row.adapterTestId} receipt does not select its exact test.`);
 
@@ -49,17 +52,23 @@ function validateRowReceipts(rows: ManifestAdapterRow[]): void {
 		if (row.adapter === "telegram" || row.adapter === "discord" || row.adapter === "slack") {
 			const policyExpected = row.adapterTestId.endsWith("-secret")
 				? "rejected_before_send"
-				: CHAT_OPERATION_POLICY[row.adapter][operation.id] === "allowed" ? "forwarded" : "rejected_before_send";
+				: CHAT_OPERATION_POLICY[row.adapter][operation.id] === "allowed"
+					? "forwarded"
+					: "rejected_before_send";
 			if (row.expected !== policyExpected)
 				throw new Error(`${row.adapterTestId} expected outcome diverges from chat command policy.`);
 		}
 		counts.set(row.adapter, (counts.get(row.adapter) ?? 0) + 1);
 	}
-	if (rows.length !== ADAPTERS.length * 91) throw new Error(`Expected ${ADAPTERS.length * 91} adapter rows; received ${rows.length}.`);
+	if (rows.length !== ADAPTERS.length * 91)
+		throw new Error(`Expected ${ADAPTERS.length * 91} adapter rows; received ${rows.length}.`);
 	for (const adapter of ADAPTERS) {
-		if (counts.get(adapter) !== 91) throw new Error(`Expected 91 ${adapter} rows; received ${counts.get(adapter) ?? 0}.`);
+		if (counts.get(adapter) !== 91)
+			throw new Error(`Expected 91 ${adapter} rows; received ${counts.get(adapter) ?? 0}.`);
 	}
-	process.stdout.write(`manifest check: ${rows.length} row receipts (${[...counts].map(([adapter, count]) => `${adapter}=${count}`).join(", ")})\n`);
+	process.stdout.write(
+		`manifest check: ${rows.length} row receipts (${[...counts].map(([adapter, count]) => `${adapter}=${count}`).join(", ")})\n`,
+	);
 }
 
 // Required files must appear as exact three-argument `bun test <file>` commands;
@@ -94,7 +103,11 @@ const perAdapter = new Map<string, number>();
 
 async function executeReceipt(argv: string[]): Promise<void> {
 	const child = Bun.spawn(argv, { cwd: repoRoot, stdout: "pipe", stderr: "pipe" });
-	const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+		child.exited,
+	]);
 	process.stdout.write(stdout);
 	process.stderr.write(stderr);
 	const tests = testCount(`${stdout}\n${stderr}`);

@@ -66,22 +66,43 @@ export class DiscordLiveProvider implements DiscordProvider {
 		this.#webSocket = options.WebSocketImpl ?? (url => new WebSocket(url));
 		this.#now = options.now ?? Date.now;
 		this.#sleep = options.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
-		this.#setInterval = options.setIntervalImpl ?? ((callback, milliseconds) => {
-			const timer = setInterval(callback, milliseconds);
-			return { cancel: () => clearInterval(timer) };
-		});
-		this.#setTimeout = options.setTimeoutImpl ?? ((callback, milliseconds) => {
-			const timer = setTimeout(callback, milliseconds);
-			return { cancel: () => clearTimeout(timer) };
-		});
+		this.#setInterval =
+			options.setIntervalImpl ??
+			((callback, milliseconds) => {
+				const timer = setInterval(callback, milliseconds);
+				return { cancel: () => clearInterval(timer) };
+			});
+		this.#setTimeout =
+			options.setTimeoutImpl ??
+			((callback, milliseconds) => {
+				const timer = setTimeout(callback, milliseconds);
+				return { cancel: () => clearTimeout(timer) };
+			});
 		this.#apiBaseUrl = options.apiBaseUrl ?? API_BASE;
 	}
 
-	get botUserId(): string { return this.#botUserId; }
-	get transportHealthy(): boolean { return !this.#stopped && !this.#gatewayError && this.#gatewayReady && !this.#awaitingHeartbeatAck && this.#socket?.readyState === 1; }
-	get gatewayError(): Error | undefined { return this.#gatewayError; }
+	get botUserId(): string {
+		return this.#botUserId;
+	}
+	get transportHealthy(): boolean {
+		return (
+			!this.#stopped &&
+			!this.#gatewayError &&
+			this.#gatewayReady &&
+			!this.#awaitingHeartbeatAck &&
+			this.#socket?.readyState === 1
+		);
+	}
+	get gatewayError(): Error | undefined {
+		return this.#gatewayError;
+	}
 
-	async createThread(input: { guildId: string; parentId: string; name: string; nonce: string }): Promise<DiscordThread> {
+	async createThread(input: {
+		guildId: string;
+		parentId: string;
+		name: string;
+		nonce: string;
+	}): Promise<DiscordThread> {
 		const marker = `${NONCE_PREFIX}${input.nonce}${NONCE_SUFFIX}`;
 		const starter = await this.#findStarterMessage(input.parentId, marker);
 		if (starter?.thread) {
@@ -89,7 +110,7 @@ export class DiscordLiveProvider implements DiscordProvider {
 			if (!existing) throw new Error("Discord returned an invalid starter-message thread");
 			return existing;
 		}
-		const messageId = starter?.id ?? await this.#createStarterMessage(input.parentId, marker);
+		const messageId = starter?.id ?? (await this.#createStarterMessage(input.parentId, marker));
 		const body = await this.#request(`/channels/${input.parentId}/messages/${messageId}/threads`, {
 			method: "POST",
 			body: JSON.stringify({ name: input.name, auto_archive_duration: 1_440 }),
@@ -98,7 +119,10 @@ export class DiscordLiveProvider implements DiscordProvider {
 	}
 
 	async #createStarterMessage(parentId: string, marker: string): Promise<string> {
-		const message = await this.#request(`/channels/${parentId}/messages`, { method: "POST", body: JSON.stringify({ content: marker }) });
+		const message = await this.#request(`/channels/${parentId}/messages`, {
+			method: "POST",
+			body: JSON.stringify({ content: marker }),
+		});
 		const id = this.#string(message, "id");
 		if (!id) throw new Error("Discord returned an invalid starter-message response");
 		return id;
@@ -110,7 +134,11 @@ export class DiscordLiveProvider implements DiscordProvider {
 		for (const message of messages) {
 			if (!this.#messageContent(message).includes(marker)) continue;
 			const id = this.#string(message, "id");
-			if (id) return { id, ...(this.#record(message).thread === undefined ? {} : { thread: this.#record(message).thread }) };
+			if (id)
+				return {
+					id,
+					...(this.#record(message).thread === undefined ? {} : { thread: this.#record(message).thread }),
+				};
 		}
 		return undefined;
 	}
@@ -118,36 +146,47 @@ export class DiscordLiveProvider implements DiscordProvider {
 	async findThreadByNonce(input: { guildId: string; parentId: string; nonce: string }): Promise<DiscordThread | null> {
 		const marker = `${NONCE_PREFIX}${input.nonce}${NONCE_SUFFIX}`;
 		const parentMessages = await this.#request(`/channels/${input.parentId}/messages?limit=100`);
-		if (Array.isArray(parentMessages)) for (const message of parentMessages) {
-			if (!this.#messageContent(message).includes(marker)) continue;
-			const thread = this.#starterThread(this.#record(message).thread, input.guildId, input.parentId);
-			if (thread) return thread;
-		}
+		if (Array.isArray(parentMessages))
+			for (const message of parentMessages) {
+				if (!this.#messageContent(message).includes(marker)) continue;
+				const thread = this.#starterThread(this.#record(message).thread, input.guildId, input.parentId);
+				if (thread) return thread;
+			}
 		const candidates = await this.#listThreads(input.guildId, input.parentId);
 		for (const candidate of candidates) {
 			const messages = await this.#request(`/channels/${candidate.id}/messages?limit=25`);
-			if (Array.isArray(messages) && messages.some(message => this.#messageContent(message).includes(marker))) return candidate;
+			if (Array.isArray(messages) && messages.some(message => this.#messageContent(message).includes(marker)))
+				return candidate;
 		}
 		return null;
 	}
 
-	async postMessage(input: { threadId: string; content: string; nonce?: string; components?: DiscordMessageComponent[] }): Promise<{ id: string }> {
+	async postMessage(input: {
+		threadId: string;
+		content: string;
+		nonce?: string;
+		components?: DiscordMessageComponent[];
+	}): Promise<{ id: string }> {
 		const body = await this.#request(`/channels/${input.threadId}/messages`, {
 			method: "POST",
 			body: JSON.stringify({
 				content: input.content,
 				...(input.nonce === undefined ? {} : { nonce: input.nonce, enforce_nonce: true }),
-				...(input.components === undefined ? {} : { components: input.components.map(component => ({
-					type: component.type,
-					components: component.components.map(select => ({
-						type: select.type,
-						custom_id: select.customId,
-						...(select.placeholder === undefined ? {} : { placeholder: select.placeholder }),
-						...(select.minValues === undefined ? {} : { min_values: select.minValues }),
-						...(select.maxValues === undefined ? {} : { max_values: select.maxValues }),
-						options: select.options,
-					})),
-				})) }),
+				...(input.components === undefined
+					? {}
+					: {
+							components: input.components.map(component => ({
+								type: component.type,
+								components: component.components.map(select => ({
+									type: select.type,
+									custom_id: select.customId,
+									...(select.placeholder === undefined ? {} : { placeholder: select.placeholder }),
+									...(select.minValues === undefined ? {} : { min_values: select.minValues }),
+									...(select.maxValues === undefined ? {} : { max_values: select.maxValues }),
+									options: select.options,
+								})),
+							})),
+						}),
 			}),
 		});
 		const id = this.#string(body, "id");
@@ -156,18 +195,27 @@ export class DiscordLiveProvider implements DiscordProvider {
 	}
 
 	async deferInteraction(input: { id: string; token: string }): Promise<void> {
-		await this.#interactionRequest(`/interactions/${encodeURIComponent(input.id)}/${encodeURIComponent(input.token)}/callback`, {
-			method: "POST",
-			body: JSON.stringify({ type: 6 }),
-		});
+		await this.#interactionRequest(
+			`/interactions/${encodeURIComponent(input.id)}/${encodeURIComponent(input.token)}/callback`,
+			{
+				method: "POST",
+				body: JSON.stringify({ type: 6 }),
+			},
+		);
 	}
 
 	async archiveThread(input: { threadId: string; locked?: boolean }): Promise<void> {
-		await this.#request(`/channels/${input.threadId}`, { method: "PATCH", body: JSON.stringify({ archived: true, ...(input.locked === undefined ? {} : { locked: input.locked }) }) });
+		await this.#request(`/channels/${input.threadId}`, {
+			method: "PATCH",
+			body: JSON.stringify({ archived: true, ...(input.locked === undefined ? {} : { locked: input.locked }) }),
+		});
 	}
 
 	async unarchiveThread(input: { threadId: string }): Promise<void> {
-		await this.#request(`/channels/${input.threadId}`, { method: "PATCH", body: JSON.stringify({ archived: false, locked: false }) });
+		await this.#request(`/channels/${input.threadId}`, {
+			method: "PATCH",
+			body: JSON.stringify({ archived: false, locked: false }),
+		});
 	}
 
 	async findMessageByNonce(input: { threadId: string; nonce: string }): Promise<{ id: string } | null> {
@@ -223,16 +271,24 @@ export class DiscordLiveProvider implements DiscordProvider {
 		this.#gatewayError = undefined;
 		this.#gatewayReady = false;
 		this.#awaitingHeartbeatAck = false;
-		socket.addEventListener("message", event => { void this.#handleGateway(socket, event).catch(error => this.#handleGatewayFailure(socket, error)); });
+		socket.addEventListener("message", event => {
+			void this.#handleGateway(socket, event).catch(error => this.#handleGatewayFailure(socket, error));
+		});
 		socket.addEventListener("close", () => this.#scheduleReconnect(socket));
-		socket.addEventListener("error", () => { if (socket.readyState !== 3) socket.close(); });
+		socket.addEventListener("error", () => {
+			if (socket.readyState !== 3) socket.close();
+		});
 	}
 
 	async #handleGateway(socket: DiscordGatewaySocket, event: Event): Promise<void> {
 		const data = (event as MessageEvent).data;
 		if (typeof data !== "string") return;
 		let frame: JsonRecord;
-		try { frame = JSON.parse(data) as JsonRecord; } catch { return; }
+		try {
+			frame = JSON.parse(data) as JsonRecord;
+		} catch {
+			return;
+		}
 		if (typeof frame.s === "number") this.#sequence = frame.s;
 		if (frame.op === 10) {
 			const interval = this.#number(this.#record(frame.d), "heartbeat_interval");
@@ -243,7 +299,10 @@ export class DiscordLiveProvider implements DiscordProvider {
 			this.#identifyOrResume(socket);
 			return;
 		}
-		if (frame.op === 1) { this.#sendHeartbeat(socket); return; }
+		if (frame.op === 1) {
+			this.#sendHeartbeat(socket);
+			return;
+		}
 		if (frame.op === 11) {
 			if (socket === this.#socket) this.#awaitingHeartbeatAck = false;
 			return;
@@ -262,7 +321,10 @@ export class DiscordLiveProvider implements DiscordProvider {
 			if (socket.readyState !== 3) socket.close();
 			return;
 		}
-		if (frame.op === 7) { socket.close(); return; }
+		if (frame.op === 7) {
+			socket.close();
+			return;
+		}
 		if (frame.op !== 0) return;
 		const payload = this.#record(frame.d);
 		if (frame.t === "READY") {
@@ -280,10 +342,21 @@ export class DiscordLiveProvider implements DiscordProvider {
 
 	#identifyOrResume(socket: DiscordGatewaySocket): void {
 		if (this.#sessionId && this.#sequence !== null) {
-			socket.send(JSON.stringify({ op: 6, d: { token: this.#token, session_id: this.#sessionId, seq: this.#sequence } }));
+			socket.send(
+				JSON.stringify({ op: 6, d: { token: this.#token, session_id: this.#sessionId, seq: this.#sequence } }),
+			);
 			return;
 		}
-		socket.send(JSON.stringify({ op: 2, d: { token: this.#token, intents: GATEWAY_INTENTS, properties: { os: "bun", browser: "gjc", device: "gjc" } } }));
+		socket.send(
+			JSON.stringify({
+				op: 2,
+				d: {
+					token: this.#token,
+					intents: GATEWAY_INTENTS,
+					properties: { os: "bun", browser: "gjc", device: "gjc" },
+				},
+			}),
+		);
 	}
 
 	#sendHeartbeat(socket: DiscordGatewaySocket): void {
@@ -304,31 +377,40 @@ export class DiscordLiveProvider implements DiscordProvider {
 		this.#heartbeat = undefined;
 		if (this.#stopped || this.#reconnect) return;
 		const reconnectAt = this.#now() + minimumDelayMs;
-		this.#reconnect = this.#setTimeout(() => {
-			this.#reconnect = undefined;
-			this.#connect(this.#resumeGatewayUrl ?? this.#gatewayUrl ?? "wss://gateway.discord.gg");
-		}, Math.max(0, reconnectAt - this.#now()));
+		this.#reconnect = this.#setTimeout(
+			() => {
+				this.#reconnect = undefined;
+				this.#connect(this.#resumeGatewayUrl ?? this.#gatewayUrl ?? "wss://gateway.discord.gg");
+			},
+			Math.max(0, reconnectAt - this.#now()),
+		);
 	}
 
 	async #listThreads(guildId: string, parentId: string): Promise<DiscordThread[]> {
 		const result: DiscordThread[] = [];
 		const active = this.#record(await this.#request(`/guilds/${guildId}/threads/active`));
 		const activeThreads = active.threads;
-		if (Array.isArray(activeThreads)) for (const thread of activeThreads) {
-			const parsed = this.#threadOrUndefined(thread, guildId, parentId);
-			if (parsed) result.push(parsed);
-		}
+		if (Array.isArray(activeThreads))
+			for (const thread of activeThreads) {
+				const parsed = this.#threadOrUndefined(thread, guildId, parentId);
+				if (parsed) result.push(parsed);
+			}
 		const archived = this.#record(await this.#request(`/channels/${parentId}/threads/archived/public?limit=100`));
 		const archivedThreads = archived.threads;
-		if (Array.isArray(archivedThreads)) for (const thread of archivedThreads) {
-			const parsed = this.#threadOrUndefined(thread, guildId, parentId);
-			if (parsed) result.push(parsed);
-		}
+		if (Array.isArray(archivedThreads))
+			for (const thread of archivedThreads) {
+				const parsed = this.#threadOrUndefined(thread, guildId, parentId);
+				if (parsed) result.push(parsed);
+			}
 		return result;
 	}
 
 	async #request(path: string, init: RequestInit = {}): Promise<unknown> {
-		return await this.#requestWithHeaders(path, { Authorization: `Bot ${this.#token}`, "Content-Type": "application/json" }, init);
+		return await this.#requestWithHeaders(
+			path,
+			{ Authorization: `Bot ${this.#token}`, "Content-Type": "application/json" },
+			init,
+		);
 	}
 	async #interactionRequest(path: string, init: RequestInit = {}): Promise<unknown> {
 		return await this.#requestWithHeaders(path, { "Content-Type": "application/json" }, init);
@@ -336,7 +418,7 @@ export class DiscordLiveProvider implements DiscordProvider {
 	async #requestWithHeaders(path: string, headers: Record<string, string>, init: RequestInit): Promise<unknown> {
 		for (let attempt = 0; ; attempt++) {
 			const mergedHeaders = new Headers(headers);
-			new Headers(init.headers).forEach((value, key) => mergedHeaders.set(key, value));
+			for (const [key, value] of new Headers(init.headers)) mergedHeaders.set(key, value);
 			const response = await this.#fetch(`${this.#apiBaseUrl}${path}`, { ...init, headers: mergedHeaders });
 			if (response.status !== 429) {
 				if (!response.ok) throw new Error(`Discord API request failed (${response.status})`);
@@ -369,29 +451,70 @@ export class DiscordLiveProvider implements DiscordProvider {
 		const metadata = this.#record(thread.thread_metadata);
 		return { id, guildId, parentId, archived: metadata.archived === true, locked: metadata.locked === true };
 	}
-	#messageContent(value: unknown): string { return this.#string(this.#record(value), "content") ?? ""; }
-	#record(value: unknown): JsonRecord { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }
-	#string(value: unknown, key: string): string | undefined { const record = this.#record(value); return typeof record[key] === "string" ? record[key] : undefined; }
-	#number(record: JsonRecord, key: string): number | undefined { return typeof record[key] === "number" ? record[key] : undefined; }
+	#messageContent(value: unknown): string {
+		return this.#string(this.#record(value), "content") ?? "";
+	}
+	#record(value: unknown): JsonRecord {
+		return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+	}
+	#string(value: unknown, key: string): string | undefined {
+		const record = this.#record(value);
+		return typeof record[key] === "string" ? record[key] : undefined;
+	}
+	#number(record: JsonRecord, key: string): number | undefined {
+		return typeof record[key] === "number" ? record[key] : undefined;
+	}
 	#parentId(data: JsonRecord): string | undefined {
-		return this.#string(data, "parent_id") ?? this.#string(this.#record(data.thread), "parent_id") ?? this.#string(this.#record(data.channel), "parent_id");
+		return (
+			this.#string(data, "parent_id") ??
+			this.#string(this.#record(data.thread), "parent_id") ??
+			this.#string(this.#record(data.channel), "parent_id")
+		);
 	}
 	#inbound(type: unknown, data: JsonRecord): DiscordInboundEvent | undefined {
 		if (type === "MESSAGE_CREATE") {
-			const id = this.#string(data, "id"); const guildId = this.#string(data, "guild_id"); const threadId = this.#string(data, "channel_id");
-			const author = this.#record(data.author); const authorId = this.#string(author, "id"); const parentId = this.#parentId(data);
+			const id = this.#string(data, "id");
+			const guildId = this.#string(data, "guild_id");
+			const threadId = this.#string(data, "channel_id");
+			const author = this.#record(data.author);
+			const authorId = this.#string(author, "id");
+			const parentId = this.#parentId(data);
 			if (!id || !guildId || !threadId || !parentId || !authorId) return undefined;
-			return { id, guildId, parentId, threadId, authorId, bot: author.bot === true, content: this.#string(data, "content") };
+			return {
+				id,
+				guildId,
+				parentId,
+				threadId,
+				authorId,
+				bot: author.bot === true,
+				content: this.#string(data, "content"),
+			};
 		}
 		if (type === "INTERACTION_CREATE") {
-			const id = this.#string(data, "id"); const token = this.#string(data, "token"); const guildId = this.#string(data, "guild_id"); const threadId = this.#string(data, "channel_id");
-			const member = this.#record(data.member); const user = this.#record(member.user); const authorId = this.#string(user, "id"); const parentId = this.#parentId(data); const interaction = this.#record(data.data); const customId = this.#string(interaction, "custom_id");
+			const id = this.#string(data, "id");
+			const token = this.#string(data, "token");
+			const guildId = this.#string(data, "guild_id");
+			const threadId = this.#string(data, "channel_id");
+			const member = this.#record(data.member);
+			const user = this.#record(member.user);
+			const authorId = this.#string(user, "id");
+			const parentId = this.#parentId(data);
+			const interaction = this.#record(data.data);
+			const customId = this.#string(interaction, "custom_id");
 			if (!id || !token || !guildId || !threadId || !parentId || !authorId || !customId) return undefined;
 			const values = interaction.values;
-			const value = Array.isArray(values) && (typeof values[0] === "string" || typeof values[0] === "number")
-				? values[0]
-				: this.#string(interaction, "value") ?? this.#number(interaction, "value");
-			return { id, guildId, parentId, threadId, authorId, interaction: { id, token, customId, ...(value === undefined ? {} : { value }) } };
+			const value =
+				Array.isArray(values) && (typeof values[0] === "string" || typeof values[0] === "number")
+					? values[0]
+					: (this.#string(interaction, "value") ?? this.#number(interaction, "value"));
+			return {
+				id,
+				guildId,
+				parentId,
+				threadId,
+				authorId,
+				interaction: { id, token, customId, ...(value === undefined ? {} : { value }) },
+			};
 		}
 		return undefined;
 	}

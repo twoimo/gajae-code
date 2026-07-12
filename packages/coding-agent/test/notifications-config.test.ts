@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { createAgentSession } from "../src/sdk";
 import {
 	buildRedactedAction,
 	completionNotifyDisabledByEnv,
@@ -22,7 +23,6 @@ import {
 } from "../src/sdk/bus/config";
 import { createNotificationsExtension } from "../src/sdk/bus/index";
 import { daemonPaths } from "../src/sdk/bus/telegram-daemon";
-import { createAgentSession } from "../src/sdk";
 import { SessionManager } from "../src/session/session-manager";
 
 const BASE_CFG: NotificationConfig = {
@@ -140,12 +140,19 @@ describe("notifications config", () => {
 		const slack: NotificationConfig = {
 			...BASE_CFG,
 			enabled: true,
-			slack: { botToken: "slack-token", appToken: "slack-app-token", workspaceId: "workspace", channelId: "channel" },
+			slack: {
+				botToken: "slack-token",
+				appToken: "slack-app-token",
+				workspaceId: "workspace",
+				channelId: "channel",
+			},
 		};
 
 		expect(isDiscordConfigured(discord)).toBe(true);
 		expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, guildId: " " } })).toBe(false);
-expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentChannelId: undefined } })).toBe(false);
+		expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentChannelId: undefined } })).toBe(
+			false,
+		);
 		expect(isSlackConfigured(slack)).toBe(true);
 		expect(isSlackConfigured({ ...slack, slack: { ...slack.slack, appToken: "\t" } })).toBe(false);
 		expect(isGloballyConfigured(discord)).toBe(true);
@@ -343,10 +350,10 @@ expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentCh
 			"notifications.enabled": true,
 			"notifications.telegram.botToken": " ",
 			"notifications.telegram.chatId": "\t",
-"notifications.discord.botToken": "discord-token",
-"notifications.discord.applicationId": "discord-app",
-"notifications.discord.guildId": "discord-guild",
-"notifications.discord.parentChannelId": "discord-parent",
+			"notifications.discord.botToken": "discord-token",
+			"notifications.discord.applicationId": "discord-app",
+			"notifications.discord.guildId": "discord-guild",
+			"notifications.discord.parentChannelId": "discord-parent",
 		});
 
 		const disposers: Array<() => Promise<void>> = [];
@@ -444,20 +451,8 @@ expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentCh
 			await parentPrefixSubagent.session.extensionRunner?.emit({ type: "session_start" });
 			await agentTypeOnlySubagent.session.extensionRunner?.emit({ type: "session_start" });
 			await explicitExtensionSubagent.session.extensionRunner?.emit({ type: "session_start" });
-			const topLevelEndpoint = path.join(
-				cwd,
-				".gjc",
-				"state",
-				"sdk",
-				`${topLevel.session.sessionId}.json`,
-			);
-			const subagentEndpoint = path.join(
-				cwd,
-				".gjc",
-				"state",
-				"sdk",
-				`${subagent.session.sessionId}.json`,
-			);
+			const topLevelEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${topLevel.session.sessionId}.json`);
+			const subagentEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${subagent.session.sessionId}.json`);
 			const parentPrefixSubagentEndpoint = path.join(
 				cwd,
 				".gjc",
@@ -531,8 +526,7 @@ expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentCh
 				enableMCP: false,
 				enableLsp: false,
 			});
-		const endpointFor = (sessionId: string): string =>
-			path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+		const endpointFor = (sessionId: string): string => path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
 		try {
 			resetSettingsForTest();
 			await Settings.init({ inMemory: true, cwd, agentDir: cwd });

@@ -127,8 +127,6 @@ export class AgentWireFrameSequencer {
 	}
 }
 
-
-
 /** Serialize a single `AgentSessionEvent` into a canonical `event` wire frame. */
 export function toAgentWireEventFrame(
 	event: AgentSessionEvent,

@@ -15,7 +15,10 @@ function containsSecretField(value: unknown): boolean {
 /** Rejects secret-bearing config patches from model-facing adapter inputs. */
 export function validateAdapterSecretFields(operation: string, input: Input): SecretInputError | undefined {
 	if (operation === "config.patch" && containsSecretField(input)) {
-		return { code: "secret_field_forbidden", message: "config.patch secret fields are not available through this adapter." };
+		return {
+			code: "secret_field_forbidden",
+			message: "config.patch secret fields are not available through this adapter.",
+		};
 	}
 	return undefined;
 }

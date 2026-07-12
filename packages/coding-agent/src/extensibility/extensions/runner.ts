@@ -217,8 +217,6 @@ export class ExtensionRunner {
 	#setPlanModeFn: ExtensionContextActions["setPlanMode"] = undefined;
 	#operateGoalFn: ExtensionContextActions["operateGoal"] = undefined;
 
-
-
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	#branchHandler: BranchHandler = async () => ({ cancelled: false });
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -320,9 +318,6 @@ export class ExtensionRunner {
 		this.#getJobsFn = contextActions.getJobs;
 		this.#sdkControlFn = contextActions.sdkControl;
 		this.#setSdkPermissionProviderFn = contextActions.setSdkPermissionProvider;
-
-
-
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {

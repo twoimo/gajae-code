@@ -4,7 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { YAML } from "bun";
 import type { Settings } from "../src/config/settings";
-import { getNotificationConfig, isDiscordConfigured, isGloballyConfigured, isSlackConfigured } from "../src/sdk/bus/config";
+import {
+	getNotificationConfig,
+	isDiscordConfigured,
+	isGloballyConfigured,
+	isSlackConfigured,
+} from "../src/sdk/bus/config";
 import { createLightweightDaemonSettings } from "../src/sdk/bus/telegram-daemon-cli";
 
 // The daemon is spawned as a lightweight process that reads config.yml into a
@@ -92,7 +97,12 @@ describe("notifications daemon config reachability (providers)", () => {
 		const completeSlack = cfgFromRaw({
 			notifications: {
 				enabled: true,
-				slack: { botToken: "slack-bot-secret", appToken: "slack-app-secret", workspaceId: "workspace", channelId: "channel" },
+				slack: {
+					botToken: "slack-bot-secret",
+					appToken: "slack-app-secret",
+					workspaceId: "workspace",
+					channelId: "channel",
+				},
 			},
 		});
 		expect(isSlackConfigured(completeSlack)).toBe(true);

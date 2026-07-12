@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { readBrokerDiscovery as readBrokerFile, type BrokerDiscovery } from "../broker/discovery";
+import { type BrokerDiscovery, readBrokerDiscovery as readBrokerFile } from "../broker/discovery";
 
 export interface SdkSessionEndpoint {
 	sessionId: string;
@@ -22,7 +22,10 @@ export interface SdkSessionEndpointList {
 
 export class SdkDiscoveryError extends Error {
 	readonly code = "discovery_error";
-	constructor(readonly path: string, message: string) {
+	constructor(
+		readonly path: string,
+		message: string,
+	) {
 		super(message);
 		this.name = "SdkDiscoveryError";
 	}
@@ -33,9 +36,11 @@ function endpointDirectory(repo: string): string {
 }
 
 function parseEndpoint(sessionId: string, file: string, value: unknown): SdkSessionEndpoint {
-	if (!value || typeof value !== "object") throw new SdkDiscoveryError(file, "SDK endpoint discovery record must be an object.");
+	if (!value || typeof value !== "object")
+		throw new SdkDiscoveryError(file, "SDK endpoint discovery record must be an object.");
 	const endpoint = value as { version?: unknown; url?: unknown; token?: unknown };
-	if (typeof endpoint.version === "number" && endpoint.version > 1) throw new SdkDiscoveryError(file, "Unsupported SDK endpoint discovery state version.");
+	if (typeof endpoint.version === "number" && endpoint.version > 1)
+		throw new SdkDiscoveryError(file, "Unsupported SDK endpoint discovery state version.");
 	if (typeof endpoint.url !== "string" || typeof endpoint.token !== "string" || !endpoint.url || !endpoint.token)
 		throw new SdkDiscoveryError(file, "SDK endpoint discovery record is invalid.");
 	return { sessionId, url: endpoint.url, token: endpoint.token, path: file };
@@ -72,7 +77,9 @@ export async function listSdkSessionEndpoints(repo: string): Promise<SdkSessionE
 	return {
 		endpoints: results.flatMap(result => (result.endpoint ? [result.endpoint] : [])),
 		warnings: results.flatMap(result =>
-			result.warning ? [{ code: result.warning.code, path: result.warning.path, message: result.warning.message }] : [],
+			result.warning
+				? [{ code: result.warning.code, path: result.warning.path, message: result.warning.message }]
+				: [],
 		),
 	};
 }

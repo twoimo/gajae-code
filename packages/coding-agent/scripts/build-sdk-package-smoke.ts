@@ -29,14 +29,17 @@ async function runSmoke(): Promise<Surface> {
 	try {
 		const tarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], packageDir);
 		const tarballPath = path.isAbsolute(tarball) ? tarball : path.join(packageDir, tarball);
-		await fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify({ name: "sdk-smoke", private: true }, null, 2));
+		await fs.writeFile(
+			path.join(tempDir, "package.json"),
+			JSON.stringify({ name: "sdk-smoke", private: true }, null, 2),
+		);
 		// Install the packed artifact, rather than importing the workspace source, so exports/files
 		// omissions in the published tarball fail this gate.
 		run(["bun", "add", tarballPath, "--ignore-scripts"], tempDir);
 		const probePath = path.join(tempDir, "probe.ts");
 		await fs.writeFile(
 			probePath,
-			`import * as root from ${JSON.stringify(packageName)};\nimport * as sdk from ${JSON.stringify(`${packageName}/sdk`)};\nimport * as bus from ${JSON.stringify(`${packageName}/sdk/bus`)};\nconst required = [[root, "createAgentSession", "root"], [sdk, "createAgentSession", "sdk"], [bus, "createNotificationsExtension", "sdk/bus"], [sdk, "SdkClient", "sdk"]] as const;\nfor (const [module, name, subpath] of required) if (!(name in module)) throw new Error(\`${"${subpath}"} missing ${"${name}"}\`);\nprocess.stdout.write(JSON.stringify({ root: Object.keys(root).sort(), sdk: Object.keys(sdk).sort() }));\n`,
+			`import * as root from ${JSON.stringify(packageName)};\nimport * as sdk from ${JSON.stringify(`${packageName}/sdk`)};\nimport * as bus from ${JSON.stringify(`${packageName}/sdk/bus`)};\nconst required = [[root, "createAgentSession", "root"], [sdk, "createAgentSession", "sdk"], [bus, "createNotificationsExtension", "sdk/bus"], [sdk, "SdkClient", "sdk"]] as const;\nfor (const [module, name, subpath] of required) if (!(name in module)) throw new Error(subpath + " missing " + name);\nprocess.stdout.write(JSON.stringify({ root: Object.keys(root).sort(), sdk: Object.keys(sdk).sort() }));\n`,
 		);
 		const surface = JSON.parse(run(["bun", "run", probePath], tempDir)) as Surface;
 		assertExport(Object.fromEntries(surface.root.map(name => [name, true])), "createAgentSession", "root");

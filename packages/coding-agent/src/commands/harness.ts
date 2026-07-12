@@ -629,6 +629,12 @@ function scopedBootstrapReceipt(stdout: Uint8Array): ScopedBootstrapReceipt | nu
 	}
 }
 
+function ownerIsolationPlatform(): NodeJS.Platform {
+	return process.platform === "linux" || process.env.GJC_HARNESS_TEST_ASSUME_LINUX_OWNER_ISOLATION !== "1"
+		? process.platform
+		: "linux";
+}
+
 function portableProcessStartTime(pid: number): string | null {
 	if (process.platform === "linux") return null;
 	const configured = process.env.GJC_HARNESS_PROCESS_START_COMMAND;
@@ -643,7 +649,11 @@ function portableProcessStartTime(pid: number): string | null {
 			return null;
 		}
 	}
-	const result = Bun.spawnSync([...command, String(pid)], { stdout: "pipe", stderr: "ignore" });
+	const result = Bun.spawnSync([...command, String(pid)], {
+		stdout: "pipe",
+		stderr: "ignore",
+		env: { ...process.env, LC_ALL: "C", LANG: "C" },
+	});
 	if (result.exitCode !== 0) return null;
 	const value = result.stdout.toString();
 	const line = value.endsWith("\n") ? value.slice(0, -1) : value;
@@ -865,6 +875,7 @@ export default class Harness extends Command {
 				process.env.GJC_HARNESS_TEST_CALLER_CGROUP ??
 				(await fs.readFile("/proc/self/cgroup", "utf8").catch(() => null)),
 			probeServer: async (socketKey, tmuxControlArgv): Promise<TmuxServerProof> => {
+				const platform = ownerIsolationPlatform();
 				if (!socketKey || socketKey.length > 128) return { state: "unverifiable" };
 				const controlArgv = tmuxControlArgv ?? [tmuxCommand, "-L", socketKey];
 				if (controlArgv.length < 3 || controlArgv[0] !== tmuxCommand || !controlArgv.includes("-L")) {
@@ -881,20 +892,16 @@ export default class Harness extends Command {
 				if (!Number.isSafeInteger(pid) || pid <= 0) return { state: "unverifiable" };
 				const cgroupText =
 					process.env.GJC_HARNESS_TEST_SERVER_CGROUP ??
-					(process.platform === "linux"
-						? await fs.readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null)
-						: null);
+					(platform === "linux" ? await fs.readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null) : null);
 				const testStartTime = process.env.GJC_HARNESS_TEST_SERVER_START_TIME;
 				const stat =
-					testStartTime || process.platform !== "linux"
+					testStartTime || platform !== "linux"
 						? null
 						: await fs.readFile(`/proc/${pid}/stat`, "utf8").catch(() => null);
-				const cgroup = classifyCgroup({ platform: process.platform, cgroupText });
+				const cgroup = classifyCgroup({ platform, cgroupText });
 				const startTime =
 					testStartTime ??
-					(process.platform === "linux"
-						? ownerProcessStartTime(process.platform, stat)
-						: portableProcessStartTime(pid));
+					(platform === "linux" ? ownerProcessStartTime(platform, stat) : portableProcessStartTime(pid));
 				if (!startTime) return { state: "unverifiable", pid, cgroup };
 				return {
 					state:
@@ -999,7 +1006,8 @@ export default class Harness extends Command {
 		} catch {
 			return { started: false, sessionName, socketKey, reason: "tmux-owner-generation_unverifiable" };
 		}
-		if (process.platform !== "linux" && !portableProcessStartTime(process.pid))
+		const platform = ownerIsolationPlatform();
+		if (platform !== "linux" && !portableProcessStartTime(process.pid))
 			return { started: false, sessionName, socketKey, reason: "tmux-owner-generation_unverifiable" };
 		await fs.mkdir(path.join(ownerStateDir, sessionId, "owner-lifecycle"), { recursive: true, mode: 0o700 });
 		const ownerGeneration = randomUUID();
@@ -1039,7 +1047,7 @@ export default class Harness extends Command {
 			{
 				schema_version: 1,
 				op: "plan",
-				platform: process.platform,
+				platform,
 				session_id: sessionId,
 				owner_generation: ownerGeneration,
 				baseline,

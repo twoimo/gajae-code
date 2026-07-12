@@ -41,7 +41,12 @@ export interface DiscordProvider {
 	findThreadByNonce(input: { guildId: string; parentId: string; nonce: string }): Promise<DiscordThread | null>;
 	/** Finds a posted message by its caller-generated nonce after an uncertain post. */
 	findMessageByNonce(input: { threadId: string; nonce: string }): Promise<{ id: string } | null>;
-	postMessage(input: { threadId: string; content: string; nonce?: string; components?: DiscordMessageComponent[] }): Promise<{ id: string }>;
+	postMessage(input: {
+		threadId: string;
+		content: string;
+		nonce?: string;
+		components?: DiscordMessageComponent[];
+	}): Promise<{ id: string }>;
 	/** Defers an accepted component interaction before SDK routing can exceed Discord's response deadline. */
 	deferInteraction(input: { id: string; token: string }): Promise<void>;
 	archiveThread(input: { threadId: string; locked?: boolean }): Promise<void>;

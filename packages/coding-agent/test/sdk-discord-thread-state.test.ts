@@ -1,16 +1,31 @@
 import { describe, expect, test } from "bun:test";
-import { acceptsDiscordInbound, discordConversationKey, type DiscordConversation } from "../src/sdk/bus/discord-conversation";
+import {
+	acceptsDiscordInbound,
+	type DiscordConversation,
+	discordConversationKey,
+} from "../src/sdk/bus/discord-conversation";
 
 function record(): DiscordConversation {
 	return {
-		generation: 1, state: "active", appId: "app", guildId: "guild", parentChannelId: "parent", threadId: "thread",
-		sessionId: "session", endpointGeneration: 4, updatedAt: 0, seenEventIds: [], seenInteractionIds: [],
+		generation: 1,
+		state: "active",
+		appId: "app",
+		guildId: "guild",
+		parentChannelId: "parent",
+		threadId: "thread",
+		sessionId: "session",
+		endpointGeneration: 4,
+		updatedAt: 0,
+		seenEventIds: [],
+		seenInteractionIds: [],
 	};
 }
 
 describe("Discord conversation identity", () => {
 	test("uses the complete app, guild, parent and thread identity", () => {
-		expect(discordConversationKey({ appId: "app", guildId: "guild", parentChannelId: "parent", threadId: "thread" })).toBe("app:guild:parent:thread");
+		expect(
+			discordConversationKey({ appId: "app", guildId: "guild", parentChannelId: "parent", threadId: "thread" }),
+		).toBe("app:guild:parent:thread");
 	});
 	test("rejects stale, superseded, archived and generation-mismatched inbound events", () => {
 		const active = record();

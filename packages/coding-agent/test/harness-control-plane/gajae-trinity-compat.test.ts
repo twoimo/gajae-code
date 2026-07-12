@@ -75,7 +75,6 @@ describe("gajae trinity wire contract", () => {
 		}
 	});
 
-
 	it("the supported-harness seam is unchanged", () => {
 		expect(SUPPORTED_HARNESSES).toEqual(["gajae-code"]);
 	});

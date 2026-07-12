@@ -36,9 +36,7 @@ describe("ACP lazy startup", () => {
 			() => client,
 			ndJsonStream(clientToAgent.writable, agentToClient.readable),
 		);
-		const serverConnection = createAcpConnection(
-			ndJsonStream(agentToClient.writable, clientToAgent.readable),
-		);
+		const serverConnection = createAcpConnection(ndJsonStream(agentToClient.writable, clientToAgent.readable));
 
 		try {
 			const initializeResponse = await Promise.race([

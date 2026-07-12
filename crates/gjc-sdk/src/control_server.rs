@@ -45,15 +45,15 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ControlServerConfig {
 	/// The control token clients must present (`?token=` + per-frame `token`).
-	pub token: String,
+	pub token:     String,
 	/// Bind host. Defaults to loopback via [`ControlServerConfig::new`].
-	pub host: IpAddr,
+	pub host:      IpAddr,
 	/// Bind port. `0` selects an ephemeral port; the bound port is read back.
-	pub port: u16,
+	pub port:      u16,
 	/// Daemon agent dir; when set, the control discovery file is written here.
 	pub agent_dir: Option<PathBuf>,
 	/// Identifier of the daemon that owns this endpoint.
-	pub owner_id: String,
+	pub owner_id:  String,
 }
 
 impl ControlServerConfig {
@@ -61,32 +61,32 @@ impl ControlServerConfig {
 	#[must_use]
 	pub fn new(token: impl Into<String>, owner_id: impl Into<String>) -> Self {
 		Self {
-			token: token.into(),
-			host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-			port: 0,
+			token:     token.into(),
+			host:      IpAddr::V4(Ipv4Addr::LOCALHOST),
+			port:      0,
 			agent_dir: None,
-			owner_id: owner_id.into(),
+			owner_id:  owner_id.into(),
 		}
 	}
 }
 
 #[derive(Debug)]
 struct ControlState {
-	token: String,
+	token:        String,
 	/// Valid, authorized lifecycle requests forwarded to the host daemon.
 	lifecycle_tx: tokio::sync::mpsc::UnboundedSender<LifecycleClientMessage>,
 	/// Host responses, broadcast to connection tasks for request-id routing.
-	resp_tx: broadcast::Sender<LifecycleServerMessage>,
+	resp_tx:      broadcast::Sender<LifecycleServerMessage>,
 }
 
 /// Handle to a running control server.
 #[derive(Debug)]
 pub struct ControlServerHandle {
-	addr: SocketAddr,
-	state: Arc<ControlState>,
-	cancel: CancellationToken,
-	accept_task: tokio::task::JoinHandle<()>,
-	agent_dir: Option<PathBuf>,
+	addr:         SocketAddr,
+	state:        Arc<ControlState>,
+	cancel:       CancellationToken,
+	accept_task:  tokio::task::JoinHandle<()>,
+	agent_dir:    Option<PathBuf>,
 	lifecycle_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<LifecycleClientMessage>>>,
 }
 
@@ -337,15 +337,15 @@ mod tests {
 	fn close_frame(request_id: &str, token: &str) -> String {
 		let msg = LifecycleClientMessage::SessionClose(SessionClose {
 			request_id: request_id.into(),
-			update_id: 1,
-			chat_id: "42".into(),
-			token: token.into(),
-			target: SessionCloseTarget {
-				session_id: "sess-1".into(),
-				tmux_session: None,
+			update_id:  1,
+			chat_id:    "42".into(),
+			token:      token.into(),
+			target:     SessionCloseTarget {
+				session_id:         "sess-1".into(),
+				tmux_session:       None,
 				session_state_file: None,
 			},
-			force: true,
+			force:      true,
 		});
 		serde_json::to_string(&msg).expect("serialize")
 	}
@@ -400,12 +400,12 @@ mod tests {
 		// Host produces a terminal response; it is routed back by request id.
 		handle.respond(LifecycleServerMessage::SessionCloseResponse(
 			crate::lifecycle::SessionCloseResponse {
-				request_id: "lc_04".into(),
-				status: LifecycleStatus::Ok,
-				session_id: "sess-1".into(),
-				process_gone: true,
+				request_id:        "lc_04".into(),
+				status:            LifecycleStatus::Ok,
+				session_id:        "sess-1".into(),
+				process_gone:      true,
 				history_preserved: true,
-				endpoint_stale: true,
+				endpoint_stale:    true,
 			},
 		));
 		let got = next_lifecycle(&mut ws).await;

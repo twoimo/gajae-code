@@ -2,24 +2,32 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createNotificationsExtension } from "../src/sdk/bus";
-import { Settings } from "../src/config/settings";
-import { BrokerWorkflowGateEmitter, FileGateStore, type WorkflowGateEmitter } from "../src/modes/shared/agent-wire/workflow-gate-broker";
-
-import { SessionSdkHost } from "../src/sdk/host";
-import type { ClientBridgePermissionOption, ClientBridgePermissionOutcome, ClientBridgePermissionToolCall } from "../src/session/client-bridge";
+import type { Settings } from "../src/config/settings";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
-import type { ExtensionActions, ExtensionContextActions, ExtensionUIContext } from "../src/extensibility/extensions/types";
+import type {
+	ExtensionActions,
+	ExtensionContextActions,
+	ExtensionUIContext,
+} from "../src/extensibility/extensions/types";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
+import {
+	BrokerWorkflowGateEmitter,
+	FileGateStore,
+	type WorkflowGateEmitter,
+} from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import type { InteractiveModeContext } from "../src/modes/types";
+import { createNotificationsExtension } from "../src/sdk/bus";
+import { SessionSdkHost } from "../src/sdk/host";
+import type {
+	ClientBridgePermissionOption,
+	ClientBridgePermissionOutcome,
+	ClientBridgePermissionToolCall,
+} from "../src/session/client-bridge";
 
 import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
 
-type SdkPermissionProvider = NonNullable<ExtensionContextActions["setSdkPermissionProvider"]> extends (provider: infer T) => void ? T : never;
-
-
-
-
+type SdkPermissionProvider =
+	NonNullable<ExtensionContextActions["setSdkPermissionProvider"]> extends (provider: infer T) => void ? T : never;
 
 const dirs: string[] = [];
 const sockets: WebSocket[] = [];
@@ -38,13 +46,19 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 	}
 }
 
-function start(ctx: Record<string, unknown>, settings?: Settings): Map<string, (event: unknown, context: unknown) => unknown> {
+function start(
+	ctx: Record<string, unknown>,
+	settings?: Settings,
+): Map<string, (event: unknown, context: unknown) => unknown> {
 	const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
-	createNotificationsExtension({
-		on: (event: string, handler: (event: unknown, context: unknown) => unknown) => handlers.set(event, handler),
-		registerCommand: () => {},
-		sendUserMessage: () => {},
-	} as never, settings ? { settings } : undefined);
+	createNotificationsExtension(
+		{
+			on: (event: string, handler: (event: unknown, context: unknown) => unknown) => handlers.set(event, handler),
+			registerCommand: () => {},
+			sendUserMessage: () => {},
+		} as never,
+		settings ? { settings } : undefined,
+	);
 	void handlers.get("session_start")?.({ type: "session_start" }, ctx);
 	return handlers;
 }
@@ -73,34 +87,56 @@ function context(
 			return counts.steering + counts.followUp + counts.nextTurn > 0;
 		},
 		getPendingMessageCounts: () => live.counts ?? { steering: 0, followUp: 0, nextTurn: 0 },
-		getTranscript: () => [{ id: "entry-1", role: "assistant", textSummary: "Fixture transcript", ts: "2026-01-01T00:00:00.000Z", body: "Fixture transcript body" }],
-		getTranscriptBody: (entryId: string) => entryId === "entry-1" ? "Fixture transcript body" : undefined,
+		getTranscript: () => [
+			{
+				id: "entry-1",
+				role: "assistant",
+				textSummary: "Fixture transcript",
+				ts: "2026-01-01T00:00:00.000Z",
+				body: "Fixture transcript body",
+			},
+		],
+		getTranscriptBody: (entryId: string) => (entryId === "entry-1" ? "Fixture transcript body" : undefined),
 		getGoalState: () => ({ enabled: true, goal: { id: "goal-1", objective: "Fixture goal", status: "active" } }),
 		getTodoState: () => [{ name: "Fixture", tasks: [{ content: "Fixture todo", status: "pending" }] }],
 		getQueuedMessages: () => [{ id: "queue-1", text: "Fixture queued", mode: "followUp" }],
 		cycleModel: async () => ({ model: { id: "fixture-model" }, thinkingLevel: "low" }),
 		cycleThinkingLevel: () => "high",
-		setQueueMode: (queue: string, mode: unknown) => (queue === "steering" && mode === "all") || (queue === "follow_up" && mode === "one-at-a-time") || (queue === "interrupt" && mode === "wait"),
+		setQueueMode: (queue: string, mode: unknown) =>
+			(queue === "steering" && mode === "all") ||
+			(queue === "follow_up" && mode === "one-at-a-time") ||
+			(queue === "interrupt" && mode === "wait"),
 		getSkillState: () => [{ name: "fixture-skill" }],
 		getConfigItems: () => [{ key: "fixture.config", value: true }],
 		getBranchCandidates: () => [{ id: "branch-1" }],
 		getExtensions: () => [{ path: "fixture-extension" }],
 		getArtifact: () => undefined,
 		getJobs: () => undefined,
-		sdkBindings: () => ["cycleModel", "cycleThinkingLevel", "setQueueMode", "getSkillState", "getConfigItems", "getBranchCandidates", "getExtensions"],
+		sdkBindings: () => [
+			"cycleModel",
+			"cycleThinkingLevel",
+			"setQueueMode",
+			"getSkillState",
+			"getConfigItems",
+			"getBranchCandidates",
+			"getExtensions",
+		],
 		clearContext: async () => true,
-
 	};
 }
 
 test("ExtensionRunner forwards SDK permission providers into its production context", () => {
-	let installed: SdkPermissionProvider = undefined;
-
+	let installed: SdkPermissionProvider;
 
 	const runner = new ExtensionRunner([], {} as never, process.cwd(), {} as never, {} as never);
-	runner.initialize({} as ExtensionActions, {
-		setSdkPermissionProvider: provider => { installed = provider; },
-	} as ExtensionContextActions);
+	runner.initialize(
+		{} as ExtensionActions,
+		{
+			setSdkPermissionProvider: provider => {
+				installed = provider;
+			},
+		} as ExtensionContextActions,
+	);
 	const provider = async (): Promise<ClientBridgePermissionOutcome> => ({ outcome: "cancelled" });
 	runner.createContext().setSdkPermissionProvider?.(provider);
 	expect(installed === provider).toBe(true);
@@ -108,27 +144,41 @@ test("ExtensionRunner forwards SDK permission providers into its production cont
 
 test("interactive extension context advertises typed SDK controls and forwards permission providers", async () => {
 	let contextActions: ExtensionContextActions | undefined;
-	let installed: SdkPermissionProvider = undefined;
+	let installed: SdkPermissionProvider;
 
 	let mode: "prompt" | "allow" | "deny" = "prompt";
 	const runner = {
-		initialize(_actions: ExtensionActions, actions: ExtensionContextActions, _commands: unknown, _ui: ExtensionUIContext): void {
+		initialize(
+			_actions: ExtensionActions,
+			actions: ExtensionContextActions,
+			_commands: unknown,
+			_ui: ExtensionUIContext,
+		): void {
 			contextActions = actions;
 		},
 	};
 	const controller = new ExtensionUiController({
 		session: {
 			extensionRunner: runner,
-			setSdkPermissionProvider: (provider: typeof installed) => { installed = provider; },
-			setSdkPermissionMode: (next: typeof mode) => { mode = next; },
-			get sdkPermissionMode() { return mode; },
+			setSdkPermissionProvider: (provider: typeof installed) => {
+				installed = provider;
+			},
+			setSdkPermissionMode: (next: typeof mode) => {
+				mode = next;
+			},
+			get sdkPermissionMode() {
+				return mode;
+			},
 		},
 	} as unknown as InteractiveModeContext);
 	controller.initializeHookRunner({} as ExtensionUIContext, false);
 	const provider = async (): Promise<ClientBridgePermissionOutcome> => ({ outcome: "cancelled" });
 	contextActions?.setSdkPermissionProvider?.(provider);
 	expect(installed === provider).toBe(true);
-	expect(await contextActions?.sdkControl?.("permission_mode.set", { mode: "deny" })).toEqual({ changed: true, mode: "deny" });
+	expect(await contextActions?.sdkControl?.("permission_mode.set", { mode: "deny" })).toEqual({
+		changed: true,
+		mode: "deny",
+	});
 });
 
 test("SDK host replays event frames over direct v3 ingress and routes queries through the v2 control-command seam", async () => {
@@ -302,33 +352,78 @@ test("SDK host binds session query and control seams and excludes uninstalled re
 	});
 	const request = async (requestId: string, command: Record<string, unknown>): Promise<Record<string, unknown>> => {
 		socket.send(JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId, command }));
-		await waitFor(() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === requestId), `${requestId} response`);
-		return JSON.parse(String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === requestId)?.message)) as Record<string, unknown>;
+		await waitFor(
+			() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === requestId),
+			`${requestId} response`,
+		);
+		return JSON.parse(
+			String(
+				frames.find(frame => frame.type === "control_command_result" && frame.requestId === requestId)?.message,
+			),
+		) as Record<string, unknown>;
 	};
-	for (const [query, expected] of [["Q11", { name: "fixture-skill" }], ["Q13", { key: "fixture.config" }], ["Q16", { id: "branch-1" }], ["Q22", { path: "fixture-extension" }]] as const) {
+	for (const [query, expected] of [
+		["Q11", { name: "fixture-skill" }],
+		["Q13", { key: "fixture.config" }],
+		["Q16", { id: "branch-1" }],
+		["Q22", { path: "fixture-extension" }],
+	] as const) {
 		const response = await request(`query-${query}`, { type: "query_request", id: `query-${query}`, query });
 		expect(response).toMatchObject({ ok: true, page: { items: [expect.objectContaining(expected)] } });
 	}
-	for (const [operation, input, confirm] of [["model.cycle", {}, false], ["thinking.cycle", {}, false], ["queue.steering_mode.set", { mode: "all" }, false], ["context.clear", {}, true]] as const) {
-		const response = await request(`control-${operation}`, { type: "control_request", id: `control-${operation}`, operation, input, ...(confirm ? { confirm } : {}) });
+	for (const [operation, input, confirm] of [
+		["model.cycle", {}, false],
+		["thinking.cycle", {}, false],
+		["queue.steering_mode.set", { mode: "all" }, false],
+		["context.clear", {}, true],
+	] as const) {
+		const response = await request(`control-${operation}`, {
+			type: "control_request",
+			id: `control-${operation}`,
+			operation,
+			input,
+			...(confirm ? { confirm } : {}),
+		});
 		expect(response).toMatchObject({ ok: true });
 	}
-	const capabilities = await request("capabilities", { type: "query_request", id: "capabilities", query: "runtime.capabilities" });
-	expect(capabilities).toMatchObject({ ok: true, page: { items: [expect.objectContaining({ operations: expect.arrayContaining(["config.patch"]) })] } });
+	const capabilities = await request("capabilities", {
+		type: "query_request",
+		id: "capabilities",
+		query: "runtime.capabilities",
+	});
+	expect(capabilities).toMatchObject({
+		ok: true,
+		page: { items: [expect.objectContaining({ operations: expect.arrayContaining(["config.patch"]) })] },
+	});
 
 	for (const query of ["Q24", "Q25"]) {
-		const response = await request(`excluded-${query}`, { type: "query_request", id: `excluded-${query}`, query, input: { artifactId: "missing" } });
+		const response = await request(`excluded-${query}`, {
+			type: "query_request",
+			id: `excluded-${query}`,
+			query,
+			input: { artifactId: "missing" },
+		});
 		expect(response).toMatchObject({ ok: false, error: { code: "resource_gone" } });
-
 	}
 });
 
-	test("SDK host routes pure ACP permission prompts through a live reverse provider", async () => {
+test("SDK host routes pure ACP permission prompts through a live reverse provider", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-permission-provider-"));
 	dirs.push(cwd);
 	const sessionId = `sdk-permission-provider-${Date.now()}`;
-	let permissionProvider: ((toolCall: ClientBridgePermissionToolCall, options: ClientBridgePermissionOption[], signal?: AbortSignal) => Promise<ClientBridgePermissionOutcome>) | undefined;
-	const ctx = { ...context(cwd, sessionId), setSdkPermissionProvider: (provider: typeof permissionProvider) => { permissionProvider = provider; } };
+	let permissionProvider:
+		| ((
+				toolCall: ClientBridgePermissionToolCall,
+				options: ClientBridgePermissionOption[],
+				signal?: AbortSignal,
+		  ) => Promise<ClientBridgePermissionOutcome>)
+		| undefined;
+	const ctx = {
+		...context(cwd, sessionId),
+		setSdkPermissionProvider: (provider: typeof permissionProvider) => {
+			permissionProvider = provider;
+		},
+	};
 	process.env.GJC_NOTIFICATIONS = "1";
 	start(ctx);
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
@@ -344,12 +439,32 @@ test("SDK host binds session query and control seams and excludes uninstalled re
 	});
 	await waitFor(() => frames.some(frame => frame.type === "hello"), "SDK hello");
 	const connectionId = String(frames.find(frame => frame.type === "hello")?.connectionId);
-	socket.send(JSON.stringify({ type: "register_provider", id: "permission", connectionId, capability: "permission", definitions: [] }));
+	socket.send(
+		JSON.stringify({
+			type: "register_provider",
+			id: "permission",
+			connectionId,
+			capability: "permission",
+			definitions: [],
+		}),
+	);
 	await waitFor(() => permissionProvider !== undefined, "permission provider installation");
-	const requested = permissionProvider!({ toolCallId: "call-1", toolName: "bash", title: "printf guarded", status: "pending" }, [{ optionId: "allow_once", name: "Allow once", kind: "allow_once" }]);
+	const requested = permissionProvider!(
+		{ toolCallId: "call-1", toolName: "bash", title: "printf guarded", status: "pending" },
+		[{ optionId: "allow_once", name: "Allow once", kind: "allow_once" }],
+	);
 	await waitFor(() => frames.some(frame => frame.type === "reverse_request"), "reverse permission request");
 	const request = frames.find(frame => frame.type === "reverse_request")!;
-	socket.send(JSON.stringify({ type: "reverse_response", id: request.id, connectionId, leaseId: request.leaseId, ok: true, result: { outcome: "selected", optionId: "allow_once", kind: "allow_once" } }));
+	socket.send(
+		JSON.stringify({
+			type: "reverse_response",
+			id: request.id,
+			connectionId,
+			leaseId: request.leaseId,
+			ok: true,
+			result: { outcome: "selected", optionId: "allow_once", kind: "allow_once" },
+		}),
+	);
 	expect(await requested).toEqual({ outcome: "selected", optionId: "allow_once", kind: "allow_once" });
 	socket.close();
 	await waitFor(() => permissionProvider === undefined, "permission provider removal after disconnect");
@@ -432,7 +547,9 @@ test("SDK host replay gaps are generation-scoped and sequence gaps remain cohere
 		sessionId: "replay-gaps",
 		stateRoot: "/tmp/replay-gaps",
 		token: "test-token",
-		sendFrame: (_connectionId, frame) => { sent.push(frame); },
+		sendFrame: (_connectionId, frame) => {
+			sent.push(frame);
+		},
 		onFrame: handler => {
 			receive = handler;
 			return () => {};
@@ -551,7 +668,6 @@ test("Q17 returns resource_gone before the host has an assistant message and ret
 	).toMatchObject({ ok: true, page: { items: ["Assistant reply"] } });
 });
 
-
 test("terminal shutdown removes session snapshot spills", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-snapshots-"));
 	dirs.push(cwd);
@@ -568,10 +684,15 @@ test("terminal shutdown removes session snapshot spills", async () => {
 		socket.addEventListener("open", () => resolve(), { once: true });
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
-	socket.send(JSON.stringify({
-		type: "control_command", sessionId, token: endpoint.token, requestId: "snapshot-query",
-		command: { type: "query_request", id: "snapshot-query", query: "Q01" },
-	}));
+	socket.send(
+		JSON.stringify({
+			type: "control_command",
+			sessionId,
+			token: endpoint.token,
+			requestId: "snapshot-query",
+			command: { type: "query_request", id: "snapshot-query", query: "Q01" },
+		}),
+	);
 	await waitFor(
 		() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === "snapshot-query"),
 		"snapshot query response",
@@ -581,7 +702,6 @@ test("terminal shutdown removes session snapshot spills", async () => {
 	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, context(cwd, sessionId));
 	await waitFor(() => !fs.existsSync(snapshotDirectory), "snapshot spill removal");
 });
-
 
 test("diff queries return typed errors outside a Git working tree", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-no-git-"));
@@ -600,27 +720,40 @@ test("diff queries return typed errors outside a Git working tree", async () => 
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
 	for (const query of ["Q06", "Q07", "Q08"]) {
-		socket.send(JSON.stringify({
-			type: "control_command", sessionId, token: endpoint.token, requestId: query,
-			command: { type: "query_request", id: query, query },
-		}));
+		socket.send(
+			JSON.stringify({
+				type: "control_command",
+				sessionId,
+				token: endpoint.token,
+				requestId: query,
+				command: { type: "query_request", id: query, query },
+			}),
+		);
 	}
 	await waitFor(
-		() => ["Q06", "Q07", "Q08"].every(query => frames.some(frame => frame.type === "control_command_result" && frame.requestId === query)),
+		() =>
+			["Q06", "Q07", "Q08"].every(query =>
+				frames.some(frame => frame.type === "control_command_result" && frame.requestId === query),
+			),
 		"typed diff responses",
 	);
 	for (const query of ["Q06", "Q07", "Q08"]) {
-		const message = frames.find(frame => frame.type === "control_command_result" && frame.requestId === query)?.message;
+		const message = frames.find(
+			frame => frame.type === "control_command_result" && frame.requestId === query,
+		)?.message;
 		expect(JSON.parse(String(message))).toMatchObject({ ok: false, error: { code: "not_git_repository" } });
 	}
 	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, context(cwd, sessionId));
 });
 
-
 test("diff queries return a bounded error for oversized diffs", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-large-diff-"));
 	dirs.push(cwd);
-	for (const args of [["init", "-q"], ["config", "user.email", "test@example.com"], ["config", "user.name", "Test"]]) {
+	for (const args of [
+		["init", "-q"],
+		["config", "user.email", "test@example.com"],
+		["config", "user.name", "Test"],
+	]) {
 		expect(Bun.spawnSync(["git", ...args], { cwd }).exitCode).toBe(0);
 	}
 	fs.writeFileSync(path.join(cwd, "large.txt"), "seed\n");
@@ -640,15 +773,22 @@ test("diff queries return a bounded error for oversized diffs", async () => {
 		socket.addEventListener("open", () => resolve(), { once: true });
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
-	socket.send(JSON.stringify({
-		type: "control_command", sessionId, token: endpoint.token, requestId: "large-diff",
-		command: { type: "query_request", id: "large-diff", query: "Q06" },
-	}));
+	socket.send(
+		JSON.stringify({
+			type: "control_command",
+			sessionId,
+			token: endpoint.token,
+			requestId: "large-diff",
+			command: { type: "query_request", id: "large-diff", query: "Q06" },
+		}),
+	);
 	await waitFor(
 		() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === "large-diff"),
 		"bounded diff response",
 	);
-	const message = frames.find(frame => frame.type === "control_command_result" && frame.requestId === "large-diff")?.message;
+	const message = frames.find(
+		frame => frame.type === "control_command_result" && frame.requestId === "large-diff",
+	)?.message;
 	expect(JSON.parse(String(message))).toMatchObject({ ok: false, error: { code: "diff_too_large" } });
 	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, context(cwd, sessionId));
 });
@@ -686,15 +826,22 @@ test("context.get reports live streaming state and typed queue depths without no
 	});
 	await Bun.sleep(100);
 	const queryContext = async (requestId: string): Promise<Record<string, unknown>> => {
-		socket.send(JSON.stringify({
-			type: "control_command", sessionId, token: endpoint.token, requestId,
-			command: { type: "query_request", id: requestId, query: "context.get" },
-		}));
+		socket.send(
+			JSON.stringify({
+				type: "control_command",
+				sessionId,
+				token: endpoint.token,
+				requestId,
+				command: { type: "query_request", id: requestId, query: "context.get" },
+			}),
+		);
 		await waitFor(
 			() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === requestId),
 			`context response ${requestId}`,
 		);
-		const message = frames.find(frame => frame.type === "control_command_result" && frame.requestId === requestId)?.message;
+		const message = frames.find(
+			frame => frame.type === "control_command_result" && frame.requestId === requestId,
+		)?.message;
 		const parsed = JSON.parse(String(message)) as { page: { items: Record<string, unknown>[] } };
 		return parsed.page.items[0] as Record<string, unknown>;
 	};
@@ -733,7 +880,8 @@ test("SDK endpoint applies typed skill, plan, goal, and config controls with obs
 		getSkillState: () => activeSkills,
 		getGoalState: () => goal,
 		invokeSkill: async (name: string, args?: string) => {
-			if (name !== "fixture-skill") throw Object.assign(new Error(`Skill ${name} was not found.`), { code: "invalid_input" });
+			if (name !== "fixture-skill")
+				throw Object.assign(new Error(`Skill ${name} was not found.`), { code: "invalid_input" });
 			activeSkills.push({ name, args });
 			return { name, args };
 		},
@@ -749,14 +897,27 @@ test("SDK endpoint applies typed skill, plan, goal, and config controls with obs
 			if (op === "get") return goal;
 			throw Object.assign(new Error(`Unsupported goal op ${op}.`), { code: "invalid_input" });
 		},
-		sdkBindings: () => ["cycleModel", "cycleThinkingLevel", "setQueueMode", "getSkillState", "getConfigItems", "getBranchCandidates", "getExtensions", "invokeSkill", "setPlanMode", "operateGoal"],
+		sdkBindings: () => [
+			"cycleModel",
+			"cycleThinkingLevel",
+			"setQueueMode",
+			"getSkillState",
+			"getConfigItems",
+			"getBranchCandidates",
+			"getExtensions",
+			"invokeSkill",
+			"setPlanMode",
+			"operateGoal",
+		],
 	};
 	const configWrites: Array<[string, unknown]> = [];
-	const settings = { get: () => undefined, set: (key: string, value: unknown) => configWrites.push([key, value]) } as unknown as Settings;
+	const settings = {
+		get: () => undefined,
+		set: (key: string, value: unknown) => configWrites.push([key, value]),
+	} as unknown as Settings;
 
 	process.env.GJC_NOTIFICATIONS = "1";
-	const handlers = start(ctx, settings);
-
+	start(ctx, settings);
 
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
 	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
@@ -770,19 +931,84 @@ test("SDK endpoint applies typed skill, plan, goal, and config controls with obs
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
 	const request = async (id: string, command: Record<string, unknown>): Promise<Record<string, unknown>> => {
-		socket.send(JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId: id, command }));
-		await waitFor(() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === id), `${id} response`);
-		return JSON.parse(String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === id)?.message)) as Record<string, unknown>;
+		socket.send(
+			JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId: id, command }),
+		);
+		await waitFor(
+			() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === id),
+			`${id} response`,
+		);
+		return JSON.parse(
+			String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === id)?.message),
+		) as Record<string, unknown>;
 	};
-	expect(await request("skill", { type: "control_request", id: "skill", operation: "skill.invoke", input: { name: "fixture-skill", args: "run" } })).toMatchObject({ ok: true });
-	expect(await request("q11", { type: "query_request", id: "q11", query: "Q11" })).toMatchObject({ ok: true, page: { items: [{ name: "fixture-skill", args: "run" }] } });
-	expect(await request("plan", { type: "control_request", id: "plan", operation: "mode.plan.set", input: { on: true } })).toMatchObject({ ok: true, result: { state: { enabled: true, planFilePath: "local://PLAN.md" } } });
-	expect(await request("goal", { type: "control_request", id: "goal", operation: "mode.goal.operate", input: { op: "create", objective: "Ship it" } })).toMatchObject({ ok: true });
-	expect(await request("q04", { type: "query_request", id: "q04", query: "Q04" })).toMatchObject({ ok: true, page: { items: [{ enabled: true, goal: { objective: "Ship it", status: "active" } }] } });
+	expect(
+		await request("skill", {
+			type: "control_request",
+			id: "skill",
+			operation: "skill.invoke",
+			input: { name: "fixture-skill", args: "run" },
+		}),
+	).toMatchObject({ ok: true });
+	expect(await request("q11", { type: "query_request", id: "q11", query: "Q11" })).toMatchObject({
+		ok: true,
+		page: { items: [{ name: "fixture-skill", args: "run" }] },
+	});
+	expect(
+		await request("plan", { type: "control_request", id: "plan", operation: "mode.plan.set", input: { on: true } }),
+	).toMatchObject({ ok: true, result: { state: { enabled: true, planFilePath: "local://PLAN.md" } } });
+	expect(
+		await request("goal", {
+			type: "control_request",
+			id: "goal",
+			operation: "mode.goal.operate",
+			input: { op: "create", objective: "Ship it" },
+		}),
+	).toMatchObject({ ok: true });
+	expect(await request("q04", { type: "query_request", id: "q04", query: "Q04" })).toMatchObject({
+		ok: true,
+		page: { items: [{ enabled: true, goal: { objective: "Ship it", status: "active" } }] },
+	});
 
-	expect(await request("skill-error", { type: "control_request", id: "skill-error", operation: "skill.invoke", input: { name: "missing" } })).toEqual({ type: "control_response", id: "skill-error", ok: false, error: { code: "invalid_input", message: "Skill missing was not found." } });
-	expect(await request("secret-error", { type: "control_request", id: "secret-error", operation: "config.patch", input: { patch: { apiToken: "secret" } } })).toEqual({ type: "control_response", id: "secret-error", ok: false, error: { code: "invalid_input", message: "config.patch rejects secret fields at the SDK host." } });
-	expect(await request("nested-secret-error", { type: "control_request", id: "nested-secret-error", operation: "config.patch", input: { patch: { theme: "dark", display: { credentials: { apiKey: "secret" } } } } })).toEqual({ type: "control_response", id: "nested-secret-error", ok: false, error: { code: "invalid_input", message: "config.patch rejects secret fields at the SDK host." } });
+	expect(
+		await request("skill-error", {
+			type: "control_request",
+			id: "skill-error",
+			operation: "skill.invoke",
+			input: { name: "missing" },
+		}),
+	).toEqual({
+		type: "control_response",
+		id: "skill-error",
+		ok: false,
+		error: { code: "invalid_input", message: "Skill missing was not found." },
+	});
+	expect(
+		await request("secret-error", {
+			type: "control_request",
+			id: "secret-error",
+			operation: "config.patch",
+			input: { patch: { apiToken: "secret" } },
+		}),
+	).toEqual({
+		type: "control_response",
+		id: "secret-error",
+		ok: false,
+		error: { code: "invalid_input", message: "config.patch rejects secret fields at the SDK host." },
+	});
+	expect(
+		await request("nested-secret-error", {
+			type: "control_request",
+			id: "nested-secret-error",
+			operation: "config.patch",
+			input: { patch: { theme: "dark", display: { credentials: { apiKey: "secret" } } } },
+		}),
+	).toEqual({
+		type: "control_response",
+		id: "nested-secret-error",
+		ok: false,
+		error: { code: "invalid_input", message: "config.patch rejects secret fields at the SDK host." },
+	});
 	expect(configWrites).toEqual([]);
 });
 
@@ -790,7 +1016,10 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-workflow-gate-"));
 	dirs.push(cwd);
 	const sessionId = `workflow-gate-${Date.now()}`;
-	const emitter = new BrokerWorkflowGateEmitter(sessionId, new FileGateStore(path.join(cwd, ".gjc", "state", "workflow-gates.json")));
+	const emitter = new BrokerWorkflowGateEmitter(
+		sessionId,
+		new FileGateStore(path.join(cwd, ".gjc", "state", "workflow-gates.json")),
+	);
 	process.env.GJC_NOTIFICATIONS = "1";
 	start(context(cwd, sessionId, "main", {}, emitter));
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
@@ -805,18 +1034,39 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
 	const request = async (id: string, command: Record<string, unknown>): Promise<Record<string, unknown>> => {
-		socket.send(JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId: id, command }));
-		await waitFor(() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === id), `${id} response`);
-		return JSON.parse(String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === id)?.message)) as Record<string, unknown>;
+		socket.send(
+			JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId: id, command }),
+		);
+		await waitFor(
+			() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === id),
+			`${id} response`,
+		);
+		return JSON.parse(
+			String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === id)?.message),
+		) as Record<string, unknown>;
 	};
 	let gateId = "";
 	emitter.onGateEmitted!(gate => {
 		gateId = gate.gate_id;
 	});
-	const advance = emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string", enum: ["approve"] } });
+	const advance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+	});
 	await waitFor(() => gateId !== "", "workflow gate");
-	expect(await request("gates", { type: "query_request", id: "gates", query: "Q12" })).toMatchObject({ ok: true, page: { items: [{ gate_id: gateId }] } });
-	expect(await request("answer", { type: "control_request", id: "answer", operation: "workflow.gate_answer", input: { id: gateId, response: "approve" } })).toMatchObject({ ok: true, result: { status: "accepted" } });
+	expect(await request("gates", { type: "query_request", id: "gates", query: "Q12" })).toMatchObject({
+		ok: true,
+		page: { items: [{ gate_id: gateId }] },
+	});
+	expect(
+		await request("answer", {
+			type: "control_request",
+			id: "answer",
+			operation: "workflow.gate_answer",
+			input: { id: gateId, response: "approve" },
+		}),
+	).toMatchObject({ ok: true, result: { status: "accepted" } });
 	expect(await advance).toBe("approve");
 });
 
@@ -824,7 +1074,10 @@ test("AC2/AC8: SDK host completes successful session mutations over its live Web
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-successful-verbs-"));
 	dirs.push(cwd);
 	const sessionId = `successful-verbs-${Date.now()}`;
-	const emitter = new BrokerWorkflowGateEmitter(sessionId, new FileGateStore(path.join(cwd, ".gjc", "state", "workflow-gates.json")));
+	const emitter = new BrokerWorkflowGateEmitter(
+		sessionId,
+		new FileGateStore(path.join(cwd, ".gjc", "state", "workflow-gates.json")),
+	);
 	const emittedGates: Array<{ gate_id: string; kind: string }> = [];
 	emitter.onGateEmitted!(gate => emittedGates.push(gate));
 	let compactions = 0;
@@ -835,7 +1088,9 @@ test("AC2/AC8: SDK host completes successful session mutations over its live Web
 	} as unknown as Settings;
 	const ctx = {
 		...context(cwd, sessionId, "main", {}, emitter),
-		compact: async () => { compactions++; },
+		compact: async () => {
+			compactions++;
+		},
 		getConfigItems: () => ({ "ui.theme": "light" }),
 	};
 	process.env.GJC_NOTIFICATIONS = "1";
@@ -852,46 +1107,119 @@ test("AC2/AC8: SDK host completes successful session mutations over its live Web
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
 	const request = async (id: string, command: Record<string, unknown>): Promise<Record<string, unknown>> => {
-		socket.send(JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId: id, command }));
-		await waitFor(() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === id), `${id} response`);
-		return JSON.parse(String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === id)?.message)) as Record<string, unknown>;
+		socket.send(
+			JSON.stringify({ type: "control_command", sessionId, token: endpoint.token, requestId: id, command }),
+		);
+		await waitFor(
+			() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === id),
+			`${id} response`,
+		);
+		return JSON.parse(
+			String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === id)?.message),
+		) as Record<string, unknown>;
 	};
 
 	await waitFor(() => getAskAnswerSource(sessionId) !== undefined, "interactive ask source");
-	const askAnswer = getAskAnswerSource(sessionId)!.awaitAnswer("Continue with the SDK host test?", ["continue", "stop"]);
+	const askAnswer = getAskAnswerSource(sessionId)!.awaitAnswer("Continue with the SDK host test?", [
+		"continue",
+		"stop",
+	]);
 	await waitFor(() => frames.some(frame => frame.type === "action_needed" && frame.kind === "ask"), "pending ask");
 	const askId = String(frames.find(frame => frame.type === "action_needed" && frame.kind === "ask")?.id);
-	expect(await request("ask-answer", {
-		type: "control_request", id: "ask-answer", operation: "ask.answer", input: { id: askId, answer: 0 }, idempotencyKey: "successful-verbs-ask-answer",
-	})).toEqual({ type: "control_response", id: "ask-answer", ok: true, result: { resolved: true } });
+	expect(
+		await request("ask-answer", {
+			type: "control_request",
+			id: "ask-answer",
+			operation: "ask.answer",
+			input: { id: askId, answer: 0 },
+			idempotencyKey: "successful-verbs-ask-answer",
+		}),
+	).toEqual({ type: "control_response", id: "ask-answer", ok: true, result: { resolved: true } });
 	expect(await askAnswer).toBe("continue");
 
-	const questionAdvance = emitter.emitGate({ stage: "deep-interview", kind: "question", schema: { type: "string", enum: ["continue"] } });
+	const questionAdvance = emitter.emitGate({
+		stage: "deep-interview",
+		kind: "question",
+		schema: { type: "string", enum: ["continue"] },
+	});
 	await waitFor(() => emittedGates.some(gate => gate.kind === "question"), "pending question gate");
 	const questionGateId = emittedGates.find(gate => gate.kind === "question")!.gate_id;
-	expect(await request("gate-answer", {
-		type: "control_request", id: "gate-answer", operation: "workflow.gate_answer", input: { id: questionGateId, response: "continue" }, idempotencyKey: "successful-verbs-gate-answer",
-	})).toMatchObject({ type: "control_response", id: "gate-answer", ok: true, result: { gate_id: questionGateId, status: "accepted" } });
+	expect(
+		await request("gate-answer", {
+			type: "control_request",
+			id: "gate-answer",
+			operation: "workflow.gate_answer",
+			input: { id: questionGateId, response: "continue" },
+			idempotencyKey: "successful-verbs-gate-answer",
+		}),
+	).toMatchObject({
+		type: "control_response",
+		id: "gate-answer",
+		ok: true,
+		result: { gate_id: questionGateId, status: "accepted" },
+	});
 	expect(await questionAdvance).toBe("continue");
 
-	const approvalAdvance = emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string", enum: ["approve"] } });
+	const approvalAdvance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+	});
 	await waitFor(() => emittedGates.some(gate => gate.kind === "approval"), "pending approval gate");
 	const approvalGateId = emittedGates.find(gate => gate.kind === "approval")!.gate_id;
-	expect(await request("plan-approve", {
-		type: "control_request", id: "plan-approve", operation: "workflow.plan_approve", input: { id: approvalGateId, choice: "approve" }, idempotencyKey: "successful-verbs-plan-approve",
-	})).toMatchObject({ type: "control_response", id: "plan-approve", ok: true, result: { gate_id: approvalGateId, status: "accepted" } });
+	expect(
+		await request("plan-approve", {
+			type: "control_request",
+			id: "plan-approve",
+			operation: "workflow.plan_approve",
+			input: { id: approvalGateId, choice: "approve" },
+			idempotencyKey: "successful-verbs-plan-approve",
+		}),
+	).toMatchObject({
+		type: "control_response",
+		id: "plan-approve",
+		ok: true,
+		result: { gate_id: approvalGateId, status: "accepted" },
+	});
 	expect(await approvalAdvance).toBe("approve");
 
-	expect(await request("compaction", {
-		type: "control_request", id: "compaction", operation: "compaction.run", input: {}, idempotencyKey: "successful-verbs-compaction",
-	})).toEqual({ type: "control_response", id: "compaction", ok: true, result: { started: true } });
+	expect(
+		await request("compaction", {
+			type: "control_request",
+			id: "compaction",
+			operation: "compaction.run",
+			input: {},
+			idempotencyKey: "successful-verbs-compaction",
+		}),
+	).toEqual({ type: "control_response", id: "compaction", ok: true, result: { started: true } });
 	expect(compactions).toBe(1);
 
-	expect(await request("config-patch", {
-		type: "control_request", id: "config-patch", operation: "config.patch", input: { patch: { "ui.theme": "dark" } }, expectedRevision: "0", idempotencyKey: "successful-verbs-config-patch",
-	})).toEqual({ type: "control_response", id: "config-patch", ok: true, result: { patched: ["ui.theme"], revision: "1" } });
+	expect(
+		await request("config-patch", {
+			type: "control_request",
+			id: "config-patch",
+			operation: "config.patch",
+			input: { patch: { "ui.theme": "dark" } },
+			expectedRevision: "0",
+			idempotencyKey: "successful-verbs-config-patch",
+		}),
+	).toEqual({
+		type: "control_response",
+		id: "config-patch",
+		ok: true,
+		result: { patched: ["ui.theme"], revision: "1" },
+	});
 	expect(configWrites).toEqual([["ui.theme", "dark"]]);
-	expect(await request("config-readback", {
-		type: "query_request", id: "config-readback", query: "config.list/get",
-	})).toMatchObject({ type: "query_response", id: "config-readback", ok: true, page: { items: [{ "ui.theme": "dark" }] } });
+	expect(
+		await request("config-readback", {
+			type: "query_request",
+			id: "config-readback",
+			query: "config.list/get",
+		}),
+	).toMatchObject({
+		type: "query_response",
+		id: "config-readback",
+		ok: true,
+		page: { items: [{ "ui.theme": "dark" }] },
+	});
 });

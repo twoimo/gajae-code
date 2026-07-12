@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { WorkflowGate } from "../src/modes/shared/agent-wire/workflow-gate-types";
 import {
 	FileGateStore,
 	type GateAuditEvent,
@@ -10,6 +9,7 @@ import {
 	WorkflowGateBroker,
 	WorkflowGateBrokerError,
 } from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import type { WorkflowGate } from "../src/modes/shared/agent-wire/workflow-gate-types";
 
 function makeBroker(
 	extra: { audit?: (e: GateAuditEvent) => void; advance?: (g: WorkflowGate, a: unknown) => void } = {},

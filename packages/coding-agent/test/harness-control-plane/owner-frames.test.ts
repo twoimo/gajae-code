@@ -106,7 +106,12 @@ describe("owner frame -> observability", () => {
 		owner = new RuntimeOwner({ root, sessionId: SID, transport });
 		const info = await owner.start();
 		transport.emit({ type: "agent_start" });
-		transport.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "bun test x" } });
+		transport.emit({
+			type: "tool_execution_start",
+			toolCallId: "t1",
+			toolName: "bash",
+			args: { command: "bun test x" },
+		});
 		transport.emit({
 			type: "tool_execution_end",
 			toolCallId: "t1",

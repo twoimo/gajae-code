@@ -3,7 +3,10 @@ export const SDK_STATE_VERSION = 1;
 export class UnsupportedStateVersionError extends Error {
 	readonly code = "unsupported_state_version";
 
-	constructor(readonly file: string, readonly version: number) {
+	constructor(
+		readonly file: string,
+		readonly version: number,
+	) {
 		super(`Unsupported SDK state version ${version} in ${file}; maximum supported version is ${SDK_STATE_VERSION}.`);
 		this.name = "UnsupportedStateVersionError";
 	}
