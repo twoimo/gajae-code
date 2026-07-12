@@ -1423,8 +1423,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const scope = this.#planModeProviderSessionScope;
 		if (scope && !this.session.isStreaming) {
-			this.session.restoreTemporaryProviderSessionScope(scope);
-			this.#planModeProviderSessionScope = undefined;
+			const restored = this.session.restoreTemporaryProviderSessionScope(scope);
+			if (restored) this.#planModeProviderSessionScope = undefined;
 		} else if (this.#planModePreviousModelState) {
 			const prev = this.#planModePreviousModelState;
 			if (modelsAreEqual(this.session.model, prev.model)) {

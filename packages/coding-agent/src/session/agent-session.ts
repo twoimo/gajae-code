@@ -565,6 +565,7 @@ export interface TemporaryProviderSessionScope {
 
 interface TemporaryProviderSessionScopeRecord {
 	token: TemporaryProviderSessionScope;
+	autoOwned: boolean;
 	model: Model | undefined;
 	thinkingLevel: ThinkingLevel | undefined;
 	fallbackController: FallbackChainController | undefined;
@@ -1802,9 +1803,17 @@ export class AgentSession {
 
 	/** Suspend provider state without closing it while a temporary model is active. */
 	beginTemporaryProviderSessionScope(reason: TemporaryModelReason): TemporaryProviderSessionScope {
+		return this.#beginTemporaryProviderSessionScope(reason, false);
+	}
+
+	#beginTemporaryProviderSessionScope(
+		reason: TemporaryModelReason,
+		autoOwned: boolean,
+	): TemporaryProviderSessionScope {
 		const token: TemporaryProviderSessionScope = Object.freeze({ reason });
 		this.#temporaryProviderSessionScopes.push({
 			token,
+			autoOwned,
 			model: this.model,
 			thinkingLevel: this.#thinkingLevel,
 			fallbackController: this.#defaultFallbackController,
@@ -1824,12 +1833,22 @@ export class AgentSession {
 		return token;
 	}
 
-	/** Restore a temporary scope. Only the current (topmost) owner may restore it. */
+	/** Restore a temporary scope, unwinding any auto-owned scopes above it. */
 	restoreTemporaryProviderSessionScope(token: TemporaryProviderSessionScope): boolean {
-		const scope = this.#temporaryProviderSessionScopes.at(-1);
-		if (!scope || scope.token !== token) return false;
-		this.#temporaryProviderSessionScopes.pop();
-		if (this.#autoTemporaryProviderSessionScope === token) this.#autoTemporaryProviderSessionScope = undefined;
+		const scopeIndex = this.#temporaryProviderSessionScopes.findLastIndex(scope => scope.token === token);
+		if (scopeIndex < 0 || this.#temporaryProviderSessionScopes.slice(scopeIndex + 1).some(scope => !scope.autoOwned)) {
+			return false;
+		}
+		while (this.#temporaryProviderSessionScopes.length > scopeIndex) {
+			this.#restoreTopTemporaryProviderSessionScope();
+		}
+		return true;
+	}
+
+	#restoreTopTemporaryProviderSessionScope(): void {
+		const scope = this.#temporaryProviderSessionScopes.pop();
+		if (!scope) return;
+		if (this.#autoTemporaryProviderSessionScope === scope.token) this.#autoTemporaryProviderSessionScope = undefined;
 		this.#closeProviderSessionMap(this.#providerSessionState, "temporary scope restore");
 		this.#rebindProviderSessionState(scope.providerSessionState);
 		this.#defaultFallbackController = scope.fallbackController;
@@ -1841,7 +1860,6 @@ export class AgentSession {
 		this.#thinkingLevel = scope.thinkingLevel;
 		this.agent.setThinkingLevel(toReasoningEffort(scope.thinkingLevel));
 		void this.#syncEditToolModeAfterModelChange(previousEditMode);
-		return true;
 	}
 
 	/** Promote a temporary scope. The suspended provider state is permanently closed. */
@@ -7104,7 +7122,7 @@ export class AgentSession {
 			? (suppliedScope ??
 				(restoredAutoScope && this.model && modelsAreEqual(this.model, model)
 					? undefined
-					: this.beginTemporaryProviderSessionScope(options?.reason ?? "other")))
+					: this.#beginTemporaryProviderSessionScope(options?.reason ?? "other", true)))
 			: undefined;
 		const ownsScope = scope !== undefined && !suppliedScope;
 		if (autoCreateScope && scope) this.#autoTemporaryProviderSessionScope = scope;

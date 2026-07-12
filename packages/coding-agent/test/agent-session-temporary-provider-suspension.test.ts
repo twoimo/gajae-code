@@ -47,6 +47,40 @@ describe("temporary provider-session suspension", () => {
 		expect(session.restoreTemporaryProviderSessionScope(outer)).toBe(false);
 	});
 
+	test("restores an explicit scope after unwinding auto-owned scopes above it", async () => {
+		const planModel = { ...model, id: "plan" } as Model;
+		const session = createSession(undefined, [model, planModel]);
+		const originalMap = session.providerSessionState;
+		const originalClose = vi.fn();
+		originalMap.set("original", state(originalClose));
+		const planScope = session.beginTemporaryProviderSessionScope("plan-mode");
+		const planMap = session.providerSessionState;
+		const planClose = vi.fn();
+		planMap.set("plan", state(planClose));
+		await session.setModelTemporary(planModel, undefined, {
+			cause: "temporary-operation",
+			providerSessionScope: planScope,
+		});
+		const autoScope = await session.setModelTemporary(model, undefined, {
+			cause: "temporary-operation",
+			reason: "context-promotion",
+		});
+		if (!autoScope) throw new Error("Context promotion did not create an auto-owned scope");
+		const autoMap = session.providerSessionState;
+		const autoClose = vi.fn();
+		autoMap.set("auto", state(autoClose));
+
+		expect(session.restoreTemporaryProviderSessionScope(planScope)).toBe(true);
+		expect(session.model).toBe(model);
+		expect(session.providerSessionState).toBe(originalMap);
+		expect(session.agent.providerSessionState).toBe(originalMap);
+		expect(autoClose).toHaveBeenCalledTimes(1);
+		expect(planClose).toHaveBeenCalledTimes(1);
+		expect(originalClose).not.toHaveBeenCalled();
+		expect(session.restoreTemporaryProviderSessionScope(autoScope)).toBe(false);
+		expect(session.restoreTemporaryProviderSessionScope(planScope)).toBe(false);
+	});
+
 	test("new session drains provider state and installs a new shared map", async () => {
 		const session = createSession();
 		const oldMap = session.providerSessionState;

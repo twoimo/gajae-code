@@ -60,6 +60,34 @@ describe("plan-mode temporary fallback state", () => {
 		expect(originalClose).not.toHaveBeenCalled();
 	});
 
+	test("unwinds a context-promotion scope before restoring the plan scope", async () => {
+		const originalMap = session.providerSessionState;
+		const originalClose = vi.fn();
+		originalMap.set("default", state(originalClose));
+
+		await mode.handlePlanModeCommand();
+		const planMap = session.providerSessionState;
+		const planClose = vi.fn();
+		planMap.set("plan", state(planClose));
+		await session.setModelTemporary(defaultModel, undefined, {
+			cause: "temporary-operation",
+			reason: "context-promotion",
+		});
+		const promotionMap = session.providerSessionState;
+		const promotionClose = vi.fn();
+		promotionMap.set("promotion", state(promotionClose));
+
+		vi.spyOn(mode, "showHookConfirm").mockResolvedValue(true);
+		await mode.handlePlanModeCommand();
+
+		expect(session.model).toBe(defaultModel);
+		expect(session.providerSessionState).toBe(originalMap);
+		expect(session.agent.providerSessionState).toBe(originalMap);
+		expect(promotionClose).toHaveBeenCalledTimes(1);
+		expect(planClose).toHaveBeenCalledTimes(1);
+		expect(originalClose).not.toHaveBeenCalled();
+	});
+
 	test("applies a deferred plan switch in the temporary scope and restores its original provider state on exit", async () => {
 		const originalClose = vi.fn();
 		session.providerSessionState.set("default", state(originalClose));
