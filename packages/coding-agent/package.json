@@ -114,6 +114,8 @@
 		"./modes/components/runtime-mcp-add-wizard": null,
 		"./modes/controllers/runtime-mcp-command-controller": null,
 		"./slash-commands/helpers/mcp": null,
+		"./visible-session": null,
+		"./visible-session/*": null,
 		"./*": {
 			"types": "./src/*.ts",
 			"import": "./src/*.ts"
