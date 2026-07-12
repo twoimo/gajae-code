@@ -27,6 +27,7 @@ import {
 	type ResumeSessionRequest,
 	type ResumeSessionResponse,
 	type SessionInfo,
+	type SessionNotification,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
 	type SetSessionModeRequest,
@@ -68,6 +69,8 @@ interface PromptWaiter {
 	cancelRequested: boolean;
 	acknowledged: boolean;
 	activityObserved: boolean;
+	/** The prompt was accepted while the host was already busy, so its next valid idle ends the steer. */
+	steeringAtAcknowledgement: boolean;
 	/** Highest inbound frame sequence already observed when the prompt was acknowledged. */
 	boundary: number;
 	correlation: PromptCorrelation;
@@ -79,15 +82,19 @@ interface PromptWaiter {
 type PromptCorrelation = { commandId?: string; turnId?: string };
 
 type BrokerConnection = { adapter: AcpSdkAdapter; client: SdkClient };
+type PendingAttachment = { epoch: number; task: Promise<void> };
 
 type SessionRecord = {
 	cwd: string;
 	adapter: AcpSdkAdapter;
 	unsubscribe: () => void;
+	reconnectUnsubscribe: () => void;
 	/** Per-session frame work queue; callbacks never race prompt ownership. */
 	frameTail: Promise<void>;
 	/** Monotonic at WebSocket ingress, before queued work begins. */
 	inboundSequence: number;
+	/** Updated at ingress so a prompt acknowledgement can distinguish a steer from a fresh turn. */
+	busy: boolean;
 	activePrompt?: PromptWaiter;
 };
 type Endpoint = { url: string; token: string };
@@ -116,6 +123,14 @@ function parseAcpStartupOptions(value: unknown): AcpStartupOptions | undefined {
 
 function object(value: unknown): JsonObject | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : undefined;
+}
+
+function aggregateAcpFailure(code: string, message: string, failures: unknown[]): AcpSdkAdapterError {
+	const aggregate = new AggregateError(failures, message);
+	return Object.assign(new AcpSdkAdapterError(code, aggregate.message), {
+		cause: aggregate,
+		errors: aggregate.errors,
+	});
 }
 
 /** Applies ACP's offset cursor after narrowing the broker listing to the requested cwd. */
@@ -552,13 +567,16 @@ export class AcpAgent implements Agent {
 	readonly #connection: AgentSideConnection;
 	readonly #agentDir: string;
 	readonly #sessions = new Map<string, SessionRecord>();
-	readonly #attaching = new Map<string, Promise<void>>();
-	readonly #resolvingExisting = new Map<string, Promise<void>>();
+	readonly #attaching = new Map<string, PendingAttachment>();
+	readonly #resolvingExisting = new Map<string, PendingAttachment>();
 	readonly #knownSessionCwds = new Map<string, string>();
+	readonly #sessionEpochs = new Map<string, number>();
+	readonly #tearingDown = new Map<string, number>();
 	#clientCapabilities: ClientCapabilities | undefined;
 	#broker: Promise<BrokerConnection> | undefined;
 	readonly #startupOptions: AcpStartupOptions | undefined;
 	#disposed = false;
+	#disposePromise: Promise<void> | undefined;
 
 	constructor(
 		connection: AgentSideConnection,
@@ -570,9 +588,9 @@ export class AcpAgent implements Agent {
 		this.#startupOptions = parseAcpStartupOptions(candidate?.startupOptions);
 		queueMicrotask(() => {
 			if (connection.signal.aborted) {
-				void this.#dispose();
+				this.#beginDispose();
 			} else {
-				connection.signal.addEventListener("abort", () => void this.#dispose(), { once: true });
+				connection.signal.addEventListener("abort", () => this.#beginDispose(), { once: true });
 			}
 		});
 	}
@@ -630,12 +648,12 @@ export class AcpAgent implements Agent {
 		try {
 			await this.#attach(id, params.cwd, endpoint(result));
 			await applyAcpStartupOptions(this.#adapter(id), this.#startupOptions);
+			this.#scheduleBootstrap(id);
+			return { sessionId: id, ...(await this.#sessionState(id)) };
 		} catch (error) {
 			await this.#discardNewSession(id);
 			throw error;
 		}
-		this.#scheduleBootstrap(id);
-		return { sessionId: id, ...(await this.#sessionState(id)) };
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -670,9 +688,15 @@ export class AcpAgent implements Agent {
 			randomUUID(),
 		);
 		const id = sessionId(result);
-		await this.#attach(id, params.cwd, endpoint(result));
-		this.#scheduleBootstrap(id);
-		return { sessionId: id, ...(await this.#sessionState(id)) };
+		this.#knownSessionCwds.set(id, params.cwd);
+		try {
+			await this.#attach(id, params.cwd, endpoint(result));
+			this.#scheduleBootstrap(id);
+			return { sessionId: id, ...(await this.#sessionState(id)) };
+		} catch (error) {
+			await this.#discardNewSession(id);
+			throw error;
+		}
 	}
 
 	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -710,9 +734,14 @@ export class AcpAgent implements Agent {
 		const cwd = record?.cwd ?? this.#knownSessionCwds.get(params.sessionId);
 		// ACP close has no cwd. Only connection-owned sessions may reach broker lifecycle control.
 		if (!cwd) return {};
-		await this.#teardownSession(params.sessionId, "closed", true);
-		this.#knownSessionCwds.delete(params.sessionId);
-		return {};
+		this.#beginTeardown(params.sessionId);
+		try {
+			await this.#teardownSession(params.sessionId, "closed", true);
+			this.#knownSessionCwds.delete(params.sessionId);
+			return {};
+		} finally {
+			this.#finishTeardown(params.sessionId);
+		}
 	}
 
 	async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
@@ -721,32 +750,36 @@ export class AcpAgent implements Agent {
 		// ACP's delete request has no cwd. Only delete sessions this connection has
 		// already scoped through the broker; unknown ids remain the protocol no-op.
 		if (!cwd) return {};
-
-		await this.#teardownSession(params.sessionId, "deleted", true);
-		let saved: string;
+		this.#beginTeardown(params.sessionId);
 		try {
-			saved = await this.#resolveSavedSession(params.sessionId, cwd);
-		} catch (error) {
-			if (error instanceof AcpSdkAdapterError && error.code === "not_found") {
-				this.#knownSessionCwds.delete(params.sessionId);
-				return {};
+			await this.#teardownSession(params.sessionId, "deleted", true);
+			let saved: string;
+			try {
+				saved = await this.#resolveSavedSession(params.sessionId, cwd);
+			} catch (error) {
+				if (error instanceof AcpSdkAdapterError && error.code === "not_found") {
+					this.#knownSessionCwds.delete(params.sessionId);
+					return {};
+				}
+				throw error;
 			}
-			throw error;
+			await (await this.#brokerAdapter()).global(
+				"session.delete",
+				{ sessionId: params.sessionId, sessionPath: saved, cwd, target: { path: cwd } },
+				this.#lifecycleIdempotencyKey(params.sessionId, "session.delete"),
+			);
+			this.#knownSessionCwds.delete(params.sessionId);
+			return {};
+		} finally {
+			this.#finishTeardown(params.sessionId);
 		}
-		await (await this.#brokerAdapter()).global(
-			"session.delete",
-			{ sessionId: params.sessionId, sessionPath: saved, cwd, target: { path: cwd } },
-			randomUUID(),
-		);
-		this.#knownSessionCwds.delete(params.sessionId);
-		return {};
 	}
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
 		if (params.modeId !== ACP_DEFAULT_MODE_ID && params.modeId !== ACP_PLAN_MODE_ID)
 			throw new Error(`Unsupported ACP mode: ${params.modeId}`);
 		await this.#adapter(params.sessionId).control("mode.plan.set", { on: params.modeId === ACP_PLAN_MODE_ID });
-		await this.#connection.sessionUpdate({
+		await this.#publishSessionUpdate(params.sessionId, {
 			sessionId: params.sessionId,
 			update: { sessionUpdate: "current_mode_update", currentModeId: params.modeId },
 		});
@@ -773,7 +806,7 @@ export class AcpAgent implements Agent {
 			}
 		}
 		const state = await this.#sessionState(params.sessionId);
-		await this.#connection.sessionUpdate({
+		await this.#publishSessionUpdate(params.sessionId, {
 			sessionId: params.sessionId,
 			update: { sessionUpdate: "config_option_update", configOptions: state.configOptions ?? [] },
 		});
@@ -791,6 +824,7 @@ export class AcpAgent implements Agent {
 				cancelRequested: false,
 				acknowledged: false,
 				activityObserved: false,
+				steeringAtAcknowledgement: record.busy,
 				boundary: record.inboundSequence,
 				correlation: {},
 				resolve,
@@ -803,6 +837,7 @@ export class AcpAgent implements Agent {
 				text: payload.text,
 				...(payload.images.length ? { images: payload.images } : {}),
 			});
+			waiter.steeringAtAcknowledgement = record.busy;
 			// Capture the ingress boundary after the command acknowledgement. Frames
 			// queued before this point are stale with respect to this ACP prompt.
 			waiter.boundary = record.inboundSequence;
@@ -860,7 +895,44 @@ export class AcpAgent implements Agent {
 		return this.#connection.closed;
 	}
 
+	#sessionEpoch(id: string): number {
+		return this.#sessionEpochs.get(id) ?? 0;
+	}
+
+	#advanceSessionEpoch(id: string): void {
+		this.#sessionEpochs.set(id, this.#sessionEpoch(id) + 1);
+	}
+
+	#assertSessionEpoch(id: string, epoch: number): void {
+		if (this.#disposed || this.#tearingDown.has(id) || this.#sessionEpoch(id) !== epoch)
+			throw new AcpSdkAdapterError("connection_closed", `ACP session ${id} was closed while attaching.`);
+	}
+
+	#beginTeardown(id: string): void {
+		this.#tearingDown.set(id, (this.#tearingDown.get(id) ?? 0) + 1);
+	}
+
+	#finishTeardown(id: string): void {
+		const remaining = (this.#tearingDown.get(id) ?? 1) - 1;
+		if (remaining > 0) this.#tearingDown.set(id, remaining);
+		else this.#tearingDown.delete(id);
+	}
+
+	#lifecycleIdempotencyKey(id: string, operation: "session.close" | "session.delete"): string {
+		return `acp:${operation}:${id}`;
+	}
+
+	#isAlreadyGone(error: unknown): boolean {
+		return (
+			typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			((error.code === "not_found" || error.code === "resource_gone") as boolean)
+		);
+	}
+
 	async #attachExisting(id: string, cwd: string): Promise<void> {
+		const epoch = this.#sessionEpoch(id);
 		const attached = this.#sessions.get(id);
 		if (attached) {
 			if (path.resolve(attached.cwd) !== path.resolve(cwd))
@@ -871,8 +943,9 @@ export class AcpAgent implements Agent {
 		if (knownCwd && path.resolve(knownCwd) !== path.resolve(cwd))
 			throw new AcpSdkAdapterError("conflict", `ACP session ${id} has conflicting cwd authority.`);
 		const resolving = this.#resolvingExisting.get(id);
-		if (resolving) {
-			await resolving;
+		if (resolving?.epoch === epoch) {
+			await resolving.task;
+			this.#assertSessionEpoch(id, epoch);
 			const resolved = this.#sessions.get(id);
 			if (!resolved) throw new AcpSdkAdapterError("unavailable", `ACP session ${id} did not attach.`);
 			if (path.resolve(resolved.cwd) !== path.resolve(cwd))
@@ -880,30 +953,37 @@ export class AcpAgent implements Agent {
 			return;
 		}
 
-		const pending = this.#resolveExistingAttachment(id, cwd);
+		const task = this.#resolveExistingAttachment(id, cwd, epoch);
+		const pending = { epoch, task };
 		this.#resolvingExisting.set(id, pending);
 		try {
-			await pending;
+			await task;
+			this.#assertSessionEpoch(id, epoch);
 		} finally {
 			if (this.#resolvingExisting.get(id) === pending) this.#resolvingExisting.delete(id);
 		}
 	}
 
-	async #resolveExistingAttachment(id: string, cwd: string): Promise<void> {
+	async #resolveExistingAttachment(id: string, cwd: string, epoch: number): Promise<void> {
+		this.#assertSessionEpoch(id, epoch);
 		const indexed = await this.#scopedBrokerSession(id, cwd);
+		this.#assertSessionEpoch(id, epoch);
 		if (indexed?.live) {
 			const result = await this.#brokerEndpoint(id, indexed.endpointGeneration);
-			await this.#attach(id, cwd, endpoint(result));
+			this.#assertSessionEpoch(id, epoch);
+			await this.#attach(id, cwd, endpoint(result), epoch);
 			return;
 		}
 
 		const saved = await this.#resolveSavedSession(id, cwd);
+		this.#assertSessionEpoch(id, epoch);
 		const result = await (await this.#brokerAdapter()).global(
 			"session.resume",
 			{ cwd, sessionId: id, sessionPath: saved, target: { path: cwd } },
 			randomUUID(),
 		);
-		await this.#attach(id, cwd, endpoint(result));
+		this.#assertSessionEpoch(id, epoch);
+		await this.#attach(id, cwd, endpoint(result), epoch);
 	}
 
 	async #scopedBrokerSession(id: string, cwd: string): Promise<BrokerSession | undefined> {
@@ -921,7 +1001,8 @@ export class AcpAgent implements Agent {
 		return matches[0];
 	}
 
-	async #attach(id: string, cwd: string, discovered: Endpoint): Promise<void> {
+	async #attach(id: string, cwd: string, discovered: Endpoint, epoch = this.#sessionEpoch(id)): Promise<void> {
+		this.#assertSessionEpoch(id, epoch);
 		const existing = this.#sessions.get(id);
 		if (existing) {
 			if (path.resolve(existing.cwd) !== path.resolve(cwd))
@@ -929,8 +1010,9 @@ export class AcpAgent implements Agent {
 			return;
 		}
 		const attaching = this.#attaching.get(id);
-		if (attaching) {
-			await attaching;
+		if (attaching?.epoch === epoch) {
+			await attaching.task;
+			this.#assertSessionEpoch(id, epoch);
 			const attached = this.#sessions.get(id);
 			if (!attached) throw new AcpSdkAdapterError("unavailable", `ACP session ${id} did not attach.`);
 			if (path.resolve(attached.cwd) !== path.resolve(cwd))
@@ -938,41 +1020,80 @@ export class AcpAgent implements Agent {
 			return;
 		}
 
-		const pending = this.#attachEndpoint(id, cwd, discovered);
+		const task = this.#attachEndpoint(id, cwd, discovered, epoch);
+		const pending = { epoch, task };
 		this.#attaching.set(id, pending);
 		try {
-			await pending;
+			await task;
+			this.#assertSessionEpoch(id, epoch);
 		} finally {
 			if (this.#attaching.get(id) === pending) this.#attaching.delete(id);
 		}
 	}
 
-	async #attachEndpoint(id: string, cwd: string, discovered: Endpoint): Promise<void> {
-		const adapter = await AcpSdkAdapter.connect({
-			url: discovered.url,
-			token: discovered.token,
-			connection: this.#reverseConnection(id),
-			providers: this.#providers(),
-		});
-		const record: SessionRecord = {
-			cwd,
-			adapter,
-			unsubscribe: () => {},
-			frameTail: Promise.resolve(),
-			inboundSequence: 0,
-		};
-		record.unsubscribe = adapter.onFrame(frame => this.#enqueueSdkFrame(id, adapter, frame));
-		this.#sessions.set(id, record);
-		this.#knownSessionCwds.set(id, cwd);
+	async #attachEndpoint(id: string, cwd: string, discovered: Endpoint, epoch: number): Promise<void> {
+		let adapter: AcpSdkAdapter | undefined;
 		try {
+			adapter = await AcpSdkAdapter.connect({
+				url: discovered.url,
+				token: discovered.token,
+				connection: this.#reverseConnection(id),
+				providers: this.#providers(),
+			});
+			this.#assertSessionEpoch(id, epoch);
+			const record: SessionRecord = {
+				cwd,
+				adapter,
+				unsubscribe: () => {},
+				reconnectUnsubscribe: () => {},
+				frameTail: Promise.resolve(),
+				inboundSequence: 0,
+				busy: false,
+			};
+			record.unsubscribe = adapter.onFrame(frame => this.#enqueueSdkFrame(id, adapter!, frame));
+			record.reconnectUnsubscribe = adapter.onReconnectFailed(error =>
+				this.#recoverSessionAfterTransportFailure(id, adapter!, error),
+			);
+			this.#sessions.set(id, record);
+			this.#knownSessionCwds.set(id, cwd);
 			await applyAcpPermissionMode(adapter, this.#clientCapabilities);
+			this.#assertSessionEpoch(id, epoch);
 		} catch (error) {
-			try {
-				await this.#teardownSession(id, "attachment failed", false);
-			} finally {
-				this.#knownSessionCwds.delete(id);
+			if (adapter && this.#sessions.get(id)?.adapter === adapter) {
+				try {
+					await this.#teardownSession(id, "attachment failed", false);
+				} finally {
+					this.#knownSessionCwds.delete(id);
+				}
+			} else if (adapter) {
+				try {
+					await adapter.close();
+				} catch {}
 			}
 			throw error;
+		}
+	}
+
+	#recoverSessionAfterTransportFailure(id: string, adapter: AcpSdkAdapter, error: Error): void {
+		const record = this.#sessions.get(id);
+		if (!record || record.adapter !== adapter) return;
+		const detail = error.message || "SDK transport reconnect failed.";
+		const terminal = new AcpSdkAdapterError("connection_closed", `ACP session transport was lost: ${detail}`);
+		void this.#recoverSessionAfterTransportFailureAsync(id, adapter, record.cwd, terminal);
+	}
+
+	async #recoverSessionAfterTransportFailureAsync(
+		id: string,
+		adapter: AcpSdkAdapter,
+		cwd: string,
+		error: AcpSdkAdapterError,
+	): Promise<void> {
+		await this.#failSession(id, adapter, error);
+		if (this.#disposed || this.#knownSessionCwds.get(id) !== cwd) return;
+		try {
+			await this.#attachExisting(id, cwd);
+		} catch {
+			// The affected prompt was rejected and the stale adapter was removed. A later load/resume retries discovery.
 		}
 	}
 
@@ -988,33 +1109,60 @@ export class AcpAgent implements Agent {
 	 */
 	async #teardownSession(id: string, reason: string, closeRemote: boolean): Promise<void> {
 		const record = this.#sessions.get(id);
-		if (record) {
-			this.#sessions.delete(id);
-			record.unsubscribe();
-			const waiter = record.activePrompt;
-			record.activePrompt = undefined;
-			waiter?.reject(new AcpSdkAdapterError("connection_closed", `ACP session was ${reason}.`));
-		}
-
-		let adapterFailure: unknown;
+		const ownershipBound = record !== undefined || this.#knownSessionCwds.has(id);
+		this.#beginTeardown(id);
 		try {
-			await record?.adapter.close();
-		} catch (error) {
-			adapterFailure = error;
-		}
-		let remoteFailure: unknown;
-		if (closeRemote) {
-			try {
-				await (await this.#brokerAdapter()).global("session.close", { sessionId: id }, randomUUID());
-			} catch (error) {
-				remoteFailure = error;
+			this.#advanceSessionEpoch(id);
+			if (record) {
+				this.#sessions.delete(id);
+				record.unsubscribe();
+				record.reconnectUnsubscribe();
+				const waiter = record.activePrompt;
+				record.activePrompt = undefined;
+				waiter?.reject(new AcpSdkAdapterError("connection_closed", `ACP session was ${reason}.`));
 			}
+
+			const failures: unknown[] = [];
+			try {
+				await record?.adapter.close();
+			} catch (error) {
+				failures.push(error);
+			}
+			if (closeRemote) {
+				try {
+					await (await this.#brokerAdapter()).global(
+						"session.close",
+						{ sessionId: id },
+						this.#lifecycleIdempotencyKey(id, "session.close"),
+					);
+				} catch (error) {
+					if (!(ownershipBound && this.#isAlreadyGone(error))) failures.push(error);
+				}
+			}
+			if (failures.length > 0) {
+				const detail = failures
+					.map(failure => (failure instanceof Error ? failure.message : String(failure)))
+					.join("; ");
+				throw aggregateAcpFailure("terminal_uncertain", `ACP session cleanup is uncertain: ${detail}`, failures);
+			}
+		} finally {
+			this.#finishTeardown(id);
 		}
-		if (adapterFailure || remoteFailure) {
-			const failure = remoteFailure ?? adapterFailure;
-			const detail = failure instanceof Error ? failure.message : String(failure);
-			throw new AcpSdkAdapterError("terminal_uncertain", `ACP session cleanup is uncertain: ${detail}`);
-		}
+	}
+
+	async #failSession(id: string, adapter: AcpSdkAdapter, error: AcpSdkAdapterError): Promise<void> {
+		const record = this.#sessions.get(id);
+		if (!record || record.adapter !== adapter) return;
+		this.#advanceSessionEpoch(id);
+		this.#sessions.delete(id);
+		record.unsubscribe();
+		record.reconnectUnsubscribe();
+		const waiter = record.activePrompt;
+		record.activePrompt = undefined;
+		waiter?.reject(error);
+		try {
+			await adapter.close();
+		} catch {}
 	}
 
 	async #brokerAdapter(): Promise<AcpSdkAdapter> {
@@ -1029,15 +1177,29 @@ export class AcpAgent implements Agent {
 
 	async #brokerConnection(): Promise<BrokerConnection> {
 		if (!this.#broker) {
-			this.#broker = (async () => {
+			let pending!: Promise<BrokerConnection>;
+			pending = (async () => {
 				await ensureBroker({ agentDir: this.#agentDir });
 				const discovery = await readSdkBrokerDiscovery(this.#agentDir);
 				if (!discovery) throw new AcpSdkAdapterError("unavailable", "SDK broker discovery is unavailable.");
 				const client = await SdkClient.connect(discovery.url, discovery.token);
-				return { adapter: new AcpSdkAdapter({ url: discovery.url, token: discovery.token, client }), client };
+				const adapter = new AcpSdkAdapter({ url: discovery.url, token: discovery.token, client });
+				adapter.onReconnectFailed(() => {
+					if (this.#broker === pending) this.#broker = undefined;
+					void adapter.close().catch(() => undefined);
+				});
+				await adapter.start();
+				return { adapter, client };
 			})();
+			this.#broker = pending;
 		}
-		return await this.#broker;
+		const pending = this.#broker;
+		try {
+			return await pending;
+		} catch (error) {
+			if (this.#broker === pending) this.#broker = undefined;
+			throw error;
+		}
 	}
 
 	#adapter(id: string): AcpSdkAdapter {
@@ -1081,15 +1243,29 @@ export class AcpAgent implements Agent {
 		};
 	}
 
+	#observeSessionActivity(record: SessionRecord, frame: JsonObject): void {
+		const event = receivedSdkEvent(frame)?.event;
+		if (event?.type === "agent_start") record.busy = true;
+		else if (event?.type === "agent_end") record.busy = false;
+	}
+
+	#frameProcessingFailure(error: unknown): AcpSdkAdapterError {
+		if (error instanceof AcpSdkAdapterError && error.code === "frame_processing_failed") return error;
+		const detail = error instanceof Error ? error.message : String(error);
+		return new AcpSdkAdapterError("frame_processing_failed", `ACP session frame processing failed: ${detail}`);
+	}
+
 	#enqueueSdkFrame(id: string, adapter: AcpSdkAdapter, frame: JsonObject): void {
 		const record = this.#sessions.get(id);
 		if (!record || record.adapter !== adapter) return;
-		// Sequence at ingress, not at asynchronous handling time: a frame that
-		// arrived before a prompt acknowledgement remains before its boundary even
-		// if sessionUpdate is slow.
+		// Sequence and busy state are captured at ingress, before queued work begins.
+		// A frame received before acknowledgement stays before that prompt's boundary.
+		this.#observeSessionActivity(record, frame);
 		const sequence = ++record.inboundSequence;
 		const task = record.frameTail.then(async () => await this.#handleSdkFrame(id, adapter, frame, sequence));
-		record.frameTail = task.catch(() => undefined);
+		record.frameTail = task.catch(
+			async error => await this.#failSession(id, adapter, this.#frameProcessingFailure(error)),
+		);
 	}
 
 	async #handleSdkFrame(id: string, adapter: AcpSdkAdapter, frame: JsonObject, sequence: number): Promise<void> {
@@ -1100,9 +1276,9 @@ export class AcpAgent implements Agent {
 		const { event, wirePayload } = received;
 		const correlation = correlationFrom(frame, event);
 		const activePrompt = record.activePrompt;
-		// Prompt ownership is always updated before awaiting ACP client delivery.
-		// This makes a slow or failing sessionUpdate unable to reorder a terminal
-		// event behind the next prompt.
+		// Prompt ownership is updated before publishing client notifications, but a
+		// terminal waiter is resolved only after publication succeeds so a failed
+		// sessionUpdate rejects the prompt instead of reporting false completion.
 		if (
 			activePrompt?.acknowledged &&
 			sequence > activePrompt.boundary &&
@@ -1110,27 +1286,51 @@ export class AcpAgent implements Agent {
 		) {
 			if (isPromptActivity(String(event.type))) {
 				activePrompt.activityObserved = true;
-				this.#settlePrompt(record, activePrompt);
 			} else if (event.type === "agent_end") {
-				if (correlationsMatch(activePrompt.correlation, correlation) || activePrompt.activityObserved) {
+				if (
+					correlationsMatch(activePrompt.correlation, correlation) ||
+					activePrompt.activityObserved ||
+					activePrompt.steeringAtAcknowledgement
+				)
 					activePrompt.pendingTerminal = correlation;
-					this.#settlePrompt(record, activePrompt);
-				}
 			}
 		}
-		if (!wirePayload) return;
-		for (const notification of mapAgentWireEventPayloadToAcpSessionUpdates(wirePayload as never, id, {
-			cwd: record.cwd,
-		}))
-			await this.#connection.sessionUpdate(notification);
+		if (wirePayload) {
+			for (const notification of mapAgentWireEventPayloadToAcpSessionUpdates(wirePayload as never, id, {
+				cwd: record.cwd,
+			}))
+				await this.#publishSessionUpdate(id, notification, adapter);
+		}
+		if (activePrompt) this.#settlePrompt(record, activePrompt);
 	}
 
 	#settlePrompt(record: SessionRecord, waiter: PromptWaiter): void {
 		if (record.activePrompt !== waiter || !waiter.acknowledged || !waiter.pendingTerminal) return;
 		if (correlationsConflict(waiter.correlation, waiter.pendingTerminal)) return;
-		if (!correlationsMatch(waiter.correlation, waiter.pendingTerminal) && !waiter.activityObserved) return;
+		if (
+			!correlationsMatch(waiter.correlation, waiter.pendingTerminal) &&
+			!waiter.activityObserved &&
+			!waiter.steeringAtAcknowledgement
+		)
+			return;
 		record.activePrompt = undefined;
 		waiter.resolve({ stopReason: waiter.cancelRequested ? "cancelled" : "end_turn" });
+	}
+
+	async #publishSessionUpdate(
+		id: string,
+		notification: SessionNotification,
+		expectedAdapter?: AcpSdkAdapter,
+	): Promise<void> {
+		const record = this.#sessions.get(id);
+		if (!record || (expectedAdapter && record.adapter !== expectedAdapter)) return;
+		try {
+			await this.#connection.sessionUpdate(notification);
+		} catch (error) {
+			const failure = this.#frameProcessingFailure(error);
+			await this.#failSession(id, record.adapter, failure);
+			throw failure;
+		}
 	}
 
 	async #sessionState(id: string): Promise<Pick<NewSessionResponse, "configOptions" | "modes">> {
@@ -1157,24 +1357,32 @@ export class AcpAgent implements Agent {
 				const content = transcriptReplayContent(message);
 				if (!imageLimitationReported) {
 					imageLimitationReported = true;
-					await this.#connection.sessionUpdate({
-						sessionId: id,
-						update: {
-							sessionUpdate: "session_info_update",
-							_meta: { gjcTranscriptImageReplay: content.images },
+					await this.#publishSessionUpdate(
+						id,
+						{
+							sessionId: id,
+							update: {
+								sessionUpdate: "session_info_update",
+								_meta: { gjcTranscriptImageReplay: content.images },
+							},
 						},
-					});
+						adapter,
+					);
 				}
 				const messageId = typeof message.id === "string" ? message.id : undefined;
 				for (const block of content.blocks) {
-					await this.#connection.sessionUpdate({
-						sessionId: id,
-						update: {
-							sessionUpdate: message.role === "user" ? "user_message_chunk" : "agent_message_chunk",
-							content: block,
-							...(messageId ? { messageId } : {}),
+					await this.#publishSessionUpdate(
+						id,
+						{
+							sessionId: id,
+							update: {
+								sessionUpdate: message.role === "user" ? "user_message_chunk" : "agent_message_chunk",
+								content: block,
+								...(messageId ? { messageId } : {}),
+							},
 						},
-					});
+						adapter,
+					);
 				}
 			}
 			cursor = typeof page?.continuationCursor === "string" ? page.continuationCursor : undefined;
@@ -1185,14 +1393,19 @@ export class AcpAgent implements Agent {
 
 	#scheduleBootstrap(id: string): void {
 		setTimeout(() => {
-			if (!this.#sessions.has(id) || this.#connection.signal.aborted) return;
-			void this.#connection.sessionUpdate({
-				sessionId: id,
-				update: {
-					sessionUpdate: "session_info_update",
-					_meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+			const record = this.#sessions.get(id);
+			if (!record || this.#connection.signal.aborted) return;
+			void this.#publishSessionUpdate(
+				id,
+				{
+					sessionId: id,
+					update: {
+						sessionUpdate: "session_info_update",
+						_meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+					},
 				},
-			});
+				record.adapter,
+			).catch(() => undefined);
 		}, ACP_BOOTSTRAP_RACE_GUARD_MS);
 	}
 
@@ -1212,6 +1425,15 @@ export class AcpAgent implements Agent {
 			throw new AcpSdkAdapterError("unsupported", "MCP servers are unsupported under SDK-backed ACP.");
 	}
 
+	#beginDispose(): void {
+		if (this.#disposePromise) return;
+		this.#disposePromise = this.#dispose();
+		// AbortSignal listeners cannot return a promise to their caller. Retain the
+		// aggregate cleanup result while attaching a rejection handler so disposal
+		// never creates a detached unhandled rejection.
+		void this.#disposePromise.catch(() => undefined);
+	}
+
 	async #dispose(): Promise<void> {
 		if (this.#disposed) return;
 		this.#disposed = true;
@@ -1226,12 +1448,21 @@ export class AcpAgent implements Agent {
 		this.#attaching.clear();
 		this.#resolvingExisting.clear();
 		this.#knownSessionCwds.clear();
-		if (this.#broker) await (await this.#broker).adapter.close();
+		this.#tearingDown.clear();
+		if (this.#broker) {
+			const broker = this.#broker;
+			this.#broker = undefined;
+			try {
+				await (await broker).adapter.close();
+			} catch (error) {
+				failures.push(error);
+			}
+		}
 		if (failures.length > 0) {
 			const detail = failures
 				.map(failure => (failure instanceof Error ? failure.message : String(failure)))
 				.join("; ");
-			throw new AcpSdkAdapterError("terminal_uncertain", `ACP connection cleanup is uncertain: ${detail}`);
+			throw aggregateAcpFailure("terminal_uncertain", `ACP connection cleanup is uncertain: ${detail}`, failures);
 		}
 	}
 }

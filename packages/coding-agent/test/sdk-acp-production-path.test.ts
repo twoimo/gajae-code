@@ -90,6 +90,14 @@ test("production ACP routes zero-session SDK globals through the broker adapter"
 		expect.objectContaining({ type: "broker_request", operation: "session.list", input: {} }),
 	]);
 	expect(requests[0]).not.toHaveProperty("sessionId");
+	const lifecycle = await agent.extMethod("_gjc/sdk/global", {
+		operation: "session.create",
+		input: { cwd: directory },
+		idempotencyKey: "must-not-reach-broker",
+	});
+	expect(lifecycle).toMatchObject({ ok: false, error: { code: "operation_prohibited" } });
+	expect(JSON.stringify(lifecycle)).not.toContain(token);
+	expect(requests).toHaveLength(1);
 	abort.abort();
 });
 
@@ -110,6 +118,9 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 	const providerRegistrations: Array<Record<string, unknown>> = [];
 	let promptSocket: { send(message: string): void } | undefined;
 	let abortAcknowledged = true;
+	let promptDeliveredWhileBusy = false;
+	let holdEndpointResponse = false;
+	let releaseEndpointResponse: (() => void) | undefined;
 
 	let server!: ReturnType<typeof Bun.serve>;
 	server = Bun.serve({
@@ -151,28 +162,38 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 						return;
 					}
 					if (frame.operation === "session.list") {
+						const input = frame.input as Record<string, unknown>;
 						socket.send(
 							JSON.stringify({
 								type: "broker_response",
 								id: frame.id,
 								ok: true,
-								result: { sessions: brokerSessions },
+								result:
+									input.resolveSessionId === "owned-session"
+										? { savedSession: { id: "owned-session", path: path.join(cwd, "owned-session.jsonl") } }
+										: { sessions: brokerSessions },
 							}),
 						);
 						return;
 					}
 					if (frame.operation === "session.get_endpoint") {
-						socket.send(
-							JSON.stringify({
-								type: "broker_response",
-								id: frame.id,
-								ok: true,
-								result: {
-									sessionId: "owned-session",
-									endpoint: { url: `ws://127.0.0.1:${server.port}`, token },
-								},
-							}),
-						);
+						const respond = () =>
+							socket.send(
+								JSON.stringify({
+									type: "broker_response",
+									id: frame.id,
+									ok: true,
+									result: {
+										sessionId: "owned-session",
+										endpoint: { url: `ws://127.0.0.1:${server.port}`, token },
+									},
+								}),
+							);
+						if (holdEndpointResponse) {
+							releaseEndpointResponse = respond;
+							return;
+						}
+						respond();
 						return;
 					}
 					socket.send(JSON.stringify({ type: "broker_response", id: frame.id, ok: true, result: {} }));
@@ -210,10 +231,12 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 					if (frame.operation === "turn.prompt") {
 						promptInputs.push(frame.input as Record<string, unknown>);
 						promptSocket = socket;
-						// This is a real-host `activity` frame received before the prompt
-						// acknowledgement. ACP must retain it below the acknowledgement boundary.
+						// This real-host activity frame precedes acknowledgement, so it must
+						// not settle a normal fresh prompt below the acknowledgement boundary.
 						if (promptInputs.length === 1)
 							socket.send(JSON.stringify({ type: "activity", sessionId: "owned-session", state: "idle" }));
+						if (promptDeliveredWhileBusy)
+							socket.send(JSON.stringify({ type: "activity", sessionId: "owned-session", state: "busy" }));
 					}
 					socket.send(
 						JSON.stringify({
@@ -338,6 +361,14 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
 	expect(await bounded(abortFailurePrompt, "abort-failure prompt completion")).toEqual({ stopReason: "end_turn" });
 	abortAcknowledged = true;
+	promptDeliveredWhileBusy = true;
+	const steeringPrompt = agent.prompt({ sessionId: created.sessionId, prompt: [{ type: "text", text: "steer me" }] });
+	await waitFor(() => promptInputs.length === 4, "steering prompt delivery");
+	promptDeliveredWhileBusy = false;
+	// The host sent busy before the acknowledgement. The first valid idle after
+	// that boundary must finish the steering prompt without a second busy frame.
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
+	expect(await bounded(steeringPrompt, "steering prompt completion")).toEqual({ stopReason: "end_turn" });
 
 	await expect(
 		agent.prompt({
@@ -415,6 +446,24 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 		expect.objectContaining({ input: { sessionId: created.sessionId, endpointGeneration: 1 } }),
 	]);
 	expect(providerRegistrations).toHaveLength(registrationsBeforeLiveAttach + 2);
+	const racingAbort = new AbortController();
+	const racingLoader = new AcpAgent(
+		{ signal: racingAbort.signal, closed: Promise.withResolvers<void>().promise } as unknown as AgentSideConnection,
+		{ agentDir },
+	);
+	await bounded(racingLoader.listSessions({ cwd }), "scope racing loader");
+	holdEndpointResponse = true;
+	const staleAttach = racingLoader.loadSession({ sessionId: created.sessionId, cwd, mcpServers: [] });
+	await waitFor(() => releaseEndpointResponse !== undefined, "held endpoint response");
+	await bounded(racingLoader.closeSession({ sessionId: created.sessionId }), "close racing loader");
+	holdEndpointResponse = false;
+	releaseEndpointResponse!();
+	releaseEndpointResponse = undefined;
+	await expect(bounded(staleAttach, "stale attachment rejection")).rejects.toThrow("closed while attaching");
+	await expect(
+		racingLoader.prompt({ sessionId: created.sessionId, prompt: [{ type: "text", text: "stale" }] }),
+	).rejects.toThrow("Unsupported ACP session");
+	racingAbort.abort();
 
 	brokerSessions = [
 		{ sessionId: created.sessionId, locator: { repo: cwd }, live: true, endpointGeneration: 1 },
@@ -453,18 +502,69 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 		expect.objectContaining({ operation: "session.list", input: { cwd } }),
 	]);
 	scopeConflictAbort.abort();
+	brokerSessions = [{ sessionId: created.sessionId, locator: { repo: cwd }, live: true, endpointGeneration: 1 }];
 	const deletingPrompt = agent.prompt({ sessionId: created.sessionId, prompt: [{ type: "text", text: "delete me" }] });
 	const deletingPromptError = deletingPrompt.then(
 		() => undefined,
 		(error: unknown) => error,
 	);
-	await waitFor(() => promptInputs.length === 4, "delete prompt delivery");
+	await waitFor(() => promptInputs.length === 5, "delete prompt delivery");
 	await expect(
 		bounded(agent.deleteSession({ sessionId: created.sessionId }), "owned session delete"),
 	).resolves.toEqual({});
 	expect(await bounded(deletingPromptError, "deleted prompt rejection")).toMatchObject({
 		message: "ACP session was deleted.",
 	});
+	const closeRequests = brokerRequests.filter(request => request.operation === "session.close");
+	expect(new Set(closeRequests.map(request => request.idempotencyKey))).toEqual(
+		new Set([`acp:session.close:${created.sessionId}`]),
+	);
+	expect(brokerRequests).toContainEqual(
+		expect.objectContaining({
+			operation: "session.delete",
+			idempotencyKey: `acp:session.delete:${created.sessionId}`,
+		}),
+	);
+	brokerSessions = [{ sessionId: created.sessionId, locator: { repo: cwd }, live: true, endpointGeneration: 1 }];
+	const frameFailureAbort = new AbortController();
+	let rejectFrameUpdates = false;
+	let frameBootstrapPublished = false;
+	const frameFailureAgent = new AcpAgent(
+		{
+			sessionUpdate: async () => {
+				if (rejectFrameUpdates) throw new Error("delivery broke");
+				frameBootstrapPublished = true;
+			},
+			signal: frameFailureAbort.signal,
+			closed: Promise.withResolvers<void>().promise,
+		} as unknown as AgentSideConnection,
+		{ agentDir },
+	);
+	await bounded(
+		frameFailureAgent.resumeSession({ sessionId: created.sessionId, cwd, mcpServers: [] }),
+		"frame failure attach",
+	);
+	await waitFor(() => frameBootstrapPublished, "frame failure bootstrap");
+	const frameFailurePrompt = frameFailureAgent.prompt({
+		sessionId: created.sessionId,
+		prompt: [{ type: "text", text: "frame failure" }],
+	});
+	await waitFor(() => promptInputs.length === 6, "frame failure prompt delivery");
+	rejectFrameUpdates = true;
+	promptSocket!.send(
+		JSON.stringify({
+			type: "event",
+			payload: { event: { type: "auto_compaction_start", reason: "manual", action: "manual" } },
+		}),
+	);
+	await expect(bounded(frameFailurePrompt, "frame failure prompt rejection")).rejects.toMatchObject({
+		code: "frame_processing_failed",
+		message: "ACP session frame processing failed: delivery broke",
+	});
+	await expect(
+		frameFailureAgent.prompt({ sessionId: created.sessionId, prompt: [{ type: "text", text: "closed" }] }),
+	).rejects.toThrow("Unsupported ACP session");
+	frameFailureAbort.abort();
 	loaderAbort.abort();
 	controller.abort();
 }, 30_000);

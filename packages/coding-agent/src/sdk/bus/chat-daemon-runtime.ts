@@ -378,6 +378,7 @@ export class ChatDaemonRuntime {
 				sessionId,
 				content,
 				notification.type === "action_needed" ? notification.id : undefined,
+				attached.generation,
 			);
 	}
 

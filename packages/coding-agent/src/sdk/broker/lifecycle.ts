@@ -3,17 +3,26 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { getSessionsDir } from "@gajae-code/utils";
+
 import { prepareLaunchWorktree } from "../../gjc-runtime/launch-worktree";
-import { FileSessionStorage } from "../../session/session-storage";
-import { SdkClient } from "../client/client";
-import type { Broker, BrokerResponse } from "./broker";
-import { isPidAlive } from "./discovery";
+import {
+	FileSessionStorage,
+	SessionDeleteVerificationError,
+	type VerifiedSessionDeleteTarget,
+} from "../../session/session-storage";
+import { SdkClient, SdkClientError } from "../client/client";
+import type { Broker, BrokerCleanupEvidence, BrokerResponse } from "./broker";
+
 import { resolveSdkInternalSpawnCommand } from "./runtime";
 
 const READY_TIMEOUT_MS = 10_000;
 const POLL_MS = 50;
 const CLOSE_TIMEOUT_MS = 2_000;
 type Input = Record<string, unknown>;
+export const isCanonicalSessionId = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+const defaultStateRoot = (cwd: string) => path.join(path.resolve(cwd), ".gjc", "state");
+const hasDefaultStateRoot = (cwd: string, root: string) => path.resolve(root) === defaultStateRoot(cwd);
 
 export interface SessionLifecycleWorktreeTarget {
 	enabled: true;
@@ -48,11 +57,14 @@ export function readSessionLifecycleLaunchRequest(value: string | undefined): Se
 			request.operation !== "session.fork" &&
 			request.operation !== "session.resume") ||
 		typeof request.sessionId !== "string" ||
-		!request.sessionId ||
+		!isCanonicalSessionId(request.sessionId) ||
 		typeof request.cwd !== "string" ||
 		!request.cwd ||
 		typeof request.stateRoot !== "string" ||
 		!request.stateRoot ||
+		!hasDefaultStateRoot(request.cwd, request.stateRoot) ||
+		(request.sourceSessionId !== undefined &&
+			(typeof request.sourceSessionId !== "string" || !isCanonicalSessionId(request.sourceSessionId))) ||
 		(request.modelPreset !== undefined && (typeof request.modelPreset !== "string" || !request.modelPreset)) ||
 		(request.worktree !== undefined && !isLifecycleWorktreeTarget(request.worktree))
 	)
@@ -72,9 +84,11 @@ type SessionLaunch = {
 	worktreeReceipt?: SessionLifecycleWorktreeReceipt;
 };
 
-const fail = (code: string, message: string): BrokerResponse => ({
+type CleanupEvidence = BrokerCleanupEvidence;
+
+const fail = (code: string, message: string, cleanup?: CleanupEvidence): BrokerResponse => ({
 	ok: false,
-	error: { code: code as never, message },
+	error: { code: code as never, message, ...(cleanup ? { cleanup } : {}) },
 });
 function text(value: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined;
@@ -140,6 +154,19 @@ function command(): { file: string; args: string[] } {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const lifecycleMarkerPath = (root: string, id: string) => path.join(root, "sdk", `${id}.lifecycle.json`);
 type EffectMarker = { pid: number; effectMarker: string; incarnation: string };
+const processIncarnationReadersForTest = new WeakMap<Broker, (pid: number) => string | undefined>();
+
+export function setProcessIncarnationForTest(
+	broker: Broker,
+	value: ((pid: number) => string | undefined) | undefined,
+): void {
+	if (value) processIncarnationReadersForTest.set(broker, value);
+	else processIncarnationReadersForTest.delete(broker);
+}
+
+function processIncarnationForBroker(broker: Broker, pid: number): string | undefined {
+	return processIncarnationReadersForTest.get(broker)?.(pid) ?? processIncarnation(pid);
+}
 
 /** A PID is reusable; bind it to the OS-provided process start incarnation. */
 function processIncarnation(pid: number): string | undefined {
@@ -164,6 +191,35 @@ function processIncarnation(pid: number): string | undefined {
 	}
 	return undefined;
 }
+
+type ProcessObservation = "alive" | "exited" | "uncertain";
+
+/** Only ESRCH or a changed, readable incarnation proves the owned process exited. */
+function observeProcess(
+	pid: number,
+	expectedIncarnation: string | undefined,
+	readIncarnation: (pid: number) => string | undefined = processIncarnation,
+): ProcessObservation {
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH" ? "exited" : "uncertain";
+	}
+	if (!expectedIncarnation) return "uncertain";
+	const actualIncarnation = readIncarnation(pid);
+	if (!actualIncarnation) return "uncertain";
+	return actualIncarnation === expectedIncarnation ? "alive" : "exited";
+}
+
+function hasObservedProcessExit(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
+	}
+}
+
 async function writeEffectMarker(root: string, id: string, marker: EffectMarker): Promise<void> {
 	await fs.mkdir(path.join(root, "sdk"), { recursive: true, mode: 0o700 });
 	await fs.writeFile(lifecycleMarkerPath(root, id), JSON.stringify(marker), { mode: 0o600 });
@@ -208,25 +264,44 @@ async function recordTerminalUncertain(broker: Broker, id: string, root: string,
 async function terminateSpawnedChild(child: ChildProcess, broker: Broker, id: string, root: string): Promise<boolean> {
 	const pid = child.pid;
 	if (!pid) return false;
-	const incarnation = processIncarnation(pid);
-	const alive = (): boolean => incarnation !== undefined && processIncarnation(pid) === incarnation;
-	const signal = async (value: NodeJS.Signals): Promise<boolean> =>
-		!alive() || signalVerifiedSession({ locator: { stateRoot: root }, pid }, id, value);
-	if (!(await signal("SIGTERM"))) {
-		await recordTerminalUncertain(broker, id, root, pid);
-		return false;
-	}
-	const deadline = Date.now() + CLOSE_TIMEOUT_MS;
-	while (alive() && Date.now() < deadline) await sleep(POLL_MS);
-	if (alive()) {
-		if (!(await signal("SIGKILL"))) {
-			await recordTerminalUncertain(broker, id, root, pid);
-			return false;
+	const incarnation = processIncarnationForBroker(broker, pid);
+	const observe = (): ProcessObservation =>
+		child.exitCode !== null
+			? "exited"
+			: observeProcess(pid, incarnation, value => processIncarnationForBroker(broker, value));
+	const waitForExit = async (deadline: number): Promise<ProcessObservation> => {
+		let observation = observe();
+		while (observation === "alive" && Date.now() < deadline) {
+			await sleep(POLL_MS);
+			observation = observe();
 		}
-		const killDeadline = Date.now() + CLOSE_TIMEOUT_MS;
-		while (alive() && Date.now() < killDeadline) await sleep(POLL_MS);
+		return observation;
+	};
+
+	let observation = observe();
+	if (observation === "alive") {
+		if (!(await signalVerifiedSession({ locator: { stateRoot: root }, pid }, id, "SIGTERM"))) {
+			observation = observe();
+			if (observation !== "exited") {
+				await recordTerminalUncertain(broker, id, root, pid);
+				return false;
+			}
+		} else {
+			observation = await waitForExit(Date.now() + CLOSE_TIMEOUT_MS);
+		}
 	}
-	if (alive()) {
+	if (observation === "alive") {
+		if (!(await signalVerifiedSession({ locator: { stateRoot: root }, pid }, id, "SIGKILL"))) {
+			observation = observe();
+			if (observation !== "exited") {
+				await recordTerminalUncertain(broker, id, root, pid);
+				return false;
+			}
+		} else {
+			observation = await waitForExit(Date.now() + CLOSE_TIMEOUT_MS);
+		}
+	}
+	if (observation !== "exited") {
 		await recordTerminalUncertain(broker, id, root, pid);
 		return false;
 	}
@@ -244,6 +319,7 @@ async function terminateSpawnedChild(child: ChildProcess, broker: Broker, id: st
 		});
 	return true;
 }
+
 async function signalVerifiedSession(
 	record: { locator: { stateRoot: string }; pid: number },
 	id: string,
@@ -278,7 +354,7 @@ async function waitForClose(
 		if (
 			broker.index.hasHostUnregistered(id, record.endpointGeneration, record.pid) &&
 			(await endpointRemoved(record.locator.stateRoot, id)) &&
-			!isPidAlive(record.pid)
+			hasObservedProcessExit(record.pid)
 		)
 			return true;
 		await sleep(POLL_MS);
@@ -350,9 +426,12 @@ async function launchInput(
 	input: Input,
 ): Promise<SessionLaunch | BrokerResponse> {
 	const requestedCwd = lifecycleCwd(input);
-	const sourceCwd = requestedCwd ?? process.cwd();
-	const root = stateRoot(input, requestedCwd);
-	if (!root) return fail("invalid_input", "A target path or stateRoot is required.");
+	if (!requestedCwd) return fail("invalid_input", "A target path is required.");
+	const sourceCwd = requestedCwd;
+	const suppliedRoot = stateRoot(input, requestedCwd);
+	if (!suppliedRoot || !hasDefaultStateRoot(requestedCwd, suppliedRoot))
+		return fail("invalid_input", "stateRoot must be the default .gjc/state for cwd.");
+
 	try {
 		if (!(await fs.stat(sourceCwd)).isDirectory())
 			return fail("invalid_input", "Lifecycle worktree must be a directory.");
@@ -385,10 +464,13 @@ async function launchInput(
 			);
 		}
 	}
-	const resolvedRoot = worktree ? stateRoot(input, cwd) : root;
-	if (!resolvedRoot) return fail("invalid_input", "A target path or stateRoot is required.");
+	const resolvedRoot = defaultStateRoot(cwd);
+
 	const requested = sessionId(input);
+	if (requested !== undefined && !isCanonicalSessionId(requested))
+		return fail("invalid_input", "sessionId must be a canonical safe identifier.");
 	const modelPreset = text(input.modelPreset);
+
 	if (operation === "session.create")
 		return { id: randomUUID(), cwd, root: resolvedRoot, modelPreset, worktree, worktreeReceipt };
 	if (operation === "session.resume") {
@@ -403,6 +485,8 @@ async function launchInput(
 		return { id: requested, cwd, root: resolvedRoot, sessionPath: savedPath, modelPreset, worktree, worktreeReceipt };
 	}
 	const sourceSessionId = text(input.sourceSessionId) ?? text(input.sourceId);
+	if (sourceSessionId !== undefined && !isCanonicalSessionId(sourceSessionId))
+		return fail("invalid_input", "sourceSessionId must be a canonical safe identifier.");
 	const sourceSessionPath = text(input.sourceSessionPath) ?? text(input.sourcePath) ?? text(input.sessionPath);
 	if (!sourceSessionId && !sourceSessionPath)
 		return fail("invalid_input", "sourceSessionId or sourceSessionPath is required to fork a session.");
@@ -435,24 +519,45 @@ function within(root: string, candidate: string): boolean {
 	const relative = path.relative(root, candidate);
 	return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
 }
+type ValidatedDelete = {
+	storage: FileSessionStorage;
+	target: VerifiedSessionDeleteTarget;
+	metadataRoot: string;
+};
+
 async function validateDeletePath(
 	broker: Broker,
 	input: Input,
 	id: string,
-	record: { locator: { stateRoot: string } } | undefined,
-): Promise<string | BrokerResponse> {
+	record: { locator: { repo: string; stateRoot: string } } | undefined,
+): Promise<ValidatedDelete | BrokerResponse> {
 	const sessionPath = text(input.sessionPath);
-	const cwd = text(input.cwd) ?? text((input.target as Record<string, unknown> | undefined)?.path);
+	const cwd = lifecycleCwd(input);
 	if (!sessionPath || !cwd)
 		return fail("invalid_input", "session.delete requires sessionPath and its configured cwd.");
+	const requestedRoot = stateRoot(input, cwd);
+	if (!requestedRoot || !hasDefaultStateRoot(cwd, requestedRoot))
+		return fail("invalid_input", "stateRoot must be the default .gjc/state for cwd.");
+	if (
+		record &&
+		(path.resolve(record.locator.repo) !== cwd || path.resolve(record.locator.stateRoot) !== requestedRoot)
+	)
+		return fail("invalid_input", "session.delete locator does not match the indexed session.");
+
 	const unresolved = path.resolve(sessionPath);
 	const storageRoot = await fs
-		.realpath(path.resolve(broker.settings.agentDir, "sessions"))
-		.catch(() => path.resolve(broker.settings.agentDir, "sessions"));
+		.realpath(getSessionsDir(broker.settings.agentDir))
+		.catch(() => path.resolve(getSessionsDir(broker.settings.agentDir)));
 	const canonicalParent = await fs.realpath(path.dirname(unresolved)).catch(() => path.dirname(unresolved));
 	const candidate = path.join(canonicalParent, path.basename(unresolved));
 	if (!candidate.endsWith(".jsonl") || !within(storageRoot, candidate))
 		return fail("invalid_input", "session.delete path is outside the configured session storage root.");
+	try {
+		if ((await fs.lstat(candidate)).isSymbolicLink())
+			return fail("invalid_input", "session.delete path is a symlink.");
+	} catch {
+		return fail("not_found", "Requested saved session does not exist.");
+	}
 	let resolved: string;
 	try {
 		resolved = await fs.realpath(candidate);
@@ -461,21 +566,101 @@ async function validateDeletePath(
 	}
 	if (!within(storageRoot, resolved))
 		return fail("invalid_input", "session.delete path resolves outside the configured session storage root.");
-	if (record) {
-		const requestedRoot = stateRoot(input, lifecycleCwd(input));
-		if (!requestedRoot || path.resolve(requestedRoot) !== path.resolve(record.locator.stateRoot))
-			return fail("invalid_input", "session.delete locator does not match the indexed session.");
+
+	const storage = new FileSessionStorage();
+	let snapshot: ReturnType<FileSessionStorage["readSnapshotSync"]>;
+	try {
+		snapshot = storage.readSnapshotSync(resolved);
+	} catch {
+		return fail("not_found", "Requested saved session does not exist or cannot be read.");
 	}
 	try {
-		const firstLine = (await fs.readFile(resolved, "utf8")).split("\n", 1)[0];
-		const header = JSON.parse(firstLine) as { type?: unknown; id?: unknown };
+		const newline = snapshot.bytes.indexOf(0x0a);
+		const firstLine = Buffer.from(
+			snapshot.bytes.subarray(0, newline === -1 ? snapshot.bytes.length : newline),
+		).toString("utf8");
+		const header = JSON.parse(firstLine) as { type?: unknown; id?: unknown; cwd?: unknown };
 		if (header.type !== "session" || header.id !== id)
 			return fail("invalid_input", "session.delete path does not contain the requested session.");
+		if (typeof header.cwd !== "string")
+			return fail("invalid_input", "session.delete transcript cwd does not match the configured cwd.");
+		const transcriptCwd = header.cwd;
+		const headerCwd = await fs.realpath(transcriptCwd).catch(() => path.resolve(transcriptCwd));
+		const requestedCwd = await fs.realpath(cwd).catch(() => cwd);
+		if (headerCwd !== requestedCwd)
+			return fail("invalid_input", "session.delete transcript cwd does not match the configured cwd.");
 	} catch {
-		return fail("not_found", "Requested saved session does not exist or has an invalid header.");
+		return fail("invalid_input", "Requested saved session has an invalid header.");
 	}
-	return resolved;
+	return {
+		storage,
+		target: {
+			sessionsRoot: storageRoot,
+			transcriptPath: resolved,
+			sessionId: id,
+			cwd,
+			transcriptIdentity: { dev: snapshot.stat.dev, ino: snapshot.stat.ino },
+		},
+		metadataRoot: requestedRoot,
+	};
 }
+function sameCloseGeneration(
+	expected: {
+		locator: { repo: string; stateRoot: string };
+		endpointGeneration: number;
+		pid: number;
+		endpointMtimeMs?: number;
+	},
+	current: {
+		locator: { repo: string; stateRoot: string };
+		endpointGeneration: number;
+		pid: number;
+		endpointMtimeMs?: number;
+		live: boolean;
+	},
+): boolean {
+	return (
+		current.live &&
+		current.endpointGeneration === expected.endpointGeneration &&
+		current.pid === expected.pid &&
+		current.endpointMtimeMs === expected.endpointMtimeMs &&
+		path.resolve(current.locator.repo) === path.resolve(expected.locator.repo) &&
+		path.resolve(current.locator.stateRoot) === path.resolve(expected.locator.stateRoot)
+	);
+}
+
+async function revalidateCloseGeneration(
+	broker: Broker,
+	id: string,
+	expected: {
+		locator: { repo: string; stateRoot: string };
+		endpointGeneration: number;
+		pid: number;
+		endpointMtimeMs?: number;
+	},
+): Promise<BrokerResponse | undefined> {
+	await broker.index.refresh();
+	const current = broker.index.listSessions().sessions.find(session => session.sessionId === id);
+	return current && sameCloseGeneration(expected, current)
+		? undefined
+		: fail("endpoint_stale", "session endpoint is stale");
+}
+
+function isTransportFailure(error: unknown): error is SdkClientError {
+	return (
+		error instanceof SdkClientError &&
+		["unavailable", "timeout", "connection_closed", "reconnect_exhausted"].includes(error.code)
+	);
+}
+
+function closeEndpoint(endpoint: unknown): { url: string; token: string } | undefined {
+	if (typeof endpoint !== "object" || endpoint === null) return undefined;
+	const value = endpoint as { url?: unknown; token?: unknown };
+	return typeof value.url === "string" && typeof value.token === "string"
+		? { url: value.url, token: value.token }
+		: undefined;
+}
+
 /** Executes broker-owned global lifecycle effects. */
 export async function executeLifecycle(
 	broker: Broker,
@@ -483,6 +668,12 @@ export async function executeLifecycle(
 	input: Input,
 	identity: string,
 ): Promise<BrokerResponse> {
+	const requestedSessionId = sessionId(input);
+	if (requestedSessionId !== undefined && !isCanonicalSessionId(requestedSessionId))
+		return fail("invalid_input", "sessionId must be a canonical safe identifier.");
+	const requestedSourceSessionId = text(input.sourceSessionId) ?? text(input.sourceId);
+	if (requestedSourceSessionId !== undefined && !isCanonicalSessionId(requestedSourceSessionId))
+		return fail("invalid_input", "sourceSessionId must be a canonical safe identifier.");
 	if (operation === "session.create" || operation === "session.fork" || operation === "session.resume") {
 		await broker.index.refresh();
 		if (operation === "session.resume") {
@@ -544,7 +735,7 @@ export async function executeLifecycle(
 			child = spawned;
 			const pid = spawned.pid;
 			if (!pid) throw new Error("spawned session has no pid");
-			const incarnation = processIncarnation(pid);
+			const incarnation = processIncarnationForBroker(broker, pid);
 			if (!incarnation) throw new Error("spawned session has no readable OS incarnation");
 			await writeEffectMarker(launch.root, launch.id, { pid, effectMarker, incarnation });
 			spawned.unref();
@@ -591,60 +782,95 @@ export async function executeLifecycle(
 
 	const id = sessionId(input);
 	if (!id) return fail("invalid_input", "sessionId is required.");
+	if (!isCanonicalSessionId(id)) return fail("invalid_input", "sessionId must be a canonical safe identifier.");
 	await broker.index.refresh();
 	const record = broker.index.listSessions().sessions.find(session => session.sessionId === id);
 	if (operation === "session.close") {
 		if (!record) return fail("not_found", "session is not indexed");
+		if (record.terminalUncertain)
+			return fail("terminal_uncertain", "Session ownership is uncertain and cannot be closed safely.");
 		await broker.ledger.transition(identity, "effect_started", { intendedSessionId: id, effectMarker: randomUUID() });
+
+		let usedSignalFallback = false;
 		let note: string | undefined;
-		try {
-			const endpoint = JSON.parse(
-				await fs.readFile(path.join(record.locator.stateRoot, "sdk", `${id}.json`), "utf8"),
-			) as { url?: string; token?: string };
-			if (!endpoint.url || !endpoint.token) throw new Error("endpoint has no URL or token");
-			const client = await SdkClient.connect(endpoint.url, endpoint.token, {
-				timeoutMs: 2_000,
-				reconnectAttempts: 0,
-			});
+		const endpointResult = await broker.handleRequest("session.get_endpoint", {
+			sessionId: id,
+			endpointGeneration: record.endpointGeneration,
+		});
+		if (!endpointResult.ok) {
+			if (endpointResult.error.code === "endpoint_stale") return endpointResult;
+			if (endpointResult.error.code !== "resource_gone") return endpointResult;
+			usedSignalFallback = true;
+		} else {
+			const endpoint = closeEndpoint(endpointResult.result);
+			if (!endpoint) return fail("close_refused", "Session endpoint is malformed.");
+			let client: SdkClient | undefined;
 			try {
+				client = await SdkClient.connect(endpoint.url, endpoint.token, {
+					timeoutMs: 2_000,
+					reconnectAttempts: 0,
+				});
+				const refreshedEndpointResult = await broker.handleRequest("session.get_endpoint", {
+					sessionId: id,
+					endpointGeneration: record.endpointGeneration,
+				});
+				if (!refreshedEndpointResult.ok) return refreshedEndpointResult;
+				const refreshedEndpoint = closeEndpoint(refreshedEndpointResult.result);
+				if (
+					!refreshedEndpoint ||
+					refreshedEndpoint.url !== endpoint.url ||
+					refreshedEndpoint.token !== endpoint.token
+				)
+					return fail("endpoint_stale", "session endpoint is stale");
+				const stale = await revalidateCloseGeneration(broker, id, record);
+				if (stale) return stale;
 				const response = await client.control("session.close");
-				if ((response as { ok?: unknown }).ok !== true) throw new Error("endpoint rejected session.close");
+				if ((response as { ok?: unknown }).ok !== true)
+					return fail("close_refused", "Session endpoint rejected session.close.");
+			} catch (error) {
+				if (isTransportFailure(error)) usedSignalFallback = true;
+				else if (error instanceof SdkClientError) return fail(error.code, error.message);
+				else
+					return fail(
+						"close_refused",
+						`Session endpoint close failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
 			} finally {
-				await client.close();
+				await client?.close();
 			}
-		} catch {
+		}
+
+		if (usedSignalFallback) {
 			if (!(await signalVerifiedSession(record, id, "SIGTERM")))
 				return fail(
 					"close_refused",
 					"Session endpoint is unavailable and its durable process identity could not be verified.",
 				);
-			note = "Endpoint close unavailable; sent SIGTERM to the durably identified session process.";
-		}
-		if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
-			if (!(await signalVerifiedSession(record, id, "SIGTERM")))
-				return fail(
-					"close_refused",
-					"Session did not close and its durable process identity could not be verified for SIGTERM.",
-				);
-			note ??=
-				"Graceful close did not complete within 2000ms; sent SIGTERM to the durably identified session process.";
+			note = "Endpoint close was unreachable; sent SIGTERM to the durably identified session process.";
 			if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
 				if (!(await signalVerifiedSession(record, id, "SIGKILL")))
 					return fail(
 						"close_refused",
-						"Session did not close after SIGTERM and its durable process identity could not be verified for SIGKILL.",
+						"Session did not close after transport fallback and its durable process identity could not be verified for SIGKILL.",
 					);
 				note =
-					"Graceful close and SIGTERM did not complete within bounded deadlines; sent SIGKILL to the durably identified session process.";
+					"Endpoint close was unreachable and SIGTERM did not complete within the bounded deadline; sent SIGKILL to the durably identified session process.";
 				if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
 					await recordTerminalUncertain(broker, id, record.locator.stateRoot, record.pid);
 					return fail(
 						"terminal_uncertain",
-						"Session did not unregister, remove its endpoint, and exit after bounded SIGTERM/SIGKILL fallback.",
+						"Session did not unregister, remove its endpoint, and exit after bounded transport fallback.",
 					);
 				}
 			}
+		} else if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
+			await recordTerminalUncertain(broker, id, record.locator.stateRoot, record.pid);
+			return fail(
+				"terminal_uncertain",
+				"Session acknowledged session.close but did not unregister, remove its endpoint, and exit before the deadline.",
+			);
 		}
+
 		await broker.index.append({
 			type: "session_closed",
 			sessionId: id,
@@ -656,18 +882,64 @@ export async function executeLifecycle(
 		return { ok: true, result: { sessionId: id, ...(note ? { note } : {}) } };
 	}
 	if (operation === "session.delete") {
+		if (record?.terminalUncertain)
+			return fail("terminal_uncertain", "Session ownership is uncertain and cannot be deleted safely.");
 		if (record?.live) return fail("live_session", "Refusing to delete a live session; close it first.");
 		const validated = await validateDeletePath(broker, input, id, record);
-		if (typeof validated !== "string") return validated;
+		if ("ok" in validated) return validated;
 		await broker.ledger.transition(identity, "effect_started", { intendedSessionId: id, effectMarker: randomUUID() });
+		let deleted: Awaited<ReturnType<FileSessionStorage["deleteSessionVerified"]>>;
 		try {
-			await new FileSessionStorage().deleteSessionWithArtifacts(validated);
-			const metadataRoot = record?.locator.stateRoot ?? stateRoot(input, lifecycleCwd(input));
-			if (metadataRoot) await fs.rm(lifecycleMarkerPath(metadataRoot, id), { force: true });
+			deleted = await validated.storage.deleteSessionVerified(validated.target);
+		} catch (error) {
+			if (error instanceof SessionDeleteVerificationError)
+				return fail(
+					"invalid_input",
+					`Saved session deletion verification failed (${error.kind}): ${error.message}`,
+				);
+			return fail(
+				"unavailable",
+				`Unable to delete saved session artifacts: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		if (deleted.kind === "cleanup_pending")
+			return fail(
+				"cleanup_pending",
+				`Saved session cleanup is pending in ${deleted.phase}: ${deleted.error.message}`,
+				{
+					phase: deleted.phase,
+					transcriptIdentity: {
+						dev: deleted.transcriptIdentity.dev.toString(),
+						ino: deleted.transcriptIdentity.ino.toString(),
+					},
+					...(deleted.phase === "artifacts" && deleted.artifactsIdentity
+						? {
+								artifactsIdentity: {
+									dev: deleted.artifactsIdentity.dev.toString(),
+									ino: deleted.artifactsIdentity.ino.toString(),
+								},
+							}
+						: {}),
+				},
+			);
+
+		if (record)
+			await broker.index.append({
+				type: "session_closed",
+				sessionId: id,
+				locator: record.locator,
+				endpointGeneration: record.endpointGeneration,
+				pid: record.pid,
+			});
+		try {
+			await fs.rm(lifecycleMarkerPath(validated.metadataRoot, id), { force: true });
 		} catch (error) {
 			return fail(
-				"not_found",
-				`Unable to delete saved session artifacts: ${error instanceof Error ? error.message : String(error)}`,
+				"cleanup_pending",
+				`Saved session was deleted but lifecycle metadata cleanup is pending: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				{ phase: "metadata" },
 			);
 		}
 		return { ok: true, result: { sessionId: id } };

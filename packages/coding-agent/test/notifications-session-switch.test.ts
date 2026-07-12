@@ -196,7 +196,7 @@ test("session_switch rotates SDK authority while preserving topic identity", asy
 	}
 }, 30000);
 
-test("session_switch with missing previousSessionFile is a safe no-op", async () => {
+test("session_switch rotates authority without a previous session file", async () => {
 	await withNotifications(async () => {
 		const harness = createHarness("gjc-notif-switch-missing-prev-");
 		const frames = await startAndConnect(harness);
@@ -208,18 +208,34 @@ test("session_switch with missing previousSessionFile is a safe no-op", async ()
 			{ type: "session_switch", previousSessionFile: undefined },
 			harness.ctx,
 		);
-		await sleep(250);
+		await waitFor(() => fs.existsSync(harness.endpoint(harness.sid)), 4000, "rotated endpoint without prior file");
+		expect(fs.existsSync(originalEndpoint)).toBe(false);
+		const rotatedFrames = await connectFrames(harness.endpoint(harness.sid));
 
-		expect(fs.existsSync(originalEndpoint)).toBe(true);
-		expect(fs.existsSync(harness.endpoint(harness.sid))).toBe(false);
-
-		harness.sid = originalId;
 		await harness.handlers.get("agent_start")!({ type: "agent_start" }, harness.ctx);
 		await waitFor(
-			() => frames.some(f => f.type === "activity" && f.state === "busy" && f.sessionId === originalId),
+			() => rotatedFrames.some(f => f.type === "activity" && f.state === "busy" && f.sessionId === harness.sid),
 			4000,
-			"busy activity for original session id",
+			"busy activity for rotated session id",
 		);
+		expect(frames.some(f => f.type === "activity" && f.sessionId === harness.sid)).toBe(false);
+	});
+}, 30000);
+
+test("session_branch rotates endpoint authority", async () => {
+	await withNotifications(async () => {
+		const harness = createHarness("gjc-notif-branch-");
+		await startAndConnect(harness);
+		const originalId = harness.sid;
+		const originalEndpoint = harness.endpoint(originalId);
+		harness.sid = `branch-${originalId}`;
+
+		await harness.handlers.get("session_branch")!(
+			{ type: "session_branch", previousSessionFile: harness.previousSessionFile(originalId) },
+			harness.ctx,
+		);
+		await waitFor(() => fs.existsSync(harness.endpoint()), 4000, "branched endpoint");
+		expect(fs.existsSync(originalEndpoint)).toBe(false);
 	});
 }, 30000);
 
@@ -248,7 +264,7 @@ test("session_switch with matching previous and current ids is a safe no-op", as
 	});
 }, 30000);
 
-test("session_switch with no runtime for previous id is a safe no-op", async () => {
+test("session_switch starts authority when the previous runtime is absent", async () => {
 	await withNotifications(async () => {
 		const harness = createHarness("gjc-notif-switch-no-runtime-");
 		const missingPrevId = `missing-${harness.sid}`;
@@ -258,9 +274,7 @@ test("session_switch with no runtime for previous id is a safe no-op", async () 
 			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(missingPrevId) },
 			harness.ctx,
 		);
-		await sleep(250);
-
-		expect(fs.existsSync(harness.endpoint(newId))).toBe(false);
+		await waitFor(() => fs.existsSync(harness.endpoint(newId)), 4000, "new endpoint after absent prior runtime");
 	});
 }, 30000);
 

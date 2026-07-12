@@ -28,7 +28,7 @@ async function worktree(root: string) {
 }
 
 function env(overrides: Record<string, string>) {
-	return { ...process.env, GJC_SESSION_SKIP_ROUTER: "1", GJC_SESSION_MONITOR_DISABLE: "1", ...overrides };
+	return { ...process.env, GJC_SESSION_MONITOR_DISABLE: "1", ...overrides };
 }
 
 async function fixture(root: string, mode = "direct", runner = "sleep 30") {
@@ -213,6 +213,8 @@ afterEach(async () => {
 describe("gjc-session create public owner lifecycle", () => {
 	test("rejects missing binaries, directories, git worktrees, and detached branches", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-validation-")); roots.push(root);
+		const legacyRoutingArgs = Bun.spawnSync(["bash", createScript, "x", root, "channel", "@mention"], { stderr: "pipe" });
+		expect(legacyRoutingArgs.exitCode).toBe(2); expect(legacyRoutingArgs.stderr.toString()).toContain("<session-name> <worktree-path>");
 		const missing = Bun.spawnSync(["bash", createScript, "x", root], { env: env({ GJC_BIN: "/definitely-not-a-gjc-executable" }), stderr: "pipe" });
 		expect(missing.exitCode).toBe(1); expect(missing.stderr.toString()).toContain("gjc not found");
 		const binary = await fixture(root);
@@ -298,10 +300,10 @@ describe("gjc-session create public owner lifecycle", () => {
 		expect(await Bun.file(path.join(state, "started.json")).exists()).toBe(true);
 	});
 
-	test("fails closed for malformed plans before any router registration", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-invalid-plan-")); roots.push(root);
-		const dir = await worktree(root); const bad = path.join(root, "bad-gjc"); const router = path.join(root, "router");
-		await executable(bad, `#!/usr/bin/env python3
+test("fails closed for malformed plans before creating an owner", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-invalid-plan-")); roots.push(root);
+	const dir = await worktree(root); const bad = path.join(root, "bad-gjc"); const name = `invalid-plan-${Date.now()}`;
+	await executable(bad, `#!/usr/bin/env python3
 import json, os, sys
 request = json.load(sys.stdin)
 if request.get("op") == "publish_generation":
@@ -312,10 +314,10 @@ if request.get("op") == "publish_generation":
 else:
     print("{}")
 `);
-		await executable(router, `#!/usr/bin/env bash\ntouch ${path.join(root, "router-called")}\n`);
-		const result = Bun.spawnSync(["bash", createScript, "bad", dir], { env: env({ GJC_BIN: bad, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0" }), stderr: "pipe" });
-		expect(result.exitCode).toBe(1); expect(result.stderr.toString()).toContain("plan response rejected"); expect(await Bun.file(path.join(root, "router-called")).exists()).toBe(false);
-	});
+	const result = Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bad }), stderr: "pipe" });
+	expect(result.exitCode).toBe(1); expect(result.stderr.toString()).toContain("plan response rejected");
+	expect(Bun.spawnSync(["tmux", "-L", `gjc-${name}`, "has-session", "-t", `=${name}`], { stdout: "pipe", stderr: "pipe" }).exitCode).not.toBe(0);
+});
 
 	test("runner classifies terminal runtime completion as normal cleanup", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-completed-")); roots.push(root);
@@ -360,65 +362,16 @@ test("ships only human-visible tmux lifecycle helpers", async () => {
 		expect(postmortem).not.toContain(forbidden);
 		expect(harnessOwner).not.toContain(forbidden);
 	}
+	for (const forbidden of ["clawhip", "router", "GJC_SESSION_ROUTER", "GJC_SESSION_CHANNEL", "GJC_SESSION_KEYWORDS", "tmux watch", "--channel", "--mention", "--keywords"]) {
+		expect(create).not.toContain(forbidden);
+	}
+	expect(create).toContain("Usage: $0 <session-name> <worktree-path>");
 	expect(create).toContain('"op": "plan"');
 	expect(create).toContain('"op":"observe_terminal"');
 	expect(postmortem).toContain("gjc_session_write_public_marker");
 	expect(harnessOwner).toContain("MACHINE_CONTROL=Coordinator MCP, ACP, or Gajae-Code SDK");
 });
 
-	test("monitor disable leaves no monitor owner session and router registration keeps caller options", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-router-")); roots.push(root);
-		const dir = await worktree(root); const state = path.join(root, "state"); const log = path.join(root, "router.log"); const timeoutLog = path.join(root, "timeout.log"); const bin = await fixture(root); const router = path.join(root, "router"); const timeout = path.join(root, "bin", "timeout");
-		await executable(router, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > ${log}\n`);
-		await executable(timeout, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >\"$GJC_FIXTURE_TIMEOUT_LOG\"\nexec /usr/bin/timeout \"$@\"\n");
-		const name = `router-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-		expect(Bun.spawnSync(["bash", createScript, name, dir, "C1", "@team"], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0", GJC_SESSION_STALE_MINUTES: "17", GJC_FIXTURE_TIMEOUT_LOG: timeoutLog, PATH: `${path.join(root, "bin")}:${process.env.PATH}` }) }).exitCode).toBe(0);
-		expect(await Bun.file(log).text()).toContain("--stale-minutes 17");
-		expect(await Bun.file(timeoutLog).text()).toStartWith("10s ");
-		expect(Bun.spawnSync(["tmux", "-L", `gjc-${name}`, "has-session", "-t", `${name}-owner-monitor`]).exitCode).not.toBe(0);
-	});
-
-test("records router watch failures without failing creation", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-watch-failure-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const router = path.join(root, "router");
-	await executable(router, "#!/usr/bin/env bash\nexit 37\n");
-	const name = `watch-failure-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-	const created = Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0" }), stderr: "pipe" });
-	expect(created.exitCode).toBe(0);
-	const generation = ((await Bun.file(path.join(state, name, "owner-lifecycle", "generation.json")).json()) as { generation: string }).generation;
-	const canonicalPath = path.join(state, name, "owner-lifecycle", `router-failure-${generation}-watch_registration.json`);
-	const canonical = await Bun.file(canonicalPath).json() as Record<string, unknown>;
-	expect(canonical).toEqual({ schema_version: 1, kind: "router_failure", session_id: name, owner_generation: generation, boundary: "watch_registration", exit_code: 37 });
-	expect(await Bun.file(path.join(state, "router-failure.json")).json()).toEqual(canonical);
-});
-
-test("bounds a blocking router watch through timeout and publishes its current immutable failure receipt", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-watch-timeout-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const router = path.join(root, "router"); const timeout = path.join(root, "bin", "timeout"); const timeoutLog = path.join(root, "timeout.log");
-	await executable(router, "#!/usr/bin/env bash\nsleep 30\n");
-	await executable(timeout, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >>\"$GJC_FIXTURE_TIMEOUT_LOG\"\nexec /usr/bin/timeout \"$@\"\n");
-	const name = `watch-timeout-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-	const startedAt = Date.now();
-	const created = Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0", GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS: "1", GJC_FIXTURE_TIMEOUT_LOG: timeoutLog, PATH: `${path.join(root, "bin")}:${process.env.PATH}` }), stderr: "pipe" });
-	const elapsed = Date.now() - startedAt;
-	expect(created.exitCode).toBe(0);
-	expect(elapsed).toBeGreaterThanOrEqual(750); expect(elapsed).toBeLessThan(5000);
-	expect(await Bun.file(timeoutLog).text()).toStartWith("1s ");
-	const generation = ((await Bun.file(path.join(state, name, "owner-lifecycle", "generation.json")).json()) as { generation: string }).generation;
-	const canonicalPath = path.join(state, name, "owner-lifecycle", `router-failure-${generation}-watch_registration.json`);
-	const canonical = await Bun.file(canonicalPath).json() as Record<string, unknown>;
-	expect(canonical).toEqual({ schema_version: 1, kind: "router_failure", session_id: name, owner_generation: generation, boundary: "watch_registration", exit_code: 124 });
-	expect(await Bun.file(path.join(state, "router-failure.json")).json()).toEqual(canonical);
-});
-test("rejects test router watch deadlines outside the production-safe bound", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-watch-timeout-bound-")); roots.push(root);
-	const dir = await worktree(root); const bin = await fixture(root);
-	for (const duration of ["0", "11", "one"]) {
-		const result = Bun.spawnSync(["bash", createScript, `watch-bound-${duration}`, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS: duration }), stderr: "pipe" });
-		expect(result.exitCode).toBe(1);
-		expect(result.stderr.toString()).toContain("GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS must be an integer from 1 through 10");
-	}
-});
 test("passes branch and coordinator identity to the raw owner without private lifecycle payloads", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-owner-env-")); roots.push(root);
 	const dir = await worktree(root); const state = path.join(root, "state");
@@ -436,20 +389,17 @@ sleep 2`;
 
 test("records one generation-bound recovery only after a prior incident replacement is started", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-replacement-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const router = path.join(root, "router"); const log = path.join(root, "router.log");
+	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root);
 	const name = `replacement-${Date.now()}`; const socket = `gjc-${name}`; sessions.push({ name, socket });
 	await fs.mkdir(state, { recursive: true });
 	await fs.mkdir(path.join(state, name, "owner-lifecycle"), { recursive: true });
 	await Bun.write(path.join(state, name, "owner-lifecycle", "incident-prior-generation.json"), JSON.stringify({ schema_version: 1, session_id: name, generation: "prior-generation", dedupe_key: `owner-loss:${name}:prior-generation`, classification: "unexpected_owner_loss" }));
 	await Bun.write(path.join(state, "incident.json"), JSON.stringify({ schema_version: 1, kind: "owner_incident", session_id: name, owner_generation: "prior-generation", incident_dedupe: `${name}:prior-generation` }));
-	await executable(router, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${log}\n`);
-	const created = Bun.spawnSync(["bash", createScript, name, dir, "C-recovery"], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0" }), stderr: "pipe" });
+	const created = Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }), stderr: "pipe" });
 	if (created.exitCode !== 0) throw new Error(created.stderr.toString());
 	const recovery = await Bun.file(path.join(state, "recovery.json")).json() as Record<string, string>;
 	expect(recovery).toMatchObject({ kind: "owner_recovered", session_id: name, prior_owner_generation: "prior-generation", prior_incident_dedupe: `${name}:prior-generation` });
 	expect(recovery.owner_generation).not.toBe("prior-generation");
-	const routerCalls = await Bun.file(log).text();
-	expect(routerCalls.match(/tmux recovered/g)).toHaveLength(1);
 });
 
 test("reconciles an immediately replaced missing owner before publishing the next generation", async () => {
@@ -521,17 +471,15 @@ test("retries a generation-bound failed create without synthesizing owner loss o
 
 test("does not recover an incident again in a third generation when a canonical recovery exists", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-third-recovery-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const router = path.join(root, "router"); const log = path.join(root, "router.log");
+	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root);
 	const name = `third-recovery-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` }); const lifecycle = path.join(state, name, "owner-lifecycle");
 	await fs.mkdir(lifecycle, { recursive: true });
 	await Bun.write(path.join(lifecycle, "incident-first.json"), JSON.stringify({ schema_version: 1, session_id: name, generation: "first", dedupe_key: `owner-loss:${name}:first`, classification: "unexpected_owner_loss" }));
 	await Bun.write(path.join(state, "incident.json"), JSON.stringify({ schema_version: 1, kind: "owner_incident", session_id: name, owner_generation: "first", incident_dedupe: `${name}:first` }));
 	await Bun.write(path.join(lifecycle, "recovery-second.json"), JSON.stringify({ schema_version: 1, kind: "owner_recovered", session_id: name, owner_generation: "second", prior_owner_generation: "first", prior_incident_dedupe: `${name}:first` }));
-	await executable(router, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${log}\n`);
-	expect(Bun.spawnSync(["bash", createScript, name, dir, "C-third"], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0" }) }).exitCode).toBe(0);
+	expect(Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }) }).exitCode).toBe(0);
 	expect(await Bun.file(path.join(state, "recovery.json")).exists()).toBe(false);
 	expect(await Bun.file(path.join(state, "incident.json")).exists()).toBe(false);
-	expect((await Bun.file(log).text()).match(/tmux recovered/g)).toBeNull();
 });
 
 	test("does not accept a terminal runtime record from another session", async () => {
@@ -649,10 +597,9 @@ gjc_session_write_vanished_json() { : >"$1"; }
 
 	test("monitor writes immutable verdict and incident markers after owner loss without claiming recovery", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-monitor-")); roots.push(root);
-		const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const router = path.join(root, "router"); const log = path.join(root, "incident.log");
-		await executable(router, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${log}\n`);
+		const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root);
 		const name = `monitor-${Date.now()}`; const socket = `gjc-${name}`; sessions.push({ name, socket });
-		expect(Bun.spawnSync(["bash", createScript, name, dir, "C-monitor"], { env: { ...env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router }), GJC_SESSION_MONITOR_DISABLE: "0", GJC_SESSION_MONITOR_INTERVAL: "1" } }).exitCode).toBe(0);
+		expect(Bun.spawnSync(["bash", createScript, name, dir], { env: { ...env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }), GJC_SESSION_MONITOR_DISABLE: "0", GJC_SESSION_MONITOR_INTERVAL: "1" } }).exitCode).toBe(0);
 		Bun.spawnSync(["tmux", "-L", socket, "kill-session", "-t", name], { stdout: "pipe", stderr: "pipe" });
 		await waitFor(path.join(state, "incident.json"), 8_000);
 		expect(await Bun.file(path.join(state, "verdict.json")).json()).toMatchObject({ classification: "unexpected_owner_loss" });
@@ -664,10 +611,8 @@ gjc_session_write_vanished_json() { : >"$1"; }
 			generation: generation.generation,
 			dedupe_key: `owner-loss:${name}:${generation.generation}`,
 		});
-		await waitFor(log);
-		expect(await Bun.file(log).text()).toContain("tmux stale --session");
 		expect(await Bun.file(path.join(state, "recovery.json")).exists()).toBe(false);
-		const recovered = Bun.spawnSync(["bash", createScript, name, dir, "C-recovered"], {
+		const recovered = Bun.spawnSync(["bash", createScript, name, dir], {
 			env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }),
 			stdout: "pipe",
 			stderr: "pipe",
@@ -1128,19 +1073,4 @@ test("keeps owner status while exposing canonical-collision and alias publicatio
 	}
 }, 20_000);
 
-test("records nonfatal recovery and stale-owner router notification failures", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-router-notification-failure-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const router = path.join(root, "router"); const name = `router-failure-${Date.now()}`; const socket = `gjc-${name}`; sessions.push({ name, socket });
-	await executable(router, "#!/usr/bin/env bash\nexit 37\n");
-	const lifecycle = path.join(state, name, "owner-lifecycle"); await fs.mkdir(lifecycle, { recursive: true });
-	await Bun.write(path.join(lifecycle, "incident-prior.json"), JSON.stringify({ schema_version: 1, session_id: name, generation: "prior", dedupe_key: `owner-loss:${name}:prior`, classification: "unexpected_owner_loss" }));
-	await Bun.write(path.join(state, "incident.json"), JSON.stringify({ schema_version: 1, kind: "owner_incident", session_id: name, owner_generation: "prior", incident_dedupe: `${name}:prior` }));
-	const created = Bun.spawnSync(["bash", createScript, name, dir, "C-router"], { env: { ...env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state, GJC_SESSION_ROUTER: router, GJC_SESSION_SKIP_ROUTER: "0" }), GJC_SESSION_MONITOR_DISABLE: "0", GJC_SESSION_MONITOR_INTERVAL: "1" }, stderr: "pipe" });
-	expect(created.exitCode).toBe(0);
-	const generation = ((await Bun.file(path.join(lifecycle, "generation.json")).json()) as { generation: string }).generation;
-	expect(await Bun.file(path.join(lifecycle, `router-failure-${generation}-recovery_notification.json`)).json()).toMatchObject({ kind: "router_failure", boundary: "recovery_notification", exit_code: 37, owner_generation: generation });
-	expect(Bun.spawnSync(["tmux", "-L", socket, "kill-session", "-t", name], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
-	await waitFor(path.join(lifecycle, `router-failure-${generation}-stale_owner_notification.json`), 9_000);
-	expect(await Bun.file(path.join(lifecycle, `router-failure-${generation}-stale_owner_notification.json`)).json()).toMatchObject({ kind: "router_failure", boundary: "stale_owner_notification", exit_code: 37, owner_generation: generation });
-}, 20_000);
 });

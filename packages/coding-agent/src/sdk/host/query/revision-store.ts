@@ -8,6 +8,8 @@ export const MAX_PINNED_REVISIONS = 128;
 export const MAX_MEMORY_BYTES = 16 * 1024 * 1024;
 export const SNAPSHOT_TTL_MS = 15 * 60 * 1000;
 const CHUNK_BYTES = 4 * 1024 * 1024;
+const STRING_INDEX_BYTES = 64 * 1024;
+const STRING_READ_BYTES = 512 * 1024;
 
 export class RevisionStoreError extends Error {
 	constructor(
@@ -18,21 +20,39 @@ export class RevisionStoreError extends Error {
 	}
 }
 
+interface StringCheckpoint {
+	decodedOffset: number;
+	serializedOffset: number;
+}
+
+interface EscapedStringIndex {
+	byteLength: number;
+	checkpoints: StringCheckpoint[];
+}
+
+interface IndexedField {
+	start: number;
+	end: number;
+	plainStringBytes?: number;
+	isString?: boolean;
+	stringIndex?: EscapedStringIndex;
+}
+
 interface RevisionIndex {
 	items?: {
 		start: number;
 		end: number;
 		entryId?: string;
-		fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }>;
+		fields?: Record<string, IndexedField>;
 	}[];
-	fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }>;
+	fields?: Record<string, IndexedField>;
 }
 
 interface Revision {
 	id: string;
 	hash: string;
 	bytes: number;
-	payload?: string;
+	payload?: Buffer;
 	manifest?: string;
 	chunks?: string[];
 	chunkLengths?: number[];
@@ -45,7 +65,7 @@ interface Revision {
 interface SerializedRevision {
 	hash: string;
 	bytes: number;
-	payload?: string;
+	payload?: Buffer;
 	manifest: string;
 	chunks: string[];
 	chunkLengths: number[];
@@ -253,7 +273,7 @@ class ChunkJsonParser {
 	}
 }
 
-/** Per-session MVCC snapshots. Payloads are canonical JSON strings. */
+/** Per-session MVCC snapshots. Payloads hold canonical JSON UTF-8. */
 export class RevisionStore {
 	readonly #resources = new Map<string, Revision[]>();
 	readonly #pinIndex = new Map<string, Revision>();
@@ -263,13 +283,15 @@ export class RevisionStore {
 	#manifestRefs = new Map<string, number>();
 	#peakBufferedBytes = 0;
 	#peakReadBufferedBytes = 0;
+	readonly #onReadRange?: (start: number, end: number) => void;
 
 	constructor(
 		readonly sessionId: string,
 		private readonly now: () => number = Date.now,
-		options?: { storageDir?: string },
+		options?: { storageDir?: string; onReadRange?: (start: number, end: number) => void },
 	) {
 		this.#directory = options?.storageDir ? join(options.storageDir, "sdk", "snapshots", sessionId) : undefined;
+		this.#onReadRange = options?.onReadRange;
 	}
 
 	async createRevision(resourceKind: string, resourceId: string, payload: unknown): Promise<string> {
@@ -313,7 +335,7 @@ export class RevisionStore {
 		const revision = this.#resources.get(`${resourceKind}:${resourceId}`)?.find(item => item.id === id);
 		if (!revision) return undefined;
 		revision.lastAccessed = this.now();
-		if (revision.payload !== undefined) return JSON.parse(revision.payload);
+		if (revision.payload !== undefined) return JSON.parse(revision.payload.toString("utf8"));
 		return revision.chunks === undefined
 			? undefined
 			: this.#parseChunks(revision.chunks, revision.chunkLengths ?? []);
@@ -568,16 +590,8 @@ export class RevisionStore {
 				await this.#encodeString(key, append);
 				await append(":");
 				const start = bytes;
-				await this.#encode(child, append, false);
-				index.fields[key] = {
-					start,
-					end: bytes,
-					...(isPlainJsonString(child)
-						? { plainStringBytes: Buffer.byteLength(child), isString: true }
-						: typeof child === "string"
-							? { isString: true }
-							: {}),
-				};
+				const field = await this.#encodeIndexedValue(child, append);
+				index.fields[key] = { start, end: bytes, ...field };
 			}
 			await append("}");
 		} else await this.#encode(root, append, false);
@@ -599,7 +613,10 @@ export class RevisionStore {
 
 	async #encode(value: unknown, append: (text: string) => Promise<void>, inArray: boolean): Promise<void> {
 		if (value === null) return append("null");
-		if (typeof value === "string") return this.#encodeString(value, append);
+		if (typeof value === "string") {
+			await this.#encodeString(value, append);
+			return;
+		}
 		if (typeof value === "number") return append(Number.isFinite(value) ? String(value) : "null");
 		if (typeof value === "boolean") return append(value ? "true" : "false");
 		if (typeof value === "bigint") throw new TypeError("Do not know how to serialize a BigInt");
@@ -631,29 +648,70 @@ export class RevisionStore {
 		return append("null");
 	}
 
-	async #encodeString(value: string, append: (text: string) => Promise<void>): Promise<void> {
+	async #encodeString(
+		value: string,
+		append: (text: string) => Promise<void>,
+		indexEscapedString = false,
+	): Promise<EscapedStringIndex | undefined> {
 		await append('"');
 		let output = "";
+		let serializedOffset = 1;
+		const stringIndex = indexEscapedString
+			? { byteLength: 0, checkpoints: [{ decodedOffset: 0, serializedOffset }] }
+			: undefined;
 		for (let index = 0; index < value.length; index++) {
 			const code = value.charCodeAt(index);
-			if (code === 0x22) output += '\\"';
-			else if (code === 0x5c) output += "\\\\";
-			else if (code === 0x08) output += "\\b";
-			else if (code === 0x0c) output += "\\f";
-			else if (code === 0x0a) output += "\\n";
-			else if (code === 0x0d) output += "\\r";
-			else if (code === 0x09) output += "\\t";
-			else if (
+			let encoded: string;
+			let decoded: string;
+			if (code === 0x22) {
+				encoded = '\\"';
+				decoded = '"';
+			} else if (code === 0x5c) {
+				encoded = "\\\\";
+				decoded = "\\";
+			} else if (code === 0x08) {
+				encoded = "\\b";
+				decoded = "\b";
+			} else if (code === 0x0c) {
+				encoded = "\\f";
+				decoded = "\f";
+			} else if (code === 0x0a) {
+				encoded = "\\n";
+				decoded = "\n";
+			} else if (code === 0x0d) {
+				encoded = "\\r";
+				decoded = "\r";
+			} else if (code === 0x09) {
+				encoded = "\\t";
+				decoded = "\t";
+			} else if (
 				code >= 0xd800 &&
 				code <= 0xdbff &&
 				index + 1 < value.length &&
 				value.charCodeAt(index + 1) >= 0xdc00 &&
 				value.charCodeAt(index + 1) <= 0xdfff
-			)
-				output += value[index] + value[++index];
-			else if (code < 0x20 || (code >= 0xd800 && code <= 0xdfff))
-				output += `\\u${code.toString(16).padStart(4, "0")}`;
-			else output += value[index];
+			) {
+				decoded = value.slice(index, index + 2);
+				encoded = decoded;
+				index++;
+			} else if (code < 0x20 || (code >= 0xd800 && code <= 0xdfff)) {
+				encoded = `\\u${code.toString(16).padStart(4, "0")}`;
+				decoded = value[index]!;
+			} else {
+				encoded = value[index]!;
+				decoded = encoded;
+			}
+			output += encoded;
+			if (stringIndex) {
+				serializedOffset += Buffer.byteLength(encoded);
+				stringIndex.byteLength += Buffer.byteLength(decoded);
+				const last = stringIndex.checkpoints[stringIndex.checkpoints.length - 1]!;
+				if (stringIndex.byteLength - last.decodedOffset >= STRING_INDEX_BYTES)
+					stringIndex.checkpoints.push({
+						decodedOffset: stringIndex.byteLength,
+						serializedOffset,
+					});
+			}
 			if (output.length >= 64 * 1024) {
 				await append(output);
 				output = "";
@@ -661,15 +719,41 @@ export class RevisionStore {
 		}
 		if (output) await append(output);
 		await append('"');
+		if (stringIndex) {
+			const last = stringIndex.checkpoints[stringIndex.checkpoints.length - 1]!;
+			if (last.decodedOffset !== stringIndex.byteLength)
+				stringIndex.checkpoints.push({
+					decodedOffset: stringIndex.byteLength,
+					serializedOffset,
+				});
+		}
+		return stringIndex;
+	}
+
+	async #encodeIndexedValue(
+		value: unknown,
+		append: (text: string) => Promise<void>,
+	): Promise<Omit<IndexedField, "start" | "end">> {
+		if (typeof value !== "string") {
+			await this.#encode(value, append, false);
+			return {};
+		}
+		if (isPlainJsonString(value)) {
+			await this.#encodeString(value, append);
+			return { plainStringBytes: Buffer.byteLength(value), isString: true };
+		}
+		const stringIndex = await this.#encodeString(value, append, true);
+		if (!stringIndex) throw new SyntaxError("escaped string index is unavailable");
+		return { isString: true, stringIndex };
 	}
 
 	async #readStringRange(
 		revision: Revision,
-		range: { start: number; end: number; plainStringBytes?: number },
+		range: IndexedField,
 		offset: number,
 		length: number,
 	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
-		if (offset < 0 || length <= 0) return undefined;
+		if (offset < 0 || length <= 0 || !range.isString) return undefined;
 		if (range.plainStringBytes !== undefined) {
 			const requestedStart = Math.min(offset, range.plainStringBytes);
 			const source = await this.#readBytes(
@@ -688,13 +772,166 @@ export class RevisionStore {
 				offset: start,
 			};
 		}
-		const value = JSON.parse(await this.#readRange(revision, range));
-		if (typeof value !== "string") return undefined;
-		const bytes = Buffer.from(value);
-		const start = utf8BoundaryAtOrAfter(bytes, Math.min(offset, bytes.length));
-		const end = utf8BoundaryAtOrBefore(bytes, Math.min(bytes.length, start + length));
-		if (end === start && start < bytes.length) return undefined;
-		return { body: bytes.subarray(start, end).toString("utf8"), complete: end === bytes.length, offset: start };
+		if (!range.stringIndex) throw new SyntaxError("escaped string index is unavailable");
+		return this.#readEscapedStringRange(revision, range, offset, length);
+	}
+
+	async #readEscapedStringRange(
+		revision: Revision,
+		range: IndexedField,
+		offset: number,
+		length: number,
+	): Promise<{ body: string; complete: boolean; offset: number } | undefined> {
+		const stringIndex = range.stringIndex;
+		if (!stringIndex) throw new SyntaxError("escaped string index is unavailable");
+		const openingQuote = await this.#readBytes(revision, range.start, range.start + 1);
+		if (openingQuote.length !== 1 || openingQuote[0] !== 0x22)
+			throw new SyntaxError("expected string in JSON snapshot");
+		const requestedOffset = Math.min(offset, stringIndex.byteLength);
+		const checkpoint = stringCheckpointAtOrBefore(stringIndex.checkpoints, requestedOffset);
+		let position = range.start + checkpoint.serializedOffset;
+		let source: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+		let sourceStart = position;
+		const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+		const fill = async (needed = 1): Promise<boolean> => {
+			if (position + needed > range.end) return false;
+			if (position >= sourceStart && position + needed <= sourceStart + source.length) return true;
+			sourceStart = position;
+			source = await this.#readBytes(
+				revision,
+				position,
+				Math.min(range.end, position + Math.max(STRING_READ_BYTES, needed)),
+			);
+			return source.length >= needed;
+		};
+		const take = async (): Promise<number> => {
+			if (!(await fill())) throw new SyntaxError("unexpected end of JSON string");
+			return source[position++ - sourceStart]!;
+		};
+		const readUnicodeEscape = async (): Promise<number> => {
+			let hex = "";
+			for (let index = 0; index < 4; index++) hex += String.fromCharCode(await take());
+			if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new SyntaxError("invalid Unicode escape in JSON snapshot");
+			return Number.parseInt(hex, 16);
+		};
+		const hasEscapedLowSurrogate = async (): Promise<boolean> => {
+			if (!(await fill(6))) return false;
+			const start = position - sourceStart;
+			if (source[start] !== 0x5c || source[start + 1] !== 0x75) return false;
+			const hex = source.subarray(start + 2, start + 6).toString("ascii");
+			if (!/^[0-9a-fA-F]{4}$/.test(hex)) return false;
+			const code = Number.parseInt(hex, 16);
+			return code >= 0xdc00 && code <= 0xdfff;
+		};
+		const readUnit = async (): Promise<string | undefined> => {
+			if (!(await fill())) throw new SyntaxError("unexpected end of JSON string");
+			const start = position - sourceStart;
+			const first = source[start]!;
+			if (first === 0x22) {
+				position++;
+				return undefined;
+			}
+			if (first === 0x5c) {
+				position++;
+				switch (await take()) {
+					case 0x22:
+						return '"';
+					case 0x5c:
+						return "\\";
+					case 0x2f:
+						return "/";
+					case 0x62:
+						return "\b";
+					case 0x66:
+						return "\f";
+					case 0x6e:
+						return "\n";
+					case 0x72:
+						return "\r";
+					case 0x74:
+						return "\t";
+					case 0x75: {
+						const code = await readUnicodeEscape();
+						let decoded = String.fromCharCode(code);
+						if (code >= 0xd800 && code <= 0xdbff && (await hasEscapedLowSurrogate())) {
+							position += 2;
+							decoded += String.fromCharCode(await readUnicodeEscape());
+						}
+						return decoded;
+					}
+					default:
+						throw new SyntaxError("invalid string escape in JSON snapshot");
+				}
+			}
+			if (first < 0x20) throw new SyntaxError("unescaped control character in JSON snapshot");
+			if (first < 0x80) {
+				position++;
+				return String.fromCharCode(first);
+			}
+			const width =
+				first >= 0xc2 && first <= 0xdf
+					? 2
+					: first >= 0xe0 && first <= 0xef
+						? 3
+						: first >= 0xf0 && first <= 0xf4
+							? 4
+							: 0;
+			if (width === 0 || !(await fill(width))) throw new SyntaxError("invalid UTF-8 in JSON string");
+			const bytes = source.subarray(position - sourceStart, position - sourceStart + width);
+			if (bytes.subarray(1).some(byte => (byte & 0xc0) !== 0x80))
+				throw new SyntaxError("invalid UTF-8 in JSON string");
+			position += width;
+			try {
+				return utf8Decoder.decode(bytes);
+			} catch {
+				throw new SyntaxError("invalid UTF-8 in JSON string");
+			}
+		};
+		let decodedOffset = checkpoint.decodedOffset;
+		let responseOffset: number | undefined;
+		let bodyBytes = 0;
+		const parts: string[] = [];
+		let body = "";
+		const append = (value: string): void => {
+			body += value;
+			if (body.length >= 64 * 1024) {
+				parts.push(body);
+				body = "";
+			}
+		};
+		const result = (complete: boolean) => ({
+			body: parts.length === 0 ? body : `${parts.join("")}${body}`,
+			complete,
+			offset: responseOffset ?? requestedOffset,
+		});
+		while (true) {
+			const unit = await readUnit();
+			if (unit === undefined) {
+				if (position !== range.end || decodedOffset !== stringIndex.byteLength)
+					throw new SyntaxError("escaped string index does not match JSON snapshot");
+				return result(true);
+			}
+			const unitBytes = Buffer.byteLength(unit);
+			if (responseOffset === undefined) {
+				if (decodedOffset < requestedOffset) {
+					decodedOffset += unitBytes;
+					if (decodedOffset <= requestedOffset) continue;
+					responseOffset = decodedOffset;
+					continue;
+				}
+				responseOffset = decodedOffset;
+			}
+			if (bodyBytes + unitBytes > length) return bodyBytes === 0 ? undefined : result(false);
+			append(unit);
+			bodyBytes += unitBytes;
+			decodedOffset += unitBytes;
+			if (decodedOffset === stringIndex.byteLength) {
+				if ((await readUnit()) !== undefined || position !== range.end)
+					throw new SyntaxError("escaped string index does not match JSON snapshot");
+				return result(true);
+			}
+			if (bodyBytes === length) return result(false);
+		}
 	}
 
 	async #encodeIndexedItem(
@@ -703,7 +940,7 @@ export class RevisionStore {
 		position: () => number,
 	): Promise<{
 		entryId?: string;
-		fields?: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }>;
+		fields?: Record<string, IndexedField>;
 	}> {
 		const root =
 			value && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function"
@@ -713,7 +950,7 @@ export class RevisionStore {
 			await this.#encode(root, append, true);
 			return {};
 		}
-		const fields: Record<string, { start: number; end: number; plainStringBytes?: number; isString?: boolean }> = {};
+		const fields: Record<string, IndexedField> = {};
 		let entryId: string | undefined;
 		await append("{");
 		let first = true;
@@ -724,16 +961,8 @@ export class RevisionStore {
 			await this.#encodeString(key, append);
 			await append(":");
 			const start = position();
-			await this.#encode(child, append, false);
-			fields[key] = {
-				start,
-				end: position(),
-				...(isPlainJsonString(child)
-					? { plainStringBytes: Buffer.byteLength(child), isString: true }
-					: typeof child === "string"
-						? { isString: true }
-						: {}),
-			};
+			const field = await this.#encodeIndexedValue(child, append);
+			fields[key] = { start, end: position(), ...field };
 			if (key === "id") entryId = String(child ?? "");
 		}
 		await append("}");
@@ -741,7 +970,8 @@ export class RevisionStore {
 	}
 
 	async #readBytes(revision: Revision, start: number, end: number): Promise<Buffer> {
-		if (revision.payload !== undefined) return Buffer.from(revision.payload).subarray(start, end);
+		this.#onReadRange?.(start, end);
+		if (revision.payload !== undefined) return revision.payload.subarray(start, end);
 		if (!this.#directory || !revision.chunks || !revision.chunkLengths)
 			throw new SyntaxError("snapshot range is unavailable");
 		const values: Buffer[] = [];
@@ -767,16 +997,16 @@ export class RevisionStore {
 		return (await this.#readBytes(revision, range.start, range.end)).toString("utf8");
 	}
 
-	async #readChunks(chunks: string[], lengths: number[]): Promise<string | undefined> {
+	async #readChunks(chunks: string[], lengths: number[]): Promise<Buffer | undefined> {
 		if (!this.#directory || chunks.length === 0) return undefined;
-		const values: string[] = [];
+		const values: Buffer[] = [];
 		for (const [index, chunk] of chunks.entries()) {
 			const data = await readFile(join(this.#directory, "objects", chunk));
 			if (data.length !== lengths[index] || createHash("sha256").update(data).digest("hex") !== chunk)
 				throw new SyntaxError("snapshot chunk does not match manifest");
-			values.push(data.toString("utf8"));
+			values.push(data);
 		}
-		return values.join("");
+		return Buffer.concat(values);
 	}
 
 	async #parseChunks(chunks: string[], lengths: number[]): Promise<unknown> {
@@ -874,9 +1104,16 @@ function utf8ChunkEnd(text: string, start: number, maxBytes: number): number {
 		low--;
 	return low;
 }
-function utf8BoundaryAtOrAfter(bytes: Buffer, offset: number): number {
-	while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++;
-	return offset;
+function stringCheckpointAtOrBefore(checkpoints: readonly StringCheckpoint[], offset: number): StringCheckpoint {
+	if (checkpoints.length === 0) throw new SyntaxError("escaped string index has no checkpoints");
+	let low = 0;
+	let high = checkpoints.length;
+	while (low < high) {
+		const middle = low + Math.floor((high - low) / 2);
+		if (checkpoints[middle]!.decodedOffset <= offset) low = middle + 1;
+		else high = middle;
+	}
+	return checkpoints[Math.max(0, low - 1)]!;
 }
 function utf8BoundaryAtOrBefore(bytes: Buffer, offset: number): number {
 	while (offset > 0 && offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset--;

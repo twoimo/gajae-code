@@ -1419,12 +1419,25 @@ export function createNotificationsExtension(
 ): void {
 	const runtimes = new Map<string, SessionRuntime>();
 	const disabledSessions = new Set<string>();
+	let activeRuntimeId: string | undefined;
+	let identityControlInFlight = false;
+	let deferredIdentityRotation: { event: { previousSessionFile?: string }; ctx: ExtensionContext } | undefined;
+	const identityControlOperations = new Set([
+		"session.new",
+		"session.fork",
+		"session.resume",
+		"session.switch",
+		"session.branch",
+	]);
 	const sessionId = (ctx: ExtensionContext): string => ctx.sessionManager.getSessionId();
 	const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 	async function stopSession(id: string, reason: "session" | "notifications" = "session"): Promise<boolean> {
 		const rt = runtimes.get(id);
-		if (!rt) return false;
+		if (!rt) {
+			if (activeRuntimeId === id) activeRuntimeId = undefined;
+			return false;
+		}
 		if (reason === "notifications" && rt.host.started) {
 			rt.notificationsActive = false;
 			try {
@@ -1438,6 +1451,7 @@ export function createNotificationsExtension(
 			return true;
 		}
 		runtimes.delete(id);
+		if (activeRuntimeId === id) activeRuntimeId = undefined;
 		try {
 			rt.cancelPostmortemCleanup();
 		} catch {}
@@ -1513,7 +1527,10 @@ export function createNotificationsExtension(
 		const sdkEnabledForSession = shouldHostSdk(settings, isNotificationEligibleContext(ctx));
 		if (!isNotificationEligibleContext(ctx) || (!notificationsEnabledForSession && !sdkEnabledForSession))
 			return "disabled";
-		if (runtimes.has(id)) return "already";
+		if (runtimes.has(id)) {
+			activeRuntimeId = id;
+			return "already";
+		}
 
 		const stateRoot = path.join(ctx.cwd, ".gjc", "state");
 
@@ -1638,6 +1655,12 @@ export function createNotificationsExtension(
 			onRequest: options.onSdkRequest,
 			afterControlResponse: async (_connectionId, request, response) => {
 				if (request.operation === "session.close" && response.ok === true) ctx.shutdown();
+				if (typeof request.operation === "string" && identityControlOperations.has(request.operation)) {
+					const pending = deferredIdentityRotation;
+					deferredIdentityRotation = undefined;
+					identityControlInFlight = false;
+					if (response.ok === true && pending) await rotateSessionAuthority(pending.event, pending.ctx);
+				}
 			},
 			control: async (_connectionId, frame) => {
 				const request = frame as {
@@ -1650,6 +1673,14 @@ export function createNotificationsExtension(
 				};
 				const requestId = typeof request.id === "string" ? request.id : "";
 				const operation = typeof request.operation === "string" ? request.operation : "";
+				const rotatesIdentity = identityControlOperations.has(operation);
+				if (rotatesIdentity && identityControlInFlight)
+					return {
+						id: requestId,
+						ok: false,
+						error: { code: "conflict", message: "session identity mutation is already active" },
+					};
+				if (rotatesIdentity) identityControlInFlight = true;
 				const response = await dispatchControl(
 					controlSurface,
 					OPERATIONS.find(row => row.kind === "control" && row.sdkId === operation),
@@ -1662,6 +1693,10 @@ export function createNotificationsExtension(
 						confirm: request.confirm === true,
 					},
 				);
+				if (rotatesIdentity && response.ok !== true) {
+					identityControlInFlight = false;
+					deferredIdentityRotation = undefined;
+				}
 				return response;
 			},
 			query: async (connectionId, frame) => {
@@ -2017,6 +2052,7 @@ export function createNotificationsExtension(
 				pendingInbound: new Set<number>(),
 			};
 			runtimes.set(id, runtime);
+			activeRuntimeId = id;
 			const startedRuntime = runtime;
 			runtime.enableNotifications = () => {
 				const runtime = startedRuntime;
@@ -2252,13 +2288,31 @@ export function createNotificationsExtension(
 	// session id. `/new`, fork, and resume must all tear down A before publishing
 	// B. Chat implementations may preserve a topic as metadata, but it must never
 	// preserve A's endpoint or credentials as B's control/viewing authority.
-	api.on("session_switch", async (event, ctx) => {
+	const rotateSessionAuthority = async (
+		event: { previousSessionFile?: string },
+		ctx: ExtensionContext,
+	): Promise<void> => {
 		const newId = sessionId(ctx);
-		const prevId = sessionIdFromFile(event.previousSessionFile);
-		if (!prevId || prevId === newId || !runtimes.has(prevId)) return;
-		if (disabledSessions.delete(prevId)) disabledSessions.add(newId);
-		await stopSession(prevId);
+		const prevId = activeRuntimeId ?? sessionIdFromFile(event.previousSessionFile);
+		if (prevId && prevId !== newId) {
+			if (disabledSessions.delete(prevId)) disabledSessions.add(newId);
+			await stopSession(prevId);
+		}
 		await startSession(ctx);
+	};
+	api.on("session_switch", async (event, ctx) => {
+		if (identityControlInFlight) {
+			deferredIdentityRotation = { event, ctx };
+			return;
+		}
+		await rotateSessionAuthority(event, ctx);
+	});
+	api.on("session_branch", async (event, ctx) => {
+		if (identityControlInFlight) {
+			deferredIdentityRotation = { event, ctx };
+			return;
+		}
+		await rotateSessionAuthority(event, ctx);
 	});
 
 	// Drive the live typing indicator: mark busy when the agent loop starts so

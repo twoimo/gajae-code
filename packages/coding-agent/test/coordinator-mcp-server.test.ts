@@ -9,8 +9,9 @@ const tempDirs: string[] = [];
 
 async function tempRoot(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-coordinator-server-"));
-	tempDirs.push(dir);
-	return dir;
+	const canonical = await fs.realpath(dir);
+	tempDirs.push(canonical);
+	return canonical;
 }
 
 afterEach(async () => {
@@ -18,6 +19,12 @@ afterEach(async () => {
 });
 
 type SdkControl = { operation: string; input: Record<string, unknown>; idempotencyKey?: string };
+
+function lifecycleControls(controls: SdkControl[]): SdkControl[] {
+	return controls.filter(
+		control => control.operation !== "session.list" && control.operation !== "session.get_endpoint",
+	);
+}
 
 async function createSdkControlServer(
 	root: string,
@@ -38,7 +45,7 @@ async function createSdkControlServer(
 					page: { items: ["first assistant line\nlatest assistant line"], complete: true, revision: "test" },
 				},
 	brokerSessions: Array<Record<string, unknown>> = [
-		{ sessionId: "visible-session", locator: { repo: root }, live: true },
+		{ sessionId: "visible-session", locator: { repo: root }, live: true, endpointGeneration: 1 },
 	],
 	sessionCommand?: string,
 ) {
@@ -88,10 +95,18 @@ async function createSdkControlServer(
 							const worktree = target?.worktree as Record<string, unknown> | undefined;
 							const lifecycleCwd = worktree?.enabled === true ? path.join(root, "hermes-worktree") : undefined;
 							const sessionId = `created-session-${++createdSessions}`;
+							const sessionCwd = lifecycleCwd ?? root;
+							await fs.mkdir(path.join(sessionCwd, ".gjc", "state", "sdk"), { recursive: true });
 							await Bun.write(
-								path.join(root, ".gjc", "state", "sdk", `${sessionId}.json`),
+								path.join(sessionCwd, ".gjc", "state", "sdk", `${sessionId}.json`),
 								JSON.stringify({ url: "ws://sdk.example.test", token: "test-token" }),
 							);
+							brokerSessions.push({
+								sessionId,
+								locator: { repo: sessionCwd },
+								live: true,
+								endpointGeneration: 1,
+							});
 							return {
 								ok: true,
 								result: {
@@ -205,7 +220,12 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		expect(publicResult).not.toContain("session-record-secret");
 		expect(publicResult).not.toContain("session-state-secret");
 		expect(controls).toEqual([
-			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
+			{ operation: "session.list", input: { cwd: root }, idempotencyKey: undefined },
+			{
+				operation: "session.get_endpoint",
+				input: { sessionId: "visible-session", endpointGeneration: 1 },
+				idempotencyKey: "register-1",
+			},
 			{ operation: "session.list", input: { cwd: root }, idempotencyKey: undefined },
 		]);
 	});
@@ -295,7 +315,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		});
 		expect(queries).toEqual(["context.get"]);
 	});
-	it("returns an explicit uncertain active-turn view when the SDK endpoint is absent", async () => {
+	it("uses the generation-bound broker endpoint when a stale local endpoint file is absent", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
 		const queries: string[] = [];
@@ -311,9 +331,9 @@ describe("Coordinator MCP canonical SDK controls", () => {
 
 		await expect(server.callTool("gjc_coordinator_read_turn", { turn_id: sent.turn_id })).resolves.toMatchObject({
 			ok: true,
-			advisory_status: { authority: "sdk", live: null, reason: "not_found" },
+			advisory_status: { authority: "sdk", live: true, is_streaming: true },
 		});
-		expect(queries).toEqual([]);
+		expect(queries).toEqual(["context.get"]);
 	});
 
 	it("passes a resolved mpreset into the SDK lifecycle create request and persists it with the session", async () => {
@@ -327,7 +347,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			allow_mutation: true,
 		});
 		expect(started).toMatchObject({ ok: true, session: { session_id: "created-session-1", mpreset: "codex-eco" } });
-		expect(controls).toEqual([
+		expect(lifecycleControls(controls)).toEqual([
 			{
 				operation: "session.create",
 				input: { cwd: root, target: { path: root }, modelPreset: "codex-eco" },
@@ -421,6 +441,191 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
 		expect(controls).toEqual([]);
 	});
+	it("rejects wrapper session commands instead of executing a coordinator-owned launcher", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(
+			root,
+			controls,
+			undefined,
+			undefined,
+			undefined,
+			"wrapper gjc --worktree",
+		);
+
+		await expect(
+			server.callTool("gjc_coordinator_start_session", {
+				cwd: root,
+				idempotency_key: "wrapper-command",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
+		expect(controls).toEqual([]);
+	});
+	it("durably replays sequential prompt retries and rejects caller-key request conflicts", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		await registerSdkSession(server, root);
+		const first = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: "visible-session",
+			prompt: "retry-safe prompt",
+			idempotency_key: "same-prompt-key",
+			allow_mutation: true,
+		});
+		const replay = await server.callTool("gjc_coordinator_send_prompt", {
+			session_id: "visible-session",
+			prompt: "retry-safe prompt",
+			idempotency_key: "same-prompt-key",
+			allow_mutation: true,
+		});
+		expect(replay).toEqual(first);
+		expect(lifecycleControls(controls).filter(control => control.operation === "turn.prompt")).toHaveLength(1);
+		await expect(
+			server.callTool("gjc_coordinator_send_prompt", {
+				session_id: "visible-session",
+				prompt: "different prompt",
+				idempotency_key: "same-prompt-key",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "idempotency_conflict" } });
+		expect(lifecycleControls(controls).filter(control => control.operation === "turn.prompt")).toHaveLength(1);
+	});
+	it("serializes concurrent same-key retries into one durable turn", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		await registerSdkSession(server, root);
+		const request = {
+			session_id: "visible-session",
+			prompt: "concurrent retry",
+			idempotency_key: "concurrent-prompt-key",
+			allow_mutation: true,
+		};
+		const [first, replay] = await Promise.all([
+			server.callTool("gjc_coordinator_send_prompt", request),
+			server.callTool("gjc_coordinator_send_prompt", request),
+		]);
+		expect(replay).toEqual(first);
+		expect(lifecycleControls(controls).filter(control => control.operation === "turn.prompt")).toHaveLength(1);
+	});
+	it("replays composite start and report mutations without allocating another turn or report", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		const startArgs = {
+			cwd: root,
+			prompt: "start once",
+			idempotency_key: "composite-start",
+			allow_mutation: true,
+		};
+		const started = await server.callTool("gjc_coordinator_start_session", startArgs);
+		const replayedStart = await server.callTool("gjc_coordinator_start_session", startArgs);
+		expect(replayedStart).toEqual(started);
+		expect(lifecycleControls(controls).filter(control => control.operation === "session.create")).toHaveLength(1);
+		expect(lifecycleControls(controls).filter(control => control.operation === "turn.prompt")).toHaveLength(1);
+		const delegateArgs = {
+			cwd: root,
+			task: "delegate once",
+			idempotency_key: "composite-delegate",
+			allow_mutation: true,
+		};
+		const delegated = await server.callTool("gjc_delegate_execute", delegateArgs);
+		const replayedDelegate = await server.callTool("gjc_delegate_execute", delegateArgs);
+		expect(replayedDelegate).toEqual(delegated);
+		expect(lifecycleControls(controls).filter(control => control.operation === "session.create")).toHaveLength(2);
+		expect(lifecycleControls(controls).filter(control => control.operation === "turn.prompt")).toHaveLength(2);
+
+		const reportArgs = {
+			status: "running",
+			summary: "one report",
+			idempotency_key: "composite-report",
+			allow_mutation: true,
+		};
+		const report = await server.callTool("gjc_coordinator_report_status", reportArgs);
+		const replayedReport = await server.callTool("gjc_coordinator_report_status", reportArgs);
+		expect(replayedReport).toEqual(report);
+		await expect(server.callTool("gjc_coordinator_read_coordination_status")).resolves.toMatchObject({
+			summary: { reports: 1 },
+		});
+	});
+	it("fails closed on workspace and endpoint-generation binding changes", async () => {
+		const root = await tempRoot();
+		const otherWorkspace = path.join(root, "other-workspace");
+		await fs.mkdir(otherWorkspace);
+		const controls: SdkControl[] = [];
+		const sessions = [{ sessionId: "visible-session", locator: { repo: root }, live: true, endpointGeneration: 1 }];
+		const server = await createSdkControlServer(root, controls, undefined, undefined, sessions);
+		await registerSdkSession(server, root);
+		sessions.push({
+			sessionId: "foreign-session",
+			locator: { repo: otherWorkspace },
+			live: true,
+			endpointGeneration: 1,
+		});
+		await expect(
+			server.callTool("gjc_coordinator_register_session", {
+				session_id: "foreign-session",
+				cwd: root,
+				idempotency_key: "foreign-workspace",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "not_found" } });
+		sessions[0]!.endpointGeneration = 2;
+		await expect(
+			server.callTool("gjc_coordinator_send_prompt", {
+				session_id: "visible-session",
+				prompt: "stale generation",
+				idempotency_key: "stale-generation",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "endpoint_stale" } });
+		expect(lifecycleControls(controls).filter(control => control.operation === "turn.prompt")).toHaveLength(0);
+		await expect(
+			server.callTool("gjc_delegate_execute", {
+				cwd: otherWorkspace,
+				session_id: "visible-session",
+				task: "wrong workspace",
+				idempotency_key: "wrong-workspace",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "workspace_mismatch" } });
+	});
+	it("never returns credential-contaminated reused session records", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		await registerSdkSession(server, root);
+		const recordPath = path.join(
+			root,
+			".gjc",
+			"coordinator-state",
+			"local",
+			"repo",
+			"sessions",
+			"visible-session.json",
+		);
+		const record = JSON.parse(await fs.readFile(recordPath, "utf8"));
+		await Bun.write(
+			recordPath,
+			JSON.stringify({
+				...record,
+				endpoint: { token: "reused-session-secret" },
+				token: "reused-session-secret",
+				credentials: { nested: "reused-session-secret" },
+			}),
+		);
+		const delegated = await server.callTool("gjc_delegate_plan", {
+			cwd: root,
+			session_id: "visible-session",
+			task: "sanitize session",
+			idempotency_key: "contaminated-reuse",
+			allow_mutation: true,
+		});
+		expect(delegated).toMatchObject({ ok: true, session: { session_id: "visible-session" } });
+		expect(JSON.stringify(delegated)).not.toContain("reused-session-secret");
+		expect(await fs.readFile(recordPath, "utf8")).not.toContain("reused-session-secret");
+	});
 
 	it("routes prompts, follow-ups, abort-and-prompts, and answers through SDK controls with caller keys", async () => {
 		const root = await tempRoot();
@@ -460,8 +665,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				allow_mutation: true,
 			}),
 		).toMatchObject({ ok: true, operation: "ask.answer", result: { accepted: true } });
-		expect(controls).toEqual([
-			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
+		expect(lifecycleControls(controls)).toEqual([
 			{ operation: "turn.prompt", input: { text: "first" }, idempotencyKey: "prompt-1" },
 			{ operation: "turn.follow_up", input: { text: "follow up" }, idempotencyKey: "prompt-2" },
 			{ operation: "turn.abort_and_prompt", input: { text: "replace" }, idempotencyKey: "prompt-3" },
@@ -486,7 +690,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			});
 			expect(result).toMatchObject({ ok: true, delivered: true, workflow: key });
 		}
-		expect(controls).toEqual(
+		expect(lifecycleControls(controls)).toEqual(
 			expect.arrayContaining([
 				{ operation: "session.create", input: { cwd: root, target: { path: root } }, idempotencyKey: "plan" },
 				{
@@ -588,9 +792,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				allow_mutation: true,
 			}),
 		).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-		expect(controls).toEqual([
-			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
-		]);
+		expect(lifecycleControls(controls)).toEqual([]);
 	});
 
 	it("returns SDK failures rather than falling back outside SDK control", async () => {
@@ -634,9 +836,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			"session.registered",
 			"report.written",
 		]);
-		expect(controls).toEqual([
-			{ operation: "session.get_endpoint", input: { sessionId: "visible-session" }, idempotencyKey: "register-1" },
-		]);
+		expect(lifecycleControls(controls)).toEqual([]);
 	});
 	it("closes an idle ephemeral coordinator session through broker lifecycle without terminal ownership", async () => {
 		const root = await tempRoot();

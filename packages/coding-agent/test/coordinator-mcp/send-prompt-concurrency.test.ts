@@ -27,6 +27,7 @@ describe("send_prompt same-session concurrency", () => {
 			const brokerUrl = "ws://127.0.0.1:4312";
 			const sessionUrl = "ws://127.0.0.1:4313";
 			const agentDir = path.join(root, "agent-global");
+			const brokerSessions: Array<Record<string, unknown>> = [];
 			await writeBrokerDiscovery(agentDir, {
 				version: 1,
 				protocolVersion: 3,
@@ -59,9 +60,22 @@ describe("send_prompt same-session concurrency", () => {
 					connectSdk: async url =>
 						url === brokerUrl
 							? ({
-									global: async (operation: string) => {
-										expect(operation).toBe("session.create");
-										return { result: { sessionId } };
+									global: async (operation: string, input: Record<string, unknown>) => {
+										if (operation === "session.create") {
+											brokerSessions.push({
+												sessionId,
+												locator: { repo: root },
+												live: true,
+												endpointGeneration: 1,
+											});
+											return { ok: true, result: { sessionId } };
+										}
+										if (operation === "session.list")
+											return { ok: true, result: { sessions: brokerSessions } };
+										if (operation === "session.get_endpoint") {
+											return { ok: true, result: { url: sessionUrl, token: "session-token" } };
+										}
+										throw new Error(`unexpected broker operation: ${operation} ${JSON.stringify(input)}`);
 									},
 									close: async () => {},
 								} as never)

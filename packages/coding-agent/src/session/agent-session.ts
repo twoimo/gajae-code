@@ -8018,6 +8018,13 @@ export class AgentSession {
 			this.#syncTodoPhasesFromBranch();
 
 			this.#resetIrcRosterDeliveryState();
+			if (this.#extensionRunner) {
+				await this.#extensionRunner.emit({
+					type: "session_switch",
+					reason: "new",
+					previousSessionFile,
+				});
+			}
 
 			return { document: handoffText, savedPath };
 		} catch (error) {

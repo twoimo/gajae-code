@@ -240,7 +240,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 					case "session.new":
 						return { created: await session.newSession() };
 					case "session.fork":
-						return { session: await session.sessionManager.fork() };
+						return { session: await session.fork() };
 					case "session.resume":
 						return { resumed: await session.switchSession(String(input.id)) };
 					case "session.close":

@@ -179,6 +179,7 @@ export class SlackNotificationDaemon {
 			// Recovery is a barrier: Socket Mode must not ACK an envelope before the
 			// mapping authority represented by durable effects has been restored.
 			await this.#reconcileTerminalProviderReceipts();
+			await this.#reconcileTerminalInboundReceipts();
 			const providerRecoveryFailed = await this.#drainProviderEffects();
 			await this.#drainPendingDispatches();
 			await this.#scheduleLeaseRecovery(providerRecoveryFailed);
@@ -244,6 +245,10 @@ export class SlackNotificationDaemon {
 	}
 
 	async postRoot(sessionId: string, body: string, endpointGeneration?: number): Promise<SlackConversation> {
+		const endpoint = await this.#resolveEndpoint(sessionId);
+		if (!endpoint || (endpointGeneration !== undefined && endpoint.generation !== endpointGeneration))
+			throw new SlackEndpointBindingError("Slack root publication requires the current session endpoint.");
+		const generation = endpoint.generation;
 		const pendingKey = this.#intentKey(sessionId);
 		let claimed = false;
 		const pending = await this.store.transact(pendingKey, current => {
@@ -274,7 +279,7 @@ export class SlackNotificationDaemon {
 				rootPublicationOwner: this.#publicationOwnerId,
 				rootPublicationLeaseExpiresAt: now + this.#publicationLeaseMs,
 				rootPublicationFence: (current?.rootPublicationFence ?? 0) + 1,
-				endpointGeneration,
+				endpointGeneration: generation,
 				updatedAt: now,
 				seenEventIds: current?.seenEventIds ?? [],
 				seenContextIds: current?.seenContextIds ?? [],
@@ -284,7 +289,10 @@ export class SlackNotificationDaemon {
 			};
 		});
 		if (!pending?.clientMsgId) throw new Error("Unable to persist Slack root post intent");
-		if (pending.state === "active") return pending;
+		if (pending.state === "active") {
+			if (pending.endpointGeneration !== generation) throw new SlackEndpointBindingError();
+			return pending;
+		}
 		if (!claimed) return await this.#waitForRoot(pendingKey, sessionId, body, endpointGeneration);
 		const clientMsgId = pending.clientMsgId;
 		const fence = pending.rootPublicationFence;
@@ -292,7 +300,7 @@ export class SlackNotificationDaemon {
 		let posted: SlackPostedMessage | null = null;
 		try {
 			await this.#withRootLease(pendingKey, clientMsgId, fence, async () => {
-				posted = await this.#postDurable(`root:${sessionId}:${clientMsgId}`, sessionId, endpointGeneration ?? 0, {
+				posted = await this.#postDurable(`root:${sessionId}:${clientMsgId}`, sessionId, generation, {
 					channel: this.options.channelId,
 					text: body,
 					clientMsgId,
@@ -323,13 +331,13 @@ export class SlackNotificationDaemon {
 		}
 		if (!posted) throw new Error("Slack root post was not confirmed");
 		const confirmedPosted = posted as SlackPostedMessage;
-		const endpoint = await this.#withRootLease(
+		const currentEndpoint = await this.#withRootLease(
 			pendingKey,
 			clientMsgId,
 			fence,
 			async () => await this.#resolveEndpoint(sessionId),
 		);
-		const generation = endpointGeneration ?? endpoint?.generation;
+		const endpointMatches = currentEndpoint?.generation === generation;
 		const active = await this.store.transact(pendingKey, current => {
 			if (
 				!current ||
@@ -338,8 +346,6 @@ export class SlackNotificationDaemon {
 				current.rootPublicationFence !== fence
 			)
 				return current;
-			const endpointMatches =
-				endpoint && (endpointGeneration === undefined || endpoint.generation === endpointGeneration);
 			return nextRecord(current, {
 				state: endpointMatches ? "active" : "error",
 				rootTs: confirmedPosted.ts,
@@ -356,16 +362,34 @@ export class SlackNotificationDaemon {
 	}
 
 	/** Deliver a notification into the mapped root thread, creating that root once. */
-	async notify(sessionId: string, body: string, actionId?: string): Promise<SlackConversation> {
+	async notify(
+		sessionId: string,
+		body: string,
+		actionId?: string,
+		endpointGeneration?: number,
+	): Promise<SlackConversation> {
+		const endpoint = await this.#resolveEndpoint(sessionId);
+		if (!endpoint || (endpointGeneration !== undefined && endpoint.generation !== endpointGeneration))
+			throw new SlackEndpointBindingError("Slack notification requires the current session endpoint.");
+		const generation = endpoint.generation;
 		const existing = await this.findSession(sessionId, false);
-		const usedExistingRoot = existing?.record.state === "active" && !!existing.record.rootTs;
-		const conversation = usedExistingRoot ? existing.record : await this.postRoot(sessionId, body);
+		const usedExistingRoot =
+			existing?.record.state === "active" &&
+			!!existing.record.rootTs &&
+			existing.record.endpointGeneration === generation;
+		const conversation = usedExistingRoot
+			? existing.record
+			: existing?.record.state === "active"
+				? await this.resume(sessionId, body, generation)
+				: await this.postRoot(sessionId, body, generation);
 		if (!conversation.rootTs) return conversation;
-		const key = existing?.key ?? this.#intentKey(sessionId);
+		const key = this.#intentKey(sessionId);
+		const conversationGeneration = this.#requireEndpointGeneration(conversation);
+		if (conversationGeneration !== generation) throw new SlackEndpointBindingError();
 		if (!usedExistingRoot) {
 			if (!actionId) return conversation;
 			const active = await this.store.transact(key, current =>
-				current && acceptsSlackInbound(current, conversation.rootTs!, current.endpointGeneration ?? -1)
+				current && acceptsSlackInbound(current, conversation.rootTs!, conversationGeneration)
 					? nextRecord(current, { pendingActionId: actionId, updatedAt: this.#now() })
 					: current,
 			);
@@ -373,23 +397,17 @@ export class SlackNotificationDaemon {
 			return active;
 		}
 		if (!actionId) {
-			await this.#postDurable(
-				`notification:${sessionId}:${this.#randomId()}`,
-				sessionId,
-				conversation.endpointGeneration ?? 0,
-				{
-					channel: conversation.channelId,
-					threadTs: conversation.rootTs,
-					text: body,
-					clientMsgId: this.#randomId(),
-				},
-			);
+			await this.#postDurable(`notification:${sessionId}:${this.#randomId()}`, sessionId, conversationGeneration, {
+				channel: conversation.channelId,
+				threadTs: conversation.rootTs,
+				text: body,
+				clientMsgId: this.#randomId(),
+			});
 			return conversation;
 		}
 		let actionClaimed = false;
 		const intent = await this.store.transact(key, current => {
-			if (!current || !acceptsSlackInbound(current, conversation.rootTs!, current.endpointGeneration ?? -1))
-				return current;
+			if (!current || !acceptsSlackInbound(current, conversation.rootTs!, conversationGeneration)) return current;
 			const now = this.#now();
 			if (current.outboundActionId && current.outboundActionId !== actionId) return current;
 			if (current.outboundActionId === actionId) {
@@ -426,12 +444,12 @@ export class SlackNotificationDaemon {
 		let published: SlackPostedMessage | null = null;
 		try {
 			await this.#withActionLease(key, clientMsgId, fence, async () => {
-				published = await this.#postDurable(
-					`action:${sessionId}:${actionId}`,
-					sessionId,
-					conversation.endpointGeneration ?? 0,
-					{ channel: conversation.channelId, threadTs: conversation.rootTs, text: body, clientMsgId },
-				);
+				published = await this.#postDurable(`action:${sessionId}:${actionId}`, sessionId, conversationGeneration, {
+					channel: conversation.channelId,
+					threadTs: conversation.rootTs,
+					text: body,
+					clientMsgId,
+				});
 			});
 		} catch (error) {
 			if (this.#isUncertainPostFailure(error)) {
@@ -478,17 +496,13 @@ export class SlackNotificationDaemon {
 	async postCommandResult(sessionId: string, content: string): Promise<boolean> {
 		const found = await this.findSession(sessionId, false);
 		if (found?.record.state !== "active" || !found.record.rootTs) return false;
-		await this.#postDurable(
-			`command-result:${sessionId}:${this.#randomId()}`,
-			sessionId,
-			found.record.endpointGeneration ?? 0,
-			{
-				channel: found.record.channelId,
-				threadTs: found.record.rootTs,
-				text: content,
-				clientMsgId: this.#randomId(),
-			},
-		);
+		const generation = this.#requireEndpointGeneration(found.record);
+		await this.#postDurable(`command-result:${sessionId}:${this.#randomId()}`, sessionId, generation, {
+			channel: found.record.channelId,
+			threadTs: found.record.rootTs,
+			text: content,
+			clientMsgId: this.#randomId(),
+		});
 		return true;
 	}
 
@@ -508,7 +522,7 @@ export class SlackNotificationDaemon {
 		await this.#postDurable(
 			`close-marker:${sessionId}:${found.record.clientMsgId ?? found.record.rootTs}`,
 			sessionId,
-			found.record.endpointGeneration ?? 0,
+			this.#requireEndpointGeneration(found.record),
 			{
 				channel: found.record.channelId,
 				threadTs: found.record.rootTs,
@@ -671,13 +685,19 @@ export class SlackNotificationDaemon {
 		receipt: SlackInboundDispatchReceipt;
 	}): Promise<boolean> {
 		const current = await this.store.read(claim.key);
+		const effect = await this.#journal.read<SlackInboundEffectPayload>(claim.receipt.effectId);
+		if (effect?.state === "terminal") {
+			await this.#finalizeTerminalInboundDispatch(claim.key, claim.receipt);
+			return false;
+		}
 		if (
 			!current ||
-			!acceptsSlackInbound(current, current.rootTs ?? "", claim.endpoint.generation) ||
-			claim.receipt.endpointGeneration !== claim.endpoint.generation ||
-			!(current.inboundDispatches ?? []).some(receipt => receipt.key === claim.receipt.key)
-		)
+			!this.#mappedInboundDispatchable(current, claim.receipt, effect) ||
+			claim.receipt.endpointGeneration !== claim.endpoint.generation
+		) {
+			await this.#terminalizeStaleInboundDispatch(claim.key, claim.receipt, "stale_mapping");
 			return false;
+		}
 		return await this.#dispatchEffect(claim, claim.receipt.effectId);
 	}
 
@@ -686,12 +706,17 @@ export class SlackNotificationDaemon {
 		effectId: string,
 	): Promise<boolean> {
 		const effect = await this.#rescheduleAfterEffectTransition(
-			this.#journal.claim<
-				| { type: "reply"; id: string; answer: string; idempotencyKey: string }
-				| { type: "command"; content: string; idempotencyKey: string }
-			>(effectId, this.#publicationOwnerId, Math.max(this.#publicationLeaseMs, 100)),
+			this.#journal.claim<SlackInboundEffectPayload>(
+				effectId,
+				this.#publicationOwnerId,
+				Math.max(this.#publicationLeaseMs, 100),
+			),
 		);
 		if (!effect) return false;
+		if (!this.#matchesInboundEffect(effect, claim.receipt)) {
+			await this.#terminalizeStaleInboundDispatch(claim.key, claim.receipt, "stale_mapping");
+			return false;
+		}
 		const lease: ChatEffectLease = { owner: this.#publicationOwnerId, epoch: effect.epoch };
 		try {
 			if (effect.payload.type === "command") {
@@ -705,7 +730,10 @@ export class SlackNotificationDaemon {
 						payload.idempotencyKey,
 					) ?? Promise.resolve(false));
 				});
-				if (!(await this.#inboundEffectCurrent(claim, effect.id))) return false;
+				if (!(await this.#inboundEffectCurrent(claim, effect.id))) {
+					await this.#terminalizeStaleInboundDispatch(claim.key, claim.receipt, "stale_binding");
+					return false;
+				}
 				const recorded = await this.#journal.record(effect.id, lease, "terminal", {
 					status: accepted ? "accepted" : "rejected",
 				});
@@ -716,12 +744,18 @@ export class SlackNotificationDaemon {
 				if (!(await this.#inboundEffectCurrent(claim, effect.id))) throw new SlackStaleEffectError();
 				this.options.createClient(claim.endpoint).send(effect.payload);
 			});
-			if (!(await this.#inboundEffectCurrent(claim, effect.id))) return false;
+			if (!(await this.#inboundEffectCurrent(claim, effect.id))) {
+				await this.#terminalizeStaleInboundDispatch(claim.key, claim.receipt, "stale_binding");
+				return false;
+			}
 			const recorded = await this.#journal.record(effect.id, lease, "terminal", { status: "sent" });
 			if (recorded) await this.#finishDispatch(claim, "terminal");
 			return !!recorded;
 		} catch (error) {
-			if (error instanceof SlackStaleEffectError) return false;
+			if (error instanceof SlackStaleEffectError) {
+				await this.#terminalizeStaleInboundDispatch(claim.key, claim.receipt, "stale_binding");
+				return false;
+			}
 			const state = this.#isDefiniteSdkPreSendFailure(error) ? "accepted" : "uncertain";
 			const recorded = await this.#rescheduleAfterEffectTransition(
 				this.#journal.record(effect.id, lease, state, { status: state }),
@@ -738,15 +772,18 @@ export class SlackNotificationDaemon {
 	): Promise<boolean> {
 		const endpoint = await this.#resolveEndpoint(claim.sessionId);
 		if (!endpoint || endpoint.generation !== claim.endpoint.generation) return false;
-		const current = await this.store.read(claim.key);
+		const [current, effect] = await Promise.all([
+			this.store.read(claim.key),
+			this.#journal.read<SlackInboundEffectPayload>(effectId),
+		]);
 		return (
 			!!current &&
+			!!effect &&
 			current.sessionId === claim.sessionId &&
 			acceptsSlackInbound(current, current.rootTs ?? "", claim.endpoint.generation) &&
 			claim.receipt.endpointGeneration === claim.endpoint.generation &&
-			(current.inboundDispatches ?? []).some(
-				receipt => receipt.key === claim.receipt.key && receipt.effectId === effectId,
-			)
+			this.#matchesInboundEffect(effect, claim.receipt) &&
+			(current.inboundDispatches ?? []).some(receipt => this.#sameInboundReceipt(receipt, claim.receipt))
 		);
 	}
 
@@ -768,20 +805,36 @@ export class SlackNotificationDaemon {
 	}
 
 	async #drainPendingDispatches(): Promise<void> {
+		await this.#reconcileTerminalInboundReceipts();
 		const document = await this.store.load();
-		const mappedEffectIds = new Set<string>();
+		const dispatchableEffectIds = new Set<string>();
 		for (const [key, record] of Object.entries(document.conversations)) {
-			if (!record.sessionId || !record.rootTs || record.state !== "active") continue;
 			for (const receipt of record.inboundDispatches ?? []) {
-				mappedEffectIds.add(receipt.effectId);
-				if (receipt.endpointGeneration !== record.endpointGeneration) continue;
-				const endpoint = await this.#resolveEndpoint(record.sessionId);
-				if (!endpoint || endpoint.generation !== receipt.endpointGeneration) continue;
+				const effect = await this.#journal.read<SlackInboundEffectPayload>(receipt.effectId);
+				if (effect?.state === "terminal") {
+					await this.#finalizeTerminalInboundDispatch(key, receipt);
+					continue;
+				}
+				if (!this.#mappedInboundDispatchable(record, receipt, effect)) {
+					await this.#terminalizeStaleInboundDispatch(key, receipt, "stale_mapping");
+					continue;
+				}
+				const endpoint = await this.#resolveEndpoint(record.sessionId!);
+				if (!endpoint || endpoint.generation !== receipt.endpointGeneration) {
+					await this.#terminalizeStaleInboundDispatch(key, receipt, "stale_binding");
+					continue;
+				}
+				if (
+					effect.state === "uncertain" ||
+					(effect.state === "leased" && (effect.leaseExpiresAt ?? 0) > this.#now())
+				)
+					continue;
+				dispatchableEffectIds.add(receipt.effectId);
 				const inflightKey = `${key}\u0000${receipt.key}`;
 				if (this.#inflightInbound.has(inflightKey)) continue;
 				this.#inflightInbound.add(inflightKey);
 				try {
-					await this.#dispatchInbound({ key, endpoint, sessionId: record.sessionId, receipt });
+					await this.#dispatchInbound({ key, endpoint, sessionId: record.sessionId!, receipt });
 				} finally {
 					this.#inflightInbound.delete(inflightKey);
 				}
@@ -789,7 +842,7 @@ export class SlackNotificationDaemon {
 		}
 		for (const effect of await this.#journal.list()) {
 			if (
-				mappedEffectIds.has(effect.id) ||
+				dispatchableEffectIds.has(effect.id) ||
 				effect.transport !== "slack" ||
 				effect.state === "terminal" ||
 				!effect.sessionId ||
@@ -807,9 +860,11 @@ export class SlackNotificationDaemon {
 					effect.id,
 				))
 			) {
-				await this.#terminalizeRejectedInbound(effect.id);
+				await this.#terminalizeStaleInboundDispatch(adopted.key, adopted.receipt, "stale_binding");
 				continue;
 			}
+			if (effect.state === "uncertain" || (effect.state === "leased" && (effect.leaseExpiresAt ?? 0) > this.#now()))
+				continue;
 			await this.#dispatchInbound({
 				key: adopted.key,
 				endpoint,
@@ -819,12 +874,148 @@ export class SlackNotificationDaemon {
 		}
 	}
 
+	#validInboundRouting(routing: SlackInboundRouting): boolean {
+		return (
+			routing.teamId === this.options.teamId &&
+			routing.channelId === this.options.channelId &&
+			text(routing.rootTs) !== undefined &&
+			text(routing.eventId) !== undefined &&
+			text(routing.interactionId) !== undefined &&
+			routing.retryKey === `${routing.eventId}:${routing.interactionId}` &&
+			(routing.eventContext === undefined || text(routing.eventContext) !== undefined) &&
+			(routing.kind === "command" || (routing.kind === "action" && text(routing.actionId) !== undefined))
+		);
+	}
+	#matchesInboundEffect(effect: ChatEffect<SlackInboundEffectPayload>, receipt: SlackInboundDispatchReceipt): boolean {
+		const payload = effect.payload;
+		const routing = payload?.routing;
+		if (
+			!routing ||
+			!this.#validInboundRouting(routing) ||
+			!effect.sessionId ||
+			!Number.isSafeInteger(effect.endpointGeneration) ||
+			effect.endpointGeneration <= 0
+		)
+			return false;
+		const effectId = `inbound:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
+		const idempotencyKey = `slack:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
+		return (
+			effect.id === effectId &&
+			payload.idempotencyKey === idempotencyKey &&
+			receipt.key === `${routing.eventId}:${routing.interactionId}` &&
+			receipt.eventId === routing.eventId &&
+			receipt.interactionId === routing.interactionId &&
+			receipt.retryKey === routing.retryKey &&
+			receipt.eventContext === routing.eventContext &&
+			receipt.kind === routing.kind &&
+			receipt.actionId === routing.actionId &&
+			receipt.endpointGeneration === effect.endpointGeneration &&
+			receipt.effectId === effect.id &&
+			receipt.idempotencyKey === payload.idempotencyKey &&
+			((payload.type === "command" && routing.kind === "command" && effect.kind === "sdk.inbound.command") ||
+				(payload.type === "reply" &&
+					routing.kind === "action" &&
+					effect.kind === "sdk.inbound.reply" &&
+					payload.id === routing.actionId))
+		);
+	}
+	#sameInboundReceipt(left: SlackInboundDispatchReceipt, right: SlackInboundDispatchReceipt): boolean {
+		return (
+			left.key === right.key &&
+			left.eventId === right.eventId &&
+			left.interactionId === right.interactionId &&
+			left.retryKey === right.retryKey &&
+			left.eventContext === right.eventContext &&
+			left.kind === right.kind &&
+			left.actionId === right.actionId &&
+			left.endpointGeneration === right.endpointGeneration &&
+			left.effectId === right.effectId &&
+			left.idempotencyKey === right.idempotencyKey
+		);
+	}
+	#mappedInboundDispatchable(
+		record: SlackConversation,
+		receipt: SlackInboundDispatchReceipt,
+		effect: ChatEffect<SlackInboundEffectPayload> | undefined,
+	): effect is ChatEffect<SlackInboundEffectPayload> {
+		return (
+			!!effect &&
+			record.state === "active" &&
+			!!record.sessionId &&
+			!!record.rootTs &&
+			acceptsSlackInbound(record, record.rootTs, receipt.endpointGeneration) &&
+			record.sessionId === effect.sessionId &&
+			this.#matchesInboundEffect(effect, receipt)
+		);
+	}
+	async #reconcileTerminalInboundReceipts(): Promise<void> {
+		for (const effect of await this.#journal.list()) {
+			if (
+				effect.transport !== "slack" ||
+				effect.state !== "terminal" ||
+				(effect.kind !== "sdk.inbound.command" && effect.kind !== "sdk.inbound.reply")
+			)
+				continue;
+			const payload = effect.payload as SlackInboundEffectPayload;
+			if (!payload?.routing || !this.#validInboundRouting(payload.routing)) continue;
+			const key = slackConversationKey({
+				teamId: payload.routing.teamId,
+				channelId: payload.routing.channelId,
+				rootTs: payload.routing.rootTs,
+			});
+			const current = await this.store.read(key);
+			let receipt: SlackInboundDispatchReceipt | undefined;
+			if (current && current.sessionId === effect.sessionId) {
+				receipt = current.inboundDispatches?.find(candidate =>
+					this.#matchesInboundEffect(effect as ChatEffect<SlackInboundEffectPayload>, candidate),
+				);
+			}
+			if (receipt) await this.#finalizeTerminalInboundDispatch(key, receipt);
+		}
+	}
+	async #terminalizeStaleInboundDispatch(
+		key: string,
+		receipt: SlackInboundDispatchReceipt,
+		status: "stale_binding" | "stale_mapping",
+	): Promise<void> {
+		await this.#journal.terminalize(receipt.effectId, { status });
+		await this.#finalizeTerminalInboundDispatch(key, receipt);
+	}
+	async #finalizeTerminalInboundDispatch(key: string, receipt: SlackInboundDispatchReceipt): Promise<void> {
+		await this.store.transact(key, current => {
+			const found = current?.inboundDispatches?.find(candidate => this.#sameInboundReceipt(candidate, receipt));
+			return !current || !found ? current : this.#completeInboundDispatch(current, found, true);
+		});
+	}
+	#completeInboundDispatch(
+		current: SlackConversation,
+		receipt: SlackInboundDispatchReceipt,
+		terminal: boolean,
+	): SlackConversation {
+		return nextRecord(current, {
+			pendingActionId:
+				receipt.kind === "action" && current.pendingActionId === receipt.actionId
+					? undefined
+					: current.pendingActionId,
+			seenEventIds: [...current.seenEventIds, receipt.eventId],
+			seenInteractionIds: [...current.seenInteractionIds, receipt.interactionId],
+			seenRetryKeys: [...current.seenRetryKeys, receipt.retryKey],
+			seenContextIds:
+				receipt.eventContext === undefined
+					? current.seenContextIds
+					: [...current.seenContextIds, receipt.eventContext],
+			inboundDispatches: terminal
+				? (current.inboundDispatches ?? []).filter(candidate => !this.#sameInboundReceipt(candidate, receipt))
+				: current.inboundDispatches,
+			updatedAt: this.#now(),
+		});
+	}
 	async #adoptOrphanInbound(
 		effect: ChatEffect<SlackInboundEffectPayload>,
 	): Promise<{ key: string; sessionId: string; receipt: SlackInboundDispatchReceipt } | undefined> {
 		const payload = effect.payload;
 		const routing = payload?.routing;
-		if (!routing) {
+		if (!routing || !this.#validInboundRouting(routing)) {
 			await this.#terminalizeRejectedInbound(effect.id);
 			return undefined;
 		}
@@ -842,10 +1033,17 @@ export class SlackNotificationDaemon {
 		const expectedEffectId = `inbound:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
 		const expectedIdempotencyKey = `slack:${routing.teamId}:${routing.channelId}:${routing.rootTs}:${routing.eventId}:${routing.interactionId}`;
 		const validPayload =
+			effect.transport === "slack" &&
+			!!effect.sessionId &&
+			Number.isSafeInteger(effect.endpointGeneration) &&
+			effect.endpointGeneration > 0 &&
 			effect.id === expectedEffectId &&
 			payload.idempotencyKey === expectedIdempotencyKey &&
-			((payload.type === "command" && routing.kind === "command") ||
-				(payload.type === "reply" && routing.kind === "action" && payload.id === routing.actionId));
+			((payload.type === "command" && routing.kind === "command" && effect.kind === "sdk.inbound.command") ||
+				(payload.type === "reply" &&
+					routing.kind === "action" &&
+					effect.kind === "sdk.inbound.reply" &&
+					payload.id === routing.actionId));
 		let receipt: SlackInboundDispatchReceipt | undefined;
 		await this.store.transact(key, current => {
 			if (
@@ -864,18 +1062,7 @@ export class SlackNotificationDaemon {
 					(routing.eventContext !== undefined && candidate.eventContext === routing.eventContext),
 			);
 			if (existing) {
-				if (
-					existing.effectId === effect.id &&
-					existing.idempotencyKey === payload.idempotencyKey &&
-					existing.endpointGeneration === effect.endpointGeneration &&
-					existing.eventId === routing.eventId &&
-					existing.interactionId === routing.interactionId &&
-					existing.retryKey === routing.retryKey &&
-					existing.eventContext === routing.eventContext &&
-					existing.kind === routing.kind &&
-					existing.actionId === routing.actionId
-				)
-					receipt = existing;
+				if (this.#matchesInboundEffect(effect, existing)) receipt = existing;
 				return current;
 			}
 			if (
@@ -918,26 +1105,10 @@ export class SlackNotificationDaemon {
 	): Promise<void> {
 		await this.store.transact(claim.key, current => {
 			if (!current || !acceptsSlackInbound(current, current.rootTs ?? "", claim.endpoint.generation)) return current;
-			const found = (current.inboundDispatches ?? []).find(receipt => receipt.key === claim.receipt.key);
-			if (!found) return current;
-			return nextRecord(current, {
-				pendingActionId:
-					found.kind === "action" && current.pendingActionId === found.actionId
-						? undefined
-						: current.pendingActionId,
-				seenEventIds: [...current.seenEventIds, found.eventId],
-				seenInteractionIds: [...current.seenInteractionIds, found.interactionId],
-				seenRetryKeys: [...current.seenRetryKeys, found.retryKey],
-				seenContextIds:
-					found.eventContext === undefined
-						? current.seenContextIds
-						: [...current.seenContextIds, found.eventContext],
-				inboundDispatches:
-					state === "terminal"
-						? (current.inboundDispatches ?? []).filter(receipt => receipt.key !== found.key)
-						: current.inboundDispatches,
-				updatedAt: this.#now(),
-			});
+			const found = (current.inboundDispatches ?? []).find(receipt =>
+				this.#sameInboundReceipt(receipt, claim.receipt),
+			);
+			return found ? this.#completeInboundDispatch(current, found, state === "terminal") : current;
 		});
 	}
 
@@ -948,10 +1119,14 @@ export class SlackNotificationDaemon {
 	}): Promise<void> {
 		await this.store.transact(claim.key, current => {
 			if (!current || !acceptsSlackInbound(current, current.rootTs ?? "", claim.endpoint.generation)) return current;
-			const found = (current.inboundDispatches ?? []).find(receipt => receipt.key === claim.receipt.key);
+			const found = (current.inboundDispatches ?? []).find(receipt =>
+				this.#sameInboundReceipt(receipt, claim.receipt),
+			);
 			return found
 				? nextRecord(current, {
-						inboundDispatches: (current.inboundDispatches ?? []).filter(receipt => receipt.key !== found.key),
+						inboundDispatches: (current.inboundDispatches ?? []).filter(
+							candidate => !this.#sameInboundReceipt(candidate, found),
+						),
 						updatedAt: this.#now(),
 					})
 				: current;
@@ -990,10 +1165,16 @@ export class SlackNotificationDaemon {
 		payload: { channel?: unknown; clientMsgId: string },
 		rootTs: string,
 	): Promise<void> {
-		if (!effect.sessionId || typeof payload.channel !== "string" || payload.channel !== this.options.channelId)
+		if (
+			!effect.sessionId ||
+			typeof payload.channel !== "string" ||
+			payload.channel !== this.options.channelId ||
+			!Number.isSafeInteger(effect.endpointGeneration) ||
+			effect.endpointGeneration <= 0
+		)
 			return;
 		const endpoint = await this.#resolveEndpoint(effect.sessionId);
-		if (!endpoint || (effect.endpointGeneration !== 0 && endpoint.generation !== effect.endpointGeneration)) return;
+		if (!endpoint || endpoint.generation !== effect.endpointGeneration) return;
 		await this.store.transact(this.#intentKey(effect.sessionId), current =>
 			current &&
 			current.state === "posting_root" &&
@@ -1001,13 +1182,11 @@ export class SlackNotificationDaemon {
 			current.teamId === this.options.teamId &&
 			current.channelId === payload.channel &&
 			current.clientMsgId === payload.clientMsgId &&
-			(effect.endpointGeneration === 0 ||
-				current.endpointGeneration === undefined ||
-				current.endpointGeneration === effect.endpointGeneration)
+			current.endpointGeneration === effect.endpointGeneration
 				? nextRecord(current, {
 						state: "active",
 						rootTs,
-						endpointGeneration: endpoint.generation,
+						endpointGeneration: effect.endpointGeneration,
 						rootPublicationOwner: undefined,
 						rootPublicationLeaseExpiresAt: undefined,
 						lastError: undefined,
@@ -1021,7 +1200,14 @@ export class SlackNotificationDaemon {
 		effect: ChatEffect,
 		payload: { channel?: unknown; threadTs?: unknown; clientMsgId: string },
 	): Promise<void> {
-		if (!effect.sessionId || typeof payload.channel !== "string" || typeof payload.threadTs !== "string") return;
+		if (
+			!effect.sessionId ||
+			typeof payload.channel !== "string" ||
+			typeof payload.threadTs !== "string" ||
+			!Number.isSafeInteger(effect.endpointGeneration) ||
+			effect.endpointGeneration <= 0
+		)
+			return;
 		const threadTs = payload.threadTs;
 		const endpoint = await this.#resolveEndpoint(effect.sessionId);
 		if (!endpoint || endpoint.generation !== effect.endpointGeneration) return;
@@ -1202,10 +1388,10 @@ export class SlackNotificationDaemon {
 	}
 
 	async #providerEffectCurrent(effect: ChatEffect): Promise<boolean> {
-		if (!effect.sessionId) return false;
-		const endpoint = await this.#resolveEndpoint(effect.sessionId);
-		if (!endpoint || (effect.endpointGeneration !== 0 && endpoint.generation !== effect.endpointGeneration))
+		if (!effect.sessionId || !Number.isSafeInteger(effect.endpointGeneration) || effect.endpointGeneration <= 0)
 			return false;
+		const endpoint = await this.#resolveEndpoint(effect.sessionId);
+		if (!endpoint || endpoint.generation !== effect.endpointGeneration) return false;
 		const payload = effect.payload as { threadTs?: unknown };
 		const threadTs = payload.threadTs;
 		const records = Object.values((await this.store.load()).conversations);
@@ -1219,8 +1405,8 @@ export class SlackNotificationDaemon {
 		return records.some(
 			record =>
 				record.sessionId === effect.sessionId &&
-				(record.state === "posting_root" ||
-					(record.state === "active" && record.endpointGeneration === effect.endpointGeneration)),
+				record.endpointGeneration === effect.endpointGeneration &&
+				record.state === "posting_root",
 		);
 	}
 
@@ -1230,6 +1416,8 @@ export class SlackNotificationDaemon {
 		endpointGeneration: number,
 		payload: { channel: string; text: string; threadTs?: string; clientMsgId: string },
 	): Promise<SlackPostedMessage> {
+		if (!Number.isSafeInteger(endpointGeneration) || endpointGeneration <= 0)
+			throw new SlackEndpointBindingError("Slack provider effects require a positive endpoint generation.");
 		const initial = await this.#rescheduleAfterEffectTransition(
 			this.#journal.enqueue({
 				id,
@@ -1459,10 +1647,16 @@ export class SlackNotificationDaemon {
 		throw new Error("Slack action publication is still pending");
 	}
 
-	private async findSession(
+	async findSession(
 		sessionId: string,
 		includeInactive: boolean,
-	): Promise<{ key: string; record: SlackConversation } | undefined> {
+	): Promise<
+		| {
+				key: string;
+				record: SlackConversation;
+		  }
+		| undefined
+	> {
 		const document = await this.store.load();
 		return Object.entries(document.conversations)
 			.map(([key, record]) => ({ key, record }))
@@ -1487,6 +1681,12 @@ export class SlackNotificationDaemon {
 			channelId: this.options.channelId,
 			rootTs: `intent:${sessionId}`,
 		});
+	}
+	#requireEndpointGeneration(record: SlackConversation): number {
+		const generation = record.endpointGeneration;
+		if (typeof generation !== "number" || !Number.isSafeInteger(generation) || generation <= 0)
+			throw new SlackEndpointBindingError("Slack conversation has no current endpoint generation.");
+		return generation;
 	}
 	#leaseExpired(expiresAt: number | undefined, now: number): boolean {
 		return expiresAt === undefined || expiresAt <= now;

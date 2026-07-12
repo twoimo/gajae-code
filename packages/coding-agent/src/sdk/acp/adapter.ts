@@ -77,6 +77,7 @@ export class AcpSdkAdapter {
 	readonly #heartbeatMs: number;
 	#unsubscribe?: () => void;
 	#unsubscribeReconnect?: () => void;
+	#unsubscribeReconnectFailed?: () => void;
 	#heartbeat?: NodeJS.Timeout;
 	#connectionId?: string;
 	#leases = new Map<string, string>();
@@ -128,15 +129,15 @@ export class AcpSdkAdapter {
 		this.#unsubscribeReconnect ??= this.#client.onReconnect(
 			() => void this.#reclaimProviders().catch(error => this.#reportReconnectFailure(error)),
 		);
+		this.#unsubscribeReconnectFailed ??= this.#client.onReconnectFailed(error => this.#reportReconnectFailure(error));
 		await this.#client.connect();
 		this.#connectionId = this.#client.connectionId;
 		if (this.#providers.length > 0 && !this.#connectionId) this.#connectionId = await this.#waitForConnectionId();
 		for (const provider of this.#providers) await this.registerProvider(provider);
-		if (this.#providers.length)
-			this.#heartbeat = setInterval(
-				() => void this.#heartbeatLeases().catch(error => this.#reportReconnectFailure(error)),
-				this.#heartbeatMs,
-			);
+		this.#heartbeat ??= setInterval(
+			() => void this.#heartbeatLeases().catch(error => this.#reportReconnectFailure(error)),
+			this.#heartbeatMs,
+		);
 	}
 
 	async close(): Promise<void> {
@@ -147,6 +148,7 @@ export class AcpSdkAdapter {
 		this.#reverseRequests.clear();
 		this.#unsubscribe?.();
 		this.#unsubscribeReconnect?.();
+		this.#unsubscribeReconnectFailed?.();
 		await this.#client.close();
 	}
 
@@ -198,8 +200,14 @@ export class AcpSdkAdapter {
 			return await this.sdkControl(params as { operation: string; input?: JsonObject });
 		if (method === "_gjc/sdk/query")
 			return await this.sdkQuery(params as { query: string; input?: JsonObject; cursor?: string });
-		if (method === "_gjc/sdk/global")
+		if (method === "_gjc/sdk/global") {
+			if (typeof params.operation === "string" && isLifecycleOperation(params.operation))
+				throw new AcpSdkAdapterError(
+					"operation_prohibited",
+					"ACP lifecycle operations are available only through typed session methods.",
+				);
 			return await this.sdkGlobal(params as { operation: string; input?: JsonObject; idempotencyKey?: string });
+		}
 		if (method === "prompt") return await this.prompt(params);
 		if (method === "cancel") return await this.cancel();
 		if (method === "setModel") return await this.setModel(params);
@@ -261,17 +269,6 @@ export class AcpSdkAdapter {
 		}
 	}
 
-	async #recover(): Promise<void> {
-		try {
-			await this.#client.connect();
-			await this.#client.awaitHello();
-			await this.#reclaimProviders();
-		} catch (error) {
-			this.#reportReconnectFailure(error);
-			throw error;
-		}
-	}
-
 	#reportReconnectFailure(error: unknown): void {
 		const typed =
 			error instanceof SdkClientError
@@ -303,13 +300,15 @@ export class AcpSdkAdapter {
 	}
 
 	async #heartbeatLeases(): Promise<void> {
-		if (!this.#connectionId || this.#closed) return;
-		for (const leaseId of this.#leases.values()) {
-			try {
+		if (this.#closed) return;
+		try {
+			await this.#client.awaitHello();
+			this.#connectionId ??= this.#client.connectionId;
+			if (!this.#connectionId) return;
+			for (const leaseId of this.#leases.values())
 				this.#client.send({ type: "provider_heartbeat", connectionId: this.#connectionId, leaseId });
-			} catch {
-				await this.#recover();
-			}
+		} catch (error) {
+			this.#reportReconnectFailure(error);
 		}
 	}
 

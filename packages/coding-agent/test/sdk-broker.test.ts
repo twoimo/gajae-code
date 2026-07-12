@@ -14,6 +14,7 @@ import { ensureBroker } from "../src/sdk/broker/ensure";
 import { getBrokerIdentityKey } from "../src/sdk/broker/identity";
 import { readSessionLifecycleLaunchRequest } from "../src/sdk/broker/lifecycle";
 import { resolveSdkInternalSpawnCommand } from "../src/sdk/broker/runtime";
+import { FileSessionStorage } from "../src/session/session-storage";
 
 const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-"));
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -42,7 +43,8 @@ it("SDK lifecycle model presets reach the session host parser", () => {
 		JSON.stringify({
 			operation: "session.create",
 			sessionId: "session-1",
-			stateRoot: "/state",
+			stateRoot: "/repo/.gjc/state",
+
 			cwd: "/repo",
 			modelPreset: "codex-eco",
 		}),
@@ -233,12 +235,282 @@ describe("SDK broker identity and discovery", () => {
 				ok: false,
 				error: {
 					code: "invalid_input",
-					message: "session.delete path resolves outside the configured session storage root.",
+					message: "session.delete path is a symlink.",
 				},
 			});
 			expect(await fs.readFile(external, "utf8")).toContain('"requested"');
 			expect((await fs.stat(externalArtifacts)).isDirectory()).toBe(true);
 		} finally {
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+	it("rejects traversal and conflicting session-id aliases before lifecycle state access", async () => {
+		const dir = await temp();
+		const broker = new Broker({ agentDir: dir });
+		try {
+			expect(await broker.handleRequest("session.get_endpoint", { sessionId: "../escape" })).toEqual({
+				ok: false,
+				error: { code: "invalid_input", message: "sessionId must be a canonical safe identifier" },
+			});
+			expect(
+				await broker.handleRequest("session.close", { sessionId: "session-a", id: "session-b" }, "alias-conflict"),
+			).toEqual({ ok: false, error: { code: "invalid_input", message: "sessionId aliases conflict" } });
+			await expect(fs.stat(path.join(dir, "sdk", "escape.json"))).rejects.toThrow();
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("replays id and sessionId lifecycle aliases under one caller idempotency key", async () => {
+		const dir = await temp();
+		const broker = new Broker({ agentDir: dir });
+		await broker.start();
+		try {
+			const first = await broker.handleRequest("session.close", { sessionId: "missing" }, "same-close");
+			expect(await broker.handleRequest("session.close", { id: "missing" }, "same-close")).toEqual(first);
+		} finally {
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a non-default lifecycle state root at broker ingress", async () => {
+		const dir = await temp();
+		const broker = new Broker({ agentDir: dir });
+		try {
+			expect(
+				await broker.handleRequest(
+					"session.create",
+					{ cwd: dir, stateRoot: path.join(dir, "alternate-state") },
+					"alternate-state-root",
+				),
+			).toEqual({
+				ok: false,
+				error: { code: "invalid_input", message: "stateRoot must be the default .gjc/state for cwd." },
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("uses verified deletion to remove the exact transcript, artifacts, and indexed authority", async () => {
+		const dir = await temp();
+		const cwd = path.join(dir, "workspace");
+		const stateRoot = path.join(cwd, ".gjc", "state");
+		const sessionId = "verified-delete";
+		const sessionPath = path.join(getSessionsDir(dir), "project", `${sessionId}.jsonl`);
+		const artifactsDir = sessionPath.slice(0, -6);
+		const broker = new Broker({ agentDir: dir });
+		await fs.mkdir(path.dirname(sessionPath), { recursive: true });
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.writeFile(sessionPath, `${JSON.stringify({ type: "session", id: sessionId, cwd })}\n`);
+		await fs.mkdir(artifactsDir);
+		await fs.writeFile(path.join(artifactsDir, "artifact.txt"), "artifact");
+		await broker.start();
+		try {
+			await broker.index.append({
+				type: "host_registered",
+				sessionId,
+				locator: { repo: cwd, stateRoot },
+				endpointGeneration: 1,
+				pid: 999_999_999,
+			});
+			expect(
+				await broker.handleRequest("session.delete", { sessionId, sessionPath, cwd }, "verified-delete-key"),
+			).toEqual({ ok: true, result: { sessionId } });
+			await expect(fs.stat(sessionPath)).rejects.toThrow();
+			await expect(fs.stat(artifactsDir)).rejects.toThrow();
+			expect(await broker.handleRequest("session.list", {})).toMatchObject({
+				ok: true,
+				result: { sessions: [] },
+			});
+		} finally {
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves typed verified-delete partial-cleanup evidence", async () => {
+		const dir = await temp();
+		const cwd = path.join(dir, "workspace");
+		const sessionId = "pending-delete";
+		const sessionPath = path.join(getSessionsDir(dir), `${sessionId}.jsonl`);
+		const broker = new Broker({ agentDir: dir });
+		const originalDelete = FileSessionStorage.prototype.deleteSessionVerified;
+		await fs.mkdir(path.dirname(sessionPath), { recursive: true });
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.writeFile(sessionPath, `${JSON.stringify({ type: "session", id: sessionId, cwd })}\n`);
+		await broker.start();
+		FileSessionStorage.prototype.deleteSessionVerified = async () => ({
+			kind: "cleanup_pending" as const,
+
+			phase: "artifacts" as const,
+			error: new Error("artifact cleanup denied"),
+			artifactsIdentity: { dev: 7n, ino: 8n },
+			transcriptIdentity: { dev: 5n, ino: 6n },
+		});
+		try {
+			const pending = await broker.handleRequest(
+				"session.delete",
+				{ sessionId, sessionPath, cwd },
+				"pending-delete-key",
+			);
+			expect(pending).toEqual({
+				ok: false,
+				error: {
+					code: "cleanup_pending",
+					message: "Saved session cleanup is pending in artifacts: artifact cleanup denied",
+					cleanup: {
+						phase: "artifacts",
+						artifactsIdentity: { dev: "7", ino: "8" },
+						transcriptIdentity: { dev: "5", ino: "6" },
+					},
+				},
+			});
+			expect(
+				await broker.handleRequest("session.delete", { sessionId, sessionPath, cwd }, "pending-delete-key"),
+			).toEqual(pending);
+			expect(await fs.readFile(sessionPath, "utf8")).toContain(sessionId);
+		} finally {
+			FileSessionStorage.prototype.deleteSessionVerified = originalDelete;
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("returns endpoint_stale without dispatching close after endpoint generation rotation", async () => {
+		const dir = await temp();
+		const stateRoot = path.join(dir, ".gjc", "state");
+		const sessionId = "rotating";
+		const endpointPath = path.join(stateRoot, "sdk", `${sessionId}.json`);
+		const broker = new Broker({ agentDir: dir });
+		let controlRequests = 0;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request, httpServer) {
+				if (httpServer.upgrade(request)) return;
+				return new Response("WebSocket required", { status: 426 });
+			},
+			websocket: {
+				open(ws) {
+					void (async () => {
+						await fs.writeFile(
+							endpointPath,
+							JSON.stringify({
+								sessionId,
+								pid: process.pid,
+								url: `ws://127.0.0.1:${server.port}`,
+								token: "replacement-token",
+							}),
+						);
+						await broker.index.append({
+							type: "host_registered",
+							sessionId,
+							locator: { repo: dir, stateRoot },
+							endpointGeneration: 2,
+							pid: process.pid,
+							endpointMtimeMs: (await fs.stat(endpointPath)).mtimeMs,
+						});
+						ws.send(JSON.stringify({ type: "hello" }));
+					})();
+				},
+				message(ws, message) {
+					const frame = JSON.parse(String(message)) as { id?: string; type?: string };
+					if (frame.type === "control_request") controlRequests++;
+					if (frame.id) ws.send(JSON.stringify({ id: frame.id, ok: true }));
+				},
+			},
+		});
+		await broker.start();
+		try {
+			await fs.mkdir(path.dirname(endpointPath), { recursive: true });
+			await fs.writeFile(
+				endpointPath,
+				JSON.stringify({
+					sessionId,
+					pid: process.pid,
+					url: `ws://127.0.0.1:${server.port}`,
+					token: "initial-token",
+				}),
+			);
+			await broker.index.append({
+				type: "host_registered",
+				sessionId,
+				locator: { repo: dir, stateRoot },
+				endpointGeneration: 1,
+				pid: process.pid,
+				endpointMtimeMs: (await fs.stat(endpointPath)).mtimeMs,
+			});
+			expect(await broker.handleRequest("session.close", { sessionId }, "rotating-close")).toEqual({
+				ok: false,
+				error: { code: "endpoint_stale", message: "session endpoint is stale" },
+			});
+			expect(controlRequests).toBe(0);
+		} finally {
+			server.stop(true);
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves a typed session-host close failure without signal fallback", async () => {
+		const dir = await temp();
+		const stateRoot = path.join(dir, ".gjc", "state");
+		const sessionId = "flush-failure";
+		const endpointPath = path.join(stateRoot, "sdk", `${sessionId}.json`);
+		const broker = new Broker({ agentDir: dir });
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request, httpServer) {
+				if (httpServer.upgrade(request)) return;
+				return new Response("WebSocket required", { status: 426 });
+			},
+			websocket: {
+				open(ws) {
+					ws.send(JSON.stringify({ type: "hello" }));
+				},
+				message(ws, message) {
+					const frame = JSON.parse(String(message)) as { id?: string };
+					if (frame.id)
+						ws.send(
+							JSON.stringify({
+								id: frame.id,
+								ok: false,
+								error: { code: "flush_failed", message: "session flush failed" },
+							}),
+						);
+				},
+			},
+		});
+		await broker.start();
+		try {
+			await fs.mkdir(path.dirname(endpointPath), { recursive: true });
+			await fs.writeFile(
+				endpointPath,
+				JSON.stringify({
+					sessionId,
+					pid: process.pid,
+					url: `ws://127.0.0.1:${server.port}`,
+					token: "flush-token",
+				}),
+			);
+			await broker.index.append({
+				type: "host_registered",
+				sessionId,
+				locator: { repo: dir, stateRoot },
+				endpointGeneration: 1,
+				pid: process.pid,
+				endpointMtimeMs: (await fs.stat(endpointPath)).mtimeMs,
+			});
+			expect(await broker.handleRequest("session.close", { sessionId }, "flush-close")).toEqual({
+				ok: false,
+				error: { code: "flush_failed", message: "session flush failed" },
+			});
+		} finally {
+			server.stop(true);
 			await broker.stop();
 			await fs.rm(dir, { recursive: true, force: true });
 		}

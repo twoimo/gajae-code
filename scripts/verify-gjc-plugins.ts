@@ -11,6 +11,8 @@
  * - the Codex .mcp.json file uses a Codex-accepted shape (mcp_servers wrapper or
  *   a direct server map), while manifests keep the camelCase `mcpServers` field
  *   per the official Codex plugin docs.
+ * - every generated installable file uses the exact Coordinator MCP command and omits
+ *   tmux machine ingress.
  */
 
 import * as fs from "node:fs";
@@ -37,6 +39,27 @@ function read(rel: string): string {
 }
 function readJson(rel: string): Record<string, unknown> {
 	return JSON.parse(read(rel) || "{}") as Record<string, unknown>;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function coordinatorMcpServer(config: Record<string, unknown>): Record<string, unknown> | undefined {
+	const servers = record(config.mcpServers) ?? record(config.mcp_servers) ?? config;
+	return record(servers["gjc-coordinator"]);
+}
+
+function hasCanonicalCoordinatorMcpCommand(server: Record<string, unknown> | undefined): boolean {
+	return (
+		server?.command === "gjc" &&
+		Array.isArray(server.args) &&
+		server.args.length === 2 &&
+		server.args[0] === "mcp-serve" &&
+		server.args[1] === "coordinator"
+	);
 }
 
 const delegateTools = COORDINATOR_MCP_TOOL_NAMES.filter(name => name.startsWith("gjc_delegate_"));
@@ -117,6 +140,12 @@ const codexMcpOk = "mcp_servers" in codexMcpObj || "gjc-coordinator" in codexMcp
 gate("Codex .mcp.json uses mcp_servers or direct map", codexMcpOk && !("mcpServers" in codexMcpObj), Object.keys(codexMcpObj).join(", "));
 const claudeMcpObj = readJson(claudeMcp);
 gate("Claude .mcp.json uses mcpServers wrapper", "mcpServers" in claudeMcpObj, Object.keys(claudeMcpObj).join(", "));
+const coordinatorMcpServers = [claudeMcpObj, codexMcpObj].map(coordinatorMcpServer);
+gate(
+	"coordinator MCP uses the exact shipped command and args",
+	coordinatorMcpServers.every(hasCanonicalCoordinatorMcpCommand),
+	JSON.stringify(coordinatorMcpServers.map(server => ({ command: server?.command, args: server?.args }))),
+);
 
 // Fail-closed env invariants across every generated .mcp.json.
 const mcpFiles = [...files.keys()].filter(rel => rel.endsWith(".mcp.json"));
@@ -141,16 +170,15 @@ for (const tool of delegateTools) {
 }
 gate("docs reference delegate tools", docsReferenceTools, "command/skill docs mention each delegate tool");
 
-const pluginDocumentation = [...files]
-	.filter(([rel]) => rel.endsWith(".md"))
-	.map(([, text]) => text)
-	.join("\n");
+const machineTmuxRoutePattern =
+	/(?:\btmux\s+(?:watch|load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:scripts\/)?gjc-session\/(?:prompt|tail|watch)(?:\.sh)?\b|\bgjc-session\s+(?:prompt|tail|watch)\b)/g;
+const installableMachineRouteReferences = [...files].flatMap(([rel, text]) =>
+	[...text.matchAll(machineTmuxRoutePattern)].map(match => `${rel}:${match[0]}`),
+);
 gate(
-	"plugin omits tmux machine prompt and viewing helpers",
-	!/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b)/.test(
-		pluginDocumentation,
-	),
-	"plugin routes external control and viewing through Coordinator MCP/SDK",
+	"all generated installable files omit tmux machine ingress",
+	installableMachineRouteReferences.length === 0,
+	installableMachineRouteReferences.join(", ") || "none",
 );
 
 let failures = 0;

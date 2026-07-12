@@ -248,6 +248,43 @@ const machineEntrypoints = new Map<string, string>([
 	["packages/coding-agent/src/sdk/cli/session-cli.ts", "daemon session CLI"],
 ]);
 
+const machineWrapperEntrypoints = new Map<string, string>([
+	["packages/coding-agent/src/commands/acp.ts", "ACP command"],
+	["packages/coding-agent/src/commands/daemon.ts", "daemon command"],
+	["packages/coding-agent/src/commands/mcp-serve.ts", "MCP command"],
+	["packages/coding-agent/src/sdk/cli/session-cli.ts", "daemon session CLI"],
+]);
+const rootAcpEntrypoint = "packages/coding-agent/src/main.ts";
+const directMachineWrapperRoutePattern =
+	/(?:\b(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s+)?["'][^"']*(?:session\/agent-session|sdk\/session|sdk\/host\/(?:control|query)|session\/client-bridge|modes\/(?:rpc|bridge)|\/(?:rpc|bridge)(?=[-"'/.]|$)|unattended)(?:[-"'/.]|$)|\bimport\s*\(\s*["'][^"']*(?:session\/agent-session|sdk\/session|sdk\/host\/(?:control|query)|session\/client-bridge|modes\/(?:rpc|bridge)|\/(?:rpc|bridge)(?=[-"'/.]|$)|unattended)(?:[-"'/.]|$)|["'](?:rpc|bridge)(?:[-"'/.]|$)|--mode(?:\s+|=)["']?rpc(?:\b|["'])|["']--mode["']\s*,\s*["']rpc["']|\b(?:new\s+)?AgentSession\b|\b(?:agentSession|agent_session|session)\s*\.\s*(?:prompt|promptCustomMessage|abort|abortAndPrompt|followUp|answer)\s*\(|(?:Bun\.(?:spawn|spawnSync)|runner)\s*\(\s*\[[^\]]*?\b(?:tmux|tmux_command)\b)/g;
+
+function directMachineWrapperRouteViolations(file: string, owner: string, contents: string): string[] {
+	return [...contents.matchAll(directMachineWrapperRoutePattern)].map(
+		match =>
+			`${file}:${lineNumber(contents, match.index ?? 0)}: ${owner} wrapper bypasses SDK/ACP/Coordinator through direct session, RPC, or tmux routing (${match[0]})`,
+	);
+}
+
+function rootAcpModeViolations(contents: string): string[] {
+	const branch = /if\s*\(\s*mode\s*===\s*["']acp["']\s*\)\s*\{([\s\S]*?)\n\s*\}\s*else\s*\{/.exec(contents)?.[1];
+	if (branch === undefined) return [`${rootAcpEntrypoint}: root --mode acp lacks an isolated ACP dispatch branch`];
+	const violations: string[] = [];
+	if (
+		!/await\s*\(\s*deps\.runAcpMode\s*\?\?\s*\(await import\(["']\.\/modes\/acp["']\)\)\.runAcpMode\)\s*\(/.test(
+			branch,
+		)
+	) {
+		violations.push(`${rootAcpEntrypoint}: root --mode acp must dispatch only through the SDK ACP bootstrap`);
+	}
+	const branchOffset = contents.indexOf(branch);
+	for (const match of branch.matchAll(directMachineWrapperRoutePattern)) {
+		violations.push(
+			`${rootAcpEntrypoint}:${lineNumber(contents, branchOffset + (match.index ?? 0))}: root --mode acp bypasses SDK ACP through direct session, RPC, or tmux routing (${match[0]})`,
+		);
+	}
+	return violations;
+}
+
 const relativeImportPattern =
 	/(?:import|export)\s+(?:type\s+)?(?:[^"'`;]*?\s+from\s+)?["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g;
 const sourceExtensions = [".ts", ".tsx", ".mts", ".cts"];
@@ -452,6 +489,9 @@ async function scan(): Promise<string[]> {
 		const bridgeClientMetadataViolation = bridgeClientPackageMetadataViolation(file, contents);
 		if (bridgeClientMetadataViolation) violations.push(bridgeClientMetadataViolation);
 		if (isProductionTypeScript(file)) contentsByFile.set(file, contents);
+		const wrapper = machineWrapperEntrypoints.get(file);
+		if (wrapper) violations.push(...directMachineWrapperRouteViolations(file, wrapper, contents));
+		if (file === rootAcpEntrypoint) violations.push(...rootAcpModeViolations(contents));
 
 		for (const match of contents.matchAll(
 			/(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s+)?["'][^"']*modes\/(?:rpc|bridge)(?:["'/]|$)/g,
@@ -477,6 +517,19 @@ async function scan(): Promise<string[]> {
 				violations.push(`${file}: --mode option retains rpc, rpc-ui, or bridge`);
 			}
 		}
+		if (file === "packages/coding-agent/src/commands/acp.ts") {
+			if (
+				!/parsed\.mode\s*=\s*["']acp["']/.test(contents) ||
+				!/runRootCommand\s*\(\s*parsed\s*,\s*args\s*\)/.test(contents)
+			) {
+				violations.push(`${file}: shipped ACP command does not dispatch through the root ACP bootstrap`);
+			}
+		}
+		if (file === "packages/coding-agent/src/commands/daemon.ts") {
+			if (!/runSdkSessionCli\s*\(/.test(contents)) {
+				violations.push(`${file}: shipped daemon session command does not dispatch the SDK session CLI`);
+			}
+		}
 		if (file === "packages/coding-agent/src/modes/acp/acp-agent.ts") {
 			if (!/from\s*["'][^"']*sdk\/acp(?:\/adapter)?["']/.test(contents)) {
 				violations.push(`${file}: shipped ACP entrypoint does not import the SDK ACP adapter`);
@@ -488,7 +541,12 @@ async function scan(): Promise<string[]> {
 			}
 		}
 		if (file === "packages/coding-agent/src/commands/mcp-serve.ts") {
-			if (!/from\s*["'][^"']*sdk\/mcp\/server["']/.test(contents) || !/runSdkMcpStdio\s*\(/.test(contents)) {
+			if (
+				!/from\s*["'][^"']*sdk\/mcp\/server["']/.test(contents) ||
+				!/from\s*["'][^"']*coordinator-mcp\/server["']/.test(contents) ||
+				!/runSdkMcpStdio\s*\(/.test(contents) ||
+				!/runCoordinatorMcpStdio\s*\(/.test(contents)
+			) {
 				violations.push(`${file}: shipped MCP command does not dispatch the SDK MCP server`);
 			}
 		}
@@ -972,6 +1030,36 @@ async function selfTest(): Promise<void> {
 			"packages/coding-agent/src/sdk/client.ts": "export class SdkClient {}\n",
 		},
 		0,
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/commands/acp.ts":
+				'import { AgentSession } from "../session/agent-session";\nvoid AgentSession;\n',
+		},
+		1,
+		"ACP command wrapper bypasses SDK/ACP/Coordinator through direct session, RPC, or tmux routing",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/commands/daemon.ts": 'Bun.spawn(["tmux", "new-session", "-d"]);\n',
+		},
+		1,
+		"daemon command wrapper bypasses SDK/ACP/Coordinator through direct session, RPC, or tmux routing",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/commands/mcp-serve.ts": 'import { RpcClient } from "../rpc";\nvoid RpcClient;\n',
+		},
+		1,
+		"MCP command wrapper bypasses SDK/ACP/Coordinator through direct session, RPC, or tmux routing",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/main.ts":
+				'const mode = "acp";\nif (mode === "acp") {\n const session = new AgentSession();\n session.prompt("bypass");\n} else {\n void 0;\n}\n',
+		},
+		1,
+		"root --mode acp bypasses SDK ACP through direct session, RPC, or tmux routing",
 	);
 }
 

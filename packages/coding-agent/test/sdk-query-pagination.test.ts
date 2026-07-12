@@ -365,3 +365,48 @@ it("streams an oversized root object as monotonic bounded canonical JSON ranges"
 	expect((response.page?.items[0] as { complete: boolean }).complete).toBe(true);
 	await store.close();
 });
+
+it("incrementally continues very large escaped emoji fields through bounded snapshot reads", async () => {
+	const stateRoot = await mkdtemp(join(tmpdir(), "gjc-sdk-query-test-"));
+	const reads: { start: number; end: number }[] = [];
+	const unit = `"\\${String.fromCharCode(0x08, 0x0c, 0x0a, 0x0d, 0x09, 0x00)}🙂`;
+	const body = unit.repeat(750_000);
+	const store = new RevisionStore("s1", Date.now, {
+		storageDir: stateRoot,
+		onReadRange: (start, end) => reads.push({ start, end }),
+	});
+	const revision = await store.createRevision("note", "escaped", { body });
+	const serializedBytes = await store.revisionByteLength("note", "escaped", revision);
+	if (serializedBytes === undefined) throw new Error("missing escaped revision");
+	expect(serializedBytes).toBeGreaterThan(16 * 1024 * 1024);
+	reads.length = 0;
+
+	const emojiOffset = Buffer.byteLength(unit) * 125_000 + 9;
+	const insideEmoji = await store.readStringRange("note", "escaped", revision, "body", emojiOffset, 256 * 1024);
+	if (!insideEmoji) throw new Error("missing emoji continuation page");
+	expect(insideEmoji.offset).toBe(Buffer.byteLength(unit) * 125_001);
+	expect(Buffer.from(insideEmoji.body).toString("utf8")).toBe(insideEmoji.body);
+
+	const pages: string[] = [];
+	const offsets: number[] = [];
+	let offset = 0;
+	let complete = false;
+	while (!complete) {
+		const page = await store.readStringRange("note", "escaped", revision, "body", offset, 256 * 1024);
+		if (!page) throw new Error("missing escaped continuation page");
+		expect(page.offset).toBe(offset);
+		expect(Buffer.byteLength(page.body)).toBeLessThanOrEqual(256 * 1024);
+		expect(Buffer.from(page.body).toString("utf8")).toBe(page.body);
+		pages.push(page.body);
+		offsets.push(page.offset);
+		offset += Buffer.byteLength(page.body);
+		complete = page.complete;
+	}
+	expect(pages.join("")).toBe(body);
+	expect(offsets.length).toBeGreaterThan(1);
+	expect(offsets.every((pageOffset, index) => index === 0 || pageOffset > offsets[index - 1]!)).toBe(true);
+	expect(reads.length).toBeGreaterThan(1);
+	expect(reads.every(({ start, end }) => end - start <= 512 * 1024)).toBe(true);
+	expect(reads.every(({ start, end }) => end - start < serializedBytes)).toBe(true);
+	await store.close();
+});

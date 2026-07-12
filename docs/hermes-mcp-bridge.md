@@ -41,7 +41,7 @@ gjc setup hermes \
   --install
 ```
 
-The generated setup is model-agnostic and worktree-isolated. By default it renders `GJC_COORDINATOR_MCP_SESSION_COMMAND` as `gjc --worktree`, so spawned sessions launch inside a GJC-managed sibling worktree while GJC retains the source repository as project identity. Users who need a stable named branch can set `--worktree-name`; users who need a specific local wrapper, dev checkout, or provider/model can opt in explicitly:
+The generated setup is model-agnostic and worktree-isolated. By default it renders `GJC_COORDINATOR_MCP_SESSION_COMMAND` as `gjc --worktree`, which is a typed selector for SDK lifecycle creation—not a shell command the bridge runs. Spawned sessions launch inside a GJC-managed sibling worktree while GJC retains the source repository as project identity. Users who need a stable named branch can set `--worktree-name`:
 
 ```bash
 gjc setup hermes \
@@ -49,13 +49,7 @@ gjc setup hermes \
   --worktree-name hermes-gajae-code
 ```
 
-```bash
-gjc setup hermes \
-  --root /path/to/repo \
-  --session-command "gjc --worktree hermes-custom --model <provider/model>"
-```
-
-Provider/model examples are examples only; GJC does not hard-code GPT, Anthropic, or any other provider as the Hermes bridge default.
+The runtime accepts only the literal selectors `gjc` and `gjc --worktree [name]`. It rejects local wrappers, shell syntax, tmux flags, and model/provider flags before creating a session. Existing setup configs that contain a legacy explicit `--session-command` must be changed to one of those selectors; provider and model resolution remains normal GJC configuration, not coordinator command injection.
 
 Run a non-mutating setup smoke check with:
 
@@ -82,17 +76,17 @@ Mutating tools require both startup opt-in and per-call consent:
 export GJC_COORDINATOR_MCP_MUTATIONS="sessions,questions,reports"
 ```
 
-Every mutating MCP call must include `allow_mutation: true` and the required caller-provided `idempotency_key`. Missing startup opt-in, per-call consent, or an idempotency key returns an error.
+Every mutating MCP call that requires a caller key must include `allow_mutation: true` and the required caller-provided `idempotency_key`. The bridge durably binds the key to the tool and canonical arguments, serializes concurrent duplicates, replays the original bounded public response, and rejects reuse with different arguments as `idempotency_conflict`.
 
-`gjc_coordinator_start_session` uses the configured GJC-compatible session command to create a session. `gjc setup hermes` writes `gjc --worktree` by default:
+`gjc_coordinator_start_session` uses SDK lifecycle control with the configured typed GJC selector. `gjc setup hermes` writes `gjc --worktree` by default:
 
 ```bash
 export GJC_COORDINATOR_MCP_SESSION_COMMAND="gjc --worktree"
 ```
 
-The coordinator discovers that session's SDK endpoint, then sends prompts and answers through SDK control operations. `gjc_coordinator_read_coordination_status` returns a canonical polling snapshot for sessions, session states, turns, questions, reports, and bounded event summaries. Tmux identifiers, when supplied while registering an existing session, are advisory process metadata only; they do not provide control authority, machine viewing, or determine turn completion.
+The only supported values are `gjc` and `gjc --worktree [name]`; this variable is never evaluated as a shell command. The coordinator binds registration, reuse, and control to the broker's exact canonical workspace and endpoint generation, then discovers the generation-bound SDK endpoint internally. Endpoint credentials are never persisted in coordinator records or returned by coordinator tools. `gjc_coordinator_read_coordination_status` returns a canonical polling snapshot for public session, state, turn, question, report, and bounded event data. Tmux identifiers, when supplied while registering an existing session, are advisory process metadata only; they do not provide control authority, machine viewing, startup, prompt injection, or determine turn completion.
 
-For resume safety, prefer the generated GJC-native worktree command over creating a git worktree in Hermes itself. GJC's launch path records the original repo as the project identity while running in the worktree, so session listing/resume can still group the session under the source project. If Hermes creates and later deletes an unmanaged worktree, a saved session may still exist but its cwd can be gone.
+For resume safety, prefer the generated GJC-native worktree selector over creating a git worktree in Hermes itself. GJC's launch path records the original repo as the project identity while running in the worktree, so session listing/resume can still group the session under the source project. If Hermes creates and later deletes an unmanaged worktree, a saved session may still exist but its cwd can be gone.
 
 Artifact reads are canonicalized, symlink escapes are rejected, and returned content is byte-capped by `GJC_COORDINATOR_MCP_ARTIFACT_BYTE_CAP`.
 
@@ -138,7 +132,7 @@ Mutating tools:
 
 The `gjc_delegate_*` tools are high-level, session-level delegation: each starts (or reuses) an SDK-discovered session and sends one workflow-tagged turn for `/skill:ralplan`, `/skill:ultragoal`, or `/skill:team`, returning a durable `turn_id`, status, and artifact references. They use the same `sessions` mutation class and fail-closed workdir gating as `gjc_coordinator_start_session`, and emit a `delegation.started` event. Pass `await_completion: true` to use the durable bounded await/report path; `timeout_ms` and `poll_interval_ms` apply to that completion payload. Without it, the tool returns immediately after SDK acknowledgement. Pass `cwd` and `task`; set `allow_mutation: true` and a caller-provided `idempotency_key` only with startup mutation opt-in plus per-call consent. Optionally pass `mpreset` (same semantics as `gjc --mpreset <profile>`) to `gjc_coordinator_start_session` or a delegate tool to authoritatively activate a GJC model profile when starting a fresh session — it is resolved through the merged built-in/custom profile registry, applied from the first turn, and surfaced in status; unknown names are rejected with the available-profile listing, and reusing a session with a conflicting `mpreset` fails with `mpreset_conflict`. This is distinct from the advisory `model` prompt hint. Prefer these over manual `start_session` + `send_prompt` when delegating a whole workflow.
 
-`gjc_coordinator_register_session` registers an existing SDK-discoverable GJC session for coordinator control. It validates the workdir allowlist and session id, then verifies endpoint discovery before writing session state. Optional tmux identifiers are retained only as advisory process metadata and are never machine-read.
+`gjc_coordinator_register_session` registers an existing SDK-discoverable GJC session for coordinator control. It validates the workdir allowlist and session id, then verifies the broker's exact canonical workspace and endpoint generation before writing a credential-free session record. Optional tmux identifiers are retained only as advisory process metadata and are never machine-read.
 ## Turn orchestration flow
 
 External coordinators should treat turns, not terminal scrollback, as the unit of work:

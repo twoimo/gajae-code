@@ -13,7 +13,8 @@ import {
 	writeBrokerDiscovery,
 } from "./discovery";
 import { deriveIdempotencyIdentity } from "./identity";
-import { executeLifecycle } from "./lifecycle";
+import { executeLifecycle, isCanonicalSessionId } from "./lifecycle";
+
 import { LifecycleLedger } from "./lifecycle-ledger";
 import { type IndexedSession, SessionIndex } from "./session-index";
 import { BrokerTransport } from "./transport";
@@ -36,11 +37,115 @@ export type BrokerErrorCode =
 	| "readiness_timeout"
 	| "close_refused"
 	| "not_found"
-	| "live_session";
+	| "live_session"
+	| "cleanup_pending"
+	| (string & {});
+
+export type BrokerCleanupEvidence = {
+	phase: "artifacts" | "transcript" | "metadata";
+	artifactsIdentity?: { dev: string; ino: string };
+	transcriptIdentity?: { dev: string; ino: string };
+};
 export type BrokerResponse =
 	| { ok: true; result?: unknown; indexSeq?: number }
-	| { ok: false; error: { code: BrokerErrorCode; message: string }; indexSeq?: number };
+	| {
+			ok: false;
+			error: { code: BrokerErrorCode; message: string; cleanup?: BrokerCleanupEvidence };
+			indexSeq?: number;
+	  };
 const error = (code: BrokerErrorCode, message: string): BrokerResponse => ({ ok: false, error: { code, message } });
+
+type InputNormalization = { input: Record<string, unknown> } | BrokerResponse;
+
+function isBrokerResponse(value: InputNormalization): value is BrokerResponse {
+	return "ok" in value;
+}
+
+function normalizeAliasedString(
+	input: Record<string, unknown>,
+	canonical: string,
+	aliases: readonly string[],
+	normalize = (value: string) => value,
+): { value: string | undefined; error?: string } {
+	const supplied = [canonical, ...aliases].filter(name => input[name] !== undefined).map(name => input[name]);
+	if (supplied.length === 0) return { value: undefined };
+	if (supplied.some(value => typeof value !== "string" || value.length === 0))
+		return { value: undefined, error: `${canonical} must be a non-empty string` };
+	const values = supplied.map(value => normalize(value as string));
+	if (values.some(value => value !== values[0])) return { value: undefined, error: `${canonical} aliases conflict` };
+	return { value: values[0] };
+}
+
+function normalizeBrokerInput(operation: string, input: Record<string, unknown>): InputNormalization {
+	const normalized: Record<string, unknown> = { ...input };
+	const session = normalizeAliasedString(input, "sessionId", ["id"]);
+	if (session.error) return error("invalid_input", session.error);
+	if (session.value !== undefined) {
+		if (!isCanonicalSessionId(session.value))
+			return error("invalid_input", "sessionId must be a canonical safe identifier");
+		normalized.sessionId = session.value;
+		delete normalized.id;
+	}
+	const source = normalizeAliasedString(input, "sourceSessionId", ["sourceId"]);
+	if (source.error) return error("invalid_input", source.error);
+	if (source.value !== undefined) {
+		if (!isCanonicalSessionId(source.value))
+			return error("invalid_input", "sourceSessionId must be a canonical safe identifier");
+		normalized.sourceSessionId = source.value;
+		delete normalized.sourceId;
+	}
+
+	if (operation === "session.list") {
+		const resolved = input.resolveSessionId;
+		if (resolved !== undefined && (typeof resolved !== "string" || !isCanonicalSessionId(resolved)))
+			return error("invalid_input", "resolveSessionId must be a canonical safe identifier");
+		return { input: normalized };
+	}
+	if (
+		operation !== "session.create" &&
+		operation !== "session.fork" &&
+		operation !== "session.resume" &&
+		operation !== "session.close" &&
+		operation !== "session.delete"
+	)
+		return { input: normalized };
+
+	const target =
+		typeof input.target === "object" && input.target !== null && !Array.isArray(input.target)
+			? (input.target as Record<string, unknown>)
+			: undefined;
+	const cwd = normalizeAliasedString(
+		{ cwd: input.cwd, path: input.path, targetPath: target?.path },
+		"cwd",
+		["path", "targetPath"],
+		value => path.resolve(value),
+	);
+	if (cwd.error) return error("invalid_input", cwd.error);
+	if (cwd.value !== undefined) {
+		normalized.cwd = cwd.value;
+		delete normalized.path;
+	}
+	const stateRoot = normalizeAliasedString(
+		{ stateRoot: input.stateRoot, targetStateRoot: target?.stateRoot },
+		"stateRoot",
+		["targetStateRoot"],
+		value => path.resolve(value),
+	);
+	if (stateRoot.error) return error("invalid_input", stateRoot.error);
+	if (stateRoot.value !== undefined && (!cwd.value || stateRoot.value !== path.join(cwd.value, ".gjc", "state")))
+		return error("invalid_input", "stateRoot must be the default .gjc/state for cwd.");
+	if (cwd.value !== undefined) normalized.stateRoot = path.join(cwd.value, ".gjc", "state");
+	else if (stateRoot.value !== undefined) return error("invalid_input", "stateRoot requires cwd.");
+
+	if (target) {
+		const normalizedTarget = { ...target };
+		delete normalizedTarget.path;
+		delete normalizedTarget.stateRoot;
+		if (Object.keys(normalizedTarget).length > 0) normalized.target = normalizedTarget;
+		else delete normalized.target;
+	}
+	return { input: normalized };
+}
 function canonicalJson(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value);
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -305,9 +410,11 @@ export class Broker {
 		this.discovery = null;
 	}
 	async #endpoint(input: Record<string, unknown>): Promise<BrokerResponse> {
-		await this.index.refresh();
 		const sessionId = input.sessionId;
-		if (typeof sessionId !== "string" || !sessionId) return error("invalid_input", "sessionId is required");
+		if (typeof sessionId !== "string" || !isCanonicalSessionId(sessionId))
+			return error("invalid_input", "sessionId must be a canonical safe identifier");
+		await this.index.refresh();
+
 		const record = this.index.listSessions().sessions.find(session => session.sessionId === sessionId);
 		if (!record) return error("resource_gone", "session is not indexed");
 		if (
@@ -318,6 +425,9 @@ export class Broker {
 		return this.#readEndpoint(record);
 	}
 	async #readEndpoint(record: IndexedSession): Promise<BrokerResponse> {
+		if (!isCanonicalSessionId(record.sessionId))
+			return error("invalid_input", "indexed sessionId is not a canonical safe identifier");
+
 		try {
 			const endpointPath = path.join(record.locator.stateRoot, "sdk", `${record.sessionId}.json`);
 			const [source, metadata] = await Promise.all([fs.readFile(endpointPath, "utf8"), fs.stat(endpointPath)]);
@@ -343,6 +453,9 @@ export class Broker {
 		idempotencyKey?: string,
 	): Promise<BrokerResponse> {
 		if (this.#stopping) return error("broker_restarting", "broker is stopping");
+		const normalization = normalizeBrokerInput(operation, input);
+		if (isBrokerResponse(normalization)) return normalization;
+		input = normalization.input;
 		if (operation === "session.list") {
 			await this.index.refresh();
 			const result = this.index.listSessions();

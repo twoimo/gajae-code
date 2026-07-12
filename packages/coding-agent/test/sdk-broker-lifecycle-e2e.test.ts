@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
 import { Broker } from "../src/sdk/broker/broker";
 import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
+import { setProcessIncarnationForTest } from "../src/sdk/broker/lifecycle";
 import { runSdkSessionCli } from "../src/sdk/cli";
 import { SdkClient } from "../src/sdk/client";
 import { readSdkBrokerDiscovery } from "../src/sdk/client/discovery";
@@ -94,7 +95,7 @@ async function liveLifecycleSession(root: string, agentDir: string, sessionId: s
 
 test("broker rejects an endpoint-only lifecycle child that never authenticates session_ready", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-life-"));
-	const stateRoot = path.join(agentDir, "state");
+	const stateRoot = path.join(agentDir, ".gjc", "state");
 	const fixture = path.join(agentDir, "fixture.js");
 	await fs.writeFile(
 		fixture,
@@ -322,6 +323,67 @@ test("broker preserves endpoint and marker when a durably identified child remai
 		await fs.rm(agentDir, { recursive: true, force: true });
 	}
 }, 10_000);
+
+if (process.platform === "darwin") {
+	test("broker records terminal uncertainty when a spawned child incarnation is unreadable", async () => {
+		const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-incarnation-"));
+		const fixture = path.join(agentDir, "unreadable-incarnation.js");
+		const pidPath = path.join(agentDir, "unreadable-incarnation.pid");
+		const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+		let incarnationReads = 0;
+		let childPid: number | undefined;
+		const broker = new Broker({ agentDir });
+		await fs.writeFile(
+			fixture,
+			`require("fs").writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+		);
+		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
+		setProcessIncarnationForTest(broker, pid => (++incarnationReads === 1 ? `test:${pid}` : undefined));
+		await broker.start();
+		try {
+			expect(
+				await broker.handleRequest(
+					"session.create",
+					{ cwd: agentDir, readinessTimeoutMs: 100 },
+					"unreadable-incarnation",
+				),
+			).toMatchObject({ ok: false, error: { code: "terminal_uncertain" } });
+			const deadline = Date.now() + 2_000;
+			while (Date.now() < deadline) {
+				try {
+					childPid = Number(await fs.readFile(pidPath, "utf8"));
+					break;
+				} catch {
+					await Bun.sleep(20);
+				}
+			}
+			expect(childPid).toBeGreaterThan(0);
+			expect(await broker.handleRequest("session.list", {})).toMatchObject({
+				ok: true,
+				result: { sessions: [expect.objectContaining({ terminalUncertain: true })] },
+			});
+		} finally {
+			if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+			else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+			setProcessIncarnationForTest(broker, undefined);
+			const pid = childPid;
+			if (
+				pid &&
+				(() => {
+					try {
+						process.kill(pid, 0);
+						return true;
+					} catch {
+						return false;
+					}
+				})()
+			)
+				process.kill(pid, "SIGKILL");
+			await broker.stop();
+			await fs.rm(agentDir, { recursive: true, force: true });
+		}
+	}, 10_000);
+}
 
 test("broker starts from the production broker entrypoint with no sessions", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-zero-"));

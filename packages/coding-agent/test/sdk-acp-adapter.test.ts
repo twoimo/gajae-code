@@ -5,6 +5,7 @@ class FakeSdkClient {
 	connectionId = "acp-connection";
 	frames: Record<string, unknown>[] = [];
 	listeners = new Set<(frame: Record<string, unknown>) => void>();
+	reconnectFailedListeners = new Set<(error: Error) => void>();
 	async control(operation: string, input: Record<string, unknown>) {
 		this.frames.push({ type: "control_request", operation, input });
 		return { ok: true };
@@ -31,9 +32,16 @@ class FakeSdkClient {
 	onReconnect(_listener: () => void) {
 		return () => {};
 	}
+	onReconnectFailed(listener: (error: Error) => void) {
+		this.reconnectFailedListeners.add(listener);
+		return () => this.reconnectFailedListeners.delete(listener);
+	}
 	async connect() {}
 	emit(frame: Record<string, unknown>) {
 		for (const listener of this.listeners) listener(frame);
+	}
+	emitReconnectFailure(error: Error) {
+		for (const listener of this.reconnectFailedListeners) listener(error);
 	}
 	async close() {}
 }
@@ -96,20 +104,19 @@ test("ACP generic routes honor provider, machine, and secret field dispositions"
 	await adapter.close();
 });
 
-test("ACP SDK adapter exposes SDK event frames and forwards lifecycle idempotency keys", async () => {
+test("ACP SDK adapter exposes SDK event frames while rejecting raw lifecycle globals", async () => {
 	const sdk = new FakeSdkClient();
 	const adapter = new AcpSdkAdapter({ url: "ws://unused", token: "secret", client: sdk as never });
 	const received: Record<string, unknown>[] = [];
 	const unsubscribe = adapter.onFrame(frame => received.push(frame));
 	await adapter.start();
 	await expect(
-		adapter.handle("_gjc/sdk/global", { operation: "session.create", input: { cwd: "/workspace" } }),
-	).rejects.toMatchObject({ code: "invalid_input" });
-	await adapter.handle("_gjc/sdk/global", {
-		operation: "session.create",
-		input: { cwd: "/workspace" },
-		idempotencyKey: "generic-lifecycle-key",
-	});
+		adapter.handle("_gjc/sdk/global", {
+			operation: "session.create",
+			input: { cwd: "/workspace" },
+			idempotencyKey: "generic-lifecycle-key",
+		}),
+	).rejects.toMatchObject({ code: "operation_prohibited" });
 	await adapter.global("session.create", { cwd: "/workspace" }, "lifecycle-key");
 	sdk.emit({ type: "event", payload: { type: "turn_end" } });
 	expect(sdk.frames).toContainEqual({
@@ -118,14 +125,20 @@ test("ACP SDK adapter exposes SDK event frames and forwards lifecycle idempotenc
 		input: { cwd: "/workspace" },
 		idempotencyKey: "lifecycle-key",
 	});
-	expect(sdk.frames).toContainEqual({
-		type: "broker_request",
-		operation: "session.create",
-		input: { cwd: "/workspace" },
-		idempotencyKey: "generic-lifecycle-key",
-	});
 	expect(received).toContainEqual({ type: "event", payload: { type: "turn_end" } });
 	unsubscribe();
+	await adapter.close();
+});
+
+test("ACP SDK adapter forwards terminal reconnect failures to its session owner", async () => {
+	const sdk = new FakeSdkClient();
+	const adapter = new AcpSdkAdapter({ url: "ws://unused", token: "secret", client: sdk as never });
+	const failures: AcpSdkAdapterError[] = [];
+	adapter.onReconnectFailed(error => failures.push(error as AcpSdkAdapterError));
+	await adapter.start();
+	sdk.emitReconnectFailure(new Error("token rejected"));
+	await waitFor(() => failures.length === 1, "reconnect failure callback");
+	expect(failures[0]).toMatchObject({ code: "reconnect_exhausted", message: "token rejected" });
 	await adapter.close();
 });
 test("ACP lifecycle aliases forward caller idempotency keys outside operation input", async () => {
