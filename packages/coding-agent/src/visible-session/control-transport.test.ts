@@ -606,16 +606,21 @@ describe.serial("visible session local control transport", () => {
 			try {
 				await chmodStarted.promise;
 				const socket = net.createConnection({ path: endpoint });
+				const connected = Promise.withResolvers<void>();
 				const closed = Promise.withResolvers<void>();
-				socket.once("error", () => undefined);
-				socket.once("close", closed.resolve);
-				socket.once("connect", () => {
-					const message = Buffer.concat([
-						encodeControlFrame(createRequest("a".repeat(64))),
-						CONTROL_REQUEST_END_MARKER,
-					]);
-					socket.write(message);
-				});
+				socket.once("connect", () => connected.resolve());
+				socket.once("error", connected.reject);
+				socket.once("close", () => closed.resolve());
+				await connected.promise;
+				const message = Buffer.concat([
+					encodeControlFrame(createRequest("a".repeat(64))),
+					CONTROL_REQUEST_END_MARKER,
+				]);
+				const sent = Promise.withResolvers<void>();
+				socket.write(message, error => (error ? sent.reject(error) : sent.resolve()));
+				await sent.promise;
+				await Bun.sleep(25);
+				socket.destroy();
 				await closed.promise;
 				expect(calls).toBe(0);
 				releaseChmod.resolve();
@@ -1232,7 +1237,8 @@ describe.serial("visible session local control transport", () => {
 						const peerClosed = Promise.withResolvers<void>();
 						client.once("close", () => clientClosed.resolve());
 						peer.once("close", () => peerClosed.resolve());
-						client.end();
+						client.destroy();
+						peer.destroy();
 						return Promise.all([clientClosed.promise, peerClosed.promise]);
 					}),
 				);
