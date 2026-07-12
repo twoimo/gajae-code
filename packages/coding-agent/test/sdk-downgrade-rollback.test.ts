@@ -141,8 +141,7 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 		sourceEntrypoints: string[];
 		artifactPath: string;
 		artifactSha256Scope: string;
-		platform: string;
-		arch: string;
+		supportedPlatforms: string[];
 		toolchain: {
 			runtime: string;
 			version: string;
@@ -150,7 +149,7 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 			nativeBuild: string[];
 			nativeEmbed: string[];
 			compile: string[];
-			sign: string[];
+			sign: Record<string, string[]>;
 		};
 
 		productCommand: string[];
@@ -165,8 +164,7 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 	]);
 	expect(manifest.artifactPath).toBe("packages/coding-agent/dist/gjc-rollback");
 	expect(manifest.artifactSha256Scope).toContain("executable bytes");
-	expect(manifest.platform).toBe(process.platform);
-	expect(manifest.arch).toBe(process.arch);
+	expect(manifest.supportedPlatforms).toContain(process.platform);
 	expect(manifest.toolchain.runtime).toBe("bun");
 	expect(manifest.toolchain.version).toBe(Bun.version);
 	expect(manifest.runtimeEnvironment).toEqual({ BUN_OPTIONS: "--preload {transportShim}" });
@@ -216,8 +214,11 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 			BUN_NO_CODESIGN_MACHO_BINARY: "1",
 		});
 		expect(compiled.exitCode, compiled.output).toBe(0);
-		const signed = await command(manifest.toolchain.sign, productDirectory);
-		expect(signed.exitCode, signed.output).toBe(0);
+		const signCommand = manifest.toolchain.sign[process.platform] ?? [];
+		if (signCommand.length > 0) {
+			const signed = await command(signCommand, productDirectory);
+			expect(signed.exitCode, signed.output).toBe(0);
+		}
 		const executable = path.join(worktree, manifest.artifactPath);
 		const executableStat = await fs.stat(executable);
 		expect(executableStat.isFile()).toBe(true);
@@ -227,7 +228,7 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 			.digest("hex");
 		expect(artifactSha256).toMatch(/^[0-9a-f]{64}$/);
 		console.log(
-			`Pinned pretrain executable commit=${commit} platform=${manifest.platform} arch=${manifest.arch} artifact=${manifest.artifactPath} sha256=${artifactSha256}`,
+			`Pinned pretrain executable commit=${commit} platform=${process.platform} arch=${process.arch} artifact=${manifest.artifactPath} sha256=${artifactSha256}`,
 		);
 		endpointServer = startOldFormatFakeEndpoint("endpoint-token");
 		const activeEndpointServer = endpointServer;
