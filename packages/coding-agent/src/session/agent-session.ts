@@ -1242,6 +1242,10 @@ export class AgentSession {
 	#resourceSampler: () => EmergencyCompactionSample = () => this.#defaultResourceSample();
 	#retainedMemorySampler: (() => RetainedMemorySample) | undefined;
 	#prePromptContextCheckPromise: Promise<void> | undefined = undefined;
+	/** Display-only context snapshot; pre-prompt compaction estimates deliberately remain uncached. */
+	#contextUsageCache: { key: string; value: ContextUsage } | undefined;
+	#contextUsageMessageIds = new WeakMap<AgentMessage, number>();
+	#nextContextUsageMessageId = 0;
 
 	// Branch summarization state
 	#branchSummaryAbortController: AbortController | undefined = undefined;
@@ -11465,26 +11469,87 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
+		const cacheKey = this.#contextUsageCacheKey(model, contextWindow);
+		if (this.#contextUsageCache?.key === cacheKey) return this.#contextUsageCache.value;
+
 		// After compaction, the last assistant usage reflects pre-compaction context size.
 		// We can only trust usage from an assistant that responded after the latest compaction.
 		// If no such assistant exists, context token count is unknown until the next LLM response.
 		const branchEntries = this.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const boundaryTs = latestCompaction ? new Date(latestCompaction.timestamp).getTime() : 0;
-
-		if (latestCompaction && !this.#findAnchorableUsageIndex(this.messages, boundaryTs)) {
-			return { tokens: null, contextWindow, percent: null, source: "unknown" };
+		const anchor = this.#findAnchorableUsageIndex(this.messages, boundaryTs);
+		let value: ContextUsage;
+		if (latestCompaction && !anchor) {
+			value = { tokens: null, contextWindow, percent: null, source: "unknown" };
+		} else {
+			const estimate = this.#estimateContextTokens(boundaryTs, anchor);
+			value = {
+				tokens: estimate.tokens,
+				contextWindow,
+				percent: (estimate.tokens / contextWindow) * 100,
+				source: estimate.anchored ? "provider_anchor" : "heuristic",
+			};
 		}
 
-		const estimate = this.#estimateContextTokens();
-		const percent = (estimate.tokens / contextWindow) * 100;
+		this.#contextUsageCache = { key: cacheKey, value };
+		return value;
+	}
 
-		return {
-			tokens: estimate.tokens,
-			contextWindow,
-			percent,
-			source: estimate.anchored ? "provider_anchor" : "heuristic",
+	#contextUsageCacheKey(model: Model, contextWindow: number): string {
+		const messages = this.messages;
+		const lastMessage = messages[messages.length - 1];
+		// Entry and leaf revisions change whenever the active branch changes, avoiding getBranch() on warm reads.
+		const revision = this.sessionManager.revisionSnapshot();
+		return `${model.id}|${contextWindow}|${messages.length}|${this.#contextUsageMessageFingerprint(lastMessage)}|${revision.entry}:${revision.leaf}|${this.#computeContextUsageNonMessageInputsKey()}`;
+	}
+
+	#contextUsageMessageFingerprint(message: AgentMessage | undefined): string {
+		if (!message) return "";
+		let messageId = this.#contextUsageMessageIds.get(message);
+		if (messageId === undefined) {
+			messageId = ++this.#nextContextUsageMessageId;
+			this.#contextUsageMessageIds.set(message, messageId);
+		}
+
+		const role = message.role;
+		const timestamp = typeof message.timestamp === "number" ? message.timestamp : "";
+		let contentLength = 0;
+		let blockCount = 0;
+		const record = message as {
+			content?: unknown;
+			command?: unknown;
+			output?: unknown;
+			summary?: unknown;
+			stopReason?: unknown;
+			usage?: Usage;
 		};
+
+		if (typeof record.command === "string") contentLength += record.command.length;
+		if (typeof record.output === "string") contentLength += record.output.length;
+		if (typeof record.summary === "string") contentLength += record.summary.length;
+		if (typeof record.content === "string") {
+			contentLength += record.content.length;
+		} else if (Array.isArray(record.content)) {
+			blockCount = record.content.length;
+			for (const block of record.content) {
+				if (!block || typeof block !== "object") continue;
+				const content = block as { text?: unknown; thinking?: unknown; name?: unknown };
+				if (typeof content.text === "string") contentLength += content.text.length;
+				if (typeof content.thinking === "string") contentLength += content.thinking.length;
+				if (typeof content.name === "string") contentLength += content.name.length;
+			}
+		}
+		const stopReason = typeof record.stopReason === "string" ? record.stopReason : "";
+		const usageTokens = record.usage ? calculateContextTokens(record.usage) : 0;
+		return `${messageId}:${role}:${timestamp}:${contentLength}:${blockCount}:${stopReason}:${usageTokens}`;
+	}
+
+	#computeContextUsageNonMessageInputsKey(): string {
+		const systemPrompt = this.systemPrompt;
+		let systemPromptLengths = "";
+		for (const part of systemPrompt) systemPromptLengths += `${part.length},`;
+		return `${systemPrompt.length}:${systemPromptLengths}|${this.agent.state.tools.length}|${this.skills.length}`;
 	}
 
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
@@ -11499,11 +11564,19 @@ export class AgentSession {
 	/**
 	 * Estimate context tokens from messages, using the last assistant usage when available.
 	 */
-	#estimateContextTokens(): {
+	#estimateContextTokens(
+		boundaryTs: number,
+		anchor: { index: number; usage: Usage } | undefined,
+	): {
 		tokens: number;
 		anchored: boolean;
 	} {
-		return this.#estimateContextTokensWith(message => this.#estimateMessageDisplayTokens(message));
+		return this.#estimateContextTokensWith(
+			message => this.#estimateMessageDisplayTokens(message),
+			false,
+			boundaryTs,
+			anchor,
+		);
 	}
 
 	/** Count inline image blocks in a message (for bucketing the fixed image token estimate). */
@@ -11611,14 +11684,19 @@ export class AgentSession {
 	#estimateContextTokensWith(
 		estimateMessage: (message: AgentMessage) => number,
 		inflateFixed = false,
+		boundaryTs?: number,
+		knownAnchor?: { index: number; usage: Usage } | undefined,
 	): {
 		tokens: number;
 		anchored: boolean;
 	} {
 		const messages = this.messages;
-		const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
-		const boundaryTs = latestCompaction ? new Date(latestCompaction.timestamp).getTime() : 0;
-		const anchor = this.#findAnchorableUsageIndex(messages, boundaryTs);
+		let anchor = knownAnchor;
+		if (boundaryTs === undefined) {
+			const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
+			boundaryTs = latestCompaction ? new Date(latestCompaction.timestamp).getTime() : 0;
+			anchor = this.#findAnchorableUsageIndex(messages, boundaryTs);
+		}
 
 		if (!anchor) {
 			// No usage data - estimate the full provider request.

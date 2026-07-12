@@ -1,132 +1,170 @@
 {
   "schemaVersion": 1,
   "kind": "api-package-test-report",
-  "commit": "96f48793",
+  "round": 2,
+  "commit": "555c94ce60331d013cc3ee6883c023fb0f81efaa",
+  "rounds": [
+    {
+      "round": 0,
+      "commit": "96f48793",
+      "outcome": "C4 failed: timestamp-less stale provider usage could cross a compaction boundary (RT-TS-001)."
+    },
+    {
+      "round": 2,
+      "commit": "555c94ce60331d013cc3ee6883c023fb0f81efaa",
+      "outcome": "All targeted regression and adversarial probes passed; no new defects found."
+    }
+  ],
+  "surfaceEvidence": [
+    {
+      "command": "bun test packages/coding-agent/test/agent-session-context-usage-ssot.test.ts packages/coding-agent/test/context-usage-cross-surface.test.ts packages/coding-agent/test/context-usage-ssot-redteam.test.ts packages/coding-agent/test/status-line-context-cache.test.ts packages/coding-agent/test/status-line-model-percent.test.ts packages/coding-agent/test/compaction.test.ts packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts packages/coding-agent/test/acp-agent.test.ts packages/coding-agent/test/rpc-get-state-payload.test.ts",
+      "files": 9,
+      "pass": 175,
+      "skip": 2,
+      "fail": 0,
+      "assertions": 616
+    },
+    {
+      "command": "bun test packages/coding-agent/test/context-usage-ssot-redteam.test.ts",
+      "files": 1,
+      "pass": 13,
+      "skip": 0,
+      "fail": 0,
+      "assertions": 40
+    },
+    {
+      "command": "cd python/gjc-rpc && python3.11 -m unittest tests.test_context_and_unattended",
+      "files": 1,
+      "pass": 7,
+      "fail": 0
+    }
+  ],
   "suites": [
     {
-      "command": "bun test packages/coding-agent/test/agent-session-context-usage-ssot.test.ts packages/coding-agent/test/context-usage-cross-surface.test.ts packages/coding-agent/test/status-line-context-cache.test.ts packages/coding-agent/test/status-line-model-percent.test.ts packages/coding-agent/test/acp-agent.test.ts packages/coding-agent/test/compaction.test.ts packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts",
-      "pass": 154,
+      "command": "bun test packages/coding-agent/test/agent-session-context-usage-ssot.test.ts packages/coding-agent/test/context-usage-cross-surface.test.ts packages/coding-agent/test/context-usage-ssot-redteam.test.ts packages/coding-agent/test/status-line-context-cache.test.ts packages/coding-agent/test/status-line-model-percent.test.ts packages/coding-agent/test/compaction.test.ts packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts packages/coding-agent/test/acp-agent.test.ts packages/coding-agent/test/rpc-get-state-payload.test.ts",
+      "pass": 175,
+      "skip": 2,
       "fail": 0
     },
     {
       "command": "bun test packages/coding-agent/test/context-usage-ssot-redteam.test.ts",
-      "pass": 7,
+      "pass": 13,
       "fail": 0
     },
     {
-      "command": "bun test packages/coding-agent/test/rpc-get-state-payload.test.ts",
-      "pass": 3,
+      "command": "cd python/gjc-rpc && python3.11 -m unittest tests.test_context_and_unattended",
+      "pass": 7,
       "fail": 0
     }
   ],
   "contractCoverage": [
     {
       "id": "C1",
-      "contract": "Provider usage is SSOT: anchored total is calculateContextTokens(lastUsage) plus a heuristic trailing delta.",
+      "contract": "Anchored total is provider usage plus only the heuristic trailing delta.",
       "verdict": "pass",
       "evidence": [
-        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts: anchors on provider-reported total and estimates only trailing messages",
-        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts: retains only heuristic deltas after a provider anchor"
+        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts verifies provider total plus trailing messages.",
+        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts verifies zero-usage, aborted, and error turns are estimated after the positive anchor."
       ]
     },
     {
       "id": "C2",
-      "contract": "The heuristic is used only when there is no anchor and includes fixed system/tool/skill context.",
+      "contract": "The no-anchor heuristic includes fixed system, tool, and skill context.",
       "verdict": "pass",
       "evidence": [
-        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts: full heuristic includes fixed context when assistants abort/error",
-        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts: fixed-context heuristic at session start"
+        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts verifies full heuristic totals for aborted/error-only sessions and session start.",
+        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts verifies an anchor-less snapshot exceeds message-only estimation."
       ]
     },
     {
       "id": "C3",
-      "contract": "Post-compaction unknown stays null/?; ACP omits usage_update; RPC preserves null.",
+      "contract": "Unknown stays unknown end-to-end: breakdown usedTokens is null, report renders unknown, ACP omits it, and RPC preserves null.",
       "verdict": "pass",
       "evidence": [
-        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts: unknown usage after compaction",
-        "packages/coding-agent/test/context-usage-cross-surface.test.ts: status-line '?' and unknown context panel/report",
-        "packages/coding-agent/test/acp-agent.test.ts: omits ACP usage updates when the context count is unknown",
-        "packages/coding-agent/src/modes/shared/agent-wire/command-dispatch.ts:182-211 assigns contextUsage: session.getContextUsage() without transformation; packages/coding-agent/test/rpc-get-state-payload.test.ts:64-75 verifies get_state payload forwarding"
+        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts and context-usage-cross-surface.test.ts cover post-compaction unknown usage.",
+        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts verifies nullable breakdown usage, estimated non-negative free space, and unknown report text.",
+        "packages/coding-agent/test/acp-agent.test.ts and rpc-get-state-payload.test.ts cover ACP omission and RPC forwarding.",
+        "python/gjc-rpc/tests/test_context_and_unattended.py verifies null unknown source parsing."
       ]
     },
     {
       "id": "C4",
-      "contract": "The pre-prompt compaction estimator rejects usage anchors older than the latest compaction entry.",
-      "verdict": "fail",
+      "contract": "Anchors must be strictly after the latest compaction boundary; absent, NaN, and boundary-equal timestamps are rejected, while later non-anchor turns do not mask a valid anchor.",
+      "verdict": "pass",
       "evidence": [
-        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts: valid stale timestamps are rejected",
-        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts: timestamp-less stale assistant crosses the boundary",
-        "packages/coding-agent/src/session/agent-session.ts:11613-11622 uses messages[i].timestamp < boundaryTs; undefined < boundaryTs is false"
+        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts: RT-TS-001 rejects timestamp-less stale usage with a real AgentSession.",
+        "packages/coding-agent/test/agent-session-context-usage-ssot.test.ts rejects stale, equal-boundary, and NaN timestamps and preserves earlier valid anchors.",
+        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts verifies no-boundary legacy anchoring, zero/aborted/error masking resistance, and two-compaction latest-boundary selection."
       ]
     },
     {
       "id": "C5",
-      "contract": "All surfaces agree for the same session state.",
+      "contract": "Cross-surface values retain source/provenance parity, including heuristic snapshots copied verbatim into the breakdown.",
       "verdict": "pass",
       "evidence": [
-        "packages/coding-agent/test/context-usage-cross-surface.test.ts: provider-anchor and unknown parity across status line, context panel, and context report",
-        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts: provider total above window, no-model status fallback, and ACP zero-token emission"
+        "packages/coding-agent/test/context-usage-cross-surface.test.ts covers status line, context panel/report, and provider/unknown parity.",
+        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts verifies breakdown.usedTokens equals the real heuristic getContextUsage().tokens snapshot exactly.",
+        "packages/coding-agent/test/status-line-context-cache.test.ts and status-line-model-percent.test.ts cover footer/status-line usage rendering."
       ]
     }
   ],
   "adversarialCases": [
     {
       "id": "RT-TS-001",
-      "scenario": "A timestamp-less assistant that predates compaction is persisted again after the compaction entry.",
-      "expected": "The compaction boundary must reject the old provider anchor.",
-      "verdict": "fail",
-      "notes": "Observed provider_anchor with 150,000 tokens. The comparison in agent-session.ts is undefined < boundaryTs, which is false. Current typed message interfaces require timestamp and current message construction assigns Date.now(), but SessionManager loads message payloads from JSON without timestamp validation; malformed or legacy persisted payloads can therefore reach this path."
+      "scenario": "A timestamp-less assistant persisted after a compaction entry represents stale pre-compaction usage.",
+      "expected": "Reject it and return unknown usage.",
+      "verdict": "pass",
+      "notes": "Real AgentSession returned { tokens: null, percent: null, source: unknown }."
     },
     {
-      "id": "RT-ZERO-002",
-      "scenario": "A successful zero-usage assistant follows a positive post-compaction assistant.",
-      "expected": "Document current conservative behavior rather than use the earlier anchor without accounting for the later assistant.",
+      "id": "RT-NOBOUND-002",
+      "scenario": "A timestamp-less positive-usage assistant exists in a session with no compaction boundary.",
+      "expected": "Accept it as a provider anchor for compatible legacy sessions.",
       "verdict": "pass",
-      "notes": "Observed { tokens: null, percent: null, source: unknown }. The post-compaction gate stops at the zero-usage successful assistant and masks the earlier positive anchor. This is the known pre-existing edge; it avoids reporting an incomplete anchored total."
+      "notes": "Real AgentSession returned the provider total and source provider_anchor."
     },
     {
-      "id": "RT-OVER-003",
-      "scenario": "Provider reports 300,000 tokens against a 200,000-token context window.",
-      "expected": "Render 150.0% without a crash and never produce negative reserve/free token counts.",
+      "id": "RT-MASK-003",
+      "scenario": "A positive post-compaction anchor is followed by zero-usage success, aborted, and error assistants.",
+      "expected": "Use the earlier positive anchor and estimate every later message as trailing context.",
       "verdict": "pass",
-      "notes": "Status line rendered 150.0%; provider-anchor breakdown used 300,000, freeTokens was 0, and context rendering completed."
+      "notes": "Observed provider total plus the heuristic deltas for all three later turns."
     },
     {
-      "id": "RT-NOMODEL-004",
-      "scenario": "Status-line SegmentContext has no model and getContextUsage() returns undefined.",
-      "expected": "Use the heuristic fallback without crashing; render the no-model segment.",
+      "id": "RT-2COMP-004",
+      "scenario": "A provider anchor falls after the first compaction but before a second, followed by a valid post-second-compaction anchor.",
+      "expected": "Reject the intermediate anchor and use the anchor strictly after the latest boundary.",
       "verdict": "pass",
-      "notes": "The real StatusLineComponent computed a positive heuristic token count with a zero context window and rendered no-model."
+      "notes": "Real AgentSession selected only the 150,000-token post-latest-boundary anchor."
     },
     {
-      "id": "RT-ARITH-005",
-      "scenario": "computeContextBreakdown runs with heuristic and provider-anchor snapshots, including provider usage over the window.",
-      "expected": "autoCompactBufferTokens and freeTokens are never negative.",
+      "id": "RT-UNKNOWN-005",
+      "scenario": "computeContextBreakdown receives source unknown with null tokens.",
+      "expected": "Keep usedTokens null, derive non-negative free space from estimated categories, and render unknown.",
       "verdict": "pass",
-      "notes": "Both source paths produced non-negative reserve and free values; the over-window provider case clamps freeTokens to 0."
+      "notes": "usedTokens was null; freeTokens matched the clamped estimated-space arithmetic; rendered report contained unknown."
     },
     {
-      "id": "RT-ACP-ZERO-006",
-      "scenario": "ACP end-of-turn sees contextUsage.tokens equal to numeric 0.",
-      "expected": "Emit usage_update with used: 0; only null suppresses the update.",
+      "id": "RT-PARITY-006",
+      "scenario": "A real session has no assistant usage anchor.",
+      "expected": "The context breakdown copies the heuristic ContextUsage snapshot exactly, including fixed context.",
       "verdict": "pass",
-      "notes": "A real AcpAgent prompt emitted usage_update { size: 200000, used: 0 }. The implementation condition is contextUsage?.tokens != null at acp-agent.ts:2219-2230."
+      "notes": "breakdown.usedTokens equaled getContextUsage().tokens and exceeded message-only estimation."
+    },
+    {
+      "id": "RT-DIVERGENCE-007",
+      "scenario": "Compare anchored display estimation with the anchor-less pre-prompt compaction estimator.",
+      "expected": "The display path uses the provider anchor; the anchor-less pre-prompt path inflates fixed and message estimates and can cross a threshold above display usage.",
+      "verdict": "pass",
+      "notes": "Anchored display returned the exact provider total. For an anchor-less real AgentSession, the derived compaction estimate exceeded display-with-pending usage and the midpoint threshold triggered auto_compaction_start before prompt dispatch."
+    },
+    {
+      "id": "RT-PY-SOURCE-008",
+      "scenario": "Python RPC parser receives an invalid contextUsage.source or an older payload without source.",
+      "expected": "Reject invalid values and default missing source to heuristic.",
+      "verdict": "pass",
+      "notes": "python3.11 unittest ran 7 tests, including invalid-source rejection and missing-source heuristic default coverage."
     }
   ],
-  "defectsFound": [
-    {
-      "id": "RT-TS-001",
-      "severity": "medium",
-      "contract": "C4",
-      "title": "Missing message timestamps can bypass the latest-compaction anchor boundary.",
-      "impact": "A stale provider-reported context total can be presented as a post-compaction provider anchor, violating SSOT provenance and potentially reporting a substantially incorrect token count/percent.",
-      "reachability": "Normal current TypeScript construction is protected: UserMessage and AssistantMessage timestamp fields are required, and current AgentSession creators assign Date.now(). The persisted-session loader parses message payloads without validating timestamps, so malformed, manually edited, or legacy JSON can still reach the faulty JavaScript comparison.",
-      "evidence": [
-        "packages/coding-agent/test/context-usage-ssot-redteam.test.ts",
-        "packages/coding-agent/src/session/agent-session.ts:11613-11622",
-        "packages/coding-agent/src/session/session-manager.ts:1123-1145"
-      ],
-      "recommendedFix": "Treat a non-finite or missing timestamp as pre-boundary when a compaction boundary exists, or validate/normalize timestamps during persisted-session loading before estimating context usage."
-    }
-  ]
+  "defectsFound": []
 }
