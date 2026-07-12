@@ -204,7 +204,11 @@ export class AcpSdkAdapter {
 		if (method === "cancel") return await this.cancel();
 		if (method === "setModel") return await this.setModel(params);
 		const global = SESSION_GLOBALS[method];
-		if (global) return await this.global(global, params);
+		if (global) {
+			if (!isLifecycleOperation(global)) return await this.global(global, params);
+			const { idempotencyKey, ...input } = params;
+			return await this.global(global, input, typeof idempotencyKey === "string" ? idempotencyKey : undefined);
+		}
 		throw new AcpSdkAdapterError("method_not_found", `Unsupported ACP SDK method: ${method}`);
 	}
 

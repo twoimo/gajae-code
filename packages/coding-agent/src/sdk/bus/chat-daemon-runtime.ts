@@ -41,6 +41,7 @@ export interface ChatDaemonRuntimeDeps {
 	createClient?: (endpoint: SdkSessionEndpoint) => Promise<ChatDaemonSdkClient>;
 	createIndex?: (agentDir: string) => SessionIndex;
 	createBrokerClient?: (endpoint: { url: string; token: string }) => Promise<ChatDaemonSdkClient>;
+	onReconciled?: () => void;
 	setInterval?: typeof setInterval;
 	clearInterval?: typeof clearInterval;
 }
@@ -217,6 +218,7 @@ export class ChatDaemonRuntime {
 				try {
 					await this.reconcile();
 					this.#reconcileReady = true;
+					this.deps.onReconciled?.();
 				} catch (error) {
 					this.#reconcileReady = false;
 					throw error;

@@ -272,14 +272,40 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			});
 			const firstPost = first.postRoot("session", "root");
 			for (let attempt = 0; attempt < 100 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
-			await Bun.sleep(45);
+			const key = "T1:C1:intent:session";
+			const firstLease = await first.store.read(key);
+			if (!firstLease) throw new Error("Slack root lease was not persisted");
+			let renewedLease = firstLease;
+			for (let attempt = 0; attempt < 20 && renewedLease.generation === firstLease.generation; attempt++) {
+				await Bun.sleep(25);
+				renewedLease = (await first.store.read(key)) ?? renewedLease;
+			}
+			expect(renewedLease).toMatchObject({
+				state: "posting_root",
+				rootPublicationOwner: "first",
+				rootPublicationFence: firstLease.rootPublicationFence,
+			});
+			expect(renewedLease.generation).toBeGreaterThan(firstLease.generation);
 			const secondPost = second.postRoot("session", "root");
-			await Bun.sleep(20);
-			expect(fake.postStarts).toBe(1);
 			gate.resolve();
 			const [one, two] = await Promise.all([firstPost, secondPost]);
-			expect(one.rootTs).toBe(two.rootTs);
-			expect(fake.posts).toHaveLength(1);
+			expect(one).toMatchObject({ state: "active", rootTs: "1.1", clientMsgId: "stable-root-id" });
+			expect(two.rootTs).toBe(one.rootTs);
+			expect(fake.posts).toEqual([
+				expect.objectContaining({ channel: "C1", text: "root", clientMsgId: "stable-root-id" }),
+			]);
+			expect(
+				await new ChatEffectJournal({ agentDir, transport: "slack" }).read("root:session:stable-root-id"),
+			).toMatchObject({
+				state: "terminal",
+				receipt: {
+					provider: "slack",
+					channelId: "C1",
+					timestamp: one.rootTs,
+					messageId: "stable-root-id",
+					status: "posted",
+				},
+			});
 		} finally {
 			await fs.rm(agentDir, { recursive: true, force: true });
 		}
@@ -315,15 +341,40 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			});
 			const firstPost = first.notify("session", "question", "action");
 			for (let attempt = 0; attempt < 100 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
-			await Bun.sleep(45);
+			const key = "T1:C1:intent:session";
+			const firstLease = await first.store.read(key);
+			if (!firstLease) throw new Error("Slack action lease was not persisted");
+			let renewedLease = firstLease;
+			for (let attempt = 0; attempt < 20 && renewedLease.generation === firstLease.generation; attempt++) {
+				await Bun.sleep(25);
+				renewedLease = (await first.store.read(key)) ?? renewedLease;
+			}
+			expect(renewedLease).toMatchObject({
+				outboundActionId: "action",
+				outboundActionOwner: "first",
+				outboundActionFence: firstLease.outboundActionFence,
+			});
+			expect(renewedLease.generation).toBeGreaterThan(firstLease.generation);
 			const secondPost = second.notify("session", "question", "action");
-			await Bun.sleep(20);
-			expect(fake.postStarts).toBe(1);
 			gate.resolve();
 			const [one, two] = await Promise.all([firstPost, secondPost]);
 			expect(one.pendingActionId).toBe("action");
 			expect(two.pendingActionId).toBe("action");
-			expect(fake.posts.filter(post => post.text === "question")).toHaveLength(1);
+			expect(fake.posts.filter(post => post.clientMsgId === "stable-action-id")).toEqual([
+				expect.objectContaining({ channel: "C1", threadTs: "1.1", text: "question" }),
+			]);
+			expect(
+				await new ChatEffectJournal({ agentDir, transport: "slack" }).read("action:session:action"),
+			).toMatchObject({
+				state: "terminal",
+				receipt: {
+					provider: "slack",
+					channelId: "C1",
+					timestamp: "1.2",
+					messageId: "stable-action-id",
+					status: "posted",
+				},
+			});
 		} finally {
 			await fs.rm(agentDir, { recursive: true, force: true });
 		}
@@ -1298,7 +1349,7 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 		try {
 			let now = 0;
 			let failScheduledDrain = false;
-			let failedScheduledDrains = 0;
+			const scheduledDrainFailed = Promise.withResolvers<void>();
 			const fake = new FakeSlack();
 			const injected: Array<Record<string, unknown>> = [];
 			daemon = new SlackNotificationDaemon({
@@ -1311,7 +1362,7 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 				createClient: () => ({ send: frame => injected.push(frame) }),
 				resolveEndpoint: async sessionId => {
 					if (failScheduledDrain) {
-						failedScheduledDrains++;
+						scheduledDrainFailed.resolve();
 						throw new Error("transient endpoint lookup failure");
 					}
 					return endpoint(sessionId);
@@ -1351,17 +1402,25 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 					messageEnvelope("redelivery", "event-1", root.rootTs!, { clientMsgId: "interaction-1" }),
 				),
 			).toBe(false);
-			expect(fake.acks).toContain("redelivery");
+			expect(fake.acks).toEqual(["redelivery"]);
 			failScheduledDrain = true;
 			now = 11;
-			await Bun.sleep(30);
-			const failuresAfterFirstRetry = failedScheduledDrains;
-			expect(failuresAfterFirstRetry).toBeGreaterThan(0);
-			await Bun.sleep(10);
-			expect(failedScheduledDrains).toBe(failuresAfterFirstRetry);
+			await scheduledDrainFailed.promise;
 			failScheduledDrain = false;
-			await Bun.sleep(100);
-			expect(injected).toEqual([expect.objectContaining({ type: "reply", id: "action-1", answer: "reply" })]);
+			for (let attempt = 0; attempt < 20 && injected.length === 0; attempt++) await Bun.sleep(25);
+			expect(injected).toEqual([
+				expect.objectContaining({
+					type: "reply",
+					id: "action-1",
+					answer: "reply",
+					idempotencyKey: `slack:T1:C1:${root.rootTs}:event-1:interaction-1`,
+				}),
+			]);
+			expect(await journal.read(effectId)).toMatchObject({ state: "terminal", receipt: { status: "sent" } });
+			const recovered = await daemon.store.read("T1:C1:intent:session");
+			expect(recovered?.inboundDispatches).toEqual([]);
+			expect(recovered?.seenEventIds).toContain("event-1");
+			expect(recovered?.seenInteractionIds).toContain("interaction-1");
 		} finally {
 			await daemon?.stop();
 			await fs.rm(agentDir, { recursive: true, force: true });

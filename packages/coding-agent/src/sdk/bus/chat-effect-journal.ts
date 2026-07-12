@@ -137,6 +137,39 @@ export class ChatEffectJournal {
 		return raced;
 	}
 
+	/**
+	 * Inserts an effect directly into a live lease. Recovery can never observe a
+	 * newly persisted effect as claimable before its owner has authority to act.
+	 * Existing effects are left untouched and report no acquired lease.
+	 */
+	async enqueueAndClaim<TPayload>(
+		input: EnqueueChatEffect<TPayload>,
+		owner: string,
+		leaseMs: number,
+	): Promise<ChatEffect<TPayload> | undefined> {
+		nonEmpty(input.id, "id");
+		nonEmpty(input.kind, "kind");
+		nonEmpty(owner, "owner");
+		if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error("Chat effect lease duration must be positive");
+		let claimed: ChatEffect<TPayload> | undefined;
+		const now = this.#now();
+		await this.#store.transact(input.id, current => {
+			if (current) return current;
+			claimed = {
+				...input,
+				generation: 1,
+				state: "leased",
+				owner,
+				epoch: 1,
+				leaseExpiresAt: now + leaseMs,
+				createdAt: now,
+				updatedAt: now,
+			};
+			return claimed;
+		});
+		return claimed;
+	}
+
 	async claim<TPayload = unknown>(
 		id: string,
 		owner: string,

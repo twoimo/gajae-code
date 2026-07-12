@@ -46,7 +46,7 @@ async function incarnation(pid: number): Promise<string> {
 
 async function liveLifecycleSession(root: string, agentDir: string, sessionId: string) {
 	const stateRoot = path.join(root, ".gjc", "state");
-	const request = { operation: "session.create", sessionId, stateRoot } as const;
+	const request = { operation: "session.create", sessionId, cwd: root, stateRoot } as const;
 	const child = Bun.spawn([process.execPath, "run", cliEntrypoint, "sdk", "session-host-internal"], {
 		cwd: root,
 		env: {
@@ -122,12 +122,12 @@ setInterval(()=>{},1000);
 		const [first, second] = await Promise.all([
 			broker.handleRequest(
 				"session.create",
-				{ stateRoot, readinessTimeoutMs: 100, body: "first", modelPreset: "codex-eco" },
+				{ stateRoot, cwd: agentDir, readinessTimeoutMs: 100, body: "first", modelPreset: "codex-eco" },
 				"create-1",
 			),
 			broker.handleRequest(
 				"session.create",
-				{ stateRoot, readinessTimeoutMs: 100, body: "second", modelPreset: "codex-eco" },
+				{ stateRoot, cwd: agentDir, readinessTimeoutMs: 100, body: "second", modelPreset: "codex-eco" },
 				"create-2",
 			),
 		]);
@@ -137,6 +137,7 @@ setInterval(()=>{},1000);
 		const fixturePid = Number(await fs.readFile(path.join(agentDir, "fixture.pid"), "utf8"));
 		expect(() => process.kill(fixturePid, 0)).toThrow();
 		expect(JSON.parse(await fs.readFile(path.join(agentDir, "fixture.request.json"), "utf8"))).toMatchObject({
+			cwd: agentDir,
 			modelPreset: "codex-eco",
 		});
 		expect((await fs.readdir(path.join(stateRoot, "sdk"))).filter(name => name.endsWith(".json"))).toEqual([]);
@@ -175,6 +176,58 @@ test("broker refuses a stale registered PID when no durable effect marker proves
 	} finally {
 		await broker.stop();
 		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("broker atomically reuses the indexed live owner for distinct resume keys", async () => {
+	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-resume-live-"));
+	const agentDir = path.join(root, "agent");
+	const stateRoot = path.join(root, ".gjc", "state");
+	const sessionId = "already-live";
+	const sessionPath = path.join(agentDir, "sessions", `${sessionId}.jsonl`);
+	const endpointPath = path.join(stateRoot, "sdk", `${sessionId}.json`);
+	const broker = new Broker({ agentDir });
+	try {
+		await broker.start();
+		await fs.mkdir(path.dirname(sessionPath), { recursive: true });
+		await fs.writeFile(sessionPath, JSON.stringify({ type: "session", id: sessionId }));
+		await fs.mkdir(path.dirname(endpointPath), { recursive: true });
+		await fs.writeFile(
+			endpointPath,
+			JSON.stringify({ sessionId, pid: process.pid, url: "ws://127.0.0.1:1", token: "live-owner-token" }),
+		);
+		await broker.index.append({
+			type: "host_registered",
+			sessionId,
+			locator: { repo: root, stateRoot },
+			endpointGeneration: 17,
+			pid: process.pid,
+			endpointMtimeMs: (await fs.stat(endpointPath)).mtimeMs,
+		});
+
+		const [first, second] = await Promise.all([
+			broker.handleRequest("session.resume", { sessionId, sessionPath, cwd: root }, "resume-first"),
+			broker.handleRequest("session.resume", { sessionId, sessionPath, cwd: root }, "resume-second"),
+		]);
+
+		for (const resumed of [first, second]) {
+			expect(resumed).toMatchObject({
+				ok: true,
+				result: {
+					sessionId,
+					endpointGeneration: 17,
+					reused: true,
+					endpoint: { token: "live-owner-token" },
+				},
+			});
+		}
+		expect(await broker.handleRequest("session.list", {})).toMatchObject({
+			ok: true,
+			result: { sessions: [expect.objectContaining({ sessionId, endpointGeneration: 17 })] },
+		});
+	} finally {
+		await broker.stop();
+		await fs.rm(root, { recursive: true, force: true });
 	}
 });
 test("broker never signals a PID reused after its lifecycle marker was written", async () => {

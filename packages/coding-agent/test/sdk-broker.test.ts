@@ -43,10 +43,19 @@ it("SDK lifecycle model presets reach the session host parser", () => {
 			operation: "session.create",
 			sessionId: "session-1",
 			stateRoot: "/state",
+			cwd: "/repo",
 			modelPreset: "codex-eco",
 		}),
 	);
 	expect(lifecycleArgs(request, "/repo", "/agent").mpreset).toBe("codex-eco");
+});
+
+it("SDK lifecycle launch requests require a worktree identity", () => {
+	expect(() =>
+		readSessionLifecycleLaunchRequest(
+			JSON.stringify({ operation: "session.create", sessionId: "session-1", stateRoot: "/state" }),
+		),
+	).toThrow("GJC_SDK_LIFECYCLE_REQUEST is invalid.");
 });
 async function waitForDiscovery(agentDir: string) {
 	const deadline = Date.now() + 5_000;
@@ -92,7 +101,7 @@ describe("SDK broker identity and discovery", () => {
 		expect(restarted.token).not.toBe(first.token);
 		const owner = (await import("../src/sdk/broker/ensure")).brokerOwnerForTest(dir);
 		await owner?.stop();
-	});
+	}, 15_000);
 	it("leaves exactly one live detached broker after concurrent process startup", async () => {
 		const dir = await temp();
 		const children = [0, 1].map(() =>

@@ -75,6 +75,11 @@ type DiscordInboundRouting = {
 	actionNonce?: string;
 };
 
+type DiscordInboundClaim = {
+	receipt: DiscordInboundDispatchReceipt;
+	liveCallbackEffect?: ChatEffect<DiscordInboundEffectPayload>;
+};
+
 /** SDK-only Discord threaded notification daemon. It owns no AgentSession and never retains endpoint credentials. */
 export class DiscordNotificationDaemon {
 	readonly #store: ConversationStore<DiscordConversation>;
@@ -252,24 +257,24 @@ export class DiscordNotificationDaemon {
 			await this.#fail(event.threadId);
 			return;
 		}
-		const receipt = await this.#claimInbound(record, event);
-		if (receipt === "invalid") {
+		const claim = await this.#claimInbound(record, event);
+		if (claim === "invalid") {
 			await this.#fail(event.threadId);
 			return;
 		}
-		if (!receipt || this.#inflightInbound.has(receipt.effectId)) return;
-		this.#inflightInbound.add(receipt.effectId);
+		if (!claim || this.#inflightInbound.has(claim.receipt.effectId)) return;
+		this.#inflightInbound.add(claim.receipt.effectId);
 		try {
-			// Interaction callbacks have a short provider deadline.  The mapping and
+			// Interaction callbacks have a short provider deadline. The mapping and
 			// journal claim are sufficient to acknowledge; endpoint discovery waits.
 			const endpoint = event.interaction ? null : await this.#resolveEndpoint(record.sessionId);
 			if (!event.interaction && !this.#matches(record, endpoint)) {
 				await this.#fail(event.threadId);
 				return;
 			}
-			await this.#dispatchInbound(record, endpoint, receipt, event.interaction);
+			await this.#dispatchInbound(record, endpoint, claim.receipt, event.interaction, claim.liveCallbackEffect);
 		} finally {
-			this.#inflightInbound.delete(receipt.effectId);
+			this.#inflightInbound.delete(claim.receipt.effectId);
 			await this.#scheduleLeaseRecovery();
 		}
 	}
@@ -282,7 +287,7 @@ export class DiscordNotificationDaemon {
 	async #claimInbound(
 		record: DiscordConversation,
 		event: DiscordInboundEvent,
-	): Promise<DiscordInboundDispatchReceipt | undefined | "invalid"> {
+	): Promise<DiscordInboundClaim | "invalid" | undefined> {
 		const route = event.interaction ? decodeCustomId(event.interaction.customId) : undefined;
 		const command = !event.interaction && event.content?.startsWith("/sdk ");
 		if (!command && (!route || !event.interaction || route.generation !== record.endpointGeneration))
@@ -306,24 +311,43 @@ export class DiscordNotificationDaemon {
 			kind: command ? "command" : "action",
 			...(!command ? { actionId: route!.actionId, actionNonce: route!.actionNonce } : {}),
 		};
-		await this.#rescheduleAfterEffectTransition(
-			this.#effects.enqueue({
-				id: effectId,
-				kind: `discord.inbound.${command ? "command" : "action"}`,
-				transport: "discord",
-				sessionId: record.sessionId,
-				endpointGeneration: record.endpointGeneration!,
-				payload: command
-					? { type: "command", content: event.content!, idempotencyKey, routing }
-					: ({
-							type: "reply",
-							id: route!.actionId,
-							answer: componentAnswer(event.interaction!.value ?? ""),
-							idempotencyKey,
-							routing,
-						} satisfies DiscordInboundEffectPayload),
-			}),
-		);
+		const payload: DiscordInboundEffectPayload = command
+			? { type: "command", content: event.content!, idempotencyKey, routing }
+			: {
+					type: "reply",
+					id: route!.actionId,
+					answer: componentAnswer(event.interaction!.value ?? ""),
+					idempotencyKey,
+					routing,
+				};
+		let liveCallbackEffect: ChatEffect<DiscordInboundEffectPayload> | undefined;
+		if (event.interaction) {
+			liveCallbackEffect = await this.#rescheduleAfterEffectTransition(
+				this.#effects.enqueueAndClaim(
+					{
+						id: effectId,
+						kind: "discord.inbound.action",
+						transport: "discord",
+						sessionId: record.sessionId,
+						endpointGeneration: record.endpointGeneration!,
+						payload,
+					},
+					this.#dispatchOwner,
+					this.#dispatchLeaseMs,
+				),
+			);
+		} else {
+			await this.#rescheduleAfterEffectTransition(
+				this.#effects.enqueue({
+					id: effectId,
+					kind: "discord.inbound.command",
+					transport: "discord",
+					sessionId: record.sessionId,
+					endpointGeneration: record.endpointGeneration!,
+					payload,
+				}),
+			);
+		}
 
 		await this.#store.transact(key, current => {
 			if (current?.state !== "active" || current.endpointGeneration !== record.endpointGeneration) return current;
@@ -373,17 +397,28 @@ export class DiscordNotificationDaemon {
 			await this.#terminalizeRejectedInbound(effectId);
 			return "invalid";
 		}
-		return receipt;
+		if (liveCallbackEffect && liveCallbackEffect.id !== receipt.effectId) {
+			await this.#terminalizeRejectedInbound(liveCallbackEffect.id);
+			liveCallbackEffect = undefined;
+		}
+		return { receipt, liveCallbackEffect };
 	}
 	async #dispatchInbound(
 		record: DiscordConversation,
 		initialEndpoint: DiscordEndpointBinding | null,
 		receipt: DiscordInboundDispatchReceipt,
 		interaction?: DiscordInboundEvent["interaction"],
+		liveCallbackEffect?: ChatEffect<DiscordInboundEffectPayload>,
 	): Promise<void> {
-		const effect = await this.#rescheduleAfterEffectTransition(
-			this.#effects.claim<DiscordInboundEffectPayload>(receipt.effectId, this.#dispatchOwner, this.#dispatchLeaseMs),
-		);
+		const effect =
+			liveCallbackEffect ??
+			(await this.#rescheduleAfterEffectTransition(
+				this.#effects.claim<DiscordInboundEffectPayload>(
+					receipt.effectId,
+					this.#dispatchOwner,
+					this.#dispatchLeaseMs,
+				),
+			));
 		if (!effect) return;
 		const lease = { owner: this.#dispatchOwner, epoch: effect.epoch };
 		const current = await this.#currentInboundRecord(record, receipt);
@@ -393,8 +428,8 @@ export class DiscordNotificationDaemon {
 		}
 		record = current;
 		if (receipt.kind === "action") {
-			// Callback tokens cannot survive a restart; make this exact authority
-			// terminal rather than reclaiming an accepted effect indefinitely.
+			// Callback tokens cannot survive a restart. Recovery skips a valid live
+			// callback lease; a reclaimed action without its token is terminal.
 			if (!interaction) {
 				await this.#terminalizeInbound(record, receipt, "callback_token_unavailable");
 				return;
@@ -500,13 +535,32 @@ export class DiscordNotificationDaemon {
 			clearInterval(timer);
 		}
 	}
+	#hasLiveCallbackLease(effect: ChatEffect | undefined): boolean {
+		return (
+			effect?.kind === "discord.inbound.action" &&
+			effect.state === "leased" &&
+			typeof effect.owner === "string" &&
+			(effect.leaseExpiresAt ?? 0) > this.#now()
+		);
+	}
+
 	async #drainPendingDispatches(): Promise<void> {
 		const dispatched = new Set<string>();
 		for (const record of Object.values((await this.#store.load()).conversations)) {
 			if (!record.threadId || !record.sessionId || record.state !== "active") continue;
-			const endpoint = await this.#resolveEndpoint(record.sessionId);
+			let endpoint: DiscordEndpointBinding | null = null;
+			let endpointResolved = false;
 			for (const receipt of record.inboundDispatches ?? []) {
-				if ((await this.#effects.read(receipt.effectId))?.state === "terminal") continue;
+				const effect = await this.#effects.read(receipt.effectId);
+				if (effect?.state === "terminal") continue;
+				if (this.#hasLiveCallbackLease(effect)) {
+					dispatched.add(receipt.effectId);
+					continue;
+				}
+				if (!endpointResolved) {
+					endpoint = await this.#resolveEndpoint(record.sessionId);
+					endpointResolved = true;
+				}
 				if (!this.#matches(record, endpoint) || endpoint.generation !== receipt.endpointGeneration) {
 					await this.#terminalizeInbound(record, receipt, "stale_binding");
 					continue;
@@ -524,7 +578,8 @@ export class DiscordNotificationDaemon {
 				effect.transport !== "discord" ||
 				effect.state === "terminal" ||
 				!effect.kind.startsWith("discord.inbound.") ||
-				dispatched.has(effect.id)
+				dispatched.has(effect.id) ||
+				this.#hasLiveCallbackLease(effect)
 			)
 				continue;
 			const payload = effect.payload as DiscordInboundEffectPayload;

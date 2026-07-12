@@ -152,6 +152,32 @@ describe("SDK daemon session CLI", () => {
 		expect(disclosed.stderr).not.toContain("session-token");
 	});
 
+	it("selects the broker specified by --agent-dir over the ambient agent directory", async () => {
+		const alternateAgentDir = path.join(root, "alternate-agent");
+		const alternateBroker = new Broker({ agentDir: alternateAgentDir, packageGeneration: "test" });
+		await alternateBroker.start();
+		try {
+			await alternateBroker.index.append({
+				type: "host_registered",
+				sessionId: "alternate",
+				locator: { repo: root, stateRoot },
+				endpointGeneration: 1,
+				pid: process.pid,
+				endpointMtimeMs: (await fs.stat(path.join(stateRoot, "sdk", "live.json"))).mtimeMs,
+			});
+
+			const result = await runCli(root, agentDir, ["list", "--agent-dir", alternateAgentDir]);
+			expect(result.exitCode).toBe(0);
+			expect(
+				(JSON.parse(result.stdout).result.sessions as Array<{ sessionId: string }>).map(
+					session => session.sessionId,
+				),
+			).toEqual(["alternate"]);
+		} finally {
+			await alternateBroker.stop();
+		}
+	});
+
 	it("requires a caller lifecycle idempotency key before broker connection", async () => {
 		const result = await runCli(root, agentDir, [
 			"global",

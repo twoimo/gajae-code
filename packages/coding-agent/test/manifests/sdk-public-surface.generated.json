@@ -242,7 +242,6 @@
     "convertLeadingTabsToSpaces",
     "convertToLlm",
     "countLeadingWhitespace",
-    "createAcpSessionFactory",
     "createAgentSession",
     "createAppendOnlyContextManager",
     "createBranchSummaryMessage",

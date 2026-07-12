@@ -15,10 +15,13 @@ import { type SlackConversation, slackConversationKey } from "../src/sdk/bus/sla
 import type { SlackProviderClient, SlackSocketEnvelope } from "../src/sdk/bus/slack-provider";
 import { startProductionSdkHost } from "./helpers/sdk-production-host";
 
+type SlackPost = { channel: string; text: string; threadTs?: string; clientMsgId: string };
+
 class FakeSlackProvider implements SlackProviderClient {
 	started = false;
 	stopped = false;
-	posts: Array<{ channel: string; text: string; threadTs?: string; clientMsgId: string }> = [];
+	posts: SlackPost[] = [];
+	#postWaiters: Array<{ count: number; predicate: (post: SlackPost) => boolean; resolve: () => void }> = [];
 	handler: ((envelope: SlackSocketEnvelope) => void | Promise<void>) | undefined;
 
 	async start(handler: (envelope: SlackSocketEnvelope) => void | Promise<void>): Promise<void> {
@@ -28,6 +31,19 @@ class FakeSlackProvider implements SlackProviderClient {
 	async stop(): Promise<void> {
 		this.stopped = true;
 	}
+	waitForPostCount(count: number, predicate: (post: SlackPost) => boolean): Promise<void> {
+		if (this.posts.filter(predicate).length >= count) return Promise.resolve();
+		const waiter = Promise.withResolvers<void>();
+		this.#postWaiters.push({ count, predicate, resolve: waiter.resolve });
+		return waiter.promise;
+	}
+	#resolvePostWaiters(): void {
+		this.#postWaiters = this.#postWaiters.filter(waiter => {
+			if (this.posts.filter(waiter.predicate).length < waiter.count) return true;
+			waiter.resolve();
+			return false;
+		});
+	}
 	async ack(): Promise<void> {}
 	async postMessage(input: {
 		channel: string;
@@ -36,6 +52,7 @@ class FakeSlackProvider implements SlackProviderClient {
 		clientMsgId: string;
 	}): Promise<{ channel: string; ts: string; client_msg_id: string }> {
 		this.posts.push(input);
+		this.#resolvePostWaiters();
 		return { channel: input.channel, ts: `1.${this.posts.length}`, client_msg_id: input.clientMsgId };
 	}
 	async findMessageByClientMsgId(): Promise<null> {
@@ -50,10 +67,24 @@ class FakeDiscordProvider implements DiscordProvider {
 	stopped = false;
 	threads: DiscordThread[] = [];
 	messages: Array<{ threadId: string; content: string; components?: DiscordMessageComponent[] }> = [];
+	#threadWaiters: Array<{ count: number; resolve: () => void }> = [];
 	archives: string[] = [];
 	handler: ((event: DiscordInboundEvent) => Promise<void>) | undefined;
 	startupInbound: DiscordInboundEvent | undefined;
 
+	waitForThreadCount(count: number): Promise<void> {
+		if (this.threads.length >= count) return Promise.resolve();
+		const waiter = Promise.withResolvers<void>();
+		this.#threadWaiters.push({ count, resolve: waiter.resolve });
+		return waiter.promise;
+	}
+	#resolveThreadWaiters(): void {
+		this.#threadWaiters = this.#threadWaiters.filter(waiter => {
+			if (this.threads.length < waiter.count) return true;
+			waiter.resolve();
+			return false;
+		});
+	}
 	async createThread(input: {
 		guildId: string;
 		parentId: string;
@@ -67,6 +98,7 @@ class FakeDiscordProvider implements DiscordProvider {
 			archived: false,
 		};
 		this.threads.push(thread);
+		this.#resolveThreadWaiters();
 		return thread;
 	}
 	async findThreadByNonce(): Promise<DiscordThread | null> {
@@ -110,11 +142,25 @@ class FakeSdkClient implements ChatDaemonSdkClient {
 	sent: Record<string, unknown>[] = [];
 	requests: Record<string, unknown>[] = [];
 	handler: ((frame: Record<string, unknown>) => void) | undefined;
+	#sentWaiters: Array<{ predicate: (frame: Record<string, unknown>) => boolean; resolve: () => void }> = [];
 	onFrame(handler: (frame: Record<string, unknown>) => void): () => void {
 		this.handler = handler;
 		return () => {
 			this.handler = undefined;
 		};
+	}
+	waitForSent(predicate: (frame: Record<string, unknown>) => boolean): Promise<void> {
+		if (this.sent.some(predicate)) return Promise.resolve();
+		const waiter = Promise.withResolvers<void>();
+		this.#sentWaiters.push({ predicate, resolve: waiter.resolve });
+		return waiter.promise;
+	}
+	#resolveSentWaiters(): void {
+		this.#sentWaiters = this.#sentWaiters.filter(waiter => {
+			if (!this.sent.some(waiter.predicate)) return true;
+			waiter.resolve();
+			return false;
+		});
 	}
 	async request(frame: Record<string, unknown>): Promise<Record<string, unknown>> {
 		this.requests.push(frame);
@@ -124,6 +170,7 @@ class FakeSdkClient implements ChatDaemonSdkClient {
 	}
 	send(frame: Record<string, unknown>): void {
 		this.sent.push(frame);
+		this.#resolveSentWaiters();
 	}
 	async close(): Promise<void> {
 		this.closed = true;
@@ -538,6 +585,9 @@ describe("chat daemon worker", () => {
 		const persisted = await readConversation();
 		expect(persisted?.pendingActionId).toBe("action-before-restart");
 		expect(persisted?.rootTs).toBeDefined();
+		const replySent = restartedClient.waitForSent(
+			frame => frame.type === "reply" && frame.id === "action-before-restart" && frame.answer === "safe",
+		);
 		await restartedProvider.handler?.({
 			envelope_id: "reply-envelope",
 			payload: {
@@ -555,7 +605,7 @@ describe("chat daemon worker", () => {
 				},
 			},
 		});
-		await Bun.sleep(10);
+		await replySent;
 		expect(restartedClient.sent).toContainEqual(
 			expect.objectContaining({ type: "reply", id: "action-before-restart", answer: "safe" }),
 		);
@@ -788,8 +838,10 @@ describe("chat daemon worker", () => {
 					clearInterval: (() => {}) as typeof clearInterval,
 				},
 			);
+			const replayedThread = provider.waitForThreadCount(1);
 			await runtime.start();
 			expect(provider.started).toBe(true);
+			await replayedThread;
 			expect(provider.threads).toHaveLength(1);
 			expect(frames).toContainEqual(expect.objectContaining({ type: "event_replay" }));
 
@@ -852,12 +904,13 @@ describe("chat daemon worker", () => {
 				},
 			},
 		});
-		const startRuntime = (provider: FakeSlackProvider) =>
+		const startRuntime = (provider: FakeSlackProvider, onReconciled?: () => void) =>
 			new ChatDaemonRuntime(
 				{ kind: "slack", agentDir, config },
 				{
 					createSlackProvider: () => provider,
 					createIndex: () => index,
+					onReconciled,
 					setInterval: ((callback: () => void) => {
 						tick = callback;
 						return 0;
@@ -893,16 +946,18 @@ describe("chat daemon worker", () => {
 			});
 
 			const firstProvider = new FakeSlackProvider();
-			const firstRuntime = startRuntime(firstProvider);
+			const generationTwoReconciled = Promise.withResolvers<void>();
+			let reconciliationCount = 0;
+			const firstRuntime = startRuntime(firstProvider, () => {
+				reconciliationCount++;
+				if (reconciliationCount === 2) generationTwoReconciled.resolve();
+			});
 			await firstRuntime.start();
+			const firstCommandResult = firstProvider.waitForPostCount(1, post =>
+				post.text.includes('"operation":"todo.list"'),
+			);
 			await firstProvider.handler?.(command("first"));
-			for (
-				let attempt = 0;
-				attempt < 100 &&
-				firstProvider.posts.filter(post => post.text.includes('"operation":"todo.list"')).length < 1;
-				attempt++
-			)
-				await Bun.sleep(5);
+			await firstCommandResult;
 			expect(firstProvider.posts.filter(post => post.text.includes('"operation":"todo.list"'))).toHaveLength(1);
 
 			await index.append({
@@ -918,31 +973,26 @@ describe("chat daemon worker", () => {
 					? { ...current, generation: current.generation + 1, endpointGeneration: 2, updatedAt: Date.now() }
 					: current,
 			);
+			expect(tick).toBeDefined();
 			tick?.();
-			await Bun.sleep(20);
+			await generationTwoReconciled.promise;
+			const generationTwoCommandResult = firstProvider.waitForPostCount(2, post =>
+				post.text.includes('"operation":"todo.list"'),
+			);
 			await firstProvider.handler?.(command("generation-two"));
-			for (
-				let attempt = 0;
-				attempt < 100 &&
-				firstProvider.posts.filter(post => post.text.includes('"operation":"todo.list"')).length < 2;
-				attempt++
-			)
-				await Bun.sleep(5);
+			await generationTwoCommandResult;
 			expect(firstProvider.posts.filter(post => post.text.includes('"operation":"todo.list"'))).toHaveLength(2);
 			await firstRuntime.stop();
 			expect(firstProvider.stopped).toBe(true);
 
 			const restartedProvider = new FakeSlackProvider();
 			const restartedRuntime = startRuntime(restartedProvider);
+			const restartedCommandResult = restartedProvider.waitForPostCount(1, post =>
+				post.text.includes('"operation":"todo.list"'),
+			);
 			await restartedRuntime.start();
 			await restartedProvider.handler?.(command("after-restart"));
-			for (
-				let attempt = 0;
-				attempt < 100 &&
-				restartedProvider.posts.filter(post => post.text.includes('"operation":"todo.list"')).length < 1;
-				attempt++
-			)
-				await Bun.sleep(5);
+			await restartedCommandResult;
 			expect(restartedProvider.posts.filter(post => post.text.includes('"operation":"todo.list"'))).toHaveLength(1);
 			await restartedRuntime.stop();
 			expect(restartedProvider.stopped).toBe(true);

@@ -15,11 +15,14 @@ describe("SDK broker restart", () => {
 		await b.stop();
 	});
 
-	it("allows one owner during simultaneous stale-lock takeover", async () => {
+	it("allows one owner during simultaneous primary lock takeover", async () => {
 		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-restart-race-"));
 		const lock = path.join(dir, "sdk", "broker.lock");
-		await fs.mkdir(path.dirname(lock), { recursive: true });
-		await fs.writeFile(lock, JSON.stringify({ ownerId: "stale-owner", pid: 999_999_999, ts: 0 }));
+		await fs.mkdir(lock, { recursive: true });
+		await fs.writeFile(
+			path.join(lock, "owner.json"),
+			JSON.stringify({ version: 1, ownerId: "stale-owner", pid: 999_999_999, acquiredAt: 0 }),
+		);
 
 		const a = new Broker({ agentDir: dir });
 		const b = new Broker({ agentDir: dir });
@@ -31,6 +34,21 @@ describe("SDK broker restart", () => {
 		} finally {
 			await a.stop();
 			await b.stop();
+		}
+	});
+
+	it("takes over a legacy regular-file stale lock", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-restart-legacy-"));
+		const lock = path.join(dir, "sdk", "broker.lock");
+		await fs.mkdir(path.dirname(lock), { recursive: true });
+		await fs.writeFile(lock, JSON.stringify({ ownerId: "stale-owner", pid: 999_999_999, ts: 0 }));
+
+		const broker = new Broker({ agentDir: dir });
+		try {
+			await broker.start();
+			expect(broker.ownsDiscovery).toBe(true);
+		} finally {
+			await broker.stop();
 		}
 	});
 });

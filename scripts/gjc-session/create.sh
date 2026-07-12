@@ -22,7 +22,7 @@ MONITOR_SESSION="${SESSION}-owner-monitor"
 # Production always uses a ten-second router watch deadline. Tests may shorten it,
 # but cannot disable or extend the deadline.
 ROUTER_WATCH_TIMEOUT_SECONDS=10
-if [[ -v GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS ]]; then
+if [[ -n "${GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS+x}" ]]; then
   ROUTER_WATCH_TIMEOUT_SECONDS="$GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS"
   if [[ ! "$ROUTER_WATCH_TIMEOUT_SECONDS" =~ ^([1-9]|10)$ ]]; then
     echo "GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS must be an integer from 1 through 10" >&2
@@ -1114,5 +1114,4 @@ exec 9>&-
 unset GJC_SESSION_TRANSITION_LOCK_HELD
 printf 'created GJC session: %s\n' "$SESSION"
 printf '  workdir: %s\n  branch: %s\n  state: %s\n' "$WORKDIR" "$BRANCH" "$STATE_DIR"
-printf '  markers: creation-state.json started.json prompt-accepted.json terminal.json final.json verdict.json incident.json recovery.json\n'
-printf '  prompt: GJC_SESSION_STATE_DIR=%q GJC_SESSION_TMUX_SOCKET=%q %q %q @/path/to/prompt.md\n' "$STATE_DIR" "$SOCKET_KEY" "$SCRIPT_DIR/prompt.sh" "$SESSION"
+printf '  markers: creation-state.json started.json terminal.json final.json verdict.json incident.json recovery.json\n'

@@ -3,6 +3,11 @@
   "kind": "pretrain-binary",
   "strategy": "isolated-worktree-offline-install-compile",
   "baseRef": "aedd0df99e7c9dff420b50f7ff47bd6645627bdd",
+  "sourceRecovery": {
+    "remote": "origin",
+    "ref": "aedd0df99e7c9dff420b50f7ff47bd6645627bdd",
+    "depth": 1
+  },
   "sourceEntrypoints": [
     "packages/coding-agent/src/cli.ts",
     "packages/coding-agent/src/notifications/telegram-daemon-cli.ts"

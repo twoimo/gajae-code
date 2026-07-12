@@ -491,7 +491,7 @@ interface SessionRuntime {
 	revisions: RevisionStore;
 	/** Releases all snapshot pins before the revision store is closed. */
 	cursors: CursorRegistry;
-	/** Current session id; updated when a runtime is re-keyed. */
+	/** Current endpoint session identity; never re-key an existing host across a switch. */
 	id: string;
 	idleSeq: number;
 	/** Interactive asks awaiting a remote answer, by action id. */
@@ -517,6 +517,10 @@ interface SessionRuntime {
 	sessionTag: string;
 	/** Whether the agent loop is currently running (drives the typing indicator). */
 	busy: boolean;
+	/** Prompt command/turn identities awaiting their corresponding agent_start. */
+	pendingPromptCorrelations: Array<{ commandId: string; turnId: string }>;
+	/** Identity bound to the agent lifecycle currently in flight. */
+	activePromptCorrelation?: { commandId: string; turnId: string };
 	/** Inbound Telegram update ids injected but not yet consumed by a turn. */
 	pendingInbound: Set<number>;
 	/** Latest assistant text of the in-flight turn (from message_update). */
@@ -544,6 +548,14 @@ function pushSessionFrame(
 	frame: { type: string; [key: string]: unknown },
 ): void {
 	runtime.server.pushFrame(JSON.stringify(frame));
+	runtime.host.emitEvent({ kind: frame.type, payload: frame });
+}
+
+/** Agent lifecycle is SDK session truth, independent of optional chat delivery. */
+function emitAgentLifecycle(
+	runtime: Pick<SessionRuntime, "host">,
+	frame: { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string },
+): void {
 	runtime.host.emitEvent({ kind: frame.type, payload: frame });
 }
 
@@ -616,7 +628,9 @@ function resolveSettings(settingsOverride?: Settings): ResolvedSettings {
 }
 
 function resolveToken(): string {
-	return process.env.GJC_NOTIFICATIONS_TOKEN ?? crypto.randomBytes(24).toString("base64url");
+	// `GJC_NOTIFICATIONS_TOKEN` remains an enablement compatibility flag, never
+	// a reusable endpoint credential. Every host identity gets fresh authority.
+	return crypto.randomBytes(24).toString("base64url");
 }
 
 function parseAnswer(answerJson: string): unknown {
@@ -1177,6 +1191,7 @@ function sdkControlSurface(
 	pendingInteractive: Map<string, PendingInteractiveAsk>,
 	api: ExtensionAPI,
 	isBusy: () => boolean,
+	onPromptAccepted: (correlation: { commandId: string; turnId: string }) => void = () => {},
 	settings?: Settings,
 	configOverrides: Map<string, unknown> = new Map(),
 	configRevision: { current: number } = { current: 0 },
@@ -1207,18 +1222,22 @@ function sdkControlSurface(
 	};
 	const surface: ControlSurface = {
 		prompt: (text, images) => {
-			const promptImages = Array.isArray(images) ? (images as { data: string; mime?: string }[]) : [];
+			const promptImages = Array.isArray(images) ? (images as { data: string; mimeType?: string }[]) : [];
 			const content: string | (TextContent | ImageContent)[] =
 				promptImages.length > 0
 					? [
 							...(text ? [{ type: "text", text } as TextContent] : []),
 							...promptImages.map(
-								img => ({ type: "image", data: img.data, mimeType: img.mime ?? "image/jpeg" }) as ImageContent,
+								img =>
+									({ type: "image", data: img.data, mimeType: img.mimeType ?? "image/jpeg" }) as ImageContent,
 							),
 						]
 					: text;
+			const commandId = crypto.randomUUID();
+			const turnId = crypto.randomUUID();
 			api.sendUserMessage(content, isBusy() ? { deliverAs: "steer" } : undefined);
-			return { commandId: crypto.randomUUID(), accepted: true };
+			onPromptAccepted({ commandId, turnId });
+			return { commandId, turnId, accepted: true };
 		},
 		steer: text => send(text, "steer"),
 		followUp: text => send(text, "followUp"),
@@ -1500,6 +1519,7 @@ export function createNotificationsExtension(
 
 		const gateOptions = new Map<string, string[]>();
 		const pendingInteractive = new Map<string, PendingInteractiveAsk>();
+		const pendingPromptCorrelations: Array<{ commandId: string; turnId: string }> = [];
 		const tag = sessionTag(id);
 		const redact = cfg.redact;
 		const verbosity = cfg.verbosity;
@@ -1574,6 +1594,7 @@ export function createNotificationsExtension(
 			pendingInteractive,
 			api,
 			() => runtime?.busy === true,
+			correlation => pendingPromptCorrelations.push(correlation),
 			settings,
 			configOverrides,
 			configRevision,
@@ -1991,6 +2012,8 @@ export function createNotificationsExtension(
 				stream: streamingEnabled(),
 				sessionTag: tag,
 				busy: false,
+				pendingPromptCorrelations,
+				activePromptCorrelation: undefined,
 				pendingInbound: new Set<number>(),
 			};
 			runtimes.set(id, runtime);
@@ -2225,71 +2248,17 @@ export function createNotificationsExtension(
 		await startSession(ctx);
 	});
 
-	// A session id change within the same process needs reason-aware handling.
-	// `/new` and fork CONTINUE the same terminal thread (e.g. plan "approve and
-	// execute" clears into a fresh session), so re-key the existing runtime
-	// old→new WITHOUT recreating the NotificationServer: the server, its endpoint
-	// discovery file, and the daemon's forum topic are all keyed by the original
-	// session id and the daemon routes by socket, so the existing topic is reused
-	// and the next identity frame renames it in place instead of spawning a new
-	// thread. `resume`, by contrast, loads a DIFFERENT, already-persisted session
-	// that owns its own topic — tear the previous runtime down and start fresh
-	// under the resumed id so the daemon attaches to (or recreates) that
-	// session's own discovery + topic rather than hijacking this terminal's.
+	// A session endpoint's token and generation are authority for exactly one
+	// session id. `/new`, fork, and resume must all tear down A before publishing
+	// B. Chat implementations may preserve a topic as metadata, but it must never
+	// preserve A's endpoint or credentials as B's control/viewing authority.
 	api.on("session_switch", async (event, ctx) => {
 		const newId = sessionId(ctx);
 		const prevId = sessionIdFromFile(event.previousSessionFile);
-		if (!prevId || prevId === newId) return;
-
-		if (event.reason === "resume") {
-			stopSession(prevId);
-			await startSession(ctx);
-			return;
-		}
-
-		// `/new` / fork: re-key in place and rename the existing topic.
+		if (!prevId || prevId === newId || !runtimes.has(prevId)) return;
 		if (disabledSessions.delete(prevId)) disabledSessions.add(newId);
-		const rt = runtimes.get(prevId);
-		if (!rt || runtimes.has(newId)) return;
-		runtimes.delete(prevId);
-		runtimes.set(newId, rt);
-		const notificationsWereActive = rt.notificationsActive;
-		if (notificationsWereActive) {
-			try {
-				rt.disposeAnswerSource();
-			} catch {}
-			try {
-				rt.disposeFileSink();
-			} catch {}
-			try {
-				rt.disposeGateListener();
-			} catch {}
-			rt.notificationsActive = false;
-		}
-		rt.id = newId;
-		// Follow the id change so a later process teardown closes the re-keyed
-		// session (the old closure captured the retired id).
-		try {
-			rt.cancelPostmortemCleanup();
-		} catch {}
-		rt.cancelPostmortemCleanup = postmortem.register(`notifications-session-closed:${newId}`, async () => {
-			await stopSession(rt.id);
-		});
-		if (notificationsWereActive) rt.enableNotifications();
-		// Rename the existing topic now when the new session already has a name; a
-		// fresh unnamed session is renamed on its next agent_end re-assert, which
-		// avoids a transient rename to bare "repo/branch".
-		if (ctx.sessionManager.getSessionName()) {
-			try {
-				pushSessionFrame(rt, {
-					type: "identity_header",
-					sessionId: newId,
-					...buildIdentity(ctx.cwd, ctx.sessionManager.getSessionName()),
-				});
-			} catch (e) {
-				logger.warn(`notifications: identity_header (switch) failed: ${String(e)}`);
-			}
-		}
+		await stopSession(prevId);
+		await startSession(ctx);
 	});
 
 	// Drive the live typing indicator: mark busy when the agent loop starts so
@@ -2302,8 +2271,12 @@ export function createNotificationsExtension(
 		// Streaming state is SDK-visible session truth (context.get isStreaming);
 		// it is tracked regardless of whether notifications are active.
 		rt.busy = true;
-		if (!rt.notificationsActive) return;
+		const correlation = rt.pendingPromptCorrelations.shift();
+		rt.activePromptCorrelation = correlation;
+		emitAgentLifecycle(rt, { type: "agent_start", sessionId: id, ...correlation });
 		try {
+			// `activity` is the native live-host lifecycle surface. The separately
+			// emitted agent_start above is replayable with command/turn correlation.
 			pushSessionFrame(rt, { type: "activity", sessionId: id, state: "busy" });
 		} catch (e) {
 			logger.warn(`notifications: activity (busy) failed: ${String(e)}`);
@@ -2340,13 +2313,16 @@ export function createNotificationsExtension(
 		if (!rt) return;
 		// Clear the streaming flag for SDK consumers even when notifications are off.
 		rt.busy = false;
-		if (!rt.notificationsActive) return;
-		const seq = rt.idleSeq++;
+		const correlation = rt.activePromptCorrelation;
+		rt.activePromptCorrelation = undefined;
+		emitAgentLifecycle(rt, { type: "agent_end", sessionId: id, ...correlation });
 		try {
 			pushSessionFrame(rt, { type: "activity", sessionId: id, state: "idle" });
 		} catch (e) {
 			logger.warn(`notifications: activity (idle) failed: ${String(e)}`);
 		}
+		if (!rt.notificationsActive) return;
+		const seq = rt.idleSeq++;
 		// Re-assert the identity header so the daemon renames the topic once the
 		// session title has been auto-generated ("{repo}/{branch} - {title}"). The
 		// daemon only renames when the title actually changed.

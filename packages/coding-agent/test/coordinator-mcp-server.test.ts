@@ -40,6 +40,7 @@ async function createSdkControlServer(
 	brokerSessions: Array<Record<string, unknown>> = [
 		{ sessionId: "visible-session", locator: { repo: root }, live: true },
 	],
+	sessionCommand?: string,
 ) {
 	const stateRoot = path.join(root, ".gjc", "coordinator-state");
 	const agentDir = path.join(root, "agent-global");
@@ -51,6 +52,7 @@ async function createSdkControlServer(
 			GJC_COORDINATOR_MCP_MUTATIONS: "sessions,questions,reports",
 			GJC_COORDINATOR_MCP_PROFILE: "local",
 			GJC_COORDINATOR_MCP_REPO: "repo",
+			...(sessionCommand ? { GJC_COORDINATOR_MCP_SESSION_COMMAND: sessionCommand } : {}),
 		},
 		services: {
 			getAgentDir: () => agentDir,
@@ -82,12 +84,36 @@ async function createSdkControlServer(
 							};
 						}
 						if (operation === "session.create") {
+							const target = input.target as Record<string, unknown> | undefined;
+							const worktree = target?.worktree as Record<string, unknown> | undefined;
+							const lifecycleCwd = worktree?.enabled === true ? path.join(root, "hermes-worktree") : undefined;
 							const sessionId = `created-session-${++createdSessions}`;
 							await Bun.write(
 								path.join(root, ".gjc", "state", "sdk", `${sessionId}.json`),
 								JSON.stringify({ url: "ws://sdk.example.test", token: "test-token" }),
 							);
-							return { ok: true, result: { sessionId } };
+							return {
+								ok: true,
+								result: {
+									sessionId,
+									...(lifecycleCwd
+										? {
+												cwd: lifecycleCwd,
+												worktree: {
+													enabled: true,
+													cwd: lifecycleCwd,
+													created: true,
+													reused: false,
+												},
+											}
+										: {}),
+									endpoint: {
+										url: "ws://broker.example.test/new?token=created-endpoint-secret",
+										token: "Bearer created-endpoint-secret",
+										credentials: { nested: { token: "nested-created-endpoint-secret" } },
+									},
+								},
+							};
 						}
 						return { ok: true, result: { sessionId: String(input.sessionId ?? "visible-session") } };
 					},
@@ -315,6 +341,86 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			),
 		).resolves.toContain('"mpreset": "codex-eco"');
 	});
+	it("keeps lifecycle endpoint credentials out of start_session results", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+
+		const started = await server.callTool("gjc_coordinator_start_session", {
+			cwd: root,
+			idempotency_key: "credential-free-start",
+			allow_mutation: true,
+		});
+
+		expect(started).toMatchObject({ ok: true, session: { session_id: "created-session-1" } });
+		expect(started.result).toBeUndefined();
+		for (const secret of ["created-endpoint-secret", "nested-created-endpoint-secret", "Bearer"]) {
+			expect(JSON.stringify(started)).not.toContain(secret);
+		}
+		expect(started.lifecycle).toEqual({ session_id: "created-session-1" });
+	});
+
+	it("translates the documented GJC worktree command into a typed SDK lifecycle target", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(
+			root,
+			controls,
+			undefined,
+			undefined,
+			undefined,
+			"gjc --worktree hermes",
+		);
+
+		const started = await server.callTool("gjc_coordinator_start_session", {
+			cwd: root,
+			idempotency_key: "worktree-start",
+			allow_mutation: true,
+		});
+		expect(started).toMatchObject({
+			ok: true,
+			session: { cwd: path.join(root, "hermes-worktree") },
+			lifecycle: {
+				session_id: "created-session-1",
+				worktree: {
+					enabled: true,
+					cwd: path.join(root, "hermes-worktree"),
+					created: true,
+					reused: false,
+				},
+			},
+		});
+		expect(controls).toContainEqual({
+			operation: "session.create",
+			input: {
+				cwd: root,
+				target: { path: root, worktree: { enabled: true, name: "hermes" } },
+			},
+			idempotencyKey: "worktree-start",
+		});
+	});
+
+	it("rejects unsupported session-command flags rather than silently ignoring them", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(
+			root,
+			controls,
+			undefined,
+			undefined,
+			undefined,
+			"gjc --worktree --model provider/model",
+		);
+
+		await expect(
+			server.callTool("gjc_coordinator_start_session", {
+				cwd: root,
+				idempotency_key: "invalid-worktree-command",
+				allow_mutation: true,
+			}),
+		).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
+		expect(controls).toEqual([]);
+	});
 
 	it("routes prompts, follow-ups, abort-and-prompts, and answers through SDK controls with caller keys", async () => {
 		const root = await tempRoot();
@@ -400,6 +506,38 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				},
 			]),
 		);
+	});
+	it("serializes concurrent delegations that reuse one live session", async () => {
+		const root = await tempRoot();
+		const controls: SdkControl[] = [];
+		const server = await createSdkControlServer(root, controls);
+		await registerSdkSession(server, root);
+
+		const results = await Promise.all([
+			server.callTool("gjc_delegate_execute", {
+				cwd: root,
+				session_id: "visible-session",
+				task: "first delegated task",
+				idempotency_key: "delegate-first",
+				allow_mutation: true,
+			}),
+			server.callTool("gjc_delegate_execute", {
+				cwd: root,
+				session_id: "visible-session",
+				task: "second delegated task",
+				idempotency_key: "delegate-second",
+				allow_mutation: true,
+			}),
+		]);
+
+		expect(results.filter(result => result.ok === true && result.status === "active")).toHaveLength(1);
+		expect(
+			results.filter(
+				result =>
+					result.ok === false && (result.error as { code?: string } | undefined)?.code === "active_turn_exists",
+			),
+		).toHaveLength(1);
+		expect(controls.filter(control => control.operation === "turn.prompt")).toHaveLength(1);
 	});
 
 	it("returns immediately by default and exposes bounded delegation completion when requested", async () => {

@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type ChatEffect, ChatEffectJournal, type ChatEffectLease } from "../src/sdk/bus/chat-effect-journal";
+import {
+	type ChatEffect,
+	ChatEffectJournal,
+	type ChatEffectLease,
+	type EnqueueChatEffect,
+} from "../src/sdk/bus/chat-effect-journal";
 import { ConversationStore } from "../src/sdk/bus/conversation-store";
 import type { DiscordConversation } from "../src/sdk/bus/discord-conversation";
 import {
@@ -143,7 +148,7 @@ async function withDaemon(
 	}
 }
 
-function inbound(threadId: string, id: string, generation = 1): DiscordInboundEvent {
+function inbound(threadId: string, id: string, generation = 1, customId?: string): DiscordInboundEvent {
 	return {
 		id,
 		guildId: "guild",
@@ -153,7 +158,8 @@ function inbound(threadId: string, id: string, generation = 1): DiscordInboundEv
 		interaction: {
 			id: `interaction-${id}`,
 			token: `token-${id}`,
-			customId: actionCustomIds.get(threadId) ?? `gjc:${generation}:ask:00000000-0000-0000-0000-000000000000`,
+			customId:
+				customId ?? actionCustomIds.get(threadId) ?? `gjc:${generation}:ask:00000000-0000-0000-0000-000000000000`,
 			value: "yes",
 		},
 	};
@@ -464,6 +470,103 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 				},
 			},
 		);
+	});
+	test("recovery skips a live callback lease created before its dispatch", async () => {
+		const frames: Record<string, unknown>[] = [];
+		const journaled = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const originalEnqueueAndClaim = ChatEffectJournal.prototype.enqueueAndClaim;
+		let recovery: DiscordNotificationDaemon | undefined;
+		let deferred = 0;
+		vi.spyOn(ChatEffectJournal.prototype, "enqueueAndClaim").mockImplementation(async function <TPayload>(
+			this: ChatEffectJournal,
+			input: EnqueueChatEffect<TPayload>,
+			owner: string,
+			leaseMs: number,
+		): Promise<ChatEffect<TPayload> | undefined> {
+			const claimed = (await originalEnqueueAndClaim.call(this, input, owner, leaseMs)) as
+				| ChatEffect<TPayload>
+				| undefined;
+			journaled.resolve();
+			await release.promise;
+			return claimed;
+		});
+		try {
+			await withDaemon(
+				async (daemon, provider, agentDir) => {
+					const conversation = await daemon.notify({
+						sessionId: "session",
+						endpointGeneration: 1,
+						content: "Choose",
+						actionId: "ask",
+						options: ["Yes"],
+					});
+					provider.deferInteraction = async () => {
+						deferred++;
+					};
+					const effectId = `discord:app:guild:parent:${conversation.threadId}:live-recovery-barrier`;
+					const live = daemon.handleInbound(inbound(conversation.threadId!, "live-recovery-barrier", 1));
+					await journaled.promise;
+
+					const beforeRecovery = await new ChatEffectJournal({ agentDir, transport: "discord" }).read(effectId);
+					expect(beforeRecovery).toMatchObject({ state: "leased", owner: expect.any(String) });
+					expect(beforeRecovery?.leaseExpiresAt ?? 0).toBeGreaterThan(0);
+					expect(JSON.stringify(beforeRecovery)).not.toContain("token-live-recovery-barrier");
+
+					recovery = new DiscordNotificationDaemon({
+						agentDir,
+						repo: agentDir,
+						guildId: "guild",
+						parentChannelId: "parent",
+						provider,
+						resolveEndpoint: async () => ({
+							generation: 1,
+							isCurrent: () => true,
+							send: frame => {
+								frames.push(frame);
+							},
+						}),
+					});
+					await recovery.start();
+
+					const afterRecovery = await new ChatEffectJournal({ agentDir, transport: "discord" }).read(effectId);
+					expect(afterRecovery).toMatchObject({
+						state: "leased",
+						owner: beforeRecovery?.owner,
+						epoch: beforeRecovery?.epoch,
+					});
+					expect(afterRecovery?.receipt).toBeUndefined();
+					expect(deferred).toBe(0);
+					expect(frames).toEqual([]);
+
+					release.resolve();
+					await live;
+					expect(deferred).toBe(1);
+					expect(frames).toMatchObject([
+						{ type: "reply", id: "ask", answer: "yes", idempotencyKey: expect.any(String) },
+					]);
+					expect(frames).toHaveLength(1);
+					expect((await new ChatEffectJournal({ agentDir, transport: "discord" }).read(effectId))?.state).toBe(
+						"terminal",
+					);
+					await recovery.stop();
+					recovery = undefined;
+				},
+				{
+					resolveEndpoint: async () => ({
+						generation: 1,
+						isCurrent: () => true,
+						send: frame => {
+							frames.push(frame);
+						},
+					}),
+				},
+			);
+		} finally {
+			release.resolve();
+			await recovery?.stop();
+			vi.restoreAllMocks();
+		}
 	});
 
 	test("waits for an in-flight renewal before posting a provider message", async () => {
@@ -1028,6 +1131,8 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					actionId: "ask",
 					options: ["Yes"],
 				});
+				expect(uncertain.pendingActionNonce).toBeDefined();
+				const uncertainCustomId = `gjc:1:ask:${uncertain.pendingActionNonce!}`;
 				provider.deferInteraction = async () => {};
 				const originalSend = (await endpoint()).send;
 				const throwingEndpoint = async (): Promise<DiscordEndpointBinding> => ({
@@ -1047,7 +1152,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					now: () => now,
 					resolveEndpoint: throwingEndpoint,
 				});
-				await sender.handleInbound(inbound(uncertain.threadId!, "uncertain-post-send", 1));
+				await sender.handleInbound(inbound(uncertain.threadId!, "uncertain-post-send", 1, uncertainCustomId));
 				expect(frames).toHaveLength(1);
 				const afterUncertain = new DiscordNotificationDaemon({
 					agentDir,

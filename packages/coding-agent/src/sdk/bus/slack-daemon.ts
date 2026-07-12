@@ -27,6 +27,9 @@ import { type ChatEffect, ChatEffectJournal, type ChatEffectLease } from "./chat
 import { SlackProviderError } from "./slack-live-provider";
 import type { SlackPostedMessage, SlackProvider, SlackSocketEnvelope } from "./slack-provider";
 
+// Durable filesystem publication leases must outlast one event-loop and persistence turn.
+const MIN_PUBLICATION_LEASE_MS = 100;
+
 export interface SlackEndpoint extends SdkSessionEndpoint {
 	generation: number;
 }
@@ -149,6 +152,8 @@ export class SlackNotificationDaemon {
 	#leaseRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 	#leaseRecoveryAt: number | undefined;
 	#leaseRecoveryFailures = 0;
+	#leaseRecoveryTimerGeneration = 0;
+	#leaseRecoveryScheduling: Promise<void> = Promise.resolve();
 	#recoveringLeasedEffects = false;
 
 	constructor(private readonly options: SlackNotificationDaemonOptions) {
@@ -157,7 +162,7 @@ export class SlackNotificationDaemon {
 		this.#now = options.now ?? Date.now;
 		this.#randomId = options.randomId ?? randomUUID;
 		this.#publicationOwnerId = options.publicationOwnerId ?? randomUUID();
-		this.#publicationLeaseMs = options.publicationLeaseMs ?? 30_000;
+		this.#publicationLeaseMs = Math.max(options.publicationLeaseMs ?? 30_000, MIN_PUBLICATION_LEASE_MS);
 		this.#journal = new ChatEffectJournal({ agentDir: options.agentDir, transport: "slack", now: this.#now });
 		this.#resolveEndpoint =
 			options.resolveEndpoint ??
@@ -182,17 +187,13 @@ export class SlackNotificationDaemon {
 			});
 		} catch (error) {
 			this.#started = false;
-			if (this.#leaseRecoveryTimer) clearTimeout(this.#leaseRecoveryTimer);
-			this.#leaseRecoveryTimer = undefined;
-			this.#leaseRecoveryAt = undefined;
+			this.#clearLeaseRecoveryTimer();
 			throw error;
 		}
 	}
 
 	async stop(): Promise<void> {
-		if (this.#leaseRecoveryTimer) clearTimeout(this.#leaseRecoveryTimer);
-		this.#leaseRecoveryTimer = undefined;
-		this.#leaseRecoveryAt = undefined;
+		this.#clearLeaseRecoveryTimer();
 
 		if (this.#started) {
 			this.#started = false;
@@ -1110,6 +1111,13 @@ export class SlackNotificationDaemon {
 		return effect;
 	}
 	async #scheduleLeaseRecovery(recoveryFailed = false): Promise<void> {
+		const scheduled = this.#leaseRecoveryScheduling.then(async () => {
+			await this.#scheduleLeaseRecoveryNow(recoveryFailed);
+		});
+		this.#leaseRecoveryScheduling = scheduled.catch(() => undefined);
+		return await scheduled;
+	}
+	async #scheduleLeaseRecoveryNow(recoveryFailed: boolean): Promise<void> {
 		if (!this.#started) return;
 		const now = this.#now();
 		const recoveryAt = (await this.#journal.list())
@@ -1128,25 +1136,32 @@ export class SlackNotificationDaemon {
 				},
 				recoveryFailed ? now : undefined,
 			);
+		if (!this.#started) return;
 		if (recoveryAt === undefined) {
-			if (this.#leaseRecoveryTimer) clearTimeout(this.#leaseRecoveryTimer);
-			this.#leaseRecoveryTimer = undefined;
-			this.#leaseRecoveryAt = undefined;
+			this.#clearLeaseRecoveryTimer();
 			this.#leaseRecoveryFailures = 0;
 			return;
 		}
 		if (this.#leaseRecoveryAt !== undefined && this.#leaseRecoveryAt <= recoveryAt) return;
-		if (this.#leaseRecoveryTimer) clearTimeout(this.#leaseRecoveryTimer);
+		this.#clearLeaseRecoveryTimer();
 		this.#leaseRecoveryAt = recoveryAt;
 		const delay =
 			recoveryAt <= now
 				? Math.min(1_000, 25 * 2 ** Math.min(this.#leaseRecoveryFailures, 5))
 				: Math.min(recoveryAt - now, 2_147_483_647);
+		const timerGeneration = this.#leaseRecoveryTimerGeneration;
 		this.#leaseRecoveryTimer = setTimeout(() => {
+			if (!this.#started || timerGeneration !== this.#leaseRecoveryTimerGeneration) return;
 			this.#leaseRecoveryTimer = undefined;
 			this.#leaseRecoveryAt = undefined;
 			void this.#track(this.#recoverLeasedEffects());
 		}, delay);
+	}
+	#clearLeaseRecoveryTimer(): void {
+		this.#leaseRecoveryTimerGeneration++;
+		if (this.#leaseRecoveryTimer) clearTimeout(this.#leaseRecoveryTimer);
+		this.#leaseRecoveryTimer = undefined;
+		this.#leaseRecoveryAt = undefined;
 	}
 	async #recoverLeasedEffects(): Promise<void> {
 		if (!this.#started || this.#recoveringLeasedEffects) return;
@@ -1379,10 +1394,20 @@ export class SlackNotificationDaemon {
 		if (renewBeforeOperation) await renew();
 		let failure: unknown;
 		let renewing = Promise.resolve();
+		let renewalPending = false;
+		const renewLease = async () => {
+			try {
+				await renew();
+			} catch (error) {
+				failure ??= error;
+			}
+		};
 		const timer = setInterval(
 			() => {
-				renewing = renewing.then(renew).catch(error => {
-					failure ??= error;
+				if (renewalPending || failure) return;
+				renewalPending = true;
+				renewing = renewing.then(renewLease).finally(() => {
+					renewalPending = false;
 				});
 			},
 			Math.max(1, Math.floor(this.#publicationLeaseMs / 4)),

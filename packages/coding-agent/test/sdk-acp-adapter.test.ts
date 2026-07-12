@@ -128,6 +128,38 @@ test("ACP SDK adapter exposes SDK event frames and forwards lifecycle idempotenc
 	unsubscribe();
 	await adapter.close();
 });
+test("ACP lifecycle aliases forward caller idempotency keys outside operation input", async () => {
+	const sdk = new FakeSdkClient();
+	const adapter = new AcpSdkAdapter({ url: "ws://unused", token: "secret", client: sdk as never });
+	const aliases: Array<{ method: string; operation: string; input: Record<string, unknown> }> = [
+		{ method: "newSession", operation: "session.create", input: { cwd: "/workspace/new" } },
+		{ method: "loadSession", operation: "session.resume", input: { cwd: "/workspace/load", sessionId: "load" } },
+		{
+			method: "resumeSession",
+			operation: "session.resume",
+			input: { cwd: "/workspace/resume", sessionId: "resume" },
+		},
+		{ method: "forkSession", operation: "session.fork", input: { cwd: "/workspace/fork", sessionId: "fork" } },
+		{ method: "closeSession", operation: "session.close", input: { sessionId: "close" } },
+	];
+
+	await adapter.start();
+	for (const alias of aliases)
+		await expect(adapter.handle(alias.method, alias.input)).rejects.toMatchObject({ code: "invalid_input" });
+
+	for (const [index, alias] of aliases.entries())
+		await adapter.handle(alias.method, { ...alias.input, idempotencyKey: `alias-${index}` });
+
+	expect(sdk.frames).toEqual(
+		aliases.map((alias, index) => ({
+			type: "broker_request",
+			operation: alias.operation,
+			input: alias.input,
+			idempotencyKey: `alias-${index}`,
+		})),
+	);
+	await adapter.close();
+});
 
 test("ACP reverse cancellation and stale failures suppress responses over the real WebSocket transport", async () => {
 	let server!: ReturnType<typeof Bun.serve>;

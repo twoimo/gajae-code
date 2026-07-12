@@ -10,8 +10,7 @@
 ### Added
 
 - Added an owner-proof idle session reaper and `gjc_coordinator_stop_session` for ephemeral (delegate-created) coordinator sessions. Termination goes exclusively through the canonical SDK broker `session.close` lifecycle (durable process identity verified before close) — never a raw `process.kill` or tmux control. The reaper re-validates ephemeral and no-active-turn state at close time under the same per-session mutation lock as delegate reuse, and purges coordinator metadata only after SDK closure is verified, retaining it when closure cannot be confirmed (#2080).
-- Added an owner-proof idle session reaper and `gjc_coordinator_stop_session` for ephemeral (delegate-created) coordinator sessions. Termination goes exclusively through the owner-proof `forceCloseGjcTmuxSession` path (pid, native session id, owner generation, server key, and start time all verified before SIGTERM) — never a raw `process.kill`. The reaper binds each close to the persisted runtime-state file, re-validates ephemeral and no-active-turn at kill time under the same per-session mutation lock as delegate reuse, and purges state only on verified termination (#2080).
-- RPC clients can now durably select the machine-global default model and effective thinking level for subsequent messages, while project policy and resumed session history retain precedence.
+
 ### Fixed
 
 - IRC deliveries now accept their exchange batch in the recipient's volatile current-session queue before recipient/main UI observations or sender success. Awaited deliveries generate the reply first, then accept the ordered incoming + auto-reply pair and commit the IRC roster claim before observation; provider failures and sender aborts before acceptance leave no ghost exchange, while observer failures after acceptance are isolated. This is not a durability guarantee: durable history injection remains a later flush and no fsync, recovery, persistent IDs, or deduplication was added.
@@ -34,7 +33,7 @@
 
 ### Changed
 
-- Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2, including the robogjc web workspace and a non-mutating publish-type gate.
+- Migrated the repository type-check and release declaration pipeline to stable TypeScript 7.0.2 with a non-mutating publish-type gate.
 - Rebalanced GPT-5.6 Codex and combo presets around published family tiers and reasoning-effort curves. The executor assignments are informed by descriptive repeated local exact-edit evidence from selected TypeScript tasks; default, planner, architect, and critic assignments remain product judgments rather than benchmark claims.
 - Cache-miss diagnostics now separate actionable, diagnostic-only, and provider-side-suspected causes instead of asserting a user-side fix for every miss (#2020). A large, costly miss with no cache reads or writes is reported as a neutral `Cache notice` marked "provider-side suspected / not user-actionable" (with what GJC cannot determine) rather than telling the user to keep a stable prefix; a miss with reads but no writes is reported as diagnostic-only without asserting a single cause; and the "cache write without enough matching reads" warning now only fires when reads actually fail to cover the writes. The existing miss cost summary and the #1929/#1936 pricing/provenance safeguards are unchanged.
 

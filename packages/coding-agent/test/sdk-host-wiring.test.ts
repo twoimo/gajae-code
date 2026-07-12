@@ -400,11 +400,11 @@ test("SDK host preserves ordered prompt image blocks in the host payload", async
 
 	await prompt("text-and-images", {
 		text: "Compare these screenshots.",
-		images: [{ data: "cG5nLWJ5dGVz", mime: "image/png" }, { data: "ZGVmYXVsdC1taW1l" }],
+		images: [{ data: "cG5nLWJ5dGVz", mimeType: "image/png" }, { data: "ZGVmYXVsdC1taW1l" }],
 	});
 	await prompt("images-only", {
 		text: "",
-		images: [{ data: "d2VicC1ieXRlcw", mime: "image/webp" }],
+		images: [{ data: "d2VicC1ieXRlcw", mimeType: "image/webp" }],
 	});
 
 	expect(sent).toEqual([
@@ -418,6 +418,60 @@ test("SDK host preserves ordered prompt image blocks in the host payload", async
 		],
 		[[{ type: "image", data: "d2VicC1ieXRlcw", mimeType: "image/webp" }], { deliverAs: "steer" }],
 	]);
+});
+
+test("SDK session switches rotate endpoint authority before publishing the replacement host", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-switch-"));
+	dirs.push(cwd);
+	const sessionA = `sdk-switch-a-${Date.now()}`;
+	const sessionB = `sdk-switch-b-${Date.now()}`;
+	let activeSessionId = sessionA;
+	const ctx = {
+		...context(cwd, sessionA),
+		sessionManager: {
+			getSessionId: () => activeSessionId,
+			getSessionName: () => "SDK switch",
+			getUsageStatistics: () => ({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 }),
+		},
+	};
+	const handlers = start(ctx);
+	const endpointAPath = path.join(cwd, ".gjc", "state", "sdk", `${sessionA}.json`);
+	await waitFor(() => fs.existsSync(endpointAPath), "session A endpoint");
+	const endpointA = JSON.parse(fs.readFileSync(endpointAPath, "utf8")) as { url: string; token: string };
+	const clientA = new WebSocket(`${endpointA.url}/?token=${encodeURIComponent(endpointA.token)}`);
+	sockets.push(clientA);
+	await new Promise<void>((resolve, reject) => {
+		clientA.addEventListener("open", () => resolve(), { once: true });
+		clientA.addEventListener("error", () => reject(new Error("session A WebSocket error")), { once: true });
+	});
+
+	activeSessionId = sessionB;
+	await handlers.get("session_switch")?.(
+		{
+			type: "session_switch",
+			reason: "new",
+			previousSessionFile: path.join(cwd, "sessions", `ts_${sessionA}.jsonl`),
+		},
+		ctx,
+	);
+	const endpointBPath = path.join(cwd, ".gjc", "state", "sdk", `${sessionB}.json`);
+	await waitFor(() => !fs.existsSync(endpointAPath) && fs.existsSync(endpointBPath), "rotated session endpoint");
+	const endpointB = JSON.parse(fs.readFileSync(endpointBPath, "utf8")) as { url: string; token: string };
+	expect(endpointB.token).not.toBe(endpointA.token);
+	await waitFor(() => clientA.readyState === WebSocket.CLOSED, "session A client close");
+
+	const staleTokenClient = new WebSocket(`${endpointB.url}/?token=${encodeURIComponent(endpointA.token)}`);
+	sockets.push(staleTokenClient);
+	await Promise.race([
+		new Promise<void>(resolve => {
+			staleTokenClient.addEventListener("close", () => resolve(), { once: true });
+			staleTokenClient.addEventListener("error", () => resolve(), { once: true });
+		}),
+		Bun.sleep(1_000).then(() => {
+			throw new Error("stale session token was not rejected by the replacement host");
+		}),
+	]);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 });
 
 test("SDK host binds session query and control seams and excludes uninstalled resources", async () => {

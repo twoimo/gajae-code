@@ -124,7 +124,7 @@ async function startAndConnect(harness: ReturnType<typeof createHarness>): Promi
 	return connectFrames(harness.endpoint());
 }
 
-test("session_switch reuses the existing topic instead of spawning a new session", async () => {
+test("session_switch rotates SDK authority while preserving topic identity", async () => {
 	const prevEnv = process.env.GJC_NOTIFICATIONS;
 	process.env.GJC_NOTIFICATIONS = "1";
 	try {
@@ -178,28 +178,18 @@ test("session_switch reuses the existing topic instead of spawning a new session
 		const previousSessionFile = path.join(cwd, ".gjc", "agent", "sessions", `ts_${previousSessionId}.jsonl`);
 		await handlers.get("session_switch")!({ type: "session_switch", reason: "new", previousSessionFile }, ctx);
 
-		// No new "session": the new id does NOT get its own endpoint discovery file,
-		// and the original server keeps serving.
 		const newEndpoint = path.join(notifDir, `${sid}.json`);
-		expect(fs.existsSync(newEndpoint)).toBe(false);
-		expect(fs.existsSync(originalEndpoint)).toBe(true);
+		await waitFor(() => fs.existsSync(newEndpoint), 4000, "rotated endpoint file");
+		expect(fs.existsSync(originalEndpoint)).toBe(false);
+		const newFrames = await connectFrames(newEndpoint);
 
-		// The existing topic is renamed: an identity_header with the new title is
-		// re-asserted over the SAME socket (the daemon edits the topic in place).
-		await waitFor(
-			() => frames.some(f => f.type === "identity_header" && f.title === "Renamed Plan"),
-			4000,
-			"identity_header rename frame",
-		);
-
-		// The runtime was re-keyed: events for the NEW id keep flowing over the same
-		// socket. Without the re-key, agent_start would find no runtime and emit nothing.
 		await handlers.get("agent_start")!({ type: "agent_start" }, ctx);
 		await waitFor(
-			() => frames.some(f => f.type === "activity" && f.state === "busy" && f.sessionId === sid),
+			() => newFrames.some(f => f.type === "activity" && f.state === "busy" && f.sessionId === sid),
 			4000,
-			"busy activity for new session id",
+			"busy activity for rotated session id",
 		);
+		expect(frames.some(f => f.type === "activity" && f.sessionId === sid)).toBe(false);
 	} finally {
 		if (prevEnv === undefined) delete process.env.GJC_NOTIFICATIONS;
 		else process.env.GJC_NOTIFICATIONS = prevEnv;
@@ -274,13 +264,12 @@ test("session_switch with no runtime for previous id is a safe no-op", async () 
 	});
 }, 30000);
 
-test("session_switch to unnamed session reuses socket without switch identity frame", async () => {
+test("session_switch to unnamed session rotates the endpoint without a title frame", async () => {
 	await withNotifications(async () => {
 		const harness = createHarness("gjc-notif-switch-unnamed-");
-		const frames = await startAndConnect(harness);
+		await startAndConnect(harness);
 		const originalId = harness.sid;
 		const originalEndpoint = harness.endpoint(originalId);
-		const initialFrameCount = frames.length;
 
 		harness.sid = `switch-b-${originalId}`;
 		harness.name = undefined;
@@ -288,25 +277,24 @@ test("session_switch to unnamed session reuses socket without switch identity fr
 			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(originalId) },
 			harness.ctx,
 		);
-		await sleep(250);
-
-		expect(fs.existsSync(originalEndpoint)).toBe(true);
-		expect(fs.existsSync(harness.endpoint(harness.sid))).toBe(false);
-		expect(frames.slice(initialFrameCount).some(f => f.type === "identity_header")).toBe(false);
+		await waitFor(() => fs.existsSync(harness.endpoint(harness.sid)), 4000, "unnamed rotated endpoint");
+		expect(fs.existsSync(originalEndpoint)).toBe(false);
+		const switchedFrames = await connectFrames(harness.endpoint(harness.sid));
+		expect(switchedFrames.some(f => f.type === "identity_header")).toBe(false);
 
 		await harness.handlers.get("agent_end")!({ type: "agent_end" }, harness.ctx);
 		await waitFor(
-			() => frames.some(f => f.type === "activity" && f.state === "idle" && f.sessionId === harness.sid),
+			() => switchedFrames.some(f => f.type === "activity" && f.state === "idle" && f.sessionId === harness.sid),
 			4000,
-			"idle activity for unnamed switched session id",
+			"idle activity for unnamed rotated session id",
 		);
 	});
 }, 30000);
 
-test("session_switch can chain A to B to C while keeping only the original endpoint", async () => {
+test("session_switch can chain A to B to C with one endpoint authority at a time", async () => {
 	await withNotifications(async () => {
 		const harness = createHarness("gjc-notif-switch-chain-");
-		const frames = await startAndConnect(harness);
+		await startAndConnect(harness);
 		const a = harness.sid;
 		const originalEndpoint = harness.endpoint(a);
 		const b = `switch-b-${a}`;
@@ -318,23 +306,23 @@ test("session_switch can chain A to B to C while keeping only the original endpo
 			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(a) },
 			harness.ctx,
 		);
+		await waitFor(() => fs.existsSync(harness.endpoint(b)), 4000, "session B endpoint");
+		expect(fs.existsSync(originalEndpoint)).toBe(false);
 		harness.sid = c;
 		harness.name = "Session C";
 		await harness.handlers.get("session_switch")!(
 			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(b) },
 			harness.ctx,
 		);
-		await sleep(250);
-
-		expect(fs.existsSync(originalEndpoint)).toBe(true);
+		await waitFor(() => fs.existsSync(harness.endpoint(c)), 4000, "session C endpoint");
 		expect(fs.existsSync(harness.endpoint(b))).toBe(false);
-		expect(fs.existsSync(harness.endpoint(c))).toBe(false);
+		const cFrames = await connectFrames(harness.endpoint(c));
 
 		await harness.handlers.get("agent_start")!({ type: "agent_start" }, harness.ctx);
 		await waitFor(
-			() => frames.some(f => f.type === "activity" && f.state === "busy" && f.sessionId === c),
+			() => cFrames.some(f => f.type === "activity" && f.state === "busy" && f.sessionId === c),
 			4000,
-			"busy activity for twice-switched session id",
+			"busy activity for twice-rotated session id",
 		);
 	});
 }, 30000);
@@ -394,7 +382,8 @@ test("session_switch keeps notification resources inactive until notify on rebin
 			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(originalId) },
 			harness.ctx,
 		);
-		expect(fs.existsSync(harness.endpoint(originalId))).toBe(true);
+		await waitFor(() => fs.existsSync(harness.endpoint(newId)), 4000, "rebound SDK endpoint");
+		expect(fs.existsSync(harness.endpoint(originalId))).toBe(false);
 		expect(getAskAnswerSource(originalId)).toBeUndefined();
 		expect(getTelegramFileSink(originalId)).toBeUndefined();
 		expect(getAskAnswerSource(newId)).toBeUndefined();

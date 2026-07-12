@@ -27,6 +27,14 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 	}
 	throw new Error(`Timed out waiting for ${label}`);
 }
+async function bounded<T>(promise: Promise<T>, label: string, timeoutMs = 2_000): Promise<T> {
+	return await Promise.race([
+		promise,
+		Bun.sleep(timeoutMs).then(() => {
+			throw new Error(`Timed out waiting for ${label}`);
+		}),
+	]);
+}
 
 test("production ACP routes zero-session SDK globals through the broker adapter", async () => {
 	const directory = await mkdtemp(path.join(tmpdir(), "gjc-sdk-acp-production-"));
@@ -101,6 +109,7 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 	const updates: SessionNotification[] = [];
 	const providerRegistrations: Array<Record<string, unknown>> = [];
 	let promptSocket: { send(message: string): void } | undefined;
+	let abortAcknowledged = true;
 
 	let server!: ReturnType<typeof Bun.serve>;
 	server = Bun.serve({
@@ -177,11 +186,17 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 								? [{ provider: "openai", id: "gpt", name: "GPT" }]
 								: frame.query === "transcript.list"
 									? [
-											{ id: "user-1", role: "user", content: "Earlier request" },
+											{
+												id: "user-1",
+												role: "user",
+												textSummary: "Earlier request",
+												body: "Earlier request",
+											},
 											{
 												id: "assistant-1",
 												role: "assistant",
-												content: [{ type: "text", text: "Earlier response" }],
+												textSummary: "Earlier response",
+												body: "Earlier response",
 											},
 										]
 									: [];
@@ -195,13 +210,22 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 					if (frame.operation === "turn.prompt") {
 						promptInputs.push(frame.input as Record<string, unknown>);
 						promptSocket = socket;
+						// This is a real-host `activity` frame received before the prompt
+						// acknowledgement. ACP must retain it below the acknowledgement boundary.
+						if (promptInputs.length === 1)
+							socket.send(JSON.stringify({ type: "activity", sessionId: "owned-session", state: "idle" }));
 					}
 					socket.send(
 						JSON.stringify({
 							type: "control_response",
 							id: frame.id,
 							ok: true,
-							result: frame.operation === "turn.prompt" ? { commandId: "prompt-command", accepted: true } : {},
+							result:
+								frame.operation === "turn.prompt"
+									? { commandId: "prompt-command", turnId: "prompt-turn", accepted: true }
+									: frame.operation === "turn.abort"
+										? { aborted: abortAcknowledged }
+										: {},
 						}),
 					);
 				}
@@ -239,9 +263,9 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 		} as unknown as AgentSideConnection,
 		{ agentDir, startupOptions: { modelPreset: "codex-medium" } },
 	);
-	const initialized = await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+	const initialized = await bounded(agent.initialize({ protocolVersion: 1, clientCapabilities: {} }), "initialize");
 	expect(initialized.agentCapabilities?.mcpCapabilities).toBeUndefined();
-	const created = await agent.newSession({ cwd, mcpServers: [] });
+	const created = await bounded(agent.newSession({ cwd, mcpServers: [] }), "new session");
 	expect(created.sessionId).toBe("owned-session");
 	expect(lifecycleInputs).toEqual([expect.objectContaining({ cwd, modelPreset: "codex-medium" })]);
 
@@ -279,24 +303,12 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 	);
 	await Bun.sleep(20);
 	expect(firstSettled).toBe(false);
-	promptSocket!.send(
-		JSON.stringify({
-			type: "event",
-			payload: { event_type: "agent_end", event: { type: "agent_end", messages: [] } },
-		}),
-	);
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
 	await Bun.sleep(20);
 	expect(firstSettled).toBe(false);
-	promptSocket!.send(
-		JSON.stringify({ type: "event", payload: { event_type: "agent_start", event: { type: "agent_start" } } }),
-	);
-	promptSocket!.send(
-		JSON.stringify({
-			type: "event",
-			payload: { event_type: "agent_end", event: { type: "agent_end", messages: [] } },
-		}),
-	);
-	expect(await firstPrompt).toEqual({ stopReason: "end_turn" });
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "busy" }));
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
+	expect(await bounded(firstPrompt, "first prompt completion")).toEqual({ stopReason: "end_turn" });
 
 	let cancelledSettled = false;
 	const cancelledPrompt = agent
@@ -306,20 +318,26 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 			return value;
 		});
 	await waitFor(() => promptInputs.length === 2, "second prompt delivery");
-	await agent.cancel({ sessionId: created.sessionId });
+	await bounded(agent.cancel({ sessionId: created.sessionId }), "cancel acknowledgement");
 	expect(controlOperations).toContain("turn.abort");
 	await Bun.sleep(20);
 	expect(cancelledSettled).toBe(false);
-	promptSocket!.send(
-		JSON.stringify({ type: "event", payload: { event_type: "agent_start", event: { type: "agent_start" } } }),
-	);
-	promptSocket!.send(
-		JSON.stringify({
-			type: "event",
-			payload: { event_type: "agent_end", event: { type: "agent_end", messages: [] } },
-		}),
-	);
-	expect(await cancelledPrompt).toEqual({ stopReason: "cancelled" });
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "busy" }));
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
+	expect(await bounded(cancelledPrompt, "cancelled prompt completion")).toEqual({ stopReason: "cancelled" });
+	const abortFailurePrompt = agent.prompt({
+		sessionId: created.sessionId,
+		prompt: [{ type: "text", text: "abort failure" }],
+	});
+	await waitFor(() => promptInputs.length === 3, "abort failure prompt delivery");
+	abortAcknowledged = false;
+	await expect(
+		bounded(agent.cancel({ sessionId: created.sessionId }), "failed cancel acknowledgement"),
+	).rejects.toThrow("SDK did not acknowledge cancellation");
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "busy" }));
+	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
+	expect(await bounded(abortFailurePrompt, "abort-failure prompt completion")).toEqual({ stopReason: "end_turn" });
+	abortAcknowledged = true;
 
 	await expect(
 		agent.prompt({
@@ -338,14 +356,14 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 
 	const observerAbort = new AbortController();
 	const observer = new AcpAgent({ signal: observerAbort.signal } as unknown as AgentSideConnection, { agentDir });
-	await observer.listSessions({});
+	await bounded(observer.listSessions({}), "observer list");
 	const brokerRequestCount = brokerRequests.length;
-	expect(await observer.closeSession({ sessionId: created.sessionId })).toEqual({});
-	expect(await observer.deleteSession({ sessionId: created.sessionId })).toEqual({});
+	expect(await bounded(observer.closeSession({ sessionId: created.sessionId }), "observer close")).toEqual({});
+	expect(await bounded(observer.deleteSession({ sessionId: created.sessionId }), "observer delete")).toEqual({});
 	expect(brokerRequests).toHaveLength(brokerRequestCount);
 	observerAbort.abort();
 
-	await agent.loadSession({ sessionId: created.sessionId, cwd, mcpServers: [] });
+	await bounded(agent.loadSession({ sessionId: created.sessionId, cwd, mcpServers: [] }), "owned session reload");
 	expect(updates).toEqual(
 		expect.arrayContaining([
 			expect.objectContaining({
@@ -362,6 +380,15 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 					content: { type: "text", text: "Earlier response" },
 				}),
 			}),
+			expect.objectContaining({
+				sessionId: created.sessionId,
+				update: expect.objectContaining({
+					sessionUpdate: "session_info_update",
+					_meta: {
+						gjcTranscriptImageReplay: { available: false, reason: "historical_transcript_images_unavailable" },
+					},
+				}),
+			}),
 		]),
 	);
 	const loaderAbort = new AbortController();
@@ -375,10 +402,13 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 	);
 	const registrationsBeforeLiveAttach = providerRegistrations.length;
 	const brokerRequestsBeforeLiveAttach = brokerRequests.length;
-	await Promise.all([
-		loader.loadSession({ sessionId: created.sessionId, cwd, mcpServers: [] }),
-		loader.resumeSession({ sessionId: created.sessionId, cwd, mcpServers: [] }),
-	]);
+	await bounded(
+		Promise.all([
+			loader.loadSession({ sessionId: created.sessionId, cwd, mcpServers: [] }),
+			loader.resumeSession({ sessionId: created.sessionId, cwd, mcpServers: [] }),
+		]),
+		"concurrent live attach",
+	);
 	const liveAttachRequests = brokerRequests.slice(brokerRequestsBeforeLiveAttach);
 	expect(liveAttachRequests.filter(request => request.operation === "session.resume")).toHaveLength(0);
 	expect(liveAttachRequests.filter(request => request.operation === "session.get_endpoint")).toEqual([
@@ -423,6 +453,18 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 		expect.objectContaining({ operation: "session.list", input: { cwd } }),
 	]);
 	scopeConflictAbort.abort();
+	const deletingPrompt = agent.prompt({ sessionId: created.sessionId, prompt: [{ type: "text", text: "delete me" }] });
+	const deletingPromptError = deletingPrompt.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	await waitFor(() => promptInputs.length === 4, "delete prompt delivery");
+	await expect(
+		bounded(agent.deleteSession({ sessionId: created.sessionId }), "owned session delete"),
+	).resolves.toEqual({});
+	expect(await bounded(deletingPromptError, "deleted prompt rejection")).toMatchObject({
+		message: "ACP session was deleted.",
+	});
 	loaderAbort.abort();
 	controller.abort();
-});
+}, 30_000);

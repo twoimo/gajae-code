@@ -78,6 +78,7 @@ export default class Daemon extends Command {
 				cursor: flagRec.cursor as string | undefined,
 				showEndpointCredential: Boolean(flagRec["show-endpoint-credential"]),
 				yes: Boolean(flagRec.yes),
+				agentDir: flagRec["agent-dir"] as string | undefined,
 			});
 			return;
 		}

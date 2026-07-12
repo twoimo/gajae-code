@@ -240,7 +240,9 @@ describe("test manifest runner", () => {
 		});
 		const missingRequired = run(runner, [missingRequiredManifest]);
 		expect(missingRequired.exitCode, output(missingRequired)).toBe(1);
-		expect(output(missingRequired)).toContain(`Manifest required file is not an executable command: ${failingTest}`);
+		expect(output(missingRequired)).toContain(
+			`Manifest required file is not covered by executable commands: ${failingTest}`,
+		);
 
 		const passingManifest = await writeManifest(path.join(directory, "success"), {
 			version: 1,
@@ -278,7 +280,18 @@ describe("test manifest runner", () => {
 		});
 		const result = run(runner, [manifestPath]);
 		expect(result.exitCode, output(result)).toBe(1);
-		expect(output(result)).toContain(`Manifest required file is not an executable command: ${requiredTest}`);
+		expect(output(result)).toContain(`Manifest required file is not covered by executable commands: ${requiredTest}`);
+	});
+	it("rejects incomplete anchored partitions for a required parity file", async () => {
+		const directory = await tempDir();
+		const manifest = await sdkAdapterParityManifest();
+		manifest.commands = manifest.commands.filter(command => command.argv[4] !== "^AD-L-");
+		const manifestPath = await writeManifest(directory, manifest);
+		const result = run(runner, [manifestPath]);
+		expect(result.exitCode, output(result)).toBe(1);
+		expect(output(result)).toContain(
+			"Manifest required file is not covered by executable commands: packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
+		);
 	});
 	it("does not run parity rows after a behavioral command fails", async () => {
 		const directory = await tempDir();

@@ -28,6 +28,14 @@ const retiredAgentWireSubpaths = [
 	"./modes/shared/agent-wire/ui-result",
 	"./modes/shared/agent-wire/wire-types",
 ] as const;
+const retiredTmuxMachineBusPaths = new Set(["scripts/gjc-session/prompt.sh", "scripts/gjc-session/tail.sh"]);
+const machineTmuxDocumentationPaths = new Set([
+	"docs/gjc-session-clawhip-routing.md",
+	"packages/coding-agent/src/setup/hermes/templates/operator-instructions.v1.md",
+]);
+const machineTmuxDocumentationPattern =
+	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b)/g;
+const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b/g;
 
 function isWorkspacePackageManifest(file: string): boolean {
 	return file === "package.json" || (file.startsWith("packages/") && file.endsWith("/package.json"));
@@ -215,6 +223,10 @@ const sanctionedTmuxPaths = new Map<string, string>([
 ]);
 
 const coordinatorMcpRoot = "packages/coding-agent/src/coordinator-mcp/server.ts";
+function isPublishedGjcSessionShellHelper(file: string): boolean {
+	return file.startsWith("scripts/gjc-session/") && file.endsWith(".sh");
+}
+
 const canonicalSdkClientModule = "packages/coding-agent/src/sdk/client/client.ts";
 const coordinatorDirectAuthorityPatterns = [
 	/\bimport\s+(?:type\s+)?[\s\S]*?\sfrom\s*["'][^"']*(?:session\/agent-session|sdk\/session|sdk\/host\/control)["']/g,
@@ -405,6 +417,25 @@ async function scan(): Promise<string[]> {
 		if (file.startsWith(retiredPythonRpcPackagePath)) {
 			violations.push(`${file}: retired Python gjc-rpc package source survived`);
 		}
+		if (retiredTmuxMachineBusPaths.has(file)) {
+			violations.push(`${file}: retired tmux machine prompt or viewing helper survived`);
+		}
+		if (machineTmuxDocumentationPaths.has(file)) {
+			const contents = await Bun.file(path.join(repoRoot, file)).text();
+			for (const match of contents.matchAll(machineTmuxDocumentationPattern)) {
+				violations.push(
+					`${file}:${lineNumber(contents, match.index ?? 0)}: published machine documentation directs tmux prompt or viewing access`,
+				);
+			}
+		}
+		if (isPublishedGjcSessionShellHelper(file)) {
+			const contents = await Bun.file(path.join(repoRoot, file)).text();
+			for (const match of contents.matchAll(tmuxMachineBusPrimitivePattern)) {
+				violations.push(
+					`${file}:${lineNumber(contents, match.index ?? 0)}: published shell helper performs tmux machine prompt injection or pane viewing`,
+				);
+			}
+		}
 		if (file === scannerPath || !isSource(file)) continue;
 
 		let contents: string;
@@ -499,6 +530,11 @@ async function scan(): Promise<string[]> {
 			for (const match of contents.matchAll(/\b(set-buffer|paste-buffer|send-keys)\b/g)) {
 				violations.push(
 					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${match[1]} content injection is outside sanctioned process lifecycle`,
+				);
+			}
+			for (const match of contents.matchAll(/\bcapture-pane\b/g)) {
+				violations.push(
+					`${file}:${lineNumber(contents, match.index ?? 0)}: coordinator MCP reads tmux pane content outside SDK queries`,
 				);
 			}
 			for (const pattern of coordinatorDirectAuthorityPatterns) {
@@ -679,6 +715,24 @@ async function selfTest(): Promise<void> {
 	);
 	await runSelfTestFixture({ "docs/rpc-removal.md": "The RPC compatibility fixture was removed.\n" }, 0);
 	await runSelfTestFixture(
+		{ "scripts/gjc-session/prompt.sh": "#!/usr/bin/env bash\n" },
+		1,
+		"retired tmux machine prompt or viewing helper survived",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/unsafe.sh":
+				"#!/usr/bin/env bash\ntmux load-buffer -b prompt -\ntmux capture-pane -p -t session\n",
+		},
+		1,
+		"published shell helper performs tmux machine prompt injection or pane viewing",
+	);
+	await runSelfTestFixture(
+		{ "docs/gjc-session-clawhip-routing.md": "scripts/gjc-session/tail.sh visible output\n" },
+		1,
+		"published machine documentation directs tmux prompt or viewing access",
+	);
+	await runSelfTestFixture(
 		{
 			"packages/coding-agent/src/unsanctioned.ts": 'Bun.spawnSync(["tmux", "send-keys", "-t", "pane", "prompt"]);\n',
 		},
@@ -709,6 +763,15 @@ async function selfTest(): Promise<void> {
 		},
 		1,
 		"tmux set-buffer content injection is outside sanctioned process lifecycle",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/coordinator-mcp/server.ts":
+				'import { SdkClient } from "../sdk/client/client";\nBun.spawnSync(["tmux", "capture-pane", "-p"]);\nvoid SdkClient;\n',
+			"packages/coding-agent/src/sdk/client/client.ts": "export class SdkClient {}\n",
+		},
+		1,
+		"coordinator MCP reads tmux pane content outside SDK queries",
 	);
 	await runSelfTestFixture(
 		{

@@ -57,7 +57,7 @@ export async function startProductionSdkHost(cwd: string): Promise<{
 		observed,
 		stop: async () => {
 			await session.extensionRunner?.emit({ type: "session_shutdown" });
-			session.dispose();
+			await session.dispose();
 		},
 	};
 }

@@ -441,6 +441,7 @@ describe("GJC tmux session management", () => {
 
 	it("fails closed before tagging when native session identity is unavailable", () => {
 		const calls: string[][] = [];
+		injectSafeAbsentToSafeOwnerProof();
 		const spawnSyncSpy = spyOn(Bun, "spawnSync") as unknown as SpawnSyncSpy;
 		spawnSyncSpy.mockImplementation((cmd: string[]) => {
 			calls.push(cmd);

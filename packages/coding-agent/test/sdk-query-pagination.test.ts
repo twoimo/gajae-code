@@ -152,6 +152,24 @@ describe("SDK query pagination", () => {
 		await store.close();
 	});
 
+	it("splits large CJK and emoji snapshots at UTF-8 boundaries", async () => {
+		const stateRoot = await mkdtemp(join(tmpdir(), "gjc-sdk-query-test-"));
+		const snapshotDir = join(stateRoot, "sdk", "snapshots", "s1");
+		const body = "漢🙂".repeat(3 * 1024 * 1024);
+		const store = new RevisionStore("s1", Date.now, { storageDir: stateRoot });
+		const revision = await store.createRevision("large", "multibyte", { body });
+		const files = await readdir(join(snapshotDir, "objects"));
+		expect(files.length).toBeGreaterThan(1);
+		for (const file of files) {
+			const chunk = await readFile(join(snapshotDir, "objects", file));
+			expect(chunk.length).toBeLessThanOrEqual(4 * 1024 * 1024);
+			expect(Buffer.from(chunk.toString("utf8"))).toEqual(chunk);
+		}
+		expect((await store.readRevision("large", "multibyte", revision)) as { body: string }).toEqual({ body });
+		expect(store.peakBufferedBytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+		await store.close();
+	});
+
 	it("reads a 40 MiB transcript body page from its indexed manifest range", async () => {
 		const stateRoot = await mkdtemp(join(tmpdir(), "gjc-sdk-query-test-"));
 		const body = "t".repeat(40 * 1024 * 1024);

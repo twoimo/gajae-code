@@ -58,16 +58,18 @@ const MAX_ACP_REPLAY_PAGES = 10_000;
 
 type JsonObject = Record<string, unknown>;
 /**
- * The v3 turn.prompt acknowledgement carries a command ID, but AgentSession's
- * current terminal events do not require that ID. A terminal event therefore
- * completes a prompt only when matching IDs are present, or after this prompt
- * has observed a post-delivery start/stream marker. A stale lone agent_end can
- * never settle a newer ACP prompt.
+ * ACP prompt completion is tied to a post-acknowledgement lifecycle boundary.
+ * AgentSession events do not carry the command identity themselves, so the
+ * host stamps command/turn identities into its replay ring and ACP also keeps
+ * a per-endpoint ingress sequence. A frame observed before an acknowledgement
+ * can never settle the waiter that acknowledgement creates.
  */
 interface PromptWaiter {
 	cancelRequested: boolean;
 	acknowledged: boolean;
 	activityObserved: boolean;
+	/** Highest inbound frame sequence already observed when the prompt was acknowledged. */
+	boundary: number;
 	correlation: PromptCorrelation;
 	pendingTerminal?: PromptCorrelation;
 	resolve: (response: PromptResponse) => void;
@@ -82,6 +84,10 @@ type SessionRecord = {
 	cwd: string;
 	adapter: AcpSdkAdapter;
 	unsubscribe: () => void;
+	/** Per-session frame work queue; callbacks never race prompt ownership. */
+	frameTail: Promise<void>;
+	/** Monotonic at WebSocket ingress, before queued work begins. */
+	inboundSequence: number;
 	activePrompt?: PromptWaiter;
 };
 type Endpoint = { url: string; token: string };
@@ -201,6 +207,60 @@ function isPromptActivity(eventType: string): boolean {
 		"tool_execution_update",
 		"tool_execution_end",
 	].includes(eventType);
+}
+
+export type TranscriptReplayBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+/**
+ * The production transcript query exposes durable `{ body, textSummary }`
+ * entries, not an ACP-shaped `content` array. Historical session JSONL has no
+ * recoverable image bytes, so replay exposes that boundary rather than
+ * pretending images were restored.
+ */
+export interface TranscriptReplayContent {
+	blocks: TranscriptReplayBlock[];
+	images: { available: false; reason: "historical_transcript_images_unavailable" };
+}
+
+export function transcriptReplayContent(entry: unknown): TranscriptReplayContent {
+	const record = object(entry);
+	if (typeof record?.body !== "string")
+		throw new AcpSdkAdapterError(
+			"transcript_body_unavailable",
+			"ACP cannot replay a transcript entry without its production body.",
+		);
+	return {
+		blocks: record.body.length > 0 ? [{ type: "text", text: record.body }] : [],
+		images: { available: false, reason: "historical_transcript_images_unavailable" },
+	};
+}
+
+type ReceivedSdkEvent = {
+	event: JsonObject;
+	/** Event payload accepted by the ACP event mapper, when this is an agent-wire frame. */
+	wirePayload?: JsonObject;
+};
+
+/**
+ * Native session hosts emit `activity` directly; test-only/legacy adapters may
+ * wrap agent-wire events in `{ type: "event", payload }`. Normalize both
+ * without treating notification-specific frames as agent lifecycle truth.
+ */
+function receivedSdkEvent(frame: JsonObject): ReceivedSdkEvent | undefined {
+	if (frame.type === "activity") {
+		const type = frame.state === "busy" ? "agent_start" : frame.state === "idle" ? "agent_end" : undefined;
+		return type ? { event: { type, ...correlationFrom(frame) } } : undefined;
+	}
+	if (frame.type !== "event") return undefined;
+	const payload = object(frame.payload);
+	if (!payload) return undefined;
+	const replayPayload = object(payload.payload);
+	const event = object(payload.event) ?? replayPayload ?? payload;
+	if (typeof event.type !== "string") return undefined;
+	return {
+		event,
+		...(object(payload.event) ? { wirePayload: payload } : {}),
+	};
 }
 
 const ACP_CONFIG_OPTIONS = [
@@ -650,15 +710,8 @@ export class AcpAgent implements Agent {
 		const cwd = record?.cwd ?? this.#knownSessionCwds.get(params.sessionId);
 		// ACP close has no cwd. Only connection-owned sessions may reach broker lifecycle control.
 		if (!cwd) return {};
-		await (await this.#brokerAdapter()).global("session.close", { sessionId: params.sessionId }, randomUUID());
-		try {
-			record?.unsubscribe();
-			record?.activePrompt?.reject(new AcpSdkAdapterError("connection_closed", "ACP session was closed."));
-			await record?.adapter.close();
-		} finally {
-			this.#sessions.delete(params.sessionId);
-			this.#knownSessionCwds.delete(params.sessionId);
-		}
+		await this.#teardownSession(params.sessionId, "closed", true);
+		this.#knownSessionCwds.delete(params.sessionId);
 		return {};
 	}
 
@@ -669,18 +722,15 @@ export class AcpAgent implements Agent {
 		// already scoped through the broker; unknown ids remain the protocol no-op.
 		if (!cwd) return {};
 
-		if (record) {
-			record.unsubscribe();
-			await record.adapter.close();
-			this.#sessions.delete(params.sessionId);
-			await (await this.#brokerAdapter()).global("session.close", { sessionId: params.sessionId }, randomUUID());
-		}
-
+		await this.#teardownSession(params.sessionId, "deleted", true);
 		let saved: string;
 		try {
 			saved = await this.#resolveSavedSession(params.sessionId, cwd);
 		} catch (error) {
-			if (error instanceof AcpSdkAdapterError && error.code === "not_found") return {};
+			if (error instanceof AcpSdkAdapterError && error.code === "not_found") {
+				this.#knownSessionCwds.delete(params.sessionId);
+				return {};
+			}
 			throw error;
 		}
 		await (await this.#brokerAdapter()).global(
@@ -741,6 +791,7 @@ export class AcpAgent implements Agent {
 				cancelRequested: false,
 				acknowledged: false,
 				activityObserved: false,
+				boundary: record.inboundSequence,
 				correlation: {},
 				resolve,
 				reject,
@@ -752,8 +803,11 @@ export class AcpAgent implements Agent {
 				text: payload.text,
 				...(payload.images.length ? { images: payload.images } : {}),
 			});
-			waiter.acknowledged = true;
+			// Capture the ingress boundary after the command acknowledgement. Frames
+			// queued before this point are stale with respect to this ACP prompt.
+			waiter.boundary = record.inboundSequence;
 			waiter.correlation = correlationFrom(acknowledgement);
+			waiter.acknowledged = true;
 			this.#settlePrompt(record, waiter);
 		} catch (error) {
 			if (record.activePrompt === waiter) record.activePrompt = undefined;
@@ -765,8 +819,17 @@ export class AcpAgent implements Agent {
 	async cancel(params: { sessionId: string }): Promise<void> {
 		const record = this.#sessions.get(params.sessionId);
 		if (!record) throw new AcpSdkAdapterError("not_found", `Unsupported ACP session: ${params.sessionId}`);
-		if (record.activePrompt) record.activePrompt.cancelRequested = true;
-		await record.adapter.cancel();
+		const waiter = record.activePrompt;
+		const acknowledgement = await record.adapter.cancel();
+		const result = object(object(acknowledgement)?.result) ?? object(acknowledgement);
+		if (result?.aborted !== true)
+			throw new AcpSdkAdapterError(
+				"abort_unacknowledged",
+				"SDK did not acknowledge cancellation of the active prompt.",
+			);
+		// Do not retroactively mark a waiter that already settled while the abort
+		// request was in flight. A cancelled response means the abort itself won.
+		if (waiter && record.activePrompt === waiter) waiter.cancelRequested = true;
 	}
 
 	async extMethod(method: string, params: JsonObject): Promise<JsonObject> {
@@ -889,35 +952,69 @@ export class AcpAgent implements Agent {
 			url: discovered.url,
 			token: discovered.token,
 			connection: this.#reverseConnection(id),
-
 			providers: this.#providers(),
 		});
-		const unsubscribe = adapter.onFrame(frame => void this.#handleSdkFrame(id, frame));
-		this.#sessions.set(id, { cwd, adapter, unsubscribe });
+		const record: SessionRecord = {
+			cwd,
+			adapter,
+			unsubscribe: () => {},
+			frameTail: Promise.resolve(),
+			inboundSequence: 0,
+		};
+		record.unsubscribe = adapter.onFrame(frame => this.#enqueueSdkFrame(id, adapter, frame));
+		this.#sessions.set(id, record);
 		this.#knownSessionCwds.set(id, cwd);
 		try {
 			await applyAcpPermissionMode(adapter, this.#clientCapabilities);
 		} catch (error) {
-			unsubscribe();
-			this.#sessions.delete(id);
-			this.#knownSessionCwds.delete(id);
-			await adapter.close().catch(() => undefined);
+			try {
+				await this.#teardownSession(id, "attachment failed", false);
+			} finally {
+				this.#knownSessionCwds.delete(id);
+			}
 			throw error;
 		}
 	}
 
 	async #discardNewSession(id: string): Promise<void> {
-		const record = this.#sessions.get(id);
-		this.#sessions.delete(id);
+		await this.#teardownSession(id, "discarded", true);
 		this.#knownSessionCwds.delete(id);
+	}
+
+	/**
+	 * All local session disposal follows one path: remove ownership and reject a
+	 * waiting prompt before any awaited socket or broker work. A failed close is
+	 * terminally uncertain, not a reason to leave a usable-looking ACP record.
+	 */
+	async #teardownSession(id: string, reason: string, closeRemote: boolean): Promise<void> {
+		const record = this.#sessions.get(id);
+		if (record) {
+			this.#sessions.delete(id);
+			record.unsubscribe();
+			const waiter = record.activePrompt;
+			record.activePrompt = undefined;
+			waiter?.reject(new AcpSdkAdapterError("connection_closed", `ACP session was ${reason}.`));
+		}
+
+		let adapterFailure: unknown;
 		try {
-			record?.unsubscribe();
-			record?.activePrompt?.reject(new AcpSdkAdapterError("connection_closed", "ACP session was discarded."));
 			await record?.adapter.close();
-		} catch {}
-		try {
-			await (await this.#brokerAdapter()).global("session.close", { sessionId: id }, randomUUID());
-		} catch {}
+		} catch (error) {
+			adapterFailure = error;
+		}
+		let remoteFailure: unknown;
+		if (closeRemote) {
+			try {
+				await (await this.#brokerAdapter()).global("session.close", { sessionId: id }, randomUUID());
+			} catch (error) {
+				remoteFailure = error;
+			}
+		}
+		if (adapterFailure || remoteFailure) {
+			const failure = remoteFailure ?? adapterFailure;
+			const detail = failure instanceof Error ? failure.message : String(failure);
+			throw new AcpSdkAdapterError("terminal_uncertain", `ACP session cleanup is uncertain: ${detail}`);
+		}
 	}
 
 	async #brokerAdapter(): Promise<AcpSdkAdapter> {
@@ -984,31 +1081,48 @@ export class AcpAgent implements Agent {
 		};
 	}
 
-	async #handleSdkFrame(id: string, frame: Record<string, unknown>): Promise<void> {
-		if (frame.type !== "event") return;
-		const payload = object(frame.payload) ?? object(frame);
-		if (!payload) return;
-		const event = object(payload.event) ?? payload;
-		if (typeof event.type !== "string") return;
-		const cwd = this.#sessions.get(id)?.cwd;
-		const wirePayload = "event" in payload ? payload : { event_type: event.type, event };
-		for (const notification of mapAgentWireEventPayloadToAcpSessionUpdates(wirePayload as never, id, { cwd }))
-			await this.#connection.sessionUpdate(notification);
-
+	#enqueueSdkFrame(id: string, adapter: AcpSdkAdapter, frame: JsonObject): void {
 		const record = this.#sessions.get(id);
-		const activePrompt = record?.activePrompt;
-		if (!record || !activePrompt) return;
-		const correlation = correlationFrom(frame, payload, event);
-		if (correlationsConflict(activePrompt.correlation, correlation)) return;
-		if (isPromptActivity(event.type)) {
-			activePrompt.activityObserved = true;
-			this.#settlePrompt(record, activePrompt);
-			return;
+		if (!record || record.adapter !== adapter) return;
+		// Sequence at ingress, not at asynchronous handling time: a frame that
+		// arrived before a prompt acknowledgement remains before its boundary even
+		// if sessionUpdate is slow.
+		const sequence = ++record.inboundSequence;
+		const task = record.frameTail.then(async () => await this.#handleSdkFrame(id, adapter, frame, sequence));
+		record.frameTail = task.catch(() => undefined);
+	}
+
+	async #handleSdkFrame(id: string, adapter: AcpSdkAdapter, frame: JsonObject, sequence: number): Promise<void> {
+		const record = this.#sessions.get(id);
+		if (!record || record.adapter !== adapter) return;
+		const received = receivedSdkEvent(frame);
+		if (!received) return;
+		const { event, wirePayload } = received;
+		const correlation = correlationFrom(frame, event);
+		const activePrompt = record.activePrompt;
+		// Prompt ownership is always updated before awaiting ACP client delivery.
+		// This makes a slow or failing sessionUpdate unable to reorder a terminal
+		// event behind the next prompt.
+		if (
+			activePrompt?.acknowledged &&
+			sequence > activePrompt.boundary &&
+			!correlationsConflict(activePrompt.correlation, correlation)
+		) {
+			if (isPromptActivity(String(event.type))) {
+				activePrompt.activityObserved = true;
+				this.#settlePrompt(record, activePrompt);
+			} else if (event.type === "agent_end") {
+				if (correlationsMatch(activePrompt.correlation, correlation) || activePrompt.activityObserved) {
+					activePrompt.pendingTerminal = correlation;
+					this.#settlePrompt(record, activePrompt);
+				}
+			}
 		}
-		if (event.type !== "agent_end") return;
-		if (!correlationsMatch(activePrompt.correlation, correlation) && !activePrompt.activityObserved) return;
-		activePrompt.pendingTerminal = correlation;
-		this.#settlePrompt(record, activePrompt);
+		if (!wirePayload) return;
+		for (const notification of mapAgentWireEventPayloadToAcpSessionUpdates(wirePayload as never, id, {
+			cwd: record.cwd,
+		}))
+			await this.#connection.sessionUpdate(notification);
 	}
 
 	#settlePrompt(record: SessionRecord, waiter: PromptWaiter): void {
@@ -1032,6 +1146,7 @@ export class AcpAgent implements Agent {
 	async #replaySession(id: string): Promise<void> {
 		const adapter = this.#adapter(id);
 		let cursor: string | undefined;
+		let imageLimitationReported = false;
 		for (let pageCount = 0; pageCount < MAX_ACP_REPLAY_PAGES; pageCount++) {
 			const response = object(await adapter.query("transcript.list", {}, cursor));
 			const result = object(response?.result) ?? response;
@@ -1039,41 +1154,27 @@ export class AcpAgent implements Agent {
 			for (const item of Array.isArray(page?.items) ? page.items : []) {
 				const message = object(item);
 				if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
-				const content =
-					typeof message.content === "string"
-						? [{ type: "text", text: message.content }]
-						: Array.isArray(message.content)
-							? message.content
-							: [];
-				for (const block of content) {
-					const value = object(block);
-					const messageId = typeof message.id === "string" ? message.id : undefined;
-					if (value?.type === "text" && typeof value.text === "string") {
-						await this.#connection.sessionUpdate({
-							sessionId: id,
-							update: {
-								sessionUpdate: message.role === "user" ? "user_message_chunk" : "agent_message_chunk",
-								content: { type: "text", text: value.text },
-								...(messageId ? { messageId } : {}),
-							},
-						});
-						continue;
-					}
-					if (value?.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string") {
-						await this.#connection.sessionUpdate({
-							sessionId: id,
-							update: {
-								sessionUpdate: message.role === "user" ? "user_message_chunk" : "agent_message_chunk",
-								content: { type: "image", data: value.data, mimeType: value.mimeType },
-								...(messageId ? { messageId } : {}),
-							},
-						});
-						continue;
-					}
-					throw new AcpSdkAdapterError(
-						"unsupported_content",
-						"ACP cannot faithfully replay a transcript content block.",
-					);
+				const content = transcriptReplayContent(message);
+				if (!imageLimitationReported) {
+					imageLimitationReported = true;
+					await this.#connection.sessionUpdate({
+						sessionId: id,
+						update: {
+							sessionUpdate: "session_info_update",
+							_meta: { gjcTranscriptImageReplay: content.images },
+						},
+					});
+				}
+				const messageId = typeof message.id === "string" ? message.id : undefined;
+				for (const block of content.blocks) {
+					await this.#connection.sessionUpdate({
+						sessionId: id,
+						update: {
+							sessionUpdate: message.role === "user" ? "user_message_chunk" : "agent_message_chunk",
+							content: block,
+							...(messageId ? { messageId } : {}),
+						},
+					});
 				}
 			}
 			cursor = typeof page?.continuationCursor === "string" ? page.continuationCursor : undefined;
@@ -1114,15 +1215,23 @@ export class AcpAgent implements Agent {
 	async #dispose(): Promise<void> {
 		if (this.#disposed) return;
 		this.#disposed = true;
-		for (const record of this.#sessions.values()) {
-			record.unsubscribe();
-			record.activePrompt?.reject(new AcpSdkAdapterError("connection_closed", "ACP connection closed."));
-			await record.adapter.close();
+		const failures: unknown[] = [];
+		for (const id of [...this.#sessions.keys()]) {
+			try {
+				await this.#teardownSession(id, "connection closed", false);
+			} catch (error) {
+				failures.push(error);
+			}
 		}
-		this.#sessions.clear();
 		this.#attaching.clear();
 		this.#resolvingExisting.clear();
 		this.#knownSessionCwds.clear();
-		if (this.#broker) (await this.#broker).adapter.close().catch(() => undefined);
+		if (this.#broker) await (await this.#broker).adapter.close();
+		if (failures.length > 0) {
+			const detail = failures
+				.map(failure => (failure instanceof Error ? failure.message : String(failure)))
+				.join("; ");
+			throw new AcpSdkAdapterError("terminal_uncertain", `ACP connection cleanup is uncertain: ${detail}`);
+		}
 	}
 }

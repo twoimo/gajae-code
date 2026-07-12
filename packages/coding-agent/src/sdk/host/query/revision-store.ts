@@ -525,17 +525,8 @@ export class RevisionStore {
 					await flush();
 					remaining = CHUNK_BYTES;
 				}
-				let end = Math.min(text.length, offset + Math.max(1, remaining));
-				while (end > offset && Buffer.byteLength(text.slice(offset, end)) > remaining) end--;
-				if (
-					end > offset &&
-					end < text.length &&
-					text.charCodeAt(end - 1) >= 0xd800 &&
-					text.charCodeAt(end - 1) <= 0xdbff &&
-					text.charCodeAt(end) >= 0xdc00 &&
-					text.charCodeAt(end) <= 0xdfff
-				)
-					end--;
+				const end = utf8ChunkEnd(text, offset, remaining);
+
 				if (end === offset) {
 					await flush();
 					continue;
@@ -861,6 +852,27 @@ export class RevisionStore {
 
 function isPlainJsonString(value: unknown): value is string {
 	return typeof value === "string" && !/["\\\u0000-\u001f\ud800-\udfff]/.test(value);
+}
+
+/** Finds the furthest UTF-16 boundary whose UTF-8 encoding fits in maxBytes. */
+function utf8ChunkEnd(text: string, start: number, maxBytes: number): number {
+	let low = start;
+	let high = Math.min(text.length, start + maxBytes);
+	while (low < high) {
+		const middle = low + Math.ceil((high - low) / 2);
+		if (Buffer.byteLength(text.slice(start, middle)) <= maxBytes) low = middle;
+		else high = middle - 1;
+	}
+	if (
+		low > start &&
+		low < text.length &&
+		text.charCodeAt(low - 1) >= 0xd800 &&
+		text.charCodeAt(low - 1) <= 0xdbff &&
+		text.charCodeAt(low) >= 0xdc00 &&
+		text.charCodeAt(low) <= 0xdfff
+	)
+		low--;
+	return low;
 }
 function utf8BoundaryAtOrAfter(bytes: Buffer, offset: number): number {
 	while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++;

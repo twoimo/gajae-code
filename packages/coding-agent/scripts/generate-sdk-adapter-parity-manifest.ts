@@ -27,13 +27,20 @@ const adapterTests: Record<Adapter, string[]> = {
 		"packages/coding-agent/test/sdk-adapter-dispositions.test.ts",
 	],
 };
-const commands = [
+const dispositionTestFile = "packages/coding-agent/test/sdk-adapter-dispositions.test.ts";
+const commandFiles = [
 	...new Set([...Object.values(adapterTests).flat(), "packages/coding-agent/test/sdk-host-wiring.test.ts"]),
 ].sort();
-const required = [...commands];
+const commands: Manifest["commands"] = commandFiles.flatMap(file =>
+	file === dispositionTestFile
+		? ["^AD-M-", "^AD-A-", "^AD-L-", "^AD-(T|D|S)-"].map(pattern => ({
+				argv: ["bun", "test", file, "--test-name-pattern", pattern],
+			}))
+		: [{ argv: ["bun", "test", file] }],
+);
+const required = [...commandFiles];
 const excluded: Manifest["excluded"] = [];
 const adapters = ["telegram", "discord", "slack", "mcp", "acp", "daemonCli"] as const;
-const dispositionTestFile = "packages/coding-agent/test/sdk-adapter-dispositions.test.ts";
 
 function expectedOutcome(disposition: AdapterDisposition): ManifestAdapterRow["expected"] {
 	return disposition === "prohibited"
@@ -88,7 +95,7 @@ function generateRows(): ManifestAdapterRow[] {
 function generateManifest(): Manifest {
 	return {
 		version: 1,
-		commands: commands.map(file => ({ argv: ["bun", "test", file] })),
+		commands,
 		excluded,
 		required,
 		rows: generateRows(),

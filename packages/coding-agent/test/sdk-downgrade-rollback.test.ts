@@ -10,13 +10,19 @@ import { SessionIndex } from "../src/sdk/broker/session-index";
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const pretrainManifest = path.join(import.meta.dir, "manifests", "sdk-pretrain-binary.json");
 class PinnedOldReaderCommitUnavailableError extends Error {
-	constructor(baseRef: string) {
+	constructor(baseRef: string, reason: string) {
 		super(
-			`Pinned old-reader git object ${baseRef} is unavailable; the rollback acceptance proof requires this commit.`,
+			`Pinned old-reader git object ${baseRef} cannot establish its exact commit identity; ${reason}. The rollback acceptance proof requires this commit.`,
 		);
 		this.name = "PinnedOldReaderCommitUnavailableError";
 	}
 }
+
+type PinnedCommitRecovery = {
+	remote: string;
+	ref: string;
+	depth: number;
+};
 
 const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-sdk-rollback-"));
 
@@ -32,6 +38,35 @@ async function command(
 		child.exited,
 	]);
 	return { exitCode, output: `${stdout}${stderr}` };
+}
+
+async function resolvePinnedOldReaderCommit(baseRef: string, recovery: PinnedCommitRecovery): Promise<string> {
+	if (recovery.ref !== baseRef) {
+		throw new PinnedOldReaderCommitUnavailableError(
+			baseRef,
+			`recovery ref ${recovery.ref} does not match the pinned commit`,
+		);
+	}
+
+	const current = await command(["git", "rev-parse", "--verify", `${baseRef}^{commit}`]);
+	if (current.exitCode === 0 && current.output.trim() === baseRef) return baseRef;
+
+	const fetched = await command([
+		"git",
+		"fetch",
+		"--no-tags",
+		`--depth=${recovery.depth}`,
+		recovery.remote,
+		recovery.ref,
+	]);
+	const recovered = await command(["git", "rev-parse", "--verify", `${baseRef}^{commit}`]);
+	if (fetched.exitCode !== 0 || recovered.exitCode !== 0 || recovered.output.trim() !== baseRef) {
+		throw new PinnedOldReaderCommitUnavailableError(
+			baseRef,
+			`bounded fetch from ${recovery.remote} ref ${recovery.ref} at depth ${recovery.depth} exited ${fetched.exitCode}`,
+		);
+	}
+	return recovered.output.trim();
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: number, description: string): Promise<void> {
@@ -142,6 +177,7 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 		artifactPath: string;
 		artifactSha256Scope: string;
 		supportedPlatforms: string[];
+		sourceRecovery: PinnedCommitRecovery;
 		toolchain: {
 			runtime: string;
 			version: string;
@@ -168,6 +204,7 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 	expect(manifest.toolchain.runtime).toBe("bun");
 	expect(manifest.toolchain.version).toBe(Bun.version);
 	expect(manifest.runtimeEnvironment).toEqual({ BUN_OPTIONS: "--preload {transportShim}" });
+	expect(manifest.sourceRecovery).toEqual({ remote: "origin", ref: manifest.baseRef, depth: 1 });
 	expect(manifest.productCommand).toEqual([
 		"{executable}",
 		"notify",
@@ -191,14 +228,14 @@ test("v1 SDK state transforms to a rollback directory and is executable by the p
 	let endpointServer:
 		| { url: string; port: number; frames: Array<Record<string, unknown>>; stop: () => void }
 		| undefined;
-	const available = await command(["git", "cat-file", "-e", `${manifest.baseRef}^{commit}`]);
-	if (available.exitCode !== 0) throw new PinnedOldReaderCommitUnavailableError(manifest.baseRef);
+	const recoveredCommit = await resolvePinnedOldReaderCommit(manifest.baseRef, manifest.sourceRecovery);
 	const added = await command(["git", "worktree", "add", "--detach", worktree, manifest.baseRef]);
 	expect(added.exitCode, added.output).toBe(0);
 	try {
 		const head = await command(["git", "rev-parse", "HEAD"], worktree);
 		expect(head.exitCode, head.output).toBe(0);
 		const commit = head.output.trim();
+		expect(commit).toBe(recoveredCommit);
 		expect(commit).toBe(manifest.baseRef);
 		const installed = await command(manifest.toolchain.dependencyInstall, worktree);
 		expect(installed.exitCode, installed.output).toBe(0);

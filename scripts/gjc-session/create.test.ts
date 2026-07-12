@@ -7,7 +7,7 @@ const roots: string[] = [];
 const sessions: Array<{ name: string; socket: string }> = [];
 const createScript = path.join(import.meta.dir, "create.sh");
 const postmortemScript = path.join(import.meta.dir, "postmortem.sh");
-const promptScript = path.join(import.meta.dir, "prompt.sh");
+const harnessOwnerScript = path.join(import.meta.dir, "harness-tmux-owner-start.sh");
 
 async function executable(file: string, content: string) {
 	await fs.mkdir(path.dirname(file), { recursive: true });
@@ -347,13 +347,23 @@ test("runner ignores a stale prompt acceptance marker from another generation", 
 	expect(await Bun.file(path.join(state, "final.json")).json()).toMatchObject({ owner_exit_reason: "owner_exited_before_prompt_acceptance", prompt_accepted: false, worktree_changed_since_baseline: true });
 });
 
-test("uses public lifecycle markers only and excludes all private capture mechanisms", async () => {
-	const [create, postmortem, prompt] = await Promise.all([Bun.file(createScript).text(), Bun.file(postmortemScript).text(), Bun.file(promptScript).text()]);
-	for (const forbidden of ["pane.log", "pipe-pane", "capture-pane", "turnEvidence", "TURN_EVIDENCE", "pane-text"]) {
-		expect(create).not.toContain(forbidden); expect(postmortem).not.toContain(forbidden); expect(prompt).not.toContain(forbidden);
+test("ships only human-visible tmux lifecycle helpers", async () => {
+	const [create, postmortem, harnessOwner] = await Promise.all([
+		Bun.file(createScript).text(),
+		Bun.file(postmortemScript).text(),
+		Bun.file(harnessOwnerScript).text(),
+	]);
+	expect(await Bun.file(path.join(import.meta.dir, "prompt.sh")).exists()).toBe(false);
+	expect(await Bun.file(path.join(import.meta.dir, "tail.sh")).exists()).toBe(false);
+	for (const forbidden of ["load-buffer", "paste-buffer", "send-keys", "capture-pane", "pipe-pane", "turnEvidence", "TURN_EVIDENCE", "pane-text"]) {
+		expect(create).not.toContain(forbidden);
+		expect(postmortem).not.toContain(forbidden);
+		expect(harnessOwner).not.toContain(forbidden);
 	}
-	expect(create).toContain('"op": "plan"'); expect(create).toContain('"op":"observe_terminal"'); expect(postmortem).toContain("gjc_session_write_public_marker");
-	expect(prompt).toContain('kind": "prompt_accepted"'); expect(prompt).toContain("public started marker");
+	expect(create).toContain('"op": "plan"');
+	expect(create).toContain('"op":"observe_terminal"');
+	expect(postmortem).toContain("gjc_session_write_public_marker");
+	expect(harnessOwner).toContain("MACHINE_CONTROL=Coordinator MCP, ACP, or Gajae-Code SDK");
 });
 
 	test("monitor disable leaves no monitor owner session and router registration keeps caller options", async () => {
@@ -423,56 +433,6 @@ sleep 2`;
 	expect(await Bun.file(path.join(state, "owner-env.json")).json()).toEqual({ GJC_COORDINATOR_SESSION_ID: name, GJC_COORDINATOR_SESSION_BRANCH: "session-test", GJC_COORDINATOR_SESSION_STATE_FILE: path.join(state, "runtime-state.json"), GJC_SESSION_STATE_DIR: state });
 });
 
-test("prompt requires a public started marker and records a payload-free acceptance marker in the isolated socket", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-prompt-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const name = `prompt-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-	expect(Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }) }).exitCode).toBe(0);
-	const secret = "private prompt must not be persisted";
-	const submitted = Bun.spawnSync(["bash", promptScript, name, secret], { env: { ...process.env, GJC_SESSION_STATE_DIR: state }, stdout: "pipe", stderr: "pipe" });
-	expect(submitted.exitCode).toBe(0); expect(submitted.stdout.toString()).not.toContain(secret);
-	const marker = await Bun.file(path.join(state, "prompt-accepted.json")).json() as Record<string, unknown>;
-expect(marker).toMatchObject({ schema_version: 1, kind: "prompt_accepted", session_id: name, worktree_baseline_dirty: false, owner_generation: expect.any(String) });
-	expect(JSON.stringify(marker)).not.toContain(secret);
-});
-
-test("prompt deletes its private buffer when paste fails", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-prompt-paste-failure-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const name = `prompt-paste-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-	expect(Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }) }).exitCode).toBe(0);
-	const log = path.join(root, "tmux.log"); const tmux = path.join(root, "tmux"); const secret = "private prompt paste failure";
-	await executable(tmux, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${log}\nfor arg in "$@"; do [[ "$arg" == paste-buffer ]] && exit 23; done\nexec /usr/bin/tmux "$@"\n`);
-	const result = Bun.spawnSync(["bash", promptScript, name, secret], { env: { ...process.env, GJC_SESSION_STATE_DIR: state, GJC_SESSION_TMUX_BIN: tmux }, stdout: "pipe", stderr: "pipe" });
-	expect(result.exitCode).not.toBe(0);
-	expect(await Bun.file(log).text()).toContain("delete-buffer");
-	expect(result.stdout.toString() + result.stderr.toString()).not.toContain(secret);
-});
-
-test("prompt deletes a private buffer when its load client fails after creating it", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-prompt-load-failure-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const name = `prompt-load-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-	expect(Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }) }).exitCode).toBe(0);
-	const log = path.join(root, "tmux.log"); const tmux = path.join(root, "tmux"); const secret = "private prompt load failure";
-	await executable(tmux, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${log}\nfor arg in "$@"; do [[ "$arg" == load-buffer ]] && { /usr/bin/tmux "$@"; exit 23; }; done\nexec /usr/bin/tmux "$@"\n`);
-	const result = Bun.spawnSync(["bash", promptScript, name, secret], { env: { ...process.env, GJC_SESSION_STATE_DIR: state, GJC_SESSION_TMUX_BIN: tmux }, stdout: "pipe", stderr: "pipe" });
-	expect(result.exitCode).not.toBe(0);
-	const calls = await Bun.file(log).text();
-	expect(calls).toContain("load-buffer"); expect(calls).toContain("delete-buffer"); expect(calls).not.toContain("paste-buffer");
-	expect(result.stdout.toString() + result.stderr.toString()).not.toContain(secret);
-});
-
-test("prompt fails when private buffer deletion fails on the reachable isolated server", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-prompt-delete-failure-")); roots.push(root);
-	const dir = await worktree(root); const state = path.join(root, "state"); const bin = await fixture(root); const name = `prompt-delete-${Date.now()}`; sessions.push({ name, socket: `gjc-${name}` });
-	expect(Bun.spawnSync(["bash", createScript, name, dir], { env: env({ GJC_BIN: bin, GJC_SESSION_STATE_DIR: state }) }).exitCode).toBe(0);
-	const log = path.join(root, "tmux.log"); const tmux = path.join(root, "tmux"); const secret = "private prompt delete failure";
-	await executable(tmux, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${log}\nfor arg in "$@"; do [[ "$arg" == paste-buffer ]] && exit 23; [[ "$arg" == delete-buffer ]] && exit 24; done\nexec /usr/bin/tmux "$@"\n`);
-	const result = Bun.spawnSync(["bash", promptScript, name, secret], { env: { ...process.env, GJC_SESSION_STATE_DIR: state, GJC_SESSION_TMUX_BIN: tmux }, stdout: "pipe", stderr: "pipe" });
-	expect(result.exitCode).not.toBe(0);
-	const calls = await Bun.file(log).text();
-	expect(calls).toContain("delete-buffer"); expect(calls).toContain("has-session");
-	expect(result.stderr.toString()).toContain("failed to delete private prompt buffer");
-	expect(result.stdout.toString() + result.stderr.toString()).not.toContain(secret);
-});
 
 test("records one generation-bound recovery only after a prior incident replacement is started", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-replacement-")); roots.push(root);
@@ -574,14 +534,6 @@ test("does not recover an incident again in a third generation when a canonical 
 	expect((await Bun.file(log).text()).match(/tmux recovered/g)).toBeNull();
 });
 
-test("prompt fails closed without a started marker and does not expose prompt text", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-prompt-marker-")); roots.push(root);
-	const state = path.join(root, "state"); await fs.mkdir(state, { recursive: true });
-	const secret = "do not disclose this prompt";
-	const result = Bun.spawnSync(["bash", promptScript, "missing", secret], { env: { ...process.env, GJC_SESSION_STATE_DIR: state }, stdout: "pipe", stderr: "pipe" });
-	expect(result.exitCode).toBe(1); expect(result.stderr.toString()).toContain("no public started marker");
-	expect(result.stdout.toString() + result.stderr.toString()).not.toContain(secret);
-});
 	test("does not accept a terminal runtime record from another session", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-mismatch-")); roots.push(root);
 		const dir = await worktree(root); const state = path.join(root, "state");

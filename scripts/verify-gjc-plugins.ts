@@ -59,7 +59,6 @@ const codexManifest = path.join(PLUGIN_DIR, ".codex-plugin", "plugin.json");
 const claudeMcp = path.join(PLUGIN_DIR, ".mcp.json");
 const codexMcp = path.join(PLUGIN_DIR, ".codex.mcp.json");
 const skill = path.join(PLUGIN_DIR, "skills", "gjc-delegation", "SKILL.md");
-const sessionSkill = path.join(PLUGIN_DIR, "skills", "gjc-session", "SKILL.md");
 const codexMarketplace = path.join(".agents", "plugins", "marketplace.json");
 const claudeMarketplace = path.join(".claude-plugin", "marketplace.json");
 const unexpectedPluginFiles = findUnexpectedPluginFiles(files);
@@ -71,7 +70,7 @@ gate(
 
 gate(
 	"nested plugin layout present",
-	[claudeManifest, codexManifest, claudeMcp, codexMcp, skill, sessionSkill].every(rel => files.has(rel)),
+[claudeManifest, codexManifest, claudeMcp, codexMcp, skill].every(rel => files.has(rel)),
 	`plugin folder ./${PLUGIN_DIR}/`,
 );
 gate(
@@ -142,39 +141,16 @@ for (const tool of delegateTools) {
 }
 gate("docs reference delegate tools", docsReferenceTools, "command/skill docs mention each delegate tool");
 
-const sessionSkillText = read(sessionSkill);
-const sessionHelperRefs = [
-	"scripts/gjc-session/create.sh",
-	"scripts/gjc-session/prompt.sh",
-	"scripts/gjc-session/tail.sh",
-	"scripts/gjc-session/harness-tmux-owner-start.sh",
-	"docs/gjc-session-clawhip-routing.md",
-];
+const pluginDocumentation = [...files]
+	.filter(([rel]) => rel.endsWith(".md"))
+	.map(([, text]) => text)
+	.join("\n");
 gate(
-	"gjc-session skill references public helpers",
-	sessionHelperRefs.every(ref => sessionSkillText.includes(ref)),
-	sessionHelperRefs.join(", "),
-);
-gate(
-	"gjc-session skill keeps routing values runtime-owned",
-	sessionSkillText.includes("runtime inputs") &&
-		sessionSkillText.includes("Never hard-code private ids") &&
-		!/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/u.test(sessionSkillText),
-	"no embedded credentials or private routing values",
-);
-gate(
-	"gjc-session guidance uses SDK ownership modes, not retired RPC modes",
-	sessionSkillText.includes("Use the SDK/ACP integration when a host owns the tools.") &&
-		sessionSkillText.includes("For SDK/harness ownership debugging") &&
-		!sessionSkillText.includes("Prefer RPC/ACP") &&
-		!sessionSkillText.includes("harness/RPC dogfooding"),
-	"generated skill uses SDK/ACP and SDK/harness ownership guidance",
-);
-const harnessHelperText = fs.readFileSync(path.join(import.meta.dir, "gjc-session", "harness-tmux-owner-start.sh"), "utf8");
-gate(
-	"harness helper does not recommend retired RPC modes",
-	harnessHelperText.includes("SDK/harness ownership debugging") && !harnessHelperText.includes("harness/RPC dogfooding"),
-	"helper uses SDK/harness ownership guidance",
+	"plugin omits tmux machine prompt and viewing helpers",
+	!/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane)\b)/.test(
+		pluginDocumentation,
+	),
+	"plugin routes external control and viewing through Coordinator MCP/SDK",
 );
 
 let failures = 0;

@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import { Args, Command, Flags } from "@gajae-code/utils/cli";
 import type { Args as ParsedArgs } from "../cli/args";
 import { applyStartupModelProfiles, createSessionManager } from "../main";
@@ -29,17 +30,19 @@ async function runSessionHost(): Promise<void> {
 	const agentDir = process.env.GJC_AGENT_DIR;
 	if (!agentDir) throw new Error("GJC_AGENT_DIR is required for sdk session-host-internal.");
 	const cwd = process.cwd();
+	if ((await fs.realpath(request.cwd)) !== (await fs.realpath(cwd)))
+		throw new Error(`Lifecycle worktree mismatch: expected ${request.cwd}, got ${cwd}.`);
 	const parsed = lifecycleArgs(request, cwd, agentDir);
 	const sessionManager = await createSessionManager(parsed, cwd);
 	const { session } = await createAgentSession({ cwd, agentDir, sessionManager });
-	if (request.modelPreset) {
-		await applyStartupModelProfiles({
-			session,
-			settings: session.settings,
-			modelRegistry: session.modelRegistry,
-			parsedArgs: parsed,
-		});
-	}
+	// Extension initialization publishes the SDK-ready event, so profile activation
+	// must finish before the broker can expose this lifecycle host.
+	await applyStartupModelProfiles({
+		session,
+		settings: session.settings,
+		modelRegistry: session.modelRegistry,
+		parsedArgs: parsed,
+	});
 	let stopping = false;
 	const stop = () => {
 		if (stopping) return;

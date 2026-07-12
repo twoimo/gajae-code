@@ -71,21 +71,37 @@ function validateRowReceipts(rows: ManifestAdapterRow[]): void {
 	);
 }
 
-// Required files must appear as exact three-argument `bun test <file>` commands;
-// flag-token or non-positional appearances never satisfy coverage.
-const executableFiles = new Set(
+// Required files must be either exact `bun test <file>` commands or fail-closed
+// anchored partitions that collectively match every declared row for that file.
+const rows = manifest.rows ?? [];
+const exactExecutableFiles = new Set(
 	manifest.commands
 		.filter(command => command.argv.length === 3 && command.argv[0] === "bun" && command.argv[1] === "test")
 		.map(command => command.argv[2]),
 );
 for (const file of manifest.required ?? []) {
-	if (!executableFiles.has(file)) {
-		process.stderr.write(`Manifest required file is not an executable command: ${file}\n`);
+	if (exactExecutableFiles.has(file)) continue;
+	const fileRows = rows.filter(row => row.testFile === file);
+	const partitions = manifest.commands
+		.filter(
+			command =>
+				command.argv.length === 5 &&
+				command.argv[0] === "bun" &&
+				command.argv[1] === "test" &&
+				command.argv[2] === file &&
+				command.argv[3] === "--test-name-pattern" &&
+				command.argv[4]?.startsWith("^"),
+		)
+		.map(command => new RegExp(command.argv[4]!));
+	if (
+		fileRows.length === 0 ||
+		partitions.length === 0 ||
+		fileRows.some(row => !partitions.some(pattern => pattern.test(row.testNamePattern)))
+	) {
+		process.stderr.write(`Manifest required file is not covered by executable commands: ${file}\n`);
 		process.exit(1);
 	}
 }
-
-const rows = manifest.rows ?? [];
 if (rows.length > 0) {
 	try {
 		validateRowReceipts(rows);

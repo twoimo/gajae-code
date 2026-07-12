@@ -77,4 +77,4 @@ done
 cat "/tmp/${session_name}.gjc-start.json"
 cat "/tmp/${session_name}.gjc-observe.json"
 printf '\nSESSION_ID=%s\nSTATE_ROOT=%s\nTMUX_SERVER=default\nTMUX_SESSION=%s\n' "$sid" "$root" "$session_name"
-printf 'MONITOR_CAPTURE=tmux capture-pane -p -J -t %q:0.0 -S -200\n' "$session_name"
+printf 'MACHINE_CONTROL=Coordinator MCP, ACP, or Gajae-Code SDK\n'

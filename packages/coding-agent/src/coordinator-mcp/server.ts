@@ -10,6 +10,7 @@ import {
 	COORDINATOR_MCP_TOOL_NAMES,
 	type CoordinatorToolName,
 } from "../coordinator/contract";
+import { parseLaunchWorktreeMode } from "../gjc-runtime/launch-worktree";
 import { SdkClient, SdkClientError } from "../sdk/client/client";
 import { readSdkBrokerDiscovery, readSdkSessionEndpoint } from "../sdk/client/discovery";
 import {
@@ -573,6 +574,27 @@ function normalizeSession(session: Record<string, unknown>): Record<string, unkn
 	};
 }
 
+function coordinatorLifecycleTarget(sessionCommand: string | null, cwd: string): Record<string, unknown> {
+	if (!sessionCommand) return { path: cwd };
+	const [executable, ...args] = sessionCommand.trim().split(/\s+/);
+	if (!executable || path.basename(executable) !== "gjc")
+		throw new SdkClientError(
+			"invalid_input",
+			"GJC_COORDINATOR_MCP_SESSION_COMMAND must be a GJC worktree launch command.",
+		);
+	const parsed = parseLaunchWorktreeMode(args);
+	if (parsed.remainingArgs.length > 0)
+		throw new SdkClientError(
+			"invalid_input",
+			"GJC_COORDINATOR_MCP_SESSION_COMMAND supports only gjc --worktree [name] under SDK lifecycle control.",
+		);
+	if (!parsed.mode.enabled) return { path: cwd };
+	return {
+		path: cwd,
+		worktree: { enabled: true, ...(parsed.mode.name ? { name: parsed.mode.name } : {}) },
+	};
+}
+
 async function ensureDir(dir: string): Promise<void> {
 	await fs.mkdir(dir, { recursive: true });
 }
@@ -653,13 +675,28 @@ function publicCoordinatorSession(session: Record<string, unknown>): Record<stri
 	const result: Record<string, unknown> = {
 		session_id: firstString(session, ["session_id", "sessionId"]) ?? "unknown",
 	};
-	for (const key of ["cwd", "created_at"]) {
+	for (const key of ["cwd", "created_at", "mpreset"]) {
 		const value = session[key];
 		if (typeof value === "string") result[key] = value;
 	}
 	if (typeof session.ephemeral === "boolean") result.ephemeral = session.ephemeral;
 	if (typeof session.visible === "boolean") result.visible = session.visible;
 	return result;
+}
+
+function publicLifecycleReceipt(result: Record<string, unknown>, sessionId: string): Record<string, unknown> {
+	const receipt: Record<string, unknown> = { session_id: sessionId };
+	const worktree = asRecord(result.worktree);
+	if (worktree?.enabled !== true) return receipt;
+	const publicWorktree: Record<string, unknown> = { enabled: true };
+	for (const key of ["cwd", "branch"]) {
+		if (typeof worktree[key] === "string") publicWorktree[key] = worktree[key];
+	}
+	for (const key of ["created", "reused"]) {
+		if (typeof worktree[key] === "boolean") publicWorktree[key] = worktree[key];
+	}
+	receipt.worktree = publicWorktree;
+	return receipt;
 }
 
 function publicCoordinatorSessionState(state: CoordinatorSessionState | null): Record<string, unknown> | null {
@@ -2231,111 +2268,115 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 					mutationRequested: args.allow_mutation === true,
 					model: typeof args.model === "string" ? args.model : null,
 				});
+				const reusedSessionId = args.session_id == null ? undefined : safeExternalId("session", args.session_id);
 				try {
-					let sessionId: string;
-					let session: Record<string, unknown>;
-					let reusedSession = false;
-					if (args.session_id != null) {
-						sessionId = safeExternalId("session", args.session_id);
-						const existing = asRecord(await readJsonFile(sessionFile(sessionId)));
-						const sessionMpreset = optionalString(existing?.mpreset);
-						if (mpresetResolution.mpreset !== null && sessionMpreset !== mpresetResolution.mpreset) {
+					const delegate = async () => {
+						let sessionId: string;
+						let session: Record<string, unknown>;
+						let reusedSession = false;
+						if (reusedSessionId) {
+							sessionId = reusedSessionId;
+							const existing = asRecord(await readJsonFile(sessionFile(sessionId)));
+							const sessionMpreset = optionalString(existing?.mpreset);
+							if (mpresetResolution.mpreset !== null && sessionMpreset !== mpresetResolution.mpreset) {
+								return {
+									ok: false,
+									reason: "mpreset_conflict",
+									session_id: sessionId,
+									session_mpreset: sessionMpreset,
+									requested_mpreset: mpresetResolution.mpreset,
+								};
+							}
+							brokerResult(
+								await brokerSession(canonicalCwd, "session.get_endpoint", { sessionId }, idempotencyKey),
+							);
+							session = normalizeSession({ ...(existing ?? {}), session_id: sessionId, cwd: canonicalCwd });
+							reusedSession = true;
+						} else {
+							const created = brokerResult(
+								await brokerSession(
+									canonicalCwd,
+									"session.create",
+									{
+										cwd: canonicalCwd,
+										target: coordinatorLifecycleTarget(config.sessionCommand, canonicalCwd),
+										...(mpresetResolution.mpreset ? { modelPreset: mpresetResolution.mpreset } : {}),
+									},
+									idempotencyKey,
+								),
+							);
+							sessionId = safeExternalId("session", created.sessionId ?? created.session_id);
+							session = normalizeSession({
+								session_id: sessionId,
+								cwd: optionalString(created.cwd) ?? canonicalCwd,
+								ephemeral: true,
+								created_at: new Date().toISOString(),
+								...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
+							});
+						}
+						await writeJsonFile(sessionFile(sessionId), session);
+						const previousActiveTurn = await readActiveTurn(namespaceDir, sessionId);
+						if (previousActiveTurn && args.queue !== true && args.force !== true) {
 							return {
 								ok: false,
-								reason: "mpreset_conflict",
-								session_id: sessionId,
-								session_mpreset: sessionMpreset,
-								requested_mpreset: mpresetResolution.mpreset,
+								error: {
+									code: "active_turn_exists",
+									message: `Session ${sessionId} already has active turn ${previousActiveTurn.turn_id}.`,
+								},
+								turn_id: previousActiveTurn.turn_id,
 							};
 						}
-						brokerResult(
-							await brokerSession(canonicalCwd, "session.get_endpoint", { sessionId }, idempotencyKey),
-						);
-						session = normalizeSession({ ...(existing ?? {}), session_id: sessionId, cwd: canonicalCwd });
-						reusedSession = true;
-					} else {
-						const created = brokerResult(
-							await brokerSession(
-								canonicalCwd,
-								"session.create",
-								{
-									cwd: canonicalCwd,
-									target: { path: canonicalCwd },
-									...(mpresetResolution.mpreset ? { modelPreset: mpresetResolution.mpreset } : {}),
-								},
-								idempotencyKey,
-							),
-						);
-						sessionId = safeExternalId("session", created.sessionId ?? created.session_id);
-						session = normalizeSession({
-							session_id: sessionId,
-							cwd: canonicalCwd,
-							ephemeral: true,
-							created_at: new Date().toISOString(),
-							...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
-						});
-					}
-					await writeJsonFile(sessionFile(sessionId), session);
-					const previousActiveTurn = await readActiveTurn(namespaceDir, sessionId);
-					if (previousActiveTurn && args.queue !== true && args.force !== true) {
-						return {
-							ok: false,
-							error: {
-								code: "active_turn_exists",
-								message: `Session ${sessionId} already has active turn ${previousActiveTurn.turn_id}.`,
+						const operation =
+							args.force === true
+								? "turn.abort_and_prompt"
+								: args.queue === true
+									? "turn.follow_up"
+									: "turn.prompt";
+						const result = await controlSession(session, operation, { text: taggedPrompt }, idempotencyKey);
+						requirePromptAcknowledgement(result);
+						const turn = await recordAcceptedPrompt(sessionId, taggedPrompt, operation, previousActiveTurn);
+						await appendCoordinatorEvent(namespaceDir, {
+							kind: "delegation.started",
+							sessionId,
+							turnId: turn.turn_id,
+							summary: `Delegated ${delegateWorkflow} via ${name} on session ${sessionId}`,
+							metadata: {
+								workflow: delegateWorkflow,
+								tool_name: name,
+								reused_session: reusedSession,
+								sdk_operation: operation,
 							},
-							turn_id: previousActiveTurn.turn_id,
-						};
-					}
-					const operation =
-						args.force === true
-							? "turn.abort_and_prompt"
-							: args.queue === true
-								? "turn.follow_up"
-								: "turn.prompt";
-					const result = await controlSession(session, operation, { text: taggedPrompt }, idempotencyKey);
-					requirePromptAcknowledgement(result);
-					const turn = await recordAcceptedPrompt(sessionId, taggedPrompt, operation, previousActiveTurn);
-					await appendCoordinatorEvent(namespaceDir, {
-						kind: "delegation.started",
-						sessionId,
-						turnId: turn.turn_id,
-						summary: `Delegated ${delegateWorkflow} via ${name} on session ${sessionId}`,
-						metadata: {
+						});
+						const response = {
+							ok: true,
 							workflow: delegateWorkflow,
 							tool_name: name,
-							reused_session: reusedSession,
-							sdk_operation: operation,
-						},
-					});
-					const response = {
-						ok: true,
-						workflow: delegateWorkflow,
-						tool_name: name,
-						session_id: sessionId,
-						turn_id: turn.turn_id,
-						active_turn_id: turn.delivery.queued ? (previousActiveTurn?.turn_id ?? null) : turn.turn_id,
-						status: turn.status,
-						queued: turn.delivery.queued,
-						delivered: turn.delivery.delivered,
-						delivery: turn.delivery,
-						session,
-						session_state: await readSessionState(namespaceDir, sessionId),
-						turn,
-						result,
-						...(hasTask && hasPrompt ? { prompt_alias_ignored: true } : {}),
+							session_id: sessionId,
+							turn_id: turn.turn_id,
+							active_turn_id: turn.delivery.queued ? (previousActiveTurn?.turn_id ?? null) : turn.turn_id,
+							status: turn.status,
+							queued: turn.delivery.queued,
+							delivered: turn.delivery.delivered,
+							delivery: turn.delivery,
+							session,
+							session_state: await readSessionState(namespaceDir, sessionId),
+							turn,
+							result,
+							...(hasTask && hasPrompt ? { prompt_alias_ignored: true } : {}),
+						};
+						return args.await_completion === true
+							? {
+									...response,
+									completion: await awaitTurnPayload(
+										turn.turn_id,
+										sessionId,
+										args.timeout_ms,
+										args.poll_interval_ms,
+									),
+								}
+							: response;
 					};
-					return args.await_completion === true
-						? {
-								...response,
-								completion: await awaitTurnPayload(
-									turn.turn_id,
-									sessionId,
-									args.timeout_ms,
-									args.poll_interval_ms,
-								),
-							}
-						: response;
+					return reusedSessionId ? await withSessionTransition(reusedSessionId, delegate) : await delegate();
 				} catch (error) {
 					return sdkError(error);
 				}
@@ -2383,7 +2424,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 							"session.create",
 							{
 								cwd,
-								target: { path: cwd },
+								target: coordinatorLifecycleTarget(config.sessionCommand, cwd),
 								...(mpresetResolution.mpreset ? { modelPreset: mpresetResolution.mpreset } : {}),
 							},
 							idempotencyKey,
@@ -2392,18 +2433,20 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 					const sessionId = safeExternalId("session", created.sessionId ?? created.session_id);
 					const session = normalizeSession({
 						session_id: sessionId,
-						cwd,
+						cwd: optionalString(created.cwd) ?? cwd,
 						...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
 					});
 					await writeJsonFile(sessionFile(sessionId), session);
+					const lifecycle = publicLifecycleReceipt(created, sessionId);
 					if (typeof args.prompt === "string" && args.prompt.length > 0) {
 						const result = await controlSession(session, "turn.prompt", { text: args.prompt }, idempotencyKey);
 						requirePromptAcknowledgement(result);
 						const turn = await recordAcceptedPrompt(sessionId, args.prompt, "turn.prompt", null);
 						return {
 							ok: true,
-							session,
+							session: publicCoordinatorSession(session),
 							session_id: sessionId,
+							lifecycle,
 							turn_id: turn.turn_id,
 							active_turn_id: turn.turn_id,
 							status: turn.status,
@@ -2412,7 +2455,6 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 							operation: "turn.prompt",
 							turn,
 							session_state: await readSessionState(namespaceDir, sessionId),
-							result,
 						};
 					}
 					const sessionState = await writeSessionState(namespaceDir, sessionId, "ready_for_input", {
@@ -2425,7 +2467,12 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 						summary: `Session ${sessionId} started through SDK lifecycle control`,
 						payloadRef: path.relative(namespaceDir, sessionFile(sessionId)),
 					});
-					return { ok: true, session, session_state: sessionState, result: created };
+					return {
+						ok: true,
+						session: publicCoordinatorSession(session),
+						session_state: publicCoordinatorSessionState(sessionState),
+						lifecycle,
+					};
 				} catch (error) {
 					return sdkError(error);
 				}

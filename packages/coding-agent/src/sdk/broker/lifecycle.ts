@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { prepareLaunchWorktree } from "../../gjc-runtime/launch-worktree";
 import { FileSessionStorage } from "../../session/session-storage";
 import { SdkClient } from "../client/client";
 import type { Broker, BrokerResponse } from "./broker";
@@ -14,14 +15,29 @@ const POLL_MS = 50;
 const CLOSE_TIMEOUT_MS = 2_000;
 type Input = Record<string, unknown>;
 
+export interface SessionLifecycleWorktreeTarget {
+	enabled: true;
+	name?: string;
+}
+
+export interface SessionLifecycleWorktreeReceipt {
+	enabled: true;
+	cwd: string;
+	created: boolean;
+	reused: boolean;
+	branch?: string;
+}
+
 export interface SessionLifecycleLaunchRequest {
 	operation: "session.create" | "session.fork" | "session.resume";
 	sessionId: string;
+	cwd: string;
 	stateRoot: string;
 	sourceSessionId?: string;
 	sourceSessionPath?: string;
 	sessionPath?: string;
 	modelPreset?: string;
+	worktree?: SessionLifecycleWorktreeTarget;
 }
 
 export function readSessionLifecycleLaunchRequest(value: string | undefined): SessionLifecycleLaunchRequest {
@@ -33,9 +49,12 @@ export function readSessionLifecycleLaunchRequest(value: string | undefined): Se
 			request.operation !== "session.resume") ||
 		typeof request.sessionId !== "string" ||
 		!request.sessionId ||
+		typeof request.cwd !== "string" ||
+		!request.cwd ||
 		typeof request.stateRoot !== "string" ||
 		!request.stateRoot ||
-		(request.modelPreset !== undefined && (typeof request.modelPreset !== "string" || !request.modelPreset))
+		(request.modelPreset !== undefined && (typeof request.modelPreset !== "string" || !request.modelPreset)) ||
+		(request.worktree !== undefined && !isLifecycleWorktreeTarget(request.worktree))
 	)
 		throw new Error("GJC_SDK_LIFECYCLE_REQUEST is invalid.");
 	return request as SessionLifecycleLaunchRequest;
@@ -43,11 +62,14 @@ export function readSessionLifecycleLaunchRequest(value: string | undefined): Se
 
 type SessionLaunch = {
 	id: string;
+	cwd: string;
 	root: string;
 	sourceSessionId?: string;
 	sourceSessionPath?: string;
 	sessionPath?: string;
 	modelPreset?: string;
+	worktree?: SessionLifecycleWorktreeTarget;
+	worktreeReceipt?: SessionLifecycleWorktreeReceipt;
 };
 
 const fail = (code: string, message: string): BrokerResponse => ({
@@ -60,17 +82,32 @@ function text(value: unknown): string | undefined {
 function sessionId(input: Input): string | undefined {
 	return text(input.sessionId) ?? text(input.id);
 }
-function stateRoot(input: Input): string | undefined {
-	const target = input.target as Record<string, unknown> | undefined;
-	const root = text(input.stateRoot) ?? text(target?.stateRoot);
-	if (root) return root;
-	const cwd = text(input.cwd) ?? text(input.path) ?? text(target?.path);
-	return cwd ? path.join(cwd, ".gjc", "state") : undefined;
-}
-function lifecycleScope(input: Input): string | undefined {
+function lifecycleCwd(input: Input): string | undefined {
 	const target = input.target as Record<string, unknown> | undefined;
 	const cwd = text(input.cwd) ?? text(input.path) ?? text(target?.path);
 	return cwd ? path.resolve(cwd) : undefined;
+}
+function stateRoot(input: Input, cwd: string | undefined): string | undefined {
+	const target = input.target as Record<string, unknown> | undefined;
+	const root = text(input.stateRoot) ?? text(target?.stateRoot);
+	if (root) return path.resolve(root);
+	return cwd ? path.join(cwd, ".gjc", "state") : undefined;
+}
+
+function isLifecycleWorktreeTarget(value: unknown): value is SessionLifecycleWorktreeTarget {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const target = value as Record<string, unknown>;
+	return (
+		target.enabled === true &&
+		(target.name === undefined || (typeof target.name === "string" && target.name.length > 0))
+	);
+}
+
+function lifecycleWorktreeTarget(input: Input): SessionLifecycleWorktreeTarget | null | undefined {
+	const target = input.target as Record<string, unknown> | undefined;
+	const worktree = target?.worktree;
+	if (worktree === undefined) return undefined;
+	return isLifecycleWorktreeTarget(worktree) ? worktree : null;
 }
 
 async function reconcileReadyScope(broker: Broker, id: string, scope: string | undefined): Promise<void> {
@@ -312,11 +349,48 @@ async function launchInput(
 	operation: "session.create" | "session.fork" | "session.resume",
 	input: Input,
 ): Promise<SessionLaunch | BrokerResponse> {
-	const root = stateRoot(input);
+	const requestedCwd = lifecycleCwd(input);
+	const sourceCwd = requestedCwd ?? process.cwd();
+	const root = stateRoot(input, requestedCwd);
 	if (!root) return fail("invalid_input", "A target path or stateRoot is required.");
+	try {
+		if (!(await fs.stat(sourceCwd)).isDirectory())
+			return fail("invalid_input", "Lifecycle worktree must be a directory.");
+	} catch {
+		return fail("invalid_input", "Lifecycle worktree does not exist.");
+	}
+	const worktree = lifecycleWorktreeTarget(input);
+	if (worktree === null || (worktree !== undefined && requestedCwd === undefined))
+		return fail("invalid_input", "Lifecycle worktree target is invalid.");
+	let cwd = sourceCwd;
+	let worktreeReceipt: SessionLifecycleWorktreeReceipt | undefined;
+	if (worktree) {
+		try {
+			const prepared = prepareLaunchWorktree(sourceCwd, [
+				worktree.name ? `--worktree=${worktree.name}` : "--worktree",
+			]);
+			if (!prepared.worktree.enabled) return fail("invalid_input", "Lifecycle worktree target is invalid.");
+			cwd = path.resolve(prepared.cwd);
+			worktreeReceipt = {
+				enabled: true,
+				cwd,
+				created: prepared.worktree.created,
+				reused: prepared.worktree.reused,
+				...(prepared.worktree.branchName ? { branch: prepared.worktree.branchName } : {}),
+			};
+		} catch (error) {
+			return fail(
+				"invalid_input",
+				`Unable to prepare lifecycle worktree: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	const resolvedRoot = worktree ? stateRoot(input, cwd) : root;
+	if (!resolvedRoot) return fail("invalid_input", "A target path or stateRoot is required.");
 	const requested = sessionId(input);
 	const modelPreset = text(input.modelPreset);
-	if (operation === "session.create") return { id: randomUUID(), root, modelPreset };
+	if (operation === "session.create")
+		return { id: randomUUID(), cwd, root: resolvedRoot, modelPreset, worktree, worktreeReceipt };
 	if (operation === "session.resume") {
 		if (!requested) return fail("invalid_input", "sessionId is required to resume a saved session.");
 		const savedPath = text(input.sessionPath);
@@ -326,7 +400,7 @@ async function launchInput(
 		} catch {
 			return fail("not_found", "Requested saved session does not exist.");
 		}
-		return { id: requested, root, sessionPath: savedPath, modelPreset };
+		return { id: requested, cwd, root: resolvedRoot, sessionPath: savedPath, modelPreset, worktree, worktreeReceipt };
 	}
 	const sourceSessionId = text(input.sourceSessionId) ?? text(input.sourceId);
 	const sourceSessionPath = text(input.sourceSessionPath) ?? text(input.sourcePath) ?? text(input.sessionPath);
@@ -345,7 +419,16 @@ async function launchInput(
 			return fail("not_found", "Source saved session does not exist.");
 		}
 	}
-	return { id: randomUUID(), root, sourceSessionId, sourceSessionPath, modelPreset };
+	return {
+		id: randomUUID(),
+		cwd,
+		root: resolvedRoot,
+		sourceSessionId,
+		sourceSessionPath,
+		modelPreset,
+		worktree,
+		worktreeReceipt,
+	};
 }
 
 function within(root: string, candidate: string): boolean {
@@ -379,7 +462,7 @@ async function validateDeletePath(
 	if (!within(storageRoot, resolved))
 		return fail("invalid_input", "session.delete path resolves outside the configured session storage root.");
 	if (record) {
-		const requestedRoot = stateRoot(input);
+		const requestedRoot = stateRoot(input, lifecycleCwd(input));
 		if (!requestedRoot || path.resolve(requestedRoot) !== path.resolve(record.locator.stateRoot))
 			return fail("invalid_input", "session.delete locator does not match the indexed session.");
 	}
@@ -402,6 +485,30 @@ export async function executeLifecycle(
 ): Promise<BrokerResponse> {
 	if (operation === "session.create" || operation === "session.fork" || operation === "session.resume") {
 		await broker.index.refresh();
+		if (operation === "session.resume") {
+			const requestedSessionId = sessionId(input);
+			const existing = requestedSessionId
+				? broker.index.listSessions().sessions.find(session => session.sessionId === requestedSessionId)
+				: undefined;
+			if (existing?.live) {
+				const endpoint = await broker.handleRequest("session.get_endpoint", {
+					sessionId: requestedSessionId,
+					endpointGeneration: existing.endpointGeneration,
+				});
+				if (!endpoint.ok)
+					return fail("live_session", "Session is already live but its generation-bound endpoint is unavailable.");
+				return {
+					ok: true,
+					result: {
+						sessionId: requestedSessionId,
+						cwd: existing.locator.repo,
+						endpointGeneration: existing.endpointGeneration,
+						endpoint: endpoint.result,
+						reused: true,
+					},
+				};
+			}
+		}
 		const launch = await launchInput(broker, operation, input);
 		if ("ok" in launch) return launch;
 		const effectMarker = randomUUID();
@@ -410,16 +517,18 @@ export async function executeLifecycle(
 		const request: SessionLifecycleLaunchRequest = {
 			operation,
 			sessionId: launch.id,
+			cwd: launch.cwd,
 			stateRoot: launch.root,
 			...(launch.sourceSessionId ? { sourceSessionId: launch.sourceSessionId } : {}),
 			...(launch.sourceSessionPath ? { sourceSessionPath: launch.sourceSessionPath } : {}),
 			...(launch.sessionPath ? { sessionPath: launch.sessionPath } : {}),
 			...(launch.modelPreset ? { modelPreset: launch.modelPreset } : {}),
+			...(launch.worktree ? { worktree: launch.worktree } : {}),
 		};
 		let child: ChildProcess | undefined;
 		try {
 			const spawned = spawn(cmd.file, cmd.args, {
-				cwd: text(input.cwd) ?? text((input.target as Record<string, unknown> | undefined)?.path) ?? process.cwd(),
+				cwd: launch.cwd,
 				detached: true,
 				stdio: "ignore",
 				env: {
@@ -468,8 +577,16 @@ export async function executeLifecycle(
 						`Session ${launch.id} did not become ready and its spawned process could not be verified dead.`,
 					);
 		}
-		await reconcileReadyScope(broker, launch.id, lifecycleScope(input));
-		return { ok: true, result: { sessionId: launch.id, endpoint } };
+		await reconcileReadyScope(broker, launch.id, launch.cwd);
+		return {
+			ok: true,
+			result: {
+				sessionId: launch.id,
+				cwd: launch.cwd,
+				endpoint,
+				...(launch.worktreeReceipt ? { worktree: launch.worktreeReceipt } : {}),
+			},
+		};
 	}
 
 	const id = sessionId(input);
@@ -545,7 +662,7 @@ export async function executeLifecycle(
 		await broker.ledger.transition(identity, "effect_started", { intendedSessionId: id, effectMarker: randomUUID() });
 		try {
 			await new FileSessionStorage().deleteSessionWithArtifacts(validated);
-			const metadataRoot = record?.locator.stateRoot ?? stateRoot(input);
+			const metadataRoot = record?.locator.stateRoot ?? stateRoot(input, lifecycleCwd(input));
 			if (metadataRoot) await fs.rm(lifecycleMarkerPath(metadataRoot, id), { force: true });
 		} catch (error) {
 			return fail(

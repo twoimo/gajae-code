@@ -52,7 +52,7 @@ import {
 	discoverAuthStorage,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
-import type { AuthStorage } from "./session/auth-storage";
+
 import {
 	type ResumeSessionIdentity,
 	resolveResumableSession,
@@ -365,19 +365,6 @@ type CreateSessionForMain = (
 	context?: { skipPostCreateModelRefresh?: boolean },
 ) => Promise<CreateAgentSessionResult>;
 
-type AcpSessionFactory = (cwd: string) => Promise<AgentSession>;
-
-export interface AcpSessionFactoryOptions {
-	baseOptions: CreateAgentSessionOptions;
-	settings: Settings;
-	sessionDir?: string;
-	authStorage: AuthStorage;
-	modelRegistry: ModelRegistry;
-	parsedArgs: Pick<Args, "apiKey" | "default" | "model" | "mpreset" | "thinking">;
-	rawArgs: string[];
-	createSession: CreateSessionForMain;
-}
-
 export async function applyStartupModelProfiles(args: {
 	session: AgentSession;
 	settings: Settings;
@@ -435,50 +422,6 @@ export async function applyStartupModelProfilesOrExit(
 		process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 		process.exit(1);
 	}
-}
-
-/**
- * Build the per-`session/new` factory used by ACP mode.
- *
- * MCP servers in ACP sessions are owned exclusively by the ACP client, which
- * supplies them through `session/new.mcpServers` and re-applies them via
- * {@link AcpAgent#configureMcpServers}. We therefore force `enableMCP: false`
- * on every session created here so {@link createAgentSession} skips the on-disk
- * `.mcp.json` discovery path — otherwise host MCP tools land in the session's
- * tool registry and shadow the client-supplied servers (issue #1234).
- */
-export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSessionFactory {
-	return async cwd => {
-		const nextSettings = await args.settings.cloneForCwd(cwd);
-		const hasStartupProfile = Boolean(nextSettings.get("modelProfile.default") || args.parsedArgs.mpreset);
-		const nextSessionManager = SessionManager.create(cwd, args.sessionDir);
-		const agentId = `acp:${nextSessionManager.getSessionId()}`;
-		const { session: nextSession } = await args.createSession(
-			{
-				...args.baseOptions,
-				cwd,
-				sessionManager: nextSessionManager,
-				settings: nextSettings,
-				authStorage: args.authStorage,
-				modelRegistry: args.modelRegistry,
-				agentId,
-				hasUI: false,
-				enableMCP: false,
-			},
-			{ skipPostCreateModelRefresh: hasStartupProfile },
-		);
-		await applyStartupModelProfilesOrExit({
-			session: nextSession,
-			settings: nextSettings,
-			modelRegistry: args.modelRegistry,
-			parsedArgs: args.parsedArgs,
-			startupModel: args.baseOptions.model,
-			startupThinkingLevel: args.baseOptions.thinkingLevel,
-		});
-		applyCliRuntimeApiKeyOverride(args.authStorage, args.parsedArgs.apiKey, nextSession.model);
-		applyExtensionFlagValues(nextSession, args.rawArgs);
-		return nextSession;
-	};
 }
 
 interface InteractiveModeFactoryOptions {
