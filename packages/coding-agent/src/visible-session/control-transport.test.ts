@@ -1175,19 +1175,21 @@ describe.serial("visible session local control transport", () => {
 			const firstStarted = Promise.withResolvers<void>();
 			const servers: net.Server[] = [];
 			const originalCreateServer = net.createServer;
-			const createServer = vi.spyOn(net, "createServer").mockImplementation(
-				(
-					options?: net.ServerOpts | ((socket: net.Socket) => void),
-					connectionListener?: (socket: net.Socket) => void,
-				): net.Server => {
-					const rawServer =
-						typeof options === "function"
-							? originalCreateServer(options)
-							: originalCreateServer(options, connectionListener);
-					servers.push(rawServer);
-					return rawServer;
-				},
-			);
+			const createServer = vi
+				.spyOn(net, "createServer")
+				.mockImplementation(
+					(
+						options?: net.ServerOpts | ((socket: net.Socket) => void),
+						connectionListener?: (socket: net.Socket) => void,
+					): net.Server => {
+						const rawServer =
+							typeof options === "function"
+								? originalCreateServer(options)
+								: originalCreateServer(options, connectionListener);
+						servers.push(rawServer);
+						return rawServer;
+					},
+				);
 			let calls = 0;
 			const server = new LocalControlServer({
 				endpoint,
