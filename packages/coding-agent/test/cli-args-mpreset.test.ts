@@ -50,8 +50,10 @@ function fakeSession(initial = model("initial-provider", "initial")) {
 			session.model = next;
 			session.thinkingLevel = thinkingLevel;
 		},
+		getConfiguredModelChain: () => undefined,
+		setConfiguredModelChain() {},
 	};
-	return session as AgentSession & { setModelTemporaryCalls: Array<{ model: Model; thinkingLevel?: ThinkingLevel }> };
+	return session as unknown as AgentSession & { setModelTemporaryCalls: Array<{ model: Model; thinkingLevel?: ThinkingLevel }> };
 }
 describe("CLI model profile args", () => {
 	test("parses --mpreset with separate value", () => {

@@ -914,19 +914,23 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		progress.recentOutput = [];
 	};
 
+	const forwardSubagentEvent = (event: AgentEvent | Extract<AgentSessionEvent, { type: "model_fallback_switched" }>) => {
+		if (!options.eventBus) return;
+		options.eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, {
+			index,
+			agent: agent.name,
+			agentSource: agent.source,
+			task,
+			assignment,
+			event,
+		});
+	};
+
 	const processEvent = (event: AgentEvent) => {
 		if (resolved) return;
 
-		if (options.eventBus) {
-			options.eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, {
-				index,
-				agent: agent.name,
-				agentSource: agent.source,
-				task,
-				assignment,
-				event,
-			});
-		}
+		forwardSubagentEvent(event);
+
 
 		const now = Date.now();
 		let flushProgress = false;
@@ -1597,6 +1601,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						};
 					}
 					scheduleProgress(true);
+					return;
+				}
+				if (event.type === "model_fallback_switched") {
+					forwardSubagentEvent(event);
 					return;
 				}
 				if (isAgentEvent(event)) {

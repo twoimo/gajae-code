@@ -26,7 +26,7 @@ function createControllerContext() {
 	const setModelCalls: Array<{
 		model: Model;
 		role: string;
-		options?: { selector?: string; thinkingLevel?: ThinkingLevel };
+		options?: { cause?: "user-selection"; selector?: string; thinkingLevel?: ThinkingLevel };
 	}> = [];
 	const session = {
 		model: model("provider-a", "current") as Model | undefined,
@@ -45,7 +45,11 @@ function createControllerContext() {
 			resolveCanonicalModel: () => undefined,
 			getApiKey: vi.fn(async () => "key"),
 		},
-		async setModel(nextModel: Model, role: string, options?: { selector?: string; thinkingLevel?: ThinkingLevel }) {
+		async setModel(
+			nextModel: Model,
+			role: string,
+			options?: { cause?: "user-selection"; selector?: string; thinkingLevel?: ThinkingLevel },
+		) {
 			setModelCalls.push({ model: nextModel, role, options });
 			this.model = nextModel;
 			if (options?.thinkingLevel) this.thinkingLevel = options.thinkingLevel;
@@ -125,7 +129,7 @@ describe("SelectorController model batch assignments", () => {
 			{
 				model: selectedModel,
 				role: "default",
-				options: { selector: "provider-a/selected", thinkingLevel: ThinkingLevel.High },
+				options: { cause: "user-selection", selector: "provider-a/selected", thinkingLevel: ThinkingLevel.High },
 			},
 		]);
 		expect(settings.getModelRole("default")).toBe("provider-a/selected:high");

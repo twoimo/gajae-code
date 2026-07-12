@@ -753,6 +753,46 @@ export function resolveModelOverride(
 	return { explicitThinkingLevel: false };
 }
 
+/** Resolve a fallback chain to its first callable entry without charging attempts. */
+export async function resolveModelChainWithAuth(
+	modelPatterns: readonly string[],
+	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
+	settings?: Settings,
+	sessionId?: string,
+	options?: { managedFallback?: boolean },
+): Promise<{
+	model?: Model<Api>;
+	thinkingLevel?: ThinkingLevel;
+	explicitThinkingLevel: boolean;
+	activeIndex: number;
+	skips: Array<{ selector: string; reason: string }>;
+}> {
+	const availableModels = modelRegistry.getAvailable();
+	const matchPreferences = { usageOrder: settings?.getStorage()?.getModelUsageOrder() };
+	const skips: Array<{ selector: string; reason: string }> = [];
+	for (let activeIndex = 0; activeIndex < modelPatterns.length; activeIndex += 1) {
+		const selector = modelPatterns[activeIndex];
+		const candidate = resolveModelRoleValue(selector, availableModels, { settings, matchPreferences, modelRegistry });
+		if (!candidate.model) {
+			skips.push({ selector, reason: "unknown_model" });
+			continue;
+		}
+		if (options?.managedFallback && modelPatterns.length > 1) {
+			const cursorReason = managedCursorFallbackUnavailableReason(candidate.model, selector);
+			if (cursorReason) {
+				skips.push({ selector, reason: cursorReason });
+				continue;
+			}
+		}
+		const key = await modelRegistry.getApiKey(candidate.model, sessionId);
+		if (key === kNoAuth || isAuthenticated(key)) {
+			return { ...candidate, activeIndex, skips };
+		}
+		skips.push({ selector, reason: "unauthenticated" });
+	}
+	return { explicitThinkingLevel: false, activeIndex: modelPatterns.length, skips };
+}
+
 /**
  * Resolve a list of override patterns to the first matching model, with an
  * auth-aware fallback to the parent session's active model.

@@ -62,7 +62,7 @@ export function aggregateModelProfileRequiredProviders(
 const profile = (
 	name: string,
 	requiredProviders: string[],
-	modelMapping: Partial<Record<ModelProfileRole, string>>,
+	modelMapping: Partial<Record<ModelProfileRole, ModelSelectorValue>>,
 	alternativeProviderGroups?: readonly (readonly string[])[],
 ): ModelProfileDefinition => ({
 	name,

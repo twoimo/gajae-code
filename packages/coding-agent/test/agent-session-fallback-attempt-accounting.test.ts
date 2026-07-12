@@ -61,6 +61,17 @@ describe("FallbackChainController attempt accounting", () => {
 		expect(controller.isExhausted()).toBe(false);
 	});
 
+	it("gives the sticky active entry a fresh request budget after accepted requests", () => {
+		const controller = new FallbackChainController(chain(["a/1", "b/2"]), 3);
+		controller.onAttemptStarted();
+		controller.resetAttemptBudget(); // first accepted request
+		controller.onAttemptStarted();
+		controller.resetAttemptBudget(); // second accepted request
+		expect(controller.onAttemptFailure("server", "500")).toBe("retry");
+		expect(controller.attemptsUsed).toBe(1);
+		expect(controller.currentSelector()).toBe("a/1");
+	});
+
 	it("rejects a non-positive maxAttempts", () => {
 		expect(() => new FallbackChainController(chain(["a/1"]), 0)).toThrow(/positive integer/);
 	});

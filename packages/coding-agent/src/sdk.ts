@@ -46,6 +46,7 @@ import {
 	parseModelPattern,
 	parseModelString,
 	resolveAllowedModels,
+	resolveModelChainWithAuth,
 	resolveModelRoleValue,
 	type ScopedModelSelection,
 } from "./config/model-resolver";
@@ -1078,19 +1079,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let modelFallbackMessage: string | undefined;
 	// If session has data, try to restore model from it.
 	// Skip restore when an explicit model was requested.
-	const configuredDefaultHead = existingSession.configuredModelChains?.default?.entries?.[0];
-	const defaultModelStr = configuredDefaultHead ?? existingSession.models.default;
-	if (!hasExplicitModel && !model && hasExistingSession && defaultModelStr) {
+	let restoredDefaultResolution:
+		| Awaited<ReturnType<typeof resolveModelChainWithAuth>>
+		| undefined;
+	const configuredDefaultEntries = existingSession.configuredModelChains?.default?.entries;
+	const defaultModelEntries = configuredDefaultEntries ?? (existingSession.models.default ? [existingSession.models.default] : []);
+	if (!hasExplicitModel && !model && hasExistingSession && defaultModelEntries.length > 0) {
 		await logger.time("restoreSessionModel", async () => {
-			const parsedModel = parseModelString(defaultModelStr);
-			if (parsedModel) {
-				const restoredModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
-				if (restoredModel && (await hasModelApiKey(restoredModel))) {
-					model = restoredModel;
-				}
-			}
+			restoredDefaultResolution = await resolveModelChainWithAuth(
+				defaultModelEntries,
+				modelRegistry,
+				settings,
+				providerSessionId,
+				{ managedFallback: defaultModelEntries.length > 1 },
+			);
+			model = restoredDefaultResolution.model;
 			if (!model) {
-				modelFallbackMessage = `Could not restore model ${defaultModelStr}`;
+				modelFallbackMessage = `Could not restore model chain ${defaultModelEntries.join(" → ")}`;
 			}
 		});
 	}
@@ -2387,6 +2392,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			providerSessionState: options.providerSessionState,
 		});
 		hasSession = true;
+		if (restoredDefaultResolution && model) {
+			session.seedDefaultFallbackResolution(restoredDefaultResolution.activeIndex, restoredDefaultResolution.skips);
+		}
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => asyncJobManager.isDeliverySuppressed(entry.jobId),

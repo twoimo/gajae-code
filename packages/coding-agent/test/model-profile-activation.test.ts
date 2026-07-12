@@ -8,6 +8,7 @@ import {
 	formatModelProfileCredentialError,
 	materializeActiveModelProfileAssignment,
 	materializeActiveModelProfileAssignments,
+	materializeModelProfileForDeletion,
 	prepareModelProfileActivation,
 } from "../src/config/model-profile-activation";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
@@ -103,11 +104,15 @@ function fakeSession(initial = model("provider-a", "initial")) {
 		sessionId: "session-1",
 		setModelTemporaryCalls: [] as Array<{ model: Model; thinkingLevel?: ThinkingLevel }>,
 		configuredModelChains: new Map<string, readonly string[]>(),
+		seedDefaultFallbackResolutionCalls: [] as Array<{ activeIndex: number; skips: Array<{ selector: string; reason: string }> }>,
 		getConfiguredModelChain(role: string) {
 			return this.configuredModelChains.get(role);
 		},
 		setConfiguredModelChain(role: string, entries: readonly string[]) {
 			this.configuredModelChains.set(role, [...entries]);
+		},
+		seedDefaultFallbackResolution(activeIndex: number, skips: Array<{ selector: string; reason: string }>) {
+			this.seedDefaultFallbackResolutionCalls.push({ activeIndex, skips });
 		},
 		async setModelTemporary(next: Model, thinkingLevel?: ThinkingLevel) {
 			this.setModelTemporaryCalls.push({ model: next, thinkingLevel });
@@ -160,10 +165,52 @@ describe("model profile activation", () => {
 			profileName: profile.name,
 		});
 
-		expect(prepared.defaultChain).toEqual(["provider-a/default", "provider-b/executor"]);
+		expect(prepared.defaultChain).toEqual(["provider-a/default:high", "provider-b/executor"]);
 		expect(prepared.agentModelOverrides.executor).toEqual(["provider-c/executor", "provider-b/executor"]);
 		await applyPreparedModelProfileActivation(prepared);
-		expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/default", "provider-b/executor"]);
+		expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/default:high", "provider-b/executor"]);
+	});
+
+	test("skips unavailable default-chain entries and activates the valid tail", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "unavailable-head",
+			requiredProviders: [],
+			modelMapping: { default: ["provider-a/missing", "provider-b/executor"] },
+			source: "user",
+		};
+		const session = fakeSession();
+		await activateModelProfile({
+			session,
+			modelRegistry: fakeRegistry({ profiles: [profile] }),
+			settings: Settings.isolated(),
+			profileName: profile.name,
+		});
+
+		expect(session.model).toMatchObject({ provider: "provider-b", id: "executor" });
+		expect(session.getConfiguredModelChain("default")).toEqual(["provider-b/executor"]);
+		expect(session.seedDefaultFallbackResolutionCalls).toEqual([{ activeIndex: 0, skips: [] }]);
+	});
+
+	test("skips unauthenticated default-chain entries and seeds the authenticated tail", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "unauthenticated-head",
+			requiredProviders: [],
+			modelMapping: { default: ["provider-a/default:high", "provider-b/executor"] },
+			source: "user",
+		};
+		const session = fakeSession();
+		await activateModelProfile({
+			session,
+			modelRegistry: fakeRegistry({ missingProviders: ["provider-a"], profiles: [profile] }),
+			settings: Settings.isolated(),
+			profileName: profile.name,
+		});
+
+		expect(session.model).toMatchObject({ provider: "provider-b", id: "executor" });
+		expect(session.getConfiguredModelChain("default")).toEqual(["provider-a/default:high", "provider-b/executor"]);
+		expect(session.seedDefaultFallbackResolutionCalls).toEqual([
+			{ activeIndex: 1, skips: [{ selector: "provider-a/default:high", reason: "unauthenticated" }] },
+		]);
 	});
 
 	test("hard required providers still gate activation", async () => {
@@ -278,7 +325,7 @@ describe("model profile activation", () => {
 				agent: new Agent({ initialState: { model: fallback, systemPrompt: [], tools: [], messages: [] } }),
 				sessionManager: manager,
 				settings: Settings.isolated({ "compaction.enabled": false }),
-				modelRegistry: { getAvailable: () => [head, fallback] } as ModelRegistry,
+				modelRegistry: { getAvailable: () => [head, fallback], getApiKey: async () => kNoAuth } as unknown as ModelRegistry,
 			});
 			configuringSession.setConfiguredModelChain(
 				"default",
@@ -297,7 +344,7 @@ describe("model profile activation", () => {
 				agent: new Agent({ initialState: { model: fallback, systemPrompt: [], tools: [], messages: [] } }),
 				sessionManager: reopened,
 				settings: Settings.isolated({ "compaction.enabled": false }),
-				modelRegistry: { getAvailable: () => [head, fallback] } as ModelRegistry,
+				modelRegistry: { getAvailable: () => [head, fallback], getApiKey: async () => kNoAuth } as unknown as ModelRegistry,
 			});
 			try {
 				expect(await session.switchSession(sessionFile)).toBe(true);
@@ -410,6 +457,56 @@ describe("model profile activation", () => {
 		});
 		expect(settings.get("modelProfile.default")).toBeUndefined();
 		expect(session.getActiveModelProfile()).toBeUndefined();
+	});
+
+	test("materializing a non-default role retains the active default chain from the live fallback", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "default-chain-profile",
+			requiredProviders: [],
+			modelMapping: { default: ["provider-a/default", "provider-b/executor", "provider-c/default"] },
+			source: "user",
+		};
+		const session = fakeSession();
+		const settings = Settings.isolated({ "modelProfile.default": profile.name });
+		await activateModelProfile({
+			session,
+			modelRegistry: fakeRegistry({ profiles: [profile] }),
+			settings,
+			profileName: profile.name,
+		});
+		session.model = model("provider-b", "executor");
+		session.thinkingLevel = undefined;
+
+		materializeActiveModelProfileAssignment({
+			session,
+			settings,
+			role: "executor",
+			selector: "provider-c/executor",
+		});
+
+		expect(settings.get("modelRoles").default).toEqual(["provider-b/executor", "provider-c/default"]);
+	});
+
+	test("profile deletion materializes the complete default fallback chain", async () => {
+		const profile: ModelProfileDefinition = {
+			name: "delete-chain-profile",
+			requiredProviders: [],
+			modelMapping: { default: ["provider-a/default:high", "provider-b/executor", "provider-c/default"] },
+			source: "user",
+		};
+		const settings = Settings.isolated({ "modelProfile.default": profile.name });
+		await materializeModelProfileForDeletion({
+			session: fakeSession(),
+			modelRegistry: fakeRegistry({ profiles: [profile] }),
+			settings,
+			profileName: profile.name,
+		});
+
+		expect(settings.get("modelRoles").default).toEqual([
+			"provider-a/default:high",
+			"provider-b/executor",
+			"provider-c/default",
+		]);
 	});
 
 	test("materializing a default override stores the selected default and clears the profile", async () => {

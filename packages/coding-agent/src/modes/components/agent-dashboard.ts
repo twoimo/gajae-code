@@ -34,7 +34,8 @@ import { isEnoent, prompt } from "@gajae-code/utils";
 import { YAML } from "bun";
 import { getConfigDirs } from "../../config";
 import type { ModelRegistry } from "../../config/model-registry";
-import { selectorHead } from "../../config/model-selector-value";
+import { selectorHead, type ModelSelectorValue } from "../../config/model-selector-value";
+
 import {
 	formatModelString,
 	resolveAgentModelPatterns,
@@ -101,6 +102,17 @@ export function resolveAgentCreationModel(
 		throw new Error("No available model to generate agent specification.");
 	}
 	return fallbackModel;
+}
+
+export function updateAgentModelOverride(
+	overrides: Record<string, ModelSelectorValue>,
+	agentName: string,
+	rawValue: string,
+): Record<string, ModelSelectorValue> {
+	const value = rawValue.trim();
+	if (value) return { ...overrides, [agentName]: value };
+	const { [agentName]: _, ...remainingOverrides } = overrides;
+	return remainingOverrides;
 }
 
 const SOURCE_ORDER: Record<AgentSource, number> = {
@@ -484,16 +496,10 @@ export class AgentDashboard extends Container {
 		this.#settingsManager.set("task.disabledAgents", disabled);
 	}
 
-	#persistModelOverrides(): void {
+	#persistModelOverride(agentName: string, rawValue: string): void {
 		if (!this.#settingsManager) return;
-		const overrides: Record<string, string> = {};
-		for (const agent of this.#allAgents) {
-			const value = agent.overrideModel?.trim();
-			if (value) {
-				overrides[agent.name] = value;
-			}
-		}
-		this.#settingsManager.set("task.agentModelOverrides", overrides);
+		const overrides = this.#settingsManager.get("task.agentModelOverrides");
+		this.#settingsManager.set("task.agentModelOverrides", updateAgentModelOverride(overrides, agentName, rawValue));
 	}
 
 	#toggleSelectedAgent(): void {
@@ -525,7 +531,7 @@ export class AgentDashboard extends Container {
 		if (!selected) return;
 		const value = rawValue.trim();
 		selected.overrideModel = value || undefined;
-		this.#persistModelOverrides();
+		this.#persistModelOverride(selected.name, value);
 		this.#editingAgentName = null;
 		this.#editInput = null;
 		this.#applyFilters();

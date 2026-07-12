@@ -15,7 +15,7 @@ import {
 	kNoAuth,
 	type ModelRegistry,
 } from "./model-registry";
-import { formatModelSelectorValue, resolveModelRoleValue } from "./model-resolver";
+import { formatModelSelectorValue, parseModelString, resolveModelRoleValue } from "./model-resolver";
 import { normalizeModelSelectorValue, type ModelSelectorValue } from "./model-selector-value";
 import type { Settings } from "./settings";
 
@@ -30,6 +30,7 @@ type ModelProfileActivationSession = Pick<
 	getActiveModelProfile?: () => string | undefined;
 	getSessionDefaultModelSelector?: () => string | undefined;
 	recordResumeDefaultModel?: (selector: string) => void;
+	seedDefaultFallbackResolution?: (activeIndex: number, skips: Array<{ selector: string; reason: string }>) => void;
 };
 
 
@@ -65,6 +66,11 @@ export interface PreparedModelProfileActivation {
 	defaultModel: Model<Api> | undefined;
 	defaultThinkingLevel: ThinkingLevel | undefined;
 	/** Full configured default fallback chain, clamped entry-by-entry. */
+	/** Index of the authenticated default-chain entry selected for activation. */
+	defaultActiveIndex: number | undefined;
+	/** Resolution-time skips that occurred before selecting the default entry. */
+	defaultResolutionSkips: Array<{ selector: string; reason: string }>;
+	/** Full configured default fallback chain, clamped entry-by-entry. */
 	defaultChain: readonly string[];
 	modelRoles: Record<string, ModelSelectorValue>;
 	agentModelOverrides: Record<string, ModelSelectorValue>;
@@ -81,7 +87,7 @@ export interface PreparedModelProfileActivation {
 export interface MaterializeModelProfileAssignmentOptions {
 	session: Pick<
 		ModelProfileActivationSession,
-		"model" | "thinkingLevel" | "setActiveModelProfile" | "getActiveModelProfile"
+		"model" | "thinkingLevel" | "getConfiguredModelChain" | "setActiveModelProfile" | "getActiveModelProfile"
 	>;
 	settings: Pick<Settings, "clearOverride" | "get" | "override" | "set">;
 	role: GjcModelAssignmentTargetId;
@@ -91,7 +97,7 @@ export interface MaterializeModelProfileAssignmentOptions {
 export interface MaterializeModelProfileAssignmentsOptions {
 	session: Pick<
 		ModelProfileActivationSession,
-		"model" | "thinkingLevel" | "setActiveModelProfile" | "getActiveModelProfile"
+		"model" | "thinkingLevel" | "getConfiguredModelChain" | "setActiveModelProfile" | "getActiveModelProfile"
 	>;
 	settings: Pick<Settings, "clearOverride" | "get" | "override" | "set">;
 	assignments: ReadonlyMap<GjcModelAssignmentTargetId, string> | Partial<Record<GjcModelAssignmentTargetId, string>>;
@@ -116,6 +122,30 @@ function getMaterializedAssignments(
 	return result;
 }
 
+function materializeConfiguredDefaultChain(
+	session: Pick<ModelProfileActivationSession, "model" | "thinkingLevel" | "getConfiguredModelChain">,
+): ModelSelectorValue | undefined {
+	const configuredChain = session.getConfiguredModelChain("default") ?? [];
+	if (!session.model) {
+		return configuredChain.length === 0 ? undefined : configuredChain.length === 1 ? configuredChain[0] : [...configuredChain];
+	}
+
+	const activeSelector = formatModelSelectorValue(
+		`${session.model.provider}/${session.model.id}`,
+		session.thinkingLevel,
+	);
+	const exactIndex = configuredChain.indexOf(activeSelector);
+	const activeIndex =
+		exactIndex !== -1
+			? exactIndex
+			: configuredChain.findIndex(entry => {
+				const parsed = parseModelString(entry);
+				return parsed?.provider === session.model?.provider && parsed?.id === session.model?.id;
+			});
+	const effectiveChain = activeIndex === -1 ? [activeSelector] : [activeSelector, ...configuredChain.slice(activeIndex + 1)];
+	return effectiveChain.length === 1 ? effectiveChain[0] : effectiveChain;
+}
+
 export function materializeActiveModelProfileAssignment(options: MaterializeModelProfileAssignmentOptions): boolean {
 	const activeProfile = options.session.getActiveModelProfile?.() ?? options.settings.get("modelProfile.default");
 	if (!activeProfile) return false;
@@ -126,11 +156,9 @@ export function materializeActiveModelProfileAssignment(options: MaterializeMode
 
 	if (options.role === "default") {
 		nextModelRoles.default = options.selector;
-	} else if (!nextModelRoles.default && options.session.model) {
-		nextModelRoles.default = formatModelSelectorValue(
-			`${options.session.model.provider}/${options.session.model.id}`,
-			options.session.thinkingLevel,
-		);
+	} else if (!nextModelRoles.default) {
+		const defaultChain = materializeConfiguredDefaultChain(options.session);
+		if (defaultChain) nextModelRoles.default = defaultChain;
 	}
 
 	if (target.settingsPath === "modelRoles") {
@@ -160,11 +188,9 @@ export function materializeActiveModelProfileAssignments(options: MaterializeMod
 	const nextAgentModelOverrides = { ...options.settings.get("task.agentModelOverrides") };
 	const includesDefault = materializedAssignments.some(([role]) => role === "default");
 
-	if (!includesDefault && !nextModelRoles.default && options.session.model) {
-		nextModelRoles.default = formatModelSelectorValue(
-			`${options.session.model.provider}/${options.session.model.id}`,
-			options.session.thinkingLevel,
-		);
+	if (!includesDefault && !nextModelRoles.default) {
+		const defaultChain = materializeConfiguredDefaultChain(options.session);
+		if (defaultChain) nextModelRoles.default = defaultChain;
 	}
 
 	for (const [role, selector] of materializedAssignments) {
@@ -266,6 +292,13 @@ function rewriteBindingsProviders(
 	};
 }
 
+function formatMaterializedSelector(selector: string, model: Model<Api>): string {
+	const clampedSelector = formatClampedModelSelector(selector, model);
+	const explicitThinkingLevel = parseModelString(selector)?.thinkingLevel;
+	if (!explicitThinkingLevel || parseModelString(clampedSelector)?.thinkingLevel) return clampedSelector;
+	return formatModelSelectorValue(clampedSelector, explicitThinkingLevel);
+}
+
 function resolveAndClampSelectorValue(
 	selectorValue: ModelSelectorValue,
 	availableModels: Model<Api>[],
@@ -274,13 +307,16 @@ function resolveAndClampSelectorValue(
 	role: string,
 ): ModelSelectorValue {
 	const selectors = normalizeModelSelectorValue(selectorValue);
-	const clamped = selectors.map(selector => {
+	const clamped: string[] = [];
+	for (const selector of selectors) {
 		const resolved = resolveModelRoleValue(selector, availableModels, options);
-		if (!resolved.model) {
-			throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selector}`);
+		if (resolved.model) {
+			clamped.push(formatMaterializedSelector(selector, resolved.model));
 		}
-		return formatClampedModelSelector(selector, resolved.model);
-	});
+	}
+	if (clamped.length === 0) {
+		throw new Error(`Model profile "${profileLabel}" ${role} selector did not resolve: ${selectors[0]}`);
+	}
 	return clamped.length === 1 && typeof selectorValue === "string" ? clamped[0] : clamped;
 }
 
@@ -329,23 +365,43 @@ export async function prepareModelProfileActivation(
 	if (missingProviders.length > 0 && alternativeGroups.length > 0) {
 		bindings = rewriteBindingsProviders(bindings, new Set(authenticatedProviders), alternativeGroups);
 	}
-	const defaultChain = bindings.defaultSelector
-		? normalizeModelSelectorValue(
-				resolveAndClampSelectorValue(
-					bindings.defaultSelector,
-					availableModels,
-					{ settings: options.settings as Settings, modelRegistry: options.modelRegistry as ModelRegistry },
-					profileLabel,
-					"default",
-				),
-			)
-		: [];
-	const resolvedDefault = bindings.defaultSelector
-		? resolveModelRoleValue(bindings.defaultSelector, availableModels, {
-				settings: options.settings as Settings,
-				modelRegistry: options.modelRegistry,
-			})
-		: undefined;
+	const defaultSelectors = bindings.defaultSelector ? normalizeModelSelectorValue(bindings.defaultSelector) : [];
+	const defaultChain =
+		defaultSelectors.length > 0
+			? normalizeModelSelectorValue(
+					resolveAndClampSelectorValue(
+						bindings.defaultSelector!,
+						availableModels,
+						{ settings: options.settings as Settings, modelRegistry: options.modelRegistry as ModelRegistry },
+						profileLabel,
+						"default",
+					),
+				)
+			: [];
+	let defaultModel: Model<Api> | undefined;
+	let defaultThinkingLevel: ThinkingLevel | undefined;
+	let defaultActiveIndex: number | undefined;
+	const defaultResolutionSkips: Array<{ selector: string; reason: string }> = [];
+	let clampedIndex = 0;
+	for (const selector of defaultSelectors) {
+		const resolved = resolveModelRoleValue(selector, availableModels, {
+			settings: options.settings as Settings,
+			modelRegistry: options.modelRegistry,
+		});
+		if (!resolved.model) continue;
+		const clampedSelector = defaultChain[clampedIndex++];
+		const apiKey = await options.modelRegistry.getApiKeyForProvider(resolved.model.provider, options.session.sessionId);
+		if (apiKey === kNoAuth || isAuthenticated(apiKey)) {
+			defaultModel = resolved.model;
+			defaultThinkingLevel = resolved.thinkingLevel;
+			defaultActiveIndex = clampedIndex - 1;
+			break;
+		}
+		defaultResolutionSkips.push({ selector: clampedSelector, reason: "unauthenticated" });
+	}
+	if (bindings.defaultSelector && !defaultModel) {
+		throw new Error(`Model profile "${profileLabel}" default selectors did not resolve to an authenticated model`);
+	}
 
 	const modelRoles: Record<string, ModelSelectorValue> = {};
 	for (const [role, selectorValue] of Object.entries(bindings.modelRoles) as [
@@ -385,8 +441,10 @@ export async function prepareModelProfileActivation(
 		previousModelRoles: { ...options.settings.get("modelRoles") },
 		previousDefaultChain: options.session.getConfiguredModelChain("default"),
 
-		defaultModel: resolvedDefault?.model,
-		defaultThinkingLevel: resolvedDefault?.thinkingLevel,
+		defaultModel,
+		defaultThinkingLevel,
+		defaultActiveIndex,
+		defaultResolutionSkips,
 		defaultChain,
 		modelRoles,
 		agentModelOverrides,
@@ -417,6 +475,9 @@ export async function applyPreparedModelProfileActivation(
 	try {
 		if (prepared.defaultChain.length > 0) {
 			prepared.session.setConfiguredModelChain("default", prepared.defaultChain, "profile-activation", prepared.profileName, true);
+			if (prepared.defaultActiveIndex !== undefined) {
+				prepared.session.seedDefaultFallbackResolution?.(prepared.defaultActiveIndex, prepared.defaultResolutionSkips);
+			}
 
 			defaultChainChanged = true;
 		}
@@ -523,12 +584,10 @@ export async function materializeModelProfileForDeletion(
 	const previousPersistedDefaultProfile = prepared.settings.getGlobal("modelProfile.default");
 	const nextModelRoles = {
 		...prepared.previousModelRoles,
-		...(prepared.defaultModel
+		...(prepared.defaultChain.length > 0
 			? {
-					default: formatModelSelectorValue(
-						`${prepared.defaultModel.provider}/${prepared.defaultModel.id}`,
-						prepared.defaultThinkingLevel,
-					),
+					default:
+						prepared.defaultChain.length === 1 ? prepared.defaultChain[0] : [...prepared.defaultChain],
 				}
 			: {}),
 		...prepared.modelRoles,

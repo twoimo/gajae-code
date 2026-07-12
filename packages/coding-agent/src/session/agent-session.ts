@@ -146,6 +146,7 @@ import {
 	formatModelString,
 	managedCursorFallbackUnavailableReason,
 	parseModelString,
+	resolveModelChainWithAuth,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
 	type ScopedModelSelection,
@@ -1802,6 +1803,16 @@ export class AgentSession {
 			providerSessionState: this.#providerSessionState,
 		});
 		this.#rebindProviderSessionState(new Map());
+		const temporaryModel = this.model;
+		this.#defaultFallbackController = new FallbackChainController(
+			{
+				role: "default",
+				entries: temporaryModel ? [formatModelString(temporaryModel)] : [],
+				origin: "temporary-provider-scope",
+				explicitHead: true,
+			},
+			this.settings.get("fallback.maxAttempts"),
+		);
 		return token;
 	}
 
@@ -5657,7 +5668,9 @@ export class AgentSession {
 		this.#beginInFlight();
 		const generation = this.#promptGeneration;
 		if (message.role === "user") {
+			await this.#ensureDefaultFallbackResolution();
 			await this.#resetDefaultFallbackForNewTurn();
+			this.#defaultFallbackChain().resetAttemptBudget();
 		}
 		const rosterClaim = this.#claimIrcRosterCandidate();
 		try {
@@ -9386,12 +9399,21 @@ export class AgentSession {
 
 	#isRetryableError(message: AssistantMessage): boolean {
 		if (message.errorMessage?.startsWith("Model fallback chain exhausted;")) return false;
+		const managedFallback = this.#defaultFallbackChain().chain.entries.length > 1;
+		if (!managedFallback) {
+			const classification = this.#classifyErrorForRetry(message);
+			return (
+				classification === "usage_limit" ||
+				classification === "transient" ||
+				classification === "unknown" ||
+				classification === "first_event_timeout"
+			);
+		}
 		const trigger = classifyFallbackTrigger({ message: message.errorMessage, status: message.errorStatus });
 		if (trigger.class === "rate_limit" || trigger.class === "quota" || trigger.class === "auth" || trigger.class === "server") {
 			return true;
 		}
 		const classification = this.#classifyErrorForRetry(message);
-		if (classification === "usage_limit") return this.#defaultFallbackChain().chain.entries.length < 2;
 		return classification === "transient" || classification === "unknown" || classification === "first_event_timeout";
 	}
 
@@ -9613,6 +9635,25 @@ export class AgentSession {
 		}
 	}
 
+	async #ensureDefaultFallbackResolution(): Promise<void> {
+		if (this.#defaultFallbackController) return;
+		const controller = this.#defaultFallbackChain();
+		if (controller.chain.entries.length < 2) return;
+		const resolution = await resolveModelChainWithAuth(
+			controller.chain.entries,
+			this.#modelRegistry,
+			this.settings,
+			this.sessionId,
+			{ managedFallback: true },
+		);
+		controller.seedResolution(resolution.activeIndex, resolution.skips);
+		if (!resolution.model) throw new Error(this.#fallbackExhaustionError(controller));
+		this.#setModelAuthoritatively(resolution.model, "restore");
+		if (resolution.explicitThinkingLevel && resolution.thinkingLevel !== undefined) {
+			this.setThinkingLevel(resolution.thinkingLevel);
+		}
+	}
+
 	#defaultFallbackChain(): FallbackChainController {
 		const configuredChain = this.sessionManager.buildSessionContext().configuredModelChains.default;
 		const settingsEntries = normalizeModelSelectorValue(
@@ -9635,6 +9676,7 @@ export class AgentSession {
 
 	async #handleManagedAttemptOutcome(outcome: ManagedAttemptOutcome): Promise<ManagedAttemptDecision> {
 		if (outcome.type === "run_terminal") {
+			this.#defaultFallbackChain().resetAttemptBudget();
 			return { type: "terminal", terminal: { stopReason: outcome.reason } };
 		}
 		return this.#handleRetryableError(outcome.failure.message, true, outcome.failure.transportFailure) as Promise<ManagedAttemptDecision>;
@@ -9711,8 +9753,8 @@ export class AgentSession {
 					from,
 					to,
 					reason,
-					role: controller.chain.role,
-					scope: "session",
+					role: controller.chain.identity ?? controller.chain.role,
+					scope: controller.chain.origin === "subagent" ? "subagent-call" : "session",
 					activeIndex: controller.activeIndex,
 					chainLength: controller.chain.entries.length,
 					attemptsUsed,
@@ -9761,10 +9803,21 @@ export class AgentSession {
 				: false;
 		}
 		const retrySettings = this.settings.getGroup("retry");
+		const legacyRetryConfigured =
+			this.settings.has("retry.enabled") ||
+			this.settings.has("retry.maxRetries") ||
+			this.settings.has("retry.baseDelayMs") ||
+			this.settings.has("retry.maxDelayMs");
+		// A bare default retry configuration must preserve the historical
+		// fail-closed behavior for generic provider errors. Explicit retry
+		// settings opt into the resilient legacy retry path.
+		if (!managedFallback && (!retrySettings.enabled || !legacyRetryConfigured)) return false;
+		const legacyClassification = managedFallback ? undefined : this.#classifyErrorForRetry(message);
+		const legacyUnbounded = legacyClassification === "transient" || legacyClassification === "unknown";
 		const attemptsUsed = managedFallback ? controller.attemptsUsed || 1 : this.#retryAttempt + 1;
 		const outcome = managedFallback
 			? controller.onAttemptFailure(trigger.class, message.errorMessage || "Unknown error")
-			: attemptsUsed > retrySettings.maxRetries
+			: !legacyUnbounded && attemptsUsed > retrySettings.maxRetries
 				? "exhausted"
 				: "retry";
 		if (outcome === "exhausted") {
@@ -9789,6 +9842,17 @@ export class AgentSession {
 					: retryAfterMs !== undefined
 						? Math.max(retrySettings.baseDelayMs * 2 ** Math.max(0, attemptsUsed - 1), retryAfterMs)
 						: retrySettings.baseDelayMs * 2 ** Math.max(0, attemptsUsed - 1);
+		if (!managedFallback && !legacyUnbounded && retrySettings.maxDelayMs > 0 && delayMs > retrySettings.maxDelayMs) {
+			this.#retryAttempt = 0;
+			await this.#emitSessionEvent({
+				type: "auto_retry_end",
+				success: false,
+				attempt: attemptsUsed,
+				finalError: `Provider requested ${delayMs}ms wait, exceeds retry.maxDelayMs (${retrySettings.maxDelayMs}ms). Original error: ${errorMessage}`,
+			});
+			this.#resolveRetry();
+			return false;
+		}
 
 		const retry = async (ownership?: ManagedAttemptContinuationOwnership): Promise<void> => {
 			if (managedFallback) await this.#markFailedManagedCredential(trigger);
@@ -9836,6 +9900,7 @@ export class AgentSession {
 				maxAttempts: managedFallback ? controller.maxAttempts : retrySettings.maxRetries,
 				delayMs,
 				errorMessage,
+				unbounded: !managedFallback && legacyUnbounded,
 			});
 
 			const messages = this.agent.state.messages;
@@ -9849,7 +9914,7 @@ export class AgentSession {
 				if (this.#retryAbortController !== retryAbortController) return;
 				this.#retryAbortController = undefined;
 				if (this.#retryNowRequested) {
-					this.#retryNowRequested = false;
+					// Fall through below so the retry continues immediately.
 				} else {
 					const attempt = this.#retryAttempt;
 					this.#retryAttempt = 0;
@@ -9868,6 +9933,7 @@ export class AgentSession {
 				return;
 			}
 			if (this.#retryAbortController === retryAbortController) this.#retryAbortController = undefined;
+			this.#retryNowRequested = false;
 
 			if (managedOutcome) {
 				try {
@@ -9903,16 +9969,12 @@ export class AgentSession {
 				}
 			}
 
-			void this.agent.waitForIdle().then(
-				() =>
-					this.#scheduleAgentContinue({
-						delayMs: 1,
-						generation,
-						onError: () => this.#failRetryRecovery("Retry continuation failed to start"),
-						onSkip: () => this.#failRetryRecovery("Retry continuation was superseded"),
-					}),
-				() => this.#failRetryRecovery("Retry continuation failed to settle"),
-			);
+			this.#scheduleAgentContinue({
+				delayMs: 1,
+				generation,
+				onError: () => this.#failRetryRecovery("Retry continuation failed to start"),
+				onSkip: () => this.#failRetryRecovery("Retry continuation was superseded"),
+			});
 		};
 
 		if (managedOutcome) return { type: "retry", continuation: retry };
@@ -10872,6 +10934,8 @@ export class AgentSession {
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 
 			const sessionContext = this.buildDisplaySessionContext();
+			const didReloadConversationChange =
+				!switchingToDifferentSession && this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 
@@ -10893,19 +10957,38 @@ export class AgentSession {
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#resetInjectedContextSignatures();
 			this.#syncTodoPhasesFromBranch();
-			this.#closeAllProviderSessions(switchingToDifferentSession ? "session switch" : "session reload");
-			this.#rebindProviderSessionState(new Map());
+			if (switchingToDifferentSession || didReloadConversationChange) {
+				this.#closeAllProviderSessions(switchingToDifferentSession ? "session switch" : "session reload");
+				this.#rebindProviderSessionState(new Map());
+			}
 
-			// Restore the configured default chain head. The full configured chain
-			// remains in SessionContext; runtime fallback state always starts at index 0.
 			const configuredDefaultChain = sessionContext.configuredModelChains.default?.entries;
-			const defaultModelStr = configuredDefaultChain?.[0] ?? sessionContext.models.default;
-			if (defaultModelStr) {
-				const parsed = parseModelString(defaultModelStr);
+			const defaultEntries = configuredDefaultChain ?? (sessionContext.models.default ? [sessionContext.models.default] : []);
+			this.#defaultFallbackController = undefined;
+			if (defaultEntries.length > 1) {
+				const resolution = await resolveModelChainWithAuth(
+					defaultEntries,
+					this.#modelRegistry,
+					this.settings,
+					this.sessionId,
+					{ managedFallback: true },
+				);
+				const controller = this.#defaultFallbackChain();
+				controller.seedResolution(resolution.activeIndex, resolution.skips);
+				if (!resolution.model) throw new Error(this.#fallbackExhaustionError(controller));
+				if (!this.model || !modelsAreEqual(this.model, resolution.model)) {
+					this.#setModelAuthoritatively(resolution.model, "restore");
+				}
+				if (resolution.explicitThinkingLevel && resolution.thinkingLevel !== undefined) {
+					this.setThinkingLevel(resolution.thinkingLevel);
+				}
+			} else if (defaultEntries.length === 1) {
+				const parsed = parseModelString(defaultEntries[0]);
 				if (parsed) {
-					const availableModels = this.#modelRegistry.getAvailable();
-					const match = availableModels.find(m => m.provider === parsed.provider && m.id === parsed.id);
-					if (match) {
+					const match = this.#modelRegistry
+						.getAvailable()
+						.find(model => model.provider === parsed.provider && model.id === parsed.id);
+					if (match && (!this.model || !modelsAreEqual(this.model, match))) {
 						this.#setModelAuthoritatively(match, "restore");
 					}
 				}

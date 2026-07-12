@@ -57,6 +57,13 @@ export class FallbackChainController {
 		this.#attemptStarted = true;
 	}
 
+	/** Start a logically new request without losing its sticky selected entry. */
+	resetAttemptBudget(): void {
+		this.attemptsUsed = 0;
+		this.tried = [];
+		this.#attemptStarted = false;
+	}
+
 	/** Seed a controller from auth-aware resolution without charging requests. */
 	seedResolution(activeIndex: number, skips: Array<{ selector: string; reason: string }>): void {
 		this.activeIndex = Math.min(Math.max(0, activeIndex), this.chain.entries.length);
