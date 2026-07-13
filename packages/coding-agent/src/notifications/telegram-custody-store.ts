@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { daemonPaths } from "./daemon-paths";
 import {
 	type TelegramCustodyEpochBinding,
 	type TelegramCustodyEpochFs,
 	withCurrentTelegramCustodyEpoch,
 } from "./telegram-custody-epoch";
-import { daemonPaths } from "./daemon-paths";
 
 export const TELEGRAM_CUSTODY_SCHEMA_VERSION = 2;
 export const TELEGRAM_CUSTODY_MAX_RECORDS = 1_000;

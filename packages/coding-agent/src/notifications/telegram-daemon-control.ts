@@ -24,6 +24,7 @@ import type {
 import { OWNERSHIP_MISMATCH_MESSAGE, ownershipMismatchRecovery } from "../daemon/operator-contract";
 import { resolveGjcRuntimeSpawnInfo } from "../daemon/runtime";
 import { getNotificationConfig, isTelegramConfigured, tokenFingerprint } from "./config";
+import { type TelegramCustodyEpochBinding, withCurrentTelegramCustodyEpoch } from "./telegram-custody-epoch";
 import {
 	daemonPaths,
 	isFreshLiveOwner,
@@ -33,7 +34,6 @@ import {
 	type TelegramDaemonDeps,
 	type TelegramDaemonFs,
 } from "./telegram-daemon";
-import { withCurrentTelegramCustodyEpoch, type TelegramCustodyEpochBinding } from "./telegram-custody-epoch";
 
 const nodeFs: TelegramDaemonFs = fs.promises as unknown as TelegramDaemonFs;
 const DEFAULT_GRACEFUL_TIMEOUT_MS = 8_000;
@@ -71,11 +71,7 @@ function controlRequestMatchesBinding(
 	request: TelegramDaemonControlRequestRead | undefined,
 	binding: TelegramCustodyEpochBinding,
 ): boolean {
-	return Boolean(
-		request &&
-			request.ownerId === binding.ownerId &&
-			request.custodyEpoch === binding.custodyEpoch,
-	);
+	return Boolean(request && request.ownerId === binding.ownerId && request.custodyEpoch === binding.custodyEpoch);
 }
 
 function isControlRequest(value: unknown): value is TelegramDaemonControlRequestRead {
@@ -380,7 +376,14 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		const captured = await readDaemonState(this.settings, this.fsImpl);
 		if (!captured || captured.ownerId !== oldOwnerId || captured.pid !== oldPid) {
 			const after = await this.status();
-			return this.result(action, false, "telegram daemon ownership changed before control request", before, after, warnings);
+			return this.result(
+				action,
+				false,
+				"telegram daemon ownership changed before control request",
+				before,
+				after,
+				warnings,
+			);
 		}
 		if (captured.custodyEpoch !== undefined && !isCustodyEpoch(captured.custodyEpoch)) {
 			const after = await this.status();
@@ -508,21 +511,11 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 				ownershipMismatchRecovery(),
 			);
 		}
-		return this.result(
-			action,
-			true,
-			`reloaded telegram daemon (${spawned.result})`,
-			before,
-			after,
-			warnings,
-		);
+		return this.result(action, true, `reloaded telegram daemon (${spawned.result})`, before, after, warnings);
 	}
 
 	/** Clear only the exact pair-bound request for a still-current owner binding. */
-	private async clearOwnRequest(
-		requestId: string,
-		binding: TelegramCustodyEpochBinding | undefined,
-	): Promise<void> {
+	private async clearOwnRequest(requestId: string, binding: TelegramCustodyEpochBinding | undefined): Promise<void> {
 		if (!binding || !(await this.hasCurrentBinding(binding))) return;
 		await clearTelegramControlRequest(this.settings, requestId, this.fsImpl, binding);
 	}

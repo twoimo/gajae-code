@@ -5,11 +5,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	allocateTelegramCustodyEpoch,
+	readTelegramCustodyEpoch,
 	TELEGRAM_CUSTODY_EPOCH_MAX_FILE_BYTES,
-	TelegramCustodyEpochError,
+	type TelegramCustodyEpochError,
 	type TelegramCustodyEpochFs,
 	telegramCustodyEpochPath,
-	readTelegramCustodyEpoch,
 	withCurrentTelegramCustodyEpoch,
 } from "./telegram-custody-epoch";
 
@@ -82,10 +82,7 @@ async function withAgentDirectory(operation: (agentDir: string) => Promise<void>
 	}
 }
 
-async function expectFailure(
-	operation: Promise<unknown>,
-	reason: TelegramCustodyEpochError["reason"],
-): Promise<void> {
+async function expectFailure(operation: Promise<unknown>, reason: TelegramCustodyEpochError["reason"]): Promise<void> {
 	await expect(operation).rejects.toMatchObject({ name: "TelegramCustodyEpochError", reason });
 }
 
@@ -109,7 +106,9 @@ describe("Telegram custody epoch", () => {
 				),
 			);
 
-			expect(bindings.map(binding => binding.custodyEpoch).sort((left, right) => left - right)).toEqual([1, 2, 3, 4, 5]);
+			expect(bindings.map(binding => binding.custodyEpoch).sort((left, right) => left - right)).toEqual([
+				1, 2, 3, 4, 5,
+			]);
 			expect(new Set(bindings.map(binding => binding.ownerId))).toEqual(
 				new Set(["owner-a", "owner-b", "owner-c", "owner-d", "owner-e"]),
 			);
@@ -123,9 +122,11 @@ describe("Telegram custody epoch", () => {
 			const third = await allocateTelegramCustodyEpoch({ agentDir, ownerId: "owner-a" });
 			let called = false;
 
-			expect(await withCurrentTelegramCustodyEpoch({ agentDir, binding: first }, async () => {
-				called = true;
-			})).toEqual({ ok: false, reason: "fenced" });
+			expect(
+				await withCurrentTelegramCustodyEpoch({ agentDir, binding: first }, async () => {
+					called = true;
+				}),
+			).toEqual({ ok: false, reason: "fenced" });
 			expect(await withCurrentTelegramCustodyEpoch({ agentDir, binding: second }, async () => undefined)).toEqual({
 				ok: false,
 				reason: "fenced",
@@ -214,9 +215,9 @@ describe("Telegram custody epoch", () => {
 					fakeFs.failSyncAt = 2;
 					fakeFs.failSyncCode = failure === "target-sync-eperm" ? "EPERM" : undefined;
 				}
-				await expect(allocateTelegramCustodyEpoch({ agentDir, ownerId: `owner-${failure}`, fs: fakeFs })).rejects.toThrow(
-					"simulated",
-				);
+				await expect(
+					allocateTelegramCustodyEpoch({ agentDir, ownerId: `owner-${failure}`, fs: fakeFs }),
+				).rejects.toThrow("simulated");
 				const entries = await fs.readdir(path.dirname(epochPath));
 				expect(entries.some(entry => entry.endsWith(".tmp"))).toBe(false);
 			}
@@ -225,7 +226,9 @@ describe("Telegram custody epoch", () => {
 			const binding = await allocateTelegramCustodyEpoch({ agentDir, ownerId: "owner-ok", fs: fakeFs });
 			expect(binding.custodyEpoch).toBeGreaterThan(0);
 			expect(fakeFs.writeCalls[0]?.mode).toBe(0o600);
-			expect(fakeFs.chmodCalls.some(call => call.file !== path.dirname(epochPath) && call.mode === 0o600)).toBe(true);
+			expect(fakeFs.chmodCalls.some(call => call.file !== path.dirname(epochPath) && call.mode === 0o600)).toBe(
+				true,
+			);
 			expect(path.dirname(fakeFs.renameCalls[0]!.from)).toBe(path.dirname(fakeFs.renameCalls[0]!.to));
 			expect(fakeFs.openCalls.map(call => call.flags)).toEqual(["r+", "r+", "r"]);
 		});

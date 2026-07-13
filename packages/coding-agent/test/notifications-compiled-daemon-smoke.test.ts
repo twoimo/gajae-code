@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import nativesPackageJson from "../../natives/package.json" with { type: "json" };
 import { devEntrypoints, releaseEntrypoints } from "../scripts/compile-args";
 import { buildTelegramDaemonSpawnArgs, daemonPaths } from "../src/notifications/telegram-daemon";
 
@@ -14,7 +15,7 @@ describe("compiled daemon smoke coverage", () => {
 
 	async function runWithTimeout(
 		command: string[],
-		opts: { cwd: string },
+		opts: { cwd: string; env?: Record<string, string | undefined> },
 		timeoutMs: number,
 	): Promise<{
 		exitCode: number | null;
@@ -42,6 +43,26 @@ describe("compiled daemon smoke coverage", () => {
 			new Response(proc.stderr).text(),
 		]);
 		return { exitCode, stdout, stderr, timedOut };
+	}
+
+	function stageCompiledNativeAddons(dataHome: string): void {
+		const nativeDir = path.join(repoRoot, "packages/natives/native");
+		const filenamePrefix = `pi_natives.${process.platform}-${process.arch}`;
+		const addonFilenames = fs
+			.readdirSync(nativeDir)
+			.filter(
+				filename =>
+					filename === `${filenamePrefix}.node` ||
+					filename === `${filenamePrefix}-baseline.node` ||
+					filename === `${filenamePrefix}-modern.node`,
+			);
+		expect(addonFilenames).not.toHaveLength(0);
+
+		const stagedNativeDir = path.join(dataHome, "gjc", "natives", nativesPackageJson.version);
+		fs.mkdirSync(stagedNativeDir, { recursive: true });
+		for (const filename of addonFilenames) {
+			fs.copyFileSync(path.join(nativeDir, filename), path.join(stagedNativeDir, filename));
+		}
 	}
 
 	async function buildCompiledDaemonSmokeBinary(outPath: string): Promise<void> {
@@ -120,15 +141,22 @@ describe("compiled daemon smoke coverage", () => {
 	test("compiled binary with daemon CLI entrypoint starts root version and daemon smoke", async () => {
 		const temp = tempDir("gjc-compiled-daemon-binary-");
 		const binaryPath = path.join(temp, "gjc-repro");
+		const nativeDataHome = path.join(temp, "xdg-data");
+		const isolatedEnv = {
+			...process.env,
+			XDG_DATA_HOME: nativeDataHome,
+			...(process.platform === "win32" ? { LOCALAPPDATA: path.join(temp, "local-app-data") } : {}),
+		};
 		try {
+			stageCompiledNativeAddons(nativeDataHome);
 			await buildCompiledDaemonSmokeBinary(binaryPath);
-			const version = await runWithTimeout([binaryPath, "--version"], { cwd: temp }, 10_000);
+			const version = await runWithTimeout([binaryPath, "--version"], { cwd: temp, env: isolatedEnv }, 10_000);
 			expect(version.timedOut).toBe(false);
 			expect(`${version.exitCode}\n${version.stdout}\n${version.stderr}`).toStartWith("0\ngjc/");
 
 			const smoke = await runWithTimeout(
 				[binaryPath, "notify", "daemon-internal", "--smoke"],
-				{ cwd: temp },
+				{ cwd: temp, env: isolatedEnv },
 				10_000,
 			);
 			expect(smoke.timedOut).toBe(false);
@@ -136,7 +164,7 @@ describe("compiled daemon smoke coverage", () => {
 		} finally {
 			fs.rmSync(temp, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 
 	test("compile entrypoint lists preserve the dynamic daemon entrypoint for compiled binaries", () => {
 		expect(devEntrypoints).toContain("./src/notifications/telegram-daemon-cli.ts");

@@ -16,6 +16,10 @@ import {
 } from "../src/daemon/operator-contract";
 import { resolveGjcRuntimeSpawnInfo } from "../src/daemon/runtime";
 import { tokenFingerprint } from "../src/notifications/config";
+import {
+	TELEGRAM_CUSTODY_EPOCH_SCHEMA_VERSION,
+	telegramCustodyEpochPath,
+} from "../src/notifications/telegram-custody-epoch";
 import { daemonPaths } from "../src/notifications/telegram-daemon";
 import {
 	clearTelegramControlRequest,
@@ -52,10 +56,28 @@ function settings(agentDir: string): Settings {
 	);
 }
 
-function writeState(agentDir: string, state: Record<string, unknown>): void {
+function writeState(
+	agentDir: string,
+	state: Record<string, unknown>,
+	{ writeEpoch = true }: { writeEpoch?: boolean } = {},
+): void {
 	const paths = daemonPaths(agentDir);
 	fs.mkdirSync(paths.dir, { recursive: true });
 	fs.writeFileSync(paths.state, JSON.stringify(state));
+	const { ownerId, custodyEpoch } = state;
+	if (
+		writeEpoch &&
+		typeof ownerId === "string" &&
+		ownerId.length > 0 &&
+		typeof custodyEpoch === "number" &&
+		Number.isSafeInteger(custodyEpoch) &&
+		custodyEpoch > 0
+	) {
+		fs.writeFileSync(
+			telegramCustodyEpochPath(agentDir),
+			`${JSON.stringify({ version: TELEGRAM_CUSTODY_EPOCH_SCHEMA_VERSION, custodyEpoch, ownerId })}\n`,
+		);
+	}
 }
 
 function freshState(extra: Partial<Record<string, unknown>> = {}): Record<string, unknown> {

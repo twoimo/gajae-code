@@ -10,6 +10,7 @@ import {
 	TELEGRAM_PARSE_MODE,
 } from "../src/notifications/html-format";
 import { deliverRichWithFallback } from "../src/notifications/rich-render";
+import { telegramCustodyEpochPath } from "../src/notifications/telegram-custody-epoch";
 import {
 	acquireDaemonOwnership,
 	buildTelegramDaemonSpawnArgs,
@@ -17,23 +18,22 @@ import {
 	DAEMON_VERSION,
 	daemonPaths,
 	ensureTelegramDaemonRunning,
-	spawnTelegramDaemonOwner,
 	registerNotificationRoot,
 	releaseDaemonOwnership,
 	renewDaemonHeartbeat,
+	spawnTelegramDaemonOwner,
 	TelegramBotTransport,
 	type TelegramDaemonFs,
 	TelegramEventDispatchState,
 	TelegramNotificationDaemon,
 	TelegramUpdatePoller,
 } from "../src/notifications/telegram-daemon";
+import { runDaemonInternal, runDaemonSmoke } from "../src/notifications/telegram-daemon-cli";
 import {
 	clearTelegramControlRequest,
 	readTelegramControlRequest,
 	writeTelegramControlRequest,
 } from "../src/notifications/telegram-daemon-control";
-import { telegramCustodyEpochPath } from "../src/notifications/telegram-custody-epoch";
-import { runDaemonInternal, runDaemonSmoke } from "../src/notifications/telegram-daemon-cli";
 
 const THREADED_FALLBACK_NOTICE =
 	"Flat Telegram private chat supports outbound notifications and inline ask buttons only. Enable Threaded Mode in @BotFather > Bot Settings > Threads Settings for free-text replies and session commands.";

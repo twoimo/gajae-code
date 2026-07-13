@@ -50,8 +50,8 @@ import { deliverRichActionWithFallback, deliverRichWithFallback, shouldPromoteRi
 import {
 	allocateTelegramCustodyEpoch,
 	readTelegramCustodyEpoch,
-	withCurrentTelegramCustodyEpoch,
 	type TelegramCustodyEpochBinding,
+	withCurrentTelegramCustodyEpoch,
 } from "./telegram-custody-epoch";
 import { type TelegramCustodyLoadResult, TelegramCustodyStore } from "./telegram-custody-store";
 import {
@@ -425,9 +425,7 @@ function ownerBindingMatches(
 	state: DaemonState | undefined,
 	binding: TelegramCustodyEpochBinding,
 ): state is DaemonState & { custodyEpoch: number } {
-	return Boolean(
-		state && state.ownerId === binding.ownerId && state.custodyEpoch === binding.custodyEpoch,
-	);
+	return Boolean(state && state.ownerId === binding.ownerId && state.custodyEpoch === binding.custodyEpoch);
 }
 
 function assertValidPersistedStateEpoch(state: DaemonState | undefined): void {

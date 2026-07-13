@@ -204,7 +204,10 @@ async function writeTelegramCustodyEpoch(
 	if (Buffer.byteLength(data, "utf8") > TELEGRAM_CUSTODY_EPOCH_MAX_FILE_BYTES) {
 		throw new TelegramCustodyEpochError("corrupt");
 	}
-	const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+	const temporaryPath = path.join(
+		path.dirname(filePath),
+		`.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+	);
 
 	try {
 		await fsImpl.writeFile(temporaryPath, data, { mode: 0o600 });
@@ -287,10 +290,7 @@ export async function withCurrentTelegramCustodyEpoch<T>(
 	const filePath = telegramCustodyEpochPath(input.agentDir);
 	return withFileLock(filePath, async () => {
 		const current = await readTelegramCustodyEpoch({ agentDir: input.agentDir, fs: fsImpl });
-		if (
-			current.ownerId !== input.binding.ownerId ||
-			current.custodyEpoch !== input.binding.custodyEpoch
-		) {
+		if (current.ownerId !== input.binding.ownerId || current.custodyEpoch !== input.binding.custodyEpoch) {
 			return { ok: false, reason: "fenced" };
 		}
 		return { ok: true, value: await operation() };

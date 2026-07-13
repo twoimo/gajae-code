@@ -6,18 +6,12 @@ import type { Settings } from "../config/settings";
 import { getNotificationConfig, isTelegramConfigured } from "./config";
 import { daemonPaths } from "./daemon-paths";
 import {
-	readDaemonState,
-	type TelegramDaemonOptions,
-} from "./telegram-daemon";
-import {
-	clearTelegramControlRequest,
-	readTelegramControlRequest,
-} from "./telegram-daemon-control";
-import {
 	readTelegramCustodyEpoch,
-	withCurrentTelegramCustodyEpoch,
 	type TelegramCustodyEpochBinding,
+	withCurrentTelegramCustodyEpoch,
 } from "./telegram-custody-epoch";
+import { readDaemonState, type TelegramDaemonOptions } from "./telegram-daemon";
+import { clearTelegramControlRequest, readTelegramControlRequest } from "./telegram-daemon-control";
 
 type TelegramDaemonRunner = {
 	run(): Promise<void>;
@@ -62,16 +56,13 @@ async function withCurrentDaemonBinding<T>(
 	operation: () => Promise<T>,
 ): Promise<{ ok: true; value: T } | { ok: false }> {
 	return await withFileLock(daemonPaths(settings.getAgentDir()).state, async () => {
-		const guarded = await withCurrentTelegramCustodyEpoch(
-			{ agentDir: settings.getAgentDir(), binding },
-			async () => {
-				const state = await readDaemonState(settings);
-				if (state?.ownerId !== binding.ownerId || state.custodyEpoch !== binding.custodyEpoch) {
-					return { ok: false } as const;
-				}
-				return { ok: true, value: await operation() } as const;
-			},
-		);
+		const guarded = await withCurrentTelegramCustodyEpoch({ agentDir: settings.getAgentDir(), binding }, async () => {
+			const state = await readDaemonState(settings);
+			if (state?.ownerId !== binding.ownerId || state.custodyEpoch !== binding.custodyEpoch) {
+				return { ok: false } as const;
+			}
+			return { ok: true, value: await operation() } as const;
+		});
 		if (!guarded.ok || !guarded.value.ok) return { ok: false };
 		return guarded.value;
 	});
@@ -293,16 +284,11 @@ export async function runDaemonInternal(argv: string[], deps: RunDaemonInternalD
 					{ ownerId: requestOwnerId, custodyEpoch: requestCustodyEpoch },
 					async () => {
 						const request = await readTelegramControlRequest(settings as Settings);
-						if (
-							request?.ownerId === requestOwnerId &&
-							request.custodyEpoch === requestCustodyEpoch
-						) {
-							await clearTelegramControlRequest(
-								settings as Settings,
-								request.requestId,
-								undefined,
-								{ ownerId: requestOwnerId, custodyEpoch: requestCustodyEpoch },
-							);
+						if (request?.ownerId === requestOwnerId && request.custodyEpoch === requestCustodyEpoch) {
+							await clearTelegramControlRequest(settings as Settings, request.requestId, undefined, {
+								ownerId: requestOwnerId,
+								custodyEpoch: requestCustodyEpoch,
+							});
 						}
 					},
 				);
