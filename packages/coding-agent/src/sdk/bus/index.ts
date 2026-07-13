@@ -1222,8 +1222,8 @@ function sdkControlSurface(
 		throw Object.assign(new Error(`${operation} is unavailable: ${reason}`), { code: "unavailable" });
 	};
 	const bindings = new Set(ctx.sdkBindings?.() ?? []);
-	const send = (text: string, deliverAs?: "steer" | "followUp") => {
-		api.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
+	const sendSteer = (text: string) => {
+		api.sendUserMessage(text, { deliverAs: "steer" });
 		return { commandId: crypto.randomUUID(), accepted: true };
 	};
 	const resolveModel = (id: string) => {
@@ -1252,7 +1252,7 @@ function sdkControlSurface(
 			await Bun.sleep(10);
 		}
 	};
-	const submitPrompt = async (text: string, images: unknown, forceFresh = false) => {
+	const submitPrompt = async (text: string, images: unknown, forceFresh = false, deliverAs?: "steer" | "followUp") => {
 		if (forceFresh && (isBusy() || !ctx.isIdle())) {
 			throw Object.assign(new Error("Previous turn did not finish aborting before replacement prompt submission."), {
 				code: "busy",
@@ -1298,7 +1298,7 @@ function sdkControlSurface(
 		try {
 			submission = Promise.resolve(
 				api.sendUserMessage(content, {
-					...(!forceFresh && isBusy() ? { deliverAs: "steer" as const } : {}),
+					...(deliverAs ? { deliverAs } : !forceFresh && isBusy() ? { deliverAs: "steer" as const } : {}),
 					onPreflightAccepted,
 				}),
 			);
@@ -1333,8 +1333,8 @@ function sdkControlSurface(
 	};
 	const surface: ControlSurface = {
 		prompt: (text, images) => submitPrompt(text, images),
-		steer: text => send(text, "steer"),
-		followUp: text => send(text, "followUp"),
+		steer: text => sendSteer(text),
+		followUp: text => submitPrompt(text, undefined, false, "followUp"),
 		abort: () => {
 			cancelPendingPreflights();
 			ctx.abort();
@@ -1857,7 +1857,9 @@ export function createNotificationsExtension(
 			onRequest: options.onSdkRequest,
 			afterControlResponse: async (connectionId, request, response) => {
 				if (
-					(request.operation === "turn.prompt" || request.operation === "turn.abort_and_prompt") &&
+					(request.operation === "turn.prompt" ||
+						request.operation === "turn.follow_up" ||
+						request.operation === "turn.abort_and_prompt") &&
 					response.ok === true &&
 					response.result &&
 					typeof response.result === "object" &&

@@ -28,7 +28,10 @@ import {
 	TMUX_OWNER_ISOLATION_MAX_LINE_BYTES,
 	tmuxOwnerIsolationBootstrapArgv,
 } from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation";
-import { isTmuxOwnerIsolationCliArgv } from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation-cli";
+import {
+	isTmuxOwnerIsolationCliArgv,
+	tmuxServerProof,
+} from "@gajae-code/coding-agent/gjc-runtime/tmux-owner-isolation-cli";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const ownerIsolationCliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
@@ -127,6 +130,58 @@ describe("tmux owner isolation", () => {
 		for (const argv of [[], [ownerIsolationFlag, "extra"], ["extra", ownerIsolationFlag], ["--other"]]) {
 			expect(isTmuxOwnerIsolationCliArgv(argv)).toBe(false);
 		}
+	});
+
+	it("treats successful whitespace-only list-sessions output as absent", async () => {
+		const proof = await tmuxServerProof("socket", ["psmux"], {
+			platform: "win32",
+			runListSessions: () => ({ exitCode: 0, stdout: " \r\n\t", stderr: "" }),
+		});
+		expect(proof).toEqual({ state: "absent" });
+	});
+
+	it("treats a known no-server diagnostic as absent", async () => {
+		const proof = await tmuxServerProof("socket", ["psmux"], {
+			platform: "win32",
+			runListSessions: () => ({
+				exitCode: 1,
+				stdout: "",
+				stderr: "no server running on /tmp/psmux.sock",
+			}),
+		});
+		expect(proof).toEqual({ state: "absent" });
+	});
+
+	it("accepts complete matching list-sessions rows on win32", async () => {
+		const proof = await tmuxServerProof("socket", ["psmux"], {
+			platform: "win32",
+			runListSessions: () => ({
+				exitCode: 0,
+				stdout: "4242\tfirst\n4242\tsecond\n",
+				stderr: "",
+			}),
+		});
+		expect(proof).toEqual({
+			state: "safe",
+			pid: 4242,
+			startTime: "not_applicable",
+			cgroup: { classification: "not_applicable" },
+			sessionNames: ["first", "second"],
+		});
+	});
+
+	it.each([
+		["an invalid pid", "not-a-pid\towned\n"],
+		["a missing pid", "\towned\n"],
+		["malformed columns", "42\towned\textra\n"],
+		["inconsistent pids", "42\tfirst\n43\tsecond\n"],
+		["mixed valid and invalid rows", "42\tfirst\nbroken\tsecond\n"],
+	])("fails closed on non-empty list-sessions output with %s", async (_case, stdout) => {
+		const proof = await tmuxServerProof("socket", ["psmux"], {
+			platform: "win32",
+			runListSessions: () => ({ exitCode: 0, stdout, stderr: "" }),
+		});
+		expect(proof).toEqual({ state: "unverifiable" });
 	});
 
 	it("invokes a compiled bootstrap with only the internal flag", () => {

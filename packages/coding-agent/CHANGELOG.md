@@ -49,6 +49,7 @@
 
 ### Fixed
 
+- Fixed native-Windows coordinator/runtime compatibility by treating psmux's successful empty `list-sessions` response as an absent server while keeping malformed rows fail-closed, reading process incarnations through a validated PowerShell start-time query, sharing the existing BOM-free encoded PowerShell pane command, preserving multiline SDK prompts behind semantic readiness, and retaining runtime command/turn acknowledgement identity across Windows-equivalent workspace paths (#2145).
 - The coordinator MCP owner-server probe now recognizes tmux ≥3.7's missing-server diagnostic (`error connecting to <socket> (No such file or directory)`) as an absent server. tmux 3.7 changed the wording from the older `no server running on <socket>`, which the coordinator probe did not match — so a brand-new coordinator socket (which never has a server yet) was misclassified `unverifiable` instead of `absent`, and **every** `gjc_delegate_*` / session create failed closed with `coordinator_tmux_owner_server_unverifiable` on tmux ≥3.7. The coordinator and `gjc` harness probes now match the same no-server wordings the other owner-isolation probes already did.
 - Preserved explicit Telegram forum-topic renames as durable user-owned names, immediately re-asserting delayed edits while retaining restart and rename-race recovery (#1910).
 - Prevented typed provider safety stops from entering automatic retry loops and aligned ACP refusal reporting with the provider-native classification.

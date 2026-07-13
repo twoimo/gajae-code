@@ -455,6 +455,68 @@ test("SDK host preserves ordered prompt image blocks in the host payload", async
 	]);
 });
 
+test("SDK host correlates follow-up acknowledgements with the later agent start", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-follow-up-correlation-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-follow-up-correlation-${Date.now()}`;
+	const sent: Parameters<ExtensionActions["sendUserMessage"]>[] = [];
+	const sessionContext = context(cwd, sessionId);
+	const handlers = start(sessionContext, undefined, (...args) => {
+		sent.push(args);
+	});
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "follow-up-correlation",
+			operation: "turn.follow_up",
+			input: { text: "queued follow-up" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "follow-up-correlation"),
+		"follow-up acknowledgement",
+	);
+	const acknowledgement = frames.find(
+		frame => frame.type === "control_response" && frame.id === "follow-up-correlation",
+	) as { result?: { commandId?: string; turnId?: string } };
+	const commandId = acknowledgement.result?.commandId;
+	const turnId = acknowledgement.result?.turnId;
+	expect(acknowledgement).toMatchObject({
+		ok: true,
+		result: { accepted: true, commandId: expect.any(String), turnId: expect.any(String) },
+	});
+	if (typeof commandId !== "string" || typeof turnId !== "string") throw new Error("missing follow-up correlation");
+	expect(sent).toEqual([["queued follow-up", { deliverAs: "followUp" }]]);
+	void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+	socket.send(JSON.stringify({ type: "event_replay", id: "follow-up-replay", sinceGeneration: 1, sinceSeq: 0 }));
+	await waitFor(
+		() => frames.some(frame => frame.type === "event_replay_result" && frame.id === "follow-up-replay"),
+		"correlated agent start replay",
+	);
+	const replay = frames.find(frame => frame.type === "event_replay_result" && frame.id === "follow-up-replay");
+	expect(replay?.events).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				type: "event",
+				kind: "agent_start",
+				payload: expect.objectContaining({ type: "agent_start", sessionId, commandId, turnId }),
+			}),
+		]),
+	);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
+});
+
 test("SDK host delivers accepted prompt failures after their acknowledgement", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-terminal-"));
 	dirs.push(cwd);

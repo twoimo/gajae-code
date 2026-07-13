@@ -227,6 +227,60 @@ test("broker parses Darwin kernel process start timestamps with microsecond prec
 	expect(parseDarwinProcessIncarnation(bsdInfo)).toBe("darwin:1700000000:123456");
 	expect(parseDarwinProcessIncarnation(sameSecondSuccessor)).toBe("darwin:1700000000:123457");
 });
+test("broker reads Windows process incarnations through a PowerShell query", () => {
+	let invoked = false;
+	const result = processIncarnation(4_242, {
+		platform: "win32",
+		runCommand(command, args) {
+			invoked = true;
+			expect(command).toBe("powershell.exe");
+			expect(args).toEqual([
+				"-NoLogo",
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				'$ErrorActionPreference = \'Stop\'; $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $process = Get-Process -Id 4242 -ErrorAction Stop; $startTime = $process.StartTime.ToUniversalTime().ToString("o"); [Console]::Out.WriteLine(("{0}`t{1}" -f $process.Id, $startTime))',
+			]);
+			return { exitCode: 0, stdout: "4242\t2025-02-03T04:05:06.1234567Z\r\n" };
+		},
+	});
+	expect(invoked).toBe(true);
+	expect(result).toBe("win32:2025-02-03T04:05:06.1234567Z");
+});
+
+test("broker fails closed when a Windows process-incarnation query fails", () => {
+	const options = {
+		platform: "win32" as const,
+		runCommand: () => ({ exitCode: 1, stdout: "4242\t2025-02-03T04:05:06.1234567Z\n" }),
+	};
+	expect(processIncarnation(4_242, options)).toBeUndefined();
+	expect(
+		processIncarnation(4_242, {
+			platform: "win32",
+			runCommand() {
+				throw new Error("PowerShell unavailable");
+			},
+		}),
+	).toBeUndefined();
+});
+
+test("broker rejects empty, malformed, and mismatched Windows process-incarnation output", () => {
+	for (const stdout of [
+		"",
+		"4242\t2025-02-03T04:05:06.123Z\n",
+		"4242\t2025-02-30T04:05:06.1234567Z\n",
+		"4243\t2025-02-03T04:05:06.1234567Z\n",
+		"4242\t2025-02-03T04:05:06.1234567Z\r",
+		"4242\t2025-02-03T04:05:06.1234567Z\n\n",
+	]) {
+		expect(
+			processIncarnation(4_242, {
+				platform: "win32",
+				runCommand: () => ({ exitCode: 0, stdout }),
+			}),
+		).toBeUndefined();
+	}
+});
 
 test("broker bounds a hanging WebSocket upgrade by the lifecycle deadline and cleans its child", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-hanging-upgrade-"));
