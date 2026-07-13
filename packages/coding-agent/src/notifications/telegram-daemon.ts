@@ -108,7 +108,7 @@ export interface TelegramDaemonFs {
 	writeFile(path: string, data: string, opts?: fs.WriteFileOptions): Promise<void>;
 	rename(oldPath: string, newPath: string): Promise<void>;
 	unlink(path: string): Promise<void>;
-	open(path: string, flags: string, mode?: number): Promise<{ close(): Promise<void> }>;
+	open(path: string, flags: string, mode?: number): Promise<{ sync(): Promise<void>; close(): Promise<void> }>;
 	readdir(path: string): Promise<string[]>;
 	chmod(path: string, mode: number): Promise<void>;
 }
@@ -161,6 +161,8 @@ export const ASK_CONTROLS_CAPABILITY = "ask_controls_v1";
 export const DAEMON_GENERATION = NOTIFICATION_PROTOCOL_VERSION;
 
 const nodeFs: TelegramDaemonFs = fs.promises as unknown as TelegramDaemonFs;
+const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(["EISDIR", "EINVAL", "ENOSYS", "ENOTSUP", "EPERM"]);
+const TOPIC_STATE_SCHEMA_VERSION = 1;
 
 /**
  * Durably persist a `/rich` toggle. A real {@link Settings} exposes
@@ -315,12 +317,130 @@ async function readJson<T>(fsImpl: TelegramDaemonFs, file: string): Promise<T | 
 	}
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function hasExactKeys(
+	value: Record<string, unknown>,
+	required: readonly string[],
+	optional: readonly string[] = [],
+): boolean {
+	const keys = Object.keys(value);
+	return (
+		keys.length >= required.length &&
+		keys.length <= required.length + optional.length &&
+		required.every(key => Object.hasOwn(value, key)) &&
+		keys.every(key => required.includes(key) || optional.includes(key))
+	);
+}
+
+function isTopicRecord(value: unknown): value is TopicRegistryState["topics"][string] {
+	if (
+		!isPlainObject(value) ||
+		!hasExactKeys(
+			value,
+			["topicId", "identitySent", "createdAt"],
+			["name", "nameOwner", "nameReconcilePending", "userNameUpdateId", "identityKey"],
+		)
+	) {
+		return false;
+	}
+	const hasUserNameUpdateId = Object.hasOwn(value, "userNameUpdateId");
+	const userOwned = value.nameOwner === "user";
+	if (
+		(userOwned &&
+			(typeof value.name !== "string" ||
+				value.name.trim().length === 0 ||
+				!hasUserNameUpdateId ||
+				typeof value.userNameUpdateId !== "number" ||
+				!Number.isSafeInteger(value.userNameUpdateId) ||
+				value.userNameUpdateId < 0)) ||
+		(!userOwned && (hasUserNameUpdateId || value.nameReconcilePending === true))
+	) {
+		return false;
+	}
+	return (
+		typeof value.topicId === "string" &&
+		value.topicId.length > 0 &&
+		typeof value.identitySent === "boolean" &&
+		typeof value.createdAt === "number" &&
+		Number.isSafeInteger(value.createdAt) &&
+		value.createdAt >= 0 &&
+		(!Object.hasOwn(value, "name") || typeof value.name === "string") &&
+		(!Object.hasOwn(value, "nameOwner") || value.nameOwner === "user") &&
+		(!Object.hasOwn(value, "nameReconcilePending") || typeof value.nameReconcilePending === "boolean") &&
+		(!hasUserNameUpdateId ||
+			(typeof value.userNameUpdateId === "number" &&
+				Number.isSafeInteger(value.userNameUpdateId) &&
+				value.userNameUpdateId >= 0)) &&
+		(!Object.hasOwn(value, "identityKey") || typeof value.identityKey === "string")
+	);
+}
+
+function parseTopicStateEnvelope(
+	value: unknown,
+	identity: { chatId: string; tokenFingerprint: string },
+): TopicRegistryState | undefined {
+	if (!isPlainObject(value) || !hasExactKeys(value, ["version", "chatId", "tokenFingerprint", "topics"])) {
+		return undefined;
+	}
+	const rawTopics = value.topics;
+	if (
+		value.version !== TOPIC_STATE_SCHEMA_VERSION ||
+		value.chatId !== identity.chatId ||
+		value.tokenFingerprint !== identity.tokenFingerprint ||
+		!isPlainObject(rawTopics)
+	) {
+		return undefined;
+	}
+
+	const topics: TopicRegistryState["topics"] = {};
+	const topicIds = new Set<string>();
+	for (const [sessionId, record] of Object.entries(rawTopics)) {
+		if (!sessionId || !isTopicRecord(record) || topicIds.has(record.topicId)) return undefined;
+		topicIds.add(record.topicId);
+		topics[sessionId] = record;
+	}
+	return { topics };
+}
+
+function isUnsupportedDirectorySyncError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return typeof code === "string" && UNSUPPORTED_DIRECTORY_SYNC_CODES.has(code);
+}
+
+async function syncFile(fsImpl: TelegramDaemonFs, filePath: string): Promise<void> {
+	const handle = await fsImpl.open(filePath, "r+");
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function syncDirectory(fsImpl: TelegramDaemonFs, directoryPath: string): Promise<void> {
+	const handle = await fsImpl.open(directoryPath, "r");
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
 async function writeJsonAtomic(fsImpl: TelegramDaemonFs, file: string, data: unknown): Promise<void> {
 	const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
 	try {
 		await fsImpl.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
 		await fsImpl.chmod(tmp, 0o600).catch(() => undefined);
+		await syncFile(fsImpl, tmp);
 		await fsImpl.rename(tmp, file);
+		await syncFile(fsImpl, file);
+		try {
+			await syncDirectory(fsImpl, path.dirname(file));
+		} catch (error) {
+			if (!isUnsupportedDirectorySyncError(error)) throw error;
+		}
 	} catch (error) {
 		await fsImpl.unlink(tmp).catch(() => undefined);
 		throw error;
@@ -1191,6 +1311,7 @@ export class TelegramNotificationDaemon {
 	#custodyLoadPromise: Promise<TelegramCustodyLoadResult> | undefined;
 	readonly #topicDeletionPromises = new Map<string, Promise<void>>();
 	private readonly topics = new TopicRegistry();
+	#topicStateLoadFailed = false;
 	/** Serializes registry snapshots so an older atomic write cannot overwrite newer rename state. */
 	private topicsPersistQueue: Promise<void> = Promise.resolve();
 	/** Daemon edit attempts that can race an accepted user service message. */
@@ -2424,11 +2545,18 @@ export class TelegramNotificationDaemon {
 					try {
 						await this.persistTopics();
 					} catch {
-						if (previousTopic !== undefined) this.topics.load({ topics: { [sessionId]: previousTopic } });
+						const replacement = this.topics.get(sessionId);
+						// A write can race a new topic for this same session.
+						// Never overwrite its record or reverse index.
+						if (previousTopic !== undefined && replacement === undefined) {
+							this.topics.load({ topics: { [sessionId]: previousTopic } });
+						}
 						logger.warn("notifications: Telegram topic deletion local persistence failed");
 						return false;
 					}
-					if (current !== undefined) this.clearDeletedTopicRuntimeState(sessionId);
+					if (current !== undefined && this.topics.get(sessionId) === undefined) {
+						this.clearDeletedTopicRuntimeState(sessionId);
+					}
 					return true;
 				},
 			);
@@ -2458,10 +2586,18 @@ export class TelegramNotificationDaemon {
 	}
 
 	private persistTopics(): Promise<void> {
+		if (this.#topicStateLoadFailed) {
+			return Promise.reject(new Error("Telegram topic persistence is disabled after an untrusted topic state load"));
+		}
 		const pending = this.topicsPersistQueue.then(async () => {
 			const paths = daemonPaths(this.opts.settings.getAgentDir());
 			await ensureDir(this.fsImpl, paths.dir);
-			await writeJsonAtomic(this.fsImpl, path.join(paths.dir, "telegram-topics.json"), this.topics.serialize());
+			await writeJsonAtomic(this.fsImpl, path.join(paths.dir, "telegram-topics.json"), {
+				version: TOPIC_STATE_SCHEMA_VERSION,
+				chatId: this.opts.chatId,
+				tokenFingerprint: tokenFingerprint(this.opts.botToken),
+				...this.topics.serialize(),
+			});
 		});
 		this.topicsPersistQueue = pending.catch(() => undefined);
 		return pending;
@@ -2469,8 +2605,27 @@ export class TelegramNotificationDaemon {
 
 	async loadTopics(): Promise<void> {
 		const paths = daemonPaths(this.opts.settings.getAgentDir());
-		const raw = await readJson<TopicRegistryState>(this.fsImpl, path.join(paths.dir, "telegram-topics.json"));
-		if (raw && typeof raw === "object") this.topics.load(raw);
+		let raw: unknown;
+		try {
+			raw = await readJson<unknown>(this.fsImpl, path.join(paths.dir, "telegram-topics.json"));
+		} catch (error) {
+			this.#topicStateLoadFailed = true;
+			for (const sessionId of this.topics.sessionIds()) this.topics.delete(sessionId);
+			throw error;
+		}
+		if (raw === undefined) return;
+		const state = parseTopicStateEnvelope(raw, {
+			chatId: this.opts.chatId,
+			tokenFingerprint: tokenFingerprint(this.opts.botToken),
+		});
+		if (state === undefined) {
+			this.#topicStateLoadFailed = true;
+			for (const sessionId of this.topics.sessionIds()) this.topics.delete(sessionId);
+			throw new Error(
+				"Telegram topic state is malformed, unsupported, or does not match the current Telegram identity",
+			);
+		}
+		this.topics.load(state);
 	}
 	private ensureCustodyLoaded(): Promise<TelegramCustodyLoadResult> {
 		if (!this.#custodyLoadPromise) {

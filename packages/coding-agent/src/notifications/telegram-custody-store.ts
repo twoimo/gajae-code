@@ -60,10 +60,12 @@ export interface TelegramCustodyStoreFs {
 	rename(oldPath: string, newPath: string): Promise<void>;
 	chmod(path: string, mode: number): Promise<void>;
 	unlink(path: string): Promise<void>;
+	open(path: string, flags: string, mode?: number): Promise<{ sync(): Promise<void>; close(): Promise<void> }>;
 }
 
 const CUSTODY_FILENAME = "telegram-deletion-custody.json";
 const nodeFs: TelegramCustodyStoreFs = fs.promises as unknown as TelegramCustodyStoreFs;
+const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(["EISDIR", "EINVAL", "ENOSYS", "ENOTSUP", "EPERM"]);
 
 type StoreMode = "writable" | "read_only";
 type LegacyTelegramCustodyState = "queued" | "in_flight" | "unknown";
@@ -508,6 +510,28 @@ function hasDuplicateObjectKeys(source: string): boolean {
 	const end = scanValue(0);
 	return end === undefined || skipWhitespace(end) !== source.length;
 }
+function isUnsupportedDirectorySyncError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return typeof code === "string" && UNSUPPORTED_DIRECTORY_SYNC_CODES.has(code);
+}
+
+async function syncFile(fsImpl: TelegramCustodyStoreFs, filePath: string): Promise<void> {
+	const handle = await fsImpl.open(filePath, "r+");
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function syncDirectory(fsImpl: TelegramCustodyStoreFs, directoryPath: string): Promise<void> {
+	const handle = await fsImpl.open(directoryPath, "r");
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
 
 export class TelegramCustodyStore {
 	readonly #agentDir: string;
@@ -849,7 +873,14 @@ export class TelegramCustodyStore {
 		try {
 			await this.#fsImpl.writeFile(temporaryFile, data, { mode: 0o600 });
 			await this.#fsImpl.chmod(temporaryFile, 0o600);
+			await syncFile(this.#fsImpl, temporaryFile);
 			await this.#fsImpl.rename(temporaryFile, this.#file);
+			await syncFile(this.#fsImpl, this.#file);
+			try {
+				await syncDirectory(this.#fsImpl, this.#dir);
+			} catch (error) {
+				if (!isUnsupportedDirectorySyncError(error)) throw error;
+			}
 		} catch (error) {
 			await this.#fsImpl.unlink(temporaryFile).catch(() => undefined);
 			throw error;

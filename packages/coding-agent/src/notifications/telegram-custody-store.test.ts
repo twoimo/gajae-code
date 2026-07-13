@@ -35,10 +35,22 @@ class FakeFs implements TelegramCustodyStoreFs {
 	readonly writeCalls: { path: string; data: string; mode: number | undefined }[] = [];
 	readonly renameCalls: { from: string; to: string }[] = [];
 	readonly unlinkCalls: string[] = [];
+	readonly openCalls: { path: string; flags: string }[] = [];
+	readonly operations: string[] = [];
 	failRename = false;
 	failWrite = false;
+	failOpenAt: number | undefined;
+	failOpenCode: string | undefined;
+	failSyncAt: number | undefined;
+	failSyncCode: string | undefined;
+	failCloseAt: number | undefined;
+	failCloseCode: string | undefined;
+	#openCount = 0;
+	#syncCount = 0;
+	#closeCount = 0;
 
 	async mkdir(file: string, options?: fs.MakeDirectoryOptions): Promise<undefined> {
+		this.operations.push("mkdir");
 		this.mkdirCalls.push({ path: file, mode: numericMode(options?.mode) });
 		return undefined;
 	}
@@ -50,16 +62,19 @@ class FakeFs implements TelegramCustodyStoreFs {
 	}
 
 	async writeFile(file: string, data: string, options?: fs.WriteFileOptions): Promise<void> {
+		this.operations.push("write");
 		this.writeCalls.push({ path: file, data, mode: writeMode(options) });
 		if (this.failWrite) throw new Error("simulated write failure");
 		this.files.set(file, data);
 	}
 
 	async chmod(file: string, mode: number): Promise<void> {
+		this.operations.push("chmod");
 		this.chmodCalls.push({ path: file, mode });
 	}
 
 	async rename(from: string, to: string): Promise<void> {
+		this.operations.push("rename");
 		this.renameCalls.push({ from, to });
 		if (this.failRename) throw new Error("simulated rename failure");
 		const contents = this.files.get(from);
@@ -69,8 +84,36 @@ class FakeFs implements TelegramCustodyStoreFs {
 	}
 
 	async unlink(file: string): Promise<void> {
+		this.operations.push("unlink");
 		this.unlinkCalls.push(file);
 		this.files.delete(file);
+	}
+
+	async open(file: string, flags: string, _mode?: number): Promise<{ sync(): Promise<void>; close(): Promise<void> }> {
+		this.operations.push(`open:${flags}`);
+		this.openCalls.push({ path: file, flags });
+		this.#openCount++;
+		if (this.failOpenAt === this.#openCount) throw this.#failure("simulated open failure", this.failOpenCode);
+		return {
+			sync: async () => {
+				this.operations.push("sync");
+				this.#syncCount++;
+				if (this.failSyncAt === this.#syncCount) {
+					throw this.#failure("simulated sync failure", this.failSyncCode);
+				}
+			},
+			close: async () => {
+				this.operations.push("close");
+				this.#closeCount++;
+				if (this.failCloseAt === this.#closeCount) {
+					throw this.#failure("simulated close failure", this.failCloseCode);
+				}
+			},
+		};
+	}
+
+	#failure(message: string, code: string | undefined): Error {
+		return code === undefined ? new Error(message) : Object.assign(new Error(message), { code });
 	}
 }
 
@@ -519,6 +562,28 @@ describe("TelegramCustodyStore", () => {
 		expect(fakeFs.writeCalls[0]?.mode).toBe(0o600);
 		expect(fakeFs.chmodCalls[1]?.mode).toBe(0o600);
 		expect(path.dirname(fakeFs.renameCalls[0]!.from)).toBe(path.dirname(fakeFs.renameCalls[0]!.to));
+		const temporaryFile = fakeFs.writeCalls[0]!.path;
+		expect(fakeFs.operations).toEqual([
+			"mkdir",
+			"chmod",
+			"write",
+			"chmod",
+			"open:r+",
+			"sync",
+			"close",
+			"rename",
+			"open:r+",
+			"sync",
+			"close",
+			"open:r",
+			"sync",
+			"close",
+		]);
+		expect(fakeFs.openCalls).toEqual([
+			{ path: temporaryFile, flags: "r+" },
+			{ path: CUSTODY_PATH, flags: "r+" },
+			{ path: daemonPaths(AGENT_DIR).dir, flags: "r" },
+		]);
 
 		const before = fakeFs.files.get(CUSTODY_PATH);
 		fakeFs.failWrite = true;
@@ -527,6 +592,91 @@ describe("TelegramCustodyStore", () => {
 		expect(fakeFs.files.get(CUSTODY_PATH)).toBe(before);
 		expect([...fakeFs.files.keys()].some(file => file.endsWith(".tmp"))).toBe(false);
 		expect(fakeFs.unlinkCalls).toHaveLength(1);
+	});
+	test("fails closed before rename when temporary durability barriers cannot open, sync, or close", async () => {
+		const failures = [
+			(fakeFs: FakeFs) => {
+				fakeFs.failOpenAt = 1;
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failSyncAt = 1;
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failCloseAt = 1;
+			},
+		];
+
+		for (const configureFailure of failures) {
+			const fakeFs = new FakeFs();
+			const source = JSON.stringify({
+				version: TELEGRAM_CUSTODY_SCHEMA_VERSION,
+				records: { [telegramCustodyKey("42", "77")]: custodyRecord() },
+			});
+			fakeFs.files.set(CUSTODY_PATH, source);
+			const store = storeWith(fakeFs);
+			expect(await store.load()).toEqual({
+				mode: "writable",
+				migrated: false,
+				records: [custodyRecord()],
+			});
+
+			configureFailure(fakeFs);
+			await expect(store.put(custodyRecord({ topicId: "8" }))).rejects.toThrow("simulated");
+			expect(store.list()).toEqual([custodyRecord()]);
+			expect(fakeFs.files.get(CUSTODY_PATH)).toBe(source);
+			expect(fakeFs.renameCalls).toEqual([]);
+			expect([...fakeFs.files.keys()].some(file => file.endsWith(".tmp"))).toBe(false);
+		}
+	});
+
+	test("does not promote memory after installed-file or supported parent-directory durability failures", async () => {
+		const failures = [
+			(fakeFs: FakeFs) => {
+				fakeFs.failSyncAt = 2;
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failSyncAt = 2;
+				fakeFs.failSyncCode = "EPERM";
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failCloseAt = 2;
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failOpenAt = 3;
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failSyncAt = 3;
+			},
+			(fakeFs: FakeFs) => {
+				fakeFs.failCloseAt = 3;
+			},
+		];
+
+		for (const configureFailure of failures) {
+			const fakeFs = new FakeFs();
+			const store = storeWith(fakeFs);
+			await store.load();
+			configureFailure(fakeFs);
+
+			await expect(store.put(custodyRecord())).rejects.toThrow("simulated");
+			expect(store.list()).toEqual([]);
+			expect(fakeFs.renameCalls).toHaveLength(1);
+			expect(fakeFs.files.get(CUSTODY_PATH)).toBe(fakeFs.writeCalls[0]?.data);
+			expect([...fakeFs.files.keys()].some(file => file.endsWith(".tmp"))).toBe(false);
+		}
+	});
+
+	test("continues after a documented unsupported parent-directory sync error", async () => {
+		const fakeFs = new FakeFs();
+		fakeFs.failSyncAt = 3;
+		fakeFs.failSyncCode = "ENOTSUP";
+		const store = storeWith(fakeFs);
+		await store.load();
+
+		expect(await store.put(custodyRecord())).toEqual({ ok: true });
+		expect(store.get({ chatId: "42", topicId: "77" })).toEqual(custodyRecord());
+		expect(serialized(fakeFs).records["42:77"]).toEqual(custodyRecord());
+		expect(fakeFs.openCalls.map(call => call.flags)).toEqual(["r+", "r+", "r"]);
 	});
 
 	test("serializes overlapping puts and removes and returns copies from read APIs", async () => {

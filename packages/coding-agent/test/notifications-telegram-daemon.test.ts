@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
+import { tokenFingerprint } from "../src/notifications/config";
 import {
 	markdownToTelegramHtml,
 	splitTelegramHtml,
@@ -69,6 +70,26 @@ function setPrivateAgentDir(s: Settings, agentDir: string) {
 		},
 	}) as Settings;
 }
+function topicStateEnvelope(
+	topics: Record<string, unknown>,
+	identity: { chatId?: string; botToken?: string } = {},
+): { version: number; chatId: string; tokenFingerprint: string; topics: Record<string, unknown> } {
+	const chatId = identity.chatId ?? "42";
+	return {
+		version: 1,
+		chatId,
+		tokenFingerprint: tokenFingerprint(identity.botToken ?? "tok"),
+		topics,
+	};
+}
+async function openDaemonFsHandle(
+	file: string,
+	flags: string,
+	mode?: number,
+): Promise<{ sync(): Promise<void>; close(): Promise<void> }> {
+	const handle = await fs.promises.open(file, flags, mode);
+	return { sync: () => handle.sync(), close: () => handle.close() };
+}
 async function allocateTestCustodyEpoch(agentDir: string, ownerId = "owner"): Promise<number> {
 	return (await allocateTelegramCustodyEpoch({ agentDir, ownerId })).custodyEpoch;
 }
@@ -83,7 +104,7 @@ function topicStateFs(onTopicStateWrite: () => Promise<void>): TelegramDaemonFs 
 		},
 		rename: (oldPath, newPath) => fs.promises.rename(oldPath, newPath).then(() => undefined),
 		unlink: file => fs.promises.unlink(file),
-		open: async (file, flags, mode) => fs.promises.open(file, flags, mode),
+		open: openDaemonFsHandle,
 		readdir: file => fs.promises.readdir(file),
 		chmod: (file, mode) => fs.promises.chmod(file, mode),
 	};
@@ -122,7 +143,7 @@ function trackedDaemonFs(input: {
 			}
 		},
 		unlink: file => fs.promises.unlink(file),
-		open: async (file, flags, mode) => fs.promises.open(file, flags, mode),
+		open: openDaemonFsHandle,
 		readdir: file => fs.promises.readdir(file),
 		chmod: (file, mode) => fs.promises.chmod(file, mode),
 	};
@@ -449,6 +470,50 @@ describe("telegram daemon", () => {
 			expect(registry.sessions[`s${i}`]).toBe(path.join(agentDir, `cwd-${i}`, ".gjc", "state"));
 		}
 	});
+	test("atomic daemon persistence syncs temporary and installed files before tolerating unsupported directory sync", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		const paths = daemonPaths(agentDir);
+		const syncs: Array<{ file: string; flags: string }> = [];
+		const fsImpl: TelegramDaemonFs = {
+			mkdir: (file, opts) => fs.promises.mkdir(file, opts).then(() => undefined),
+			readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+			writeFile: (file, data, opts) => fs.promises.writeFile(file, data, opts),
+			rename: (from, to) => fs.promises.rename(from, to).then(() => undefined),
+			unlink: file => fs.promises.unlink(file),
+			open: async (file, flags, mode) => {
+				if (file === paths.dir && flags === "r") {
+					return {
+						sync: async () => {
+							syncs.push({ file, flags });
+							const error = new Error("directory sync unavailable") as NodeJS.ErrnoException;
+							error.code = "EPERM";
+							throw error;
+						},
+						close: async () => undefined,
+					};
+				}
+				const handle = await fs.promises.open(file, flags, mode);
+				return {
+					sync: async () => {
+						syncs.push({ file, flags });
+						await handle.sync();
+					},
+					close: () => handle.close(),
+				};
+			},
+			readdir: file => fs.promises.readdir(file),
+			chmod: (file, mode) => fs.promises.chmod(file, mode),
+		};
+
+		await registerNotificationRoot({ settings: s, cwd: path.join(agentDir, "repo"), sessionId: "S", fs: fsImpl });
+
+		expect(syncs).toHaveLength(3);
+		expect(syncs[0]).toMatchObject({ flags: "r+" });
+		expect(syncs[0]!.file).toStartWith(`${paths.roots}.`);
+		expect(syncs[1]).toEqual({ file: paths.roots, flags: "r+" });
+		expect(syncs[2]).toEqual({ file: paths.dir, flags: "r" });
+	});
 
 	test("fake Bot API observes one getUpdates loop", async () => {
 		const agentDir = tempAgentDir();
@@ -527,20 +592,34 @@ describe("telegram daemon", () => {
 		expect(requests[1].init.body).toBeInstanceOf(FormData);
 	});
 
-	test("TelegramBotTransport noRetry performs one application request", async () => {
-		let attempts = 0;
-		const transport = new TelegramBotTransport({
+	test("TelegramBotTransport retries recognized transient errors by default but honors noRetry", async () => {
+		let noRetryAttempts = 0;
+		const noRetryTransport = new TelegramBotTransport({
 			botToken: "tok",
 			apiBase: "https://telegram.test",
 			fetchImpl: (async () => {
-				attempts++;
-				throw new Error("connection reset after write");
+				noRetryAttempts++;
+				throw Object.assign(new Error("connection reset after write"), { code: "ECONNRESET" });
 			}) as unknown as typeof fetch,
 		});
 		await expect(
-			transport.call("sendMessage", { chat_id: "42", text: "Selected!" }, { noRetry: true }),
+			noRetryTransport.call("deleteForumTopic", { chat_id: "42", message_thread_id: 301 }, { noRetry: true }),
 		).rejects.toThrow("connection reset");
-		expect(attempts).toBe(1);
+		expect(noRetryAttempts).toBe(1);
+
+		let defaultRetryAttempts = 0;
+		const defaultRetryTransport = new TelegramBotTransport({
+			botToken: "tok",
+			apiBase: "https://telegram.test",
+			fetchImpl: (async () => {
+				defaultRetryAttempts++;
+				throw Object.assign(new Error("connection reset after write"), { code: "ECONNRESET" });
+			}) as unknown as typeof fetch,
+		});
+		await expect(
+			defaultRetryTransport.call("deleteForumTopic", { chat_id: "42", message_thread_id: 301 }),
+		).rejects.toThrow("connection reset");
+		expect(defaultRetryAttempts).toBe(3);
 	});
 
 	test("TelegramEventDispatchState groups dispatch state without changing maps", () => {
@@ -3211,6 +3290,106 @@ test("stale identity after loadTopics reuses the persisted repo branch owner", a
 	expect(threadedSends).toHaveLength(1);
 	expect(Number(threadedSends[0])).toBeGreaterThan(0);
 });
+test("persisted topics use and load a matching versioned Telegram identity envelope", async () => {
+	const { agentDir } = await identityTopicHarness();
+	const topicPath = path.join(daemonPaths(agentDir).dir, "telegram-topics.json");
+	const persisted = JSON.parse(fs.readFileSync(topicPath, "utf8")) as {
+		version: number;
+		chatId: string;
+		tokenFingerprint: string;
+		topics: Record<string, { topicId: string }>;
+	};
+	expect(persisted).toMatchObject({
+		version: 1,
+		chatId: "42",
+		tokenFingerprint: tokenFingerprint("tok"),
+	});
+	const topicId = persisted.topics.S!.topicId;
+
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId: "owner",
+		custodyEpoch: 1,
+		botToken: "tok",
+		chatId: "42",
+		botApi: new FakeBotApi(),
+	});
+	await daemon.loadTopics();
+
+	const internals = daemon as unknown as {
+		topics: {
+			get(sessionId: string): { topicId: string } | undefined;
+			sessionForTopic(topicId: string): string | undefined;
+		};
+	};
+	expect(internals.topics.get("S")?.topicId).toBe(topicId);
+	expect(internals.topics.sessionForTopic(topicId)).toBe("S");
+});
+
+test.each([
+	["legacy", () => JSON.stringify({ topics: { S: { topicId: "301", identitySent: true, createdAt: 0 } } })],
+	[
+		"malformed",
+		() =>
+			JSON.stringify({
+				version: 1,
+				chatId: "42",
+				tokenFingerprint: tokenFingerprint("tok"),
+				topics: ["not-a-registry"],
+			}),
+	],
+	[
+		"forward-version",
+		() =>
+			JSON.stringify({
+				...topicStateEnvelope({ S: { topicId: "301", identitySent: true, createdAt: 0 } }),
+				version: 2,
+			}),
+	],
+	[
+		"cross-chat collision",
+		() =>
+			JSON.stringify(
+				topicStateEnvelope({ S: { topicId: "301", identitySent: true, createdAt: 0 } }, { chatId: "43" }),
+			),
+	],
+	[
+		"token-rotation collision",
+		() =>
+			JSON.stringify(
+				topicStateEnvelope(
+					{ S: { topicId: "301", identitySent: true, createdAt: 0 } },
+					{ botToken: "rotated-token" },
+				),
+			),
+	],
+])("loadTopics fails closed for %s state before scan/deletion", async (_name, serialize) => {
+	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
+	const topicPath = path.join(daemonPaths(agentDir).dir, "telegram-topics.json");
+	fs.mkdirSync(path.dirname(topicPath), { recursive: true });
+	const persisted = serialize();
+	fs.writeFileSync(topicPath, persisted);
+
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId: "owner",
+		custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	await expect(daemon.loadTopics()).rejects.toThrow("Telegram topic state");
+
+	const internals = daemon as unknown as {
+		topics: { sessionForTopic(topicId: string): string | undefined };
+	};
+	expect(internals.topics.sessionForTopic("301")).toBeUndefined();
+	await daemon.scanRoots();
+	expect(bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(0);
+	expect(fs.readFileSync(topicPath, "utf8")).toBe(persisted);
+});
 
 test("threaded mode off: frames fall back to the flat paired chat with a one-time notice", async () => {
 	const agentDir = tempAgentDir();
@@ -3684,6 +3863,210 @@ test("deterministic two-topic cleanup rollback restores only its failed session"
 	await closeTopicSession({ daemon: harness.daemon, session: secondSession });
 	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
 }, 15_000);
+test("held cleanup persistence failure preserves a same-session topic replacement", async () => {
+	const cleanupWriteStarted = Promise.withResolvers<void>();
+	const releaseCleanupWrite = Promise.withResolvers<void>();
+	let holdCleanupWrite = false;
+	let cleanupWriteHeld = false;
+	let failCleanupWrite = false;
+	const harness = await createTopicDeletionHarness(
+		new FakeBotApi(),
+		"owner",
+		trackedDaemonFs({
+			onTopicWrite: async data => {
+				if (!holdCleanupWrite || cleanupWriteHeld) return;
+				const snapshot = JSON.parse(data) as { topics: Record<string, unknown> };
+				if (Object.hasOwn(snapshot.topics, "S")) return;
+				cleanupWriteHeld = true;
+				failCleanupWrite = true;
+				cleanupWriteStarted.resolve();
+				await releaseCleanupWrite.promise;
+			},
+			failTopicWrite: () => {
+				if (!failCleanupWrite) return false;
+				failCleanupWrite = false;
+				return true;
+			},
+		}),
+	);
+	const originalTopicId = currentTopicId(harness.agentDir, "S");
+	const registry = harness.daemon as unknown as {
+		topics: {
+			get(sessionId: string): { topicId: string } | undefined;
+			getOrCreateTopic(
+				sessionId: string,
+				create: () => Promise<string>,
+				now?: () => number,
+				name?: string,
+			): Promise<{ topicId: string }>;
+			sessionForTopic(topicId: string): string | undefined;
+		};
+		persistTopics(): Promise<void>;
+	};
+	harness.bot.calls = [];
+	holdCleanupWrite = true;
+
+	const close = closeTopicSession(harness);
+	await cleanupWriteStarted.promise;
+	const replacement = await registry.topics.getOrCreateTopic(
+		"S",
+		async () => "302",
+		() => 1,
+		"replacement",
+	);
+	expect(registry.topics.sessionForTopic(originalTopicId)).toBeUndefined();
+	expect(registry.topics.sessionForTopic(replacement.topicId)).toBe("S");
+
+	releaseCleanupWrite.resolve();
+	await close;
+
+	expect(cleanupWriteHeld).toBe(true);
+	expect(failCleanupWrite).toBe(false);
+	expect(registry.topics.get("S")?.topicId).toBe(replacement.topicId);
+	expect(registry.topics.sessionForTopic(originalTopicId)).toBeUndefined();
+	expect(registry.topics.sessionForTopic(replacement.topicId)).toBe("S");
+
+	await registry.persistTopics();
+	expect(currentTopicId(harness.agentDir, "S")).toBe(replacement.topicId);
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toEqual([
+		{
+			method: "deleteForumTopic",
+			body: { chat_id: "42", message_thread_id: Number(originalTopicId) },
+			opts: { noRetry: true },
+		},
+	]);
+}, 15_000);
+test("held successful cleanup preserves a same-session replacement and its runtime state", async () => {
+	const cleanupWriteStarted = Promise.withResolvers<void>();
+	const releaseCleanupWrite = Promise.withResolvers<void>();
+	let holdCleanupWrite = false;
+	let cleanupWriteHeld = false;
+	const harness = await createTopicDeletionHarness(
+		new FakeBotApi(),
+		"owner",
+		trackedDaemonFs({
+			onTopicWrite: async data => {
+				if (!holdCleanupWrite || cleanupWriteHeld) return;
+				const snapshot = JSON.parse(data) as { topics: Record<string, unknown> };
+				if (Object.hasOwn(snapshot.topics, "S")) return;
+				cleanupWriteHeld = true;
+				cleanupWriteStarted.resolve();
+				await releaseCleanupWrite.promise;
+			},
+		}),
+	);
+	const originalTopicId = currentTopicId(harness.agentDir, "S");
+	const internals = harness.daemon as unknown as {
+		topics: {
+			get(sessionId: string): { topicId: string } | undefined;
+			getOrCreateTopic(
+				sessionId: string,
+				create: () => Promise<string>,
+				now?: () => number,
+				name?: string,
+			): Promise<{ topicId: string }>;
+			sessionForTopic(topicId: string): string | undefined;
+		};
+		liveMessages: Map<string, number>;
+		topicOwnerByIdentity: Map<string, string>;
+		pendingThreadedFrames: Map<string, unknown>;
+	};
+	harness.bot.calls = [];
+	holdCleanupWrite = true;
+
+	const close = closeTopicSession(harness);
+	await cleanupWriteStarted.promise;
+	const replacement = await internals.topics.getOrCreateTopic(
+		"S",
+		async () => "302",
+		() => 1,
+		"replacement",
+	);
+	const replacementIdentity = "replacement-repo\0replacement-branch";
+	const replacementFrames = [{ send: { method: "sendMessage" }, msg: { type: "turn_stream" } }];
+	internals.liveMessages.set("S:replacement", 9001);
+	internals.topicOwnerByIdentity.set(replacementIdentity, "S");
+	internals.pendingThreadedFrames.set("S", replacementFrames);
+
+	releaseCleanupWrite.resolve();
+	await close;
+
+	expect(cleanupWriteHeld).toBe(true);
+	expect(internals.topics.get("S")?.topicId).toBe(replacement.topicId);
+	expect(internals.topics.sessionForTopic(originalTopicId)).toBeUndefined();
+	expect(internals.topics.sessionForTopic(replacement.topicId)).toBe("S");
+	expect(internals.liveMessages.get("S:replacement")).toBe(9001);
+	expect(internals.topicOwnerByIdentity.get(replacementIdentity)).toBe("S");
+	expect(internals.pendingThreadedFrames.get("S")).toBe(replacementFrames);
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toEqual([
+		{
+			method: "deleteForumTopic",
+			body: { chat_id: "42", message_thread_id: Number(originalTopicId) },
+			opts: { noRetry: true },
+		},
+	]);
+}, 15_000);
+test.each([
+	["installed-file"],
+	["parent-directory"],
+] as const)("confirmed cleanup keeps custody and local topic state when %s sync fails", async failurePoint => {
+	let agentDir = "";
+	let topicFile = "";
+	let armed = false;
+	let failTopicParentSync = false;
+	const fsImpl = trackedDaemonFs({});
+	const open = fsImpl.open;
+	fsImpl.open = async (file, flags, mode) => {
+		const paths = daemonPaths(agentDir);
+		const failSync = async (): Promise<never> => {
+			const error = new Error(`${failurePoint} topic sync failed`) as NodeJS.ErrnoException;
+			error.code = "EIO";
+			throw error;
+		};
+		if (armed && failurePoint === "parent-directory" && failTopicParentSync && file === paths.dir && flags === "r") {
+			failTopicParentSync = false;
+			return { sync: failSync, close: async () => undefined };
+		}
+		const handle = await open(file, flags, mode);
+		return {
+			sync: async () => {
+				if (armed && failurePoint === "installed-file" && file === topicFile && flags === "r+") {
+					await failSync();
+				}
+				await handle.sync();
+				if (armed && failurePoint === "parent-directory" && file === topicFile && flags === "r+") {
+					failTopicParentSync = true;
+				}
+			},
+			close: () => handle.close(),
+		};
+	};
+
+	const harness = await createTopicDeletionHarness(new FakeBotApi(), "owner", fsImpl);
+	agentDir = harness.agentDir;
+	topicFile = path.join(daemonPaths(agentDir).dir, "telegram-topics.json");
+	const topicId = currentTopicId(agentDir, "S");
+	const internals = harness.daemon as unknown as {
+		topics: {
+			get(sessionId: string): { topicId: string } | undefined;
+			sessionForTopic(topicId: string): string | undefined;
+		};
+	};
+	harness.bot.calls = [];
+	armed = true;
+
+	await closeTopicSession(harness);
+
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(agentDir).records[`42:${topicId}`]).toMatchObject({ state: "confirmed" });
+	expect(internals.topics.get("S")?.topicId).toBe(topicId);
+	expect(internals.topics.sessionForTopic(topicId)).toBe("S");
+
+	await closeTopicSession(harness);
+
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(agentDir).records[`42:${topicId}`]).toMatchObject({ state: "confirmed" });
+});
 
 test("rejected, malformed, and reset topic deletion outcomes remain unknown without retries", async () => {
 	const reset = Object.assign(new Error("connection reset secret-reset"), { code: "ECONNRESET" });
@@ -3975,16 +4358,16 @@ test("confirmed recovery resolves a topic only after acquiring the current custo
 	const internals = recovery as unknown as {
 		topics: {
 			load(state: { topics: Record<string, { topicId: string; identitySent: boolean; createdAt: number }> }): void;
-			sessionIds(): string[];
+			sessionForTopic(topicId: string): string | undefined;
 		};
 		persistTopics(): Promise<void>;
 		finishConfirmedTopicDeletion(input: unknown, topicId?: string): Promise<void>;
 	};
-	const sessionIds = internals.topics.sessionIds.bind(internals.topics);
-	let sessionIdsBeforeEpochProof = 0;
-	internals.topics.sessionIds = () => {
-		sessionIdsBeforeEpochProof += 1;
-		return sessionIds();
+	const sessionForTopic = internals.topics.sessionForTopic.bind(internals.topics);
+	let sessionLookupBeforeEpochProof = 0;
+	internals.topics.sessionForTopic = candidateTopicId => {
+		sessionLookupBeforeEpochProof += 1;
+		return sessionForTopic(candidateTopicId);
 	};
 	const helperEntered = Promise.withResolvers<void>();
 	const finishConfirmedTopicDeletion = internals.finishConfirmedTopicDeletion.bind(recovery);
@@ -4011,7 +4394,7 @@ test("confirmed recovery resolves a topic only after acquiring the current custo
 	try {
 		recoveryLoad = recovery.loadCustody();
 		await helperEntered.promise;
-		expect(sessionIdsBeforeEpochProof).toBe(0);
+		expect(sessionLookupBeforeEpochProof).toBe(0);
 
 		internals.topics.load({
 			topics: {
@@ -5166,7 +5549,9 @@ test("orphan reaping records its trigger and retains a rejected topic deletion",
 	fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
 	fs.writeFileSync(
 		path.join(daemonPaths(agentDir).dir, "telegram-topics.json"),
-		JSON.stringify({ topics: { orphan: { topicId: "301", identitySent: true, createdAt: 0, name: "orphan" } } }),
+		JSON.stringify(
+			topicStateEnvelope({ orphan: { topicId: "301", identitySent: true, createdAt: 0, name: "orphan" } }),
+		),
 	);
 
 	const bot = new FakeBotApi();
@@ -5208,7 +5593,7 @@ test("concurrent session close and orphan reaping join one durable topic teardow
 	fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
 	fs.writeFileSync(
 		path.join(daemonPaths(agentDir).dir, "telegram-topics.json"),
-		JSON.stringify({ topics: { S: { topicId: "301", identitySent: true, createdAt: 0, name: "S" } } }),
+		JSON.stringify(topicStateEnvelope({ S: { topicId: "301", identitySent: true, createdAt: 0, name: "S" } })),
 	);
 
 	const bot = new FakeBotApi();
@@ -5262,12 +5647,12 @@ test("scanRoots reaps stale and dead-PID session topics after the orphan grace w
 	fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
 	fs.writeFileSync(
 		path.join(daemonPaths(agentDir).dir, "telegram-topics.json"),
-		JSON.stringify({
-			topics: {
+		JSON.stringify(
+			topicStateEnvelope({
 				stale: { topicId: "101", identitySent: true, createdAt: 0, name: "stale" },
 				dead: { topicId: "102", identitySent: true, createdAt: 0, name: "dead" },
-			},
-		}),
+			}),
+		),
 	);
 	const bot = new FakeBotApi();
 	const daemon = new TelegramNotificationDaemon({
@@ -5302,7 +5687,9 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 	fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
 	fs.writeFileSync(
 		path.join(daemonPaths(agentDir).dir, "telegram-topics.json"),
-		JSON.stringify({ topics: { missing: { topicId: "201", identitySent: true, createdAt: 0, name: "missing" } } }),
+		JSON.stringify(
+			topicStateEnvelope({ missing: { topicId: "201", identitySent: true, createdAt: 0, name: "missing" } }),
+		),
 	);
 	const bot = new FakeBotApi();
 	const daemon = new TelegramNotificationDaemon({
@@ -5328,7 +5715,7 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 	fs.mkdirSync(daemonPaths(blockedAgentDir).dir, { recursive: true });
 	fs.writeFileSync(
 		path.join(daemonPaths(blockedAgentDir).dir, "telegram-topics.json"),
-		JSON.stringify({ topics: { kept: { topicId: "202", identitySent: true, createdAt: 0, name: "kept" } } }),
+		JSON.stringify(topicStateEnvelope({ kept: { topicId: "202", identitySent: true, createdAt: 0, name: "kept" } })),
 	);
 	const blockedBot = new FakeBotApi();
 	const blockedDaemon = new TelegramNotificationDaemon({
@@ -6531,7 +6918,7 @@ describe("telegram daemon custody epoch fencing", () => {
 				await fs.promises.rename(from, to);
 			},
 			unlink: async file => await fs.promises.unlink(file),
-			open: async (file, flags, mode) => await fs.promises.open(file, flags, mode),
+			open: openDaemonFsHandle,
 			readdir: async file => await fs.promises.readdir(file),
 			chmod: async (file, mode) => await fs.promises.chmod(file, mode),
 		};
