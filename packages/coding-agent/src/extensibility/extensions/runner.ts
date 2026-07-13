@@ -583,7 +583,7 @@ export class ExtensionRunner {
 				...(this.#operateGoalFn ? ["operateGoal"] : []),
 			],
 			shutdown: () => this.#shutdownHandler(),
-			getSystemPrompt: () => this.#getSystemPromptFn(),
+			getSystemPrompt: () => [...this.#getSystemPromptFn()],
 			hasQueuedMessages: () => this.#hasPendingMessagesFn(), // deprecated alias
 			workflowGate: this.#getWorkflowGateFn(),
 			clearContext: () => this.#clearContextFn(),

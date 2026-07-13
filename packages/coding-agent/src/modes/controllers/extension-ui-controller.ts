@@ -846,7 +846,7 @@ export class ExtensionUiController {
 						shutdown: () => {
 							// Signal shutdown request
 						},
-						getSystemPrompt: () => this.ctx.session.systemPrompt,
+						getSystemPrompt: () => [...this.ctx.session.systemPrompt],
 						cycleModel: () => this.ctx.session.cycleModel(),
 						cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
 						setQueueMode: (kind, mode) => {
