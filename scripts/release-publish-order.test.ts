@@ -41,6 +41,12 @@ async function readCiWorkflowJobs(): Promise<YamlRecord> {
 	const parsed: unknown = Bun.YAML.parse(workflow);
 	return requireYamlRecord(requireYamlRecord(parsed, "CI workflow").jobs, "CI workflow jobs");
 }
+async function readDevWorkflowJobs(): Promise<YamlRecord> {
+	const workflow = await Bun.file(path.join(repoRoot, ".github/workflows/dev-ci.yml")).text();
+	const parsed: unknown = Bun.YAML.parse(workflow);
+	return requireYamlRecord(requireYamlRecord(parsed, "Dev CI workflow").jobs, "Dev CI workflow jobs");
+}
+
 
 async function readManifest(relativePath: string): Promise<PackageManifest> {
 	return (await Bun.file(path.join(repoRoot, relativePath, "package.json")).json()) as PackageManifest;
@@ -212,7 +218,7 @@ describe("portable CI test coverage", () => {
 		const [posixSkipStep, posixSkipIndex] = requireWorkflowStep(
 			steps,
 			"name",
-			"Verify POSIX-only session tests skip on Windows",
+			"Verify Linux-only session tests skip on Windows",
 		);
 		const [nativeBuildStep, nativeBuildIndex] = requireWorkflowStep(
 			steps,
@@ -238,6 +244,38 @@ describe("portable CI test coverage", () => {
 		expect(typeCheckIndex).toBeLessThan(portableContractsIndex);
 		expect(portableContractsIndex).toBeLessThan(posixSkipIndex);
 		expect(posixSkipIndex).toBeLessThan(nativeBuildIndex);
+	});
+	test("dev pull requests prove the Linux executed and Windows/macOS skipped policy on the exact head", async () => {
+		const jobs = await readDevWorkflowJobs();
+		const platformPolicy = requireYamlRecord(jobs["platform-policy"], "platform-policy job");
+		const strategy = requireYamlRecord(platformPolicy.strategy, "platform-policy strategy");
+		const matrix = requireYamlRecord(strategy.matrix, "platform-policy matrix");
+		const include = matrix.include;
+		expect(Array.isArray(include), "platform-policy include must be a YAML sequence").toBe(true);
+		if (!Array.isArray(include)) throw new Error("platform-policy include must be a YAML sequence");
+		expect(include).toEqual([
+			{ label: "Linux executes", os: "ubuntu-22.04", expectation: "--expect-executed" },
+			{ label: "Windows skips", os: "windows-latest", expectation: "--expect-skipped" },
+			{ label: "macOS skips", os: "macos-latest", expectation: "--expect-skipped" },
+		]);
+
+		const steps = platformPolicy.steps;
+		expect(Array.isArray(steps), "platform-policy steps must be a YAML sequence").toBe(true);
+		if (!Array.isArray(steps)) throw new Error("platform-policy steps must be a YAML sequence");
+		const [checkout] = steps;
+		expect(requireYamlRecord(requireYamlRecord(checkout, "platform checkout").with, "platform checkout inputs")).toMatchObject({
+			repository: "${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+			ref: "${{ github.event.pull_request.head.sha || github.sha }}",
+		});
+		const [verify] = requireWorkflowStep(
+			steps,
+			"run",
+			"bun scripts/verify-platform-test-policy.ts ${{ matrix.expectation }} scripts/gjc-session/create.test.ts",
+		);
+		expect(verify.name).toBe("Verify ${{ matrix.label }} policy");
+
+		const aggregate = requireYamlRecord(jobs.affected, "affected aggregate job");
+		expect(aggregate.needs).toContain("platform-policy");
 	});
 
 	test("linux test executes the POSIX session integration before the full TypeScript suite", async () => {

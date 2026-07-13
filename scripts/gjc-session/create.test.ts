@@ -212,7 +212,8 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
 
-describe.skipIf(process.platform === "win32")("gjc-session create public owner lifecycle", () => {
+// This fixture invokes Bash/GNU utilities, systemd-run, tmux, and /proc; it is Linux-only.
+describe.skipIf(process.platform !== "linux")("gjc-session create public owner lifecycle", () => {
 	test("rejects missing binaries, directories, git worktrees, and detached branches", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-create-validation-")); roots.push(root);
 		const missing = Bun.spawnSync(["bash", createScript, "x", root], { env: env({ GJC_BIN: "/definitely-not-a-gjc-executable" }), stderr: "pipe" });
