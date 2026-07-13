@@ -116,7 +116,11 @@ describe("SDK broker identity and discovery", () => {
 		);
 		try {
 			const discovery = await waitForDiscovery(dir);
-			await sleep(100);
+			// The losing broker exits once it observes the winner's discovery record.
+			// Poll instead of a fixed delay so the assertion is robust to CI scheduling
+			// (the loser's exit can lag the discovery write under load).
+			for (let attempt = 0; attempt < 200 && children.every(child => child.exitCode === null); attempt++)
+				await sleep(25);
 			const exited = children.filter(child => child.exitCode !== null);
 			expect(exited).toHaveLength(1);
 			const owner = children.find(child => child.exitCode === null);
