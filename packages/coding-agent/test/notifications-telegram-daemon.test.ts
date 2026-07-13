@@ -10,7 +10,7 @@ import {
 	TELEGRAM_PARSE_MODE,
 } from "../src/notifications/html-format";
 import { deliverRichWithFallback } from "../src/notifications/rich-render";
-import { telegramCustodyEpochPath } from "../src/notifications/telegram-custody-epoch";
+import { allocateTelegramCustodyEpoch, telegramCustodyEpochPath } from "../src/notifications/telegram-custody-epoch";
 import {
 	acquireDaemonOwnership,
 	buildTelegramDaemonSpawnArgs,
@@ -65,6 +65,9 @@ function setPrivateAgentDir(s: Settings, agentDir: string) {
 		},
 	}) as Settings;
 }
+async function allocateTestCustodyEpoch(agentDir: string, ownerId = "owner"): Promise<number> {
+	return (await allocateTelegramCustodyEpoch({ agentDir, ownerId })).custodyEpoch;
+}
 
 function topicStateFs(onTopicStateWrite: () => Promise<void>): TelegramDaemonFs {
 	return {
@@ -75,6 +78,33 @@ function topicStateFs(onTopicStateWrite: () => Promise<void>): TelegramDaemonFs 
 			await fs.promises.writeFile(file, data, opts);
 		},
 		rename: (oldPath, newPath) => fs.promises.rename(oldPath, newPath).then(() => undefined),
+		unlink: file => fs.promises.unlink(file),
+		open: async (file, flags, mode) => fs.promises.open(file, flags, mode),
+		readdir: file => fs.promises.readdir(file),
+		chmod: (file, mode) => fs.promises.chmod(file, mode),
+	};
+}
+function trackedDaemonFs(input: {
+	commits?: string[];
+	failCustodyWriteAt?: number;
+	failTopicWrite?: () => boolean;
+}): TelegramDaemonFs {
+	let custodyWrites = 0;
+	return {
+		mkdir: (file, opts) => fs.promises.mkdir(file, opts).then(() => undefined),
+		readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+		writeFile: async (file, data, opts) => {
+			if (file.includes("telegram-deletion-custody.json")) {
+				custodyWrites += 1;
+				if (custodyWrites === input.failCustodyWriteAt) throw new Error("custody write failed");
+			}
+			if (file.includes("telegram-topics.json") && input.failTopicWrite?.()) throw new Error("topic write failed");
+			await fs.promises.writeFile(file, data, opts);
+		},
+		rename: async (from, to) => {
+			input.commits?.push(path.basename(to));
+			await fs.promises.rename(from, to);
+		},
 		unlink: file => fs.promises.unlink(file),
 		open: async (file, flags, mode) => fs.promises.open(file, flags, mode),
 		readdir: file => fs.promises.readdir(file),
@@ -104,13 +134,16 @@ class FakeWs extends EventTarget {
 }
 
 class FakeBotApi {
-	calls: Array<{ method: string; body: any }> = [];
+	calls: Array<{ method: string; body: any; opts?: { signal?: AbortSignal; noRetry?: boolean } }> = [];
 	updates: any[] = [];
 	activeGetUpdates = 0;
 	maxConcurrentGetUpdates = 0;
 	botUsername: string | undefined = undefined;
-	async call(method: string, body: unknown): Promise<unknown> {
-		this.calls.push({ method, body });
+	deleteResponse: unknown | undefined;
+	deleteError: unknown | undefined;
+
+	async call(method: string, body: unknown, opts?: { signal?: AbortSignal; noRetry?: boolean }): Promise<unknown> {
+		this.calls.push({ method, body, opts });
 		if (method === "getUpdates") {
 			this.activeGetUpdates++;
 			this.maxConcurrentGetUpdates = Math.max(this.maxConcurrentGetUpdates, this.activeGetUpdates);
@@ -127,8 +160,90 @@ class FakeBotApi {
 		if (method === "getFile") return { ok: true, result: { file_path: "docs/file_7.bin" } };
 		if (method === "createForumTopic") return { ok: true, result: { message_thread_id: this.calls.length } };
 		if (method === "sendMessage") return { ok: true, result: { message_id: this.calls.length } };
+		if (method === "deleteForumTopic") {
+			if (this.deleteError !== undefined) throw this.deleteError;
+			if (this.deleteResponse !== undefined) return this.deleteResponse;
+		}
 		return { ok: true, result: true };
 	}
+}
+type CustodySnapshot = {
+	version: number;
+	records: Record<
+		string,
+		{
+			state: string;
+			trigger?: string;
+			diagnostic?: { kind: string; rejection?: string; transport?: string; errorCode?: number };
+		}
+	>;
+};
+
+function readCustodySnapshot(agentDir: string): CustodySnapshot {
+	return JSON.parse(
+		fs.readFileSync(path.join(daemonPaths(agentDir).dir, "telegram-deletion-custody.json"), "utf8"),
+	) as CustodySnapshot;
+}
+
+function currentTopicId(agentDir: string, sessionId: string): string {
+	const state = JSON.parse(fs.readFileSync(path.join(daemonPaths(agentDir).dir, "telegram-topics.json"), "utf8")) as {
+		topics: Record<string, { topicId: string }>;
+	};
+	return state.topics[sessionId]!.topicId;
+}
+
+async function createTopicDeletionHarness(
+	bot = new FakeBotApi(),
+	ownerId = "owner",
+	fsImpl: TelegramDaemonFs | undefined = undefined,
+) {
+	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir, ownerId);
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId,
+		custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+		fs: fsImpl,
+	});
+	const session: {
+		sessionId: string;
+		token: string;
+		endpointKey: string;
+		ws: { readyState: number; send(): void };
+		pending: Map<unknown, unknown>;
+	} = {
+		sessionId: "S",
+		token: "tok",
+		endpointKey: "endpoint",
+		ws: { readyState: 1, send() {} },
+		pending: new Map(),
+	};
+	await daemon.handleSessionMessage(session as never, {
+		type: "identity_header",
+		sessionId: "S",
+		repo: "repo",
+		branch: "branch",
+	});
+	return { agentDir, custodyEpoch, bot, daemon, session };
+}
+
+async function closeTopicSession(input: {
+	daemon: TelegramNotificationDaemon;
+	session: {
+		sessionId: string;
+		token: string;
+		endpointKey: string;
+		ws: { readyState: number; send(): void };
+		pending: Map<unknown, unknown>;
+	};
+}): Promise<void> {
+	await input.daemon.handleSessionMessage(input.session as never, {
+		type: "session_closed",
+		sessionId: input.session.sessionId,
+	});
 }
 
 type TopicAuthorityState = {
@@ -3390,12 +3505,13 @@ test("activity busy frame sends a typing chat action into the session topic", as
 
 test("session_closed deletes the topic and resume creates a fresh visible topic", async () => {
 	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
 	const bot = new FakeBotApi();
 	let now = 0;
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
-		custodyEpoch: 1,
+		custodyEpoch,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3424,6 +3540,9 @@ test("session_closed deletes the topic and resume creates a fresh visible topic"
 	const deleted = bot.calls.find(c => c.method === "deleteForumTopic");
 	expect(deleted).toBeTruthy();
 	expect(deleted!.body.message_thread_id).toBe(threadId);
+	expect(deleted!.body).toEqual({ chat_id: "42", message_thread_id: threadId });
+	expect(deleted!.opts).toEqual({ noRetry: true });
+	expect(bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
 
 	now = 10_000;
 	bot.calls = [];
@@ -3446,6 +3565,200 @@ test("session_closed deletes the topic and resume creates a fresh visible topic"
 	);
 });
 
+test("concurrent session-close triggers join one claimed topic deletion", async () => {
+	const harness = await createTopicDeletionHarness();
+	const topicId = currentTopicId(harness.agentDir, "S");
+	harness.bot.calls = [];
+
+	await Promise.all([closeTopicSession(harness), closeTopicSession(harness)]);
+
+	const deletions = harness.bot.calls.filter(call => call.method === "deleteForumTopic");
+	expect(deletions).toEqual([
+		{
+			method: "deleteForumTopic",
+			body: { chat_id: "42", message_thread_id: Number(topicId) },
+			opts: { noRetry: true },
+		},
+	]);
+	expect(readCustodySnapshot(harness.agentDir).records).toEqual({});
+});
+
+test("rejected, malformed, and reset topic deletion outcomes remain unknown without retries", async () => {
+	const reset = Object.assign(new Error("connection reset secret-reset"), { code: "ECONNRESET" });
+	const cases: Array<{
+		response?: unknown;
+		error?: unknown;
+		diagnostic: { kind: string; rejection?: string; transport?: string; errorCode?: number };
+		forbidden: string;
+	}> = [
+		{
+			response: { ok: false, error_code: 429, description: "too many requests secret-description" },
+			diagnostic: { kind: "telegram_rejected", rejection: "rate_limited", errorCode: 429 },
+			forbidden: "secret-description",
+		},
+		{
+			response: { ok: "true" },
+			diagnostic: { kind: "malformed_response" },
+			forbidden: "true",
+		},
+		{
+			error: reset,
+			diagnostic: { kind: "transport_ambiguous", transport: "connection_reset" },
+			forbidden: "secret-reset",
+		},
+	];
+
+	for (const entry of cases) {
+		const bot = new FakeBotApi();
+		const harness = await createTopicDeletionHarness(bot);
+		const topicId = currentTopicId(harness.agentDir, "S");
+		bot.deleteResponse = entry.response;
+		bot.deleteError = entry.error;
+		bot.calls = [];
+
+		await closeTopicSession(harness);
+
+		expect(bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+		expect(readCustodySnapshot(harness.agentDir).records[`42:${topicId}`]).toMatchObject({
+			state: "unknown",
+			trigger: "session_closed",
+			diagnostic: entry.diagnostic,
+		});
+		expect(
+			fs.readFileSync(path.join(daemonPaths(harness.agentDir).dir, "telegram-deletion-custody.json"), "utf8"),
+		).not.toContain(entry.forbidden);
+
+		await closeTopicSession(harness);
+		expect(bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	}
+});
+
+test("same-owner ABA and read-only custody block a topic deletion before the call", async () => {
+	const aba = await createTopicDeletionHarness(new FakeBotApi(), "same-owner");
+	await allocateTestCustodyEpoch(aba.agentDir, "same-owner");
+	aba.bot.calls = [];
+	await closeTopicSession(aba);
+	expect(aba.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(0);
+
+	const readOnly = await createTopicDeletionHarness();
+	fs.writeFileSync(path.join(daemonPaths(readOnly.agentDir).dir, "telegram-deletion-custody.json"), "{");
+	readOnly.bot.calls = [];
+	await closeTopicSession(readOnly);
+	expect(readOnly.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(0);
+});
+
+test("claim persistence failure leaves the topic queued and makes no deletion request", async () => {
+	const harness = await createTopicDeletionHarness(
+		new FakeBotApi(),
+		"owner",
+		trackedDaemonFs({ failCustodyWriteAt: 2 }),
+	);
+	const topicId = currentTopicId(harness.agentDir, "S");
+	harness.bot.calls = [];
+
+	await closeTopicSession(harness);
+
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(0);
+	expect(readCustodySnapshot(harness.agentDir).records[`42:${topicId}`]).toMatchObject({ state: "queued" });
+});
+
+test("pool flush failure leaves deletion queued before the claim", async () => {
+	const harness = await createTopicDeletionHarness();
+	const topicId = currentTopicId(harness.agentDir, "S");
+	const daemon = harness.daemon as unknown as { flushPool(): Promise<void> };
+	daemon.flushPool = async () => {
+		throw new Error("pool flush failed");
+	};
+	harness.bot.calls = [];
+
+	await closeTopicSession(harness);
+
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(0);
+	expect(readCustodySnapshot(harness.agentDir).records[`42:${topicId}`]).toMatchObject({ state: "queued" });
+});
+test("confirmed custody precedes local topic persistence and custody cleanup", async () => {
+	const commits: string[] = [];
+	const harness = await createTopicDeletionHarness(new FakeBotApi(), "owner", trackedDaemonFs({ commits }));
+	commits.length = 0;
+	harness.bot.calls = [];
+
+	await closeTopicSession(harness);
+
+	expect(commits).toEqual([
+		"telegram-deletion-custody.json",
+		"telegram-deletion-custody.json",
+		"telegram-deletion-custody.json",
+		"telegram-topics.json",
+		"telegram-deletion-custody.json",
+	]);
+});
+
+test("settlement and local persistence failures never issue a second deletion request", async () => {
+	const settlementFs = trackedDaemonFs({ failCustodyWriteAt: 3 });
+	const settlement = await createTopicDeletionHarness(new FakeBotApi(), "owner", settlementFs);
+	const settlementTopicId = currentTopicId(settlement.agentDir, "S");
+	settlement.bot.calls = [];
+	await closeTopicSession(settlement);
+	expect(settlement.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(settlement.agentDir).records[`42:${settlementTopicId}`]).toMatchObject({
+		state: "in_flight",
+	});
+	await closeTopicSession(settlement);
+	expect(settlement.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+
+	const recovered = new TelegramNotificationDaemon({
+		settings: settings(settlement.agentDir),
+		ownerId: "owner",
+		custodyEpoch: settlement.custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: settlement.bot,
+		fs: settlementFs,
+	});
+	await recovered.loadTopics();
+	await closeTopicSession({ daemon: recovered, session: settlement.session });
+	expect(settlement.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+
+	let failTopicWrite = false;
+	const topicFs = trackedDaemonFs({ failTopicWrite: () => failTopicWrite });
+	const topic = await createTopicDeletionHarness(new FakeBotApi(), "owner", topicFs);
+	const topicId = currentTopicId(topic.agentDir, "S");
+	failTopicWrite = true;
+	topic.bot.calls = [];
+	await closeTopicSession(topic);
+	expect(topic.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(topic.agentDir).records[`42:${topicId}`]).toMatchObject({ state: "confirmed" });
+	await closeTopicSession(topic);
+	expect(topic.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+
+	failTopicWrite = false;
+	await closeTopicSession(topic);
+	expect(topic.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(topic.agentDir).records).toEqual({});
+
+	const cleanupFs = trackedDaemonFs({ failCustodyWriteAt: 4 });
+	const cleanup = await createTopicDeletionHarness(new FakeBotApi(), "owner", cleanupFs);
+	const cleanupTopicId = currentTopicId(cleanup.agentDir, "S");
+	cleanup.bot.calls = [];
+	await closeTopicSession(cleanup);
+	expect(cleanup.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(cleanup.agentDir).records[`42:${cleanupTopicId}`]).toMatchObject({
+		state: "confirmed",
+	});
+	const cleanupRecovered = new TelegramNotificationDaemon({
+		settings: settings(cleanup.agentDir),
+		ownerId: "owner",
+		custodyEpoch: cleanup.custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: cleanup.bot,
+		fs: cleanupFs,
+	});
+	await cleanupRecovered.loadTopics();
+	await cleanupRecovered.loadCustody();
+	expect(cleanup.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(readCustodySnapshot(cleanup.agentDir).records).toEqual({});
+});
 test("session_closed clears reply message routes for the closed session", async () => {
 	FakeWs.instances = [];
 	const agentDir = tempAgentDir();
@@ -3475,6 +3788,7 @@ test("session_closed clears reply message routes for the closed session", async 
 test("session_closed tombstones its endpoint generation so scans do not recreate an empty topic", async () => {
 	FakeWs.instances = [];
 	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "S" });
@@ -3486,7 +3800,7 @@ test("session_closed tombstones its endpoint generation so scans do not recreate
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
-		custodyEpoch: 1,
+		custodyEpoch,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4192,16 +4506,23 @@ test("run() persists aliases before releasing ownership on exit", async () => {
 	expect(fs.existsSync(daemonPaths(agentDir).aliases)).toBe(true);
 });
 describe("telegram custody loading", () => {
-	test("migrates custody before the first scan without Telegram deletion or delivery", async () => {
+	test("recovers in-flight custody before the first scan without Telegram deletion or delivery", async () => {
 		const agentDir = tempAgentDir();
 		const custodyPath = path.join(agentDir, "notifications", "telegram-deletion-custody.json");
 		fs.mkdirSync(path.dirname(custodyPath), { recursive: true });
 		fs.writeFileSync(
 			custodyPath,
 			JSON.stringify({
-				version: 1,
-				chatId: "42",
-				records: { "7": { state: "in_flight", updatedAt: 1 } },
+				version: 3,
+				records: {
+					"42:7": {
+						chatId: "42",
+						topicId: "7",
+						state: "in_flight",
+						updatedAt: 1,
+						custodyEpoch: 1,
+					},
+				},
 			}),
 		);
 
@@ -4247,13 +4568,29 @@ describe("telegram custody loading", () => {
 		expect(events).toEqual(["topics", "custody", "scan"]);
 		expect(daemon.custodyLoadResult).toEqual({
 			mode: "writable",
-			migrated: true,
-			records: [{ chatId: "42", topicId: "7", state: "unknown", updatedAt: 1 }],
+			migrated: false,
+			records: [
+				{
+					chatId: "42",
+					topicId: "7",
+					state: "unknown",
+					updatedAt: 1,
+					custodyEpoch: 1,
+					diagnostic: { kind: "restart_after_claim" },
+				},
+			],
 		});
 		expect(JSON.parse(fs.readFileSync(custodyPath, "utf8"))).toEqual({
-			version: 2,
+			version: 3,
 			records: {
-				"42:7": { chatId: "42", topicId: "7", state: "unknown", updatedAt: 1 },
+				"42:7": {
+					chatId: "42",
+					topicId: "7",
+					state: "unknown",
+					updatedAt: 1,
+					custodyEpoch: 1,
+					diagnostic: { kind: "restart_after_claim" },
+				},
 			},
 		});
 		expect(bot.calls.filter(call => call.method === "deleteForumTopic" || call.method === "sendMessage")).toEqual([]);
@@ -4394,9 +4731,55 @@ test("scanRoots connects only live endpoints (skips stale + dead-PID records)", 
 	expect(FakeWs.instances.every(ws => ws.url.startsWith("ws://live"))).toBe(true);
 });
 
+test("orphan reaping records its trigger and retains a rejected topic deletion", async () => {
+	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
+	const s = setPrivateAgentDir(settings(agentDir), agentDir);
+	const cwd = path.join(agentDir, "repo");
+	await registerNotificationRoot({ settings: s, cwd, sessionId: "orphan" });
+	const endpointDir = path.join(cwd, ".gjc", "state", "notifications");
+	fs.mkdirSync(endpointDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(endpointDir, "orphan.json"),
+		JSON.stringify({ url: "ws://orphan", token: "t", stale: true }),
+	);
+	fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
+	fs.writeFileSync(
+		path.join(daemonPaths(agentDir).dir, "telegram-topics.json"),
+		JSON.stringify({ topics: { orphan: { topicId: "301", identitySent: true, createdAt: 0, name: "orphan" } } }),
+	);
+
+	const bot = new FakeBotApi();
+	bot.deleteResponse = { ok: false, error_code: 404, description: "topic is gone" };
+	const daemon = new TelegramNotificationDaemon({
+		settings: s,
+		ownerId: "owner",
+		custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+		now: () => 120_000,
+	});
+	await daemon.loadTopics();
+	await daemon.scanRoots();
+
+	expect(bot.calls.filter(call => call.method === "deleteForumTopic")).toEqual([
+		{
+			method: "deleteForumTopic",
+			body: { chat_id: "42", message_thread_id: 301 },
+			opts: { noRetry: true },
+		},
+	]);
+	expect(readCustodySnapshot(agentDir).records["42:301"]).toMatchObject({
+		state: "unknown",
+		trigger: "orphan_reap",
+		diagnostic: { kind: "telegram_rejected", rejection: "not_found", errorCode: 404 },
+	});
+});
 test("scanRoots reaps stale and dead-PID session topics after the orphan grace window", async () => {
 	FakeWs.instances = [];
 	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "stale" });
@@ -4422,7 +4805,7 @@ test("scanRoots reaps stale and dead-PID session topics after the orphan grace w
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
-		custodyEpoch: 1,
+		custodyEpoch,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4443,6 +4826,7 @@ test("scanRoots reaps stale and dead-PID session topics after the orphan grace w
 
 test("scanRoots reaps missing endpoint topics only when all roots are readable and grace has elapsed", async () => {
 	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "missing" });
@@ -4456,7 +4840,7 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
-		custodyEpoch: 1,
+		custodyEpoch,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,

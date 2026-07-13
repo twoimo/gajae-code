@@ -53,7 +53,16 @@ import {
 	type TelegramCustodyEpochBinding,
 	withCurrentTelegramCustodyEpoch,
 } from "./telegram-custody-epoch";
-import { type TelegramCustodyLoadResult, TelegramCustodyStore } from "./telegram-custody-store";
+import {
+	type TelegramCustodyClaimResult,
+	type TelegramCustodyDiagnostic,
+	type TelegramCustodyLoadResult,
+	type TelegramCustodyQueueResult,
+	TelegramCustodyStore,
+	type TelegramCustodyWriteResult,
+	type TelegramDeletionTrigger,
+	type TelegramRejectionClass,
+} from "./telegram-custody-store";
 import {
 	type AliasTable,
 	buildActionMarkdown,
@@ -1179,6 +1188,8 @@ export class TelegramNotificationDaemon {
 	readonly #custodyStore: TelegramCustodyStore;
 	/** Startup custody result retained for later deletion-recovery phases. */
 	#custodyLoadResult: TelegramCustodyLoadResult | undefined;
+	#custodyLoadPromise: Promise<TelegramCustodyLoadResult> | undefined;
+	readonly #topicDeletionPromises = new Map<string, Promise<void>>();
 	private readonly topics = new TopicRegistry();
 	/** Serializes registry snapshots so an older atomic write cannot overwrite newer rename state. */
 	private topicsPersistQueue: Promise<void> = Promise.resolve();
@@ -1799,7 +1810,7 @@ export class TelegramNotificationDaemon {
 				handle: async session => {
 					this.busy.delete(session.sessionId);
 					this.closedEndpointKeys.set(session.sessionId, session.endpointKey);
-					await this.deleteTopic(session.sessionId);
+					await this.deleteTopic(session.sessionId, "session_closed");
 					this.dropSession(session, "session_closed");
 				},
 			});
@@ -2226,39 +2237,198 @@ export class TelegramNotificationDaemon {
 
 	private async deleteOrphanedTopic(sessionId: string): Promise<void> {
 		if (!this.topicPastOrphanGrace(sessionId)) return;
-		await this.deleteTopic(sessionId);
+		await this.deleteTopic(sessionId, "orphan_reap");
 	}
 
-	/** Best-effort delete of a session topic once its local notification endpoint shuts down. */
-	private async deleteTopic(sessionId: string): Promise<void> {
+	private async deleteTopic(sessionId: string, trigger: TelegramDeletionTrigger): Promise<void> {
 		const record = this.topics.get(sessionId);
 		if (!record) return;
+
+		const key = `${this.opts.chatId}:${record.topicId}`;
+		const existing = this.#topicDeletionPromises.get(key);
+		if (existing) {
+			await existing;
+			return;
+		}
+
+		const deletion = this.claimAndCallTopicDeletion({ sessionId, topicId: record.topicId, trigger });
+		this.#topicDeletionPromises.set(key, deletion);
 		try {
-			// Drop queued sends for this session before deleting the topic; otherwise
-			// rate-limited frames can flush later into a deleted topic or across resume.
-			const removed = this.pool.removeWhere(item => item.sessionId === sessionId);
-			for (const item of removed) {
-				if (item.payload.selectedAck)
-					this.finishSelectedAck(item.payload.selectedAck, { status: "failed", reason: "cancelled" });
-			}
-			await this.flushPool();
-			const res = (await this.botApi.call("deleteForumTopic", {
-				chat_id: this.opts.chatId,
-				message_thread_id: Number(record.topicId),
-			})) as { ok?: boolean };
-			if (res?.ok === false) return;
-			this.topics.delete(sessionId);
-			for (const k of [...this.liveMessages.keys()]) {
-				if (k.startsWith(`${sessionId}:`)) this.liveMessages.delete(k);
-			}
-			this.topicOwnerByIdentity.forEach((ownerSessionId, identityKey) => {
-				if (ownerSessionId === sessionId) this.topicOwnerByIdentity.delete(identityKey);
+			await deletion;
+		} finally {
+			if (this.#topicDeletionPromises.get(key) === deletion) this.#topicDeletionPromises.delete(key);
+		}
+	}
+
+	private async claimAndCallTopicDeletion(input: {
+		sessionId: string;
+		topicId: string;
+		trigger: TelegramDeletionTrigger;
+	}): Promise<void> {
+		let load: TelegramCustodyLoadResult;
+		try {
+			load = await this.ensureCustodyLoaded();
+		} catch {
+			logger.warn("notifications: Telegram topic deletion custody load failed");
+			return;
+		}
+		if (load.mode !== "writable") return;
+
+		let queued: TelegramCustodyQueueResult;
+		try {
+			queued = await this.#custodyStore.queueDeletion({
+				chatId: this.opts.chatId,
+				topicId: input.topicId,
+				trigger: input.trigger,
 			});
-			this.pendingThreadedFrames.delete(sessionId);
+		} catch {
+			logger.warn("notifications: Telegram topic deletion queue failed");
+			return;
+		}
+		if (!queued.ok) return;
+		if (queued.status === "blocked") {
+			if (queued.record.state === "confirmed")
+				await this.finishConfirmedTopicDeletion(input.sessionId, input.topicId);
+			return;
+		}
+
+		const removed = this.pool.removeWhere(item => item.sessionId === input.sessionId);
+		for (const item of removed) {
+			if (item.payload.selectedAck)
+				this.finishSelectedAck(item.payload.selectedAck, { status: "failed", reason: "cancelled" });
+		}
+		try {
+			await this.flushPool();
+		} catch {
+			logger.warn("notifications: Telegram topic deletion pool flush failed");
+			return;
+		}
+
+		let claimed: TelegramCustodyClaimResult;
+		try {
+			claimed = await this.#custodyStore.claimDeletion({ chatId: this.opts.chatId, topicId: input.topicId });
+		} catch {
+			logger.warn("notifications: Telegram topic deletion claim failed");
+			return;
+		}
+		if (!claimed.ok || claimed.status !== "claimed" || claimed.record.custodyEpoch !== this.opts.custodyEpoch) return;
+
+		let diagnostic: TelegramCustodyDiagnostic;
+		try {
+			const guarded = await withCurrentTelegramCustodyEpoch(
+				{
+					agentDir: this.opts.settings.getAgentDir(),
+					binding: { ownerId: this.opts.ownerId, custodyEpoch: this.opts.custodyEpoch },
+				},
+				() =>
+					this.botApi.call(
+						"deleteForumTopic",
+						{ chat_id: this.opts.chatId, message_thread_id: Number(input.topicId) },
+						{ noRetry: true },
+					),
+			);
+			if (!guarded.ok) return;
+			diagnostic = this.classifyDeleteResponse(guarded.value);
+		} catch (error) {
+			diagnostic = this.classifyDeleteError(error);
+		}
+
+		let settled: TelegramCustodyWriteResult;
+		try {
+			settled = await this.#custodyStore.settleDeletion({
+				chatId: this.opts.chatId,
+				topicId: input.topicId,
+				diagnostic,
+			});
+		} catch {
+			logger.warn("notifications: Telegram topic deletion settlement failed");
+			return;
+		}
+		if (!settled.ok || diagnostic.kind !== "telegram_ok") return;
+		await this.finishConfirmedTopicDeletion(input.sessionId, input.topicId);
+	}
+
+	private classifyDeleteResponse(response: unknown): TelegramCustodyDiagnostic {
+		if (
+			typeof response !== "object" ||
+			response === null ||
+			Array.isArray(response) ||
+			Object.getPrototypeOf(response) !== Object.prototype
+		) {
+			return { kind: "malformed_response" };
+		}
+		const value = response as { ok?: unknown; error_code?: unknown };
+		if (value.ok === true) return { kind: "telegram_ok" };
+		if (value.ok !== false) return { kind: "malformed_response" };
+
+		const errorCode =
+			typeof value.error_code === "number" && Number.isSafeInteger(value.error_code) ? value.error_code : undefined;
+		let rejection: TelegramRejectionClass = "other";
+		if (errorCode === 404) rejection = "not_found";
+		else if (errorCode === 403) rejection = "forbidden";
+		else if (errorCode === 429) rejection = "rate_limited";
+		else if (errorCode !== undefined && errorCode >= 500 && errorCode <= 599) rejection = "server_error";
+		return {
+			kind: "telegram_rejected",
+			rejection,
+			...(errorCode === undefined ? {} : { errorCode }),
+		};
+	}
+
+	private classifyDeleteError(error: unknown): TelegramCustodyDiagnostic {
+		if (isAbortError(error)) return { kind: "transport_ambiguous", transport: "aborted" };
+
+		const value = error as { code?: unknown; name?: unknown; message?: unknown };
+		const code = typeof value?.code === "string" ? value.code : "";
+		const name = typeof value?.name === "string" ? value.name : "";
+		const message = typeof value?.message === "string" ? value.message.slice(0, 256).toLowerCase() : "";
+		if (code === "ECONNRESET" || name === "ECONNRESET" || /connection reset/i.test(message)) {
+			return { kind: "transport_ambiguous", transport: "connection_reset" };
+		}
+		if (code === "ETIMEDOUT" || name === "TimeoutError" || /timeout|timed out/i.test(message)) {
+			return { kind: "transport_ambiguous", transport: "timeout" };
+		}
+		if (
+			code === "ENOTFOUND" ||
+			code === "ECONNREFUSED" ||
+			code === "EAI_AGAIN" ||
+			name === "TypeError" ||
+			/network|dns|fetch failed/i.test(message)
+		) {
+			return { kind: "transport_ambiguous", transport: "network" };
+		}
+		return { kind: "transport_ambiguous", transport: "other" };
+	}
+
+	private async finishConfirmedTopicDeletion(sessionId: string, topicId: string): Promise<void> {
+		const current = this.topics.get(sessionId);
+		if (current !== undefined && current.topicId !== topicId) return;
+		const previousTopics = this.topics.serialize();
+		if (current !== undefined) this.topics.delete(sessionId);
+		try {
 			await this.persistTopics();
 		} catch {
-			// Best-effort: missing Telegram topic permissions must not stop teardown.
+			if (current !== undefined) this.topics.load(previousTopics);
+			logger.warn("notifications: Telegram topic deletion local persistence failed");
+			return;
 		}
+		if (current !== undefined) this.clearDeletedTopicRuntimeState(sessionId);
+		try {
+			const removed = await this.#custodyStore.removeConfirmed({ chatId: this.opts.chatId, topicId });
+			if (!removed.ok) return;
+		} catch {
+			logger.warn("notifications: Telegram topic deletion custody cleanup failed");
+		}
+	}
+
+	private clearDeletedTopicRuntimeState(sessionId: string): void {
+		for (const key of [...this.liveMessages.keys()]) {
+			if (key.startsWith(`${sessionId}:`)) this.liveMessages.delete(key);
+		}
+		this.topicOwnerByIdentity.forEach((ownerSessionId, identityKey) => {
+			if (ownerSessionId === sessionId) this.topicOwnerByIdentity.delete(identityKey);
+		});
+		this.pendingThreadedFrames.delete(sessionId);
 	}
 
 	private persistTopics(): Promise<void> {
@@ -2274,18 +2444,37 @@ export class TelegramNotificationDaemon {
 	async loadTopics(): Promise<void> {
 		const paths = daemonPaths(this.opts.settings.getAgentDir());
 		const raw = await readJson<TopicRegistryState>(this.fsImpl, path.join(paths.dir, "telegram-topics.json"));
-		// Restore the full serialized registry (topicId + identitySent + name) so a
-		// fresh daemon after reload does not resend identity headers or lose renames.
 		if (raw && typeof raw === "object") this.topics.load(raw);
 	}
+	private ensureCustodyLoaded(): Promise<TelegramCustodyLoadResult> {
+		if (!this.#custodyLoadPromise) {
+			this.#custodyLoadPromise = this.#custodyStore.load().then(result => {
+				this.#custodyLoadResult = result;
+				return result;
+			});
+		}
+		return this.#custodyLoadPromise;
+	}
+
 	get custodyLoadResult(): TelegramCustodyLoadResult | undefined {
 		return this.#custodyLoadResult;
 	}
 
 	async loadCustody(): Promise<TelegramCustodyLoadResult> {
-		const result = await this.#custodyStore.load();
-		this.#custodyLoadResult = result;
-		return result;
+		const result = await this.ensureCustodyLoaded();
+		if (result.mode !== "writable") return result;
+
+		for (const record of this.#custodyStore.list()) {
+			if (record.state !== "confirmed") continue;
+			const sessionId = this.topics
+				.sessionIds()
+				.find(candidate => this.topics.get(candidate)?.topicId === record.topicId);
+			await this.finishConfirmedTopicDeletion(sessionId ?? "", record.topicId);
+		}
+
+		const updated = { ...result, records: this.#custodyStore.list() };
+		this.#custodyLoadResult = updated;
+		return updated;
 	}
 
 	/** Download a Telegram file by its file_path (from getFile) into memory. */
@@ -3392,9 +3581,6 @@ export class TelegramNotificationDaemon {
 		});
 		if (!this.running) return;
 		this.runtime.start();
-		this.startFlushTimer();
-		this.startScanTimer();
-		this.startTypingTimer();
 		try {
 			await this.refreshBotIdentity();
 			await this.registerBotCommands();
@@ -3403,6 +3589,9 @@ export class TelegramNotificationDaemon {
 			await this.loadCustody();
 			await this.loadSeenUpdateIds();
 			await this.replyStore.load();
+			this.startFlushTimer();
+			this.startScanTimer();
+			this.startTypingTimer();
 			await this.runScan();
 			// Owner-only: start the session-lifecycle control server now that
 			// ownership is confirmed (singleton-safe). Best-effort; degrades.
