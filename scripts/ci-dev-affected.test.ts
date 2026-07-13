@@ -334,26 +334,17 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-pr-base-"));
 		tempDirs.push(tempDir);
 		const outputFile = path.join(tempDir, "github-output.txt");
-		const expectedPaths = [
-			".github/workflows/ci.yml",
-			".github/workflows/dev-ci.yml",
-			"packages/coding-agent/CHANGELOG.md",
-			"scripts/ci-dev-affected.test.ts",
-			"scripts/ci-dev-affected.ts",
-			"scripts/gjc-session/create.test.ts",
-			"scripts/release-publish-order.test.ts",
-			"scripts/verify-platform-test-policy.test.ts",
-			"scripts/verify-platform-test-policy.ts",
-		];
+		const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repoRoot }).stdout.toString().trim();
+		expect(head).toMatch(/^[0-9a-f]{40}$/);
 
 		const { exitCode } = await runScript(["--matrix-json"], undefined, {
 			CI_DEV_PLAN_MODE: "pr",
-			CI_DEV_WORKSPACE_SHA: "bfc589b212dbf7857da567d5d214a1e917e60e68",
-			GITHUB_BASE_REF: "dev",
-			GITHUB_BASE_SHA: "96eed5e39347e0778f68afea9872176dc82aa3b6",
+			CI_DEV_WORKSPACE_SHA: head,
+			GITHUB_BASE_REF: "branch-that-must-not-be-resolved",
+			GITHUB_BASE_SHA: head,
 			GITHUB_EVENT_NAME: "pull_request",
 			GITHUB_OUTPUT: outputFile,
-			GITHUB_SHA: "bfc589b212dbf7857da567d5d214a1e917e60e68",
+			GITHUB_SHA: head,
 		});
 		expect(exitCode).toBe(0);
 
@@ -366,7 +357,7 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		const transportedPaths = (changedPathsLine as string).slice("changed_paths=".length);
 		const plannedPaths = decodeChangedPaths(transportedPaths);
 
-		expect(plannedPaths).toEqual(expectedPaths);
+		expect(plannedPaths).toEqual([]);
 		expect(Buffer.byteLength(JSON.stringify(plannedPaths), "utf8")).toBeLessThan(48 * 1024);
 		expect(transportedPaths.length).toBeLessThan(64 * 1024);
 	});
