@@ -7,6 +7,7 @@ import {
 	normalizeRepoRelativePosixPath,
 	decodeChangedPaths,
 	encodeChangedPaths,
+	getChangedPathsForRange,
 	packageScriptCommand,
 	planTargetedTasks,
 	planTasks,
@@ -31,6 +32,10 @@ function requireWorkflowStep(steps: readonly unknown[], property: "name" | "run"
 	if (index < 0) throw new Error(`workflow step ${property}=${value} must exist`);
 	return [requireYamlRecord(steps[index], `workflow step ${property}=${value}`), index];
 }
+function nulDelimitedPaths(paths: readonly string[]): Uint8Array {
+	return new TextEncoder().encode(paths.length === 0 ? "" : `${paths.join("\0")}\0`);
+}
+
 
 const packages: WorkspacePackage[] = [
 	{
@@ -411,6 +416,81 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(fetchRun).toContain('git check-ref-format --branch "$BASE_REF" >/dev/null');
 		expect(fetchRun).toContain('[[ "$BASE_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]');
 		expect(fetchRun).not.toContain("origin/dev");
+	});
+
+	test("keeps ordinary merge-base diffs unchanged", async () => {
+		const calls: string[] = [];
+		const result = await getChangedPathsForRange("base", "head", async (_base, _head, mode) => {
+			calls.push(mode);
+			return {
+				exitCode: 0,
+				stdout: nulDelimitedPaths(["scripts/ci-dev-affected.ts", "docs/guide.md"]),
+				stderr: "",
+			};
+		});
+
+		expect(calls).toEqual(["merge-base"]);
+		expect(result).toEqual({
+			paths: ["docs/guide.md", "scripts/ci-dev-affected.ts"],
+			usedConservativeTwoTreeDiff: false,
+		});
+	});
+
+	test("uses a conservative two-tree diff after a no-merge-base failure without corrupting hostile filenames", async () => {
+		const calls: string[] = [];
+		const hostilePath = "docs/safe\n__GITHUB_OUTPUT__=forged";
+		const result = await getChangedPathsForRange("base", "head", async (_base, _head, mode) => {
+			calls.push(mode);
+			if (mode === "merge-base") {
+				return {
+					exitCode: 128,
+					stdout: new Uint8Array(),
+					stderr: "fatal: base...head: no merge base",
+				};
+			}
+			return {
+				exitCode: 0,
+				stdout: nulDelimitedPaths([hostilePath, "scripts/ci-dev-affected.ts"]),
+				stderr: "",
+			};
+		});
+
+		expect(calls).toEqual(["merge-base", "two-tree"]);
+		expect(result).toEqual({
+			paths: [hostilePath, "scripts/ci-dev-affected.ts"].sort(),
+			usedConservativeTwoTreeDiff: true,
+		});
+		expect(decodeChangedPaths(encodeChangedPaths(result.paths))).toEqual(result.paths);
+	});
+
+	test("fails closed for git failures other than no merge base", async () => {
+		const calls: string[] = [];
+		await expect(
+			getChangedPathsForRange("base", "head", async (_base, _head, mode) => {
+				calls.push(mode);
+				return {
+					exitCode: 128,
+					stdout: new Uint8Array(),
+					stderr: "fatal: bad object base",
+				};
+			}),
+		).rejects.toThrow("Failed to compute changed paths for requested range (git exit code 128).");
+		expect(calls).toEqual(["merge-base"]);
+	});
+
+	test("fails closed when the conservative two-tree diff fails", async () => {
+		const calls: string[] = [];
+		await expect(
+			getChangedPathsForRange("base", "head", async (_base, _head, mode) => {
+				calls.push(mode);
+				return {
+					exitCode: 128,
+					stdout: new Uint8Array(),
+					stderr: mode === "merge-base" ? "fatal: base...head: no merge base" : "fatal: bad object base",
+				};
+			}),
+		).rejects.toThrow("Failed to compute changed paths with conservative two-tree diff (git exit code 128).");
+		expect(calls).toEqual(["merge-base", "two-tree"]);
 	});
 
 	test("base64 path transport cannot forge GitHub planner outputs with newline or delimiter filenames", async () => {

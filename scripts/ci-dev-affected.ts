@@ -344,6 +344,24 @@ function printPlan(paths: readonly string[], plannedTasks: readonly Task[]): voi
 	}
 }
 
+export type GitDiffMode = "merge-base" | "two-tree";
+
+export interface GitDiffResult {
+	exitCode: number;
+	stdout: Uint8Array;
+	stderr: string;
+}
+
+export type GitDiffRunner = (base: string, head: string, mode: GitDiffMode) => Promise<GitDiffResult>;
+
+export interface ChangedPathRange {
+	paths: string[];
+	usedConservativeTwoTreeDiff: boolean;
+}
+
+export const NO_MERGE_BASE_FALLBACK_DIAGNOSTIC =
+	"ci-dev-affected: no merge base; using conservative two-tree changed-path diff.";
+
 async function getChangedPaths(): Promise<string[]> {
 	const transportedPaths = Bun.env[CHANGED_PATHS_TRANSPORT_ENV]?.trim();
 	if (transportedPaths) {
@@ -368,13 +386,63 @@ async function getChangedPaths(): Promise<string[]> {
 
 	const base = await resolveBaseRef();
 	const head = Bun.env.CI_DEV_WORKSPACE_SHA?.trim() || Bun.env.GITHUB_SHA?.trim() || "HEAD";
-	const range = base.includes("...") || base.includes("..") ? base : `${base}...${head}`;
-	const diff = await $`git diff --name-only -z ${range}`.cwd(repoRoot).quiet().nothrow();
-	if (diff.exitCode !== 0) {
-		const stderr = diff.stderr.toString().trim();
-		throw new Error(`Failed to compute changed paths for ${range}: ${stderr}`);
+	if (base.includes("...") || base.includes("..")) {
+		const diff = await $`git diff --name-only -z ${base}`.cwd(repoRoot).quiet().nothrow();
+		if (diff.exitCode !== 0) {
+			throw new Error(`Failed to compute changed paths for requested range (git exit code ${diff.exitCode}).`);
+		}
+		return normalizeChangedPaths(new TextDecoder().decode(diff.stdout).split("\0").filter(Boolean));
 	}
-	return normalizeChangedPaths(new TextDecoder().decode(diff.stdout).split("\0").filter(Boolean));
+
+	const changedPathRange = await getChangedPathsForRange(base, head);
+	if (changedPathRange.usedConservativeTwoTreeDiff) {
+		console.error(NO_MERGE_BASE_FALLBACK_DIAGNOSTIC);
+	}
+	return changedPathRange.paths;
+}
+
+export async function getChangedPathsForRange(
+	base: string,
+	head: string,
+	gitDiffRunner: GitDiffRunner = runGitDiff,
+): Promise<ChangedPathRange> {
+	const mergeBaseDiff = await gitDiffRunner(base, head, "merge-base");
+	if (mergeBaseDiff.exitCode === 0) {
+		return {
+			paths: normalizeChangedPaths(new TextDecoder().decode(mergeBaseDiff.stdout).split("\0").filter(Boolean)),
+			usedConservativeTwoTreeDiff: false,
+		};
+	}
+	if (!isNoMergeBaseError(mergeBaseDiff.stderr)) {
+		throw new Error(`Failed to compute changed paths for requested range (git exit code ${mergeBaseDiff.exitCode}).`);
+	}
+
+	const twoTreeDiff = await gitDiffRunner(base, head, "two-tree");
+	if (twoTreeDiff.exitCode !== 0) {
+		throw new Error(
+			`Failed to compute changed paths with conservative two-tree diff (git exit code ${twoTreeDiff.exitCode}).`,
+		);
+	}
+	return {
+		paths: normalizeChangedPaths(new TextDecoder().decode(twoTreeDiff.stdout).split("\0").filter(Boolean)),
+		usedConservativeTwoTreeDiff: true,
+	};
+}
+
+async function runGitDiff(base: string, head: string, mode: GitDiffMode): Promise<GitDiffResult> {
+	const diff =
+		mode === "merge-base"
+			? await $`git diff --name-only -z ${`${base}...${head}`}`.cwd(repoRoot).quiet().nothrow()
+			: await $`git diff --name-only -z ${base} ${head}`.cwd(repoRoot).quiet().nothrow();
+	return {
+		exitCode: diff.exitCode,
+		stdout: diff.stdout,
+		stderr: diff.stderr.toString(),
+	};
+}
+
+function isNoMergeBaseError(stderr: string): boolean {
+	return /fatal: [^\r\n]*\bno merge base\b/i.test(stderr);
 }
 
 export function encodeChangedPaths(paths: readonly string[]): string {
