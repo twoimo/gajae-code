@@ -198,7 +198,11 @@ export class DiscordNotificationDaemon {
 			this.#started = false;
 			await this.options.provider.stop();
 		}
-		await Promise.all([...this.#activeWork]);
+		// Drain until quiescent: a tracked task can schedule further tracked work while
+		// we await, and any that outlives stop() would bleed timing pressure into the
+		// next daemon/test. #started is false, so no new recovery timers arm and the
+		// loop terminates.
+		while (this.#activeWork.size > 0) await Promise.all([...this.#activeWork]);
 	}
 
 	async notify(input: DiscordNotificationInput): Promise<DiscordConversation> {
