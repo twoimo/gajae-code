@@ -1301,6 +1301,7 @@ export class AcpAgent implements Agent {
 			}))
 				await this.#publishSessionUpdate(id, notification, adapter);
 		}
+		if (event.type === "agent_end") await this.#emitEndOfTurnUpdates(id, adapter);
 		if (activePrompt) this.#settlePrompt(record, activePrompt);
 	}
 
@@ -1315,6 +1316,43 @@ export class AcpAgent implements Agent {
 			return;
 		record.activePrompt = undefined;
 		waiter.resolve({ stopReason: waiter.cancelRequested ? "cancelled" : "end_turn" });
+	}
+
+	async #emitEndOfTurnUpdates(id: string, adapter: AcpSdkAdapter): Promise<void> {
+		let usage: JsonObject | undefined;
+		try {
+			const response = object(await adapter.query("context.get"));
+			const result = object(response?.result) ?? response;
+			usage = object(result?.usage);
+		} catch {
+			// Context usage is advisory ACP metadata; prompt completion remains authoritative.
+		}
+		if (typeof usage?.tokens === "number" && typeof usage.contextWindow === "number") {
+			await this.#publishSessionUpdate(
+				id,
+				{
+					sessionId: id,
+					update: {
+						sessionUpdate: "usage_update",
+						size: usage.contextWindow,
+						used: usage.tokens,
+					},
+				},
+				adapter,
+			);
+		}
+		await this.#publishSessionUpdate(
+			id,
+			{
+				sessionId: id,
+				update: {
+					sessionUpdate: "session_info_update",
+					updatedAt: new Date().toISOString(),
+					_meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+				},
+			},
+			adapter,
+		);
 	}
 
 	async #publishSessionUpdate(

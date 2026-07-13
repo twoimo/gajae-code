@@ -292,7 +292,7 @@ import type {
 	ClientBridgePermissionOutcome,
 	ClientBridgePermissionToolCall,
 } from "./client-bridge";
-
+import { computeNonMessageTokens } from "./context-estimation";
 import {
 	type ContributionPrepOptions,
 	type ContributionPrepResult,
@@ -1273,6 +1273,11 @@ export class AgentSession {
 	#resourceSampler: () => EmergencyCompactionSample = () => this.#defaultResourceSample();
 	#retainedMemorySampler: (() => RetainedMemorySample) | undefined;
 	#prePromptContextCheckPromise: Promise<void> | undefined = undefined;
+	/** Display-only context snapshot; pre-prompt compaction estimates deliberately remain uncached. */
+	#contextUsageCache: { key: string; value: ContextUsage } | undefined;
+	#contextUsageMessageIds = new WeakMap<AgentMessage, number>();
+	#nextContextUsageMessageId = 0;
+	#contextUsageEstimateCount = 0;
 
 	// Branch summarization state
 	#branchSummaryAbortController: AbortController | undefined = undefined;
@@ -2327,6 +2332,7 @@ export class AgentSession {
 			(this.#planCompactAbortPending || this.#silentAbortPending)
 		) {
 			(event.message as AssistantMessage).errorMessage = SILENT_ABORT_MARKER;
+			this.agent.touchContext();
 			this.#planCompactAbortPending = false;
 			this.#silentAbortPending = false;
 		}
@@ -11799,43 +11805,92 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
+		const cacheKey = this.#contextUsageCacheKey(model, contextWindow);
+		if (this.#contextUsageCache?.key === cacheKey) return { ...this.#contextUsageCache.value };
+		this.#contextUsageEstimateCount++;
+
 		// After compaction, the last assistant usage reflects pre-compaction context size.
 		// We can only trust usage from an assistant that responded after the latest compaction.
 		// If no such assistant exists, context token count is unknown until the next LLM response.
 		const branchEntries = this.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
-
-		if (latestCompaction) {
-			// Check if there's a valid assistant usage after the compaction boundary
-			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
-			let hasPostCompactionUsage = false;
-			for (let i = branchEntries.length - 1; i > compactionIndex; i--) {
-				const entry = branchEntries[i];
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					const assistant = entry.message;
-					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-						const contextTokens = calculateContextTokens(assistant.usage);
-						if (contextTokens > 0) {
-							hasPostCompactionUsage = true;
-						}
-						break;
-					}
-				}
-			}
-
-			if (!hasPostCompactionUsage) {
-				return { tokens: null, contextWindow, percent: null };
-			}
+		const boundaryTs = latestCompaction ? new Date(latestCompaction.timestamp).getTime() : 0;
+		const anchor = this.#findAnchorableUsageIndex(this.messages, boundaryTs);
+		let value: ContextUsage;
+		if (latestCompaction && !anchor) {
+			value = { tokens: null, contextWindow, percent: null, source: "unknown" };
+		} else {
+			const estimate = this.#estimateContextTokens(boundaryTs, anchor);
+			value = {
+				tokens: estimate.tokens,
+				contextWindow,
+				percent: (estimate.tokens / contextWindow) * 100,
+				source: estimate.anchored ? "provider_anchor" : "heuristic",
+			};
 		}
 
-		const estimate = this.#estimateContextTokens();
-		const percent = (estimate.tokens / contextWindow) * 100;
+		this.#contextUsageCache = { key: cacheKey, value };
+		return { ...value };
+	}
 
-		return {
-			tokens: estimate.tokens,
-			contextWindow,
-			percent,
+	getContextUsageObservabilityForTests(): { estimateCount: number } {
+		return { estimateCount: this.#contextUsageEstimateCount };
+	}
+
+	#contextUsageCacheKey(model: Model, contextWindow: number): string {
+		const messages = this.messages;
+		const lastMessage = messages[messages.length - 1];
+		// Entry and leaf revisions change whenever the active branch changes, avoiding getBranch() on warm reads.
+		const revision = this.sessionManager.revisionSnapshot();
+		return `${this.agent.contextRevision}|${model.id}|${contextWindow}|${messages.length}|${this.#contextUsageMessageFingerprint(lastMessage)}|${revision.entry}:${revision.leaf}|${this.#computeContextUsageNonMessageInputsKey()}`;
+	}
+
+	#contextUsageMessageFingerprint(message: AgentMessage | undefined): string {
+		if (!message) return "";
+		let messageId = this.#contextUsageMessageIds.get(message);
+		if (messageId === undefined) {
+			messageId = ++this.#nextContextUsageMessageId;
+			this.#contextUsageMessageIds.set(message, messageId);
+		}
+
+		const role = message.role;
+		const timestamp = typeof message.timestamp === "number" ? message.timestamp : "";
+		let contentLength = 0;
+		let blockCount = 0;
+		const record = message as {
+			content?: unknown;
+			command?: unknown;
+			output?: unknown;
+			summary?: unknown;
+			stopReason?: unknown;
+			usage?: Usage;
 		};
+
+		if (typeof record.command === "string") contentLength += record.command.length;
+		if (typeof record.output === "string") contentLength += record.output.length;
+		if (typeof record.summary === "string") contentLength += record.summary.length;
+		if (typeof record.content === "string") {
+			contentLength += record.content.length;
+		} else if (Array.isArray(record.content)) {
+			blockCount = record.content.length;
+			for (const block of record.content) {
+				if (!block || typeof block !== "object") continue;
+				const content = block as { text?: unknown; thinking?: unknown; name?: unknown };
+				if (typeof content.text === "string") contentLength += content.text.length;
+				if (typeof content.thinking === "string") contentLength += content.thinking.length;
+				if (typeof content.name === "string") contentLength += content.name.length;
+			}
+		}
+		const stopReason = typeof record.stopReason === "string" ? record.stopReason : "";
+		const usageTokens = record.usage ? calculateContextTokens(record.usage) : 0;
+		return `${messageId}:${role}:${timestamp}:${contentLength}:${blockCount}:${stopReason}:${usageTokens}`;
+	}
+
+	#computeContextUsageNonMessageInputsKey(): string {
+		const systemPrompt = this.systemPrompt;
+		let systemPromptLengths = "";
+		for (const part of systemPrompt) systemPromptLengths += `${part.length},`;
+		return `${systemPrompt.length}:${systemPromptLengths}|${this.agent.state.tools.length}|${this.skills.length}`;
 	}
 
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
@@ -11850,10 +11905,19 @@ export class AgentSession {
 	/**
 	 * Estimate context tokens from messages, using the last assistant usage when available.
 	 */
-	#estimateContextTokens(): {
+	#estimateContextTokens(
+		boundaryTs: number,
+		anchor: { index: number; usage: Usage } | undefined,
+	): {
 		tokens: number;
+		anchored: boolean;
 	} {
-		return this.#estimateContextTokensWith(message => this.#estimateMessageDisplayTokens(message));
+		return this.#estimateContextTokensWith(
+			message => this.#estimateMessageDisplayTokens(message),
+			false,
+			boundaryTs,
+			anchor,
+		);
 	}
 
 	/** Count inline image blocks in a message (for bucketing the fixed image token estimate). */
@@ -11882,6 +11946,24 @@ export class AgentSession {
 		const usage = assistant.usage;
 		if (!usage || calculateContextTokens(usage) <= 0) return undefined;
 		return usage;
+	}
+
+	/** Find the newest positive successful usage anchor after a compaction boundary. */
+	#findAnchorableUsageIndex(
+		messages: readonly AgentMessage[],
+		boundaryTs: number,
+	): { index: number; usage: Usage } | undefined {
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const message = messages[i];
+			const usage = this.#anchorableAssistantUsage(message);
+			if (!usage) continue;
+			if (boundaryTs > 0) {
+				const timestamp = message.timestamp;
+				if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= boundaryTs) continue;
+			}
+			return { index: i, usage };
+		}
+		return undefined;
 	}
 
 	/**
@@ -11928,39 +12010,45 @@ export class AgentSession {
 
 	#estimateContextTokensForCompaction(pendingMessages: readonly AgentMessage[]): {
 		tokens: number;
+		anchored: boolean;
 	} {
-		const estimate = this.#estimateContextTokensWith(message => this.#estimateMessageCompactionDeltaTokens(message));
+		const estimate = this.#estimateContextTokensWith(
+			message => this.#estimateMessageCompactionDeltaTokens(message),
+			true,
+		);
 		return {
 			tokens: estimate.tokens + this.#estimateMessagesCompactionDeltaTokens(pendingMessages),
+			anchored: estimate.anchored,
 		};
 	}
 
-	#estimateContextTokensWith(estimateMessage: (message: AgentMessage) => number): {
+	#estimateContextTokensWith(
+		estimateMessage: (message: AgentMessage) => number,
+		inflateFixed = false,
+		boundaryTs?: number,
+		knownAnchor?: { index: number; usage: Usage } | undefined,
+	): {
 		tokens: number;
+		anchored: boolean;
 	} {
 		const messages = this.messages;
-
-		// Find the last successful assistant message with positive usage.
-		// Error/aborted turns are estimated as trailing context instead.
-		let lastUsageIndex: number | null = null;
-		let lastUsage: Usage | undefined;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const usage = this.#anchorableAssistantUsage(messages[i]);
-			if (usage) {
-				lastUsage = usage;
-				lastUsageIndex = i;
-				break;
-			}
+		let anchor = knownAnchor;
+		if (boundaryTs === undefined) {
+			const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
+			boundaryTs = latestCompaction ? new Date(latestCompaction.timestamp).getTime() : 0;
+			anchor = this.#findAnchorableUsageIndex(messages, boundaryTs);
 		}
 
-		if (!lastUsage || lastUsageIndex === null) {
-			// No usage data - estimate all messages
-			let estimated = 0;
+		if (!anchor) {
+			// No usage data - estimate the full provider request.
+			const fixedTokens = computeNonMessageTokens(this);
+			let estimated = inflateFixed ? Math.ceil(fixedTokens * this.#compactionDeltaInflation) : fixedTokens;
 			for (const message of messages) {
 				estimated += estimateMessage(message);
 			}
 			return {
 				tokens: estimated,
+				anchored: false,
 			};
 		}
 
@@ -11968,14 +12056,15 @@ export class AgentSession {
 		// tokens: the next request replays the anchor assistant's own output
 		// (text/reasoning/tool calls), so dropping it undercounts the very tokens
 		// a large-reasoning turn just added (Sol xhigh emits tens of thousands).
-		const usageTokens = calculateContextTokens(lastUsage);
+		const usageTokens = calculateContextTokens(anchor.usage);
 		let trailingTokens = 0;
-		for (let i = lastUsageIndex + 1; i < messages.length; i++) {
+		for (let i = anchor.index + 1; i < messages.length; i++) {
 			trailingTokens += estimateMessage(messages[i]);
 		}
 
 		return {
 			tokens: usageTokens + trailingTokens,
+			anchored: true,
 		};
 	}
 

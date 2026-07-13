@@ -200,6 +200,17 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 					return;
 				}
 				if (frame.type === "query_request") {
+					if (frame.query === "context.get") {
+						socket.send(
+							JSON.stringify({
+								type: "query_response",
+								id: frame.id,
+								ok: true,
+								result: { usage: { tokens: 0, contextWindow: 200_000, percent: 0, source: "provider_anchor" } },
+							}),
+						);
+						return;
+					}
 					const items =
 						frame.query === "config.list/get"
 							? [{ mode: "default", model: "openai/gpt", thinking: "medium" }]
@@ -332,6 +343,8 @@ test("production ACP preserves lifecycle, turn, replay, and connection ownership
 	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "busy" }));
 	promptSocket!.send(JSON.stringify({ type: "activity", sessionId: created.sessionId, state: "idle" }));
 	expect(await bounded(firstPrompt, "first prompt completion")).toEqual({ stopReason: "end_turn" });
+	const usageUpdate = updates.find(update => update.update.sessionUpdate === "usage_update");
+	expect(usageUpdate?.update).toMatchObject({ sessionUpdate: "usage_update", size: 200_000, used: 0 });
 
 	let cancelledSettled = false;
 	const cancelledPrompt = agent
