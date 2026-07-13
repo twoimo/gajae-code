@@ -249,6 +249,21 @@ export class ExtensionUiController {
 	};
 
 	/**
+	 * Re-mount the composer after a transient hook UI closes. Prefer the pet-aware
+	 * restore (InteractiveMode.restoreComposer) so the editor keeps its reserved
+	 * pet columns; fall back to a plain editor swap for contexts that predate it
+	 * (e.g. lightweight test doubles).
+	 */
+	#restoreComposerEditor(): void {
+		if (typeof this.ctx.restoreComposer === "function") {
+			this.ctx.restoreComposer();
+		} else {
+			this.ctx.editorContainer.clear();
+			this.ctx.editorContainer.addChild(this.ctx.editor);
+		}
+	}
+
+	/**
 	 * Initialize the hook system with TUI-based UI context.
 	 */
 	async initHooksAndCustomTools(): Promise<void> {
@@ -1046,8 +1061,7 @@ export class ExtensionUiController {
 	 */
 	hideHookSelector(): void {
 		this.ctx.hookSelector?.dispose();
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(this.ctx.editor);
+		this.#restoreComposerEditor();
 		this.ctx.hookSelector = undefined;
 		this.ctx.ui.setFocus(this.ctx.editor);
 		this.ctx.ui.requestRender();
@@ -1108,8 +1122,7 @@ export class ExtensionUiController {
 	 */
 	hideHookInput(): void {
 		this.ctx.hookInput?.dispose();
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(this.ctx.editor);
+		this.#restoreComposerEditor();
 		this.ctx.hookInput = undefined;
 		this.ctx.ui.setFocus(this.ctx.editor);
 		this.ctx.ui.requestRender();
@@ -1158,8 +1171,7 @@ export class ExtensionUiController {
 	 * Hide the hook editor.
 	 */
 	hideHookEditor(): void {
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(this.ctx.editor);
+		this.#restoreComposerEditor();
 		this.ctx.hookEditor = undefined;
 		this.ctx.ui.setFocus(this.ctx.editor);
 		this.ctx.ui.requestRender();
@@ -1202,8 +1214,7 @@ export class ExtensionUiController {
 			closed = true;
 			this.#clearActiveHookCustom();
 			if (!options?.overlay) {
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(this.ctx.editor);
+				this.#restoreComposerEditor();
 				this.ctx.editor.setText(savedText);
 			}
 			this.ctx.ui.setFocus(this.ctx.editor);
