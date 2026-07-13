@@ -1257,18 +1257,25 @@ function sdkControlSurface(
 					: text;
 			const commandId = crypto.randomUUID();
 			const turnId = crypto.randomUUID();
-			const acceptance = Promise.withResolvers<void>();
+			type PreflightTerminalResult = { status: "accepted" } | { status: "rejected"; error: unknown };
+			const preflight = Promise.withResolvers<PreflightTerminalResult>();
+			let preflightSettled = false;
 			let accepted = false;
 			const correlation = { commandId, turnId };
+			const settlePreflight = (result: PreflightTerminalResult) => {
+				if (preflightSettled) return;
+				preflightSettled = true;
+				preflight.resolve(result);
+			};
 			const onPreflightAccepted = () => {
-				if (accepted) return;
+				if (preflightSettled) return;
 				accepted = true;
 				onPromptAccepted(correlation);
-				acceptance.resolve();
+				settlePreflight({ status: "accepted" });
 			};
 			// Do not acknowledge the prompt until AgentSession's async preflight
-			// succeeds. The callback records correlation before agent_start can fire.
-			let submission: Promise<void>;
+			// succeeds. The terminal result records correlation before agent_start can fire.
+			let submission: Promise<void> | undefined;
 			try {
 				submission = Promise.resolve(
 					api.sendUserMessage(content, {
@@ -1277,16 +1284,28 @@ function sdkControlSurface(
 					}),
 				);
 			} catch (error) {
-				if (!accepted) throw error;
-				onPromptFailed(correlation, error);
-				await acceptance.promise;
-				return { commandId, turnId, accepted: true };
+				if (accepted) onPromptFailed(correlation, error);
+				else settlePreflight({ status: "rejected", error });
 			}
-			void submission.catch(error => {
-				if (!accepted) acceptance.reject(error);
-				else onPromptFailed(correlation, error);
-			});
-			await acceptance.promise;
+			if (submission) {
+				void submission.then(
+					() => {
+						if (!accepted)
+							settlePreflight({
+								status: "rejected",
+								error: Object.assign(new Error("Prompt submission completed without preflight acceptance."), {
+									code: "busy",
+								}),
+							});
+					},
+					error => {
+						if (accepted) onPromptFailed(correlation, error);
+						else settlePreflight({ status: "rejected", error });
+					},
+				);
+			}
+			const result = await preflight.promise;
+			if (result.status === "rejected") throw result.error;
 			return { commandId, turnId, accepted: true };
 		},
 		steer: text => send(text, "steer"),

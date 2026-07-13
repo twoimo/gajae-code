@@ -155,6 +155,191 @@ setInterval(()=>{},1000);
 	}
 }, 15_000);
 
+test("broker rejects a cross-workspace cold fork source before spawning", async () => {
+	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-cross-workspace-"));
+	const agentDir = path.join(root, "agent");
+	const sourceCwd = path.join(root, "source");
+	const targetCwd = path.join(root, "target");
+	const fixture = path.join(root, "spawned.js");
+	const spawnedPath = path.join(root, "spawned");
+	const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+	const broker = new Broker({ agentDir });
+	try {
+		await fs.mkdir(sourceCwd, { recursive: true });
+		await fs.mkdir(targetCwd, { recursive: true });
+		const source = SessionManager.create(sourceCwd, SessionManager.getDefaultSessionDir(sourceCwd, agentDir));
+		await source.ensureOnDisk();
+		const sourcePath = source.getSessionFile();
+		if (!sourcePath) throw new Error("Expected source session path.");
+		await fs.writeFile(
+			fixture,
+			`require("fs").writeFileSync(${JSON.stringify(spawnedPath)}, "spawned"); setInterval(() => {}, 1000);`,
+		);
+		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
+		await broker.start();
+		expect(
+			await broker.handleRequest(
+				"session.fork",
+				{
+					cwd: targetCwd,
+					stateRoot: path.join(targetCwd, ".gjc", "state"),
+					sourceSessionId: source.getSessionId(),
+					sourceSessionPath: sourcePath,
+				},
+				"cross-workspace-fork",
+			),
+		).toEqual({
+			ok: false,
+			error: {
+				code: "invalid_input",
+				message: "Source saved session does not match the requested workspace and session id.",
+			},
+		});
+		await expect(fs.stat(spawnedPath)).rejects.toThrow();
+	} finally {
+		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+		await broker.stop();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
+test("broker rejects invalid and oversized readiness timeouts before spawning", async () => {
+	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-timeout-"));
+	const fixture = path.join(agentDir, "spawned.js");
+	const spawnedPath = path.join(agentDir, "spawned");
+	const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+	const broker = new Broker({ agentDir });
+	try {
+		await fs.writeFile(
+			fixture,
+			`require("fs").writeFileSync(${JSON.stringify(spawnedPath)}, "spawned"); setInterval(() => {}, 1000);`,
+		);
+		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
+		await broker.start();
+		for (const readinessTimeoutMs of [0, 60_001]) {
+			expect(
+				await broker.handleRequest(
+					"session.create",
+					{ cwd: agentDir, readinessTimeoutMs },
+					`invalid-timeout-${readinessTimeoutMs}`,
+				),
+			).toEqual({
+				ok: false,
+				error: {
+					code: "invalid_input",
+					message: "readinessTimeoutMs must be an integer between 1 and 60000.",
+				},
+			});
+		}
+		await expect(fs.stat(spawnedPath)).rejects.toThrow();
+	} finally {
+		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("broker fails promptly when the owned lifecycle child exits before readiness", async () => {
+	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-child-exit-"));
+	const fixture = path.join(agentDir, "exit.js");
+	const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+	const broker = new Broker({ agentDir });
+	try {
+		await fs.writeFile(fixture, "setTimeout(() => process.exit(0), 100);");
+		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
+		await broker.start();
+		const started = Date.now();
+		expect(
+			await broker.handleRequest("session.create", { cwd: agentDir, readinessTimeoutMs: 2_000 }, "child-exits"),
+		).toMatchObject({ ok: false, error: { code: "spawn_failed" } });
+		expect(Date.now() - started).toBeLessThan(1_000);
+	} finally {
+		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("broker rejects a ready foreign host for the spawned session id", async () => {
+	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-foreign-ready-"));
+	const stateRoot = path.join(agentDir, ".gjc", "state");
+	const fixture = path.join(agentDir, "foreign.js");
+	const foreignIdPath = path.join(agentDir, "foreign-session-id");
+	const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+	const previousEndpoint = process.env.GJC_FOREIGN_ENDPOINT_URL;
+	let replayRequests = 0;
+	const foreign = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request, server) {
+			if (server.upgrade(request)) return;
+			return new Response("WebSocket required", { status: 426 });
+		},
+		websocket: {
+			open(socket) {
+				socket.send(JSON.stringify({ type: "hello", connectionId: "foreign" }));
+			},
+			message(socket, message) {
+				const frame = JSON.parse(String(message)) as { id?: string; type?: string };
+				if (frame.type !== "event_replay" || !frame.id) return;
+				replayRequests++;
+				void fs.readFile(foreignIdPath, "utf8").then(sessionId =>
+					socket.send(
+						JSON.stringify({
+							type: "event_replay_result",
+							id: frame.id,
+							ok: true,
+							events: [{ type: "event", name: "session_ready", sessionId, generation: 1 }],
+						}),
+					),
+				);
+			},
+		},
+	});
+	const broker = new Broker({ agentDir });
+	try {
+		await fs.writeFile(
+			fixture,
+			`
+const fs=require('fs'), path=require('path'), crypto=require('crypto');
+const root=process.env.GJC_STATE_ROOT, id=process.env.GJC_SESSION_ID, agent=process.env.GJC_AGENT_DIR;
+fs.mkdirSync(path.join(root,'sdk'),{recursive:true});
+fs.writeFileSync(path.join(agent,'foreign-session-id'),id);
+const endpoint=path.join(root,'sdk',id+'.json');
+fs.writeFileSync(endpoint,JSON.stringify({sessionId:id,pid:process.ppid,url:process.env.GJC_FOREIGN_ENDPOINT_URL,token:'foreign'}));
+const m=fs.statSync(endpoint).mtimeMs;
+const log=path.join(agent,'sdk','sessions','index.jsonl');fs.mkdirSync(path.dirname(log),{recursive:true});const indexSeq=fs.existsSync(log)?fs.readFileSync(log,'utf8').trim().split('\\n').filter(Boolean).length+1:1;
+const event={type:'host_registered',sessionId:id,locator:{repo:'foreign',stateRoot:root},endpointGeneration:1,pid:process.ppid,endpointMtimeMs:m,version:1,indexSeq,ts:Date.now()};
+event.checksum=crypto.createHash('sha256').update(JSON.stringify(event)).digest('hex');fs.appendFileSync(log,JSON.stringify(event)+'\\n');
+setInterval(()=>{},1000);
+`,
+		);
+		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
+		process.env.GJC_FOREIGN_ENDPOINT_URL = `ws://127.0.0.1:${foreign.port}`;
+		await broker.start();
+		expect(
+			await broker.handleRequest(
+				"session.create",
+				{ cwd: agentDir, stateRoot, readinessTimeoutMs: 1_000 },
+				"foreign-ready",
+			),
+		).toMatchObject({ ok: false, error: { code: "readiness_timeout" } });
+		expect((await fs.readFile(foreignIdPath, "utf8")).length).toBeGreaterThan(0);
+		expect(replayRequests).toBe(0);
+	} finally {
+		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+		if (previousEndpoint === undefined) delete process.env.GJC_FOREIGN_ENDPOINT_URL;
+		else process.env.GJC_FOREIGN_ENDPOINT_URL = previousEndpoint;
+		foreign.stop(true);
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
 test("broker refuses a stale registered PID when no durable effect marker proves ownership", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-stale-"));
 	const stateRoot = path.join(agentDir, "state");
@@ -376,18 +561,15 @@ test("broker preserves endpoint and marker when a durably identified child remai
 if (process.platform === "darwin") {
 	test("broker records terminal uncertainty when a spawned child incarnation is unreadable", async () => {
 		const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-incarnation-"));
-		const fixture = path.join(agentDir, "unreadable-incarnation.js");
-		const pidPath = path.join(agentDir, "unreadable-incarnation.pid");
 		const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
 		let incarnationReads = 0;
 		let childPid: number | undefined;
 		const broker = new Broker({ agentDir });
-		await fs.writeFile(
-			fixture,
-			`require("fs").writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
-		);
-		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
-		setProcessIncarnationForTest(broker, pid => (++incarnationReads === 1 ? `test:${pid}` : undefined));
+		process.env.GJC_SDK_SESSION_COMMAND = "/bin/sleep 60";
+		setProcessIncarnationForTest(broker, pid => {
+			childPid ??= pid;
+			return ++incarnationReads === 1 ? `test:${pid}` : undefined;
+		});
 		await broker.start();
 		try {
 			expect(
@@ -397,15 +579,6 @@ if (process.platform === "darwin") {
 					"unreadable-incarnation",
 				),
 			).toMatchObject({ ok: false, error: { code: "terminal_uncertain" } });
-			const deadline = Date.now() + 2_000;
-			while (Date.now() < deadline) {
-				try {
-					childPid = Number(await fs.readFile(pidPath, "utf8"));
-					break;
-				} catch {
-					await Bun.sleep(20);
-				}
-			}
 			expect(childPid).toBeGreaterThan(0);
 			expect(await broker.handleRequest("session.list", {})).toMatchObject({
 				ok: true,

@@ -4,6 +4,7 @@ import path from "node:path";
 import { writeBrokerDiscovery } from "../src/sdk/broker/discovery";
 import { SessionIndex } from "../src/sdk/broker/session-index";
 import { ChatDaemonRuntime, type ChatDaemonSdkClient } from "../src/sdk/bus/chat-daemon-runtime";
+import { ChatEffectJournal } from "../src/sdk/bus/chat-effect-journal";
 import { ConversationStore } from "../src/sdk/bus/conversation-store";
 import type {
 	DiscordInboundEvent,
@@ -13,6 +14,7 @@ import type {
 } from "../src/sdk/bus/discord-provider";
 import { type SlackConversation, slackConversationKey } from "../src/sdk/bus/slack-conversation";
 import type { SlackProviderClient, SlackSocketEnvelope } from "../src/sdk/bus/slack-provider";
+import { SdkClientError } from "../src/sdk/client/client";
 import { startProductionSdkHost } from "./helpers/sdk-production-host";
 
 type SlackPost = { channel: string; text: string; threadTs?: string; clientMsgId: string };
@@ -756,6 +758,108 @@ describe("chat daemon worker", () => {
 		expect(client.requests).toHaveLength(requestsBeforeProhibited);
 		expect(broker.requests).toHaveLength(1);
 		await runtime.stop();
+	});
+	it("retains a sent control prompt as ambiguous when its SDK response is lost", async () => {
+		root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-chat-command-response-loss-"));
+		const agentDir = path.join(root, "agent");
+		const stateRoot = path.join(root, ".gjc", "state");
+		const endpointPath = path.join(stateRoot, "sdk", "session.json");
+		await fs.mkdir(path.dirname(endpointPath), { recursive: true });
+		await fs.writeFile(
+			endpointPath,
+			JSON.stringify({ sessionId: "session", url: "ws://127.0.0.1:1", token: "endpoint-token" }),
+		);
+		const index = await new SessionIndex(agentDir).open();
+		await index.append({
+			type: "host_registered",
+			sessionId: "session",
+			locator: { repo: root, stateRoot },
+			endpointGeneration: 1,
+			pid: process.pid,
+			endpointMtimeMs: (await fs.stat(endpointPath)).mtimeMs,
+		});
+		const runtimeInput = {
+			kind: "slack" as const,
+			agentDir,
+			config: {
+				identity: "fingerprint-only",
+				notifications: {
+					slack: {
+						botToken: "bot-token",
+						appToken: "app-token",
+						workspaceId: "team",
+						channelId: "channel",
+						authorizedUserId: "human",
+					},
+				},
+			},
+		};
+		const timerDeps = {
+			createIndex: () => index,
+			setInterval: (() => 0) as unknown as typeof setInterval,
+			clearInterval: (() => {}) as typeof clearInterval,
+		};
+		const firstProvider = new FakeSlackProvider();
+		const firstClient = new FakeSdkClient();
+		firstClient.request = async frame => {
+			firstClient.requests.push(frame);
+			if (frame.type === "event_replay")
+				return { events: [{ type: "event", name: "session_ready", sessionId: "session", generation: 1 }] };
+			throw new SdkClientError("connection_closed", "SDK connection closed after accepting the control request");
+		};
+		const firstRuntime = new ChatDaemonRuntime(runtimeInput, {
+			...timerDeps,
+			createSlackProvider: () => firstProvider,
+			createClient: async () => firstClient,
+		});
+		await firstRuntime.start();
+		const rootTs = "1.1";
+		expect(firstProvider.posts).toHaveLength(1);
+		await firstProvider.handler?.({
+			envelope_id: "prompt-envelope",
+			payload: {
+				type: "events_api",
+				event_id: "prompt-event",
+				team_id: "team",
+				event: {
+					type: "message",
+					channel: "channel",
+					ts: "2.1",
+					thread_ts: rootTs,
+					user: "human",
+					text: '/sdk control turn.prompt {"text":"accepted prompt"}',
+					client_msg_id: "prompt-id",
+				},
+			},
+		});
+		expect(firstClient.requests).toContainEqual({
+			type: "control_request",
+			operation: "turn.prompt",
+			input: { text: "accepted prompt" },
+			confirm: true,
+			idempotencyKey: "slack:team:channel:1.1:human:prompt-event:prompt-id",
+		});
+		const effectId = "inbound:team:channel:1.1:human:prompt-event:prompt-id";
+		expect(await new ChatEffectJournal({ agentDir, transport: "slack" }).read(effectId)).toMatchObject({
+			kind: "sdk.inbound.command",
+			state: "uncertain",
+			receipt: { status: "uncertain" },
+		});
+		await firstRuntime.stop();
+
+		const restartedProvider = new FakeSlackProvider();
+		const restartedClient = new FakeSdkClient();
+		const restartedRuntime = new ChatDaemonRuntime(runtimeInput, {
+			...timerDeps,
+			createSlackProvider: () => restartedProvider,
+			createClient: async () => restartedClient,
+		});
+		await restartedRuntime.start();
+		expect(restartedClient.requests).toEqual([expect.objectContaining({ type: "event_replay" })]);
+		expect(restartedClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "control_request", operation: "turn.prompt" }),
+		);
+		await restartedRuntime.stop();
 	});
 	it("uses the production SdkClient loopback boundary while Discord remains fake", async () => {
 		root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-chat-worker-wire-"));

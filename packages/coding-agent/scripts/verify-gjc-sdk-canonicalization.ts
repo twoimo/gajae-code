@@ -279,7 +279,7 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	if (
 		arityGuards.length !== 1 ||
 		twoOperandArityChecks.length !== 1 ||
-		/(?:^|[;\n])\s*(?:if|while|until|for|case|function)\b/m.test(guardPrefix) ||
+		/(?:^|[;\n])\s*(?:if|while|until|for|case|function\b|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{)/m.test(guardPrefix) ||
 		/(?:&&|\|\|)\s*(?:\\\r?\n\s*)?$/.test(guardPrefix)
 	) {
 		violation(arityGuard?.index ?? 0, "human-only tmux owner must have one fail-closed exact two-operand guard");
@@ -351,7 +351,7 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 
 	const normalizedContents = normalizeShellContinuations(contents);
 	const shellGjcInvocations =
-		/(?:^|[|;&(]\s*|\btimeout\s+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)\s+)(["']?)\$(?:GJC_BIN|GJC_SESSION_GJC_BIN|\{(?:GJC_BIN|GJC_SESSION_GJC_BIN)\})\1([^\r\n;|&)]*)/gm;
+		/(?:^|[|;&(]\s*|\b(?:command|exec)\s+|\btimeout\s+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)\s+)(["']?)\$(?:GJC_BIN|GJC_SESSION_GJC_BIN|\{(?:GJC_BIN|GJC_SESSION_GJC_BIN)\})\1([^\r\n;|&)]*)/gm;
 	for (const match of normalizedContents.matchAll(shellGjcInvocations)) {
 		const argumentsText = (match[2] ?? "").trim().replace(/["']$/, "");
 		const isZeroArgInteractiveLaunch = argumentsText.length === 0;
@@ -433,6 +433,14 @@ function isProductionTypeScript(file: string): boolean {
 		file.startsWith("packages/coding-agent/src/") &&
 		/\.(?:[cm]?tsx?)$/.test(file) &&
 		!/\.(?:test|spec)\.[cm]?tsx?$/.test(file)
+	);
+}
+
+function isProductionTypeScriptOrJavaScript(file: string): boolean {
+	return (
+		file.startsWith("packages/coding-agent/src/") &&
+		/\.(?:[cm]?[jt]sx?)$/.test(file) &&
+		!/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)
 	);
 }
 
@@ -710,6 +718,14 @@ async function scan(): Promise<string[]> {
 			violations.push(`${file}: listener imports AgentSession or dispatch internals outside a sanctioned host`);
 		}
 
+		if (isProductionTypeScriptOrJavaScript(file) && file !== coordinatorMcpRoot) {
+			for (const match of contents.matchAll(/\b(capture-pane|pipe-pane)\b/g)) {
+				violations.push(
+					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${match[1]} pane access is outside sanctioned test fixtures`,
+				);
+			}
+		}
+
 		if (isProductionTypeScript(file) && file !== coordinatorMcpRoot) {
 			for (const match of contents.matchAll(
 				/(?:Bun\.(?:spawn|spawnSync)|runner)\s*\(\s*\[[^\]]*?\b(?:tmux|tmux_command)\b[^\]]*?["'](set-buffer|paste-buffer|send-keys)["']([^\n]*)/g,
@@ -732,7 +748,7 @@ async function scan(): Promise<string[]> {
 					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${match[1]} content injection is outside sanctioned process lifecycle`,
 				);
 			}
-			for (const match of contents.matchAll(/\bcapture-pane\b/g)) {
+			for (const match of contents.matchAll(/\b(capture-pane|pipe-pane)\b/g)) {
 				violations.push(
 					`${file}:${lineNumber(contents, match.index ?? 0)}: coordinator MCP reads tmux pane content outside SDK queries`,
 				);
@@ -963,8 +979,38 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 	await runSelfTestFixture(
 		{
 			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'guard() {\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }\n}',
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
 				"child = subprocess.Popen(command)",
 				'command.extend(["--file", "task.md"])\nchild = subprocess.Popen(command)',
+			),
+		},
+		1,
+		"must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'command.append("--file")\nchild = subprocess.Popen(command)',
+			),
+		},
+		1,
+		"must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'command.insert(1, "--file")\nchild = subprocess.Popen(command)',
 			),
 		},
 		1,
@@ -1022,6 +1068,26 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
 				'"$GJC_BIN" --internal-tmux-owner-isolation',
 				'captured=$("$GJC_BIN" --file task.md)',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'command "$GJC_BIN" --file task.md',
+			),
+		},
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'exec "$GJC_BIN" --file task.md',
 			),
 		},
 		1,
@@ -1156,6 +1222,27 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		},
 		1,
 		"coordinator MCP reads tmux pane content outside SDK queries",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.ts": 'Bun.spawnSync(["tmux", "capture-pane", "-p"]);\n',
+		},
+		1,
+		"tmux capture-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.js": 'Bun.spawnSync(["tmux", "pipe-pane", "sink"]);\n',
+		},
+		1,
+		"tmux pipe-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/sanctioned-tmux-pane.ts":
+				'Bun.spawnSync(["tmux", "capture-pane", "-p"]);\nBun.spawnSync(["tmux", "pipe-pane", "sink"]);\n',
+		},
+		0,
 	);
 	await runSelfTestFixture(
 		{

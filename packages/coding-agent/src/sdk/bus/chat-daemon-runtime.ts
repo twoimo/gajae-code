@@ -43,8 +43,9 @@ export class ChatDeliveryError extends Error {
 function chatDeliveryPhase(error: unknown): ChatDeliveryPhase | undefined {
 	if (error instanceof ChatDeliveryError) return error.phase;
 	if (!(error instanceof SdkClientError)) return undefined;
-	if (error.code === "connection_closed") return "pre_send";
-	return ["unavailable", "timeout", "reconnect_exhausted", "protocol_error"].includes(error.code)
+	// `connection_closed` conveys no send-progress guarantee: SdkClient also emits it
+	// when a pending, already-sent request loses its response.
+	return ["connection_closed", "unavailable", "timeout", "reconnect_exhausted", "protocol_error"].includes(error.code)
 		? "ambiguous"
 		: undefined;
 }

@@ -84,10 +84,15 @@ test("SdkClient surfaces malformed transport frames as typed protocol errors", a
 	await client.close();
 });
 
-test("SdkClient rejects in-flight requests immediately when the remote closes", async () => {
-	const host = start((_frame, socket) => socket.close(1000, "done"));
+test("SdkClient reports connection_closed when a sent request loses its response", async () => {
+	let accepted: Record<string, unknown> | undefined;
+	const host = start((frame, socket) => {
+		accepted = frame;
+		socket.close(1000, "done");
+	});
 	const client = await SdkClient.connect(host.url, host.token, { timeoutMs: 1_000 });
 	await expect(client.control("close")).rejects.toMatchObject({ code: "connection_closed" });
+	expect(accepted).toMatchObject({ type: "control_request", operation: "close" });
 	await client.close();
 });
 

@@ -167,4 +167,37 @@ describe("AgentSession before_agent_start attribution fallback", () => {
 		expect(llmInjected.attribution).toBe("agent");
 		expect(inferCopilotInitiator(llmMessages)).toBe("agent");
 	});
+	it("rejects a prompt whose async preflight is cancelled before acceptance", async () => {
+		const { emitBeforeAgentStart } = createSession();
+		const preflightStarted = Promise.withResolvers<void>();
+		const releasePreflight = Promise.withResolvers<void>();
+		emitBeforeAgentStart.mockImplementationOnce(async () => {
+			preflightStarted.resolve();
+			await releasePreflight.promise;
+			return undefined;
+		});
+		let accepted = false;
+		const cancelledPrompt = session.sendUserMessage("cancel during preflight", {
+			onPreflightAccepted: () => {
+				accepted = true;
+			},
+		});
+		await preflightStarted.promise;
+		await session.abort();
+		releasePreflight.resolve();
+
+		await expect(cancelledPrompt).rejects.toMatchObject({
+			code: "busy",
+			message: "Prompt preflight was cancelled before execution.",
+		});
+		expect(accepted).toBe(false);
+
+		let replacementAccepted = false;
+		await session.sendUserMessage("replacement prompt", {
+			onPreflightAccepted: () => {
+				replacementAccepted = true;
+			},
+		});
+		expect(replacementAccepted).toBe(true);
+	});
 });

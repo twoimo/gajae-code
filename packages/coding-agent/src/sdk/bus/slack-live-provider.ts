@@ -22,6 +22,8 @@ export class SlackProviderError extends Error {
 		readonly operation: string,
 		readonly status?: number,
 		readonly retryAfterMs?: number,
+		/** The server may have accepted the request before its response became unusable. */
+		readonly mayHaveBeenAccepted = false,
 	) {
 		super(`${operation} failed (${code})`);
 		this.name = "SlackProviderError";
@@ -183,7 +185,9 @@ export class SlackLiveProvider implements SlackProviderClient {
 			client_msg_id: input.clientMsgId,
 		});
 		const message = this.#message(response);
-		if (!message) throw new SlackProviderError("protocol", "chat.postMessage");
+		// A successful HTTP response without a usable receipt can still represent a
+		// remote acceptance. The daemon must reconcile by client_msg_id before retrying.
+		if (!message) throw new SlackProviderError("protocol", "chat.postMessage", undefined, undefined, true);
 		return message;
 	}
 
@@ -322,7 +326,13 @@ export class SlackLiveProvider implements SlackProviderClient {
 			try {
 				parsed = await response.json();
 			} catch {
-				throw new SlackProviderError("protocol", operation, response.status);
+				throw new SlackProviderError(
+					"protocol",
+					operation,
+					response.status,
+					undefined,
+					operation === "chat.postMessage" && response.ok,
+				);
 			}
 			const result = parsed && typeof parsed === "object" ? (parsed as SlackApiResponse) : {};
 			if (response.status !== 429) {

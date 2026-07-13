@@ -517,8 +517,15 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
-	/** Invoked after all prompt preflight checks pass and immediately before agent execution begins. */
+	/**
+	 * Invoked after all prompt preflight checks pass and immediately before agent execution begins.
+	 * Cancellation before this callback rejects the prompt.
+	 */
 	onPreflightAccepted?: () => void;
+}
+
+function promptPreflightCancelledError(): Error {
+	return Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" });
 }
 
 /** Result from a handoff operation. */
@@ -1507,6 +1514,10 @@ export class AgentSession {
 
 	#beginInFlight(): void {
 		this.#promptInFlightCount++;
+		// A successor that starts before a deferred terminal event is published keeps
+		// the session continuously busy; emitting the predecessor's idle boundary later
+		// would create a false readiness window between the two prompts.
+		this.#pendingAgentEndEmit = undefined;
 		if (this.#promptInFlightCount === 1) {
 			this.#acquirePowerAssertion();
 		}
@@ -5896,10 +5907,10 @@ export class AgentSession {
 			messages.push(message);
 
 			// Early bail-out: if a newer abort/prompt cycle started during setup,
-			// return before mutating shared state (nextTurn messages, system prompt).
+			// terminate the preflight so callers do not wait indefinitely for acceptance.
 			if (this.#promptGeneration !== generation) {
 				this.#resetInjectedContextSignatures();
-				return;
+				throw promptPreflightCancelledError();
 			}
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
@@ -5986,9 +5997,10 @@ export class AgentSession {
 			// The injection signatures were consumed while building the automatic
 			// goal/plan context above, but the message is not delivered on this
 			// aborted turn, so reset them here so the next real turn re-injects once.
+			// Terminate the preflight rather than returning without acknowledgement.
 			if (this.#promptGeneration !== generation) {
 				this.#resetInjectedContextSignatures();
-				return;
+				throw promptPreflightCancelledError();
 			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;

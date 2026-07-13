@@ -52,6 +52,7 @@ function start(
 	ctx: Record<string, unknown>,
 	settings?: Settings,
 	sendUserMessage: ExtensionActions["sendUserMessage"] = () => {},
+	forwardPreflightCallbacks = false,
 ): Map<string, (event: unknown, context: unknown) => unknown> {
 	const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
 	createNotificationsExtension(
@@ -62,6 +63,7 @@ function start(
 				content: Parameters<ExtensionActions["sendUserMessage"]>[0],
 				options?: Parameters<ExtensionActions["sendUserMessage"]>[1],
 			) => {
+				if (forwardPreflightCallbacks) return Promise.resolve(sendUserMessage(content, options));
 				const { onPreflightAccepted, ...delivery } = options ?? {};
 				const submission = sendUserMessage(content, Object.keys(delivery).length > 0 ? delivery : undefined);
 				onPreflightAccepted?.();
@@ -478,6 +480,81 @@ test("SDK host delivers accepted prompt failures after their acknowledgement", a
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
 });
 
+test("SDK host terminalizes a cancelled preflight and releases prompt authority", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-preflight-cancelled-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-prompt-preflight-cancelled-${Date.now()}`;
+	const preflightStarted = Promise.withResolvers<void>();
+	const releasePreflight = Promise.withResolvers<void>();
+	let aborted = false;
+	const abort = () => {
+		aborted = true;
+	};
+	const handlers = start(
+		{ ...context(cwd, sessionId), abort },
+		undefined,
+		async (content, options) => {
+			if (content === "cancel during preflight") {
+				preflightStarted.resolve();
+				await releasePreflight.promise;
+				if (aborted) {
+					throw Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" });
+				}
+			}
+			options?.onPreflightAccepted?.();
+		},
+		true,
+	);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "cancelled-preflight",
+			operation: "turn.prompt",
+			input: { text: "cancel during preflight" },
+		}),
+	);
+	await preflightStarted.promise;
+	abort();
+	releasePreflight.resolve();
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "cancelled-preflight"),
+		"cancelled preflight response",
+	);
+	expect(frames.find(frame => frame.type === "control_response" && frame.id === "cancelled-preflight")).toMatchObject({
+		ok: false,
+		error: { code: "busy", message: "Prompt preflight was cancelled before execution." },
+	});
+	expect(frames.some(frame => frame.type === "agent_failed")).toBe(false);
+
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "replacement-prompt",
+			operation: "turn.prompt",
+			input: { text: "replacement prompt" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "replacement-prompt"),
+		"replacement prompt response",
+	);
+	expect(frames.find(frame => frame.type === "control_response" && frame.id === "replacement-prompt")).toMatchObject({
+		ok: true,
+		result: { accepted: true, commandId: expect.any(String), turnId: expect.any(String) },
+	});
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
+});
 test("SDK host applies prompt preflight correlation to abort_and_prompt", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-abort-prompt-"));
 	dirs.push(cwd);

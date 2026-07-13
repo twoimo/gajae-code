@@ -24,6 +24,12 @@ class SlackStaleEffectError extends Error {
 	}
 }
 
+class SlackReconciledAbsentEffectError extends Error {
+	constructor() {
+		super("Slack effect was not found during reconciliation");
+	}
+}
+
 import { type ChatEffect, ChatEffectJournal, type ChatEffectLease } from "./chat-effect-journal";
 import { SlackProviderError } from "./slack-live-provider";
 import type { SlackPostedMessage, SlackProvider, SlackSocketEnvelope } from "./slack-provider";
@@ -338,13 +344,8 @@ export class SlackNotificationDaemon {
 		}
 		if (!posted) throw new Error("Slack root post was not confirmed");
 		const confirmedPosted = posted as SlackPostedMessage;
-		const currentEndpoint = await this.#withRootLease(
-			pendingKey,
-			clientMsgId,
-			fence,
-			async () => await this.#resolveEndpoint(sessionId),
-		);
-		const endpointMatches = currentEndpoint?.generation === generation;
+		// A confirmed receipt remains authoritative even if the endpoint rolled after
+		// dispatch; resume performs any required replacement after reconciliation.
 		const active = await this.store.transact(pendingKey, current => {
 			if (
 				!current ||
@@ -354,11 +355,11 @@ export class SlackNotificationDaemon {
 			)
 				return current;
 			return nextRecord(current, {
-				state: endpointMatches ? "active" : "error",
+				state: "active",
 				rootTs: confirmedPosted.ts,
 				endpointGeneration: generation,
 				updatedAt: this.#now(),
-				lastError: endpointMatches ? undefined : "endpoint_unavailable",
+				lastError: undefined,
 				rootPublicationOwner: undefined,
 				rootPublicationLeaseExpiresAt: undefined,
 			});
@@ -1165,9 +1166,9 @@ export class SlackNotificationDaemon {
 				const receipt = effect.receipt;
 				if (
 					receipt?.provider !== "slack" ||
-					receipt.status !== "posted" ||
-					typeof receipt.timestamp !== "string" ||
-					typeof payload.clientMsgId !== "string"
+					typeof payload.clientMsgId !== "string" ||
+					(receipt.status !== "posted" && receipt.status !== "not_found") ||
+					(receipt.status === "posted" && typeof receipt.timestamp !== "string")
 				)
 					continue;
 				const normalized = {
@@ -1175,8 +1176,14 @@ export class SlackNotificationDaemon {
 					threadTs: payload.threadTs,
 					clientMsgId: payload.clientMsgId,
 				};
-				if (typeof normalized.threadTs === "string") await this.#activateReconciledAction(effect, normalized);
-				else await this.#activateReconciledRoot(effect, normalized, receipt.timestamp);
+				if (typeof normalized.threadTs === "string") {
+					if (receipt.status === "posted") await this.#activateReconciledAction(effect, normalized);
+					else await this.#releaseUnreconciledAction(effect, normalized);
+				} else if (receipt.status === "posted") {
+					await this.#activateReconciledRoot(effect, normalized, receipt.timestamp!);
+				} else {
+					await this.#releaseUnreconciledRoot(effect, normalized);
+				}
 			} catch {
 				await this.#recordRecoveryFailure(effect);
 			}
@@ -1196,8 +1203,8 @@ export class SlackNotificationDaemon {
 			effect.endpointGeneration <= 0
 		)
 			return;
-		const endpoint = await this.#resolveEndpoint(effect.sessionId);
-		if (!endpoint || endpoint.generation !== effect.endpointGeneration) return;
+		// Receipt recovery must retain the original mapping through an endpoint roll;
+		// inbound routing still fences it against the now-current endpoint generation.
 		await this.store.transact(this.#intentKey(effect.sessionId), current =>
 			current &&
 			current.state === "posting_root" &&
@@ -1232,8 +1239,6 @@ export class SlackNotificationDaemon {
 		)
 			return;
 		const threadTs = payload.threadTs;
-		const endpoint = await this.#resolveEndpoint(effect.sessionId);
-		if (!endpoint || endpoint.generation !== effect.endpointGeneration) return;
 		const document = await this.store.load();
 		const found = Object.entries(document.conversations)
 			.map(([key, record]) => ({ key, record }))
@@ -1244,18 +1249,87 @@ export class SlackNotificationDaemon {
 					record.teamId === this.options.teamId &&
 					record.channelId === payload.channel &&
 					record.rootTs === threadTs &&
-					record.endpointGeneration === endpoint.generation &&
+					record.endpointGeneration === effect.endpointGeneration &&
 					record.outboundActionClientMsgId === payload.clientMsgId &&
 					typeof record.outboundActionId === "string",
 			)[0];
 		if (!found) return;
 		await this.store.transact(found.key, current =>
 			current &&
-			acceptsSlackInbound(current, threadTs, endpoint.generation) &&
+			acceptsSlackInbound(current, threadTs, effect.endpointGeneration) &&
 			current.outboundActionClientMsgId === payload.clientMsgId &&
 			current.outboundActionId === found.record.outboundActionId
 				? nextRecord(current, {
 						pendingActionId: current.outboundActionId,
+						outboundActionId: undefined,
+						outboundActionClientMsgId: undefined,
+						outboundActionOwner: undefined,
+						outboundActionLeaseExpiresAt: undefined,
+						updatedAt: this.#now(),
+					})
+				: current,
+		);
+	}
+	async #releaseUnreconciledRoot(
+		effect: ChatEffect,
+		payload: { channel?: unknown; clientMsgId: string },
+	): Promise<void> {
+		if (
+			!effect.sessionId ||
+			typeof payload.channel !== "string" ||
+			payload.channel !== this.options.channelId ||
+			!Number.isSafeInteger(effect.endpointGeneration) ||
+			effect.endpointGeneration <= 0
+		)
+			return;
+		await this.store.transact(this.#intentKey(effect.sessionId), current =>
+			current &&
+			current.state === "posting_root" &&
+			current.sessionId === effect.sessionId &&
+			current.teamId === this.options.teamId &&
+			current.channelId === payload.channel &&
+			current.clientMsgId === payload.clientMsgId &&
+			current.endpointGeneration === effect.endpointGeneration
+				? nextRecord(current, {
+						state: "error",
+						rootPublicationOwner: undefined,
+						rootPublicationLeaseExpiresAt: undefined,
+						lastError: "provider_not_found",
+						updatedAt: this.#now(),
+					})
+				: current,
+		);
+	}
+	async #releaseUnreconciledAction(
+		effect: ChatEffect,
+		payload: { channel?: unknown; threadTs?: unknown; clientMsgId: string },
+	): Promise<void> {
+		if (
+			!effect.sessionId ||
+			typeof payload.channel !== "string" ||
+			typeof payload.threadTs !== "string" ||
+			!Number.isSafeInteger(effect.endpointGeneration) ||
+			effect.endpointGeneration <= 0
+		)
+			return;
+		const threadTs = payload.threadTs;
+		const document = await this.store.load();
+		const found = Object.entries(document.conversations).find(
+			([, record]) =>
+				record.state === "active" &&
+				record.sessionId === effect.sessionId &&
+				record.teamId === this.options.teamId &&
+				record.channelId === payload.channel &&
+				record.rootTs === threadTs &&
+				record.endpointGeneration === effect.endpointGeneration &&
+				record.outboundActionClientMsgId === payload.clientMsgId,
+		);
+		if (!found) return;
+		await this.store.transact(found[0], current =>
+			current &&
+			acceptsSlackInbound(current, threadTs, effect.endpointGeneration) &&
+			current.outboundActionClientMsgId === payload.clientMsgId
+				? nextRecord(current, {
 						outboundActionId: undefined,
 						outboundActionClientMsgId: undefined,
 						outboundActionOwner: undefined,
@@ -1284,10 +1358,12 @@ export class SlackNotificationDaemon {
 		for (const effect of await this.#journal.list()) {
 			try {
 				if (effect.kind !== "provider-post" || effect.state === "terminal") continue;
-				if (!effect.sessionId || !(await this.#providerEffectCurrent(effect))) {
+				const current = !!effect.sessionId && (await this.#providerEffectCurrent(effect));
+				if (!current && effect.state !== "uncertain" && effect.state !== "leased") {
 					await this.#journal.terminalize(effect.id, { provider: "slack", status: "stale_noop" });
 					continue;
 				}
+				if (!effect.sessionId) continue;
 				const payload = effect.payload as {
 					channel?: unknown;
 					text?: unknown;
@@ -1312,6 +1388,7 @@ export class SlackNotificationDaemon {
 				await this.#recordRecoveryFailure(effect);
 			}
 		}
+		await this.#reconcileTerminalProviderReceipts();
 		return failed;
 	}
 	async #rescheduleAfterEffectTransition<T extends ChatEffect | undefined>(transition: Promise<T>): Promise<T> {
@@ -1484,20 +1561,25 @@ export class SlackNotificationDaemon {
 		}
 		if (!effect) throw new Error("Slack provider effect is owned by another worker");
 		const lease: ChatEffectLease = { owner: this.#publicationOwnerId, epoch: effect.epoch };
+		// A recovered lease may have crossed the provider boundary before its owner died.
+		const requiresReconciliation = initial.state === "uncertain" || initial.state === "leased";
 		try {
 			const posted = await this.#withEffectLease(id, lease, async () => {
-				if (!(await this.#providerEffectCurrent(effect!))) throw new SlackStaleEffectError();
+				if (!requiresReconciliation && !(await this.#providerEffectCurrent(effect!)))
+					throw new SlackStaleEffectError();
 				const found = await this.options.provider.findMessageByClientMsgId({
 					channel: effect!.payload.channel,
 					threadTs: effect!.payload.threadTs,
 					clientMsgId: effect!.payload.clientMsgId,
 				});
 				if (found) return found;
-				if (!(await this.#providerEffectCurrent(effect!))) throw new SlackStaleEffectError();
+				if (!(await this.#providerEffectCurrent(effect!))) {
+					if (requiresReconciliation) throw new SlackReconciledAbsentEffectError();
+					throw new SlackStaleEffectError();
+				}
 				return await this.options.provider.postMessage(effect!.payload);
 			});
 
-			if (!(await this.#providerEffectCurrent(effect))) throw new SlackStaleEffectError();
 			if (
 				!(await this.#journal.record(id, lease, "terminal", {
 					provider: "slack",
@@ -1511,19 +1593,26 @@ export class SlackNotificationDaemon {
 
 			return posted;
 		} catch (error) {
+			if (error instanceof SlackReconciledAbsentEffectError) {
+				await this.#rescheduleAfterEffectTransition(
+					this.#journal.record(id, lease, "terminal", { provider: "slack", status: "not_found" }),
+				);
+				throw new SlackStaleEffectError();
+			}
 			if (error instanceof SlackStaleEffectError) throw error;
 			if (this.#isUncertainPostFailure(error)) {
 				try {
-					const reconciled = await this.#withEffectLease(id, lease, async () => {
-						if (!(await this.#providerEffectCurrent(effect!))) throw new SlackStaleEffectError();
-						return await this.options.provider.findMessageByClientMsgId({
-							channel: effect!.payload.channel,
-							threadTs: effect!.payload.threadTs,
-							clientMsgId: effect!.payload.clientMsgId,
-						});
-					});
+					const reconciled = await this.#withEffectLease(
+						id,
+						lease,
+						async () =>
+							await this.options.provider.findMessageByClientMsgId({
+								channel: effect!.payload.channel,
+								threadTs: effect!.payload.threadTs,
+								clientMsgId: effect!.payload.clientMsgId,
+							}),
+					);
 					if (reconciled) {
-						if (!(await this.#providerEffectCurrent(effect))) throw new SlackStaleEffectError();
 						if (
 							!(await this.#journal.record(id, lease, "terminal", {
 								provider: "slack",
@@ -1536,15 +1625,15 @@ export class SlackNotificationDaemon {
 							throw new Error("Slack provider effect lease expired before commit");
 						return reconciled;
 					}
-				} catch (reconcileError) {
-					if (reconcileError instanceof SlackStaleEffectError) throw reconcileError;
+				} catch {
 					// Preserve the uncertain effect for a later reconciliation attempt.
 				}
 			}
+			const uncertain = this.#isUncertainPostFailure(error);
 			await this.#rescheduleAfterEffectTransition(
-				this.#journal.record(id, lease, this.#isUncertainPostFailure(error) ? "uncertain" : "terminal", {
+				this.#journal.record(id, lease, uncertain ? "uncertain" : "terminal", {
 					provider: "slack",
-					status: this.#isUncertainPostFailure(error) ? "uncertain" : "failed",
+					status: uncertain ? "uncertain" : "failed",
 				}),
 			);
 			throw error;
@@ -1717,7 +1806,9 @@ export class SlackNotificationDaemon {
 
 	#isUncertainPostFailure(error: unknown): boolean {
 		return (
-			error instanceof SlackProviderError && error.operation === "chat.postMessage" && error.code === "connection"
+			error instanceof SlackProviderError &&
+			error.operation === "chat.postMessage" &&
+			(error.code === "connection" || error.mayHaveBeenAccepted)
 		);
 	}
 	#isDefiniteSdkPreSendFailure(error: unknown): boolean {

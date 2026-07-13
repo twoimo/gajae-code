@@ -217,6 +217,28 @@ export class ChatEffectJournal {
 		return renewed;
 	}
 
+	/** Persists provider progress without releasing the owner/epoch fence. */
+	async recordReceipt<TPayload = unknown>(
+		id: string,
+		lease: ChatEffectLease,
+		receipt: ChatEffectReceipt,
+	): Promise<ChatEffect<TPayload> | undefined> {
+		let recorded: ChatEffect<TPayload> | undefined;
+		const now = this.#now();
+		await this.#store.transact(id, current => {
+			if (current?.state !== "leased" || current.owner !== lease.owner || current.epoch !== lease.epoch)
+				return current;
+			recorded = {
+				...current,
+				generation: current.generation + 1,
+				receipt,
+				updatedAt: now,
+			} as ChatEffect<TPayload>;
+			return recorded;
+		});
+		return recorded;
+	}
+
 	async record<TPayload = unknown>(
 		id: string,
 		lease: ChatEffectLease,

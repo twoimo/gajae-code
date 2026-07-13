@@ -16,6 +16,7 @@ class FakeSlack {
 	knownMessages = new Map<string, { channel: string; ts: string; client_msg_id: string }>();
 	failPost = false;
 	failPostAfterAccept = false;
+	failPostProtocolAfterAccept = false;
 	failStart = false;
 	failFinds = 0;
 	onAck?: (envelopeId: string) => Promise<void>;
@@ -55,6 +56,10 @@ class FakeSlack {
 		if (this.failPostAfterAccept) {
 			this.failPostAfterAccept = false;
 			throw new SlackProviderError("connection", "chat.postMessage");
+		}
+		if (this.failPostProtocolAfterAccept) {
+			this.failPostProtocolAfterAccept = false;
+			throw new SlackProviderError("protocol", "chat.postMessage", undefined, undefined, true);
 		}
 		return message;
 	}
@@ -515,6 +520,70 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			expect(Object.keys((await daemon.store.load()).conversations)).toHaveLength(1);
 		});
 	});
+	it("reconciles a malformed accepted postMessage response by its durable client message id", async () => {
+		await withDaemon(async (daemon, fake, _injected, _setEndpointGeneration, agentDir) => {
+			await daemon.start();
+			const postMessage = fake.postMessage.bind(fake);
+			fake.postMessage = async input => {
+				try {
+					return await postMessage(input);
+				} catch (error) {
+					fake.failFinds = 1;
+					throw error;
+				}
+			};
+			fake.failPostProtocolAfterAccept = true;
+			await expect(daemon.postRoot("session", "root")).rejects.toThrow("protocol");
+			for (let attempt = 0; attempt < 20; attempt++) {
+				if ((await daemon.store.read("T1:C1:intent:session"))?.state === "active") break;
+				await Bun.sleep(25);
+			}
+			expect(await daemon.store.read("T1:C1:intent:session")).toMatchObject({ state: "active", rootTs: "1.1" });
+			expect(
+				await new ChatEffectJournal({ agentDir, transport: "slack" }).read("root:session:client-id-1"),
+			).toMatchObject({
+				state: "terminal",
+				receipt: { provider: "slack", status: "posted", messageId: "client-id-1" },
+			});
+			expect(fake.posts).toEqual([expect.objectContaining({ clientMsgId: "client-id-1" })]);
+		});
+	});
+
+	it("reconciles a generation-rolled accepted post before allowing any replacement", async () => {
+		await withDaemon(async (daemon, fake, _injected, setEndpointGeneration, agentDir) => {
+			const releasePost = Promise.withResolvers<void>();
+			const reconciliationStarted = Promise.withResolvers<void>();
+			const releaseReconciliation = Promise.withResolvers<void>();
+			fake.postGate = releasePost.promise;
+			fake.onFind = async () => {
+				if (fake.posts.length === 0) return;
+				reconciliationStarted.resolve();
+				await releaseReconciliation.promise;
+			};
+			fake.failPostProtocolAfterAccept = true;
+			const posting = daemon.postRoot("session", "root");
+			for (let attempt = 0; attempt < 20 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
+			setEndpointGeneration(2);
+			releasePost.resolve();
+			await reconciliationStarted.promise;
+			expect(fake.posts).toEqual([expect.objectContaining({ clientMsgId: "client-id-1", text: "root" })]);
+			expect(
+				await new ChatEffectJournal({ agentDir, transport: "slack" }).read("root:session:client-id-1"),
+			).toMatchObject({
+				state: "leased",
+			});
+			releaseReconciliation.resolve();
+			await expect(posting).resolves.toMatchObject({ state: "active", rootTs: "1.1", endpointGeneration: 1 });
+			expect(fake.posts).toEqual([expect.objectContaining({ clientMsgId: "client-id-1", text: "root" })]);
+			expect(
+				await new ChatEffectJournal({ agentDir, transport: "slack" }).read("root:session:client-id-1"),
+			).toMatchObject({
+				state: "terminal",
+				receipt: { provider: "slack", status: "posted", messageId: "client-id-1" },
+			});
+		});
+	});
+
 	it("recovers a live transient provider failure without restart, input, or another notification", async () => {
 		await withDaemon(async (daemon, fake) => {
 			await daemon.start();

@@ -8,6 +8,7 @@ import {
 	type ChatEffect,
 	ChatEffectJournal,
 	type ChatEffectLease,
+	type ChatEffectReceipt,
 	type EnqueueChatEffect,
 } from "../src/sdk/bus/chat-effect-journal";
 
@@ -1232,7 +1233,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 		);
 	});
 
-	test("replays only pre-send receipts across restart and fences a stale claimer", async () => {
+	test("recovers a callback-defer intent after the callback lease expires and fences a stale claimer", async () => {
 		const frames: Record<string, unknown>[] = [];
 		let now = 0;
 		const entered = Promise.withResolvers<void>();
@@ -1279,24 +1280,25 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					resolveEndpoint: endpoint,
 				});
 				await restarted.start();
-				expect(frames).toHaveLength(0);
+				expect(frames).toHaveLength(1);
 				release.resolve();
 				await blocked;
-				expect(frames).toHaveLength(0);
+				expect(frames).toHaveLength(1);
 
 				const retry = await restarted.notify({
 					sessionId: "session",
 					endpointGeneration: 1,
 					content: "Again",
-					actionId: "ask",
+					actionId: "ask-retry",
 					options: ["Yes"],
 				});
+				const retryCustomId = `gjc:1:ask-retry:${retry.pendingActionNonce!}`;
 				provider.deferInteraction = async () => {
 					throw new Error("definite pre-send");
 				};
-				await expect(restarted.handleInbound(inbound(retry.threadId!, "definite-pre-send", 1))).rejects.toThrow(
-					"Discord interaction callback failed",
-				);
+				await expect(
+					restarted.handleInbound(inbound(retry.threadId!, "definite-pre-send", 1, retryCustomId)),
+				).rejects.toThrow("Discord interaction callback failed");
 				const afterPreSend = new DiscordNotificationDaemon({
 					agentDir,
 					repo: agentDir,
@@ -1307,17 +1309,17 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					resolveEndpoint: endpoint,
 				});
 				await afterPreSend.start();
-				expect(frames).toHaveLength(0);
+				expect(frames).toHaveLength(1);
 
 				const uncertain = await afterPreSend.notify({
 					sessionId: "session",
 					endpointGeneration: 1,
 					content: "Last",
-					actionId: "ask",
+					actionId: "ask-uncertain",
 					options: ["Yes"],
 				});
 				expect(uncertain.pendingActionNonce).toBeDefined();
-				const uncertainCustomId = `gjc:1:ask:${uncertain.pendingActionNonce!}`;
+				const uncertainCustomId = `gjc:1:ask-uncertain:${uncertain.pendingActionNonce!}`;
 				provider.deferInteraction = async () => {};
 				const originalSend = (await endpoint()).send;
 				const throwingEndpoint = async (): Promise<DiscordEndpointBinding> => ({
@@ -1338,7 +1340,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					resolveEndpoint: throwingEndpoint,
 				});
 				await sender.handleInbound(inbound(uncertain.threadId!, "uncertain-post-send", 1, uncertainCustomId));
-				expect(frames).toHaveLength(1);
+				expect(frames).toHaveLength(2);
 				const afterUncertain = new DiscordNotificationDaemon({
 					agentDir,
 					repo: agentDir,
@@ -1349,7 +1351,7 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 					resolveEndpoint: endpoint,
 				});
 				await afterUncertain.start();
-				expect(frames).toHaveLength(1);
+				expect(frames).toHaveLength(2);
 			},
 			{
 				resolveEndpoint: async () => ({
@@ -1404,6 +1406,120 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 			expect(effects).not.toContain("token-token-private");
 			expect(effects).not.toContain('"token"');
 		});
+	});
+	test("recovers a durable callback intent across crashes immediately before and after defer", async () => {
+		for (const crashPoint of ["before_remote", "after_remote"] as const) {
+			const frames: Record<string, unknown>[] = [];
+			let now = 0;
+			let deferred = 0;
+			let deferReturned = false;
+			let recovery: DiscordNotificationDaemon | undefined;
+			const crashReached = Promise.withResolvers<void>();
+			const releaseCrash = Promise.withResolvers<void>();
+			const originalRecordReceipt = ChatEffectJournal.prototype.recordReceipt;
+			const originalRenew = ChatEffectJournal.prototype.renew;
+			try {
+				await withDaemon(
+					async (daemon, provider, agentDir) => {
+						const conversation = await daemon.notify({
+							sessionId: "session",
+							endpointGeneration: 1,
+							content: "Choose",
+							actionId: "ask",
+							options: ["Yes"],
+						});
+						const effectId = `discord:app:guild:parent:${conversation.threadId}:crash-${crashPoint}`;
+						if (crashPoint === "before_remote") {
+							vi.spyOn(ChatEffectJournal.prototype, "recordReceipt").mockImplementation(async function <
+								TPayload,
+							>(
+								this: ChatEffectJournal,
+								id: string,
+								lease: ChatEffectLease,
+								receipt: ChatEffectReceipt,
+							): Promise<ChatEffect<TPayload> | undefined> {
+								const recorded = (await originalRecordReceipt.call(this, id, lease, receipt)) as
+									| ChatEffect<TPayload>
+									| undefined;
+								if (id === effectId && receipt.status === "defer_intent") {
+									crashReached.resolve();
+									await releaseCrash.promise;
+								}
+								return recorded;
+							});
+						} else {
+							vi.spyOn(ChatEffectJournal.prototype, "renew").mockImplementation(async function <TPayload>(
+								this: ChatEffectJournal,
+								id: string,
+								lease: ChatEffectLease,
+								leaseMs: number,
+							): Promise<ChatEffect<TPayload> | undefined> {
+								const renewed = (await originalRenew.call(this, id, lease, leaseMs)) as
+									| ChatEffect<TPayload>
+									| undefined;
+								if (id === effectId && lease.epoch === 1 && deferReturned) {
+									crashReached.resolve();
+									await releaseCrash.promise;
+								}
+								return renewed;
+							});
+						}
+						provider.deferInteraction = async () => {
+							deferred++;
+							deferReturned = true;
+						};
+						const handling = daemon.handleInbound(inbound(conversation.threadId!, `crash-${crashPoint}`, 1));
+						await crashReached.promise;
+
+						const journal = new ChatEffectJournal({ agentDir, transport: "discord", now: () => now });
+						const prepared = await journal.read(effectId);
+						expect(prepared).toMatchObject({
+							state: "leased",
+							receipt: { status: "defer_intent" },
+						});
+						expect(JSON.stringify(prepared)).not.toContain(`token-crash-${crashPoint}`);
+						expect(prepared?.id).toBe(effectId);
+						expect(prepared?.generation).toBeGreaterThan(1);
+
+						now = 60_001;
+						recovery = new DiscordNotificationDaemon({
+							agentDir,
+							repo: agentDir,
+							guildId: "guild",
+							parentChannelId: "parent",
+							provider,
+							now: () => now,
+							resolveEndpoint: async () => ({
+								generation: 1,
+								isCurrent: () => true,
+								send: frame => {
+									frames.push(frame);
+								},
+							}),
+						});
+						await recovery.start();
+						expect(deferred).toBe(crashPoint === "before_remote" ? 0 : 1);
+						expect(frames).toMatchObject([
+							{ type: "reply", id: "ask", answer: "yes", idempotencyKey: expect.any(String) },
+						]);
+						expect(frames).toHaveLength(1);
+						expect(await journal.read(effectId)).toMatchObject({ state: "terminal" });
+
+						releaseCrash.resolve();
+						await handling;
+						expect(deferred).toBe(crashPoint === "before_remote" ? 0 : 1);
+						expect(frames).toHaveLength(1);
+						await recovery.stop();
+						recovery = undefined;
+					},
+					{ now: () => now },
+				);
+			} finally {
+				releaseCrash.resolve();
+				await recovery?.stop();
+				vi.restoreAllMocks();
+			}
+		}
 	});
 
 	test("recovers a deferred action after a definite SDK pre-send failure without its callback token", async () => {

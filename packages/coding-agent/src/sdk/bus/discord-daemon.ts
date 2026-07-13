@@ -507,9 +507,10 @@ export class DiscordNotificationDaemon {
 			return;
 		}
 		record = current;
-		if (receipt.kind === "action" && !this.#isDeferredActionEffect(effect)) {
-			// Callback tokens cannot survive a restart. Once defer succeeds, the
-			// durable deferred receipt lets recovery resume the SDK delivery without one.
+		if (receipt.kind === "action" && !this.#hasDurableDeferIntent(effect)) {
+			// Callback tokens cannot survive a restart. Persist the intent before remote
+			// I/O so recovery can safely resume SDK delivery whether defer reached Discord
+			// or the process stopped first.
 			if (!interaction) {
 				await this.#terminalizeInbound(record, receipt, "callback_token_unavailable");
 				return;
@@ -543,6 +544,12 @@ export class DiscordNotificationDaemon {
 				Math.max(1, Math.floor(this.#dispatchLeaseMs / 3)),
 			);
 			try {
+				if (!(await renewCallbackLease())) return;
+				const prepared = await this.#rescheduleAfterEffectTransition(
+					this.#effects.recordReceipt<DiscordInboundEffectPayload>(effect.id, lease, { status: "defer_intent" }),
+				);
+				if (!prepared) return;
+				effect = prepared;
 				if (!(await renewCallbackLease())) return;
 				await this.options.provider.deferInteraction({ id: interaction.id, token: interaction.token });
 				if (!(await renewCallbackLease())) return;
@@ -659,11 +666,14 @@ export class DiscordNotificationDaemon {
 			clearInterval(timer);
 		}
 	}
-	#isDeferredActionEffect(effect: ChatEffect<DiscordInboundEffectPayload>): boolean {
-		return effect.kind === "discord.inbound.action" && effect.receipt?.status === "deferred";
+	#hasDurableDeferIntent(effect: ChatEffect<DiscordInboundEffectPayload>): boolean {
+		return (
+			effect.kind === "discord.inbound.action" &&
+			(effect.receipt?.status === "defer_intent" || effect.receipt?.status === "deferred")
+		);
 	}
 	#inboundAcceptedStatus(effect: ChatEffect<DiscordInboundEffectPayload>, fallback: string): string {
-		return this.#isDeferredActionEffect(effect) ? "deferred" : fallback;
+		return this.#hasDurableDeferIntent(effect) ? (effect.receipt?.status ?? fallback) : fallback;
 	}
 
 	#hasLiveCallbackLease(effect: ChatEffect | undefined): boolean {
