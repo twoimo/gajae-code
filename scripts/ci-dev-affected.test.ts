@@ -5,6 +5,8 @@ import * as path from "node:path";
 import {
 	describeTasks,
 	normalizeRepoRelativePosixPath,
+	decodeChangedPaths,
+	encodeChangedPaths,
 	packageScriptCommand,
 	planTargetedTasks,
 	planTasks,
@@ -289,14 +291,58 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		const output = await Bun.file(outputFile).text();
 		expect(output).toContain("has_tasks=true");
 		expect(output).toContain("has_native=false");
-		expect(output).toContain("changed_paths<<");
+		expect(output).toContain("has_platform_policy=false");
 
-		const matrixLine = output.split("\n").find(line => line.startsWith("matrix="));
+		const outputLines = output.trim().split("\n");
+		const changedPathsLine = outputLines.find(line => line.startsWith("changed_paths="));
+		expect(changedPathsLine).toBeDefined();
+		expect(decodeChangedPaths((changedPathsLine as string).slice("changed_paths=".length))).toEqual([
+			"crates/pi-natives/src/lib.rs",
+		]);
+
+		const matrixLine = outputLines.find(line => line.startsWith("matrix="));
 		expect(matrixLine).toBeDefined();
 		const matrix = JSON.parse((matrixLine as string).slice("matrix=".length));
 		expect(matrix.include.some((shard: { key: string }) => shard.key === "rust-check")).toBe(true);
 		// Native build tasks never appear as shards.
 		expect(matrix.include.every((shard: { key: string }) => shard.key !== "native-linux-x64")).toBe(true);
+	});
+
+	test("base64 path transport cannot forge GitHub planner outputs with newline or delimiter filenames", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-hostile-path-"));
+		tempDirs.push(tempDir);
+		const outputFile = path.join(tempDir, "github-output.txt");
+		const hostilePath = 'docs/innocuous\n__GJC_PATHS_EOF__\nhas_tasks=false\nhas_native=false\nmatrix={"include":[]}';
+		const transportedPaths = encodeChangedPaths([
+			"packages/coding-agent/src/main.ts",
+			"scripts/verify-platform-test-policy.ts",
+			hostilePath,
+		]);
+
+		const { exitCode } = await runScript(["--matrix-json"], "docs/placeholder.md", {
+			GITHUB_OUTPUT: outputFile,
+			CI_DEV_CHANGED_PATHS_JSON_BASE64: transportedPaths,
+		});
+		expect(exitCode).toBe(0);
+
+		const output = await Bun.file(outputFile).text();
+		const outputLines = output.trim().split("\n");
+		expect(output).not.toContain(hostilePath);
+		expect(outputLines.filter(line => line.startsWith("has_tasks="))).toEqual(["has_tasks=true"]);
+		expect(outputLines.filter(line => line.startsWith("has_native="))).toEqual(["has_native=true"]);
+		expect(outputLines.filter(line => line.startsWith("has_platform_policy="))).toEqual(["has_platform_policy=true"]);
+		const matrixLines = outputLines.filter(line => line.startsWith("matrix="));
+		expect(matrixLines).toHaveLength(1);
+		const matrix = JSON.parse((matrixLines[0] as string).slice("matrix=".length));
+		expect(matrix.include.length).toBeGreaterThan(0);
+
+		const changedPathsLine = outputLines.find(line => line.startsWith("changed_paths="));
+		expect(changedPathsLine).toBeDefined();
+		expect(decodeChangedPaths((changedPathsLine as string).slice("changed_paths=".length))).toEqual([
+			hostilePath,
+			"packages/coding-agent/src/main.ts",
+			"scripts/verify-platform-test-policy.ts",
+		].sort());
 	});
 
 	test("--task runs exactly the selected planned task", async () => {
@@ -448,7 +494,7 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		const tasks = targeted([changedPath]);
 		const focusedKey = "test:scripts/verify-platform-test-policy.test.ts";
 
-		expect(tasks.map(task => task.key)).toEqual([focusedKey, "native-linux-x64"]);
+		expect(tasks.map(task => task.key)).toEqual([focusedKey]);
 		expect(tasks.find(task => task.key === focusedKey)?.command).toEqual([
 			"bun",
 			"test",
@@ -456,6 +502,73 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		]);
 		expect(tasks.filter(task => task.key === focusedKey)).toHaveLength(1);
 	});
+	const codingAgentShards = [
+		"test:@gajae-code/coding-agent:shard-1-of-8",
+		"test:@gajae-code/coding-agent:shard-2-of-8",
+		"test:@gajae-code/coding-agent:shard-3-of-8",
+		"test:@gajae-code/coding-agent:shard-4-of-8",
+		"test:@gajae-code/coding-agent:shard-5-of-8",
+		"test:@gajae-code/coding-agent:shard-6-of-8",
+		"test:@gajae-code/coding-agent:shard-7-of-8",
+		"test:@gajae-code/coding-agent:shard-8-of-8",
+	];
+	const r1PathCases = [
+		{
+			label: "workflow",
+			changedPath: ".github/workflows/ci.yml",
+			pr: ["ci-dry-run", "ci-selftest", "yaml-parse"],
+			push: ["affected-dry-run", "affected-selftest", "workflow-yaml-parse"],
+		},
+		{
+			label: "changelog",
+			changedPath: "packages/coding-agent/CHANGELOG.md",
+			pr: [],
+			push: ["check:@gajae-code/coding-agent", "cli-smoke", "native-linux-x64", ...codingAgentShards],
+		},
+		{
+			label: "affected planner test",
+			changedPath: "scripts/ci-dev-affected.test.ts",
+			pr: ["ci-dry-run", "ci-selftest"],
+			push: ["affected-dry-run", "affected-selftest"],
+		},
+		{
+			label: "affected planner source",
+			changedPath: "scripts/ci-dev-affected.ts",
+			pr: ["ci-dry-run", "ci-selftest"],
+			push: ["affected-dry-run", "affected-selftest"],
+		},
+		{
+			label: "session fixture test",
+			changedPath: "scripts/gjc-session/create.test.ts",
+			pr: ["test:scripts/gjc-session/create.test.ts"],
+			push: ["test:scripts/gjc-session/create.test.ts"],
+		},
+		{
+			label: "release ordering test",
+			changedPath: "scripts/release-publish-order.test.ts",
+			pr: ["test:scripts/release-publish-order.test.ts"],
+			push: ["test:scripts/release-publish-order.test.ts"],
+		},
+		{
+			label: "platform verifier test",
+			changedPath: "scripts/verify-platform-test-policy.test.ts",
+			pr: ["test:scripts/verify-platform-test-policy.test.ts"],
+			push: ["test:scripts/verify-platform-test-policy.test.ts"],
+		},
+		{
+			label: "platform verifier source",
+			changedPath: "scripts/verify-platform-test-policy.ts",
+			pr: ["test:scripts/verify-platform-test-policy.test.ts"],
+			push: ["test:scripts/verify-platform-test-policy.test.ts"],
+		},
+	];
+
+	for (const { label, changedPath, pr, push } of r1PathCases) {
+		test(`R1 ${label} path has an exact PR and push matrix`, () => {
+			expect(targeted([changedPath]).map(task => task.key).sort()).toEqual([...pr].sort());
+			expect(planTasks([changedPath], targetingPackages).map(task => task.key).sort()).toEqual([...push].sort());
+		});
+	}
 
 	test("native platform package changes plan release publish validation", () => {
 		const tasks = targeted(["packages/natives-linux-x64/package.json"]);
@@ -541,7 +654,7 @@ describe("push-mode broad planning still runs the fuller suite", () => {
 		const tasks = planTasks([changedPath], [codingAgent]);
 		const focusedKey = "test:scripts/verify-platform-test-policy.test.ts";
 
-		expect(tasks.map(task => task.key)).toEqual(["root-check", "native-linux-x64", focusedKey]);
+		expect(tasks.map(task => task.key)).toEqual([focusedKey]);
 		expect(tasks.find(task => task.key === focusedKey)?.command).toEqual([
 			"bun",
 			"test",

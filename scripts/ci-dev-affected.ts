@@ -1,12 +1,25 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun";
+import { Buffer } from "node:buffer";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 
 const repoRoot = path.join(import.meta.dir, "..");
 const ZERO_SHA = /^0+$/;
 const PACKAGE_SCOPES = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
+const MAX_CHANGED_PATHS = 1_000;
+const MAX_CHANGED_PATHS_SERIALIZED_BYTES = 48 * 1024;
+const MAX_CHANGED_PATHS_TRANSPORT_LENGTH = Math.ceil((MAX_CHANGED_PATHS_SERIALIZED_BYTES / 3) * 4);
+const CHANGED_PATHS_TRANSPORT_ENV = "CI_DEV_CHANGED_PATHS_JSON_BASE64";
+const PLATFORM_POLICY_PATHS = new Set([
+	".github/workflows/ci.yml",
+	".github/workflows/dev-ci.yml",
+	"scripts/gjc-session/create.test.ts",
+	"scripts/release-publish-order.test.ts",
+	"scripts/verify-platform-test-policy.test.ts",
+	"scripts/verify-platform-test-policy.ts",
+]);
 const PYTHON_DEV_SETUP =
 	"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc -e 'python/robogjc[dev]'";
 // The coding-agent package has hundreds of test files; keep dev affected
@@ -17,9 +30,7 @@ const CODING_AGENT_TEST_SHARDS = 8;
 // Keys for tasks that compile the @gajae-code/natives addon. They run once in
 // the dedicated dev-ci native-build job (not as matrix shards) and publish the
 // built `.node` files as an artifact the runtime-dependent shards download.
-// Declared here (before the top-level `await main()`) so it is initialized for
-// every CLI mode despite top-level await halting later module statements.
-const NATIVE_BUILD_KEYS: ReadonlySet<string> = new Set(["native-build", "native-linux-x64"]);
+const NATIVE_BUILD_KEYS: ReadonlySet<string> = new Set(["native-linux-x64"]);
 
 // Behavioral-owner tests cover entrypoint contracts whose names intentionally do
 // not follow the source-file basename convention. They supplement, rather than
@@ -28,6 +39,15 @@ const BEHAVIORAL_OWNER_TESTS: Readonly<Record<string, readonly string[]>> = {
 	"packages/coding-agent/src/main.ts": ["packages/coding-agent/test/startup-update-contract.test.ts"],
 };
 const PLATFORM_TEST_POLICY_TEST = "scripts/verify-platform-test-policy.test.ts";
+const FOCUSED_SCRIPT_TESTS: Readonly<Record<string, string>> = {
+	"scripts/gjc-session/create.test.ts": "scripts/gjc-session/create.test.ts",
+	"scripts/release-publish-order.test.ts": "scripts/release-publish-order.test.ts",
+	"scripts/verify-platform-test-policy.ts": PLATFORM_TEST_POLICY_TEST,
+	[PLATFORM_TEST_POLICY_TEST]: PLATFORM_TEST_POLICY_TEST,
+};
+const NON_NATIVE_FOCUSED_TEST_KEYS: ReadonlySet<string> = new Set(
+	Object.values(FOCUSED_SCRIPT_TESTS).map(testFile => `test:${testFile}`),
+);
 
 export interface PackageManifest {
 	name?: string;
@@ -169,7 +189,7 @@ async function emitAffectedFlags(): Promise<void> {
 		const planned = planTasks(paths, packages);
 		const keys = new Set(planned.map(task => task.key));
 		rust = keys.has("rust-check") || keys.has("rust-test");
-		native = keys.has("native-build") || keys.has("native-linux-x64");
+		native = keys.has("native-linux-x64");
 		console.log(`ci-dev-affected: rust=${rust} native=${native} (changed paths: ${paths.length})`);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -198,7 +218,7 @@ function taskNeedsNative(key: string): boolean {
 		key === "wrapper-version" ||
 		key === "deep-interview-definitions" ||
 		key === "deep-interview-runtime" ||
-		key.startsWith("test:")
+		(key.startsWith("test:") && !NON_NATIVE_FOCUSED_TEST_KEYS.has(key))
 	);
 }
 
@@ -232,9 +252,10 @@ export function describeTasks(tasks: readonly Task[]): TaskMatrixEntry[] {
 // `--matrix-json` prints the planned tasks as a JSON array on stdout (consumed
 // by tests and for debugging). Under GitHub Actions it also appends the dev-ci
 // planner outputs: `matrix` (the shard include list, excluding native-build
-// tasks), `has_tasks`, `has_native`, and the resolved `changed_paths` so every
-// downstream job reuses the planner's exact diff via CI_DEV_CHANGED_PATHS
-// instead of re-resolving the base ref on each runner.
+// tasks), `has_tasks`, `has_native`, and a base64-encoded JSON `changed_paths`
+// value so every downstream job reuses the planner's exact diff via
+// CI_DEV_CHANGED_PATHS_JSON_BASE64 instead of re-resolving the base ref on each
+// runner. Encoding prevents hostile Git pathnames from adding GitHub outputs.
 async function emitMatrix(): Promise<void> {
 	const paths = await getChangedPaths();
 	const mode = resolvePlanMode();
@@ -251,14 +272,14 @@ async function emitMatrix(): Promise<void> {
 		.filter(entry => !entry.nativeBuild)
 		.map(entry => ({ key: entry.key, description: entry.description, native: entry.native, rust: entry.rust }));
 	const hasNative = entries.some(entry => entry.nativeBuild);
+	const hasPlatformPolicy = paths.some(changedPath => PLATFORM_POLICY_PATHS.has(changedPath));
 	const lines = [
 		`matrix=${JSON.stringify({ include: shards })}`,
 		`has_tasks=${shards.length > 0}`,
 		`has_native=${hasNative}`,
+		`has_platform_policy=${hasPlatformPolicy}`,
 		`plan_mode=${mode}`,
-		"changed_paths<<__GJC_PATHS_EOF__",
-		...paths,
-		"__GJC_PATHS_EOF__",
+		`changed_paths=${encodeChangedPaths(paths)}`,
 		"",
 	];
 	await fs.appendFile(githubOutput, lines.join("\n"));
@@ -324,24 +345,76 @@ function printPlan(paths: readonly string[], plannedTasks: readonly Task[]): voi
 }
 
 async function getChangedPaths(): Promise<string[]> {
+	const transportedPaths = Bun.env[CHANGED_PATHS_TRANSPORT_ENV]?.trim();
+	if (transportedPaths) {
+		return decodeChangedPaths(transportedPaths);
+	}
+
 	const explicitPaths = Bun.env.CI_DEV_CHANGED_PATHS?.trim();
 	if (explicitPaths) {
-		return explicitPaths
-			.split(/[\n,]/)
-			.map(entry => entry.trim())
-			.filter(Boolean)
-			.sort();
+		if (Buffer.byteLength(explicitPaths, "utf8") > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
+			throw new Error("CI_DEV_CHANGED_PATHS exceeds the changed-path transport limit.");
+		}
+		return normalizeChangedPaths(
+			explicitPaths
+				.split(/[\n,]/)
+				.map(entry => entry.trim())
+				.filter(Boolean),
+		);
 	}
 
 	const base = await resolveBaseRef();
-	const head = Bun.env.GITHUB_SHA?.trim() || "HEAD";
+	const head = Bun.env.CI_DEV_WORKSPACE_SHA?.trim() || Bun.env.GITHUB_SHA?.trim() || "HEAD";
 	const range = base.includes("...") || base.includes("..") ? base : `${base}...${head}`;
 	const diff = await $`git diff --name-only -z ${range}`.cwd(repoRoot).quiet().nothrow();
 	if (diff.exitCode !== 0) {
 		const stderr = diff.stderr.toString().trim();
 		throw new Error(`Failed to compute changed paths for ${range}: ${stderr}`);
 	}
-	return new TextDecoder().decode(diff.stdout).split("\0").filter(Boolean).sort();
+	return normalizeChangedPaths(new TextDecoder().decode(diff.stdout).split("\0").filter(Boolean));
+}
+
+export function encodeChangedPaths(paths: readonly string[]): string {
+	const serialized = JSON.stringify(normalizeChangedPaths(paths));
+	return Buffer.from(serialized, "utf8").toString("base64");
+}
+
+export function decodeChangedPaths(encodedPaths: string): string[] {
+	if (
+		encodedPaths.length > MAX_CHANGED_PATHS_TRANSPORT_LENGTH ||
+		encodedPaths.length % 4 !== 0 ||
+		!/^[A-Za-z0-9+/]*={0,2}$/.test(encodedPaths)
+	) {
+		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 is not a bounded base64 payload.");
+	}
+
+	const serialized = Buffer.from(encodedPaths, "base64");
+	if (serialized.byteLength > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
+		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 exceeds the changed-path transport limit.");
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(serialized.toString("utf8"));
+	} catch {
+		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 does not contain JSON.");
+	}
+	if (!Array.isArray(parsed) || !parsed.every(isString)) {
+		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 must contain a JSON string array.");
+	}
+	return normalizeChangedPaths(parsed);
+}
+
+function normalizeChangedPaths(paths: readonly string[]): string[] {
+	if (paths.length > MAX_CHANGED_PATHS) {
+		throw new Error(`Changed-path plan exceeds the ${MAX_CHANGED_PATHS}-path limit.`);
+	}
+	const normalized = Array.from(new Set(paths.filter(Boolean))).sort();
+	const serializedBytes = Buffer.byteLength(JSON.stringify(normalized), "utf8");
+	if (serializedBytes > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
+		throw new Error("Changed-path plan exceeds the transport size limit.");
+	}
+	return normalized;
 }
 
 async function resolveBaseRef(): Promise<string> {
@@ -442,7 +515,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	const installChanged = paths.some(isInstallPath);
 	const publishChanged = paths.some(isReleasePublishPath);
 	const wrapperChanged = paths.some(isUnscopedWrapperPath);
-	const toolingScriptChanged = paths.some(isToolingScriptPath);
+	const toolingScriptChanged = paths.some(changedPath => isToolingScriptPath(changedPath) && !focusedScriptTestFor(changedPath));
 	const deepInterviewOnly = isDeepInterviewOnly(paths);
 	const needsNativeRuntime = !deepInterviewOnly && (paths.some(isCodingAgentRuntimePath) || wrapperChanged || fullWorkspace);
 	const workflowHarnessOnly = paths.length > 0 && paths.every(isWorkflowHarnessPath);
@@ -456,7 +529,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	}
 
 	if (needsNativeRuntime) {
-		add(tasks, "native-build", "Build native addon for CLI/test smoke", ["bun", "run", "build:native"]);
+		addNativeBuild(tasks);
 	}
 
 	if (fullWorkspace) {
@@ -508,8 +581,11 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	if (needsNativeRuntime) {
 		add(tasks, "cli-smoke", "GJC CLI smoke test", ["bun", "run", "ci:test:smoke"]);
 	}
-	if (paths.some(isPlatformTestPolicyPath)) {
-		addTestFileTask(tasks, PLATFORM_TEST_POLICY_TEST);
+	for (const changedPath of paths) {
+		const focusedTest = focusedScriptTestFor(changedPath);
+		if (focusedTest) {
+			addTestFileTask(tasks, focusedTest);
+		}
 	}
 	if (paths.some(isWorkflowOrScriptPath)) {
 		add(tasks, "affected-dry-run", "Affected CI selector self-check", ["bun", "scripts/ci-dev-affected.ts", "--dry-run"]);
@@ -558,8 +634,9 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 			needCiSelftest = true;
 			continue;
 		}
-		if (isPlatformTestPolicyPath(changedPath)) {
-			addTestFileTask(tasks, PLATFORM_TEST_POLICY_TEST);
+		const focusedTest = focusedScriptTestFor(changedPath);
+		if (focusedTest) {
+			addTestFileTask(tasks, focusedTest);
 			continue;
 		}
 		if (isCiHarnessScriptPath(changedPath)) {
@@ -722,8 +799,8 @@ function isTestFilePath(changedPath: string): boolean {
 function isCiHarnessScriptPath(changedPath: string): boolean {
 	return changedPath === "scripts/ci-dev-affected.ts" || changedPath === "scripts/ci-dev-affected.test.ts" || changedPath === "scripts/check-workflow-yaml.ts";
 }
-function isPlatformTestPolicyPath(changedPath: string): boolean {
-	return changedPath === "scripts/verify-platform-test-policy.ts" || changedPath === PLATFORM_TEST_POLICY_TEST;
+function focusedScriptTestFor(changedPath: string): string | undefined {
+	return FOCUSED_SCRIPT_TESTS[changedPath];
 }
 
 function isWebPath(changedPath: string): boolean {
@@ -736,7 +813,9 @@ function isCodeIshPath(changedPath: string): boolean {
 
 
 function addNativeBuild(tasks: Map<string, Task>): void {
-	add(tasks, "native-linux-x64", "Build linux x64 native addons", ["bash", "-lc", 'TARGET_VARIANTS="baseline modern" bun scripts/ci-build-native.ts']);
+	if (!Array.from(tasks.keys()).some(isNativeBuildKey)) {
+		add(tasks, "native-linux-x64", "Build linux x64 native addons", ["bash", "-lc", 'TARGET_VARIANTS="baseline modern" bun scripts/ci-build-native.ts']);
+	}
 }
 
 function add(tasks: Map<string, Task>, key: string, description: string, command: readonly string[], cwd?: string): void {
