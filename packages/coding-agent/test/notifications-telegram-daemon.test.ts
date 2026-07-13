@@ -10,7 +10,11 @@ import {
 	TELEGRAM_PARSE_MODE,
 } from "../src/notifications/html-format";
 import { deliverRichWithFallback } from "../src/notifications/rich-render";
-import { allocateTelegramCustodyEpoch, telegramCustodyEpochPath } from "../src/notifications/telegram-custody-epoch";
+import {
+	allocateTelegramCustodyEpoch,
+	telegramCustodyEpochPath,
+	withCurrentTelegramCustodyEpoch,
+} from "../src/notifications/telegram-custody-epoch";
 import {
 	acquireDaemonOwnership,
 	buildTelegramDaemonSpawnArgs,
@@ -3920,6 +3924,104 @@ test("same-owner epoch advance after confirmed settlement fences stale local cle
 	) as { topics: Record<string, { topicId: string }> };
 	expect(recoveredTopics.topics.S).toBeUndefined();
 	expect(readCustodySnapshot(harness.agentDir).records).toEqual({});
+});
+test("confirmed recovery resolves a topic only after acquiring the current custody epoch", async () => {
+	const agentDir = tempAgentDir();
+	const custodyEpoch = await allocateTestCustodyEpoch(agentDir);
+	const topicId = "77";
+	fs.writeFileSync(
+		path.join(daemonPaths(agentDir).dir, "telegram-deletion-custody.json"),
+		JSON.stringify({
+			version: 3,
+			records: {
+				[`42:${topicId}`]: {
+					chatId: "42",
+					topicId,
+					state: "confirmed",
+					updatedAt: 0,
+					custodyEpoch,
+					trigger: "session_closed",
+					diagnostic: { kind: "telegram_ok" },
+				},
+			},
+		}),
+	);
+
+	const bot = new FakeBotApi();
+	const recovery = new TelegramNotificationDaemon({
+		settings: settings(agentDir),
+		ownerId: "owner",
+		custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot,
+	});
+	await recovery.loadTopics();
+
+	const internals = recovery as unknown as {
+		topics: {
+			load(state: { topics: Record<string, { topicId: string; identitySent: boolean; createdAt: number }> }): void;
+			sessionIds(): string[];
+		};
+		persistTopics(): Promise<void>;
+		finishConfirmedTopicDeletion(input: unknown, topicId?: string): Promise<void>;
+	};
+	const sessionIds = internals.topics.sessionIds.bind(internals.topics);
+	let sessionIdsBeforeEpochProof = 0;
+	internals.topics.sessionIds = () => {
+		sessionIdsBeforeEpochProof += 1;
+		return sessionIds();
+	};
+	const helperEntered = Promise.withResolvers<void>();
+	const finishConfirmedTopicDeletion = internals.finishConfirmedTopicDeletion.bind(recovery);
+	internals.finishConfirmedTopicDeletion = async (input, confirmedTopicId) => {
+		helperEntered.resolve();
+		await finishConfirmedTopicDeletion(input, confirmedTopicId);
+	};
+
+	const epochGuardEntered = Promise.withResolvers<void>();
+	const releaseEpochGuard = Promise.withResolvers<void>();
+	const epochGuard = withCurrentTelegramCustodyEpoch(
+		{
+			agentDir,
+			binding: { ownerId: "owner", custodyEpoch },
+		},
+		async () => {
+			epochGuardEntered.resolve();
+			await releaseEpochGuard.promise;
+		},
+	);
+	await epochGuardEntered.promise;
+
+	let recoveryLoad: Promise<unknown> | undefined;
+	try {
+		recoveryLoad = recovery.loadCustody();
+		await helperEntered.promise;
+		expect(sessionIdsBeforeEpochProof).toBe(0);
+
+		internals.topics.load({
+			topics: {
+				S: { topicId, identitySent: true, createdAt: 0 },
+			},
+		});
+		await internals.persistTopics();
+		expect(currentTopicId(agentDir, "S")).toBe(topicId);
+
+		releaseEpochGuard.resolve();
+		expect((await epochGuard).ok).toBe(true);
+		await recoveryLoad;
+
+		const persistedTopics = JSON.parse(
+			fs.readFileSync(path.join(daemonPaths(agentDir).dir, "telegram-topics.json"), "utf8"),
+		) as { topics: Record<string, { topicId: string }> };
+		expect(persistedTopics.topics.S).toBeUndefined();
+		expect(readCustodySnapshot(agentDir).records).toEqual({});
+		expect(bot.calls).toHaveLength(0);
+	} finally {
+		releaseEpochGuard.resolve();
+		await epochGuard;
+		await recoveryLoad;
+	}
 });
 
 test("pool flush failure leaves deletion queued before the claim", async () => {

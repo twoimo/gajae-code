@@ -2288,7 +2288,7 @@ export class TelegramNotificationDaemon {
 		if (!queued.ok) return;
 		if (queued.status === "blocked") {
 			if (queued.record.state === "confirmed")
-				await this.finishConfirmedTopicDeletion(input.sessionId, input.topicId);
+				await this.finishConfirmedTopicDeletion({ sessionId: input.sessionId, topicId: input.topicId });
 			return;
 		}
 
@@ -2345,7 +2345,7 @@ export class TelegramNotificationDaemon {
 			return;
 		}
 		if (!settled.ok || diagnostic.kind !== "telegram_ok") return;
-		await this.finishConfirmedTopicDeletion(input.sessionId, input.topicId);
+		await this.finishConfirmedTopicDeletion({ sessionId: input.sessionId, topicId: input.topicId });
 	}
 
 	private classifyDeleteResponse(response: unknown): TelegramCustodyDiagnostic {
@@ -2405,7 +2405,7 @@ export class TelegramNotificationDaemon {
 		return { kind: "transport_ambiguous", transport: "other" };
 	}
 
-	private async finishConfirmedTopicDeletion(sessionId: string, topicId: string): Promise<void> {
+	private async finishConfirmedTopicDeletion(input: { sessionId?: string; topicId: string }): Promise<void> {
 		let localCleanup = false;
 		try {
 			const guarded = await withCurrentTelegramCustodyEpoch(
@@ -2414,8 +2414,11 @@ export class TelegramNotificationDaemon {
 					binding: { ownerId: this.opts.ownerId, custodyEpoch: this.opts.custodyEpoch },
 				},
 				async () => {
+					const sessionId = input.sessionId ?? this.topics.sessionForTopic(input.topicId);
+					if (sessionId === undefined) return true;
+
 					const current = this.topics.get(sessionId);
-					if (current !== undefined && current.topicId !== topicId) return false;
+					if (current !== undefined && current.topicId !== input.topicId) return false;
 					const previousTopic = current === undefined ? undefined : Object.freeze({ ...current });
 					if (current !== undefined) this.topics.delete(sessionId);
 					try {
@@ -2437,7 +2440,7 @@ export class TelegramNotificationDaemon {
 		}
 		if (!localCleanup) return;
 		try {
-			const removed = await this.#custodyStore.removeConfirmed({ chatId: this.opts.chatId, topicId });
+			const removed = await this.#custodyStore.removeConfirmed({ chatId: this.opts.chatId, topicId: input.topicId });
 			if (!removed.ok) return;
 		} catch {
 			logger.warn("notifications: Telegram topic deletion custody cleanup failed");
@@ -2490,10 +2493,7 @@ export class TelegramNotificationDaemon {
 		for (const record of this.#custodyStore.list()) {
 			if (record.state !== "confirmed") continue;
 			if (record.chatId !== this.opts.chatId) continue;
-			const sessionId = this.topics
-				.sessionIds()
-				.find(candidate => this.topics.get(candidate)?.topicId === record.topicId);
-			await this.finishConfirmedTopicDeletion(sessionId ?? "", record.topicId);
+			await this.finishConfirmedTopicDeletion({ topicId: record.topicId });
 		}
 
 		const updated = { ...result, records: this.#custodyStore.list() };
