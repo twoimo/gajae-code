@@ -3,6 +3,9 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type ParserPlugin, parse } from "@babel/parser";
+import traverse, { type Binding, type NodePath } from "@babel/traverse";
+import * as t from "@babel/types";
 
 const repoRoot = process.env.GJC_SDK_CANONICALIZATION_SCAN_ROOT
 	? path.resolve(process.env.GJC_SDK_CANONICALIZATION_SCAN_ROOT)
@@ -33,6 +36,9 @@ const constructedRetiredIngressPatterns = [
 ];
 const retiredModeValuePattern = /^(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*$/i;
 const retiredModeArgumentPattern = /^--mode(?:\s+|=)(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*$/i;
+const MAX_STATIC_FILE_STEPS = 1_024;
+const MAX_STATIC_EXPRESSION_STEPS = 256;
+const MAX_STATIC_ALIAS_HOPS = 64;
 
 const allowedRpcModeInvocationTests = new Set([
 	"packages/coding-agent/test/sdk-downgrade-rollback.test.ts",
@@ -344,20 +350,458 @@ function legacyPythonRpcViolations(file: string, contents: string): string[] {
 	return violations;
 }
 
+type RetiredModeSourceType = "unambiguous" | "commonjs" | "module";
+type StaticAnalysisBudgetKind = "file_steps" | "expression_steps" | "alias_hops";
+type StaticStringResult = { kind: "known"; value: string } | { kind: "unknown"; reason: string };
+type StaticArrayResult = { kind: "known"; values: string[] } | { kind: "unknown"; reason: string };
+type StaticDefinitionResult = { kind: "definition"; definition: StaticDefinition } | StaticStringResult;
+
+interface RetiredModeParserOptions {
+	sourceType: RetiredModeSourceType;
+	plugins: ParserPlugin[];
+}
+
+interface StaticAnalysisFileState {
+	steps: number;
+}
+
+interface StaticEvaluationContext {
+	file: string;
+	expressionSteps: number;
+	aliasHops: number;
+	activeBindings: Set<Binding>;
+	evaluationSteps: NodePath<t.Expression>[];
+}
+
+interface StaticDefinition {
+	expressionPath: NodePath<t.Expression>;
+	start: number;
+	end: number;
+}
+
+class StaticAnalysisParseError extends Error {
+	constructor(file: string, line: number, column: number) {
+		super(`${file}:${line}:${column}: static retired-mode analysis parse failed`);
+		this.name = "StaticAnalysisParseError";
+	}
+}
+
+class StaticAnalysisBudgetExceeded extends Error {
+	constructor(file: string, node: t.Node, kind: StaticAnalysisBudgetKind, limit: number, observed: number) {
+		const location = staticNodeLocation(node);
+		super(
+			`${file}:${location.line}:${location.column}: static retired-mode analysis budget exceeded (kind=${kind}, limit=${limit}, observed=${observed})`,
+		);
+		this.name = "StaticAnalysisBudgetExceeded";
+	}
+}
+
 function isExecutableSource(file: string): boolean {
 	return /\.(?:[cm]?[jt]sx?|py)$/.test(file);
 }
 
-function rpcModeInvocationViolations(file: string, contents: string): string[] {
-	if (isGeneratedDocumentationIndex(file) || !isExecutableSource(file) || allowedRpcModeInvocationTests.has(file))
-		return [];
+function retiredModeParserOptions(file: string): RetiredModeParserOptions | undefined {
+	const importAttributePlugins: ParserPlugin[] = ["importAttributes"];
+	if (file.endsWith(".d.mts")) {
+		return {
+			sourceType: "module",
+			plugins: [["typescript", { dts: true, disallowAmbiguousJSXLike: true }]],
+		};
+	}
+	if (file.endsWith(".d.cts")) {
+		return {
+			sourceType: "commonjs",
+			plugins: [["typescript", { dts: true, disallowAmbiguousJSXLike: true }]],
+		};
+	}
+	if (file.endsWith(".d.ts")) {
+		return { sourceType: "unambiguous", plugins: [["typescript", { dts: true }]] };
+	}
+	if (file.endsWith(".tsx")) return { sourceType: "unambiguous", plugins: ["typescript", "jsx"] };
+	if (file.endsWith(".mts")) {
+		return {
+			sourceType: "unambiguous",
+			plugins: [["typescript", { disallowAmbiguousJSXLike: true }]],
+		};
+	}
+	if (file.endsWith(".cts")) {
+		return {
+			sourceType: "commonjs",
+			plugins: [["typescript", { disallowAmbiguousJSXLike: true }]],
+		};
+	}
+	if (file.endsWith(".ts")) return { sourceType: "unambiguous", plugins: ["typescript"] };
+	if (file.endsWith(".jsx")) return { sourceType: "unambiguous", plugins: ["jsx", ...importAttributePlugins] };
+	if (file.endsWith(".cjs")) return { sourceType: "commonjs", plugins: importAttributePlugins };
+	if (file.endsWith(".js") || file.endsWith(".mjs")) {
+		return { sourceType: "unambiguous", plugins: importAttributePlugins };
+	}
+	return undefined;
+}
+
+function parserErrorLocation(error: unknown): { line: number; column: number } {
+	const parserError = error as { loc?: unknown };
+	const location = parserError.loc;
+	if (location && typeof location === "object") {
+		const parserLocation = location as { line?: unknown; column?: unknown };
+		if (typeof parserLocation.line === "number" && typeof parserLocation.column === "number") {
+			return { line: parserLocation.line, column: parserLocation.column };
+		}
+	}
+	return { line: 1, column: 0 };
+}
+
+function parseRetiredModeSource(file: string, contents: string): t.File | undefined {
+	const options = retiredModeParserOptions(file);
+	if (!options) return undefined;
+	try {
+		return parse(contents, options);
+	} catch (error) {
+		const location = parserErrorLocation(error);
+		throw new StaticAnalysisParseError(file, location.line, location.column);
+	}
+}
+
+function staticNodeLocation(node: t.Node): { line: number; column: number } {
+	return { line: node.loc?.start.line ?? 1, column: node.loc?.start.column ?? 0 };
+}
+
+function staticNodeOffset(node: t.Node): number | undefined {
+	return typeof node.start === "number" ? node.start : undefined;
+}
+
+function staticNodeEnd(node: t.Node): number | undefined {
+	return typeof node.end === "number" ? node.end : undefined;
+}
+
+function staticKnown(value: string): StaticStringResult {
+	return { kind: "known", value };
+}
+
+function staticUnknown(reason: string): StaticStringResult {
+	return { kind: "unknown", reason };
+}
+
+function staticExpressionPath(path: NodePath, key: string): NodePath<t.Expression> | undefined {
+	const childPath = path.get(key) as NodePath | NodePath[];
+	if (Array.isArray(childPath) || !childPath.isExpression()) return undefined;
+	return childPath;
+}
+
+function staticExecutionContext(path: NodePath): NodePath | undefined {
+	let current: NodePath | null = path;
+	while (current) {
+		if (current.isProgram() || current.isFunction()) return current;
+		current = current.parentPath;
+	}
+	return undefined;
+}
+
+function isExecutionContextAncestor(ancestor: NodePath, descendant: NodePath): boolean {
+	let current: NodePath | null = descendant;
+	while (current) {
+		if (current.node === ancestor.node) return true;
+		current = current.parentPath;
+	}
+	return false;
+}
+
+function recordStaticEvaluationStep(path: NodePath<t.Expression>, context: StaticEvaluationContext): void {
+	context.evaluationSteps.push(path);
+	context.expressionSteps++;
+	if (context.expressionSteps > MAX_STATIC_EXPRESSION_STEPS) {
+		throw new StaticAnalysisBudgetExceeded(
+			context.file,
+			path.node,
+			"expression_steps",
+			MAX_STATIC_EXPRESSION_STEPS,
+			context.expressionSteps,
+		);
+	}
+}
+
+function commitStaticFileSteps(
+	evaluationSteps: readonly NodePath<t.Expression>[],
+	file: string,
+	fileState: StaticAnalysisFileState,
+): void {
+	for (const path of evaluationSteps) {
+		fileState.steps++;
+		if (fileState.steps > MAX_STATIC_FILE_STEPS) {
+			throw new StaticAnalysisBudgetExceeded(file, path.node, "file_steps", MAX_STATIC_FILE_STEPS, fileState.steps);
+		}
+	}
+}
+
+function incrementStaticAliasHop(path: NodePath<t.Identifier>, context: StaticEvaluationContext): void {
+	context.aliasHops++;
+	if (context.aliasHops > MAX_STATIC_ALIAS_HOPS) {
+		throw new StaticAnalysisBudgetExceeded(
+			context.file,
+			path.node,
+			"alias_hops",
+			MAX_STATIC_ALIAS_HOPS,
+			context.aliasHops,
+		);
+	}
+}
+
+function bindingInitializer(binding: Binding): StaticDefinitionResult {
+	if (!binding.path.isVariableDeclarator()) return staticUnknown("unsupported binding");
+	const declaration = binding.path.node;
+	if (!t.isIdentifier(declaration.id) || declaration.id.name !== binding.identifier.name) {
+		return staticUnknown("unsupported binding");
+	}
+	const initializerPath = staticExpressionPath(binding.path, "init");
+	if (!initializerPath) return staticUnknown("missing initializer");
+	const start = staticNodeOffset(initializerPath.node);
+	const end = staticNodeEnd(initializerPath.node);
+	if (start === undefined || end === undefined) return staticUnknown("missing initializer position");
+	return { kind: "definition", definition: { expressionPath: initializerPath, start, end } };
+}
+
+function assignmentPathForViolation(violationPath: NodePath): NodePath<t.AssignmentExpression> | undefined {
+	if (violationPath.isAssignmentExpression()) return violationPath;
+	const parentPath = violationPath.parentPath;
+	if (parentPath?.isAssignmentExpression() && parentPath.node.left === violationPath.node) return parentPath;
+	return undefined;
+}
+
+function staticAssignmentDefinition(binding: Binding, violationPath: NodePath): StaticDefinitionResult {
+	const assignmentPath = assignmentPathForViolation(violationPath);
+	if (assignmentPath?.node.operator !== "=") return staticUnknown("unsupported write");
+	if (!t.isIdentifier(assignmentPath.node.left)) return staticUnknown("unsupported write");
+	if (assignmentPath.scope.getBinding(assignmentPath.node.left.name) !== binding) {
+		return staticUnknown("unsupported write");
+	}
+	if (!assignmentPath.parentPath?.isExpressionStatement()) return staticUnknown("ambiguous write");
+	const expressionPath = staticExpressionPath(assignmentPath, "right");
+	if (!expressionPath) return staticUnknown("unsupported write");
+	const start = staticNodeOffset(assignmentPath.node);
+	const end = staticNodeEnd(assignmentPath.node);
+	if (start === undefined || end === undefined) return staticUnknown("missing write position");
+	return { kind: "definition", definition: { expressionPath, start, end } };
+}
+
+function isUnambiguousStaticWrite(path: NodePath<t.AssignmentExpression>, context: NodePath): boolean {
+	let current: NodePath | null = path.parentPath;
+	while (current && current.node !== context.node) {
+		if (
+			current.isIfStatement() ||
+			current.isSwitchCase() ||
+			current.isForStatement() ||
+			current.isForInStatement() ||
+			current.isForOfStatement() ||
+			current.isWhileStatement() ||
+			current.isDoWhileStatement() ||
+			current.isTryStatement() ||
+			current.isConditionalExpression() ||
+			current.isLogicalExpression()
+		) {
+			return false;
+		}
+		current = current.parentPath;
+	}
+	return current !== null;
+}
+
+function staticReachingDefinition(identifierPath: NodePath<t.Identifier>, binding: Binding): StaticDefinitionResult {
+	const initialDefinition = bindingInitializer(binding);
+	if (initialDefinition.kind !== "definition") return initialDefinition;
+	const useOffset = staticNodeOffset(identifierPath.node);
+	const bindingContext = staticExecutionContext(binding.path);
+	const useContext = staticExecutionContext(identifierPath);
+	if (useOffset === undefined || !bindingContext || !useContext) return staticUnknown("missing use position");
+	if (bindingContext.node !== useContext.node) {
+		if (binding.kind !== "const" || !binding.constant || !isExecutionContextAncestor(bindingContext, useContext)) {
+			return staticUnknown("ambiguous cross-context binding");
+		}
+		return initialDefinition;
+	}
+	if (initialDefinition.definition.end > useOffset) return staticUnknown("direct TDZ");
+
+	let selectedDefinition = initialDefinition.definition;
+	for (const violationPath of binding.constantViolations) {
+		const violationContext = staticExecutionContext(violationPath);
+		if (!violationContext || violationContext.node !== bindingContext.node) {
+			return staticUnknown("ambiguous cross-context write");
+		}
+		const violationOffset = staticNodeOffset(violationPath.node);
+		if (violationOffset === undefined) return staticUnknown("missing write position");
+		if (violationOffset >= useOffset) continue;
+		const writeDefinition = staticAssignmentDefinition(binding, violationPath);
+		if (writeDefinition.kind !== "definition") return writeDefinition;
+		if (writeDefinition.definition.end > useOffset) return staticUnknown("ambiguous write order");
+		const assignmentPath = assignmentPathForViolation(violationPath);
+		if (!assignmentPath || !isUnambiguousStaticWrite(assignmentPath, bindingContext)) {
+			return staticUnknown("ambiguous write");
+		}
+		if (writeDefinition.definition.start === selectedDefinition.start) return staticUnknown("ambiguous write order");
+		if (writeDefinition.definition.start > selectedDefinition.start) selectedDefinition = writeDefinition.definition;
+	}
+	return { kind: "definition", definition: selectedDefinition };
+}
+
+function evaluateStaticArrayElements(
+	path: NodePath<t.ArrayExpression>,
+	context: StaticEvaluationContext,
+): StaticArrayResult {
+	recordStaticEvaluationStep(path, context);
+	const elementPaths = path.get("elements");
+	if (!Array.isArray(elementPaths)) return { kind: "unknown", reason: "unsupported array" };
+	const values: string[] = [];
+	for (const elementPath of elementPaths) {
+		if (!elementPath.isExpression()) return { kind: "unknown", reason: "unsupported array element" };
+		const value = evaluateStaticString(elementPath, context);
+		if (value.kind !== "known") return value;
+		values.push(value.value);
+	}
+	return { kind: "known", values };
+}
+
+function evaluateStaticJoin(path: NodePath<t.CallExpression>, context: StaticEvaluationContext): StaticStringResult {
+	if (path.node.optional) return staticUnknown("unsupported call");
+	const calleePath = staticExpressionPath(path, "callee");
+	if (!calleePath?.isMemberExpression()) return staticUnknown("unsupported call");
+	if (
+		calleePath.node.computed ||
+		calleePath.node.optional ||
+		!t.isIdentifier(calleePath.node.property, { name: "join" })
+	) {
+		return staticUnknown("unsupported call");
+	}
+	const objectPath = staticExpressionPath(calleePath, "object");
+	if (!objectPath?.isArrayExpression()) return staticUnknown("unsupported call");
+	const argumentPaths = path.get("arguments");
+	if (!Array.isArray(argumentPaths) || argumentPaths.length > 1) return staticUnknown("unsupported call");
+	let separator = ",";
+	if (argumentPaths.length === 1) {
+		const separatorPath = argumentPaths[0];
+		if (!separatorPath.isExpression()) return staticUnknown("unsupported call");
+		const separatorResult = evaluateStaticString(separatorPath, context);
+		if (separatorResult.kind !== "known") return separatorResult;
+		separator = separatorResult.value;
+	}
+	const arrayResult = evaluateStaticArrayElements(objectPath as NodePath<t.ArrayExpression>, context);
+	return arrayResult.kind === "known" ? staticKnown(arrayResult.values.join(separator)) : arrayResult;
+}
+
+function evaluateStaticIdentifier(path: NodePath<t.Identifier>, context: StaticEvaluationContext): StaticStringResult {
+	const binding = path.scope.getBinding(path.node.name);
+	if (!binding) return staticUnknown("missing binding");
+	if (context.activeBindings.has(binding)) return staticUnknown("binding cycle");
+	const definition = staticReachingDefinition(path, binding);
+	if (definition.kind !== "definition") return definition;
+	context.activeBindings.add(binding);
+	try {
+		incrementStaticAliasHop(path, context);
+		return evaluateStaticString(definition.definition.expressionPath, context);
+	} finally {
+		context.activeBindings.delete(binding);
+	}
+}
+
+function evaluateStaticString(path: NodePath<t.Expression>, context: StaticEvaluationContext): StaticStringResult {
+	recordStaticEvaluationStep(path, context);
+	const node = path.node;
+	if (t.isStringLiteral(node)) return staticKnown(node.value);
+	if (t.isIdentifier(node)) return evaluateStaticIdentifier(path as NodePath<t.Identifier>, context);
+	if (
+		t.isTSAsExpression(node) ||
+		t.isTSTypeAssertion(node) ||
+		t.isTSSatisfiesExpression(node) ||
+		t.isTSNonNullExpression(node) ||
+		t.isParenthesizedExpression(node)
+	) {
+		const expressionPath = staticExpressionPath(path, "expression");
+		return expressionPath ? evaluateStaticString(expressionPath, context) : staticUnknown("unsupported wrapper");
+	}
+	if (t.isTemplateLiteral(node)) {
+		const expressionPaths = path.get("expressions");
+		if (!Array.isArray(expressionPaths) || expressionPaths.length !== node.expressions.length) {
+			return staticUnknown("unsupported template");
+		}
+		let value = "";
+		for (let index = 0; index < node.quasis.length; index++) {
+			const cooked = node.quasis[index]?.value.cooked;
+			if (cooked === null || cooked === undefined) return staticUnknown("unsupported template");
+			value += cooked;
+			if (index === expressionPaths.length) continue;
+			const expressionPath = expressionPaths[index];
+			if (!expressionPath.isExpression()) return staticUnknown("unsupported template");
+			const expressionResult = evaluateStaticString(expressionPath, context);
+			if (expressionResult.kind !== "known") return expressionResult;
+			value += expressionResult.value;
+		}
+		return staticKnown(value);
+	}
+	if (t.isBinaryExpression(node) && node.operator === "+") {
+		const leftPath = staticExpressionPath(path, "left");
+		const rightPath = staticExpressionPath(path, "right");
+		if (!leftPath || !rightPath) return staticUnknown("unsupported binary expression");
+		const left = evaluateStaticString(leftPath, context);
+		if (left.kind !== "known") return left;
+		const right = evaluateStaticString(rightPath, context);
+		return right.kind === "known" ? staticKnown(left.value + right.value) : right;
+	}
+	if (t.isCallExpression(node)) return evaluateStaticJoin(path as NodePath<t.CallExpression>, context);
+	return staticUnknown("unsupported expression");
+}
+
+function isStaticModeCandidate(
+	elements: readonly ({ path: NodePath<t.Expression>; value: string | undefined } | undefined)[],
+): boolean {
+	return elements.some(element => element?.value === "--mode" || /^--mode(?:\s+|=)/.test(element?.value ?? ""));
+}
+
+function staticRetiredModeInvocationViolations(file: string, contents: string): string[] {
+	const ast = parseRetiredModeSource(file, contents);
+	if (!ast) return [];
+	const fileState: StaticAnalysisFileState = { steps: 0 };
+	const violations = new Set<string>();
+	traverse(ast, {
+		ArrayExpression(arrayPath) {
+			const elementPaths = arrayPath.get("elements");
+			if (!Array.isArray(elementPaths)) return;
+			const evaluationSteps: NodePath<t.Expression>[] = [];
+			const elements: Array<{ path: NodePath<t.Expression>; value: string | undefined } | undefined> = [];
+			for (const elementPath of elementPaths) {
+				if (!elementPath.isExpression()) {
+					elements.push(undefined);
+					continue;
+				}
+				const context: StaticEvaluationContext = {
+					file,
+					expressionSteps: 0,
+					aliasHops: 0,
+					activeBindings: new Set<Binding>(),
+					evaluationSteps,
+				};
+				const result = evaluateStaticString(elementPath, context);
+				elements.push({ path: elementPath, value: result.kind === "known" ? result.value : undefined });
+			}
+			if (!isStaticModeCandidate(elements)) return;
+			commitStaticFileSteps(evaluationSteps, file, fileState);
+			for (let index = 0; index < elements.length; index++) {
+				const current = elements[index];
+				if (!current?.value) continue;
+				const preceding = index > 0 ? elements[index - 1] : undefined;
+				if (
+					!retiredModeArgumentPattern.test(current.value) &&
+					!(preceding?.value === "--mode" && retiredModeValuePattern.test(current.value))
+				)
+					continue;
+				const violationPath = preceding?.value === "--mode" ? preceding.path : current.path;
+				violations.add(`${file}:${staticNodeLocation(violationPath.node).line}: invokes removed --mode rpc`);
+			}
+		},
+	});
+	return [...violations];
+}
+
+function legacyRpcModeAliasViolations(file: string, contents: string): string[] {
 	const { masked, values: bindings } = staticStringBindings(contents);
-	const patterns = [...retiredExternalModeInvocationPatterns, ...constructedRetiredIngressPatterns];
-	const violations = patterns.flatMap(pattern =>
-		[...contents.matchAll(pattern)].map(
-			match => `${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`,
-		),
-	);
+	const violations: string[] = [];
 	for (const match of masked.matchAll(/\[[^\]\r\n]*\]/g)) {
 		const argv = match[0].slice(1, -1).split(",");
 		for (let index = 0; index < argv.length; index++) {
@@ -366,15 +810,31 @@ function rpcModeInvocationViolations(file: string, contents: string): string[] {
 			const value = staticStringValue(expression, bindings);
 			const preceding = index > 0 ? staticStringValue(argv[index - 1], bindings) : undefined;
 			if (
-				value === undefined ||
-				(!retiredModeArgumentPattern.test(value) &&
-					!(preceding === "--mode" && retiredModeValuePattern.test(value)))
-			)
-				continue;
-			violations.push(`${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`);
+				value !== undefined &&
+				(retiredModeArgumentPattern.test(value) || (preceding === "--mode" && retiredModeValuePattern.test(value)))
+			) {
+				violations.push(`${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`);
+			}
 		}
 	}
 	return violations;
+}
+
+function rpcModeInvocationViolations(file: string, contents: string): string[] {
+	if (isGeneratedDocumentationIndex(file) || !isExecutableSource(file) || allowedRpcModeInvocationTests.has(file))
+		return [];
+	const patterns = [...retiredExternalModeInvocationPatterns, ...constructedRetiredIngressPatterns];
+	const violations = patterns.flatMap(pattern =>
+		[...contents.matchAll(pattern)].map(
+			match => `${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`,
+		),
+	);
+	if (retiredModeParserOptions(file)) {
+		violations.push(...staticRetiredModeInvocationViolations(file, contents));
+	} else {
+		violations.push(...legacyRpcModeAliasViolations(file, contents));
+	}
+	return [...new Set(violations)];
 }
 
 function bridgeClientPackageMetadataViolation(file: string, contents: string): string | undefined {
@@ -1353,10 +1813,16 @@ async function scan(): Promise<string[]> {
 	return violations;
 }
 
+interface SelfTestFixtureOptions {
+	expectedDiagnostics?: readonly string[];
+	timeoutMs?: number;
+}
+
 async function runSelfTestFixture(
 	files: Record<string, string>,
 	expectedExitCode: number,
 	expectedOutput?: string,
+	options: SelfTestFixtureOptions = {},
 ): Promise<void> {
 	const fixture = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-sdk-canonicalization-"));
 	try {
@@ -1368,22 +1834,102 @@ async function runSelfTestFixture(
 		const init = Bun.spawnSync(["git", "init", "-q"], { cwd: fixture, stdout: "pipe", stderr: "pipe" });
 		const add = Bun.spawnSync(["git", "add", "."], { cwd: fixture, stdout: "pipe", stderr: "pipe" });
 		if (init.exitCode !== 0 || add.exitCode !== 0) throw new Error("unable to create scanner self-test fixture");
-		const result = Bun.spawnSync([process.execPath, import.meta.path], {
+		const timeoutMs = options.timeoutMs ?? 10_000;
+		const scanner = Bun.spawn([process.execPath, import.meta.path], {
 			cwd: repoRoot,
 			env: { ...process.env, GJC_SDK_CANONICALIZATION_SCAN_ROOT: fixture },
 			stdout: "pipe",
 			stderr: "pipe",
+			timeout: timeoutMs,
 		});
-		const output = `${new TextDecoder().decode(result.stdout)}${new TextDecoder().decode(result.stderr)}`;
-		if (result.exitCode !== expectedExitCode) {
-			throw new Error(`self-test expected exit ${expectedExitCode}, got ${result.exitCode}: ${output}`);
+		const [exitCode, stdout, stderr] = await Promise.all([
+			scanner.exited,
+			new Response(scanner.stdout).text(),
+			new Response(scanner.stderr).text(),
+		]);
+		const output = `${stdout}${stderr}`;
+		if (scanner.signalCode !== null) {
+			throw new Error(`self-test timed out after ${timeoutMs}ms: ${output}`);
+		}
+		if (exitCode !== expectedExitCode) {
+			throw new Error(`self-test expected exit ${expectedExitCode}, got ${exitCode}: ${output}`);
 		}
 		if (expectedOutput && !output.includes(expectedOutput)) {
 			throw new Error(`self-test expected output ${JSON.stringify(expectedOutput)}, got: ${output}`);
 		}
+		if (options.expectedDiagnostics) {
+			const diagnostics = output.split(/\r?\n/).filter(line => line.endsWith(": invokes removed --mode rpc"));
+			if (
+				diagnostics.length !== options.expectedDiagnostics.length ||
+				diagnostics.some((diagnostic, index) => diagnostic !== options.expectedDiagnostics?.[index])
+			) {
+				throw new Error(
+					`self-test expected diagnostics ${JSON.stringify(options.expectedDiagnostics)}, got ${JSON.stringify(diagnostics)}`,
+				);
+			}
+		}
 	} finally {
 		await fs.rm(fixture, { recursive: true, force: true });
 	}
+}
+
+const retiredModeFixtureDirectory = "packages/coding-agent/test/fixtures/";
+
+function retiredModeFixturePath(name: string): string {
+	return `${retiredModeFixtureDirectory}${name}`;
+}
+
+function retiredModeDiagnostic(file: string, line = 1): string {
+	return `${file}:${line}: invokes removed --mode rpc`;
+}
+
+interface ExactRetiredModeFixtureOptions {
+	expectedOutput?: string;
+	timeoutMs?: number;
+}
+
+async function runExactRetiredModeFixture(
+	name: string,
+	contents: string,
+	expectedExitCode: number,
+	expectedDiagnostics: readonly string[],
+	options: ExactRetiredModeFixtureOptions = {},
+): Promise<void> {
+	const file = retiredModeFixturePath(name);
+	await runSelfTestFixture({ [file]: contents }, expectedExitCode, options.expectedOutput, {
+		expectedDiagnostics,
+		timeoutMs: options.timeoutMs,
+	});
+}
+
+function staticBinaryExpression(left: string, right: string, operandCount: number): string {
+	return [JSON.stringify(left), JSON.stringify(right), ...Array.from({ length: operandCount - 2 }, () => '""')].join(
+		" + ",
+	);
+}
+
+function sourceLocationAt(contents: string, offset: number): { line: number; column: number } {
+	return {
+		line: lineNumber(contents, offset),
+		column: offset - contents.lastIndexOf("\n", offset - 1) - 1,
+	};
+}
+
+function staticBudgetDiagnostic(
+	file: string,
+	location: { line: number; column: number },
+	kind: StaticAnalysisBudgetKind,
+	limit: number,
+	observed: number,
+): string {
+	return `${file}:${location.line}:${location.column}: static retired-mode analysis budget exceeded (kind=${kind}, limit=${limit}, observed=${observed})`;
+}
+
+function aliasChainSource(bindingCount: number): string {
+	const bindings = Array.from({ length: bindingCount }, (_, index) =>
+		index === 0 ? 'const a0 = "rpc";' : `const a${index} = a${index - 1};`,
+	);
+	return `${bindings.join("\n")}\nBun.spawnSync(["--mode", a${bindingCount - 1}]);\n`;
 }
 
 async function selfTest(): Promise<void> {
@@ -1427,6 +1973,331 @@ async function selfTest(): Promise<void> {
 		},
 		1,
 		"invokes removed --mode rpc",
+	);
+	await runExactRetiredModeFixture(
+		"typed-rpc-alias.ts",
+		'const retiredMode: string = "rpc"; Bun.spawnSync(["gjc", "--mode", retiredMode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("typed-rpc-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"typed-bridge-alias.ts",
+		'const retiredMode: string = "bridge-compat"; Bun.spawnSync(["gjc", "--mode", retiredMode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("typed-bridge-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"typed-unattended-alias.ts",
+		'const retiredMode: string = "unattended"; Bun.spawnSync(["gjc", "--mode", retiredMode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("typed-unattended-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"ts-as-string.ts",
+		'const mode = "rpc" as string; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("ts-as-string.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"ts-as-const.ts",
+		'const mode = "rpc" as const; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("ts-as-const.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"ts-use-assertion.ts",
+		'const mode = "rpc"; Bun.spawnSync(["gjc", "--mode", mode as string]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("ts-use-assertion.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"ts-angle-assertion.ts",
+		'const mode = <string>"rpc"; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("ts-angle-assertion.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"ts-satisfies.ts",
+		'const mode = "rpc" satisfies string; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("ts-satisfies.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"ts-non-null.ts",
+		'const mode = ("rpc" as string)!; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("ts-non-null.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"parenthesized-alias.ts",
+		'const mode = (("rpc")); Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("parenthesized-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"typed-alias-chain.ts",
+		'const prefix: string = "r"; const mode = (prefix + "pc") as string; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("typed-alias-chain.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"template-alias.ts",
+		`const prefix = "r"; const mode = \`\${prefix}pc\`; Bun.spawnSync(["gjc", "--mode", mode]);\n`,
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("template-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"literal-join-alias.ts",
+		'const mode = ["r", "pc"].join(""); Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("literal-join-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"constructed-mode-flag-alias.ts",
+		'const flag = ["--", "mode"].join(""); const mode: string = "rpc"; Bun.spawnSync(["gjc", flag, mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("constructed-mode-flag-alias.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"constructed-mode-flag-join.ts",
+		'Bun.spawnSync(["gjc", ["--m", "ode"].join(""), "rpc"]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("constructed-mode-flag-join.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"constructed-mode-flag-binary.ts",
+		'const mode: string = "rpc"; Bun.spawnSync(["gjc", "--m" + "ode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("constructed-mode-flag-binary.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"constructed-mode-flag-template.ts",
+		`const suffix = "ode"; Bun.spawnSync(["gjc", \`--m\${suffix}\`, "rpc"]);\n`,
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("constructed-mode-flag-template.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"constructed-mode-flag-aliased.ts",
+		'const flag = ["--m", "ode"].join(""); const mode: string = "rpc"; Bun.spawnSync(["gjc", flag, mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("constructed-mode-flag-aliased.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"inner-retired-shadow.ts",
+		'const mode = "acp";\n{ const mode: string = "rpc"; Bun.spawnSync(["gjc", "--mode", mode]); }\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("inner-retired-shadow.ts"), 2)],
+	);
+	await runExactRetiredModeFixture(
+		"closure-forward-const.ts",
+		'const launch = () => Bun.spawnSync(["gjc", "--mode", mode]);\nconst mode = "rpc";\nlaunch();\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("closure-forward-const.ts"), 1)],
+	);
+	await runExactRetiredModeFixture(
+		"safe-block-shadow.ts",
+		'const mode = "rpc"; { const mode = "acp"; Bun.spawnSync(["gjc", "--mode", mode]); }\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"parameter-shadow.ts",
+		'const mode = "rpc"; function launch(mode: string) { Bun.spawnSync(["gjc", "--mode", mode]); } launch("acp");\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"catch-shadow.ts",
+		'const mode = "rpc"; try { throw "acp"; } catch (mode) { Bun.spawnSync(["gjc", "--mode", mode]); }\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"destructure-shadow.ts",
+		'const mode = "rpc"; const { mode: shadow } = { mode: "acp" }; Bun.spawnSync(["gjc", "--mode", shadow]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"sibling-shadow.ts",
+		'{ const mode = "rpc"; void mode; } { const mode = "acp"; Bun.spawnSync(["gjc", "--mode", mode]); }\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"direct-tdz.ts",
+		'Bun.spawnSync(["gjc", "--mode", mode]); const mode = "rpc";\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"pre-use-safe-to-retired.ts",
+		'let mode = "acp"; mode = "rpc"; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("pre-use-safe-to-retired.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"pre-use-retired-to-safe.ts",
+		'let mode = "rpc"; mode = "acp"; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"later-safe-write.ts",
+		'let mode = "rpc"; Bun.spawnSync(["gjc", "--mode", mode]); mode = "acp";\n',
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("later-safe-write.ts"))],
+	);
+	await runExactRetiredModeFixture(
+		"later-retired-write.ts",
+		'let mode = "acp"; Bun.spawnSync(["gjc", "--mode", mode]); mode = "rpc";\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"branch-write.ts",
+		'let mode = "acp"; if (condition) mode = "rpc"; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"compound-write.ts",
+		'let mode = "rpc"; mode += "-compat"; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"update-write.ts",
+		'let mode = "rpc"; mode++; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"dynamic-member-controls.ts",
+		'const dynamicMode = process.env.MODE; const state = { mode: "rpc" }; Bun.spawnSync(["gjc", "--mode", dynamicMode]); Bun.spawnSync(["gjc", "--mode", state.mode]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"typed-acp-control.ts",
+		'const mode: string = "acp"; Bun.spawnSync(["gjc", "--mode", mode]);\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture("unused-retired-alias.ts", 'const mode = "rpc"; void mode;\n', 0, []);
+	await runExactRetiredModeFixture(
+		"unrelated-array.ts",
+		'const values = ["rpc", "bridge-compat", "unattended"]; void values;\n',
+		0,
+		[],
+	);
+	await runExactRetiredModeFixture(
+		"cycle.ts",
+		'const a = b; const b = a; Bun.spawnSync(["gjc", "--mode", a]);\n',
+		0,
+		[],
+		{ timeoutMs: 2_000 },
+	);
+	await runExactRetiredModeFixture("deduplicated-direct-mode.ts", 'Bun.spawnSync(["gjc", "--mode", "rpc"]);\n', 1, [
+		retiredModeDiagnostic(retiredModeFixturePath("deduplicated-direct-mode.ts")),
+	]);
+	await runExactRetiredModeFixture(
+		"harmless-comment.ts",
+		'// RPC compatibility was retired; use ACP instead.\nconst mode = "acp";\nvoid mode;\n',
+		0,
+		[],
+	);
+	const parserFixtures: ReadonlyArray<readonly [string, string]> = [
+		["parser-js.js", 'const mode = "acp";\n'],
+		["parser-jsx.jsx", "const element = <div />;\nvoid element;\n"],
+		["parser-mjs.mjs", 'export const mode = "acp";\n'],
+		["parser-cjs.cjs", 'const mode = "acp";\n'],
+		["parser-ts.ts", 'const mode: string = "acp";\n'],
+		["parser-tsx.tsx", "const element: JSX.Element = <div />;\nvoid element;\n"],
+		["parser-mts.mts", 'export const mode: string = "acp";\n'],
+		["parser-cts.cts", 'const mode: string = "acp";\n'],
+		["parser-d-ts.d.ts", "declare const mode: string;\n"],
+		["parser-d-mts.d.mts", "export declare const mode: string;\n"],
+		["parser-d-cts.d.cts", "declare const mode: string;\n"],
+		["parser-import-attributes.js", 'import value from "./fixture.json" with { type: "json" };\nvoid value;\n'],
+		["parser-shebang.js", '#!/usr/bin/env bun\nconst mode = "acp";\n'],
+	];
+	for (const [name, contents] of parserFixtures) {
+		await runExactRetiredModeFixture(name, contents, 0, []);
+	}
+	const malformedSource = "const mode: string = ;\n";
+	await runExactRetiredModeFixture("malformed.ts", malformedSource, 2, [], {
+		expectedOutput: `${retiredModeFixturePath("malformed.ts")}:1:21: static retired-mode analysis parse failed`,
+	});
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/python-text-only.py":
+				'def launch():\n    subprocess.run(["gjc", "--mode", "rpc"])\n',
+		},
+		1,
+		undefined,
+		{
+			expectedDiagnostics: [retiredModeDiagnostic("packages/coding-agent/test/fixtures/python-text-only.py", 2)],
+		},
+	);
+	// 128/129 literals joined by binary nodes consume exactly 255/257 expression steps.
+	const expressionUnderSource = `Bun.spawnSync(["--mode", ${staticBinaryExpression("r", "pc", 128)}]);\n`;
+	await runExactRetiredModeFixture("expression-step-under-limit.ts", expressionUnderSource, 1, [
+		retiredModeDiagnostic(retiredModeFixturePath("expression-step-under-limit.ts")),
+	]);
+	const expressionOverSource = `Bun.spawnSync(["--mode", ${staticBinaryExpression("r", "pc", 129)}]);\n`;
+	const expressionOverOffset = expressionOverSource.lastIndexOf('""');
+	await runExactRetiredModeFixture("expression-step-over-limit.ts", expressionOverSource, 2, [], {
+		expectedOutput: staticBudgetDiagnostic(
+			retiredModeFixturePath("expression-step-over-limit.ts"),
+			sourceLocationAt(expressionOverSource, expressionOverOffset),
+			"expression_steps",
+			256,
+			257,
+		),
+	});
+	// a63 through a0 follows 64 bindings and evaluates 65 nodes including the literal initializer.
+	const aliasUnderSource = aliasChainSource(64);
+	await runExactRetiredModeFixture("alias-hop-under-limit.ts", aliasUnderSource, 1, [
+		retiredModeDiagnostic(retiredModeFixturePath("alias-hop-under-limit.ts"), 65),
+	]);
+	const aliasOverSource = aliasChainSource(65);
+	const aliasOverOffset = aliasOverSource.indexOf("a0;", aliasOverSource.indexOf("const a1"));
+	await runExactRetiredModeFixture("alias-hop-over-limit.ts", aliasOverSource, 2, [], {
+		expectedOutput: staticBudgetDiagnostic(
+			retiredModeFixturePath("alias-hop-over-limit.ts"),
+			sourceLocationAt(aliasOverSource, aliasOverOffset),
+			"alias_hops",
+			64,
+			65,
+		),
+	});
+	// Four arrays each consume one --mode literal plus a 255-node safe value: 4 × 256 = 1,024.
+	const fileUnderSource = Array.from(
+		{ length: 4 },
+		() => `["--mode", ${staticBinaryExpression("a", "cp", 128)}];`,
+	).join("\n");
+	await runExactRetiredModeFixture("file-step-under-limit.ts", `${fileUnderSource}\n`, 0, []);
+	const fileOverSource = `${fileUnderSource}\n["--mode", "acp"];\n`;
+	const fileOverOffset = fileOverSource.lastIndexOf('"--mode"');
+	await runExactRetiredModeFixture("file-step-over-limit.ts", fileOverSource, 2, [], {
+		expectedOutput: staticBudgetDiagnostic(
+			retiredModeFixturePath("file-step-over-limit.ts"),
+			sourceLocationAt(fileOverSource, fileOverOffset),
+			"file_steps",
+			1_024,
+			1_025,
+		),
+	});
+	const unrelatedFileBudgetSource = Array.from(
+		{ length: 4 },
+		() => `["unrelated", ${staticBinaryExpression("a", "cp", 128)}];`,
+	).join("\n");
+	await runExactRetiredModeFixture(
+		"unrelated-file-step-control.ts",
+		`${unrelatedFileBudgetSource}\n["--mode", "rpc"];\n`,
+		1,
+		[retiredModeDiagnostic(retiredModeFixturePath("unrelated-file-step-control.ts"), 5)],
 	);
 
 	await runSelfTestFixture(
