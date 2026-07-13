@@ -734,6 +734,19 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		]);
 		expect(await Bun.file(outputFile).text()).toContain("has_platform_policy=true");
 	});
+	test("a Linux system-dependency change schedules the platform-policy lane", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-system-deps-"));
+		tempDirs.push(tempDir);
+		const outputFile = path.join(tempDir, "github-output.txt");
+
+		const { exitCode } = await runScript(["--matrix-json"], "scripts/ci-install-system-deps.sh", {
+			CI_DEV_PLAN_MODE: "pr",
+			GITHUB_EVENT_NAME: "pull_request",
+			GITHUB_OUTPUT: outputFile,
+		});
+		expect(exitCode).toBe(0);
+		expect(await Bun.file(outputFile).text()).toContain("has_platform_policy=true");
+	});
 	test("an unlisted session shell path does not schedule the platform-policy lane", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-session-nonowner-"));
 		tempDirs.push(tempDir);

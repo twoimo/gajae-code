@@ -19,6 +19,7 @@ const PLATFORM_POLICY_PATHS = new Set([
 	"scripts/gjc-session/create.sh",
 	"scripts/gjc-session/prompt.sh",
 	"scripts/gjc-session/postmortem.sh",
+	"scripts/ci-install-system-deps.sh",
 	"scripts/release-publish-order.test.ts",
 	"scripts/verify-platform-test-policy.test.ts",
 	"scripts/verify-platform-test-policy.ts",
