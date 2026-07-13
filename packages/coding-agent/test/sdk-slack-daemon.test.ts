@@ -25,9 +25,10 @@ class FakeSlack {
 	postGate?: Promise<void>;
 	startGate?: Promise<void>;
 	postStarts = 0;
+	#postStartWaiters: Array<{ count: number; resolve: () => void }> = [];
 	startCalls = 0;
 	stops = 0;
-	onFind?: () => Promise<void>;
+	onFind?: (clientMsgId: string) => Promise<void>;
 	onStart?: (handler: (envelope: SlackSocketEnvelope) => void | Promise<void>) => Promise<void>;
 
 	async start(handler: (envelope: SlackSocketEnvelope) => void | Promise<void>): Promise<void> {
@@ -47,6 +48,20 @@ class FakeSlack {
 		await this.onAck?.(envelopeId);
 	}
 
+	waitForPostStartCount(count: number): Promise<void> {
+		if (this.postStarts >= count) return Promise.resolve();
+		const waiter = Promise.withResolvers<void>();
+		this.#postStartWaiters.push({ count, resolve: waiter.resolve });
+		return waiter.promise;
+	}
+	#resolvePostStartWaiters(): void {
+		this.#postStartWaiters = this.#postStartWaiters.filter(waiter => {
+			if (this.postStarts < waiter.count) return true;
+			waiter.resolve();
+			return false;
+		});
+	}
+
 	async postMessage(input: {
 		channel: string;
 		text: string;
@@ -54,6 +69,7 @@ class FakeSlack {
 		clientMsgId: string;
 	}): Promise<{ channel: string; ts: string; client_msg_id: string }> {
 		this.postStarts++;
+		this.#resolvePostStartWaiters();
 		await this.postGate;
 		if (this.failPost) throw new Error("Slack rate limited");
 		this.posts.push(input);
@@ -78,7 +94,7 @@ class FakeSlack {
 			throw new SlackProviderError("connection", "chat.postMessage");
 		}
 
-		await this.onFind?.();
+		await this.onFind?.(input.clientMsgId);
 		return this.knownMessages.get(input.clientMsgId) ?? null;
 	}
 }
@@ -377,7 +393,7 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 				publicationOwnerId: "second",
 			});
 			const firstPost = first.postRoot("session", "root");
-			for (let attempt = 0; attempt < 100 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
+			await fake.waitForPostStartCount(1);
 			const key = "T1:C1:intent:session";
 			const firstLease = await first.store.read(key);
 			if (!firstLease) throw new Error("Slack root lease was not persisted");
@@ -446,7 +462,7 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 				publicationOwnerId: "second",
 			});
 			const firstPost = first.notify("session", "question", "action");
-			for (let attempt = 0; attempt < 100 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
+			await fake.waitForPostStartCount(1);
 			const key = "T1:C1:intent:session";
 			const firstLease = await first.store.read(key);
 			if (!firstLease) throw new Error("Slack action lease was not persisted");
@@ -609,14 +625,14 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			const reconciliationStarted = Promise.withResolvers<void>();
 			const releaseReconciliation = Promise.withResolvers<void>();
 			fake.postGate = releasePost.promise;
-			fake.onFind = async () => {
-				if (fake.posts.length === 0) return;
+			fake.onFind = async clientMsgId => {
+				if (clientMsgId !== "client-id-1" || fake.posts.length === 0) return;
 				reconciliationStarted.resolve();
 				await releaseReconciliation.promise;
 			};
 			fake.failPostProtocolAfterAccept = true;
 			const posting = daemon.postRoot("session", "root");
-			for (let attempt = 0; attempt < 20 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
+			await fake.waitForPostStartCount(1);
 			setEndpointGeneration(2);
 			releasePost.resolve();
 			await reconciliationStarted.promise;
@@ -644,15 +660,15 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			const reconciliationStarted = Promise.withResolvers<void>();
 			const releaseReconciliation = Promise.withResolvers<void>();
 			fake.postGate = releasePost.promise;
-			fake.onFind = async () => {
-				if (fake.posts.length === 0) return;
+			fake.onFind = async clientMsgId => {
+				if (clientMsgId !== "client-id-1" || fake.posts.length === 0) return;
 				reconciliationStarted.resolve();
 				await releaseReconciliation.promise;
 			};
 			fake.failPostProtocolAfterAccept = true;
 
 			const generationOne = daemon.postRoot("session", "generation one root", 1);
-			for (let attempt = 0; attempt < 20 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
+			await fake.waitForPostStartCount(1);
 			setEndpointGeneration(2);
 			releasePost.resolve();
 			await reconciliationStarted.promise;

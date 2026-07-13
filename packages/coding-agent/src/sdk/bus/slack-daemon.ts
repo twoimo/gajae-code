@@ -1783,13 +1783,11 @@ export class SlackNotificationDaemon {
 		const lease: ChatEffectLease = { owner: this.#publicationOwnerId, epoch: effect.epoch };
 		// A recovered lease may have crossed the provider boundary before its owner
 		// died, and a fresh post may have reached Slack at a now-superseded generation.
-		// Reconcile first in all cases; when reconciliation proves absence, terminalize
-		// any accepted, uncertain, leased, or stale-generation publication before a replacement.
+		// Reconcile first in all cases. Only an effect that may have crossed the
+		// provider boundary is terminalized after an absent reconciliation; a stale
+		// pending effect remains nonterminal for recovery.
 		const requiresReconciliation =
-			initial.state === "accepted" ||
-			initial.state === "uncertain" ||
-			initial.state === "leased" ||
-			!(await this.#providerEffectCurrent(initial));
+			initial.state === "accepted" || initial.state === "uncertain" || initial.state === "leased";
 		try {
 			const posted = await this.#withEffectLease(id, lease, async () => {
 				const found = await this.options.provider.findMessageByClientMsgId({

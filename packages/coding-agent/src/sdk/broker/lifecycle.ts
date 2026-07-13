@@ -1394,29 +1394,40 @@ export async function executeLifecycle(
 					"Session endpoint is unavailable and its durable process identity could not be verified.",
 				);
 			note = "Endpoint close was unreachable; sent SIGTERM to the durably identified session process.";
-			if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
-				const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
-				if (stale) return stale;
-				if (!(await signalVerifiedSession(record, id, "SIGKILL")))
-					return fail(
-						"close_refused",
-						"Session did not close after transport fallback and its durable process identity could not be verified for SIGKILL.",
-					);
-				note =
-					"Endpoint close was unreachable and SIGTERM did not complete within the bounded deadline; sent SIGKILL to the durably identified session process.";
-				if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
-					await recordTerminalUncertain(broker, id, record.locator.stateRoot, record.pid);
-					return fail(
-						"terminal_uncertain",
-						"Session did not unregister, remove its endpoint, and exit after bounded transport fallback.",
-					);
-				}
+		}
+
+		let closed = await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS);
+		if (!closed && !usedSignalFallback) {
+			const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
+			if (stale) return stale;
+			if (!(await signalVerifiedSession(record, id, "SIGTERM"))) {
+				await recordTerminalUncertain(broker, id, record.locator.stateRoot, record.pid);
+				return fail(
+					"terminal_uncertain",
+					"Session acknowledged session.close but its durable process identity could not be verified for shutdown escalation.",
+				);
 			}
-		} else if (!(await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS))) {
+			note =
+				"Session acknowledged session.close but graceful teardown did not complete within the bounded deadline; sent SIGTERM to the durably identified session process.";
+			closed = await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS);
+		}
+		if (!closed) {
+			const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
+			if (stale) return stale;
+			if (!(await signalVerifiedSession(record, id, "SIGKILL")))
+				return fail(
+					"close_refused",
+					"Session did not close after SIGTERM and its durable process identity could not be verified for SIGKILL.",
+				);
+			note =
+				"Session teardown did not complete after SIGTERM within the bounded deadline; sent SIGKILL to the durably identified session process.";
+			closed = await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS);
+		}
+		if (!closed) {
 			await recordTerminalUncertain(broker, id, record.locator.stateRoot, record.pid);
 			return fail(
 				"terminal_uncertain",
-				"Session acknowledged session.close but did not unregister, remove its endpoint, and exit before the deadline.",
+				"Session did not unregister, remove its endpoint, and exit after bounded shutdown escalation.",
 			);
 		}
 
