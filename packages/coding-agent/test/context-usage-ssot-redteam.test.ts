@@ -160,7 +160,6 @@ const testModel: Model = {
 	maxTokens: 8_192,
 };
 
-
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
@@ -277,7 +276,6 @@ describe("context usage SSOT red-team probes", () => {
 		expect(heuristic.source).toBe("heuristic");
 		expect(providerAnchor.source).toBe("provider_anchor");
 	});
-
 
 	it("retains only heuristic deltas after a provider anchor", async () => {
 		const { session, sessionManager } = await createSession();
