@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type RateLimitItem, RateLimitPool } from "../src/notifications/rate-limit-pool";
+import { type RateLimitItem, RateLimitPool } from "../src/sdk/bus/rate-limit-pool";
 
 function item(
 	sessionId: string,

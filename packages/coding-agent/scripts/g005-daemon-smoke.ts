@@ -18,14 +18,14 @@ import {
 	resolveGjcTmuxCommand,
 } from "../src/gjc-runtime/tmux-common";
 import { forceCloseGjcTmuxSession, statusGjcTmuxSession } from "../src/gjc-runtime/tmux-sessions";
-import type { SessionCloseFrame, SessionCreateFrame } from "../src/notifications/index";
+import type { SessionCloseFrame, SessionCreateFrame } from "../src/sdk/bus/index";
 import {
 	type AuditEvent,
 	handleLifecycleRequest,
 	type LedgerDoc,
 	type LedgerStore,
 	type OrchestratorDeps,
-} from "../src/notifications/lifecycle-orchestrator";
+} from "../src/sdk/bus/lifecycle-orchestrator";
 
 const tmux = resolveGjcTmuxCommand(process.env);
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g005-"));

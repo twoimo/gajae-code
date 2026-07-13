@@ -8,8 +8,8 @@ import {
 	splitTelegramHtml,
 	TELEGRAM_MESSAGE_LIMIT,
 	TELEGRAM_PARSE_MODE,
-} from "../src/notifications/html-format";
-import { deliverRichWithFallback } from "../src/notifications/rich-render";
+} from "../src/sdk/bus/html-format";
+import { deliverRichWithFallback } from "../src/sdk/bus/rich-render";
 import {
 	acquireDaemonOwnership,
 	DAEMON_GENERATION,
@@ -24,8 +24,8 @@ import {
 	TelegramEventDispatchState,
 	TelegramNotificationDaemon,
 	TelegramUpdatePoller,
-} from "../src/notifications/telegram-daemon";
-import { runDaemonInternal, runDaemonSmoke } from "../src/notifications/telegram-daemon-cli";
+} from "../src/sdk/bus/telegram-daemon";
+import { runDaemonInternal, runDaemonSmoke } from "../src/sdk/bus/telegram-daemon-cli";
 
 const THREADED_FALLBACK_NOTICE =
 	"Flat Telegram private chat supports outbound notifications and inline ask buttons only. Enable Threaded Mode in @BotFather > Bot Settings > Threads Settings for free-text replies and session commands.";
@@ -269,7 +269,9 @@ describe("telegram daemon", () => {
 				"notifications.telegram.botToken": " ",
 				"notifications.telegram.chatId": "\t",
 				"notifications.discord.botToken": "discord-token",
-				"notifications.discord.channelId": "discord-channel",
+				"notifications.discord.applicationId": "discord-app",
+				"notifications.discord.guildId": "discord-guild",
+				"notifications.discord.parentChannelId": "discord-parent",
 			}) as Settings,
 			agentDir,
 		);
@@ -738,7 +740,9 @@ describe("telegram daemon", () => {
 				"notifications.telegram.botToken": " ",
 				"notifications.telegram.chatId": "\t",
 				"notifications.discord.botToken": "discord-token",
-				"notifications.discord.channelId": "discord-channel",
+				"notifications.discord.applicationId": "discord-app",
+				"notifications.discord.guildId": "discord-guild",
+				"notifications.discord.parentChannelId": "discord-parent",
 			}) as Settings,
 			agentDir,
 		);
@@ -1918,10 +1922,10 @@ describe("telegram daemon", () => {
 			randomId: () => "owner",
 		});
 
-		// Endpoint discovery files live at <cwd>/.gjc/state/notifications/<sessionId>.json.
+		// Endpoint discovery files live at <cwd>/.gjc/state/sdk/<sessionId>.json.
 		const writeEndpoint = async (cwd: string, sessionId: string, url: string) => {
 			await registerNotificationRoot({ settings: s, cwd, sessionId });
-			const dir = path.join(cwd, ".gjc", "state", "notifications");
+			const dir = path.join(cwd, ".gjc", "state", "sdk");
 			fs.mkdirSync(dir, { recursive: true });
 			fs.writeFileSync(path.join(dir, `${sessionId}.json`), JSON.stringify({ url, token: "tok" }));
 		};
@@ -2067,7 +2071,7 @@ describe("telegram daemon connection-drop resilience (repro-first)", () => {
 		const cwd = path.join(agentDir, "sess-cwd");
 		await registerNotificationRoot({ settings: s, cwd, sessionId: "S" });
 		const roots = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8")) as { roots: string[] };
-		const endpointDir = path.join(roots.roots[0]!, "notifications");
+		const endpointDir = path.join(roots.roots[0]!, "sdk");
 		fs.mkdirSync(endpointDir, { recursive: true });
 		fs.writeFileSync(path.join(endpointDir, "S.json"), JSON.stringify({ url: "ws://s", token: "ts" }));
 
@@ -3351,7 +3355,7 @@ test("session_closed tombstones its endpoint generation so scans do not recreate
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "S" });
-	const endpointDir = path.join(cwd, ".gjc", "state", "notifications");
+	const endpointDir = path.join(cwd, ".gjc", "state", "sdk");
 	fs.mkdirSync(endpointDir, { recursive: true });
 	fs.writeFileSync(path.join(endpointDir, "S.json"), JSON.stringify({ url: "ws://live", token: "ts", pid: 4242 }));
 
@@ -3676,7 +3680,7 @@ describe("telegram daemon reconnect reconciliation", () => {
 		return (async () => {
 			await registerNotificationRoot({ settings: s, cwd, sessionId });
 			const roots = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8")) as { roots: string[] };
-			const dir = path.join(roots.roots[0]!, "notifications");
+			const dir = path.join(roots.roots[0]!, "sdk");
 			fs.mkdirSync(dir, { recursive: true });
 			fs.writeFileSync(path.join(dir, `${sessionId}.json`), JSON.stringify({ url: "ws://s", token: "ts" }));
 		})();
@@ -3827,7 +3831,7 @@ describe("telegram daemon reconnect answer routing", () => {
 		const cwd = path.join(agentDir, "cwd");
 		await registerNotificationRoot({ settings: s, cwd, sessionId: "S" });
 		const roots = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8")) as { roots: string[] };
-		const dir = path.join(roots.roots[0]!, "notifications");
+		const dir = path.join(roots.roots[0]!, "sdk");
 		fs.mkdirSync(dir, { recursive: true });
 		fs.writeFileSync(path.join(dir, "S.json"), JSON.stringify({ url: "ws://s", token: "ts" }));
 
@@ -4055,7 +4059,7 @@ test("a fresh daemon scanRoots reconnects an existing session endpoint", async (
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "live-session" });
-	const endpointDir = path.join(cwd, ".gjc", "state", "notifications");
+	const endpointDir = path.join(cwd, ".gjc", "state", "sdk");
 	fs.mkdirSync(endpointDir, { recursive: true });
 	fs.writeFileSync(path.join(endpointDir, "live-session.json"), JSON.stringify({ url: "ws://live", token: "tok" }));
 	const daemon = new TelegramNotificationDaemon({
@@ -4154,7 +4158,7 @@ test("scanRoots connects only live endpoints (skips stale + dead-PID records)", 
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "live" });
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "stale" });
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "dead" });
-	const endpointDir = path.join(cwd, ".gjc", "state", "notifications");
+	const endpointDir = path.join(cwd, ".gjc", "state", "sdk");
 	fs.mkdirSync(endpointDir, { recursive: true });
 	fs.writeFileSync(path.join(endpointDir, "live.json"), JSON.stringify({ url: "ws://live", token: "t", pid: 4242 }));
 	fs.writeFileSync(
@@ -4186,7 +4190,7 @@ test("scanRoots reaps stale and dead-PID session topics after the orphan grace w
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "stale" });
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "dead" });
-	const endpointDir = path.join(cwd, ".gjc", "state", "notifications");
+	const endpointDir = path.join(cwd, ".gjc", "state", "sdk");
 	fs.mkdirSync(endpointDir, { recursive: true });
 	fs.writeFileSync(
 		path.join(endpointDir, "stale.json"),
@@ -4230,7 +4234,7 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	const cwd = path.join(agentDir, "repo");
 	await registerNotificationRoot({ settings: s, cwd, sessionId: "missing" });
-	fs.mkdirSync(path.join(cwd, ".gjc", "state", "notifications"), { recursive: true });
+	fs.mkdirSync(path.join(cwd, ".gjc", "state", "sdk"), { recursive: true });
 	fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
 	fs.writeFileSync(
 		path.join(daemonPaths(agentDir).dir, "telegram-topics.json"),

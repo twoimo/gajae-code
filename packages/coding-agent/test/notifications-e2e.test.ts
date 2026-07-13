@@ -1,5 +1,5 @@
 /**
- * Deterministic end-to-end QA of the notifications SDK.
+ * Deterministic end-to-end QA of the Gajae-Code SDK notification transport.
  *
  * Drives the REAL stack — napi `NotificationServer` (Rust WS core) + real
  * WebSocket + the real Telegram reference client — with only Telegram's HTTP API
@@ -17,8 +17,8 @@ import { expect, test } from "bun:test";
 // freshly-built NotificationServer. The relative path targets this workspace's own
 // built `packages/natives/native` (which CI rebuilds), so the e2e exercises the real core.
 import { NotificationServer } from "../../natives/native/index.js";
-import { notificationActionPayload } from "../src/notifications/helpers";
-import { runTelegramReferenceClient } from "../src/notifications/telegram-reference";
+import { notificationActionPayload } from "../src/sdk/bus/helpers";
+import { runTelegramReferenceClient } from "../src/sdk/bus/telegram-reference";
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 function jsonResponse(body: unknown): Response {
@@ -81,7 +81,7 @@ test("e2e: ask -> Telegram -> button tap -> reply -> resolved", async () => {
 	expect(ep.url).toContain("ws://127.0.0.1:");
 
 	// ---- real reference client (real WS to the server; fake Telegram) ----
-	const endpointFile = `${stateRoot}/notifications/e2e.json`;
+	const endpointFile = `${stateRoot}/sdk/e2e.json`;
 	let clientError: unknown;
 	const clientDone = runTelegramReferenceClient({
 		botToken: "x",
@@ -145,11 +145,10 @@ test("e2e: ask -> Telegram -> button tap -> reply -> resolved", async () => {
 	expect(clientError).toBeUndefined();
 }, 30000);
 
-test("interactive ask answered remotely via answer source (no RPC)", async () => {
-	// Mirrors what the notifications extension's AskAnswerSource does, against the
-	// real server: a pending interactive ask is registered repliable and resolved
-	// by a remote reply mapped to the chosen option label — proving asks can be
-	// answered remotely without RPC/unattended mode.
+test("interactive ask answered remotely via SDK answer source", async () => {
+	// Mirrors the SDK bus AskAnswerSource against the real server: a pending
+	// interactive ask is registered repliable and resolved by a remote SDK reply
+	// mapped to the chosen option label.
 	const stateRoot = `/tmp/notif-e2e-ans-${process.pid}-${Date.now()}`;
 	const srv = new NotificationServer("ans", "tok", stateRoot, true);
 

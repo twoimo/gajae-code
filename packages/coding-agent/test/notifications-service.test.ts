@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
-import { tokenFingerprint } from "../src/notifications/config";
-import { daemonPaths } from "../src/notifications/daemon-paths";
-import type { NotificationServiceFs } from "../src/notifications/notification-service";
+import { tokenFingerprint } from "../src/sdk/bus/config";
+import { daemonPaths } from "../src/sdk/bus/daemon-paths";
+import type { NotificationServiceFs } from "../src/sdk/bus/notification-service";
 import {
 	buildNotificationStatusReport,
 	checkNotificationHealth,
@@ -12,7 +12,7 @@ import {
 	recoverNotifications,
 	sanitizeDiagnostic,
 	sendNotificationTest,
-} from "../src/notifications/notification-service";
+} from "../src/sdk/bus/notification-service";
 
 const TOKEN = "1234567890:ABCDEFghijkLmnOpQrsTuvWxYz012345678";
 

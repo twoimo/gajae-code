@@ -18,9 +18,9 @@ import WebSocket from "ws";
 // Import the WORKTREE native build directly (not @gajae-code/natives, which can
 // resolve to a different checkout in this dev environment).
 import { NotificationControlServer } from "../../natives/native/index.js";
-import { parseLifecycleCommand } from "../src/notifications/lifecycle-commands";
-import { attachLifecycleControl, fileAudit, fileLedgerStore } from "../src/notifications/lifecycle-control-runtime";
-import type { OrchestratorDeps } from "../src/notifications/lifecycle-orchestrator";
+import { parseLifecycleCommand } from "../src/sdk/bus/lifecycle-commands";
+import { attachLifecycleControl, fileAudit, fileLedgerStore } from "../src/sdk/bus/lifecycle-control-runtime";
+import type { OrchestratorDeps } from "../src/sdk/bus/lifecycle-orchestrator";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-"));
 const token = crypto.randomBytes(32).toString("base64url");

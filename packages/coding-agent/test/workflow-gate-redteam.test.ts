@@ -2,25 +2,25 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { RpcJsonSchema, RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import {
 	FileGateStore,
 	type GateAuditEvent,
 	MemoryGateStore,
 	WorkflowGateBroker,
 	WorkflowGateBrokerError,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
+} from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import {
 	assertSupportedGateSchema,
 	compileGateSchema,
 	GATE_SCHEMA_LIMITS,
 	validateGateAnswer,
 	WorkflowGateSchemaError,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-schema";
+} from "../src/modes/shared/agent-wire/workflow-gate-schema";
+import type { JsonSchema, WorkflowGate } from "../src/modes/shared/agent-wire/workflow-gate-types";
 
 function makeBroker() {
 	const audit: GateAuditEvent[] = [];
-	const advanced: Array<{ gate: RpcWorkflowGate; answer: unknown }> = [];
+	const advanced: Array<{ gate: WorkflowGate; answer: unknown }> = [];
 	const broker = new WorkflowGateBroker("redteam-run-20260605", new MemoryGateStore(), {
 		advance: (gate, answer) => {
 			advanced.push({ gate, answer });
@@ -30,8 +30,8 @@ function makeBroker() {
 	return { broker, audit, advanced };
 }
 
-function nestedObjectSchema(depth: number): RpcJsonSchema {
-	let schema: RpcJsonSchema = { type: "string" };
+function nestedObjectSchema(depth: number): JsonSchema {
+	let schema: JsonSchema = { type: "string" };
 	for (let i = 0; i < depth; i++) {
 		schema = { type: "object", properties: { child: schema }, required: ["child"] };
 	}

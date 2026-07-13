@@ -8,7 +8,6 @@ import { createHarnessCliEnv, type HarnessCliEnv } from "./harness-control-plane
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
-const fakeRpc = path.join(import.meta.dir, "harness-control-plane", "fixtures", "fake-rpc.ts");
 const sessionId = "tmux-owner-test";
 
 let root: string;
@@ -137,7 +136,7 @@ async function runHarness(
 			env: {
 				...cliEnv.env,
 				GJC_HARNESS_STATE_ROOT: root,
-				GJC_HARNESS_RPC_COMMAND: JSON.stringify(["bun", fakeRpc]),
+				GJC_HARNESS_TEST_ASSUME_LINUX_OWNER_ISOLATION: "1",
 				GJC_TMUX_COMMAND: tmuxCommand,
 				...env,
 			},
@@ -260,7 +259,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const seam = await createScopedHarnessSeam();
 		const result = await runHarness(seam.tmuxCommand, 0, {
 			GJC_HARNESS_TEST_CALLER_CGROUP: "/\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			PATH: `${seam.path}:${process.env.PATH ?? ""}`,
 		});
@@ -291,7 +290,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const seam = await createScopedHarnessSeam();
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_CALLER_CGROUP: "0::/user.slice/user-1.service\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			GJC_HARNESS_TEST_BOOTSTRAP_RECEIPT: receipt,
 			PATH: `${seam.path}:${process.env.PATH ?? ""}`,
@@ -311,7 +310,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const seam = await createScopedHarnessSeam();
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_CALLER_CGROUP: "/\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			GJC_HARNESS_TEST_NATIVE_RECEIPT: nativeReceipt,
 			PATH: `${seam.path}:${process.env.PATH ?? ""}`,
@@ -326,7 +325,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_SWAP_SERVER: "1",
 			GJC_HARNESS_TEST_CALLER_CGROUP: "/\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			PATH: `${seam.path}:${process.env.PATH ?? ""}`,
 		});
@@ -356,7 +355,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_SCOPED_REPLACE: "1",
 			GJC_HARNESS_TEST_CALLER_CGROUP: "0::/user.slice/user-1.service\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			PATH: `${seam.path}:${process.env.PATH ?? ""}`,
 		});
@@ -376,7 +375,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const seam = await createScopedHarnessSeam();
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_CALLER_CGROUP: "0::/user.slice/user-1.service\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			GJC_HARNESS_TEST_BOOTSTRAP_RECEIPT:
 				'{"schema_version":1,"ok":true,"code":"bootstrapped","native_session_id":"$1","server_pid":1,"server_start_time":"wrong","session_name":"gajae_code_harness_tmux-owner-test"}',
@@ -392,7 +391,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		const seam = await createScopedHarnessSeam();
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_CALLER_CGROUP: "0::/user.slice/user-1.service\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			GJC_HARNESS_TEST_KILL_FAIL: "1",
 			GJC_HARNESS_TEST_BOOTSTRAP_RECEIPT:
@@ -414,7 +413,7 @@ describe("HarnessCommand tmux-resident owner startup", () => {
 		);
 		const result = await runHarness(seam.tmuxCommand, 1, {
 			GJC_HARNESS_TEST_CALLER_CGROUP: "0::/user.slice/user-1.service\n",
-			GJC_HARNESS_TEST_SERVER_CGROUP: process.platform === "linux" ? "/gjc-owner-test.scope\n" : "",
+			GJC_HARNESS_TEST_SERVER_CGROUP: "/gjc-owner-test.scope\n",
 			GJC_HARNESS_TEST_SERVER_START_TIME: "1",
 			GJC_HARNESS_TEST_REPLACE_GENERATION: "1",
 			PATH: `${seam.path}:${process.env.PATH ?? ""}`,

@@ -8,7 +8,7 @@ import chalk from "chalk";
 import { parseEffort } from "../thinking";
 import { BUILTIN_TOOLS } from "../tools";
 
-export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui" | "bridge";
+export type Mode = "text" | "json" | "acp";
 
 export interface Args {
 	cwd?: string;
@@ -32,7 +32,6 @@ export interface Args {
 	mode?: Mode;
 	noSession?: boolean;
 	sessionDir?: string;
-	rpcListen?: string;
 	providerSessionId?: string;
 	fork?: string;
 	models?: string[];
@@ -101,15 +100,15 @@ export function parseArgs(args: string[]): Args {
 			result.allowHome = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (
-				mode === "text" ||
-				mode === "json" ||
-				mode === "rpc" ||
-				mode === "acp" ||
-				mode === "rpc-ui" ||
-				mode === "bridge"
-			) {
+			if (mode === "text" || mode === "json" || mode === "acp") {
 				result.mode = mode;
+			} else {
+				const removed = mode === "rpc" || mode === "rpc-ui" || mode === "bridge";
+				throw new CliParseError(
+					removed
+						? `--mode ${mode} was removed; external control now uses the Gajae-Code SDK (docs/sdk.md)`
+						: `invalid --mode value: ${mode} (expected text, json, or acp)`,
+				);
 			}
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
@@ -154,8 +153,6 @@ export function parseArgs(args: string[]): Args {
 			result.noSession = true;
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
-		} else if (arg === "--listen" && i + 1 < args.length) {
-			result.rpcListen = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map(s => s.trim());
 		} else if (arg === "--no-tools") {

@@ -439,8 +439,9 @@ describe("GJC tmux session management", () => {
 		}
 	});
 
-	it("fails closed before creating or tagging when the target server proof is unavailable", () => {
+	it("fails closed before tagging when native session identity is unavailable", () => {
 		const calls: string[][] = [];
+		injectSafeAbsentToSafeOwnerProof();
 		const spawnSyncSpy = spyOn(Bun, "spawnSync") as unknown as SpawnSyncSpy;
 		spawnSyncSpy.mockImplementation((cmd: string[]) => {
 			calls.push(cmd);
@@ -449,9 +450,9 @@ describe("GJC tmux session management", () => {
 		});
 
 		expect(() => createGjcTmuxSession({ GJC_TMUX_COMMAND: "tmux" })).toThrow(
-			"gjc_tmux_owner_isolation_server_unverifiable",
+			"gjc_tmux_owner_isolation_native_session_identity_unavailable",
 		);
-		expect(calls.some(cmd => cmd.includes("new-session"))).toBe(false);
+		expect(calls.some(cmd => cmd.includes("new-session"))).toBe(true);
 		expect(calls.some(cmd => cmd.includes("set-option") || cmd.includes("set-window-option"))).toBe(false);
 	});
 	it("rejects psmux before creating or tagging a managed session", async () => {

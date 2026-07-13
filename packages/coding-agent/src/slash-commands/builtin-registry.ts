@@ -42,7 +42,7 @@ import {
 	formatNotificationTestResult,
 	recoverNotifications,
 	sendNotificationTest,
-} from "../notifications/notification-service";
+} from "../sdk/bus/notification-service";
 import { computeCacheMissCostSummary, formatCacheMissSummaryLines } from "../session/cache-economics";
 import { formatModelOnboardingGuidance } from "../setup/model-onboarding-guidance";
 import {

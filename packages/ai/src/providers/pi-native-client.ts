@@ -11,8 +11,8 @@
  *
  * Activated when a {@link Model} has `transport: "pi-native"` set; the
  * dispatch hook lives in `streamSimple()` (see `../stream.ts`). Used by
- * containerized gjc deployments (e.g. robogjc slots) that route every LLM call
- * through a credential-holding sidecar so the slot itself stays credential-free.
+ * containerized GJC deployments that route every LLM call through a
+ * credential-holding sidecar so the container stays credential-free.
  */
 import { readSseJson } from "@gajae-code/utils";
 import type {

@@ -80,7 +80,13 @@
 						"botToken": {
 							"type": "string"
 						},
-						"channelId": {
+						"applicationId": {
+							"type": "string"
+						},
+						"guildId": {
+							"type": "string"
+						},
+						"parentChannelId": {
 							"type": "string"
 						}
 					},
@@ -92,7 +98,16 @@
 						"botToken": {
 							"type": "string"
 						},
+						"appToken": {
+							"type": "string"
+						},
+						"workspaceId": {
+							"type": "string"
+						},
 						"channelId": {
+							"type": "string"
+						},
+						"authorizedUserId": {
 							"type": "string"
 						}
 					},

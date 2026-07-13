@@ -1,10 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import type {
-	SessionCloseFrame,
-	SessionCreateFrame,
-	SessionResumeFrame,
-} from "@gajae-code/coding-agent/notifications/index";
+import type { SessionCloseFrame, SessionCreateFrame, SessionResumeFrame } from "@gajae-code/coding-agent/sdk/bus/index";
 import {
 	type AuditEvent,
 	classifyDuplicate,
@@ -15,7 +11,7 @@ import {
 	type OrchestratorDeps,
 	requestHash,
 	summarizeTarget,
-} from "@gajae-code/coding-agent/notifications/lifecycle-orchestrator";
+} from "@gajae-code/coding-agent/sdk/bus/lifecycle-orchestrator";
 
 const PAIRED = "42";
 

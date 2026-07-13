@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseLaunchWorktreeMode } from "@gajae-code/coding-agent/gjc-runtime/launch-worktree";
-import type { SessionCreateFrame } from "@gajae-code/coding-agent/notifications/index";
+import type { SessionCreateFrame } from "@gajae-code/coding-agent/sdk/bus/index";
 import {
 	attachLifecycleControl,
 	buildCreateArgv,
@@ -16,8 +16,8 @@ import {
 	daemonSpawnCreate,
 	fileLedgerStore,
 	outcomeToResponse,
-} from "@gajae-code/coding-agent/notifications/lifecycle-control-runtime";
-import type { LedgerEntry, OrchestratorDeps } from "@gajae-code/coding-agent/notifications/lifecycle-orchestrator";
+} from "@gajae-code/coding-agent/sdk/bus/lifecycle-control-runtime";
+import type { LedgerEntry, OrchestratorDeps } from "@gajae-code/coding-agent/sdk/bus/lifecycle-orchestrator";
 
 const PAIRED = "42";
 

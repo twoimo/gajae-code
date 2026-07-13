@@ -183,6 +183,16 @@ describe("native release binary coverage", () => {
 		expect(workflow).toContain("pattern: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}*-h${{ needs.rust-hash.outputs.hash }}");
 	});
 
+	test("tag publication requires the non-skippable SDK closure", async () => {
+		const workflow = await Bun.file(path.join(repoRoot, ".github/workflows/ci.yml")).text();
+
+		expect(workflow).toContain("sdk_closure:");
+		expect(workflow).toContain("run: bun run check:sdk-closure");
+		expect(workflow).toContain("needs: [check, sdk_closure, native_linux, native_release, rust-hash]");
+		expect(workflow).toContain("needs.sdk_closure.result == 'success'");
+		expect(workflow).toContain("needs: [release_binary, release_github_verify, rust-hash, sdk_closure]");
+	});
+
 	test("linux native platform packages declare their glibc requirement", async () => {
 		// The linux native addons are built against *-unknown-linux-gnu targets
 		// only (see the ci.yml build matrix), so the platform packages must set

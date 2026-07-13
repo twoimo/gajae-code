@@ -423,7 +423,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		}
 	});
 	it("does not rebuild when MCP server instructions change only beyond the 4000-char truncation boundary", async () => {
-		// `rebuildSystemPrompt` (sdk.ts) truncates each server instruction to 4000 chars
+		// `rebuildSystemPrompt` (sdk/session.ts) truncates each server instruction to 4000 chars
 		// before embedding it. The `getMcpServerInstructions` callback must therefore
 		// return pre-truncated strings so the signature hashes exactly what the prompt
 		// builder uses. Changes beyond char 4000 cannot affect rendered prompt bytes
@@ -438,7 +438,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 			},
 			{
 				getMcpServerInstructions: () => {
-					// Mirror what sdk.ts does: truncate to 4000 chars before returning.
+					// Mirror what sdk/session.ts does: truncate to 4000 chars before returning.
 					const out = new Map<string, string>();
 					for (const [name, text] of instructions) {
 						out.set(name, text.length > 4000 ? text.slice(0, 4000) : text);

@@ -287,9 +287,13 @@ describe("ACP session/delete wire oracle (real subprocess stdio)", () => {
 			const listBefore = await connection.listSessions({ cwd: workspace });
 			expect(listBefore.sessions.map(session => session.sessionId)).toContain(sessionId);
 
-			// Exactly one session transcript exists under the isolated root.
+			// Exactly one persisted session transcript exists; broker index logs are not transcripts.
 			const transcripts = await Array.fromAsync(
-				new Bun.Glob("**/*.jsonl").scan({ cwd: root, absolute: true, onlyFiles: true }),
+				new Bun.Glob("**/*.jsonl").scan({
+					cwd: path.join(root, "agent", "sessions"),
+					absolute: true,
+					onlyFiles: true,
+				}),
 			);
 			expect(transcripts).toHaveLength(1);
 			const sessionPath = transcripts[0]!;

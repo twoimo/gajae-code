@@ -1,16 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { askSchema } from "@gajae-code/coding-agent/tools/ask";
 import {
 	type AskGateQuestion,
 	DeepInterviewGateError,
 	gateAnswerToResult,
 	questionToGate,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/deep-interview-gate";
-import {
-	MemoryGateStore,
-	WorkflowGateBroker,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
-import { schemaHash } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-schema";
-import { askSchema } from "@gajae-code/coding-agent/tools/ask";
+} from "../src/modes/shared/agent-wire/deep-interview-gate";
+import { MemoryGateStore, WorkflowGateBroker } from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import { schemaHash } from "../src/modes/shared/agent-wire/workflow-gate-schema";
 
 const singleQ: AskGateQuestion = {
 	id: "single-auth",
@@ -211,7 +208,7 @@ describe("deep-interview question gates red-team", () => {
 		});
 	});
 
-	it("keeps generic pick-first unattended consumers safe for zero-option questions", async () => {
+	it("keeps generic pick-first SDK workflow-gate consumers safe for zero-option questions", async () => {
 		const zeroQ: AskGateQuestion = {
 			id: "zero-options-generic",
 			question: "What constraint is missing?",

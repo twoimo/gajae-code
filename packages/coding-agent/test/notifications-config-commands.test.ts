@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { parseNotifyArgs, runNotifyCommand } from "../src/cli/notify-cli";
+import { Settings } from "../src/config/settings";
 import {
 	parseInThreadConfigCommand,
 	parseRichToggleCommand,
 	parseTelegramControlCommand,
-} from "../src/notifications/config-commands";
+} from "../src/sdk/bus/config-commands";
 
 describe("parseInThreadConfigCommand", () => {
 	test("/verbose and /lean toggle verbosity", () => {
@@ -120,5 +122,112 @@ describe("parseTelegramControlCommand", () => {
 		});
 		expect(parseTelegramControlCommand("/context@OtherBot")).toEqual({ kind: "ignored", commandName: "context" });
 		expect(parseTelegramControlCommand("plain text")).toEqual({ kind: "none" });
+	});
+});
+
+describe("notify Discord and Slack setup", () => {
+	test("parses provider-specific setup flags while bare setup remains Telegram", () => {
+		expect(parseNotifyArgs(["notify", "setup"])?.provider).toBeUndefined();
+		expect(
+			parseNotifyArgs([
+				"notify",
+				"setup",
+				"discord",
+				"--discord-bot-token",
+				"discord-secret",
+				"--discord-application-id",
+				"app",
+				"--discord-guild-id",
+				"guild",
+				"--discord-parent-channel-id",
+				"parent",
+			]),
+		).toMatchObject({ provider: "discord", discordBotToken: "discord-secret", discordApplicationId: "app" });
+	});
+
+	test("saves complete providers, preserves unrelated settings, rejects partial config, and masks status tokens", async () => {
+		const settings = Settings.isolated({ "modelProfile.default": "preserve" });
+		const discordToken = "discord-secret-token";
+		await runNotifyCommand(
+			{
+				action: "setup",
+				rawArgs: ["discord"],
+				provider: "discord",
+				discordBotToken: discordToken,
+				discordApplicationId: "app",
+				discordGuildId: "guild",
+				discordParentChannelId: "parent",
+			},
+			{
+				settings,
+				ensureProviderDaemon: async provider => {
+					expect(provider).toBe("discord");
+					return "owner_spawned";
+				},
+			},
+		);
+		expect(settings.get("notifications.discord.botToken")).toBe(discordToken);
+		expect(settings.get("notifications.enabled")).toBe(true);
+		expect(settings.get("modelProfile.default")).toBe("preserve");
+
+		const slackBotToken = "xoxb-slack-secret-token";
+		const slackAppToken = "xapp-slack-app-secret-token";
+		const setupWrites: string[] = [];
+		const originalSetupWrite = process.stdout.write;
+		process.stdout.write = ((chunk: string | Uint8Array) => {
+			setupWrites.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write;
+		try {
+			await runNotifyCommand(
+				{
+					action: "setup",
+					rawArgs: ["slack"],
+					provider: "slack",
+					slackBotToken,
+					slackAppToken,
+					slackWorkspaceId: "workspace",
+					slackChannelId: "channel",
+					slackAuthorizedUserId: "slack-user",
+				},
+				{
+					settings,
+					ensureProviderDaemon: async provider => {
+						expect(provider).toBe("slack");
+						return "owner_spawned";
+					},
+				},
+			);
+		} finally {
+			process.stdout.write = originalSetupWrite;
+		}
+		expect(settings.get("notifications.slack.botToken")).toBe(slackBotToken);
+		expect(settings.get("notifications.slack.authorizedUserId")).toBe("slack-user");
+		expect(setupWrites.join("")).toContain("daemon=owner_spawned");
+		expect(setupWrites.join("")).not.toContain(slackBotToken);
+		expect(setupWrites.join("")).not.toContain(slackAppToken);
+
+		const partialSettings = Settings.isolated({ "modelProfile.default": "preserve" });
+		await expect(
+			runNotifyCommand(
+				{ action: "setup", rawArgs: ["slack"], provider: "slack", slackBotToken: "bot" },
+				{ settings: partialSettings },
+			),
+		).rejects.toThrow("--slack-app-token is required");
+		expect(partialSettings.get("notifications.slack.botToken")).toBeUndefined();
+
+		const writes: string[] = [];
+		const originalWrite = process.stdout.write;
+		process.stdout.write = ((chunk: string | Uint8Array) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write;
+		try {
+			await runNotifyCommand({ action: "status", rawArgs: [] }, { settings });
+		} finally {
+			process.stdout.write = originalWrite;
+		}
+		expect(writes.join("")).toContain("discord.botToken: disc…(len 20)");
+		expect(writes.join("")).not.toContain(discordToken);
 	});
 });

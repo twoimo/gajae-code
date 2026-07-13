@@ -1,6 +1,6 @@
 # External controller integration guide
 
-This guide is for authors of bots and orchestrators that want to drive Gajae-Code (`gjc`) without scraping terminal scrollback. Hermes, OpenClaw, GitHub bots, chatops bots, and custom schedulers are examples of external controllers; none of them need bespoke GJC behavior if they can speak the Coordinator MCP or RPC lifecycle below.
+This guide is for authors of bots and orchestrators that want to drive Gajae-Code (`gjc`) without scraping terminal scrollback. Hermes, OpenClaw, GitHub bots, chatops bots, and custom schedulers are examples of external controllers; none of them need bespoke GJC behavior if they can speak the Coordinator MCP tools or the SDK WebSocket lifecycle below.
 
 GJC is an external runner. Your controller owns queueing, identity, policy, and credentials; GJC owns the coding-agent session, workflows, tools, artifacts, and evidence inside the selected repository or worktree.
 
@@ -10,11 +10,10 @@ Use the smallest surface that fits your bot:
 
 | Surface | Best for | Command | Stability notes |
 | --- | --- | --- | --- |
-| Coordinator MCP | Any external controller that can call MCP tools to start/register tmux sessions, send turns, answer questions, and read artifacts. | `gjc mcp-serve coordinator` | Preferred orchestration surface. `gjc mcp-serve hermes` is a compatibility alias, not a separate contract. |
+| Coordinator MCP | Any external controller that can discover SDK-backed sessions, send turns, answer questions, and read artifacts. | `gjc mcp-serve coordinator` | Preferred orchestration surface. `gjc mcp-serve hermes` is a compatibility alias, not a separate contract. |
 | Setup adapter | Rendering a portable MCP config and operator instructions for a controller profile. | `gjc setup hermes --root /path/to/repo` | Compatibility-oriented config renderer; does not call an LLM or validate provider credentials. |
-| RPC stdio | A controller that embeds a single `gjc --mode rpc` subprocess and handles JSONL frames directly or through `python/gjc-rpc`. | `gjc --mode rpc` | Best for process-backed, single-session bot workers. |
-| Bridge HTTPS | Experimental remote control for an already-running session. | `gjc --mode bridge` | Session-control endpoints are fail-closed by default; do not use as the default bot lifecycle surface yet. |
-| Visible tmux fallback | Human-supervised lanes where an existing visible `gjc --tmux` pane should become coordinator-authoritative. | `gjc --tmux`, then `gjc_coordinator_register_session` | Use when an operator already opened a pane or wants direct terminal visibility. |
+| SDK WebSocket | A controller that drives one live session directly: state queries, events, actions, and workflow-gate replies. | Connect to the session's loopback SDK endpoint (see [`docs/sdk.md`](./sdk.md)) | The canonical machine interface. `--mode rpc`, `--mode rpc-ui`, and `--mode bridge` have been removed. |
+| Daemon session CLI | Scripted control/queries against a live session with JSON output. | `gjc daemon session list\|control\|query\|global` | A pure SDK client; honors the same protocol and dispositions. |
 
 ## Recommended architecture
 
@@ -22,14 +21,14 @@ Use the smallest surface that fits your bot:
 external controller / bot
   ├─ chooses repo/worktree and task policy
   ├─ starts MCP server: gjc mcp-serve coordinator
-  ├─ starts or registers one GJC tmux session
+  ├─ discovers or starts one SDK-backed GJC session
   ├─ sends one bounded turn at a time
   ├─ answers structured questions explicitly
   ├─ marks turn completion/failure with report_status
   └─ reads artifacts/reports from allowlisted roots
 ```
 
-Do not infer completion from terminal output. Treat durable turn state as authoritative and tmux tail output as advisory debug context only.
+Do not infer completion from terminal output. Treat SDK-backed durable turn state as authoritative. Tmux identifiers, when present, are advisory process metadata only.
 
 ## Coordinator MCP setup
 
@@ -70,17 +69,17 @@ The generated config uses these environment variables:
 | `GJC_COORDINATOR_MCP_STATE_ROOT` | Optional coordination state root; defaults under `.gjc/state/coordinator-mcp`. |
 | `GJC_COORDINATOR_MCP_ARTIFACT_BYTE_CAP` | Maximum bytes returned by artifact reads. |
 
-Mutating calls require both startup opt-in and per-call `allow_mutation: true`. Missing either one fails closed.
+Mutating calls require both startup opt-in, per-call `allow_mutation: true`, and the required caller-provided `idempotency_key`. Missing any one fails closed.
 
 ## Generic smoke strategy
 
-Use three different smoke levels so CI does not depend on one operator's model, API key, tmux layout, or desktop:
+Use three different smoke levels so CI does not depend on one operator's model, API key, or desktop:
 
 | Smoke | Required for CI | What it proves | Example |
 | --- | --- | --- | --- |
-| Contract smoke | Yes | MCP server metadata, tool discovery, exported tool names, input schemas, read-only default, and mutation-gate failures. No provider credentials or tmux pane required. | `gjc mcp-serve coordinator --check --json` and focused tests around `tools/list` plus mutation denial. |
-| Dry-run lifecycle smoke | Yes when changed behavior affects lifecycle state | A generic controller can start/register a mocked session, send a turn, observe active-turn protection, report terminal status, and read the completed turn without a real LLM. | `bun test packages/coding-agent/test/coordinator-mcp.test.ts` uses mocked coordinator services and temporary state roots. |
-| Optional live smoke | No | One operator's local provider/model/profile/tmux setup can run end-to-end in their chosen repo. Failure diagnoses that setup; it must not fail CI or PR validation. | Start `gjc mcp-serve coordinator` with local env, dispatch a tiny task, then report/read evidence. |
+| Contract smoke | Yes | MCP server metadata, tool discovery, exported tool names, input schemas, read-only default, and mutation-gate failures. No provider credentials required. | `gjc mcp-serve coordinator --check --json` and focused tests around `tools/list` plus mutation denial. |
+| Dry-run lifecycle smoke | Yes when changed behavior affects lifecycle state | A generic controller can discover a mocked SDK session, send a turn, observe active-turn protection, report terminal status, and read the completed turn without a real LLM. | `bun test packages/coding-agent/test/coordinator-mcp-server.test.ts` uses mocked SDK services and temporary state roots. |
+| Optional live smoke | No | One operator's local provider/model/profile setup can run end-to-end in their chosen repo. Failure diagnoses that setup; it must not fail CI or PR validation. | Start `gjc mcp-serve coordinator` with local env, dispatch a tiny task, then report/read evidence. |
 
 A public bot integration change should at least preserve the contract smoke and local-leak docs test. Live smokes are diagnostics, not mandatory gates.
 
@@ -108,7 +107,7 @@ Mutating tools:
 - `gjc_coordinator_report_status`
 - `gjc_coordinator_stop_session`
 
-`gjc_coordinator_stop_session` terminates a coordinator-managed session through the owner-proof tmux shutdown path — it verifies the pane pid, native session id, owner generation, server key, and process start time before signaling, so it can never kill a PID-reused or foreign session — and then purges the session's coordinator state. It refuses a session that still has an active turn unless an explicit force is supplied, and it is the same reclamation path the idle reaper uses to reap abandoned ephemeral (delegate-created) sessions.
+`gjc_coordinator_stop_session` closes a coordinator delegate-created (ephemeral) session through canonical SDK broker lifecycle control, then removes its coordinator metadata only after the broker reports success. It refuses sessions with an active turn. User-registered sessions require both `force: true` and the `GJC_COORDINATOR_MCP_FORCE_STOP` capability; the same SDK lifecycle path reaps abandoned ephemeral delegate sessions after the configured idle TTL.
 
 High-level delegation tools:
 
@@ -126,33 +125,27 @@ Call `gjc_coordinator_start_session` with a canonical workdir inside `GJC_COORDI
 {
   "cwd": "/path/to/repo",
   "prompt": "Optional first bounded task prompt",
+  "idempotency_key": "start-gjc-demo-1",
   "allow_mutation": true
 }
 ```
 
-The returned payload includes `session.session_id`, `session_state`, and, when a prompt is provided, `turn_id`, `status`, `delivery`, `queued`, and `delivered`.
+The returned payload includes `session.session_id`, `session_state`, and, when a prompt is provided, `turn_id`, `active_turn_id`, `status`, `delivery`, `queued`, and `delivered`. The top-level `status`, `queued`, and `delivered` exactly mirror the nested durable turn; `active_turn_id` is the current active turn.
 
-### Register a visible tmux fallback session
+### Register an SDK-discoverable session
 
-If an operator already started a visible session, register it instead of starting a hidden coordinator session:
-
-```sh
-gjc --tmux
-```
+Register an already-running GJC session only after its endpoint is discoverable from the selected workdir:
 
 ```json
 {
   "session_id": "visible-gjc-1",
   "cwd": "/path/to/repo",
-  "tmux_session": "visible-gjc-1",
-  "tmux_target": "visible-gjc-1:0.0",
-  "visible": true,
-  "source": "operator-visible-tmux",
+  "idempotency_key": "register-visible-gjc-1",
   "allow_mutation": true
 }
 ```
 
-`gjc_coordinator_register_session` validates safe ids, workdir allowlists, tmux target syntax, and liveness before writing coordinator state.
+`gjc_coordinator_register_session` validates the session id and workdir allowlist, then verifies SDK endpoint discovery before writing coordinator state. Optional `tmux_session` and `tmux_target` fields are advisory process metadata only.
 
 ### Send work as turns
 
@@ -162,6 +155,7 @@ Send one bounded task prompt and persist the returned `turn_id`:
 {
   "session_id": "gjc-demo",
   "prompt": "Use /skill:ralplan to build a plan for ...",
+  "idempotency_key": "send-gjc-demo-1",
   "allow_mutation": true
 }
 ```
@@ -196,12 +190,13 @@ When the work is done, your bot must call `gjc_coordinator_report_status` with t
   "status": "completed",
   "summary": "Implemented the requested fix and ran focused tests.",
   "evidence_paths": ["/path/to/repo/test-output.txt"],
+  "idempotency_key": "report-gjc-demo-1",
   "allow_mutation": true
 }
 ```
 
 Use `status: "failed"` plus `blocker` for provider failures, unrecoverable tool failures, missing credentials, policy denial, or task blockers.
-Use `status: "cancelled"` when the coordinator policy intentionally stops tracking an active turn, for example after an operator abort or a bot-side shutdown decision. This records the turn as terminal in coordinator state; it does not kill the underlying tmux process. To supersede one active turn with replacement work, send the replacement prompt with `force: true` and preserve the superseded turn id in your audit trail.
+Use `status: "cancelled"` when the coordinator policy intentionally stops tracking an active turn, for example after an operator abort or a bot-side shutdown decision. This records the turn as terminal in coordinator state; it does not kill or control any tmux process. To supersede one active turn with replacement work, send the replacement prompt with `force: true` and preserve the superseded turn id in your audit trail.
 
 ### Forward finish/stop lifecycle notifications
 
@@ -264,6 +259,7 @@ Then answer by id:
   "turn_id": "turn-00000000-0000-0000-0000-000000000000",
   "question_id": "question-1",
   "answer": { "decision": "approve" },
+  "idempotency_key": "answer-gjc-demo-1",
   "allow_mutation": true
 }
 ```
@@ -280,42 +276,19 @@ Use `gjc_coordinator_list_artifacts` to inspect safe roots and `gjc_coordinator_
 
 Artifact paths are canonicalized, symlink escapes are rejected, and output is byte-capped. Use `gjc_coordinator_read_coordination_status` for status reports written through `gjc_coordinator_report_status`.
 
-## RPC stdio integration
+## SDK WebSocket integration
 
-Use RPC when your bot owns a single worker subprocess rather than an MCP coordinator. The wire protocol is JSONL over stdio:
+Use the SDK when your bot owns a single live session rather than an MCP coordinator. Each running session exposes a loopback WebSocket endpoint discovered via `.gjc/state/sdk/<sessionId>.json`; the wire protocol (state queries, control operations, event subscription and replay, workflow-gate replies, reverse host-tool leases) is documented in [`docs/sdk.md`](./sdk.md).
 
-```sh
-gjc --mode rpc --provider anthropic --model claude-sonnet-4-5
-```
+Key SDK lifecycle facts:
 
-Recommended Python client:
+- The discovery file carries the endpoint URL and per-session token; a wrong token is rejected at the WebSocket handshake.
+- `server_hello` marks the connection ready; queries and controls are correlated JSON frames.
+- Workflow gates surface as `action_needed` frames and are answered with `reply` frames.
+- Host-owned tools and URI schemes are registered through the directed reverse-RPC provider lease (`register_provider`); registration is acquisition.
+- `gjc daemon session control|query|global` wraps the same protocol for shell scripts, printing one JSON result per invocation.
 
-```python
-from gjc_rpc import RpcClient, WorkflowGate
-
-with RpcClient(no_session=True, no_rules=True) as client:
-    client.install_headless_ui()
-
-    def on_gate(gate: WorkflowGate) -> None:
-        if gate.kind == "approval":
-            client.respond_gate(gate.gate_id, {"decision": "approve"})
-
-    client.on_workflow_gate(on_gate)
-    turn = client.prompt_and_wait("Inspect this repo and report the integration contract.")
-    print(turn.require_assistant_text())
-```
-
-RPC hosts can also expose host-owned tools and URI schemes. Use these to give GJC controlled access to your bot's issue tracker, queue, database rows, or artifact store without leaking long-lived credentials into the GJC process.
-
-Key RPC lifecycle facts:
-
-- `{ "type": "ready" }` means the subprocess is ready for commands.
-- `prompt` is acknowledged immediately; completion is observed through `agent_end` or `RpcClient.prompt_and_wait()`.
-- `workflow_gate` frames are answered with `workflow_gate_response`.
-- `extension_ui_request` frames are answered with `extension_ui_response` or a headless policy.
-- Host tool calls and host URI requests are explicit callback frames that must be completed or rejected by the host.
-- `RpcClient` enforces single-flight prompt lifecycle collection; use one client per concurrent worker.
-- `abort` and `abort_and_prompt` are the RPC cancellation commands for subprocess workers; coordinator MCP cancellation is recorded through terminal turn status instead.
+`--mode rpc`, `--mode rpc-ui`, and `--mode bridge` have been removed along with their JSONL/HTTPS protocols and the former Python RPC client. There are no compatibility shims; migrate controllers to the SDK endpoint or Coordinator MCP.
 
 ## Error handling playbook
 
@@ -323,11 +296,11 @@ Key RPC lifecycle facts:
 | --- | --- |
 | `coordinator_mutation_class_disabled:*` | Re-render setup with the required mutation class, or keep the bot in read-only mode. |
 | `coordinator_mutation_call_not_allowed:*` | Add `allow_mutation: true` only after policy approval for that specific call. |
-| `unknown_session` | Re-list sessions; start a new managed session or register the visible tmux fallback. |
+| `unknown_session` | Re-list sessions; start a new managed session or register a session after its SDK endpoint is discoverable. |
 | `active_turn_exists` | Poll the active turn, send with `queue: true`, or use `force: true` only when supersession is intentional. |
-| `timeout` from `await_turn` | Treat as non-terminal. Poll again or inspect `read_status`/`read_tail`; do not mark failure solely from a bounded wait timeout. |
-| Coordinator cancellation | Use `gjc_coordinator_report_status` with `status: "cancelled"` for an intentionally stopped turn, or send replacement work with `force: true` when supersession is policy-approved. This is coordinator state, not a tmux process kill. |
-| Stale tmux/session state | Check `read_status.session_state` and advisory liveness. Register a new visible session or report the turn failed with a recoverable blocker. |
+| `timeout` from `await_turn` | Treat as non-terminal. Poll again or inspect `read_status`; do not mark failure solely from a bounded wait timeout. |
+| Coordinator cancellation | Use `gjc_coordinator_report_status` with `status: "cancelled"` for an intentionally stopped turn, or send replacement work with `force: true` when supersession is policy-approved. This is coordinator state, not process control. |
+| Stale session state | Check `read_status.session_state` and SDK endpoint discovery. Register a new discoverable session or report the turn failed with a recoverable blocker. |
 | Provider/auth failure | Capture the model/provider error in `report_status` with `status: "failed"`; do not retry forever without a policy budget. |
 | Artifact denied | Keep the artifact inside allowlisted roots and avoid symlink escapes. |
 | Malformed or invalid question answer | Re-read the question/gate schema and submit a value matching the advertised shape. |
@@ -381,7 +354,5 @@ Hermes and OpenClaw can use the same MCP tool contract. Their names here are exa
 ## Related references
 
 - [`docs/hermes-mcp-bridge.md`](./hermes-mcp-bridge.md) — coordinator MCP details and setup adapter behavior.
-- [`docs/rpc.md`](./rpc.md) — JSONL RPC protocol, event frames, workflow gates, host tools, and host URI schemes.
-- [`docs/bridge.md`](./bridge.md) — experimental HTTPS bridge and fail-closed endpoint matrix.
-- [`python/gjc-rpc/README.md`](../python/gjc-rpc/README.md) — typed Python RPC client examples.
-- [`python/robogjc/README.md`](../python/robogjc/README.md) — example self-hosted GitHub bot using `gjc --mode rpc`.
+- [`docs/sdk.md`](./sdk.md) — SDK wire protocol, event frames, workflow gates, host tools, and host URI schemes.
+- [`docs/external-control-readiness.md`](./external-control-readiness.md) — readiness classification of the supported external-control surfaces.

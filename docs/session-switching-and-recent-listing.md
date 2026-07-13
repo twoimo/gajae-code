@@ -12,7 +12,7 @@ It focuses on current implementation behavior, including fallback paths and cave
 - [`../src/modes/components/session-selector.ts`](../packages/coding-agent/src/modes/components/session-selector.ts)
 - [`../src/modes/controllers/selector-controller.ts`](../packages/coding-agent/src/modes/controllers/selector-controller.ts)
 - [`../src/main.ts`](../packages/coding-agent/src/main.ts)
-- [`../src/sdk.ts`](../packages/coding-agent/src/sdk.ts)
+- [`../src/sdk/session.ts`](../packages/coding-agent/src/sdk/session.ts)
 - [`../src/modes/interactive-mode.ts`](../packages/coding-agent/src/modes/interactive-mode.ts)
 - [`../src/modes/utils/ui-helpers.ts`](../packages/coding-agent/src/modes/utils/ui-helpers.ts)
 

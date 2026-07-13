@@ -8,7 +8,7 @@ import {
 } from "../src/modes/shared/agent-wire/event-envelope";
 import {
 	observeAgentSessionEvent,
-	observeRpcOutboundFrame,
+	observeAgentWireFrame,
 	toAgentWireEventPayload,
 } from "../src/modes/shared/agent-wire/event-observation";
 import { EVENT_FIXTURES, RAW_SECRET } from "./agent-wire/fixtures";
@@ -65,7 +65,7 @@ describe("agent-wire conformance matrix", () => {
 				expect(JSON.stringify(obs?.evidence ?? {})).not.toContain(RAW_SECRET);
 
 				// Harness via the RPC wire frame delegates to the same observation.
-				const frameObs = observeRpcOutboundFrame(frame as unknown as Record<string, unknown>);
+				const frameObs = observeAgentWireFrame(frame as unknown as Record<string, unknown>);
 				expect(frameObs?.eventType).toBe(type);
 
 				// ACP: whitelist -> []; otherwise a defined projection (may be empty for
@@ -128,7 +128,7 @@ describe("agent-wire conformance matrix", () => {
 		];
 		for (const [name, frame, expectedKind] of cases) {
 			it(`observes ${name}`, () => {
-				const obs = observeRpcOutboundFrame(frame);
+				const obs = observeAgentWireFrame(frame);
 				if (expectedKind === null) {
 					expect(obs).toBeNull();
 				} else {

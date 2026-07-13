@@ -5,9 +5,8 @@ import { CliParseError } from "@gajae-code/utils/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { Settings } from "../src/config/settings";
-import { applyStartupModelProfiles, createAcpSessionFactory } from "../src/main";
+import { applyStartupModelProfiles } from "../src/main";
 import { parseCliCredentialSelector } from "../src/runtime-credential-selector";
-import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../src/sdk";
 import type { AgentSession } from "../src/session/agent-session";
 
 const model = (provider: string, id: string): Model =>
@@ -158,7 +157,7 @@ test("deferred explicit CLI --model is reapplied after --mpreset activation", as
 	expect(session.model).toBe(explicitModel);
 });
 
-test("ACP session factory applies default profile and --mpreset before returning session", async () => {
+test("startup model profiles apply the default profile before --mpreset", async () => {
 	const settings = Settings.isolated({ "modelProfile.default": "default-profile" });
 	const session = fakeSession();
 	const registry = fakeRegistry([
@@ -175,30 +174,21 @@ test("ACP session factory applies default profile and --mpreset before returning
 			source: "user",
 		},
 	]) as never;
-	const createSession = async (): Promise<CreateAgentSessionResult> =>
-		({
-			session,
-			setToolUIContext: () => {},
-			extensionsResult: {},
-			eventBus: {},
-		}) as unknown as CreateAgentSessionResult;
-	const factory = createAcpSessionFactory({
-		baseOptions: {} as CreateAgentSessionOptions,
+
+	await applyStartupModelProfiles({
+		session,
 		settings,
-		authStorage: { setRuntimeApiKey: () => {} } as never,
 		modelRegistry: registry,
 		parsedArgs: { mpreset: "session-profile" },
-		rawArgs: [],
-		createSession,
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
 	});
 
-	const result = await factory(process.cwd());
-
-	expect(result).toBe(session);
 	expect(
 		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
 	).toEqual(["profile-provider/default:medium", "cli-provider/explicit:high"]);
 });
+
 test("persisted default thinking overrides startup default profile effort", async () => {
 	const settings = Settings.isolated({
 		"modelProfile.default": "default-profile",
@@ -226,58 +216,4 @@ test("persisted default thinking overrides startup default profile effort", asyn
 	expect(
 		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
 	).toEqual(["profile-provider/default:xhigh"]);
-});
-
-test("ACP session factory refreshes registry before applying project default profile", async () => {
-	const settings = Settings.isolated();
-	const projectSettings = Settings.isolated({ "modelProfile.default": "project-profile" });
-	const settingsWithProjectClone = settings as Settings & { cloneForCwd: (cwd: string) => Promise<Settings> };
-	settingsWithProjectClone.cloneForCwd = async () => projectSettings;
-	const session = fakeSession();
-	const registry = fakeRegistry([], {
-		profilesAfterRefresh: [
-			{
-				name: "project-profile",
-				requiredProviders: ["project-provider"],
-				modelMapping: { default: "project-provider/discovered:medium" },
-				source: "user",
-			},
-		],
-		modelsAfterRefresh: [model("project-provider", "discovered")],
-	});
-	const createSessionContexts: Array<{ skipPostCreateModelRefresh?: boolean } | undefined> = [];
-	const createSession = async (
-		_options: CreateAgentSessionOptions,
-		context?: { skipPostCreateModelRefresh?: boolean },
-	): Promise<CreateAgentSessionResult> => {
-		createSessionContexts.push(context);
-		if (!context?.skipPostCreateModelRefresh) {
-			registry.refreshInBackground();
-		}
-		return {
-			session,
-			setToolUIContext: () => {},
-			extensionsResult: {},
-			eventBus: {},
-		} as unknown as CreateAgentSessionResult;
-	};
-	const factory = createAcpSessionFactory({
-		baseOptions: {} as CreateAgentSessionOptions,
-		settings,
-		authStorage: { setRuntimeApiKey: () => {} } as never,
-		modelRegistry: registry as never,
-		parsedArgs: {},
-		rawArgs: [],
-		createSession,
-	});
-
-	const result = await factory(process.cwd());
-
-	expect(result).toBe(session);
-	expect(createSessionContexts).toEqual([{ skipPostCreateModelRefresh: true }]);
-	expect(registry.refreshCalls).toEqual(["online-if-uncached"]);
-	expect(registry.refreshInBackgroundCalls).toEqual([]);
-	expect(
-		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
-	).toEqual(["project-provider/discovered:medium"]);
 });

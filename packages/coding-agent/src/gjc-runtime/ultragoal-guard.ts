@@ -174,6 +174,39 @@ function findReceiptGoal(
 	return storyGoal ? { goal: storyGoal, receiptKind: "per-goal" } : null;
 }
 
+/**
+ * A review-blocker replacement can stand in for a superseded validation-batch
+ * final only while validating the run's final aggregate receipt. Ordinary
+ * per-goal validation continues to require the original batch-close receipt.
+ */
+function hasFreshReviewedBatchFinalReplacement(input: {
+	plan: UltragoalPlan;
+	ledger: readonly UltragoalLedgerEvent[];
+	deferredGoal: UltragoalGoal;
+}): boolean {
+	const finalGoalId = input.deferredGoal.completionVerification?.validationBatch?.finalGoalId;
+	const finalGoal = finalGoalId ? input.plan.goals.find(goal => goal.id === finalGoalId) : undefined;
+	if (finalGoal?.status !== "superseded") return false;
+	const replacements = input.plan.goals.filter(
+		goal =>
+			goal.status === "complete" &&
+			goal.steering?.kind === "review_blocker" &&
+			goal.steering.blockedGoalId === finalGoal.id,
+	);
+	if (replacements.length !== 1) return false;
+	const replacement = replacements[0]!;
+	const receipt = replacement.completionVerification;
+	if (receipt?.receiptKind !== "per-goal") return false;
+	return (
+		validateCompletionReceipt({
+			plan: input.plan,
+			ledger: input.ledger,
+			goal: replacement,
+			receiptKind: "per-goal",
+		}).state === "active_verified_complete"
+	);
+}
+
 export function validateCompletionReceipt(input: {
 	plan: UltragoalPlan;
 	ledger: readonly UltragoalLedgerEvent[];
@@ -267,12 +300,26 @@ export function validateCompletionReceipt(input: {
 					goalId: input.goal.id,
 				};
 			}
-			const priorDiagnostic = validateCompletionReceipt({
-				plan: input.plan,
-				ledger: input.ledger,
-				goal: priorGoal,
-				receiptKind: "per-goal",
-			});
+			const priorDiagnostic =
+				priorGoal.completionVerification.validationBatch?.role === "deferred-member"
+					? validateDeferredMemberReceiptFresh({
+							plan: input.plan,
+							ledger: input.ledger,
+							goal: priorGoal,
+							receipt: priorGoal.completionVerification,
+							receiptKind: "per-goal",
+							requireClose: !hasFreshReviewedBatchFinalReplacement({
+								plan: input.plan,
+								ledger: input.ledger,
+								deferredGoal: priorGoal,
+							}),
+						})
+					: validateCompletionReceipt({
+							plan: input.plan,
+							ledger: input.ledger,
+							goal: priorGoal,
+							receiptKind: "per-goal",
+						});
 			if (priorDiagnostic.state !== "active_verified_complete") {
 				return {
 					state: priorDiagnostic.state,

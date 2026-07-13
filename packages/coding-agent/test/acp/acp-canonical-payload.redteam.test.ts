@@ -1,6 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import {
 	mapAgentSessionEventToAcpSessionUpdates,
 	mapAgentWireEventPayloadToAcpSessionUpdates,
@@ -156,17 +154,5 @@ describe("ACP canonical payload red-team", () => {
 		expect(streamed).toHaveLength(1);
 		expect(ended).toEqual([]);
 		expect(chunks).toEqual(["final assistant answer"]);
-	});
-
-	it("does not import dispatchRpcCommand from the ACP agent or event mapper", () => {
-		const sourcePaths = [
-			path.join(import.meta.dir, "../../src/modes/acp/acp-agent.ts"),
-			path.join(import.meta.dir, "../../src/modes/acp/acp-event-mapper.ts"),
-		];
-
-		for (const sourcePath of sourcePaths) {
-			const source = readFileSync(sourcePath, "utf8");
-			expect(source.match(/import[^;]*dispatchRpcCommand/s), sourcePath).toBeNull();
-		}
 	});
 });

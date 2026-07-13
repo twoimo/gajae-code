@@ -4,12 +4,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@gajae-code/ai";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { createAgentSession } from "../src/sdk";
 import {
 	buildRedactedAction,
 	completionNotifyDisabledByEnv,
 	getNotificationConfig,
+	isDiscordConfigured,
 	isGloballyConfigured,
 	isSessionNotificationsEnabled,
+	isSlackConfigured,
 	isTelegramConfigured,
 	maskToken,
 	type NotificationConfig,
@@ -17,10 +20,9 @@ import {
 	sessionTag,
 	shouldRegisterNotificationsExtension,
 	tokenFingerprint,
-} from "../src/notifications/config";
-import { createNotificationsExtension } from "../src/notifications/index";
-import { daemonPaths } from "../src/notifications/telegram-daemon";
-import { createAgentSession } from "../src/sdk";
+} from "../src/sdk/bus/config";
+import { createNotificationsExtension } from "../src/sdk/bus/index";
+import { daemonPaths } from "../src/sdk/bus/telegram-daemon";
 import { SessionManager } from "../src/session/session-manager";
 
 const BASE_CFG: NotificationConfig = {
@@ -29,11 +31,16 @@ const BASE_CFG: NotificationConfig = {
 	chatId: undefined,
 	discord: {
 		botToken: undefined,
-		channelId: undefined,
+		applicationId: undefined,
+		guildId: undefined,
+		parentChannelId: undefined,
 	},
 	slack: {
 		botToken: undefined,
+		appToken: undefined,
+		workspaceId: undefined,
 		channelId: undefined,
+		authorizedUserId: undefined,
 	},
 	redact: false,
 	verbosity: "lean",
@@ -77,9 +84,14 @@ describe("notifications config", () => {
 			"notifications.telegram.botToken": "token-1",
 			"notifications.telegram.chatId": "chat-1",
 			"notifications.discord.botToken": "discord-token",
-			"notifications.discord.channelId": "discord-channel",
+			"notifications.discord.applicationId": "discord-app",
+			"notifications.discord.guildId": "discord-guild",
+			"notifications.discord.parentChannelId": "discord-parent",
 			"notifications.slack.botToken": "slack-token",
+			"notifications.slack.appToken": "slack-app-token",
+			"notifications.slack.workspaceId": "slack-workspace",
 			"notifications.slack.channelId": "slack-channel",
+			"notifications.slack.authorizedUserId": "slack-user",
 			"notifications.redact": true,
 			"notifications.daemon.idleTimeoutMs": 1234,
 		});
@@ -90,11 +102,16 @@ describe("notifications config", () => {
 			chatId: "chat-1",
 			discord: {
 				botToken: "discord-token",
-				channelId: "discord-channel",
+				applicationId: "discord-app",
+				guildId: "discord-guild",
+				parentChannelId: "discord-parent",
 			},
 			slack: {
 				botToken: "slack-token",
+				appToken: "slack-app-token",
+				workspaceId: "slack-workspace",
 				channelId: "slack-channel",
+				authorizedUserId: "slack-user",
 			},
 			redact: true,
 			verbosity: "lean",
@@ -112,44 +129,39 @@ describe("notifications config", () => {
 		});
 	});
 
-	test("isGloballyConfigured is true when enabled with any complete adapter", () => {
-		expect(isGloballyConfigured(GLOBAL_CFG)).toBe(true);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, enabled: false })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, botToken: undefined })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, botToken: "" })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, chatId: undefined })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, chatId: "" })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, botToken: " " })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, chatId: "\t" })).toBe(false);
-		expect(
-			isGloballyConfigured({
-				...BASE_CFG,
-				enabled: true,
-				botToken: " ",
-				chatId: "\t",
-			}),
-		).toBe(false);
-		expect(
-			isGloballyConfigured({
-				...BASE_CFG,
-				enabled: true,
-				discord: { botToken: "discord-token", channelId: "discord-channel" },
-			}),
-		).toBe(true);
-		expect(
-			isGloballyConfigured({
-				...BASE_CFG,
-				enabled: true,
-				slack: { botToken: "slack-token", channelId: "slack-channel" },
-			}),
-		).toBe(true);
-		expect(
-			isGloballyConfigured({
-				...BASE_CFG,
-				enabled: true,
-				discord: { botToken: "discord-token", channelId: undefined },
-			}),
-		).toBe(false);
+	test("chat adapter guards require every non-blank credential and routing identifier", () => {
+		const discord: NotificationConfig = {
+			...BASE_CFG,
+			enabled: true,
+			discord: {
+				botToken: "discord-token",
+				applicationId: "discord-app",
+				guildId: "discord-guild",
+				parentChannelId: "discord-parent",
+			},
+		};
+		const slack: NotificationConfig = {
+			...BASE_CFG,
+			enabled: true,
+			slack: {
+				botToken: "slack-token",
+				appToken: "slack-app-token",
+				workspaceId: "workspace",
+				channelId: "channel",
+				authorizedUserId: "slack-user",
+			},
+		};
+
+		expect(isDiscordConfigured(discord)).toBe(true);
+		expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, guildId: " " } })).toBe(false);
+		expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentChannelId: undefined } })).toBe(
+			false,
+		);
+		expect(isSlackConfigured(slack)).toBe(true);
+		expect(isSlackConfigured({ ...slack, slack: { ...slack.slack, appToken: "\t" } })).toBe(false);
+		expect(isGloballyConfigured(discord)).toBe(true);
+		expect(isGloballyConfigured(slack)).toBe(true);
+		expect(isGloballyConfigured({ ...discord, enabled: false })).toBe(false);
 	});
 
 	test("isTelegramConfigured rejects blank Telegram credentials even when another adapter is configured", () => {
@@ -158,7 +170,7 @@ describe("notifications config", () => {
 			enabled: true,
 			botToken: " ",
 			chatId: "\t",
-			discord: { botToken: "discord-token", channelId: "discord-channel" },
+			discord: { botToken: "discord-token", applicationId: "app", guildId: "guild", parentChannelId: "parent" },
 		};
 
 		expect(isGloballyConfigured(mixedAdapterCfg)).toBe(true);
@@ -195,6 +207,22 @@ describe("notifications config", () => {
 
 		expect(isSessionNotificationsEnabled({ cfg: GLOBAL_CFG, env: {}, sessionDisabled: false })).toBe(true);
 		expect(isSessionNotificationsEnabled({ cfg: BASE_CFG, env: {}, sessionDisabled: false })).toBe(false);
+		expect(
+			isSessionNotificationsEnabled({
+				cfg: PRIMARY_GLOBAL_CFG,
+				env: {},
+				sessionDisabled: false,
+				spawnedByGjc: true,
+			}),
+		).toBe(false);
+		expect(
+			isSessionNotificationsEnabled({
+				cfg: PRIMARY_GLOBAL_CFG,
+				env: { GJC_NOTIFICATIONS: "1" },
+				sessionDisabled: false,
+				spawnedByGjc: true,
+			}),
+		).toBe(true);
 	});
 
 	test("shouldRegisterNotificationsExtension applies registration precedence", () => {
@@ -318,7 +346,7 @@ describe("notifications config", () => {
 		expect(shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: {}, spawnedByGjc: true })).toBe(false);
 	});
 	test("settings-enabled subagent sessions do not register the notifications extension", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notifications-subagent-"));
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-subagent-"));
 		tempDirs.push(cwd);
 		const previous = process.env.GJC_NOTIFICATIONS;
 		delete process.env.GJC_NOTIFICATIONS;
@@ -327,7 +355,9 @@ describe("notifications config", () => {
 			"notifications.telegram.botToken": " ",
 			"notifications.telegram.chatId": "\t",
 			"notifications.discord.botToken": "discord-token",
-			"notifications.discord.channelId": "discord-channel",
+			"notifications.discord.applicationId": "discord-app",
+			"notifications.discord.guildId": "discord-guild",
+			"notifications.discord.parentChannelId": "discord-parent",
 		});
 
 		const disposers: Array<() => Promise<void>> = [];
@@ -425,39 +455,27 @@ describe("notifications config", () => {
 			await parentPrefixSubagent.session.extensionRunner?.emit({ type: "session_start" });
 			await agentTypeOnlySubagent.session.extensionRunner?.emit({ type: "session_start" });
 			await explicitExtensionSubagent.session.extensionRunner?.emit({ type: "session_start" });
-			const topLevelEndpoint = path.join(
-				cwd,
-				".gjc",
-				"state",
-				"notifications",
-				`${topLevel.session.sessionId}.json`,
-			);
-			const subagentEndpoint = path.join(
-				cwd,
-				".gjc",
-				"state",
-				"notifications",
-				`${subagent.session.sessionId}.json`,
-			);
+			const topLevelEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${topLevel.session.sessionId}.json`);
+			const subagentEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${subagent.session.sessionId}.json`);
 			const parentPrefixSubagentEndpoint = path.join(
 				cwd,
 				".gjc",
 				"state",
-				"notifications",
+				"sdk",
 				`${parentPrefixSubagent.session.sessionId}.json`,
 			);
 			const agentTypeOnlySubagentEndpoint = path.join(
 				cwd,
 				".gjc",
 				"state",
-				"notifications",
+				"sdk",
 				`${agentTypeOnlySubagent.session.sessionId}.json`,
 			);
 			const explicitExtensionSubagentEndpoint = path.join(
 				cwd,
 				".gjc",
 				"state",
-				"notifications",
+				"sdk",
 				`${explicitExtensionSubagent.session.sessionId}.json`,
 			);
 			expect(fs.existsSync(topLevelEndpoint)).toBe(true);
@@ -477,8 +495,8 @@ describe("notifications config", () => {
 		}
 	}, 30000);
 
-	test("sessionScope=primary suppresses a GJC-spawned child endpoint end to end and consumes the marker", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notifications-spawned-"));
+	test("sessionScope=primary keeps a canonical SDK endpoint while suppressing GJC-spawned child delivery", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-notif-spawned-"));
 		tempDirs.push(cwd);
 		const previousNotif = process.env.GJC_NOTIFICATIONS;
 		const previousSpawn = process.env.GJC_SPAWNED_BY_SESSION;
@@ -488,7 +506,9 @@ describe("notifications config", () => {
 			Settings.isolated({
 				"notifications.enabled": true,
 				"notifications.discord.botToken": "discord-token",
-				"notifications.discord.channelId": "discord-channel",
+				"notifications.discord.applicationId": "discord-application",
+				"notifications.discord.guildId": "discord-guild",
+				"notifications.discord.parentChannelId": "discord-channel",
 				"notifications.sessionScope": scope,
 			});
 		const primarySettings = adapterSettings("primary");
@@ -510,13 +530,13 @@ describe("notifications config", () => {
 				enableMCP: false,
 				enableLsp: false,
 			});
-		const endpointFor = (sessionId: string): string =>
-			path.join(cwd, ".gjc", "state", "notifications", `${sessionId}.json`);
+		const endpointFor = (sessionId: string): string => path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
 		try {
 			resetSettingsForTest();
 			await Settings.init({ inMemory: true, cwd, agentDir: cwd });
 
-			// 1. Spawned child under primary: suppressed, and the marker is consumed.
+			// 1. A spawned child under primary keeps the mandatory SDK endpoint,
+			// while the session-scoped delivery guard above suppresses notifications.
 			process.env.GJC_SPAWNED_BY_SESSION = "parent-abc";
 			const suppressed = await spawn(primarySettings);
 			disposers.push(() => suppressed.session.dispose());
@@ -538,7 +558,7 @@ describe("notifications config", () => {
 			await preserved.session.extensionRunner?.emit({ type: "session_start" });
 			await optedIn.session.extensionRunner?.emit({ type: "session_start" });
 
-			expect(fs.existsSync(endpointFor(suppressed.session.sessionId))).toBe(false);
+			expect(fs.existsSync(endpointFor(suppressed.session.sessionId))).toBe(true);
 			expect(fs.existsSync(endpointFor(preserved.session.sessionId))).toBe(true);
 			expect(fs.existsSync(endpointFor(optedIn.session.sessionId))).toBe(true);
 		} finally {

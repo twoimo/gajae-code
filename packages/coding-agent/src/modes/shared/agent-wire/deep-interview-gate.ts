@@ -7,12 +7,11 @@
  * back into the exact QuestionResult shape the human path produces, so ambiguity
  * scoring/state updates proceed identically whether a human or an agent answers.
  *
- * This is the pure mapping primitive. Routing the ask tool through it (instead of
- * the interactive select/editor UI) when an unattended controller + gate broker
- * are attached is wired with the transport in #321 and exercised by #323.
+ * This is the pure mapping primitive used by SDK-native workflow gate emitters.
  */
-import type { RpcJsonSchema, RpcWorkflowGateKind, RpcWorkflowStage } from "../../rpc/rpc-types";
+
 import type { OpenGateInput } from "./workflow-gate-broker";
+import type { JsonSchema, WorkflowGateKind, WorkflowStage } from "./workflow-gate-types";
 
 /** "Other (type your own)" sentinel, mirroring the interactive ask tool. */
 export const GATE_OTHER_OPTION = "Other (type your own)";
@@ -27,8 +26,8 @@ export interface AskGateDeepInterviewState {
 }
 
 export interface AskGateWorkflowGateMeta {
-	stage: RpcWorkflowStage;
-	kind: RpcWorkflowGateKind;
+	stage: WorkflowStage;
+	kind: WorkflowGateKind;
 }
 
 export interface AskGateQuestion {
@@ -115,16 +114,16 @@ function deepInterviewQuestionState(questionText: string): Record<string, unknow
 	return state;
 }
 
-function questionAnswerSchema(question: AskGateQuestion, labels: string[]): RpcJsonSchema {
+function questionAnswerSchema(question: AskGateQuestion, labels: string[]): JsonSchema {
 	const multi = question.multi ?? false;
-	const selectedItems: RpcJsonSchema = { type: "string", enum: labels };
-	const selectedBase: RpcJsonSchema = { type: "array", items: selectedItems, uniqueItems: true };
-	const selectedOnly: RpcJsonSchema = {
+	const selectedItems: JsonSchema = { type: "string", enum: labels };
+	const selectedBase: JsonSchema = { type: "array", items: selectedItems, uniqueItems: true };
+	const selectedOnly: JsonSchema = {
 		...selectedBase,
 		minItems: question.allowEmpty ? 0 : 1,
 		...(multi ? {} : { maxItems: 1 }),
 	};
-	const selectedWithOther: RpcJsonSchema = {
+	const selectedWithOther: JsonSchema = {
 		...selectedBase,
 		...(multi ? {} : { maxItems: 0 }),
 	};

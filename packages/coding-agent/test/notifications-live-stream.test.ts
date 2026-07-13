@@ -3,10 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
-import { createNotificationsExtension } from "../src/notifications/index";
-import { TelegramNotificationDaemon } from "../src/notifications/telegram-daemon";
-import { readEndpoint } from "../src/notifications/telegram-reference";
-import { renderThreadedFrame } from "../src/notifications/threaded-render";
+import { createNotificationsExtension } from "../src/sdk/bus/index";
+import { TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
+import { readEndpoint } from "../src/sdk/bus/telegram-reference";
+import { renderThreadedFrame } from "../src/sdk/bus/threaded-render";
 
 // ---------------------------------------------------------------------------
 // 1) Pure render contract: streamed turn frames become editable, and live +
@@ -119,7 +119,7 @@ async function bootSession(): Promise<{ handlers: Map<string, Handler>; ctx: unk
 	} as never;
 
 	await handlers.get("session_start")!({ type: "session_start" }, ctx);
-	const endpointFile = path.join(cwd, ".gjc", "state", "notifications", `${sid}.json`);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sid}.json`);
 	await waitFor(() => fs.existsSync(endpointFile), 4000, "endpoint file");
 	const { url, token } = readEndpoint(endpointFile);
 

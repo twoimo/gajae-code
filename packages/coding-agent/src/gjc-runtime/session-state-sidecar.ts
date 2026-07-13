@@ -1112,7 +1112,7 @@ export async function persistCoordinatorRuntimeStateFromPostmortem(
 						if (shouldPreserveTerminalPayload(previous as RuntimeStateSidecarPayload, identity)) return;
 						// The immutable owner verdict remains in its lifecycle artifact; never replace a
 						// complete agent terminal payload merely to mirror that verdict here.
-						if (process.platform === "linux" && context.ownerTerminalMetadataInvalid) {
+						if (context.ownerTerminalMetadataInvalid) {
 							await persistInvalidOwnerTerminalMetadata(
 								reason,
 								context,
@@ -1122,7 +1122,7 @@ export async function persistCoordinatorRuntimeStateFromPostmortem(
 							);
 							return;
 						}
-						if (process.platform === "linux" && context.ownerTerminal) {
+						if (context.ownerTerminal) {
 							await persistCoordinatorRuntimeStateFromOwnerTerminalPostmortem(
 								reason,
 								context,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import type { GcContext } from "@gajae-code/coding-agent/gjc-runtime/gc-runtime";
 import { tmuxSessionsGcAdapter } from "@gajae-code/coding-agent/gjc-runtime/tmux-gc";
+import { __setMutationServerProofForTests } from "@gajae-code/coding-agent/gjc-runtime/tmux-sessions";
 
 const env = { GJC_TMUX_COMMAND: "tmux-test" };
 const project = "/tmp/gjc-project";
@@ -63,6 +64,7 @@ function sessionLine(overrides: {
 describe("tmux GC safety", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		__setMutationServerProofForTests(null);
 	});
 
 	it("classifies attached/live tagged sessions with stale metadata as non-removable and does not prune", async () => {
@@ -144,6 +146,7 @@ describe("tmux GC safety", () => {
 			}),
 		);
 		const calls: string[][] = [];
+		__setMutationServerProofForTests(() => ({ pid: 1, startTime: "test" }));
 		const spawnSyncSpy = spyOn(Bun, "spawnSync") as unknown as SpawnSyncSpy;
 		spawnSyncSpy.mockImplementation((cmd: string[]) => {
 			calls.push(cmd);
@@ -185,7 +188,7 @@ describe("tmux GC safety", () => {
 			});
 			expect(await tmuxSessionsGcAdapter.prune(record!, ctx())).toEqual({
 				removed: false,
-				error: "gjc_tmux_owner_isolation_server_unverifiable",
+				error: "gjc_tmux_cleanup_target_changed",
 			});
 			expect(calls).not.toContainEqual(["tmux-test", "kill-session", "-t", "=gajae_code_done"]);
 		} finally {

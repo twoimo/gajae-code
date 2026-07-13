@@ -2,21 +2,21 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { RpcWorkflowGate } from "@gajae-code/coding-agent/modes/rpc/rpc-types";
 import {
 	FileGateStore,
 	type GateAuditEvent,
 	MemoryGateStore,
 	WorkflowGateBroker,
 	WorkflowGateBrokerError,
-} from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
+} from "../src/modes/shared/agent-wire/workflow-gate-broker";
+import type { WorkflowGate } from "../src/modes/shared/agent-wire/workflow-gate-types";
 
 function makeBroker(
-	extra: { audit?: (e: GateAuditEvent) => void; advance?: (g: RpcWorkflowGate, a: unknown) => void } = {},
+	extra: { audit?: (e: GateAuditEvent) => void; advance?: (g: WorkflowGate, a: unknown) => void } = {},
 ) {
-	const emitted: RpcWorkflowGate[] = [];
+	const emitted: WorkflowGate[] = [];
 	const audit: GateAuditEvent[] = [];
-	const advanced: Array<{ gate: RpcWorkflowGate; answer: unknown }> = [];
+	const advanced: Array<{ gate: WorkflowGate; answer: unknown }> = [];
 	const broker = new WorkflowGateBroker("2026-06-05-0449-4845", new MemoryGateStore(), {
 		emit: g => emitted.push(g),
 		advance: (g, a) => {

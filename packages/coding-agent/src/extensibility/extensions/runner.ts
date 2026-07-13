@@ -6,7 +6,7 @@ import type { CredentialDisabledEvent, ImageContent, Model, ProviderResponseMeta
 import type { KeyId } from "@gajae-code/tui";
 import { logger } from "@gajae-code/utils";
 import type { ModelRegistry } from "../../config/model-registry";
-import type { WorkflowGateEmitter } from "../../modes/shared/agent-wire/unattended-session";
+import type { WorkflowGateEmitter } from "../../modes/shared/agent-wire/workflow-gate-broker";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
 import type {
@@ -182,10 +182,41 @@ export class ExtensionRunner {
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
+	#getPendingMessageCountsFn: () => { steering: number; followUp: number; nextTurn: number } = () => ({
+		steering: 0,
+		followUp: 0,
+		nextTurn: 0,
+	});
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#getWorkflowGateFn: () => WorkflowGateEmitter | undefined = () => undefined;
+	#clearContextFn: () => Promise<boolean> = async () => false;
+	#getTranscriptFn: ExtensionContext["getTranscript"] = () => [];
+	#getTranscriptBodyFn: ExtensionContext["getTranscriptBody"] = () => undefined;
+	#getGoalStateFn: ExtensionContext["getGoalState"] = () => undefined;
+	#getTodoStateFn: ExtensionContext["getTodoState"] = () => undefined;
+	#getQueuedMessagesFn: ExtensionContext["getQueuedMessages"] = () => [];
+	#getActiveToolsFn: ExtensionContext["getActiveTools"] = () => [];
+	#getAllToolsFn: ExtensionContext["getAllTools"] = () => [];
+	#cycleModelFn: ExtensionContextActions["cycleModel"] = undefined;
+	#cycleThinkingLevelFn: ExtensionContextActions["cycleThinkingLevel"] = undefined;
+	#setQueueModeFn: ExtensionContextActions["setQueueMode"] = undefined;
+	#getSkillStateFn: ExtensionContextActions["getSkillState"] = undefined;
+	#getConfigItemsFn: ExtensionContextActions["getConfigItems"] = undefined;
+	#getBranchCandidatesFn: ExtensionContextActions["getBranchCandidates"] = undefined;
+	#getExtensionsFn: ExtensionContextActions["getExtensions"] = undefined;
+	#getArtifactFn: ExtensionContextActions["getArtifact"] = undefined;
+	#getArtifactRangeFn: ExtensionContextActions["getArtifactRange"] = undefined;
+
+	#getJobsFn: ExtensionContextActions["getJobs"] = undefined;
+	#sdkControlFn: ExtensionContextActions["sdkControl"] = undefined;
+	#setSdkPermissionProviderFn: ExtensionContextActions["setSdkPermissionProvider"] = undefined;
+
+	#invokeSkillFn: ExtensionContextActions["invokeSkill"] = undefined;
+	#setPlanModeFn: ExtensionContextActions["setPlanMode"] = undefined;
+	#operateGoalFn: ExtensionContextActions["operateGoal"] = undefined;
+
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	#branchHandler: BranchHandler = async () => ({ cancelled: false });
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -257,9 +288,36 @@ export class ExtensionRunner {
 		this.#isIdleFn = contextActions.isIdle;
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
+		this.#getPendingMessageCountsFn =
+			contextActions.getPendingMessageCounts ?? (() => ({ steering: 0, followUp: 0, nextTurn: 0 }));
 		this.#shutdownHandler = contextActions.shutdown;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 		this.#getWorkflowGateFn = contextActions.getWorkflowGate ?? (() => undefined);
+		this.#clearContextFn = contextActions.clearContext ?? (async () => false);
+		this.#getTranscriptFn = contextActions.getTranscript ?? (() => []);
+		this.#getTranscriptBodyFn = contextActions.getTranscriptBody ?? (() => undefined);
+		this.#getGoalStateFn = contextActions.getGoalState ?? (() => undefined);
+		this.#getTodoStateFn = contextActions.getTodoState ?? (() => undefined);
+		this.#getQueuedMessagesFn = contextActions.getQueuedMessages ?? (() => []);
+		this.#getActiveToolsFn = contextActions.getActiveTools ?? (() => []);
+		this.#getAllToolsFn = contextActions.getAllTools ?? (() => []);
+		this.#cycleModelFn = contextActions.cycleModel;
+		this.#cycleThinkingLevelFn = contextActions.cycleThinkingLevel;
+		this.#setQueueModeFn = contextActions.setQueueMode;
+		this.#getSkillStateFn = contextActions.getSkillState;
+		this.#invokeSkillFn = contextActions.invokeSkill;
+		this.#setPlanModeFn = contextActions.setPlanMode;
+		this.#operateGoalFn = contextActions.operateGoal;
+
+		this.#getConfigItemsFn = contextActions.getConfigItems;
+		this.#getBranchCandidatesFn = contextActions.getBranchCandidates;
+		this.#getExtensionsFn = contextActions.getExtensions;
+		this.#getArtifactFn = contextActions.getArtifact;
+		this.#getArtifactRangeFn = contextActions.getArtifactRange;
+
+		this.#getJobsFn = contextActions.getJobs;
+		this.#sdkControlFn = contextActions.sdkControl;
+		this.#setSdkPermissionProviderFn = contextActions.setSdkPermissionProvider;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -297,8 +355,8 @@ export class ExtensionRunner {
 	 * Forward a `credential_disabled` event from `AuthStorage` to extension handlers.
 	 *
 	 * If {@link initialize} has not yet run, the event is buffered and replayed once
-	 * initialize wires the runtime/UI context. This matters because mode controllers
-	 * (interactive, RPC, ACP, print, subagent) call `initialize()` AFTER `createAgentSession`
+	 * initialize wires the runtime/UI context. This matters because session frontends
+	 * (interactive, ACP, print, and subagent) call `initialize()` AFTER `createAgentSession`
 	 * returns, but `AuthStorage` can fire `credential_disabled` during startup model probes
 	 * inside `createAgentSession()`. Without deferral, extension handlers would observe
 	 * `hasUI=false`, an unset model, and no-op runtime actions on exactly the headline
@@ -483,10 +541,52 @@ export class ExtensionRunner {
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
+			getPendingMessageCounts: () => this.#getPendingMessageCountsFn(),
+			getTranscript: () => this.#getTranscriptFn(),
+			getTranscriptBody: entryId => this.#getTranscriptBodyFn(entryId),
+			getGoalState: () => this.#getGoalStateFn(),
+			getTodoState: () => this.#getTodoStateFn(),
+			getQueuedMessages: () => this.#getQueuedMessagesFn(),
+			getActiveTools: () => this.#getActiveToolsFn(),
+			getAllTools: () => this.#getAllToolsFn(),
+			cycleModel: async () => await this.#cycleModelFn?.(),
+			cycleThinkingLevel: () => this.#cycleThinkingLevelFn?.(),
+			setQueueMode: (kind, mode) => this.#setQueueModeFn?.(kind, mode) ?? false,
+			invokeSkill: async (name, args) => await this.#invokeSkillFn?.(name, args),
+
+			setPlanMode: on => this.#setPlanModeFn?.(on),
+			operateGoal: async (op, objective) => await this.#operateGoalFn?.(op, objective),
+
+			getSkillState: () => this.#getSkillStateFn?.(),
+			getConfigItems: () => this.#getConfigItemsFn?.(),
+			getBranchCandidates: () => this.#getBranchCandidatesFn?.(),
+			getExtensions: () => this.#getExtensionsFn?.(),
+			getArtifact: id => this.#getArtifactFn?.(id),
+			getArtifactRange: (id, offset, length) => this.#getArtifactRangeFn?.(id, offset, length),
+
+			getJobs: () => this.#getJobsFn?.(),
+			sdkControl: (operation, input) => this.#sdkControlFn?.(operation, input),
+			setSdkPermissionProvider: provider => this.#setSdkPermissionProviderFn?.(provider),
+			sdkBindings: () => [
+				...(this.#cycleModelFn ? ["cycleModel"] : []),
+				...(this.#cycleThinkingLevelFn ? ["cycleThinkingLevel"] : []),
+				...(this.#setQueueModeFn ? ["setQueueMode"] : []),
+				...(this.#getSkillStateFn ? ["getSkillState"] : []),
+				...(this.#getConfigItemsFn ? ["getConfigItems"] : []),
+				...(this.#getBranchCandidatesFn ? ["getBranchCandidates"] : []),
+				...(this.#getExtensionsFn ? ["getExtensions"] : []),
+				...(this.#getArtifactRangeFn ? ["getArtifactRange"] : []),
+				...(this.#getJobsFn ? ["getJobs"] : []),
+				...(this.#sdkControlFn ? ["sdkControl"] : []),
+				...(this.#invokeSkillFn ? ["invokeSkill"] : []),
+				...(this.#setPlanModeFn ? ["setPlanMode"] : []),
+				...(this.#operateGoalFn ? ["operateGoal"] : []),
+			],
 			shutdown: () => this.#shutdownHandler(),
-			getSystemPrompt: () => this.#getSystemPromptFn(),
+			getSystemPrompt: () => [...this.#getSystemPromptFn()],
 			hasQueuedMessages: () => this.#hasPendingMessagesFn(), // deprecated alias
 			workflowGate: this.#getWorkflowGateFn(),
+			clearContext: () => this.#clearContextFn(),
 		};
 	}
 
@@ -734,7 +834,7 @@ export class ExtensionRunner {
 	async emitInput(
 		text: string,
 		images: ImageContent[] | undefined,
-		source: "interactive" | "rpc" | "extension",
+		source: "interactive" | "sdk" | "extension",
 	): Promise<InputEventResult> {
 		const handlers = this.#handlersByEvent.get("input") ?? [];
 		if (handlers.length === 0) return {};

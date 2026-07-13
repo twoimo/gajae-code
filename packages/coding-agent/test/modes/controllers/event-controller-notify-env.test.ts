@@ -16,7 +16,7 @@ import { resetSettingsForTest, Settings, settings } from "@gajae-code/coding-age
 import { EventController } from "@gajae-code/coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@gajae-code/coding-agent/modes/types";
-import { completionNotifyDisabledByEnv } from "@gajae-code/coding-agent/notifications/config";
+import { completionNotifyDisabledByEnv } from "@gajae-code/coding-agent/sdk/bus/config";
 import { TERMINAL } from "@gajae-code/tui";
 
 type NotifyProc = Bun.Subprocess<"ignore", "ignore", "ignore">;

@@ -759,8 +759,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		};
 		const gateEmitter = this.session.getWorkflowGateEmitter?.();
 		const canUseWorkflowGate = gateEmitter?.isUnattended() === true;
-
-		// Headless fallback: unattended workflow gates are the non-TUI answer path.
+		// Headless fallback: SDK workflow gates are the non-TUI answer path.
 		if (!canUseWorkflowGate && (!context?.hasUI || !context.ui)) {
 			context?.abort();
 			throw new ToolAbortError("Ask tool requires interactive mode");
@@ -772,9 +771,9 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				if (!extensionUi) throw new ToolAbortError("Ask tool requires interactive mode");
 				const source = this.session.getAskAnswerSource?.();
 				if (!source) return extensionUi.select(prompt, options, dialogOptions);
-				// Race the local UI against a remote answer (e.g. a Telegram reply via the
-				// notifications SDK) so asks can be answered without RPC mode. First valid
-				// answer wins; the loser is aborted so neither side is left hanging:
+				// Race the local UI against a remote answer (e.g. an SDK reply) so asks
+				// can be answered without local UI interaction. The first valid answer
+				// wins; the loser is aborted so neither side is left hanging:
 				//   - local wins  -> abort the remote source (marks the action resolved-locally)
 				//   - remote wins -> abort the local selector so the TUI dialog actually closes
 				const remoteController = new AbortController();
@@ -975,8 +974,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		) => {
 			const rawOptionLabels = q.options.map(o => o.label);
 			const questionIndex = params.questions.indexOf(q);
-			// Unattended (#316/#323/G011): route the question through the workflow-gate
-			// emitter instead of the interactive UI; the external agent answers over RPC.
+			// Route headless asks through the SDK workflow-gate emitter; a connected
+			// SDK responder supplies the durable answer instead of an interactive UI.
 			if (gateEmitter && canUseWorkflowGate) {
 				const gateQuestion: AskGateQuestion = {
 					id: q.id,

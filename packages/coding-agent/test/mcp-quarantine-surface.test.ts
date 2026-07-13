@@ -21,7 +21,7 @@ describe("GJC MCP quarantine surface", () => {
 	});
 
 	it("does not discover or proxy MCP tools into agent or subagent sessions", async () => {
-		const sdk = await source("sdk.ts");
+		const sdk = await source("sdk", "session.ts");
 		const taskExecutor = await source("task", "executor.ts");
 		const taskIndex = await source("task", "index.ts");
 

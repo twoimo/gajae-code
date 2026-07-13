@@ -3,8 +3,8 @@
  * for AgentSession events and bounded owner observations.
  *
  * Two distinct consumer-facing shapes, deliberately NOT collapsed into one:
- * - `AgentWireEventPayload`: rich, full `AgentSessionEvent` for renderers
- *   (ACP SDK notifications, RPC/Bridge event frames).
+ * - `AgentWireEventPayload`: rich, full `AgentSessionEvent` for event
+ *   consumers on any agent-wire transport.
  * - `AgentWireOwnerObservation`: bounded/redacted owner evidence for control
  *   planes (Harness). Never carries assistant text, message deltas, raw tool
  *   args, raw command output, raw tool results, answers, or oversize strings.
@@ -63,8 +63,8 @@ export const AGENT_WIRE_EVENT_TYPES: readonly AgentWireEventType[] = Object.keys
 ) as AgentWireEventType[];
 
 /**
- * Rich event payload. Carries the full `AgentSessionEvent` so renderers (ACP,
- * RPC, Bridge) can present message content, tool args/results, todo state, etc.
+ * Rich event payload. Carries the full `AgentSessionEvent` so event consumers
+ * can present message content, tool args/results, todo state, and related data.
  */
 export interface AgentWireEventPayload {
 	event_type: AgentWireEventType;
@@ -78,7 +78,7 @@ export type AgentWireCompactAssistantMessageEvent = AssistantMessageEvent extend
 
 export interface AgentWireCompactMessageUpdatePayload {
 	event_type: "message_update";
-	/** Compact RPC opt-in payload: delta-only update plus minimal routing metadata. */
+	/** Compact opt-in payload: delta-only update plus minimal routing metadata. */
 	compact: true;
 	message_id: string | null;
 	content_index: number | null;
@@ -120,7 +120,7 @@ export interface AgentWireOwnerObservation {
 	eventType?: AgentWireEventType;
 	/** Set when this observation derives from a non-event wire frame. */
 	frameType?: string;
-	/** Owner event kind (e.g. `rpc_tool_started`). */
+	/** Owner event kind (for example, a tool-started observation). */
 	kind: string;
 	/** Bounded observed signal, or null when the frame carries no signal. */
 	signal: AgentWireObservedSignal | null;

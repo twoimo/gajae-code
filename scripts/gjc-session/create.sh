@@ -7,28 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=postmortem.sh
 source "$SCRIPT_DIR/postmortem.sh"
 
-SESSION="${1:?Usage: $0 <session-name> <worktree-path> [channel-id] [mention]}"
-WORKDIR="${2:?Usage: $0 <session-name> <worktree-path> [channel-id] [mention]}"
-CHANNEL="${3:-}"
-MENTION="${4:-}"
+[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }
+SESSION="$1"
+WORKDIR="$2"
 GJC_BIN="${GJC_BIN-$(command -v gjc || true)}"
-GJC_FLAGS="${GJC_SESSION_FLAGS:-}"
-ROUTER_BIN="${GJC_SESSION_ROUTER:-$(command -v clawhip || true)}"
 TMUX_BIN="${GJC_SESSION_TMUX_BIN:-tmux}"
 STATE_DIR="${GJC_SESSION_STATE_DIR:-$WORKDIR/.gjc-session-state/$SESSION}"
 RUNTIME_STATE_JSON="$STATE_DIR/runtime-state.json"
 SOCKET_KEY="gjc-${SESSION//[^A-Za-z0-9_.-]/_}"
 MONITOR_SESSION="${SESSION}-owner-monitor"
-# Production always uses a ten-second router watch deadline. Tests may shorten it,
-# but cannot disable or extend the deadline.
-ROUTER_WATCH_TIMEOUT_SECONDS=10
-if [[ -v GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS ]]; then
-  ROUTER_WATCH_TIMEOUT_SECONDS="$GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS"
-  if [[ ! "$ROUTER_WATCH_TIMEOUT_SECONDS" =~ ^([1-9]|10)$ ]]; then
-    echo "GJC_SESSION_TEST_ROUTER_WATCH_TIMEOUT_SECONDS must be an integer from 1 through 10" >&2
-    exit 1
-  fi
-fi
 
 
 shell_join() { printf '%q ' "$@"; }
@@ -688,7 +675,7 @@ for handled_signal in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(handled_signal, forward)
 
 started_at = now()
-command = [os.environ["GJC_SESSION_GJC_BIN"], *os.environ.get("GJC_SESSION_FLAGS", "").split()]
+command = [os.environ["GJC_SESSION_GJC_BIN"]]
 try:
     child = subprocess.Popen(command, cwd=os.environ["GJC_SESSION_WORKDIR"])
     status = child.wait()
@@ -715,7 +702,7 @@ raise SystemExit(exit_code)
 SUPERVISOR
 chmod 700 "$STATE_DIR/supervisor.py"
 
-LAUNCH=(env "GJC_SESSION_NAME=$SESSION" "GJC_SESSION_WORKDIR=$WORKDIR" "GJC_SESSION_BRANCH=$BRANCH" "GJC_SESSION_STATE_DIR=$STATE_DIR" "GJC_SESSION_OWNER_GENERATION=$OWNER_GENERATION" "GJC_SESSION_RUNTIME_FRESH_AFTER=$CREATED_AT" "GJC_SESSION_STARTED_JSON=$STATE_DIR/started.json" "GJC_SESSION_TERMINAL_JSON=$STATE_DIR/terminal.json" "GJC_SESSION_TERMINAL_CANONICAL_JSON=$LIFECYCLE_DIR/terminal-$OWNER_GENERATION.json" "GJC_SESSION_FINAL_JSON=$STATE_DIR/final.json" "GJC_SESSION_FINAL_CANONICAL_JSON=$LIFECYCLE_DIR/final-$OWNER_GENERATION.json" "GJC_SESSION_GENERATION_JSON=$GENERATION_JSON" "GJC_COORDINATOR_SESSION_ID=$SESSION" "GJC_COORDINATOR_SESSION_BRANCH=$BRANCH" "GJC_COORDINATOR_SESSION_STATE_FILE=$RUNTIME_STATE_JSON" "GJC_TMUX_OWNER_GENERATION=$OWNER_GENERATION" "GJC_TMUX_OWNER_STATE_DIR=$STATE_DIR" "GJC_TMUX_OWNER_SERVER_KEY=$SOCKET_KEY" "GJC_SESSION_PROMPT_ACCEPTED_JSON=$STATE_DIR/prompt-accepted.json" "GJC_SESSION_WORKTREE_BASELINE_DIRTY=$WORKTREE_BASELINE_DIRTY" "GJC_SESSION_GJC_BIN=$GJC_BIN" "GJC_SESSION_FLAGS=$GJC_FLAGS" "GJC_SESSION_RUNNER_SH=$STATE_DIR/runner.sh" "GJC_SESSION_POSTMORTEM_SH=$SCRIPT_DIR/postmortem.sh" python3 "$STATE_DIR/supervisor.py")
+LAUNCH=(env "GJC_SESSION_NAME=$SESSION" "GJC_SESSION_WORKDIR=$WORKDIR" "GJC_SESSION_BRANCH=$BRANCH" "GJC_SESSION_STATE_DIR=$STATE_DIR" "GJC_SESSION_OWNER_GENERATION=$OWNER_GENERATION" "GJC_SESSION_RUNTIME_FRESH_AFTER=$CREATED_AT" "GJC_SESSION_STARTED_JSON=$STATE_DIR/started.json" "GJC_SESSION_TERMINAL_JSON=$STATE_DIR/terminal.json" "GJC_SESSION_TERMINAL_CANONICAL_JSON=$LIFECYCLE_DIR/terminal-$OWNER_GENERATION.json" "GJC_SESSION_FINAL_JSON=$STATE_DIR/final.json" "GJC_SESSION_FINAL_CANONICAL_JSON=$LIFECYCLE_DIR/final-$OWNER_GENERATION.json" "GJC_SESSION_GENERATION_JSON=$GENERATION_JSON" "GJC_COORDINATOR_SESSION_ID=$SESSION" "GJC_COORDINATOR_SESSION_BRANCH=$BRANCH" "GJC_COORDINATOR_SESSION_STATE_FILE=$RUNTIME_STATE_JSON" "GJC_TMUX_OWNER_GENERATION=$OWNER_GENERATION" "GJC_TMUX_OWNER_STATE_DIR=$STATE_DIR" "GJC_TMUX_OWNER_SERVER_KEY=$SOCKET_KEY" "GJC_SESSION_PROMPT_ACCEPTED_JSON=$STATE_DIR/prompt-accepted.json" "GJC_SESSION_WORKTREE_BASELINE_DIRTY=$WORKTREE_BASELINE_DIRTY" "GJC_SESSION_GJC_BIN=$GJC_BIN" "GJC_SESSION_RUNNER_SH=$STATE_DIR/runner.sh" "GJC_SESSION_POSTMORTEM_SH=$SCRIPT_DIR/postmortem.sh" python3 "$STATE_DIR/supervisor.py")
 LAUNCH_SHELL="$(shell_join "${LAUNCH[@]}")"
 TMUX_ARGV=("$TMUX_BIN" -L "$SOCKET_KEY" new-session -d -P -F '#{session_id}' -s "$SESSION" -c "$WORKDIR" -n gjc "$LAUNCH_SHELL")
 PLAN_LINE="$(python3 - "$SESSION" "$OWNER_GENERATION" "$WORKDIR" "$STATE_DIR" "$SOCKET_KEY" "$GENERATION_BASELINE_JSON" "${TMUX_ARGV[@]}" <<'PY'
@@ -918,42 +905,8 @@ finally:
     except FileNotFoundError: pass
 PY
 )"
-RECOVERY_CREATED=0
-RECOVERY_DEDUPE=""
 if [[ "$RECOVERY_RESULT" == 1:* ]]; then
-  RECOVERY_CREATED=1
-  RECOVERY_DEDUPE="${RECOVERY_RESULT#1:}"
   gjc_session_publish_current_alias "$LIFECYCLE_DIR/recovery-$OWNER_GENERATION.json" "$STATE_DIR/recovery.json" "$GENERATION_JSON" "$SESSION" "$OWNER_GENERATION" owner_recovered || { echo "failed to publish recovery lifecycle alias" >&2; exit 1; }
-fi
-if [[ "$RECOVERY_CREATED" == 1 && "${GJC_SESSION_SKIP_ROUTER:-0}" != 1 && -n "$ROUTER_BIN" && -n "$CHANNEL" ]]; then
-  set +e
-  "$ROUTER_BIN" tmux recovered --session "$SESSION" --generation "$OWNER_GENERATION" --prior-dedupe "$RECOVERY_DEDUPE" --channel "$CHANNEL" >/dev/null 2>&1
-  recovery_router_rc=$?
-  set -e
-  if [[ "$recovery_router_rc" -ne 0 ]]; then
-    echo "router recovery notification failed; tmux session is still running" >&2
-    if python3 - "$LIFECYCLE_DIR/router-failure-$OWNER_GENERATION-recovery_notification.json" "$SESSION" "$OWNER_GENERATION" "$recovery_router_rc" <<'PY'
-
-import json, os, sys
-path, session, generation, rc = sys.argv[1:]
-record = {"schema_version":1,"kind":"router_failure","session_id":session,"owner_generation":generation,"boundary":"recovery_notification","exit_code":int(rc)}
-temporary = f"{path}.{os.getpid()}.tmp"
-try:
-    with open(temporary, "x", encoding="utf-8") as handle: json.dump(record, handle, separators=(",", ":")); handle.write("\n")
-    os.link(temporary, path)
-except FileExistsError:
-    with open(path, encoding="utf-8") as handle:
-        if json.load(handle) != record: raise
-finally:
-    try: os.unlink(temporary)
-    except FileNotFoundError: pass
-PY
-    then
-      gjc_session_publish_current_alias "$LIFECYCLE_DIR/router-failure-$OWNER_GENERATION-recovery_notification.json" "$STATE_DIR/router-failure.json" "$GENERATION_JSON" "$SESSION" "$OWNER_GENERATION" router_failure || echo "router recovery failure receipt publication unavailable" >&2
-    else
-      echo "router recovery failure receipt unavailable" >&2
-    fi
-  fi
 fi
 
 cat >"$STATE_DIR/monitor.sh" <<'MONITOR'
@@ -1036,75 +989,16 @@ if [[ "$classification" == unexpected_owner_loss ]]; then
   within_recovery_deadline || exit 1
   gjc_session_publish_current_alias "$GJC_SESSION_INCIDENT_CANONICAL_JSON" "$GJC_SESSION_INCIDENT_JSON" "$GJC_SESSION_GENERATION_JSON" "$GJC_SESSION_NAME" "$GJC_SESSION_OWNER_GENERATION" owner_incident || exit 1
   within_recovery_deadline || exit 1
-  if [[ -n "${GJC_SESSION_ROUTER_BIN:-}" && -n "${GJC_SESSION_CHANNEL:-}" ]]; then
-    set +e
-    "$GJC_SESSION_ROUTER_BIN" tmux stale --session "$GJC_SESSION_NAME" --pane missing --minutes 0 --last-line "GJC owner lifecycle incident recorded" --channel "$GJC_SESSION_CHANNEL" >/dev/null 2>&1
-    stale_router_rc=$?
-    set -e
-    if [[ "$stale_router_rc" -ne 0 ]]; then
-      echo "router stale-owner notification failed" >&2
-      python3 - "$GJC_SESSION_STATE_DIR/$GJC_SESSION_NAME/owner-lifecycle/router-failure-$GJC_SESSION_OWNER_GENERATION-stale_owner_notification.json" "$GJC_SESSION_NAME" "$GJC_SESSION_OWNER_GENERATION" "$stale_router_rc" <<'PY'
-import json, os, sys
-path, session, generation, rc = sys.argv[1:]
-record = {"schema_version":1,"kind":"router_failure","session_id":session,"owner_generation":generation,"boundary":"stale_owner_notification","exit_code":int(rc)}
-temporary = f"{path}.{os.getpid()}.tmp"
-try:
-    with open(temporary, "x", encoding="utf-8") as handle: json.dump(record, handle, separators=(",", ":")); handle.write("\n")
-    os.link(temporary, path)
-except FileExistsError:
-    with open(path, encoding="utf-8") as handle:
-        if json.load(handle) != record: raise
-finally:
-    try: os.unlink(temporary)
-    except FileNotFoundError: pass
-PY
-      gjc_session_publish_current_alias "$GJC_SESSION_STATE_DIR/$GJC_SESSION_NAME/owner-lifecycle/router-failure-$GJC_SESSION_OWNER_GENERATION-stale_owner_notification.json" "$GJC_SESSION_STATE_DIR/router-failure.json" "$GJC_SESSION_GENERATION_JSON" "$GJC_SESSION_NAME" "$GJC_SESSION_OWNER_GENERATION" router_failure || echo "router stale-owner failure receipt publication unavailable" >&2
-    fi
-  fi
 fi
 MONITOR
 chmod +x "$STATE_DIR/monitor.sh"
 CREATION_BOUNDARY=monitor
 
 if [[ "${GJC_SESSION_MONITOR_DISABLE:-0}" != 1 ]]; then
-  MONITOR_LAUNCH=(env "GJC_SESSION_NAME=$SESSION" "GJC_SESSION_WORKDIR=$WORKDIR" "GJC_SESSION_OWNER_GENERATION=$OWNER_GENERATION" "GJC_SESSION_STATE_DIR=$STATE_DIR" "GJC_SESSION_SOCKET_KEY=$SOCKET_KEY" "GJC_SESSION_TMUX_BIN=$TMUX_BIN" "GJC_SESSION_GJC_BIN=$GJC_BIN" "GJC_SESSION_POSTMORTEM_SH=$SCRIPT_DIR/postmortem.sh" "GJC_SESSION_GENERATION_JSON=$GENERATION_JSON" "GJC_SESSION_VERDICT_JSON=$STATE_DIR/verdict.json" "GJC_SESSION_VERDICT_CANONICAL_JSON=$LIFECYCLE_DIR/verdict-$OWNER_GENERATION.json" "GJC_SESSION_VANISHED_JSON=$STATE_DIR/vanished.json" "GJC_SESSION_VANISHED_CANONICAL_JSON=$LIFECYCLE_DIR/vanished-$OWNER_GENERATION.json" "GJC_SESSION_INCIDENT_JSON=$STATE_DIR/incident.json" "GJC_SESSION_INCIDENT_CANONICAL_JSON=$LIFECYCLE_DIR/incident-$OWNER_GENERATION.json" "GJC_SESSION_ROUTER_BIN=$ROUTER_BIN" "GJC_SESSION_CHANNEL=$CHANNEL" "GJC_SESSION_MONITOR_INTERVAL=${GJC_SESSION_MONITOR_INTERVAL:-5}" bash "$STATE_DIR/monitor.sh")
+  MONITOR_LAUNCH=(env "GJC_SESSION_NAME=$SESSION" "GJC_SESSION_WORKDIR=$WORKDIR" "GJC_SESSION_OWNER_GENERATION=$OWNER_GENERATION" "GJC_SESSION_STATE_DIR=$STATE_DIR" "GJC_SESSION_SOCKET_KEY=$SOCKET_KEY" "GJC_SESSION_TMUX_BIN=$TMUX_BIN" "GJC_SESSION_GJC_BIN=$GJC_BIN" "GJC_SESSION_POSTMORTEM_SH=$SCRIPT_DIR/postmortem.sh" "GJC_SESSION_GENERATION_JSON=$GENERATION_JSON" "GJC_SESSION_VERDICT_JSON=$STATE_DIR/verdict.json" "GJC_SESSION_VERDICT_CANONICAL_JSON=$LIFECYCLE_DIR/verdict-$OWNER_GENERATION.json" "GJC_SESSION_VANISHED_JSON=$STATE_DIR/vanished.json" "GJC_SESSION_VANISHED_CANONICAL_JSON=$LIFECYCLE_DIR/vanished-$OWNER_GENERATION.json" "GJC_SESSION_INCIDENT_JSON=$STATE_DIR/incident.json" "GJC_SESSION_INCIDENT_CANONICAL_JSON=$LIFECYCLE_DIR/incident-$OWNER_GENERATION.json" "GJC_SESSION_MONITOR_INTERVAL=${GJC_SESSION_MONITOR_INTERVAL:-5}" bash "$STATE_DIR/monitor.sh")
   "$TMUX_BIN" -L "$SOCKET_KEY" new-session -d -s "$MONITOR_SESSION" -c "$WORKDIR" -n owner-monitor "$(shell_join "${MONITOR_LAUNCH[@]}")" || { echo "owner monitor creation failed" >&2; exit 1; }
   ROLLBACK_MONITOR_CREATED=1
   record_rollback_identity monitor_session "$MONITOR_SESSION" ROLLBACK_MONITOR_NATIVE_ID ROLLBACK_MONITOR_SERVER_PID ROLLBACK_MONITOR_SERVER_START_TIME ROLLBACK_MONITOR_SESSION_NAME || { echo "owner monitor rollback identity receipt failed" >&2; exit 1; }
-fi
-if [[ "${GJC_SESSION_SKIP_ROUTER:-0}" != 1 && -n "$ROUTER_BIN" ]]; then
-  KEYWORDS="${GJC_SESSION_KEYWORDS:-/skill:deep-interview,/skill:ralplan,gjc ultragoal,gjc team,deep-interview,ralplan,ultragoal,team,Ask 1 questions,Ask questions,Deep Interview · Round,Question}"
-  WATCH_ARGS=(tmux watch --session "$SESSION" --stale-minutes "${GJC_SESSION_STALE_MINUTES:-60}" --format compact)
-  [[ -n "$KEYWORDS" ]] && WATCH_ARGS+=(--keywords "$KEYWORDS")
-  [[ -n "$CHANNEL" ]] && WATCH_ARGS+=(--channel "$CHANNEL")
-  [[ -n "$MENTION" ]] && WATCH_ARGS+=(--mention "$MENTION")
-  set +e
-  timeout "${ROUTER_WATCH_TIMEOUT_SECONDS}s" "$ROUTER_BIN" "${WATCH_ARGS[@]}"
-  watch_rc=$?
-  set -e
-  if [[ "$watch_rc" -ne 0 ]]; then
-    echo "router watch registration failed for $SESSION (rc=$watch_rc); tmux session is still running" >&2
-    if python3 - "$LIFECYCLE_DIR/router-failure-$OWNER_GENERATION-watch_registration.json" "$SESSION" "$OWNER_GENERATION" "$watch_rc" <<'PY'
-import json, os, sys
-path, session, generation, rc = sys.argv[1:]
-record = {"schema_version":1,"kind":"router_failure","session_id":session,"owner_generation":generation,"boundary":"watch_registration","exit_code":int(rc)}
-temporary = f"{path}.{os.getpid()}.tmp"
-try:
-    with open(temporary, "x", encoding="utf-8") as handle: json.dump(record, handle, separators=(",", ":")); handle.write("\n")
-    os.link(temporary, path)
-except FileExistsError:
-    with open(path, encoding="utf-8") as handle:
-        if json.load(handle) != record: raise
-finally:
-    try: os.unlink(temporary)
-    except FileNotFoundError: pass
-PY
-    then
-      gjc_session_publish_current_alias "$LIFECYCLE_DIR/router-failure-$OWNER_GENERATION-watch_registration.json" "$STATE_DIR/router-failure.json" "$GENERATION_JSON" "$SESSION" "$OWNER_GENERATION" router_failure || echo "router watch failure receipt publication unavailable" >&2
-    else
-      echo "router watch failure receipt unavailable" >&2
-    fi
-  fi
 fi
 CREATION_COMPLETE=1
 ROLLBACK_ARMED=0
@@ -1114,5 +1008,4 @@ exec 9>&-
 unset GJC_SESSION_TRANSITION_LOCK_HELD
 printf 'created GJC session: %s\n' "$SESSION"
 printf '  workdir: %s\n  branch: %s\n  state: %s\n' "$WORKDIR" "$BRANCH" "$STATE_DIR"
-printf '  markers: creation-state.json started.json prompt-accepted.json terminal.json final.json verdict.json incident.json recovery.json\n'
-printf '  prompt: GJC_SESSION_STATE_DIR=%q GJC_SESSION_TMUX_SOCKET=%q %q %q @/path/to/prompt.md\n' "$STATE_DIR" "$SOCKET_KEY" "$SCRIPT_DIR/prompt.sh" "$SESSION"
+printf '  markers: creation-state.json started.json terminal.json final.json verdict.json incident.json recovery.json\n'

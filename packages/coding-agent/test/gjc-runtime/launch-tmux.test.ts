@@ -2982,7 +2982,7 @@ describe("tmux owner isolation launch gate", () => {
 		}
 	});
 
-	it("uses normal postmortem completion rather than Linux owner verdict locking on Darwin", async () => {
+	it("persists a fail-closed portable owner terminal verdict on Darwin", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-darwin-owner-finalization-"));
 		const previousPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 		try {
@@ -2999,8 +2999,8 @@ describe("tmux owner isolation launch gate", () => {
 			const payload = JSON.parse(
 				fs.readFileSync(path.join(sessionRuntimeDir(root, "portable-owner"), "runtime-state.json"), "utf8"),
 			) as Record<string, unknown>;
-			expect(payload.event).toBe("process_exit");
-			expect(payload.reason).not.toBe("owner_verdict_unavailable");
+			expect(payload.event).toBe("owner_terminal");
+			expect(payload.reason).toBe("owner_verdict_unavailable");
 		} finally {
 			if (previousPlatform) Object.defineProperty(process, "platform", previousPlatform);
 			fs.rmSync(root, { recursive: true, force: true });

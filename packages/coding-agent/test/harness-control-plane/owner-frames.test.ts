@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { callEndpoint } from "../../src/harness-control-plane/control-endpoint";
 import { RuntimeOwner } from "../../src/harness-control-plane/owner";
-import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/rpc-adapter";
+import type { HarnessSessionTransport, SessionStateSnapshot } from "../../src/harness-control-plane/session-transport";
 import { readEvents, writeSessionState } from "../../src/harness-control-plane/storage";
 import { SESSION_SCHEMA_VERSION, type SessionHandle, type SessionState } from "../../src/harness-control-plane/types";
 
 /** In-process RPC that lets a test push event frames through the owner's onEventFrame path. */
-class FrameRpc implements HarnessRpc {
+class FrameTransport implements HarnessSessionTransport {
 	cursor = 0;
 	live = true;
 	#cb: ((frame: Record<string, unknown>) => void) | null = null;
 	#lastAt: string | null = null;
-	async getState(): Promise<RpcStateSnapshot> {
+	async getState(): Promise<SessionStateSnapshot> {
 		return { isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
 	}
 	eventCursor(): number {
@@ -102,18 +102,23 @@ function obsOf(res: any) {
 
 describe("owner frame -> observability", () => {
 	it("AC-1: a tool turn surfaces tool-call/test-running + completed; single-writer events; lifecycle finalizing", async () => {
-		const rpc = new FrameRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const transport = new FrameTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport });
 		const info = await owner.start();
-		rpc.emit({ type: "agent_start" });
-		rpc.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "bun test x" } });
-		rpc.emit({
+		transport.emit({ type: "agent_start" });
+		transport.emit({
+			type: "tool_execution_start",
+			toolCallId: "t1",
+			toolName: "bash",
+			args: { command: "bun test x" },
+		});
+		transport.emit({
 			type: "tool_execution_end",
 			toolCallId: "t1",
 			toolName: "bash",
 			result: { details: { status: "ok" } },
 		});
-		rpc.emit({ type: "agent_end" });
+		transport.emit({ type: "agent_end" });
 		await flush();
 
 		const events = await readEvents(root, SID, 0);
@@ -141,23 +146,23 @@ describe("owner frame -> observability", () => {
 	});
 
 	it("maps real partial/error tool frames without persisting raw args or output", async () => {
-		const rpc = new FrameRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const transport = new FrameTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport });
 		const info = await owner.start();
-		rpc.emit({
+		transport.emit({
 			type: "tool_execution_start",
 			toolCallId: "t-secret",
 			toolName: "bash",
 			args: { command: "bun test SECRET_COMMAND" },
 		});
-		rpc.emit({
+		transport.emit({
 			type: "tool_execution_update",
 			toolCallId: "t-secret",
 			toolName: "bash",
 			args: { command: "bun test SECRET_COMMAND" },
 			partialResult: { status: "running", content: [{ type: "text", text: "SECRET_PARTIAL" }] },
 		});
-		rpc.emit({
+		transport.emit({
 			type: "tool_execution_end",
 			toolCallId: "t-secret",
 			toolName: "bash",
@@ -185,12 +190,12 @@ describe("owner frame -> observability", () => {
 		expect(obsJson).not.toContain("SECRET_OUTPUT");
 	});
 	it("AC-6: a message_update storm cannot starve agent_end (completed) or bloat the event log", async () => {
-		const rpc = new FrameRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const transport = new FrameTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport });
 		const info = await owner.start();
-		rpc.emit({ type: "agent_start" });
-		for (let i = 0; i < 500; i++) rpc.emit({ type: "message_update", messageId: "m1", delta: "noise" });
-		rpc.emit({ type: "agent_end" });
+		transport.emit({ type: "agent_start" });
+		for (let i = 0; i < 500; i++) transport.emit({ type: "message_update", messageId: "m1", delta: "noise" });
+		transport.emit({ type: "agent_end" });
 		await flush();
 
 		const events = await readEvents(root, SID, 0);
@@ -204,18 +209,18 @@ describe("owner frame -> observability", () => {
 	});
 
 	it("AC-7: transient tool-call/completed survive polling gaps (sticky from the event log)", async () => {
-		const rpc = new FrameRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const transport = new FrameTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport });
 		const info = await owner.start();
 		// frames happen BETWEEN observe polls
-		rpc.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "read", args: { path: "x" } });
-		rpc.emit({
+		transport.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "read", args: { path: "x" } });
+		transport.emit({
 			type: "tool_execution_end",
 			toolCallId: "t1",
 			toolName: "read",
 			result: { details: { status: "ok" } },
 		});
-		rpc.emit({ type: "agent_end" });
+		transport.emit({ type: "agent_end" });
 		await flush();
 		// getState reports idle now, but the later observe still shows the transient signals.
 		const obs = obsOf(
@@ -227,10 +232,10 @@ describe("owner frame -> observability", () => {
 	});
 
 	it("rpcLive is distinct from ownerLive (RPC death does not imply dead owner)", async () => {
-		const rpc = new FrameRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc });
+		const transport = new FrameTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport });
 		const info = await owner.start();
-		rpc.live = false; // RPC subprocess died; owner endpoint still serving
+		transport.live = false; // SDK transport died; owner endpoint still serving
 		const res = (await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>;
 		expect((res.state as Record<string, unknown>).ownerLive).toBe(true);
 		expect(obsOf(res).rpcLive).toBe(false);

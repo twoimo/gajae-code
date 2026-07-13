@@ -9,9 +9,7 @@ It explicitly excludes context-overflow recovery via auto-compaction. Overflow i
 - [`../src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts)
 - [`../src/config/settings-schema.ts`](../packages/coding-agent/src/config/settings-schema.ts)
 - [`../src/modes/controllers/event-controller.ts`](../packages/coding-agent/src/modes/controllers/event-controller.ts)
-- [`../src/modes/rpc/rpc-mode.ts`](../packages/coding-agent/src/modes/rpc/rpc-mode.ts)
-- [`../src/modes/rpc/rpc-client.ts`](../packages/coding-agent/src/modes/rpc/rpc-client.ts)
-- [`../src/modes/rpc/rpc-types.ts`](../packages/coding-agent/src/modes/rpc/rpc-types.ts)
+- [`sdk.md`](./sdk.md) for the external machine interface.
 
 ## Scope boundary vs compaction
 
@@ -143,7 +141,7 @@ Effect:
 
 This prevents callers from treating a retrying turn as complete too early.
 
-## Controls: settings and RPC
+## Controls: settings and SDK actions
 
 ### Configuration knobs
 
@@ -161,19 +159,9 @@ Programmatic toggles in session:
 - `autoRetryEnabled` reads `retry.enabled`
 - `isRetrying` reports whether retry lifecycle promise is active
 
-### RPC controls
+### External control
 
-RPC command surface:
-
-- `set_auto_retry` → `session.setAutoRetryEnabled(command.enabled)`
-- `abort_retry` → `session.abortRetry()`
-
-Client helpers:
-
-- `RpcClient.setAutoRetry(enabled)`
-- `RpcClient.abortRetry()`
-
-Both commands return success responses; retry progress/failure details come from streamed session events, not command response payloads.
+External clients observe retry lifecycle through the [SDK machine interface](./sdk.md). The removed RPC command surface and `RpcClient` helpers are not supported.
 
 ## Event emission and failure surfacing
 
@@ -188,7 +176,7 @@ Propagation:
 
 - emitted through `AgentSession.subscribe(...)`
 - forwarded to extension runner as extension events
-- in RPC mode, forwarded directly as JSON event objects (`session.subscribe(event => output(event))`)
+- exposed to external clients through SDK event subscriptions
 - in TUI, consumed by `EventController` for loader/error UI
 
 Final failure surfacing:
@@ -196,7 +184,7 @@ Final failure surfacing:
 - On max-exceeded or cancellation, `auto_retry_end.success === false`
 - TUI shows: `Retry failed after N attempts: <finalError>`
 - Extensions/hooks receive `auto_retry_end` with same fields
-- RPC consumers receive same event object on stdout stream
+- SDK clients receive the same event stream
 
 ## Permanent stop conditions
 
@@ -215,7 +203,7 @@ A new retry chain can still start later on a future retryable error after counte
 
 - Classification is regex text matching; provider-specific structured errors are not used here.
 - Retry strips the failing assistant error from **runtime context** before re-continue, but session history still keeps that error entry.
-- `RpcSessionState` currently exposes `autoCompactionEnabled` but not an `autoRetryEnabled` field; RPC callers must track their own toggle state or query settings through other APIs.
+- SDK clients observe retry state through session events and state updates.
 - Model fallback changes append temporary `model_change` entries and may later restore the primary model when its cooldown expires, depending on `retry.fallbackRevertPolicy`.
 
 ## Provider request/stream retry budgets

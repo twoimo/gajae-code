@@ -939,10 +939,9 @@ export interface Model<TApi extends Api = any> {
 	 * (or compatible) host; `headers.Authorization` (or `apiKey` resolved by
 	 * the registry) carries the gateway bearer.
 	 *
-	 * Used by containerized gjc installs (e.g. robogjc slots) to route every
-	 * LLM call through a sidecar gateway that holds the real provider
-	 * credentials. The model's other metadata (pricing, context window,
-	 * thinking config, …) still resolves locally; only the streaming
+	 * Used by containerized GJC installs to route every LLM call through a
+	 * sidecar gateway that holds the real provider credentials. The model's other
+	 * metadata (pricing, context window, thinking config, …) still resolves locally; only the streaming
 	 * dispatch is redirected.
 	 */
 	transport?: "pi-native";

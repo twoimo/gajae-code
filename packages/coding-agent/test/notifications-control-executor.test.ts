@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import { executeNotificationControlCommand } from "../src/notifications";
+import { executeNotificationControlCommand } from "../src/sdk/bus";
 
 function fakeCtx(overrides: Record<string, unknown> = {}) {
 	const compactCalls: Array<string | undefined> = [];

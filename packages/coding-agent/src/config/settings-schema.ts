@@ -264,9 +264,14 @@ export const SETTINGS_SCHEMA = {
 	"notifications.telegram.richDraft.enabled": { type: "boolean", default: false },
 	"notifications.telegram.topics.nameTemplate": { type: "string", default: undefined },
 	"notifications.discord.botToken": { type: "string", default: undefined },
-	"notifications.discord.channelId": { type: "string", default: undefined },
+	"notifications.discord.applicationId": { type: "string", default: undefined },
+	"notifications.discord.guildId": { type: "string", default: undefined },
+	"notifications.discord.parentChannelId": { type: "string", default: undefined },
 	"notifications.slack.botToken": { type: "string", default: undefined },
+	"notifications.slack.appToken": { type: "string", default: undefined },
+	"notifications.slack.workspaceId": { type: "string", default: undefined },
 	"notifications.slack.channelId": { type: "string", default: undefined },
+	"notifications.slack.authorizedUserId": { type: "string", default: undefined },
 	"notifications.redact": { type: "boolean", default: false },
 	"notifications.verbosity": {
 		type: "string",
@@ -3460,10 +3465,14 @@ export interface NotificationsSettings {
 	};
 	discord: {
 		botToken: string | undefined;
-		channelId: string | undefined;
+		applicationId: string | undefined;
+		guildId: string | undefined;
+		parentChannelId: string | undefined;
 	};
 	slack: {
 		botToken: string | undefined;
+		appToken: string | undefined;
+		workspaceId: string | undefined;
 		channelId: string | undefined;
 	};
 	redact: boolean;

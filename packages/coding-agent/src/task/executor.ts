@@ -1508,12 +1508,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							pendingExtensionMessages.push(sendPromise);
 						},
 						sendUserMessage: (content, options) => {
-							const sendPromise = session.sendUserMessage(content, options).catch(e => {
+							const send = session.sendUserMessage(content, options);
+							const observedSend = send.catch(e => {
 								logger.error("Extension sendUserMessage failed", {
 									error: e instanceof Error ? e.message : String(e),
 								});
 							});
-							pendingExtensionMessages.push(sendPromise);
+							pendingExtensionMessages.push(observedSend);
+							return send;
 						},
 						appendEntry: (customType, data) => {
 							session.sessionManager.appendCustomEntry(customType, data);
@@ -1539,10 +1541,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						isIdle: () => !session.isStreaming,
 						abort: () => session.abort(),
 						hasPendingMessages: () => session.queuedMessageCount > 0,
+						getPendingMessageCounts: () => session.pendingMessageCounts,
+						getTranscript: () => session.getTranscript(),
+						getTranscriptBody: entryId => session.getTranscriptBody(entryId),
+						getGoalState: () => session.getGoalModeState(),
+						getTodoState: () => session.getTodoPhases(),
+						getQueuedMessages: () => session.getQueuedMessageEntries(),
+						getActiveTools: () => session.getActiveToolNames(),
+						getAllTools: () => session.getAllToolNames(),
 						shutdown: () => {},
 						getContextUsage: () => session.getContextUsage(),
 						getSystemPrompt: () => session.systemPrompt,
 						compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
+						clearContext: () => session.clearContext(),
 					},
 				);
 				extensionRunner.onError(err => {

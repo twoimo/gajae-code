@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { callEndpoint } from "../../src/harness-control-plane/control-endpoint";
 import { RuntimeOwner, resolveOwner, resolveOwnerLive } from "../../src/harness-control-plane/owner";
-import type { HarnessRpc, RpcStateSnapshot } from "../../src/harness-control-plane/rpc-adapter";
 import { acquireLease } from "../../src/harness-control-plane/session-lease";
+import type { HarnessSessionTransport, SessionStateSnapshot } from "../../src/harness-control-plane/session-transport";
 import {
 	controlSocketPath,
 	readEvents,
@@ -16,13 +16,13 @@ import {
 } from "../../src/harness-control-plane/storage";
 import { SESSION_SCHEMA_VERSION, type SessionHandle, type SessionState } from "../../src/harness-control-plane/types";
 
-class FakeRpc implements HarnessRpc {
+class FakeTransport implements HarnessSessionTransport {
 	cursor = 0;
-	state: RpcStateSnapshot = { isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
+	state: SessionStateSnapshot = { isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
 	ack = true;
 	accept = true;
 	agentStarts: number[] = [];
-	async getState(): Promise<RpcStateSnapshot> {
+	async getState(): Promise<SessionStateSnapshot> {
 		return this.state;
 	}
 	eventCursor(): number {
@@ -76,8 +76,8 @@ afterEach(async () => {
 
 describe("RuntimeOwner (in-process integration)", () => {
 	it("routes submit through the endpoint, accepts via single-flight, and is the single event writer", async () => {
-		const rpc = new FakeRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 200 });
+		const transport = new FakeTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 200 });
 		const info = await owner.start();
 		expect(info.leaseEpoch).toBe(1);
 
@@ -107,11 +107,11 @@ describe("RuntimeOwner (in-process integration)", () => {
 	});
 
 	it("routes operate through the owner lease-guarded event writer", async () => {
-		const rpc = new FakeRpc();
+		const transport = new FakeTransport();
 		owner = new RuntimeOwner({
 			root,
 			sessionId: SID,
-			rpc,
+			transport,
 			acceptanceTimeoutMs: 100,
 			finalizeChecks: {
 				async runValidation(spec) {
@@ -150,9 +150,9 @@ describe("RuntimeOwner (in-process integration)", () => {
 	});
 
 	it("blocks submit when the harness acks but never starts (no false-positive acceptance)", async () => {
-		const rpc = new FakeRpc();
-		rpc.accept = false; // ack only, no agent_start
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 100 });
+		const transport = new FakeTransport();
+		transport.accept = false; // ack only, no agent_start
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 100 });
 		const info = await owner.start();
 		const res = (await callEndpoint(info.socketPath, { verb: "submit", input: { prompt: "p" } })) as Record<
 			string,
@@ -168,9 +168,9 @@ describe("RuntimeOwner (in-process integration)", () => {
 	});
 
 	it("blocks submit during finalizing and does not call RPC", async () => {
-		const rpc = new FakeRpc();
+		const transport = new FakeTransport();
 		await writeSessionState(root, { ...seedState(root), lifecycle: "finalizing" });
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 100 });
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 100 });
 		const info = await owner.start();
 
 		const res = (await callEndpoint(info.socketPath, { verb: "submit", input: { prompt: "too soon" } })) as Record<
@@ -187,13 +187,13 @@ describe("RuntimeOwner (in-process integration)", () => {
 			available: false,
 			reason: "lifecycle-not-idle:finalizing",
 		});
-		expect(rpc.cursor).toBe(0);
+		expect(transport.cursor).toBe(0);
 	});
 
 	it("reports rpc-not-idle as not submitted and stops advertising submit", async () => {
-		const rpc = new FakeRpc();
-		rpc.state = { isStreaming: true, steeringQueueDepth: 0, followupQueueDepth: 0 };
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 100 });
+		const transport = new FakeTransport();
+		transport.state = { isStreaming: true, steeringQueueDepth: 0, followupQueueDepth: 0 };
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 100 });
 		const info = await owner.start();
 
 		const res = (await callEndpoint(info.socketPath, { verb: "submit", input: { prompt: "too soon" } })) as Record<
@@ -206,17 +206,17 @@ describe("RuntimeOwner (in-process integration)", () => {
 		expect((res.evidence as Record<string, unknown>).submitted).toBe(false);
 		expect((res.evidence as Record<string, unknown>).reason).toBe("pre-state-not-idle");
 		expect(res.nextAllowedActions).toContainEqual({ verb: "submit", available: false, reason: "rpc-not-idle" });
-		expect(rpc.cursor).toBe(0);
+		expect(transport.cursor).toBe(0);
 	});
 
 	it("live owner reconcile preserves vanished blockers until recovery evidence", async () => {
-		const rpc = new FakeRpc();
+		const transport = new FakeTransport();
 		await writeSessionState(root, {
 			...seedState(root),
 			lifecycle: "blocked",
 			blockers: ["owner-vanished:dirty"],
 		});
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 200 });
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 200 });
 		const info = await owner.start();
 
 		const obs = (await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>;
@@ -231,7 +231,7 @@ describe("RuntimeOwner (in-process integration)", () => {
 	});
 
 	it("recover clears vanished blockers after writing vanish receipt evidence", async () => {
-		const rpc = new FakeRpc();
+		const transport = new FakeTransport();
 		const init = Bun.spawnSync(["git", "init"], { cwd: root, stdout: "pipe", stderr: "pipe" });
 		expect(init.exitCode).toBe(0);
 		await writeSessionState(root, {
@@ -239,7 +239,7 @@ describe("RuntimeOwner (in-process integration)", () => {
 			lifecycle: "blocked",
 			blockers: ["owner-vanished:dirty"],
 		});
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 200 });
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 200 });
 		const info = await owner.start();
 
 		const res = (await callEndpoint(info.socketPath, { verb: "recover", input: {} })) as Record<string, unknown>;
@@ -256,13 +256,13 @@ describe("RuntimeOwner (in-process integration)", () => {
 	});
 
 	it("live owner reconcile clears detached startup false-negative blockers", async () => {
-		const rpc = new FakeRpc();
+		const transport = new FakeTransport();
 		await writeSessionState(root, {
 			...seedState(root),
 			lifecycle: "blocked",
 			blockers: ["detached-owner-not-live"],
 		});
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 200 });
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 200 });
 		const info = await owner.start();
 
 		const obs = (await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>;
@@ -277,8 +277,8 @@ describe("RuntimeOwner (in-process integration)", () => {
 	});
 
 	it("observe is owner-routed and reports ownerLive; retire releases the lease", async () => {
-		const rpc = new FakeRpc();
-		owner = new RuntimeOwner({ root, sessionId: SID, rpc, acceptanceTimeoutMs: 200 });
+		const transport = new FakeTransport();
+		owner = new RuntimeOwner({ root, sessionId: SID, transport, acceptanceTimeoutMs: 200 });
 		const info = await owner.start();
 
 		const obs = (await callEndpoint(info.socketPath, { verb: "observe", input: {} })) as Record<string, unknown>;

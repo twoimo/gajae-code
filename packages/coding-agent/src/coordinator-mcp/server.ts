@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isKnownSinkPeerClosedError } from "@gajae-code/utils";
+import { getAgentDir, isKnownSinkPeerClosedError } from "@gajae-code/utils";
 import { VERSION } from "@gajae-code/utils/dirs";
 
 import {
@@ -11,33 +11,13 @@ import {
 	COORDINATOR_MCP_TOOL_NAMES,
 	type CoordinatorToolName,
 } from "../coordinator/contract";
-import {
-	GJC_COORDINATOR_SESSION_ID_ENV,
-	GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV,
-	GJC_COORDINATOR_SESSION_READINESS_FILE_ENV,
-	GJC_COORDINATOR_SESSION_STATE_FILE_ENV,
-	GJC_TMUX_OWNER_GENERATION_ENV,
-	GJC_TMUX_OWNER_SERVER_KEY_ENV,
-	GJC_TMUX_OWNER_STATE_DIR_ENV,
-} from "../gjc-runtime/session-state-sidecar";
-
-import {
-	captureOwnerGenerationBaselineSync,
-	classifyCgroup,
-	isExactScopedBootstrapSuccessReceipt,
-	type OwnerIsolationProbe,
-	ownerProcessStartTime,
-	planTmuxOwnerIsolation,
-	replaceOwnerGenerationSync,
-	type TmuxServerProof,
-} from "../gjc-runtime/tmux-owner-isolation";
-import { forceCloseGjcTmuxSession } from "../gjc-runtime/tmux-sessions";
+import { SdkClient, SdkClientError } from "../sdk/client/client";
+import { readSdkBrokerDiscovery } from "../sdk/client/discovery";
 import {
 	type CoordinatorModelProfileLoader,
 	loadCoordinatorModelProfiles,
 	resolveCoordinatorMpreset,
 } from "./model-preset";
-
 import {
 	assertCoordinatorArtifactPath,
 	assertCoordinatorWorkdir,
@@ -76,32 +56,6 @@ function sinkErrorCode(error: unknown): string | undefined {
 		return undefined;
 	}
 }
-
-interface SessionStartInput {
-	cwd: string;
-	prompt?: string;
-	mpreset?: string | null;
-	namespace: { profile: string | null; repo: string | null };
-	worktree: true;
-	sessionId: string;
-	launchId: string;
-	/** Canonical, coordinator-owned immutable readiness marker path. */
-	readinessMarkerFile: string;
-	/** @deprecated Compatibility alias for injected launch providers. */
-	readinessFile: string;
-}
-
-interface SessionRegisterInput {
-	sessionId: string;
-	cwd: string;
-	tmuxSession: string;
-	tmuxTarget: string;
-	visible: boolean;
-	warpAttached: boolean | null;
-	source: string;
-	model: string | null;
-}
-
 interface CoordinatorFinalResponse {
 	text: string | null;
 	format: "markdown";
@@ -122,25 +76,9 @@ interface RuntimeSessionStatePayload extends CoordinatorSessionState {
 	error?: { code: string; message: string; recoverable: boolean } | null;
 }
 
-interface CommandResult {
-	exitCode: number;
-	stdout: string;
-	stderr: string;
-}
-
-type CommandRunner = (command: string[], stdinLine?: string) => Promise<CommandResult>;
-
 interface CoordinatorServices {
-	listSessions?: () => unknown[] | Promise<unknown[]>;
-	startSession?: (input: SessionStartInput) => unknown | Promise<unknown>;
-	commandRunner?: CommandRunner;
-	forceCloseSession?: (
-		sessionName: string,
-		env: NodeJS.ProcessEnv,
-		expectedSessionId?: string,
-		expectedStateFile?: string,
-	) => Promise<unknown>;
-	ownerIsolationProbe?: OwnerIsolationProbe;
+	connectSdk?: (url: string, token: string) => Promise<SdkClient>;
+	getAgentDir?: () => string;
 	resolveModelProfiles?: CoordinatorModelProfileLoader;
 }
 
@@ -151,7 +89,6 @@ interface CoordinatorMcpServerOptions {
 
 interface LegacyHandlerOptions {
 	env?: NodeJS.ProcessEnv;
-	createSession?: (input: SessionStartInput) => unknown;
 }
 
 type TurnStatus =
@@ -171,28 +108,16 @@ interface TurnRecord {
 	session_id: string;
 	namespace: { profile: string | null; repo: string | null };
 	status: TurnStatus;
-	prompt: {
-		text: string;
-		created_at: string;
-		source: "mcp" | "question_answer";
-	};
+	prompt: { text: string; created_at: string; source: "mcp" | "question_answer" };
 	delivery: {
 		delivered: boolean;
 		queued: boolean;
 		target: string | null;
 		tmux_keys_sent?: boolean;
 		prompt_acknowledged?: boolean;
-		state?:
-			| "queued"
-			| "awaiting_runtime_readiness"
-			| "delivering"
-			| "tmux_keys_sent"
-			| "acknowledged"
-			| "unavailable"
-			| "unacknowledged";
+		state?: "queued" | "tmux_keys_sent" | "acknowledged" | "unavailable" | "unacknowledged";
 		attempts: Array<{
 			delivered: boolean;
-			attempt_id?: string;
 			created_at: string;
 			reason: string | null;
 			channel?: "tmux_keys" | "runtime_ack";
@@ -209,11 +134,7 @@ interface TurnRecord {
 	};
 	evidence: Array<Record<string, unknown>>;
 	error: { code: string; message: string; recoverable: boolean } | null;
-	liveness: {
-		checked_at: string | null;
-		live: boolean | null;
-		reason: string | null;
-	};
+	liveness: { checked_at: string | null; live: boolean | null; reason: string | null };
 	created_at: string;
 	updated_at: string;
 	started_at: string | null;
@@ -238,22 +159,9 @@ interface CoordinatorSessionState {
 	current_turn_id: string | null;
 	last_turn_id: string | null;
 	updated_at: string;
-	source: "coordinator" | "agent_session_event" | "process_postmortem";
-
+	source: "coordinator" | "agent_session_event";
 	live: boolean | null;
 	reason: string | null;
-	cwd?: string;
-	workdir?: string;
-	session_file?: string | null;
-	owner_generation?: string;
-	event?: string;
-	owner_terminal?: {
-		generation: string;
-		socket_key: string;
-		classification: string;
-		observer: string;
-		observed_at: string;
-	};
 }
 
 type CoordinatorEventKind =
@@ -307,10 +215,6 @@ const MISSING_FINAL_RESPONSE_ADVISORY = "completion_missing_final_response";
 const PROMPT_ACK_TIMEOUT_REASON = "runtime_prompt_ack_timeout";
 const DEFAULT_RUNTIME_PROMPT_ACK_TIMEOUT_MS = 10_000;
 const MAX_RUNTIME_PROMPT_ACK_TIMEOUT_MS = 5 * 60 * 1000;
-const RUNTIME_READINESS_TIMEOUT_REASON = "runtime_readiness_timeout";
-const DEFAULT_RUNTIME_READINESS_TIMEOUT_MS = 10_000;
-const MAX_RUNTIME_READINESS_TIMEOUT_MS = 5 * 60 * 1000;
-
 const ACTIVE_TURN_STATUSES = new Set<TurnStatus>(["delivering", "active", "waiting_for_answer", "completing"]);
 const TERMINAL_TURN_STATUSES = new Set<TurnStatus>(["completed", "failed", "cancelled", "superseded"]);
 const TURN_ID_PATTERN = /^turn-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -326,12 +230,7 @@ function textResult(
 	isError = false,
 ): { content: Array<{ type: "text"; text: string }>; isError: boolean } {
 	return {
-		content: [
-			{
-				type: "text",
-				text: typeof payload === "string" ? payload : JSON.stringify(payload),
-			},
-		],
+		content: [{ type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) }],
 		isError,
 	};
 }
@@ -341,32 +240,30 @@ function toolSchema(name: CoordinatorToolName): {
 	description: string;
 	inputSchema: Record<string, unknown>;
 } {
-	const allowMutation = {
-		type: "boolean",
-		description: "Required and must be true for mutating tools.",
-	};
+	const allowMutation = { type: "boolean", description: "Required and must be true for mutating tools." };
 	const cwd = {
 		type: "string",
 		description: "Canonicalized GJC worktree or project directory inside configured roots.",
 	};
-	const sessionId = {
-		type: "string",
-		description: "GJC coordinator bridge session id.",
-	};
-	const pathField = {
-		type: "string",
-		description: "Artifact path inside configured safe roots.",
-	};
+	const sessionId = { type: "string", description: "GJC coordinator bridge session id." };
+	const pathField = { type: "string", description: "Artifact path inside configured safe roots." };
 	const mpreset = {
 		type: "string",
 		description:
-			"Optional GJC model profile (`gjc --mpreset <profile>`) to authoritatively activate for a fresh session; resolved through the merged built-in/custom profile registry and applied from the first turn. Unknown names are rejected with the available-profile listing.",
+			"Optional GJC model profile (`gjc --mpreset <profile>`). Unknown names are rejected with the available-profile listing.",
 	};
+
 	const common = { type: "object", properties: {} as Record<string, unknown> };
+	const idempotencyKey = {
+		type: "string",
+		description: "Caller-provided idempotency key for durable coordinator mutation replay.",
+	};
+
 	if (name === "gjc_coordinator_register_session") {
 		return {
 			name,
-			description: "Register an existing visible tmux GJC session as a coordinator-authoritative session.",
+			description:
+				"Register an existing broker-indexed GJC session; tmux identifiers are advisory process metadata only.",
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -379,24 +276,26 @@ function toolSchema(name: CoordinatorToolName): {
 					source: { type: "string" },
 					model: { type: "string" },
 					allow_mutation: allowMutation,
+					idempotency_key: idempotencyKey,
 				},
-				required: ["session_id", "cwd", "tmux_session", "tmux_target", "allow_mutation"],
+				required: ["session_id", "cwd", "idempotency_key", "allow_mutation"],
 			},
 		};
 	}
 	if (name === "gjc_coordinator_start_session") {
 		return {
 			name,
-			description: "Start a GJC worktree/tmux oriented session through the coordinator bridge.",
+			description: "Start a broker-managed GJC session through canonical SDK lifecycle control.",
 			inputSchema: {
 				type: "object",
 				properties: {
 					cwd,
 					prompt: { type: "string" },
 					mpreset,
+					idempotency_key: idempotencyKey,
 					allow_mutation: allowMutation,
 				},
-				required: ["cwd", "allow_mutation"],
+				required: ["cwd", "idempotency_key", "allow_mutation"],
 			},
 		};
 	}
@@ -404,14 +303,14 @@ function toolSchema(name: CoordinatorToolName): {
 		return {
 			name,
 			description:
-				"Reap a coordinator delegate-created (ephemeral) session: terminate its owner via the owner-proof forceCloseGjcTmuxSession, then purge its state files only on verified termination. Never touches non-ephemeral (user-registered) sessions unless force is set AND the force-stop capability is enabled.",
+				"Close and reap a coordinator delegate-created (ephemeral) SDK session through broker lifecycle control. Non-ephemeral user-registered sessions require both force and the force-stop capability.",
 			inputSchema: {
 				type: "object",
 				properties: {
 					session_id: sessionId,
 					force: {
 						type: "boolean",
-						description: "Reap a non-ephemeral session; requires the GJC_COORDINATOR_MCP_FORCE_STOP capability.",
+						description: "Close a non-ephemeral session; requires the GJC_COORDINATOR_MCP_FORCE_STOP capability.",
 					},
 					reason: { type: "string", description: "Optional audit reason recorded on the session.reaped event." },
 					allow_mutation: allowMutation,
@@ -432,23 +331,20 @@ function toolSchema(name: CoordinatorToolName): {
 					prompt: { type: "string" },
 					queue: { type: "boolean" },
 					force: { type: "boolean" },
+					idempotency_key: idempotencyKey,
 					allow_mutation: allowMutation,
 				},
-				required: ["session_id", "prompt", "allow_mutation"],
+				required: ["session_id", "prompt", "idempotency_key", "allow_mutation"],
 			},
 		};
 	}
 	if (name === "gjc_coordinator_read_turn") {
 		return {
 			name,
-			description: "Read authoritative durable turn state plus bounded advisory tmux status.",
+			description: "Read authoritative durable turn state without terminal-pane inspection.",
 			inputSchema: {
 				type: "object",
-				properties: {
-					session_id: sessionId,
-					turn_id: { type: "string" },
-					lines: { type: "number" },
-				},
+				properties: { session_id: sessionId, turn_id: { type: "string" } },
 				required: ["turn_id"],
 			},
 		};
@@ -470,7 +366,6 @@ function toolSchema(name: CoordinatorToolName): {
 						type: "number",
 						description: "Bounded polling interval in milliseconds, capped at 10 seconds.",
 					},
-					lines: { type: "number" },
 				},
 				required: ["turn_id"],
 			},
@@ -487,9 +382,10 @@ function toolSchema(name: CoordinatorToolName): {
 					turn_id: { type: "string" },
 					question_id: { type: "string" },
 					answer: {},
+					idempotency_key: idempotencyKey,
 					allow_mutation: allowMutation,
 				},
-				required: ["question_id", "answer", "allow_mutation"],
+				required: ["session_id", "question_id", "answer", "idempotency_key", "allow_mutation"],
 			},
 		};
 	}
@@ -507,9 +403,10 @@ function toolSchema(name: CoordinatorToolName): {
 					blocker: { type: "string" },
 					pr_url: { type: "string" },
 					evidence_paths: { type: "array", items: { type: "string" } },
+					idempotency_key: idempotencyKey,
 					allow_mutation: allowMutation,
 				},
-				required: ["status", "allow_mutation"],
+				required: ["status", "idempotency_key", "allow_mutation"],
 			},
 		};
 	}
@@ -517,53 +414,35 @@ function toolSchema(name: CoordinatorToolName): {
 		return {
 			name,
 			description: "Read one bounded artifact from configured safe roots.",
-			inputSchema: {
-				type: "object",
-				properties: { path: pathField },
-				required: ["path"],
-			},
+			inputSchema: { type: "object", properties: { path: pathField }, required: ["path"] },
 		};
 	}
 	if (name === "gjc_coordinator_read_status") {
 		return {
 			name,
-			description: "Read selected coordinator bridge session status.",
+			description: "Read selected broker-indexed GJC session status from SDK discovery.",
 			inputSchema: { type: "object", properties: { session_id: sessionId } },
 		};
 	}
 	if (name === "gjc_coordinator_read_tail") {
 		return {
 			name,
-			description: "Read a bounded structured session tail, not tmux scrollback.",
-			inputSchema: {
-				type: "object",
-				properties: { session_id: sessionId, lines: { type: "number" } },
-			},
+			description: "Read bounded last-assistant output through the session SDK, never terminal scrollback.",
+			inputSchema: { type: "object", properties: { session_id: sessionId, lines: { type: "number" } } },
 		};
 	}
 	if (name === "gjc_coordinator_list_questions") {
 		return {
 			name,
 			description: "List bounded structured questions for coordinator coordination.",
-			inputSchema: {
-				type: "object",
-				properties: { session_id: sessionId, status: { type: "string" } },
-			},
+			inputSchema: { type: "object", properties: { session_id: sessionId, status: { type: "string" } } },
 		};
 	}
 	if (name === "gjc_coordinator_list_artifacts") {
-		return {
-			name,
-			description: "List known safe artifact roots for coordinator coordination.",
-			inputSchema: common,
-		};
+		return { name, description: "List known safe artifact roots for coordinator coordination.", inputSchema: common };
 	}
 	if (name === "gjc_coordinator_read_coordination_status") {
-		return {
-			name,
-			description: "Read coordinator coordination reports.",
-			inputSchema: common,
-		};
+		return { name, description: "Read coordinator coordination reports.", inputSchema: common };
 	}
 	if (name === "gjc_coordinator_watch_events") {
 		return {
@@ -597,11 +476,9 @@ function toolSchema(name: CoordinatorToolName): {
 						type: "string",
 						description: "Delegated task or objective to run through the selected GJC workflow.",
 					},
-					prompt: {
-						type: "string",
-						description: "Alias for task; accepted when task is absent.",
-					},
+					prompt: { type: "string", description: "Alias for task; accepted when task is absent." },
 					allow_mutation: allowMutation,
+					idempotency_key: idempotencyKey,
 					session_id: {
 						type: "string",
 						description:
@@ -616,37 +493,24 @@ function toolSchema(name: CoordinatorToolName): {
 						description: "When reusing a session with an active turn, supersede it before sending.",
 					},
 					mpreset,
+
 					model: {
 						type: "string",
 						description: "Optional model hint passed in prompt metadata; no provider default is implied.",
 					},
-					await_completion: {
-						type: "boolean",
-						description: "If true, poll the turn until terminal or timeout.",
-					},
+					await_completion: { type: "boolean", description: "If true, poll the turn until terminal or timeout." },
 					timeout_ms: {
 						type: "number",
 						description:
 							"Bounded await timeout in milliseconds, capped at 30 minutes like gjc_coordinator_await_turn.",
 					},
-					poll_interval_ms: {
-						type: "number",
-						description: "Bounded await polling interval.",
-					},
-					lines: {
-						type: "number",
-						description: "Bounded advisory tail lines returned with await/read payloads.",
-					},
+					poll_interval_ms: { type: "number", description: "Bounded await polling interval." },
 				},
-				required: ["cwd", "allow_mutation"],
+				required: ["cwd", "idempotency_key", "allow_mutation"],
 			},
 		};
 	}
-	return {
-		name,
-		description: "List known scoped GJC coordinator bridge sessions.",
-		inputSchema: common,
-	};
+	return { name, description: "List known scoped GJC coordinator bridge sessions.", inputSchema: common };
 }
 
 type DelegateWorkflow = "plan" | "execute" | "team";
@@ -712,465 +576,70 @@ function workflowPrompt(
 	].join("\n");
 }
 
-const PRIVATE_SESSION_CONTROL_FIELDS = new Set([
-	"tmux_socket_key",
-	"tmuxSocketKey",
-	"tmux_owner_generation",
-	"tmuxOwnerGeneration",
-	"tmux_owner_state_dir",
-	"tmuxOwnerStateDir",
-	"tmux_owner_server_key",
-	"tmuxOwnerServerKey",
-	"tmux_owner_server_pid",
-	"tmuxOwnerServerPid",
-	"tmux_owner_server_start_time",
-	"tmuxOwnerServerStartTime",
-	"tmux_native_session_id",
-	"tmuxNativeSessionId",
-	"pane_id",
-	"paneId",
-	"socket_key",
-	"socketKey",
-	"owner_generation",
-	"ownerGeneration",
-	"state_dir",
-	"ownerStateDir",
-	"owner_server_key",
-	"ownerServerKey",
-	"owner_server_pid",
-	"ownerServerPid",
-	"owner_server_start_time",
-	"ownerServerStartTime",
-	"owner_terminal",
-	"ownerTerminal",
-	"generation",
-	"server_key",
-	"intent_id",
-	"dedupe_key",
-	"__coordinatorOwnerTransaction",
-]);
-
-function publicSessionProjection(session: Record<string, unknown>): Record<string, unknown> {
-	return Object.fromEntries(Object.entries(session).filter(([key]) => !PRIVATE_SESSION_CONTROL_FIELDS.has(key)));
-}
-
-function publicCoordinatorResponse(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(publicCoordinatorResponse);
-	const record = asRecord(value);
-	if (!record) return value;
-	return Object.fromEntries(
-		Object.entries(publicSessionProjection(record)).map(([key, item]) => [key, publicCoordinatorResponse(item)]),
-	);
-}
-
 function normalizeSession(session: Record<string, unknown>): Record<string, unknown> {
-	const suppliedIds = [session.session_id, session.sessionId, session.name].filter(
-		(value): value is string => typeof value === "string",
-	);
-	if (suppliedIds.length === 0) throw new Error("invalid_session_id");
-	const sessionId = safeExternalId("session", suppliedIds[0]);
-	if (suppliedIds.some(value => value !== sessionId)) throw new Error("session_id_conflict");
-	return {
-		...(session.tmuxSession ? { tmux_session: session.tmuxSession } : {}),
-		...(session.tmuxTarget ? { tmux_target: session.tmuxTarget } : {}),
-		...(session.tmuxSocketKey ? { tmux_socket_key: session.tmuxSocketKey } : {}),
-		...(session.tmuxOwnerGeneration ? { tmux_owner_generation: session.tmuxOwnerGeneration } : {}),
-		...(session.tmuxOwnerStateDir ? { tmux_owner_state_dir: session.tmuxOwnerStateDir } : {}),
-		...(session.tmuxOwnerServerKey ? { tmux_owner_server_key: session.tmuxOwnerServerKey } : {}),
-		...(session.tmuxOwnerServerPid ? { tmux_owner_server_pid: session.tmuxOwnerServerPid } : {}),
-		...(session.tmuxOwnerServerStartTime ? { tmux_owner_server_start_time: session.tmuxOwnerServerStartTime } : {}),
-		...(session.tmuxNativeSessionId ? { tmux_native_session_id: session.tmuxNativeSessionId } : {}),
-		...(session.paneId ? { pane_id: session.paneId } : {}),
-		...(session.cwd ? { cwd: session.cwd } : {}),
-		...(session.createdAt ? { created_at: session.createdAt } : {}),
-		...session,
-		session_id: sessionId,
-		sessionId,
+	const normalized: Record<string, unknown> = {
+		session_id: firstString(session, ["sessionId", "session_id", "name"]) ?? "unknown",
 	};
-}
-
-async function canonicalizePath(value: string): Promise<string> {
-	try {
-		return await fs.realpath(value);
-	} catch {
-		return path.resolve(value);
+	const strings: Array<[string, string[]]> = [
+		["cwd", ["cwd"]],
+		["created_at", ["created_at", "createdAt"]],
+		["mpreset", ["mpreset"]],
+		["source", ["source"]],
+		["model", ["model"]],
+		["tmux_session", ["tmux_session", "tmuxSession"]],
+		["tmux_target", ["tmux_target", "tmuxTarget"]],
+		["broker_workspace", ["broker_workspace"]],
+		["endpoint_incarnation", ["endpoint_incarnation"]],
+	];
+	for (const [output, keys] of strings) {
+		const value = firstString(session, keys);
+		if (value !== null) normalized[output] = value;
 	}
-}
-
-interface RuntimeReadinessMarker {
-	schema_version: 1;
-	session_id: string;
-	launch_id: string;
-	state: "ready_for_input";
-	event: "interactive_input_ready";
-	source: "gjc_interactive_runtime";
-	ready_for_input: true;
-	created_at: string;
-}
-
-async function readRuntimeReadinessMarker(
-	markerFile: string,
-	sessionId: string,
-	launchId: string,
-	readinessRoot?: string,
-): Promise<RuntimeReadinessMarker | null> {
-	try {
-		const expectedFile = path.resolve(markerFile);
-		if (readinessRoot) {
-			const canonicalRoot = await fs.realpath(readinessRoot);
-			const canonicalParent = await fs.realpath(path.dirname(expectedFile));
-			if (
-				!expectedFile.startsWith(`${canonicalRoot}${path.sep}`) ||
-				!canonicalParent.startsWith(`${canonicalRoot}${path.sep}`)
-			)
-				return null;
-		}
-		const stat = await fs.lstat(expectedFile);
-		if (!stat.isFile() || stat.isSymbolicLink()) return null;
-		const marker = JSON.parse(await fs.readFile(expectedFile, "utf8")) as RuntimeReadinessMarker;
-		return marker.schema_version === 1 &&
-			marker.session_id === sessionId &&
-			marker.launch_id === launchId &&
-			marker.state === "ready_for_input" &&
-			marker.event === "interactive_input_ready" &&
-			marker.source === "gjc_interactive_runtime" &&
-			marker.ready_for_input === true &&
-			typeof marker.created_at === "string" &&
-			marker.created_at.length > 0 &&
-			Number.isFinite(Date.parse(marker.created_at))
-			? marker
-			: null;
-	} catch {
-		return null;
+	for (const key of ["ephemeral", "visible"]) {
+		if (typeof session[key] === "boolean") normalized[key] = session[key];
 	}
+	if (
+		typeof session.endpoint_generation === "number" &&
+		Number.isSafeInteger(session.endpoint_generation) &&
+		session.endpoint_generation > 0
+	)
+		normalized.endpoint_generation = session.endpoint_generation;
+	return normalized;
 }
 
-async function waitForRuntimeReadinessMarker(
-	markerFile: string,
-	sessionId: string,
-	launchId: string,
-	readinessRoot: string,
-	timeoutMs: number,
-): Promise<boolean> {
-	const ready = async (): Promise<boolean> =>
-		(await readRuntimeReadinessMarker(markerFile, sessionId, launchId, readinessRoot)) !== null;
-	if (await ready()) return true;
-
-	const markerDir = path.dirname(markerFile);
-	await ensureDir(markerDir);
-	const deadline = Date.now() + Math.max(timeoutMs, 0);
-	let wake = Promise.withResolvers<void>();
-	let watcher: nodeFs.FSWatcher | null = null;
-	try {
-		watcher = nodeFs.watch(markerDir, (_eventType, filename) => {
-			if (filename === path.basename(markerFile)) wake.resolve();
-		});
-		// A marker may be installed between the first read and watch creation.
-		if (await ready()) return true;
-		while (Date.now() < deadline) {
-			const remainingMs = Math.max(1, deadline - Date.now());
-			let timer: NodeJS.Timeout | null = null;
-			const fallback = new Promise<void>(resolve => {
-				timer = setTimeout(resolve, Math.min(50, remainingMs));
-				timer.unref?.();
-			});
-			await Promise.race([wake.promise, fallback]);
-			if (timer) clearTimeout(timer);
-			wake = Promise.withResolvers<void>();
-			if (await ready()) return true;
-		}
-		return false;
-	} finally {
-		watcher?.close();
-	}
+function coordinatorLifecycleTarget(sessionCommand: string | null, cwd: string): Record<string, unknown> {
+	if (!sessionCommand) return { path: cwd };
+	const [executable, ...args] = sessionCommand.trim().split(/\s+/);
+	if (executable !== "gjc")
+		throw new SdkClientError(
+			"invalid_input",
+			"GJC_COORDINATOR_MCP_SESSION_COMMAND must be exactly gjc with an optional --worktree [name] selector.",
+		);
+	if (args.length === 0) return { path: cwd };
+	if (
+		args[0] !== "--worktree" ||
+		args.length > 2 ||
+		(args[1] !== undefined && (args[1].length === 0 || args[1].startsWith("-")))
+	)
+		throw new SdkClientError(
+			"invalid_input",
+			"GJC_COORDINATOR_MCP_SESSION_COMMAND supports only gjc or gjc --worktree [name] under SDK lifecycle control.",
+		);
+	return {
+		path: cwd,
+		worktree: { enabled: true, ...(args[1] ? { name: args[1] } : {}) },
+	};
 }
 
 async function ensureDir(dir: string): Promise<void> {
 	await fs.mkdir(dir, { recursive: true });
 }
 
-class CoordinatorStateError extends Error {
-	constructor(readonly reason: "invalid" | "unreadable") {
-		super(`coordinator_state_${reason}`);
-	}
-}
-
-const COORDINATOR_SESSION_STATES = new Set<CoordinatorSessionStateValue>([
-	"booting",
-	"ready_for_input",
-	"running",
-	"needs_user_input",
-	"completed",
-	"errored",
-	"stale",
-	"unknown",
-]);
-const COORDINATOR_EVENT_KINDS = new Set<CoordinatorEventKind>([
-	"session.registered",
-	"session.started",
-	"session.reaped",
-	"session.state_changed",
-	"turn.queued",
-	"turn.delivering",
-	"turn.active",
-	"turn.acknowledged",
-	"turn.waiting_for_answer",
-	"turn.completed",
-	"turn.failed",
-	"turn.cancelled",
-	"turn.superseded",
-	"question.opened",
-	"question.answered",
-	"report.written",
-	"tmux.delivery_succeeded",
-	"tmux.delivery_failed",
-	"delegation.started",
-]);
-
-function coordinatorStateError(reason: "invalid" | "unreadable"): CoordinatorStateError {
-	return new CoordinatorStateError(reason);
-}
-
-function isValidCoordinatorSessionState(value: unknown, sessionId: string): value is CoordinatorSessionState {
-	const record = asRecord(value);
-	return (
-		record?.schema_version === 1 &&
-		record.session_id === sessionId &&
-		typeof record.state === "string" &&
-		COORDINATOR_SESSION_STATES.has(record.state as CoordinatorSessionStateValue) &&
-		typeof record.ready_for_input === "boolean" &&
-		record.ready_for_input === (record.state === "ready_for_input" || record.state === "completed") &&
-		(record.current_turn_id === null ||
-			(typeof record.current_turn_id === "string" && TURN_ID_PATTERN.test(record.current_turn_id))) &&
-		(record.last_turn_id === null ||
-			(typeof record.last_turn_id === "string" && TURN_ID_PATTERN.test(record.last_turn_id))) &&
-		typeof record.updated_at === "string" &&
-		Number.isFinite(Date.parse(record.updated_at)) &&
-		(record.source === "coordinator" ||
-			record.source === "agent_session_event" ||
-			record.source === "process_postmortem") &&
-		(record.live === null || typeof record.live === "boolean") &&
-		(record.reason === null || typeof record.reason === "string")
-	);
-}
-
-const MAX_RUNTIME_FINAL_RESPONSE_TEXT_LENGTH = 16_384;
-const MAX_RUNTIME_FINAL_RESPONSE_SOURCE_LENGTH = 256;
-const MAX_RUNTIME_FINAL_RESPONSE_ARTIFACT_PATH_LENGTH = 1_024;
-const MAX_RUNTIME_ERROR_CODE_LENGTH = 128;
-const MAX_RUNTIME_ERROR_MESSAGE_LENGTH = 4_096;
-
-function isBoundedNullableString(value: unknown, maxLength: number): value is string | null {
-	return value === null || (typeof value === "string" && value.length <= maxLength);
-}
-
-function isValidRuntimeFinalResponse(value: unknown): value is CoordinatorFinalResponse {
-	const record = asRecord(value);
-	return (
-		record !== null &&
-		Object.keys(record).every(key => ["text", "format", "source", "artifact_path", "truncated"].includes(key)) &&
-		isBoundedNullableString(record.text, MAX_RUNTIME_FINAL_RESPONSE_TEXT_LENGTH) &&
-		record.format === "markdown" &&
-		(record.source === null ||
-			(typeof record.source === "string" &&
-				record.source.length > 0 &&
-				record.source.length <= MAX_RUNTIME_FINAL_RESPONSE_SOURCE_LENGTH)) &&
-		(record.artifact_path === null ||
-			(typeof record.artifact_path === "string" &&
-				record.artifact_path.length > 0 &&
-				record.artifact_path.length <= MAX_RUNTIME_FINAL_RESPONSE_ARTIFACT_PATH_LENGTH &&
-				!path.isAbsolute(record.artifact_path) &&
-				!record.artifact_path.split(/[\\/]/).includes(".."))) &&
-		typeof record.truncated === "boolean"
-	);
-}
-
-function isValidRuntimeError(value: unknown): value is NonNullable<RuntimeSessionStatePayload["error"]> {
-	const record = asRecord(value);
-	return (
-		record !== null &&
-		Object.keys(record).every(key => ["code", "message", "recoverable"].includes(key)) &&
-		typeof record.code === "string" &&
-		record.code.length > 0 &&
-		record.code.length <= MAX_RUNTIME_ERROR_CODE_LENGTH &&
-		typeof record.message === "string" &&
-		record.message.length > 0 &&
-		record.message.length <= MAX_RUNTIME_ERROR_MESSAGE_LENGTH &&
-		typeof record.recoverable === "boolean"
-	);
-}
-
-function isValidOwnerTerminalRuntimeReceipt(value: unknown, sessionId: string): boolean {
-	const record = asRecord(value);
-	if (!record) return false;
-	const baseKeys = [
-		"generation",
-		"socket_key",
-		"signal",
-		"result",
-		"classification",
-		"observer",
-		"observed_at",
-		"dedupe_key",
-	];
-	const keys = Object.keys(record);
-	if (!keys.every(key => [...baseKeys, "intent_id"].includes(key)) || baseKeys.some(key => !keys.includes(key)))
-		return false;
-	if (
-		!validRuntimeOwnerGeneration(record.generation) ||
-		!validRuntimeOwnerGeneration(record.socket_key) ||
-		typeof record.signal !== "string" ||
-		!["SIGTERM", "SIGHUP", "SIGINT", "SIGKILL", "EXIT", "MANUAL", "UNKNOWN"].includes(record.signal) ||
-		typeof record.result !== "string" ||
-		!record.result ||
-		record.result.length > 64 ||
-		!["expected_operator_shutdown", "unexpected_owner_loss", "non_operator_cleanup"].includes(
-			String(record.classification),
-		) ||
-		!["sidecar", "raw_monitor"].includes(String(record.observer)) ||
-		typeof record.observed_at !== "string" ||
-		!Number.isFinite(Date.parse(record.observed_at)) ||
-		record.dedupe_key !== `owner-loss:${sessionId}:${record.generation}`
-	)
-		return false;
-	if (record.classification === "expected_operator_shutdown")
-		return (
-			record.signal === "SIGTERM" &&
-			record.result === "owner_term_then_session_cleanup" &&
-			typeof record.intent_id === "string" &&
-			record.intent_id.length > 0
-		);
-	if (record.intent_id !== undefined) return false;
-	if (record.classification === "non_operator_cleanup") return record.result === "cleanup";
-	return ["owner_lost", "cleanup", "process_postmortem", "exit", "unknown_terminal"].includes(record.result);
-}
-
-function isValidRuntimeSessionState(value: unknown, sessionId: string): value is RuntimeSessionStatePayload {
-	if (!isValidCoordinatorSessionState(value, sessionId)) return false;
-	const record = asRecord(value);
-	if (!record) return false;
-	const finalResponse = record.final_response;
-	const error = record.error;
-	if (finalResponse !== undefined && !isValidRuntimeFinalResponse(finalResponse)) return false;
-	if (record.source !== "coordinator" && record.live !== (record.state === "running")) return false;
-	if (error !== undefined && error !== null && !isValidRuntimeError(error)) return false;
-	if (record.owner_generation !== undefined && !validRuntimeOwnerGeneration(record.owner_generation)) return false;
-	if (record.source === "coordinator") return finalResponse === undefined && (error === undefined || error === null);
-	if (record.source === "process_postmortem") {
-		if (record.state !== "completed" && record.state !== "errored") return false;
-		if (record.event === "owner_terminal") {
-			if (!isValidOwnerTerminalRuntimeReceipt(record.owner_terminal, sessionId)) return false;
-			const ownerTerminal = asRecord(record.owner_terminal)!;
-			const expected = ownerTerminal.classification === "expected_operator_shutdown";
-			if (
-				record.reason !== ownerTerminal.classification ||
-				record.state !== (expected ? "completed" : "errored") ||
-				(expected
-					? error !== undefined && error !== null
-					: error === undefined ||
-						error === null ||
-						error.code !== ownerTerminal.classification ||
-						error.recoverable !== true)
-			)
-				return false;
-		} else if (record.event === "process_exit") {
-			if (
-				record.owner_terminal !== undefined ||
-				typeof record.exit_kind !== "string" ||
-				record.exit_kind.length === 0 ||
-				record.exit_kind.length > 128 ||
-				(record.exit_code !== null &&
-					(typeof record.exit_code !== "number" || !Number.isSafeInteger(record.exit_code))) ||
-				(record.signal !== null &&
-					record.signal !== "SIGINT" &&
-					record.signal !== "SIGTERM" &&
-					record.signal !== "SIGHUP") ||
-				typeof record.prompt_accepted !== "boolean" ||
-				typeof record.observed_recoverable_worktree_changes !== "boolean" ||
-				(record.worktree_baseline_dirty !== null && typeof record.worktree_baseline_dirty !== "boolean") ||
-				typeof record.worktree_changed_since_baseline !== "boolean"
-			)
-				return false;
-		} else {
-			return false;
-		}
-	}
-	if (record.state === "completed") return error === undefined || error === null;
-	if (record.state === "errored") return error !== undefined && error !== null;
-	return finalResponse === undefined && (error === undefined || error === null);
-}
-
-const PUBLIC_COORDINATOR_ERRORS = new Set([
-	"coordinator_workdir_required",
-	"coordinator_workdir_roots_required",
-	"coordinator_workdir_outside_allowed_roots",
-	"coordinator_artifact_path_required",
-	"coordinator_artifact_roots_required",
-	"coordinator_artifact_outside_allowed_roots",
-	"coordinator_mutation_class_disabled",
-	"coordinator_mutation_call_not_allowed",
-	"invalid_session_id",
-	"invalid_tmux_session",
-	"invalid_tmux_target",
-	"invalid_turn_id",
-	"invalid_question_id",
-	"session_id_conflict",
-	"tmux_session_unavailable",
-	"tmux_target_unavailable",
-	"coordinator_session_command_required",
-	"coordinator_launch_attestation_missing",
-	"coordinator_launch_attestation_mismatch",
-	"coordinator_launch_metadata_missing",
-	"coordinator_readiness_path_invalid",
-	"session_origin_unverified",
-	"coordinator_prompt_buffer_privacy_unverified",
-	"coordinator_tmux_start_failed",
-	"coordinator_tmux_owner_server_unsafe",
-	"coordinator_tmux_owner_server_unverifiable",
-	"coordinator_tmux_owner_server_race",
-	"coordinator_evidence_paths_must_be_array",
-]);
-
-class CoordinatorStartError extends Error {
-	constructor(
-		message: string,
-		readonly cleanupStatus: "cleaned" | "failed" | "unverifiable",
-	) {
-		super(message);
-	}
-}
-
-function publicCleanupStatus(error: unknown): "cleaned" | "failed" | "unverifiable" | undefined {
-	return error instanceof CoordinatorStartError ? error.cleanupStatus : undefined;
-}
-
-function publicCoordinatorError(error: unknown): string {
-	if (error instanceof CoordinatorStateError) return `coordinator_state_${error.reason}`;
-	const message = error instanceof Error ? error.message : "";
-	const normalized = message
-		.replace(/[\u0000-\u001f\u007f]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-	const code = normalized.split(":", 1)[0];
-	return PUBLIC_COORDINATOR_ERRORS.has(code) ? code : "coordinator_request_failed";
-}
-
-function isExpectedStateAbsence(error: unknown): boolean {
-	return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
-}
-
 async function readJsonFile(file: string): Promise<unknown | null> {
-	let content: string;
 	try {
-		content = await fs.readFile(file, "utf8");
-	} catch (error) {
-		if (isExpectedStateAbsence(error)) return null;
-		throw coordinatorStateError("unreadable");
-	}
-	try {
-		return JSON.parse(content);
+		return JSON.parse(await fs.readFile(file, "utf8"));
 	} catch {
-		throw coordinatorStateError("invalid");
+		return null;
 	}
 }
 
@@ -1179,17 +648,136 @@ async function writeJsonFile(file: string, value: unknown): Promise<void> {
 	await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function listJsonFiles(dir: string): Promise<unknown[]> {
-	let entries: string[];
+const COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP = 64 * 1024;
+const COORDINATOR_IDEMPOTENCY_STRING_BYTE_CAP = 8 * 1024;
+
+interface CoordinatorToolIdempotencyRecord {
+	schema_version: 1;
+	tool: string;
+	key_digest: string;
+	request_digest: string;
+	state: "in_progress" | "completed";
+	response?: Record<string, unknown>;
+	created_at: string;
+	completed_at?: string;
+}
+
+type CoordinatorIdempotencyFile =
+	| { kind: "missing" }
+	| { kind: "record"; value: Record<string, unknown> }
+	| { kind: "corrupt" };
+
+async function readCoordinatorIdempotencyFile(file: string): Promise<CoordinatorIdempotencyFile> {
+	let source: string;
 	try {
-		entries = await fs.readdir(dir);
+		source = await fs.readFile(file, "utf8");
 	} catch (error) {
-		if (isExpectedStateAbsence(error)) return [];
-		throw coordinatorStateError("unreadable");
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" } : { kind: "corrupt" };
 	}
-	return await Promise.all(
-		entries.filter(entry => entry.endsWith(".json")).map(entry => readJsonFile(path.join(dir, entry))),
-	);
+	try {
+		const value = asRecord(JSON.parse(source));
+		return value ? { kind: "record", value } : { kind: "corrupt" };
+	} catch {
+		return { kind: "corrupt" };
+	}
+}
+
+async function writeCoordinatorIdempotencyFile(file: string, value: CoordinatorToolIdempotencyRecord): Promise<void> {
+	await ensureDir(path.dirname(file));
+	const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		const handle = await fs.open(temporary, "wx", 0o600);
+		try {
+			await handle.writeFile(`${JSON.stringify(value)}\n`);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		await fs.rename(temporary, file);
+		const directory = await fs.open(path.dirname(file), "r");
+		try {
+			await directory.sync();
+		} finally {
+			await directory.close();
+		}
+	} catch (error) {
+		await fs.rm(temporary, { force: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
+function canonicalJson(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record)
+		.sort()
+		.map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+		.join(",")}}`;
+}
+
+function sensitivePublicField(key: string): boolean {
+	return /^(?:token|secret|credential(?:s)?|authorization|password|api[_-]?key|endpoint|url|uri)$/i.test(key);
+}
+
+function boundedPublicValue(value: unknown, budget: { remaining: number }, depth = 0): unknown {
+	if (depth > 12 || budget.remaining <= 0) return "[truncated]";
+	if (value === null || typeof value === "boolean") {
+		budget.remaining -= 8;
+		return value;
+	}
+	if (typeof value === "number") {
+		budget.remaining -= 24;
+		return Number.isFinite(value) ? value : null;
+	}
+	if (typeof value === "string") {
+		const cap = Math.max(0, Math.min(COORDINATOR_IDEMPOTENCY_STRING_BYTE_CAP, budget.remaining));
+		let end = value.length;
+		while (end > 0 && Buffer.byteLength(value.slice(0, end)) > cap) end -= 1;
+		const text = value.slice(0, end);
+		budget.remaining -= Buffer.byteLength(text);
+		return end === value.length ? text : `${text}[truncated]`;
+	}
+	if (Array.isArray(value)) {
+		const items: unknown[] = [];
+		for (const item of value.slice(0, 128)) items.push(boundedPublicValue(item, budget, depth + 1));
+		if (value.length > 128) items.push("[truncated]");
+		return items;
+	}
+	if (typeof value !== "object") return null;
+	const output: Record<string, unknown> = {};
+	for (const key of Object.keys(value as Record<string, unknown>).slice(0, 128)) {
+		output[key] = sensitivePublicField(key)
+			? "[redacted]"
+			: boundedPublicValue((value as Record<string, unknown>)[key], budget, depth + 1);
+	}
+	if (Object.keys(value as Record<string, unknown>).length > 128) output.truncated = true;
+	return output;
+}
+
+function boundedPublicResponse(response: Record<string, unknown>): Record<string, unknown> {
+	const value = boundedPublicValue(response, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP });
+	return asRecord(value) ?? { ok: false, error: { code: "unavailable", message: "Invalid coordinator response." } };
+}
+
+function publicSdkAcknowledgement(result: unknown): Record<string, unknown> {
+	const response = asRecord(result);
+	return {
+		...(response?.accepted === true ? { accepted: true } : {}),
+		...(typeof response?.turn_id === "string" ? { turn_id: response.turn_id } : {}),
+	};
+}
+
+async function listJsonFiles(dir: string): Promise<unknown[]> {
+	try {
+		const entries = await fs.readdir(dir);
+		const values = await Promise.all(
+			entries.filter(entry => entry.endsWith(".json")).map(entry => readJsonFile(path.join(dir, entry))),
+		);
+		return values.filter(value => value !== null);
+	} catch {
+		return [];
+	}
 }
 
 const COORDINATOR_STATUS_EVENT_LIMIT = 100;
@@ -1204,6 +792,80 @@ function firstString(record: Record<string, unknown>, keys: string[]): string | 
 		if (typeof value === "string" && value.length > 0) return value;
 	}
 	return null;
+}
+
+function brokerSessionId(record: Record<string, unknown>): string | null {
+	return firstString(record, ["sessionId", "session_id"]);
+}
+
+function brokerSessionScope(record: Record<string, unknown>): string | null {
+	return firstString(asRecord(record.locator) ?? {}, ["repo"]);
+}
+
+function scopedBrokerSessions(values: unknown[], cwd: string): Array<Record<string, unknown>> {
+	const scope = path.resolve(cwd);
+	return jsonRecords(values).filter(session => {
+		const sessionScope = brokerSessionScope(session);
+		return sessionScope !== null && path.resolve(sessionScope) === scope;
+	});
+}
+
+function brokerLiveness(session: Record<string, unknown> | null): Record<string, unknown> {
+	if (!session) return { authority: "sdk_broker", live: false, reason: "not_indexed" };
+	if (typeof session.live === "boolean") return { authority: "sdk_broker", live: session.live };
+	return { authority: "sdk_broker", reason: "liveness_unreported" };
+}
+
+function publicBrokerSession(session: Record<string, unknown>): Record<string, unknown> {
+	const sessionId = brokerSessionId(session);
+	return {
+		...(sessionId ? { session_id: sessionId } : {}),
+		...(typeof session.live === "boolean" ? { live: session.live } : {}),
+		...(session.terminalUncertain === true || session.terminal_uncertain === true
+			? { terminal_uncertain: true }
+			: {}),
+	};
+}
+
+function publicCoordinatorSession(session: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = {
+		session_id: firstString(session, ["session_id", "sessionId"]) ?? "unknown",
+	};
+	for (const key of ["cwd", "created_at", "mpreset"]) {
+		const value = session[key];
+		if (typeof value === "string") result[key] = value;
+	}
+	if (typeof session.ephemeral === "boolean") result.ephemeral = session.ephemeral;
+	if (typeof session.visible === "boolean") result.visible = session.visible;
+	return result;
+}
+
+function publicLifecycleReceipt(result: Record<string, unknown>, sessionId: string): Record<string, unknown> {
+	const receipt: Record<string, unknown> = { session_id: sessionId };
+	const worktree = asRecord(result.worktree);
+	if (worktree?.enabled !== true) return receipt;
+	const publicWorktree: Record<string, unknown> = { enabled: true };
+	for (const key of ["cwd", "branch"]) {
+		if (typeof worktree[key] === "string") publicWorktree[key] = worktree[key];
+	}
+	for (const key of ["created", "reused"]) {
+		if (typeof worktree[key] === "boolean") publicWorktree[key] = worktree[key];
+	}
+	receipt.worktree = publicWorktree;
+	return receipt;
+}
+
+function publicCoordinatorSessionState(state: CoordinatorSessionState | null): Record<string, unknown> | null {
+	if (!state) return null;
+	return {
+		session_id: state.session_id,
+		state: state.state,
+		ready_for_input: state.ready_for_input,
+		current_turn_id: state.current_turn_id,
+		last_turn_id: state.last_turn_id,
+		updated_at: state.updated_at,
+		...(typeof state.live === "boolean" ? { live: state.live } : {}),
+	};
 }
 
 function eventTimestamp(record: Record<string, unknown>): string | null {
@@ -1222,7 +884,6 @@ function canonicalCoordinatorEvent(
 		question_id: event_type === "question_state" ? firstString(record, ["id", "question_id"]) : null,
 		status: firstString(record, ["status", "state"]),
 		source: firstString(record, ["source"]),
-		reason: firstString(record, ["reason"]),
 		updated_at: eventTimestamp(record),
 	};
 }
@@ -1277,39 +938,22 @@ function boundSummary(value: string): string {
 }
 
 async function readLatestEventSeq(namespaceDir: string): Promise<number> {
-	const rawSequence = await readJsonFile(eventSequenceFile(namespaceDir));
-	const events = await readCoordinatorEvents(namespaceDir);
-	const journalLatestSeq = events.at(-1)?.seq ?? 0;
-	if (rawSequence === null) return journalLatestSeq;
-	const sequence = asRecord(rawSequence);
-	if (
-		!sequence ||
-		Object.keys(sequence).some(key => key !== "seq" && key !== "updated_at") ||
-		typeof sequence.seq !== "number" ||
-		!Number.isSafeInteger(sequence.seq) ||
-		sequence.seq < 0 ||
-		typeof sequence.updated_at !== "string" ||
-		!Number.isFinite(Date.parse(sequence.updated_at)) ||
-		sequence.seq > journalLatestSeq
-	)
-		throw coordinatorStateError("invalid");
-	return journalLatestSeq;
+	const sequence = asRecord(await readJsonFile(eventSequenceFile(namespaceDir)));
+	const seq = sequence?.seq;
+	if (typeof seq === "number" && Number.isInteger(seq) && seq >= 0) return seq;
+	let latestSeq = 0;
+	for (const event of await readCoordinatorEvents(namespaceDir)) latestSeq = Math.max(latestSeq, event.seq);
+	return latestSeq;
 }
 
 const eventAppendQueues = new Map<string, Promise<unknown>>();
 
-/** Lock order: namespace transaction lock, then event journal lock. */
-function coordinatorTransactionLockFile(namespaceDir: string): string {
-	return path.join(namespaceDir, "locks", "mutation.lock");
-}
-
-async function withCoordinatorTransaction<T>(namespaceDir: string, operation: () => Promise<T>): Promise<T> {
-	return await withSessionStateLock(coordinatorTransactionLockFile(namespaceDir), operation);
-}
-
 async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEventInput): Promise<CoordinatorEvent> {
 	const previous = eventAppendQueues.get(namespaceDir) ?? Promise.resolve();
-	const { promise: current, resolve: release } = Promise.withResolvers<void>();
+	let release!: () => void;
+	const current = new Promise<void>(resolve => {
+		release = resolve;
+	});
 	const queued = previous.then(
 		() => current,
 		() => current,
@@ -1318,148 +962,57 @@ async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEv
 
 	await previous.catch(() => undefined);
 	try {
-		return await withSessionStateLock(eventJournalFile(namespaceDir), async () => {
-			const latestSeq = await readLatestEventSeq(namespaceDir);
-			const seq = latestSeq + 1;
-			const timestamp = new Date().toISOString();
-			const event: CoordinatorEvent = {
-				schema_version: 1,
-				seq,
-				id: `event-${seq.toString().padStart(12, "0")}`,
-				timestamp,
-				kind: input.kind,
-				summary: boundSummary(input.summary),
-				...(input.sessionId ? { session_id: input.sessionId } : {}),
-				...(input.turnId ? { turn_id: input.turnId } : {}),
-				...(input.questionId ? { question_id: input.questionId } : {}),
-				...(input.reportId ? { report_id: input.reportId } : {}),
-				...(input.payloadRef ? { payload_ref: input.payloadRef } : {}),
-				...(input.metadata ? { metadata: input.metadata } : {}),
-			};
-			await ensureDir(eventsDir(namespaceDir));
-			await fs.appendFile(eventJournalFile(namespaceDir), `${JSON.stringify(event)}\n`);
-			await writeJsonFile(eventSequenceFile(namespaceDir), {
-				seq,
-				updated_at: timestamp,
-			});
-			return event;
-		});
+		const latestSeq = await readLatestEventSeq(namespaceDir);
+		const seq = latestSeq + 1;
+		const timestamp = new Date().toISOString();
+		const event: CoordinatorEvent = {
+			schema_version: 1,
+			seq,
+			id: `event-${seq.toString().padStart(12, "0")}`,
+			timestamp,
+			kind: input.kind,
+			summary: boundSummary(input.summary),
+			...(input.sessionId ? { session_id: input.sessionId } : {}),
+			...(input.turnId ? { turn_id: input.turnId } : {}),
+			...(input.questionId ? { question_id: input.questionId } : {}),
+			...(input.reportId ? { report_id: input.reportId } : {}),
+			...(input.payloadRef ? { payload_ref: input.payloadRef } : {}),
+			...(input.metadata ? { metadata: input.metadata } : {}),
+		};
+		await ensureDir(eventsDir(namespaceDir));
+		await fs.appendFile(eventJournalFile(namespaceDir), `${JSON.stringify(event)}\n`);
+		await writeJsonFile(eventSequenceFile(namespaceDir), { seq, updated_at: timestamp });
+		return event;
 	} finally {
 		release();
 		if (eventAppendQueues.get(namespaceDir) === queued) eventAppendQueues.delete(namespaceDir);
 	}
 }
 
-// Per-session mutation lock. Concurrent stdio dispatch (see pumpCoordinatorMcpStream) makes
-// same-session read-modify-write tool calls (notably send_prompt: read active turn → decide →
-// write new turn) interleave, which could persist two "active" turns while only one active-turn
-// pointer survives. Serializing per session — same promise-chain shape as eventAppendQueues —
-// restores the atomicity the former serial read loop provided, without serializing across
-// sessions or blocking long read-only polls (await_turn/watch_events). This is an in-process
-// lock distinct from the file-based withSessionStateLock/withCoordinatorTransaction, so it can
-// never deadlock by nesting inside them.
-const sessionMutationQueues = new Map<string, Promise<unknown>>();
-
-async function withSessionMutation<T>(key: string, fn: () => Promise<T>): Promise<T> {
-	const previous = sessionMutationQueues.get(key) ?? Promise.resolve();
-	const { promise: current, resolve: release } = Promise.withResolvers<void>();
-	const queued = previous.then(
-		() => current,
-		() => current,
-	);
-	sessionMutationQueues.set(key, queued);
-	await previous.catch(() => undefined);
+function parseCoordinatorEvent(line: string): CoordinatorEvent | null {
 	try {
-		return await fn();
-	} finally {
-		release();
-		if (sessionMutationQueues.get(key) === queued) sessionMutationQueues.delete(key);
-	}
-}
-
-function parseCoordinatorEvent(line: string): CoordinatorEvent {
-	let event: unknown;
-	try {
-		event = JSON.parse(line);
+		const event = JSON.parse(line) as CoordinatorEvent;
+		if (typeof event.seq !== "number" || typeof event.kind !== "string") return null;
+		return event;
 	} catch {
-		throw coordinatorStateError("invalid");
+		return null;
 	}
-	const record = asRecord(event);
-	const allowed = new Set([
-		"schema_version",
-		"seq",
-		"id",
-		"timestamp",
-		"kind",
-		"session_id",
-		"turn_id",
-		"question_id",
-		"report_id",
-		"summary",
-		"payload_ref",
-		"metadata",
-	]);
-	const metadata = asRecord(record?.metadata);
-	const validMetadata =
-		record?.metadata === undefined && metadata === null
-			? true
-			: metadata !== null &&
-				Object.values(metadata).every(
-					value => value === null || ["string", "number", "boolean"].includes(typeof value),
-				);
-	const validOptionalExternalId = (value: unknown) =>
-		value === undefined || (typeof value === "string" && SAFE_EXTERNAL_ID_PATTERN.test(value));
-	const validPayloadRef =
-		record?.payload_ref === undefined ||
-		(typeof record.payload_ref === "string" &&
-			record.payload_ref.length > 0 &&
-			!path.isAbsolute(record.payload_ref) &&
-			!record.payload_ref.split(/[\\/]/).includes(".."));
-	if (
-		!record ||
-		Object.keys(record).some(key => !allowed.has(key)) ||
-		record.schema_version !== 1 ||
-		typeof record.seq !== "number" ||
-		!Number.isSafeInteger(record.seq) ||
-		record.seq <= 0 ||
-		record.id !== `event-${record.seq.toString().padStart(12, "0")}` ||
-		typeof record.timestamp !== "string" ||
-		!Number.isFinite(Date.parse(record.timestamp)) ||
-		typeof record.kind !== "string" ||
-		!COORDINATOR_EVENT_KINDS.has(record.kind as CoordinatorEventKind) ||
-		typeof record.summary !== "string" ||
-		record.summary.length > 240 ||
-		!validOptionalExternalId(record.session_id) ||
-		(record.turn_id !== undefined && (typeof record.turn_id !== "string" || !TURN_ID_PATTERN.test(record.turn_id))) ||
-		!validOptionalExternalId(record.question_id) ||
-		!validOptionalExternalId(record.report_id) ||
-		!validPayloadRef ||
-		!validMetadata
-	) {
-		throw coordinatorStateError("invalid");
-	}
-	return record as unknown as CoordinatorEvent;
 }
 
 async function readCoordinatorEvents(namespaceDir: string): Promise<CoordinatorEvent[]> {
-	const journalFile = eventJournalFile(namespaceDir);
-	let content: string;
 	try {
-		content = await fs.readFile(journalFile, "utf8");
+		const content = await fs.readFile(eventJournalFile(namespaceDir), "utf8");
+		return content
+			.split("\n")
+			.map(line => line.trim())
+			.filter(Boolean)
+			.map(parseCoordinatorEvent)
+			.filter((event): event is CoordinatorEvent => event !== null)
+			.sort((left, right) => left.seq - right.seq);
 	} catch (error) {
-		if (isExpectedStateAbsence(error)) return [];
-		throw coordinatorStateError("unreadable");
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
 	}
-	const events = content
-		.split("\n")
-		.map(line => line.trim())
-		.filter(Boolean)
-		.map(parseCoordinatorEvent);
-	for (let index = 1; index < events.length; index++) {
-		if (events[index].seq !== events[index - 1].seq + 1) throw coordinatorStateError("invalid");
-	}
-
-	return events;
 }
 
 function boundedEventLimit(value: unknown): number {
@@ -1536,39 +1089,8 @@ function safeTmuxTarget(value: unknown): string {
 	return value;
 }
 
-function safeTmuxRuntimeIdentity(value: string): boolean {
-	return value.length > 0 && value.length <= 160 && !/[\s\u0000-\u001f\u007f]/.test(value);
-}
-
-function coordinatorCleanupPredicate(expectedPid: number, nativeSessionId: string, attemptSession: string): string {
-	return `#{&&:#{==:#{pid},${expectedPid}},#{&&:#{==:#{session_id},${nativeSessionId}},#{==:#{session_name},${attemptSession}}}}`;
-}
-
-function parseTmuxNewSessionRecord(
-	stdout: string,
-	sessionName: string,
-): { tmuxTarget: string; paneId: string; nativeSessionId: string } | undefined {
-	const match = /^(\S+) (%\d+) (\$\d+)\n?$/.exec(stdout);
-	if (!match) return undefined;
-	const [tmuxTarget, paneId, nativeSessionId] = match.slice(1);
-	const targetSuffix = tmuxTarget!.slice(`${sessionName}:`.length);
-	if (
-		!tmuxTarget!.startsWith(`${sessionName}:`) ||
-		!/^\d+\.\d+$/.test(targetSuffix) ||
-		!safeTmuxRuntimeIdentity(tmuxTarget!) ||
-		!safeTmuxRuntimeIdentity(paneId!) ||
-		!safeTmuxRuntimeIdentity(nativeSessionId!)
-	)
-		return undefined;
-	return { tmuxTarget: tmuxTarget!, paneId: paneId!, nativeSessionId: nativeSessionId! };
-}
-
 function optionalString(value: unknown): string | null {
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function optionalBoolean(value: unknown): boolean | null {
-	return typeof value === "boolean" ? value : null;
 }
 
 function turnsDir(namespaceDir: string): string {
@@ -1583,158 +1105,12 @@ function turnFile(namespaceDir: string, turnId: string): string {
 	return path.join(turnsDir(namespaceDir), `${safeTurnId(turnId)}.json`);
 }
 
-function questionFile(namespaceDir: string, questionId: string): string {
-	return path.join(namespaceDir, "questions", `${safeExternalId("question", questionId)}.json`);
-}
-
 function sessionStateFile(namespaceDir: string, sessionId: string): string {
 	return path.join(namespaceDir, "session-states", `${safeExternalId("session", sessionId)}.json`);
 }
 
-function isTimestamp(value: unknown): value is string {
-	return typeof value === "string" && Number.isFinite(Date.parse(value));
-}
-
-function isValidTurnRecord(value: unknown): value is TurnRecord {
-	const turn = asRecord(value);
-	const delivery = asRecord(turn?.delivery);
-	const prompt = asRecord(turn?.prompt);
-	const response = asRecord(turn?.final_response);
-	const liveness = asRecord(turn?.liveness);
-	const namespace = asRecord(turn?.namespace);
-	const statuses: readonly TurnStatus[] = [
-		"queued",
-		"delivering",
-		"active",
-		"waiting_for_answer",
-		"completing",
-		"completed",
-		"failed",
-		"cancelled",
-		"superseded",
-	];
-	if (
-		turn?.schema_version !== 1 ||
-		typeof turn.turn_id !== "string" ||
-		!TURN_ID_PATTERN.test(turn.turn_id) ||
-		typeof turn.session_id !== "string" ||
-		!SAFE_EXTERNAL_ID_PATTERN.test(turn.session_id) ||
-		!namespace ||
-		(namespace.profile !== null && typeof namespace.profile !== "string") ||
-		(namespace.repo !== null && typeof namespace.repo !== "string") ||
-		!statuses.includes(turn.status as TurnStatus)
-	)
-		return false;
-	if (
-		!prompt ||
-		typeof prompt.text !== "string" ||
-		!isTimestamp(prompt.created_at) ||
-		(prompt.source !== "mcp" && prompt.source !== "question_answer")
-	)
-		return false;
-	if (
-		!delivery ||
-		typeof delivery.delivered !== "boolean" ||
-		typeof delivery.queued !== "boolean" ||
-		(delivery.target !== null && typeof delivery.target !== "string") ||
-		(delivery.tmux_keys_sent !== undefined && typeof delivery.tmux_keys_sent !== "boolean") ||
-		(delivery.prompt_acknowledged !== undefined && typeof delivery.prompt_acknowledged !== "boolean") ||
-		(delivery.state !== undefined &&
-			![
-				"queued",
-				"awaiting_runtime_readiness",
-				"delivering",
-				"tmux_keys_sent",
-				"acknowledged",
-				"unavailable",
-				"unacknowledged",
-			].includes(delivery.state as string)) ||
-		!Array.isArray(delivery.attempts) ||
-		!delivery.attempts.every(attempt => {
-			const item = asRecord(attempt);
-			return (
-				item !== null &&
-				typeof item.delivered === "boolean" &&
-				isTimestamp(item.created_at) &&
-				(item.reason === null || typeof item.reason === "string") &&
-				(item.channel === undefined || item.channel === "tmux_keys" || item.channel === "runtime_ack") &&
-				(item.tmux_keys_sent === undefined || typeof item.tmux_keys_sent === "boolean")
-			);
-		})
-	)
-		return false;
-	if (
-		!Array.isArray(turn.question_ids) ||
-		!turn.question_ids.every(id => typeof id === "string" && SAFE_EXTERNAL_ID_PATTERN.test(id)) ||
-		!isValidRuntimeFinalResponse(response) ||
-		!Array.isArray(turn.evidence) ||
-		!turn.evidence.every(item => asRecord(item) !== null) ||
-		(turn.error !== null && !isValidRuntimeError(turn.error))
-	)
-		return false;
-	if (
-		!liveness ||
-		(liveness.checked_at !== null && !isTimestamp(liveness.checked_at)) ||
-		(liveness.live !== null && typeof liveness.live !== "boolean") ||
-		(liveness.reason !== null && typeof liveness.reason !== "string") ||
-		!isTimestamp(turn.created_at) ||
-		!isTimestamp(turn.updated_at) ||
-		(turn.started_at !== null && !isTimestamp(turn.started_at)) ||
-		(turn.completed_at !== null && !isTimestamp(turn.completed_at))
-	)
-		return false;
-	return TERMINAL_TURN_STATUSES.has(turn.status as TurnStatus)
-		? turn.completed_at !== null && (turn.status === "failed" ? turn.error !== null : turn.error === null)
-		: turn.completed_at === null && turn.error === null;
-}
-
-function isValidActiveTurnRecord(
-	value: unknown,
-	sessionId: string,
-): value is {
-	session_id: string;
-	turn_id: string;
-	status: TurnStatus;
-	updated_at: string;
-} {
-	const active = asRecord(value);
-	return (
-		active !== null &&
-		Object.keys(active).every(key => ["session_id", "turn_id", "status", "updated_at"].includes(key)) &&
-		active.session_id === sessionId &&
-		typeof active.turn_id === "string" &&
-		TURN_ID_PATTERN.test(active.turn_id) &&
-		ACTIVE_TURN_STATUSES.has(active.status as TurnStatus) &&
-		isTimestamp(active.updated_at)
-	);
-}
-
 async function readTurnRecord(namespaceDir: string, turnId: unknown): Promise<TurnRecord | null> {
-	const requestedTurnId = safeTurnId(turnId);
-	const value = await readJsonFile(turnFile(namespaceDir, requestedTurnId));
-	if (value === null) return null;
-	if (!isValidTurnRecord(value) || value.turn_id !== requestedTurnId) throw coordinatorStateError("invalid");
-	return value;
-}
-
-async function listTurnRecords(namespaceDir: string): Promise<TurnRecord[]> {
-	let entries: string[];
-	try {
-		entries = await fs.readdir(turnsDir(namespaceDir));
-	} catch (error) {
-		if (isExpectedStateAbsence(error)) return [];
-		throw coordinatorStateError("unreadable");
-	}
-	const records = await Promise.all(
-		entries
-			.filter(entry => entry.endsWith(".json"))
-			.map(async entry => {
-				const turnId = entry.slice(0, -".json".length);
-				if (!TURN_ID_PATTERN.test(turnId)) throw coordinatorStateError("invalid");
-				return await readTurnRecord(namespaceDir, turnId);
-			}),
-	);
-	return records.filter((record): record is TurnRecord => record !== null);
+	return (await readJsonFile(turnFile(namespaceDir, safeTurnId(turnId)))) as TurnRecord | null;
 }
 
 function turnEventKind(status: TurnStatus): CoordinatorEventKind | null {
@@ -1750,8 +1126,7 @@ function turnEventKind(status: TurnStatus): CoordinatorEventKind | null {
 }
 
 async function writeTurnRecord(namespaceDir: string, turn: TurnRecord): Promise<void> {
-	if (!isValidTurnRecord(turn)) throw coordinatorStateError("invalid");
-	const previous = await readTurnRecord(namespaceDir, turn.turn_id);
+	const previous = (await readJsonFile(turnFile(namespaceDir, turn.turn_id))) as TurnRecord | null;
 	await writeJsonFile(turnFile(namespaceDir, turn.turn_id), turn);
 	const kind = previous?.status === turn.status ? null : turnEventKind(turn.status);
 	if (kind) {
@@ -1771,17 +1146,14 @@ async function writeTurnRecord(namespaceDir: string, turn: TurnRecord): Promise<
 }
 
 async function readActiveTurn(namespaceDir: string, sessionId: string): Promise<TurnRecord | null> {
-	const value = await readJsonFile(activeTurnFile(namespaceDir, sessionId));
-	if (value === null) return null;
-	if (!isValidActiveTurnRecord(value, sessionId)) throw coordinatorStateError("invalid");
-	const turn = await readTurnRecord(namespaceDir, value.turn_id);
-	if (!turn || turn.session_id !== sessionId || turn.status !== value.status || !ACTIVE_TURN_STATUSES.has(turn.status))
-		throw coordinatorStateError("invalid");
+	const active = asRecord(await readJsonFile(activeTurnFile(namespaceDir, sessionId)));
+	if (!active || typeof active.turn_id !== "string") return null;
+	const turn = await readTurnRecord(namespaceDir, active.turn_id);
+	if (!turn || turn.session_id !== sessionId || !ACTIVE_TURN_STATUSES.has(turn.status)) return null;
 	return turn;
 }
 
 async function writeActiveTurn(namespaceDir: string, turn: TurnRecord): Promise<void> {
-	if (!ACTIVE_TURN_STATUSES.has(turn.status)) throw coordinatorStateError("invalid");
 	await writeJsonFile(activeTurnFile(namespaceDir, turn.session_id), {
 		session_id: turn.session_id,
 		turn_id: turn.turn_id,
@@ -1791,81 +1163,12 @@ async function writeActiveTurn(namespaceDir: string, turn: TurnRecord): Promise<
 }
 
 async function clearActiveTurn(namespaceDir: string, turn: TurnRecord): Promise<void> {
-	const value = await readJsonFile(activeTurnFile(namespaceDir, turn.session_id));
-	if (value === null) return;
-	if (!isValidActiveTurnRecord(value, turn.session_id)) throw coordinatorStateError("invalid");
-	if (value.turn_id === turn.turn_id) await fs.rm(activeTurnFile(namespaceDir, turn.session_id), { force: true });
+	const active = asRecord(await readJsonFile(activeTurnFile(namespaceDir, turn.session_id)));
+	if (active?.turn_id === turn.turn_id) await fs.rm(activeTurnFile(namespaceDir, turn.session_id), { force: true });
 }
 
 async function readSessionState(namespaceDir: string, sessionId: string): Promise<CoordinatorSessionState | null> {
-	const value = await readJsonFile(sessionStateFile(namespaceDir, sessionId));
-	if (value === null) return null;
-	if (!isValidRuntimeSessionState(value, sessionId)) throw coordinatorStateError("invalid");
-	return value;
-}
-
-function validRuntimeOwnerGeneration(value: unknown): value is string {
-	return (
-		typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\s\u0000-\u001f\u007f]/.test(value)
-	);
-}
-
-function runtimeStateMatchesPrivateOwnerGeneration(
-	sessionState: CoordinatorSessionState,
-	session: Record<string, unknown> | null,
-): boolean {
-	const expectedGeneration = session?.tmux_owner_generation ?? session?.tmuxOwnerGeneration;
-	if (expectedGeneration === undefined)
-		return !(sessionState.source === "process_postmortem" && sessionState.event === "owner_terminal");
-	if (!validRuntimeOwnerGeneration(expectedGeneration) || sessionState.owner_generation !== expectedGeneration)
-		return false;
-	if (sessionState.source !== "process_postmortem") return true;
-	if (sessionState.event !== "owner_terminal") return false;
-	const expectedSocketKey = session?.tmux_owner_server_key ?? session?.tmuxOwnerServerKey;
-	return (
-		typeof expectedSocketKey === "string" &&
-		sessionState.owner_terminal?.generation === expectedGeneration &&
-		sessionState.owner_terminal.socket_key === expectedSocketKey
-	);
-}
-
-async function reconcileTerminalRuntimeEvidence(namespaceDir: string, sessionId: string): Promise<boolean> {
-	const sessionState = await readSessionState(namespaceDir, sessionId);
-	if (
-		!sessionState ||
-		sessionState.source === "coordinator" ||
-		(sessionState.state !== "completed" && sessionState.state !== "errored")
-	)
-		return false;
-	const session = asRecord(await readJsonFile(path.join(namespaceDir, "sessions", `${sessionId}.json`)));
-	if (!runtimeStateMatchesPrivateOwnerGeneration(sessionState, session)) return false;
-
-	const activeTurn = await readActiveTurn(namespaceDir, sessionId);
-	if (activeTurn && (sessionState.current_turn_id === null || sessionState.current_turn_id === activeTurn.turn_id)) {
-		await markTurnTerminalFromSessionState(namespaceDir, activeTurn, sessionState);
-	}
-	return true;
-}
-
-async function preflightCoordinatorMutation(
-	namespaceDir: string,
-	sessionId?: string,
-	options: { rejectTerminalRuntimeEvidence?: boolean } = {},
-): Promise<void> {
-	await readLatestEventSeq(namespaceDir);
-	if (!sessionId) return;
-	const [sessionState, session] = await Promise.all([
-		readSessionState(namespaceDir, sessionId),
-		readJsonFile(path.join(namespaceDir, "sessions", `${sessionId}.json`)),
-	]);
-	const sessionRecord = asRecord(session);
-	if (sessionRecord && normalizeSession(sessionRecord).session_id !== sessionId)
-		throw coordinatorStateError("invalid");
-	if (sessionState && sessionState.session_id !== sessionId) throw coordinatorStateError("invalid");
-	await readActiveTurn(namespaceDir, sessionId);
-	const terminalRuntimeEvidence = await reconcileTerminalRuntimeEvidence(namespaceDir, sessionId);
-	if (terminalRuntimeEvidence && options.rejectTerminalRuntimeEvidence !== false)
-		throw coordinatorStateError("invalid");
+	return (await readJsonFile(sessionStateFile(namespaceDir, sessionId))) as CoordinatorSessionState | null;
 }
 
 async function writeSessionStateUnlocked(
@@ -1881,20 +1184,6 @@ async function writeSessionStateUnlocked(
 	} = {},
 ): Promise<CoordinatorSessionState> {
 	const previous = await readSessionState(namespaceDir, sessionId);
-	if (previous && previous.source !== "coordinator") return previous;
-	const session = asRecord(await readJsonFile(path.join(namespaceDir, "sessions", `${sessionId}.json`)));
-	const previousCwd = typeof previous?.cwd === "string" && previous.cwd.trim() ? previous.cwd : null;
-	const cwd =
-		typeof session?.cwd === "string" && session.cwd.trim()
-			? path.resolve(session.cwd)
-			: previousCwd
-				? path.resolve(previousCwd)
-				: null;
-	if (!cwd) throw coordinatorStateError("invalid");
-	const sessionFile =
-		typeof session?.session_file === "string" && session.session_file.trim()
-			? path.resolve(session.session_file)
-			: null;
 	const payload: CoordinatorSessionState = {
 		schema_version: 1,
 		session_id: sessionId,
@@ -1906,9 +1195,6 @@ async function writeSessionStateUnlocked(
 		source: options.source ?? "coordinator",
 		live: options.live ?? previous?.live ?? null,
 		reason: options.reason ?? null,
-		cwd,
-		workdir: cwd,
-		session_file: sessionFile,
 	};
 	await writeJsonFile(sessionStateFile(namespaceDir, sessionId), payload);
 	if (
@@ -2041,12 +1327,13 @@ async function withSessionStateLock<T>(stateFile: string, operation: () => Promi
 			return outcome.value;
 		} catch (error) {
 			if (handle) throw error;
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw coordinatorStateError("unreadable");
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error("coordinator_state_unreadable");
+
 			await reclaimStaleSessionStateLock(lockFile);
 			await Bun.sleep(5);
 		}
 	}
-	throw coordinatorStateError("unreadable");
+	throw new Error("coordinator_state_unreadable");
 }
 
 async function writeSessionState(
@@ -2068,64 +1355,25 @@ async function writeSessionState(
 	);
 }
 
-function hasTmuxIdentity(session: Record<string, unknown>): boolean {
-	return (
-		(typeof session.tmux_session === "string" && session.tmux_session.length > 0) ||
-		(typeof session.tmuxSession === "string" && session.tmuxSession.length > 0)
-	);
-}
-
-function unavailableSessionReason(turn: TurnRecord, reason: string): string {
-	if (
-		reason === "tmux_session_missing" &&
-		turn.delivery.tmux_keys_sent === true &&
-		turn.delivery.prompt_acknowledged === true
-	) {
-		return "tmux_session_missing_after_prompt_acknowledgement";
-	}
-	return reason;
-}
-
-function unavailableSessionEvidence(turn: TurnRecord, reason: string, timestamp: string): Record<string, unknown>[] {
-	if (reason !== "tmux_session_missing_after_prompt_acknowledgement") return turn.evidence;
-	return [
-		...turn.evidence,
-		{
-			type: reason,
-			message:
-				"The tmux session disappeared after GJC runtime acknowledged the prompt, before any terminal final_response or error was recorded. Treat this as an in-flight vanished session and inspect/restart with recovery evidence rather than resubmitting blindly.",
-			tmux_keys_sent: true,
-			prompt_acknowledged: true,
-			prior_status: turn.status,
-			created_at: timestamp,
-		},
-	];
-}
-
 async function markTurnFailedForUnavailableSession(
 	namespaceDir: string,
 	turn: TurnRecord,
 	reason: string,
 ): Promise<TurnRecord> {
 	const timestamp = new Date().toISOString();
-	const durableReason = unavailableSessionReason(turn, reason);
 	const failed: TurnRecord = {
 		...turn,
 		status: "failed",
 		final_response: {
-			text: `Coordinator session unavailable: ${durableReason}`,
+			text: `Coordinator session unavailable: ${reason}`,
 			format: "markdown",
 			source: "coordinator_liveness",
 			artifact_path: null,
 			truncated: false,
 		},
-		evidence: unavailableSessionEvidence(turn, durableReason, timestamp),
-		error: {
-			code: "session_unavailable",
-			message: durableReason,
-			recoverable: true,
-		},
-		liveness: { checked_at: timestamp, live: false, reason: durableReason },
+		evidence: turn.evidence,
+		error: { code: "session_unavailable", message: reason, recoverable: true },
+		liveness: { checked_at: timestamp, live: false, reason },
 		updated_at: timestamp,
 		completed_at: timestamp,
 	};
@@ -2134,7 +1382,7 @@ async function markTurnFailedForUnavailableSession(
 	await writeSessionState(namespaceDir, failed.session_id, "stale", {
 		lastTurnId: failed.turn_id,
 		live: false,
-		reason: durableReason,
+		reason,
 	});
 	return failed;
 }
@@ -2305,11 +1553,7 @@ async function markTurnFailedForUnacknowledgedDelivery(
 				created_at: timestamp,
 			},
 		],
-		liveness: {
-			checked_at: timestamp,
-			live: turn.liveness.live,
-			reason: PROMPT_ACK_TIMEOUT_REASON,
-		},
+		liveness: { checked_at: timestamp, live: turn.liveness.live, reason: PROMPT_ACK_TIMEOUT_REASON },
 		updated_at: timestamp,
 		completed_at: timestamp,
 	};
@@ -2330,16 +1574,6 @@ async function reconcileRuntimeAcknowledgement(
 	ackTimeoutMs: number,
 	options: { failOnTimeout: boolean } = { failOnTimeout: true },
 ): Promise<TurnRecord> {
-	const session = asRecord(await readJsonFile(path.join(namespaceDir, "sessions", `${turn.session_id}.json`)));
-	if (
-		sessionState &&
-		runtimeStateMatchesPrivateOwnerGeneration(sessionState, session) &&
-		sessionState.source !== "coordinator" &&
-		(sessionState.state === "completed" || sessionState.state === "errored") &&
-		(sessionState.current_turn_id === null || sessionState.current_turn_id === turn.turn_id)
-	) {
-		return await markTurnTerminalFromSessionState(namespaceDir, turn, sessionState);
-	}
 	if (sessionState && runtimeStateAcknowledgesTurn(turn, sessionState)) {
 		return await markTurnAcknowledgedFromRuntimeState(namespaceDir, turn, sessionState);
 	}
@@ -2347,30 +1581,6 @@ async function reconcileRuntimeAcknowledgement(
 		return await markTurnFailedForUnacknowledgedDelivery(namespaceDir, turn, ackTimeoutMs);
 	}
 	return turn;
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-/**
- * Append an authoritative `--mpreset <profile>` to the coordinator child launch
- * command so the spawned GJC session activates the selected profile from its
- * first turn. The profile name is validated against the merged registry before
- * reaching here; it is still shell-quoted as defense in depth.
- *
- * Precedence note: this matches `gjc --mpreset <profile>` semantics exactly, so
- * an explicit model-affecting flag already present in the operator-configured
- * `sessionCommand` (e.g. a `--model`/`--thinking` baked into the launch command)
- * follows the same CLI precedence as a direct `gjc --mpreset ... --model ...`
- * invocation. The effective profile recorded on the session is the
- * coordinator-resolved request, not a child-attested activation receipt; a
- * cross-process activation receipt is a possible future enhancement and is out
- * of scope for the per-session selection contract here.
- */
-export function buildCoordinatorSessionCommand(sessionCommand: string, mpreset: string | null | undefined): string {
-	if (!mpreset) return sessionCommand;
-	return `${sessionCommand} --mpreset ${shellQuote(mpreset)}`;
 }
 
 function makeTurnRecord(
@@ -2397,13 +1607,7 @@ function makeTurnRecord(
 			attempts: [],
 		},
 		question_ids: [],
-		final_response: {
-			text: null,
-			format: "markdown",
-			source: null,
-			artifact_path: null,
-			truncated: false,
-		},
+		final_response: { text: null, format: "markdown", source: null, artifact_path: null, truncated: false },
 		evidence: [],
 		error: null,
 		liveness: { checked_at: null, live: null, reason: null },
@@ -2425,8 +1629,6 @@ function asTerminalTurnStatus(status: unknown): TurnStatus | null {
 
 export const COORDINATOR_AWAIT_TURN_TIMEOUT_MAX_MS = 30 * 60 * 1000;
 export const COORDINATOR_RUNTIME_PROMPT_ACK_TIMEOUT_MAX_MS = MAX_RUNTIME_PROMPT_ACK_TIMEOUT_MS;
-export const COORDINATOR_RUNTIME_READINESS_TIMEOUT_MAX_MS = MAX_RUNTIME_READINESS_TIMEOUT_MS;
-
 export const COORDINATOR_EVENT_WATCH_TIMEOUT_MAX_MS = 30_000;
 export const COORDINATOR_POLL_INTERVAL_MAX_MS = 10_000;
 
@@ -2445,12 +1647,6 @@ export function boundedRuntimePromptAckTimeoutMs(value: unknown): number {
 		COORDINATOR_RUNTIME_PROMPT_ACK_TIMEOUT_MAX_MS,
 	);
 }
-export function boundedRuntimeReadinessTimeoutMs(value: unknown): number {
-	return Math.min(
-		parsePositiveIntegerMs(value, DEFAULT_RUNTIME_READINESS_TIMEOUT_MS),
-		COORDINATOR_RUNTIME_READINESS_TIMEOUT_MAX_MS,
-	);
-}
 
 export function boundedEventWatchTimeoutMs(value: unknown): number {
 	return Math.min(parsePositiveIntegerMs(value, 1000), COORDINATOR_EVENT_WATCH_TIMEOUT_MAX_MS);
@@ -2459,624 +1655,11 @@ export function boundedEventWatchTimeoutMs(value: unknown): number {
 export function boundedPollIntervalMs(value: unknown): number {
 	return Math.min(Math.max(parsePositiveIntegerMs(value, 100), 10), COORDINATOR_POLL_INTERVAL_MAX_MS);
 }
-async function runCommand(
-	command: string[],
-	stdinLine?: string,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	const proc = Bun.spawn(command, {
-		stdin: stdinLine === undefined ? "ignore" : "pipe",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	if (stdinLine !== undefined) {
-		const stdin = proc.stdin;
-		if (!stdin) throw new Error("coordinator_command_stdin_unavailable");
-		stdin.write(`${stdinLine}\n`);
-		stdin.end();
-	}
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { exitCode, stdout, stderr };
-}
-
-async function sendTmuxPromptKeys(
-	target: string,
-	prompt: string,
-	runner: CommandRunner,
-	socketKey: string,
-	proveCurrentServer: () => Promise<boolean>,
-): Promise<boolean> {
-	const runMutation = async (argv: string[]): Promise<CommandResult | null> => {
-		if (!(await proveCurrentServer())) return null;
-		return await runner(argv);
-	};
-	const bufferName = `gjc-coordinator-prompt-${randomUUID()}`;
-	const tmux = ["tmux", "-L", socketKey];
-	const zeroize = async (): Promise<boolean> => {
-		for (let attempt = 0; attempt < 2; attempt++) {
-			const cleared = await runMutation([...tmux, "set-buffer", "-b", bufferName, "--", ""]);
-			const deleted =
-				cleared?.exitCode === 0 ? await runMutation([...tmux, "delete-buffer", "-b", bufferName]) : null;
-			if (cleared?.exitCode === 0 && deleted?.exitCode === 0) return true;
-		}
-		return false;
-	};
-	const buffered = await runMutation([...tmux, "set-buffer", "-b", bufferName, "--", prompt]);
-	if (buffered?.exitCode !== 0) return false;
-	const pasted = await runMutation([...tmux, "paste-buffer", "-d", "-b", bufferName, "-t", target]);
-	if (pasted?.exitCode !== 0) {
-		if (!(await zeroize())) throw new Error("coordinator_prompt_buffer_privacy_unverified");
-		return false;
-	}
-	const dismissedAutocomplete = await runMutation([...tmux, "send-keys", "-t", target, "Escape"]);
-	if (dismissedAutocomplete?.exitCode !== 0) return false;
-	const submitted = await runMutation([...tmux, "send-keys", "-t", target, "Enter"]);
-	return submitted?.exitCode === 0;
-}
 
 function boundedLineCount(value: unknown): number {
 	const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) return 80;
 	return Math.min(parsed, 400);
-}
-
-async function assertTmuxTargetAvailable(
-	tmuxSession: string,
-	tmuxTarget: string,
-	runner: CommandRunner = runCommand,
-): Promise<void> {
-	const session = await runner(["tmux", "has-session", "-t", tmuxSession]);
-	if (session.exitCode !== 0) throw new Error("tmux_session_unavailable");
-	const pane = await runner(["tmux", "display-message", "-p", "-t", tmuxTarget, "#{pane_id}"]);
-	if (pane.exitCode !== 0 || pane.stdout.trim().length === 0) throw new Error("tmux_target_unavailable");
-}
-
-async function registerExistingTmuxSession(
-	input: SessionRegisterInput,
-	namespaceDir: string,
-	sessionFilePath: string,
-	runner: CommandRunner = runCommand,
-): Promise<{
-	session: Record<string, unknown>;
-	sessionState: CoordinatorSessionState;
-}> {
-	await assertTmuxTargetAvailable(input.tmuxSession, input.tmuxTarget, runner);
-	const existing = asRecord(await readJsonFile(sessionFilePath));
-	if (existing) {
-		const existingSession = typeof existing.tmux_session === "string" ? existing.tmux_session : existing.tmuxSession;
-		const existingTarget = typeof existing.tmux_target === "string" ? existing.tmux_target : existing.tmuxTarget;
-		if (existingSession && existingSession !== input.tmuxSession) throw new Error("session_id_conflict");
-		if (existingTarget && existingTarget !== input.tmuxTarget) throw new Error("session_id_conflict");
-	}
-	const timestamp = new Date().toISOString();
-	const session = {
-		...(existing ?? {}),
-		session_id: input.sessionId,
-		sessionId: input.sessionId,
-		tmux_session: input.tmuxSession,
-		tmuxSession: input.tmuxSession,
-		tmux_target: input.tmuxTarget,
-		tmuxTarget: input.tmuxTarget,
-		cwd: input.cwd,
-		created_at: typeof existing?.created_at === "string" ? existing.created_at : timestamp,
-		createdAt: typeof existing?.createdAt === "string" ? existing.createdAt : timestamp,
-		registered_at: timestamp,
-		visible: input.visible,
-		authoritative: true,
-		warp_attached: input.warpAttached,
-		source: input.source,
-		origin: "registered",
-		model: input.model,
-	};
-	await writeJsonFile(sessionFilePath, session);
-	const state = await writeSessionState(namespaceDir, input.sessionId, "ready_for_input", {
-		live: true,
-		reason: null,
-	});
-	return { session, sessionState: state };
-}
-
-async function portableProcessStartTime(pid: number, runner: CommandRunner): Promise<string | null> {
-	const result = await runner(["ps", "-o", "lstart=", "-p", String(pid)]);
-	const startTime = result.stdout.trim();
-	return result.exitCode === 0 &&
-		startTime.length > 0 &&
-		startTime.length <= 160 &&
-		!/[\r\n\u0000-\u001f\u007f]/.test(startTime)
-		? startTime
-		: null;
-}
-
-export async function coordinatorOwnerIsolationProbe(runner: CommandRunner): Promise<OwnerIsolationProbe> {
-	return {
-		readCallerCgroup: async () => await fs.readFile("/proc/self/cgroup", "utf8").catch(() => null),
-		probeServer: async (socketKey): Promise<TmuxServerProof> => {
-			try {
-				const result = await runner(["tmux", "-L", socketKey, "list-sessions", "-F", "#{pid} #{session_name}"]);
-				if (result.exitCode !== 0) {
-					const diagnostic = `${result.stdout}\n${result.stderr}`.slice(0, 512);
-					return /(?:no server running|failed to connect to server|no sessions|error connecting to)/i.test(
-						diagnostic,
-					)
-						? { state: "absent" }
-						: { state: "unverifiable" };
-				}
-				const rows = result.stdout
-					.split("\n")
-					.map(line => line.trim().split(/\s+/, 2))
-					.filter(([pid, name]) => Boolean(pid && name));
-				const pid = Number(rows[0]?.[0]);
-				const sessionNames = rows.map(([, name]) => name as string);
-				if (!Number.isSafeInteger(pid) || pid <= 0 || rows.some(([rowPid]) => Number(rowPid) !== pid))
-					return { state: "unverifiable" };
-				const stat =
-					process.platform === "linux" ? await fs.readFile(`/proc/${pid}/stat`, "utf8").catch(() => null) : null;
-				const startTime =
-					process.platform === "linux"
-						? ownerProcessStartTime(process.platform, stat)
-						: await portableProcessStartTime(pid, runner);
-				if (!startTime) return { state: "unverifiable", pid, sessionNames };
-				if (process.platform !== "linux")
-					return {
-						state: "safe",
-						pid,
-						startTime,
-						sessionNames,
-						cgroup: { classification: "not_applicable" },
-					};
-				const cgroupText = await fs.readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null);
-				const cgroup = classifyCgroup({ platform: process.platform, cgroupText });
-				return {
-					state:
-						cgroup.classification === "safe"
-							? "safe"
-							: cgroup.classification === "unsafe_service"
-								? "unsafe"
-								: "unverifiable",
-					pid,
-					startTime,
-					sessionNames,
-					cgroup,
-				};
-			} catch {
-				// A transient spawn failure (e.g. EAGAIN under load, or a momentary tmux/ps hiccup)
-				// must not fatally abort the owner-server proof. Surfacing it as an unverifiable state
-				// lets proveCoordinatorOwnerServer's bounded retry loop re-probe once the transient
-				// clears, instead of propagating the throw and failing the entire delegate outright.
-				return { state: "unverifiable" };
-			}
-		},
-	};
-}
-
-async function proveCoordinatorOwnerServer(probe: OwnerIsolationProbe, socketKey: string): Promise<TmuxServerProof> {
-	for (let attempt = 0; attempt < 50; attempt++) {
-		const proof = await probe.probeServer(socketKey);
-		if (proof.state === "unsafe" || (proof.state === "safe" && proof.pid && proof.startTime)) return proof;
-		if (attempt < 49) await Bun.sleep(10);
-	}
-	return { state: "unverifiable" };
-}
-
-async function startTmuxSession(
-	config: CoordinatorMcpConfig,
-	input: SessionStartInput,
-	namespaceDir: string,
-	runner: CommandRunner = runCommand,
-	ownerIsolationProbe?: OwnerIsolationProbe,
-): Promise<Record<string, unknown>> {
-	if (!config.sessionCommand) throw new Error("coordinator_session_command_required");
-	const sessionName = input.sessionId;
-	const socketKey = `gjc-coordinator-${randomUUID().slice(0, 8)}`;
-	const ownerStateDir = namespaceDir;
-	const ownerGeneration = randomUUID();
-	const generationBaseline = captureOwnerGenerationBaselineSync(ownerStateDir, sessionName);
-	const runtimeStateFile = sessionStateFile(namespaceDir, sessionName);
-	const sessionCommand = [
-		"exec env",
-		`${GJC_COORDINATOR_SESSION_STATE_FILE_ENV}=${shellQuote(runtimeStateFile)}`,
-		`${GJC_COORDINATOR_SESSION_ID_ENV}=${shellQuote(sessionName)}`,
-		`${GJC_TMUX_OWNER_GENERATION_ENV}=${shellQuote(ownerGeneration)}`,
-		`${GJC_TMUX_OWNER_STATE_DIR_ENV}=${shellQuote(ownerStateDir)}`,
-		`${GJC_TMUX_OWNER_SERVER_KEY_ENV}=${shellQuote(socketKey)}`,
-		`${GJC_COORDINATOR_SESSION_LAUNCH_ID_ENV}=${shellQuote(input.launchId)}`,
-		`${GJC_COORDINATOR_SESSION_READINESS_FILE_ENV}=${shellQuote(input.readinessMarkerFile)}`,
-		buildCoordinatorSessionCommand(config.sessionCommand, input.mpreset),
-	].join(" ");
-	const tmuxArgv = [
-		"tmux",
-		"-L",
-		socketKey,
-		"new-session",
-		"-d",
-		"-P",
-		"-F",
-		"#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{session_id}",
-		"-s",
-		sessionName,
-		"-c",
-		input.cwd,
-		sessionCommand,
-	];
-	const probe = ownerIsolationProbe ?? (await coordinatorOwnerIsolationProbe(runner));
-	let plan = await planTmuxOwnerIsolation(
-		{
-			schema_version: 1,
-			op: "plan",
-			platform: process.platform,
-			session_id: sessionName,
-			owner_generation: ownerGeneration,
-			baseline: generationBaseline,
-			cwd: input.cwd,
-			state_dir: ownerStateDir,
-			socket_key: socketKey,
-			tmux_argv: tmuxArgv,
-		},
-		probe,
-	);
-	if (!plan.ok) throw new Error(`coordinator_tmux_owner_${plan.code}`);
-	if (plan.execution.mode === "direct" && plan.execution.server_absent_before) {
-		plan = await planTmuxOwnerIsolation(
-			{
-				schema_version: 1,
-				op: "plan",
-				platform: process.platform,
-				session_id: sessionName,
-				owner_generation: ownerGeneration,
-				baseline: generationBaseline,
-				cwd: input.cwd,
-				state_dir: ownerStateDir,
-				socket_key: socketKey,
-				tmux_argv: tmuxArgv,
-			},
-			{
-				...probe,
-				readCallerCgroup: async () => "0::/gjc-coordinator-bootstrap.service",
-			},
-		);
-		if (!plan.ok) throw new Error(`coordinator_tmux_owner_${plan.code}`);
-	}
-	const preSpawnProof =
-		plan.execution.mode === "direct" && plan.server_state === "safe"
-			? await proveCoordinatorOwnerServer(probe, socketKey)
-			: null;
-	if (
-		preSpawnProof &&
-		(preSpawnProof.state !== "safe" ||
-			!preSpawnProof.pid ||
-			!preSpawnProof.startTime ||
-			(process.platform === "linux" && preSpawnProof.cgroup?.classification !== "safe"))
-	)
-		throw new Error("coordinator_tmux_owner_server_unverifiable");
-	const started = await runner(
-		plan.execution.argv,
-		plan.execution.mode === "scoped" ? plan.execution.stdin_line : undefined,
-	);
-
-	const rawScopedReceipt =
-		plan.execution.mode === "scoped" && isExactScopedBootstrapSuccessReceipt(started.stdout)
-			? (JSON.parse(started.stdout.trim()) as {
-					native_session_id: string;
-					server_pid: number;
-					server_start_time: string;
-					session_name: string;
-				})
-			: undefined;
-	const scopedReceipt =
-		rawScopedReceipt?.session_name === plan.execution.attempt_session ? rawScopedReceipt : undefined;
-	const directReceipt =
-		plan.execution.mode === "direct"
-			? parseTmuxNewSessionRecord(started.stdout, plan.execution.attempt_session)
-			: undefined;
-	const directNativeSessionId = directReceipt?.nativeSessionId;
-	const spawnedNativeSessionId = scopedReceipt?.native_session_id ?? directNativeSessionId;
-	let expectedServer = scopedReceipt
-		? {
-				pid: scopedReceipt.server_pid,
-				startTime: scopedReceipt.server_start_time,
-			}
-		: preSpawnProof && preSpawnProof.state === "safe" && preSpawnProof.pid && preSpawnProof.startTime
-			? { pid: preSpawnProof.pid, startTime: preSpawnProof.startTime }
-			: undefined;
-	const cleanupFailedAttempt = async (): Promise<"cleaned" | "failed" | "unverifiable"> => {
-		if (!spawnedNativeSessionId || !expectedServer) return "unverifiable";
-		try {
-			const result = await runner([
-				"tmux",
-				"-L",
-				socketKey,
-				"if-shell",
-				"-t",
-				spawnedNativeSessionId,
-				"-F",
-				coordinatorCleanupPredicate(expectedServer.pid, spawnedNativeSessionId, plan.execution.attempt_session),
-				`kill-session -t '${spawnedNativeSessionId}' ; display-message -p __gjc_coordinator_cleanup_ok__`,
-				"display-message -p __gjc_coordinator_cleanup_refused__",
-			]);
-			if (result.exitCode !== 0) return "failed";
-			return result.stdout.trim() === "__gjc_coordinator_cleanup_ok__" ? "cleaned" : "unverifiable";
-		} catch {
-			return "unverifiable";
-		}
-	};
-	const failAfterCleanup = async (reason: string): Promise<never> => {
-		throw new CoordinatorStartError(reason, await cleanupFailedAttempt());
-	};
-	if (started.exitCode !== 0) return await failAfterCleanup("coordinator_tmux_start_failed");
-	const bootstrapReceiptValid = plan.execution.mode !== "scoped" || scopedReceipt !== undefined;
-	const initialProof = await proveCoordinatorOwnerServer(probe, socketKey).catch(error =>
-		failAfterCleanup(error instanceof Error ? error.message : "coordinator_tmux_owner_server_unverifiable"),
-	);
-	if (
-		initialProof.state !== "safe" ||
-		!initialProof.pid ||
-		!initialProof.startTime ||
-		(process.platform === "linux" && initialProof.cgroup?.classification !== "safe")
-	) {
-		return await failAfterCleanup("coordinator_tmux_owner_server_unverifiable");
-	}
-	if (
-		scopedReceipt &&
-		(initialProof.pid !== scopedReceipt.server_pid || initialProof.startTime !== scopedReceipt.server_start_time)
-	) {
-		return await failAfterCleanup("coordinator_tmux_owner_server_race");
-	}
-	if (
-		preSpawnProof &&
-		(initialProof.pid !== preSpawnProof.pid || initialProof.startTime !== preSpawnProof.startTime)
-	) {
-		return await failAfterCleanup("coordinator_tmux_owner_server_race");
-	}
-	if (!expectedServer)
-		expectedServer = {
-			pid: initialProof.pid,
-			startTime: initialProof.startTime,
-		};
-	if (!bootstrapReceiptValid) {
-		return await failAfterCleanup("coordinator_tmux_start_failed");
-	}
-
-	const startRecord = await (async () => {
-		const queried = await runner([
-			"tmux",
-			"-L",
-			socketKey,
-			"display-message",
-			"-p",
-			"-t",
-			sessionName,
-			"#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{session_id}",
-		]);
-		if (queried.exitCode !== 0) throw new Error("coordinator_tmux_start_failed");
-		return queried.stdout.trim();
-	})().catch(error => failAfterCleanup(error instanceof Error ? error.message : "coordinator_tmux_start_failed"));
-	const postLaunchProof = await probe.probeServer(socketKey);
-	if (
-		postLaunchProof.state !== "safe" ||
-		postLaunchProof.pid !== initialProof.pid ||
-		postLaunchProof.startTime !== initialProof.startTime
-	) {
-		return await failAfterCleanup("coordinator_tmux_owner_server_race");
-	}
-	const parsedStartRecord = parseTmuxNewSessionRecord(startRecord, plan.execution.attempt_session);
-	if (!parsedStartRecord) {
-		return await failAfterCleanup("coordinator_tmux_start_failed");
-	}
-	const { tmuxTarget, paneId, nativeSessionId } = parsedStartRecord;
-	if (
-		(scopedReceipt && nativeSessionId !== scopedReceipt.native_session_id) ||
-		(plan.execution.mode === "direct" && nativeSessionId !== directNativeSessionId)
-	) {
-		return await failAfterCleanup("coordinator_tmux_owner_server_race");
-	}
-	const ownerTransaction = {
-		commit: () => replaceOwnerGenerationSync(ownerStateDir, sessionName, ownerGeneration, generationBaseline),
-		rollback: cleanupFailedAttempt,
-	};
-	return {
-		sessionId: sessionName,
-		tmuxSession: sessionName,
-		tmuxTarget,
-		paneId,
-		tmuxNativeSessionId: nativeSessionId,
-		tmuxSocketKey: socketKey,
-		tmuxOwnerGeneration: ownerGeneration,
-		tmuxOwnerStateDir: ownerStateDir,
-		tmuxOwnerServerKey: socketKey,
-		tmuxOwnerServerPid: initialProof.pid,
-		tmuxOwnerServerStartTime: initialProof.startTime,
-
-		cwd: input.cwd,
-		createdAt: new Date().toISOString(),
-		sessionCommand: config.sessionCommand,
-		...(input.mpreset ? { mpreset: input.mpreset } : {}),
-		runtimeStateFile,
-		__coordinatorOwnerTransaction: ownerTransaction,
-		launchId: input.launchId,
-		readinessMarkerFile: input.readinessMarkerFile,
-		readinessFile: input.readinessMarkerFile,
-		origin: "coordinator_created",
-		runtime_readiness_latched: false,
-	};
-}
-
-function hasPrivateTmuxOwnerIdentity(session: Record<string, unknown>): boolean {
-	const socketKey = typeof session.tmux_socket_key === "string" ? session.tmux_socket_key : session.tmuxSocketKey;
-	const serverKey =
-		typeof session.tmux_owner_server_key === "string" ? session.tmux_owner_server_key : session.tmuxOwnerServerKey;
-	const pid = session.tmux_owner_server_pid ?? session.tmuxOwnerServerPid;
-	const startTime = session.tmux_owner_server_start_time ?? session.tmuxOwnerServerStartTime;
-	const nativeSessionId = session.tmux_native_session_id ?? session.tmuxNativeSessionId;
-	const paneId = session.pane_id ?? session.paneId;
-	return (
-		typeof socketKey === "string" &&
-		socketKey.length > 0 &&
-		socketKey === serverKey &&
-		Number.isSafeInteger(pid) &&
-		typeof startTime === "string" &&
-		startTime.length > 0 &&
-		typeof nativeSessionId === "string" &&
-		nativeSessionId.length > 0 &&
-		typeof paneId === "string" &&
-		paneId.length > 0
-	);
-}
-
-async function proveImmutableTmuxTarget(session: Record<string, unknown>, runner: CommandRunner): Promise<boolean> {
-	const target = typeof session.tmux_target === "string" ? session.tmux_target : session.tmuxTarget;
-	const socketKey = typeof session.tmux_socket_key === "string" ? session.tmux_socket_key : session.tmuxSocketKey;
-	const expectedSessionId = session.tmux_native_session_id ?? session.tmuxNativeSessionId;
-	const expectedPaneId = session.pane_id ?? session.paneId;
-	if (
-		typeof target !== "string" ||
-		typeof socketKey !== "string" ||
-		typeof expectedSessionId !== "string" ||
-		typeof expectedPaneId !== "string"
-	)
-		return false;
-	const identity = await runner([
-		"tmux",
-		"-L",
-		socketKey,
-		"display-message",
-		"-p",
-		"-t",
-		target,
-		"#{session_id} #{pane_id}",
-	]);
-	const parts = identity.stdout.trim().split(/\s+/);
-	if (identity.exitCode !== 0) return false;
-	return parts.length === 2 && parts[0] === expectedSessionId && parts[1] === expectedPaneId;
-}
-async function captureTmuxTail(
-	session: Record<string, unknown>,
-	lines: number,
-	runner: CommandRunner = runCommand,
-): Promise<string[]> {
-	const target = typeof session.tmux_target === "string" ? session.tmux_target : session.tmuxTarget;
-	const socketKey = typeof session.tmux_socket_key === "string" ? session.tmux_socket_key : session.tmuxSocketKey;
-	if (
-		!hasPrivateTmuxOwnerIdentity(session) ||
-		typeof socketKey !== "string" ||
-		socketKey.length === 0 ||
-		typeof target !== "string" ||
-		target.length === 0
-	)
-		return [];
-	const pid = session.tmux_owner_server_pid ?? session.tmuxOwnerServerPid;
-	const startTime = session.tmux_owner_server_start_time ?? session.tmuxOwnerServerStartTime;
-	const probe = await coordinatorOwnerIsolationProbe(runner);
-	const proof = await probe.probeServer(socketKey);
-	if (
-		proof.state !== "safe" ||
-		proof.pid !== pid ||
-		proof.startTime !== startTime ||
-		(process.platform === "linux" && proof.cgroup?.classification !== "safe") ||
-		!(await proveImmutableTmuxTarget(session, runner))
-	)
-		return [];
-	const captured = await runner(["tmux", "-L", socketKey, "capture-pane", "-t", target, "-p", "-S", `-${lines}`]);
-	if (captured.exitCode !== 0) return [];
-	return captured.stdout.split("\n").slice(-lines);
-}
-
-async function sendTmuxPrompt(
-	session: Record<string, unknown>,
-	prompt: string,
-	runner: CommandRunner = runCommand,
-	ownerIsolationProbe?: OwnerIsolationProbe,
-): Promise<boolean> {
-	const target = typeof session.tmux_target === "string" ? session.tmux_target : session.tmuxTarget;
-	const socketKey = typeof session.tmux_socket_key === "string" ? session.tmux_socket_key : session.tmuxSocketKey;
-	const serverKey =
-		typeof session.tmux_owner_server_key === "string" ? session.tmux_owner_server_key : session.tmuxOwnerServerKey;
-	const pid = session.tmux_owner_server_pid ?? session.tmuxOwnerServerPid;
-	const startTime = session.tmux_owner_server_start_time ?? session.tmuxOwnerServerStartTime;
-	if (
-		typeof target !== "string" ||
-		target.length === 0 ||
-		typeof socketKey !== "string" ||
-		socketKey.length === 0 ||
-		socketKey !== serverKey ||
-		!Number.isSafeInteger(pid) ||
-		typeof startTime !== "string" ||
-		startTime.length === 0
-	)
-		return false;
-	const paneId = session.pane_id ?? session.paneId;
-	if (typeof paneId !== "string" || !(await proveImmutableTmuxTarget(session, runner))) return false;
-	const probe = ownerIsolationProbe ?? (await coordinatorOwnerIsolationProbe(runner));
-	const proveCurrentServer = async (): Promise<boolean> => {
-		const proof = await probe.probeServer(socketKey);
-		return (
-			proof.state === "safe" &&
-			proof.pid === pid &&
-			proof.startTime === startTime &&
-			(process.platform !== "linux" || proof.cgroup?.classification === "safe")
-		);
-	};
-	return await sendTmuxPromptKeys(paneId, prompt, runner, socketKey, proveCurrentServer);
-}
-
-async function hasTmuxSession(
-	session: Record<string, unknown>,
-	runner: CommandRunner = runCommand,
-): Promise<boolean | null> {
-	const tmuxSession = typeof session.tmux_session === "string" ? session.tmux_session : session.tmuxSession;
-	const socketKey = typeof session.tmux_socket_key === "string" ? session.tmux_socket_key : session.tmuxSocketKey;
-	if (
-		!hasPrivateTmuxOwnerIdentity(session) ||
-		typeof socketKey !== "string" ||
-		socketKey.length === 0 ||
-		typeof tmuxSession !== "string" ||
-		tmuxSession.length === 0
-	)
-		return null;
-	const checked = await runner(["tmux", "-L", socketKey, "has-session", "-t", tmuxSession]);
-	return checked.exitCode === 0;
-}
-
-function lastMatchingLine(lines: string[], pattern: RegExp): string | null {
-	for (let index = lines.length - 1; index >= 0; index--) {
-		const line = lines[index]?.trim();
-		if (line && pattern.test(line)) return line;
-	}
-	return null;
-}
-
-function summarizePaneTail(lines: string[]): Record<string, unknown> {
-	const nonEmpty = lines.map(line => line.trim()).filter(Boolean);
-	const spinnerLine = lastMatchingLine(nonEmpty, /^[⠁-⣿]\s+/u);
-	const hudLine = lastMatchingLine(nonEmpty, /\/ 📁 | PR \d+|Status Review|Tracking/i);
-	const errorLine = lastMatchingLine(nonEmpty, /\b(error|failed|exception|404|not_found)\b/i);
-	const assistantLine = lastMatchingLine(nonEmpty, /^(gajae|assistant)\b/i);
-	const lastContent = nonEmpty.at(-1) ?? null;
-	return {
-		state: spinnerLine ? "working" : errorLine ? "error_or_warning" : "idle_or_unknown",
-		activity: spinnerLine ?? hudLine ?? lastContent,
-		hud: hudLine,
-		last_error: errorLine,
-		last_speaker: assistantLine,
-		last_content: lastContent,
-	};
-}
-
-async function inspectTmuxSession(
-	session: Record<string, unknown>,
-	lines = 80,
-	runner: CommandRunner = runCommand,
-): Promise<Record<string, unknown>> {
-	const live = await hasTmuxSession(session, runner);
-	const tail = live ? await captureTmuxTail(session, lines, runner) : [];
-
-	return {
-		live,
-		...summarizePaneTail(tail),
-		tail_preview: tail.slice(-20),
-	};
 }
 
 function waitForTurnStateChange(namespaceDir: string, turn: TurnRecord, timeoutMs: number): Promise<void> {
@@ -3186,7 +1769,7 @@ export async function readCoordinatorArtifact(
 	} catch (error) {
 		return {
 			ok: false,
-			reason: publicCoordinatorError(error),
+			reason: (error instanceof Error ? error.message.split(":")[0] : String(error)).replace(/^coordinator_/, ""),
 		};
 	} finally {
 		await handle?.close();
@@ -3198,281 +1781,470 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 	const config = buildCoordinatorMcpConfig(env);
 	const promptAckTimeoutMs = boundedRuntimePromptAckTimeoutMs(env.GJC_COORDINATOR_MCP_PROMPT_ACK_TIMEOUT_MS);
 	const services = options.services ?? {};
-	const namespaceDir = coordinatorNamespacePath(config);
-	const commandRunner = services.commandRunner ?? runCommand;
 	const loadModelProfiles = services.resolveModelProfiles ?? loadCoordinatorModelProfiles;
-	const readinessTimeoutMs = boundedRuntimeReadinessTimeoutMs(env.GJC_COORDINATOR_MCP_RUNTIME_READINESS_TIMEOUT_MS);
+	const namespaceDir = coordinatorNamespacePath(config);
+	const sessionTransitionTails = new Map<string, Promise<void>>();
+
 	async function withSessionTransition<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-		return await withSessionMutation(`${namespaceDir}::${sessionId}`, operation);
-	}
-
-	async function startCoordinatorSession(
-		cwd: string,
-		prompt?: string,
-		mpreset?: string | null,
-	): Promise<Record<string, unknown>> {
-		const sessionId = `gjc-coordinator-${randomUUID().slice(0, 8)}`;
-		const launchId = randomUUID();
-		const readinessRoot = path.join(namespaceDir, "launch-readiness");
-		const readinessDir = path.join(readinessRoot, sessionId);
-		await ensureDir(readinessDir);
-		const canonicalRoot = await fs.realpath(readinessRoot);
-		const canonicalDir = await fs.realpath(readinessDir);
-		if (!canonicalDir.startsWith(`${canonicalRoot}${path.sep}`))
-			throw new Error("coordinator_readiness_path_invalid");
-		const readinessMarkerFile = path.join(canonicalDir, `${launchId}.json`);
-		const input: SessionStartInput = {
-			cwd,
-			prompt,
-			namespace: config.namespace,
-			mpreset,
-			worktree: true,
-			sessionId,
-			launchId,
-			readinessMarkerFile,
-			readinessFile: readinessMarkerFile,
-		};
-		const started = services.startSession
-			? await services.startSession(input)
-			: await startTmuxSession(config, input, namespaceDir, commandRunner, services.ownerIsolationProbe);
-		const record = asRecord(started);
-		if (!record) throw new Error("coordinator_session_command_required");
-		const attestedSessionId = optionalString(record.sessionId ?? record.session_id);
-		const attestedLaunchId = optionalString(record.launchId ?? record.launch_id);
-		const attestedMarkerFile = optionalString(
-			record.readinessMarkerFile ?? record.readiness_marker_file ?? record.readinessFile ?? record.readiness_file,
-		);
-		if (!attestedSessionId || !attestedLaunchId || !attestedMarkerFile)
-			throw new Error("coordinator_launch_attestation_missing");
-		if (
-			attestedSessionId !== sessionId ||
-			attestedLaunchId !== launchId ||
-			(await canonicalizePath(attestedMarkerFile)) !== readinessMarkerFile
-		)
-			throw new Error("coordinator_launch_attestation_mismatch");
-		return normalizeSession({
-			...record,
-			session_id: sessionId,
-			launch_id: launchId,
-			readiness_marker_file: readinessMarkerFile,
-			readiness_marker_path: readinessMarkerFile,
-			origin: "coordinator_created",
-			runtime_ready_launch_id: null,
-			runtime_ready_at: null,
-			runtime_readiness_latched: false,
-		});
-	}
-
-	function sessionReadinessAuthorityError(
-		reason: "coordinator_launch_metadata_missing" | "session_origin_unverified",
-		session: Record<string, unknown>,
-	): Error {
-		const error = new Error(reason);
-		Object.assign(error, {
-			sessionId: optionalString(session.session_id),
-			action: "Start a new coordinator session or explicitly register the live external tmux session.",
-		});
-		return error;
-	}
-
-	function assertSessionReadinessAuthority(session: Record<string, unknown>): void {
-		if (session.origin === "registered") return;
-		const tmuxTarget = session.tmux_target ?? session.tmuxTarget;
-		if (
-			session.origin == null &&
-			typeof session.registered_at === "string" &&
-			session.registered_at.length > 0 &&
-			session.authoritative === true &&
-			hasTmuxIdentity(session) &&
-			typeof tmuxTarget === "string" &&
-			tmuxTarget.length > 0
-		)
-			return;
-		if (session.origin === "coordinator_created") {
-			const sessionId = optionalString(session.session_id);
-			const launchId = optionalString(session.launch_id);
-			const markerFile = optionalString(session.readiness_marker_file ?? session.readiness_marker_path);
-			if (!sessionId || !launchId || !markerFile) {
-				throw sessionReadinessAuthorityError("coordinator_launch_metadata_missing", session);
-			}
-			return;
+		const prior = sessionTransitionTails.get(sessionId) ?? Promise.resolve();
+		const release = Promise.withResolvers<void>();
+		const tail = prior.then(() => release.promise);
+		sessionTransitionTails.set(sessionId, tail);
+		await prior;
+		try {
+			return await operation();
+		} finally {
+			release.resolve();
+			if (sessionTransitionTails.get(sessionId) === tail) sessionTransitionTails.delete(sessionId);
 		}
-		throw sessionReadinessAuthorityError("session_origin_unverified", session);
 	}
 
-	async function awaitRuntimeReadiness(session: Record<string, unknown>): Promise<boolean> {
-		assertSessionReadinessAuthority(session);
-		if (session.origin === "registered" || session.origin == null) return true;
-		const sessionId = optionalString(session.session_id);
-		const launchId = optionalString(session.launch_id);
-		const markerFile = optionalString(session.readiness_marker_file ?? session.readiness_marker_path);
-		if (!sessionId || !launchId || !markerFile) throw new Error("coordinator_launch_metadata_missing");
-		if (session.runtime_ready_launch_id === launchId) return true;
-		return await waitForRuntimeReadinessMarker(
-			markerFile,
-			sessionId,
-			launchId,
-			path.join(namespaceDir, "launch-readiness"),
-			readinessTimeoutMs,
+	async function controlSession(
+		session: Record<string, unknown>,
+		operation: string,
+		input: Record<string, unknown>,
+		idempotencyKey: string,
+	): Promise<unknown> {
+		const endpoint = await resolveSessionEndpoint(session, idempotencyKey);
+		const client = await (services.connectSdk ?? ((url, token) => SdkClient.connect(url, token)))(
+			endpoint.url,
+			endpoint.token,
 		);
+		try {
+			return await client.control(operation, input, { idempotencyKey });
+		} finally {
+			await client.close();
+		}
 	}
 
-	async function listSessions(): Promise<unknown[]> {
-		if (!config.namespace.profile || !config.namespace.repo) return [];
-		if (services.listSessions) return await services.listSessions();
-		return await listJsonFiles(path.join(namespaceDir, "sessions"));
+	async function querySession(session: Record<string, unknown>, query: string): Promise<Record<string, unknown>> {
+		const endpoint = await resolveSessionEndpoint(session);
+		const client = await (services.connectSdk ?? ((url, token) => SdkClient.connect(url, token)))(
+			endpoint.url,
+			endpoint.token,
+		);
+		try {
+			const response = asRecord(await client.query(query));
+			if (response?.ok !== true) {
+				const error = asRecord(response?.error);
+				throw new SdkClientError(
+					typeof error?.code === "string" ? error.code : "unavailable",
+					typeof error?.message === "string" ? error.message : `SDK ${query} query failed.`,
+				);
+			}
+			return response;
+		} finally {
+			await client.close();
+		}
+	}
+
+	function sdkQueryPageItem(response: Record<string, unknown>, query: string): unknown {
+		const items = asRecord(response.page)?.items;
+		if (!Array.isArray(items) || items.length !== 1)
+			throw new SdkClientError("unavailable", `SDK ${query} query returned an invalid page.`);
+		return items[0];
+	}
+
+	async function queryLastAssistant(session: Record<string, unknown>): Promise<string | null> {
+		const item = sdkQueryPageItem(await querySession(session, "session.last_assistant"), "session.last_assistant");
+		if (typeof item === "string") return item;
+		const message = asRecord(item);
+		return typeof message?.text === "string"
+			? message.text
+			: typeof message?.content === "string"
+				? message.content
+				: null;
+	}
+
+	async function queryContextStatus(session: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const context = asRecord(sdkQueryPageItem(await querySession(session, "context.get"), "context.get"));
+		return {
+			authority: "sdk",
+			live: true,
+			...(typeof context?.isStreaming === "boolean" ? { is_streaming: context.isStreaming } : {}),
+		};
+	}
+
+	function requirePromptAcknowledgement(result: unknown): void {
+		if (asRecord(result)?.accepted !== true) {
+			throw new SdkClientError("unavailable", "SDK did not acknowledge prompt delivery.");
+		}
+	}
+
+	function sdkError(error: unknown): Record<string, unknown> {
+		if (error instanceof SdkClientError) return { ok: false, error: { code: error.code, message: error.message } };
+		return {
+			ok: false,
+			error: { code: "unavailable", message: error instanceof Error ? error.message : String(error) },
+		};
+	}
+
+	function requiredIdempotencyKey(args: Record<string, unknown>): string {
+		const key = optionalString(args.idempotency_key);
+		if (!key) throw new SdkClientError("invalid_request", "idempotency_key is required.");
+		return key;
+	}
+
+	function idempotencyFile(idempotencyKey: string): string {
+		const keyDigest = createHash("sha256").update(idempotencyKey).digest("hex");
+		return path.join(namespaceDir, "idempotency", `${keyDigest}.json`);
+	}
+
+	async function withToolIdempotency(
+		tool: string,
+		idempotencyKey: string,
+		canonicalArgs: Record<string, unknown>,
+		operation: () => Promise<Record<string, unknown>>,
+	): Promise<Record<string, unknown>> {
+		const keyDigest = createHash("sha256").update(idempotencyKey).digest("hex");
+		const requestDigest = createHash("sha256")
+			.update(canonicalJson({ tool, args: canonicalArgs }))
+			.digest("hex");
+		const file = idempotencyFile(idempotencyKey);
+		return await withSessionStateLock(file, async () => {
+			const existingFile = await readCoordinatorIdempotencyFile(file);
+			if (existingFile.kind === "corrupt")
+				return {
+					ok: false,
+					error: {
+						code: "terminal_uncertain",
+						message: "coordinator idempotency ledger is corrupt; mutation outcome is uncertain",
+					},
+				};
+			const existing =
+				existingFile.kind === "record" ? (existingFile.value as Partial<CoordinatorToolIdempotencyRecord>) : null;
+			if (existing) {
+				if (
+					existing.schema_version !== 1 ||
+					existing.key_digest !== keyDigest ||
+					existing.tool !== tool ||
+					existing.request_digest !== requestDigest
+				)
+					return {
+						ok: false,
+						error: { code: "idempotency_conflict", message: "idempotency key was used with a different request" },
+					};
+				if (existing.state === "completed") {
+					const replay = asRecord(existing.response);
+					if (replay) return replay;
+					return {
+						ok: false,
+						error: {
+							code: "terminal_uncertain",
+							message: "completed coordinator idempotency record is corrupt; mutation outcome is uncertain",
+						},
+					};
+				}
+				if (existing.state === "in_progress")
+					return {
+						ok: false,
+						error: {
+							code: "idempotency_in_progress",
+							message: "prior coordinator mutation outcome is not replayable",
+						},
+					};
+				return {
+					ok: false,
+					error: {
+						code: "terminal_uncertain",
+						message: "coordinator idempotency record is corrupt; mutation outcome is uncertain",
+					},
+				};
+			}
+			const started: CoordinatorToolIdempotencyRecord = {
+				schema_version: 1,
+				tool,
+				key_digest: keyDigest,
+				request_digest: requestDigest,
+				state: "in_progress",
+				created_at: new Date().toISOString(),
+			};
+			await writeCoordinatorIdempotencyFile(file, started);
+			const response = boundedPublicResponse(await operation().catch(error => sdkError(error)));
+			await writeCoordinatorIdempotencyFile(file, {
+				...started,
+				state: "completed",
+				response,
+				completed_at: new Date().toISOString(),
+			});
+			return response;
+		});
+	}
+
+	async function brokerSession(
+		_cwd: string,
+		operation: string,
+		input: Record<string, unknown>,
+		idempotencyKey?: string,
+	): Promise<unknown> {
+		const discovery = await readSdkBrokerDiscovery(services.getAgentDir?.() ?? getAgentDir());
+		if (!discovery) throw new SdkClientError("not_found", "SDK broker discovery is unavailable.");
+		const client = await (services.connectSdk ?? ((url, token) => SdkClient.connect(url, token)))(
+			discovery.url,
+			discovery.token,
+		);
+		try {
+			return await client.global(operation, input, { ...(idempotencyKey ? { idempotencyKey } : {}) });
+		} finally {
+			await client.close();
+		}
+	}
+
+	function brokerResult(value: unknown): Record<string, unknown> {
+		const response = asRecord(value);
+		if (response?.ok === false) {
+			const error = asRecord(response.error);
+			throw new SdkClientError(
+				typeof error?.code === "string" ? error.code : "unavailable",
+				typeof error?.message === "string" ? error.message : "SDK broker request failed.",
+			);
+		}
+		return asRecord(response?.result) ?? response ?? {};
+	}
+
+	async function canonicalBrokerWorkspace(cwd: string): Promise<string> {
+		try {
+			return await fs.realpath(cwd);
+		} catch {
+			throw new SdkClientError("not_found", "Coordinator workspace cannot be resolved.");
+		}
+	}
+
+	function brokerEndpointGeneration(session: Record<string, unknown>): number | null {
+		return typeof session.endpointGeneration === "number" &&
+			Number.isSafeInteger(session.endpointGeneration) &&
+			session.endpointGeneration > 0
+			? session.endpointGeneration
+			: typeof session.endpoint_generation === "number" &&
+					Number.isSafeInteger(session.endpoint_generation) &&
+					session.endpoint_generation > 0
+				? session.endpoint_generation
+				: null;
+	}
+
+	function brokerEndpointIncarnation(session: Record<string, unknown>, sessionId: string): string | null {
+		const endpointGeneration = brokerEndpointGeneration(session);
+		const pid = session.pid;
+		const endpointMtimeMs = session.endpointMtimeMs;
+		if (
+			endpointGeneration === null ||
+			typeof pid !== "number" ||
+			!Number.isSafeInteger(pid) ||
+			pid <= 0 ||
+			typeof endpointMtimeMs !== "number" ||
+			!Number.isFinite(endpointMtimeMs) ||
+			endpointMtimeMs <= 0
+		)
+			return null;
+		return createHash("sha256")
+			.update(canonicalJson({ endpointGeneration, endpointMtimeMs, pid, sessionId }))
+			.digest("hex");
+	}
+
+	type BrokerSessionAuthority = {
+		workspace: string;
+		endpointGeneration: number;
+		endpointIncarnation: string;
+	};
+
+	async function exactBrokerSessionAuthority(sessionId: string, workspace: string): Promise<BrokerSessionAuthority> {
+		const listing = brokerResult(await brokerSession(workspace, "session.list", { cwd: workspace }));
+		const matches: Array<{ session: Record<string, unknown>; workspace: string }> = [];
+		for (const session of jsonRecords(Array.isArray(listing.sessions) ? listing.sessions : [])) {
+			if (brokerSessionId(session) !== sessionId) continue;
+			const declaredWorkspace = brokerSessionScope(session);
+			if (!declaredWorkspace) continue;
+			let canonicalWorkspace: string;
+			try {
+				canonicalWorkspace = await canonicalBrokerWorkspace(declaredWorkspace);
+			} catch {
+				continue;
+			}
+			if (canonicalWorkspace === workspace) matches.push({ session, workspace: canonicalWorkspace });
+		}
+		if (matches.length !== 1)
+			throw new SdkClientError(
+				"not_found",
+				"Session is not uniquely indexed in the requested coordinator workspace.",
+			);
+		const match = matches[0]!;
+		const endpointGeneration = brokerEndpointGeneration(match.session);
+		const endpointIncarnation = brokerEndpointIncarnation(match.session, sessionId);
+		if (endpointGeneration === null || endpointIncarnation === null)
+			throw new SdkClientError("endpoint_stale", "Broker session has no usable endpoint incarnation.");
+		return { workspace: match.workspace, endpointGeneration, endpointIncarnation };
+	}
+
+	async function exactBrokerSessionBinding(
+		sessionId: string,
+		workspace: string,
+		idempotencyKey?: string,
+	): Promise<BrokerSessionAuthority & { endpoint: { url: string; token: string } }> {
+		const authority = await exactBrokerSessionAuthority(sessionId, workspace);
+		const endpointRecord = brokerResult(
+			await brokerSession(
+				workspace,
+				"session.get_endpoint",
+				{
+					sessionId,
+					endpointGeneration: authority.endpointGeneration,
+					endpointIncarnation: authority.endpointIncarnation,
+				},
+				idempotencyKey,
+			),
+		);
+		const url = optionalString(endpointRecord.url);
+		const token = optionalString(endpointRecord.token);
+		if (!url || !token)
+			throw new SdkClientError("endpoint_stale", "Broker returned an invalid incarnation-bound endpoint.");
+		return { ...authority, endpoint: { url, token } };
+	}
+
+	async function resolveSessionEndpoint(
+		session: Record<string, unknown>,
+		idempotencyKey?: string,
+	): Promise<{ url: string; token: string }> {
+		const sessionId = optionalString(session.session_id) ?? optionalString(session.sessionId);
+		const cwd = optionalString(session.cwd);
+		const persistedWorkspace = optionalString(session.broker_workspace);
+		const persistedGeneration =
+			typeof session.endpoint_generation === "number" &&
+			Number.isSafeInteger(session.endpoint_generation) &&
+			session.endpoint_generation > 0
+				? session.endpoint_generation
+				: null;
+		const persistedIncarnation = optionalString(session.endpoint_incarnation);
+		if (!sessionId || !cwd || !persistedWorkspace || persistedGeneration === null || !persistedIncarnation)
+			throw new SdkClientError("not_found", "Coordinator session has no incarnation-bound broker identity.");
+		const workspace = await canonicalBrokerWorkspace(cwd);
+		if (workspace !== persistedWorkspace)
+			throw new SdkClientError("endpoint_stale", "Coordinator session workspace binding is stale.");
+		const binding = await exactBrokerSessionBinding(sessionId, workspace, idempotencyKey);
+		if (binding.endpointGeneration !== persistedGeneration || binding.endpointIncarnation !== persistedIncarnation)
+			throw new SdkClientError("endpoint_stale", "Coordinator session endpoint incarnation is stale.");
+		return binding.endpoint;
+	}
+
+	async function listSessions(cwd?: string): Promise<Array<Record<string, unknown>>> {
+		const roots = cwd ? [cwd] : config.allowedRoots;
+		const listings = await Promise.all(
+			roots.map(async root => {
+				const listing = brokerResult(await brokerSession(root, "session.list", { cwd: root }));
+				return scopedBrokerSessions(Array.isArray(listing.sessions) ? listing.sessions : [], root);
+			}),
+		);
+		return listings.flat();
 	}
 	function sessionFile(sessionId: unknown): string {
 		return path.join(namespaceDir, "sessions", `${safeExternalId("session", sessionId)}.json`);
 	}
-	const forceCloseSession =
-		services.forceCloseSession ??
-		((name: string, targetEnv: NodeJS.ProcessEnv, expectedSessionId?: string, expectedStateFile?: string) =>
-			forceCloseGjcTmuxSession(name, targetEnv, expectedSessionId, expectedStateFile));
-
-	// Reap a coordinator delegate-created (ephemeral) session. Addresses the #2034 review:
-	//  - terminates via the owner-proof forceCloseGjcTmuxSession (pid + native session_id +
-	//    generation + server_key + start_time verified atomically) — never a raw process.kill,
-	//    so a recycled PID can never signal a foreign process.
-	//  - re-validates ephemeral + no-active-turn AT kill time under a per-session lock, closing
-	//    the select→kill TOCTOU and races with concurrent send_prompt / delegate / stop.
-	//  - purges state files ONLY on verified termination; on failure the record is kept for retry
-	//    and no session.reaped event is emitted (honest audit, no worse leak).
 	async function reapSession(
 		rawId: unknown,
 		opts: { force?: boolean; reason?: string } = {},
-	): Promise<{ ok: boolean; reason?: string; killed: boolean; active_turn_id?: string; detail?: string }> {
+	): Promise<{ ok: boolean; reason?: string; closed: boolean; active_turn_id?: string; detail?: string }> {
 		const id = safeExternalId("session", rawId);
-		return await withSessionMutation(`${namespaceDir}::${id}`, async () => {
-			const record = asRecord(await readJsonFile(sessionFile(id)));
-			if (!record) return { ok: false, reason: "unknown_session", killed: false };
-			if (record.ephemeral !== true && opts.force !== true) {
-				return { ok: false, reason: "not_ephemeral", killed: false };
-			}
+		return await withSessionTransition(id, async () => {
+			const session = asRecord(await readJsonFile(sessionFile(id)));
+			if (!session) return { ok: false, reason: "unknown_session", closed: false };
+			if (session.ephemeral !== true && opts.force !== true)
+				return { ok: false, reason: "not_ephemeral", closed: false };
 			const activeTurn = await readActiveTurn(namespaceDir, id);
-			if (activeTurn) {
-				return { ok: false, reason: "active_turn", killed: false, active_turn_id: activeTurn.turn_id };
+			if (activeTurn) return { ok: false, reason: "active_turn", closed: false, active_turn_id: activeTurn.turn_id };
+			const cwd = optionalString(session.cwd);
+			const persistedWorkspace = optionalString(session.broker_workspace);
+			const persistedGeneration =
+				typeof session.endpoint_generation === "number" &&
+				Number.isSafeInteger(session.endpoint_generation) &&
+				session.endpoint_generation > 0
+					? session.endpoint_generation
+					: null;
+			const persistedIncarnation = optionalString(session.endpoint_incarnation);
+			if (!cwd || !persistedWorkspace || persistedGeneration === null || !persistedIncarnation)
+				return { ok: false, reason: "endpoint_stale", closed: false };
+			let workspace = "";
+			try {
+				workspace = await canonicalBrokerWorkspace(cwd);
+				const authority = await exactBrokerSessionAuthority(id, workspace);
+				if (
+					authority.workspace !== persistedWorkspace ||
+					authority.endpointGeneration !== persistedGeneration ||
+					authority.endpointIncarnation !== persistedIncarnation
+				)
+					return { ok: false, reason: "endpoint_stale", closed: false };
+				brokerResult(
+					await brokerSession(
+						cwd,
+						"session.close",
+						{
+							sessionId: id,
+							endpointGeneration: authority.endpointGeneration,
+							endpointIncarnation: authority.endpointIncarnation,
+						},
+						`coordinator-reap:${id}:${authority.endpointIncarnation}`,
+					),
+				);
+			} catch (error) {
+				return {
+					ok: false,
+					reason: "close_failed",
+					detail: error instanceof SdkClientError ? error.code : "unavailable",
+					closed: false,
+				};
 			}
-			const tmuxSession = optionalString(record.tmux_session) ?? optionalString(record.tmuxSession);
-			let killed = false;
-			if (tmuxSession) {
-				// Production delegate records persist the owner state-file path as `runtimeStateFile`
-				// (see startTmuxSession). Read that so the owner-proof close is actually bound to the
-				// recorded state-file identity; `sessionStateFile` is only a compatibility fallback for
-				// any externally-registered record that used the older key.
-				const expectedStateFile =
-					optionalString(record.runtimeStateFile) ?? optionalString(record.sessionStateFile) ?? undefined;
-				try {
-					await forceCloseSession(tmuxSession, env, undefined, expectedStateFile);
-					killed = true;
-				} catch (err) {
+			try {
+				await exactBrokerSessionAuthority(id, workspace);
+				return { ok: false, reason: "endpoint_stale", closed: false };
+			} catch (error) {
+				if (!(error instanceof SdkClientError) || error.code !== "not_found")
 					return {
 						ok: false,
-						reason: "terminate_failed",
-						detail: err instanceof Error ? err.message : String(err),
-						killed: false,
+						reason: "close_failed",
+						detail: error instanceof SdkClientError ? error.code : "unavailable",
+						closed: false,
 					};
-				}
 			}
-			// Purge the session record FIRST so a partial rm failure can never re-list → re-reap →
-			// emit a duplicate session.reaped. `killed` is honest: false when nothing was signalled.
 			await fs.rm(sessionFile(id), { force: true });
+			await fs.rm(sessionStateFile(namespaceDir, id), { force: true });
+			await fs.rm(activeTurnFile(namespaceDir, id), { force: true });
 			await appendCoordinatorEvent(namespaceDir, {
 				kind: "session.reaped",
 				sessionId: id,
-				summary: `Session ${id} reaped${opts.reason ? ` (${opts.reason})` : ""}`,
-				metadata: { reason: opts.reason ?? null, force: opts.force === true, killed },
+				summary: `Session ${id} closed and reaped${opts.reason ? ` (${opts.reason})` : ""}`,
+				metadata: { reason: opts.reason ?? null, force: opts.force === true, closed: true },
 			});
-			await fs.rm(sessionStateFile(namespaceDir, id), { force: true });
-			await fs.rm(activeTurnFile(namespaceDir, id), { force: true });
-			return { ok: true, killed };
+			return { ok: true, closed: true };
 		});
 	}
 
 	const sessionReaper: SessionReaper = createSessionReaper(
 		{
 			listSessions: async (): Promise<ReapableSession[]> => {
+				const sessions = await listJsonFiles(path.join(namespaceDir, "sessions"));
 				const out: ReapableSession[] = [];
-				for (const raw of await listSessions()) {
-					try {
-						const rec = asRecord(raw);
-						if (rec?.ephemeral !== true) continue;
-						const sid = optionalString(rec.session_id);
-						if (!sid) continue;
-						const activeTurn = await readActiveTurn(namespaceDir, sid);
-						const state = await readSessionState(namespaceDir, sid);
-						const stamp = optionalString(state?.updated_at) ?? optionalString(rec.created_at);
-						const lastActivityMs = stamp ? Date.parse(stamp) : 0;
-						out.push({
-							sessionId: sid,
-							ephemeral: true,
-							hasActiveTurn: activeTurn !== null,
-							lastActivityMs: Number.isFinite(lastActivityMs) ? lastActivityMs : 0,
-						});
-					} catch {
-						// A single corrupt session/state file must not abort the whole sweep — skip it.
-					}
+				for (const raw of sessions) {
+					const session = asRecord(raw);
+					const sessionId = optionalString(session?.session_id);
+					if (session?.ephemeral !== true || !sessionId) continue;
+					const state = await readSessionState(namespaceDir, sessionId);
+					const stamp = optionalString(state?.updated_at) ?? optionalString(session.created_at);
+					const lastActivityMs = stamp ? Date.parse(stamp) : Number.NaN;
+					out.push({
+						sessionId,
+						ephemeral: true,
+						hasActiveTurn: (await readActiveTurn(namespaceDir, sessionId)) !== null,
+						lastActivityMs: Number.isFinite(lastActivityMs) ? lastActivityMs : Date.now(),
+					});
 				}
 				return out;
 			},
-			reapSession: async (sid: string): Promise<void> => {
-				await reapSession(sid, { reason: "idle_reaper" });
+			reapSession: async (sessionId: string): Promise<void> => {
+				const result = await reapSession(sessionId, { reason: "idle_reaper" });
+				if (!result.ok) throw new Error(result.reason ?? "session_reap_failed");
 			},
 			now: () => Date.now(),
 		},
 		{ idleTtlMs: config.sessionIdleTtlMs, sweepIntervalMs: config.sessionSweepIntervalMs },
 	);
-	async function compensateFailedOwnerStart(
-		session: Record<string, unknown>,
-		ownerTransaction: {
-			rollback?: () => Promise<"cleaned" | "failed" | "unverifiable">;
-		} | null,
-	): Promise<"cleaned" | "failed" | "unverifiable"> {
-		let cleanupStatus: "cleaned" | "failed" | "unverifiable" = "unverifiable";
-		try {
-			cleanupStatus = (await ownerTransaction?.rollback?.()) ?? "unverifiable";
-		} catch {
-			cleanupStatus = "unverifiable";
-		}
-		try {
-			const sessionId = String(session.session_id);
-			const cwd = typeof session.cwd === "string" ? path.resolve(session.cwd) : null;
-			if (!cwd) throw coordinatorStateError("invalid");
-			const state: CoordinatorSessionState = {
-				schema_version: 1,
-				session_id: sessionId,
-				state: "errored",
-				ready_for_input: false,
-				current_turn_id: null,
-				last_turn_id: null,
-				updated_at: new Date().toISOString(),
-				source: "coordinator",
-				live: false,
-				reason: "coordinator_start_rolled_back",
-				cwd,
-				workdir: cwd,
-				session_file: null,
-			};
-			await writeJsonFile(sessionStateFile(namespaceDir, sessionId), state);
-			await fs.rm(sessionFile(sessionId), { force: true });
-			await appendCoordinatorEvent(namespaceDir, {
-				kind: "session.state_changed",
-				sessionId,
-				summary: `Session ${sessionId} start rolled back`,
-				payloadRef: path.relative(namespaceDir, sessionStateFile(namespaceDir, sessionId)),
-				metadata: {
-					state: "errored",
-					ready_for_input: false,
-					live: false,
-					reason: "coordinator_start_rolled_back",
-				},
-			});
-		} catch {
-			return "failed";
-		}
-		return cleanupStatus;
-	}
-
 	async function listQuestions(args: Record<string, unknown>): Promise<unknown[]> {
 		const sessionId = args.session_id == null ? null : safeExternalId("session", args.session_id);
 		const status = typeof args.status === "string" && args.status.length > 0 ? args.status : null;
@@ -3496,333 +2268,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		return evidence;
 	}
 
-	async function prepareActiveTurnUnlocked(session: Record<string, unknown>, turn: TurnRecord): Promise<TurnRecord> {
-		const active = await readActiveTurn(namespaceDir, turn.session_id);
-		if (active && active.turn_id !== turn.turn_id) return active;
-		const timestamp = new Date().toISOString();
-		const target = typeof session.tmux_target === "string" ? session.tmux_target : session.tmuxTarget;
-		const pending: TurnRecord = {
-			...turn,
-			status: "active",
-			delivery: {
-				delivered: false,
-				queued: true,
-				target: typeof target === "string" ? target : null,
-				tmux_keys_sent: false,
-				prompt_acknowledged: false,
-				state: "awaiting_runtime_readiness",
-				attempts: [
-					{
-						delivered: false,
-						tmux_keys_sent: false,
-						channel: "tmux_keys",
-						created_at: timestamp,
-						reason: "awaiting_runtime_readiness",
-					},
-				],
-			},
-			liveness: { checked_at: null, live: null, reason: null },
-			started_at: turn.started_at ?? timestamp,
-			updated_at: timestamp,
-		};
-		await writeTurnRecord(namespaceDir, pending);
-		await writeActiveTurn(namespaceDir, pending);
-		await writeSessionState(namespaceDir, pending.session_id, "booting", {
-			currentTurnId: pending.turn_id,
-			live: null,
-			reason: "awaiting_runtime_readiness",
-		});
-		return pending;
-	}
-
-	async function completePreparedTurn(session: Record<string, unknown>, pendingTurn: TurnRecord): Promise<TurnRecord> {
-		const ready = await awaitRuntimeReadiness(session);
-		const observedLive = hasTmuxIdentity(session) ? await hasTmuxSession(session, commandRunner) : null;
-		return await withSessionTransition(pendingTurn.session_id, async () => {
-			const current = await readTurnRecord(namespaceDir, pendingTurn.turn_id);
-			const active = await readActiveTurn(namespaceDir, pendingTurn.session_id);
-			if (
-				!current ||
-				!active ||
-				active.turn_id !== pendingTurn.turn_id ||
-				TERMINAL_TURN_STATUSES.has(current.status) ||
-				current.delivery.state !== "awaiting_runtime_readiness" ||
-				current.delivery.tmux_keys_sent === true
-			)
-				return current ?? pendingTurn;
-			if (!ready) {
-				const completedAt = new Date().toISOString();
-				const message = `GJC runtime did not attest interactive input readiness within ${readinessTimeoutMs}ms.`;
-				const failed: TurnRecord = {
-					...current,
-					status: "failed",
-					delivery: {
-						...current.delivery,
-						delivered: false,
-						queued: false,
-						tmux_keys_sent: false,
-						prompt_acknowledged: false,
-						state: "awaiting_runtime_readiness",
-					},
-					final_response: {
-						text: message,
-						format: "markdown",
-						source: "coordinator_runtime_readiness",
-						artifact_path: null,
-						truncated: false,
-					},
-					error: { code: RUNTIME_READINESS_TIMEOUT_REASON, message, recoverable: true },
-					evidence: [
-						...current.evidence,
-						{
-							type: RUNTIME_READINESS_TIMEOUT_REASON,
-							created_at: completedAt,
-							tmux_keys_sent: false,
-							prompt_acknowledged: false,
-						},
-					],
-					updated_at: completedAt,
-					completed_at: completedAt,
-				};
-				await writeTurnRecord(namespaceDir, failed);
-				await clearActiveTurn(namespaceDir, failed);
-				await writeSessionState(namespaceDir, failed.session_id, "booting", {
-					lastTurnId: failed.turn_id,
-					live: null,
-					reason: RUNTIME_READINESS_TIMEOUT_REASON,
-				});
-				return failed;
-			}
-			const currentSession = asRecord(await readJsonFile(sessionFile(pendingTurn.session_id))) ?? session;
-			if (
-				currentSession.origin === "coordinator_created" &&
-				(currentSession.session_id !== session.session_id ||
-					currentSession.launch_id !== session.launch_id ||
-					currentSession.readiness_marker_file !== session.readiness_marker_file)
-			)
-				return current;
-			const latched =
-				currentSession.origin === "coordinator_created"
-					? {
-							...currentSession,
-							runtime_ready_launch_id: currentSession.launch_id,
-							runtime_ready_at: new Date().toISOString(),
-							runtime_readiness_latched: true,
-						}
-					: currentSession;
-			if (latched !== currentSession) await writeJsonFile(sessionFile(pendingTurn.session_id), latched);
-			const target = typeof latched.tmux_target === "string" ? latched.tmux_target : latched.tmuxTarget;
-			const attemptId = `delivery-${randomUUID()}`;
-			const attemptedAt = new Date().toISOString();
-			const delivering: TurnRecord = {
-				...current,
-				status: "delivering",
-				updated_at: attemptedAt,
-				delivery: {
-					...current.delivery,
-					queued: false,
-					state: "delivering",
-					attempts: [
-						...current.delivery.attempts,
-						{
-							attempt_id: attemptId,
-							delivered: false,
-							tmux_keys_sent: false,
-							channel: "tmux_keys",
-							created_at: attemptedAt,
-							reason: "delivery_attempt",
-						},
-					],
-				},
-			};
-			await writeTurnRecord(namespaceDir, delivering);
-			await writeActiveTurn(namespaceDir, delivering);
-			await writeSessionState(namespaceDir, delivering.session_id, "running", {
-				currentTurnId: delivering.turn_id,
-				live: observedLive,
-				reason: null,
-			});
-			const tmuxKeysSent = await sendTmuxPrompt(
-				latched,
-				delivering.prompt.text,
-				commandRunner,
-				services.ownerIsolationProbe,
-			);
-			const deliveredAt = new Date().toISOString();
-			const delivered: TurnRecord = {
-				...delivering,
-				status: "active",
-				updated_at: deliveredAt,
-				delivery: {
-					...delivering.delivery,
-					delivered: false,
-					queued: !tmuxKeysSent,
-					tmux_keys_sent: tmuxKeysSent,
-					prompt_acknowledged: false,
-					state: tmuxKeysSent ? "tmux_keys_sent" : "unavailable",
-					attempts: [
-						...delivering.delivery.attempts.slice(0, -1),
-						{
-							attempt_id: attemptId,
-							delivered: false,
-							tmux_keys_sent: tmuxKeysSent,
-							channel: "tmux_keys",
-							created_at: deliveredAt,
-							reason: tmuxKeysSent ? "awaiting_runtime_ack" : "tmux_delivery_unavailable",
-						},
-					],
-				},
-			};
-			await writeTurnRecord(namespaceDir, delivered);
-			await writeActiveTurn(namespaceDir, delivered);
-			await appendCoordinatorEvent(namespaceDir, {
-				kind: tmuxKeysSent ? "tmux.delivery_succeeded" : "tmux.delivery_failed",
-				sessionId: delivered.session_id,
-				turnId: delivered.turn_id,
-				summary: tmuxKeysSent
-					? `Tmux delivery succeeded for turn ${delivered.turn_id}`
-					: `Tmux delivery failed for turn ${delivered.turn_id}`,
-				payloadRef: path.relative(namespaceDir, turnFile(namespaceDir, delivered.turn_id)),
-				metadata: {
-					target: typeof target === "string" ? target : null,
-					live: observedLive,
-					attempt_id: attemptId,
-				},
-			});
-			return delivered;
-		});
-	}
-
-	async function activateTurn(session: Record<string, unknown>, turn: TurnRecord): Promise<TurnRecord> {
-		const pendingTurn = await withSessionTransition(
-			turn.session_id,
-			async () => await prepareActiveTurnUnlocked(session, turn),
-		);
-		if (pendingTurn.turn_id !== turn.turn_id) return pendingTurn;
-		return await completePreparedTurn(session, pendingTurn);
-	}
-
-	async function prepareNextQueuedTurnUnlocked(sessionId: string): Promise<{
-		session: Record<string, unknown>;
-		turn: TurnRecord;
-	} | null> {
-		const session = asRecord(await readJsonFile(sessionFile(sessionId)));
-		if (!session || (await readActiveTurn(namespaceDir, sessionId))) return null;
-		try {
-			assertSessionReadinessAuthority(session);
-		} catch {
-			return null;
-		}
-		const queuedTurns = (await listTurnRecords(namespaceDir))
-			.filter(turn => turn.session_id === sessionId && turn.status === "queued")
-			.sort((left, right) => left.created_at.localeCompare(right.created_at));
-		const nextTurn = queuedTurns[0];
-		if (!nextTurn) return null;
-		return { session, turn: await prepareActiveTurnUnlocked(session, nextTurn) };
-	}
-
-	async function reconcileRuntimeAcknowledgementFenced(
-		turnId: string,
-		sessionState: CoordinatorSessionState | null,
-		failOnTimeout: boolean,
-	): Promise<TurnRecord | null> {
-		const observed = await readTurnRecord(namespaceDir, turnId);
-		if (!observed) return null;
-		const observedTurnId = sessionState?.current_turn_id;
-		return await withSessionTransition(observed.session_id, async () => {
-			const current = await readTurnRecord(namespaceDir, turnId);
-			if (!current || !ACTIVE_TURN_STATUSES.has(current.status)) return current;
-			const currentState = await readSessionState(namespaceDir, current.session_id);
-			const state =
-				sessionState &&
-				sessionState.updated_at === currentState?.updated_at &&
-				observedTurnId === currentState.current_turn_id
-					? sessionState
-					: currentState;
-			return await reconcileRuntimeAcknowledgement(namespaceDir, current, state, promptAckTimeoutMs, {
-				failOnTimeout,
-			});
-		});
-	}
-
-	async function markTurnTerminalFromSessionStateFenced(
-		turnId: string,
-		observedState: CoordinatorSessionState,
-	): Promise<TurnRecord | null> {
-		const observed = await readTurnRecord(namespaceDir, turnId);
-		if (!observed) return null;
-		return await withSessionTransition(observed.session_id, async () => {
-			const current = await readTurnRecord(namespaceDir, turnId);
-			if (!current || !ACTIVE_TURN_STATUSES.has(current.status)) return current;
-			const currentState = await readSessionState(namespaceDir, current.session_id);
-			if (!currentState || currentState.updated_at !== observedState.updated_at) return current;
-			const matchesTurn =
-				currentState.current_turn_id === current.turn_id ||
-				(currentState.state === "errored" &&
-					currentState.source === "agent_session_event" &&
-					currentState.current_turn_id == null);
-			if (!matchesTurn || (currentState.state !== "completed" && currentState.state !== "errored")) return current;
-			return await markTurnTerminalFromSessionState(namespaceDir, current, currentState);
-		});
-	}
-
-	async function markTurnFailedForUnavailableSessionFenced(
-		turnId: string,
-		reason: string,
-	): Promise<TurnRecord | null> {
-		const observed = await readTurnRecord(namespaceDir, turnId);
-		if (!observed) return null;
-		return await withSessionTransition(observed.session_id, async () => {
-			const current = await readTurnRecord(namespaceDir, turnId);
-			if (!current || !ACTIVE_TURN_STATUSES.has(current.status)) return current;
-			return await markTurnFailedForUnavailableSession(namespaceDir, current, reason);
-		});
-	}
-
-	async function preparePromptTurn(
-		session: Record<string, unknown>,
-		prompt: string,
-		options: { force: boolean; queue: boolean; queueWithoutActive?: boolean },
-	): Promise<
-		| { ok: false; activeTurn: TurnRecord }
-		| { ok: true; turn: TurnRecord; priorActiveTurn: TurnRecord | null; queued: boolean }
-	> {
-		const sessionId = safeExternalId("session", session.session_id);
-		const prepared = await withSessionTransition(sessionId, async () => {
-			const activeTurn = await readActiveTurn(namespaceDir, sessionId);
-			if (activeTurn && !options.force && !options.queue) {
-				return { ok: false as const, activeTurn };
-			}
-			if (activeTurn && options.force) {
-				const timestamp = new Date().toISOString();
-				const superseded: TurnRecord = {
-					...activeTurn,
-					status: "superseded",
-					updated_at: timestamp,
-					completed_at: timestamp,
-				};
-				await writeTurnRecord(namespaceDir, superseded);
-				await clearActiveTurn(namespaceDir, superseded);
-			}
-			const shouldQueue =
-				options.queue && !options.force && (activeTurn !== null || options.queueWithoutActive === true);
-			const turn = makeTurnRecord(config, sessionId, prompt, shouldQueue ? "queued" : "active");
-			if (shouldQueue) {
-				await writeTurnRecord(namespaceDir, turn);
-				return { ok: true as const, turn, priorActiveTurn: activeTurn, queued: true };
-			}
-			const pending = await prepareActiveTurnUnlocked(session, turn);
-			return { ok: true as const, turn: pending, priorActiveTurn: activeTurn, queued: false };
-		});
-		if (!prepared.ok || prepared.queued) return prepared;
-		return { ...prepared, turn: await completePreparedTurn(session, prepared.turn) };
-	}
-
-	async function readTurnPayload(
-		turnId: unknown,
-		sessionId: unknown,
-		lines: unknown,
-	): Promise<Record<string, unknown>> {
+	async function readTurnPayload(turnId: unknown, sessionId: unknown): Promise<Record<string, unknown>> {
 		const turn = await readTurnRecord(namespaceDir, turnId);
 		if (!turn) return { ok: false, reason: "unknown_turn" };
 		if (sessionId != null && turn.session_id !== safeExternalId("session", sessionId)) {
@@ -3830,59 +2276,66 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		}
 		const session = asRecord(await readJsonFile(sessionFile(turn.session_id)));
 		let resolvedTurn = turn;
-		let advisoryStatus: Record<string, unknown> = { live: false };
+		let advisoryStatus: Record<string, unknown> = {
+			authority: "sdk",
+			live: null,
+			reason: "session_endpoint_unobserved",
+		};
 		let sessionState = await readSessionState(namespaceDir, turn.session_id);
-		resolvedTurn =
-			(await reconcileRuntimeAcknowledgementFenced(resolvedTurn.turn_id, sessionState, false)) ?? resolvedTurn;
+		if (session) {
+			try {
+				advisoryStatus = await queryContextStatus(session);
+			} catch (error) {
+				advisoryStatus = {
+					authority: "sdk",
+					live: null,
+					reason: error instanceof SdkClientError ? error.code : "unavailable",
+				};
+			}
+		} else {
+			advisoryStatus = { authority: "sdk", live: null, reason: "session_record_missing" };
+		}
+		resolvedTurn = await reconcileRuntimeAcknowledgement(
+			namespaceDir,
+			resolvedTurn,
+			sessionState,
+			promptAckTimeoutMs,
+			{ failOnTimeout: false },
+		);
 		if (resolvedTurn !== turn) sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
+		if (
+			sessionState?.state === "needs_user_input" &&
+			sessionState.current_turn_id === resolvedTurn.turn_id &&
+			ACTIVE_TURN_STATUSES.has(resolvedTurn.status) &&
+			resolvedTurn.status !== "waiting_for_answer"
+		) {
+			const timestamp = new Date().toISOString();
+			resolvedTurn = { ...resolvedTurn, status: "waiting_for_answer", updated_at: timestamp };
+			await writeTurnRecord(namespaceDir, resolvedTurn);
+			await writeActiveTurn(namespaceDir, resolvedTurn);
+		}
 		if (
 			sessionState &&
 			ACTIVE_TURN_STATUSES.has(resolvedTurn.status) &&
-			runtimeStateMatchesPrivateOwnerGeneration(sessionState, session) &&
 			(sessionState.current_turn_id === resolvedTurn.turn_id ||
 				(sessionState.state === "errored" &&
 					sessionState.source === "agent_session_event" &&
 					sessionState.current_turn_id == null)) &&
 			(sessionState.state === "completed" || sessionState.state === "errored")
 		) {
-			resolvedTurn =
-				(await markTurnTerminalFromSessionStateFenced(resolvedTurn.turn_id, sessionState)) ?? resolvedTurn;
-			sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
-		} else if (
-			sessionState &&
-			ACTIVE_TURN_STATUSES.has(resolvedTurn.status) &&
-			sessionState.current_turn_id === resolvedTurn.turn_id &&
-			sessionState.state === "stale" &&
-			sessionState.reason === "tmux_delivery_unavailable" &&
-			resolvedTurn.delivery.state === "unavailable" &&
-			session &&
-			hasTmuxIdentity(session)
-		) {
-			resolvedTurn =
-				(await markTurnFailedForUnavailableSessionFenced(resolvedTurn.turn_id, "tmux_delivery_unavailable")) ??
-				resolvedTurn;
+			resolvedTurn = await markTurnTerminalFromSessionState(namespaceDir, resolvedTurn, sessionState);
 			sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
 		} else if (!session && ACTIVE_TURN_STATUSES.has(resolvedTurn.status)) {
-			resolvedTurn =
-				(await markTurnFailedForUnavailableSessionFenced(resolvedTurn.turn_id, "session_record_missing")) ??
-				resolvedTurn;
+			resolvedTurn = await markTurnFailedForUnavailableSession(namespaceDir, resolvedTurn, "session_record_missing");
 			sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
-		} else if (session) {
-			advisoryStatus = await inspectTmuxSession(session, boundedLineCount(lines), commandRunner);
-			if (
-				ACTIVE_TURN_STATUSES.has(resolvedTurn.status) &&
-				hasTmuxIdentity(session) &&
-				advisoryStatus.live === false
-			) {
-				resolvedTurn =
-					(await markTurnFailedForUnavailableSessionFenced(resolvedTurn.turn_id, "tmux_session_missing")) ??
-					resolvedTurn;
-				sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
-			}
 		}
 		if (ACTIVE_TURN_STATUSES.has(resolvedTurn.status)) {
-			resolvedTurn =
-				(await reconcileRuntimeAcknowledgementFenced(resolvedTurn.turn_id, sessionState, true)) ?? resolvedTurn;
+			resolvedTurn = await reconcileRuntimeAcknowledgement(
+				namespaceDir,
+				resolvedTurn,
+				sessionState,
+				promptAckTimeoutMs,
+			);
 			if (!ACTIVE_TURN_STATUSES.has(resolvedTurn.status)) {
 				sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
 			}
@@ -3891,9 +2344,9 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			resolvedTurn.status === "completed" && !reportableFinalResponse(resolvedTurn.final_response);
 		return {
 			ok: true,
-			turn: resolvedTurn,
+			turn: boundedPublicValue(resolvedTurn, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
 			advisory_status: advisoryStatus,
-			session_state: sessionState,
+			session_state: publicCoordinatorSessionState(sessionState),
 			...(missingFinalResponse
 				? {
 						completion_missing_final_response: true,
@@ -3903,127 +2356,248 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		};
 	}
 
-	async function reconcileActiveTurnAcknowledgements(): Promise<void> {
-		await preflightCoordinatorMutation(namespaceDir, undefined, {
-			rejectTerminalRuntimeEvidence: false,
-		});
+	async function awaitTurnPayload(
+		turnId: unknown,
+		sessionId: unknown,
+		timeoutMs: unknown,
+		pollIntervalMs: unknown,
+	): Promise<Record<string, unknown>> {
+		const timeout = boundedAwaitTurnTimeoutMs(timeoutMs);
+		const pollInterval = boundedPollIntervalMs(pollIntervalMs);
+		const deadline = Date.now() + timeout;
+		let payload = await readTurnPayload(turnId, sessionId);
+		while (
+			payload.ok === true &&
+			!TERMINAL_TURN_STATUSES.has((payload.turn as TurnRecord).status) &&
+			(payload.turn as TurnRecord).status !== "waiting_for_answer" &&
+			Date.now() < deadline
+		) {
+			const remainingMs = deadline - Date.now();
+			await waitForTurnStateChange(namespaceDir, payload.turn as TurnRecord, Math.min(pollInterval, remainingMs));
+			payload = await readTurnPayload(turnId, sessionId);
+		}
+		if (
+			payload.ok === true &&
+			!TERMINAL_TURN_STATUSES.has((payload.turn as TurnRecord).status) &&
+			(payload.turn as TurnRecord).status !== "waiting_for_answer"
+		) {
+			return {
+				ok: false,
+				reason: "timeout",
+				turn: payload.turn,
+				advisory_status: payload.advisory_status,
+				session_state: payload.session_state,
+			};
+		}
+		return payload;
+	}
 
-		const turns = (await listTurnRecords(namespaceDir)).filter(turn => ACTIVE_TURN_STATUSES.has(turn.status));
+	async function recordAcceptedPrompt(
+		sessionId: string,
+		prompt: string,
+		operation: "turn.prompt" | "turn.follow_up" | "turn.abort_and_prompt",
+		previousActiveTurn: TurnRecord | null,
+	): Promise<TurnRecord> {
+		const timestamp = new Date().toISOString();
+		if (operation === "turn.abort_and_prompt" && previousActiveTurn) {
+			const superseded: TurnRecord = {
+				...previousActiveTurn,
+				status: "superseded",
+				updated_at: timestamp,
+				completed_at: timestamp,
+			};
+			await writeTurnRecord(namespaceDir, superseded);
+			await clearActiveTurn(namespaceDir, superseded);
+		}
+		const queued = operation === "turn.follow_up";
+		const turn = makeTurnRecord(config, sessionId, prompt, queued ? "queued" : "active");
+		turn.delivery = {
+			delivered: true,
+			queued,
+			target: null,
+			prompt_acknowledged: true,
+			state: "acknowledged",
+			attempts: [{ delivered: true, channel: "runtime_ack", created_at: timestamp, reason: null }],
+		};
+		await writeTurnRecord(namespaceDir, turn);
+		if (!queued) {
+			await writeActiveTurn(namespaceDir, turn);
+			await writeSessionState(namespaceDir, sessionId, "running", {
+				currentTurnId: turn.turn_id,
+				live: null,
+				reason: null,
+			});
+		}
+		return turn;
+	}
+
+	async function promoteNextQueuedTurn(sessionId: string): Promise<TurnRecord | null> {
+		const queuedTurns = (await listJsonFiles(turnsDir(namespaceDir)))
+			.map(turn => asRecord(turn) as TurnRecord | null)
+			.filter(
+				(turn): turn is TurnRecord => turn !== null && turn.session_id === sessionId && turn.status === "queued",
+			)
+			.sort((left, right) => left.created_at.localeCompare(right.created_at));
+		const next = queuedTurns[0];
+		if (!next) return null;
+		const timestamp = new Date().toISOString();
+		const active: TurnRecord = { ...next, status: "active", started_at: timestamp, updated_at: timestamp };
+		await writeTurnRecord(namespaceDir, active);
+		await writeActiveTurn(namespaceDir, active);
+		await writeSessionState(namespaceDir, sessionId, "running", {
+			currentTurnId: active.turn_id,
+			live: null,
+			reason: null,
+		});
+		return active;
+	}
+
+	async function reconcileActiveTurnAcknowledgements(): Promise<void> {
+		const turns = (await listJsonFiles(turnsDir(namespaceDir)))
+			.map(turn => asRecord(turn) as TurnRecord | null)
+			.filter((turn): turn is TurnRecord => turn !== null && ACTIVE_TURN_STATUSES.has(turn.status));
 		for (const turn of turns) {
 			let sessionState = await readSessionState(namespaceDir, turn.session_id);
-			if (
-				sessionState &&
-				(sessionState.state === "completed" || sessionState.state === "errored") &&
-				(sessionState.current_turn_id === turn.turn_id ||
-					(sessionState.state === "errored" &&
-						sessionState.source === "agent_session_event" &&
-						sessionState.current_turn_id == null))
-			) {
-				const terminal = await markTurnTerminalFromSessionStateFenced(turn.turn_id, sessionState);
-				if (!terminal || !ACTIVE_TURN_STATUSES.has(terminal.status)) continue;
-			}
-			const acknowledged = (await reconcileRuntimeAcknowledgementFenced(turn.turn_id, sessionState, false)) ?? turn;
-			if (!ACTIVE_TURN_STATUSES.has(acknowledged.status)) continue;
-			if (acknowledged !== turn) sessionState = await readSessionState(namespaceDir, acknowledged.session_id);
-			const session = asRecord(await readJsonFile(sessionFile(acknowledged.session_id)));
-			if (
-				sessionState &&
-				sessionState.current_turn_id === acknowledged.turn_id &&
-				sessionState.state === "stale" &&
-				sessionState.reason === "tmux_delivery_unavailable" &&
-				acknowledged.delivery.state === "unavailable" &&
-				session &&
-				hasTmuxIdentity(session)
-			) {
-				await markTurnFailedForUnavailableSessionFenced(acknowledged.turn_id, "tmux_delivery_unavailable");
-				continue;
-			}
+			const resolvedTurn = await reconcileRuntimeAcknowledgement(
+				namespaceDir,
+				turn,
+				sessionState,
+				promptAckTimeoutMs,
+				{ failOnTimeout: false },
+			);
+			if (!ACTIVE_TURN_STATUSES.has(resolvedTurn.status)) continue;
+			if (resolvedTurn !== turn) sessionState = await readSessionState(namespaceDir, resolvedTurn.session_id);
+			const session = asRecord(await readJsonFile(sessionFile(resolvedTurn.session_id)));
 			if (!session) {
-				await markTurnFailedForUnavailableSessionFenced(acknowledged.turn_id, "session_record_missing");
+				await markTurnFailedForUnavailableSession(namespaceDir, resolvedTurn, "session_record_missing");
 				continue;
 			}
-			if (hasTmuxIdentity(session) && (await hasTmuxSession(session, commandRunner)) === false) {
-				await markTurnFailedForUnavailableSessionFenced(acknowledged.turn_id, "tmux_session_missing");
-				continue;
-			}
-			await reconcileRuntimeAcknowledgementFenced(acknowledged.turn_id, sessionState, true);
+			await reconcileRuntimeAcknowledgement(namespaceDir, resolvedTurn, sessionState, promptAckTimeoutMs);
 		}
 	}
 
-	async function callToolUnlocked(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+	async function callTool(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
 		try {
-			if (name === "gjc_coordinator_list_sessions") return { ok: true, sessions: await listSessions() };
+			if (name === "gjc_coordinator_list_sessions")
+				return { ok: true, sessions: (await listSessions()).map(publicBrokerSession) };
 			if (name === "gjc_coordinator_register_session") {
 				requireCoordinatorMutation(config, "sessions", args);
+				const idempotencyKey = requiredIdempotencyKey(args);
 				const sessionId = safeExternalId("session", args.session_id);
-				await preflightCoordinatorMutation(namespaceDir, sessionId);
-				const cwd = await assertCoordinatorWorkdir(config, args.cwd);
-				const tmuxSession = safeTmuxSessionName(args.tmux_session);
-				const tmuxTarget = safeTmuxTarget(args.tmux_target);
-				const registered = await registerExistingTmuxSession(
+				const cwd = await canonicalBrokerWorkspace(await assertCoordinatorWorkdir(config, args.cwd));
+				const tmuxSession = optionalString(args.tmux_session) ? safeTmuxSessionName(args.tmux_session) : undefined;
+				const tmuxTarget = optionalString(args.tmux_target) ? safeTmuxTarget(args.tmux_target) : undefined;
+				return await withToolIdempotency(
+					name,
+					idempotencyKey,
 					{
-						sessionId,
+						session_id: sessionId,
 						cwd,
-						tmuxSession,
-						tmuxTarget,
+						...(tmuxSession ? { tmux_session: tmuxSession } : {}),
+						...(tmuxTarget ? { tmux_target: tmuxTarget } : {}),
 						visible: args.visible !== false,
-						warpAttached: optionalBoolean(args.warp_attached),
 						source: optionalString(args.source) ?? "register_session",
 						model: optionalString(args.model),
+						allow_mutation: true,
 					},
-					namespaceDir,
-					sessionFile(sessionId),
-					commandRunner,
+					async () => {
+						const binding = await exactBrokerSessionBinding(sessionId, cwd, idempotencyKey);
+						const session = normalizeSession({
+							session_id: sessionId,
+							cwd,
+							...(tmuxSession ? { tmux_session: tmuxSession } : {}),
+							...(tmuxTarget ? { tmux_target: tmuxTarget } : {}),
+							visible: args.visible !== false,
+							source: optionalString(args.source) ?? "register_session",
+							model: optionalString(args.model),
+							broker_workspace: binding.workspace,
+							endpoint_generation: binding.endpointGeneration,
+							endpoint_incarnation: binding.endpointIncarnation,
+						});
+						await writeJsonFile(sessionFile(sessionId), session);
+						const sessionState = await writeSessionState(namespaceDir, sessionId, "ready_for_input", {
+							live: null,
+							reason: null,
+						});
+						await appendCoordinatorEvent(namespaceDir, {
+							kind: "session.registered",
+							sessionId,
+							summary: `Session ${sessionId} registered for coordinator control`,
+							payloadRef: path.relative(namespaceDir, sessionFile(sessionId)),
+							metadata: {
+								source: optionalString(args.source) ?? "register_session",
+								visible: args.visible !== false,
+							},
+						});
+						return {
+							ok: true,
+							session: publicCoordinatorSession(session),
+							session_state: publicCoordinatorSessionState(sessionState),
+							registered: true,
+						};
+					},
 				);
-				await appendCoordinatorEvent(namespaceDir, {
-					kind: "session.registered",
-					sessionId,
-					summary: `Session ${sessionId} registered for coordinator control`,
-					payloadRef: path.relative(namespaceDir, sessionFile(sessionId)),
-					metadata: {
-						source: optionalString(args.source) ?? "register_session",
-						visible: args.visible !== false,
-					},
-				});
-
-				return {
-					ok: true,
-					session: registered.session,
-					session_state: registered.sessionState,
-					registered: true,
-				};
 			}
 			if (name === "gjc_coordinator_read_status") {
-				await reconcileActiveTurnAcknowledgements();
 				const sessionId = args.session_id;
 				if (sessionId) {
-					const session = asRecord(await readJsonFile(sessionFile(sessionId)));
+					const canonicalSessionId = safeExternalId("session", sessionId);
+					const session = asRecord(await readJsonFile(sessionFile(canonicalSessionId)));
+					const cwd = optionalString(session?.cwd);
+					if (!session || !cwd)
+						return {
+							ok: false,
+							error: { code: "not_found", message: `Coordinator session not found: ${String(sessionId)}` },
+						};
+					try {
+						const indexedSession = (await listSessions(cwd)).find(
+							candidate => brokerSessionId(candidate) === canonicalSessionId,
+						);
+						return {
+							ok: true,
+							session: publicCoordinatorSession(session),
+							status: brokerLiveness(indexedSession ?? null),
+							session_state: publicCoordinatorSessionState(
+								await readSessionState(namespaceDir, canonicalSessionId),
+							),
+						};
+					} catch (error) {
+						return sdkError(error);
+					}
+				}
+				try {
+					const sessions = await listSessions();
+					const publicSessions = sessions.map(publicBrokerSession);
 					return {
 						ok: true,
-						session,
-						status: session ? await inspectTmuxSession(session, 80, commandRunner) : { live: false },
-						session_state: await readSessionState(namespaceDir, safeExternalId("session", sessionId)),
+						sessions: publicSessions,
+						statuses: sessions.map((session, index) => ({
+							session: publicSessions[index],
+							status: brokerLiveness(session),
+						})),
 					};
+				} catch (error) {
+					return sdkError(error);
 				}
-				const sessions = await listSessions();
-				const statuses = await Promise.all(
-					sessions.map(async session =>
-						typeof session === "object" && session !== null
-							? {
-									session,
-									status: await inspectTmuxSession(session as Record<string, unknown>, 40, commandRunner),
-								}
-							: { session, status: { live: null } },
-					),
-				);
-				return { ok: true, sessions, statuses };
 			}
 			if (name === "gjc_coordinator_read_tail") {
-				const session = asRecord(await readJsonFile(sessionFile(args.session_id)));
-				return {
-					ok: true,
-					lines: session ? await captureTmuxTail(session, boundedLineCount(args.lines), commandRunner) : [],
-				};
+				const sessionId = safeExternalId("session", args.session_id);
+				const session = asRecord(await readJsonFile(sessionFile(sessionId)));
+				if (!session)
+					return {
+						ok: false,
+						error: { code: "not_found", message: `Coordinator session not found: ${sessionId}` },
+					};
+				try {
+					const text = await queryLastAssistant(session);
+					return {
+						ok: true,
+						source: "sdk",
+						lines: text === null ? [] : text.split("\n").slice(-boundedLineCount(args.lines)),
+					};
+				} catch (error) {
+					return sdkError(error);
+				}
 			}
 			if (name === "gjc_coordinator_list_questions") return { ok: true, questions: await listQuestions(args) };
 			if (name === "gjc_coordinator_list_artifacts") return { ok: true, roots: config.allowedRoots };
@@ -4031,7 +2605,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				return await readCoordinatorArtifact(config, { path: args.path });
 			if (name === "gjc_coordinator_read_coordination_status") {
 				await reconcileActiveTurnAcknowledgements();
-				const sessions = jsonRecords(await listSessions());
+				const brokerSessions = await listSessions();
 				const sessionStates = jsonRecords(await listJsonFiles(path.join(namespaceDir, "session-states")));
 				const turns = jsonRecords(await listJsonFiles(turnsDir(namespaceDir)));
 				const questions = jsonRecords(await listQuestions(args));
@@ -4044,7 +2618,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 					state_root: namespaceDir,
 					transport: { mcp: "polling", push_subscriptions: false },
 					summary: {
-						sessions: sessions.length,
+						sessions: brokerSessions.length,
 						active_sessions: activeSessionStates(sessionStates).length,
 						turns: turns.length,
 						active_turns: turns.filter(turn => ACTIVE_TURN_STATUSES.has(turn.status as TurnStatus)).length,
@@ -4053,23 +2627,26 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 						open_questions: questions.filter(question => question.status === "open").length,
 						reports: reports.length,
 					},
-					sessions,
-					session_states: sessionStates,
-					turns,
-					questions,
-					reports,
-					events: buildCanonicalCoordinatorEvents({
-						sessionStates,
-						turns,
-						questions,
-						reports,
-					}),
+					sessions: brokerSessions.map(publicBrokerSession),
+					session_states: sessionStates.map(state =>
+						publicCoordinatorSessionState(state as unknown as CoordinatorSessionState),
+					),
+					turns: turns.map(turn =>
+						boundedPublicValue(turn, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+					),
+					questions: questions.map(question =>
+						boundedPublicValue(question, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+					),
+					reports: reports.map(report =>
+						boundedPublicValue(report, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+					),
+					events: buildCanonicalCoordinatorEvents({ sessionStates, turns, questions, reports }),
 					latest_event_seq: await readLatestEventSeq(namespaceDir),
 					recent_events: eventSummaries(events.slice(-10)),
 				};
 			}
 			if (name === "gjc_coordinator_watch_events") {
-				await withCoordinatorTransaction(namespaceDir, reconcileActiveTurnAcknowledgements);
+				await reconcileActiveTurnAcknowledgements();
 				const limit = boundedEventLimit(args.limit);
 				const timeoutMs = boundedEventWatchTimeoutMs(args.timeout_ms);
 				let events = await readCoordinatorEvents(namespaceDir);
@@ -4079,7 +2656,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 					const deadline = Date.now() + timeoutMs;
 					while (matched.length === 0 && Date.now() < deadline) {
 						await waitForCoordinatorEvents(namespaceDir, Math.min(50, Math.max(1, deadline - Date.now())));
-						await withCoordinatorTransaction(namespaceDir, reconcileActiveTurnAcknowledgements);
+						await reconcileActiveTurnAcknowledgements();
 						events = await readCoordinatorEvents(namespaceDir);
 						matched = filterCoordinatorEvents(events, args, limit);
 					}
@@ -4096,12 +2673,8 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			const delegateWorkflow = workflowForDelegateTool(name);
 			if (delegateWorkflow) {
 				requireCoordinatorMutation(config, "sessions", args);
-				const canonicalCwd = await assertCoordinatorWorkdir(config, args.cwd);
-				const hasTask = typeof args.task === "string" && args.task.trim().length > 0;
-				const hasPrompt = typeof args.prompt === "string" && args.prompt.trim().length > 0;
-				const task = hasTask ? String(args.task) : hasPrompt ? String(args.prompt) : null;
-				if (!task) return { ok: false, reason: "task_required" };
-				await preflightCoordinatorMutation(namespaceDir);
+				const idempotencyKey = requiredIdempotencyKey(args);
+				const canonicalCwd = await canonicalBrokerWorkspace(await assertCoordinatorWorkdir(config, args.cwd));
 				const mpresetResolution = await resolveCoordinatorMpreset(args.mpreset, loadModelProfiles);
 				if (!mpresetResolution.ok) {
 					return {
@@ -4111,178 +2684,188 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 						available_profiles: mpresetResolution.available_profiles,
 					};
 				}
-
-				const promptAliasIgnored = hasTask && hasPrompt;
-				const mutationRequested = args.allow_mutation === true;
+				const hasTask = typeof args.task === "string" && args.task.trim().length > 0;
+				const hasPrompt = typeof args.prompt === "string" && args.prompt.trim().length > 0;
+				const task = hasTask ? String(args.task) : hasPrompt ? String(args.prompt) : null;
+				if (!task) return { ok: false, reason: "task_required" };
 				const taggedPrompt = workflowPrompt(delegateWorkflow, name, canonicalCwd, task, {
-					mutationRequested,
+					mutationRequested: args.allow_mutation === true,
 					model: typeof args.model === "string" ? args.model : null,
 				});
-
-				let session: Record<string, unknown>;
-				let reusedSession = false;
-				if (args.session_id != null) {
-					const sessionId = safeExternalId("session", args.session_id);
-					await preflightCoordinatorMutation(namespaceDir, sessionId);
-					const existing = asRecord(await readJsonFile(sessionFile(sessionId)));
-					if (!existing)
-						return {
-							ok: false,
-							reason: "unknown_session",
-							session_id: sessionId,
-						};
-					const storedCwd = typeof existing.cwd === "string" ? existing.cwd : null;
-					const canonicalStored = storedCwd ? await canonicalizePath(storedCwd) : null;
-					const canonicalRequested = await canonicalizePath(canonicalCwd);
-					if (!canonicalStored || canonicalStored !== canonicalRequested) {
-						return {
-							ok: false,
-							reason: "session_cwd_mismatch",
-							session_id: sessionId,
-						};
-					}
-					if (mpresetResolution.mpreset !== null) {
-						const sessionMpreset = typeof existing.mpreset === "string" ? existing.mpreset : null;
-						if (sessionMpreset !== mpresetResolution.mpreset) {
-							return {
-								ok: false,
-								reason: "mpreset_conflict",
-								session_id: sessionId,
-								session_mpreset: sessionMpreset,
-								requested_mpreset: mpresetResolution.mpreset,
-							};
-						}
-					}
-
-					session = existing;
-					reusedSession = true;
-				} else {
-					session = await startCoordinatorSession(canonicalCwd, undefined, mpresetResolution.mpreset);
-					const ownerTransaction = asRecord(session.__coordinatorOwnerTransaction) as {
-						commit?: () => void;
-						rollback?: () => Promise<"cleaned" | "failed" | "unverifiable">;
-					} | null;
-					// Delegate-created sessions are ephemeral: the idle reaper may reclaim them once
-					// idle past the TTL with no active turn. User-registered sessions are never flagged.
-					session.ephemeral = true;
-					try {
-						if (mpresetResolution.mpreset) session.mpreset = mpresetResolution.mpreset;
-						await writeJsonFile(sessionFile(session.session_id), session);
-						await appendCoordinatorEvent(namespaceDir, {
-							kind: "session.started",
-							sessionId: String(session.session_id),
-							summary: `Session ${String(session.session_id)} started by coordinator delegate`,
-							payloadRef: path.relative(namespaceDir, sessionFile(session.session_id)),
-							metadata: { delegate: true, workflow: delegateWorkflow },
-						});
-						await writeSessionState(namespaceDir, String(session.session_id), "booting", {
-							live: null,
-							reason: "awaiting_runtime_readiness",
-						});
-						ownerTransaction?.commit?.();
-					} catch (error) {
-						if (ownerTransaction)
-							throw new CoordinatorStartError(
-								"coordinator_tmux_start_failed",
-								await compensateFailedOwnerStart(session, ownerTransaction),
-							);
-						throw error;
-					}
-				}
-
-				const sessionId = String(session.session_id);
-				assertSessionReadinessAuthority(session);
-				const prepared = await preparePromptTurn(session, taggedPrompt, {
-					force: args.force === true,
-					queue: args.queue === true,
-				});
-				if (!prepared.ok) {
-					return {
-						ok: false,
-						reason: "active_turn_exists",
-						session_id: sessionId,
-						active_turn_id: prepared.activeTurn.turn_id,
-					};
-				}
-				const { turn, priorActiveTurn: activeTurn, queued: shouldQueue } = prepared;
-				await appendCoordinatorEvent(namespaceDir, {
-					kind: "delegation.started",
-					sessionId,
-					turnId: turn.turn_id,
-					summary: `Delegated ${delegateWorkflow} via ${name} on session ${sessionId}`,
-					metadata: {
-						workflow: delegateWorkflow,
-						tool_name: name,
-						reused_session: reusedSession,
-						queued: shouldQueue,
-						allow_mutation: args.allow_mutation === true,
+				const reusedSessionId = args.session_id == null ? undefined : safeExternalId("session", args.session_id);
+				return await withToolIdempotency(
+					name,
+					idempotencyKey,
+					{
+						cwd: canonicalCwd,
+						task,
+						...(reusedSessionId ? { session_id: reusedSessionId } : {}),
+						queue: args.queue === true,
+						force: args.force === true,
+						mpreset: mpresetResolution.mpreset,
+						model: typeof args.model === "string" ? args.model : null,
+						await_completion: args.await_completion === true,
+						...(args.await_completion === true
+							? { timeout_ms: args.timeout_ms, poll_interval_ms: args.poll_interval_ms }
+							: {}),
+						prompt_alias_ignored: hasTask && hasPrompt,
+						allow_mutation: true,
 					},
-				});
-				const sessionState = await readSessionState(namespaceDir, sessionId);
-				const base: Record<string, unknown> = {
-					ok: true,
-					workflow: delegateWorkflow,
-					tool_name: name,
-					session_id: sessionId,
-					turn_id: turn.turn_id,
-					active_turn_id: shouldQueue ? activeTurn?.turn_id : turn.turn_id,
-					status: turn.status,
-					queued: turn.delivery.queued,
-					delivered: turn.delivery.delivered,
-					delivery: turn.delivery,
-					session,
-					session_state: sessionState,
-					turn,
-					awaited: false,
-					artifacts: [],
-				};
-				if (promptAliasIgnored) base.prompt_alias_ignored = true;
-				if (args.await_completion === true && !shouldQueue) {
-					const timeoutMs = boundedAwaitTurnTimeoutMs(args.timeout_ms);
-					const pollIntervalMs = boundedPollIntervalMs(args.poll_interval_ms);
-					const deadline = Date.now() + timeoutMs;
-					let payload = await readTurnPayload(turn.turn_id, sessionId, args.lines);
-					while (
-						payload.ok === true &&
-						!TERMINAL_TURN_STATUSES.has((payload.turn as TurnRecord).status) &&
-						Date.now() < deadline
-					) {
-						const remainingMs = deadline - Date.now();
-						await waitForTurnStateChange(
-							namespaceDir,
-							payload.turn as TurnRecord,
-							Math.min(pollIntervalMs, remainingMs),
-						);
-						payload = await readTurnPayload(turn.turn_id, sessionId, args.lines);
-					}
-					const awaitedTurn = (payload.ok === true ? payload.turn : turn) as TurnRecord;
-					base.awaited = true;
-					base.status = awaitedTurn.status;
-					base.turn = awaitedTurn;
-					base.final_response = (awaitedTurn as unknown as Record<string, unknown>).final_response ?? null;
-					base.evidence = (awaitedTurn as unknown as Record<string, unknown>).evidence ?? [];
-					if (payload.ok === true) {
-						base.session_state = payload.session_state;
-						base.advisory_status = payload.advisory_status;
-					}
-					// Mirror gjc_coordinator_await_turn timeout semantics: a still-active
-					// turn at the deadline is a bounded timeout, not a completion.
-					if (!TERMINAL_TURN_STATUSES.has(awaitedTurn.status)) {
-						base.timed_out = true;
-						base.reason = "timeout";
-						base.ok = false;
-					}
-				}
-				return base;
+					async () => {
+						const delegate = async () => {
+							let sessionId: string;
+							let session: Record<string, unknown>;
+							let reusedSession = false;
+							if (reusedSessionId) {
+								sessionId = reusedSessionId;
+								const existing = asRecord(await readJsonFile(sessionFile(sessionId)));
+								if (!existing)
+									return {
+										ok: false,
+										error: { code: "not_found", message: `Coordinator session not found: ${sessionId}` },
+									};
+								const sessionMpreset = optionalString(existing.mpreset);
+								if (mpresetResolution.mpreset !== null && sessionMpreset !== mpresetResolution.mpreset) {
+									return {
+										ok: false,
+										reason: "mpreset_conflict",
+										session_id: sessionId,
+										session_mpreset: sessionMpreset,
+										requested_mpreset: mpresetResolution.mpreset,
+									};
+								}
+								const existingCwd = optionalString(existing.cwd);
+								if (!existingCwd || (await canonicalBrokerWorkspace(existingCwd)) !== canonicalCwd)
+									return {
+										ok: false,
+										error: {
+											code: "workspace_mismatch",
+											message: "Coordinator session is bound to another workspace.",
+										},
+									};
+								const binding = await exactBrokerSessionBinding(sessionId, canonicalCwd, idempotencyKey);
+								if (
+									optionalString(existing.broker_workspace) !== canonicalCwd ||
+									existing.endpoint_generation !== binding.endpointGeneration ||
+									optionalString(existing.endpoint_incarnation) !== binding.endpointIncarnation
+								)
+									return {
+										ok: false,
+										error: {
+											code: "endpoint_stale",
+											message: "Coordinator session endpoint incarnation binding is stale.",
+										},
+									};
+								session = normalizeSession({
+									...existing,
+									session_id: sessionId,
+									cwd: canonicalCwd,
+									broker_workspace: binding.workspace,
+									endpoint_generation: binding.endpointGeneration,
+									endpoint_incarnation: binding.endpointIncarnation,
+								});
+								reusedSession = true;
+							} else {
+								const created = brokerResult(
+									await brokerSession(
+										canonicalCwd,
+										"session.create",
+										{
+											cwd: canonicalCwd,
+											target: coordinatorLifecycleTarget(config.sessionCommand, canonicalCwd),
+											...(mpresetResolution.mpreset ? { modelPreset: mpresetResolution.mpreset } : {}),
+										},
+										idempotencyKey,
+									),
+								);
+								sessionId = safeExternalId("session", created.sessionId ?? created.session_id);
+								const createdCwd = await canonicalBrokerWorkspace(optionalString(created.cwd) ?? canonicalCwd);
+								const binding = await exactBrokerSessionBinding(sessionId, createdCwd, idempotencyKey);
+								session = normalizeSession({
+									session_id: sessionId,
+									cwd: createdCwd,
+									ephemeral: true,
+									created_at: new Date().toISOString(),
+									...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
+									broker_workspace: binding.workspace,
+									endpoint_generation: binding.endpointGeneration,
+									endpoint_incarnation: binding.endpointIncarnation,
+								});
+							}
+							await writeJsonFile(sessionFile(sessionId), session);
+							const previousActiveTurn = await readActiveTurn(namespaceDir, sessionId);
+							if (previousActiveTurn && args.queue !== true && args.force !== true) {
+								return {
+									ok: false,
+									error: {
+										code: "active_turn_exists",
+										message: `Session ${sessionId} already has active turn ${previousActiveTurn.turn_id}.`,
+									},
+									turn_id: previousActiveTurn.turn_id,
+								};
+							}
+							const operation =
+								args.force === true
+									? "turn.abort_and_prompt"
+									: args.queue === true
+										? "turn.follow_up"
+										: "turn.prompt";
+							const result = await controlSession(session, operation, { text: taggedPrompt }, idempotencyKey);
+							requirePromptAcknowledgement(result);
+							const turn = await recordAcceptedPrompt(sessionId, taggedPrompt, operation, previousActiveTurn);
+							await appendCoordinatorEvent(namespaceDir, {
+								kind: "delegation.started",
+								sessionId,
+								turnId: turn.turn_id,
+								summary: `Delegated ${delegateWorkflow} via ${name} on session ${sessionId}`,
+								metadata: {
+									workflow: delegateWorkflow,
+									tool_name: name,
+									reused_session: reusedSession,
+									sdk_operation: operation,
+								},
+							});
+							const response = {
+								ok: true,
+								workflow: delegateWorkflow,
+								tool_name: name,
+								session_id: sessionId,
+								turn_id: turn.turn_id,
+								active_turn_id: turn.delivery.queued ? (previousActiveTurn?.turn_id ?? null) : turn.turn_id,
+								status: turn.status,
+								queued: turn.delivery.queued,
+								delivered: turn.delivery.delivered,
+								delivery: turn.delivery,
+								session: publicCoordinatorSession(session),
+								session_state: publicCoordinatorSessionState(await readSessionState(namespaceDir, sessionId)),
+								turn: boundedPublicValue(turn, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+								result: publicSdkAcknowledgement(result),
+								...(hasTask && hasPrompt ? { prompt_alias_ignored: true } : {}),
+							};
+							return args.await_completion === true
+								? {
+										...response,
+										completion: await awaitTurnPayload(
+											turn.turn_id,
+											sessionId,
+											args.timeout_ms,
+											args.poll_interval_ms,
+										),
+									}
+								: response;
+						};
+						return reusedSessionId ? await withSessionTransition(reusedSessionId, delegate) : await delegate();
+					},
+				);
 			}
 			if (name === "gjc_coordinator_stop_session") {
 				requireCoordinatorMutation(config, "sessions", args);
 				const sessionId = safeExternalId("session", args.session_id);
 				const forceRequested = args.force === true;
-				// force is a capability distinct from allow_mutation: reaping a non-ephemeral
-				// (user-registered) session requires GJC_COORDINATOR_MCP_FORCE_STOP to be enabled.
+				// force is a capability distinct from allow_mutation: closing a non-ephemeral
+				// user-registered session requires GJC_COORDINATOR_MCP_FORCE_STOP to be enabled.
 				if (forceRequested && !config.forceStopEnabled) {
-					return { ok: false, reason: "force_not_authorized", session_id: sessionId, killed: false };
+					return { ok: false, reason: "force_not_authorized", session_id: sessionId, closed: false };
 				}
 				const result = await reapSession(sessionId, {
 					force: forceRequested,
@@ -4291,7 +2874,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				return {
 					ok: result.ok,
 					session_id: sessionId,
-					killed: result.killed,
+					closed: result.closed,
 					...(result.reason ? { reason: result.reason } : {}),
 					...(result.active_turn_id ? { active_turn_id: result.active_turn_id } : {}),
 					...(result.detail ? { detail: result.detail } : {}),
@@ -4299,8 +2882,8 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			}
 			if (name === "gjc_coordinator_start_session") {
 				requireCoordinatorMutation(config, "sessions", args);
-				const cwd = await assertCoordinatorWorkdir(config, args.cwd);
-				await preflightCoordinatorMutation(namespaceDir);
+				const idempotencyKey = requiredIdempotencyKey(args);
+				const cwd = await canonicalBrokerWorkspace(await assertCoordinatorWorkdir(config, args.cwd));
 				const mpresetResolution = await resolveCoordinatorMpreset(args.mpreset, loadModelProfiles);
 				if (!mpresetResolution.ok) {
 					return {
@@ -4310,401 +2893,308 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 						available_profiles: mpresetResolution.available_profiles,
 					};
 				}
-
-				const session = await startCoordinatorSession(
-					cwd,
-					typeof args.prompt === "string" ? args.prompt : undefined,
-					mpresetResolution.mpreset,
-				);
-				const ownerTransaction = asRecord(session.__coordinatorOwnerTransaction) as {
-					commit?: () => void;
-					rollback?: () => Promise<"cleaned" | "failed" | "unverifiable">;
-				} | null;
-				let sessionState: CoordinatorSessionState;
-				try {
-					if (mpresetResolution.mpreset) session.mpreset = mpresetResolution.mpreset;
-					await writeJsonFile(sessionFile(session.session_id), session);
-					await appendCoordinatorEvent(namespaceDir, {
-						kind: "session.started",
-						sessionId: String(session.session_id),
-						summary: `Session ${String(session.session_id)} started by coordinator`,
-						payloadRef: path.relative(namespaceDir, sessionFile(session.session_id)),
-						metadata: { prompted: typeof args.prompt === "string" && args.prompt.length > 0 },
-					});
-					sessionState = await writeSessionState(namespaceDir, String(session.session_id), "booting", {
-						live: null,
-						reason: "awaiting_runtime_readiness",
-					});
-					ownerTransaction?.commit?.();
-				} catch (error) {
-					if (ownerTransaction)
-						throw new CoordinatorStartError(
-							"coordinator_tmux_start_failed",
-							await compensateFailedOwnerStart(session, ownerTransaction),
+				const prompt = typeof args.prompt === "string" && args.prompt.length > 0 ? args.prompt : null;
+				return await withToolIdempotency(
+					name,
+					idempotencyKey,
+					{
+						cwd,
+						mpreset: mpresetResolution.mpreset,
+						...(prompt ? { prompt } : {}),
+						allow_mutation: true,
+					},
+					async () => {
+						const created = brokerResult(
+							await brokerSession(
+								cwd,
+								"session.create",
+								{
+									cwd,
+									target: coordinatorLifecycleTarget(config.sessionCommand, cwd),
+									...(mpresetResolution.mpreset ? { modelPreset: mpresetResolution.mpreset } : {}),
+								},
+								idempotencyKey,
+							),
 						);
-					throw error;
-				}
-				if (typeof args.prompt === "string" && args.prompt.length > 0) {
-					const turn = await activateTurn(
-						session,
-						makeTurnRecord(config, String(session.session_id), args.prompt, "active"),
-					);
-					sessionState = (await readSessionState(namespaceDir, turn.session_id)) ?? sessionState;
-					const prompt = {
-						session_id: session.session_id,
-						turn_id: turn.turn_id,
-						prompt: args.prompt,
-						queued: turn.delivery.queued,
-						delivered: turn.delivery.delivered,
-						tmux_keys_sent: turn.delivery.tmux_keys_sent ?? false,
-						prompt_acknowledged: turn.delivery.prompt_acknowledged ?? false,
-						created_at: turn.created_at,
-					};
-					await writeJsonFile(path.join(namespaceDir, "prompts", `${Date.now()}.json`), prompt);
-					return {
-						ok: true,
-						session,
-						session_state: sessionState,
-						turn,
-						turn_id: turn.turn_id,
-						active_turn_id: turn.turn_id,
-						status: turn.status,
-						queued: turn.delivery.queued,
-						delivered: turn.delivery.delivered,
-						delivery: turn.delivery,
-					};
-				}
-				return { ok: true, session, session_state: sessionState };
+						const sessionId = safeExternalId("session", created.sessionId ?? created.session_id);
+						const sessionCwd = await canonicalBrokerWorkspace(optionalString(created.cwd) ?? cwd);
+						const binding = await exactBrokerSessionBinding(sessionId, sessionCwd, idempotencyKey);
+						const session = normalizeSession({
+							session_id: sessionId,
+							cwd: sessionCwd,
+							...(mpresetResolution.mpreset ? { mpreset: mpresetResolution.mpreset } : {}),
+							broker_workspace: binding.workspace,
+							endpoint_generation: binding.endpointGeneration,
+							endpoint_incarnation: binding.endpointIncarnation,
+						});
+						await writeJsonFile(sessionFile(sessionId), session);
+						const lifecycle = publicLifecycleReceipt(created, sessionId);
+						if (prompt) {
+							const result = await controlSession(session, "turn.prompt", { text: prompt }, idempotencyKey);
+							requirePromptAcknowledgement(result);
+							const turn = await recordAcceptedPrompt(sessionId, prompt, "turn.prompt", null);
+							return {
+								ok: true,
+								session: publicCoordinatorSession(session),
+								session_id: sessionId,
+								lifecycle,
+								turn_id: turn.turn_id,
+								active_turn_id: turn.turn_id,
+								status: turn.status,
+								queued: turn.delivery.queued,
+								delivered: turn.delivery.delivered,
+								operation: "turn.prompt",
+								turn: boundedPublicValue(turn, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+								session_state: publicCoordinatorSessionState(await readSessionState(namespaceDir, sessionId)),
+							};
+						}
+						const sessionState = await writeSessionState(namespaceDir, sessionId, "ready_for_input", {
+							live: null,
+							reason: null,
+						});
+						await appendCoordinatorEvent(namespaceDir, {
+							kind: "session.started",
+							sessionId,
+							summary: `Session ${sessionId} started through SDK lifecycle control`,
+							payloadRef: path.relative(namespaceDir, sessionFile(sessionId)),
+						});
+						return {
+							ok: true,
+							session: publicCoordinatorSession(session),
+							session_state: publicCoordinatorSessionState(sessionState),
+							lifecycle,
+						};
+					},
+				);
 			}
 			if (name === "gjc_coordinator_send_prompt") {
 				requireCoordinatorMutation(config, "sessions", args);
+				const idempotencyKey = requiredIdempotencyKey(args);
 				const sessionId = safeExternalId("session", args.session_id);
-				await preflightCoordinatorMutation(namespaceDir, sessionId);
-				const session = asRecord(await readJsonFile(sessionFile(sessionId)));
-				if (!session) return { ok: false, reason: "unknown_session", session_id: sessionId };
 				if (typeof args.prompt !== "string" || args.prompt.length === 0)
-					return { ok: false, reason: "prompt_required" };
-				await readSessionState(namespaceDir, sessionId);
-				await readLatestEventSeq(namespaceDir);
-				assertSessionReadinessAuthority(session);
-				const prepared = await preparePromptTurn(session, args.prompt, {
-					force: args.force === true,
-					queue: args.queue === true,
-					queueWithoutActive: true,
-				});
-				if (!prepared.ok) {
-					return {
-						ok: false,
-						reason: "active_turn_exists",
+					return { ok: false, error: { code: "invalid_input", message: "prompt is required" } };
+				const prompt = args.prompt;
+				return await withToolIdempotency(
+					name,
+					idempotencyKey,
+					{
 						session_id: sessionId,
-						active_turn_id: prepared.activeTurn.turn_id,
-					};
-				}
-				const { turn: recordedTurn, priorActiveTurn: activeTurn, queued: shouldQueue } = prepared;
-				const prompt = {
-					session_id: sessionId,
-					turn_id: recordedTurn.turn_id,
-					prompt: args.prompt,
-					queued: recordedTurn.delivery.queued,
-					delivered: recordedTurn.delivery.delivered,
-					tmux_keys_sent: recordedTurn.delivery.tmux_keys_sent ?? false,
-					prompt_acknowledged: recordedTurn.delivery.prompt_acknowledged ?? false,
-					created_at: recordedTurn.created_at,
-				};
-				await writeJsonFile(path.join(namespaceDir, "prompts", `${Date.now()}.json`), prompt);
-				return {
-					ok: true,
-					session_id: sessionId,
-					turn_id: recordedTurn.turn_id,
-					active_turn_id: shouldQueue ? activeTurn?.turn_id : recordedTurn.turn_id,
-					status: recordedTurn.status,
-					queued: recordedTurn.delivery.queued,
-					delivered: recordedTurn.delivery.delivered,
-					delivery: recordedTurn.delivery,
-					prompt,
-					tmux_keys_sent: recordedTurn.delivery.tmux_keys_sent ?? false,
-					prompt_acknowledged: recordedTurn.delivery.prompt_acknowledged ?? false,
-					session_state: await readSessionState(namespaceDir, sessionId),
-				};
+						prompt,
+						queue: args.queue === true,
+						force: args.force === true,
+						allow_mutation: true,
+					},
+					async () =>
+						await withSessionTransition(sessionId, async () => {
+							const currentSession = asRecord(await readJsonFile(sessionFile(sessionId)));
+							if (!currentSession) {
+								return {
+									ok: false,
+									error: { code: "not_found", message: `Coordinator session not found: ${sessionId}` },
+								};
+							}
+							const previousActiveTurn = await readActiveTurn(namespaceDir, sessionId);
+							if (previousActiveTurn && args.queue !== true && args.force !== true) {
+								return {
+									ok: false,
+									error: {
+										code: "active_turn_exists",
+										message: `Session ${sessionId} already has active turn ${previousActiveTurn.turn_id}.`,
+									},
+									turn_id: previousActiveTurn.turn_id,
+								};
+							}
+							const operation =
+								args.force === true
+									? "turn.abort_and_prompt"
+									: args.queue === true
+										? "turn.follow_up"
+										: "turn.prompt";
+							const result = await controlSession(currentSession, operation, { text: prompt }, idempotencyKey);
+							requirePromptAcknowledgement(result);
+							const turn = await recordAcceptedPrompt(sessionId, prompt, operation, previousActiveTurn);
+							return {
+								ok: true,
+								session_id: sessionId,
+								turn_id: turn.turn_id,
+								active_turn_id: turn.delivery.queued ? (previousActiveTurn?.turn_id ?? null) : turn.turn_id,
+								status: turn.status,
+								queued: turn.delivery.queued,
+								delivered: turn.delivery.delivered,
+								operation,
+								result: publicSdkAcknowledgement(result),
+								turn: boundedPublicValue(turn, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+								session_state: publicCoordinatorSessionState(await readSessionState(namespaceDir, sessionId)),
+							};
+						}),
+				);
 			}
 			if (name === "gjc_coordinator_read_turn") {
-				return await readTurnPayload(args.turn_id, args.session_id, args.lines);
+				return await readTurnPayload(args.turn_id, args.session_id);
 			}
 			if (name === "gjc_coordinator_await_turn") {
-				const timeoutMs = boundedAwaitTurnTimeoutMs(args.timeout_ms);
-				const pollIntervalMs = boundedPollIntervalMs(args.poll_interval_ms);
-				const deadline = Date.now() + timeoutMs;
-				let payload = await withCoordinatorTransaction(
-					namespaceDir,
-					async () => await readTurnPayload(args.turn_id, args.session_id, args.lines),
-				);
-				while (
-					payload.ok === true &&
-					!TERMINAL_TURN_STATUSES.has((payload.turn as TurnRecord).status) &&
-					Date.now() < deadline
-				) {
-					const remainingMs = deadline - Date.now();
-					await waitForTurnStateChange(
-						namespaceDir,
-						payload.turn as TurnRecord,
-						Math.min(pollIntervalMs, remainingMs),
-					);
-					payload = await withCoordinatorTransaction(
-						namespaceDir,
-						async () => await readTurnPayload(args.turn_id, args.session_id, args.lines),
-					);
-				}
-				if (payload.ok === true && !TERMINAL_TURN_STATUSES.has((payload.turn as TurnRecord).status)) {
-					return {
-						ok: false,
-						reason: "timeout",
-						turn: payload.turn,
-						advisory_status: payload.advisory_status,
-						session_state: payload.session_state,
-					};
-				}
-				return payload;
+				return await awaitTurnPayload(args.turn_id, args.session_id, args.timeout_ms, args.poll_interval_ms);
 			}
 			if (name === "gjc_coordinator_submit_question_answer") {
 				requireCoordinatorMutation(config, "questions", args);
+				const idempotencyKey = requiredIdempotencyKey(args);
+				const sessionId = safeExternalId("session", args.session_id);
 				const questionId = safeExternalId("question", args.question_id);
-				const questionPath = questionFile(namespaceDir, questionId);
-				const question = asRecord(await readJsonFile(questionPath));
-				if (!question) return { ok: false, reason: "unknown_question" };
-				if (args.session_id != null && question.session_id !== safeExternalId("session", args.session_id)) {
-					return { ok: false, reason: "question_session_mismatch" };
-				}
-				if (args.turn_id != null && question.turn_id !== safeTurnId(args.turn_id)) {
-					return { ok: false, reason: "question_turn_mismatch" };
-				}
-				await preflightCoordinatorMutation(namespaceDir);
-				const questionSessionId =
-					typeof question.session_id === "string" ? safeExternalId("session", question.session_id) : null;
-				if (!questionSessionId) throw coordinatorStateError("invalid");
-				await preflightCoordinatorMutation(namespaceDir, questionSessionId);
-				if (typeof question.turn_id === "string") {
-					const referencedTurn = await readTurnRecord(namespaceDir, question.turn_id);
-					if (!referencedTurn || referencedTurn.session_id !== questionSessionId)
-						throw coordinatorStateError("invalid");
-				}
-				const answeredTurnId = typeof question.turn_id === "string" ? question.turn_id : null;
-				const answered = {
-					...question,
-					status: "answered",
-					answer: args.answer,
-					answered_at: new Date().toISOString(),
-				};
-				await writeJsonFile(questionPath, answered);
-				if (question.status === "open") {
-					await appendCoordinatorEvent(namespaceDir, {
-						kind: "question.opened",
-						sessionId: typeof question.session_id === "string" ? question.session_id : null,
-						turnId: typeof question.turn_id === "string" ? question.turn_id : null,
-						questionId,
-						summary: `Question ${questionId} opened`,
-						payloadRef: path.relative(namespaceDir, questionPath),
-					});
-				}
-				await appendCoordinatorEvent(namespaceDir, {
-					kind: "question.answered",
-					sessionId: typeof question.session_id === "string" ? question.session_id : null,
-					turnId: typeof question.turn_id === "string" ? question.turn_id : null,
-					questionId,
-					summary: `Question ${questionId} answered`,
-					payloadRef: path.relative(namespaceDir, questionPath),
-				});
-
-				let turn: TurnRecord | null = null;
-				if (answeredTurnId) {
-					const observedTurn = await readTurnRecord(namespaceDir, answeredTurnId);
-					if (observedTurn) {
-						turn = await withSessionTransition(observedTurn.session_id, async () => {
-							const current = await readTurnRecord(namespaceDir, answeredTurnId);
-							if (!current || !ACTIVE_TURN_STATUSES.has(current.status)) return current;
-							const timestamp = new Date().toISOString();
-							const answeredTurn: TurnRecord = {
-								...current,
-								status: "active",
-								question_ids: [...new Set([...current.question_ids, questionId])],
-								updated_at: timestamp,
+				return await withToolIdempotency(
+					name,
+					idempotencyKey,
+					{
+						session_id: sessionId,
+						question_id: questionId,
+						answer: args.answer,
+						...(args.turn_id == null ? {} : { turn_id: args.turn_id }),
+						allow_mutation: true,
+					},
+					async () => {
+						const session = asRecord(await readJsonFile(sessionFile(sessionId)));
+						if (!session)
+							return {
+								ok: false,
+								error: { code: "not_found", message: `Coordinator session not found: ${sessionId}` },
 							};
-							await writeTurnRecord(namespaceDir, answeredTurn);
-							await writeActiveTurn(namespaceDir, answeredTurn);
-							await writeSessionState(namespaceDir, answeredTurn.session_id, "running", {
-								currentTurnId: answeredTurn.turn_id,
-								live: null,
-								reason: null,
-							});
-							const session = asRecord(await readJsonFile(sessionFile(answeredTurn.session_id)));
-							if (session && typeof args.answer === "string") {
-								await sendTmuxPrompt(session, args.answer, commandRunner, services.ownerIsolationProbe);
-							}
-							return answeredTurn;
-						});
-					}
-				}
-				return { ok: true, question: answered, ...(turn ? { turn } : {}) };
+						const result = await controlSession(
+							session,
+							"ask.answer",
+							{ id: questionId, answer: args.answer },
+							idempotencyKey,
+						);
+						return {
+							ok: true,
+							session_id: sessionId,
+							operation: "ask.answer",
+							result: publicSdkAcknowledgement(result),
+						};
+					},
+				);
 			}
 			if (name === "gjc_coordinator_report_status") {
 				requireCoordinatorMutation(config, "reports", args);
-				await preflightCoordinatorMutation(namespaceDir);
-
+				const idempotencyKey = requiredIdempotencyKey(args);
 				const evidence = await validateEvidencePaths(args.evidence_paths);
 				const sessionId = args.session_id == null ? null : safeExternalId("session", args.session_id);
-				if (sessionId) await preflightCoordinatorMutation(namespaceDir, sessionId);
-
-				const report = {
-					session_id: sessionId,
-					turn_id: args.turn_id,
-					status: args.status,
-					summary: args.summary,
-					blocker: args.blocker,
-					pr_url: args.pr_url,
-					evidence_paths: evidence.map(item => item.path),
-					created_at: new Date().toISOString(),
-				};
-				let turn: TurnRecord | null = null;
-				let promotedTurn: TurnRecord | null = null;
-				let promotedPreparation: { session: Record<string, unknown>; turn: TurnRecord } | null = null;
-				if (args.turn_id != null) {
-					turn = await readTurnRecord(namespaceDir, args.turn_id);
-					if (!turn) return { ok: false, reason: "unknown_turn" };
-					if (sessionId != null && turn.session_id !== sessionId) {
-						return { ok: false, reason: "turn_session_mismatch" };
-					}
-					await preflightCoordinatorMutation(namespaceDir, turn.session_id);
-					const terminalStatus = asTerminalTurnStatus(args.status);
-					if (terminalStatus) {
-						const transition = await withSessionTransition(turn.session_id, async () => {
-							const current = await readTurnRecord(namespaceDir, turn?.turn_id);
-							if (!current || TERMINAL_TURN_STATUSES.has(current.status)) {
-								return { turn: current, promotion: null };
-							}
-							const timestamp = new Date().toISOString();
-							const terminalTurn: TurnRecord = {
-								...current,
-								status: terminalStatus,
-								delivery: {
-									...current.delivery,
-									prompt_acknowledged: true,
-									state: "acknowledged",
-								},
-								final_response: {
-									text:
-										typeof args.summary === "string"
-											? args.summary
-											: typeof args.blocker === "string"
-												? args.blocker
-												: null,
-									format: "markdown",
-									source: "report_status",
-									artifact_path: null,
-									truncated: false,
-								},
-								evidence,
-								error:
-									terminalStatus === "failed"
-										? {
-												code: "reported_failure",
-												message:
-													typeof args.blocker === "string"
-														? args.blocker
-														: String(args.summary ?? "failed"),
-												recoverable: true,
-											}
-										: null,
-								updated_at: timestamp,
-								completed_at: timestamp,
-							};
-							await writeTurnRecord(namespaceDir, terminalTurn);
-							await clearActiveTurn(namespaceDir, terminalTurn);
-							await writeSessionState(
-								namespaceDir,
-								terminalTurn.session_id,
-								terminalStatus === "failed" ? "errored" : "completed",
-								{
-									lastTurnId: terminalTurn.turn_id,
-									live: null,
-									reason: terminalStatus === "failed" ? "reported_failure" : null,
-								},
-							);
-							return {
-								turn: terminalTurn,
-								promotion: await prepareNextQueuedTurnUnlocked(terminalTurn.session_id),
-							};
-						});
-						turn = transition.turn;
-						promotedPreparation = transition.promotion;
-						if (promotedPreparation) {
-							promotedTurn = await completePreparedTurn(promotedPreparation.session, promotedPreparation.turn);
-						}
-					}
-				}
-				const reportId = `report-${Date.now()}`;
-				const reportPath = path.join(namespaceDir, "reports", `${reportId}.json`);
-				await writeJsonFile(reportPath, report);
-				await appendCoordinatorEvent(namespaceDir, {
-					kind: "report.written",
-					sessionId,
-					turnId: typeof args.turn_id === "string" ? args.turn_id : null,
-					reportId,
-					summary:
-						typeof args.summary === "string"
-							? args.summary
-							: `Report ${String(args.status ?? "unknown")} written`,
-					payloadRef: path.relative(namespaceDir, reportPath),
-					metadata: {
-						status: typeof args.status === "string" ? args.status : null,
+				return await withToolIdempotency(
+					name,
+					idempotencyKey,
+					{
+						session_id: sessionId,
+						turn_id: args.turn_id ?? null,
+						status: args.status,
+						summary: args.summary,
+						blocker: args.blocker,
+						pr_url: args.pr_url,
+						evidence_paths: evidence.map(item => item.path),
+						allow_mutation: true,
 					},
-				});
-				return {
-					ok: true,
-					report,
-					...(turn
-						? {
-								turn,
-								session_state: await readSessionState(namespaceDir, turn.session_id),
+					async () => {
+						const report = {
+							session_id: sessionId,
+							turn_id: args.turn_id,
+							status: args.status,
+							summary: args.summary,
+							blocker: args.blocker,
+							pr_url: args.pr_url,
+							evidence_paths: evidence.map(item => item.path),
+							created_at: new Date().toISOString(),
+						};
+						let turn: TurnRecord | null = null;
+						if (args.turn_id != null) {
+							turn = await readTurnRecord(namespaceDir, args.turn_id);
+							if (!turn) return { ok: false, reason: "unknown_turn" };
+							if (sessionId != null && turn.session_id !== sessionId)
+								return { ok: false, reason: "turn_session_mismatch" };
+							const terminalStatus = asTerminalTurnStatus(args.status);
+							if (terminalStatus) {
+								const timestamp = new Date().toISOString();
+								turn = {
+									...turn,
+									status: terminalStatus,
+									delivery: {
+										...turn.delivery,
+										prompt_acknowledged: true,
+										state: "acknowledged",
+									},
+									final_response: {
+										text:
+											typeof args.summary === "string"
+												? args.summary
+												: typeof args.blocker === "string"
+													? args.blocker
+													: null,
+										format: "markdown",
+										source: "report_status",
+										artifact_path: null,
+										truncated: false,
+									},
+									evidence,
+									error:
+										terminalStatus === "failed"
+											? {
+													code: "reported_failure",
+													message:
+														typeof args.blocker === "string"
+															? args.blocker
+															: String(args.summary ?? "failed"),
+													recoverable: true,
+												}
+											: null,
+									updated_at: timestamp,
+									completed_at: timestamp,
+								};
+								await writeTurnRecord(namespaceDir, turn);
+								await clearActiveTurn(namespaceDir, turn);
+								await writeSessionState(
+									namespaceDir,
+									turn.session_id,
+									terminalStatus === "failed" ? "errored" : "completed",
+									{
+										lastTurnId: turn.turn_id,
+										live: null,
+										reason: terminalStatus === "failed" ? "reported_failure" : null,
+									},
+								);
+								await promoteNextQueuedTurn(turn.session_id);
 							}
-						: {}),
-					...(promotedTurn ? { promoted_turn: promotedTurn } : {}),
-				};
+						}
+						const reportId = `report-${randomUUID()}`;
+						const reportPath = path.join(namespaceDir, "reports", `${reportId}.json`);
+						await writeJsonFile(reportPath, report);
+						await appendCoordinatorEvent(namespaceDir, {
+							kind: "report.written",
+							sessionId,
+							turnId: typeof args.turn_id === "string" ? args.turn_id : null,
+							reportId,
+							summary:
+								typeof args.summary === "string"
+									? args.summary
+									: `Report ${String(args.status ?? "unknown")} written`,
+							payloadRef: path.relative(namespaceDir, reportPath),
+							metadata: { status: typeof args.status === "string" ? args.status : null },
+						});
+						return {
+							ok: true,
+							report: boundedPublicValue(report, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+							...(turn
+								? {
+										turn: boundedPublicValue(turn, { remaining: COORDINATOR_IDEMPOTENCY_RESPONSE_BYTE_CAP }),
+										session_state: publicCoordinatorSessionState(
+											await readSessionState(namespaceDir, turn.session_id),
+										),
+									}
+								: {}),
+						};
+					},
+				);
 			}
 			return { ok: false, reason: "unknown_tool", tool: name };
 		} catch (error) {
-			const failure = error as { sessionId?: unknown; action?: unknown };
-			return {
-				ok: false,
-				reason: publicCoordinatorError(error),
-				...(publicCleanupStatus(error) ? { cleanup_status: publicCleanupStatus(error) } : {}),
-				...(typeof failure.sessionId === "string" ? { session_id: failure.sessionId } : {}),
-				...(typeof failure.action === "string" ? { action: failure.action } : {}),
-			};
+			if (error instanceof SdkClientError) return sdkError(error);
+			return { ok: false, reason: error instanceof Error ? error.message : String(error) };
 		}
-	}
-
-	async function callToolInternal(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-		try {
-			if (
-				name === "gjc_coordinator_await_turn" ||
-				name === "gjc_coordinator_watch_events" ||
-				(name === "gjc_coordinator_start_session" && typeof args.prompt === "string" && args.prompt.length > 0) ||
-				name === "gjc_coordinator_send_prompt" ||
-				workflowForDelegateTool(name) !== null
-			) {
-				return await callToolUnlocked(name, args);
-			}
-			return await withCoordinatorTransaction(namespaceDir, async () => await callToolUnlocked(name, args));
-		} catch (error) {
-			return {
-				ok: false,
-				reason: publicCoordinatorError(error),
-				...(publicCleanupStatus(error) ? { cleanup_status: publicCleanupStatus(error) } : {}),
-			};
-		}
-	}
-
-	async function callTool(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-		return publicCoordinatorResponse(await callToolInternal(name, args)) as Record<string, unknown>;
 	}
 
 	async function handleJsonRpc(request: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -4720,15 +3210,8 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				},
 			};
 		}
-		if (request.method === "ping") {
-			return { jsonrpc: "2.0", id, result: {} };
-		}
 		if (request.method === "tools/list") {
-			return {
-				jsonrpc: "2.0",
-				id,
-				result: { tools: COORDINATOR_MCP_TOOL_NAMES.map(toolSchema) },
-			};
+			return { jsonrpc: "2.0", id, result: { tools: COORDINATOR_MCP_TOOL_NAMES.map(toolSchema) } };
 		}
 		if (request.method === "prompts/list") {
 			return { jsonrpc: "2.0", id, result: { prompts: [] } };
@@ -4737,31 +3220,17 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			return { jsonrpc: "2.0", id, result: { resources: [] } };
 		}
 		if (request.method === "tools/call") {
-			const params = (request.params ?? {}) as {
-				name?: string;
-				arguments?: Record<string, unknown>;
-			};
+			const params = (request.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
 			const payload = await callTool(params.name ?? "", params.arguments ?? {});
-			return {
-				jsonrpc: "2.0",
-				id,
-				result: textResult(payload, payload.ok === false),
-			};
+			return { jsonrpc: "2.0", id, result: textResult(payload, payload.ok === false) };
 		}
-		return {
-			jsonrpc: "2.0",
-			id,
-			error: { code: -32601, message: `unknown_method:${request.method}` },
-		};
+		return { jsonrpc: "2.0", id, error: { code: -32601, message: `unknown_method:${request.method}` } };
 	}
 
 	return { config, callTool, handleJsonRpc, handle: handleJsonRpc, reapSession, sessionReaper };
 }
 
-function legacyToolResult(payload: unknown): {
-	content: Array<{ type: "text"; text: string }>;
-	isError: boolean;
-} {
+function legacyToolResult(payload: unknown): { content: Array<{ type: "text"; text: string }>; isError: boolean } {
 	const failed = typeof payload === "object" && payload !== null && (payload as { ok?: unknown }).ok === false;
 	return textResult(payload, failed);
 }
@@ -4782,21 +3251,13 @@ export async function handleCoordinatorMcpRequest(
 		};
 	}
 	if (request.method === "tools/list") {
-		return {
-			jsonrpc: "2.0",
-			id: request.id ?? null,
-			result: { tools: COORDINATOR_MCP_TOOL_NAMES.map(toolSchema) },
-		};
+		return { jsonrpc: "2.0", id: request.id ?? null, result: { tools: COORDINATOR_MCP_TOOL_NAMES.map(toolSchema) } };
 	}
 	if (request.method === "prompts/list") {
 		return { jsonrpc: "2.0", id: request.id ?? null, result: { prompts: [] } };
 	}
 	if (request.method === "resources/list") {
-		return {
-			jsonrpc: "2.0",
-			id: request.id ?? null,
-			result: { resources: [] },
-		};
+		return { jsonrpc: "2.0", id: request.id ?? null, result: { resources: [] } };
 	}
 	if (request.method !== "tools/call")
 		return {
@@ -4804,15 +3265,9 @@ export async function handleCoordinatorMcpRequest(
 			id: request.id ?? null,
 			error: { code: -32601, message: `unknown_method:${request.method}` },
 		};
-	const params = (request.params ?? {}) as {
-		name?: string;
-		arguments?: Record<string, unknown>;
-	};
+	const params = (request.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
 	const args = params.arguments ?? {};
-	const server = createCoordinatorMcpServer({
-		env: options.env ?? process.env,
-		services: options.createSession ? { startSession: input => options.createSession?.(input) } : undefined,
-	});
+	const server = createCoordinatorMcpServer({ env: options.env ?? process.env });
 	return {
 		jsonrpc: "2.0",
 		id: request.id ?? null,
@@ -4916,11 +3371,11 @@ export async function pumpCoordinatorMcpStream(
 			let response: JsonRpcResponse;
 			try {
 				response = await handleJsonRpc(request);
-			} catch (failure) {
+			} catch {
 				response = {
 					jsonrpc: "2.0",
 					id: request.id ?? null,
-					error: { code: -32603, message: publicCoordinatorError(failure) },
+					error: { code: -32603, message: "coordinator_request_failed" },
 				};
 			}
 			await emit(response);
@@ -4944,7 +3399,7 @@ export async function pumpCoordinatorMcpStream(
 		// Notifications (no id) get no response; the coordinator has no side-effecting ones.
 		if (request.id === undefined || request.id === null) return;
 		if (request.method === "ping") {
-			launch(request, true); // control frame: bypass the data cap
+			launch(request, true);
 			return;
 		}
 		if (activeData < maxDataConcurrency) {
@@ -5029,15 +3484,16 @@ export async function pumpCoordinatorMcpStream(
 
 export async function runCoordinatorMcpStdio(options: CoordinatorMcpServerOptions = {}): Promise<void> {
 	const server = createCoordinatorMcpServer(options);
-	server.sessionReaper.start(); // background idle-reap of ephemeral delegate sessions
+	server.sessionReaper.start();
 	try {
 		await pumpCoordinatorMcpStream(
 			request => server.handleJsonRpc(request),
 			process.stdin,
-			line =>
-				new Promise<void>((resolve, reject) => {
-					process.stdout.write(line, err => (err ? reject(err) : resolve()));
-				}),
+			line => {
+				const write = Promise.withResolvers<void>();
+				process.stdout.write(line, error => (error ? write.reject(error) : write.resolve()));
+				return write.promise;
+			},
 		);
 	} finally {
 		server.sessionReaper.stop();

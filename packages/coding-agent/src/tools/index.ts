@@ -10,7 +10,7 @@ import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
 import { LspTool } from "../lsp";
-import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/unattended-session";
+import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/workflow-gate-broker";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type {
@@ -200,9 +200,10 @@ export interface AskRemoteReceipt {
 export type AskAnswerSourceResult = AskRemoteReceipt | string | undefined;
 
 /**
- * Source of remote answers. `awaitAnswer` remains the legacy wire for existing
- * integrations; typed sources opt into `awaitAnswerRequest`. This keeps an old
- * string-only source from accidentally acquiring acknowledgement authority.
+ * Source of remote answers for interactive asks. `awaitAnswer` remains the legacy
+ * wire for existing integrations; typed sources opt into `awaitAnswerRequest`.
+ * This keeps a string-only source from accidentally acquiring acknowledgement
+ * authority while allowing SDK-routed interactions to settle durably.
  */
 export interface AskAnswerSource {
 	awaitAnswer(question: string, options: string[], signal?: AbortSignal): Promise<string | undefined>;
@@ -305,12 +306,11 @@ export interface ToolSession {
 	getPlanModeState?: () => PlanModeState | undefined;
 	/** Goal mode state (if active or paused) */
 	getGoalModeState?: () => GoalModeState | undefined;
-	/** Unattended workflow-gate emitter (present only when unattended mode is negotiated). */
+	/** SDK workflow-gate emitter, when a remote gate responder is connected. */
 	getWorkflowGateEmitter?: () => WorkflowGateEmitter | undefined;
 	/**
-	 * Optional remote answer source for interactive asks. When present, the ask
-	 * tool races the local UI selection against a remote answer (e.g. a Telegram
-	 * reply via the notifications SDK) so asks can be answered without RPC mode.
+	 * Optional SDK-routed answer source for interactive asks. When present, the
+	 * tool races the local UI selection against the remote SDK answer.
 	 * No-op when undefined: the ask path behaves exactly as before.
 	 */
 	getAskAnswerSource?: () => AskAnswerSource | undefined;

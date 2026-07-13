@@ -8,6 +8,10 @@
 - Preserved two-cell terminal width for Hangul Filler (U+3164), VS16 emoji-presentation graphemes, and emoji-modifier sequences while aligning TUI display-width measurement with native wrapping and truncation (#1979).
 - Fixed the native notifications server to capability-gate controlled asks per connection, default-deny until `ask_controls_v1` negotiation (reset on reconnect), and send additive non-actionable `action_unavailable` frames instead of stripped option buttons to non-capable clients (#2029).
 
+### Changed
+
+- Renamed the native notifications SDK crate from `gjc-notifications` to `gjc-sdk` as part of the Gajae-Code SDK rename. Sessions and daemons must restart together across the upgrade because discovery moved from `.gjc/state/notifications/` to `.gjc/state/sdk/` without dual-scan compatibility.
+
 ## [0.9.1] - 2026-07-08
 
 ### Changed

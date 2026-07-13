@@ -3,12 +3,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
-import { markdownToTelegramHtml, splitTelegramHtml } from "../src/notifications/html-format";
-import { buildRichMessage, deliverRichWithFallback, shouldPromoteRich } from "../src/notifications/rich-render";
-import type { BotApi } from "../src/notifications/telegram-daemon";
-import { TelegramNotificationDaemon } from "../src/notifications/telegram-daemon";
-import type { ThreadedSend } from "../src/notifications/threaded-render";
-import { renderThreadedFrame } from "../src/notifications/threaded-render";
+import { markdownToTelegramHtml, splitTelegramHtml } from "../src/sdk/bus/html-format";
+import { buildRichMessage, deliverRichWithFallback, shouldPromoteRich } from "../src/sdk/bus/rich-render";
+import type { BotApi } from "../src/sdk/bus/telegram-daemon";
+import { TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
+import type { ThreadedSend } from "../src/sdk/bus/threaded-render";
+import { renderThreadedFrame } from "../src/sdk/bus/threaded-render";
 
 // ---------------------------------------------------------------------------
 // Adversarial ("red-team") boundaries for the opt-in rich final-answer path.

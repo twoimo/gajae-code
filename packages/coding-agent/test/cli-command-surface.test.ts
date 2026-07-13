@@ -32,6 +32,7 @@ describe("GJC public CLI command surface", () => {
 			"config",
 			"stats",
 			"notify",
+			"sdk",
 			"daemon",
 			"web-search",
 			"local-provider",

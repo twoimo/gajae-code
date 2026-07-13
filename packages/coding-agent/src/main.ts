@@ -36,6 +36,7 @@ import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { persistCoordinatorRuntimeInputReady } from "./gjc-runtime/session-state-sidecar";
 import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
+import type { AcpStartupOptions } from "./modes/acp/startup-options";
 import type { SessionSelectionResult } from "./modes/components/session-selector";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -51,7 +52,7 @@ import {
 	discoverAuthStorage,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
-import type { AuthStorage } from "./session/auth-storage";
+
 import {
 	type ResumeSessionIdentity,
 	resolveResumableSession,
@@ -86,19 +87,15 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 	}
 }
 
-export type StartupUpdateRoute = "interactive" | "print" | "text" | "json" | "rpc" | "rpc-ui" | "acp" | "bridge";
+export type StartupUpdateRoute = "interactive" | "print" | "text" | "json" | "acp";
 
 export function classifyStartupUpdateRoute(
 	parsed: Pick<Args, "print" | "mode">,
 	autoPrint: boolean,
 ): StartupUpdateRoute {
-	if (!parsed.print && !autoPrint && parsed.mode === undefined) {
-		return "interactive";
-	}
-	if (parsed.print) {
-		return "print";
-	}
-	return parsed.mode ?? "text";
+	if (!parsed.print && !autoPrint && parsed.mode === undefined) return "interactive";
+	if (parsed.print) return "print";
+	return parsed.mode === "acp" ? "acp" : "text";
 }
 
 /** Coordinates the non-blocking update check around the interactive UI lifecycle. */
@@ -115,9 +112,7 @@ export class StartupUpdateOrchestrator {
 	}
 
 	startBeforeInteractiveInitialization(): void {
-		if (this.#route !== "interactive" || !this.#enabled() || this.#versionCheckPromise) {
-			return;
-		}
+		if (this.#route !== "interactive" || !this.#enabled() || this.#versionCheckPromise) return;
 		try {
 			this.#versionCheckPromise = this.#check().catch(() => undefined);
 		} catch {
@@ -128,9 +123,7 @@ export class StartupUpdateOrchestrator {
 	attachAfterInteractiveInitialization(notify: (version: string) => void): void {
 		this.#versionCheckPromise
 			?.then(version => {
-				if (version && this.#enabled()) {
-					notify(version);
-				}
+				if (version && this.#enabled()) notify(version);
 			})
 			.catch(() => {});
 	}
@@ -149,7 +142,7 @@ export async function initializeInteractiveModeWithStartupUpdate(
 	startupUpdate.attachAfterInteractiveInitialization(version => mode.showNewVersionNotification(version));
 }
 
-const RPC_DEFAULTED_SETTING_PATHS: SettingPath[] = [
+const ACP_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"todo.enabled",
 	"todo.reminders",
 	"todo.reminders.max",
@@ -167,16 +160,121 @@ const RPC_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"task.maxRecursionDepth",
 	"task.disabledAgents",
 	"task.agentModelOverrides",
-	// Memory subsystems are off-by-default for RPC hosts; embedders that want
-	// memory should opt in explicitly through their own settings layer.
+	// Memory subsystems are off-by-default for embedded (ACP) hosts; embedders
+	// that want memory should opt in explicitly through their own settings layer.
 	"memory.backend",
 	"memories.enabled",
 ];
 
-function applyRpcDefaultSettingOverrides(targetSettings: Settings = settings): void {
-	for (const settingPath of RPC_DEFAULTED_SETTING_PATHS) {
+function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): void {
+	for (const settingPath of ACP_DEFAULTED_SETTING_PATHS) {
 		targetSettings.override(settingPath, getDefault(settingPath));
 	}
+}
+
+/**
+ * Translate only ACP startup settings with a canonical SDK control carrier.
+ * Every other local-session flag is rejected so the broker-backed ACP host
+ * never appears to accept options it cannot apply to its remote session.
+ */
+export function resolveAcpStartupOptions(
+	parsed: Pick<
+		Args,
+		| "allowHome"
+		| "apiKey"
+		| "appendSystemPrompt"
+		| "credential"
+		| "continue"
+		| "default"
+		| "cwd"
+		| "fileArgs"
+		| "fork"
+		| "hooks"
+		| "messages"
+		| "mpreset"
+		| "model"
+		| "models"
+		| "noLsp"
+		| "noPty"
+		| "noRules"
+		| "noSession"
+		| "noSkills"
+		| "noTitle"
+		| "noTools"
+		| "pluginDirs"
+		| "print"
+		| "provider"
+		| "providerSessionId"
+		| "resume"
+		| "sessionDir"
+		| "skills"
+		| "slow"
+		| "smol"
+		| "plan"
+		| "systemPrompt"
+		| "thinking"
+		| "tmux"
+		| "tools"
+		| "extensions"
+		| "unknownFlags"
+	>,
+	sessionOptions: Pick<CreateAgentSessionOptions, "model" | "modelPattern" | "thinkingLevel">,
+): AcpStartupOptions {
+	const unsupported = [
+		...(parsed.allowHome ? ["--allow-home"] : []),
+		...(parsed.default ? ["--default"] : []),
+		...(parsed.apiKey ? ["--api-key"] : []),
+		...(parsed.appendSystemPrompt ? ["--append-system-prompt"] : []),
+		...(parsed.credential ? ["--credential"] : []),
+		...(parsed.continue ? ["--continue"] : []),
+		...(parsed.cwd ? ["--cwd"] : []),
+		...(parsed.fileArgs.length > 0 ? ["@file"] : []),
+		...(parsed.fork ? ["--fork"] : []),
+		...(parsed.hooks?.length ? ["--hook"] : []),
+		...(parsed.messages.length > 0 ? ["initial prompt"] : []),
+		...(parsed.models?.length ? ["--models"] : []),
+		...(parsed.noLsp ? ["--no-lsp"] : []),
+		...(parsed.noPty ? ["--no-pty"] : []),
+		...(parsed.noRules ? ["--no-rules"] : []),
+		...(parsed.noSession ? ["--no-session"] : []),
+		...(parsed.noSkills ? ["--no-skills"] : []),
+		...(parsed.noTitle ? ["--no-title"] : []),
+		...(parsed.noTools ? ["--no-tools"] : []),
+		...(parsed.pluginDirs?.length ? ["--plugin-dir"] : []),
+		...(parsed.print ? ["--print"] : []),
+		...(parsed.provider && !parsed.model ? ["--provider"] : []),
+		...(parsed.providerSessionId ? ["--provider-session-id"] : []),
+		...(parsed.resume ? ["--resume"] : []),
+		...(parsed.sessionDir ? ["--session-dir"] : []),
+		...(parsed.skills?.length ? ["--skills"] : []),
+		...(parsed.slow ? ["--slow"] : []),
+		...(parsed.smol ? ["--smol"] : []),
+		...(parsed.plan ? ["--plan"] : []),
+		...(parsed.systemPrompt ? ["--system-prompt"] : []),
+		...(parsed.tmux ? ["--tmux"] : []),
+		...(parsed.tools?.length ? ["--tools"] : []),
+		...(parsed.extensions?.length ? ["--extension"] : []),
+		...(parsed.unknownFlags.size > 0 ? ["extension flags"] : []),
+	];
+	if (unsupported.length > 0) {
+		throw new Error(
+			`Unsupported under SDK-backed ACP: ${unsupported.join(", ")}. Use ACP session configuration or SDK controls after session creation.`,
+		);
+	}
+	if (parsed.model && (!sessionOptions.model || sessionOptions.modelPattern)) {
+		throw new Error(
+			"Unsupported under SDK-backed ACP: --model could not be resolved to a canonical model ID. Use session/set_config_option after session creation.",
+		);
+	}
+	return {
+		...(parsed.mpreset ? { modelPreset: parsed.mpreset } : {}),
+		...(parsed.model && sessionOptions.model
+			? { modelId: `${sessionOptions.model.provider}/${sessionOptions.model.id}` }
+			: {}),
+		...((parsed.model || parsed.thinking) && sessionOptions.thinkingLevel
+			? { thinkingLevel: sessionOptions.thinkingLevel }
+			: {}),
+	};
 }
 
 async function readPipedInput(): Promise<string | undefined> {
@@ -267,19 +365,6 @@ type CreateSessionForMain = (
 	context?: { skipPostCreateModelRefresh?: boolean },
 ) => Promise<CreateAgentSessionResult>;
 
-type AcpSessionFactory = (cwd: string) => Promise<AgentSession>;
-
-export interface AcpSessionFactoryOptions {
-	baseOptions: CreateAgentSessionOptions;
-	settings: Settings;
-	sessionDir?: string;
-	authStorage: AuthStorage;
-	modelRegistry: ModelRegistry;
-	parsedArgs: Pick<Args, "apiKey" | "default" | "model" | "mpreset" | "thinking">;
-	rawArgs: string[];
-	createSession: CreateSessionForMain;
-}
-
 export async function applyStartupModelProfiles(args: {
 	session: AgentSession;
 	settings: Settings;
@@ -337,50 +422,6 @@ export async function applyStartupModelProfilesOrExit(
 		process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 		process.exit(1);
 	}
-}
-
-/**
- * Build the per-`session/new` factory used by ACP mode.
- *
- * MCP servers in ACP sessions are owned exclusively by the ACP client, which
- * supplies them through `session/new.mcpServers` and re-applies them via
- * {@link AcpAgent#configureMcpServers}. We therefore force `enableMCP: false`
- * on every session created here so {@link createAgentSession} skips the on-disk
- * `.mcp.json` discovery path — otherwise host MCP tools land in the session's
- * tool registry and shadow the client-supplied servers (issue #1234).
- */
-export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSessionFactory {
-	return async cwd => {
-		const nextSettings = await args.settings.cloneForCwd(cwd);
-		const hasStartupProfile = Boolean(nextSettings.get("modelProfile.default") || args.parsedArgs.mpreset);
-		const nextSessionManager = SessionManager.create(cwd, args.sessionDir);
-		const agentId = `acp:${nextSessionManager.getSessionId()}`;
-		const { session: nextSession } = await args.createSession(
-			{
-				...args.baseOptions,
-				cwd,
-				sessionManager: nextSessionManager,
-				settings: nextSettings,
-				authStorage: args.authStorage,
-				modelRegistry: args.modelRegistry,
-				agentId,
-				hasUI: false,
-				enableMCP: false,
-			},
-			{ skipPostCreateModelRefresh: hasStartupProfile },
-		);
-		await applyStartupModelProfilesOrExit({
-			session: nextSession,
-			settings: nextSettings,
-			modelRegistry: args.modelRegistry,
-			parsedArgs: args.parsedArgs,
-			startupModel: args.baseOptions.model,
-			startupThinkingLevel: args.baseOptions.thinkingLevel,
-		});
-		applyCliRuntimeApiKeyOverride(args.authStorage, args.parsedArgs.apiKey, nextSession.model);
-		applyExtensionFlagValues(nextSession, args.rawArgs);
-		return nextSession;
-	};
 }
 
 interface InteractiveModeFactoryOptions {
@@ -881,21 +922,12 @@ export interface RlmPreset {
 	onSessionCreated?: (session: AgentSession) => void | Promise<void>;
 }
 
-type RunRpcMode = (
-	session: AgentSession,
-	setToolUIContext?: CreateAgentSessionResult["setToolUIContext"],
-	options?: { listen?: string },
-) => Promise<void>;
-type RunBridgeMode = (
-	session: AgentSession,
-	setToolUIContext?: CreateAgentSessionResult["setToolUIContext"],
-) => Promise<void>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
 
 export interface RunRootCommandDependencies {
 	createAgentSession?: typeof createAgentSession;
 	discoverAuthStorage?: typeof discoverAuthStorage;
-	runAcpMode?: (createSession: AcpSessionFactory) => Promise<void>;
+	runAcpMode?: (options?: { agentDir?: string }) => Promise<void>;
 	settings?: Settings;
 	rlmPreset?: RlmPreset;
 	suppressProcessExit?: boolean;
@@ -904,8 +936,6 @@ export interface RunRootCommandDependencies {
 	readPipedInput?: typeof readPipedInput;
 	runStartupCredentialAutoImportIfNeeded?: typeof runStartupCredentialAutoImportIfNeeded;
 	getChangelogForDisplay?: typeof getChangelogForDisplay;
-	runRpcMode?: RunRpcMode;
-	runBridgeMode?: RunBridgeMode;
 	createInteractiveMode?: CreateInteractiveMode;
 	runPrintMode?: RunPrintMode;
 	isResumePickerTerminal?: ResumePickerTerminalCheck;
@@ -1030,36 +1060,17 @@ export async function runRootCommand(
 		process.exit(0);
 	}
 
-	if (
-		(parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui" || parsedArgs.mode === "bridge") &&
-		parsedArgs.fileArgs.length > 0
-	) {
-		process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC or bridge mode")}\n`);
-		process.exit(1);
-	}
-
 	const cwd = getProjectDir();
 	const settingsInstance =
 		deps.settings ?? (await logger.time("settings:init", deps.initializeSettings ?? Settings.init, { cwd }));
-	if (
-		parsedArgs.mode === "rpc" ||
-		parsedArgs.mode === "rpc-ui" ||
-		parsedArgs.mode === "acp" ||
-		parsedArgs.mode === "bridge"
-	) {
-		applyRpcDefaultSettingOverrides(settingsInstance);
+	if (parsedArgs.mode === "acp") {
+		applyAcpDefaultSettingOverrides(settingsInstance);
 	}
 	modelRegistry.applyConfiguredModelBindings(settingsInstance);
-	if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui") {
+	if (parsedArgs.noPty) {
 		Bun.env.PI_NO_PTY = "1";
 	}
-	if (
-		parsedArgs.noTitle ||
-		parsedArgs.mode === "rpc" ||
-		parsedArgs.mode === "rpc-ui" ||
-		parsedArgs.mode === "acp" ||
-		parsedArgs.mode === "bridge"
-	) {
+	if (parsedArgs.noTitle || parsedArgs.mode === "acp") {
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
@@ -1215,12 +1226,13 @@ export async function runRootCommand(
 	};
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
-	sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+	sessionOptions.hasUI = isInteractive;
 	sessionOptions.settings = settingsInstance;
 	const hasRootStartupProfile = Boolean(settingsInstance.get("modelProfile.default") || parsedArgs.mpreset);
 
 	// Research-mode (RLM) preset: augment session options before session creation.
 	deps.rlmPreset?.applyOptions(sessionOptions, settingsInstance);
+	const acpStartupOptions = mode === "acp" ? resolveAcpStartupOptions(parsedArgs, sessionOptions) : undefined;
 
 	// Handle CLI --api-key as runtime override (not persisted)
 	if (parsedArgs.apiKey && parsedArgs.credential) {
@@ -1261,17 +1273,10 @@ export async function runRootCommand(
 	};
 
 	if (mode === "acp") {
-		const createAcpSession = createAcpSessionFactory({
-			baseOptions: sessionOptions,
-			settings: settingsInstance,
-			sessionDir: parsedArgs.sessionDir,
-			authStorage,
-			modelRegistry,
-			parsedArgs,
-			rawArgs,
-			createSession,
+		await (deps.runAcpMode ?? (await import("./modes/acp")).runAcpMode)({
+			agentDir: settingsInstance.getAgentDir(),
+			...(acpStartupOptions ? { startupOptions: acpStartupOptions } : {}),
 		});
-		await (deps.runAcpMode ?? (await import("./modes/acp")).runAcpMode)(createAcpSession);
 	} else {
 		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager, eventBus } = await createSession(
 			sessionOptions,
@@ -1324,26 +1329,7 @@ export async function runRootCommand(
 			process.exit(1);
 		}
 
-		if (mode === "rpc" || mode === "rpc-ui") {
-			const { RpcListenRefusedError, runRpcMode } = await import("./modes/rpc/rpc-mode");
-			const runRpc = deps.runRpcMode ?? runRpcMode;
-			try {
-				await runRpc(session, mode === "rpc-ui" ? setToolUIContext : undefined, {
-					listen: parsedArgs.rpcListen,
-				});
-			} catch (error) {
-				if (!(error instanceof RpcListenRefusedError)) throw error;
-				logger.setTransports({ console: true, file: true });
-				logger.error(error.message);
-				await session.dispose();
-				stopThemeWatcher();
-				await postmortem.quit(1);
-				process.exit(1);
-			}
-		} else if (mode === "bridge") {
-			const runBridge = deps.runBridgeMode ?? (await import("./modes/bridge/bridge-mode")).runBridgeMode;
-			await runBridge(session, setToolUIContext);
-		} else if (isInteractive) {
+		if (isInteractive) {
 			startupUpdate.startBeforeInteractiveInitialization();
 			const changelogMarkdown = await logger.time(
 				"main:getChangelogForDisplay",

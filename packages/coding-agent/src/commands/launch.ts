@@ -109,8 +109,8 @@ export default class Index extends Command {
 			description: "Allow starting in ~ without auto-switching to a temp dir",
 		}),
 		mode: Flags.string({
-			description: "Output mode: text (default), json, rpc, acp, rpc-ui, or bridge",
-			options: ["text", "json", "rpc", "acp", "rpc-ui", "bridge"],
+			description: "Output mode: text (default), json, or acp",
+			options: ["text", "json", "acp"],
 		}),
 		print: Flags.boolean({
 			char: "p",

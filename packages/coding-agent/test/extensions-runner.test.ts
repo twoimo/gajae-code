@@ -713,6 +713,77 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("system prompt boundary", () => {
+		it("returns a defensive copy so extension mutation cannot touch the live prompt", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", async (_event, ctx) => {
+						const prompt = ctx.getSystemPrompt();
+						if (prompt[0] !== "base prompt block") {
+							throw new Error("expected the live prompt content");
+						}
+						prompt[0] = "mutated-by-extension";
+						prompt.push("appended-by-extension");
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "system-prompt-mutation.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+
+			const livePrompt = ["base prompt block", "second block"];
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => sessionManager.getSessionName(),
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => livePrompt,
+				},
+			);
+
+			const errors: Array<{ extensionPath: string; event: string; error: string }> = [];
+			runner.onError(err => {
+				errors.push(err);
+			});
+
+			await runner.emit({ type: "session_start" });
+
+			expect(errors).toEqual([]);
+			expect(livePrompt).toEqual(["base prompt block", "second block"]);
+
+			// The command context inherits the same defensive-copy getter.
+			const commandPrompt = runner.createCommandContext().getSystemPrompt();
+			commandPrompt[0] = "mutated-via-command-context";
+			expect(livePrompt).toEqual(["base prompt block", "second block"]);
+		});
+	});
+
 	describe("session name API", () => {
 		it("lets extensions read and set the session name after initialization", async () => {
 			const extCode = `
@@ -770,6 +841,60 @@ describe("ExtensionRunner", () => {
 
 			expect(sessionManager.getSessionName()).toBe("Named by extension");
 			expect(sessionManager.getHeader()?.title).toBe("Named by extension");
+		});
+
+		it("routes counted pending-message queues through createContext and zero-falls-back when omitted", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", () => {});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "pending-counts.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runtimeActions = {
+				sendMessage: () => {},
+				sendUserMessage: () => {},
+				appendEntry: () => {},
+				setLabel: () => {},
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				setActiveTools: async () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => undefined,
+				setThinkingLevel: () => {},
+				getSessionName: () => undefined,
+				setSessionName: async () => {},
+			};
+			const baseContextActions = {
+				getModel: () => undefined,
+				isIdle: () => true,
+				abort: () => {},
+				hasPendingMessages: () => true,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: async () => {},
+				getSystemPrompt: () => [],
+			};
+
+			// Wired: the counted provider is surfaced verbatim on the created context.
+			const wired = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			wired.initialize(runtimeActions, {
+				...baseContextActions,
+				getPendingMessageCounts: () => ({ steering: 2, followUp: 1, nextTurn: 3 }),
+			});
+			expect(wired.createContext().getPendingMessageCounts()).toEqual({ steering: 2, followUp: 1, nextTurn: 3 });
+
+			// Omitted: every initialize applies the explicit zero fallback, never a stale provider.
+			wired.initialize(runtimeActions, baseContextActions);
+			expect(wired.createContext().getPendingMessageCounts()).toEqual({ steering: 0, followUp: 0, nextTurn: 0 });
 		});
 
 		it("keeps session naming unavailable during extension load", async () => {

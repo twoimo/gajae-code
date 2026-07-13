@@ -320,7 +320,7 @@ function ownerFrame(
  * frames delegate to {@link observeAgentWireEventPayload}; non-event frames are
  * mapped here so owners never re-parse protocol semantics privately.
  */
-export function observeRpcOutboundFrame(frame: Record<string, unknown>): AgentWireOwnerObservation | null {
+export function observeAgentWireFrame(frame: Record<string, unknown>): AgentWireOwnerObservation | null {
 	const type = str(frame.type);
 	if (!type || type === "ready") return null;
 

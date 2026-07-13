@@ -80,6 +80,7 @@ describe("GajaePetWidget", () => {
 	afterEach(() => {
 		__animationSchedulerTestHooks.reset();
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it("on: reserves a side area and registers the overlay emitter", () => {
@@ -286,6 +287,7 @@ describe("GajaePetWidget", () => {
 	});
 
 	it("stays off when no pixel protocol is available", () => {
+		vi.spyOn(GajaePetWidget, "pixelProtocol").mockReturnValue(null);
 		const stubs = makeStubs();
 		const widget = new GajaePetWidget({
 			ui: stubs.ui,

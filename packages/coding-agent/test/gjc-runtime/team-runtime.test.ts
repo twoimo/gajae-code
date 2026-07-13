@@ -2348,7 +2348,7 @@ describe("native gjc team runtime", () => {
 		await startGjcTeam({
 			workerCount: 2,
 			agentType: "executor",
-			task: "Notifications SDK transport seam",
+			task: "Notification transport seam",
 			teamName: "transport-team",
 			cwd: cleanupRoot,
 			dryRun: true,
@@ -2360,7 +2360,7 @@ describe("native gjc team runtime", () => {
 						messageId: input.message.message_id,
 						body: input.message.body,
 					});
-					return { transport: "notifications_sdk", state: "sent", reason: "test-sdk" };
+					return { transport: "sdk", state: "sent", reason: "test-sdk" };
 				},
 			},
 		});
@@ -2402,7 +2402,7 @@ describe("native gjc team runtime", () => {
 		await startGjcTeam({
 			workerCount: 2,
 			agentType: "executor",
-			task: "Notifications SDK transport fallback",
+			task: "Notification transport fallback",
 			teamName: "transport-fallback-team",
 			cwd: cleanupRoot,
 			dryRun: true,
@@ -2434,7 +2434,7 @@ describe("native gjc team runtime", () => {
 			await startGjcTeam({
 				workerCount: 2,
 				agentType: "executor",
-				task: `Notifications SDK ${state} duplicate guard`,
+				task: `Notification transport ${state} duplicate guard`,
 				teamName: `transport-${state}-team`,
 				cwd: cleanupRoot,
 				dryRun: true,
@@ -2444,7 +2444,7 @@ describe("native gjc team runtime", () => {
 			resetMailboxTransport = setGjcTeamMailboxDeliveryTransportForTest({
 				async deliverMailboxMessage() {
 					attempts += 1;
-					return { transport: "notifications_sdk", state, reason: `test-sdk-${state}` };
+					return { transport: "sdk", state, reason: `test-sdk-${state}` };
 				},
 			});
 
@@ -2488,7 +2488,7 @@ describe("native gjc team runtime", () => {
 		await startGjcTeam({
 			workerCount: 2,
 			agentType: "executor",
-			task: "Notifications SDK explicit failure fallback",
+			task: "Notification transport explicit failure fallback",
 			teamName: "transport-failed-fallback-team",
 			cwd: cleanupRoot,
 			dryRun: true,
@@ -2498,7 +2498,7 @@ describe("native gjc team runtime", () => {
 		resetMailboxTransport = setGjcTeamMailboxDeliveryTransportForTest({
 			async deliverMailboxMessage() {
 				attempts += 1;
-				return { transport: "notifications_sdk", state: "failed", reason: "test-sdk-failed" };
+				return { transport: "sdk", state: "failed", reason: "test-sdk-failed" };
 			},
 		});
 

@@ -20,16 +20,13 @@ import { EventBus } from "../src/utils/event-bus";
 
 const alternateRoutes: Array<{
 	name: StartupUpdateRoute;
-	parsed: { print?: boolean; mode?: "text" | "json" | "rpc" | "rpc-ui" | "acp" | "bridge" };
+	parsed: { print?: boolean; mode?: "text" | "json" | "acp" };
 	autoPrint: boolean;
 }> = [
 	{ name: "print", parsed: { print: true }, autoPrint: false },
 	{ name: "text", parsed: { mode: "text" }, autoPrint: false },
-	{ name: "json", parsed: { mode: "json" }, autoPrint: false },
-	{ name: "rpc", parsed: { mode: "rpc" }, autoPrint: false },
-	{ name: "rpc-ui", parsed: { mode: "rpc-ui" }, autoPrint: false },
+	{ name: "text", parsed: { mode: "json" }, autoPrint: false },
 	{ name: "acp", parsed: { mode: "acp" }, autoPrint: false },
-	{ name: "bridge", parsed: { mode: "bridge" }, autoPrint: false },
 	{ name: "text", parsed: {}, autoPrint: true },
 ];
 
@@ -225,15 +222,12 @@ describe("startup update contract", () => {
 			name: string;
 			args: Partial<Args>;
 			pipedInput?: string;
-			expectedRunner: "acp" | "bridge" | "print" | "rpc";
+			expectedRunner: "acp" | "print";
 		}> = [
 			{ name: "print", args: { print: true }, expectedRunner: "print" },
 			{ name: "text", args: { mode: "text" }, expectedRunner: "print" },
 			{ name: "json", args: { mode: "json" }, expectedRunner: "print" },
-			{ name: "rpc", args: { mode: "rpc" }, expectedRunner: "rpc" },
-			{ name: "rpc-ui", args: { mode: "rpc-ui" }, expectedRunner: "rpc" },
 			{ name: "acp", args: { mode: "acp" }, expectedRunner: "acp" },
-			{ name: "bridge", args: { mode: "bridge" }, expectedRunner: "bridge" },
 			{ name: "auto-print", args: {}, pipedInput: "piped prompt", expectedRunner: "print" },
 		];
 
@@ -244,7 +238,11 @@ describe("startup update contract", () => {
 			let checks = 0;
 			const runners: string[] = [];
 			try {
-				await runRootCommand(rootArgs(testCase.args), [], {
+				const parsed =
+					testCase.expectedRunner === "acp"
+						? ({ messages: [], fileArgs: [], unknownFlags: new Map(), ...testCase.args } satisfies Args)
+						: rootArgs(testCase.args);
+				await runRootCommand(parsed, [], {
 					createAgentSession: async () => fakeSessionResult(),
 					discoverAuthStorage: async () => authStorage,
 					settings: Settings.isolated({ "marketplace.autoUpdate": "off", "startup.checkUpdate": true }),
@@ -261,12 +259,6 @@ describe("startup update contract", () => {
 					runAcpMode: async () => {
 						runners.push("acp");
 					},
-					runRpcMode: async () => {
-						runners.push("rpc");
-					},
-					runBridgeMode: async () => {
-						runners.push("bridge");
-					},
 					runPrintMode: async () => {
 						runners.push("print");
 					},
@@ -280,6 +272,45 @@ describe("startup update contract", () => {
 			}
 		}
 	}, 30_000);
+
+	it("forwards CLI model and thinking to SDK-backed ACP startup controls", async () => {
+		using tempDir = TempDir.createSync("@gjc-acp-startup-options-");
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		const originalNoTitle = Bun.env.PI_NO_TITLE;
+		let options: { agentDir?: string; startupOptions?: { modelId?: string; thinkingLevel?: string } } | undefined;
+		try {
+			await runRootCommand(
+				{
+					messages: [],
+					fileArgs: [],
+					unknownFlags: new Map(),
+					mode: "acp",
+					model: `${testModel.provider}/${testModel.id}`,
+					thinking: "high" as Args["thinking"],
+				},
+				[],
+				{
+					discoverAuthStorage: async () => authStorage,
+					settings: Settings.isolated({ "marketplace.autoUpdate": "off", "startup.checkUpdate": true }),
+					suppressProcessExit: true,
+					initTheme: async () => {},
+					readPipedInput: async () => undefined,
+					runStartupCredentialAutoImportIfNeeded: async () => undefined,
+					runAcpMode: async input => {
+						options = input;
+					},
+				},
+			);
+			expect(options?.startupOptions).toEqual({
+				modelId: `${testModel.provider}/${testModel.id}`,
+				thinkingLevel: "high",
+			});
+		} finally {
+			authStorage.close();
+			if (originalNoTitle === undefined) delete Bun.env.PI_NO_TITLE;
+			else Bun.env.PI_NO_TITLE = originalNoTitle;
+		}
+	});
 
 	it("preserves print-mode status and does not dispose the session twice", async () => {
 		using tempDir = TempDir.createSync("@gjc-print-exit-");

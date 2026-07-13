@@ -127,10 +127,10 @@ describe("bare resume startup gating", () => {
 		expect(await expectEarlyBareResumeRejection(bareArgs(), false)).toBe(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
 	});
 
-	it("rejects TTY-backed RPC and print routes before startup work", async () => {
-		for (const args of [bareArgs({ mode: "rpc" }), bareArgs({ print: true })]) {
-			expect(await expectEarlyBareResumeRejection(args, true)).toBe(`${BARE_RESUME_INTERACTIVE_ERROR}\n`);
-		}
+	it("rejects the TTY-backed print route before startup work", async () => {
+		expect(await expectEarlyBareResumeRejection(bareArgs({ print: true }), true)).toBe(
+			`${BARE_RESUME_INTERACTIVE_ERROR}\n`,
+		);
 	});
 
 	it("preserves undefined, zero, and nonzero exit codes in isolated route probes", async () => {

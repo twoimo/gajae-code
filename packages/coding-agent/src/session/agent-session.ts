@@ -1,7 +1,7 @@
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
- * This class is shared between all run modes (interactive, print, rpc).
+ * This class is shared by interactive, print, ACP, and SDK-hosted session callers.
  * It encapsulates:
  * - Agent state access
  * - Event subscription with automatic session persistence
@@ -28,7 +28,6 @@ import {
 	type AgentTool,
 	assertImagePlaceholdersHavePayload,
 	canContinuePersistedHistory,
-	type ResolvedThinkingLevel,
 	resolveTelemetry,
 	type StablePrefixSnapshot,
 	ThinkingLevel,
@@ -187,13 +186,17 @@ import type {
 } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
-import type { LoadedSubskillActivation } from "../extensibility/gjc-plugins";
+import {
+	type LoadedSubskillActivation,
+	resolveSubskillActivationForSkillInvocation,
+} from "../extensibility/gjc-plugins";
 import { resolveCurrentPhaseForParent } from "../extensibility/gjc-plugins/injection";
 import { readActiveSubskillsForParent, toActiveSubskillEntry } from "../extensibility/gjc-plugins/state";
 import { loadActiveSubskillTools } from "../extensibility/gjc-plugins/tools";
 import type { HookCommandContext } from "../extensibility/hooks/types";
-import type { Skill, SkillWarning } from "../extensibility/skills";
+import { buildSkillPromptMessage, type Skill, type SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
+
 import { buildGjcRuntimeSessionEnv, consumePendingGoalModeRequest } from "../gjc-runtime/goal-mode-request";
 import {
 	assertNonEmptyGjcSessionId,
@@ -213,7 +216,11 @@ import { ensureWorkflowSkillActivationState } from "../hooks/skill-state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { shutdownAll as shutdownAllLspClients } from "../lsp/client";
 import { resolveMemoryBackend } from "../memory-backend";
-import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/unattended-session";
+import {
+	BrokerWorkflowGateEmitter,
+	FileGateStore,
+	type WorkflowGateEmitter,
+} from "../modes/shared/agent-wire/workflow-gate-broker";
 import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import type { PlanModeState } from "../plan-mode/state";
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
@@ -279,7 +286,12 @@ import { buildNamedToolChoice, buildNamedToolChoiceResult } from "../utils/tool-
 import { buildWorkflowIntentDiff, WORKFLOW_INTENT_DIFF_CUSTOM_TYPE } from "../workflow/workflow-intent-diff";
 import { buildWorkspaceTree, type WorkspaceTree } from "../workspace-tree";
 import type { AuthStorage } from "./auth-storage";
-import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
+import type {
+	ClientBridge,
+	ClientBridgePermissionOption,
+	ClientBridgePermissionOutcome,
+	ClientBridgePermissionToolCall,
+} from "./client-bridge";
 import { computeNonMessageTokens } from "./context-estimation";
 import {
 	type ContributionPrepOptions,
@@ -505,6 +517,21 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
+	/**
+	 * Invoked after all prompt preflight checks pass and immediately before agent execution begins.
+	 * Cancellation before this callback rejects the prompt.
+	 */
+	onPreflightAccepted?: () => void;
+}
+
+function promptPreflightCancelledError(): Error {
+	const error = Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" });
+	error.name = "PromptPreflightCancelledError";
+	return error;
+}
+
+function isPromptPreflightCancelledError(error: unknown): boolean {
+	return error instanceof Error && error.name === "PromptPreflightCancelledError";
 }
 
 /** Result from a handoff operation. */
@@ -531,12 +558,6 @@ export interface RoleModelCycleResult {
 	model: Model;
 	thinkingLevel: ThinkingLevel | undefined;
 	role: string;
-}
-
-export interface DefaultModelSelectionResult {
-	readonly provider: string;
-	readonly modelId: string;
-	readonly thinkingLevel: ResolvedThinkingLevel;
 }
 
 /** Session statistics for /session command */
@@ -1189,7 +1210,6 @@ export class AgentSession {
 	#scopedModels: ScopedModelSelection[];
 	#thinkingLevel: ThinkingLevel | undefined;
 	#activeModelProfile: string | undefined;
-	#defaultModelSelectionTail: Promise<void> = Promise.resolve();
 	#promptTemplates: PromptTemplate[];
 	#slashCommands: FileSlashCommand[];
 
@@ -1233,6 +1253,18 @@ export class AgentSession {
 	#allowAcpAgentInitiatedTurns = false;
 	/** Per-session memory of allow_always / reject_always decisions for gated tools. */
 	#acpPermissionDecisions: Map<string, "allow_always" | "reject_always"> = new Map();
+	/** SDK-controlled permission policy applied before ACP client prompting. Defaults to `allow` so callers
+	 * without a reverse permission provider (TUI, print/headless) run guarded tools; ACP/SDK set this explicitly. */
+	#sdkPermissionMode: "prompt" | "allow" | "deny" = "allow";
+	/** Permission provider registered by a live SDK reverse lease. */
+	#sdkPermissionProvider:
+		| ((
+				toolCall: ClientBridgePermissionToolCall,
+				options: ClientBridgePermissionOption[],
+				signal?: AbortSignal,
+		  ) => Promise<ClientBridgePermissionOutcome>)
+		| undefined;
+
 	#guardedToolWrapperCache = new WeakMap<AgentTool, Map<string, AgentTool>>();
 	#acpPermissionWrapperVersion = 0;
 
@@ -1361,7 +1393,6 @@ export class AgentSession {
 	#discoverableToolSearchIndex: DiscoverableToolSearchIndex | null = null;
 	#selectedDiscoveredToolNames = new Set<string>();
 	#discoverableToolAllowedNames: ReadonlySet<string> | undefined;
-	#rpcHostToolNames = new Set<string>();
 	#gjcSubskillToolNames = new Set<string>();
 	#gjcSubskillToolSignature: string | undefined;
 	#defaultSelectedMCPServerNames = new Set<string>();
@@ -1431,15 +1462,13 @@ export class AgentSession {
 		nonEditDeterminations: 0,
 	};
 	#promptInFlightCount = 0;
-	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
-	// Local subscribers and extension hooks both receive the deferred event from
-	// #flushPendingAgentEnd(), preserving the local-before-extension ordering used
-	// by #emitSessionEvent while still preventing external clients from resuming
-	// before #promptWithMessage's finally decrements #promptInFlightCount. Without
-	// this, a client that resumes on `agent_end` can fire its next `prompt` while
-	// the session still reports busy and hit AgentBusyError. Flushed from both
-	// #endInFlight (normal) and #resetInFlight (abort).
+	#agentEventHandlersInFlight = 0;
+	#queuedExtensionEventCount = 0;
+	// Wire-level agent_end emission is deferred until both the prompt finalizer and
+	// async event handlers settle. Subscribers treat agent_end as readiness, so
+	// publishing it earlier lets a successor corrupt the prior prompt's lifecycle.
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
+
 	#obfuscator: SecretObfuscator | undefined;
 	#checkpointState: CheckpointState | undefined = undefined;
 	#providerReplaySourceCache = new WeakMap<AgentMessage, ProviderReplaySourceCacheEntry>();
@@ -1448,6 +1477,8 @@ export class AgentSession {
 	#pendingRewindReport: string | undefined = undefined;
 	#lastSuccessfulYieldToolCallId: string | undefined = undefined;
 	#promptGeneration = 0;
+	#promptPreflightAbortController = new AbortController();
+
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	/**
 	 * Provider keys for which the Anthropic fast-mode auto-fallback fired this
@@ -1497,9 +1528,41 @@ export class AgentSession {
 
 	#beginInFlight(): void {
 		this.#promptInFlightCount++;
+		// A successor that starts before a deferred terminal event is published keeps
+		// the session continuously busy; emitting the predecessor's idle boundary later
+		// would create a false readiness window between the two prompts.
+		this.#pendingAgentEndEmit = undefined;
 		if (this.#promptInFlightCount === 1) {
 			this.#acquirePowerAssertion();
 		}
+	}
+
+	#isPromptPreflightCancelled(generation: number, signal: AbortSignal): boolean {
+		return signal.aborted || this.#promptGeneration !== generation;
+	}
+
+	#throwIfPromptPreflightCancelled(generation: number, signal: AbortSignal): void {
+		if (this.#isPromptPreflightCancelled(generation, signal)) {
+			throw promptPreflightCancelledError();
+		}
+	}
+
+	async #awaitPromptPreflight<T>(generation: number, signal: AbortSignal, pending: Promise<T>): Promise<T> {
+		this.#throwIfPromptPreflightCancelled(generation, signal);
+		const cancellation = Promise.withResolvers<never>();
+		const cancel = () => cancellation.reject(promptPreflightCancelledError());
+		signal.addEventListener("abort", cancel, { once: true });
+		try {
+			const result = await Promise.race([pending, cancellation.promise]);
+			this.#throwIfPromptPreflightCancelled(generation, signal);
+			return result;
+		} finally {
+			signal.removeEventListener("abort", cancel);
+		}
+	}
+
+	#suppressDeferredAgentEndForContinuation(): void {
+		this.#pendingAgentEndEmit = undefined;
 	}
 
 	#endInFlight(): void {
@@ -1511,17 +1574,16 @@ export class AgentSession {
 		}
 	}
 
-	#resetInFlight(): void {
-		this.#promptInFlightCount = 0;
-		this.#releasePowerAssertion();
-		this.#flushPendingBackgroundExchanges();
-		this.#flushPendingAgentEnd();
-	}
-
 	#flushPendingAgentEnd(): void {
+		if (this.#promptInFlightCount > 0 || this.#agentEventHandlersInFlight > 0 || this.#queuedExtensionEventCount > 0)
+			return;
 		const pending = this.#pendingAgentEndEmit;
 		if (!pending) return;
 		this.#pendingAgentEndEmit = undefined;
+		// Persist before notifying synchronous subscribers: a subscriber may start a
+		// successor prompt from agent_end, whose running state must serialize after
+		// this terminal boundary rather than be overwritten by it.
+		this.#persistRuntimeStateInBackground(pending);
 		this.#emit(pending);
 		void this.#queueExtensionEvent(pending);
 	}
@@ -1595,6 +1657,16 @@ export class AgentSession {
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.#setGuardedAgentTools(this.agent.state.tools);
+		const workflowGateSessionId = this.sessionManager.getSessionId();
+		assertNonEmptyGjcSessionId(workflowGateSessionId, "AgentSession workflow-gate session");
+		this.setWorkflowGateEmitter(
+			new BrokerWorkflowGateEmitter(
+				workflowGateSessionId,
+				new FileGateStore(
+					path.join(sessionStateDir(this.sessionManager.getCwd(), workflowGateSessionId), "workflow-gates.json"),
+				),
+			),
+		);
 		this.yieldQueue = new YieldQueue({
 			isStreaming: () => this.isStreaming,
 			injectStreaming: message => this.agent.followUp(message),
@@ -1695,9 +1767,16 @@ export class AgentSession {
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
-		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
+		this.#unsubscribeAgent = this.agent.subscribe(this.#trackAgentEvent);
+
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
+		// SDK ToolSession callbacks capture the just-constructed session. Defer the
+		// initial ask-tool attachment until that capture has been assigned by the
+		// session factory, while retaining the durable emitter created above.
+		queueMicrotask(() => {
+			if (!this.#isDisposed) this.#ensureWorkflowGateAskTool();
+		});
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -2107,13 +2186,31 @@ export class AgentSession {
 	#queuedExtensionEvents: Promise<void> = Promise.resolve();
 
 	#queueExtensionEvent(event: AgentSessionEvent): Promise<void> {
+		this.#queuedExtensionEventCount++;
 		const emit = async () => {
 			await this.#emitExtensionEvent(event);
 		};
 		const queued = this.#queuedExtensionEvents.then(emit, emit);
 		this.#queuedExtensionEvents = queued.catch(() => {});
+		const settled = () => {
+			this.#queuedExtensionEventCount = Math.max(0, this.#queuedExtensionEventCount - 1);
+			this.#flushPendingAgentEnd();
+		};
+		void queued.then(settled, settled);
 		return queued;
 	}
+
+	#trackAgentEvent = async (event: AgentEvent): Promise<void> => {
+		this.#agentEventHandlersInFlight++;
+		try {
+			await this.#handleAgentEvent(event);
+		} catch (error) {
+			logger.warn("Agent event handler failed", { event: event.type, error: String(error) });
+		} finally {
+			this.#agentEventHandlersInFlight = Math.max(0, this.#agentEventHandlersInFlight - 1);
+			this.#flushPendingAgentEnd();
+		}
+	};
 
 	#persistRuntimeStateInBackground(event: AgentSessionEvent): void {
 		void persistCoordinatorRuntimeStateFromEvent(event, {
@@ -2137,17 +2234,24 @@ export class AgentSession {
 			return;
 		}
 		const persistRuntimeState = () => this.#persistRuntimeStateInBackground(event);
-		// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
-		// (rpc-mode, ACP, Cursor) treat agent_end as the "session is idle" signal;
-		// emitting while #promptInFlightCount > 0 lets a client fire its next
-		// `prompt` into a session that still reports isStreaming === true. Flush
-		// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
-		// an auto-compaction turn that starts before the original prompt unwinds)
-		// supersedes the pending one, which is what subscribers want — they only
-		// care about the final settle.
-		if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
-			void persistRuntimeState();
+		// Hold agent_end until the prompt's finally and all earlier async event work
+		// have unwound. Subscribers treat this event as the ready signal; flushing it
+		// from abort while either barrier is active permits a successor to race the
+		// prior prompt's cleanup.
+		if (
+			event.type === "agent_end" &&
+			(this.#promptInFlightCount > 0 || this.#agentEventHandlersInFlight > 0 || this.#queuedExtensionEventCount > 0)
+		) {
 			this.#pendingAgentEndEmit = event;
+			return;
+		}
+
+		if (event.type === "agent_end") {
+			// Start the durable terminal write before synchronous subscribers can
+			// re-enter prompt(), so a successor's running transition serializes after it.
+			void persistRuntimeState();
+			this.#emit(event);
+			await this.#emitExtensionEvent(event);
 			return;
 		}
 
@@ -2165,6 +2269,11 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	#handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// Record a successful final yield before any asynchronous extension work so a
+		// concurrently delivered agent_end cannot start post-turn maintenance first.
+		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
+			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
+		}
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -2297,9 +2406,6 @@ export class AgentSession {
 			if (event.toolName === "bash" && !event.isError) {
 				await this.#activatePendingGjcGoalModeRequest();
 			}
-		}
-		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
-			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
 		}
 		if (event.type === "turn_end" && this.#pendingRewindReport) {
 			const report = this.#pendingRewindReport;
@@ -2757,10 +2863,15 @@ export class AgentSession {
 		delayMs?: number;
 		generation?: number;
 		skipCompactionCheck?: boolean;
+		suppressPredecessorAgentEnd?: boolean;
 		shouldContinue?: () => boolean;
 		onSkip?: (reason: "generation_changed" | "aborted_signal" | "queue_drained") => void;
 		onError?: (error: unknown) => void;
 	}): Promise<void> {
+		if (options?.suppressPredecessorAgentEnd) {
+			this.#suppressDeferredAgentEndForContinuation();
+		}
+
 		const scheduledGeneration = options?.generation;
 		const signal = this.#postPromptTasksAbortController.signal;
 		return this.#schedulePostPromptTask(
@@ -2838,6 +2949,8 @@ export class AgentSession {
 			this.#scheduleAgentContinue({
 				delayMs: 100,
 				generation,
+				suppressPredecessorAgentEnd: true,
+
 				onSkip: reason => this.#logCompactionContinuationSkipped("overflow_retry", reason),
 				onError: error => this.#logCompactionContinuationError("overflow_retry", error),
 			});
@@ -2854,6 +2967,11 @@ export class AgentSession {
 	}
 
 	#scheduleAutoContinuePrompt(generation: number): void {
+		// The turn whose agent_end triggered auto-compaction is being continued, so
+		// that agent_end is not a terminal readiness signal. Suppress the deferred
+		// predecessor before the post-prompt flush can leak an idle boundary; the
+		// continuation emits the authoritative terminal agent_end when it settles.
+		this.#suppressDeferredAgentEndForContinuation();
 		const continuePrompt = async () => {
 			await this.#promptWithMessage(
 				{
@@ -3762,7 +3880,7 @@ export class AgentSession {
 	 */
 	#reconnectToAgent(): void {
 		if (this.#unsubscribeAgent) return; // Already connected
-		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
+		this.#unsubscribeAgent = this.agent.subscribe(this.#trackAgentEvent);
 	}
 
 	/**
@@ -4031,8 +4149,8 @@ export class AgentSession {
 	}
 
 	/** Single point for invalidating cached discovery indices. Call after any change that can
-	 *  affect which tools should be discoverable: registry mutations (refreshMCPTools,
-	 *  refreshRpcHostTools) or active-tool mutations (#applyActiveToolsByName). */
+	 *  affect which tools should be discoverable: registry mutations (refreshMCPTools)
+	 *  or active-tool mutations (#applyActiveToolsByName). */
 	#invalidateDiscoveryCaches(): void {
 		this.#discoverableMCPSearchIndex = null;
 		this.#discoverableToolSearchIndex = null;
@@ -4134,6 +4252,35 @@ export class AgentSession {
 	 */
 	hasForegroundBashBackgroundRequestHandler(): boolean {
 		return this.#foregroundBashBackgroundRequestHandler !== undefined;
+	}
+
+	/** Set the SDK permission policy used by guarded ACP tool execution. */
+	setSdkPermissionMode(mode: "prompt" | "allow" | "deny"): void {
+		this.#sdkPermissionMode = mode;
+	}
+
+	/** Current SDK permission policy for guarded ACP tool execution. */
+	get sdkPermissionMode(): "prompt" | "allow" | "deny" {
+		return this.#sdkPermissionMode;
+	}
+
+	/** Register or clear the SDK reverse permission provider for this session. */
+	setSdkPermissionProvider(
+		provider:
+			| ((
+					toolCall: ClientBridgePermissionToolCall,
+					options: ClientBridgePermissionOption[],
+					signal?: AbortSignal,
+			  ) => Promise<ClientBridgePermissionOutcome>)
+			| undefined,
+	): void {
+		this.#sdkPermissionProvider = provider;
+		this.#acpPermissionDecisions.clear();
+		this.#acpPermissionWrapperVersion++;
+		const activeTools = this.getActiveToolNames()
+			.map(name => this.#toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => tool !== undefined);
+		this.#setGuardedAgentTools(activeTools);
 	}
 
 	/**
@@ -4335,16 +4482,20 @@ export class AgentSession {
 		return [...new Set(activated)];
 	}
 
-	/**
-	 * Wrap a tool with a permission-gate proxy when an ACP client is connected.
-	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
-	 * the bridge exposes `requestPermission`. No-ops for all other cases.
-	 */
+	/** Wrap guarded tools so SDK permission modes remain fail-closed without a reverse provider. */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
 		const bridge = this.#clientBridge;
-		// Match the capability+method gating pattern used by read/write/bash.
-		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
+		const requestPermission =
+			this.#sdkPermissionProvider ??
+			(bridge?.capabilities.requestPermission && bridge.requestPermission
+				? (
+						toolCall: ClientBridgePermissionToolCall,
+						options: ClientBridgePermissionOption[],
+						signal?: AbortSignal,
+					) => bridge.requestPermission!(toolCall, options, signal)
+				: undefined);
 		if (!PERMISSION_REQUIRED_TOOLS.has(tool.name)) return tool;
+
 		return new Proxy(tool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return Reflect.get(target, prop, target);
@@ -4367,6 +4518,17 @@ export class AgentSession {
 					const commandContent = command
 						? [{ type: "content" as const, content: { type: "text" as const, text: `$ ${command}` } }]
 						: undefined;
+					if (this.#sdkPermissionMode === "allow") {
+						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
+					}
+					if (this.#sdkPermissionMode === "deny") {
+						throw new ToolError(`Tool call rejected by session permission policy (${target.name})`);
+					}
+					if (!requestPermission) {
+						throw new ToolError(
+							`Tool call rejected because no permission provider is connected (${target.name})`,
+						);
+					}
 					// Short-circuit on persisted decisions.
 					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
 					if (persisted === "allow_always") {
@@ -4386,7 +4548,7 @@ export class AgentSession {
 					signal?.addEventListener("abort", onAbort, { once: true });
 					let raced: PermissionRaceResult;
 					try {
-						const permissionPromise = bridge.requestPermission!(
+						const permissionPromise = requestPermission(
 							{
 								toolCallId,
 								toolName: target.name,
@@ -4465,13 +4627,14 @@ export class AgentSession {
 	#guardedToolWrapperCacheKey(): string {
 		const bridge = this.#clientBridge;
 		const acpEnabled = Boolean(bridge?.capabilities.requestPermission && bridge.requestPermission);
+		const sdkEnabled = this.#sdkPermissionProvider !== undefined;
 		const activeSkill = this.#activeSkillState?.skill ?? "";
 		const activeSkillSession = this.#activeSkillState?.sessionId ?? "";
 		return [
 			"deep-interview-mutation-v1",
 			"ultragoal-ask-v1",
 			`active=${activeSkill}:${activeSkillSession}`,
-			`acp=${acpEnabled ? "on" : "off"}:${this.#acpPermissionWrapperVersion}`,
+			`acp=${acpEnabled ? "on" : "off"}:sdk=${sdkEnabled ? "on" : "off"}:${this.#acpPermissionWrapperVersion}`,
 		].join("|");
 	}
 
@@ -4686,7 +4849,7 @@ export class AgentSession {
 	 * cache per-tool strings without preserving this property.
 	 *
 	 * Inputs NOT covered: tool input schemas; memory instructions read from disk;
-	 * and SDK-init-time closure constants in `sdk.ts` (`repeatToolDescriptions`,
+	 * and SDK-init-time closure constants in `sdk/session.ts` (`repeatToolDescriptions`,
 	 * `eagerTasks`, `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
 	 * closure-captured ones cannot change at runtime regardless of skip behavior.
 	 * For everything else, callers must explicitly call `refreshBaseSystemPrompt()`
@@ -4782,57 +4945,6 @@ export class AgentSession {
 
 		const nextActive = [...this.#getActiveNonMCPToolNames(), ...this.getSelectedMCPToolNames()];
 		await this.#applyActiveToolsByName(nextActive, { previousSelectedMCPToolNames });
-	}
-
-	/**
-	 * Replace RPC host-owned tools and refresh the active tool set before the next model call.
-	 */
-	async refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
-		const nextToolNames = rpcTools.map(tool => tool.name);
-		const uniqueToolNames = new Set(nextToolNames);
-		if (uniqueToolNames.size !== nextToolNames.length) {
-			throw new Error("RPC host tool names must be unique");
-		}
-		if (uniqueToolNames.has("ask")) {
-			throw new Error('RPC host tool "ask" is reserved and cannot be supplied by the host');
-		}
-
-		for (const name of uniqueToolNames) {
-			if (this.#toolRegistry.has(name) && !this.#rpcHostToolNames.has(name)) {
-				throw new Error(`RPC host tool "${name}" conflicts with an existing tool`);
-			}
-		}
-
-		const previousRpcHostToolNames = new Set(this.#rpcHostToolNames);
-		const previousActiveToolNames = this.getActiveToolNames();
-		for (const name of previousRpcHostToolNames) {
-			this.#toolRegistry.delete(name);
-		}
-		this.#rpcHostToolNames.clear();
-
-		for (const tool of rpcTools) {
-			const finalTool = (
-				this.#extensionRunner ? new ExtensionToolWrapper(tool, this.#extensionRunner) : tool
-			) as AgentTool;
-			this.#toolRegistry.set(finalTool.name, finalTool);
-			this.#rpcHostToolNames.add(finalTool.name);
-		}
-
-		// Registry contents changed — invalidate discovery caches so the next BM25 lookup sees
-		// the new RPC-host tool set. (#applyActiveToolsByName below also invalidates, but doing
-		// it here too keeps the contract local to "registry mutated".)
-		this.#invalidateDiscoveryCaches();
-
-		const activeNonRpcToolNames = previousActiveToolNames.filter(name => !previousRpcHostToolNames.has(name));
-		const preservedRpcToolNames = previousActiveToolNames.filter(
-			name => previousRpcHostToolNames.has(name) && this.#rpcHostToolNames.has(name),
-		);
-		const autoActivatedRpcToolNames = rpcTools
-			.filter(tool => !tool.hidden && !previousRpcHostToolNames.has(tool.name))
-			.map(tool => tool.name);
-		await this.#applyActiveToolsByName(
-			Array.from(new Set([...activeNonRpcToolNames, ...preservedRpcToolNames, ...autoActivatedRpcToolNames])),
-		);
 	}
 
 	async #hasActiveGjcSubskillTools(parent: string, sessionId: string | undefined): Promise<boolean> {
@@ -5090,12 +5202,133 @@ export class AgentSession {
 		return this.#planModeState;
 	}
 
+	/** Live SDK configuration values exposed through the session query surface. */
+	getSdkConfigItems(): Record<string, string> {
+		const model = this.model;
+		return {
+			mode: this.#planModeState?.enabled ? "plan" : "default",
+			...(model ? { model: `${model.provider}/${model.id}` } : {}),
+			thinking: this.#thinkingLevel ?? "off",
+			steeringMode: this.steeringMode,
+			followUpMode: this.followUpMode,
+			interruptMode: this.interruptMode,
+		};
+	}
+
 	setPlanModeState(state: PlanModeState | undefined): void {
 		this.#planModeState = state;
 		if (state?.enabled) {
 			this.#planReferenceSent = false;
 			this.#planReferencePath = state.planFilePath;
 		}
+	}
+
+	async invokeSkill(
+		name: string,
+		args = "",
+	): Promise<{ name: string; path: string; args?: string; lineCount?: number }> {
+		const skillName = name.trim();
+		if (!skillName) throw Object.assign(new Error("skill.invoke requires a skill name."), { code: "invalid_input" });
+		if (typeof args !== "string")
+			throw Object.assign(new Error("skill.invoke args must be a string."), { code: "invalid_input" });
+		const skill = this.skills.find(candidate => candidate.name === skillName);
+		if (!skill) throw Object.assign(new Error(`Skill ${skillName} was not found.`), { code: "invalid_input" });
+		const activation = await resolveSubskillActivationForSkillInvocation({
+			cwd: this.sessionManager.getCwd(),
+			sessionId: this.sessionId,
+			skillName: skill.name,
+			args,
+		});
+		const built = await buildSkillPromptMessage(skill, activation.cleanedArgs, {
+			subskillActivation: activation.activation,
+			subskillActivationSet: activation.activeSubskillsToPersist,
+			cwd: this.sessionManager.getCwd(),
+			sessionId: this.sessionId,
+		});
+		await this.promptCustomMessage({
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: built.message,
+			display: true,
+			details: built.details,
+			attribution: "user",
+		});
+		return {
+			name: skill.name,
+			path: skill.filePath,
+			args: activation.cleanedArgs || undefined,
+			lineCount: built.details.lineCount,
+		};
+	}
+
+	setSdkPlanMode(on: boolean): PlanModeState | undefined {
+		if (typeof on !== "boolean")
+			throw Object.assign(new Error("mode.plan.set requires a boolean on value."), { code: "invalid_input" });
+		if (!on) {
+			this.setPlanModeState(undefined);
+			return undefined;
+		}
+		const state: PlanModeState = { enabled: true, planFilePath: "local://PLAN.md", workflow: "parallel" };
+		this.setPlanModeState(state);
+		return state;
+	}
+
+	async operateGoal(
+		op: "create" | "get" | "resume" | "pause" | "complete" | "drop",
+		objective?: string,
+	): Promise<unknown> {
+		try {
+			switch (op) {
+				case "create":
+					return await this.#goalRuntime.createGoal({ objective: objective ?? "" });
+				case "get":
+					return this.getGoalModeState();
+				case "resume":
+					return await this.#goalRuntime.resumeGoal();
+				case "pause":
+					return await this.#goalRuntime.pauseGoal();
+				case "complete":
+					return await this.#goalRuntime.completeGoalFromTool();
+				case "drop":
+					return await this.#goalRuntime.dropGoal();
+			}
+		} catch (error) {
+			throw Object.assign(new Error(error instanceof Error ? error.message : "Goal operation failed."), {
+				code: "invalid_input",
+			});
+		}
+	}
+
+	getTranscript(): Array<{ id: string; role: string; textSummary: string; ts: string; body: string }> {
+		return this.sessionManager.getEntries().flatMap(entry => {
+			if (entry.type !== "message") return [];
+			const message = entry.message as unknown as { role?: unknown; content?: unknown };
+			const body =
+				typeof message.content === "string"
+					? message.content
+					: Array.isArray(message.content)
+						? message.content
+								.map(part =>
+									typeof part === "object" && part !== null && "text" in part && typeof part.text === "string"
+										? part.text
+										: "",
+								)
+								.filter(Boolean)
+								.join("\n")
+						: "";
+			return [
+				{
+					id: entry.id,
+					role: typeof message.role === "string" ? message.role : "unknown",
+					textSummary: body.slice(0, 500),
+					ts: entry.timestamp,
+					body,
+				},
+			];
+		});
+	}
+
+	getTranscriptBody(entryId: string): string | undefined {
+		return this.getTranscript().find(entry => entry.id === entryId)?.body;
 	}
 
 	getGoalModeState(): GoalModeState | undefined {
@@ -5504,6 +5737,7 @@ export class AgentSession {
 			if (workflowIntentDiff) {
 				this.sessionManager.appendCustomEntry(WORKFLOW_INTENT_DIFF_CUSTOM_TYPE, workflowIntentDiff);
 			}
+			options?.onPreflightAccepted?.();
 			return;
 		}
 
@@ -5657,13 +5891,15 @@ export class AgentSession {
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
-		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck"> & {
+		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck" | "onPreflightAccepted"> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 		},
 	): Promise<void> {
 		this.#beginInFlight();
 		const generation = this.#promptGeneration;
+		const preflightSignal = this.#promptPreflightAbortController.signal;
+
 		const rosterClaim = this.#claimIrcRosterCandidate();
 		try {
 			// Flush any pending bash messages before the new prompt
@@ -5727,10 +5963,14 @@ export class AgentSession {
 
 			messages.push(message);
 
-			// Early bail-out: if a newer abort/prompt cycle started during setup,
-			// return before mutating shared state (nextTurn messages, system prompt).
-			if (this.#promptGeneration !== generation) {
+			// Early bail-out: a generation change or cancellation during setup must
+			// terminate preflight rather than retaining SDK prompt authority.
+			if (this.#isPromptPreflightCancelled(generation, preflightSignal)) {
 				this.#resetInjectedContextSignatures();
+				// A newer abort/prompt cycle superseded this preflight. Callers awaiting
+				// acceptance (onPreflightAccepted) must be told it never ran; direct
+				// callers (e.g. prompt() aborted during a TTSR wait) resolve gracefully.
+				if (options?.onPreflightAccepted) throw promptPreflightCancelledError();
 				return;
 			}
 
@@ -5774,12 +6014,13 @@ export class AgentSession {
 			const promptAttribution: "user" | "agent" | undefined =
 				"attribution" in message ? message.attribution : undefined;
 
-			// Emit before_agent_start extension event
+			// Emit before_agent_start extension event. Race hook completion with prompt
+			// cancellation so a wedged hook cannot retain SDK prompt authority.
 			if (this.#extensionRunner) {
-				const result = await this.#extensionRunner.emitBeforeAgentStart(
-					expandedText,
-					options?.images,
-					beforeAgentStartSystemPrompt,
+				const result = await this.#awaitPromptPreflight(
+					generation,
+					preflightSignal,
+					this.#extensionRunner.emitBeforeAgentStart(expandedText, options?.images, beforeAgentStartSystemPrompt),
 				);
 				if (result?.messages) {
 					this.#appendBeforeAgentStartCustomMessages(messages, result.messages, promptAttribution, message.role);
@@ -5801,29 +6042,37 @@ export class AgentSession {
 				const contributed: BeforeAgentStartInternalMessage[] = [];
 				for (const contributor of this.#beforeAgentStartContributors) {
 					try {
-						const msg = await contributor({
-							prompt: expandedText,
-							images: options?.images,
-							sessionId: this.sessionId,
-						});
+						const msg = await this.#awaitPromptPreflight(
+							generation,
+							preflightSignal,
+							contributor({
+								prompt: expandedText,
+								images: options?.images,
+								sessionId: this.sessionId,
+							}),
+						);
 						if (msg) contributed.push(msg);
 					} catch (err) {
+						if (this.#isPromptPreflightCancelled(generation, preflightSignal))
+							throw promptPreflightCancelledError();
 						logger.debug("before_agent_start contributor failed", { error: String(err) });
 					}
 				}
 				this.#appendBeforeAgentStartCustomMessages(messages, contributed, promptAttribution, message.role);
 			}
 
-			// Bail out if a newer abort/prompt cycle has started since we began setup.
-			// The injection signatures were consumed while building the automatic
-			// goal/plan context above, but the message is not delivered on this
-			// aborted turn, so reset them here so the next real turn re-injects once.
-			if (this.#promptGeneration !== generation) {
+			// Abort can race asynchronous preflight work. The injection signatures were
+			// consumed while building context, but no prompt was accepted, so reset them.
+			if (this.#isPromptPreflightCancelled(generation, preflightSignal)) {
 				this.#resetInjectedContextSignatures();
+				// Ack-waiting callers are told the preflight never ran; direct callers
+				// (aborted after setup) resolve gracefully as before f24f46ff5.
+				if (options?.onPreflightAccepted) throw promptPreflightCancelledError();
 				return;
 			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
+			options?.onPreflightAccepted?.();
 			await this.#promptAgentWithIdleRetry(messages, agentPromptOptions);
 			const terminalAssistant = this.#findLastAssistantMessage();
 			if (
@@ -5837,6 +6086,12 @@ export class AgentSession {
 			if (!options?.skipPostPromptRecoveryWait) {
 				await this.#waitForPostPromptRecovery();
 			}
+		} catch (error) {
+			// Session identity changes historically cancel local setup silently. Only SDK
+			// submissions provide an acceptance callback and require an explicit terminal
+			// preflight failure for their remote request authority.
+			if (isPromptPreflightCancelledError(error) && !options?.onPreflightAccepted) return;
+			throw error;
 		} finally {
 			if (rosterClaim) {
 				this.agent.replaceMessages(
@@ -5898,6 +6153,50 @@ export class AgentSession {
 				void this.abort();
 			},
 			hasPendingMessages: () => this.queuedMessageCount > 0,
+			getPendingMessageCounts: () => this.pendingMessageCounts,
+			getTranscript: () => this.getTranscript(),
+			getTranscriptBody: entryId => this.getTranscriptBody(entryId),
+			getGoalState: () => this.getGoalModeState(),
+			getTodoState: () => this.getTodoPhases(),
+			getQueuedMessages: () => this.getQueuedMessageEntries(),
+			getActiveTools: () => this.getActiveToolNames(),
+			getAllTools: () => this.getAllToolNames(),
+			cycleModel: () => this.cycleModel(),
+			cycleThinkingLevel: () => this.cycleThinkingLevel(),
+			setQueueMode: (kind, mode) => {
+				if (kind === "steering" && (mode === "all" || mode === "one-at-a-time")) {
+					this.setSteeringMode(mode);
+					return true;
+				}
+				if (kind === "follow_up" && (mode === "all" || mode === "one-at-a-time")) {
+					this.setFollowUpMode(mode);
+					return true;
+				}
+				if (kind === "interrupt" && (mode === "immediate" || mode === "wait")) {
+					this.setInterruptMode(mode);
+					return true;
+				}
+				return false;
+			},
+			invokeSkill: (name, args) => this.invokeSkill(name, args),
+			setPlanMode: on => this.setSdkPlanMode(on),
+			operateGoal: (op, objective) => this.operateGoal(op, objective),
+			getSkillState: () => this.skills.map(skill => ({ name: skill.name, description: skill.description })),
+			getConfigItems: () => this.getSdkConfigItems(),
+			getBranchCandidates: () => this.sessionManager.getTree(),
+			getExtensions: () => this.#extensionRunner?.getExtensionPaths() ?? [],
+			getArtifact: () => undefined,
+			getJobs: () => undefined,
+			sdkBindings: () => [
+				"cycleModel",
+				"cycleThinkingLevel",
+				"setQueueMode",
+				"getSkillState",
+				"getConfigItems",
+				"getBranchCandidates",
+				"getExtensions",
+			],
+			clearContext: () => this.clearContext(),
 			shutdown: () => {
 				void this.dispose();
 				process.exit(0);
@@ -5936,7 +6235,7 @@ export class AgentSession {
 			reload: async () => {
 				await this.reload();
 			},
-			getSystemPrompt: () => this.systemPrompt,
+			getSystemPrompt: () => [...this.systemPrompt],
 		};
 	}
 
@@ -6354,7 +6653,7 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -6378,10 +6677,12 @@ export class AgentSession {
 
 		if (options?.deliverAs === "followUp") {
 			await this.#queueFollowUp(text, images);
+			options.onPreflightAccepted?.();
 			return;
 		}
 		if (options?.deliverAs === "steer") {
 			await this.#queueSteer(text, images);
+			options.onPreflightAccepted?.();
 			return;
 		}
 
@@ -6392,6 +6693,7 @@ export class AgentSession {
 		// the message in the steering queue with no turn to consume it.
 		if (this.isStreaming) {
 			await this.#queueSteer(text, images);
+			options?.onPreflightAccepted?.();
 			return;
 		}
 
@@ -6399,6 +6701,7 @@ export class AgentSession {
 		await this.prompt(text, {
 			expandPromptTemplates: false,
 			images,
+			onPreflightAccepted: options?.onPreflightAccepted,
 		});
 	}
 
@@ -6418,6 +6721,14 @@ export class AgentSession {
 	/** Number of pending messages (includes steering, follow-up, and next-turn messages) */
 	get queuedMessageCount(): number {
 		return this.#steeringMessages.length + this.#followUpMessages.length + this.#pendingNextTurnMessages.length;
+	}
+	/** Typed pending-message counts per queue (steering, follow-up, next-turn). */
+	get pendingMessageCounts(): { steering: number; followUp: number; nextTurn: number } {
+		return {
+			steering: this.#steeringMessages.length,
+			followUp: this.#followUpMessages.length,
+			nextTurn: this.#pendingNextTurnMessages.length,
+		};
 	}
 
 	/** Whether the agent has queued steering messages that a `user_interrupt`
@@ -6640,6 +6951,8 @@ export class AgentSession {
 		}
 		this.abortRetry();
 		this.#promptGeneration++;
+		this.#promptPreflightAbortController.abort();
+		this.#promptPreflightAbortController = new AbortController();
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.abortCompaction();
 		this.abortHandoff();
@@ -6673,10 +6986,11 @@ export class AgentSession {
 			}
 		}
 		await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
-		// Clear prompt-in-flight state: waitForIdle resolves when the agent loop's finally
-		// block runs, but nested prompt setup/finalizers may still be unwinding. Without this,
-		// a subsequent prompt() can incorrectly observe the session as busy after an abort.
-		this.#resetInFlight();
+		// waitForIdle resolves before #promptWithMessage's finally and asynchronous
+		// event handlers necessarily unwind. Keep their counters intact: #endInFlight
+		// and the event barrier publish deferred readiness only when they actually settle.
+		this.#flushPendingBackgroundExchanges();
+		this.#flushPendingAgentEnd();
 		// Safety net: clear the silent-abort flag if it was never consumed (the
 		// abort produced no aborted assistant message_end to stamp). Prevents the
 		// marker from leaking onto a later, unrelated abort.
@@ -6999,54 +7313,6 @@ export class AgentSession {
 		// configured defaultLevel; otherwise re-clamp the current level.
 		this.setThinkingLevel(thinkingLevel ?? model.thinking?.defaultLevel ?? this.thinkingLevel);
 		await this.#syncEditToolModeAfterModelChange(previousEditMode);
-	}
-
-	async setDefaultModelSelection(
-		model: Model,
-		thinkingLevel: ThinkingLevel | undefined,
-	): Promise<DefaultModelSelectionResult> {
-		const predecessor = this.#defaultModelSelectionTail;
-		const transaction = Promise.withResolvers<void>();
-		this.#defaultModelSelectionTail = transaction.promise;
-		try {
-			await predecessor;
-			if (thinkingLevel === ThinkingLevel.Inherit) {
-				throw new Error("Default model selection cannot inherit a thinking level");
-			}
-			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
-			if (!apiKey) {
-				throw new Error(`No API key for ${model.provider}/${model.id}`);
-			}
-			const resolvedLevel = resolveThinkingLevelForModel(model, thinkingLevel);
-			const effectiveLevel =
-				resolvedLevel ??
-				resolveThinkingLevelForModel(model, model.thinking?.defaultLevel ?? this.thinkingLevel) ??
-				ThinkingLevel.Off;
-			await this.waitForIdle();
-			const previousDefaultModelRole = this.settings.getGlobal("modelRoles")?.default;
-			await this.settings.setGlobalModelRoleAndFlush(
-				"default",
-				formatModelSelectorValue(`${model.provider}/${model.id}`, effectiveLevel),
-			);
-			try {
-				const previousThinkingLevel = this.thinkingLevel;
-				await this.setModelTemporary(model, effectiveLevel);
-				if (this.thinkingLevel === previousThinkingLevel) {
-					this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
-				}
-				this.sessionManager.appendModelChange(`${model.provider}/${model.id}`, "default");
-			} catch (error) {
-				await this.settings.setGlobalModelRoleAndFlush("default", previousDefaultModelRole).catch(rollbackError => {
-					logger.warn("Failed to restore durable default model selection after live apply failure", {
-						error: String(rollbackError),
-					});
-				});
-				throw error;
-			}
-			return { provider: model.provider, modelId: model.id, thinkingLevel: effectiveLevel };
-		} finally {
-			transaction.resolve();
-		}
 	}
 
 	/**
@@ -7874,6 +8140,13 @@ export class AgentSession {
 			this.#syncTodoPhasesFromBranch();
 
 			this.#resetIrcRosterDeliveryState();
+			if (this.#extensionRunner) {
+				await this.#extensionRunner.emit({
+					type: "session_switch",
+					reason: "new",
+					previousSessionFile,
+				});
+			}
 
 			return { document: handoffText, savedPath };
 		} catch (error) {
@@ -7950,7 +8223,8 @@ export class AgentSession {
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
 				// Retry on the promoted (larger) model without compacting
-				this.#scheduleAgentContinue({ delayMs: 100, generation });
+				this.#scheduleAgentContinue({ delayMs: 100, generation, suppressPredecessorAgentEnd: true });
+
 				return;
 			}
 
@@ -9066,6 +9340,8 @@ export class AgentSession {
 					this.#scheduleAgentContinue({
 						delayMs: 100,
 						generation,
+						suppressPredecessorAgentEnd: true,
+
 						shouldContinue: () => this.agent.hasQueuedMessages(),
 						onSkip: skipReason => this.#logCompactionContinuationSkipped("queued_continue", skipReason),
 						onError: error => this.#logCompactionContinuationError("queued_continue", error),
@@ -9295,6 +9571,7 @@ export class AgentSession {
 				this.#scheduleAgentContinue({
 					delayMs: 100,
 					generation,
+					suppressPredecessorAgentEnd: true,
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 					onSkip: reason => this.#logCompactionContinuationSkipped("queued_continue", reason),
 					onError: error => this.#logCompactionContinuationError("queued_continue", error),
@@ -10971,20 +11248,9 @@ export class AgentSession {
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 
-			// The target session is loaded and MCP selections are restored: the
-			// switch is committed far enough to discard pre-switch delivery queues.
-			// Clear before session_switch hooks, so messages enqueued by hooks belong
-			// to the new session and remain deliverable.
+			// The target session is loaded and MCP selections are restored: discard
+			// pre-switch delivery queues before completing the restored agent state.
 			this.agent.clearAllQueues();
-
-			// Emit session_switch event to hooks
-			if (this.#extensionRunner) {
-				await this.#extensionRunner.emit({
-					type: "session_switch",
-					reason: "resume",
-					previousSessionFile,
-				});
-			}
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#resetInjectedContextSignatures();
@@ -11038,6 +11304,9 @@ export class AgentSession {
 				: configuredServiceTier === "none"
 					? undefined
 					: configuredServiceTier;
+			// Establish the successor's durable session identity only after every
+			// restored state facet is live. Identity-bound extension hooks run below.
+			await this.sessionManager.ensureOnDisk();
 
 			if (switchingToDifferentSession) {
 				this.#resetHindsightConversationTrackingIfHindsight();
@@ -11045,6 +11314,16 @@ export class AgentSession {
 			}
 
 			this.#reconnectToAgent();
+			// session_switch is the post-commit identity signal. SDK authority and
+			// other identity-bound integrations must not observe the successor until
+			// messages, model state, MCP selections, and the agent subscription are live.
+			if (this.#extensionRunner) {
+				await this.#extensionRunner.emit({
+					type: "session_switch",
+					reason: "resume",
+					previousSessionFile,
+				});
+			}
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -11152,14 +11431,6 @@ export class AgentSession {
 
 		await this.#restoreMCPSelectionsForSessionContext(sessionContext);
 
-		// Emit session_branch event to hooks (after branch completes)
-		if (this.#extensionRunner) {
-			await this.#extensionRunner.emit({
-				type: "session_branch",
-				previousSessionFile,
-			});
-		}
-
 		if (!skipConversationRestore) {
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#resetInjectedContextSignatures();
@@ -11167,6 +11438,14 @@ export class AgentSession {
 		}
 
 		this.#resetIrcRosterDeliveryState();
+		// session_branch is the post-commit identity signal. Publish it only after
+		// the successor's messages and MCP selections are restored.
+		if (this.#extensionRunner) {
+			await this.#extensionRunner.emit({
+				type: "session_branch",
+				previousSessionFile,
+			});
+		}
 
 		return { selectedText, cancelled: false };
 	}

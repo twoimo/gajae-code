@@ -10,7 +10,6 @@ import { createHarnessCliEnv, type HarnessCliEnv } from "./cli-workspace-env";
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
 const SID = "d";
-const FAKE_RPC = path.join(import.meta.dir, "fixtures", "fake-rpc.ts");
 
 function gitInit(dir: string): void {
 	const run = (args: string[]): void => {
@@ -26,8 +25,69 @@ function gitInit(dir: string): void {
 let root: string;
 let workspace: string;
 let tmuxCommand: string;
-let rpcCommandEnv: string;
+
 let cliEnv: HarnessCliEnv;
+let sdkServer: ReturnType<typeof Bun.serve>;
+let disableSdkHost = false;
+
+async function startSdkFixture(): Promise<void> {
+	sdkServer = Bun.serve<{ token: string }>({
+		port: 0,
+		fetch(req, server) {
+			if (server.upgrade(req, { data: { token: "test-token" } })) return undefined;
+			return new Response("Not found", { status: 404 });
+		},
+		websocket: {
+			open(ws) {
+				ws.send(JSON.stringify({ type: "hello", connectionId: "fixture" }));
+			},
+			message(ws, message) {
+				const frame = JSON.parse(String(message)) as Record<string, unknown>;
+				const id = frame.id as string;
+				if (frame.type === "query_request") {
+					const item =
+						frame.query === "session.metadata"
+							? { sessionId: SID, name: "Fixture", cwd: workspace, kind: "main" }
+							: frame.query === "session.last_assistant"
+								? { text: "" }
+								: { usage: {}, isStreaming: false, steeringQueueDepth: 0, followupQueueDepth: 0 };
+					ws.send(
+						JSON.stringify({
+							type: "query_response",
+							id,
+							ok: true,
+							page: { items: [item], complete: true, revision: "1" },
+						}),
+					);
+					return;
+				}
+				if (frame.type === "event_replay") {
+					ws.send(
+						JSON.stringify({ type: "event_replay_result", id, ok: true, events: [], generation: 1, lastSeq: 0 }),
+					);
+					return;
+				}
+				if (frame.type === "control_request") {
+					ws.send(
+						JSON.stringify({
+							type: "control_response",
+							id,
+							ok: true,
+							result: { commandId: "fixture-command", accepted: true },
+						}),
+					);
+					for (const type of ["agent_start", "tool_execution_start", "agent_end"])
+						ws.send(JSON.stringify({ type: "event", payload: { type } }));
+				}
+			},
+		},
+	});
+	await mkdir(path.join(workspace, ".gjc", "state", "sdk"), { recursive: true });
+	await writeFile(
+		path.join(workspace, ".gjc", "state", "sdk", `${SID}.json`),
+		JSON.stringify({ url: `ws://127.0.0.1:${sdkServer.port}`, token: "test-token" }),
+	);
+}
 
 async function createFakeTmuxBin(rootDir: string, options: { skipOwnerLaunch?: boolean } = {}): Promise<string> {
 	const binDir = path.join(rootDir, ".test-bin");
@@ -106,9 +166,9 @@ async function runHarness(
 		env: {
 			...cliEnv.env,
 			GJC_HARNESS_STATE_ROOT: root,
-			// Drive the REAL GajaeCodeRpc against a protocol fixture (no shipped fake seam).
-			GJC_HARNESS_RPC_COMMAND: rpcCommandEnv,
+
 			GJC_TMUX_COMMAND: tmuxCommand,
+			...(disableSdkHost ? { GJC_SDK_DISABLE: "1" } : {}),
 			...env,
 		},
 		stdout: "pipe",
@@ -133,10 +193,13 @@ beforeEach(async () => {
 	workspace = await mkdtemp(path.join(tmpdir(), "hw"));
 	cliEnv = createHarnessCliEnv(repoRoot);
 	tmuxCommand = await createFakeTmuxBin(root);
-	rpcCommandEnv = JSON.stringify(["bun", FAKE_RPC]);
+
+	disableSdkHost = false;
+	await startSdkFixture();
 });
 
 afterEach(async () => {
+	sdkServer.stop(true);
 	cliEnv.cleanup();
 	const serverPid = await readFile(path.join(root, "tmux-server.pid"), "utf8")
 		.then(value => Number(value.trim()))
@@ -236,20 +299,6 @@ describe.skipIf(process.platform !== "linux")("gjc harness start --detach (detac
 		expect(after.live).toBe(false);
 	}, 60_000);
 
-	it("injects the GJC spawn-provenance marker into the detached RPC owner", async () => {
-		// fake-rpc records the GJC_SPAWNED_BY_SESSION value it was spawned with; a
-		// non-empty marker proves #runOwner tags the detached owner's RPC child so
-		// notifications.sessionScope=primary can suppress it.
-		const recordPath = path.join(root, "owner-spawn-marker");
-		const started = await runHarness(
-			["start", "--input", JSON.stringify({ harness: "gajae-code", workspace, sessionId: SID, detach: true })],
-			{ GJC_FAKE_RPC_ENV_RECORD: recordPath },
-		);
-		expect(started.code).toBe(0);
-		expect((started.json?.state as Record<string, unknown>).ownerLive).toBe(true);
-		expect(await readFile(recordPath, "utf8")).toBe(SID);
-	}, 60_000);
-
 	it("blocks without a detached fallback when tmux starts but never routes the owner", async () => {
 		tmuxCommand = await createFakeTmuxBin(root, { skipOwnerLaunch: true });
 		const started = await runHarness([
@@ -278,38 +327,34 @@ describe.skipIf(process.platform !== "linux")("gjc harness start --detach (detac
 
 	it("reports blocked only after detached owner endpoint remains unavailable", async () => {
 		tmuxCommand = path.join(root, "missing-tmux");
-		const originalRpcCommandEnv = rpcCommandEnv;
-		rpcCommandEnv = "{";
-		try {
-			const started = await runHarness([
-				"start",
-				"--input",
-				JSON.stringify({ harness: "gajae-code", workspace, sessionId: SID, detach: true }),
-			]);
-			expect(started.code).toBe(1);
-			expect(started.json?.ok).toBe(false);
-			const state = started.json?.state as Record<string, unknown>;
-			const evidence = started.json?.evidence as Record<string, unknown>;
-			expect(state.lifecycle).toBe("blocked");
-			expect(state.ownerLive).toBe(false);
-			expect(state.blockers).toContain("detached-owner-not-live");
-			expect(evidence.ownerRuntime).toBe("detached");
-			expect(evidence.reason).toBe("detached-owner-not-live");
+		disableSdkHost = true;
+		await rm(path.join(workspace, ".gjc", "state", "sdk", `${SID}.json`), { force: true });
+		const started = await runHarness([
+			"start",
+			"--input",
+			JSON.stringify({ harness: "gajae-code", workspace, sessionId: SID, detach: true }),
+		]);
+		expect(started.code).toBe(1);
+		expect(started.json?.ok).toBe(false);
+		const state = started.json?.state as Record<string, unknown>;
+		const evidence = started.json?.evidence as Record<string, unknown>;
+		expect(state.lifecycle).toBe("blocked");
+		expect(state.ownerLive).toBe(false);
+		expect(state.blockers).toContain("detached-owner-not-live");
+		expect(evidence.ownerRuntime).toBe("detached");
+		expect(evidence.reason).toBe("detached-owner-not-live");
 
-			const submit = await runHarness(["submit", "--session", SID, "--input", JSON.stringify({ prompt: "go" })]);
-			expect(submit.code).toBe(1);
-			expect(submit.json?.ok).toBe(false);
-			expect((submit.json?.state as Record<string, unknown>).ownerLive).toBe(false);
-			expect((submit.json?.evidence as Record<string, unknown>).accepted).toBe(false);
-			expect((submit.json?.evidence as Record<string, unknown>).reason).toBe("owner-not-live");
-			expect(submit.json?.nextAllowedActions).toContainEqual({
-				verb: "submit",
-				available: false,
-				reason: "lifecycle-blocked",
-			});
-		} finally {
-			rpcCommandEnv = originalRpcCommandEnv;
-		}
+		const submit = await runHarness(["submit", "--session", SID, "--input", JSON.stringify({ prompt: "go" })]);
+		expect(submit.code).toBe(1);
+		expect(submit.json?.ok).toBe(false);
+		expect((submit.json?.state as Record<string, unknown>).ownerLive).toBe(false);
+		expect((submit.json?.evidence as Record<string, unknown>).accepted).toBe(false);
+		expect((submit.json?.evidence as Record<string, unknown>).reason).toBe("owner-not-live");
+		expect(submit.json?.nextAllowedActions).toContainEqual({
+			verb: "submit",
+			available: false,
+			reason: "lifecycle-blocked",
+		});
 	}, 60_000);
 	it("fails closed without detached fallback when scoped bootstrap fails", async () => {
 		const systemdRun = path.join(root, ".test-bin", "systemd-run");

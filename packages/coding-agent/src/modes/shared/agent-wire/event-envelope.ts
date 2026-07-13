@@ -5,8 +5,8 @@
  * every variant of the event union and calls `assertNever` in the default arm,
  * so a newly added event variant fails to compile until it is handled here.
  *
- * The canonical sequencer + frame builders live here; the historical `Bridge*`
- * names are retained as thin aliases for callers that have not yet migrated.
+ * The canonical sequencer + frame builders live here under `AgentWire*` names;
+ * this is the only event-frame surface (the historical `Bridge*` aliases were removed).
  */
 import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent } from "../../../session/agent-session";
@@ -127,10 +127,6 @@ export class AgentWireFrameSequencer {
 	}
 }
 
-/** Back-compat alias for {@link AgentWireFrameSequencer}. */
-export const BridgeFrameSequencer = AgentWireFrameSequencer;
-export type BridgeFrameSequencer = AgentWireFrameSequencer;
-
 /** Serialize a single `AgentSessionEvent` into a canonical `event` wire frame. */
 export function toAgentWireEventFrame(
 	event: AgentSessionEvent,
@@ -163,13 +159,13 @@ export interface AgentWireCompactMessageUpdateOptions {
 }
 
 /**
- * Stateful compact event serializer for opt-in RPC clients.
+ * Stateful compact event serializer for opt-in wire clients (e.g. the SDK).
  *
  * Only `message_update` changes shape: it carries the immutable provider delta
  * plus message/content identifiers, with periodic full-message checkpoints that
  * are cloned synchronously before the caller returns to the event loop. All other
- * event variants remain canonical full event frames so legacy bridge/RPC behavior
- * and terminal `message_end` reconstruction are unchanged.
+ * event variants remain canonical full event frames so downstream consumers and
+ * terminal `message_end` reconstruction are unchanged.
  */
 export class AgentWireCompactEventEncoder {
 	readonly #sequencer: AgentWireFrameSequencer;
@@ -206,18 +202,15 @@ export function toAgentWireCompactEventFrame(
 	return encoder.frame(event);
 }
 
-/** Back-compat alias for {@link toAgentWireEventFrame}. */
-export const toBridgeEventFrame = toAgentWireEventFrame;
-
 /**
  * Serialize a `workflow_gate` event into a sequenced wire frame (#321). The
  * gate_id is stamped as the correlation id so the answer (posted to the
  * ui-responses endpoint) can be matched, and the monotonic `seq` gives replay
  * while `frame_id` + gate_id give idempotency.
  */
-export function toBridgeWorkflowGateFrame(
-	gate: import("../../rpc/rpc-types").RpcWorkflowGate,
+export function toAgentWireWorkflowGateFrame(
+	gate: import("./workflow-gate-types").WorkflowGate,
 	sequencer: AgentWireFrameSequencer,
-): import("./protocol").BridgeWorkflowGateFrame {
+): AgentWireFrameEnvelope<"workflow_gate", import("./workflow-gate-types").WorkflowGate> {
 	return sequencer.next("workflow_gate", gate, gate.gate_id);
 }

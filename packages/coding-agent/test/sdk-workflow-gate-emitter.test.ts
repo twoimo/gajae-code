@@ -4,19 +4,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
-import type { WorkflowGateEmitter } from "@gajae-code/coding-agent/modes/shared/agent-wire/unattended-session";
-import type { OpenGateInput } from "@gajae-code/coding-agent/modes/shared/agent-wire/workflow-gate-broker";
 import { createAgentSession } from "@gajae-code/coding-agent/sdk";
 import { Settings } from "../src/config/settings";
+import {
+	BrokerWorkflowGateEmitter,
+	FileGateStore,
+	type OpenGateInput,
+	type WorkflowGateEmitter,
+} from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import { SessionManager } from "../src/session/session-manager";
 import { registerWorkflowGateEmitterListener } from "../src/tools/ask-answer-registry";
 
 /**
- * G011 regression: the SDK-built ToolSession MUST forward getWorkflowGateEmitter
- * from the AgentSession, otherwise the real ask tool never emits workflow gates
- * in negotiated unattended RPC sessions (the bug found in review 38-ArchG011Review).
+ * The SDK-built ToolSession must forward getWorkflowGateEmitter from AgentSession
+ * so the real ask tool can emit SDK workflow gates in headless sessions.
  */
-describe("SDK ToolSession forwards getWorkflowGateEmitter (G011 real wiring)", () => {
+describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 	const tempDirs: string[] = [];
 	afterEach(() => {
 		for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
@@ -80,7 +83,7 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter (G011 real wiring)", (
 			await session.dispose();
 		}
 	}, 15_000);
-	it("late-registers ask when a headless session receives an unattended workflow gate emitter", async () => {
+	it("late-registers ask when a headless session receives a workflow gate emitter", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-headless-"));
 		tempDirs.push(tempDir);
 		const { session } = await createAgentSession({
@@ -97,8 +100,9 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter (G011 real wiring)", (
 			slashCommands: [],
 		});
 		try {
-			expect(session.getWorkflowGateEmitter()).toBeUndefined();
-			expect(session.getToolByName("ask")).toBeUndefined();
+			expect(session.getWorkflowGateEmitter()).toBeDefined();
+			await Bun.sleep(0);
+			expect(session.getToolByName("ask")).toBeDefined();
 
 			const received: OpenGateInput[] = [];
 			const emitter: WorkflowGateEmitter = {
@@ -138,4 +142,65 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter (G011 real wiring)", (
 			await session.dispose();
 		}
 	}, 15_000);
+	it("provides a durable SDK-native emitter without extension injection", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-production-"));
+		tempDirs.push(tempDir);
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			hasUI: false,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+		});
+		try {
+			const emitter = session.getWorkflowGateEmitter();
+			expect(emitter).toBeDefined();
+			await Bun.sleep(0);
+			expect(session.getToolByName("ask")).toBeDefined();
+			let gate: { gate_id: string } | undefined;
+			const dispose = emitter!.onGateEmitted!(emitted => {
+				gate = emitted;
+			});
+			const ask = session.getToolByName("ask")!;
+			const result = ask.execute(
+				"production-gate",
+				{ questions: [{ id: "auth", question: "Which auth?", options: [{ label: "JWT" }, { label: "OAuth2" }] }] },
+				undefined,
+				undefined,
+				{ hasUI: false, abort: () => {} } as unknown as AgentToolContext,
+			);
+			for (let i = 0; i < 20 && !gate; i += 1) await Bun.sleep(1);
+			expect(gate).toBeDefined();
+			const response = {
+				gate_id: gate!.gate_id,
+				answer: { selected: ["JWT"], other: false },
+				idempotency_key: "sdk-answer",
+			};
+			expect(await emitter!.resolveGate!(response)).toMatchObject({ status: "accepted" });
+			expect(await emitter!.resolveGate!(response)).toMatchObject({ status: "accepted" });
+			expect(JSON.stringify((await result).details)).toContain("JWT");
+			dispose();
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("replays durable pending gates to a host attached after restart", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-restart-"));
+		tempDirs.push(tempDir);
+		const store = path.join(tempDir, "workflow-gates.json");
+		const first = new BrokerWorkflowGateEmitter("durable-session", new FileGateStore(store));
+		void first.emitGate({ stage: "deep-interview", kind: "question", schema: { type: "string" } });
+		const restarted = new BrokerWorkflowGateEmitter("durable-session", new FileGateStore(store));
+		const replayed: string[] = [];
+		restarted.onGateEmitted!(gate => replayed.push(gate.gate_id));
+		expect(restarted.listPendingGates!()).toHaveLength(1);
+		expect(replayed).toEqual(restarted.listPendingGates!().map(gate => gate.gate_id));
+	});
 });

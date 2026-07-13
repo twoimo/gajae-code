@@ -6,8 +6,9 @@
 import { createInterface } from "node:readline/promises";
 import { APP_NAME } from "@gajae-code/utils/dirs";
 import chalk from "chalk";
-import type { Settings } from "../config/settings";
-import { maskToken } from "../notifications/config";
+import { Settings } from "../config/settings";
+import { type EnsureChatDaemonResult, ensureDiscordDaemon, ensureSlackDaemon } from "../sdk/bus/chat-daemon-control";
+import { maskToken } from "../sdk/bus/config";
 import {
 	buildNotificationStatusReport,
 	checkNotificationHealth,
@@ -17,16 +18,28 @@ import {
 	formatNotificationTestResult,
 	recoverNotifications,
 	sendNotificationTest,
-} from "../notifications/notification-service";
+} from "../sdk/bus/notification-service";
+import { runDaemonInternal } from "../sdk/bus/telegram-daemon-cli";
 
 export type NotifyAction = "setup" | "status" | "health" | "test" | "recovery" | "daemon-internal";
+export type NotifySetupProvider = "telegram" | "discord" | "slack";
 
 export interface NotifyCommandArgs {
 	action: NotifyAction;
 	smoke?: boolean;
 	rawArgs: string[];
+	provider?: NotifySetupProvider;
 	token?: string;
 	chatId?: string;
+	discordBotToken?: string;
+	discordApplicationId?: string;
+	discordGuildId?: string;
+	discordParentChannelId?: string;
+	slackBotToken?: string;
+	slackAppToken?: string;
+	slackWorkspaceId?: string;
+	slackChannelId?: string;
+	slackAuthorizedUserId?: string;
 	redact?: boolean;
 	probe?: boolean;
 	message?: string;
@@ -46,6 +59,10 @@ export interface NotifyCommandDeps {
 	tokenPrompt?: () => Promise<string>;
 	setExitCode?: (code: number) => void;
 	exitProcess?: (code: number) => void;
+	ensureProviderDaemon?: (
+		provider: "discord" | "slack",
+		settings: Settings,
+	) => Promise<EnsureChatDaemonResult | "failed">;
 }
 
 interface TelegramApiResponse<T> {
@@ -97,11 +114,27 @@ export function parseNotifyArgs(args: string[]): NotifyCommandArgs | undefined {
 			const i = rest.indexOf(name);
 			return i >= 0 ? rest[i + 1] : undefined;
 		};
+		const provider = rest[0]?.startsWith("--") ? undefined : rest[0];
+		if (provider !== undefined && provider !== "telegram" && provider !== "discord" && provider !== "slack") {
+			return undefined;
+		}
 		return {
 			action,
 			rawArgs: rest,
+			...(provider ? { provider } : {}),
 			token: flag("--token"),
 			chatId: flag("--chat-id"),
+			...(flag("--discord-bot-token") ? { discordBotToken: flag("--discord-bot-token") } : {}),
+			...(flag("--discord-application-id") ? { discordApplicationId: flag("--discord-application-id") } : {}),
+			...(flag("--discord-guild-id") ? { discordGuildId: flag("--discord-guild-id") } : {}),
+			...(flag("--discord-parent-channel-id")
+				? { discordParentChannelId: flag("--discord-parent-channel-id") }
+				: {}),
+			...(flag("--slack-bot-token") ? { slackBotToken: flag("--slack-bot-token") } : {}),
+			...(flag("--slack-app-token") ? { slackAppToken: flag("--slack-app-token") } : {}),
+			...(flag("--slack-workspace-id") ? { slackWorkspaceId: flag("--slack-workspace-id") } : {}),
+			...(flag("--slack-channel-id") ? { slackChannelId: flag("--slack-channel-id") } : {}),
+			...(flag("--slack-authorized-user-id") ? { slackAuthorizedUserId: flag("--slack-authorized-user-id") } : {}),
 			redact: rest.includes("--redact"),
 		};
 	}
@@ -132,7 +165,7 @@ export function parseNotifyArgs(args: string[]): NotifyCommandArgs | undefined {
 export async function runNotifyCommand(cmd: NotifyCommandArgs, deps: NotifyCommandDeps = {}): Promise<void> {
 	switch (cmd.action) {
 		case "setup":
-			await runSetup({
+			await runSetup(cmd, {
 				...deps,
 				setupToken: deps.setupToken ?? cmd.token,
 				setupChatId: deps.setupChatId ?? cmd.chatId,
@@ -151,15 +184,13 @@ export async function runNotifyCommand(cmd: NotifyCommandArgs, deps: NotifyComma
 		case "recovery":
 			await runRecovery(deps);
 			return;
-		case "daemon-internal": {
-			const m = await import("../notifications/telegram-daemon-cli");
+		case "daemon-internal":
 			if (cmd.smoke) {
-				await m.runDaemonSmoke();
+				await runDaemonInternal(["--smoke"]);
 			} else {
-				await m.runDaemonInternal(cmd.rawArgs);
+				await runDaemonInternal(cmd.rawArgs);
 			}
 			return;
-		}
 	}
 }
 
@@ -172,7 +203,7 @@ export async function runNotifyCliCommand(cmd: NotifyCommandArgs, deps: NotifyCo
 		}
 
 		const cancelled = error.message === "Telegram bot token prompt cancelled.";
-		process.stderr.write(cancelled ? "Telegram notify setup cancelled.\n" : `Error: ${error.message}\n`);
+		process.stderr.write(cancelled ? "Notify setup cancelled.\n" : `Error: ${error.message}\n`);
 		const code = cancelled ? 130 : 1;
 		if (deps.setExitCode) {
 			deps.setExitCode(code);
@@ -186,18 +217,86 @@ export async function runNotifyCliCommand(cmd: NotifyCommandArgs, deps: NotifyCo
 
 async function getSettings(deps: NotifyCommandDeps): Promise<Settings> {
 	if (deps.settings) return deps.settings;
-	const { Settings } = await import("../config/settings");
 	return await Settings.init();
 }
 
-async function runSetup(deps: NotifyCommandDeps): Promise<void> {
+async function runSetup(cmd: NotifyCommandArgs, deps: NotifyCommandDeps): Promise<void> {
+	const provider = cmd.provider ?? "telegram";
+	if (provider === "discord") {
+		await runDiscordSetup(cmd, deps);
+		return;
+	}
+	if (provider === "slack") {
+		await runSlackSetup(cmd, deps);
+		return;
+	}
+	await runTelegramSetup(cmd, deps);
+}
+
+function requiredSetupValue(value: string | undefined, flag: string): string {
+	if (!value?.trim()) throw new Error(`${flag} is required for non-interactive setup.`);
+	return value.trim();
+}
+
+async function runDiscordSetup(cmd: NotifyCommandArgs, deps: NotifyCommandDeps): Promise<void> {
+	const botToken = requiredSetupValue(cmd.discordBotToken, "--discord-bot-token");
+	const applicationId = requiredSetupValue(cmd.discordApplicationId, "--discord-application-id");
+	const guildId = requiredSetupValue(cmd.discordGuildId, "--discord-guild-id");
+	const parentChannelId = requiredSetupValue(cmd.discordParentChannelId, "--discord-parent-channel-id");
+	const settings = await getSettings(deps);
+	settings.set("notifications.discord.botToken", botToken);
+	settings.set("notifications.discord.applicationId", applicationId);
+	settings.set("notifications.discord.guildId", guildId);
+	settings.set("notifications.discord.parentChannelId", parentChannelId);
+	settings.set("notifications.enabled", true);
+	if (cmd.redact) settings.set("notifications.redact", true);
+	await settings.flushOrThrow();
+	const daemon = await ensureConfiguredProviderDaemon("discord", settings, deps);
+	process.stdout.write(
+		`Discord notifications enabled. botToken=${maskToken(botToken)} applicationId=${applicationId} guildId=${guildId} parentChannelId=${parentChannelId} daemon=${daemon}\n`,
+	);
+}
+
+async function runSlackSetup(cmd: NotifyCommandArgs, deps: NotifyCommandDeps): Promise<void> {
+	const botToken = requiredSetupValue(cmd.slackBotToken, "--slack-bot-token");
+	const appToken = requiredSetupValue(cmd.slackAppToken, "--slack-app-token");
+	const workspaceId = requiredSetupValue(cmd.slackWorkspaceId, "--slack-workspace-id");
+	const channelId = requiredSetupValue(cmd.slackChannelId, "--slack-channel-id");
+	const authorizedUserId = cmd.slackAuthorizedUserId?.trim() || undefined;
+	const settings = await getSettings(deps);
+	settings.set("notifications.slack.botToken", botToken);
+	settings.set("notifications.slack.appToken", appToken);
+	settings.set("notifications.slack.workspaceId", workspaceId);
+	settings.set("notifications.slack.channelId", channelId);
+	settings.set("notifications.slack.authorizedUserId", authorizedUserId);
+	settings.set("notifications.enabled", true);
+	if (cmd.redact) settings.set("notifications.redact", true);
+	await settings.flushOrThrow();
+	const daemon = await ensureConfiguredProviderDaemon("slack", settings, deps);
+	process.stdout.write(
+		`Slack notifications enabled. botToken=${maskToken(botToken)} appToken=${maskToken(appToken)} workspaceId=${workspaceId} channelId=${channelId} authorizedUserId=${authorizedUserId ?? "(unset; inbound denied)"} daemon=${daemon}\n`,
+	);
+}
+
+async function ensureConfiguredProviderDaemon(
+	provider: "discord" | "slack",
+	settings: Settings,
+	deps: NotifyCommandDeps,
+): Promise<EnsureChatDaemonResult | "failed"> {
+	try {
+		if (deps.ensureProviderDaemon) return await deps.ensureProviderDaemon(provider, settings);
+		return provider === "discord" ? await ensureDiscordDaemon(settings) : await ensureSlackDaemon(settings);
+	} catch {
+		return "failed";
+	}
+}
+
+async function runTelegramSetup(cmd: NotifyCommandArgs, deps: NotifyCommandDeps): Promise<void> {
 	const settings = await getSettings(deps);
 	const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
 	const apiBase = deps.apiBase ?? DEFAULT_API_BASE;
-	const token = deps.setupToken ?? (await (deps.tokenPrompt ?? promptForToken)());
-	if (!token.trim()) {
-		throw new Error("Telegram bot token is required.");
-	}
+	const token = deps.setupToken ?? cmd.token ?? (await (deps.tokenPrompt ?? promptForToken)());
+	if (!token.trim()) throw new Error("Telegram bot token is required.");
 
 	const user = await getMe(fetchImpl, apiBase, token);
 	const threadedState = await verifyThreadedMode(fetchImpl, apiBase, token, user, {
@@ -209,26 +308,24 @@ async function runSetup(deps: NotifyCommandDeps): Promise<void> {
 	);
 
 	let chatId: string;
-	if (deps.setupChatId?.trim()) {
-		chatId = deps.setupChatId.trim();
+	const suppliedChatId = deps.setupChatId ?? cmd.chatId;
+	if (suppliedChatId?.trim()) {
+		chatId = suppliedChatId.trim();
 		await verifyPrivateChatId(fetchImpl, apiBase, token, chatId);
 		process.stdout.write(`Using provided chat id ${chatId} (non-interactive).\n`);
 	} else {
 		const stale = await getUpdates(fetchImpl, apiBase, token, { timeout: 0, allowed_updates: ["message"] });
-		const offset = nextOffset(stale);
 		chatId = await waitForPrivateChat(fetchImpl, apiBase, token, {
-			offset,
+			offset: nextOffset(stale),
 			pollTimeoutMs: deps.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
 			pollIntervalMs: deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
 		});
 	}
-
 	settings.set("notifications.telegram.botToken", token);
 	settings.set("notifications.telegram.chatId", chatId);
 	settings.set("notifications.enabled", true);
-	if (deps.setupRedact) settings.set("notifications.redact", true);
-	await settings.flush();
-
+	if (deps.setupRedact ?? cmd.redact) settings.set("notifications.redact", true);
+	await settings.flushOrThrow();
 	process.stdout.write(
 		`Notifications enabled. botToken=${maskToken(token)} chatId=${chatId} threaded=${threadedLabel(threadedState)}\n`,
 	);
@@ -564,18 +661,19 @@ async function callTelegram<T>(
 }
 
 export function printNotifyHelp(): void {
-	process.stdout.write(`${chalk.bold(`${APP_NAME} notify`)} - Configure Telegram notifications
+	process.stdout.write(`${chalk.bold(`${APP_NAME} notify`)} - Configure Telegram, Discord, or Slack notifications
 
 ${chalk.bold("Usage:")}
-  ${APP_NAME} notify setup
-  ${APP_NAME} notify setup --token <botToken> --chat-id <chatId> [--redact]
+  ${APP_NAME} notify setup [telegram]
+  ${APP_NAME} notify setup discord --discord-bot-token <token> --discord-application-id <id> --discord-guild-id <id> --discord-parent-channel-id <id>
+  ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id> [--slack-authorized-user-id <id>]
   ${APP_NAME} notify status
   ${APP_NAME} notify health [--probe]
   ${APP_NAME} notify test [--message <text>]
   ${APP_NAME} notify recovery
 
 ${chalk.bold("Subcommands:")}
-  setup     Pair a Telegram bot token with a private chat and verify Threaded Mode capability
+  setup     Pair Telegram or save complete non-interactive Discord/Slack notification settings
   status    Show notification configuration without secrets
   health    Report config, daemon-ownership and endpoint health (--probe adds a Telegram reachability check)
   test      Send a one-off test notification through the configured Telegram adapter
@@ -583,6 +681,9 @@ ${chalk.bold("Subcommands:")}
 
 ${chalk.bold("Examples:")}
   ${APP_NAME} notify setup
+  ${APP_NAME} notify setup --token <botToken> --chat-id <chatId> [--redact]
+  ${APP_NAME} notify setup discord --discord-bot-token <token> --discord-application-id <id> --discord-guild-id <id> --discord-parent-channel-id <id>
+  ${APP_NAME} notify setup slack --slack-bot-token <token> --slack-app-token <token> --slack-workspace-id <id> --slack-channel-id <id> [--slack-authorized-user-id <id>]
   ${APP_NAME} notify status
   ${APP_NAME} notify health --probe
   ${APP_NAME} notify test --message "hello from gjc"

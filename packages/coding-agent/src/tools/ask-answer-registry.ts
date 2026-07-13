@@ -7,7 +7,7 @@
  * source; registering returns a disposer.
  */
 
-import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/unattended-session";
+import type { WorkflowGateEmitter } from "../modes/shared/agent-wire/workflow-gate-broker";
 import type { AskAnswerSource } from "./index";
 
 const sources = new Map<string, AskAnswerSource>();

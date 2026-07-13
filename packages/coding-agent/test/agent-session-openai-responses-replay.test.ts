@@ -690,7 +690,7 @@ describe("AgentSession OpenAI Responses replay boundaries", () => {
 		for (const child of [execChild!, archChild!]) {
 			expect(child.forkContextSeed).toBeDefined();
 			// cacheIdentity is the seed-borne identity; it must reuse the parent's sessionId so
-			// the child session's provider-side prefix cache hits when configured via sdk.ts:870
+			// the child session's provider-side prefix cache hits when configured via sdk/session.ts:870
 			// (which uses options.forkContextSeed?.cacheIdentity as the providerSessionId fallback).
 			expect(child.forkContextSeed!.cacheIdentity).toBe(parent.sessionId);
 		}

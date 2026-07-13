@@ -4,6 +4,13 @@ import * as path from "node:path";
 import { isEnoent, pathIsWithin, peekFile, toError } from "@gajae-code/utils";
 
 const utf8Decoder = new TextDecoder("utf-8");
+function canonicalPathSync(value: string): string {
+	try {
+		return fs.realpathSync.native(value);
+	} catch {
+		return path.resolve(value);
+	}
+}
 
 export interface SessionStorageStat {
 	dev: bigint;
@@ -614,7 +621,7 @@ export class FileSessionStorage implements SessionStorage {
 		if (typeof header.cwd !== "string") {
 			throw new SessionDeleteVerificationError("cwd", "Transcript header is missing a cwd");
 		}
-		if (path.resolve(header.cwd) !== path.resolve(expectedCwd)) {
+		if (canonicalPathSync(header.cwd) !== canonicalPathSync(expectedCwd)) {
 			throw new SessionDeleteVerificationError("cwd", "Transcript header cwd does not match authorization");
 		}
 		return { snapshot };

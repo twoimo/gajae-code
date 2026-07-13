@@ -39,7 +39,7 @@ import { type ResolvedOwner, RuntimeOwner, resolveOwner, resolveOwnerLive } from
 import { preserveDirtyWorktree } from "../harness-control-plane/preserve";
 import { RECEIPT_SPOOL_DIR_ENV } from "../harness-control-plane/receipt-spool";
 import { buildReceipt, requiresVanishBeforeAction, type VanishEvidence } from "../harness-control-plane/receipts";
-import { GajaeCodeRpc } from "../harness-control-plane/rpc-adapter";
+import { createSdkSessionTransport, spawnNormalHarnessSession } from "../harness-control-plane/sdk-transport";
 import { classifyLeaseStatus, readLease } from "../harness-control-plane/session-lease";
 import { buildResponse, buildStateView, submitUnavailableReason } from "../harness-control-plane/state-machine";
 import {
@@ -50,7 +50,6 @@ import {
 	rememberHarnessSessionRoot,
 	resolveHarnessRoot,
 	resolveHarnessSessionRoot,
-	sessionPaths,
 	writeReceiptImmutable,
 	writeSessionState,
 } from "../harness-control-plane/storage";
@@ -66,7 +65,7 @@ import {
 	type SessionHandle,
 	type SessionState,
 } from "../harness-control-plane/types";
-import { SPAWN_PROVENANCE_ENV } from "../notifications/config";
+import { SPAWN_PROVENANCE_ENV } from "../sdk/bus/config";
 
 const PRIVATE_OWNER_CONTROL_FIELDS = new Set([
 	"socket_key",
@@ -630,6 +629,12 @@ function scopedBootstrapReceipt(stdout: Uint8Array): ScopedBootstrapReceipt | nu
 	}
 }
 
+function ownerIsolationPlatform(): NodeJS.Platform {
+	return process.platform === "linux" || process.env.GJC_HARNESS_TEST_ASSUME_LINUX_OWNER_ISOLATION !== "1"
+		? process.platform
+		: "linux";
+}
+
 function portableProcessStartTime(pid: number): string | null {
 	if (process.platform === "linux") return null;
 	const configured = process.env.GJC_HARNESS_PROCESS_START_COMMAND;
@@ -644,7 +649,11 @@ function portableProcessStartTime(pid: number): string | null {
 			return null;
 		}
 	}
-	const result = Bun.spawnSync([...command, String(pid)], { stdout: "pipe", stderr: "ignore" });
+	const result = Bun.spawnSync([...command, String(pid)], {
+		stdout: "pipe",
+		stderr: "ignore",
+		env: { ...process.env, LC_ALL: "C", LANG: "C" },
+	});
 	if (result.exitCode !== 0) return null;
 	const value = result.stdout.toString();
 	const line = value.endsWith("\n") ? value.slice(0, -1) : value;
@@ -801,36 +810,40 @@ export default class Harness extends Command {
 	/** Detached owner daemon (spawned by `start --detach`). Runs until retired or signalled. */
 	async #runOwner(root: string, input: Record<string, unknown>, flagSession: string | undefined): Promise<void> {
 		const sessionId = requireSessionId(input, flagSession);
-		const sessionDir = sessionPaths(root, sessionId).gjcSessionDir;
-		// Optional rpc command override (tests / non-default hosts); defaults to `gjc --mode rpc`.
-		const override = process.env.GJC_HARNESS_RPC_COMMAND;
-		const command = override ? (JSON.parse(override) as string[]) : undefined;
-		// Mark the RPC owner as a GJC-spawned child (canonical provenance marker)
-		// so `notifications.sessionScope = "primary"` suppresses its notification
-		// endpoint/topic; default `all` preserves historical auto-on behavior.
-		const rpc = new GajaeCodeRpc({
-			sessionDir,
-			command,
-			env: { ...process.env, [SPAWN_PROVENANCE_ENV]: sessionId },
-		});
-		const owner = new RuntimeOwner({ root, sessionId, rpc });
+		const state = await loadState(root, sessionId);
+		const previousSpawnProvenance = process.env[SPAWN_PROVENANCE_ENV];
+		process.env[SPAWN_PROVENANCE_ENV] = sessionId;
+		let transport: Awaited<ReturnType<typeof createSdkSessionTransport>>;
+		try {
+			transport = await createSdkSessionTransport({
+				repo: state.handle.workspace,
+				sessionId,
+				spawn: () => spawnNormalHarnessSession(state.handle.workspace, sessionId),
+			});
+		} finally {
+			if (previousSpawnProvenance === undefined) delete process.env[SPAWN_PROVENANCE_ENV];
+			else process.env[SPAWN_PROVENANCE_ENV] = previousSpawnProvenance;
+		}
+		const owner = new RuntimeOwner({ root, sessionId, transport });
 		const info = await owner.start();
 		writeJson({ ok: true, owner: info });
 		await new Promise<void>(resolve => {
 			const stop = (): void => {
 				clearInterval(timer);
+				process.removeListener("SIGTERM", stop);
+				process.removeListener("SIGINT", stop);
 				resolve();
 			};
-			const timer = setInterval(async () => {
-				const resolved = await resolveOwner(root, sessionId);
-				if (!resolved.live) stop();
+			const timer = setInterval(() => {
+				void resolveOwner(root, sessionId).then(resolved => {
+					if (!resolved.live) stop();
+				});
 			}, 500);
 			timer.unref?.();
 			process.on("SIGTERM", stop);
 			process.on("SIGINT", stop);
 		});
 		await owner.stop();
-		process.exit(0);
 	}
 
 	#buildOwnerCommand(sessionId: string): string[] {
@@ -841,7 +854,7 @@ export default class Harness extends Command {
 	}
 
 	async #waitForOwner(root: string, sessionId: string): Promise<boolean> {
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 160; i++) {
 			const owner = await resolveOwner(root, sessionId);
 			if (owner.live && owner.socketPath) {
 				try {
@@ -862,6 +875,7 @@ export default class Harness extends Command {
 				process.env.GJC_HARNESS_TEST_CALLER_CGROUP ??
 				(await fs.readFile("/proc/self/cgroup", "utf8").catch(() => null)),
 			probeServer: async (socketKey, tmuxControlArgv): Promise<TmuxServerProof> => {
+				const platform = ownerIsolationPlatform();
 				if (!socketKey || socketKey.length > 128) return { state: "unverifiable" };
 				const controlArgv = tmuxControlArgv ?? [tmuxCommand, "-L", socketKey];
 				if (controlArgv.length < 3 || controlArgv[0] !== tmuxCommand || !controlArgv.includes("-L")) {
@@ -878,20 +892,16 @@ export default class Harness extends Command {
 				if (!Number.isSafeInteger(pid) || pid <= 0) return { state: "unverifiable" };
 				const cgroupText =
 					process.env.GJC_HARNESS_TEST_SERVER_CGROUP ??
-					(process.platform === "linux"
-						? await fs.readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null)
-						: null);
+					(platform === "linux" ? await fs.readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null) : null);
 				const testStartTime = process.env.GJC_HARNESS_TEST_SERVER_START_TIME;
 				const stat =
-					testStartTime || process.platform !== "linux"
+					testStartTime || platform !== "linux"
 						? null
 						: await fs.readFile(`/proc/${pid}/stat`, "utf8").catch(() => null);
-				const cgroup = classifyCgroup({ platform: process.platform, cgroupText });
+				const cgroup = classifyCgroup({ platform, cgroupText });
 				const startTime =
 					testStartTime ??
-					(process.platform === "linux"
-						? ownerProcessStartTime(process.platform, stat)
-						: portableProcessStartTime(pid));
+					(platform === "linux" ? ownerProcessStartTime(platform, stat) : portableProcessStartTime(pid));
 				if (!startTime) return { state: "unverifiable", pid, cgroup };
 				return {
 					state:
@@ -996,7 +1006,8 @@ export default class Harness extends Command {
 		} catch {
 			return { started: false, sessionName, socketKey, reason: "tmux-owner-generation_unverifiable" };
 		}
-		if (process.platform !== "linux" && !portableProcessStartTime(process.pid))
+		const platform = ownerIsolationPlatform();
+		if (platform !== "linux" && !portableProcessStartTime(process.pid))
 			return { started: false, sessionName, socketKey, reason: "tmux-owner-generation_unverifiable" };
 		await fs.mkdir(path.join(ownerStateDir, sessionId, "owner-lifecycle"), { recursive: true, mode: 0o700 });
 		const ownerGeneration = randomUUID();
@@ -1008,10 +1019,10 @@ export default class Harness extends Command {
 		];
 		if (process.env[RECEIPT_SPOOL_DIR_ENV])
 			envAssignments.push(`${RECEIPT_SPOOL_DIR_ENV}=${shellQuote(process.env[RECEIPT_SPOOL_DIR_ENV])}`);
-		if (process.env.GJC_HARNESS_RPC_COMMAND)
-			envAssignments.push(`GJC_HARNESS_RPC_COMMAND=${shellQuote(process.env.GJC_HARNESS_RPC_COMMAND)}`);
 		if (process.env.GJC_HARNESS_TEST_NODE_MODULES)
 			envAssignments.push(`GJC_HARNESS_TEST_NODE_MODULES=${shellQuote(process.env.GJC_HARNESS_TEST_NODE_MODULES)}`);
+		if (process.env.GJC_SDK_DISABLE)
+			envAssignments.push(`GJC_SDK_DISABLE=${shellQuote(process.env.GJC_SDK_DISABLE)}`);
 		const shellCommand = `exec env ${envAssignments.join(" ")} ${this.#buildOwnerCommand(sessionId).map(shellQuote).join(" ")}`;
 		const probe = await this.#harnessOwnerIsolationProbe(tmuxCommand);
 		const probeServer = probe.probeServer;
@@ -1036,7 +1047,7 @@ export default class Harness extends Command {
 			{
 				schema_version: 1,
 				op: "plan",
-				platform: process.platform,
+				platform,
 				session_id: sessionId,
 				owner_generation: ownerGeneration,
 				baseline,
@@ -1216,6 +1227,7 @@ export default class Harness extends Command {
 				...(process.env.GJC_HARNESS_TEST_NODE_MODULES
 					? { GJC_HARNESS_TEST_NODE_MODULES: process.env.GJC_HARNESS_TEST_NODE_MODULES }
 					: {}),
+				...(process.env.GJC_SDK_DISABLE ? { GJC_SDK_DISABLE: process.env.GJC_SDK_DISABLE } : {}),
 			},
 			stdout: "ignore",
 			stderr: "ignore",
@@ -1274,7 +1286,7 @@ export default class Harness extends Command {
 			base: typeof input.base === "string" ? input.base : null,
 			issueOrPr: preflight.normalizedIssueOrPr,
 			processHandle: { kind: "runtime-owner", ownerId: null, pid: null },
-			rpcHandle: { kind: "rpc-subprocess", pid: null, sessionDir: `${root}/sessions/${sessionId}/gjc-session` },
+			sdkHandle: { kind: "sdk-session-endpoint", sessionId },
 			ownerHandle: { leasePath, endpoint: null, heartbeatAt: null },
 			routerHandle: { kind: "default-in-owner", policy: "default-fallback", eventsPath },
 			viewportHandle: { kind: "event-monitor", tmuxSessionName: null, viewOnly: true },

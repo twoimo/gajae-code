@@ -1275,6 +1275,164 @@ describe("native GJC ultragoal runtime", () => {
 		).toBe("active_stale_receipt");
 	});
 
+	it("hydrates a reviewed validation-batch final recovery and rejects stale, wrong, and multiple replacements", async () => {
+		const prepareRecovery = async () => {
+			const root = await batchTempDir();
+			await writeStructuralArtifacts(root);
+			let plan = await createUltragoalPlan({
+				cwd: root,
+				brief: "@goal: A\na\n@goal: B\nb\n@goal: C\nc\n@goal: D\nd",
+				validationBatches: [
+					{ schemaVersion: 1, batchId: "VB001", memberIds: ["G002", "G003", "G004"], finalGoalId: "G004" },
+				],
+			});
+			await startNextUltragoalGoal({ cwd: root });
+			plan = await checkpointUltragoalGoal({
+				cwd: root,
+				goalId: "G001",
+				status: "complete",
+				evidence: "g001 complete",
+				qualityGateJson: passingQualityGate(),
+			});
+			await startNextUltragoalGoal({ cwd: root });
+			plan = await checkpointUltragoalGoal({
+				cwd: root,
+				goalId: "G002",
+				status: "complete",
+				evidence: "g002 deferred",
+				qualityGateJson: deferredBatchGate("G002", plan.goals[1]!.validationBatch!),
+			});
+			await startNextUltragoalGoal({ cwd: root });
+			plan = await checkpointUltragoalGoal({
+				cwd: root,
+				goalId: "G003",
+				status: "complete",
+				evidence: "g003 deferred",
+				qualityGateJson: deferredBatchGate("G003", plan.goals[2]!.validationBatch!),
+			});
+			await startNextUltragoalGoal({ cwd: root });
+			await runNativeUltragoalCommand(
+				[
+					"record-review-blockers",
+					"--goal-id",
+					"G004",
+					"--title",
+					"Replacement",
+					"--objective",
+					"Resolve the reviewed final.",
+					"--evidence",
+					"The original final was reviewed and superseded.",
+				],
+				root,
+			);
+			await addUltragoalSubgoal({
+				cwd: root,
+				title: "Aggregate final",
+				objective: "Produce final aggregate evidence.",
+				evidence: "Aggregate evidence is required after replacement.",
+				rationale: "Keep aggregate evidence after the replacement receipt.",
+			});
+			await startNextUltragoalGoal({ cwd: root });
+			await checkpointUltragoalGoal({
+				cwd: root,
+				goalId: "G005",
+				status: "complete",
+				evidence: "replacement verified",
+				qualityGateJson: passingQualityGate(),
+			});
+			await startNextUltragoalGoal({ cwd: root });
+			await checkpointUltragoalGoal({
+				cwd: root,
+				goalId: "G006",
+				status: "complete",
+				evidence: "aggregate verified",
+				qualityGateJson: passingQualityGate(),
+			});
+			await checkpointUltragoalGoal({
+				cwd: root,
+				goalId: "G004",
+				status: "active",
+				evidence: "reopened after aggregate receipt",
+			});
+			return root;
+		};
+		const recoveryGate = (replacementGoalId: string) =>
+			JSON.stringify({
+				...JSON.parse(passingQualityGate()),
+				validationBatchClose: {
+					schemaVersion: 1,
+					kind: "review-blocker-replacement-close",
+					replacementGoalId,
+					coverageEvidence: "The reviewed replacement and cumulative batch validation are covered.",
+				},
+			});
+
+		const validRoot = await prepareRecovery();
+		const closed = await checkpointUltragoalGoal({
+			cwd: validRoot,
+			goalId: "G004",
+			status: "complete",
+			evidence: "hydrated normal batch close",
+			qualityGateJson: recoveryGate("G005"),
+		});
+		expect(closed.goals[3]?.completionVerification?.validationBatch).toMatchObject({
+			role: "batch-close",
+			batchId: "VB001",
+			finalGoalId: "G004",
+		});
+		const closeLedger = (await readUltragoalLedger(validRoot)).at(-1);
+		expect((closeLedger?.qualityGateJson as Record<string, unknown>).validationBatchClose).toMatchObject({
+			kind: "validation-batch-close",
+			memberIds: ["G002", "G003", "G004"],
+		});
+
+		const wrongRoot = await prepareRecovery();
+		await expect(
+			checkpointUltragoalGoal({
+				cwd: wrongRoot,
+				goalId: "G004",
+				status: "complete",
+				evidence: "wrong replacement",
+				qualityGateJson: recoveryGate("G006"),
+			}),
+		).rejects.toThrow("exactly the declared replacement");
+
+		const staleRoot = await prepareRecovery();
+		const staleGoalsPath = path.join(sessionUltragoalDir(staleRoot, TEST_SESSION_ID), "goals.json");
+		const stalePlan = JSON.parse(await Bun.file(staleGoalsPath).text());
+		stalePlan.goals[4].updatedAt = new Date(Date.now() + 1_000).toISOString();
+		await fs.writeFile(staleGoalsPath, `${JSON.stringify(stalePlan, null, 2)}\n`);
+		await expect(
+			checkpointUltragoalGoal({
+				cwd: staleRoot,
+				goalId: "G004",
+				status: "complete",
+				evidence: "stale replacement",
+				qualityGateJson: recoveryGate("G005"),
+			}),
+		).rejects.toThrow("replacement close Ultragoal G005 receipt generation is stale.");
+
+		const multipleRoot = await prepareRecovery();
+		const multiplePlanPath = path.join(sessionUltragoalDir(multipleRoot, TEST_SESSION_ID), "goals.json");
+		const multiplePlan = JSON.parse(await Bun.file(multiplePlanPath).text());
+		multiplePlan.goals.push({
+			...multiplePlan.goals[4],
+			id: "G007",
+			status: "pending",
+			steering: { kind: "review_blocker", blockedGoalId: "G004" },
+		});
+		await fs.writeFile(multiplePlanPath, `${JSON.stringify(multiplePlan, null, 2)}\n`);
+		await expect(
+			checkpointUltragoalGoal({
+				cwd: multipleRoot,
+				goalId: "G004",
+				status: "complete",
+				evidence: "multiple replacements",
+				qualityGateJson: recoveryGate("G005"),
+			}),
+		).rejects.toThrow("exactly the declared replacement");
+	});
+
 	it("validation batch idempotent replay rejects stale durable metadata before early return", async () => {
 		const root = await batchTempDir();
 		await writeStructuralArtifacts(root);

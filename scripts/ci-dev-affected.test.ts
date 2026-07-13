@@ -18,21 +18,14 @@ function planForPaths(paths: readonly string[]) {
 
 describe("planTasks command shape (issue #622)", () => {
 	test("no scheduled command uses the false-green standalone `bun --cwd <dir>` form", () => {
-		const tasks = planForPaths([
-			"packages/example/src/index.ts",
-			"python/robogjc/web/app.ts",
-		]);
+		const tasks = planForPaths(["packages/example/src/index.ts"]);
 		expect(tasks.length).toBeGreaterThan(0);
 		for (const task of tasks) {
-			// The space-separated `--cwd` argument is the exact shape that makes
-			// `bun run` print its usage banner and exit 0 without running the
-			// script under Bun 1.3.x. It must never appear in a scheduled command.
 			expect(task.command).not.toContain("--cwd");
-			// Be strict about the equals form too: directory scoping is expressed
-			// via `task.cwd`, never as a `--cwd=...` flag baked into the command.
 			expect(task.command.some(arg => arg.startsWith("--cwd"))).toBe(false);
 		}
 	});
+
 
 	test("package check/test tasks run `bun run <script>` in the package cwd", () => {
 		const tasks = planForPaths(["packages/example/src/index.ts"]);
@@ -46,31 +39,6 @@ describe("planTasks command shape (issue #622)", () => {
 		expect(runTest?.cwd).toBe(resolvePackageCwd("packages/example"));
 	});
 
-	test("robogjc web tasks run `bun run <script>` in the web cwd", () => {
-		const tasks = planForPaths(["python/robogjc/web/app.ts"]);
-		const typecheck = tasks.find(task => task.key === "robogjc-web-typecheck");
-		const build = tasks.find(task => task.key === "robogjc-web-build");
-		expect(typecheck?.command).toEqual(["bun", "run", "typecheck"]);
-		expect(build?.command).toEqual(["bun", "run", "build"]);
-		expect(typecheck?.cwd).toBe(resolvePackageCwd("python/robogjc/web"));
-		expect(build?.cwd).toBe(resolvePackageCwd("python/robogjc/web"));
-	});
-
-	test("python tasks install dev dependencies before invoking pytest and ruff modules", () => {
-		const tasks = planForPaths(["python/robogjc/src/server.py"]);
-		const lint = tasks.find(task => task.key === "python-lint");
-		const runTest = tasks.find(task => task.key === "python-test");
-		expect(lint?.command).toEqual([
-			"bash",
-			"-lc",
-			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc -e 'python/robogjc[dev]' && python3 -m ruff check python && python3 -m ruff format --check python/robogjc",
-		]);
-		expect(runTest?.command).toEqual([
-			"bash",
-			"-lc",
-			"python3 -m pip install --user --upgrade 'pip>=24' 'setuptools>=69' wheel && python3 -m pip install --user -e python/gjc-rpc -e 'python/robogjc[dev]' && python3 -m pytest -x --import-mode=importlib python/gjc-rpc/tests python/robogjc/tests",
-		]);
-	});
 });
 
 	describe("deep-interview selector narrowing", () => {
@@ -425,9 +393,6 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		expect(targeted(["docs/guide.md", "CHANGELOG.md", "packages/coding-agent/README.md"])).toEqual([]);
 	});
 
-	test("robogjc static asset changes plan no Python lint/test shards", () => {
-		expect(targeted(["python/robogjc/assets/icon.png", "python/robogjc/assets/icon.jpg"])).toEqual([]);
-	});
 
 	test("native-consuming test files pull in a single native build task", () => {
 		const tasks = targeted(["packages/coding-agent/test/cli.test.ts"]);
