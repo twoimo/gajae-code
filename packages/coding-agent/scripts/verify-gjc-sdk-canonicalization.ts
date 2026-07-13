@@ -16,7 +16,21 @@ const bridgeOrUnattendedImportPattern =
 const pythonUnattendedProtocolClientPattern =
 	/\b(?:negotiate_unattended|UnattendedAccepted|UnattendedBudget|parse_unattended_accepted|workflow_gate_response)\b/g;
 const pythonGjcRpcImportPattern = /^\s*(?:from\s+gjc_rpc(?:\.|\s)|import\s+gjc_rpc(?:\.|\s|,|$))/gm;
-const modeRpcInvocationPatterns = [/--mode(?:\s+|=)["']?rpc(?:\b|["'])/g, /["']--mode["']\s*,\s*["']rpc["']/g];
+const retiredExternalModeInvocationPatterns = [
+	/--mode(?:\s+|=)["']?(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*(?:\b|["'])/gi,
+	/["']--mode["']\s*,\s*["'](?:rpc|bridge|unattended)[A-Za-z0-9_.-]*["']/gi,
+];
+const constructedRetiredIngressPatterns = [
+	/\[\s*["']r["']\s*,\s*["']pc["']\s*\]\.join\(\s*["']{2}\s*\)/g,
+	/["']r["']\s*\+\s*["']pc["']/g,
+	/`(?:r|\$\{\s*["']r["']\s*\})(?:pc|\$\{\s*["']pc["']\s*\})`/g,
+	/\[\s*["']brid["']\s*,\s*["']ge["']\s*\]\.join\(\s*["']{2}\s*\)/gi,
+	/`(?:brid|\$\{\s*["']brid["']\s*\})(?:ge|\$\{\s*["']ge["']\s*\})`/gi,
+	/\[\s*["']un["']\s*,\s*["']attended["']\s*\]\.join\(\s*["']{2}\s*\)/gi,
+	/`(?:un|\$\{\s*["']un["']\s*\})(?:attended|\$\{\s*["']attended["']\s*\})`/gi,
+	/["'](?:\.\/)?modes\/["']\s*\+\s*["'](?:rpc|bridge|unattended)[A-Za-z0-9_.-]*["']/gi,
+	/\[\s*["'](?:\.\/)?modes["']\s*,\s*["'](?:rpc|bridge|unattended)[A-Za-z0-9_.-]*["']\s*\]\.join\(\s*["']\/["']\s*\)/gi,
+];
 const allowedRpcModeInvocationTests = new Set([
 	"packages/coding-agent/test/sdk-downgrade-rollback.test.ts",
 	"packages/coding-agent/test/sdk-removed-ingresses.test.ts",
@@ -35,11 +49,178 @@ const machineTmuxDocumentationPaths = new Set([
 ]);
 const machineTmuxDocumentationPattern =
 	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
-const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b/g;
-const tmuxPaneViewingPattern =
-	/\b(?:capture-pane|pipe-pane)\b|\[\s*["'](?:capture|pipe)["']\s*,\s*["']pane["']\s*\]\.join\(\s*["']-["']\s*\)/g;
 function normalizeShellContinuations(contents: string): string {
 	return contents.replace(/\\\r?\n[ \t]*/g, " ");
+}
+
+type TmuxMachineBusPrimitive =
+	| "load-buffer"
+	| "paste-buffer"
+	| "send-keys"
+	| "capture-pane"
+	| "pipe-pane"
+	| "set-buffer";
+
+const tmuxMachineBusPrimitives: readonly TmuxMachineBusPrimitive[] = [
+	"load-buffer",
+	"paste-buffer",
+	"send-keys",
+	"capture-pane",
+	"pipe-pane",
+	"set-buffer",
+];
+
+interface TmuxPrimitiveOccurrence {
+	primitive: TmuxMachineBusPrimitive;
+	start: number;
+	end: number;
+}
+
+interface StaticStringAssignment {
+	name: string;
+	expression: string;
+	start: number;
+}
+
+function maskCodeComments(contents: string): string {
+	let masked = "";
+	let quote: "'" | '"' | "`" | undefined;
+	for (let index = 0; index < contents.length; index++) {
+		const character = contents[index];
+		if (quote) {
+			masked += character;
+			if (character === "\\") {
+				masked += contents[index + 1] ?? "";
+				index++;
+			} else if (character === quote) {
+				quote = undefined;
+			}
+			continue;
+		}
+		if (character === "'" || character === '"' || character === "`") {
+			quote = character;
+			masked += character;
+			continue;
+		}
+		if (character === "/" && contents[index + 1] === "/") {
+			while (index < contents.length && contents[index] !== "\n") {
+				masked += " ";
+				index++;
+			}
+			masked += contents[index] ?? "";
+			continue;
+		}
+		if (character === "/" && contents[index + 1] === "*") {
+			masked += "  ";
+			index++;
+			while (index + 1 < contents.length && !(contents[index] === "*" && contents[index + 1] === "/")) {
+				masked += contents[index] === "\n" ? "\n" : " ";
+				index++;
+			}
+			if (index + 1 < contents.length) {
+				masked += "  ";
+				index++;
+			}
+			continue;
+		}
+		masked += character;
+	}
+	return masked;
+}
+
+function quotedStringValue(expression: string): string | undefined {
+	const match = /^(["'])([^\\\r\n]*)\1$/.exec(expression.trim());
+	return match?.[2];
+}
+
+function staticStringValue(expression: string, bindings: ReadonlyMap<string, string>): string | undefined {
+	const trimmed = expression.trim();
+	const literal = quotedStringValue(trimmed);
+	if (literal !== undefined) return literal;
+	if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(trimmed)) return bindings.get(trimmed);
+	if (trimmed.startsWith("`") && trimmed.endsWith("`")) {
+		const interpolated = trimmed
+			.slice(1, -1)
+			.replace(/\$\{\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}/g, (source, name: string) => bindings.get(name) ?? source);
+		return interpolated.includes("${") ? undefined : interpolated;
+	}
+	const join = /^\[\s*([^\]]*?)\s*\]\.join\(\s*(["'])([^\\\r\n]*)\2\s*\)$/.exec(trimmed);
+	if (join) {
+		const parts = join[1].split(",").map(part => staticStringValue(part, bindings));
+		return parts.every((part): part is string => part !== undefined) ? parts.join(join[3]) : undefined;
+	}
+	const parts = trimmed.split("+").map(part => part.trim());
+	if (parts.length > 1) {
+		const values = parts.map(part => staticStringValue(part, bindings));
+		return values.every((part): part is string => part !== undefined) ? values.join("") : undefined;
+	}
+	return undefined;
+}
+
+function tmuxPrimitiveOccurrences(contents: string): TmuxPrimitiveOccurrence[] {
+	const masked = maskCodeComments(contents);
+	const occurrences = new Map<string, TmuxPrimitiveOccurrence>();
+	const add = (primitive: TmuxMachineBusPrimitive, start: number, end: number) => {
+		occurrences.set(`${primitive}:${start}`, { primitive, start, end });
+	};
+	for (const match of masked.matchAll(
+		/["'`](load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane|set-buffer)["'`]/g,
+	)) {
+		add(match[1] as TmuxMachineBusPrimitive, match.index ?? 0, (match.index ?? 0) + match[0].length);
+	}
+	for (const match of masked.matchAll(/\b(load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane|set-buffer)\b/g)) {
+		add(match[1] as TmuxMachineBusPrimitive, match.index ?? 0, (match.index ?? 0) + match[0].length);
+	}
+	for (const primitive of tmuxMachineBusPrimitives) {
+		const [prefix, suffix] = primitive.split("-");
+		const construction = new RegExp(
+			"(?:\\[\\s*[\"']" +
+				prefix +
+				"[\"']\\s*,\\s*[\"']-?" +
+				suffix +
+				"[\"']\\s*\\]\\s*\\.join\\(\\s*[\"']-?[\"']\\s*\\)|[\"']" +
+				prefix +
+				"[\"']\\s*\\+\\s*[\"']-?" +
+				suffix +
+				"[\"']|`(?:" +
+				prefix +
+				"|\\$\\{\\s*[\"']" +
+				prefix +
+				"[\"']\\s*\\})-(?:" +
+				suffix +
+				"|\\$\\{\\s*[\"']" +
+				suffix +
+				"[\"']\\s*\\})`)",
+			"g",
+		);
+		for (const match of masked.matchAll(construction)) {
+			add(primitive, match.index ?? 0, (match.index ?? 0) + match[0].length);
+		}
+	}
+	const assignments: StaticStringAssignment[] = [];
+	for (const match of masked.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+);?/g)) {
+		const expression = match[2];
+		const start = (match.index ?? 0) + match[0].lastIndexOf(expression);
+		assignments.push({ name: match[1], expression, start });
+	}
+	const bindings = new Map<string, string>();
+	for (let pass = 0; pass < assignments.length; pass++) {
+		let changed = false;
+		for (const assignment of assignments) {
+			const value = staticStringValue(assignment.expression, bindings);
+			if (value === undefined || bindings.get(assignment.name) === value) continue;
+			bindings.set(assignment.name, value);
+			changed = true;
+		}
+		if (!changed) break;
+	}
+	for (const assignment of assignments) {
+		const value = bindings.get(assignment.name);
+		if (value && tmuxMachineBusPrimitives.includes(value as TmuxMachineBusPrimitive)) {
+			add(value as TmuxMachineBusPrimitive, assignment.start, assignment.start + assignment.expression.length);
+		}
+	}
+	return [...occurrences.values()].sort((left, right) => left.start - right.start);
 }
 
 function isWorkspacePackageManifest(file: string): boolean {
@@ -66,7 +247,7 @@ function exportTargetStrings(target: unknown): string[] {
 }
 
 function retiredIngressSource(file: string): boolean {
-	return /\/src\/(?:modes\/(?:rpc|bridge|unattended)(?:\/|$)|(?:rpc|bridge|unattended)(?:\/|\.[cm]?[jt]sx?$))/.test(
+	return /\/src\/(?:modes\/(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*(?:\/|$)|(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*(?:\/|\.[cm]?[jt]sx?$))/i.test(
 		file,
 	);
 }
@@ -158,7 +339,8 @@ function isExecutableSource(file: string): boolean {
 function rpcModeInvocationViolations(file: string, contents: string): string[] {
 	if (isGeneratedDocumentationIndex(file) || !isExecutableSource(file) || allowedRpcModeInvocationTests.has(file))
 		return [];
-	return modeRpcInvocationPatterns.flatMap(pattern =>
+	const patterns = [...retiredExternalModeInvocationPatterns, ...constructedRetiredIngressPatterns];
+	return patterns.flatMap(pattern =>
 		[...contents.matchAll(pattern)].map(
 			match => `${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`,
 		),
@@ -209,9 +391,6 @@ function isSource(file: string): boolean {
 }
 
 const teamRuntimeTmuxPath = "packages/coding-agent/src/gjc-runtime/team-runtime.ts";
-const teamRuntimeWorkerPayloadArgs =
-	/^\s*,\s*["']-l["']\s*,\s*["']-t["']\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\],\s*\{/;
-const teamRuntimeEnterArgs = /^\s*,\s*["']-t["']\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*,\s*["']Enter["']\s*\],\s*\{/;
 
 const coordinatorMcpRoot = "packages/coding-agent/src/coordinator-mcp/server.ts";
 function isPublishedGjcSessionShellHelper(file: string): boolean {
@@ -414,6 +593,25 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	if (arityGuards.length !== 1 || topLevelArityGuards.length !== 1 || twoOperandArityChecks.length !== 1) {
 		violation(arityGuard?.index ?? 0, "human-only tmux owner must have one fail-closed exact two-operand guard");
 	}
+	const positionalRewrites = [...contents.matchAll(/^\s*(?:set\s+--(?:\s|$)|shift(?:\s|$))/gm)];
+	if (positionalRewrites.length > 0) {
+		violation(
+			positionalRewrites[0].index ?? 0,
+			"human-only tmux owner must not rewrite positional arguments before launch",
+		);
+	}
+	const guardStart = arityGuard?.index ?? 0;
+	const guardNeutralizers = [
+		...contents.matchAll(
+			/(?:^|\n)\s*(?:(?:function\s+)?(?:exit|echo)\s*(?:\(\s*\))?\s*\{|alias\s+(?:exit|echo)\b|enable\s+-n\s+(?:exit|echo)\b)/gm,
+		),
+	].filter(match => (match.index ?? 0) < guardStart);
+	if (guardNeutralizers.length > 0) {
+		violation(
+			guardNeutralizers[0].index ?? 0,
+			"human-only tmux owner must not neutralize the exact two-operand guard",
+		);
+	}
 
 	const canonicalCommand = /^\s*command\s*=\s*\[\s*os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]\s*\]\s*$/gm;
 	const canonicalCommands = [...contents.matchAll(canonicalCommand)];
@@ -432,6 +630,46 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	}
 	const canonicalInteractivePopenAssignment =
 		/^\s*child\s*=\s*subprocess\.Popen\(\s*command\s*(?:,\s*cwd\s*=\s*os\.environ\[\s*["']GJC_SESSION_WORKDIR["']\s*\])?\s*\)\s*$/;
+	const expectedLifecycleCallsites = [
+		{
+			operation: "terminal observer",
+			pattern:
+				/\bcompleted\s*=\s*subprocess\.run\(\s*\[\s*os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]\s*,\s*["']--internal-tmux-owner-isolation["']\s*\]\s*,/g,
+		},
+		{
+			operation: "owner-isolation plan",
+			pattern:
+				/\bPLAN_RESPONSE\s*=\s*"\$\(\s*printf\s+["'][^"']*["']\s+"\$PLAN_LINE"\s*\|\s*"\$GJC_BIN"\s+--internal-tmux-owner-isolation\s*\)"/g,
+		},
+		{
+			operation: "post-spawn proof",
+			pattern:
+				/\bPOST_SPAWN_RESPONSE\s*=\s*"\$\(\s*printf\s+["'][^"']*["']\s+"\$PLAN_LINE"\s*\|\s*"\$GJC_BIN"\s+--internal-tmux-owner-isolation\s*\)"/g,
+		},
+		{
+			operation: "generation publication",
+			pattern:
+				/\bGENERATION_PUBLISH_RESPONSE\s*=\s*"\$\(\s*printf\s+["'][^"']*["']\s+"\$GENERATION_PUBLISH_REQUEST"\s*\|\s*"\$GJC_BIN"\s+--internal-tmux-owner-isolation\s*\)"/g,
+		},
+		{
+			operation: "terminal monitor",
+			pattern:
+				/\bif\s+verdict\s*=\s*"\$\(\s*printf\s+["'][^"']*["']\s+"\$request"\s*\|\s*timeout\s+"[^"]+"\s+"\$GJC_SESSION_GJC_BIN"\s+--internal-tmux-owner-isolation\s*\)"\s*;\s*then/g,
+		},
+	];
+	const expectedLifecycleRanges: ShellRange[] = [];
+	for (const callsite of expectedLifecycleCallsites) {
+		const matches = [...contents.matchAll(callsite.pattern)];
+		if (matches.length !== 1) {
+			violation(
+				matches[0]?.index ?? 0,
+				`human-only tmux owner must bind one exact ${callsite.operation} lifecycle callsite`,
+			);
+			continue;
+		}
+		const match = matches[0];
+		expectedLifecycleRanges.push({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
+	}
 	const pythonCommandAssignment =
 		/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?=(?:\(\s*)?(?:command\b|\[\s*\*?command\b|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\(\s*command\b))[^\n]*$/gm;
 	for (const match of contents.matchAll(pythonCommandAssignment)) {
@@ -465,6 +703,14 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 			continue;
 		}
 		if (isLifecycleCall) {
+			const lifecycleStart = match.index ?? 0;
+			if (!expectedLifecycleRanges.some(range => lifecycleStart >= range.start && lifecycleStart < range.end)) {
+				violation(
+					lifecycleStart,
+					"human-only tmux owner must bind owner-isolation to its expected lifecycle callsite",
+				);
+				continue;
+			}
 			allowedGjcEnvironmentReferences.push({ start: argument.start, end: argument.start + argument.text.length });
 			continue;
 		}
@@ -474,6 +720,30 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 				"human-only tmux owner must invoke GJC only with zero interactive argv or the exact owner-isolation lifecycle argv",
 			);
 		}
+	}
+	for (const match of contents.matchAll(/\[\s*["']gjc["'](?:\s*,|\s*\])/g)) {
+		violation(match.index ?? 0, "human-only tmux owner must not launch a literal gjc executable");
+	}
+	for (const match of contents.matchAll(/(?:^|\n)\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*["']gjc["']\s*$/gm)) {
+		violation(match.index ?? 0, "human-only tmux owner must not alias or wrap the gjc executable");
+	}
+	for (const match of contents.matchAll(
+		/(?:^|\n)\s*(?:alias\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*['"]?gjc\b|(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{[^\n]*\bgjc\b)/gm,
+	)) {
+		violation(match.index ?? 0, "human-only tmux owner must not alias or wrap the gjc executable");
+	}
+	for (const match of contents.matchAll(
+		/(?:^|[|;&({]\s*|\b(?:command|exec|env|sudo|nice|nohup)\s+)["']?gjc["']?(?=\s|$)/gm,
+	)) {
+		violation(match.index ?? 0, "human-only tmux owner must not launch a literal gjc executable");
+	}
+	for (const match of contents.matchAll(
+		/\benv(?:\s+(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)|"[^"]*"|'[^']*'))*\s+["']?gjc["']?(?=\s|$)/gm,
+	)) {
+		violation(match.index ?? 0, "human-only tmux owner must not launch a literal gjc executable");
+	}
+	for (const match of contents.matchAll(/\b(?:bash|sh)\s+-c\s+(["'])[^\r\n]*?\bgjc\b/g)) {
+		violation(match.index ?? 0, "human-only tmux owner must not alias or wrap the gjc executable");
 	}
 	if (interactiveLaunches !== 1) {
 		violation(0, "human-only tmux owner must launch exactly one zero-argv interactive GJC process");
@@ -503,14 +773,23 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	}
 
 	const normalizedContents = normalizeShellContinuations(contents);
+	const normalizedExpectedLifecycleRanges = expectedLifecycleCallsites.flatMap(callsite =>
+		[...normalizedContents.matchAll(callsite.pattern)].map(match => ({
+			start: match.index ?? 0,
+			end: (match.index ?? 0) + match[0].length,
+		})),
+	);
 	const shellGjcInvocations =
 		/(?:^|[|;&(]\s*|\b(?:command|exec)\s+|\btimeout\s+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)\s+)(["']?)\$(?:GJC_BIN|GJC_SESSION_GJC_BIN|\{(?:GJC_BIN|GJC_SESSION_GJC_BIN)\})\1([^\r\n;|&)]*)/gm;
 	for (const match of normalizedContents.matchAll(shellGjcInvocations)) {
 		const argumentsText = (match[2] ?? "").trim().replace(/["']$/, "");
-		const isZeroArgInteractiveLaunch = argumentsText.length === 0;
 		const isLifecycleCall = /^(?:["']?--internal-tmux-owner-isolation["']?)$/.test(argumentsText);
-		if (!isZeroArgInteractiveLaunch && !isLifecycleCall) {
-			violation(match.index ?? 0, "human-only tmux owner invokes GJC with a non-lifecycle startup argument");
+		const invocationStart = match.index ?? 0;
+		if (
+			!isLifecycleCall ||
+			!normalizedExpectedLifecycleRanges.some(range => invocationStart >= range.start && invocationStart < range.end)
+		) {
+			violation(invocationStart, "human-only tmux owner invokes GJC with a non-lifecycle startup argument");
 		}
 	}
 	for (const reference of shellGjcBinaryReferenceViolations(contents)) {
@@ -529,9 +808,131 @@ const coordinatorDirectAuthorityPatterns = [
 	/\b(?:agentSession|agent_session|session)\s*\.\s*(?:prompt|promptCustomMessage|abort|abortAndPrompt|followUp|answer)\s*\(/g,
 ];
 
-function isSanctionedTeamRuntimeTmuxInput(file: string, primitive: string, args: string): boolean {
-	if (file !== teamRuntimeTmuxPath || primitive !== "send-keys") return false;
-	return teamRuntimeWorkerPayloadArgs.test(args) || teamRuntimeEnterArgs.test(args);
+function braceBlockRange(contents: string, openingBrace: number): ShellRange | undefined {
+	const structural = maskCodeComments(contents.slice(openingBrace));
+	let depth = 0;
+	let quote: "'" | '"' | "`" | undefined;
+	for (let relative = 0; relative < structural.length; relative++) {
+		const character = structural[relative];
+		if (quote) {
+			if (character === "\\") relative++;
+			else if (character === quote) quote = undefined;
+			continue;
+		}
+		if (character === "'" || character === '"' || character === "`") {
+			quote = character;
+			continue;
+		}
+		if (character === "{") depth++;
+		if (character === "}") depth--;
+		if (depth === 0) return { start: openingBrace, end: openingBrace + relative + 1 };
+	}
+	return undefined;
+}
+
+function exactTeamRuntimeSendKeysRanges(contents: string): ShellRange[] {
+	const guardMatches = [...contents.matchAll(/if\s*\(\s*useSendKeysFallback\s*\)\s*\{/g)];
+	const payloadMatches = [
+		...contents.matchAll(
+			/Bun\.spawnSync\(\s*\[\s*config\.tmux_command\s*,\s*["']send-keys["']\s*,\s*["']-l["']\s*,\s*["']-t["']\s*,\s*paneId\s*,\s*workerCommand\s*\]\s*,\s*\{[\s\S]{0,200}?stdout\s*:\s*["']ignore["'][\s\S]{0,200}?stderr\s*:\s*["']ignore["'][\s\S]{0,100}?\}\s*\)\s*;/g,
+		),
+	];
+	const enterMatches = [
+		...contents.matchAll(
+			/const\s+sendKeys\s*=\s*Bun\.spawnSync\(\s*\[\s*config\.tmux_command\s*,\s*["']send-keys["']\s*,\s*["']-t["']\s*,\s*paneId\s*,\s*["']Enter["']\s*\]\s*,\s*\{[\s\S]{0,200}?stdout\s*:\s*["']ignore["'][\s\S]{0,200}?stderr\s*:\s*["']ignore["'][\s\S]{0,100}?\}\s*\)\s*;/g,
+		),
+	];
+	const fallbackPredicateMatches = [
+		...contents.matchAll(
+			/function\s+shouldDispatchWorkerWithSendKeys\([^)]*\)\s*:\s*boolean\s*\{[\s\S]{0,400}?platform\s*===\s*["']win32["'][\s\S]{0,400}?path\.basename\(tmuxCommand\)\.toLowerCase\(\)\s*===\s*["']psmux["'][\s\S]{0,100}?\}/g,
+		),
+	];
+	const useFallbackMatches = [
+		...contents.matchAll(
+			/const\s+useSendKeysFallback\s*=\s*shouldDispatchWorkerWithSendKeys\(config\.tmux_command\)\s*;/g,
+		),
+	];
+	const splitWorkerCommandMatches = [
+		...contents.matchAll(/\.\.\.\(useSendKeysFallback\s*\?\s*\[\]\s*:\s*\[workerCommand\]\)\s*,/g),
+	];
+	if (
+		guardMatches.length !== 1 ||
+		payloadMatches.length !== 1 ||
+		enterMatches.length !== 1 ||
+		fallbackPredicateMatches.length !== 1 ||
+		useFallbackMatches.length !== 1 ||
+		splitWorkerCommandMatches.length !== 1
+	)
+		return [];
+	const guardStart = guardMatches[0].index ?? 0;
+	const payloadStart = payloadMatches[0].index ?? 0;
+	const enterStart = enterMatches[0].index ?? 0;
+	const voidStart = contents.indexOf("void sendKeys.exitCode;", enterStart);
+	if (
+		(useFallbackMatches[0].index ?? 0) >= (splitWorkerCommandMatches[0].index ?? 0) ||
+		(splitWorkerCommandMatches[0].index ?? 0) >= guardStart ||
+		payloadStart >= enterStart ||
+		voidStart < enterStart
+	)
+		return [];
+	const guard = guardMatches[0];
+	const openingBrace = (guard.index ?? 0) + guard[0].lastIndexOf("{");
+	const range = braceBlockRange(contents, openingBrace);
+	if (!range) return [];
+	if (
+		payloadStart < range.start ||
+		payloadStart >= range.end ||
+		enterStart < range.start ||
+		enterStart >= range.end ||
+		contents.indexOf("void sendKeys.exitCode;", enterStart) >= range.end
+	)
+		return [];
+	return [
+		{ start: payloadStart, end: payloadStart + payloadMatches[0][0].length },
+		{ start: enterStart, end: enterStart + enterMatches[0][0].length },
+	];
+}
+
+function isExactTmuxScrollCopyModeSendKeys(
+	file: string,
+	contents: string,
+	occurrence: TmuxPrimitiveOccurrence,
+): boolean {
+	if (file !== "packages/coding-agent/src/modes/tmux-scroll.ts" || occurrence.primitive !== "send-keys") return false;
+	const openingBracket = contents.lastIndexOf("[", occurrence.start);
+	const closingBracket = contents.indexOf("]", occurrence.end);
+	if (openingBracket === -1 || closingBracket === -1) return false;
+	return /^\[\s*["']send-keys["']\s*,\s*\.\.\.targetArgs\s*,\s*["']-X["']\s*,\s*(?:["']history-bottom["']|["']search-backward["']\s*,\s*TMUX_PREVIOUS_USER_INPUT_SEARCH_PATTERN)\s*\]$/.test(
+		contents.slice(openingBracket, closingBracket + 1),
+	);
+}
+
+function isTypeOnlyTmuxPrimitiveOccurrence(contents: string, occurrence: TmuxPrimitiveOccurrence): boolean {
+	const lineStart = contents.lastIndexOf("\n", occurrence.start) + 1;
+	const lineEnd = contents.indexOf("\n", occurrence.end);
+	return /^\s*(?:export\s+)?type\b/.test(contents.slice(lineStart, lineEnd === -1 ? contents.length : lineEnd));
+}
+
+function tmuxMachineBusViolations(file: string, contents: string): string[] {
+	const allowedTeamFallbackRanges = file === teamRuntimeTmuxPath ? exactTeamRuntimeSendKeysRanges(contents) : [];
+	const violations: string[] = [];
+	for (const occurrence of tmuxPrimitiveOccurrences(contents)) {
+		const isExactTeamFallback =
+			occurrence.primitive === "send-keys" &&
+			allowedTeamFallbackRanges.some(range => occurrence.start >= range.start && occurrence.end <= range.end);
+		if (
+			isExactTeamFallback ||
+			isExactTmuxScrollCopyModeSendKeys(file, contents, occurrence) ||
+			isTypeOnlyTmuxPrimitiveOccurrence(contents, occurrence)
+		)
+			continue;
+		const detail =
+			occurrence.primitive === "capture-pane" || occurrence.primitive === "pipe-pane"
+				? `tmux ${occurrence.primitive} pane access is outside sanctioned test fixtures`
+				: `tmux ${occurrence.primitive} content injection is outside sanctioned process lifecycle`;
+		violations.push(`${file}:${lineNumber(contents, occurrence.start)}: ${detail}`);
+	}
+	return violations;
 }
 
 function lineNumber(contents: string, offset: number): number {
@@ -657,12 +1058,12 @@ function scanPackageExports(contents: string, sourceFiles: readonly string[]): s
 	const violations: string[] = [];
 	for (const [exportPath, target] of Object.entries(manifest.exports)) {
 		if (target === null) continue;
-		if (/^\.\/modes\/rpc(?:\/|$)/.test(exportPath)) {
+		if (/^\.\/modes\/rpc(?:[A-Za-z0-9_./-]|$)/i.test(exportPath)) {
 			violations.push(
 				`${packageManifestPath}: removed RPC mode remains externally exported as ${JSON.stringify(exportPath)}`,
 			);
 		}
-		if (/(?:^|\/|[-_])(?:bridge|unattended)(?:\/|[-_]|$)/.test(exportPath)) {
+		if (/(?:^|\/|[-_])(?:bridge|unattended)[A-Za-z0-9_.-]*(?:\/|$)/i.test(exportPath)) {
 			violations.push(
 				`${packageManifestPath}: removed bridge or unattended surface remains externally exported as ${JSON.stringify(exportPath)}`,
 			);
@@ -772,10 +1173,22 @@ async function scan(): Promise<string[]> {
 		}
 		if (isPublishedGjcSessionShellHelper(file)) {
 			const contents = await Bun.file(path.join(repoRoot, file)).text();
-			const normalizedContents = normalizeShellContinuations(contents);
-			for (const match of normalizedContents.matchAll(tmuxMachineBusPrimitivePattern)) {
+			const occurrences = tmuxPrimitiveOccurrences(contents);
+			for (const match of contents.matchAll(
+				/\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane|set-buffer)\b/g,
+			)) {
+				const start = match.index ?? 0;
+				if (!occurrences.some(occurrence => start >= occurrence.start && start < occurrence.end)) {
+					occurrences.push({
+						primitive: match[0] as TmuxMachineBusPrimitive,
+						start,
+						end: start + match[0].length,
+					});
+				}
+			}
+			for (const occurrence of occurrences) {
 				violations.push(
-					`${file}:${lineNumber(normalizedContents, match.index ?? 0)}: published shell helper performs tmux machine prompt injection or pane viewing`,
+					`${file}:${lineNumber(contents, occurrence.start)}: published shell helper performs tmux machine prompt injection or pane viewing`,
 				);
 			}
 			violations.push(...tmuxCreateStartupViolations(file, contents));
@@ -801,7 +1214,7 @@ async function scan(): Promise<string[]> {
 		if (file === rootAcpEntrypoint) violations.push(...rootAcpModeViolations(contents));
 
 		for (const match of contents.matchAll(
-			/(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s+)?["'][^"']*modes\/(?:rpc|bridge)(?:["'/]|$)/g,
+			/(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s+)?["'][^"']*modes\/(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*(?:["'/]|$)/gi,
 		)) {
 			violations.push(
 				`${file}:${lineNumber(contents, match.index ?? 0)}: imports removed modes/rpc or modes/bridge`,
@@ -875,39 +1288,20 @@ async function scan(): Promise<string[]> {
 			violations.push(`${file}: listener imports AgentSession or dispatch internals outside a sanctioned host`);
 		}
 
-		if (isProductionTypeScriptOrJavaScript(file) && file !== coordinatorMcpRoot) {
-			for (const match of contents.matchAll(tmuxPaneViewingPattern)) {
-				const primitive = match[0].includes("capture") ? "capture-pane" : "pipe-pane";
-				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${primitive} pane access is outside sanctioned test fixtures`,
-				);
-			}
-		}
-
-		if (isProductionTypeScript(file) && file !== coordinatorMcpRoot) {
-			for (const match of contents.matchAll(
-				/(?:Bun\.(?:spawn|spawnSync)|runner)\s*\(\s*\[[^\]]*?\b(?:tmux|tmux_command)\b[^\]]*?["'](set-buffer|paste-buffer|send-keys)["']([^\n]*)/g,
-			)) {
-				const primitive = match[1];
-				const args = match[2];
-				if (!isSanctionedTeamRuntimeTmuxInput(file, primitive, args)) {
-					violations.push(
-						`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${primitive} content injection is outside sanctioned process lifecycle`,
-					);
+		if (isProductionTypeScriptOrJavaScript(file)) {
+			if (file === coordinatorMcpRoot) {
+				for (const occurrence of tmuxPrimitiveOccurrences(contents)) {
+					const detail =
+						occurrence.primitive === "capture-pane" || occurrence.primitive === "pipe-pane"
+							? "coordinator MCP reads tmux pane content outside SDK queries"
+							: `tmux ${occurrence.primitive} content injection is outside sanctioned process lifecycle`;
+					violations.push(`${file}:${lineNumber(contents, occurrence.start)}: ${detail}`);
 				}
+			} else {
+				violations.push(...tmuxMachineBusViolations(file, contents));
 			}
 		}
 		if (file === coordinatorMcpRoot) {
-			for (const match of contents.matchAll(/\b(set-buffer|paste-buffer|send-keys)\b/g)) {
-				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${match[1]} content injection is outside sanctioned process lifecycle`,
-				);
-			}
-			for (const match of contents.matchAll(tmuxPaneViewingPattern)) {
-				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: coordinator MCP reads tmux pane content outside SDK queries`,
-				);
-			}
 			for (const pattern of coordinatorDirectAuthorityPatterns) {
 				for (const match of contents.matchAll(pattern)) {
 					violations.push(
@@ -967,6 +1361,47 @@ async function selfTest(): Promise<void> {
 		{ "packages/coding-agent/package.json": '{"exports":{"./modes/rpc/*":"./src/modes/rpc/*.ts"}}\n' },
 		1,
 		"removed RPC mode remains externally exported",
+	);
+	await runSelfTestFixture(
+		{ "packages/coding-agent/package.json": '{"exports":{"./modes/rpc-compat/*":"./src/modes/rpc-compat/*.ts"}}\n' },
+		1,
+		"removed RPC mode remains externally exported",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/rpc-compat-mode.ts": 'Bun.spawnSync(["gjc", "--mode", "rpc-compat"]);\n',
+		},
+		1,
+		"invokes removed --mode rpc",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/bridge-compat-mode.ts":
+				'Bun.spawnSync(["gjc", "--mode", "bridge-compat"]);\n',
+		},
+		1,
+		"invokes removed --mode rpc",
+	);
+	await runSelfTestFixture(
+		{ "packages/coding-agent/src/modes/bridge-compat/legacy.ts": "export const retired = true;\n" },
+		1,
+		"retired RPC/bridge/unattended ingress source survived",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/constructed-rpc-option.ts":
+				'const mode = ["r", "pc"].join("");\nconst flags = { options: [mode] };\nvoid flags;\n',
+		},
+		1,
+		"invokes removed --mode rpc",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/consumer.ts":
+				'const legacyIngress = ["./modes", "unattended-compat"].join("/");\nvoid legacyIngress;\n',
+		},
+		1,
+		"invokes removed --mode rpc",
 	);
 	await runSelfTestFixture(
 		{
@@ -1102,10 +1537,37 @@ async function selfTest(): Promise<void> {
 [[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }
 command = [os.environ["GJC_SESSION_GJC_BIN"]]
 child = subprocess.Popen(command)
-subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolation"])
-"$GJC_BIN" --internal-tmux-owner-isolation
+completed = subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolation"], input="{}")
+PLAN_RESPONSE="$(printf '%s\\n' "$PLAN_LINE" | "$GJC_BIN" --internal-tmux-owner-isolation)"
+POST_SPAWN_RESPONSE="$(printf '%s\\n' "$PLAN_LINE" | "$GJC_BIN" --internal-tmux-owner-isolation)"
+GENERATION_PUBLISH_RESPONSE="$(printf '%s\\n' "$GENERATION_PUBLISH_REQUEST" | "$GJC_BIN" --internal-tmux-owner-isolation)"
+if verdict="$(printf '%s\\n' "$request" | timeout "1s" "$GJC_SESSION_GJC_BIN" --internal-tmux-owner-isolation)"; then
+  true
+fi
 `;
 	await runSelfTestFixture({ "scripts/gjc-session/create.sh": canonicalCreateFixture }, 0);
+	await runSelfTestFixture(
+		{ "scripts/gjc-session/create.sh": `${canonicalCreateFixture}\nsubprocess.Popen(["gjc"])\n` },
+		1,
+		"must not launch a literal gjc executable",
+	);
+	await runSelfTestFixture(
+		{ "scripts/gjc-session/create.sh": `${canonicalCreateFixture}\nlauncher="gjc"\n"$launcher"\n` },
+		1,
+		"must not alias or wrap the gjc executable",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": `${canonicalCreateFixture}\nrunner(){ gjc --internal-tmux-owner-isolation; }\nrunner\n`,
+		},
+		1,
+		"must not alias or wrap the gjc executable",
+	);
+	await runSelfTestFixture(
+		{ "scripts/gjc-session/create.sh": `${canonicalCreateFixture}\n"$GJC_BIN" --internal-tmux-owner-isolation\n` },
+		1,
+		"invokes GJC with a non-lifecycle startup argument",
+	);
 	await runSelfTestFixture(
 		{ "scripts/gjc-session/create.sh": `${canonicalCreateFixture}\nGJC_SESSION_FLAGS=unsafe\n` },
 		1,
@@ -1120,6 +1582,36 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		},
 		1,
 		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'set -- rewritten positional arguments\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+			),
+		},
+		1,
+		"must not rewrite positional arguments before launch",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'shift\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+			),
+		},
+		1,
+		"must not rewrite positional arguments before launch",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'exit(){ return 0; }\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+			),
+		},
+		1,
+		"must not neutralize the exact two-operand guard",
 	);
 	await runSelfTestFixture(
 		{
@@ -1478,12 +1970,34 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		1,
 		"tmux send-keys content injection is outside sanctioned process lifecycle",
 	);
+	const canonicalTeamRuntimeSendKeysFixture = `
+function shouldDispatchWorkerWithSendKeys(tmuxCommand: string, platform: NodeJS.Platform = process.platform): boolean {
+	return platform === "win32" || path.basename(tmuxCommand).toLowerCase() === "psmux";
+}
+const useSendKeysFallback = shouldDispatchWorkerWithSendKeys(config.tmux_command);
+const splitArgs = [...(useSendKeysFallback ? [] : [workerCommand]),];
+if (useSendKeysFallback) {
+	Bun.spawnSync([config.tmux_command, "send-keys", "-l", "-t", paneId, workerCommand], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	const sendKeys = Bun.spawnSync([config.tmux_command, "send-keys", "-t", paneId, "Enter"], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	void sendKeys.exitCode;
+}
+`;
+	await runSelfTestFixture(
+		{ "packages/coding-agent/src/gjc-runtime/team-runtime.ts": canonicalTeamRuntimeSendKeysFixture },
+		0,
+	);
 	await runSelfTestFixture(
 		{
-			"packages/coding-agent/src/gjc-runtime/team-runtime.ts":
-				'Bun.spawnSync([config.tmux_command, "send-keys", "-l", "-t", paneId, workerCommand], { stdout: "ignore" });\nBun.spawnSync([config.tmux_command, "send-keys", "-t", paneId, "Enter"], { stdout: "ignore" });\n',
+			"packages/coding-agent/src/gjc-runtime/team-runtime.ts": `${canonicalTeamRuntimeSendKeysFixture}\nBun.spawnSync([config.tmux_command, "send-keys", "-t", paneId, "prompt"]);\n`,
 		},
-		0,
+		1,
+		"tmux send-keys content injection is outside sanctioned process lifecycle",
 	);
 	await runSelfTestFixture(
 		{
@@ -1548,6 +2062,39 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		},
 		1,
 		"tmux pipe-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.ts":
+				"const paneAction = `capture-$" +
+				'{"pane"}`;\nconst executable = ["tm", "ux"].join("");\nconst argv = [executable, paneAction, "-p"];\nconst invoke = Bun.spawnSync;\ninvoke(argv);\n',
+		},
+		1,
+		"tmux capture-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.ts":
+				'const paneAction = "pipe" + "-pane";\nfunction runTmux(argv: string[]) { return Bun.spawnSync(["tmux", ...argv]); }\nrunTmux([paneAction, "sink"]);\n',
+		},
+		1,
+		"tmux pipe-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-input.ts":
+				'const executable = ["tm", "ux"].join("");\nconst primitive = ["send", "keys"].join("-");\nconst argv = [executable, primitive, "-t", "pane", "prompt"];\nconst invoke = Bun.spawnSync;\ninvoke(argv);\n',
+		},
+		1,
+		"tmux send-keys content injection is outside sanctioned process lifecycle",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-input.ts":
+				'const primitive = "paste" + "-buffer";\nfunction runTmux(argv: string[]) { return Bun.spawnSync(["tmux", ...argv]); }\nrunTmux([primitive, "-t", "pane"]);\n',
+		},
+		1,
+		"tmux paste-buffer content injection is outside sanctioned process lifecycle",
 	);
 	await runSelfTestFixture(
 		{

@@ -8,6 +8,19 @@ export type LifecycleState =
 	| "terminal_ok"
 	| "terminal_error"
 	| "terminal_uncertain";
+export interface LifecycleWorktreeIntent {
+	repoRoot: string;
+	worktreePath: string;
+	detached: boolean;
+	baseRef: string;
+	branchName?: string;
+}
+
+export interface LifecycleEffectIntent {
+	sessionId: string;
+	worktree?: LifecycleWorktreeIntent;
+}
+
 export interface LifecycleLedgerEntry {
 	version: typeof SDK_STATE_VERSION;
 	identity: string;
@@ -16,6 +29,8 @@ export interface LifecycleLedgerEntry {
 	intendedSessionId?: string;
 	resultSessionId?: string;
 	effectMarker?: string;
+	effectIntent?: LifecycleEffectIntent;
+
 	endpointGeneration?: number;
 	responseDigest?: string;
 	response?: unknown;
@@ -108,6 +123,8 @@ export class LifecycleLedger {
 		if (prior.requestHash !== requestHash) return { kind: "idempotency_conflict" };
 		if (terminal(prior.state)) return { kind: "replay", entry: prior };
 		if (prior.state === "terminal_uncertain") return { kind: "terminal_uncertain", entry: prior };
+		// An accepted row has no durable side effect. Target serialization makes retrying it safe.
+		if (prior.state === "accepted") return { kind: "new", entry: prior };
 		return { kind: "in_progress", entry: prior };
 	}
 	async transition(

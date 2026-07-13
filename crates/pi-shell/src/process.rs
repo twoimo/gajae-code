@@ -50,6 +50,11 @@ mod platform {
 			self.pid
 		}
 
+		/// Kernel-derived identity evidence for this exact process incarnation.
+		pub fn incarnation(&self) -> String {
+			format!("linux:{}", self.start_time)
+		}
+
 		pub fn children(&self) -> Vec<Self> {
 			if !self.live_identity() {
 				return Vec::new();
@@ -343,6 +348,11 @@ mod platform {
 
 		pub const fn pid(&self) -> i32 {
 			self.pid
+		}
+
+		/// Kernel-derived identity evidence for this exact process incarnation.
+		pub fn incarnation(&self) -> String {
+			format!("darwin:{}:{}", self.start_tvsec, self.start_tvusec)
 		}
 
 		pub fn children(&self) -> Vec<Self> {
@@ -859,6 +869,11 @@ mod platform {
 			self.pid
 		}
 
+		/// Kernel-derived identity evidence for this exact process incarnation.
+		pub fn incarnation(&self) -> String {
+			format!("windows:{}", self.creation_time)
+		}
+
 		pub fn parent_pid(&self) -> Option<i32> {
 			process_basic_information(self.handle.as_raw())
 				.and_then(|info| i32::try_from(info.inherited_from_unique_process_id).ok())
@@ -1276,6 +1291,14 @@ impl Process {
 	/// Operating-system process identifier for this process reference.
 	pub const fn pid(&self) -> i32 {
 		self.inner.pid()
+	}
+
+	/// Kernel-derived identity evidence for this exact process incarnation.
+	///
+	/// The opaque value is stable for the lifetime of the kernel process object
+	/// and changes when the operating system recycles a PID.
+	pub fn incarnation(&self) -> String {
+		self.inner.incarnation()
 	}
 
 	/// Parent process id for this process, when available.

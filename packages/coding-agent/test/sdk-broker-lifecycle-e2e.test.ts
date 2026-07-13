@@ -151,6 +151,72 @@ test("lifecycle host rejects a transcript replaced after strict authorization be
 	}
 });
 
+test("lifecycle fork rejects a source replaced after capture without destination residue", async () => {
+	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-lifecycle-fork-race-"));
+	const agentDir = path.join(root, "agent");
+	const sourceCwd = path.join(root, "source");
+	const targetCwd = path.join(root, "target");
+	await fs.mkdir(sourceCwd, { recursive: true });
+	await fs.mkdir(targetCwd, { recursive: true });
+	const source = SessionManager.create(sourceCwd, SessionManager.getDefaultSessionDir(sourceCwd, agentDir));
+	try {
+		await source.ensureOnDisk();
+		const sourcePath = source.getSessionFile();
+		if (!sourcePath) throw new Error("Expected saved source session path.");
+		const inventory = SessionManager.inventorySessionsStrict(sourceCwd, {
+			sessionDir: SessionManager.getDefaultSessionDir(sourceCwd, agentDir),
+		});
+		if (inventory.kind !== "complete") throw new Error("Expected strict source session inventory.");
+		const candidate = inventory.candidates.find(item => item.path === sourcePath);
+		if (!candidate) throw new Error("Expected strict source session candidate.");
+		const replacementPath = `${sourcePath}.replacement`;
+		await fs.writeFile(replacementPath, await fs.readFile(sourcePath));
+		const destinationSessionDir = SessionManager.getDefaultSessionDirReadOnly(targetCwd, agentDir);
+		const originalCapture = SessionManager.captureTranscriptStrict;
+		let replaced = false;
+		const replaceAfterCapture: typeof SessionManager.captureTranscriptStrict = (filePath, storage) => {
+			const captured = originalCapture(filePath, storage);
+			if (!replaced && filePath === sourcePath && captured.kind === "captured") {
+				replaced = true;
+				renameSync(replacementPath, sourcePath);
+			}
+			return captured;
+		};
+		SessionManager.captureTranscriptStrict = replaceAfterCapture;
+		try {
+			await expect(
+				openLifecycleSessionManager(
+					{
+						operation: "session.fork",
+						sessionId: "fork-destination",
+						cwd: targetCwd,
+						stateRoot: path.join(targetCwd, ".gjc", "state"),
+						sourceCwd,
+						sourceSessionId: candidate.id,
+						sourceSessionPath: sourcePath,
+						sourceSessionIdentity: {
+							dev: candidate.identity.dev.toString(),
+							ino: candidate.identity.ino.toString(),
+							size: candidate.identity.size,
+							mtimeMs: candidate.identity.mtimeMs,
+							mtimeNs: candidate.identity.mtimeNs.toString(),
+						},
+					},
+					targetCwd,
+					agentDir,
+				),
+			).rejects.toThrow("Lifecycle saved session authority changed while the session host forked it.");
+			expect(replaced).toBe(true);
+			await expect(fs.lstat(destinationSessionDir)).rejects.toThrow();
+		} finally {
+			SessionManager.captureTranscriptStrict = originalCapture;
+		}
+	} finally {
+		await source.close();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
 test("broker parses Darwin kernel process start timestamps with microsecond precision", () => {
 	const bsdInfo = new Uint8Array(136);
 	const view = new DataView(bsdInfo.buffer);
