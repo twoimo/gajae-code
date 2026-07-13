@@ -1896,7 +1896,7 @@ export class TelegramNotificationDaemon {
 					// explicitly stale (e.g. a hard-closed session): reconnecting
 					// would chase a dead, token-bearing record forever. Once the
 					// associated topic is past the grace window, reap it through the
-					// same best-effort delete path as graceful session shutdown.
+					// same durable custody settlement path as graceful session shutdown.
 					const pidAlive = this.opts.pidAlive ?? defaultPidAlive;
 					if (endpoint.stale || (endpoint.pid !== undefined && !pidAlive(endpoint.pid))) {
 						await this.deleteOrphanedTopic(sessionId);
@@ -2357,12 +2357,17 @@ export class TelegramNotificationDaemon {
 		) {
 			return { kind: "malformed_response" };
 		}
-		const value = response as { ok?: unknown; error_code?: unknown };
-		if (value.ok === true) return { kind: "telegram_ok" };
-		if (value.ok !== false) return { kind: "malformed_response" };
+		const descriptors = Object.getOwnPropertyDescriptors(response);
+		if (Object.values(descriptors).some(descriptor => !Object.hasOwn(descriptor, "value"))) {
+			return { kind: "malformed_response" };
+		}
+		const ok = descriptors.ok?.value;
+		if (ok === true) return { kind: "telegram_ok" };
+		if (ok !== false) return { kind: "malformed_response" };
 
+		const errorCodeValue = descriptors.error_code?.value;
 		const errorCode =
-			typeof value.error_code === "number" && Number.isSafeInteger(value.error_code) ? value.error_code : undefined;
+			typeof errorCodeValue === "number" && Number.isSafeInteger(errorCodeValue) ? errorCodeValue : undefined;
 		let rejection: TelegramRejectionClass = "other";
 		if (errorCode === 404) rejection = "not_found";
 		else if (errorCode === 403) rejection = "forbidden";
@@ -2403,12 +2408,12 @@ export class TelegramNotificationDaemon {
 	private async finishConfirmedTopicDeletion(sessionId: string, topicId: string): Promise<void> {
 		const current = this.topics.get(sessionId);
 		if (current !== undefined && current.topicId !== topicId) return;
-		const previousTopics = this.topics.serialize();
+		const previousTopic = current === undefined ? undefined : Object.freeze({ ...current });
 		if (current !== undefined) this.topics.delete(sessionId);
 		try {
 			await this.persistTopics();
 		} catch {
-			if (current !== undefined) this.topics.load(previousTopics);
+			if (previousTopic !== undefined) this.topics.load({ topics: { [sessionId]: previousTopic } });
 			logger.warn("notifications: Telegram topic deletion local persistence failed");
 			return;
 		}
