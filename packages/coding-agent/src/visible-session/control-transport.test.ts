@@ -12,13 +12,23 @@ import {
 	ControlFrameDecoder,
 	type ControlJson,
 	type ControlRequest,
+	controlFrameFromBody,
+	createControlProof,
+	decodeControlChallengeFrame,
+	decodeControlHelloFrame,
+	decodeControlProofFrame,
+	decodeControlRequestCandidateFrame,
 	decodeControlResponseFrame,
 	decodeControlWriteRequest,
 	encodeControlFrame,
+	generateControlChallenge,
+	generateControlHello,
 	MAX_CONTROL_FRAME_BYTES,
 	MAX_CONTROL_STREAM_BYTES,
 	MAX_CONTROL_TERMINAL_DIMENSION,
 	MAX_CONTROL_WRITE_BYTES,
+	verifyControlProof,
+	withoutControlToken,
 } from "./control-protocol";
 import { controlEndpointFor, LocalControlServer } from "./control-server";
 
@@ -92,8 +102,113 @@ async function sendRawFrameChunks(endpoint: string, chunks: readonly Buffer[]): 
 	return deferred.promise;
 }
 
-async function sendRawRequest(endpoint: string, chunks: readonly Buffer[]): Promise<unknown> {
-	return sendRawFrameChunks(endpoint, [...chunks, CONTROL_REQUEST_END_MARKER]);
+async function sendRawAuthenticatedRequest(
+	endpoint: string,
+	request: ControlRequest,
+	chunkRequest?: (frames: readonly Buffer[]) => readonly Buffer[],
+): Promise<unknown> {
+	const deferred = Promise.withResolvers<unknown>();
+	const hello = generateControlHello();
+	const helloFrame = encodeControlFrame(hello);
+	const requestFrame = encodeControlFrame(withoutControlToken(request));
+	const decoder = new ControlFrameDecoder(2);
+	let challengeReceived = false;
+	let response: unknown;
+	const socket = net.createConnection({ path: endpoint });
+	socket.once("connect", () => socket.write(helloFrame));
+	socket.once("end", () => socket.end());
+	socket.on("data", (chunk: Buffer) => {
+		try {
+			for (const frame of decoder.push(chunk)) {
+				if (!challengeReceived) {
+					decodeControlChallengeFrame(frame);
+					const challengeFrame = controlFrameFromBody(frame);
+					const proof = createControlProof(request.token, helloFrame, challengeFrame, requestFrame);
+					const frames = [requestFrame, encodeControlFrame(proof), CONTROL_REQUEST_END_MARKER] as const;
+					for (const requestChunk of chunkRequest?.(frames) ?? frames) socket.write(requestChunk);
+					challengeReceived = true;
+					continue;
+				}
+				response = decodeControlResponseFrame(frame);
+			}
+		} catch (error) {
+			socket.destroy();
+			deferred.reject(error);
+		}
+	});
+	socket.once("close", () => {
+		try {
+			decoder.finish();
+			deferred.resolve(response);
+		} catch (error) {
+			deferred.reject(error);
+		} finally {
+			socket.destroy();
+		}
+	});
+	socket.once("error", error => {
+		socket.destroy();
+		deferred.reject(error);
+	});
+	return deferred.promise;
+}
+async function sendRawAfterChallenge(
+	endpoint: string,
+	chunks: (helloFrame: Buffer, challengeFrame: Buffer) => readonly Buffer[],
+): Promise<unknown> {
+	const deferred = Promise.withResolvers<unknown>();
+	const decoder = new ControlFrameDecoder(2);
+	const helloFrame = encodeControlFrame(generateControlHello());
+	let challengeReceived = false;
+	let response: unknown;
+	const socket = net.createConnection({ path: endpoint });
+	socket.once("connect", () => socket.write(helloFrame));
+	socket.once("end", () => socket.end());
+	socket.on("data", (chunk: Buffer) => {
+		try {
+			for (const frame of decoder.push(chunk)) {
+				if (!challengeReceived) {
+					decodeControlChallengeFrame(frame);
+					const challengeFrame = controlFrameFromBody(frame);
+					for (const requestChunk of chunks(helloFrame, challengeFrame)) socket.write(requestChunk);
+					challengeReceived = true;
+					continue;
+				}
+				response = decodeControlResponseFrame(frame);
+			}
+		} catch (error) {
+			socket.destroy();
+			deferred.reject(error);
+		}
+	});
+	socket.once("close", () => {
+		try {
+			decoder.finish();
+			deferred.resolve(response);
+		} catch (error) {
+			deferred.reject(error);
+		} finally {
+			socket.destroy();
+		}
+	});
+	socket.once("error", error => {
+		socket.destroy();
+		deferred.reject(error);
+	});
+	return deferred.promise;
+}
+function rawRequestWithProof(
+	token: string,
+	helloFrame: Buffer,
+	challengeFrame: Buffer,
+	requestFrame: Buffer,
+	requestChunks: readonly Buffer[] = [requestFrame],
+): readonly Buffer[] {
+	return [
+		...requestChunks,
+		encodeControlFrame(createControlProof(token, helloFrame, challengeFrame, requestFrame)),
+		CONTROL_REQUEST_END_MARKER,
+	];
 }
 
 describe.serial("visible session local control transport", () => {
@@ -130,27 +245,24 @@ describe.serial("visible session local control transport", () => {
 			}
 			const client = new LocalControlClient({ endpoint, generation: "generation-1", token });
 			expect(await client.call({ action: "status", id: "request-1" })).toEqual({
-				version: 1,
+				version: CONTROL_PROTOCOL_VERSION,
 				id: "request-1",
 				ok: true,
 				result: { state: "ready" },
 			});
-			await expect(sendControlRequest(endpoint, createRequest("b".repeat(64)))).resolves.toMatchObject({
-				ok: false,
-				error: "unauthorized",
+			await expect(sendControlRequest(endpoint, createRequest("b".repeat(64)))).rejects.toMatchObject({
+				code: "bad_response",
 			});
-			await expect(sendControlRequest(endpoint, createRequest(token, "wrong-generation"))).resolves.toMatchObject({
-				ok: false,
-				error: "generation_mismatch",
+			await expect(sendControlRequest(endpoint, createRequest(token, "wrong-generation"))).rejects.toMatchObject({
+				code: "bad_response",
 			});
 			await expect(
 				sendControlRequest(endpoint, createRequest("b".repeat(64), "wrong-generation")),
-			).resolves.toMatchObject({
-				ok: false,
-				error: "unauthorized",
+			).rejects.toMatchObject({
+				code: "bad_response",
 			});
 			expect(observedRequest).toEqual({
-				version: 1,
+				version: CONTROL_PROTOCOL_VERSION,
 				id: "request-1",
 				action: "status",
 				generation: "generation-1",
@@ -160,6 +272,105 @@ describe.serial("visible session local control transport", () => {
 			expect(calls).toBe(1);
 			await server.close();
 			if (process.platform !== "win32") await expect(fs.lstat(endpoint)).rejects.toMatchObject({ code: "ENOENT" });
+		});
+	});
+	it("withholds tokens and request payloads from a pre-bound server until server authentication", async () => {
+		await withTempDir(async root => {
+			const endpoint = controlEndpointFor({ privateGenerationRoot: root, generation: "generation-1" });
+			const token = "a".repeat(64);
+			const prompt = "sensitive prompt";
+			const captured: Buffer[] = [];
+			const hellosCaptured = Promise.withResolvers<void>();
+			const fake = net.createServer(socket => {
+				const decoder = new ControlFrameDecoder(1);
+				socket.on("data", (chunk: Buffer) => {
+					for (const frame of decoder.push(chunk)) {
+						captured.push(controlFrameFromBody(frame));
+						socket.write(
+							encodeControlFrame({
+								version: CONTROL_PROTOCOL_VERSION,
+								type: "challenge",
+								endpoint,
+								generation: "generation-1",
+								nonce: "b".repeat(64),
+								proof: "c".repeat(64),
+							}),
+						);
+						if (captured.length === 2) hellosCaptured.resolve();
+					}
+				});
+			});
+			await listen(fake, endpoint);
+			const client = new LocalControlClient({ endpoint, generation: "generation-1", token });
+			await expect(client.call({ action: "prompt", data: { text: prompt } })).rejects.toMatchObject({
+				code: "bad_response",
+			});
+			await expect(client.write(Uint8Array.of(0, 0xff))).rejects.toMatchObject({ code: "bad_response" });
+			await hellosCaptured.promise;
+
+			expect(captured).toHaveLength(2);
+			for (const frame of captured)
+				expect(decodeControlHelloFrame(frame.subarray(4))).toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					type: "hello",
+					nonce: expect.stringMatching(/^[a-f0-9]{64}$/),
+				});
+			const wire = Buffer.concat(captured);
+			expect(wire.includes(Buffer.from(token, "utf8"))).toBe(false);
+			expect(wire.includes(Buffer.from(prompt, "utf8"))).toBe(false);
+			expect(wire.includes(Buffer.from([0, 0xff]))).toBe(false);
+			await close(fake);
+		});
+	});
+	it("sends a request only after a server proves the configured endpoint and generation", async () => {
+		await withTempDir(async root => {
+			const endpoint = controlEndpointFor({ privateGenerationRoot: root, generation: "generation-1" });
+			const token = "a".repeat(64);
+			const received: Buffer[] = [];
+			const server = net.createServer({ allowHalfOpen: true }, socket => {
+				const decoder = new ControlFrameDecoder(3, true);
+				let challengeFrame: Buffer | undefined;
+				socket.on("data", (chunk: Buffer) => {
+					const frames = decoder.push(chunk);
+					for (const frame of frames) received.push(controlFrameFromBody(frame));
+					if (received.length === 1) {
+						const hello = decodeControlHelloFrame(received[0].subarray(4));
+						const challenge = generateControlChallenge(token, endpoint, "generation-1", hello);
+						challengeFrame = encodeControlFrame(challenge);
+						socket.write(challengeFrame);
+					}
+					if (!decoder.ended || received.length !== 3 || !challengeFrame) return;
+					const proof = decodeControlProofFrame(received[2].subarray(4));
+					expect(verifyControlProof(token, received[0], challengeFrame, received[1], proof)).toBe(true);
+					expect(decodeControlRequestCandidateFrame(received[1].subarray(4))).toMatchObject({
+						action: "prompt",
+						data: { text: "authenticated prompt" },
+					});
+					socket.end(
+						encodeControlFrame({
+							version: CONTROL_PROTOCOL_VERSION,
+							id: "request-1",
+							ok: true,
+							result: {},
+						}),
+					);
+				});
+			});
+			await listen(server, endpoint);
+			await expect(
+				sendControlRequest(endpoint, {
+					...createRequest(token),
+					action: "prompt",
+					data: { text: "authenticated prompt" },
+				}),
+			).resolves.toEqual({
+				version: CONTROL_PROTOCOL_VERSION,
+				id: "request-1",
+				ok: true,
+				result: {},
+			});
+			expect(received).toHaveLength(3);
+			await close(server);
 		});
 	});
 	it("rejects timer values outside Node's supported delay range", () => {
@@ -181,16 +392,33 @@ describe.serial("visible session local control transport", () => {
 	it("retries transient pre-connect endpoint failures within the original timeout", async () => {
 		await withTempDir(async root => {
 			const endpoint = controlEndpointFor({ privateGenerationRoot: root, generation: "generation-1" });
-			const server = net.createServer(socket =>
-				socket.once("data", () =>
-					socket.end(encodeControlFrame({ version: 1, id: "request-1", ok: true, result: {} })),
-				),
-			);
-			const request = sendControlRequest(endpoint, createRequest("a".repeat(64)), 250);
-			await Bun.sleep(35);
-			await listen(server, endpoint);
-			await expect(request).resolves.toEqual({ version: 1, id: "request-1", ok: true, result: {} });
-			await close(server);
+			const server = new LocalControlServer({
+				endpoint,
+				generation: "generation-1",
+				token: "a".repeat(64),
+				handler: async () => ({}),
+			});
+			await server.listen();
+			const transient = Object.assign(new Error("endpoint not ready"), { code: "ENOENT" });
+			const socket = new net.Socket();
+			const createConnection = vi.spyOn(net, "createConnection").mockImplementation(() => {
+				queueMicrotask(() => {
+					createConnection.mockRestore();
+					socket.emit("error", transient);
+				});
+				return socket;
+			});
+			try {
+				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 1_000)).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "request-1",
+					ok: true,
+					result: {},
+				});
+			} finally {
+				createConnection.mockRestore();
+				await server.close();
+			}
 		});
 	});
 	it("does not retry failures after connecting", async () => {
@@ -209,22 +437,44 @@ describe.serial("visible session local control transport", () => {
 		});
 	});
 	it("accepts a complete response when the peer closes without an end event", async () => {
-		const socket = Object.assign(new events.EventEmitter(), {
+		const writes: Buffer[] = [];
+		const socket = new events.EventEmitter() as unknown as net.Socket;
+		Object.assign(socket, {
 			destroy: vi.fn(),
 			end: vi.fn(),
-			write: vi.fn(),
-		}) as unknown as net.Socket;
+			write: vi.fn((chunk: Uint8Array) => {
+				writes.push(Buffer.from(chunk));
+				if (writes.length === 1) {
+					const hello = decodeControlHelloFrame(writes[0].subarray(4));
+					queueMicrotask(() =>
+						socket.emit(
+							"data",
+							encodeControlFrame(generateControlChallenge("a".repeat(64), "unused", "generation-1", hello)),
+						),
+					);
+				}
+				if (writes.length === 4)
+					queueMicrotask(() => {
+						socket.emit(
+							"data",
+							encodeControlFrame({
+								version: CONTROL_PROTOCOL_VERSION,
+								id: "request-1",
+								ok: true,
+								result: {},
+							}),
+						);
+						socket.emit("close", false);
+					});
+			}),
+		});
 		const createConnection = vi.spyOn(net, "createConnection").mockImplementation(() => {
-			queueMicrotask(() => {
-				socket.emit("connect");
-				socket.emit("data", encodeControlFrame({ version: 1, id: "request-1", ok: true, result: {} }));
-				socket.emit("close", false);
-			});
+			queueMicrotask(() => socket.emit("connect"));
 			return socket;
 		});
 		try {
 			await expect(sendControlRequest("unused", createRequest("a".repeat(64)), 25)).resolves.toEqual({
-				version: 1,
+				version: CONTROL_PROTOCOL_VERSION,
 				id: "request-1",
 				ok: true,
 				result: {},
@@ -338,7 +588,7 @@ describe.serial("visible session local control transport", () => {
 					action: "resize",
 					data: { columns: MAX_CONTROL_TERMINAL_DIMENSION + 1, rows: 1 },
 				}),
-			).resolves.toEqual({ version: 1, id: "request-1", ok: false, error: "bad_request" });
+			).resolves.toEqual({ version: CONTROL_PROTOCOL_VERSION, id: "request-1", ok: false, error: "bad_request" });
 			expect(calls).toBe(0);
 			await server.close();
 		});
@@ -454,7 +704,12 @@ describe.serial("visible session local control transport", () => {
 			await server.listen();
 			for (let index = 0; index < 2; index += 1) {
 				const response = await sendControlRequest(endpoint, createRequest(token));
-				expect(response).toEqual({ version: 1, id: "request-1", ok: false, error: "handler_failed" });
+				expect(response).toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "request-1",
+					ok: false,
+					error: "handler_failed",
+				});
 				expect(JSON.stringify(response)).not.toContain(token);
 			}
 			expect(privateFailures).toHaveLength(2);
@@ -494,7 +749,7 @@ describe.serial("visible session local control transport", () => {
 			await server.listen();
 			for (let attempt = 0; attempt < results.length; attempt += 1)
 				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)))).resolves.toEqual({
-					version: 1,
+					version: CONTROL_PROTOCOL_VERSION,
 					id: "request-1",
 					ok: false,
 					error: "handler_failed",
@@ -605,22 +860,12 @@ describe.serial("visible session local control transport", () => {
 			const listening = server.listen();
 			try {
 				await chmodStarted.promise;
-				const socket = net.createConnection({ path: endpoint });
-				const closed = Promise.withResolvers<void>();
-				socket.once("error", () => undefined);
-				socket.once("close", () => closed.resolve());
-				const message = Buffer.concat([
-					encodeControlFrame(createRequest("a".repeat(64))),
-					CONTROL_REQUEST_END_MARKER,
-				]);
-				socket.write(message);
+				const pendingRequest = sendControlRequest(endpoint, createRequest("a".repeat(64)));
 				await Bun.sleep(25);
 				expect(calls).toBe(0);
-				socket.destroy();
 				releaseChmod.resolve();
 				await listening;
-				await closed.promise;
-				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)))).resolves.toMatchObject({
+				await expect(pendingRequest).resolves.toMatchObject({
 					ok: true,
 				});
 				expect(calls).toBe(1);
@@ -795,13 +1040,31 @@ describe.serial("visible session local control transport", () => {
 	it("rejects mismatched response IDs and times out without a response", async () => {
 		await withTempDir(async root => {
 			const endpoint = controlEndpointFor({ privateGenerationRoot: root, generation: "generation-1" });
-			const wrongId = net.createServer({ allowHalfOpen: true }, socket =>
-				socket.once("data", () =>
-					socket.end(encodeControlFrame({ version: 1, id: "wrong-id", ok: true, result: {} })),
-				),
-			);
+			const wrongId = net.createServer({ allowHalfOpen: true }, socket => {
+				const decoder = new ControlFrameDecoder(3, true);
+				let challengeSent = false;
+				socket.on("data", (chunk: Buffer) => {
+					const frames = decoder.push(chunk);
+					if (!challengeSent && frames.length > 0) {
+						const hello = decodeControlHelloFrame(frames[0]);
+						socket.write(
+							encodeControlFrame(generateControlChallenge("a".repeat(64), endpoint, "generation-1", hello)),
+						);
+						challengeSent = true;
+					}
+					if (decoder.ended)
+						socket.end(
+							encodeControlFrame({
+								version: CONTROL_PROTOCOL_VERSION,
+								id: "wrong-id",
+								ok: true,
+								result: {},
+							}),
+						);
+				});
+			});
 			await listen(wrongId, endpoint);
-			await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 100)).rejects.toMatchObject({
+			await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 1_000)).rejects.toMatchObject({
 				code: "request_id_mismatch",
 			});
 			await close(wrongId);
@@ -830,13 +1093,14 @@ describe.serial("visible session local control transport", () => {
 				},
 			});
 			await server.listen();
-			const response = await sendControlRequest(endpoint, createRequest("b".repeat(64)));
-			expect(response).toMatchObject({ ok: false, error: "unauthorized" });
+			await expect(sendControlRequest(endpoint, createRequest("b".repeat(64)))).rejects.toMatchObject({
+				code: "bad_response",
+			});
 			await expect(
 				new LocalControlClient({ endpoint, generation: "generation-1", token: "b".repeat(64) }).write(
 					Uint8Array.of(0),
 				),
-			).rejects.toMatchObject({ code: "unauthorized" });
+			).rejects.toMatchObject({ code: "bad_response" });
 			expect(calls).toBe(0);
 			await server.close();
 		});
@@ -855,8 +1119,12 @@ describe.serial("visible session local control transport", () => {
 				},
 			});
 			await server.listen();
-			const frame = encodeControlFrame(createRequest("a".repeat(64)));
-			await expect(sendRawRequest(endpoint, [frame.subarray(0, 3), frame.subarray(3)])).resolves.toMatchObject({
+			await expect(
+				sendRawAuthenticatedRequest(endpoint, createRequest("a".repeat(64)), frames => {
+					const combined = Buffer.concat(frames);
+					return [combined.subarray(0, 3), combined.subarray(3)];
+				}),
+			).resolves.toMatchObject({
 				ok: true,
 				result: { calls: 1 },
 			});
@@ -879,8 +1147,11 @@ describe.serial("visible session local control transport", () => {
 				},
 			});
 			await server.listen();
-			const frame = encodeControlFrame(createRequest("a".repeat(64)));
-			await expect(sendRawRequest(endpoint, [Buffer.concat([frame, frame])])).resolves.toMatchObject({
+			await expect(
+				sendRawAuthenticatedRequest(endpoint, createRequest("a".repeat(64)), frames => [
+					Buffer.concat([...frames, frames[1]]),
+				]),
+			).resolves.toMatchObject({
 				ok: false,
 				error: "too_many_frames",
 			});
@@ -902,7 +1173,7 @@ describe.serial("visible session local control transport", () => {
 				},
 			});
 			await server.listen();
-			await expect(sendRawRequest(endpoint, [Buffer.alloc(4)])).resolves.toMatchObject({
+			await expect(sendRawFrameChunks(endpoint, [Buffer.alloc(4)])).resolves.toMatchObject({
 				ok: false,
 				error: "bad_frame",
 			});
@@ -930,15 +1201,20 @@ describe.serial("visible session local control transport", () => {
 				},
 			});
 			await server.listen();
+			const token = "a".repeat(64);
+			const hello = generateControlHello();
+			const helloFrame = encodeControlFrame(hello);
+			const requestFrame = encodeControlFrame(withoutControlToken(createRequest(token)));
 			const socket = net.createConnection({ path: endpoint });
-			socket.once("connect", () => {
-				const message = Buffer.concat([
-					encodeControlFrame(createRequest("a".repeat(64))),
-					CONTROL_REQUEST_END_MARKER,
-				]);
-				if (process.platform === "win32") socket.write(message);
-				else socket.end(message);
+			const decoder = new ControlFrameDecoder(1);
+			socket.once("connect", () => socket.write(helloFrame));
+			socket.on("data", (chunk: Buffer) => {
+				for (const frame of decoder.push(chunk)) {
+					const proof = createControlProof(token, helloFrame, controlFrameFromBody(frame), requestFrame);
+					socket.write(Buffer.concat([requestFrame, encodeControlFrame(proof), CONTROL_REQUEST_END_MARKER]));
+				}
 			});
+			socket.once("error", () => undefined);
 			await started.promise;
 			socket.destroy();
 			await aborted.promise;
@@ -964,7 +1240,7 @@ describe.serial("visible session local control transport", () => {
 			const socket = net.createConnection({ path: endpoint });
 			const closed = Promise.withResolvers<void>();
 			socket.once("close", closed.resolve);
-			socket.once("connect", () => socket.write(encodeControlFrame(createRequest("a".repeat(64)))));
+			socket.once("connect", () => socket.write(encodeControlFrame(generateControlHello())));
 			await Bun.sleep(25);
 			socket.end();
 			await closed.promise;
@@ -1009,7 +1285,7 @@ describe.serial("visible session local control transport", () => {
 				endpoint,
 				generation: "generation-1",
 				token: "a".repeat(64),
-				requestTimeoutMs: 100,
+				requestTimeoutMs: 1_000,
 				maxConnections: 1,
 				handler: async (_request, context) => {
 					calls++;
@@ -1027,8 +1303,8 @@ describe.serial("visible session local control transport", () => {
 			});
 			await server.listen();
 			try {
-				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 1_000)).resolves.toEqual({
-					version: 1,
+				await expect(sendControlRequest(endpoint, createRequest("a".repeat(64)), 3_000)).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
 					id: "request-1",
 					ok: false,
 					error: "timeout",
@@ -1043,10 +1319,12 @@ describe.serial("visible session local control transport", () => {
 						return [];
 					}
 				});
-				expect(responses).toEqual([{ version: 1, id: "request-1", ok: false, error: "timeout" }]);
+				expect(responses).toEqual([
+					{ version: CONTROL_PROTOCOL_VERSION, id: "request-1", ok: false, error: "timeout" },
+				]);
 				await expect(
 					sendControlRequest(endpoint, { ...createRequest("a".repeat(64)), id: "request-2" }, 1_000),
-				).resolves.toEqual({ version: 1, id: "request-2", ok: true, result: {} });
+				).resolves.toEqual({ version: CONTROL_PROTOCOL_VERSION, id: "request-2", ok: true, result: {} });
 			} finally {
 				end.mockRestore();
 				await server.close();
@@ -1090,7 +1368,7 @@ describe.serial("visible session local control transport", () => {
 			}
 		});
 	});
-	it("rejects every malformed request schema before dispatch across frame boundaries", async () => {
+	it("rejects malformed, reordered, and invalid-proof requests before dispatch", async () => {
 		await withTempDir(async root => {
 			const endpoint = controlEndpointFor({ privateGenerationRoot: root, generation: "generation-1" });
 			const token = "a".repeat(64);
@@ -1105,58 +1383,122 @@ describe.serial("visible session local control transport", () => {
 				},
 			});
 			await server.listen();
-			const request = createRequest(token);
-			const cases: ReadonlyArray<{ name: string; value: unknown }> = [
-				{ name: "unknown request key", value: { ...request, extra: true } },
+			const candidate = withoutControlToken(createRequest(token));
+			const cases: ReadonlyArray<{ value: unknown; id: string }> = [
+				{ value: { ...candidate, extra: true }, id: "0" },
+				{ value: { ...candidate, token }, id: "0" },
+				{ value: { ...candidate, version: 1 }, id: "0" },
+				{ value: { ...candidate, action: "unknown" }, id: "0" },
+				{ value: { ...candidate, action: "ready", data: {} }, id: "request-1" },
 				{
-					name: "missing token",
-					value: { version: 1, id: request.id, action: "status", generation: request.generation },
-				},
-				{ name: "noncanonical token", value: { ...request, token: "A".repeat(64) } },
-				{ name: "unknown action", value: { ...request, action: "unknown" } },
-				{ name: "ready data", value: { ...request, action: "ready", data: {} } },
-				{ name: "status data", value: { ...request, action: "status", data: {} } },
-				{ name: "heartbeat data", value: { ...request, action: "heartbeat", data: {} } },
-				{ name: "cancel data", value: { ...request, action: "cancel", data: {} } },
-				{ name: "prompt extra key", value: { ...request, action: "prompt", data: { text: "value", extra: true } } },
-				{
-					name: "write mixed encoding",
-					value: { ...request, action: "write", data: { encoding: "base64", bytes: "AA==", text: "x" } },
+					value: { ...candidate, action: "prompt", data: { text: "value", extra: true } },
+					id: "request-1",
 				},
 				{
-					name: "write noncanonical base64",
-					value: { ...request, action: "write", data: { encoding: "base64", bytes: "AB==" } },
+					value: { ...candidate, action: "write", data: { encoding: "base64", bytes: "AB==" } },
+					id: "request-1",
 				},
-				{
-					name: "resize fractional dimension",
-					value: { ...request, action: "resize", data: { columns: 1.5, rows: 1 } },
-				},
-				{ name: "stream missing max bytes", value: { ...request, action: "stream", data: { cursor: null } } },
+				{ value: { ...candidate, action: "resize", data: { columns: 1.5, rows: 1 } }, id: "request-1" },
+				{ value: { ...candidate, action: "stream", data: { cursor: null } }, id: "request-1" },
 			];
 			try {
 				for (const malformed of cases) {
-					const response = await sendRawRequest(endpoint, [encodeRawFrame(malformed.value)]);
-					expect(response).toEqual({
-						version: 1,
-						id: "request-1",
+					const requestFrame = encodeRawFrame(malformed.value);
+					await expect(
+						sendRawAfterChallenge(endpoint, (helloFrame, challengeFrame) =>
+							rawRequestWithProof(token, helloFrame, challengeFrame, requestFrame),
+						),
+					).resolves.toEqual({
+						version: CONTROL_PROTOCOL_VERSION,
+						id: malformed.id,
 						ok: false,
 						error: "bad_request",
 					});
 				}
 
-				const frame = Buffer.concat([
-					encodeRawFrame({ ...request, action: "unknown" }),
-					CONTROL_REQUEST_END_MARKER,
-				]);
-				for (let split = 1; split < frame.length; split += 1) {
-					const response = await sendRawFrameChunks(endpoint, [frame.subarray(0, split), frame.subarray(split)]);
-					expect(response).toEqual({ version: 1, id: "request-1", ok: false, error: "bad_request" });
+				const malformedFrame = encodeRawFrame({ ...candidate, action: "unknown" });
+				const splits = [1, 3, 4, 5, Math.floor(malformedFrame.length / 2), malformedFrame.length - 1];
+				for (const split of new Set(splits.filter(value => value > 0 && value < malformedFrame.length))) {
+					await expect(
+						sendRawAfterChallenge(endpoint, (helloFrame, challengeFrame) =>
+							rawRequestWithProof(token, helloFrame, challengeFrame, malformedFrame, [
+								malformedFrame.subarray(0, split),
+								malformedFrame.subarray(split),
+							]),
+						),
+					).resolves.toEqual({
+						version: CONTROL_PROTOCOL_VERSION,
+						id: "0",
+						ok: false,
+						error: "bad_request",
+					});
 				}
+
+				const requestFrame = encodeControlFrame(candidate);
+				const replayHello = encodeControlFrame(generateControlHello());
+				const replayChallenge = generateControlChallenge(
+					token,
+					endpoint,
+					"generation-1",
+					decodeControlHelloFrame(replayHello.subarray(4)),
+				);
+				const replayProof = createControlProof(
+					token,
+					replayHello,
+					encodeControlFrame(replayChallenge),
+					requestFrame,
+				);
+				await expect(
+					sendRawAfterChallenge(endpoint, (helloFrame, challengeFrame) => {
+						const proof = createControlProof(token, helloFrame, challengeFrame, requestFrame);
+						return [encodeControlFrame(proof), requestFrame, CONTROL_REQUEST_END_MARKER];
+					}),
+				).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "0",
+					ok: false,
+					error: "bad_frame",
+				});
+				await expect(
+					sendRawAfterChallenge(endpoint, () => [requestFrame, CONTROL_REQUEST_END_MARKER]),
+				).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "request-1",
+					ok: false,
+					error: "bad_frame",
+				});
+				await expect(
+					sendRawAfterChallenge(endpoint, (helloFrame, challengeFrame) => {
+						const proof = createControlProof(token, helloFrame, challengeFrame, requestFrame);
+						return [
+							requestFrame,
+							encodeControlFrame({ ...proof, proof: "b".repeat(64) }),
+							CONTROL_REQUEST_END_MARKER,
+						];
+					}),
+				).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "request-1",
+					ok: false,
+					error: "unauthorized",
+				});
+				await expect(
+					sendRawAfterChallenge(endpoint, () => [
+						requestFrame,
+						encodeControlFrame(replayProof),
+						CONTROL_REQUEST_END_MARKER,
+					]),
+				).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "request-1",
+					ok: false,
+					error: "unauthorized",
+				});
 
 				const oversizedHeader = Buffer.allocUnsafe(4);
 				oversizedHeader.writeUInt32BE(MAX_CONTROL_FRAME_BYTES + 1, 0);
-				await expect(sendRawRequest(endpoint, [oversizedHeader])).resolves.toEqual({
-					version: 1,
+				await expect(sendRawFrameChunks(endpoint, [oversizedHeader])).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
 					id: "0",
 					ok: false,
 					error: "bad_frame",
@@ -1242,15 +1584,20 @@ describe.serial("visible session local control transport", () => {
 				const first = sendControlRequest(endpoint, createRequest(token));
 				await firstStarted.promise;
 				await expect(sendControlRequest(endpoint, { ...createRequest(token), id: "request-2" })).resolves.toEqual({
-					version: 1,
+					version: CONTROL_PROTOCOL_VERSION,
 					id: "request-2",
 					ok: false,
 					error: "timeout",
 				});
 				releaseFirst.resolve();
-				await expect(first).resolves.toEqual({ version: 1, id: "request-1", ok: true, result: { calls: 1 } });
+				await expect(first).resolves.toEqual({
+					version: CONTROL_PROTOCOL_VERSION,
+					id: "request-1",
+					ok: true,
+					result: { calls: 1 },
+				});
 				await expect(sendControlRequest(endpoint, { ...createRequest(token), id: "request-3" })).resolves.toEqual({
-					version: 1,
+					version: CONTROL_PROTOCOL_VERSION,
 					id: "request-3",
 					ok: true,
 					result: { calls: 2 },

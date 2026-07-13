@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 
-export const CONTROL_PROTOCOL_VERSION = 1;
+export const CONTROL_PROTOCOL_VERSION = 2;
 export const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
 export const MAX_CONTROL_REQUEST_ID_LENGTH = 128;
 export const MAX_CONTROL_WRITE_BYTES = 45 * 1024;
@@ -8,6 +8,8 @@ export const MAX_CONTROL_STREAM_BYTES = 24 * 1024;
 export const MAX_CONTROL_PROMPT_BYTES = Math.floor((64 * 1024) / 3);
 export const MAX_CONTROL_TERMINAL_DIMENSION = 10_000;
 export const CONTROL_REQUEST_END_MARKER = Buffer.alloc(4);
+export const CONTROL_NONCE_BYTES = 32;
+export const MAX_CONTROL_ENDPOINT_LENGTH = 512;
 export const CONTROL_ACTIONS = [
 	"ready",
 	"status",
@@ -22,22 +24,53 @@ export const CONTROL_ACTIONS = [
 export type ControlAction = (typeof CONTROL_ACTIONS)[number];
 export type ControlJson = null | boolean | number | string | ControlJson[] | { [key: string]: ControlJson };
 export interface ControlRequest {
-	version: 1;
+	version: 2;
 	id: string;
 	action: ControlAction;
 	generation: string;
 	token: string;
 	data?: ControlJson;
 }
+export interface ControlRequestCandidate {
+	version: 2;
+	id: string;
+	action: ControlAction;
+	generation: string;
+	data?: ControlJson;
+}
 export type AuthenticatedControlRequest = Omit<ControlRequest, "token">;
+export interface ControlHello {
+	version: 2;
+	type: "hello";
+	nonce: string;
+}
+export interface ControlChallenge {
+	version: 2;
+	type: "challenge";
+	endpoint: string;
+	generation: string;
+	nonce: string;
+	proof: string;
+}
+export interface ControlProof {
+	version: 2;
+	type: "proof";
+	proof: string;
+}
+export type ControlWireMessage =
+	| ControlRequestCandidate
+	| ControlHello
+	| ControlChallenge
+	| ControlProof
+	| ControlResponse;
 export interface ControlSuccessResponse {
-	version: 1;
+	version: 2;
 	id: string;
 	ok: true;
 	result: ControlJson;
 }
 export interface ControlErrorResponse {
-	version: 1;
+	version: 2;
 	id: string;
 	ok: false;
 	error: ControlErrorCode;
@@ -163,6 +196,8 @@ function isControlErrorCode(value: unknown): value is ControlErrorCode {
 	);
 }
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const CONTROL_NONCE = /^[a-f0-9]{64}$/;
+const CONTROL_PROOF = /^[a-f0-9]{64}$/;
 const MAX_CONTROL_TEXT_ENVELOPE_IDENTIFIER = "\0".repeat(MAX_CONTROL_REQUEST_ID_LENGTH);
 const MAX_CONTROL_TEXT_ENVELOPE_BYTES = {
 	prompt: Buffer.byteLength(
@@ -208,6 +243,22 @@ function containsUnpairedSurrogate(value: string): boolean {
 		}
 	}
 	return false;
+}
+function isControlEndpoint(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= MAX_CONTROL_ENDPOINT_LENGTH &&
+		!value.includes("\0") &&
+		!containsUnpairedSurrogate(value) &&
+		Buffer.byteLength(value, "utf8") <= MAX_CONTROL_ENDPOINT_LENGTH
+	);
+}
+function isControlNonce(value: unknown): value is string {
+	return typeof value === "string" && CONTROL_NONCE.test(value);
+}
+function isControlProof(value: unknown): value is string {
+	return typeof value === "string" && CONTROL_PROOF.test(value);
 }
 
 export function canonicalControlPromptForms(value: unknown): readonly string[] | undefined {
@@ -325,11 +376,112 @@ function parseData(action: ControlAction, data: unknown, dataPresent: boolean): 
 	return undefined;
 }
 
-function isControlRequestEncodable(request: ControlRequest): boolean {
-	return Buffer.byteLength(JSON.stringify(request), "utf8") <= MAX_CONTROL_FRAME_BYTES;
+function isControlRequestEncodable(request: ControlRequestCandidate): boolean {
+	const requestWithToken: ControlRequest =
+		request.data === undefined
+			? {
+					version: request.version,
+					id: request.id,
+					action: request.action,
+					generation: request.generation,
+					token: "f".repeat(64),
+				}
+			: {
+					version: request.version,
+					id: request.id,
+					action: request.action,
+					generation: request.generation,
+					token: "f".repeat(64),
+					data: request.data,
+				};
+	return Buffer.byteLength(JSON.stringify(requestWithToken), "utf8") <= MAX_CONTROL_FRAME_BYTES;
 }
-
+function parseTokenFreeControlRequest(request: PlainControlRecord): ControlRequestCandidate {
+	const { version, id, action, generation } = request;
+	if (
+		!Object.hasOwn(request, "version") ||
+		!Object.hasOwn(request, "id") ||
+		!Object.hasOwn(request, "action") ||
+		!Object.hasOwn(request, "generation") ||
+		version !== CONTROL_PROTOCOL_VERSION ||
+		!isIdentifier(id) ||
+		!isIdentifier(generation) ||
+		!isControlAction(action)
+	)
+		throw new ControlProtocolError("bad_request");
+	const data = parseData(action, request.data, Object.hasOwn(request, "data"));
+	const parsed: ControlRequestCandidate =
+		data === undefined
+			? { version: CONTROL_PROTOCOL_VERSION, id, action, generation }
+			: { version: CONTROL_PROTOCOL_VERSION, id, action, generation, data };
+	if (!isControlRequestEncodable(parsed)) throw new ControlProtocolError("bad_request");
+	return parsed;
+}
+export function parseControlRequestCandidate(value: unknown): ControlRequestCandidate {
+	const request = snapshotPlainControlRecord(value);
+	if (!request || !hasOnlyKeys(request, ["version", "id", "action", "generation", "data"]))
+		throw new ControlProtocolError("bad_request");
+	return parseTokenFreeControlRequest(request);
+}
+/**
+ * Validates the token-free request envelope without action-specific data semantics.
+ * Its output is only valid for authentication; parseControlRequestCandidate must run before dispatch.
+ */
+export function parseControlRequestCandidateEnvelope(value: unknown): ControlRequestCandidate {
+	const request = snapshotPlainControlRecord(value);
+	if (!request || !hasOnlyKeys(request, ["version", "id", "action", "generation", "data"]))
+		throw new ControlProtocolError("bad_request");
+	const { version, id, action, generation } = request;
+	if (
+		!Object.hasOwn(request, "version") ||
+		!Object.hasOwn(request, "id") ||
+		!Object.hasOwn(request, "action") ||
+		!Object.hasOwn(request, "generation") ||
+		version !== CONTROL_PROTOCOL_VERSION ||
+		!isIdentifier(id) ||
+		!isControlAction(action) ||
+		!isIdentifier(generation)
+	)
+		throw new ControlProtocolError("bad_request");
+	const dataPresent = Object.hasOwn(request, "data");
+	const data = dataPresent ? snapshotControlJson(request.data) : undefined;
+	if (dataPresent && data === undefined) throw new ControlProtocolError("bad_request");
+	const parsed: ControlRequestCandidate =
+		data === undefined
+			? { version: CONTROL_PROTOCOL_VERSION, id, action, generation }
+			: { version: CONTROL_PROTOCOL_VERSION, id, action, generation, data };
+	if (!isControlRequestEncodable(parsed)) throw new ControlProtocolError("bad_request");
+	return parsed;
+}
 export function parseControlRequest(value: unknown): ControlRequest {
+	const request = snapshotPlainControlRecord(value);
+	if (!request || !hasOnlyKeys(request, ["version", "id", "action", "generation", "token", "data"]))
+		throw new ControlProtocolError("bad_request");
+	const token = request.token;
+	if (!Object.hasOwn(request, "token") || !isControlProof(token)) throw new ControlProtocolError("bad_request");
+	const parsed = parseTokenFreeControlRequest(request);
+	return parsed.data === undefined
+		? {
+				version: parsed.version,
+				id: parsed.id,
+				action: parsed.action,
+				generation: parsed.generation,
+				token,
+			}
+		: {
+				version: parsed.version,
+				id: parsed.id,
+				action: parsed.action,
+				generation: parsed.generation,
+				token,
+				data: parsed.data,
+			};
+}
+/**
+ * Validates the authenticated client envelope without validating action-specific data.
+ * The server validates that data only after its proof has authenticated the endpoint.
+ */
+export function parseControlRequestEnvelope(value: unknown): ControlRequest {
 	const request = snapshotPlainControlRecord(value);
 	if (!request || !hasOnlyKeys(request, ["version", "id", "action", "generation", "token", "data"]))
 		throw new ControlProtocolError("bad_request");
@@ -342,21 +494,53 @@ export function parseControlRequest(value: unknown): ControlRequest {
 		!Object.hasOwn(request, "token") ||
 		version !== CONTROL_PROTOCOL_VERSION ||
 		!isIdentifier(id) ||
+		!isControlAction(action) ||
 		!isIdentifier(generation) ||
-		typeof token !== "string" ||
-		!/^[a-f0-9]{64}$/.test(token) ||
-		!isControlAction(action)
+		!isControlProof(token)
 	)
 		throw new ControlProtocolError("bad_request");
-	const data = parseData(action, request.data, Object.hasOwn(request, "data"));
+	const dataPresent = Object.hasOwn(request, "data");
+	const data = dataPresent ? snapshotControlJson(request.data) : undefined;
+	if (dataPresent && data === undefined) throw new ControlProtocolError("bad_request");
 	const parsed: ControlRequest =
 		data === undefined
-			? { version: 1, id, action, generation, token }
-			: { version: 1, id, action, generation, token, data };
-	if (!isControlRequestEncodable(parsed)) throw new ControlProtocolError("bad_request");
+			? { version: CONTROL_PROTOCOL_VERSION, id, action, generation, token }
+			: { version: CONTROL_PROTOCOL_VERSION, id, action, generation, token, data };
+	if (!isControlRequestEncodable(withoutControlToken(parsed))) throw new ControlProtocolError("bad_request");
 	return parsed;
 }
-
+export function withoutControlToken(request: ControlRequest): AuthenticatedControlRequest {
+	return request.data === undefined
+		? {
+				version: request.version,
+				id: request.id,
+				action: request.action,
+				generation: request.generation,
+			}
+		: {
+				version: request.version,
+				id: request.id,
+				action: request.action,
+				generation: request.generation,
+				data: request.data,
+			};
+}
+export function authenticateControlRequest(request: ControlRequestCandidate): AuthenticatedControlRequest {
+	return request.data === undefined
+		? {
+				version: request.version,
+				id: request.id,
+				action: request.action,
+				generation: request.generation,
+			}
+		: {
+				version: request.version,
+				id: request.id,
+				action: request.action,
+				generation: request.generation,
+				data: request.data,
+			};
+}
 export function parseControlResponse(value: unknown): ControlResponse {
 	const response = snapshotPlainControlRecord(value);
 	if (!response || !hasOnlyKeys(response, ["version", "id", "ok", "result", "error"]))
@@ -366,7 +550,7 @@ export function parseControlResponse(value: unknown): ControlResponse {
 		!Object.hasOwn(response, "version") ||
 		!Object.hasOwn(response, "id") ||
 		!Object.hasOwn(response, "ok") ||
-		version !== 1 ||
+		version !== CONTROL_PROTOCOL_VERSION ||
 		!isIdentifier(id) ||
 		typeof ok !== "boolean"
 	)
@@ -376,11 +560,219 @@ export function parseControlResponse(value: unknown): ControlResponse {
 			throw new ControlProtocolError("bad_frame");
 		const result = snapshotControlJson(response.result);
 		if (result === undefined) throw new ControlProtocolError("bad_frame");
-		return { version: 1, id, ok: true, result };
+		return { version: CONTROL_PROTOCOL_VERSION, id, ok: true, result };
 	}
 	if (Object.hasOwn(response, "result") || !Object.hasOwn(response, "error") || !isControlErrorCode(response.error))
 		throw new ControlProtocolError("bad_frame");
-	return { version: 1, id, ok: false, error: response.error };
+	return { version: CONTROL_PROTOCOL_VERSION, id, ok: false, error: response.error };
+}
+export function parseControlHello(value: unknown): ControlHello {
+	const hello = snapshotPlainControlRecord(value);
+	if (!hello || !hasOnlyKeys(hello, ["version", "type", "nonce"])) throw new ControlProtocolError("bad_frame");
+	const { version, type, nonce } = hello;
+	if (
+		!Object.hasOwn(hello, "version") ||
+		!Object.hasOwn(hello, "type") ||
+		!Object.hasOwn(hello, "nonce") ||
+		version !== CONTROL_PROTOCOL_VERSION ||
+		type !== "hello" ||
+		!isControlNonce(nonce)
+	)
+		throw new ControlProtocolError("bad_frame");
+	return { version: CONTROL_PROTOCOL_VERSION, type, nonce };
+}
+export function parseControlChallenge(value: unknown): ControlChallenge {
+	const challenge = snapshotPlainControlRecord(value);
+	if (!challenge || !hasOnlyKeys(challenge, ["version", "type", "endpoint", "generation", "nonce", "proof"]))
+		throw new ControlProtocolError("bad_frame");
+	const { version, type, endpoint, generation, nonce, proof } = challenge;
+	if (
+		!Object.hasOwn(challenge, "version") ||
+		!Object.hasOwn(challenge, "type") ||
+		!Object.hasOwn(challenge, "endpoint") ||
+		!Object.hasOwn(challenge, "generation") ||
+		!Object.hasOwn(challenge, "nonce") ||
+		!Object.hasOwn(challenge, "proof") ||
+		version !== CONTROL_PROTOCOL_VERSION ||
+		type !== "challenge" ||
+		!isControlEndpoint(endpoint) ||
+		!isIdentifier(generation) ||
+		!isControlNonce(nonce) ||
+		!isControlProof(proof)
+	)
+		throw new ControlProtocolError("bad_frame");
+	return { version: CONTROL_PROTOCOL_VERSION, type, endpoint, generation, nonce, proof };
+}
+export function parseControlProof(value: unknown): ControlProof {
+	const proof = snapshotPlainControlRecord(value);
+	if (!proof || !hasOnlyKeys(proof, ["version", "type", "proof"])) throw new ControlProtocolError("bad_frame");
+	const { version, type, proof: digest } = proof;
+	if (
+		!Object.hasOwn(proof, "version") ||
+		!Object.hasOwn(proof, "type") ||
+		!Object.hasOwn(proof, "proof") ||
+		version !== CONTROL_PROTOCOL_VERSION ||
+		type !== "proof" ||
+		!isControlProof(digest)
+	)
+		throw new ControlProtocolError("bad_frame");
+	return { version: CONTROL_PROTOCOL_VERSION, type, proof: digest };
+}
+function lengthDelimitedControlTranscript(domain: Buffer, fields: readonly Uint8Array[]): Buffer {
+	const prefixed = [domain, Buffer.from([CONTROL_PROTOCOL_VERSION]), ...fields];
+	const size = prefixed.reduce((total, field) => total + 4 + field.length, 0);
+	const transcript = Buffer.allocUnsafe(size);
+	let offset = 0;
+	for (const field of prefixed) {
+		transcript.writeUInt32BE(field.length, offset);
+		offset += 4;
+		transcript.set(field, offset);
+		offset += field.length;
+	}
+	return transcript;
+}
+function controlHmac(token: string, transcript: Uint8Array): string {
+	if (!isControlProof(token)) throw new Error("invalid_control_proof_token");
+	return crypto.createHmac("sha256", Buffer.from(token, "utf8")).update(transcript).digest("hex");
+}
+function controlServerTranscript(
+	endpoint: string,
+	generation: string,
+	clientNonce: string,
+	serverNonce: string,
+): Buffer {
+	return lengthDelimitedControlTranscript(Buffer.from("gjc-visible-control/v2/server-auth", "utf8"), [
+		Buffer.from(endpoint, "utf8"),
+		Buffer.from(generation, "utf8"),
+		Buffer.from(clientNonce, "hex"),
+		Buffer.from(serverNonce, "hex"),
+	]);
+}
+export function controlFrameFromBody(body: Uint8Array): Buffer {
+	if (body.length === 0 || body.length > MAX_CONTROL_FRAME_BYTES) throw new ControlProtocolError("bad_frame");
+	const frame = Buffer.allocUnsafe(body.length + 4);
+	frame.writeUInt32BE(body.length, 0);
+	frame.set(body, 4);
+	return frame;
+}
+function completeControlFrame(frame: Uint8Array): Buffer {
+	const complete = Buffer.from(frame);
+	if (
+		complete.length < 5 ||
+		complete.readUInt32BE(0) !== complete.length - 4 ||
+		complete.length - 4 > MAX_CONTROL_FRAME_BYTES
+	)
+		throw new ControlProtocolError("bad_frame");
+	return complete;
+}
+function parseProofTranscriptFrames(
+	helloFrame: Uint8Array,
+	challengeFrame: Uint8Array,
+	requestFrame: Uint8Array,
+): void {
+	decodeControlHelloFrame(completeControlFrame(helloFrame).subarray(4));
+	decodeControlChallengeFrame(completeControlFrame(challengeFrame).subarray(4));
+	completeControlFrame(requestFrame);
+}
+export function generateControlHello(): ControlHello {
+	return {
+		version: CONTROL_PROTOCOL_VERSION,
+		type: "hello",
+		nonce: crypto.randomBytes(CONTROL_NONCE_BYTES).toString("hex"),
+	};
+}
+export function generateControlChallenge(
+	token: string,
+	endpoint: string,
+	generation: string,
+	hello: ControlHello,
+): ControlChallenge {
+	if (!isControlEndpoint(endpoint) || !isIdentifier(generation) || !isControlNonce(hello.nonce))
+		throw new Error("invalid_control_challenge_identity");
+	const nonce = crypto.randomBytes(CONTROL_NONCE_BYTES).toString("hex");
+	return {
+		version: CONTROL_PROTOCOL_VERSION,
+		type: "challenge",
+		endpoint,
+		generation,
+		nonce,
+		proof: controlHmac(token, controlServerTranscript(endpoint, generation, hello.nonce, nonce)),
+	};
+}
+export function verifyControlChallenge(
+	expectedToken: string,
+	expectedEndpoint: string,
+	expectedGeneration: string,
+	hello: ControlHello,
+	challenge: ControlChallenge,
+): boolean {
+	if (
+		!isControlProof(expectedToken) ||
+		!isControlEndpoint(expectedEndpoint) ||
+		!isIdentifier(expectedGeneration) ||
+		!isControlNonce(hello.nonce) ||
+		challenge.version !== CONTROL_PROTOCOL_VERSION ||
+		challenge.type !== "challenge" ||
+		challenge.endpoint !== expectedEndpoint ||
+		challenge.generation !== expectedGeneration ||
+		!isControlNonce(challenge.nonce) ||
+		!isControlProof(challenge.proof)
+	)
+		return false;
+	const expected = controlHmac(
+		expectedToken,
+		controlServerTranscript(expectedEndpoint, expectedGeneration, hello.nonce, challenge.nonce),
+	);
+	return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(challenge.proof, "hex"));
+}
+export function createControlProof(
+	token: string,
+	helloFrame: Uint8Array,
+	challengeFrame: Uint8Array,
+	requestFrame: Uint8Array,
+): ControlProof {
+	parseProofTranscriptFrames(helloFrame, challengeFrame, requestFrame);
+	return {
+		version: CONTROL_PROTOCOL_VERSION,
+		type: "proof",
+		proof: controlHmac(
+			token,
+			lengthDelimitedControlTranscript(Buffer.from("gjc-visible-control/v2/client-auth", "utf8"), [
+				completeControlFrame(helloFrame),
+				completeControlFrame(challengeFrame),
+				completeControlFrame(requestFrame),
+			]),
+		),
+	};
+}
+export function verifyControlProof(
+	expectedToken: string,
+	helloFrame: Uint8Array,
+	challengeFrame: Uint8Array,
+	requestFrame: Uint8Array,
+	supplied: ControlProof,
+): boolean {
+	if (
+		!isControlProof(expectedToken) ||
+		supplied.version !== CONTROL_PROTOCOL_VERSION ||
+		supplied.type !== "proof" ||
+		!isControlProof(supplied.proof)
+	)
+		return false;
+	try {
+		parseProofTranscriptFrames(helloFrame, challengeFrame, requestFrame);
+		const expected = createControlProof(expectedToken, helloFrame, challengeFrame, requestFrame);
+		return crypto.timingSafeEqual(Buffer.from(expected.proof, "hex"), Buffer.from(supplied.proof, "hex"));
+	} catch {
+		return false;
+	}
+}
+export function encodeControlFrame(value: ControlWireMessage): Buffer {
+	if (typeof value === "object" && value !== null && Object.hasOwn(value, "token"))
+		throw new ControlProtocolError("bad_frame");
+	const body = Buffer.from(JSON.stringify(value), "utf8");
+	if (body.length > MAX_CONTROL_FRAME_BYTES) throw new ControlProtocolError("frame_too_large");
+	return controlFrameFromBody(body);
 }
 function parseJsonFrame(frame: Uint8Array): unknown {
 	try {
@@ -388,14 +780,6 @@ function parseJsonFrame(frame: Uint8Array): unknown {
 	} catch {
 		throw new ControlProtocolError("bad_frame");
 	}
-}
-export function encodeControlFrame(value: ControlRequest | ControlResponse): Buffer {
-	const body = Buffer.from(JSON.stringify(value), "utf8");
-	if (body.length > MAX_CONTROL_FRAME_BYTES) throw new ControlProtocolError("frame_too_large");
-	const frame = Buffer.allocUnsafe(body.length + 4);
-	frame.writeUInt32BE(body.length, 0);
-	body.copy(frame, 4);
-	return frame;
 }
 
 /** Incrementally decodes bounded frames without allocating a body until its declared length is validated. */
@@ -464,6 +848,21 @@ export class ControlFrameDecoder {
 }
 export function decodeControlRequestFrame(frame: Uint8Array): ControlRequest {
 	return parseControlRequest(parseJsonFrame(frame));
+}
+export function decodeControlRequestCandidateFrame(frame: Uint8Array): ControlRequestCandidate {
+	return parseControlRequestCandidate(parseJsonFrame(frame));
+}
+export function decodeControlRequestCandidateEnvelopeFrame(frame: Uint8Array): ControlRequestCandidate {
+	return parseControlRequestCandidateEnvelope(parseJsonFrame(frame));
+}
+export function decodeControlHelloFrame(frame: Uint8Array): ControlHello {
+	return parseControlHello(parseJsonFrame(frame));
+}
+export function decodeControlChallengeFrame(frame: Uint8Array): ControlChallenge {
+	return parseControlChallenge(parseJsonFrame(frame));
+}
+export function decodeControlProofFrame(frame: Uint8Array): ControlProof {
+	return parseControlProof(parseJsonFrame(frame));
 }
 export function decodeControlResponseFrame(frame: Uint8Array): ControlResponse {
 	return parseControlResponse(parseJsonFrame(frame));

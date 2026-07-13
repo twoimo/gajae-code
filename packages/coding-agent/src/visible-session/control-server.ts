@@ -4,17 +4,24 @@ import * as net from "node:net";
 import * as path from "node:path";
 import {
 	type AuthenticatedControlRequest,
+	authenticateControlRequest,
 	CONTROL_PROTOCOL_VERSION,
 	type ControlErrorCode,
 	ControlFrameDecoder,
+	type ControlHello,
 	type ControlJson,
 	ControlProtocolError,
-	type ControlRequest,
+	type ControlRequestCandidate,
 	type ControlResponse,
-	decodeControlRequestFrame,
+	controlFrameFromBody,
+	decodeControlHelloFrame,
+	decodeControlProofFrame,
+	decodeControlRequestCandidateEnvelopeFrame,
+	decodeControlRequestCandidateFrame,
 	encodeControlFrame,
+	generateControlChallenge,
 	snapshotControlJson,
-	verifyControlToken,
+	verifyControlProof,
 } from "./control-protocol";
 
 export interface ControlEndpointIdentity {
@@ -43,10 +50,17 @@ export interface ControlServerOptions {
 	maxInFlightHandlers?: number;
 	now?: () => number;
 }
+interface PendingControlSocketHandlers {
+	onClose: () => void;
+	onError: () => void;
+}
 const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_CONNECTIONS = 32;
 const DEFAULT_MAX_HANDLERS = 16;
+type ClosableControlServer = net.Server & {
+	closeAllConnections?: () => void;
+};
 /** Node timer delays are limited to signed 32-bit milliseconds. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
@@ -63,26 +77,7 @@ export function controlEndpointFor(identity: ControlEndpointIdentity): string {
 function safeError(id: string, error: ControlErrorCode): ControlResponse {
 	return { version: CONTROL_PROTOCOL_VERSION, id, ok: false, error };
 }
-function withoutControlToken(request: ControlRequest): AuthenticatedControlRequest {
-	return request.data === undefined
-		? {
-				version: request.version,
-				id: request.id,
-				action: request.action,
-				generation: request.generation,
-			}
-		: {
-				version: request.version,
-				id: request.id,
-				action: request.action,
-				generation: request.generation,
-				data: request.data,
-			};
-}
 
-function safeId(value: unknown): string {
-	return typeof value === "string" && value.length > 0 && value.length <= 128 ? value : "0";
-}
 function isMissing(error: unknown): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
@@ -92,15 +87,6 @@ function asError(error: unknown, fallback: string): Error {
 function appendErrors(errors: Error[], error: unknown, fallback: string): void {
 	if (error instanceof AggregateError) errors.push(...error.errors.map(nested => asError(nested, fallback)));
 	else errors.push(asError(error, fallback));
-}
-
-function safeRequestIdFromFrame(frame: Uint8Array): string {
-	try {
-		const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame));
-		return typeof value === "object" && value !== null && "id" in value ? safeId(value.id) : "0";
-	} catch {
-		return "0";
-	}
 }
 
 function currentUid(): number | null {
@@ -126,6 +112,8 @@ export class LocalControlServer {
 	#identity: { dev: number; ino: number } | null = null;
 	#endpointBound = false;
 	#ready = false;
+	#starting = false;
+	#pendingSockets = new Map<net.Socket, PendingControlSocketHandlers>();
 	#sockets = new Set<net.Socket>();
 	#connections = 0;
 	#controllers = new Set<AbortController>();
@@ -194,18 +182,25 @@ export class LocalControlServer {
 				if (!isMissing(error)) throw error;
 			}
 		}
+		this.#starting = true;
 		const server = net.createServer({ allowHalfOpen: true }, socket => this.#onConnection(socket));
 		const listening = Promise.withResolvers<void>();
 		server.once("error", listening.reject);
 		server.listen({ path: this.endpoint }, () => {
 			server.removeListener("error", listening.reject);
-			// Windows has no post-bind filesystem hardening. Mark it ready before accepting connections.
-			if (process.platform === "win32") this.#ready = true;
+			// Windows has no post-bind filesystem hardening.
+			if (process.platform === "win32") {
+				this.#ready = true;
+				this.#starting = false;
+				this.#activatePendingSockets();
+			}
 			listening.resolve();
 		});
 		try {
 			await listening.promise;
 		} catch (error) {
+			this.#starting = false;
+			this.#destroyPendingSockets();
 			server.close();
 			throw error;
 		}
@@ -232,6 +227,8 @@ export class LocalControlServer {
 					throw new Error("control_endpoint_unsafe");
 			}
 			this.#ready = true;
+			this.#starting = false;
+			this.#activatePendingSockets();
 		} catch (error) {
 			const failures = [asError(error, "control_endpoint_hardening_failed")];
 			const observerError = this.#notifyFatalError(failures[0]);
@@ -265,15 +262,66 @@ export class LocalControlServer {
 			// Private diagnostic observers cannot affect the control transport.
 		}
 	}
+	#queuePendingSocket(socket: net.Socket): void {
+		const onClose = (): void => {
+			this.#pendingSockets.delete(socket);
+			socket.removeListener("error", onError);
+		};
+		const onError = (): void => {
+			this.#pendingSockets.delete(socket);
+			socket.removeListener("close", onClose);
+			socket.destroy();
+		};
+		this.#pendingSockets.set(socket, { onClose, onError });
+		socket.once("close", onClose);
+		socket.once("error", onError);
+		socket.pause();
+	}
+	#activatePendingSockets(): void {
+		const pending = [...this.#pendingSockets.entries()];
+		this.#pendingSockets.clear();
+		for (const [socket, { onClose, onError }] of pending) {
+			socket.removeListener("close", onClose);
+			socket.removeListener("error", onError);
+			if (socket.destroyed) continue;
+			this.#onConnection(socket);
+			if (this.#sockets.has(socket)) socket.resume();
+		}
+	}
+	#destroyPendingSockets(): void {
+		const pending = [...this.#pendingSockets.entries()];
+		this.#pendingSockets.clear();
+		for (const [socket, { onClose, onError }] of pending) {
+			if (socket.destroyed) {
+				socket.removeListener("close", onClose);
+				socket.removeListener("error", onError);
+				continue;
+			}
+			socket.destroy();
+		}
+	}
 	#onConnection(socket: net.Socket): void {
-		if (!this.#ready || this.#connections >= this.#maxConnections) {
+		if (!this.#ready) {
+			if (this.#starting && this.#connections + this.#pendingSockets.size < this.#maxConnections) {
+				this.#queuePendingSocket(socket);
+				return;
+			}
+			socket.destroy();
+			return;
+		}
+		if (this.#connections >= this.#maxConnections) {
 			socket.destroy();
 			return;
 		}
 		this.#connections += 1;
 		this.#sockets.add(socket);
-		const decoder = new ControlFrameDecoder(1, true);
-		let frame: Buffer | null = null;
+		const decoder = new ControlFrameDecoder(3, true);
+		let hello: ControlHello | null = null;
+		let helloFrame: Buffer | null = null;
+		let challengeFrame: Buffer | null = null;
+		let request: ControlRequestCandidate | null = null;
+		let requestFrame: Buffer | null = null;
+		let proofVerified = false;
 		let dispatched = false;
 		let responded = false;
 		let cleaned = false;
@@ -312,26 +360,57 @@ export class LocalControlServer {
 		socket.setTimeout(this.#idleTimeoutMs, () => socket.destroy());
 		socket.on("error", () => undefined);
 		socket.on("data", (chunk: Buffer) => {
-			if (dispatched || responded) {
+			if (dispatched) {
 				socket.destroy();
 				return;
 			}
+			if (responded) return;
 			try {
-				const frames = decoder.push(chunk);
-				if (frames.length === 1) {
-					if (frame) throw new ControlProtocolError("too_many_frames");
-					frame = frames[0];
+				for (const frame of decoder.push(chunk)) {
+					if (!hello) {
+						hello = decodeControlHelloFrame(frame);
+						helloFrame = controlFrameFromBody(frame);
+						const challenge = generateControlChallenge(this.#token, this.endpoint, this.#generation, hello);
+						challengeFrame = encodeControlFrame(challenge);
+						socket.write(challengeFrame);
+						continue;
+					}
+					if (!requestFrame) {
+						requestFrame = controlFrameFromBody(frame);
+						try {
+							responseId = decodeControlRequestCandidateEnvelopeFrame(frame).id;
+						} catch {
+							// Untrusted request identities remain "0" until a proven frame is fully validated.
+						}
+						continue;
+					}
+					if (!helloFrame || !challengeFrame || proofVerified) throw new ControlProtocolError("too_many_frames");
+					const proof = decodeControlProofFrame(frame);
+					if (!verifyControlProof(this.#token, helloFrame, challengeFrame, requestFrame, proof)) {
+						respondOnce(safeError(responseId, "unauthorized"));
+						return;
+					}
+					proofVerified = true;
 				}
-				if (frame && decoder.ended) {
+				if (decoder.ended) {
+					if (!hello || !requestFrame || !proofVerified) throw new ControlProtocolError("bad_frame");
+					try {
+						request = decodeControlRequestCandidateFrame(requestFrame.subarray(4));
+					} catch {
+						respondOnce(safeError(responseId, "bad_request"));
+						return;
+					}
+					if (request.generation !== this.#generation) {
+						respondOnce(safeError(responseId, "generation_mismatch"));
+						return;
+					}
 					dispatched = true;
-					void this.#dispatch(frame, deadline, controller, respondOnce, id => {
-						responseId = id;
-					});
+					void this.#dispatch(authenticateControlRequest(request), deadline, controller, respondOnce);
 				}
 			} catch (error) {
 				respondOnce(
 					safeError(
-						"0",
+						responseId,
 						error instanceof ControlProtocolError && error.code === "too_many_frames"
 							? "too_many_frames"
 							: "bad_frame",
@@ -341,34 +420,17 @@ export class LocalControlServer {
 		});
 		socket.once("end", () => {
 			if (dispatched || responded || socket.destroyed) return;
-			respondOnce(safeError("0", "bad_frame"));
+			respondOnce(safeError(responseId, "bad_frame"));
 		});
 	}
 	async #dispatch(
-		frame: Buffer,
+		request: AuthenticatedControlRequest,
 		deadline: number,
 		controller: AbortController,
 		respond: (response: ControlResponse) => void,
-		setResponseId: (id: string) => void,
 	): Promise<void> {
-		let request: ControlRequest;
-		try {
-			request = decodeControlRequestFrame(frame);
-		} catch {
-			respond(safeError(safeRequestIdFromFrame(frame), "bad_request"));
-			return;
-		}
-		setResponseId(request.id);
-		if (!verifyControlToken(this.#token, request.token)) {
-			respond(safeError(safeId(request.id), "unauthorized"));
-			return;
-		}
-		if (request.generation !== this.#generation) {
-			respond(safeError(safeId(request.id), "generation_mismatch"));
-			return;
-		}
 		if (this.#now() >= deadline || controller.signal.aborted) {
-			respond(safeError(safeId(request.id), "timeout"));
+			respond(safeError(request.id, "timeout"));
 			return;
 		}
 		if (this.#handlers >= this.#maxHandlers) {
@@ -379,7 +441,7 @@ export class LocalControlServer {
 		try {
 			let handlerResult: ControlJson;
 			try {
-				handlerResult = await this.#handler(withoutControlToken(request), {
+				handlerResult = await this.#handler(request, {
 					signal: controller.signal,
 					deadline,
 				});
@@ -405,13 +467,15 @@ export class LocalControlServer {
 				return;
 			}
 			if (this.#now() >= deadline || controller.signal.aborted) respond(safeError(request.id, "timeout"));
-			else respond({ version: 1, id: request.id, ok: true, result });
+			else respond({ version: CONTROL_PROTOCOL_VERSION, id: request.id, ok: true, result });
 		} finally {
 			this.#handlers -= 1;
 		}
 	}
 	async #close(): Promise<void> {
 		this.#ready = false;
+		this.#starting = false;
+		this.#destroyPendingSockets();
 		const server = this.#server;
 		let cleanupIdentity = this.#identity;
 		const endpointBound = this.#endpointBound;
@@ -423,6 +487,8 @@ export class LocalControlServer {
 			try {
 				const closed = Promise.withResolvers<void>();
 				server.close(error => (error ? closed.reject(error) : closed.resolve()));
+				const closeAllConnections = (server as ClosableControlServer).closeAllConnections;
+				if (typeof closeAllConnections === "function") closeAllConnections.call(server);
 				await closed.promise;
 			} catch (error) {
 				failures.push(asError(error, "control_server_close_failed"));

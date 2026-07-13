@@ -1,24 +1,37 @@
 import { describe, expect, it } from "bun:test";
 import {
+	CONTROL_NONCE_BYTES,
 	CONTROL_PROTOCOL_VERSION,
 	CONTROL_REQUEST_END_MARKER,
 	ControlFrameDecoder,
+	type ControlHello,
 	ControlProtocolError,
 	type ControlRequest,
 	controlTokenFingerprint,
-	decodeControlRequestFrame,
+	createControlProof,
+	decodeControlChallengeFrame,
+	decodeControlHelloFrame,
+	decodeControlProofFrame,
+	decodeControlRequestCandidateEnvelopeFrame,
+	decodeControlRequestCandidateFrame,
 	decodeControlWriteRequest,
 	decodeSingleControlRequest,
 	encodeControlFrame,
+	generateControlChallenge,
 	generateControlToken,
+	MAX_CONTROL_ENDPOINT_LENGTH,
 	MAX_CONTROL_FRAME_BYTES,
 	MAX_CONTROL_REQUEST_ID_LENGTH,
 	MAX_CONTROL_STREAM_BYTES,
 	MAX_CONTROL_TERMINAL_DIMENSION,
 	MAX_CONTROL_WRITE_BYTES,
 	parseControlRequest,
+	parseControlRequestCandidate,
 	parseControlResponse,
+	verifyControlChallenge,
+	verifyControlProof,
 	verifyControlToken,
+	withoutControlToken,
 } from "./control-protocol";
 
 const request: ControlRequest = {
@@ -35,6 +48,11 @@ function encodeRawFrame(body: Uint8Array): Buffer {
 	frame.set(body, 4);
 	return frame;
 }
+function encodeRawControlRequest(value: unknown): Buffer {
+	const serialized = JSON.stringify(value);
+	if (typeof serialized !== "string") throw new Error("invalid_raw_control_request");
+	return encodeRawFrame(Buffer.from(serialized, "utf8"));
+}
 
 function expectControlProtocolError(callback: () => unknown, code: ControlProtocolError["code"]): void {
 	try {
@@ -48,15 +66,108 @@ function expectControlProtocolError(callback: () => unknown, code: ControlProtoc
 }
 
 describe("visible session control protocol", () => {
-	it("decodes split and coalesced frames", () => {
-		const encoded = encodeControlFrame(request);
+	it("decodes split and coalesced token-free request frames", () => {
+		const candidate = withoutControlToken(request);
+		const encoded = encodeControlFrame(candidate);
 		const decoder = new ControlFrameDecoder();
 		expect(decoder.push(encoded.subarray(0, 3))).toEqual([]);
-		expect(decodeControlRequestFrame(decoder.push(encoded.subarray(3))[0])).toEqual(request);
-		const second = { ...request, id: "request-2" };
+		expect(decodeControlRequestCandidateFrame(decoder.push(encoded.subarray(3))[0])).toEqual(candidate);
+		const second = { ...candidate, id: "request-2" };
 		const combined = Buffer.concat([encoded, encodeControlFrame(second)]);
-		const joined = new ControlFrameDecoder().push(combined);
-		expect(joined).toHaveLength(2);
+		expect(new ControlFrameDecoder().push(combined)).toHaveLength(2);
+		expect(() => encodeControlFrame(request)).toThrow(ControlProtocolError);
+	});
+	it("retains a structural request identity until action data is authenticated and validated", () => {
+		const structural = {
+			...withoutControlToken(request),
+			action: "resize" as const,
+			data: { columns: MAX_CONTROL_TERMINAL_DIMENSION + 1, rows: 1 },
+		};
+		const frame = encodeRawControlRequest(structural);
+		expect(decodeControlRequestCandidateEnvelopeFrame(frame.subarray(4))).toEqual(structural);
+		expectControlProtocolError(() => decodeControlRequestCandidateFrame(frame.subarray(4)), "bad_request");
+	});
+	it("authenticates the bounded mutual transcript without serializing tokens", () => {
+		const endpoint = "\\\\.\\pipe\\gjc-visible-control-v2-example";
+		const hello: ControlHello = {
+			version: CONTROL_PROTOCOL_VERSION,
+			type: "hello" as const,
+			nonce: "1".repeat(CONTROL_NONCE_BYTES * 2),
+		};
+		const helloFrame = encodeControlFrame(hello);
+		const challenge = generateControlChallenge(request.token, endpoint, request.generation, hello);
+		const challengeFrame = encodeControlFrame(challenge);
+		const candidate = withoutControlToken(request);
+		const requestFrame = encodeControlFrame(candidate);
+		const proof = createControlProof(request.token, helloFrame, challengeFrame, requestFrame);
+		const serialized = Buffer.concat([helloFrame, challengeFrame, requestFrame, encodeControlFrame(proof)]).toString(
+			"utf8",
+		);
+
+		expect(serialized).not.toContain(request.token);
+		expect(decodeControlHelloFrame(helloFrame.subarray(4))).toEqual(hello);
+		expect(decodeControlRequestCandidateFrame(requestFrame.subarray(4))).toEqual(candidate);
+		expect(decodeControlChallengeFrame(challengeFrame.subarray(4))).toEqual(challenge);
+		expect(decodeControlProofFrame(encodeControlFrame(proof).subarray(4))).toEqual(proof);
+		expect(verifyControlChallenge(request.token, endpoint, request.generation, hello, challenge)).toBe(true);
+		expect(verifyControlProof(request.token, helloFrame, challengeFrame, requestFrame, proof)).toBe(true);
+
+		const replayHello = encodeControlFrame({
+			...hello,
+			nonce: Buffer.alloc(CONTROL_NONCE_BYTES, 2).toString("hex"),
+		});
+		const reorderedRequest = encodeRawFrame(
+			Buffer.from(
+				JSON.stringify({
+					version: candidate.version,
+					generation: candidate.generation,
+					id: candidate.id,
+					action: candidate.action,
+					data: candidate.data,
+				}),
+				"utf8",
+			),
+		);
+		expect(verifyControlChallenge("b".repeat(64), endpoint, request.generation, hello, challenge)).toBe(false);
+		expect(
+			verifyControlChallenge(request.token, endpoint, request.generation, hello, {
+				...challenge,
+				proof: "b".repeat(64),
+			}),
+		).toBe(false);
+		expect(verifyControlChallenge(request.token, endpoint, "generation-2", hello, challenge)).toBe(false);
+		expect(verifyControlProof(request.token, replayHello, challengeFrame, requestFrame, proof)).toBe(false);
+		expect(verifyControlProof(request.token, helloFrame, challengeFrame, reorderedRequest, proof)).toBe(false);
+		expect(verifyControlProof(request.token, helloFrame, requestFrame, challengeFrame, proof)).toBe(false);
+		expect(
+			verifyControlProof(request.token, helloFrame, challengeFrame, requestFrame, {
+				...proof,
+				proof: "b".repeat(64),
+			}),
+		).toBe(false);
+		expectControlProtocolError(
+			() => parseControlRequestCandidate({ ...candidate, token: request.token }),
+			"bad_request",
+		);
+		expectControlProtocolError(
+			() =>
+				decodeControlChallengeFrame(
+					encodeRawFrame(Buffer.from(JSON.stringify({ ...challenge, nonce: "a".repeat(63) }))).subarray(4),
+				),
+			"bad_frame",
+		);
+		expectControlProtocolError(
+			() =>
+				decodeControlChallengeFrame(
+					encodeRawFrame(
+						Buffer.from(
+							JSON.stringify({ ...challenge, endpoint: "x".repeat(MAX_CONTROL_ENDPOINT_LENGTH + 1) }),
+							"utf8",
+						),
+					).subarray(4),
+				),
+			"bad_frame",
+		);
 	});
 
 	it("rejects hostile sizes, malformed UTF-8, unknown fields, and extra frames", () => {
@@ -67,16 +178,18 @@ describe("visible session control protocol", () => {
 		const malformed = Buffer.from([0, 0, 0, 1, 0xff]);
 		expect(() => decodeSingleControlRequest(malformed)).toThrow(ControlProtocolError);
 		expect(() => decodeSingleControlRequest(Buffer.alloc(4))).toThrow(ControlProtocolError);
-		expect(() =>
-			decodeSingleControlRequest(encodeControlFrame({ ...request, version: 2 } as unknown as ControlRequest)),
-		).toThrow(ControlProtocolError);
-		expect(() =>
-			decodeSingleControlRequest(encodeControlFrame({ ...request, action: "unknown" } as unknown as ControlRequest)),
-		).toThrow(ControlProtocolError);
-		const unknown = encodeControlFrame({ ...request, unexpected: true } as unknown as ControlRequest);
+		expect(() => decodeSingleControlRequest(encodeRawControlRequest({ ...request, version: 1 }))).toThrow(
+			ControlProtocolError,
+		);
+		expect(() => decodeSingleControlRequest(encodeRawControlRequest({ ...request, action: "unknown" }))).toThrow(
+			ControlProtocolError,
+		);
+		const unknown = encodeRawControlRequest({ ...request, unexpected: true });
 		expect(() => decodeSingleControlRequest(unknown)).toThrow(ControlProtocolError);
 		expect(() =>
-			decodeSingleControlRequest(Buffer.concat([encodeControlFrame(request), encodeControlFrame(request)])),
+			decodeSingleControlRequest(
+				Buffer.concat([encodeRawControlRequest(request), encodeRawControlRequest(request)]),
+			),
 		).toThrow(ControlProtocolError);
 	});
 	it("rejects non-object and invalid JSON request frames", () => {
@@ -114,7 +227,7 @@ describe("visible session control protocol", () => {
 				const invalid: Record<string, unknown> = { ...request, [field]: value };
 				if (value === undefined) delete invalid[field];
 				expectControlProtocolError(
-					() => decodeSingleControlRequest(encodeControlFrame(invalid as unknown as ControlRequest)),
+					() => decodeSingleControlRequest(encodeRawControlRequest(invalid)),
 					"bad_request",
 				);
 			}
@@ -129,26 +242,23 @@ describe("visible session control protocol", () => {
 				generation: request.generation,
 				token: request.token,
 			};
-			expect(decodeSingleControlRequest(encodeControlFrame(noDataRequest))).toEqual(noDataRequest);
+			expect(decodeSingleControlRequest(encodeRawControlRequest(noDataRequest))).toEqual(noDataRequest);
 			for (const data of [null, {}, { unexpected: true }, "unexpected"]) {
 				expectControlProtocolError(
-					() =>
-						decodeSingleControlRequest(
-							encodeControlFrame({ ...noDataRequest, data } as unknown as ControlRequest),
-						),
+					() => decodeSingleControlRequest(encodeRawControlRequest({ ...noDataRequest, data })),
 					"bad_request",
 				);
 			}
 		}
 	});
 	it("accepts legacy UTF-8 write text and canonical base64 bytes exactly", () => {
-		const legacy = decodeSingleControlRequest(encodeControlFrame(request));
+		const legacy = decodeSingleControlRequest(encodeRawControlRequest(request));
 		expect(decodeControlWriteRequest(legacy)).toEqual(new TextEncoder().encode("in memory only"));
 
 		const raw = Uint8Array.from([0, 0xff, 0x80, 0x0a, 0x1b]);
 		const encoded = Buffer.from(raw).toString("base64");
 		const parsed = decodeSingleControlRequest(
-			encodeControlFrame({ ...request, data: { encoding: "base64", bytes: encoded } }),
+			encodeRawControlRequest({ ...request, data: { encoding: "base64", bytes: encoded } }),
 		);
 		expect(parsed.data).toEqual({ encoding: "base64", bytes: encoded });
 		expect(decodeControlWriteRequest(parsed)).toEqual(raw);
@@ -162,23 +272,25 @@ describe("visible session control protocol", () => {
 			{ encoding: "base64", bytes: "AA==", unexpected: true },
 		];
 		for (const data of invalid) {
-			expect(() =>
-				decodeSingleControlRequest(encodeControlFrame({ ...request, data } as unknown as ControlRequest)),
-			).toThrow(ControlProtocolError);
+			expect(() => decodeSingleControlRequest(encodeRawControlRequest({ ...request, data }))).toThrow(
+				ControlProtocolError,
+			);
 		}
 		const oversized = Buffer.alloc(MAX_CONTROL_WRITE_BYTES + 1).toString("base64");
 		expect(() =>
-			decodeSingleControlRequest(encodeControlFrame({ ...request, data: { encoding: "base64", bytes: oversized } })),
+			decodeSingleControlRequest(
+				encodeRawControlRequest({ ...request, data: { encoding: "base64", bytes: oversized } }),
+			),
 		).toThrow(ControlProtocolError);
 		const exactMultibyte = "😀".repeat(Math.floor(MAX_CONTROL_WRITE_BYTES / 4));
 		expect(new TextEncoder().encode(exactMultibyte)).toHaveLength(MAX_CONTROL_WRITE_BYTES);
 		expect(
-			decodeSingleControlRequest(encodeControlFrame({ ...request, data: { text: exactMultibyte } })),
+			decodeSingleControlRequest(encodeRawControlRequest({ ...request, data: { text: exactMultibyte } })),
 		).toMatchObject({ data: { text: exactMultibyte } });
 		const oversizedMultibyte = `${exactMultibyte}😀`;
 		expect(new TextEncoder().encode(oversizedMultibyte)).toHaveLength(MAX_CONTROL_WRITE_BYTES + 4);
 		expect(() =>
-			decodeSingleControlRequest(encodeControlFrame({ ...request, data: { text: oversizedMultibyte } })),
+			decodeSingleControlRequest(encodeRawControlRequest({ ...request, data: { text: oversizedMultibyte } })),
 		).toThrow(ControlProtocolError);
 		expect(() => decodeControlWriteRequest({ ...request, action: "status" })).toThrow(ControlProtocolError);
 	});
@@ -196,7 +308,7 @@ describe("visible session control protocol", () => {
 				Math.floor((MAX_CONTROL_FRAME_BYTES - Buffer.byteLength(JSON.stringify(envelope), "utf8")) / 6),
 			);
 			const parsed = parseControlRequest({ ...envelope, data: { text } });
-			const frame = encodeControlFrame(parsed);
+			const frame = encodeRawControlRequest(parsed);
 			expect(frame.byteLength).toBeGreaterThan(MAX_CONTROL_FRAME_BYTES + 4 - 6);
 			expect(frame.byteLength).toBeLessThanOrEqual(MAX_CONTROL_FRAME_BYTES + 4);
 			expect(decodeSingleControlRequest(frame)).toEqual(parsed);
@@ -227,7 +339,7 @@ describe("visible session control protocol", () => {
 		const inheritedTokenRequest = Object.assign(Object.create({ token }), ownRequest);
 		expectControlProtocolError(() => parseControlRequest(inheritedTokenRequest), "bad_request");
 
-		const accessorResponse: Record<string, unknown> = { version: 1, id: "response", ok: true };
+		const accessorResponse: Record<string, unknown> = { version: CONTROL_PROTOCOL_VERSION, id: "response", ok: true };
 		Object.defineProperty(accessorResponse, "result", {
 			enumerable: true,
 			get: () => null,
@@ -236,11 +348,11 @@ describe("visible session control protocol", () => {
 	});
 	it("returns hardened snapshots that survive source mutation", () => {
 		const result: { nested: { value: unknown } } = { nested: { value: "before" } };
-		const parsed = parseControlResponse({ version: 1, id: "response", ok: true, result });
+		const parsed = parseControlResponse({ version: CONTROL_PROTOCOL_VERSION, id: "response", ok: true, result });
 		result.nested.value = () => undefined;
 
 		expect(parsed).toEqual({
-			version: 1,
+			version: CONTROL_PROTOCOL_VERSION,
 			id: "response",
 			ok: true,
 			result: { nested: { value: "before" } },
@@ -256,9 +368,9 @@ describe("visible session control protocol", () => {
 			action: "stream",
 			data: { cursor: null, maxBytes: MAX_CONTROL_STREAM_BYTES },
 		};
-		expect(decodeSingleControlRequest(encodeControlFrame(streamRequest))).toEqual(streamRequest);
+		expect(decodeSingleControlRequest(encodeRawControlRequest(streamRequest))).toEqual(streamRequest);
 		expect(
-			decodeSingleControlRequest(encodeControlFrame({ ...streamRequest, data: { cursor: 0, maxBytes: 1 } })),
+			decodeSingleControlRequest(encodeRawControlRequest({ ...streamRequest, data: { cursor: 0, maxBytes: 1 } })),
 		).toMatchObject({ data: { cursor: 0, maxBytes: 1 } });
 
 		const invalid = [
@@ -271,14 +383,14 @@ describe("visible session control protocol", () => {
 			{ cursor: null, maxBytes: 1, unexpected: true },
 		];
 		for (const data of invalid) {
-			expect(() =>
-				decodeSingleControlRequest(encodeControlFrame({ ...streamRequest, data } as unknown as ControlRequest)),
-			).toThrow(ControlProtocolError);
+			expect(() => decodeSingleControlRequest(encodeRawControlRequest({ ...streamRequest, data }))).toThrow(
+				ControlProtocolError,
+			);
 		}
 	});
 	it("bounds resize dimensions to safe terminal sizes", () => {
 		const resize = { ...request, action: "resize" as const, data: { columns: 1, rows: 1 } };
-		expect(decodeSingleControlRequest(encodeControlFrame(resize))).toEqual(resize);
+		expect(decodeSingleControlRequest(encodeRawControlRequest(resize))).toEqual(resize);
 		for (const data of [
 			{ columns: 0, rows: 1 },
 			{ columns: 1, rows: 0 },
@@ -287,9 +399,9 @@ describe("visible session control protocol", () => {
 			{ columns: MAX_CONTROL_TERMINAL_DIMENSION + 1, rows: 1 },
 			{ columns: 1, rows: MAX_CONTROL_TERMINAL_DIMENSION + 1 },
 		])
-			expect(() =>
-				decodeSingleControlRequest(encodeControlFrame({ ...resize, data } as unknown as ControlRequest)),
-			).toThrow(ControlProtocolError);
+			expect(() => decodeSingleControlRequest(encodeRawControlRequest({ ...resize, data }))).toThrow(
+				ControlProtocolError,
+			);
 	});
 
 	it("enforces the exact frame limit", () => {
@@ -302,11 +414,14 @@ describe("visible session control protocol", () => {
 	});
 	it("rejects a second frame delivered after the first frame", () => {
 		const decoder = new ControlFrameDecoder(1);
-		expect(decoder.push(encodeControlFrame(request))).toHaveLength(1);
-		expect(() => decoder.push(encodeControlFrame({ ...request, id: "request-2" }))).toThrow(ControlProtocolError);
+		const frame = encodeControlFrame(withoutControlToken(request));
+		expect(decoder.push(frame)).toHaveLength(1);
+		expect(() => decoder.push(encodeControlFrame({ ...withoutControlToken(request), id: "request-2" }))).toThrow(
+			ControlProtocolError,
+		);
 	});
 	it("fails closed while finalizing partial frames and end-marker-delimited requests", () => {
-		const frame = encodeControlFrame(request);
+		const frame = encodeControlFrame(withoutControlToken(request));
 		const missingMarker = new ControlFrameDecoder(1, true);
 		expect(missingMarker.push(frame)).toHaveLength(1);
 		expectControlProtocolError(() => missingMarker.finish(), "bad_frame");

@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import * as net from "node:net";
 import {
+	type AuthenticatedControlRequest,
 	CONTROL_PROTOCOL_VERSION,
 	CONTROL_REQUEST_END_MARKER,
 	type ControlAction,
@@ -10,11 +11,18 @@ import {
 	type ControlRequest,
 	type ControlResponse,
 	type ControlSuccessResponse,
+	controlFrameFromBody,
+	createControlProof,
+	decodeControlChallengeFrame,
 	decodeControlResponseFrame,
 	encodeControlFrame,
+	generateControlHello,
 	MAX_CONTROL_STREAM_BYTES,
 	MAX_CONTROL_TERMINAL_DIMENSION,
 	MAX_CONTROL_WRITE_BYTES,
+	parseControlRequestEnvelope,
+	verifyControlChallenge,
+	withoutControlToken,
 } from "./control-protocol";
 
 export class ControlClientError extends Error {
@@ -49,7 +57,6 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const STREAM_RESULT_KEYS = ["startCursor", "endCursor", "bytes", "truncated", "running"] as const;
 const PRE_CONNECT_RETRY_MS = 25;
-const MAX_PRE_CONNECT_RETRIES = 3;
 const TRANSIENT_PRE_CONNECT_CODES = new Set(["ECONNREFUSED", "ENOENT", "EAGAIN", "EINTR"]);
 /** Node timer delays are limited to signed 32-bit milliseconds. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -112,15 +119,32 @@ export function sendControlRequest(
 ): Promise<ControlResponse> {
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMER_DELAY_MS)
 		throw new Error("invalid_control_client_timeout");
-	const encoded = encodeControlFrame(request);
+	let parsedRequest: ControlRequest;
+	let authenticatedRequest: AuthenticatedControlRequest;
+	try {
+		parsedRequest = parseControlRequestEnvelope(request);
+		authenticatedRequest = withoutControlToken(parsedRequest);
+	} catch {
+		return Promise.resolve({
+			version: CONTROL_PROTOCOL_VERSION,
+			id: "0",
+			ok: false,
+			error: "bad_request",
+		});
+	}
+	const encodedRequest = encodeControlFrame(authenticatedRequest);
 	const deadline = Date.now() + timeoutMs;
 	const sendAttempt = (remainingMs: number): Promise<ControlResponse> => {
 		const deferred = Promise.withResolvers<ControlResponse>();
+		const hello = generateControlHello();
+		const encodedHello = encodeControlFrame(hello);
 		const socket = net.createConnection({ path: endpoint });
-		const decoder = new ControlFrameDecoder(1);
+		const decoder = new ControlFrameDecoder(2);
 		let response: ControlResponse | null = null;
+		let serverAuthenticated = false;
 		let settled = false;
 		let connected = false;
+		let helloSent = false;
 		const finish = (callback: () => void): void => {
 			if (settled) return;
 			settled = true;
@@ -131,17 +155,41 @@ export function sendControlRequest(
 		const timer = setTimeout(() => finish(() => deferred.reject(new ControlClientError("timeout"))), remainingMs);
 		socket.once("connect", () => {
 			connected = true;
-			const message = Buffer.concat([encoded, CONTROL_REQUEST_END_MARKER]);
-			// The explicit marker completes request framing without depending on half-close behavior.
-			socket.write(message);
+			helloSent = true;
+			socket.write(encodedHello);
 		});
 		socket.on("data", (chunk: Buffer) => {
 			if (settled) return;
 			try {
-				const [frame] = decoder.push(chunk);
-				if (!frame) return;
-				if (response) throw new ControlClientError("bad_response");
-				response = decodeControlResponseFrame(frame);
+				for (const frame of decoder.push(chunk)) {
+					if (!serverAuthenticated) {
+						const challenge = decodeControlChallengeFrame(frame);
+						if (
+							!verifyControlChallenge(
+								parsedRequest.token,
+								endpoint,
+								authenticatedRequest.generation,
+								hello,
+								challenge,
+							)
+						)
+							throw new ControlClientError("bad_response");
+						const proof = createControlProof(
+							parsedRequest.token,
+							encodedHello,
+							controlFrameFromBody(frame),
+							encodedRequest,
+						);
+						serverAuthenticated = true;
+						socket.write(encodedRequest);
+						socket.write(encodeControlFrame(proof));
+						// The explicit marker completes proof framing without depending on half-close behavior.
+						socket.write(CONTROL_REQUEST_END_MARKER);
+						continue;
+					}
+					if (response) throw new ControlClientError("bad_response");
+					response = decodeControlResponseFrame(frame);
+				}
 			} catch {
 				finish(() => deferred.reject(new ControlClientError("bad_response")));
 			}
@@ -152,7 +200,7 @@ export function sendControlRequest(
 				decoder.finish();
 				const received = response;
 				if (!received) throw new ControlClientError("bad_response");
-				if (received.id !== request.id) throw new ControlClientError("request_id_mismatch");
+				if (received.id !== authenticatedRequest.id) throw new ControlClientError("request_id_mismatch");
 				finish(() => deferred.resolve(received));
 			} catch (error) {
 				finish(() =>
@@ -163,7 +211,8 @@ export function sendControlRequest(
 		socket.once("end", () => socket.end());
 		socket.once("close", finalizeResponse);
 		socket.once("error", error => {
-			const transient = !connected && TRANSIENT_PRE_CONNECT_CODES.has((error as NodeJS.ErrnoException).code ?? "");
+			const transient =
+				!connected && !helloSent && TRANSIENT_PRE_CONNECT_CODES.has((error as NodeJS.ErrnoException).code ?? "");
 			finish(() =>
 				deferred.reject(
 					transient
@@ -175,13 +224,13 @@ export function sendControlRequest(
 		return deferred.promise;
 	};
 	return (async () => {
-		for (let attempt = 0; ; attempt += 1) {
+		for (;;) {
 			const remainingMs = deadline - Date.now();
 			if (remainingMs <= 0) throw new ControlClientError("timeout");
 			try {
 				return await sendAttempt(remainingMs);
 			} catch (error) {
-				if (!isTransientPreConnectError(error) || attempt >= MAX_PRE_CONNECT_RETRIES) throw error;
+				if (!isTransientPreConnectError(error)) throw error;
 				const retryDelay = Math.min(PRE_CONNECT_RETRY_MS, deadline - Date.now());
 				if (retryDelay <= 0) throw new ControlClientError("timeout");
 				await Bun.sleep(retryDelay);
