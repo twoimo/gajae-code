@@ -260,8 +260,8 @@ test("SDK host replays event frames over direct v3 ingress and routes queries th
 		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
 	});
 	const sessionContext = context(cwd, sessionId);
-	void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
-	void handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
+	await handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+	await handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
 	socket.send(JSON.stringify({ type: "event_replay", id: "replay-1", sinceGeneration: 1, sinceSeq: 0 }));
 	await waitFor(
 		() => frames.some(frame => frame.type === "event_replay_result" && frame.id === "replay-1"),
