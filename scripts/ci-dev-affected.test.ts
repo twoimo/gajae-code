@@ -463,6 +463,74 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(decodeChangedPaths(encodeChangedPaths(result.paths))).toEqual(result.paths);
 	});
 
+	test("real CLI fallback executes after module initialization for unrelated histories", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-unrelated-history-"));
+		tempDirs.push(tempDir);
+
+		const runGit = async (args: readonly string[]): Promise<string> => {
+			const proc = Bun.spawn(["git", ...args], {
+				cwd: tempDir,
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "GJC Test",
+					GIT_AUTHOR_EMAIL: "gjc-test@example.invalid",
+					GIT_COMMITTER_NAME: "GJC Test",
+					GIT_COMMITTER_EMAIL: "gjc-test@example.invalid",
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			if (exitCode !== 0) {
+				throw new Error(`git ${args.join(" ")} failed (${exitCode}): ${stderr}`);
+			}
+			return stdout.trim();
+		};
+
+		await runGit(["init"]);
+		await Bun.write(path.join(tempDir, "base-only.txt"), "base\n");
+		await runGit(["add", "base-only.txt"]);
+		await runGit(["commit", "-m", "base"]);
+		const base = await runGit(["rev-parse", "HEAD"]);
+
+		await runGit(["checkout", "--orphan", "ci-head"]);
+		await runGit(["rm", "-rf", "."]);
+		await fs.mkdir(path.join(tempDir, "scripts"), { recursive: true });
+		await fs.copyFile(scriptPath, path.join(tempDir, "scripts", "ci-dev-affected.ts"));
+		await Bun.write(path.join(tempDir, "package.json"), `${JSON.stringify({ workspaces: [] })}\n`);
+		await runGit(["add", "package.json", "scripts/ci-dev-affected.ts"]);
+		await runGit(["commit", "-m", "head"]);
+		const head = await runGit(["rev-parse", "HEAD"]);
+
+		const proc = Bun.spawn(["bun", path.join(tempDir, "scripts", "ci-dev-affected.ts"), "--dry-run"], {
+			cwd: tempDir,
+			env: {
+				...process.env,
+				GITHUB_EVENT_NAME: "pull_request",
+				GITHUB_BASE_SHA: base,
+				GITHUB_SHA: head,
+				CI_DEV_CHANGED_PATHS: "",
+				CI_DEV_CHANGED_PATHS_JSON_BASE64: "",
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(stderr).toContain("ci-dev-affected: no merge base; using conservative two-tree changed-path diff.");
+		expect(stderr).not.toContain("ReferenceError");
+		expect(stdout).toContain("scripts/ci-dev-affected.ts");
+	});
+
 	test("fails closed for git failures other than no merge base", async () => {
 		const calls: string[] = [];
 		await expect(

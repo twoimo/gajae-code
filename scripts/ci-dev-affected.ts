@@ -125,9 +125,6 @@ async function main(): Promise<void> {
 	}
 }
 
-if (import.meta.main) {
-	await main();
-}
 
 // CI runs in one of two planning modes:
 //   - "pr": pull_request runs get a fast, narrowly targeted plan (run only the
@@ -1088,4 +1085,8 @@ export async function runCommand(command: readonly string[], cwd: string): Promi
 		stderr: "inherit",
 	});
 	return proc.exited;
+}
+
+if (import.meta.main) {
+	await main();
 }
