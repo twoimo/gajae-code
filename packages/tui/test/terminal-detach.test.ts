@@ -7,6 +7,9 @@ import {
 } from "@gajae-code/tui";
 import { ProcessTerminal, type Terminal, type TerminalAppearance } from "@gajae-code/tui/terminal";
 import { type Component, CURSOR_MARKER, TUI } from "@gajae-code/tui/tui";
+// Bun gives this query-qualified URL a second ESM module record.
+// @ts-expect-error TypeScript does not model Bun's query-qualified source URLs.
+import * as duplicateRawTerminalLease from "../src/raw-terminal-lease.ts?duplicate-module";
 
 class StaticComponent implements Component {
 	#line: string;
@@ -126,45 +129,57 @@ async function settle(): Promise<void> {
 	await new Promise<void>(resolve => process.nextTick(resolve));
 	await Bun.sleep(25);
 }
+type ReadableFlowingState = boolean | null | undefined;
+
+interface RawStdinOptions {
+	restoreReadableFlowing?: boolean;
+	beforeSetRawMode?: (mode: boolean) => void;
+}
+
 function createRawStdin(
 	raw: boolean,
-	flowing: boolean | null,
+	flowing: ReadableFlowingState,
 	paused: boolean,
+	options: RawStdinOptions = {},
 ): {
 	stdin: RawTerminalStdin;
-	state: { raw: boolean; flowing: boolean | null; paused: boolean };
+	state: { raw: boolean; flowing: ReadableFlowingState; paused: boolean };
 	calls: string[];
 } {
 	const state = { raw, flowing, paused };
 	const calls: string[] = [];
-	return {
-		stdin: {
-			isTTY: true,
-			get isRaw(): boolean {
-				return state.raw;
-			},
-			setRawMode: (mode: boolean): void => {
-				calls.push(`raw:${mode}`);
-				state.raw = mode;
-			},
-			isPaused: (): boolean => state.paused,
-			get readableFlowing(): boolean | null {
-				return state.flowing;
-			},
-			pause: (): void => {
-				calls.push("pause");
-				state.flowing = false;
-				state.paused = true;
-			},
-			resume: (): void => {
-				calls.push("resume");
-				state.flowing = true;
-				state.paused = false;
-			},
+	const stdin: RawTerminalStdin = {
+		isTTY: true,
+		get isRaw(): boolean {
+			return state.raw;
 		},
-		state,
-		calls,
+		setRawMode: (mode: boolean): void => {
+			options.beforeSetRawMode?.(mode);
+			calls.push(`raw:${mode}`);
+			state.raw = mode;
+		},
+		get readableFlowing(): ReadableFlowingState {
+			return state.flowing;
+		},
+		pause: (): void => {
+			calls.push("pause");
+			state.flowing = false;
+			state.paused = true;
+		},
+		resume: (): void => {
+			calls.push("resume");
+			state.flowing = true;
+			state.paused = false;
+		},
 	};
+	if (options.restoreReadableFlowing) {
+		stdin.restoreReadableFlowing = (stateToRestore: null | undefined): void => {
+			calls.push(`restore-flow:${String(stateToRestore)}`);
+			state.flowing = stateToRestore;
+			state.paused = paused;
+		};
+	}
+	return { stdin, state, calls };
 }
 
 function withStdoutProperty<T>(
@@ -318,16 +333,101 @@ describe("terminal detach handling", () => {
 });
 
 describe("raw terminal lease", () => {
-	it("restores the exact raw and flow state only once", () => {
-		const { stdin, state, calls } = createRawStdin(false, false, true);
-		const lease = createRawTerminalLease({ stdin, platform: "linux" });
+	it("restores boolean flow snapshots and closes idempotently", () => {
+		const cases = [
+			{ flowing: true, paused: false, calls: ["raw:true", "resume", "resume", "raw:false"] },
+			{ flowing: false, paused: true, calls: ["raw:true", "resume", "pause", "raw:false"] },
+		] as const;
+		for (const testCase of cases) {
+			const { stdin, state, calls } = createRawStdin(false, testCase.flowing, testCase.paused);
+			const lease = createRawTerminalLease({ stdin, platform: "linux" });
 
-		expect(state).toEqual({ raw: true, flowing: true, paused: false });
-		lease.close();
-		lease.close();
+			expect(state).toEqual({ raw: true, flowing: true, paused: false });
+			lease.close();
+			lease.close();
 
+			expect(state).toEqual({ raw: false, flowing: testCase.flowing, paused: testCase.paused });
+			expect(calls).toEqual([...testCase.calls]);
+		}
+	});
+
+	it("restores null and undefined flow snapshots through an explicit seam", () => {
+		const cases: { flowing: null | undefined; label: string }[] = [
+			{ flowing: null, label: "null" },
+			{ flowing: undefined, label: "undefined" },
+		];
+		for (const testCase of cases) {
+			const { stdin, state, calls } = createRawStdin(false, testCase.flowing, false, {
+				restoreReadableFlowing: true,
+			});
+			const lease = createRawTerminalLease({ stdin, platform: "linux" });
+
+			expect(state).toEqual({ raw: true, flowing: true, paused: false });
+			lease.close();
+
+			expect(state).toEqual({ raw: false, flowing: testCase.flowing, paused: false });
+			expect(calls).toEqual(["raw:true", "resume", `restore-flow:${testCase.label}`, "raw:false"]);
+		}
+	});
+
+	it("rejects null and undefined flow snapshots without a restoration seam", () => {
+		for (const flowing of [null, undefined] as const) {
+			const { stdin, state, calls } = createRawStdin(false, flowing, false);
+
+			expect(() => createRawTerminalLease({ stdin, platform: "linux" })).toThrow(
+				"requires restoreReadableFlowing support",
+			);
+			expect(state).toEqual({ raw: false, flowing, paused: false });
+			expect(calls).toEqual([]);
+		}
+	});
+
+	it("defers reentrant emergency cleanup until raw-mode enable commits", () => {
+		let restoreRequested = true;
+		const { stdin, state, calls } = createRawStdin(false, false, true, {
+			beforeSetRawMode: (mode: boolean): void => {
+				if (mode && restoreRequested) emergencyRawTerminalRestore();
+			},
+		});
+
+		expect(() => createRawTerminalLease({ stdin, platform: "linux" })).toThrow(
+			"Raw terminal input acquisition was interrupted",
+		);
 		expect(state).toEqual({ raw: false, flowing: false, paused: true });
-		expect(calls).toEqual(["raw:true", "resume", "pause", "raw:false"]);
+		expect(calls).toEqual(["raw:true", "pause", "raw:false"]);
+
+		restoreRequested = false;
+		const successor = createRawTerminalLease({ stdin, platform: "linux" });
+		successor.close();
+	});
+
+	it("shares a resource owner across duplicate module records while keeping resources independent", () => {
+		const first = createRawStdin(false, false, true);
+		const second = createRawStdin(false, false, true);
+		const firstLease = createRawTerminalLease({ stdin: first.stdin, platform: "linux" });
+		const secondLease = duplicateRawTerminalLease.createRawTerminalLease({
+			stdin: second.stdin,
+			platform: "linux",
+		});
+
+		expect(() => duplicateRawTerminalLease.createRawTerminalLease({ stdin: first.stdin, platform: "linux" })).toThrow(
+			"Raw terminal input is already owned",
+		);
+		expect(() => createRawTerminalLease({ stdin: second.stdin, platform: "linux" })).toThrow(
+			"Raw terminal input is already owned",
+		);
+
+		firstLease.close();
+		expect(first.state).toEqual({ raw: false, flowing: false, paused: true });
+		expect(second.state).toEqual({ raw: true, flowing: true, paused: false });
+
+		const firstSuccessor = duplicateRawTerminalLease.createRawTerminalLease({
+			stdin: first.stdin,
+			platform: "linux",
+		});
+		firstSuccessor.close();
+		secondLease.close();
+		expect(second.state).toEqual({ raw: false, flowing: false, paused: true });
 	});
 
 	it("rolls back stdin and console mode when Windows VT adoption fails", () => {
@@ -358,10 +458,7 @@ describe("raw terminal lease", () => {
 		expect(modeWrites).toEqual([0x0211, 0x0011]);
 		expect(driverClosed).toBe(true);
 
-		const successor = createRawTerminalLease({
-			stdin: createRawStdin(false, false, true).stdin,
-			platform: "linux",
-		});
+		const successor = createRawTerminalLease({ stdin, platform: "linux" });
 		successor.close();
 	});
 
@@ -398,7 +495,7 @@ describe("raw terminal lease", () => {
 		expect(driverClosed).toBe(true);
 	});
 
-	it("retries emergency restoration after a partial close failure", () => {
+	it("retries emergency restoration after a partial raw-mode close failure", () => {
 		const { stdin, state } = createRawStdin(false, false, true);
 		const setRawMode = stdin.setRawMode!;
 		let rawRestoreFailures = 1;
@@ -413,10 +510,46 @@ describe("raw terminal lease", () => {
 		emergencyRawTerminalRestore();
 
 		expect(state).toEqual({ raw: false, flowing: false, paused: true });
-		const successor = createRawTerminalLease({
-			stdin: createRawStdin(false, false, true).stdin,
-			platform: "linux",
-		});
+		const successor = createRawTerminalLease({ stdin, platform: "linux" });
 		successor.close();
+	});
+
+	it("retries emergency Windows console restoration after a close failure", () => {
+		const { stdin, state } = createRawStdin(false, false, true);
+		const originalConsoleMode = 0x0011;
+		let mode = originalConsoleMode;
+		let consoleRestoreFailures = 1;
+		let driverClosed = false;
+		const modeWrites: number[] = [];
+		const consoleDriver: WindowsConsoleDriver = {
+			getInputMode: (): number => mode,
+			setInputMode: (nextMode: number): boolean => {
+				modeWrites.push(nextMode);
+				if (nextMode === originalConsoleMode && consoleRestoreFailures-- > 0) return false;
+				mode = nextMode;
+				return true;
+			},
+			close: (): void => {
+				driverClosed = true;
+			},
+		};
+		const setRawMode = stdin.setRawMode!;
+		stdin.setRawMode = (nextRaw: boolean): void => {
+			setRawMode(nextRaw);
+			if (nextRaw) mode = 0x0001;
+		};
+
+		const lease = createRawTerminalLease({ stdin, platform: "win32", consoleDriver });
+		expect(() => lease.close()).toThrow("Could not restore Windows console input mode");
+		expect(state).toEqual({ raw: false, flowing: false, paused: true });
+		expect(mode).toBe(0x0201);
+		expect(driverClosed).toBe(false);
+
+		emergencyRawTerminalRestore();
+		emergencyRawTerminalRestore();
+
+		expect(mode).toBe(originalConsoleMode);
+		expect(modeWrites).toEqual([0x0201, originalConsoleMode, originalConsoleMode]);
+		expect(driverClosed).toBe(true);
 	});
 });
