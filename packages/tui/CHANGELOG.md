@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-13
 ### Fixed
 
 - Real interactive terminals now repaint only the visible viewport during forced renders instead of clearing and replaying native scrollback.
