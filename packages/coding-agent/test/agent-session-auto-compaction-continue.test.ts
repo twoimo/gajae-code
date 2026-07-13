@@ -262,6 +262,9 @@ describe("AgentSession auto-compaction continuation", () => {
 		const warnSpy = vi.spyOn(logger, "warn");
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const events: string[] = [];
+		session.subscribe(event => events.push(event.type));
+
 		for (let i = 0; i < 4; i++) {
 			sessionManager.appendMessage({ role: "user", content: `seed user ${i}`, timestamp: Date.now() + i * 2 });
 			sessionManager.appendMessage(assistantMessage({ timestamp: Date.now() + i * 2 + 1 }));
@@ -294,6 +297,8 @@ describe("AgentSession auto-compaction continuation", () => {
 		await session.waitForIdle();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 		expect(promptSpy).not.toHaveBeenCalled();
+		expect(events.filter(type => type === "agent_end")).toHaveLength(0);
+
 		expect(
 			warnSpy.mock.calls.some(
 				call =>
@@ -312,7 +317,7 @@ describe("AgentSession auto-compaction continuation", () => {
 		expect(promptSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("threshold default with queued message uses queued continuation only", async () => {
+	it("threshold queued-followup continuation suppresses predecessor terminal readiness", async () => {
 		session.agent.followUp({
 			role: "custom",
 			customType: "test",
@@ -323,11 +328,15 @@ describe("AgentSession auto-compaction continuation", () => {
 		const warnSpy = vi.spyOn(logger, "warn");
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const events: string[] = [];
+		session.subscribe(event => events.push(event.type));
+
 		await driveCompaction();
 		await advancePostPrompt(200);
 		await session.waitForIdle();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 		expect(promptSpy).not.toHaveBeenCalled();
+		expect(events.filter(type => type === "agent_end")).toHaveLength(0);
 		expect(warnSpy.mock.calls.some(call => JSON.stringify(call).includes("AgentBusyError"))).toBe(false);
 	});
 

@@ -9,9 +9,10 @@ import { Broker } from "../sdk/broker/broker";
 import {
 	readSessionLifecycleLaunchRequest,
 	type SessionLifecycleLaunchRequest,
+	type SessionLifecycleTranscriptIdentity,
 	writeSessionLifecycleReady,
 } from "../sdk/broker/lifecycle";
-import { SessionManager } from "../session/session-manager";
+import { type ResumeSessionIdentity, SessionManager } from "../session/session-manager";
 
 export function lifecycleArgs(request: SessionLifecycleLaunchRequest, cwd: string, agentDir: string): ParsedArgs {
 	return {
@@ -29,9 +30,16 @@ export function lifecycleArgs(request: SessionLifecycleLaunchRequest, cwd: strin
 	};
 }
 
+type LifecycleTranscriptSource = {
+	cwd: string;
+	path: string;
+	id: string;
+	identity: SessionLifecycleTranscriptIdentity;
+};
+
 function sameTranscriptIdentity(
 	actual: { dev: bigint; ino: bigint; size: number; mtimeMs: number; mtimeNs: bigint },
-	expected: NonNullable<SessionLifecycleLaunchRequest["sessionIdentity"]>,
+	expected: SessionLifecycleTranscriptIdentity,
 ): boolean {
 	return (
 		actual.dev.toString() === expected.dev &&
@@ -42,22 +50,32 @@ function sameTranscriptIdentity(
 	);
 }
 
-function verifyLifecycleTranscript(request: SessionLifecycleLaunchRequest, cwd: string, agentDir: string): void {
-	if (request.operation === "session.create") return;
-	const source =
-		request.operation === "session.resume"
-			? {
-					cwd,
-					path: request.sessionPath!,
-					id: request.sessionId,
-					identity: request.sessionIdentity!,
-				}
-			: {
-					cwd: path.resolve(request.sourceCwd ?? cwd),
-					path: request.sourceSessionPath!,
-					id: request.sourceSessionId!,
-					identity: request.sourceSessionIdentity!,
-				};
+function lifecycleTranscriptSource(request: SessionLifecycleLaunchRequest, cwd: string): LifecycleTranscriptSource {
+	if (request.operation === "session.resume") {
+		return {
+			cwd,
+			path: request.sessionPath!,
+			id: request.sessionId,
+			identity: request.sessionIdentity!,
+		};
+	}
+	if (request.operation === "session.fork") {
+		return {
+			cwd: path.resolve(request.sourceCwd ?? cwd),
+			path: request.sourceSessionPath!,
+			id: request.sourceSessionId!,
+			identity: request.sourceSessionIdentity!,
+		};
+	}
+	throw new Error("A new lifecycle session has no persisted transcript authority.");
+}
+
+function verifyLifecycleTranscript(
+	request: SessionLifecycleLaunchRequest,
+	cwd: string,
+	agentDir: string,
+): LifecycleTranscriptSource {
+	const source = lifecycleTranscriptSource(request, cwd);
 	const inventory = SessionManager.inventorySessionsStrict(source.cwd, {
 		sessionDir: SessionManager.getDefaultSessionDir(source.cwd, agentDir),
 	});
@@ -71,6 +89,71 @@ function verifyLifecycleTranscript(request: SessionLifecycleLaunchRequest, cwd: 
 	);
 	if (matches.length !== 1)
 		throw new Error("Lifecycle saved session authority changed before the session host started.");
+	return source;
+}
+
+function sameLifecycleTranscriptSnapshot(left: ResumeSessionIdentity, right: ResumeSessionIdentity): boolean {
+	return (
+		left.canonicalPath === right.canonicalPath &&
+		left.sessionId === right.sessionId &&
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.mtimeNs === right.mtimeNs &&
+		left.sha256 === right.sha256
+	);
+}
+
+async function captureLifecycleTranscript(
+	request: SessionLifecycleLaunchRequest,
+	cwd: string,
+	agentDir: string,
+): Promise<ResumeSessionIdentity> {
+	const source = verifyLifecycleTranscript(request, cwd, agentDir);
+	const inspected = await SessionManager.inspectSessionTailReadOnly(source.path);
+	if (
+		inspected.kind === "error" ||
+		inspected.identity.sessionId !== source.id ||
+		!sameTranscriptIdentity(inspected.identity, source.identity)
+	)
+		throw new Error("Lifecycle saved session authority changed before the session host consumed it.");
+	return inspected.identity;
+}
+
+async function revalidateLifecycleTranscript(snapshot: ResumeSessionIdentity): Promise<void> {
+	const inspected = await SessionManager.inspectSessionTailReadOnly(snapshot.canonicalPath);
+	if (inspected.kind === "error" || !sameLifecycleTranscriptSnapshot(snapshot, inspected.identity))
+		throw new Error("Lifecycle saved session authority changed while the session host opened it.");
+}
+
+/** Opens lifecycle-authorized history without letting replacement content reach readiness. */
+export async function openLifecycleSessionManager(
+	request: SessionLifecycleLaunchRequest,
+	cwd: string,
+	agentDir: string,
+): Promise<{ parsed: ParsedArgs; sessionManager: SessionManager | undefined }> {
+	const parsed = lifecycleArgs(request, cwd, agentDir);
+	if (request.operation === "session.create") {
+		return { parsed, sessionManager: await createSessionManager(parsed, cwd) };
+	}
+	const snapshot = await captureLifecycleTranscript(request, cwd, agentDir);
+	let sessionManager: SessionManager | undefined;
+	if (request.operation === "session.resume") {
+		const opened = await SessionManager.openExistingStrict(snapshot, parsed.sessionDir);
+		if (opened.kind === "error")
+			throw new Error("Lifecycle saved session authority changed while the session host opened it.");
+		sessionManager = opened.manager;
+	} else {
+		sessionManager = await createSessionManager(parsed, cwd);
+	}
+	try {
+		await revalidateLifecycleTranscript(snapshot);
+	} catch (error) {
+		await sessionManager?.close();
+		throw error;
+	}
+	return { parsed, sessionManager };
 }
 
 /** Runs the same persisted AgentSession bootstrap used by the production CLI. */
@@ -88,9 +171,7 @@ async function runSessionHost(): Promise<void> {
 		throw new Error("Lifecycle state root does not match the broker-issued request.");
 	if (request.effectMarker && process.env.GJC_LIFECYCLE_REQUEST_ID !== request.effectMarker)
 		throw new Error("Lifecycle effect marker does not match the broker-issued request.");
-	verifyLifecycleTranscript(request, cwd, agentDir);
-	const parsed = lifecycleArgs(request, cwd, agentDir);
-	const sessionManager = await createSessionManager(parsed, cwd);
+	const { parsed, sessionManager } = await openLifecycleSessionManager(request, cwd, agentDir);
 	const { session } = await createAgentSession({ cwd, agentDir, sessionManager });
 	// Extension initialization publishes the SDK-ready event, so profile activation
 	// must finish before the broker can expose this lifecycle host.

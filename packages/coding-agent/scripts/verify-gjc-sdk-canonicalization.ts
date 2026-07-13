@@ -36,6 +36,8 @@ const machineTmuxDocumentationPaths = new Set([
 const machineTmuxDocumentationPattern =
 	/(?:scripts\/gjc-session\/(?:prompt|tail)\.sh|\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
 const tmuxMachineBusPrimitivePattern = /\b(?:load-buffer|paste-buffer|send-keys|capture-pane|pipe-pane)\b/g;
+const tmuxPaneViewingPattern =
+	/\b(?:capture-pane|pipe-pane)\b|\[\s*["'](?:capture|pipe)["']\s*,\s*["']pane["']\s*\]\.join\(\s*["']-["']\s*\)/g;
 function normalizeShellContinuations(contents: string): string {
 	return contents.replace(/\\\r?\n[ \t]*/g, " ");
 }
@@ -206,28 +208,159 @@ function isSource(file: string): boolean {
 	return /\.(?:[cm]?[jt]sx?|json|py|toml)$/.test(file);
 }
 
-const sanctionedTmuxPaths = new Map<string, string>([
-	[
-		"packages/coding-agent/src/gjc-runtime/team-runtime.ts",
-		"Team runtime owns worker process startup and its controlled worker-pane input.",
-	],
-	[
-		"packages/coding-agent/src/modes/tmux-scroll.ts",
-		"Tmux scroll mode controls the current terminal viewport through copy-mode; it never delivers a session prompt.",
-	],
-	[
-		"packages/coding-agent/test/gjc-runtime/team-runtime.test.ts",
-		"Team runtime tests exercise sanctioned worker-pane startup commands.",
-	],
-	[
-		"packages/coding-agent/test/modes/tmux-scroll.test.ts",
-		"Tmux scroll tests exercise terminal-local copy-mode viewport controls.",
-	],
-]);
+const teamRuntimeTmuxPath = "packages/coding-agent/src/gjc-runtime/team-runtime.ts";
+const teamRuntimeWorkerPayloadArgs =
+	/^\s*,\s*["']-l["']\s*,\s*["']-t["']\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\],\s*\{/;
+const teamRuntimeEnterArgs = /^\s*,\s*["']-t["']\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*,\s*["']Enter["']\s*\],\s*\{/;
 
 const coordinatorMcpRoot = "packages/coding-agent/src/coordinator-mcp/server.ts";
 function isPublishedGjcSessionShellHelper(file: string): boolean {
 	return file.startsWith("scripts/gjc-session/") && file.endsWith(".sh");
+}
+
+interface ShellStructure {
+	parentheses: number;
+	braces: number;
+	controls: number;
+}
+
+function shellStructureBefore(contents: string, offset: number): ShellStructure {
+	const structure: ShellStructure = { parentheses: 0, braces: 0, controls: 0 };
+	let quote: "'" | '"' | undefined;
+	let word = "";
+	const commitWord = () => {
+		if (["if", "while", "until", "for", "case", "select"].includes(word)) structure.controls++;
+		if (["fi", "done", "esac"].includes(word)) structure.controls = Math.max(0, structure.controls - 1);
+		word = "";
+	};
+	for (let index = 0; index < offset; index++) {
+		const character = contents[index];
+		if (quote) {
+			if (character === "\\" && quote === '"') index++;
+			else if (character === quote) quote = undefined;
+			continue;
+		}
+		if (character === "'" || character === '"') {
+			commitWord();
+			quote = character;
+			continue;
+		}
+		if (character === "#") {
+			commitWord();
+			while (index < offset && contents[index] !== "\n") index++;
+			continue;
+		}
+		if (/[A-Za-z_]/.test(character)) {
+			word += character;
+			continue;
+		}
+		if (/[0-9]/.test(character) && word) {
+			word += character;
+			continue;
+		}
+		commitWord();
+		if (character === "(") structure.parentheses++;
+		if (character === ")") structure.parentheses = Math.max(0, structure.parentheses - 1);
+		if (character === "{" && contents[index - 1] !== "$") structure.braces++;
+		if (character === "}") structure.braces = Math.max(0, structure.braces - 1);
+	}
+	commitWord();
+	return structure;
+}
+
+function hasLeadingShellContinuation(contents: string, offset: number): boolean {
+	const lines = normalizeShellContinuations(contents.slice(0, offset)).split(/\r?\n/);
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index].replace(/(?:^|\s)#.*$/, "").trim();
+		if (line) return /(?:&&|\|\||\|)$/.test(line);
+	}
+	return false;
+}
+
+function isUnconditionalTopLevelShellPosition(contents: string, offset: number): boolean {
+	const structure = shellStructureBefore(contents, offset);
+	if (structure.parentheses !== 0 || structure.braces !== 0 || structure.controls !== 0) return false;
+	return !hasLeadingShellContinuation(contents, offset);
+}
+
+interface ShellRange {
+	start: number;
+	end: number;
+}
+
+function shellArrayAssignmentRanges(contents: string): ShellRange[] {
+	const ranges: ShellRange[] = [];
+	const assignments = /\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*\(/g;
+	for (const assignment of contents.matchAll(assignments)) {
+		const openingParen = (assignment.index ?? 0) + assignment[0].lastIndexOf("(");
+		let depth = 1;
+		let quote: "'" | '"' | undefined;
+		for (let index = openingParen + 1; index < contents.length; index++) {
+			const character = contents[index];
+			if (quote) {
+				if (character === "\\" && quote === '"') index++;
+				else if (character === quote) quote = undefined;
+				continue;
+			}
+			if (character === "'" || character === '"') {
+				quote = character;
+				continue;
+			}
+			if (character === "(") depth++;
+			if (character === ")") depth--;
+			if (depth === 0) {
+				ranges.push({ start: assignment.index ?? 0, end: index + 1 });
+				break;
+			}
+		}
+	}
+	return ranges;
+}
+
+function shellGjcBinaryReferenceViolations(contents: string): ShellRange[] {
+	const normalizedContents = normalizeShellContinuations(contents);
+	const arrayRanges = shellArrayAssignmentRanges(normalizedContents);
+	const references = /(["']?)\$(?:GJC_BIN|GJC_SESSION_GJC_BIN|\{(?:GJC_BIN|GJC_SESSION_GJC_BIN)\})\1/g;
+	const violations: ShellRange[] = [];
+	for (const reference of normalizedContents.matchAll(references)) {
+		const start = reference.index ?? 0;
+		const before = normalizedContents.slice(0, start);
+		if (/(?:^|[\s"'])GJC_SESSION_GJC_BIN\s*=\s*$/.test(before)) continue;
+		if (arrayRanges.some(range => start >= range.start && start < range.end)) {
+			violations.push({ start, end: start + reference[0].length });
+			continue;
+		}
+		const lineStart = before.lastIndexOf("\n") + 1;
+		const lineEnd = normalizedContents.indexOf("\n", start);
+		const line = normalizedContents.slice(lineStart, lineEnd === -1 ? normalizedContents.length : lineEnd);
+		const linePrefix = normalizedContents.slice(lineStart, start);
+		const lastConditionalOpen = linePrefix.lastIndexOf("[[");
+		const lastConditionalClose = linePrefix.lastIndexOf("]]");
+		const isConditionalCheck = lastConditionalOpen > lastConditionalClose;
+		const isPythonHeredocArgument = /^\s*python3\s+-\s+.*<<["']PY["']\s*$/.test(line);
+		const isCommandLookup = /\bcommand\s+-v\s*$/.test(linePrefix);
+		const statementStart =
+			Math.max(
+				before.lastIndexOf("\n"),
+				before.lastIndexOf(";"),
+				before.lastIndexOf("|"),
+				before.lastIndexOf("&"),
+				before.lastIndexOf("("),
+			) + 1;
+		const prefix = before.slice(statementStart);
+		const isDirectInvocation = /^\s*$/.test(prefix);
+		const isTimedInvocation = /^\s*timeout\s+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)\s+$/.test(prefix);
+		if (
+			!isDirectInvocation &&
+			!isTimedInvocation &&
+			!isConditionalCheck &&
+			!isPythonHeredocArgument &&
+			!isCommandLookup
+		) {
+			violations.push({ start, end: start + reference[0].length });
+		}
+	}
+	return violations;
 }
 
 function pythonFirstArgument(contents: string, openingParen: number): { text: string; start: number } | undefined {
@@ -273,15 +406,12 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	const exactArityGuard =
 		/^\s*\[\[\s+\$#\s+-eq\s+2\s+\]\]\s+\|\|\s+\{\s*echo\s+["']Usage:\s+\$0\s+<session-name>\s+<worktree-path>["']\s+>&2;\s+exit\s+2;\s*\}\s*$/gm;
 	const arityGuards = [...contents.matchAll(exactArityGuard)];
+	const topLevelArityGuards = arityGuards.filter(guard =>
+		isUnconditionalTopLevelShellPosition(contents, guard.index ?? 0),
+	);
 	const twoOperandArityChecks = [...contents.matchAll(/\[\[\s+\$#\s+-eq\s+2\s+\]\]/g)];
-	const arityGuard = arityGuards[0];
-	const guardPrefix = arityGuard ? contents.slice(0, arityGuard.index ?? 0) : "";
-	if (
-		arityGuards.length !== 1 ||
-		twoOperandArityChecks.length !== 1 ||
-		/(?:^|[;\n])\s*(?:if|while|until|for|case|function\b|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{)/m.test(guardPrefix) ||
-		/(?:&&|\|\|)\s*(?:\\\r?\n\s*)?$/.test(guardPrefix)
-	) {
+	const arityGuard = topLevelArityGuards[0] ?? arityGuards[0];
+	if (arityGuards.length !== 1 || topLevelArityGuards.length !== 1 || twoOperandArityChecks.length !== 1) {
 		violation(arityGuard?.index ?? 0, "human-only tmux owner must have one fail-closed exact two-operand guard");
 	}
 
@@ -309,23 +439,29 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 		violation(match.index ?? 0, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
 	}
 
-	const allowedGjcEnvironmentReferences: Array<{ start: number; end: number }> = canonicalCommands.map(match => ({
+	const allowedGjcEnvironmentReferences: ShellRange[] = canonicalCommands.map(match => ({
 		start: match.index ?? 0,
 		end: (match.index ?? 0) + match[0].length,
 	}));
+	const allowedCommandReferences = [...allowedGjcEnvironmentReferences];
 	const subprocessCalls = /\bsubprocess\.(Popen|run|call|check_call|check_output)\s*\(/g;
 	let interactiveLaunches = 0;
 	for (const match of contents.matchAll(subprocessCalls)) {
 		const openingParen = (match.index ?? 0) + match[0].lastIndexOf("(");
 		const argument = pythonFirstArgument(contents, openingParen);
 		if (!argument) continue;
-		const isInteractiveLaunch = match[1] === "Popen" && argument.text.trim() === "command";
+		const lineStart = contents.lastIndexOf("\n", match.index ?? 0) + 1;
+		const lineEnd = contents.indexOf("\n", match.index ?? 0);
+		const line = contents.slice(lineStart, lineEnd === -1 ? contents.length : lineEnd);
+		const isInteractiveLaunch =
+			match[1] === "Popen" && argument.text.trim() === "command" && canonicalInteractivePopenAssignment.test(line);
 		const isLifecycleCall =
 			/^\s*\[\s*os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]\s*,\s*["']--internal-tmux-owner-isolation["']\s*\]\s*$/.test(
 				argument.text,
 			);
 		if (isInteractiveLaunch) {
 			interactiveLaunches++;
+			allowedCommandReferences.push({ start: lineStart, end: lineEnd === -1 ? contents.length : lineEnd });
 			continue;
 		}
 		if (isLifecycleCall) {
@@ -341,6 +477,23 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 	}
 	if (interactiveLaunches !== 1) {
 		violation(0, "human-only tmux owner must launch exactly one zero-argv interactive GJC process");
+	}
+	for (const match of contents.matchAll(/\bcommand\b/g)) {
+		const offset = match.index ?? 0;
+		const lineStart = contents.lastIndexOf("\n", offset) + 1;
+		const before = contents.slice(lineStart, offset);
+		const lineEnd = contents.indexOf("\n", offset);
+		const after = contents.slice(offset + match[0].length, lineEnd === -1 ? contents.length : lineEnd);
+		if (/\bcommand\s+-[^\s]*\s*$/.test(before) || /^\s+-[A-Za-z]/.test(after)) continue;
+		if (!allowedCommandReferences.some(range => offset >= range.start && offset < range.end)) {
+			violation(offset, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
+		}
+	}
+	for (const match of contents.matchAll(/["']command["']/g)) {
+		violation(match.index ?? 0, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
+	}
+	for (const match of contents.matchAll(/\b(?:globals|locals|vars|getattr|setattr|delattr|eval|exec)\s*\(/g)) {
+		violation(match.index ?? 0, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
 	}
 	for (const match of contents.matchAll(/os\.environ\[\s*["']GJC_SESSION_GJC_BIN["']\s*\]/g)) {
 		const offset = match.index ?? 0;
@@ -360,6 +513,9 @@ function tmuxCreateStartupViolations(file: string, contents: string): string[] {
 			violation(match.index ?? 0, "human-only tmux owner invokes GJC with a non-lifecycle startup argument");
 		}
 	}
+	for (const reference of shellGjcBinaryReferenceViolations(contents)) {
+		violation(reference.start, "human-only tmux owner must not construct or wrap a non-lifecycle GJC argv");
+	}
 	for (const match of contents.matchAll(/\bGJC_SESSION_FLAGS\b/g)) {
 		violation(match.index ?? 0, "human-only tmux owner exposes caller-provided startup arguments");
 	}
@@ -373,8 +529,9 @@ const coordinatorDirectAuthorityPatterns = [
 	/\b(?:agentSession|agent_session|session)\s*\.\s*(?:prompt|promptCustomMessage|abort|abortAndPrompt|followUp|answer)\s*\(/g,
 ];
 
-function isSanctionedTmuxPath(file: string): boolean {
-	return sanctionedTmuxPaths.has(file);
+function isSanctionedTeamRuntimeTmuxInput(file: string, primitive: string, args: string): boolean {
+	if (file !== teamRuntimeTmuxPath || primitive !== "send-keys") return false;
+	return teamRuntimeWorkerPayloadArgs.test(args) || teamRuntimeEnterArgs.test(args);
 }
 
 function lineNumber(contents: string, offset: number): number {
@@ -719,9 +876,10 @@ async function scan(): Promise<string[]> {
 		}
 
 		if (isProductionTypeScriptOrJavaScript(file) && file !== coordinatorMcpRoot) {
-			for (const match of contents.matchAll(/\b(capture-pane|pipe-pane)\b/g)) {
+			for (const match of contents.matchAll(tmuxPaneViewingPattern)) {
+				const primitive = match[0].includes("capture") ? "capture-pane" : "pipe-pane";
 				violations.push(
-					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${match[1]} pane access is outside sanctioned test fixtures`,
+					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${primitive} pane access is outside sanctioned test fixtures`,
 				);
 			}
 		}
@@ -732,10 +890,7 @@ async function scan(): Promise<string[]> {
 			)) {
 				const primitive = match[1];
 				const args = match[2];
-				const injectsContent =
-					primitive !== "send-keys" ||
-					(!/\s-X\b/.test(args) && !/^\s*[^\n]*\s(?:Escape|Enter|C-m)["']?\s*\)?;?\s*$/.test(args));
-				if (injectsContent && !isSanctionedTmuxPath(file)) {
+				if (!isSanctionedTeamRuntimeTmuxInput(file, primitive, args)) {
 					violations.push(
 						`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${primitive} content injection is outside sanctioned process lifecycle`,
 					);
@@ -748,7 +903,7 @@ async function scan(): Promise<string[]> {
 					`${file}:${lineNumber(contents, match.index ?? 0)}: tmux ${match[1]} content injection is outside sanctioned process lifecycle`,
 				);
 			}
-			for (const match of contents.matchAll(/\b(capture-pane|pipe-pane)\b/g)) {
+			for (const match of contents.matchAll(tmuxPaneViewingPattern)) {
 				violations.push(
 					`${file}:${lineNumber(contents, match.index ?? 0)}: coordinator MCP reads tmux pane content outside SDK queries`,
 				);
@@ -989,6 +1144,46 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 	await runSelfTestFixture(
 		{
 			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'(\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }\n) || true',
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'{\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }\n} || true',
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'true &&\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+				'true && \\\n[[ $# -eq 2 ]] || { echo "Usage: $0 <session-name> <worktree-path>" >&2; exit 2; }',
+			),
+		},
+		1,
+		"must have one fail-closed exact two-operand guard",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
 				"child = subprocess.Popen(command)",
 				'command.extend(["--file", "task.md"])\nchild = subprocess.Popen(command)',
 			),
@@ -1025,6 +1220,46 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		},
 		1,
 		"must launch exactly GJC_SESSION_GJC_BIN with zero startup arguments",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				"mutate(command)\nchild = subprocess.Popen(command)",
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'getattr(command, "append")("--file")\nchild = subprocess.Popen(command)',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				'globals()["command"].append("--file")\nchild = subprocess.Popen(command)',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				"child = subprocess.Popen(command)",
+				`vars()[f'{"com"}mand'] = ["gjc", "--file"]\nchild = subprocess.Popen(command)`,
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
 	);
 	await runSelfTestFixture(
 		{
@@ -1092,6 +1327,46 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		},
 		1,
 		"invokes GJC with a non-lifecycle startup argument",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'command -p "$GJC_BIN" --file task.md',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'exec -a gjc "$GJC_BIN" --file task.md',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'LAUNCH=(\n  "$GJC_BIN"\n  --file\n  task.md\n)\n"$' + '{LAUNCH[@]}"',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
+	);
+	await runSelfTestFixture(
+		{
+			"scripts/gjc-session/create.sh": canonicalCreateFixture.replace(
+				'"$GJC_BIN" --internal-tmux-owner-isolation',
+				'launcher="$GJC_BIN"\n"$launcher" --file task.md',
+			),
+		},
+		1,
+		"must not construct or wrap a non-lifecycle GJC argv",
 	);
 	await runSelfTestFixture(
 		{
@@ -1184,6 +1459,12 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 	);
 	await runSelfTestFixture(
 		{
+			"docs/gjc-session-clawhip-routing.md": "./scripts/gjc-session/create.sh bot /repo\n",
+		},
+		0,
+	);
+	await runSelfTestFixture(
+		{
 			"packages/coding-agent/src/unsanctioned.ts": 'Bun.spawnSync(["tmux", "send-keys", "-t", "pane", "prompt"]);\n',
 		},
 		1,
@@ -1192,7 +1473,15 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 	await runSelfTestFixture(
 		{
 			"packages/coding-agent/src/gjc-runtime/team-runtime.ts":
-				'Bun.spawnSync(["tmux", "send-keys", "-t", "pane", "prompt"]);\n',
+				'Bun.spawnSync([config.tmux_command, "send-keys", "-t", paneId, "prompt"]);\n',
+		},
+		1,
+		"tmux send-keys content injection is outside sanctioned process lifecycle",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/gjc-runtime/team-runtime.ts":
+				'Bun.spawnSync([config.tmux_command, "send-keys", "-l", "-t", paneId, workerCommand], { stdout: "ignore" });\nBun.spawnSync([config.tmux_command, "send-keys", "-t", paneId, "Enter"], { stdout: "ignore" });\n',
 		},
 		0,
 	);
@@ -1229,6 +1518,29 @@ subprocess.run([os.environ["GJC_SESSION_GJC_BIN"], "--internal-tmux-owner-isolat
 		},
 		1,
 		"tmux capture-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.ts": 'Bun.spawnSync("$TMUX_BIN capture-pane -p -t pane");\n',
+		},
+		1,
+		"tmux capture-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.ts":
+				'const paneViewer = ["capture", "pane"].join("-");\nBun.spawnSync(["tmux", paneViewer, "-p"]);\n',
+		},
+		1,
+		"tmux capture-pane pane access is outside sanctioned test fixtures",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/unsanctioned-pane.js":
+				'const paneViewer = ["pipe", "pane"].join("-");\nBun.spawnSync(["tmux", paneViewer, "sink"]);\n',
+		},
+		1,
+		"tmux pipe-pane pane access is outside sanctioned test fixtures",
 	);
 	await runSelfTestFixture(
 		{

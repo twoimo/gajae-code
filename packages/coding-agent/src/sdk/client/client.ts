@@ -254,13 +254,20 @@ export class SdkClient {
 			const url = new URL(this.#url);
 			url.searchParams.set("token", this.#token);
 			const socket = new WebSocket(url);
+			let timer: NodeJS.Timeout | undefined;
 			const onOpen = () => {
 				cleanup();
+				if (this.#closed) {
+					try {
+						socket.close();
+					} catch {}
+					reject(new SdkClientError("connection_closed", "SDK client closed"));
+					return;
+				}
 				this.#socket = socket;
 				this.#beginHello(socket);
 				resolve(socket);
 			};
-
 			const onError = (event: Event) => {
 				cleanup();
 				const eventWithDetail = event as Event & { error?: unknown; message?: unknown };
@@ -278,6 +285,10 @@ export class SdkClient {
 			const cleanup = () => {
 				socket.removeEventListener("open", onOpen);
 				socket.removeEventListener("error", onError);
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					timer = undefined;
+				}
 			};
 			socket.addEventListener("open", onOpen, { once: true });
 			socket.addEventListener("error", onError, { once: true });
@@ -293,6 +304,14 @@ export class SdkClient {
 				}
 				this.#rejectPending(new SdkClientError("connection_closed", "SDK WebSocket connection closed"));
 			});
+			timer = setTimeout(() => {
+				cleanup();
+				try {
+					socket.close();
+				} catch {}
+				reject(new SdkClientError("timeout", `SDK WebSocket connection timed out after ${this.#timeoutMs}ms`));
+			}, this.#timeoutMs);
+			timer.unref?.();
 		});
 	}
 

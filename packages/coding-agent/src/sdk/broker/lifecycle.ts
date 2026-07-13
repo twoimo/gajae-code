@@ -1,4 +1,5 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { dlopen, ptr } from "bun:ffi";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -21,6 +22,25 @@ const READY_TIMEOUT_MS = 10_000;
 const MAX_READY_TIMEOUT_MS = 60_000;
 const POLL_MS = 50;
 const CLOSE_TIMEOUT_MS = 2_000;
+const DARWIN_PROC_PIDTBSDINFO = 3;
+const DARWIN_PROC_BSDINFO_SIZE = 136;
+const DARWIN_PROC_BSDINFO_START_SECONDS_OFFSET = 120;
+const DARWIN_PROC_BSDINFO_START_MICROSECONDS_OFFSET = 128;
+const darwinProcLibrary =
+	process.platform === "darwin"
+		? (() => {
+				try {
+					return dlopen("/usr/lib/libproc.dylib", {
+						proc_pidinfo: {
+							args: ["i32", "i32", "u64", "ptr", "i32"],
+							returns: "i32",
+						},
+					});
+				} catch {
+					return undefined;
+				}
+			})()
+		: undefined;
 type Input = Record<string, unknown>;
 export const isCanonicalSessionId = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const defaultStateRoot = (cwd: string) => path.join(path.resolve(cwd), ".gjc", "state");
@@ -392,6 +412,20 @@ function processIncarnationForBroker(broker: Broker, pid: number): string | unde
 	return reader ? reader(pid) : processIncarnation(pid);
 }
 
+/** Parse the microsecond-resolution start timestamp returned by Darwin proc_pidinfo. */
+export function parseDarwinProcessIncarnation(info: Uint8Array): string | undefined {
+	if (info.byteLength < DARWIN_PROC_BSDINFO_SIZE) return undefined;
+	try {
+		const view = new DataView(info.buffer, info.byteOffset, info.byteLength);
+		const seconds = view.getBigUint64(DARWIN_PROC_BSDINFO_START_SECONDS_OFFSET, true);
+		const microseconds = view.getBigUint64(DARWIN_PROC_BSDINFO_START_MICROSECONDS_OFFSET, true);
+		if (seconds === 0n || microseconds >= 1_000_000n) return undefined;
+		return `darwin:${seconds}:${microseconds}`;
+	} catch {
+		return undefined;
+	}
+}
+
 /** A PID is reusable; bind it to the OS-provided process start incarnation. */
 export function processIncarnation(pid: number): string | undefined {
 	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
@@ -409,9 +443,19 @@ export function processIncarnation(pid: number): string | undefined {
 		}
 	}
 	if (process.platform === "darwin") {
-		const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
-		const started = result.status === 0 ? result.stdout.trim().replace(/\s+/g, " ") : "";
-		return started ? `darwin:${started}` : undefined;
+		const info = new Uint8Array(DARWIN_PROC_BSDINFO_SIZE);
+		try {
+			const bytesRead = darwinProcLibrary?.symbols.proc_pidinfo(
+				pid,
+				DARWIN_PROC_PIDTBSDINFO,
+				0,
+				ptr(info),
+				info.byteLength,
+			);
+			return bytesRead === DARWIN_PROC_BSDINFO_SIZE ? parseDarwinProcessIncarnation(info) : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 	return undefined;
 }
@@ -580,7 +624,7 @@ async function terminateSpawnedChild(
 			: observeProcess(pid, incarnation, value => processIncarnationForBroker(broker, value));
 	const waitForExit = async (deadline: number): Promise<ProcessObservation> => {
 		let observation = observe();
-		while (observation === "alive" && Date.now() < deadline) {
+		while (observation !== "exited" && Date.now() < deadline) {
 			await sleep(POLL_MS);
 			observation = observe();
 		}
@@ -741,20 +785,28 @@ async function waitForReady(
 		try {
 			const authority = await currentReadyAuthority(broker, id, root, expected);
 			if (!authority) {
-				await sleep(POLL_MS);
+				const remaining = deadline - Date.now();
+				if (remaining > 0) await sleep(Math.min(POLL_MS, remaining));
 				continue;
 			}
+			const connectionTimeoutMs = Math.min(2_000, deadline - Date.now());
+			if (connectionTimeoutMs <= 0) break;
 			const endpoint = authority.endpoint as { url: string; token: string };
 			const client = await SdkClient.connect(endpoint.url, endpoint.token, {
-				timeoutMs: Math.min(2_000, timeoutMs),
+				timeoutMs: connectionTimeoutMs,
 				reconnectAttempts: 0,
 			});
 			try {
-				const replay = await client.request({
-					type: "event_replay",
-					sinceGeneration: authority.endpointGeneration,
-					sinceSeq: 0,
-				});
+				const requestTimeoutMs = Math.min(2_000, deadline - Date.now());
+				if (requestTimeoutMs <= 0) break;
+				const replay = await client.request(
+					{
+						type: "event_replay",
+						sinceGeneration: authority.endpointGeneration,
+						sinceSeq: 0,
+					},
+					{ timeoutMs: requestTimeoutMs },
+				);
 				const events = (replay.events as unknown[]) ?? [];
 				if (
 					events.some(event => {
@@ -776,7 +828,8 @@ async function waitForReady(
 		} catch {
 			// A partially initialized or unauthenticated endpoint is not ready yet.
 		}
-		await sleep(POLL_MS);
+		const remaining = deadline - Date.now();
+		if (remaining > 0) await sleep(Math.min(POLL_MS, remaining));
 	}
 	return { kind: "timeout" };
 }

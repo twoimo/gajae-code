@@ -1,11 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { renameSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { openLifecycleSessionManager } from "../src/commands/sdk";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
 import { Broker } from "../src/sdk/broker/broker";
 import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
-import { setProcessIncarnationForTest } from "../src/sdk/broker/lifecycle";
+import {
+	parseDarwinProcessIncarnation,
+	processIncarnation,
+	setProcessIncarnationForTest,
+} from "../src/sdk/broker/lifecycle";
 import { runSdkSessionCli } from "../src/sdk/cli";
 import { SdkClient } from "../src/sdk/client";
 import { readSdkBrokerDiscovery } from "../src/sdk/client/discovery";
@@ -34,17 +40,9 @@ async function waitFor<T>(read: () => Promise<T | undefined>, label: string): Pr
 	throw new Error(`Timed out waiting for ${label}`);
 }
 async function incarnation(pid: number): Promise<string> {
-	if (process.platform === "linux") {
-		const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
-		return `linux:${
-			stat
-				.slice(stat.lastIndexOf(")") + 2)
-				.trim()
-				.split(/\s+/)[19]
-		}`;
-	}
-	const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)]);
-	return `darwin:${new TextDecoder().decode(result.stdout).trim().replace(/\s+/g, " ")}`;
+	const value = processIncarnation(pid);
+	if (!value) throw new Error(`Process ${pid} has no readable incarnation.`);
+	return value;
 }
 
 async function liveLifecycleSession(root: string, agentDir: string, sessionId: string) {
@@ -94,6 +92,156 @@ async function liveLifecycleSession(root: string, agentDir: string, sessionId: s
 		);
 	}
 }
+
+test("lifecycle host rejects a transcript replaced after strict authorization before it can be consumed", async () => {
+	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-lifecycle-transcript-race-"));
+	const agentDir = path.join(root, "agent");
+	const session = SessionManager.create(root, SessionManager.getDefaultSessionDir(root, agentDir));
+	try {
+		await session.ensureOnDisk();
+		const sessionPath = session.getSessionFile();
+		if (!sessionPath) throw new Error("Expected saved session path.");
+		const inventory = SessionManager.inventorySessionsStrict(root, {
+			sessionDir: SessionManager.getDefaultSessionDir(root, agentDir),
+		});
+		if (inventory.kind !== "complete") throw new Error("Expected strict session inventory.");
+		const candidate = inventory.candidates.find(item => item.path === sessionPath);
+		if (!candidate) throw new Error("Expected strict session candidate.");
+		const replacementPath = `${sessionPath}.replacement`;
+		await fs.writeFile(replacementPath, `${await fs.readFile(sessionPath, "utf8")}\n`);
+		const originalInventory = SessionManager.inventorySessionsStrict;
+		let replaced = false;
+		const replaceAfterAuthorization: typeof SessionManager.inventorySessionsStrict = (cwd, options) => {
+			const result = originalInventory(cwd, options);
+			if (!replaced) {
+				replaced = true;
+				renameSync(replacementPath, sessionPath);
+			}
+			return result;
+		};
+		SessionManager.inventorySessionsStrict = replaceAfterAuthorization;
+		try {
+			await expect(
+				openLifecycleSessionManager(
+					{
+						operation: "session.resume",
+						sessionId: candidate.id,
+						cwd: root,
+						stateRoot: path.join(root, ".gjc", "state"),
+						sessionPath,
+						sessionIdentity: {
+							dev: candidate.identity.dev.toString(),
+							ino: candidate.identity.ino.toString(),
+							size: candidate.identity.size,
+							mtimeMs: candidate.identity.mtimeMs,
+							mtimeNs: candidate.identity.mtimeNs.toString(),
+						},
+					},
+					root,
+					agentDir,
+				),
+			).rejects.toThrow("Lifecycle saved session authority changed before the session host consumed it.");
+			expect(replaced).toBe(true);
+		} finally {
+			SessionManager.inventorySessionsStrict = originalInventory;
+		}
+	} finally {
+		await session.close();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
+test("broker parses Darwin kernel process start timestamps with microsecond precision", () => {
+	const bsdInfo = new Uint8Array(136);
+	const view = new DataView(bsdInfo.buffer);
+	view.setBigUint64(120, 1_700_000_000n, true);
+	view.setBigUint64(128, 123_456n, true);
+	const sameSecondSuccessor = new Uint8Array(bsdInfo);
+	new DataView(sameSecondSuccessor.buffer).setBigUint64(128, 123_457n, true);
+	expect(parseDarwinProcessIncarnation(bsdInfo)).toBe("darwin:1700000000:123456");
+	expect(parseDarwinProcessIncarnation(sameSecondSuccessor)).toBe("darwin:1700000000:123457");
+});
+
+test("broker bounds a hanging WebSocket upgrade by the lifecycle deadline and cleans its child", async () => {
+	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-hanging-upgrade-"));
+	const stateRoot = path.join(agentDir, ".gjc", "state");
+	const fixture = path.join(agentDir, "hanging-upgrade.js");
+	const fixturePidPath = path.join(agentDir, "hanging-upgrade.pid");
+	const fixtureRequestPath = path.join(agentDir, "hanging-upgrade.request.json");
+	const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+	const previousUrl = process.env.GJC_HANGING_UPGRADE_URL;
+	const hangingUpgrade = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch() {
+			return Promise.withResolvers<Response>().promise;
+		},
+	});
+	const broker = new Broker({ agentDir });
+	let fixturePid: number | undefined;
+	try {
+		await fs.writeFile(
+			fixture,
+			`
+const fs=require('fs'), path=require('path'), crypto=require('crypto');
+const root=process.env.GJC_STATE_ROOT, id=process.env.GJC_SESSION_ID, agent=process.env.GJC_AGENT_DIR;
+fs.mkdirSync(path.join(root,'sdk'),{recursive:true});
+fs.writeFileSync(${JSON.stringify(fixturePidPath)},String(process.pid));
+fs.writeFileSync(${JSON.stringify(fixtureRequestPath)},process.env.GJC_SDK_LIFECYCLE_REQUEST);
+const endpoint=path.join(root,'sdk',id+'.json');
+fs.writeFileSync(endpoint,JSON.stringify({sessionId:id,pid:process.pid,url:process.env.GJC_HANGING_UPGRADE_URL,token:'hang'}));
+const m=fs.statSync(endpoint).mtimeMs;
+const log=path.join(agent,'sdk','sessions','index.jsonl');fs.mkdirSync(path.dirname(log),{recursive:true});const indexSeq=fs.existsSync(log)?fs.readFileSync(log,'utf8').trim().split('\\n').filter(Boolean).length+1:1;
+const event={type:'host_registered',sessionId:id,locator:{repo:agent,stateRoot:root},endpointGeneration:1,pid:process.pid,endpointMtimeMs:m,version:1,indexSeq,ts:Date.now()};
+event.checksum=crypto.createHash('sha256').update(JSON.stringify(event)).digest('hex');fs.appendFileSync(log,JSON.stringify(event)+'\\n');
+setInterval(()=>{},1000);
+`,
+		);
+		process.env.GJC_SDK_SESSION_COMMAND = `${process.execPath} ${fixture}`;
+		process.env.GJC_HANGING_UPGRADE_URL = `ws://127.0.0.1:${hangingUpgrade.port}`;
+		await broker.start();
+		const started = Date.now();
+		const lifecycle = broker.handleRequest(
+			"session.create",
+			{ cwd: agentDir, stateRoot, readinessTimeoutMs: 300 },
+			"hanging-upgrade",
+		);
+		const request = await waitFor(async () => {
+			try {
+				return JSON.parse(await fs.readFile(fixtureRequestPath, "utf8")) as {
+					effectMarker?: string;
+					sessionId?: string;
+				};
+			} catch {
+				return undefined;
+			}
+		}, "hanging-upgrade lifecycle request");
+		fixturePid = Number(await fs.readFile(fixturePidPath, "utf8"));
+		const incarnation = processIncarnation(fixturePid);
+		if (!incarnation || !request.effectMarker || !request.sessionId)
+			throw new Error("Expected a durable lifecycle child identity.");
+		await fs.writeFile(
+			path.join(stateRoot, "sdk", `${request.sessionId}.lifecycle.ready.json`),
+			JSON.stringify({ pid: fixturePid, effectMarker: request.effectMarker, incarnation }),
+		);
+		expect(await lifecycle).toMatchObject({ ok: false, error: { code: "readiness_timeout" } });
+		expect(Date.now() - started).toBeLessThan(1_500);
+		expect(() => process.kill(fixturePid!, 0)).toThrow();
+	} finally {
+		if (fixturePid) {
+			try {
+				process.kill(fixturePid, "SIGKILL");
+			} catch {}
+		}
+		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+		if (previousUrl === undefined) delete process.env.GJC_HANGING_UPGRADE_URL;
+		else process.env.GJC_HANGING_UPGRADE_URL = previousUrl;
+		hangingUpgrade.stop(true);
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+}, 10_000);
 
 test("broker rejects an endpoint-only lifecycle child that never authenticates session_ready", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-life-"));

@@ -170,3 +170,28 @@ test("SdkClient ignores a stale failed socket while a retried request is in flig
 	expect(connections).toBe(2);
 	await client.close();
 });
+
+test("SdkClient bounds a peer that accepts TCP but never completes the WebSocket upgrade", async () => {
+	const hangingUpgrade = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch() {
+			return Promise.withResolvers<Response>().promise;
+		},
+	});
+	try {
+		const started = Date.now();
+		await expect(
+			SdkClient.connect(`ws://127.0.0.1:${hangingUpgrade.port}`, "unused", {
+				timeoutMs: 75,
+				reconnectAttempts: 0,
+			}),
+		).rejects.toMatchObject({
+			code: "reconnect_exhausted",
+			details: expect.objectContaining({ code: "timeout" }),
+		});
+		expect(Date.now() - started).toBeLessThan(500);
+	} finally {
+		hangingUpgrade.stop(true);
+	}
+});

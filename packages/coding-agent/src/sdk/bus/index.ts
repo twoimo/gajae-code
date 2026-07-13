@@ -1242,81 +1242,108 @@ function sdkControlSurface(
 			return unavailable(operation, "no typed session seam is installed")();
 		return ctx.sdkControl(operation, input);
 	};
-	const surface: ControlSurface = {
-		prompt: async (text, images) => {
-			const promptImages = Array.isArray(images) ? (images as { data: string; mimeType?: string }[]) : [];
-			const content: string | (TextContent | ImageContent)[] =
-				promptImages.length > 0
-					? [
-							...(text ? [{ type: "text", text } as TextContent] : []),
-							...promptImages.map(
-								img =>
-									({ type: "image", data: img.data, mimeType: img.mimeType ?? "image/jpeg" }) as ImageContent,
-							),
-						]
-					: text;
-			const commandId = crypto.randomUUID();
-			const turnId = crypto.randomUUID();
-			type PreflightTerminalResult = { status: "accepted" } | { status: "rejected"; error: unknown };
-			const preflight = Promise.withResolvers<PreflightTerminalResult>();
-			let preflightSettled = false;
-			let accepted = false;
-			const correlation = { commandId, turnId };
-			const settlePreflight = (result: PreflightTerminalResult) => {
-				if (preflightSettled) return;
-				preflightSettled = true;
-				preflight.resolve(result);
-			};
-			const onPreflightAccepted = () => {
-				if (preflightSettled) return;
-				accepted = true;
-				onPromptAccepted(correlation);
-				settlePreflight({ status: "accepted" });
-			};
-			// Do not acknowledge the prompt until AgentSession's async preflight
-			// succeeds. The terminal result records correlation before agent_start can fire.
-			let submission: Promise<void> | undefined;
-			try {
-				submission = Promise.resolve(
-					api.sendUserMessage(content, {
-						...(isBusy() ? { deliverAs: "steer" as const } : {}),
-						onPreflightAccepted,
-					}),
-				);
-			} catch (error) {
-				if (accepted) onPromptFailed(correlation, error);
-				else settlePreflight({ status: "rejected", error });
-			}
-			if (submission) {
-				void submission.then(
-					() => {
-						if (!accepted)
-							settlePreflight({
-								status: "rejected",
-								error: Object.assign(new Error("Prompt submission completed without preflight acceptance."), {
-									code: "busy",
-								}),
-							});
-					},
-					error => {
-						if (accepted) onPromptFailed(correlation, error);
-						else settlePreflight({ status: "rejected", error });
-					},
-				);
-			}
+	const pendingPreflightCancellations = new Set<() => void>();
+	const cancelPendingPreflights = () => {
+		for (const cancel of pendingPreflightCancellations) cancel();
+	};
+	const awaitAbortReady = async () => {
+		await (ctx.abort as () => unknown)();
+		while (isBusy() || !ctx.isIdle()) {
+			await Bun.sleep(10);
+		}
+	};
+	const submitPrompt = async (text: string, images: unknown, forceFresh = false) => {
+		if (forceFresh && (isBusy() || !ctx.isIdle())) {
+			throw Object.assign(new Error("Previous turn did not finish aborting before replacement prompt submission."), {
+				code: "busy",
+			});
+		}
+		const promptImages = Array.isArray(images) ? (images as { data: string; mimeType?: string }[]) : [];
+		const content: string | (TextContent | ImageContent)[] =
+			promptImages.length > 0
+				? [
+						...(text ? [{ type: "text", text } as TextContent] : []),
+						...promptImages.map(
+							img => ({ type: "image", data: img.data, mimeType: img.mimeType ?? "image/jpeg" }) as ImageContent,
+						),
+					]
+				: text;
+		const commandId = crypto.randomUUID();
+		const turnId = crypto.randomUUID();
+		type PreflightTerminalResult = { status: "accepted" } | { status: "rejected"; error: unknown };
+		const preflight = Promise.withResolvers<PreflightTerminalResult>();
+		let preflightSettled = false;
+		let accepted = false;
+		const correlation = { commandId, turnId };
+		const settlePreflight = (result: PreflightTerminalResult) => {
+			if (preflightSettled) return;
+			preflightSettled = true;
+			preflight.resolve(result);
+		};
+		const cancelPreflight = () =>
+			settlePreflight({
+				status: "rejected",
+				error: Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" }),
+			});
+		pendingPreflightCancellations.add(cancelPreflight);
+		const onPreflightAccepted = () => {
+			if (preflightSettled) return;
+			accepted = true;
+			onPromptAccepted(correlation);
+			settlePreflight({ status: "accepted" });
+		};
+		// Do not acknowledge the prompt until AgentSession's async preflight
+		// succeeds. The terminal result records correlation before agent_start can fire.
+		let submission: Promise<void> | undefined;
+		try {
+			submission = Promise.resolve(
+				api.sendUserMessage(content, {
+					...(!forceFresh && isBusy() ? { deliverAs: "steer" as const } : {}),
+					onPreflightAccepted,
+				}),
+			);
+		} catch (error) {
+			if (accepted) onPromptFailed(correlation, error);
+			else settlePreflight({ status: "rejected", error });
+		}
+		if (submission) {
+			void submission.then(
+				() => {
+					if (!accepted)
+						settlePreflight({
+							status: "rejected",
+							error: Object.assign(new Error("Prompt submission completed without preflight acceptance."), {
+								code: "busy",
+							}),
+						});
+				},
+				error => {
+					if (accepted) onPromptFailed(correlation, error);
+					else settlePreflight({ status: "rejected", error });
+				},
+			);
+		}
+		try {
 			const result = await preflight.promise;
 			if (result.status === "rejected") throw result.error;
 			return { commandId, turnId, accepted: true };
-		},
+		} finally {
+			pendingPreflightCancellations.delete(cancelPreflight);
+		}
+	};
+	const surface: ControlSurface = {
+		prompt: (text, images) => submitPrompt(text, images),
 		steer: text => send(text, "steer"),
 		followUp: text => send(text, "followUp"),
 		abort: () => {
+			cancelPendingPreflights();
 			ctx.abort();
 			return { aborted: true };
 		},
 		abortAndPrompt: async text => {
-			ctx.abort();
-			return await surface.prompt(text);
+			cancelPendingPreflights();
+			await awaitAbortReady();
+			return await submitPrompt(text, undefined, true);
 		},
 		answerAsk: (id, answer) => {
 			const pending = pendingInteractive.get(id);

@@ -555,12 +555,25 @@ test("SDK host terminalizes a cancelled preflight and releases prompt authority"
 	});
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
 });
-test("SDK host applies prompt preflight correlation to abort_and_prompt", async () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-abort-prompt-"));
+
+test("SDK host terminalizes a never-resolving preflight on abort and fences late acceptance", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-preflight-never-"));
 	dirs.push(cwd);
-	const sessionId = `sdk-abort-prompt-${Date.now()}`;
-	let aborts = 0;
-	const handlers = start({ ...context(cwd, sessionId), abort: () => aborts++ }, undefined, () => {});
+	const sessionId = `sdk-prompt-preflight-never-${Date.now()}`;
+	const preflightStarted = Promise.withResolvers<void>();
+	const neverPreflight = Promise.withResolvers<void>();
+	let latePreflightAccepted: (() => void) | undefined;
+	const handlers = start(
+		{ ...context(cwd, sessionId), abort: () => {} },
+		undefined,
+		async (content, options) => {
+			if (content !== "never resolve") return;
+			latePreflightAccepted = options?.onPreflightAccepted;
+			preflightStarted.resolve();
+			await neverPreflight.promise;
+		},
+		true,
+	);
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
 	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
 	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
@@ -575,21 +588,103 @@ test("SDK host applies prompt preflight correlation to abort_and_prompt", async 
 	socket.send(
 		JSON.stringify({
 			type: "control_request",
+			id: "never-preflight",
+			operation: "turn.prompt",
+			input: { text: "never resolve" },
+		}),
+	);
+	await preflightStarted.promise;
+	socket.send(
+		JSON.stringify({ type: "control_request", id: "abort-never-preflight", operation: "turn.abort", input: {} }),
+	);
+	await waitFor(
+		() =>
+			frames.some(frame => frame.type === "control_response" && frame.id === "never-preflight") &&
+			frames.some(frame => frame.type === "control_response" && frame.id === "abort-never-preflight"),
+		"never-resolving preflight terminal response",
+	);
+	const promptResponses = frames.filter(frame => frame.type === "control_response" && frame.id === "never-preflight");
+	expect(promptResponses).toHaveLength(1);
+	expect(promptResponses[0]).toMatchObject({
+		ok: false,
+		error: { code: "busy", message: "Prompt preflight was cancelled before execution." },
+	});
+	expect(
+		frames.find(frame => frame.type === "control_response" && frame.id === "abort-never-preflight"),
+	).toMatchObject({
+		ok: true,
+		result: { aborted: true },
+	});
+	latePreflightAccepted?.();
+	await Promise.resolve();
+	expect(frames.filter(frame => frame.type === "control_response" && frame.id === "never-preflight")).toHaveLength(1);
+	expect(frames.some(frame => frame.type === "agent_failed" || frame.type === "agent_start")).toBe(false);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
+});
+
+test("SDK host waits for asynchronous abort unwind before delivering an abort-and-prompt replacement", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-abort-prompt-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-abort-prompt-${Date.now()}`;
+	const live = { idle: false };
+	const abortStarted = Promise.withResolvers<void>();
+	const abortSettled = Promise.withResolvers<void>();
+	const deliveries: Parameters<ExtensionActions["sendUserMessage"]>[] = [];
+	const sessionContext = {
+		...context(cwd, sessionId, "main", live),
+		abort: () => {
+			abortStarted.resolve();
+			return abortSettled.promise;
+		},
+	};
+	const handlers = start(
+		sessionContext,
+		undefined,
+		(content, options) => {
+			deliveries.push([content, options]);
+			options?.onPreflightAccepted?.();
+		},
+		true,
+	);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
 			id: "abort-and-prompt",
 			operation: "turn.abort_and_prompt",
 			input: { text: "replacement" },
 		}),
 	);
+	await abortStarted.promise;
+	await Bun.sleep(25);
+	expect(deliveries).toHaveLength(0);
+	expect(frames.some(frame => frame.type === "control_response" && frame.id === "abort-and-prompt")).toBe(false);
+	live.idle = true;
+	void handlers.get("agent_end")?.({ type: "agent_end", messages: [] }, sessionContext);
+	abortSettled.resolve();
 	await waitFor(
 		() => frames.some(frame => frame.type === "control_response" && frame.id === "abort-and-prompt"),
-		"abort-and-prompt response",
+		"abort-and-prompt response after abort unwind",
 	);
-	expect(aborts).toBe(1);
+	expect(deliveries).toHaveLength(1);
+	expect(deliveries[0]?.[0]).toBe("replacement");
+	expect(deliveries[0]?.[1]).not.toHaveProperty("deliverAs");
 	expect(frames.find(frame => frame.type === "control_response" && frame.id === "abort-and-prompt")).toMatchObject({
 		ok: true,
 		result: { accepted: true, commandId: expect.any(String), turnId: expect.any(String) },
 	});
-	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context(cwd, sessionId));
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
 
 test("SDK session switches rotate endpoint authority before publishing the replacement host", async () => {

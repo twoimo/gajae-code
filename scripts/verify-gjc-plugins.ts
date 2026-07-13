@@ -175,7 +175,7 @@ function normalizeShellContinuations(contents: string): string {
 }
 
 const machineTmuxRoutePattern =
-	/(?:\bpipe-pane\b|\btmux\s+(?:watch|load-buffer|paste-buffer|send-keys|capture-pane)\b|(?:scripts\/)?gjc-session\/(?:prompt|tail|watch)(?:\.sh)?\b|\bgjc-session\s+(?:prompt|tail|watch)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3}|\bgjc-session\s+create(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
+	/(?:\b(?:capture-pane|pipe-pane)\b|\[\s*["'](?:capture|pipe)["']\s*,\s*["']pane["']\s*\]\.join\(\s*["']-["']\s*\)|\btmux\s+(?:watch|load-buffer|paste-buffer|send-keys)\b|(?:scripts\/)?gjc-session\/(?:prompt|tail|watch)(?:\.sh)?\b|\bgjc-session\s+(?:prompt|tail|watch)\b|(?:\.\/)?(?:scripts\/)?gjc-session\/create\.sh(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3}|\bgjc-session\s+create(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|[^\s]+)){3})/g;
 const installableMachineRouteReferences = [...files].flatMap(([rel, text]) => {
 	const normalizedText = normalizeShellContinuations(text);
 	return [...normalizedText.matchAll(machineTmuxRoutePattern)].map(match => `${rel}:${match[0]}`);
@@ -184,6 +184,9 @@ const machineTmuxRouteRegressionFixtures = [
 	"tmux pipe-pane -t owner 'sink'",
 	'"$TMUX_BIN" pipe-pane -t owner "sink"',
 	"$TMUX_BIN \\\n  pipe-pane -t owner sink",
+	'$TMUX_BIN capture-pane -p -t owner',
+	'["capture", "pane"].join("-")',
+	'["pipe", "pane"].join("-")',
 	'./scripts/gjc-session/create.sh bot /repo --print "task"',
 	"scripts/gjc-session/create.sh bot /repo positional-prompt",
 	"gjc-session create bot /repo --file task.md",

@@ -525,7 +525,13 @@ export interface PromptOptions {
 }
 
 function promptPreflightCancelledError(): Error {
-	return Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" });
+	const error = Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" });
+	error.name = "PromptPreflightCancelledError";
+	return error;
+}
+
+function isPromptPreflightCancelledError(error: unknown): boolean {
+	return error instanceof Error && error.name === "PromptPreflightCancelledError";
 }
 
 /** Result from a handoff operation. */
@@ -1465,6 +1471,8 @@ export class AgentSession {
 	#pendingRewindReport: string | undefined = undefined;
 	#lastSuccessfulYieldToolCallId: string | undefined = undefined;
 	#promptGeneration = 0;
+	#promptPreflightAbortController = new AbortController();
+
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	/**
 	 * Provider keys for which the Anthropic fast-mode auto-fallback fired this
@@ -1521,6 +1529,34 @@ export class AgentSession {
 		if (this.#promptInFlightCount === 1) {
 			this.#acquirePowerAssertion();
 		}
+	}
+
+	#isPromptPreflightCancelled(generation: number, signal: AbortSignal): boolean {
+		return signal.aborted || this.#promptGeneration !== generation;
+	}
+
+	#throwIfPromptPreflightCancelled(generation: number, signal: AbortSignal): void {
+		if (this.#isPromptPreflightCancelled(generation, signal)) {
+			throw promptPreflightCancelledError();
+		}
+	}
+
+	async #awaitPromptPreflight<T>(generation: number, signal: AbortSignal, pending: Promise<T>): Promise<T> {
+		this.#throwIfPromptPreflightCancelled(generation, signal);
+		const cancellation = Promise.withResolvers<never>();
+		const cancel = () => cancellation.reject(promptPreflightCancelledError());
+		signal.addEventListener("abort", cancel, { once: true });
+		try {
+			const result = await Promise.race([pending, cancellation.promise]);
+			this.#throwIfPromptPreflightCancelled(generation, signal);
+			return result;
+		} finally {
+			signal.removeEventListener("abort", cancel);
+		}
+	}
+
+	#suppressDeferredAgentEndForContinuation(): void {
+		this.#pendingAgentEndEmit = undefined;
 	}
 
 	#endInFlight(): void {
@@ -2820,10 +2856,15 @@ export class AgentSession {
 		delayMs?: number;
 		generation?: number;
 		skipCompactionCheck?: boolean;
+		suppressPredecessorAgentEnd?: boolean;
 		shouldContinue?: () => boolean;
 		onSkip?: (reason: "generation_changed" | "aborted_signal" | "queue_drained") => void;
 		onError?: (error: unknown) => void;
 	}): Promise<void> {
+		if (options?.suppressPredecessorAgentEnd) {
+			this.#suppressDeferredAgentEndForContinuation();
+		}
+
 		const scheduledGeneration = options?.generation;
 		const signal = this.#postPromptTasksAbortController.signal;
 		return this.#schedulePostPromptTask(
@@ -2901,6 +2942,8 @@ export class AgentSession {
 			this.#scheduleAgentContinue({
 				delayMs: 100,
 				generation,
+				suppressPredecessorAgentEnd: true,
+
 				onSkip: reason => this.#logCompactionContinuationSkipped("overflow_retry", reason),
 				onError: error => this.#logCompactionContinuationError("overflow_retry", error),
 			});
@@ -2918,12 +2961,10 @@ export class AgentSession {
 
 	#scheduleAutoContinuePrompt(generation: number): void {
 		// The turn whose agent_end triggered auto-compaction is being continued, so
-		// that agent_end is not a terminal readiness signal. Discard the deferred
-		// agent_end held by #emitSessionEvent (behind the in-flight barriers) before
-		// the post-prompt flush can leak it after auto_compaction_end. The
-		// continuation emits the authoritative terminal agent_end when it settles; on
-		// skip a newer prompt (generation_changed) or the abort path supersedes it.
-		this.#pendingAgentEndEmit = undefined;
+		// that agent_end is not a terminal readiness signal. Suppress the deferred
+		// predecessor before the post-prompt flush can leak an idle boundary; the
+		// continuation emits the authoritative terminal agent_end when it settles.
+		this.#suppressDeferredAgentEndForContinuation();
 		const continuePrompt = async () => {
 			await this.#promptWithMessage(
 				{
@@ -5850,6 +5891,8 @@ export class AgentSession {
 	): Promise<void> {
 		this.#beginInFlight();
 		const generation = this.#promptGeneration;
+		const preflightSignal = this.#promptPreflightAbortController.signal;
+
 		const rosterClaim = this.#claimIrcRosterCandidate();
 		try {
 			// Flush any pending bash messages before the new prompt
@@ -5913,9 +5956,9 @@ export class AgentSession {
 
 			messages.push(message);
 
-			// Early bail-out: if a newer abort/prompt cycle started during setup,
-			// terminate the preflight so callers do not wait indefinitely for acceptance.
-			if (this.#promptGeneration !== generation) {
+			// Early bail-out: a generation change or cancellation during setup must
+			// terminate preflight rather than retaining SDK prompt authority.
+			if (this.#isPromptPreflightCancelled(generation, preflightSignal)) {
 				this.#resetInjectedContextSignatures();
 				throw promptPreflightCancelledError();
 			}
@@ -5960,12 +6003,13 @@ export class AgentSession {
 			const promptAttribution: "user" | "agent" | undefined =
 				"attribution" in message ? message.attribution : undefined;
 
-			// Emit before_agent_start extension event
+			// Emit before_agent_start extension event. Race hook completion with prompt
+			// cancellation so a wedged hook cannot retain SDK prompt authority.
 			if (this.#extensionRunner) {
-				const result = await this.#extensionRunner.emitBeforeAgentStart(
-					expandedText,
-					options?.images,
-					beforeAgentStartSystemPrompt,
+				const result = await this.#awaitPromptPreflight(
+					generation,
+					preflightSignal,
+					this.#extensionRunner.emitBeforeAgentStart(expandedText, options?.images, beforeAgentStartSystemPrompt),
 				);
 				if (result?.messages) {
 					this.#appendBeforeAgentStartCustomMessages(messages, result.messages, promptAttribution, message.role);
@@ -5987,25 +6031,28 @@ export class AgentSession {
 				const contributed: BeforeAgentStartInternalMessage[] = [];
 				for (const contributor of this.#beforeAgentStartContributors) {
 					try {
-						const msg = await contributor({
-							prompt: expandedText,
-							images: options?.images,
-							sessionId: this.sessionId,
-						});
+						const msg = await this.#awaitPromptPreflight(
+							generation,
+							preflightSignal,
+							contributor({
+								prompt: expandedText,
+								images: options?.images,
+								sessionId: this.sessionId,
+							}),
+						);
 						if (msg) contributed.push(msg);
 					} catch (err) {
+						if (this.#isPromptPreflightCancelled(generation, preflightSignal))
+							throw promptPreflightCancelledError();
 						logger.debug("before_agent_start contributor failed", { error: String(err) });
 					}
 				}
 				this.#appendBeforeAgentStartCustomMessages(messages, contributed, promptAttribution, message.role);
 			}
 
-			// Bail out if a newer abort/prompt cycle has started since we began setup.
-			// The injection signatures were consumed while building the automatic
-			// goal/plan context above, but the message is not delivered on this
-			// aborted turn, so reset them here so the next real turn re-injects once.
-			// Terminate the preflight rather than returning without acknowledgement.
-			if (this.#promptGeneration !== generation) {
+			// Abort can race asynchronous preflight work. The injection signatures were
+			// consumed while building context, but no prompt was accepted, so reset them.
+			if (this.#isPromptPreflightCancelled(generation, preflightSignal)) {
 				this.#resetInjectedContextSignatures();
 				throw promptPreflightCancelledError();
 			}
@@ -6025,6 +6072,12 @@ export class AgentSession {
 			if (!options?.skipPostPromptRecoveryWait) {
 				await this.#waitForPostPromptRecovery();
 			}
+		} catch (error) {
+			// Session identity changes historically cancel local setup silently. Only SDK
+			// submissions provide an acceptance callback and require an explicit terminal
+			// preflight failure for their remote request authority.
+			if (isPromptPreflightCancelledError(error) && !options?.onPreflightAccepted) return;
+			throw error;
 		} finally {
 			if (rosterClaim) {
 				this.agent.replaceMessages(
@@ -6884,6 +6937,8 @@ export class AgentSession {
 		}
 		this.abortRetry();
 		this.#promptGeneration++;
+		this.#promptPreflightAbortController.abort();
+		this.#promptPreflightAbortController = new AbortController();
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.abortCompaction();
 		this.abortHandoff();
@@ -8154,7 +8209,8 @@ export class AgentSession {
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
 				// Retry on the promoted (larger) model without compacting
-				this.#scheduleAgentContinue({ delayMs: 100, generation });
+				this.#scheduleAgentContinue({ delayMs: 100, generation, suppressPredecessorAgentEnd: true });
+
 				return;
 			}
 
@@ -9270,6 +9326,8 @@ export class AgentSession {
 					this.#scheduleAgentContinue({
 						delayMs: 100,
 						generation,
+						suppressPredecessorAgentEnd: true,
+
 						shouldContinue: () => this.agent.hasQueuedMessages(),
 						onSkip: skipReason => this.#logCompactionContinuationSkipped("queued_continue", skipReason),
 						onError: error => this.#logCompactionContinuationError("queued_continue", error),
@@ -9499,6 +9557,7 @@ export class AgentSession {
 				this.#scheduleAgentContinue({
 					delayMs: 100,
 					generation,
+					suppressPredecessorAgentEnd: true,
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 					onSkip: reason => this.#logCompactionContinuationSkipped("queued_continue", reason),
 					onError: error => this.#logCompactionContinuationError("queued_continue", error),

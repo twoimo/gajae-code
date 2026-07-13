@@ -584,6 +584,69 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 		});
 	});
 
+	it("serializes a live generation rollover behind an unresolved root and retains concurrent notifications", async () => {
+		await withDaemon(async (daemon, fake, _injected, setEndpointGeneration, agentDir) => {
+			const releasePost = Promise.withResolvers<void>();
+			const reconciliationStarted = Promise.withResolvers<void>();
+			const releaseReconciliation = Promise.withResolvers<void>();
+			fake.postGate = releasePost.promise;
+			fake.onFind = async () => {
+				if (fake.posts.length === 0) return;
+				reconciliationStarted.resolve();
+				await releaseReconciliation.promise;
+			};
+			fake.failPostProtocolAfterAccept = true;
+
+			const generationOne = daemon.postRoot("session", "generation one root", 1);
+			for (let attempt = 0; attempt < 20 && fake.postStarts === 0; attempt++) await Bun.sleep(1);
+			setEndpointGeneration(2);
+			releasePost.resolve();
+			await reconciliationStarted.promise;
+
+			const generationTwoResume = daemon.resume("session", "generation two ready", 2);
+			const generationTwoNotification = daemon.notify("session", "generation two notification", undefined, 2);
+			expect(fake.posts.filter(post => post.threadTs === undefined)).toEqual([
+				expect.objectContaining({ clientMsgId: "client-id-1", text: "generation one root" }),
+			]);
+
+			releaseReconciliation.resolve();
+			const [first, resumed, notified] = await Promise.all([
+				generationOne,
+				generationTwoResume,
+				generationTwoNotification,
+			]);
+			expect(first).toMatchObject({ rootTs: "1.1", clientMsgId: "client-id-1", endpointGeneration: 1 });
+			expect(resumed).toMatchObject({ state: "active", endpointGeneration: 2 });
+			expect(notified.rootTs).toBe(resumed.rootTs);
+			expect(fake.posts.filter(post => post.threadTs === undefined)).toEqual([
+				expect.objectContaining({ clientMsgId: "client-id-1", text: "generation one root" }),
+				expect.objectContaining({ text: "generation two ready" }),
+			]);
+			expect(fake.posts.filter(post => post.threadTs === resumed.rootTs)).toEqual([
+				expect.objectContaining({ text: "generation two notification" }),
+			]);
+			const journal = new ChatEffectJournal({ agentDir, transport: "slack" });
+			expect(await daemon.store.read("T1:C1:intent:session")).toMatchObject({
+				state: "active",
+				rootTs: resumed.rootTs,
+				endpointGeneration: 2,
+			});
+			expect(await journal.read("root:session:client-id-1")).toMatchObject({
+				state: "terminal",
+				receipt: { provider: "slack", status: "posted", messageId: "client-id-1" },
+			});
+			expect(
+				(await journal.list()).find(effect => {
+					const payload = effect.payload as { text?: unknown };
+					return effect.endpointGeneration === 2 && payload.text === "generation two notification";
+				}),
+			).toMatchObject({
+				state: "terminal",
+				payload: { threadTs: resumed.rootTs, text: "generation two notification" },
+			});
+		});
+	});
+
 	it("recovers a live transient provider failure without restart, input, or another notification", async () => {
 		await withDaemon(async (daemon, fake) => {
 			await daemon.start();
