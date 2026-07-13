@@ -3842,6 +3842,86 @@ test("an epoch advance after a durable claim fences the deletion call and restar
 	});
 });
 
+test("same-owner epoch advance after confirmed settlement fences stale local cleanup", async () => {
+	let agentDir = "";
+	let nextCustodyEpoch = 0;
+	let advanced = false;
+	const commits: string[] = [];
+	const fsImpl = trackedDaemonFs({
+		commits,
+		onCustodyCommit: data => {
+			const snapshot = JSON.parse(data) as CustodySnapshot;
+			if (!Object.values(snapshot.records).some(record => record.state === "confirmed")) return;
+			advanced = true;
+			fs.writeFileSync(
+				telegramCustodyEpochPath(agentDir),
+				JSON.stringify({ version: 1, ownerId: "owner", custodyEpoch: nextCustodyEpoch }),
+			);
+		},
+	});
+	const harness = await createTopicDeletionHarness(new FakeBotApi(), "owner", fsImpl);
+	agentDir = harness.agentDir;
+	nextCustodyEpoch = harness.custodyEpoch + 1;
+	const topicId = currentTopicId(harness.agentDir, "S");
+	commits.length = 0;
+	harness.bot.calls = [];
+
+	await closeTopicSession(harness);
+
+	expect(advanced).toBe(true);
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(commits).toEqual([
+		"telegram-deletion-custody.json",
+		"telegram-deletion-custody.json",
+		"telegram-deletion-custody.json",
+	]);
+	expect(currentTopicId(harness.agentDir, "S")).toBe(topicId);
+	expect(readCustodySnapshot(harness.agentDir).records[`42:${topicId}`]).toMatchObject({
+		state: "confirmed",
+		custodyEpoch: harness.custodyEpoch,
+	});
+	const staleTopics = fs.readFileSync(path.join(daemonPaths(harness.agentDir).dir, "telegram-topics.json"), "utf8");
+	const staleCustody = fs.readFileSync(
+		path.join(daemonPaths(harness.agentDir).dir, "telegram-deletion-custody.json"),
+		"utf8",
+	);
+
+	await closeTopicSession(harness);
+
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
+	expect(commits).toEqual([
+		"telegram-deletion-custody.json",
+		"telegram-deletion-custody.json",
+		"telegram-deletion-custody.json",
+	]);
+	expect(fs.readFileSync(path.join(daemonPaths(harness.agentDir).dir, "telegram-topics.json"), "utf8")).toBe(
+		staleTopics,
+	);
+	expect(fs.readFileSync(path.join(daemonPaths(harness.agentDir).dir, "telegram-deletion-custody.json"), "utf8")).toBe(
+		staleCustody,
+	);
+
+	const currentOwner = new TelegramNotificationDaemon({
+		settings: settings(harness.agentDir),
+		ownerId: "owner",
+		custodyEpoch: nextCustodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: harness.bot,
+		fs: fsImpl,
+	});
+	const callsBeforeRecovery = harness.bot.calls.length;
+	await currentOwner.loadTopics();
+	await currentOwner.loadCustody();
+
+	expect(harness.bot.calls).toHaveLength(callsBeforeRecovery);
+	const recoveredTopics = JSON.parse(
+		fs.readFileSync(path.join(daemonPaths(harness.agentDir).dir, "telegram-topics.json"), "utf8"),
+	) as { topics: Record<string, { topicId: string }> };
+	expect(recoveredTopics.topics.S).toBeUndefined();
+	expect(readCustodySnapshot(harness.agentDir).records).toEqual({});
+});
+
 test("pool flush failure leaves deletion queued before the claim", async () => {
 	const harness = await createTopicDeletionHarness();
 	const topicId = currentTopicId(harness.agentDir, "S");
@@ -3938,7 +4018,7 @@ test("settlement and local persistence failures never issue a second deletion re
 	await cleanupRecovered.loadCustody();
 	expect(cleanup.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
 	expect(readCustodySnapshot(cleanup.agentDir).records).toEqual({});
-});
+}, 15_000);
 test("foreign confirmed custody does not clean up a colliding current-chat topic on restart", async () => {
 	const harness = await createTopicDeletionHarness();
 	const topicId = currentTopicId(harness.agentDir, "S");

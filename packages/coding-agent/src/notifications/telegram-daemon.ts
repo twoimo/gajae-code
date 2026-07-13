@@ -2406,18 +2406,36 @@ export class TelegramNotificationDaemon {
 	}
 
 	private async finishConfirmedTopicDeletion(sessionId: string, topicId: string): Promise<void> {
-		const current = this.topics.get(sessionId);
-		if (current !== undefined && current.topicId !== topicId) return;
-		const previousTopic = current === undefined ? undefined : Object.freeze({ ...current });
-		if (current !== undefined) this.topics.delete(sessionId);
+		let localCleanup = false;
 		try {
-			await this.persistTopics();
+			const guarded = await withCurrentTelegramCustodyEpoch(
+				{
+					agentDir: this.opts.settings.getAgentDir(),
+					binding: { ownerId: this.opts.ownerId, custodyEpoch: this.opts.custodyEpoch },
+				},
+				async () => {
+					const current = this.topics.get(sessionId);
+					if (current !== undefined && current.topicId !== topicId) return false;
+					const previousTopic = current === undefined ? undefined : Object.freeze({ ...current });
+					if (current !== undefined) this.topics.delete(sessionId);
+					try {
+						await this.persistTopics();
+					} catch {
+						if (previousTopic !== undefined) this.topics.load({ topics: { [sessionId]: previousTopic } });
+						logger.warn("notifications: Telegram topic deletion local persistence failed");
+						return false;
+					}
+					if (current !== undefined) this.clearDeletedTopicRuntimeState(sessionId);
+					return true;
+				},
+			);
+			if (!guarded.ok) return;
+			localCleanup = guarded.value;
 		} catch {
-			if (previousTopic !== undefined) this.topics.load({ topics: { [sessionId]: previousTopic } });
-			logger.warn("notifications: Telegram topic deletion local persistence failed");
+			logger.warn("notifications: Telegram topic deletion local cleanup fence failed");
 			return;
 		}
-		if (current !== undefined) this.clearDeletedTopicRuntimeState(sessionId);
+		if (!localCleanup) return;
 		try {
 			const removed = await this.#custodyStore.removeConfirmed({ chatId: this.opts.chatId, topicId });
 			if (!removed.ok) return;
