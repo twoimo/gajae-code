@@ -217,6 +217,13 @@ jobs:
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - if: needs.relevance.outputs.relevant == 'true'
            run: bun install --frozen-lockfile
+         - name: Build native addon (win32-x64 baseline)
+           if: needs.relevance.outputs.relevant == 'true'
+           env:
+              TARGET_PLATFORM: win32
+              TARGET_ARCH: x64
+              TARGET_VARIANTS: baseline
+           run: bun run ci:build:native
          - name: Type check workspace (Windows)
            if: needs.relevance.outputs.relevant == 'true'
            run: bun run ci:check:full
@@ -226,13 +233,6 @@ jobs:
          - name: Verify Linux-only session tests skip on Windows
            if: needs.relevance.outputs.relevant == 'true'
            run: bun scripts/verify-platform-test-policy.ts --expect-skipped scripts/gjc-session/create.test.ts
-         - name: Build native addon (win32-x64 baseline)
-           if: needs.relevance.outputs.relevant == 'true'
-           env:
-              TARGET_PLATFORM: win32
-              TARGET_ARCH: x64
-              TARGET_VARIANTS: baseline
-           run: bun run ci:build:native
          - name: Smoke bun + gjc CLI (source runtime)
            if: needs.relevance.outputs.relevant == 'true'
            shell: pwsh

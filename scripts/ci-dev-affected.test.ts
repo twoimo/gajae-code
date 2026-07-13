@@ -361,7 +361,7 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(Buffer.byteLength(JSON.stringify(plannedPaths), "utf8")).toBeLessThan(48 * 1024);
 		expect(transportedPaths.length).toBeLessThan(64 * 1024);
 	});
-	test("workflow fetches the exact validated pull request base before planning", async () => {
+	test("workflow fetches the exact validated pull request base before affected planning and state-gate diffing", async () => {
 		const workflow = requireYamlRecord(
 			Bun.YAML.parse(await Bun.file(path.join(repoRoot, ".github/workflows/dev-ci.yml")).text()),
 			"Dev CI workflow",
@@ -408,6 +408,124 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(fetchRun).toContain('git check-ref-format --branch "$BASE_REF" >/dev/null');
 		expect(fetchRun).toContain('[[ "$BASE_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]');
 		expect(fetchRun).not.toContain("origin/dev");
+		const stateGatesMatrix = requireYamlRecord(
+			requireYamlRecord(workflow.jobs, "Dev CI workflow jobs")["gjc-state-gates-matrix"],
+			"gjc-state-gates-matrix job",
+		);
+		const stateGateSteps = stateGatesMatrix.steps;
+		expect(Array.isArray(stateGateSteps)).toBe(true);
+		if (!Array.isArray(stateGateSteps)) throw new Error("gjc-state-gates-matrix steps must be a YAML sequence");
+
+		const [stateCheckout, stateCheckoutIndex] = requireWorkflowStep(
+			stateGateSteps,
+			"uses",
+			"actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+		);
+		const [stateAttestation, stateAttestationIndex] = requireWorkflowStep(
+			stateGateSteps,
+			"name",
+			"Attest checked-out workspace SHA",
+		);
+		const [stateFetchBase, stateFetchBaseIndex] = requireWorkflowStep(
+			stateGateSteps,
+			"name",
+			"Fetch pull request base commit",
+		);
+		const [, stateGateIndex] = requireWorkflowStep(
+			stateGateSteps,
+			"run",
+			"bun scripts/ci-gjc-state-gates.ts --group=${{ matrix.group }}",
+		);
+
+		expect(stateCheckoutIndex).toBeLessThan(stateAttestationIndex);
+		expect(stateAttestationIndex).toBeLessThan(stateFetchBaseIndex);
+		expect(stateFetchBaseIndex).toBeLessThan(stateGateIndex);
+		expect(requireYamlRecord(stateCheckout.with, "state-gate checkout options")).toMatchObject({
+			"fetch-depth": 0,
+			repository: "${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+			ref: "${{ github.event.pull_request.head.sha || github.sha }}",
+		});
+		expect(requireYamlRecord(stateAttestation.env, "state-gate head attestation env").EXPECTED_WORKSPACE_SHA).toBe(
+			"${{ github.event.pull_request.head.sha || github.sha }}",
+		);
+		expect(requireYamlRecord(stateGatesMatrix.env, "state-gate env").GITHUB_BASE_SHA).toBe(
+			"${{ github.event.pull_request.base.sha }}",
+		);
+		expect(stateFetchBase.if).toBe("${{ github.event_name == 'pull_request' }}");
+		expect(stateFetchBase.shell).toBe("bash");
+		expect(requireYamlRecord(stateFetchBase.env, "state-gate base fetch env")).toEqual(requireYamlRecord(fetchBase.env, "base fetch env"));
+		expect(stateFetchBase.run).toBe(fetchRun);
+	});
+	test("platform policy installs Linux system dependencies only and builds the Windows native addon before checking", async () => {
+		const devWorkflow = requireYamlRecord(
+			Bun.YAML.parse(await Bun.file(path.join(repoRoot, ".github/workflows/dev-ci.yml")).text()),
+			"Dev CI workflow",
+		);
+		const platformPolicy = requireYamlRecord(
+			requireYamlRecord(devWorkflow.jobs, "Dev CI workflow jobs")["platform-policy"],
+			"platform-policy job",
+		);
+		const platformPolicySteps = platformPolicy.steps;
+		expect(Array.isArray(platformPolicySteps)).toBe(true);
+		if (!Array.isArray(platformPolicySteps)) throw new Error("platform-policy steps must be a YAML sequence");
+
+		const [linuxDependencies, linuxDependenciesIndex] = requireWorkflowStep(
+			platformPolicySteps,
+			"name",
+			"Install Linux system dependencies",
+		);
+		const [, dependencyInstallIndex] = requireWorkflowStep(platformPolicySteps, "run", "bun install --frozen-lockfile");
+		const [, policyVerifierIndex] = requireWorkflowStep(
+			platformPolicySteps,
+			"name",
+			"Verify ${{ matrix.label }} policy",
+		);
+
+		expect(linuxDependencies.if).toBe("${{ matrix.os == 'ubuntu-22.04' }}");
+		expect(linuxDependencies.run).toBe("bash scripts/ci-install-system-deps.sh");
+		expect(await Bun.file(path.join(repoRoot, "scripts/ci-install-system-deps.sh")).text()).toMatch(
+			/required_path_tools=.*\btmux\b/,
+		);
+		expect(linuxDependenciesIndex).toBeLessThan(dependencyInstallIndex);
+		expect(dependencyInstallIndex).toBeLessThan(policyVerifierIndex);
+
+		const ciWorkflow = requireYamlRecord(
+			Bun.YAML.parse(await Bun.file(path.join(repoRoot, ".github/workflows/ci.yml")).text()),
+			"CI workflow",
+		);
+		const windowsSmoke = requireYamlRecord(
+			requireYamlRecord(ciWorkflow.jobs, "CI workflow jobs").windows_smoke,
+			"windows_smoke job",
+		);
+		const windowsSteps = windowsSmoke.steps;
+		expect(Array.isArray(windowsSteps)).toBe(true);
+		if (!Array.isArray(windowsSteps)) throw new Error("windows_smoke steps must be a YAML sequence");
+
+		const [nativeBuild, nativeBuildIndex] = requireWorkflowStep(
+			windowsSteps,
+			"name",
+			"Build native addon (win32-x64 baseline)",
+		);
+		const [typeCheck, typeCheckIndex] = requireWorkflowStep(windowsSteps, "name", "Type check workspace (Windows)");
+		const [, contractsIndex] = requireWorkflowStep(windowsSteps, "name", "Test portable CI contracts (Windows)");
+		const [, skipPolicyIndex] = requireWorkflowStep(
+			windowsSteps,
+			"name",
+			"Verify Linux-only session tests skip on Windows",
+		);
+		const [, sourceSmokeIndex] = requireWorkflowStep(windowsSteps, "name", "Smoke bun + gjc CLI (source runtime)");
+
+		expect(nativeBuild.if).toBe("needs.relevance.outputs.relevant == 'true'");
+		expect(requireYamlRecord(nativeBuild.env, "Windows native build env")).toEqual({
+			TARGET_PLATFORM: "win32",
+			TARGET_ARCH: "x64",
+			TARGET_VARIANTS: "baseline",
+		});
+		expect(nativeBuildIndex).toBeLessThan(typeCheckIndex);
+		expect(typeCheckIndex).toBeLessThan(contractsIndex);
+		expect(contractsIndex).toBeLessThan(skipPolicyIndex);
+		expect(skipPolicyIndex).toBeLessThan(sourceSmokeIndex);
+		expect(typeCheck.if).toBe("needs.relevance.outputs.relevant == 'true'");
 	});
 
 	test("keeps ordinary merge-base diffs unchanged", async () => {
@@ -588,6 +706,46 @@ describe("--matrix-json and --task CLI fan-out", () => {
 			"packages/coding-agent/src/main.ts",
 			"scripts/verify-platform-test-policy.ts",
 		].sort());
+	});
+	test.each([
+		["create", "scripts/gjc-session/create.sh"],
+		["prompt", "scripts/gjc-session/prompt.sh"],
+		["postmortem", "scripts/gjc-session/postmortem.sh"],
+	])("a session %s shell owner change schedules the focused verifier and platform-policy lane", async (_name, changedPath) => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-session-owner-"));
+		tempDirs.push(tempDir);
+		const outputFile = path.join(tempDir, "github-output.txt");
+
+		const { stdout, exitCode } = await runScript(["--matrix-json"], changedPath, {
+			CI_DEV_PLAN_MODE: "pr",
+			GITHUB_EVENT_NAME: "pull_request",
+			GITHUB_OUTPUT: outputFile,
+		});
+		expect(exitCode).toBe(0);
+		expect(JSON.parse(stdout.trim())).toEqual([
+			{
+				key: "test:scripts/gjc-session/create.test.ts",
+				description: "Test scripts/gjc-session/create.test.ts",
+				command: ["bun", "test", "scripts/gjc-session/create.test.ts"],
+				native: false,
+				rust: false,
+				nativeBuild: false,
+			},
+		]);
+		expect(await Bun.file(outputFile).text()).toContain("has_platform_policy=true");
+	});
+	test("an unlisted session shell path does not schedule the platform-policy lane", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-session-nonowner-"));
+		tempDirs.push(tempDir);
+		const outputFile = path.join(tempDir, "github-output.txt");
+
+		const { exitCode } = await runScript(["--matrix-json"], "scripts/gjc-session/other.sh", {
+			CI_DEV_PLAN_MODE: "pr",
+			GITHUB_EVENT_NAME: "pull_request",
+			GITHUB_OUTPUT: outputFile,
+		});
+		expect(exitCode).toBe(0);
+		expect(await Bun.file(outputFile).text()).toContain("has_platform_policy=false");
 	});
 
 	test("rejects oversized count, serialized-byte, and base64 transports", () => {
@@ -793,6 +951,24 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		{
 			label: "session fixture test",
 			changedPath: "scripts/gjc-session/create.test.ts",
+			pr: ["test:scripts/gjc-session/create.test.ts"],
+			push: ["test:scripts/gjc-session/create.test.ts"],
+		},
+		{
+			label: "session create shell owner",
+			changedPath: "scripts/gjc-session/create.sh",
+			pr: ["test:scripts/gjc-session/create.test.ts"],
+			push: ["test:scripts/gjc-session/create.test.ts"],
+		},
+		{
+			label: "session prompt shell owner",
+			changedPath: "scripts/gjc-session/prompt.sh",
+			pr: ["test:scripts/gjc-session/create.test.ts"],
+			push: ["test:scripts/gjc-session/create.test.ts"],
+		},
+		{
+			label: "session postmortem shell owner",
+			changedPath: "scripts/gjc-session/postmortem.sh",
 			pr: ["test:scripts/gjc-session/create.test.ts"],
 			push: ["test:scripts/gjc-session/create.test.ts"],
 		},

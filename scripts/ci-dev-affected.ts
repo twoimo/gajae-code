@@ -16,6 +16,9 @@ const PLATFORM_POLICY_PATHS = new Set([
 	".github/workflows/ci.yml",
 	".github/workflows/dev-ci.yml",
 	"scripts/gjc-session/create.test.ts",
+	"scripts/gjc-session/create.sh",
+	"scripts/gjc-session/prompt.sh",
+	"scripts/gjc-session/postmortem.sh",
 	"scripts/release-publish-order.test.ts",
 	"scripts/verify-platform-test-policy.test.ts",
 	"scripts/verify-platform-test-policy.ts",
@@ -41,6 +44,9 @@ const BEHAVIORAL_OWNER_TESTS: Readonly<Record<string, readonly string[]>> = {
 const PLATFORM_TEST_POLICY_TEST = "scripts/verify-platform-test-policy.test.ts";
 const FOCUSED_SCRIPT_TESTS: Readonly<Record<string, string>> = {
 	"scripts/gjc-session/create.test.ts": "scripts/gjc-session/create.test.ts",
+	"scripts/gjc-session/create.sh": "scripts/gjc-session/create.test.ts",
+	"scripts/gjc-session/prompt.sh": "scripts/gjc-session/create.test.ts",
+	"scripts/gjc-session/postmortem.sh": "scripts/gjc-session/create.test.ts",
 	"scripts/release-publish-order.test.ts": "scripts/release-publish-order.test.ts",
 	"scripts/verify-platform-test-policy.ts": PLATFORM_TEST_POLICY_TEST,
 	[PLATFORM_TEST_POLICY_TEST]: PLATFORM_TEST_POLICY_TEST,

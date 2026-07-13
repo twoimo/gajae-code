@@ -391,10 +391,12 @@ function createElement(
 		if (!file || file.trim().length === 0 || !testcaseName || testcaseName.trim().length === 0) {
 			throw new Error("JUnit <testcase> must contain non-empty file and name attributes.");
 		}
-		if (!/^[1-9]\d*$/.test(line ?? "") || !Number.isSafeInteger(Number(line))) {
-			throw new Error("JUnit <testcase> must contain a positive safe-integer line attribute.");
+		if (line !== undefined && (!/^[1-9]\d*$/.test(line) || !Number.isSafeInteger(Number(line)))) {
+			throw new Error("JUnit <testcase> must contain a positive safe-integer line attribute when present.");
 		}
-		const identity = `${file}\u0000${line}\u0000${className}\u0000${testcaseName}`;
+		const normalizedLine = line === undefined ? "" : String(Number(line));
+		// Without a line, identical file/classname/name values are conservatively treated as duplicates.
+		const identity = `${file}\u0000${className}\u0000${testcaseName}\u0000${normalizedLine}`;
 		if (testcaseIdentities.has(identity)) {
 			throw new Error("JUnit report contains duplicate testcase identities.");
 		}

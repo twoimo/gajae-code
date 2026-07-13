@@ -10,6 +10,7 @@ import {
 const ROOT_COUNTS = 'tests="1" failures="0" skipped="0"';
 const SUITE_COUNTS = 'tests="1" failures="0" skipped="0"';
 const PASSING_TESTCASE = '<testcase name="case" classname="suite" file="suite.test.ts" line="1" />';
+const PASSING_TESTCASE_WITHOUT_LINE = '<testcase name="case" classname="suite" file="suite.test.ts" />';
 const SKIPPED_TESTCASE = '<testcase name="case" classname="suite" file="suite.test.ts" line="1"><skipped /></testcase>';
 
 function junitRoot(attributes: string, body: string): string {
@@ -33,6 +34,14 @@ describe("verify-platform-test-policy JUnit parsing", () => {
 		expect(skipped).toEqual({ tests: 1, failures: 0, errors: 0, skipped: 1 });
 		validatePlatformTestPolicy("executed", executed, 0);
 		validatePlatformTestPolicy("skipped", skipped, 0);
+	});
+	test("accepts valid Bun JUnit reports without testcase line attributes", () => {
+		expect(parseJunitCounts(junitReport(ROOT_COUNTS, SUITE_COUNTS, PASSING_TESTCASE_WITHOUT_LINE))).toEqual({
+			tests: 1,
+			failures: 0,
+			errors: 0,
+			skipped: 0,
+		});
 	});
 
 	test("reconciles nested Bun suites against their testcase descendants", () => {
@@ -182,18 +191,27 @@ describe("verify-platform-test-policy JUnit parsing", () => {
 		expect(() => validatePlatformTestPolicy("executed", counts, 0)).toThrow("1 errors");
 	});
 
-	test("rejects duplicate and incomplete testcase identities after entity decoding", () => {
+	test("rejects duplicate testcase identities and invalid present line attributes", () => {
 		const first = '<testcase name="case &#x41;" classname="suite" file="suite.test.ts" line="1" />';
 		const second = '<testcase name="case A" classname="suite" file="suite.test.ts" line="1" />';
 		expect(() => parseJunitCounts(junitReport('tests="2" failures="0" skipped="0"', 'tests="2" failures="0" skipped="0"', `${first}${second}`))).toThrow(
 			"duplicate testcase identities",
 		);
+		expect(() =>
+			parseJunitCounts(
+				junitReport('tests="2" failures="0" skipped="0"', 'tests="2" failures="0" skipped="0"', `${PASSING_TESTCASE_WITHOUT_LINE}${PASSING_TESTCASE_WITHOUT_LINE}`),
+			),
+		).toThrow("duplicate testcase identities");
 		expect(() => parseJunitCounts(junitReport(ROOT_COUNTS, SUITE_COUNTS, '<testcase name="case" line="1" />'))).toThrow(
 			"file and name attributes",
 		);
-		expect(() => parseJunitCounts(junitReport(ROOT_COUNTS, SUITE_COUNTS, '<testcase name="case" file="suite.test.ts" line="0" />'))).toThrow(
-			"positive safe-integer line",
-		);
+		for (const line of ["0", "01", "1.5", "9007199254740992"]) {
+			expect(() =>
+				parseJunitCounts(
+					junitReport(ROOT_COUNTS, SUITE_COUNTS, `<testcase name="case" file="suite.test.ts" line="${line}" />`),
+				),
+			).toThrow("positive safe-integer line");
+		}
 	});
 });
 
