@@ -198,7 +198,11 @@ export class DiscordNotificationDaemon {
 			this.#started = false;
 			await this.options.provider.stop();
 		}
-		await Promise.all([...this.#activeWork]);
+		// Drain until quiescent: a tracked task can schedule further tracked work while
+		// we await, and any that outlives stop() would bleed timing pressure into the
+		// next daemon/test. #started is false, so no new recovery timers arm and the
+		// loop terminates.
+		while (this.#activeWork.size > 0) await Promise.all([...this.#activeWork]);
 	}
 
 	async notify(input: DiscordNotificationInput): Promise<DiscordConversation> {
@@ -1441,19 +1445,34 @@ export class DiscordNotificationDaemon {
 		revalidate: () => boolean | Promise<boolean>,
 		terminalizeStaleBeforeProvider = false,
 	): Promise<ChatEffectReceipt> {
-		const initial = await this.#rescheduleAfterEffectTransition(
-			this.#effects.enqueue({ id, kind, transport: "discord", sessionId, endpointGeneration, payload }),
+		const claimed = await this.#rescheduleAfterEffectTransition(
+			this.#effects.enqueueAndClaim<TPayload>(
+				{ id, kind, transport: "discord", sessionId, endpointGeneration, payload },
+				this.#providerOwner,
+				this.#providerLeaseMs,
+			),
 		);
-		if (initial.state === "terminal") {
-			if (!initial.receipt) throw new Error(`Discord effect ${id} has no receipt`);
-			if (terminalizeStaleBeforeProvider && initial.receipt.status === "stale_noop")
-				throw new DiscordEndpointBindingError("Discord thread effect is no longer current.");
-			return initial.receipt;
+		let effect: ChatEffect<TPayload>;
+		if (claimed) {
+			// Fresh effect atomically inserted into a live lease. This closes the
+			// enqueue→claim window in which the same-process lease-recovery timer could
+			// claim the still-"pending" effect first and make this foreground claim fail
+			// with "owned by another worker" (mirrors the inbound enqueueAndClaim path).
+			effect = claimed;
+		} else {
+			const initial = await this.#effects.read<TPayload>(id);
+			if (initial?.state === "terminal") {
+				if (!initial.receipt) throw new Error(`Discord effect ${id} has no receipt`);
+				if (terminalizeStaleBeforeProvider && initial.receipt.status === "stale_noop")
+					throw new DiscordEndpointBindingError("Discord thread effect is no longer current.");
+				return initial.receipt;
+			}
+			const reclaimed = await this.#rescheduleAfterEffectTransition(
+				this.#effects.claim<TPayload>(id, this.#providerOwner, this.#providerLeaseMs),
+			);
+			if (!reclaimed) throw new Error(`Discord effect ${id} is owned by another worker`);
+			effect = reclaimed;
 		}
-		const effect = await this.#rescheduleAfterEffectTransition(
-			this.#effects.claim<TPayload>(id, this.#providerOwner, this.#providerLeaseMs),
-		);
-		if (!effect) throw new Error(`Discord effect ${id} is owned by another worker`);
 		const lease: ChatEffectLease = { owner: this.#providerOwner, epoch: effect.epoch };
 		let renewalLost = false;
 		let revalidationFailed = false;

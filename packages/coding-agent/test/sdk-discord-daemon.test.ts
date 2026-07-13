@@ -510,8 +510,12 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 			const claimed = (await originalEnqueueAndClaim.call(this, input, owner, leaseMs)) as
 				| ChatEffect<TPayload>
 				| undefined;
-			journaled.resolve();
-			await release.promise;
+			// Barrier only the inbound action claim under test; outbound provider
+			// effects also use enqueueAndClaim now and must not trip this fence.
+			if (input.kind === "discord.inbound.action") {
+				journaled.resolve();
+				await release.promise;
+			}
 			return claimed;
 		});
 		try {

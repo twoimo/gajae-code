@@ -1681,6 +1681,11 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 				}),
 			]);
 			expect(await journal.read(effectId)).toMatchObject({ state: "terminal", receipt: { status: "sent" } });
+			for (let attempt = 0; attempt < 20; attempt++) {
+				const current = await daemon.store.read("T1:C1:intent:session");
+				if ((current?.inboundDispatches?.length ?? 0) === 0 && current?.seenEventIds?.includes("event-1")) break;
+				await Bun.sleep(25);
+			}
 			const recovered = await daemon.store.read("T1:C1:intent:session");
 			expect(recovered?.inboundDispatches).toEqual([]);
 			expect(recovered?.seenEventIds).toContain("event-1");

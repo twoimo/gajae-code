@@ -211,7 +211,11 @@ export class SlackNotificationDaemon {
 			this.#started = false;
 			await this.options.provider.stop();
 		}
-		await Promise.all([...this.#activeWork]);
+		// Drain until quiescent: a tracked task can schedule further tracked work
+		// (recovery/reconciliation) while we await, and any that outlives stop() would
+		// bleed timing pressure into the next daemon/test. #started is already false,
+		// so no new lease-recovery timers can be armed and the loop terminates.
+		while (this.#activeWork.size > 0) await Promise.all([...this.#activeWork]);
 	}
 
 	/** Accepted inbound effects are durably claimed before their Socket Mode ACK. */
@@ -1587,7 +1591,10 @@ export class SlackNotificationDaemon {
 		}
 		if (!effect) throw new Error("Slack provider effect is owned by another worker");
 		const lease: ChatEffectLease = { owner: this.#publicationOwnerId, epoch: effect.epoch };
-		// A recovered lease may have crossed the provider boundary before its owner died.
+		// A recovered lease may have crossed the provider boundary before its owner
+		// died, and a fresh post may have reached Slack at a now-superseded generation.
+		// Reconcile first in all cases; when reconciliation proves absence, terminalize
+		// any accepted, uncertain, leased, or stale-generation publication before a replacement.
 		const requiresReconciliation =
 			initial.state === "accepted" ||
 			initial.state === "uncertain" ||
@@ -1595,8 +1602,6 @@ export class SlackNotificationDaemon {
 			!(await this.#providerEffectCurrent(initial));
 		try {
 			const posted = await this.#withEffectLease(id, lease, async () => {
-				if (!requiresReconciliation && !(await this.#providerEffectCurrent(effect!)))
-					throw new SlackStaleEffectError();
 				const found = await this.options.provider.findMessageByClientMsgId({
 					channel: effect!.payload.channel,
 					threadTs: effect!.payload.threadTs,

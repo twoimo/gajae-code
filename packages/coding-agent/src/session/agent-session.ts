@@ -5960,7 +5960,11 @@ export class AgentSession {
 			// terminate preflight rather than retaining SDK prompt authority.
 			if (this.#isPromptPreflightCancelled(generation, preflightSignal)) {
 				this.#resetInjectedContextSignatures();
-				throw promptPreflightCancelledError();
+				// A newer abort/prompt cycle superseded this preflight. Callers awaiting
+				// acceptance (onPreflightAccepted) must be told it never ran; direct
+				// callers (e.g. prompt() aborted during a TTSR wait) resolve gracefully.
+				if (options?.onPreflightAccepted) throw promptPreflightCancelledError();
+				return;
 			}
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
@@ -6054,7 +6058,10 @@ export class AgentSession {
 			// consumed while building context, but no prompt was accepted, so reset them.
 			if (this.#isPromptPreflightCancelled(generation, preflightSignal)) {
 				this.#resetInjectedContextSignatures();
-				throw promptPreflightCancelledError();
+				// Ack-waiting callers are told the preflight never ran; direct callers
+				// (aborted after setup) resolve gracefully as before f24f46ff5.
+				if (options?.onPreflightAccepted) throw promptPreflightCancelledError();
+				return;
 			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
