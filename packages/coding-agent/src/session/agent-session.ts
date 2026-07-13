@@ -2917,6 +2917,13 @@ export class AgentSession {
 	}
 
 	#scheduleAutoContinuePrompt(generation: number): void {
+		// The turn whose agent_end triggered auto-compaction is being continued, so
+		// that agent_end is not a terminal readiness signal. Discard the deferred
+		// agent_end held by #emitSessionEvent (behind the in-flight barriers) before
+		// the post-prompt flush can leak it after auto_compaction_end. The
+		// continuation emits the authoritative terminal agent_end when it settles; on
+		// skip a newer prompt (generation_changed) or the abort path supersedes it.
+		this.#pendingAgentEndEmit = undefined;
 		const continuePrompt = async () => {
 			await this.#promptWithMessage(
 				{

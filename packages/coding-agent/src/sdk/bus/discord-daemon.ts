@@ -693,6 +693,14 @@ export class DiscordNotificationDaemon {
 			let endpoint: DiscordEndpointBinding | null = null;
 			let endpointResolved = false;
 			for (const [index, receipt] of (record.inboundDispatches ?? []).entries()) {
+				// Never race a foreground handleInbound() dispatch: while an effect is
+				// in-flight it briefly unowns itself (record "accepted"/"deferred" before
+				// reclaiming), a window in which recovery could otherwise claim it and
+				// deliver its reply on the recovery timer instead of the awaited path.
+				if (this.#inflightInbound.has(receipt.effectId)) {
+					dispatched.add(receipt.effectId);
+					continue;
+				}
 				if (
 					receipt.kind === "action" &&
 					(record.inboundDispatches ?? [])
@@ -738,6 +746,7 @@ export class DiscordNotificationDaemon {
 				effect.state === "terminal" ||
 				!effect.kind.startsWith("discord.inbound.") ||
 				dispatched.has(effect.id) ||
+				this.#inflightInbound.has(effect.id) ||
 				this.#hasLiveCallbackLease(effect)
 			)
 				continue;
