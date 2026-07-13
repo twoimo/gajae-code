@@ -10,6 +10,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { withFileLock } from "../config/file-lock";
 import type { Settings } from "../config/settings";
 import type {
 	BuiltInDaemonController,
@@ -32,6 +33,7 @@ import {
 	type TelegramDaemonDeps,
 	type TelegramDaemonFs,
 } from "./telegram-daemon";
+import { withCurrentTelegramCustodyEpoch, type TelegramCustodyEpochBinding } from "./telegram-custody-epoch";
 
 const nodeFs: TelegramDaemonFs = fs.promises as unknown as TelegramDaemonFs;
 const DEFAULT_GRACEFUL_TIMEOUT_MS = 8_000;
@@ -44,7 +46,50 @@ export interface TelegramDaemonControlRequest {
 	action: "reload" | "stop";
 	ownerId: string;
 	pid: number;
+	custodyEpoch: number;
 	createdAt: number;
+}
+
+/** A v1 request written before custody epochs existed; never targets a T2 daemon. */
+interface LegacyTelegramDaemonControlRequest {
+	version: 1;
+	requestId: string;
+	action: "reload" | "stop";
+	ownerId: string;
+	pid: number;
+	createdAt: number;
+	custodyEpoch?: undefined;
+}
+
+type TelegramDaemonControlRequestRead = TelegramDaemonControlRequest | LegacyTelegramDaemonControlRequest;
+
+function isCustodyEpoch(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function controlRequestMatchesBinding(
+	request: TelegramDaemonControlRequestRead | undefined,
+	binding: TelegramCustodyEpochBinding,
+): boolean {
+	return Boolean(
+		request &&
+			request.ownerId === binding.ownerId &&
+			request.custodyEpoch === binding.custodyEpoch,
+	);
+}
+
+function isControlRequest(value: unknown): value is TelegramDaemonControlRequestRead {
+	if (!value || typeof value !== "object") return false;
+	const request = value as Record<string, unknown>;
+	return (
+		request.version === 1 &&
+		typeof request.requestId === "string" &&
+		(request.action === "reload" || request.action === "stop") &&
+		typeof request.ownerId === "string" &&
+		typeof request.pid === "number" &&
+		typeof request.createdAt === "number" &&
+		(request.custodyEpoch === undefined || isCustodyEpoch(request.custodyEpoch))
+	);
 }
 
 export function telegramControlRequestPath(agentDir: string): string {
@@ -54,21 +99,21 @@ export function telegramControlRequestPath(agentDir: string): string {
 export async function readTelegramControlRequest(
 	settings: Settings,
 	fsImpl: TelegramDaemonFs = nodeFs,
-): Promise<TelegramDaemonControlRequest | undefined> {
+): Promise<TelegramDaemonControlRequestRead | undefined> {
 	const file = telegramControlRequestPath(settings.getAgentDir());
 	try {
-		const parsed = JSON.parse(await fsImpl.readFile(file, "utf8")) as TelegramDaemonControlRequest;
-		return parsed?.version === 1 ? parsed : undefined;
+		const parsed: unknown = JSON.parse(await fsImpl.readFile(file, "utf8"));
+		return isControlRequest(parsed) ? parsed : undefined;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		return undefined;
 	}
 }
 
-export async function writeTelegramControlRequest(
+async function writeTelegramControlRequestAtomic(
 	settings: Settings,
 	request: TelegramDaemonControlRequest,
-	fsImpl: TelegramDaemonFs = nodeFs,
+	fsImpl: TelegramDaemonFs,
 ): Promise<void> {
 	const dir = daemonPaths(settings.getAgentDir()).dir;
 	await fsImpl.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -79,17 +124,33 @@ export async function writeTelegramControlRequest(
 	await fsImpl.rename(tmp, file);
 }
 
+export async function writeTelegramControlRequest(
+	settings: Settings,
+	request: TelegramDaemonControlRequest,
+	fsImpl: TelegramDaemonFs = nodeFs,
+): Promise<void> {
+	const dir = daemonPaths(settings.getAgentDir()).dir;
+	await fsImpl.mkdir(dir, { recursive: true, mode: 0o700 });
+	const file = telegramControlRequestPath(settings.getAgentDir());
+	await withFileLock(file, async () => {
+		await writeTelegramControlRequestAtomic(settings, request, fsImpl);
+	});
+}
+
 export async function clearTelegramControlRequest(
 	settings: Settings,
 	requestId?: string,
 	fsImpl: TelegramDaemonFs = nodeFs,
+	binding?: TelegramCustodyEpochBinding,
 ): Promise<void> {
 	const file = telegramControlRequestPath(settings.getAgentDir());
-	if (requestId) {
+	await withFileLock(file, async () => {
 		const current = await readTelegramControlRequest(settings, fsImpl);
-		if (current && current.requestId !== requestId) return;
-	}
-	await fsImpl.unlink(file).catch(() => undefined);
+		if (!current) return;
+		if (requestId && current.requestId !== requestId) return;
+		if (binding && !controlRequestMatchesBinding(current, binding)) return;
+		await fsImpl.unlink(file).catch(() => undefined);
+	});
 }
 
 export interface TelegramDaemonControlDeps {
@@ -156,6 +217,24 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			reloadPicksUpSourceEdits: rt.reloadPicksUpSourceEdits,
 			warning: rt.warning,
 		};
+	}
+	private async hasCurrentBinding(binding: TelegramCustodyEpochBinding, pid?: number): Promise<boolean> {
+		const statePath = daemonPaths(this.settings.getAgentDir()).state;
+		return await withFileLock(statePath, async () => {
+			const guarded = await withCurrentTelegramCustodyEpoch(
+				{ agentDir: this.settings.getAgentDir(), binding },
+				async () => {
+					const state = await readDaemonState(this.settings, this.fsImpl);
+					return Boolean(
+						state &&
+							state.ownerId === binding.ownerId &&
+							state.custodyEpoch === binding.custodyEpoch &&
+							(pid === undefined || state.pid === pid),
+					);
+				},
+			);
+			return guarded.ok && guarded.value;
+		});
 	}
 
 	async status(): Promise<DaemonStatus> {
@@ -295,16 +374,57 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			);
 		}
 
-		// Running owner: capture identity, request cooperative stop, signal, wait.
+		// Running owner: capture the complete binding before every control action.
 		const oldOwnerId = before.ownerId as string;
 		const oldPid = before.pid as number;
+		const captured = await readDaemonState(this.settings, this.fsImpl);
+		if (!captured || captured.ownerId !== oldOwnerId || captured.pid !== oldPid) {
+			const after = await this.status();
+			return this.result(action, false, "telegram daemon ownership changed before control request", before, after, warnings);
+		}
+		if (captured.custodyEpoch !== undefined && !isCustodyEpoch(captured.custodyEpoch)) {
+			const after = await this.status();
+			return this.result(action, false, "telegram daemon has an invalid custody epoch", before, after, warnings);
+		}
+		const oldBinding =
+			captured.custodyEpoch === undefined
+				? undefined
+				: { ownerId: captured.ownerId, custodyEpoch: captured.custodyEpoch };
 		const requestId = this.deps.randomId?.() ?? `${this.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-		await writeTelegramControlRequest(
-			this.settings,
-			{ version: 1, requestId, action, ownerId: oldOwnerId, pid: oldPid, createdAt: this.now() },
-			this.fsImpl,
-		);
-		if (this.pidAlive(oldPid)) this.sendSignal(oldPid, "SIGTERM");
+		if (oldBinding) {
+			if (!(await this.hasCurrentBinding(oldBinding, oldPid))) {
+				const after = await this.status();
+				return this.result(
+					action,
+					false,
+					"telegram daemon ownership changed before control request",
+					before,
+					after,
+					warnings,
+				);
+			}
+			await writeTelegramControlRequest(
+				this.settings,
+				{
+					version: 1,
+					requestId,
+					action,
+					ownerId: oldBinding.ownerId,
+					custodyEpoch: oldBinding.custodyEpoch,
+					pid: oldPid,
+					createdAt: this.now(),
+				},
+				this.fsImpl,
+			);
+		} else {
+			// Pre-T2 state is intentionally never assigned epoch zero. SIGTERM still
+			// reaches the legacy process, but it gets no pair-bound request and cannot
+			// participate in T2 force-kill/cleanup paths.
+			warnings.push("legacy telegram daemon lacks custody epoch; using signal-only reload handoff");
+		}
+		if (this.pidAlive(oldPid) && (!oldBinding || (await this.hasCurrentBinding(oldBinding, oldPid)))) {
+			this.sendSignal(oldPid, "SIGTERM");
+		}
 
 		let dead = await this.waitForPidDeath(oldPid, gracefulTimeoutMs);
 		if (!dead) {
@@ -312,7 +432,9 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			const current = await readDaemonState(this.settings, this.fsImpl);
 			const changedToLiveOwner =
 				current !== undefined &&
-				current.ownerId !== oldOwnerId &&
+				(oldBinding
+					? current.ownerId !== oldBinding.ownerId || current.custodyEpoch !== oldBinding.custodyEpoch
+					: current.ownerId !== oldOwnerId || current.custodyEpoch !== undefined) &&
 				isFreshLiveOwner({
 					state: current,
 					now: this.now(),
@@ -321,9 +443,10 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 					pidAlive: this.pidAlive,
 				});
 			if (changedToLiveOwner) {
-				// A different, fresh-live owner already supersedes the old one. Do not
-				// kill it or spawn another; attach to the running daemon.
-				await this.clearOwnRequest(requestId, oldOwnerId);
+				// A fresh binding already supersedes the captured one. Do not kill it
+				// or spawn another; a stale ownerId with a different epoch is equally
+				// protected here.
+				await this.clearOwnRequest(requestId, oldBinding);
 				const after = await this.status();
 				warnings.push("ownership changed to a live owner; attached without spawning");
 				return this.result(
@@ -337,15 +460,15 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 					warnings,
 				);
 			}
-			// No live replacement. Escalate to SIGKILL only with --force and only when
-			// the captured owner/pid still matches, so we never kill a different owner.
-			const stillSameOwner = current !== undefined && current.ownerId === oldOwnerId && current.pid === oldPid;
+			// No live replacement. Escalate only when the captured owner, epoch, and
+			// pid are still current; legacy state deliberately cannot enter this path.
+			const stillSameOwner = oldBinding ? await this.hasCurrentBinding(oldBinding, oldPid) : false;
 			if (opts.force && stillSameOwner && this.pidAlive(oldPid)) {
 				this.sendSignal(oldPid, "SIGKILL");
 				dead = await this.waitForPidDeath(oldPid, killTimeoutMs);
 			}
 			if (!dead) {
-				await this.clearOwnRequest(requestId, oldOwnerId);
+				await this.clearOwnRequest(requestId, oldBinding);
 				const after = await this.status();
 				const message = opts.force
 					? "old daemon did not exit after SIGKILL; refusing to spawn to avoid a Telegram 409 conflict"
@@ -354,8 +477,8 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			}
 		}
 
-		// Old pid is dead: safe to clear our request and proceed.
-		await this.clearOwnRequest(requestId, oldOwnerId);
+		// Old pid is dead: safe to clear only the exact control request and binding.
+		await this.clearOwnRequest(requestId, oldBinding);
 
 		if (action === "stop") {
 			const after = await this.status();
@@ -387,7 +510,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		}
 		return this.result(
 			action,
-			spawned.result !== "disabled",
+			true,
 			`reloaded telegram daemon (${spawned.result})`,
 			before,
 			after,
@@ -395,12 +518,12 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		);
 	}
 
-	/** Clear our own control request unless a newer owner-scoped request replaced it. */
-	private async clearOwnRequest(requestId: string, oldOwnerId: string): Promise<void> {
-		const current = await readTelegramControlRequest(this.settings, this.fsImpl);
-		if (!current) return;
-		if (current.requestId === requestId || current.ownerId === oldOwnerId) {
-			await clearTelegramControlRequest(this.settings, current.requestId, this.fsImpl);
-		}
+	/** Clear only the exact pair-bound request for a still-current owner binding. */
+	private async clearOwnRequest(
+		requestId: string,
+		binding: TelegramCustodyEpochBinding | undefined,
+	): Promise<void> {
+		if (!binding || !(await this.hasCurrentBinding(binding))) return;
+		await clearTelegramControlRequest(this.settings, requestId, this.fsImpl, binding);
 	}
 }

@@ -5,7 +5,19 @@ import { withFileLock } from "../config/file-lock";
 import type { Settings } from "../config/settings";
 import { getNotificationConfig, isTelegramConfigured } from "./config";
 import { daemonPaths } from "./daemon-paths";
-import type { TelegramDaemonOptions } from "./telegram-daemon";
+import {
+	readDaemonState,
+	type TelegramDaemonOptions,
+} from "./telegram-daemon";
+import {
+	clearTelegramControlRequest,
+	readTelegramControlRequest,
+} from "./telegram-daemon-control";
+import {
+	readTelegramCustodyEpoch,
+	withCurrentTelegramCustodyEpoch,
+	type TelegramCustodyEpochBinding,
+} from "./telegram-custody-epoch";
 
 type TelegramDaemonRunner = {
 	run(): Promise<void>;
@@ -26,6 +38,43 @@ export interface RunDaemonInternalDeps {
 function argValue(argv: string[], name: string): string | undefined {
 	const i = argv.indexOf(name);
 	return i >= 0 ? argv[i + 1] : undefined;
+}
+function parseCustodyEpochArg(argv: string[]): number {
+	const indices = argv.reduce<number[]>((found, value, index) => {
+		if (value === "--custody-epoch") found.push(index);
+		return found;
+	}, []);
+	if (indices.length !== 1) throw new Error("missing or duplicate --custody-epoch");
+	const raw = argv[indices[0]! + 1];
+	if (typeof raw !== "string" || !/^[1-9]\d*$/.test(raw)) {
+		throw new Error("invalid --custody-epoch");
+	}
+	const custodyEpoch = Number(raw);
+	if (!Number.isSafeInteger(custodyEpoch) || String(custodyEpoch) !== raw) {
+		throw new Error("invalid --custody-epoch");
+	}
+	return custodyEpoch;
+}
+
+async function withCurrentDaemonBinding<T>(
+	settings: Settings,
+	binding: TelegramCustodyEpochBinding,
+	operation: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false }> {
+	return await withFileLock(daemonPaths(settings.getAgentDir()).state, async () => {
+		const guarded = await withCurrentTelegramCustodyEpoch(
+			{ agentDir: settings.getAgentDir(), binding },
+			async () => {
+				const state = await readDaemonState(settings);
+				if (state?.ownerId !== binding.ownerId || state.custodyEpoch !== binding.custodyEpoch) {
+					return { ok: false } as const;
+				}
+				return { ok: true, value: await operation() } as const;
+			},
+		);
+		if (!guarded.ok || !guarded.value.ok) return { ok: false };
+		return guarded.value;
+	});
 }
 
 function getByPath(obj: unknown, pathSegments: string[]): unknown {
@@ -193,20 +242,30 @@ export async function runDaemonInternal(argv: string[], deps: RunDaemonInternalD
 	if (smoke) return runDaemonSmoke({ agentDir });
 	const ownerId = argValue(argv, "--owner-id");
 	if (!ownerId) throw new Error("missing --owner-id");
+	const custodyEpoch = parseCustodyEpochArg(argv);
 	if (!ownerProcessIsAlive(ownerId, deps)) {
 		process.stderr.write(`GJC notify daemon exiting: owner process from --owner-id ${ownerId} is not alive.\n`);
 		return;
 	}
 	const resolvedAgentDir = agentDir ?? process.env.GJC_CODING_AGENT_DIR ?? path.join(process.cwd(), ".gjc", "agent");
 	const settings = await resolveDaemonSettings(resolvedAgentDir, deps);
+	const binding = { ownerId, custodyEpoch };
+	const state = await readDaemonState(settings as Settings);
+	if (state?.ownerId !== binding.ownerId || state.custodyEpoch !== binding.custodyEpoch) {
+		throw new Error("Telegram daemon ownership state does not match --owner-id and --custody-epoch");
+	}
+	const currentEpoch = await readTelegramCustodyEpoch({ agentDir: resolvedAgentDir });
+	if (currentEpoch.ownerId !== binding.ownerId || currentEpoch.custodyEpoch !== binding.custodyEpoch) {
+		throw new Error("Telegram custody epoch does not match daemon ownership state");
+	}
 	const cfg = getNotificationConfig(settings as Settings);
 	if (!isTelegramConfigured(cfg)) return;
-	const { clearTelegramControlRequest, readTelegramControlRequest } = await import("./telegram-daemon-control");
 	const Daemon: TelegramDaemonConstructor =
 		deps.DaemonImpl ?? (await import("./telegram-daemon")).TelegramNotificationDaemon;
 	const daemon = new Daemon({
 		settings: settings as Settings,
 		ownerId,
+		custodyEpoch,
 		botToken: cfg.botToken,
 		chatId: cfg.chatId,
 		idleTimeoutMs: cfg.idleTimeoutMs,
@@ -215,17 +274,38 @@ export async function runDaemonInternal(argv: string[], deps: RunDaemonInternalD
 		topics: cfg.topics,
 		pid: deps.processPid ?? process.pid,
 		control: {
-			shouldStop: async owner => {
-				const req = await readTelegramControlRequest(settings as Settings);
-				return Boolean(req && (!req.ownerId || req.ownerId === owner));
+			shouldStop: async (requestOwnerId, requestCustodyEpoch) => {
+				const current = await withCurrentDaemonBinding(
+					settings as Settings,
+					{ ownerId: requestOwnerId, custodyEpoch: requestCustodyEpoch },
+					async () => await readTelegramControlRequest(settings as Settings),
+				);
+				return Boolean(
+					current.ok &&
+						current.value !== undefined &&
+						current.value.ownerId === requestOwnerId &&
+						current.value.custodyEpoch === requestCustodyEpoch,
+				);
 			},
-			clear: async owner => {
-				const req = await readTelegramControlRequest(settings as Settings);
-				// Only clear a request that targets this daemon owner, so an exiting
-				// daemon never erases a newer request meant for a different owner.
-				if (req && (!req.ownerId || req.ownerId === owner)) {
-					await clearTelegramControlRequest(settings as Settings, req.requestId);
-				}
+			clear: async (requestOwnerId, requestCustodyEpoch) => {
+				await withCurrentDaemonBinding(
+					settings as Settings,
+					{ ownerId: requestOwnerId, custodyEpoch: requestCustodyEpoch },
+					async () => {
+						const request = await readTelegramControlRequest(settings as Settings);
+						if (
+							request?.ownerId === requestOwnerId &&
+							request.custodyEpoch === requestCustodyEpoch
+						) {
+							await clearTelegramControlRequest(
+								settings as Settings,
+								request.requestId,
+								undefined,
+								{ ownerId: requestOwnerId, custodyEpoch: requestCustodyEpoch },
+							);
+						}
+					},
+				);
 			},
 		},
 	});

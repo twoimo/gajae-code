@@ -92,6 +92,7 @@ function makeDaemon(s: Settings, factory: LifecycleControlServerFactory | null):
 	return new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: fakeBot,

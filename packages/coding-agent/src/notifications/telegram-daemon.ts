@@ -47,6 +47,12 @@ import { listRecentSessions } from "./recent-activity";
 import { ReplySentStore } from "./reply-sent-store";
 import { DraftStreamState, deliverDraft, shouldStreamDraft } from "./rich-draft";
 import { deliverRichActionWithFallback, deliverRichWithFallback, shouldPromoteRich } from "./rich-render";
+import {
+	allocateTelegramCustodyEpoch,
+	readTelegramCustodyEpoch,
+	withCurrentTelegramCustodyEpoch,
+	type TelegramCustodyEpochBinding,
+} from "./telegram-custody-epoch";
 import { type TelegramCustodyLoadResult, TelegramCustodyStore } from "./telegram-custody-store";
 import {
 	type AliasTable,
@@ -66,6 +72,11 @@ export type EnsureDaemonResult = "owner_spawned" | "attached" | "disabled" | "bl
 export interface DaemonState {
 	pid: number;
 	ownerId: string;
+	/**
+	 * Required on all T2 writes. Optional only so a pre-T2 state can be routed
+	 * through the generation-reload handoff; it is never treated as epoch zero.
+	 */
+	custodyEpoch?: number;
 	tokenFingerprint: string;
 	chatId: string;
 	startedAt: number;
@@ -297,9 +308,14 @@ async function readJson<T>(fsImpl: TelegramDaemonFs, file: string): Promise<T | 
 
 async function writeJsonAtomic(fsImpl: TelegramDaemonFs, file: string, data: unknown): Promise<void> {
 	const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-	await fsImpl.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-	await fsImpl.chmod(tmp, 0o600).catch(() => undefined);
-	await fsImpl.rename(tmp, file);
+	try {
+		await fsImpl.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+		await fsImpl.chmod(tmp, 0o600).catch(() => undefined);
+		await fsImpl.rename(tmp, file);
+	} catch (error) {
+		await fsImpl.unlink(tmp).catch(() => undefined);
+		throw error;
+	}
 }
 
 async function tryOpenWx(fsImpl: TelegramDaemonFs, file: string): Promise<boolean> {
@@ -381,6 +397,45 @@ export function isFreshLiveOwner(input: {
 	);
 }
 
+export type DaemonOwnershipResult =
+	| {
+			acquired: true;
+			ownerId: string;
+			custodyEpoch: number;
+			attached?: false;
+			blocked?: false;
+			reason?: never;
+			reloadRequired?: never;
+	  }
+	| {
+			acquired: false;
+			ownerId?: undefined;
+			custodyEpoch?: undefined;
+			attached?: boolean;
+			blocked?: boolean;
+			reason?: "identity_mismatch";
+			reloadRequired?: boolean;
+	  };
+
+function isCustodyEpoch(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function ownerBindingMatches(
+	state: DaemonState | undefined,
+	binding: TelegramCustodyEpochBinding,
+): state is DaemonState & { custodyEpoch: number } {
+	return Boolean(
+		state && state.ownerId === binding.ownerId && state.custodyEpoch === binding.custodyEpoch,
+	);
+}
+
+function assertValidPersistedStateEpoch(state: DaemonState | undefined): void {
+	if (state?.custodyEpoch !== undefined && !isCustodyEpoch(state.custodyEpoch)) {
+		throw new Error("invalid Telegram daemon custody epoch in persisted ownership state");
+	}
+}
+
 export async function acquireDaemonOwnership(input: {
 	settings: Settings;
 	roots?: string[];
@@ -391,14 +446,7 @@ export async function acquireDaemonOwnership(input: {
 	pid?: number;
 	pidAlive?: (pid: number) => boolean;
 	randomId?: () => string;
-}): Promise<{
-	acquired: boolean;
-	ownerId?: string;
-	attached?: boolean;
-	blocked?: boolean;
-	reason?: "identity_mismatch";
-	reloadRequired?: boolean;
-}> {
+}): Promise<DaemonOwnershipResult> {
 	const fsImpl = input.fs ?? nodeFs;
 	const now = input.now ?? Date.now;
 	const pid = input.pid ?? process.pid;
@@ -408,76 +456,85 @@ export async function acquireDaemonOwnership(input: {
 	const ownerId = input.randomId?.() ?? `${pid}-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 	const roots = input.roots ?? (await readJson<{ roots?: string[] }>(fsImpl, paths.roots))?.roots ?? [];
 
-	// A fresh, identity-matching live owner running an OLDER generation than this
-	// build cannot serve our newer wire frames; signal a reload instead of a
-	// silent attach. Newer/equal generations attach as before (no downgrade).
-	const attachDecision = (
-		state: DaemonState | undefined,
-	): { acquired: false; attached: boolean; reloadRequired?: boolean } | undefined => {
-		if (
-			!isFreshLiveOwner({
-				state,
-				now: now(),
+	return await withFileLock(paths.state, async () => {
+		// A fresh, identity-matching live owner running an OLDER generation than this
+		// build cannot serve our newer wire frames; signal a reload instead of a
+		// silent attach. Newer/equal generations attach as before (no downgrade).
+		const attachDecision = async (
+			state: DaemonState | undefined,
+		): Promise<{ acquired: false; attached: boolean; reloadRequired?: boolean } | undefined> => {
+			assertValidPersistedStateEpoch(state);
+			if (
+				!isFreshLiveOwner({
+					state,
+					now: now(),
+					tokenFingerprint: input.tokenFingerprint,
+					chatId: input.chatId,
+					pidAlive,
+				})
+			) {
+				return undefined;
+			}
+			// A legacy owner has no fence token. Treat it exactly like a stale
+			// generation: reload it rather than inventing custody epoch zero.
+			if (state?.custodyEpoch === undefined) {
+				return { acquired: false, attached: false, reloadRequired: true };
+			}
+			const binding = await readTelegramCustodyEpoch({ agentDir: input.settings.getAgentDir() });
+			if (!ownerBindingMatches(state, binding)) {
+				throw new Error("Telegram daemon custody epoch does not match persisted ownership state");
+			}
+			return (state.generation ?? 0) < DAEMON_GENERATION
+				? { acquired: false, attached: false, reloadRequired: true }
+				: { acquired: false, attached: true };
+		};
+
+		const publishOwnership = async (): Promise<DaemonOwnershipResult> => {
+			let binding: TelegramCustodyEpochBinding;
+			try {
+				binding = await allocateTelegramCustodyEpoch({
+					agentDir: input.settings.getAgentDir(),
+					ownerId,
+				});
+			} catch (error) {
+				// We own the physical lock while the state mutex is held. Allocation
+				// may have durably consumed an epoch before a later barrier failed;
+				// unlock without attempting to reset or reuse that epoch.
+				await fsImpl.unlink(paths.lock).catch(() => undefined);
+				throw error;
+			}
+			const state: DaemonState = {
+				pid,
+				ownerId: binding.ownerId,
+				custodyEpoch: binding.custodyEpoch,
 				tokenFingerprint: input.tokenFingerprint,
 				chatId: input.chatId,
-				pidAlive,
-			})
-		) {
-			return undefined;
-		}
-		return (state?.generation ?? 0) < DAEMON_GENERATION
-			? { acquired: false, attached: false, reloadRequired: true }
-			: { acquired: false, attached: true };
-	};
-	const existing = await readJson<DaemonState>(fsImpl, paths.state);
-	if (
-		liveOwnerUsesDifferentIdentity({
-			state: existing,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			pidAlive,
-		})
-	) {
-		return { acquired: false, blocked: true, reason: "identity_mismatch" };
-	}
-	const existingDecision = attachDecision(existing);
-	if (existingDecision) return existingDecision;
-	if (await tryOpenWx(fsImpl, paths.lock)) {
-		await writeJsonAtomic(fsImpl, paths.state, {
-			pid,
-			ownerId,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			startedAt: now(),
-			heartbeatAt: now(),
-			roots,
-			version: DAEMON_VERSION,
-			generation: DAEMON_GENERATION,
-		} satisfies DaemonState);
-		return { acquired: true, ownerId };
-	}
-	const afterLock = await readJson<DaemonState>(fsImpl, paths.state);
-	if (
-		liveOwnerUsesDifferentIdentity({
-			state: afterLock,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			pidAlive,
-		})
-	) {
-		return { acquired: false, blocked: true, reason: "identity_mismatch" };
-	}
-	const afterLockDecision = attachDecision(afterLock);
-	if (afterLockDecision) return afterLockDecision;
-	if (!afterLock) return { acquired: false, attached: true };
-	if (!(await tryOpenWx(fsImpl, paths.steal))) return { acquired: false, attached: true };
-	try {
-		const rechecked = await readJson<DaemonState>(fsImpl, paths.state);
-		const recheckedDecision = attachDecision(rechecked);
-		if (recheckedDecision) return recheckedDecision;
+				startedAt: now(),
+				heartbeatAt: now(),
+				roots,
+				version: DAEMON_VERSION,
+				generation: DAEMON_GENERATION,
+			};
+			try {
+				await writeJsonAtomic(fsImpl, paths.state, state);
+			} catch (error) {
+				// The physical lock is ours while this state mutex is held. If the
+				// daemon-state publication never appeared, or still names this exact
+				// binding, remove it so the next attempt consumes a higher epoch.
+				const current = await readJson<DaemonState>(fsImpl, paths.state).catch(() => undefined);
+				if (!current || ownerBindingMatches(current, binding)) {
+					await fsImpl.unlink(paths.lock).catch(() => undefined);
+				}
+				throw error;
+			}
+			return { acquired: true, ownerId: binding.ownerId, custodyEpoch: binding.custodyEpoch };
+		};
+
+		const existing = await readJson<DaemonState>(fsImpl, paths.state);
+		assertValidPersistedStateEpoch(existing);
 		if (
 			liveOwnerUsesDifferentIdentity({
-				state: rechecked,
+				state: existing,
 				tokenFingerprint: input.tokenFingerprint,
 				chatId: input.chatId,
 				pidAlive,
@@ -485,59 +542,109 @@ export async function acquireDaemonOwnership(input: {
 		) {
 			return { acquired: false, blocked: true, reason: "identity_mismatch" };
 		}
-		if (rechecked && pidAlive(rechecked.pid)) {
-			return { acquired: false, attached: true };
+		const existingDecision = await attachDecision(existing);
+		if (existingDecision) return existingDecision;
+		if (await tryOpenWx(fsImpl, paths.lock)) return await publishOwnership();
+
+		const afterLock = await readJson<DaemonState>(fsImpl, paths.state);
+		assertValidPersistedStateEpoch(afterLock);
+		if (
+			liveOwnerUsesDifferentIdentity({
+				state: afterLock,
+				tokenFingerprint: input.tokenFingerprint,
+				chatId: input.chatId,
+				pidAlive,
+			})
+		) {
+			return { acquired: false, blocked: true, reason: "identity_mismatch" };
 		}
-		await fsImpl.unlink(paths.lock).catch(() => undefined);
-		if (!(await tryOpenWx(fsImpl, paths.lock))) return { acquired: false, attached: true };
-		await writeJsonAtomic(fsImpl, paths.state, {
-			pid,
-			ownerId,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			startedAt: now(),
-			heartbeatAt: now(),
-			roots,
-			version: DAEMON_VERSION,
-			generation: DAEMON_GENERATION,
-		} satisfies DaemonState);
-		return { acquired: true, ownerId };
-	} finally {
-		await fsImpl.unlink(paths.steal).catch(() => undefined);
-	}
+		const afterLockDecision = await attachDecision(afterLock);
+		if (afterLockDecision) return afterLockDecision;
+		// A process can crash after durable epoch publication but before state
+		// publication. Under the state mutex, no state means this orphaned physical
+		// lock has no live owner and can be reclaimed; the next allocation skips it.
+		if (!afterLock) {
+			await fsImpl.unlink(paths.lock).catch(() => undefined);
+			if (!(await tryOpenWx(fsImpl, paths.lock))) return { acquired: false, attached: true };
+			return await publishOwnership();
+		}
+		if (!(await tryOpenWx(fsImpl, paths.steal))) return { acquired: false, attached: true };
+		try {
+			const rechecked = await readJson<DaemonState>(fsImpl, paths.state);
+			assertValidPersistedStateEpoch(rechecked);
+			if (
+				liveOwnerUsesDifferentIdentity({
+					state: rechecked,
+					tokenFingerprint: input.tokenFingerprint,
+					chatId: input.chatId,
+					pidAlive,
+				})
+			) {
+				return { acquired: false, blocked: true, reason: "identity_mismatch" };
+			}
+			const recheckedDecision = await attachDecision(rechecked);
+			if (recheckedDecision) return recheckedDecision;
+			if (rechecked && pidAlive(rechecked.pid)) return { acquired: false, attached: true };
+			await fsImpl.unlink(paths.lock).catch(() => undefined);
+			if (!(await tryOpenWx(fsImpl, paths.lock))) return { acquired: false, attached: true };
+			return await publishOwnership();
+		} finally {
+			await fsImpl.unlink(paths.steal).catch(() => undefined);
+		}
+	});
 }
 
 export async function renewDaemonHeartbeat(input: {
 	settings: Settings;
 	ownerId: string;
+	custodyEpoch: number;
 	fs?: TelegramDaemonFs;
 	now?: () => number;
 	pid?: number;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	const state = await readJson<DaemonState>(fsImpl, paths.state);
-	if (!state || state.ownerId !== input.ownerId) return false;
-	await writeJsonAtomic(fsImpl, paths.state, {
-		...state,
-		pid: input.pid ?? state.pid,
-		heartbeatAt: (input.now ?? Date.now)(),
+	const binding = { ownerId: input.ownerId, custodyEpoch: input.custodyEpoch };
+	return await withFileLock(paths.state, async () => {
+		const guarded = await withCurrentTelegramCustodyEpoch(
+			{ agentDir: input.settings.getAgentDir(), binding },
+			async () => {
+				const state = await readJson<DaemonState>(fsImpl, paths.state);
+				if (!ownerBindingMatches(state, binding)) return false;
+				await writeJsonAtomic(fsImpl, paths.state, {
+					...state,
+					pid: input.pid ?? state.pid,
+					heartbeatAt: (input.now ?? Date.now)(),
+				});
+				return true;
+			},
+		);
+		return guarded.ok ? guarded.value : false;
 	});
-	return true;
 }
 
 export async function releaseDaemonOwnership(input: {
 	settings: Settings;
 	ownerId: string;
+	custodyEpoch: number;
 	fs?: TelegramDaemonFs;
 	now?: () => number;
 }): Promise<void> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	const state = await readJson<DaemonState>(fsImpl, paths.state);
-	if (state?.ownerId !== input.ownerId) return;
-	await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
-	await fsImpl.unlink(paths.lock).catch(() => undefined);
+	const binding = { ownerId: input.ownerId, custodyEpoch: input.custodyEpoch };
+	await withFileLock(paths.state, async () => {
+		const guarded = await withCurrentTelegramCustodyEpoch(
+			{ agentDir: input.settings.getAgentDir(), binding },
+			async () => {
+				const state = await readJson<DaemonState>(fsImpl, paths.state);
+				if (!ownerBindingMatches(state, binding)) return;
+				await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
+				await fsImpl.unlink(paths.lock).catch(() => undefined);
+			},
+		);
+		void guarded;
+	});
 }
 
 /** Read the persisted daemon ownership state (or undefined when absent). */
@@ -598,29 +705,45 @@ export interface TelegramSpawnOwnerInput {
 	chatId: string;
 }
 
-export interface TelegramSpawnOwnerResult {
-	result: EnsureDaemonResult;
-	ownerId?: string;
-	runtime: DaemonRuntimeInfo;
-	warnings: string[];
-	/**
-	 * Set when ownership was NOT acquired because a still-live owner is running an
-	 * older daemon generation. The caller must hand off via a reload rather than
-	 * attach; see {@link ensureTelegramDaemonRunning}.
-	 */
-	reloadRequired?: boolean;
-}
+export type TelegramSpawnOwnerResult =
+	| {
+			result: "owner_spawned";
+			ownerId: string;
+			custodyEpoch: number;
+			runtime: DaemonRuntimeInfo;
+			warnings: string[];
+			reloadRequired?: false;
+	  }
+	| {
+			result: "attached" | "blocked";
+			ownerId?: undefined;
+			custodyEpoch?: undefined;
+			runtime: DaemonRuntimeInfo;
+			warnings: string[];
+			/**
+			 * Set when ownership was NOT acquired because a still-live owner is
+			 * running an older daemon generation. The caller must hand off via a
+			 * reload rather than attach; see {@link ensureTelegramDaemonRunning}.
+			 */
+			reloadRequired?: boolean;
+	  };
 
 /**
  * Build the detached spawn command/args for the daemon-internal entrypoint.
  * Source mode prepends the entry script so the respawn loads edited source;
  * a compiled binary self-spawns its own subcommand directly.
  */
-export function buildTelegramDaemonSpawnArgs(input: { execPath?: string; ownerId: string; agentDir: string }): {
+export function buildTelegramDaemonSpawnArgs(input: {
+	execPath?: string;
+	ownerId: string;
+	custodyEpoch: number;
+	agentDir: string;
+}): {
 	command: string;
 	args: string[];
 	runtime: DaemonRuntimeInfo;
 } {
+	if (!isCustodyEpoch(input.custodyEpoch)) throw new Error("invalid Telegram daemon custody epoch");
 	const rt = resolveGjcRuntimeSpawnInfo(input.execPath ?? process.execPath);
 	const args = [
 		...rt.argsPrefix,
@@ -628,6 +751,8 @@ export function buildTelegramDaemonSpawnArgs(input: { execPath?: string; ownerId
 		"daemon-internal",
 		"--owner-id",
 		input.ownerId,
+		"--custody-epoch",
+		String(input.custodyEpoch),
 		"--agent-dir",
 		input.agentDir,
 	];
@@ -663,13 +788,17 @@ export async function spawnTelegramDaemonOwner(
 		pidAlive: deps.pidAlive,
 		randomId: deps.randomId,
 	});
-	// One source of truth for runtime detection + spawn args (no duplicate resolve).
-	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
-		execPath,
-		ownerId: ownership.ownerId ?? "",
-		agentDir,
-	});
+	const runtimeInfo = (): DaemonRuntimeInfo => {
+		const rt = resolveGjcRuntimeSpawnInfo(execPath);
+		return {
+			mode: rt.mode,
+			execPath: rt.execPath,
+			reloadPicksUpSourceEdits: rt.reloadPicksUpSourceEdits,
+			warning: rt.warning,
+		};
+	};
 	if (!ownership.acquired) {
+		const runtime = runtimeInfo();
 		if (ownership.blocked) {
 			return {
 				result: "blocked",
@@ -679,14 +808,37 @@ export async function spawnTelegramDaemonOwner(
 		}
 		return { result: "attached", runtime, warnings: [], reloadRequired: ownership.reloadRequired };
 	}
-	const spawnImpl = deps.spawn ?? defaultDaemonSpawn;
-	const child = spawnImpl(command, args, {
-		detached: true,
-		stdio: "ignore",
-		logPath: path.join(daemonPaths(agentDir).dir, "daemon.log"),
+	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
+		execPath,
+		ownerId: ownership.ownerId,
+		custodyEpoch: ownership.custodyEpoch,
+		agentDir,
 	});
-	child?.unref?.();
-	return { result: "owner_spawned", ownerId: ownership.ownerId, runtime, warnings: [] };
+	const spawnImpl = deps.spawn ?? defaultDaemonSpawn;
+	try {
+		const child = spawnImpl(command, args, {
+			detached: true,
+			stdio: "ignore",
+			logPath: path.join(daemonPaths(agentDir).dir, "daemon.log"),
+		});
+		child?.unref?.();
+	} catch (error) {
+		await releaseDaemonOwnership({
+			settings: input.settings,
+			ownerId: ownership.ownerId,
+			custodyEpoch: ownership.custodyEpoch,
+			fs: deps.fs,
+			now: deps.now,
+		});
+		throw error;
+	}
+	return {
+		result: "owner_spawned",
+		ownerId: ownership.ownerId,
+		custodyEpoch: ownership.custodyEpoch,
+		runtime,
+		warnings: [],
+	};
 }
 
 export async function ensureTelegramDaemonRunning(
@@ -922,15 +1074,16 @@ export class TelegramEventDispatchState {
  * file so the daemon does not import the control module directly.
  */
 export interface DaemonControlHooks {
-	/** Returns true when a stop/reload has been requested for this owner. */
-	shouldStop(ownerId: string): Promise<boolean>;
-	/** Clear a consumed control request (best-effort). */
-	clear?(ownerId: string): Promise<void>;
+	/** Returns true when a stop/reload has been requested for this owner binding. */
+	shouldStop(ownerId: string, custodyEpoch: number): Promise<boolean>;
+	/** Clear a consumed control request (best-effort) for this owner binding. */
+	clear?(ownerId: string, custodyEpoch: number): Promise<void>;
 }
 
 export interface TelegramDaemonOptions {
 	settings: Settings;
 	ownerId: string;
+	custodyEpoch: number;
 	botToken: string;
 	chatId: string;
 	apiBase?: string;
@@ -1438,6 +1591,9 @@ export class TelegramNotificationDaemon {
 			agentDir: opts.settings.getAgentDir(),
 			fs: opts.fs,
 			now: opts.now,
+			fence: {
+				binding: { ownerId: opts.ownerId, custodyEpoch: opts.custodyEpoch },
+			},
 		});
 		this.aliasTable = createAliasTable();
 		this.botApi =
@@ -3231,6 +3387,7 @@ export class TelegramNotificationDaemon {
 		this.running = await renewDaemonHeartbeat({
 			settings: this.opts.settings,
 			ownerId: this.opts.ownerId,
+			custodyEpoch: this.opts.custodyEpoch,
 			fs: this.fsImpl,
 			now: this.opts.now,
 			pid: this.opts.pid ?? process.pid,
@@ -3259,6 +3416,7 @@ export class TelegramNotificationDaemon {
 					!(await renewDaemonHeartbeat({
 						settings: this.opts.settings,
 						ownerId: this.opts.ownerId,
+						custodyEpoch: this.opts.custodyEpoch,
 						fs: this.fsImpl,
 						now: this.opts.now,
 						pid: this.opts.pid ?? process.pid,
@@ -3308,10 +3466,11 @@ export class TelegramNotificationDaemon {
 			await this.persistAliases().catch(() => undefined);
 			await this.persistTopics().catch(() => undefined);
 			await this.persistSeenUpdateIds().catch(() => undefined);
-			await this.opts.control?.clear?.(this.opts.ownerId).catch(() => undefined);
+			await this.opts.control?.clear?.(this.opts.ownerId, this.opts.custodyEpoch).catch(() => undefined);
 			await releaseDaemonOwnership({
 				settings: this.opts.settings,
 				ownerId: this.opts.ownerId,
+				custodyEpoch: this.opts.custodyEpoch,
 				fs: this.fsImpl,
 				now: this.opts.now,
 			});
@@ -3323,7 +3482,7 @@ export class TelegramNotificationDaemon {
 		if (this.runtime.stopRequested) return true;
 		if (!this.opts.control) return false;
 		try {
-			return await this.opts.control.shouldStop(this.opts.ownerId);
+			return await this.opts.control.shouldStop(this.opts.ownerId, this.opts.custodyEpoch);
 		} catch {
 			return false;
 		}

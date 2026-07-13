@@ -62,6 +62,7 @@ function freshState(extra: Partial<Record<string, unknown>> = {}): Record<string
 	return {
 		pid: 999,
 		ownerId: "old",
+		custodyEpoch: 1,
 		tokenFingerprint: tokenFingerprint(BOT_TOKEN),
 		chatId: "42",
 		startedAt: Date.now(),
@@ -229,11 +230,13 @@ describe("control request helpers", () => {
 			action: "reload",
 			ownerId: "owner-a",
 			pid: 123,
+			custodyEpoch: 1,
 			createdAt: Date.now(),
 		});
 		const read = await readTelegramControlRequest(s);
 		expect(read?.requestId).toBe("r1");
 		expect(read?.ownerId).toBe("owner-a");
+		expect(read?.custodyEpoch).toBe(1);
 
 		// Clearing with a mismatched requestId must not remove a newer request.
 		await clearTelegramControlRequest(s, "different-id");

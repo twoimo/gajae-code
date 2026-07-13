@@ -1,5 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+	type TelegramCustodyEpochBinding,
+	type TelegramCustodyEpochFs,
+	withCurrentTelegramCustodyEpoch,
+} from "./telegram-custody-epoch";
 import { daemonPaths } from "./daemon-paths";
 
 export const TELEGRAM_CUSTODY_SCHEMA_VERSION = 2;
@@ -25,7 +30,7 @@ export interface TelegramCustodyLoadResult {
 	records: readonly TelegramCustodyRecord[];
 }
 
-export type TelegramCustodyWriteResult = { ok: true } | { ok: false; reason: "read_only" };
+export type TelegramCustodyWriteResult = { ok: true } | { ok: false; reason: "read_only" | "fenced" };
 
 export interface TelegramCustodyStoreFs {
 	mkdir(path: string, opts?: fs.MakeDirectoryOptions): Promise<unknown>;
@@ -322,19 +327,37 @@ function hasDuplicateObjectKeys(source: string): boolean {
 }
 
 export class TelegramCustodyStore {
+	readonly #agentDir: string;
 	readonly #dir: string;
 	readonly #file: string;
 	readonly #fsImpl: TelegramCustodyStoreFs;
 	readonly #now: () => number;
+	readonly #fence: { binding: TelegramCustodyEpochBinding; fs?: TelegramCustodyEpochFs } | undefined;
 	#mode: StoreMode = "writable";
 	#records = new Map<string, TelegramCustodyRecord>();
 	#operations: Promise<void> = Promise.resolve();
 
-	constructor(input: { agentDir: string; fs?: TelegramCustodyStoreFs; now?: () => number }) {
+	constructor(input: {
+		agentDir: string;
+		fs?: TelegramCustodyStoreFs;
+		now?: () => number;
+		fence?: { binding: TelegramCustodyEpochBinding; fs?: TelegramCustodyEpochFs };
+	}) {
+		this.#agentDir = input.agentDir;
 		this.#dir = daemonPaths(input.agentDir).dir;
 		this.#file = path.join(this.#dir, CUSTODY_FILENAME);
 		this.#fsImpl = input.fs ?? nodeFs;
 		this.#now = input.now ?? Date.now;
+		this.#fence =
+			input.fence === undefined
+				? undefined
+				: {
+						binding: {
+							ownerId: input.fence.binding.ownerId,
+							custodyEpoch: input.fence.binding.custodyEpoch,
+						},
+						fs: input.fence.fs,
+					};
 	}
 
 	async load(): Promise<TelegramCustodyLoadResult> {
@@ -358,10 +381,17 @@ export class TelegramCustodyStore {
 		const copy = cloneRecord(validated);
 		return this.#serializeOperation<TelegramCustodyWriteResult>(async () => {
 			if (this.#mode === "read_only") return { ok: false, reason: "read_only" };
+			if (this.#fence) {
+				if (copy.custodyEpoch !== undefined && copy.custodyEpoch !== this.#fence.binding.custodyEpoch) {
+					return { ok: false, reason: "fenced" };
+				}
+				copy.custodyEpoch = this.#fence.binding.custodyEpoch;
+			}
 			const next = new Map(this.#records);
 			next.set(telegramCustodyKey(copy.chatId, copy.topicId), copy);
 			if (next.size > TELEGRAM_CUSTODY_MAX_RECORDS) throw new Error("Telegram custody record limit exceeded");
-			await this.#persist(next.values());
+			const persisted = await this.#persist(next.values());
+			if (!persisted.ok) return persisted;
 			this.#records = next;
 			return { ok: true };
 		});
@@ -373,7 +403,8 @@ export class TelegramCustodyStore {
 			if (this.#mode === "read_only") return { ok: false, reason: "read_only" };
 			const next = new Map(this.#records);
 			next.delete(key);
-			await this.#persist(next.values());
+			const persisted = await this.#persist(next.values());
+			if (!persisted.ok) return persisted;
 			this.#records = next;
 			return { ok: true };
 		});
@@ -413,7 +444,9 @@ export class TelegramCustodyStore {
 			const records = classifyV2Records(v2.value.records);
 			if (v2.value.hasInFlight) {
 				try {
-					await this.#persist(records);
+					if (!(await this.#persist(records)).ok) {
+						return this.#readOnly("migration_write_failed", records);
+					}
 				} catch {
 					return this.#readOnly("migration_write_failed", records);
 				}
@@ -427,7 +460,9 @@ export class TelegramCustodyStore {
 		if (!v1.ok) return this.#readOnly(v2.reason === "bounds" || v1.reason === "bounds" ? "bounds" : "corrupt", []);
 
 		try {
-			await this.#persist(v1.value.records);
+			if (!(await this.#persist(v1.value.records)).ok) {
+				return this.#readOnly("migration_write_failed", v1.value.records);
+			}
 		} catch {
 			return this.#readOnly("migration_write_failed", v1.value.records);
 		}
@@ -454,12 +489,29 @@ export class TelegramCustodyStore {
 		);
 	}
 
-	async #persist(records: Iterable<TelegramCustodyRecord>): Promise<void> {
+	async #persist(records: Iterable<TelegramCustodyRecord>): Promise<TelegramCustodyWriteResult> {
 		const data = serialize(records);
 		if (Buffer.byteLength(data, "utf8") > TELEGRAM_CUSTODY_MAX_FILE_BYTES) {
 			throw new Error("Telegram custody snapshot exceeds the maximum file size");
 		}
+		if (!this.#fence) {
+			await this.#persistAtomically(data);
+			return { ok: true };
+		}
+		const result = await withCurrentTelegramCustodyEpoch(
+			{
+				agentDir: this.#agentDir,
+				binding: this.#fence.binding,
+				fs: this.#fence.fs,
+			},
+			async () => {
+				await this.#persistAtomically(data);
+			},
+		);
+		return result.ok ? { ok: true } : result;
+	}
 
+	async #persistAtomically(data: string): Promise<void> {
 		await this.#fsImpl.mkdir(this.#dir, { recursive: true, mode: 0o700 });
 		await this.#fsImpl.chmod(this.#dir, 0o700);
 		const temporaryFile = `${this.#file}.${process.pid}.${this.#now()}.${Math.random().toString(36).slice(2)}.tmp`;

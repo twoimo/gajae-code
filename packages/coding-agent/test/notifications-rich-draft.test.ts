@@ -342,6 +342,7 @@ function makeDraftDaemon(
 	return new TelegramNotificationDaemon({
 		settings: draftSettings(tempAgentDir()),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot as any,

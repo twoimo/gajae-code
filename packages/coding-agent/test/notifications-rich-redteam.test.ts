@@ -113,6 +113,7 @@ function makeRichDaemon(bot: BotApi, rich?: { enabled: boolean }): TelegramNotif
 	return new TelegramNotificationDaemon({
 		settings: settings(tempAgentDir()),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot as any,

@@ -228,6 +228,7 @@ async function bootDaemon() {
 	const daemon = new TelegramNotificationDaemon({
 		settings: daemonSettings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot as never,

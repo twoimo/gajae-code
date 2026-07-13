@@ -140,6 +140,7 @@ async function connectRealPipeline(rich?: { enabled: boolean }): Promise<Harness
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,

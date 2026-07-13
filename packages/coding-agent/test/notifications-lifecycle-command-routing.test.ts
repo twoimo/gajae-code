@@ -43,6 +43,7 @@ function makeDaemon(agentDir: string, bot: never): TelegramNotificationDaemon {
 	return new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,

@@ -12,10 +12,12 @@ import {
 import { deliverRichWithFallback } from "../src/notifications/rich-render";
 import {
 	acquireDaemonOwnership,
+	buildTelegramDaemonSpawnArgs,
 	DAEMON_GENERATION,
 	DAEMON_VERSION,
 	daemonPaths,
 	ensureTelegramDaemonRunning,
+	spawnTelegramDaemonOwner,
 	registerNotificationRoot,
 	releaseDaemonOwnership,
 	renewDaemonHeartbeat,
@@ -25,6 +27,12 @@ import {
 	TelegramNotificationDaemon,
 	TelegramUpdatePoller,
 } from "../src/notifications/telegram-daemon";
+import {
+	clearTelegramControlRequest,
+	readTelegramControlRequest,
+	writeTelegramControlRequest,
+} from "../src/notifications/telegram-daemon-control";
+import { telegramCustodyEpochPath } from "../src/notifications/telegram-custody-epoch";
 import { runDaemonInternal, runDaemonSmoke } from "../src/notifications/telegram-daemon-cli";
 
 const THREADED_FALLBACK_NOTICE =
@@ -175,6 +183,7 @@ async function identityTopicHarness({
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId,
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -317,6 +326,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -438,7 +448,7 @@ describe("telegram daemon", () => {
 					settings: s,
 					tokenFingerprint: "fp",
 					chatId: "42",
-					pidAlive: () => false,
+					pidAlive: pid => pid === 222,
 					pid: 222,
 				}),
 			),
@@ -464,7 +474,12 @@ describe("telegram daemon", () => {
 				roots: [],
 				version: 1,
 				generation: DAEMON_GENERATION,
+				custodyEpoch: 1,
 			}),
+		);
+		fs.writeFileSync(
+			telegramCustodyEpochPath(agentDir),
+			JSON.stringify({ version: 1, ownerId: "old", custodyEpoch: 1 }),
 		);
 		const result = await acquireDaemonOwnership({
 			settings: s,
@@ -474,6 +489,24 @@ describe("telegram daemon", () => {
 			now: () => 101,
 		});
 		expect(result).toEqual({ acquired: false, attached: true });
+	});
+	test("fresh live ownership with a mismatched durable epoch fails closed", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION, custodyEpoch: 1 });
+		fs.writeFileSync(
+			telegramCustodyEpochPath(agentDir),
+			JSON.stringify({ version: 1, ownerId: "old", custodyEpoch: 2 }),
+		);
+		await expect(
+			acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "e60b05c186ca",
+				chatId: "42",
+				pidAlive: () => true,
+				now: () => 101,
+			}),
+		).rejects.toThrow("custody epoch does not match");
 	});
 
 	test("live owner token/chat mismatch blocks attach without registering a root", async () => {
@@ -543,8 +576,15 @@ describe("telegram daemon", () => {
 
 	function writeLiveOwner(agentDir: string, extra: Record<string, unknown> = {}): void {
 		const paths = daemonPaths(agentDir);
+		const state = liveOwnerState(extra);
 		fs.mkdirSync(paths.dir, { recursive: true });
-		fs.writeFileSync(paths.state, JSON.stringify(liveOwnerState(extra)));
+		fs.writeFileSync(paths.state, JSON.stringify(state));
+		if (typeof state.custodyEpoch === "number") {
+			fs.writeFileSync(
+				telegramCustodyEpochPath(agentDir),
+				JSON.stringify({ version: 1, ownerId: state.ownerId, custodyEpoch: state.custodyEpoch }),
+			);
+		}
 		fs.writeFileSync(paths.lock, "");
 	}
 
@@ -565,7 +605,7 @@ describe("telegram daemon", () => {
 	test("#2028 acquire attaches to a current-generation live owner (no reload)", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
-		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION });
+		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION, custodyEpoch: 1 });
 		const result = await acquireDaemonOwnership({
 			settings: s,
 			tokenFingerprint: "e60b05c186ca",
@@ -579,7 +619,7 @@ describe("telegram daemon", () => {
 	test("#2028 acquire does not downgrade a NEWER-generation live owner (attaches)", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
-		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION + 1 });
+		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION + 1, custodyEpoch: 1 });
 		const result = await acquireDaemonOwnership({
 			settings: s,
 			tokenFingerprint: "e60b05c186ca",
@@ -651,7 +691,7 @@ describe("telegram daemon", () => {
 	test("#2028 ensureTelegramDaemonRunning reuses a current-generation live owner without a reload", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
-		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION, heartbeatAt: Date.now() });
+		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION, custodyEpoch: 1, heartbeatAt: Date.now() });
 		const paths = daemonPaths(agentDir);
 		const signals: Array<[number, string]> = [];
 		let spawns = 0;
@@ -690,6 +730,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: new FakeBotApi(),
@@ -707,21 +748,25 @@ describe("telegram daemon", () => {
 	test("runDaemonInternal rewrites persisted owner pid to daemon process pid", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
-		await acquireDaemonOwnership({
+		const ownership = await acquireDaemonOwnership({
 			settings: s,
 			tokenFingerprint: "e60b05c186ca",
 			chatId: "42",
 			pid: 111,
 			randomId: () => "owner",
 		});
+		if (!ownership.acquired) throw new Error("ownership acquisition failed");
 		class OneShotDaemon extends TelegramNotificationDaemon {
 			override async scanRoots(): Promise<void> {}
 		}
-		await runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner"], {
-			SettingsImpl: { init: async () => s },
-			DaemonImpl: OneShotDaemon,
-			processPid: 222,
-		});
+		await runDaemonInternal(
+			["--agent-dir", agentDir, "--owner-id", ownership.ownerId, "--custody-epoch", String(ownership.custodyEpoch)],
+			{
+				SettingsImpl: { init: async () => s },
+				DaemonImpl: OneShotDaemon,
+				processPid: 222,
+			},
+		);
 		const state = JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8")) as {
 			pid: number;
 			ownerId: string;
@@ -751,11 +796,13 @@ describe("telegram daemon", () => {
 			requestStop(): void {}
 		}
 
-		await runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner"], {
-			SettingsImpl: { init: async () => s },
-			DaemonImpl: StubDaemon,
-			pidAlive: () => true,
-		});
+		await expect(
+			runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner"], {
+				SettingsImpl: { init: async () => s },
+				DaemonImpl: StubDaemon,
+				pidAlive: () => true,
+			}),
+		).rejects.toThrow("custody-epoch");
 
 		expect(daemonConstructed).toBe(false);
 	});
@@ -768,6 +815,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -802,6 +850,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -836,6 +885,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -866,6 +916,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "-10042",
 			botApi: bot,
@@ -890,6 +941,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -927,6 +979,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -957,6 +1010,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -993,6 +1047,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1039,6 +1094,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1066,6 +1122,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1126,6 +1183,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1177,6 +1235,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1245,6 +1304,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1297,6 +1357,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1336,6 +1397,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1377,6 +1439,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1396,6 +1459,7 @@ describe("telegram daemon", () => {
 		const restarted = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner-restarted",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1453,6 +1517,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1528,6 +1593,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1597,6 +1663,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: setPrivateAgentDir(settings(agentDir), agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1650,6 +1717,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1683,6 +1751,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1719,6 +1788,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1760,6 +1830,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1797,6 +1868,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1835,6 +1907,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -1865,6 +1938,7 @@ describe("telegram daemon", () => {
 		const restarted = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner-2",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: new FakeBotApi(),
@@ -1888,21 +1962,42 @@ describe("telegram daemon", () => {
 		expect(fs.readdirSync(daemonPaths(agentDir).dir).join("\n")).not.toContain("secret-token");
 	});
 
-	test("heartbeat renew and release helpers honor owner id", async () => {
+	test("heartbeat renew and release helpers honor the complete owner binding", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
-		await acquireDaemonOwnership({
+		const ownership = await acquireDaemonOwnership({
 			settings: s,
 			tokenFingerprint: "fp",
 			chatId: "42",
 			pid: process.pid,
 			randomId: () => "owner",
 		});
-		expect(await renewDaemonHeartbeat({ settings: s, ownerId: "other" })).toBe(false);
-		expect(await renewDaemonHeartbeat({ settings: s, ownerId: "owner" })).toBe(true);
-		await releaseDaemonOwnership({ settings: s, ownerId: "other" });
+		if (!ownership.acquired) throw new Error("ownership acquisition failed");
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "other",
+				custodyEpoch: ownership.custodyEpoch,
+			}),
+		).toBe(false);
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: ownership.ownerId,
+				custodyEpoch: ownership.custodyEpoch,
+			}),
+		).toBe(true);
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: "other",
+			custodyEpoch: ownership.custodyEpoch,
+		});
 		expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(true);
-		await releaseDaemonOwnership({ settings: s, ownerId: "owner" });
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: ownership.ownerId,
+			custodyEpoch: ownership.custodyEpoch,
+		});
 		expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(false);
 	});
 
@@ -1952,6 +2047,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: gatedBot,
@@ -2006,6 +2102,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -2037,6 +2134,7 @@ describe("telegram daemon", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			fetchImpl,
@@ -2076,6 +2174,7 @@ describe("telegram daemon connection-drop resilience (repro-first)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: new FakeBotApi(),
@@ -2148,6 +2247,7 @@ describe("telegram daemon connection-drop resilience (repro-first)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -2174,6 +2274,7 @@ test("daemon registers in-thread config and lifecycle commands and drops stale r
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2204,6 +2305,7 @@ test("forum lifecycle commands fail closed even when addressed to this bot usern
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(tempAgentDir()),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "-10042",
 		botApi: bot,
@@ -2232,6 +2334,7 @@ test("forum lifecycle commands fail closed when bot username is unavailable", as
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(tempAgentDir()),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "-10042",
 		botApi: bot,
@@ -2254,6 +2357,7 @@ test("non-addressable forum lifecycle commands in known topics are dropped", asy
 		const daemon = new TelegramNotificationDaemon({
 			settings: settings(tempAgentDir()),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "-10042",
 			botApi: bot,
@@ -2315,6 +2419,7 @@ test("image_attachment frame uploads via sendPhoto into an identified session to
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2357,6 +2462,7 @@ describe("telegram topic name template (#1909)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: settings(agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -2428,6 +2534,7 @@ describe("telegram topic name template (#1909)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: settings(agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -2460,6 +2567,7 @@ test("identity-less threaded frames wait for identity instead of creating fallba
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2508,6 +2616,7 @@ test("transient topic rename failure is retried on the next identity header", as
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2735,6 +2844,7 @@ test.each([
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "retry",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2789,6 +2899,7 @@ test("remote-success user-name reconciliation retries after its pending-clear wr
 	const restarted = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner-2",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: retryBot,
@@ -2838,6 +2949,7 @@ test.each([
 	const restarted = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner-2",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: retryBot,
@@ -2858,6 +2970,7 @@ test("live sessions with the same repo branch create distinct topics", async () 
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2901,6 +3014,7 @@ test("transient identity for an existing repo branch does not create a duplicate
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2931,6 +3045,7 @@ test("stale identity after loadTopics reuses the persisted repo branch owner", a
 	const firstDaemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2946,6 +3061,7 @@ test("stale identity after loadTopics reuses the persisted repo branch owner", a
 	const restartedDaemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -2980,6 +3096,7 @@ test("threaded mode off: frames fall back to the flat paired chat with a one-tim
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3033,6 +3150,7 @@ test("threaded mode off: multiple sessions share a single fallback notice", asyn
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3062,6 +3180,7 @@ test("threaded mode off: image_attachment uploads flat without message_thread_id
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3101,6 +3220,7 @@ test("non-private chat: fails closed before topic creation or flat delivery", as
 		const daemon = new TelegramNotificationDaemon({
 			settings: settings(agentDir),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -3145,6 +3265,7 @@ test("threaded off + unresolvable getChat: fails closed", async () => {
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3161,6 +3282,7 @@ test("identity_header without a title names the topic repo/branch", async () => 
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3188,6 +3310,7 @@ test("identity_header with repo/branch and a title composes repo/branch - title"
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3216,6 +3339,7 @@ test("identity_header without title or repo falls back to the GJC session label"
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3240,6 +3364,7 @@ test("activity busy frame sends a typing chat action into the session topic", as
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3270,6 +3395,7 @@ test("session_closed deletes the topic and resume creates a fresh visible topic"
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3328,6 +3454,7 @@ test("session_closed clears reply message routes for the closed session", async 
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3359,6 +3486,7 @@ test("session_closed tombstones its endpoint generation so scans do not recreate
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3415,6 +3543,7 @@ test("inbound thread message gets a queued reaction, flipped to consumed on ack"
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3462,6 +3591,7 @@ test("inbound photo is downloaded and forwarded as an image in the user_message"
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3503,6 +3633,7 @@ test("inbound document is saved to a tmp file and its path injected into the tex
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3556,6 +3687,7 @@ test("inbound document with a path-traversal filename stays sandboxed in the pri
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3606,6 +3738,7 @@ test("daemon attachment temp dirs are removed by the shutdown cleanup path", asy
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3643,6 +3776,7 @@ test("outbound file_attachment frame triggers a sendDocument upload to the topic
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3694,6 +3828,7 @@ describe("telegram daemon reconnect reconciliation", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -3736,6 +3871,7 @@ describe("telegram daemon reconnect reconciliation", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: new FakeBotApi(),
@@ -3772,6 +3908,7 @@ describe("telegram daemon reconnect reconciliation", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -3837,6 +3974,7 @@ describe("telegram daemon reconnect answer routing", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -3892,6 +4030,7 @@ test("pollOnce resolves to 0 when the in-flight getUpdates is aborted", async ()
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3916,6 +4055,7 @@ test("pollOnce backs off on a Telegram 409 conflict instead of processing update
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -3967,6 +4107,7 @@ test("requestStop aborts the active long poll and run() exits, releasing ownersh
 	const daemon = new NoScan({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4001,6 +4142,7 @@ test("run() loop exits when an owner-scoped control request asks it to stop", as
 	const daemon = new NoScan({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: new FakeBotApi(),
@@ -4034,6 +4176,7 @@ test("run() persists aliases before releasing ownership on exit", async () => {
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: new FakeBotApi(),
@@ -4091,6 +4234,7 @@ describe("telegram custody loading", () => {
 		const daemon = new CustodyOrderDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
@@ -4128,6 +4272,7 @@ test("a fresh daemon scanRoots reconnects an existing session endpoint", async (
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: new FakeBotApi(),
@@ -4146,6 +4291,7 @@ test("connectSession eagerly creates a Telegram topic on connect (before any fra
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4184,6 +4330,7 @@ test("identity_header during an in-flight eager create still renames the topic",
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4232,6 +4379,7 @@ test("scanRoots connects only live endpoints (skips stale + dead-PID records)", 
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: new FakeBotApi(),
@@ -4274,6 +4422,7 @@ test("scanRoots reaps stale and dead-PID session topics after the orphan grace w
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4307,6 +4456,7 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 	const daemon = new TelegramNotificationDaemon({
 		settings: s,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4332,6 +4482,7 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 	const blockedDaemon = new TelegramNotificationDaemon({
 		settings: blockedSettings,
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: blockedBot,
@@ -4345,10 +4496,34 @@ test("scanRoots reaps missing endpoint topics only when all roots are readable a
 test("runDaemonInternal wires SIGTERM to the daemon stop method", async () => {
 	const agentDir = tempAgentDir();
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
+	const ownership = await acquireDaemonOwnership({
+		settings: s,
+		tokenFingerprint: "e60b05c186ca",
+		chatId: "42",
+		pid: 111,
+		randomId: () => "owner",
+	});
+	if (!ownership.acquired) throw new Error("ownership acquisition failed");
+	const persistedState = JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8"));
+	const persistedEpoch = JSON.parse(fs.readFileSync(telegramCustodyEpochPath(agentDir), "utf8"));
+	expect(persistedState).toMatchObject({
+		ownerId: ownership.ownerId,
+		custodyEpoch: ownership.custodyEpoch,
+	});
+	expect(persistedEpoch).toEqual({
+		version: 1,
+		ownerId: ownership.ownerId,
+		custodyEpoch: ownership.custodyEpoch,
+	});
 	let stopped = false;
 	let resolveRun: (() => void) | undefined;
+	const daemonConstructed = Promise.withResolvers<void>();
+	let daemonOptions: { ownerId?: unknown; custodyEpoch?: unknown } | undefined;
 	class StubDaemon {
-		constructor(public opts: unknown) {}
+		constructor(opts: unknown) {
+			daemonOptions = opts as { ownerId?: unknown; custodyEpoch?: unknown };
+			daemonConstructed.resolve();
+		}
 		requestStop(): void {
 			stopped = true;
 			resolveRun?.();
@@ -4369,11 +4544,18 @@ test("runDaemonInternal wires SIGTERM to the daemon stop method", async () => {
 	};
 	(process as any).off = () => process;
 	try {
-		const runPromise = runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner"], {
-			SettingsImpl: { init: async () => s },
-			DaemonImpl: StubDaemon as any,
+		const runPromise = runDaemonInternal(
+			["--agent-dir", agentDir, "--owner-id", ownership.ownerId, "--custody-epoch", String(ownership.custodyEpoch)],
+			{
+				SettingsImpl: { init: async () => s },
+				DaemonImpl: StubDaemon as any,
+			},
+		);
+		await daemonConstructed.promise;
+		expect(daemonOptions).toMatchObject({
+			ownerId: ownership.ownerId,
+			custodyEpoch: ownership.custodyEpoch,
 		});
-		await new Promise(resolve => setTimeout(resolve, 5));
 		expect(sigtermHandler).toBeTruthy();
 		sigtermHandler?.();
 		await runPromise;
@@ -4391,6 +4573,7 @@ test("a long finalized turn is scheduled through the pool, not burst in one gran
 	const daemon = new TelegramNotificationDaemon({
 		settings: settings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot,
@@ -4477,6 +4660,7 @@ function makeRichDaemon(bot: FakeBotApi, rich?: { enabled: boolean }): TelegramN
 	return new TelegramNotificationDaemon({
 		settings: settings(tempAgentDir()),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot as any,
@@ -4878,6 +5062,7 @@ describe("telegram daemon rich final-answer promotion (Rev 3 verification)", () 
 		const daemon = new TelegramNotificationDaemon({
 			settings: settings(tempAgentDir()),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: transport,
@@ -5034,6 +5219,7 @@ describe("telegram daemon action-needed rich delivery (G004)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot as any,
@@ -5167,6 +5353,7 @@ describe("telegram daemon /rich toggle (G005)", () => {
 		return new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot as any,
@@ -5242,6 +5429,7 @@ describe("telegram daemon /rich toggle (G005)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot as any,
@@ -5317,6 +5505,7 @@ describe("telegram daemon /rich toggle (G005)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot as any,
@@ -5361,6 +5550,7 @@ describe("telegram daemon /rich toggle (G005)", () => {
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot as any,
@@ -5377,5 +5567,244 @@ describe("telegram daemon /rich toggle (G005)", () => {
 			),
 		).toBe(true);
 		expect(bot.calls.some(c => c.method === "sendMessage" && c.body.text === "Rich messages: off")).toBe(false);
+	});
+});
+describe("telegram daemon custody epoch fencing", () => {
+	test("allocates epoch one then fences a same-owner ABA restart at epoch two", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		const first = await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 101,
+			randomId: () => "reused-owner",
+		});
+		if (!first.acquired) throw new Error("first ownership acquisition failed");
+		expect(first.custodyEpoch).toBe(1);
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: first.ownerId,
+			custodyEpoch: first.custodyEpoch,
+		});
+
+		const second = await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 202,
+			randomId: () => "reused-owner",
+		});
+		if (!second.acquired) throw new Error("second ownership acquisition failed");
+		expect(second.custodyEpoch).toBe(2);
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: first.ownerId,
+				custodyEpoch: first.custodyEpoch,
+			}),
+		).toBe(false);
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: first.ownerId,
+			custodyEpoch: first.custodyEpoch,
+		});
+		expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(true);
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: second.ownerId,
+			custodyEpoch: second.custodyEpoch,
+		});
+	});
+
+	test("rejects noncanonical spawn epochs and preserves adjacent canonical argv", () => {
+		const spawned = buildTelegramDaemonSpawnArgs({
+			execPath: process.execPath,
+			ownerId: "owner",
+			custodyEpoch: 2,
+			agentDir: "agent-dir",
+		});
+		const epochFlag = spawned.args.indexOf("--custody-epoch");
+		expect(spawned.args.slice(epochFlag, epochFlag + 2)).toEqual(["--custody-epoch", "2"]);
+		expect(() =>
+			buildTelegramDaemonSpawnArgs({
+				execPath: process.execPath,
+				ownerId: "owner",
+				custodyEpoch: 0,
+				agentDir: "agent-dir",
+			}),
+		).toThrow("custody epoch");
+	});
+
+	test("spawn failure releases only its pair and retry consumes a higher epoch", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		await expect(
+			spawnTelegramDaemonOwner(
+				{ settings: s, tokenFingerprint: "fp", chatId: "42" },
+				{
+					pid: 111,
+					randomId: () => "owner",
+					spawn: () => {
+						throw new Error("spawn failed");
+					},
+				},
+			),
+		).rejects.toThrow("spawn failed");
+		expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(false);
+
+		const retried = await spawnTelegramDaemonOwner(
+			{ settings: s, tokenFingerprint: "fp", chatId: "42" },
+			{ pid: 222, randomId: () => "owner", spawn: () => ({ unref() {} }) },
+		);
+		expect(retried.result).toBe("owner_spawned");
+		if (retried.result !== "owner_spawned") throw new Error("retry did not acquire ownership");
+		expect(retried.custodyEpoch).toBe(2);
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: retried.ownerId,
+			custodyEpoch: retried.custodyEpoch,
+		});
+	});
+	test("state-publication failure leaves no physical lock and retry skips the consumed epoch", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		const paths = daemonPaths(agentDir);
+		const failingFs: TelegramDaemonFs = {
+			mkdir: async (file, opts) => await fs.promises.mkdir(file, opts).then(() => undefined),
+			readFile: async (file, encoding) => await fs.promises.readFile(file, encoding),
+			writeFile: async (file, data, opts) => await fs.promises.writeFile(file, data, opts),
+			rename: async (from, to) => {
+				if (to === paths.state) throw new Error("state write failed");
+				await fs.promises.rename(from, to);
+			},
+			unlink: async file => await fs.promises.unlink(file),
+			open: async (file, flags, mode) => await fs.promises.open(file, flags, mode),
+			readdir: async file => await fs.promises.readdir(file),
+			chmod: async (file, mode) => await fs.promises.chmod(file, mode),
+		};
+		await expect(
+			acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 101,
+				randomId: () => "owner",
+				fs: failingFs,
+			}),
+		).rejects.toThrow("state write failed");
+		expect(fs.existsSync(paths.lock)).toBe(false);
+
+		const retried = await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 202,
+			randomId: () => "owner",
+		});
+		if (!retried.acquired) throw new Error("retry ownership acquisition failed");
+		expect(retried.custodyEpoch).toBe(2);
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: retried.ownerId,
+			custodyEpoch: retried.custodyEpoch,
+		});
+	});
+
+	test("pair-bound control cleanup cannot clear a successor request", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		await writeTelegramControlRequest(s, {
+			version: 1,
+			requestId: "successor",
+			action: "stop",
+			ownerId: "same-owner",
+			custodyEpoch: 2,
+			pid: 202,
+			createdAt: 1,
+		});
+		await clearTelegramControlRequest(s, "successor", undefined, { ownerId: "same-owner", custodyEpoch: 1 });
+		expect((await readTelegramControlRequest(s))?.custodyEpoch).toBe(2);
+		await clearTelegramControlRequest(s, "successor", undefined, { ownerId: "same-owner", custodyEpoch: 2 });
+		expect(await readTelegramControlRequest(s)).toBeUndefined();
+	});
+
+	test("CLI rejects malformed, mismatched, and future custody epochs before daemon construction", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		let constructed = false;
+		class StubDaemon {
+			constructor() {
+				constructed = true;
+			}
+			async run(): Promise<void> {}
+			requestStop(): void {}
+		}
+		const deps = {
+			SettingsImpl: { init: async () => s },
+			DaemonImpl: StubDaemon,
+			pidAlive: () => true,
+		};
+		await expect(
+			runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner", "--custody-epoch", "01"], deps),
+		).rejects.toThrow("invalid --custody-epoch");
+		expect(constructed).toBe(false);
+
+		const ownership = await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 303,
+			randomId: () => "owner",
+		});
+		if (!ownership.acquired) throw new Error("ownership acquisition failed");
+		await expect(
+			runDaemonInternal(
+				[
+					"--agent-dir",
+					agentDir,
+					"--owner-id",
+					ownership.ownerId,
+					"--custody-epoch",
+					String(ownership.custodyEpoch + 1),
+				],
+				deps,
+			),
+		).rejects.toThrow("ownership state");
+		expect(constructed).toBe(false);
+
+		fs.writeFileSync(
+			telegramCustodyEpochPath(agentDir),
+			JSON.stringify({ version: 2, ownerId: ownership.ownerId, custodyEpoch: ownership.custodyEpoch }),
+		);
+		await expect(
+			runDaemonInternal(
+				[
+					"--agent-dir",
+					agentDir,
+					"--owner-id",
+					ownership.ownerId,
+					"--custody-epoch",
+					String(ownership.custodyEpoch),
+				],
+				deps,
+			),
+		).rejects.toThrow();
+		expect(constructed).toBe(false);
+		fs.writeFileSync(telegramCustodyEpochPath(agentDir), "{not-json");
+		await expect(
+			runDaemonInternal(
+				[
+					"--agent-dir",
+					agentDir,
+					"--owner-id",
+					ownership.ownerId,
+					"--custody-epoch",
+					String(ownership.custodyEpoch),
+				],
+				deps,
+			),
+		).rejects.toThrow();
+		expect(constructed).toBe(false);
 	});
 });

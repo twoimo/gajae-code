@@ -293,6 +293,7 @@ function makeDaemon(
 	return new TelegramNotificationDaemon({
 		settings: isolatedSettings(agentDir),
 		ownerId: "owner",
+		custodyEpoch: 1,
 		botToken: "tok",
 		chatId: "42",
 		botApi: bot as any,
@@ -423,6 +424,7 @@ describe("default multipart sendPhoto forwards parse_mode (AC1 amendment)", () =
 		const daemon = new TelegramNotificationDaemon({
 			settings: isolatedSettings(Bun.env.TMPDIR ?? "/tmp"),
 			ownerId: "owner",
+			custodyEpoch: 1,
 			botToken: "tok",
 			chatId: "42",
 			fetchImpl,

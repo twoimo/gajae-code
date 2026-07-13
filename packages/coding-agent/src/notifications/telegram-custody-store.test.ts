@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type * as fs from "node:fs";
 import * as path from "node:path";
+import * as fsPromises from "node:fs/promises";
+import * as os from "node:os";
 import { daemonPaths } from "./daemon-paths";
+import { allocateTelegramCustodyEpoch } from "./telegram-custody-epoch";
 import {
 	TELEGRAM_CUSTODY_MAX_FILE_BYTES,
 	TELEGRAM_CUSTODY_MAX_RECORDS,
@@ -370,5 +373,53 @@ describe("TelegramCustodyStore", () => {
 		expect(telegramCustodyKey("1", "23")).toBe("1:23");
 		expect(telegramCustodyKey("12", "3")).toBe("12:3");
 		expect(() => telegramCustodyKey("01", "3")).toThrow("Invalid Telegram custody identifier");
+	});
+	test("stamps active fence epochs and leaves stale or mismatched writes unchanged", async () => {
+		const agentDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), "gjc-telegram-custody-store-"));
+		try {
+			const fakeFs = new FakeFs();
+			const binding = await allocateTelegramCustodyEpoch({ agentDir, ownerId: "owner-a" });
+			const custodyPath = path.join(daemonPaths(agentDir).dir, "telegram-deletion-custody.json");
+			const store = new TelegramCustodyStore({
+				agentDir,
+				fs: fakeFs,
+				now: () => 1,
+				fence: { binding },
+			});
+			await store.load();
+
+			expect(await store.put(custodyRecord())).toEqual({ ok: true });
+			expect(await store.put(custodyRecord({ topicId: "8", custodyEpoch: binding.custodyEpoch }))).toEqual({
+				ok: true,
+			});
+			const stamped = JSON.parse(fakeFs.files.get(custodyPath)!) as {
+				records: Record<string, TelegramCustodyRecord>;
+			};
+			expect(stamped.records["42:77"]?.custodyEpoch).toBe(binding.custodyEpoch);
+			expect(stamped.records["42:8"]?.custodyEpoch).toBe(binding.custodyEpoch);
+
+			const beforeMismatch = fakeFs.files.get(custodyPath);
+			const recordsBeforeMismatch = store.list();
+			const writesBeforeMismatch = fakeFs.writeCalls.length;
+			expect(await store.put(custodyRecord({ topicId: "9", custodyEpoch: binding.custodyEpoch + 1 }))).toEqual({
+				ok: false,
+				reason: "fenced",
+			});
+			expect(fakeFs.files.get(custodyPath)).toBe(beforeMismatch);
+			expect(store.list()).toEqual(recordsBeforeMismatch);
+			expect(fakeFs.writeCalls).toHaveLength(writesBeforeMismatch);
+
+			await allocateTelegramCustodyEpoch({ agentDir, ownerId: "owner-a" });
+			const beforeStale = fakeFs.files.get(custodyPath);
+			const recordsBeforeStale = store.list();
+			const writesBeforeStale = fakeFs.writeCalls.length;
+			expect(await store.put(custodyRecord({ topicId: "9" }))).toEqual({ ok: false, reason: "fenced" });
+			expect(await store.remove({ chatId: "42", topicId: "77" })).toEqual({ ok: false, reason: "fenced" });
+			expect(fakeFs.files.get(custodyPath)).toBe(beforeStale);
+			expect(store.list()).toEqual(recordsBeforeStale);
+			expect(fakeFs.writeCalls).toHaveLength(writesBeforeStale);
+		} finally {
+			await fsPromises.rm(agentDir, { recursive: true, force: true });
+		}
 	});
 });

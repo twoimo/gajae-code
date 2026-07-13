@@ -147,13 +147,21 @@ describe("compiled daemon smoke coverage", () => {
 		const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
 			execPath: "/opt/gjc/gjc",
 			ownerId: "owner-1",
+			custodyEpoch: 1,
 			agentDir: "/tmp/agent",
 		});
 		expect(command).toBe("/opt/gjc/gjc");
 		// No bun/node entry-script prefix in compiled mode: the binary self-spawns its subcommand.
-		expect(args[0]).toBe("notify");
-		expect(args).toContain("daemon-internal");
-		expect(args).toEqual(expect.arrayContaining(["--owner-id", "owner-1", "--agent-dir", "/tmp/agent"]));
+		expect(args).toEqual([
+			"notify",
+			"daemon-internal",
+			"--owner-id",
+			"owner-1",
+			"--custody-epoch",
+			"1",
+			"--agent-dir",
+			"/tmp/agent",
+		]);
 		expect(runtime.mode).toBe("compiled");
 		expect(runtime.reloadPicksUpSourceEdits).toBe(false);
 		expect(runtime.warning).toContain("Rebuild");
