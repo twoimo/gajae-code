@@ -1022,6 +1022,7 @@ type CloseRecord = {
 	endpointGeneration: number;
 	pid: number;
 	endpointMtimeMs?: number;
+	lifecycleRequestId?: string;
 };
 
 function endpointIncarnation(record: CloseRecord, sessionId: string): string | undefined {
@@ -1068,6 +1069,16 @@ function sameCloseAuthority(authority: CloseAuthority, record: CloseRecord, sess
 	return (
 		authority.endpointGeneration === record.endpointGeneration &&
 		authority.endpointIncarnation === endpointIncarnation(record, sessionId)
+	);
+}
+
+function sameCloseProcessIdentity(expected: CloseRecord, current: CloseRecord & { live: boolean }): boolean {
+	return (
+		current.live &&
+		current.pid === expected.pid &&
+		current.lifecycleRequestId === expected.lifecycleRequestId &&
+		path.resolve(current.locator.repo) === path.resolve(expected.locator.repo) &&
+		path.resolve(current.locator.stateRoot) === path.resolve(expected.locator.stateRoot)
 	);
 }
 
@@ -1325,7 +1336,7 @@ export async function executeLifecycle(
 	if (!id) return fail("invalid_input", "sessionId is required.");
 	if (!isCanonicalSessionId(id)) return fail("invalid_input", "sessionId must be a canonical safe identifier.");
 	await broker.index.refresh();
-	const record = broker.index.listSessions().sessions.find(session => session.sessionId === id);
+	let record = broker.index.listSessions().sessions.find(session => session.sessionId === id);
 	if (operation === "session.close") {
 		if (!record) return fail("not_found", "session is not indexed");
 		if (record.terminalUncertain)
@@ -1338,10 +1349,21 @@ export async function executeLifecycle(
 
 		let usedSignalFallback = false;
 		let note: string | undefined;
-		const endpointResult = await broker.handleRequest("session.get_endpoint", {
+		let endpointResult = await broker.handleRequest("session.get_endpoint", {
 			sessionId: id,
 			endpointGeneration: record.endpointGeneration,
 		});
+		if (!endpointResult.ok && endpointResult.error.code === "endpoint_stale" && !requestedAuthority.authority) {
+			await broker.index.refresh();
+			const refreshed = broker.index.listSessions().sessions.find(session => session.sessionId === id);
+			if (refreshed && sameCloseProcessIdentity(record, refreshed)) {
+				record = refreshed;
+				endpointResult = await broker.handleRequest("session.get_endpoint", {
+					sessionId: id,
+					endpointGeneration: record.endpointGeneration,
+				});
+			}
+		}
 		if (!endpointResult.ok) {
 			if (endpointResult.error.code === "endpoint_stale") return endpointResult;
 			if (endpointResult.error.code !== "resource_gone") return endpointResult;
