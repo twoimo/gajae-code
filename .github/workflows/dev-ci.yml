@@ -48,6 +48,28 @@ jobs:
             echo "checked-out SHA $actual_workspace_sha does not match expected $EXPECTED_WORKSPACE_SHA"
             exit 1
           fi
+      - name: Fetch pull request base commit
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          if ! [[ "$BASE_REPOSITORY" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "invalid pull request base repository"
+            exit 1
+          fi
+          if ! [[ "$BASE_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "invalid pull request base SHA"
+            exit 1
+          fi
+          workspace_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags "https://github.com/${BASE_REPOSITORY}.git" "$BASE_SHA"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          if [ "$(git rev-parse HEAD)" != "$workspace_sha" ]; then
+            echo "base fetch changed checked-out workspace SHA"
+            exit 1
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
           bun-version: "1.3"

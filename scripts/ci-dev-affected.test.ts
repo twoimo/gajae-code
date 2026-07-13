@@ -15,6 +15,22 @@ import {
 	toRepoRelativePosixPath,
 	type WorkspacePackage,
 } from "./ci-dev-affected";
+type YamlRecord = Record<string, unknown>;
+
+function isYamlRecord(value: unknown): value is YamlRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireYamlRecord(value: unknown, location: string): YamlRecord {
+	if (!isYamlRecord(value)) throw new Error(`${location} must be a YAML mapping`);
+	return value;
+}
+
+function requireWorkflowStep(steps: readonly unknown[], property: "name" | "run" | "uses", value: string): [YamlRecord, number] {
+	const index = steps.findIndex(candidate => isYamlRecord(candidate) && candidate[property] === value);
+	if (index < 0) throw new Error(`workflow step ${property}=${value} must exist`);
+	return [requireYamlRecord(steps[index], `workflow step ${property}=${value}`), index];
+}
 
 const packages: WorkspacePackage[] = [
 	{
@@ -348,6 +364,50 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(plannedPaths).toEqual(expectedPaths);
 		expect(Buffer.byteLength(JSON.stringify(plannedPaths), "utf8")).toBeLessThan(48 * 1024);
 		expect(transportedPaths.length).toBeLessThan(64 * 1024);
+	});
+	test("workflow fetches the exact validated pull request base before planning", async () => {
+		const workflow = requireYamlRecord(
+			Bun.YAML.parse(await Bun.file(path.join(repoRoot, ".github/workflows/dev-ci.yml")).text()),
+			"Dev CI workflow",
+		);
+		const affectedPlan = requireYamlRecord(
+			requireYamlRecord(workflow.jobs, "Dev CI workflow jobs")["affected-plan"],
+			"affected-plan job",
+		);
+		const steps = affectedPlan.steps;
+		expect(Array.isArray(steps)).toBe(true);
+		if (!Array.isArray(steps)) throw new Error("affected-plan steps must be a YAML sequence");
+
+		const [, checkoutIndex] = requireWorkflowStep(steps, "uses", "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
+		const [attestation, attestationIndex] = requireWorkflowStep(steps, "name", "Attest checked-out workspace SHA");
+		const [fetchBase, fetchBaseIndex] = requireWorkflowStep(steps, "name", "Fetch pull request base commit");
+		const [, planIndex] = requireWorkflowStep(steps, "name", "Compute affected task matrix");
+
+		expect(checkoutIndex).toBeLessThan(attestationIndex);
+		expect(attestationIndex).toBeLessThan(fetchBaseIndex);
+		expect(fetchBaseIndex).toBeLessThan(planIndex);
+		expect(requireYamlRecord(attestation.env, "head attestation env").EXPECTED_WORKSPACE_SHA).toBe(
+			"${{ github.event.pull_request.head.sha || github.sha }}",
+		);
+		expect(requireYamlRecord(affectedPlan.env, "affected-plan env").GITHUB_BASE_SHA).toBe(
+			"${{ github.event.pull_request.base.sha }}",
+		);
+		expect(fetchBase.if).toBe("${{ github.event_name == 'pull_request' }}");
+		expect(requireYamlRecord(fetchBase.env, "base fetch env")).toEqual({
+			BASE_REPOSITORY: "${{ github.event.pull_request.base.repo.full_name }}",
+			BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+		});
+
+		const fetchRun = fetchBase.run;
+		expect(typeof fetchRun).toBe("string");
+		if (typeof fetchRun !== "string") throw new Error("base fetch run command must be a string");
+		expect(fetchRun).toContain('workspace_sha="$(git rev-parse HEAD)"');
+		expect(fetchRun).toContain('git fetch --no-tags "https://github.com/${BASE_REPOSITORY}.git" "$BASE_SHA"');
+		expect(fetchRun).toContain('git cat-file -e "${BASE_SHA}^{commit}"');
+		expect(fetchRun).toContain('if [ "$(git rev-parse HEAD)" != "$workspace_sha" ]; then');
+		expect(fetchRun).toContain('[[ "$BASE_REPOSITORY" =~ ^[A-Za-z0-9]');
+		expect(fetchRun).toContain('[[ "$BASE_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]');
+		expect(fetchRun).not.toContain("origin/dev");
 	});
 
 	test("base64 path transport cannot forge GitHub planner outputs with newline or delimiter filenames", async () => {
