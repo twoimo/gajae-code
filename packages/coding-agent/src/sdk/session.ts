@@ -1312,8 +1312,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	try {
+		let promptMetadataModel: Model | undefined;
 		const getActiveModelString = (): string | undefined => {
-			const activeModel = agent?.state.model;
+			const activeModel = promptMetadataModel ?? agent?.state.model;
 			if (activeModel) return formatModelString(activeModel);
 			if (model) return formatModelString(model);
 			return undefined;
@@ -1895,30 +1896,43 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
+			candidateModel?: Model,
 		): Promise<BuildSystemPromptResult> => {
 			toolContextStore.setToolNames(toolNames);
-			const activeToolNames = new Set(toolNames);
-			const discoverableBuiltinTools: DiscoverableTool[] =
-				effectiveDiscoveryMode === "all"
-					? collectDiscoverableTools(
-							Array.from(tools.values()).filter(
-								tool => tool.loadMode === "discoverable" && !activeToolNames.has(tool.name),
-							),
-							{ source: "builtin" },
-						)
-					: [];
-			const discoverableMCPTools: DiscoverableTool[] = mcpDiscoveryEnabled
-				? collectDiscoverableTools(
-						Array.from(tools.values()).filter(
-							tool => isMCPToolName(tool.name) && !activeToolNames.has(tool.name),
-						),
-						{ source: "mcp" },
-					)
-				: [];
-			const discoverableToolsForDesc: DiscoverableTool[] = [...discoverableBuiltinTools, ...discoverableMCPTools];
-			const promptTools = buildSystemPromptToolMetadata(tools, {
-				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
-			});
+			const { discoverableBuiltinTools, discoverableMCPTools, promptTools } = (() => {
+				const previousPromptMetadataModel = promptMetadataModel;
+				promptMetadataModel = candidateModel;
+				try {
+					const activeToolNames = new Set(toolNames);
+					const discoverableBuiltinTools: DiscoverableTool[] =
+						effectiveDiscoveryMode === "all"
+							? collectDiscoverableTools(
+									Array.from(tools.values()).filter(
+										tool => tool.loadMode === "discoverable" && !activeToolNames.has(tool.name),
+									),
+									{ source: "builtin" },
+								)
+							: [];
+					const discoverableMCPTools: DiscoverableTool[] = mcpDiscoveryEnabled
+						? collectDiscoverableTools(
+								Array.from(tools.values()).filter(
+									tool => isMCPToolName(tool.name) && !activeToolNames.has(tool.name),
+								),
+								{ source: "mcp" },
+							)
+						: [];
+					const discoverableToolsForDesc: DiscoverableTool[] = [
+						...discoverableBuiltinTools,
+						...discoverableMCPTools,
+					];
+					const promptTools = buildSystemPromptToolMetadata(tools, {
+						search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
+					});
+					return { discoverableBuiltinTools, discoverableMCPTools, promptTools };
+				} finally {
+					promptMetadataModel = previousPromptMetadataModel;
+				}
+			})();
 			const memoryInstructions = await resolveMemoryBackend(settings).buildDeveloperInstructions(
 				agentDir,
 				settings,

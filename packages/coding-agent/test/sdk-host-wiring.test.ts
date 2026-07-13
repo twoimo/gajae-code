@@ -183,6 +183,8 @@ test("ExtensionRunner forwards SDK permission providers into its production cont
 test("interactive extension context advertises typed SDK controls and forwards permission providers", async () => {
 	let contextActions: ExtensionContextActions | undefined;
 	let installed: SdkPermissionProvider;
+	let selected: { provider: string; id: string; thinkingLevel: string } | undefined;
+	const targetModel = { provider: "runtime-provider", id: "runtime-model" };
 
 	let mode: "prompt" | "allow" | "deny" = "prompt";
 	const runner = {
@@ -207,6 +209,14 @@ test("interactive extension context advertises typed SDK controls and forwards p
 			get sdkPermissionMode() {
 				return mode;
 			},
+			modelRegistry: {
+				find: (provider: string, id: string) =>
+					provider === targetModel.provider && id === targetModel.id ? targetModel : undefined,
+			},
+			setDefaultModelSelection: async (model: typeof targetModel, thinkingLevel: string) => {
+				selected = { ...model, thinkingLevel };
+				return { provider: model.provider, modelId: model.id, thinkingLevel };
+			},
 		},
 	} as unknown as InteractiveModeContext);
 	controller.initializeHookRunner({} as ExtensionUIContext, false);
@@ -217,6 +227,19 @@ test("interactive extension context advertises typed SDK controls and forwards p
 		changed: true,
 		mode: "deny",
 	});
+	expect(
+		await contextActions?.sdkControl?.("model.set", {
+			id: "runtime-provider/runtime-model",
+			thinkingLevel: "high",
+		}),
+	).toEqual({ provider: "runtime-provider", modelId: "runtime-model", thinkingLevel: "high" });
+	expect(selected).toEqual({ provider: "runtime-provider", id: "runtime-model", thinkingLevel: "high" });
+	await expect(
+		contextActions?.sdkControl?.("model.set", {
+			id: "runtime-provider/runtime-model",
+			thinkingLevel: "inherit",
+		}),
+	).rejects.toMatchObject({ code: "invalid_input" });
 });
 
 test("SDK host replays event frames over direct v3 ingress and routes queries through the v2 control-command seam", async () => {

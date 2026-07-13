@@ -1385,7 +1385,18 @@ function sdkControlSurface(
 			return ctx.operateGoal(op as "create" | "get" | "resume" | "pause" | "complete" | "drop", objective);
 		},
 		replaceTodo: items => typed("todo.replace", { items }),
-		setModel: async id => ({ changed: await api.setModel(resolveModel(id)) }),
+		setModel: async (id, requestedThinkingLevel) => {
+			const model = resolveModel(id);
+			if (requestedThinkingLevel === undefined) return { changed: await api.setModel(model) };
+			const thinkingLevel =
+				typeof requestedThinkingLevel === "string" ? parseThinkingLevel(requestedThinkingLevel) : undefined;
+			if (!thinkingLevel || thinkingLevel === ThinkingLevel.Inherit)
+				throw Object.assign(
+					new Error("model.set thinkingLevel must be off, minimal, low, medium, high, xhigh, or max."),
+					{ code: "invalid_input" },
+				);
+			return typed("model.set", { id: `${model.provider}/${model.id}`, thinkingLevel });
+		},
 		cycleModel: async () => {
 			if (!bindings.has("cycleModel"))
 				return unavailable("model.cycle", "no session model-cycle seam is installed")();

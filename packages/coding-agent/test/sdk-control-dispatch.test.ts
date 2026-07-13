@@ -114,6 +114,28 @@ test("dispatches every control registry operation to its ControlSurface method",
 	expect(calls).toEqual(rows.map(row => methodByOperation[row.sdkId]));
 });
 
+test("forwards an optional thinking level with model.set without changing legacy calls", async () => {
+	const model = OPERATIONS.find(row => row.sdkId === "model.set")!;
+	const calls: unknown[][] = [];
+	const surface = {
+		setModel: (...args: unknown[]) => {
+			calls.push(args);
+			return { changed: true };
+		},
+	} as unknown as ControlSurface;
+
+	await dispatchControl(surface, model, { ...request(model), input: { id: "provider/model" } });
+	await dispatchControl(surface, model, {
+		...request(model),
+		input: { id: "provider/model", thinkingLevel: "high" },
+	});
+
+	expect(calls).toEqual([
+		["provider/model", undefined],
+		["provider/model", "high"],
+	]);
+});
+
 test("rejects unknown operations, malformed input, and missing destructive confirmation", async () => {
 	const surface = {} as ControlSurface;
 	const unknown = await dispatchControl(surface, undefined, { id: "x", operation: "no.such.operation", input: {} });
@@ -189,6 +211,41 @@ test("preserves typed registry errors and maps unknown failures to internal", as
 		request(tools),
 	);
 	expect(internal.error).toEqual({ code: "internal", message: "Control operation failed." });
+});
+
+test("bounds default model selection recovery details on the SDK error", async () => {
+	const model = OPERATIONS.find(row => row.sdkId === "model.set")!;
+	const response = await dispatchControl(
+		{
+			setModel: () => {
+				throw {
+					code: "default_model_selection_recovery",
+					message: "private failure text",
+					recovery: {
+						message: "private failure text",
+						rollback: {
+							disposition: "partial",
+							failures: [{ stage: "durable", message: "private durable text" }],
+						},
+					},
+				};
+			},
+		} as unknown as ControlSurface,
+		model,
+		request(model),
+	);
+
+	expect(response.error).toEqual({
+		code: "default_model_selection_recovery",
+		message: "Default model selection could not be completed after durable selection.",
+		details: {
+			message: "Default model selection could not be completed after durable selection.",
+			rollback: {
+				disposition: "partial",
+				failures: [{ stage: "durable", message: "Durable default selection recovery could not be completed." }],
+			},
+		},
+	});
 });
 
 test("replays matching idempotency requests, rejects conflicts, and evicts LRU entries", async () => {

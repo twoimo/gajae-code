@@ -148,7 +148,7 @@ import {
 	type ScopedModelSelection,
 } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
-import type { Settings, SkillsSettings } from "../config/settings";
+import type { GlobalDefaultModelRoleCommit, Settings, SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
@@ -286,6 +286,14 @@ import { buildNamedToolChoice, buildNamedToolChoiceResult } from "../utils/tool-
 import { buildWorkflowIntentDiff, WORKFLOW_INTENT_DIFF_CUSTOM_TYPE } from "../workflow/workflow-intent-diff";
 import { buildWorkspaceTree, type WorkspaceTree } from "../workspace-tree";
 import type { AuthStorage } from "./auth-storage";
+import {
+	DefaultModelSelectionRecoveryError,
+	type DefaultModelSelectionResult,
+	type DefaultModelSelectionRollbackStage,
+} from "./default-model-selection";
+
+export { DefaultModelSelectionRecoveryError } from "./default-model-selection";
+
 import type {
 	ClientBridge,
 	ClientBridgePermissionOption,
@@ -315,6 +323,7 @@ import { formatSessionDumpText } from "./session-dump-format";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
+	DefaultModelSelectionStage,
 	NewSessionOptions,
 	SessionContext,
 	SessionManager,
@@ -434,7 +443,11 @@ export interface AgentSessionConfig {
 	/** Current session message-to-LLM conversion pipeline */
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	/** System prompt builder that can consider tool availability. Returns ordered provider-facing blocks. */
-	rebuildSystemPrompt?: (toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>;
+	rebuildSystemPrompt?: (
+		toolNames: string[],
+		tools: Map<string, AgentTool>,
+		candidateModel?: Model,
+	) => Promise<{ systemPrompt: string[] }>;
 	/** Initial workspace tree snapshot used for the first volatile per-turn context message. */
 	workspaceTree?: WorkspaceTree;
 	/** Rebuild the SSH tool from current capability discovery results. */
@@ -1210,6 +1223,8 @@ export class AgentSession {
 	#scopedModels: ScopedModelSelection[];
 	#thinkingLevel: ThinkingLevel | undefined;
 	#activeModelProfile: string | undefined;
+	#defaultModelSelectionTail: Promise<void> = Promise.resolve();
+	#defaultModelSelectionMutationRevision = 0;
 	#promptTemplates: PromptTemplate[];
 	#slashCommands: FileSlashCommand[];
 
@@ -1253,8 +1268,9 @@ export class AgentSession {
 	#allowAcpAgentInitiatedTurns = false;
 	/** Per-session memory of allow_always / reject_always decisions for gated tools. */
 	#acpPermissionDecisions: Map<string, "allow_always" | "reject_always"> = new Map();
-	/** SDK-controlled permission policy applied before ACP client prompting. */
-	#sdkPermissionMode: "prompt" | "allow" | "deny" = "prompt";
+	/** SDK-controlled permission policy applied before ACP client prompting. Defaults to `allow` so callers
+	 * without a reverse permission provider (TUI, print/headless) run guarded tools; ACP/SDK set this explicitly. */
+	#sdkPermissionMode: "prompt" | "allow" | "deny" = "allow";
 	/** Permission provider registered by a live SDK reverse lease. */
 	#sdkPermissionProvider:
 		| ((
@@ -1367,7 +1383,11 @@ export class AgentSession {
 	#onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#rebuildSystemPrompt:
-		| ((toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>)
+		| ((
+				toolNames: string[],
+				tools: Map<string, AgentTool>,
+				candidateModel?: Model,
+		  ) => Promise<{ systemPrompt: string[] }>)
 		| undefined;
 	#getMcpServerInstructions: (() => Map<string, string> | undefined) | undefined;
 	#reloadSshTool: (() => Promise<AgentTool | null>) | undefined;
@@ -1384,6 +1404,9 @@ export class AgentSession {
 	 * the dominant cause of prompt-cache invalidation in long sessions.
 	 */
 	#lastAppliedToolSignature: string | undefined;
+	#pendingAppliedToolSignature: string | undefined;
+	#baseSystemPromptGeneration = 0;
+	#pendingBaseSystemPromptRebuilds = new Set<Promise<void>>();
 	#mcpDiscoveryEnabled = false;
 	#discoverableMCPTools = new Map<string, DiscoverableMCPTool>();
 	#discoverableMCPSearchIndex: DiscoverableMCPSearchIndex | null = null;
@@ -4396,6 +4419,55 @@ export class AgentSession {
 		return resolveEditMode(this.#getEditModeSession());
 	}
 
+	#resolveEditModeForModel(model: Model): EditMode {
+		return resolveEditMode({
+			settings: this.settings,
+			getActiveModelString: () => formatModelString(model),
+		});
+	}
+
+	async #prepareDefaultModelSelectionPrompt(model: Model): Promise<string[] | undefined> {
+		if (!this.#rebuildSystemPrompt) return undefined;
+		if (!this.getActiveToolNames().includes("edit")) return undefined;
+		if (this.#resolveActiveEditMode() === this.#resolveEditModeForModel(model)) return undefined;
+		const built = await this.#rebuildSystemPrompt(this.getActiveToolNames(), this.#toolRegistry, model);
+		return built.systemPrompt;
+	}
+
+	#reserveBaseSystemPromptGeneration(): number {
+		this.#baseSystemPromptGeneration++;
+		return this.#baseSystemPromptGeneration;
+	}
+
+	async #runAdmittedBaseSystemPromptRebuild<T>(build: () => Promise<T>): Promise<T> {
+		const completion = Promise.withResolvers<void>();
+		this.#pendingBaseSystemPromptRebuilds.add(completion.promise);
+		try {
+			return await build();
+		} finally {
+			completion.resolve();
+			this.#pendingBaseSystemPromptRebuilds.delete(completion.promise);
+		}
+	}
+
+	async #waitForAdmittedBaseSystemPromptRebuilds(): Promise<void> {
+		while (this.#pendingBaseSystemPromptRebuilds.size > 0) {
+			await Promise.all(this.#pendingBaseSystemPromptRebuilds);
+		}
+	}
+
+	#applyPreparedDefaultModelSelectionPrompt(systemPrompt: string[] | undefined): void {
+		if (!systemPrompt) return;
+		this.#reserveBaseSystemPromptGeneration();
+		this.#baseSystemPrompt = systemPrompt;
+		this.agent.setSystemPrompt(this.#baseSystemPrompt);
+		const activeToolNames = this.getActiveToolNames();
+		const activeTools = activeToolNames
+			.map(name => this.#toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => tool != null);
+		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(activeToolNames, activeTools);
+	}
+
 	async #syncEditToolModeAfterModelChange(previousEditMode: EditMode): Promise<void> {
 		const currentEditMode = this.#resolveActiveEditMode();
 		if (previousEditMode !== currentEditMode && this.getActiveToolNames().includes("edit")) {
@@ -4779,6 +4851,13 @@ export class AgentSession {
 				this.#selectedDiscoveredToolNames.delete(name);
 			}
 		}
+		const signature = this.#computeAppliedToolSignature(validToolNames, tools);
+		const promptRelevantToolsChanged =
+			signature !== (this.#pendingAppliedToolSignature ?? this.#lastAppliedToolSignature);
+		if (promptRelevantToolsChanged) {
+			this.#defaultModelSelectionMutationRevision++;
+			this.#pendingAppliedToolSignature = signature;
+		}
 		this.#setGuardedAgentTools(tools);
 
 		// Active tool set changed → discoverable tool list (which excludes already-active tools)
@@ -4790,14 +4869,27 @@ export class AgentSession {
 		// `refreshMCPTools` -> `#applyActiveToolsByName` even though the resulting
 		// tool list is byte-identical. Skipping the rebuild keeps the system prompt
 		// stable, which is required for Anthropic prompt caching to keep hitting.
-		if (this.#rebuildSystemPrompt) {
-			const signature = this.#computeAppliedToolSignature(validToolNames, tools);
-			if (signature !== this.#lastAppliedToolSignature) {
-				const built = await this.#rebuildSystemPrompt(validToolNames, this.#toolRegistry);
-				this.#baseSystemPrompt = built.systemPrompt;
-				this.agent.setSystemPrompt(this.#baseSystemPrompt);
-				this.#lastAppliedToolSignature = signature;
+		if (promptRelevantToolsChanged && this.#rebuildSystemPrompt) {
+			const generation = this.#reserveBaseSystemPromptGeneration();
+			try {
+				const built = await this.#runAdmittedBaseSystemPromptRebuild(() =>
+					this.#rebuildSystemPrompt!(validToolNames, this.#toolRegistry),
+				);
+				if (generation === this.#baseSystemPromptGeneration) {
+					this.#baseSystemPrompt = built.systemPrompt;
+					this.agent.setSystemPrompt(this.#baseSystemPrompt);
+					this.#lastAppliedToolSignature = signature;
+					this.#pendingAppliedToolSignature = undefined;
+				}
+			} catch (error) {
+				if (generation === this.#baseSystemPromptGeneration) {
+					this.#pendingAppliedToolSignature = undefined;
+				}
+				throw error;
 			}
+		} else if (promptRelevantToolsChanged) {
+			this.#lastAppliedToolSignature = signature;
+			this.#pendingAppliedToolSignature = undefined;
 		}
 		if (options?.persistMCPSelection !== false) {
 			this.#persistSelectedMCPToolNamesIfChanged(previousSelectedMCPToolNames);
@@ -4876,7 +4968,20 @@ export class AgentSession {
 	async refreshBaseSystemPrompt(): Promise<void> {
 		if (!this.#rebuildSystemPrompt) return;
 		const activeToolNames = this.getActiveToolNames();
-		const built = await this.#rebuildSystemPrompt(activeToolNames, this.#toolRegistry);
+		const generation = this.#reserveBaseSystemPromptGeneration();
+		this.#defaultModelSelectionMutationRevision++;
+		let built: { systemPrompt: string[] };
+		try {
+			built = await this.#runAdmittedBaseSystemPromptRebuild(() =>
+				this.#rebuildSystemPrompt!(activeToolNames, this.#toolRegistry),
+			);
+		} catch (error) {
+			if (generation === this.#baseSystemPromptGeneration) {
+				this.#pendingAppliedToolSignature = undefined;
+			}
+			throw error;
+		}
+		if (generation !== this.#baseSystemPromptGeneration) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.agent.setSystemPrompt(this.#baseSystemPrompt);
 		// Refresh the cached signature so a subsequent `#applyActiveToolsByName` with
@@ -4886,6 +4991,7 @@ export class AgentSession {
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool != null);
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(activeToolNames, activeTools);
+		this.#pendingAppliedToolSignature = undefined;
 	}
 
 	async #buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
@@ -7404,6 +7510,177 @@ export class AgentSession {
 		await this.#syncEditToolModeAfterModelChange(previousEditMode);
 	}
 
+	async #restoreDefaultModelSelectionCommit(
+		commit: GlobalDefaultModelRoleCommit,
+	): Promise<{ readonly stage: DefaultModelSelectionRollbackStage; readonly message: string } | undefined> {
+		try {
+			if (await this.settings.restoreGlobalDefaultModelRoleIfCurrent(commit)) return undefined;
+			return {
+				stage: "durable",
+				message: "A newer default selection prevented durable recovery.",
+			};
+		} catch {
+			logger.warn("Failed to restore durable default model selection after session promotion failure", {
+				code: "default_model_selection_recovery_failed",
+				rollbackStage: "durable",
+			});
+			return {
+				stage: "durable",
+				message: "Durable default selection recovery could not be completed.",
+			};
+		}
+	}
+
+	async #discardDefaultModelSelectionStage(
+		stage: DefaultModelSelectionStage,
+	): Promise<{ readonly stage: DefaultModelSelectionRollbackStage; readonly message: string } | undefined> {
+		try {
+			await this.sessionManager.discardDefaultModelSelectionStage(stage);
+			return undefined;
+		} catch {
+			logger.warn("Failed to discard staged default model selection after session promotion failure", {
+				code: "default_model_selection_recovery_failed",
+				rollbackStage: "session",
+			});
+			return {
+				stage: "session",
+				message: "Session replacement recovery could not be completed.",
+			};
+		}
+	}
+
+	async #throwDefaultModelSelectionRecovery(
+		error: Error,
+		stage: DefaultModelSelectionStage,
+		commit: GlobalDefaultModelRoleCommit,
+	): Promise<never> {
+		const sessionFailure = await this.#discardDefaultModelSelectionStage(stage);
+		const durableFailure = await this.#restoreDefaultModelSelectionCommit(commit);
+		const failures = [sessionFailure, durableFailure].filter(
+			(failure): failure is { readonly stage: DefaultModelSelectionRollbackStage; readonly message: string } =>
+				failure !== undefined,
+		);
+		throw new DefaultModelSelectionRecoveryError(error.message, {
+			message: error.message,
+			rollback: {
+				disposition: failures.length === 0 ? "restored" : "partial",
+				failures,
+			},
+		});
+	}
+
+	#publishDefaultModelSelection(model: Model, thinkingLevel: ThinkingLevel, systemPrompt: string[] | undefined): void {
+		this.#clearActiveRetryFallback();
+		this.#setModelWithProviderSessionReset(model);
+		const thinkingLevelChanged = this.#thinkingLevel !== thinkingLevel;
+		this.#thinkingLevel = thinkingLevel;
+		this.agent.setThinkingLevel(toReasoningEffort(thinkingLevel));
+		if (thinkingLevelChanged) {
+			const event: AgentSessionEvent = { type: "thinking_level_changed", thinkingLevel };
+			for (const listener of this.#eventListenerSnapshot) {
+				try {
+					listener(event);
+				} catch {
+					logger.warn("Default model selection event listener failed", {
+						code: "default_model_selection_listener_failed",
+						disposition: "continue",
+					});
+				}
+			}
+		}
+		this.#applyPreparedDefaultModelSelectionPrompt(systemPrompt);
+		try {
+			this.settings.getStorage()?.recordModelUsage(`${model.provider}/${model.id}`);
+		} catch {
+			logger.warn("Failed to record model usage after default model selection", {
+				code: "default_model_selection_model_usage_record_failed",
+				disposition: "continue",
+			});
+		}
+	}
+
+	async setDefaultModelSelection(
+		model: Model,
+		thinkingLevel: ThinkingLevel | undefined,
+	): Promise<DefaultModelSelectionResult> {
+		const predecessor = this.#defaultModelSelectionTail;
+		const transaction = Promise.withResolvers<void>();
+		this.#defaultModelSelectionTail = transaction.promise;
+		try {
+			await predecessor;
+			if (thinkingLevel === ThinkingLevel.Inherit) {
+				throw new Error("Default model selection cannot inherit a thinking level");
+			}
+			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+			if (!apiKey) {
+				throw new Error(`No API key for ${model.provider}/${model.id}`);
+			}
+			const resolvedLevel = resolveThinkingLevelForModel(model, thinkingLevel);
+			const effectiveLevel =
+				resolvedLevel ??
+				resolveThinkingLevelForModel(model, model.thinking?.defaultLevel ?? this.thinkingLevel) ??
+				ThinkingLevel.Off;
+			await this.waitForIdle();
+			await this.sessionManager.flush();
+			await this.#waitForAdmittedBaseSystemPromptRebuilds();
+			const expectedMutationRevision = this.#defaultModelSelectionMutationRevision;
+			const preparedSystemPrompt = await this.#prepareDefaultModelSelectionPrompt(model);
+			const stage = await this.sessionManager.stageDefaultModelSelection(
+				`${model.provider}/${model.id}`,
+				effectiveLevel,
+				{ appendThinkingLevel: true },
+			);
+			let durableCommit: GlobalDefaultModelRoleCommit;
+			try {
+				durableCommit = await this.settings.setGlobalModelRoleAndFlush(
+					"default",
+					formatModelSelectorValue(`${model.provider}/${model.id}`, effectiveLevel),
+				);
+			} catch (error) {
+				await this.sessionManager.discardDefaultModelSelectionStage(stage);
+				throw error;
+			}
+			if (this.#defaultModelSelectionMutationRevision !== expectedMutationRevision) {
+				await this.#throwDefaultModelSelectionRecovery(
+					new Error("Default model selection was superseded before session promotion"),
+					stage,
+					durableCommit,
+				);
+			}
+			const promotion = this.sessionManager.promoteDefaultModelSelection(stage);
+			switch (promotion.kind) {
+				case "promoted": {
+					this.#publishDefaultModelSelection(model, effectiveLevel, preparedSystemPrompt);
+					break;
+				}
+				case "not_promoted": {
+					return this.#throwDefaultModelSelectionRecovery(
+						promotion.error ?? new Error("Default model selection was superseded before session promotion"),
+						stage,
+						durableCommit,
+					);
+				}
+				case "unknown": {
+					const message = "Session replacement outcome could not be determined.";
+					throw new DefaultModelSelectionRecoveryError(message, {
+						message,
+						rollback: {
+							disposition: "unknown",
+							failures: [
+								{
+									stage: "session",
+									message: "Session replacement outcome could not be determined.",
+								},
+							],
+						},
+					});
+				}
+			}
+			return { provider: model.provider, modelId: model.id, thinkingLevel: effectiveLevel };
+		} finally {
+			transaction.resolve();
+		}
+	}
 	/**
 	 * Cycle to next/previous model.
 	 * Uses scoped models (from --models flag) if available, otherwise all available models.
@@ -7586,6 +7863,7 @@ export class AgentSession {
 
 		this.#thinkingLevel = effectiveLevel;
 		this.agent.setThinkingLevel(toReasoningEffort(effectiveLevel));
+		if (isChanging) this.#defaultModelSelectionMutationRevision++;
 
 		if (persist && effectiveLevel !== undefined) {
 			this.settings.set("defaultThinkingLevel", effectiveLevel);
@@ -8772,7 +9050,8 @@ export class AgentSession {
 		return candidate;
 	}
 
-	#setModelWithProviderSessionReset(model: Model): void {
+	#setModelWithProviderSessionReset(model: Model | undefined): void {
+		this.#defaultModelSelectionMutationRevision++;
 		const currentModel = this.model;
 		if (currentModel) {
 			this.#closeProviderSessionsForModelSwitch(currentModel, model);
@@ -8812,15 +9091,15 @@ export class AgentSession {
 		}
 	}
 
-	#closeProviderSessionsForModelSwitch(currentModel: Model, nextModel: Model): void {
+	#closeProviderSessionsForModelSwitch(currentModel: Model, nextModel: Model | undefined): void {
 		const providerKeys = new Set<string>();
-		if (currentModel.api === "openai-codex-responses" || nextModel.api === "openai-codex-responses") {
+		if (currentModel.api === "openai-codex-responses" || nextModel?.api === "openai-codex-responses") {
 			providerKeys.add("openai-codex-responses");
 		}
 		if (currentModel.api === "openai-responses") {
 			providerKeys.add(`openai-responses:${currentModel.provider}`);
 		}
-		if (nextModel.api === "openai-responses") {
+		if (nextModel?.api === "openai-responses") {
 			providerKeys.add(`openai-responses:${nextModel.provider}`);
 		}
 
@@ -10860,8 +11139,9 @@ export class AgentSession {
 			// Accept the ordered pair as one volatile batch before committing its
 			// roster claim, notifying either UI, or resolving the sender delivery.
 			args.signal?.throwIfAborted();
-			this.#queueBackgroundExchangeInjection([incomingRecord, replyRecord]);
+			this.#queueBackgroundExchangeInjection([incomingRecord, replyRecord], { deferFlush: true });
 			commitRosterClaim?.();
+			this.#flushOrSchedulePendingBackgroundExchanges();
 			announceIncoming();
 			this.#emitIrcObservation(replyRecord);
 			this.#forwardIrcRelayToMain({
@@ -11219,8 +11499,12 @@ export class AgentSession {
 		return messages;
 	}
 
-	#queueBackgroundExchangeInjection(messages: CustomMessage[]): void {
+	#queueBackgroundExchangeInjection(messages: CustomMessage[], options?: { deferFlush?: boolean }): void {
 		this.#pendingBackgroundExchanges.push(messages);
+		if (!options?.deferFlush) this.#flushOrSchedulePendingBackgroundExchanges();
+	}
+
+	#flushOrSchedulePendingBackgroundExchanges(): void {
 		if (!this.isStreaming) {
 			this.#flushPendingBackgroundExchanges();
 			return;

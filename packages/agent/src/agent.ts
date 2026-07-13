@@ -830,7 +830,7 @@ export class Agent {
 		this.#contextRevision++;
 	}
 
-	setModel(m: Model) {
+	setModel(m: Model | undefined) {
 		this.#state.model = m;
 		this.#contextRevision++;
 	}

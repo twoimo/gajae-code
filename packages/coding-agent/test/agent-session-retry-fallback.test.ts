@@ -6,7 +6,11 @@ import { type AssistantMessage, Effort, getBundledModel, type Model, writeModelC
 import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
-import { AgentSession, type AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
+import {
+	AgentSession,
+	type AgentSessionEvent,
+	DefaultModelSelectionRecoveryError,
+} from "@gajae-code/coding-agent/session/agent-session";
 import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
 import { TempDir } from "@gajae-code/utils";
@@ -847,6 +851,79 @@ describe("AgentSession retry fallback", () => {
 		]);
 		expect(session.model?.provider).toBe(primaryModel.provider);
 		expect(session.model?.id).toBe(primaryModel.id);
+	});
+
+	it("restores the active retry fallback after a late default selection failure so cooldown expiry returns to primary", async () => {
+		// Given
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+			"retry.fallbackRevertPolicy": "cooldown-expiry",
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		const sessionManager = SessionManager.inMemory();
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+		});
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("First prompt triggers fallback");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model).toBe(fallbackModel);
+
+		const latePromotionError = new Error("late default selection failure");
+		vi.spyOn(sessionManager, "promoteDefaultModelSelection").mockReturnValue({
+			kind: "not_promoted",
+			error: latePromotionError,
+		});
+
+		// When
+		let selectionFailure: unknown;
+		try {
+			await session.setDefaultModelSelection(primaryModel, undefined);
+		} catch (error) {
+			selectionFailure = error;
+		}
+		expect(session.model).toBe(fallbackModel);
+		expect(selectionFailure).toBeInstanceOf(DefaultModelSelectionRecoveryError);
+		if (!(selectionFailure instanceof DefaultModelSelectionRecoveryError)) {
+			throw new Error("Expected typed default-selection recovery failure");
+		}
+		expect(selectionFailure.message).toBe("Default model selection could not be completed after durable selection.");
+		expect(selectionFailure.recovery).toEqual({
+			message: "Default model selection could not be completed after durable selection.",
+			rollback: { disposition: "restored", failures: [] },
+		});
+		now += 240;
+		await session.prompt("Cooldown expiry should restore primary");
+		await session.waitForIdle();
+
+		// Then
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(session.model).toBe(primaryModel);
 	});
 
 	it("preserves thinking on bare fallback selectors and does not overwrite user thinking on restore", async () => {

@@ -358,6 +358,25 @@ export type SessionEntry =
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
+export type DefaultModelSelectionStage = {
+	readonly entryRevision: number;
+	readonly headerExportRevision: number;
+	readonly sessionId: string;
+	readonly sessionFile: string | undefined;
+	readonly entries: readonly FileEntry[];
+	readonly tempPath: string | undefined;
+	readonly persistsToExistingFile: boolean;
+};
+
+export type DefaultModelSelectionPromotion =
+	| { readonly kind: "promoted" }
+	| { readonly kind: "not_promoted"; readonly error?: Error }
+	| { readonly kind: "unknown"; readonly error: Error };
+
+type SessionFileReplacementSyncOutcome =
+	| { readonly kind: "replaced" }
+	| { readonly kind: "restored_previous"; readonly error: Error };
+
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
 	entry: SessionEntry;
@@ -3146,6 +3165,7 @@ interface SessionManagerStateSnapshot {
 	titleSource: "auto" | "user" | undefined;
 	sessionFile: string | undefined;
 	flushed: boolean;
+	ensuredOnDisk: boolean;
 	needsFullRewriteOnNextPersist: boolean;
 	fileEntries: FileEntry[];
 	materializedFileEntries: FileEntry[];
@@ -3338,6 +3358,7 @@ export class SessionManager {
 			titleSource: this.#titleSource,
 			sessionFile: this.#sessionFile,
 			flushed: this.#flushed,
+			ensuredOnDisk: this.#ensuredOnDisk,
 			needsFullRewriteOnNextPersist: this.#needsFullRewriteOnNextPersist,
 			// Snapshot entry objects by reference: switch/reload replaces the active entry array,
 			// so rollback does not need structured cloning of extension/custom details.
@@ -3350,15 +3371,23 @@ export class SessionManager {
 
 	restoreState(snapshot: SessionManagerStateSnapshot): void {
 		const restoredFileEntries = [...snapshot.materializedFileEntries];
+		const retainsPersistWriter =
+			this.#persistWriter?.isOpen() === true &&
+			this.#sessionId === snapshot.sessionId &&
+			this.#sessionFile === snapshot.sessionFile &&
+			this.#persistWriterPath === snapshot.sessionFile;
 		this.#sessionId = snapshot.sessionId;
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
 		this.#sessionFile = snapshot.sessionFile;
 		this.#flushed = snapshot.flushed;
+		this.#ensuredOnDisk = snapshot.ensuredOnDisk;
 		this.#needsFullRewriteOnNextPersist = snapshot.needsFullRewriteOnNextPersist;
 		this.#fileEntries = restoredFileEntries;
-		this.#persistWriter = undefined;
-		this.#persistWriterPath = undefined;
+		if (!retainsPersistWriter) {
+			this.#persistWriter = undefined;
+			this.#persistWriterPath = undefined;
+		}
 		this.#persistChain = Promise.resolve();
 		this.#persistError = undefined;
 		this.#persistErrorReported = false;
@@ -3803,7 +3832,11 @@ export class SessionManager {
 	// shared `*.bak` glob on both real and in-memory storage backends and promote it back to
 	// the primary on the next session-dir scan.
 
-	#replaceSessionFileAfterEpermSync(tempPath: string, targetPath: string, renameError: unknown): void {
+	#replaceSessionFileAfterEpermSync(
+		tempPath: string,
+		targetPath: string,
+		renameError: unknown,
+	): SessionFileReplacementSyncOutcome {
 		const dir = path.resolve(targetPath, "..");
 		const backupPath = path.join(dir, `${path.basename(targetPath)}.${Snowflake.next()}.bak`);
 		try {
@@ -3811,7 +3844,7 @@ export class SessionManager {
 		} catch (err) {
 			if (isEnoent(err)) {
 				this.storage.renameSync(tempPath, targetPath);
-				return;
+				return { kind: "replaced" };
 			}
 			throw toError(renameError);
 		}
@@ -3830,7 +3863,7 @@ export class SessionManager {
 					{ cause: originalError },
 				);
 			}
-			throw replaceError;
+			return { kind: "restored_previous", error: replaceError };
 		}
 
 		try {
@@ -3844,6 +3877,7 @@ export class SessionManager {
 				});
 			}
 		}
+		return { kind: "replaced" };
 	}
 
 	async #replaceSessionFileAfterEperm(tempPath: string, targetPath: string, renameError: unknown): Promise<void> {
@@ -3898,13 +3932,13 @@ export class SessionManager {
 		}
 	}
 
-	#replaceSessionFileSync(tempPath: string, targetPath: string): void {
+	#replaceSessionFileSync(tempPath: string, targetPath: string): SessionFileReplacementSyncOutcome {
 		try {
 			this.storage.renameSync(tempPath, targetPath);
+			return { kind: "replaced" };
 		} catch (err) {
 			if (hasFsCode(err, "EPERM")) {
-				this.#replaceSessionFileAfterEpermSync(tempPath, targetPath, err);
-				return;
+				return this.#replaceSessionFileAfterEpermSync(tempPath, targetPath, err);
 			}
 
 			throw toError(err);
@@ -3921,7 +3955,8 @@ export class SessionManager {
 				writer.writeSync(entry);
 			}
 			writer.closeSync();
-			this.#replaceSessionFileSync(tempPath, this.#sessionFile);
+			const replacement = this.#replaceSessionFileSync(tempPath, this.#sessionFile);
+			if (replacement.kind === "restored_previous") throw replacement.error;
 		} catch (err) {
 			// closeSync is now truthful and may throw; wrap the best-effort cleanup so
 			// the original error (write/close failure) is the one surfaced, not the
@@ -3964,6 +3999,38 @@ export class SessionManager {
 		}
 	}
 
+	async #writeStagedDefaultModelSelection(
+		entries: readonly FileEntry[],
+		sessionFile: string,
+	): Promise<string | undefined> {
+		if (!this.storage.existsSync(sessionFile)) return undefined;
+		const dir = path.resolve(sessionFile, "..");
+		const tempPath = path.join(dir, `.${path.basename(sessionFile)}.${Snowflake.next()}.default-selection.tmp`);
+		const writer = new NdjsonFileWriter(this.storage, tempPath, { flags: "w" });
+		try {
+			const persistedEntries = await Promise.all(
+				materializeResidentEntriesForPersistenceSync([...entries], this.#residentBlobStores()).map(entry =>
+					prepareEntryForPersistence(entry, this.#blobStore),
+				),
+			);
+			for (const entry of persistedEntries) {
+				await writer.write(entry);
+			}
+			await writer.flush();
+			await writer.fsync();
+			await writer.close();
+			return tempPath;
+		} catch (error) {
+			try {
+				await writer.close();
+			} catch {}
+			try {
+				await this.storage.unlink(tempPath);
+			} catch {}
+			throw toError(error);
+		}
+	}
+
 	async #rewriteFile(): Promise<void> {
 		if (!this.persist || !this.#sessionFile) return;
 		await this.#queuePersistTask(async () => {
@@ -3994,6 +4061,109 @@ export class SessionManager {
 
 	isPersisted(): boolean {
 		return this.persist;
+	}
+
+	async stageDefaultModelSelection(
+		model: string,
+		thinkingLevel: string | undefined,
+		options?: { readonly appendThinkingLevel: boolean },
+	): Promise<DefaultModelSelectionStage> {
+		const entryRevision = this.#entryRevision;
+		const headerExportRevision = this.#headerExportRevision;
+		const sessionId = this.#sessionId;
+		const sessionFile = this.#sessionFile;
+		const entryIds = new Map(this.#byId);
+		let parentId = this.#leafId;
+		const entries = [...this.#fileEntries];
+		const temporaryEntry: ModelChangeEntry = {
+			type: "model_change",
+			id: generateId(entryIds),
+			parentId,
+			timestamp: new Date().toISOString(),
+			model,
+			role: "temporary",
+		};
+		entryIds.set(temporaryEntry.id, temporaryEntry);
+		entries.push(temporaryEntry);
+		parentId = temporaryEntry.id;
+		if (options?.appendThinkingLevel) {
+			const thinkingEntry: ThinkingLevelChangeEntry = {
+				type: "thinking_level_change",
+				id: generateId(entryIds),
+				parentId,
+				timestamp: new Date().toISOString(),
+				thinkingLevel: thinkingLevel ?? null,
+			};
+			entryIds.set(thinkingEntry.id, thinkingEntry);
+			entries.push(thinkingEntry);
+			parentId = thinkingEntry.id;
+		}
+		const modelEntry: ModelChangeEntry = {
+			type: "model_change",
+			id: generateId(entryIds),
+			parentId,
+			timestamp: new Date().toISOString(),
+			model,
+			role: "default",
+		};
+		entries.push(modelEntry);
+		const persistsToExistingFile = this.persist && sessionFile !== undefined && this.storage.existsSync(sessionFile);
+		const tempPath = persistsToExistingFile
+			? await this.#writeStagedDefaultModelSelection(entries, sessionFile)
+			: undefined;
+		return {
+			entryRevision,
+			headerExportRevision,
+			sessionId,
+			sessionFile,
+			entries,
+			tempPath,
+			persistsToExistingFile,
+		};
+	}
+
+	promoteDefaultModelSelection(stage: DefaultModelSelectionStage): DefaultModelSelectionPromotion {
+		if (
+			stage.entryRevision !== this.#entryRevision ||
+			stage.headerExportRevision !== this.#headerExportRevision ||
+			stage.sessionId !== this.#sessionId ||
+			stage.sessionFile !== this.#sessionFile
+		) {
+			return { kind: "not_promoted" };
+		}
+		if (stage.persistsToExistingFile) {
+			if (!stage.tempPath || !this.#sessionFile)
+				return { kind: "unknown", error: new Error("Missing staged session replacement") };
+			try {
+				this.#closePersistWriterInternalSync();
+				const replacement = this.#replaceSessionFileSync(stage.tempPath, this.#sessionFile);
+				if (replacement.kind === "restored_previous") {
+					return { kind: "not_promoted", error: replacement.error };
+				}
+			} catch (error) {
+				if (this.#persistWriter?.getCloseState() === "close_failed_retryable") {
+					return { kind: "not_promoted", error: new Error("Session replacement could not be completed.") };
+				}
+				return { kind: "unknown", error: toError(error) };
+			}
+		}
+		this.#fileEntries = [...stage.entries];
+		this.#resetResidentTextBlobStore();
+		this.#reexternalizeFileEntriesForResidentStore();
+		this.#needsFullRewriteOnNextPersist = false;
+		this.#flushed = stage.persistsToExistingFile;
+		this.#ensuredOnDisk = stage.persistsToExistingFile;
+		this.#bumpAllRevisions();
+		return { kind: "promoted" };
+	}
+
+	async discardDefaultModelSelectionStage(stage: DefaultModelSelectionStage): Promise<void> {
+		if (!stage.tempPath) return;
+		try {
+			await this.storage.unlink(stage.tempPath);
+		} catch (error) {
+			if (!isEnoent(error)) throw toError(error);
+		}
 	}
 
 	/**
