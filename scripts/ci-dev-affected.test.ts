@@ -395,6 +395,7 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(fetchBase.if).toBe("${{ github.event_name == 'pull_request' }}");
 		expect(requireYamlRecord(fetchBase.env, "base fetch env")).toEqual({
 			BASE_REPOSITORY: "${{ github.event.pull_request.base.repo.full_name }}",
+			BASE_REF: "${{ github.event.pull_request.base.ref }}",
 			BASE_SHA: "${{ github.event.pull_request.base.sha }}",
 		});
 
@@ -402,10 +403,12 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(typeof fetchRun).toBe("string");
 		if (typeof fetchRun !== "string") throw new Error("base fetch run command must be a string");
 		expect(fetchRun).toContain('workspace_sha="$(git rev-parse HEAD)"');
-		expect(fetchRun).toContain('git fetch --no-tags "https://github.com/${BASE_REPOSITORY}.git" "$BASE_SHA"');
-		expect(fetchRun).toContain('git cat-file -e "${BASE_SHA}^{commit}"');
+		expect(fetchRun).toContain('git fetch --no-tags "https://github.com/${BASE_REPOSITORY}.git" "+refs/heads/${BASE_REF}:refs/remotes/gjc-base/base"');
+		expect(fetchRun).toContain('fetched_base_sha="$(git rev-parse --verify refs/remotes/gjc-base/base^{commit})"');
+		expect(fetchRun).toContain('if [ "$fetched_base_sha" != "$BASE_SHA" ]; then');
 		expect(fetchRun).toContain('if [ "$(git rev-parse HEAD)" != "$workspace_sha" ]; then');
 		expect(fetchRun).toContain('[[ "$BASE_REPOSITORY" =~ ^[A-Za-z0-9]');
+		expect(fetchRun).toContain('git check-ref-format --branch "$BASE_REF" >/dev/null');
 		expect(fetchRun).toContain('[[ "$BASE_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]');
 		expect(fetchRun).not.toContain("origin/dev");
 	});

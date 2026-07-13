@@ -52,6 +52,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
@@ -63,9 +64,17 @@ jobs:
             echo "invalid pull request base SHA"
             exit 1
           fi
+          if ! git check-ref-format --branch "$BASE_REF" >/dev/null; then
+            echo "invalid pull request base ref"
+            exit 1
+          fi
           workspace_sha="$(git rev-parse HEAD)"
-          git fetch --no-tags "https://github.com/${BASE_REPOSITORY}.git" "$BASE_SHA"
-          git cat-file -e "${BASE_SHA}^{commit}"
+          git fetch --no-tags "https://github.com/${BASE_REPOSITORY}.git" "+refs/heads/${BASE_REF}:refs/remotes/gjc-base/base"
+          fetched_base_sha="$(git rev-parse --verify refs/remotes/gjc-base/base^{commit})"
+          if [ "$fetched_base_sha" != "$BASE_SHA" ]; then
+            echo "fetched pull request base ref does not match expected SHA"
+            exit 1
+          fi
           if [ "$(git rev-parse HEAD)" != "$workspace_sha" ]; then
             echo "base fetch changed checked-out workspace SHA"
             exit 1
