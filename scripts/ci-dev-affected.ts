@@ -352,8 +352,11 @@ async function getChangedPaths(): Promise<string[]> {
 
 	const explicitPaths = Bun.env.CI_DEV_CHANGED_PATHS?.trim();
 	if (explicitPaths) {
-		if (Buffer.byteLength(explicitPaths, "utf8") > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
-			throw new Error("CI_DEV_CHANGED_PATHS exceeds the changed-path transport limit.");
+		const explicitPathBytes = Buffer.byteLength(explicitPaths, "utf8");
+		if (explicitPathBytes > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
+			throw new Error(
+				`CI_DEV_CHANGED_PATHS has ${explicitPathBytes} UTF-8 bytes (limit ${MAX_CHANGED_PATHS_SERIALIZED_BYTES} bytes).`,
+			);
 		}
 		return normalizeChangedPaths(
 			explicitPaths
@@ -380,17 +383,20 @@ export function encodeChangedPaths(paths: readonly string[]): string {
 }
 
 export function decodeChangedPaths(encodedPaths: string): string[] {
-	if (
-		encodedPaths.length > MAX_CHANGED_PATHS_TRANSPORT_LENGTH ||
-		encodedPaths.length % 4 !== 0 ||
-		!/^[A-Za-z0-9+/]*={0,2}$/.test(encodedPaths)
-	) {
-		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 is not a bounded base64 payload.");
+	if (encodedPaths.length > MAX_CHANGED_PATHS_TRANSPORT_LENGTH) {
+		throw new Error(
+			`CI_DEV_CHANGED_PATHS_JSON_BASE64 has ${encodedPaths.length} characters (limit ${MAX_CHANGED_PATHS_TRANSPORT_LENGTH}).`,
+		);
+	}
+	if (encodedPaths.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encodedPaths)) {
+		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 is not a valid base64 payload.");
 	}
 
 	const serialized = Buffer.from(encodedPaths, "base64");
 	if (serialized.byteLength > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
-		throw new Error("CI_DEV_CHANGED_PATHS_JSON_BASE64 exceeds the changed-path transport limit.");
+		throw new Error(
+			`CI_DEV_CHANGED_PATHS_JSON_BASE64 decodes to ${serialized.byteLength} bytes (limit ${MAX_CHANGED_PATHS_SERIALIZED_BYTES} bytes).`,
+		);
 	}
 
 	let parsed: unknown;
@@ -407,12 +413,14 @@ export function decodeChangedPaths(encodedPaths: string): string[] {
 
 function normalizeChangedPaths(paths: readonly string[]): string[] {
 	if (paths.length > MAX_CHANGED_PATHS) {
-		throw new Error(`Changed-path plan exceeds the ${MAX_CHANGED_PATHS}-path limit.`);
+		throw new Error(`Changed-path plan has ${paths.length} paths (limit ${MAX_CHANGED_PATHS}).`);
 	}
 	const normalized = Array.from(new Set(paths.filter(Boolean))).sort();
 	const serializedBytes = Buffer.byteLength(JSON.stringify(normalized), "utf8");
 	if (serializedBytes > MAX_CHANGED_PATHS_SERIALIZED_BYTES) {
-		throw new Error("Changed-path plan exceeds the transport size limit.");
+		throw new Error(
+			`Changed-path plan has ${normalized.length} unique paths serialized as ${serializedBytes} bytes (limit ${MAX_CHANGED_PATHS_SERIALIZED_BYTES} bytes). Verify the diff uses the pull request target's merge base.`,
+		);
 	}
 	return normalized;
 }
@@ -423,13 +431,19 @@ async function resolveBaseRef(): Promise<string> {
 	const baseSha = Bun.env.GITHUB_BASE_SHA?.trim();
 	const baseRef = Bun.env.GITHUB_BASE_REF?.trim();
 
-	if (eventName === "pull_request" && baseRef) {
-		const mergeBase = await $`git merge-base HEAD ${`origin/${baseRef}`}`.cwd(repoRoot).quiet().nothrow();
-		if (mergeBase.exitCode === 0) {
-			const value = mergeBase.stdout.toString().trim();
-			if (value !== "") return value;
+	if (eventName === "pull_request") {
+		// `origin` is the PR fork after checkout, so origin/<baseRef> can be stale
+		// or absent. The event base SHA identifies the exact PR target baseline.
+		const pullRequestBase =
+			baseSha && !ZERO_SHA.test(baseSha) ? baseSha : baseRef ? `origin/${baseRef}` : undefined;
+		if (pullRequestBase) {
+			const mergeBase = await $`git merge-base HEAD ${pullRequestBase}`.cwd(repoRoot).quiet().nothrow();
+			if (mergeBase.exitCode === 0) {
+				const value = mergeBase.stdout.toString().trim();
+				if (value !== "") return value;
+			}
+			return pullRequestBase;
 		}
-		return `origin/${baseRef}`;
 	}
 	if (baseSha && !ZERO_SHA.test(baseSha)) {
 		return baseSha;

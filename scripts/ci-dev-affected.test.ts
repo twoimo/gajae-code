@@ -248,7 +248,7 @@ describe("--matrix-json and --task CLI fan-out", () => {
 
 	async function runScript(
 		args: readonly string[],
-		changedPaths: string,
+		changedPaths: string | undefined,
 		extraEnv: Record<string, string> = {},
 	): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 		const proc = Bun.spawn(["bun", scriptPath, ...args], {
@@ -261,7 +261,8 @@ describe("--matrix-json and --task CLI fan-out", () => {
 				...process.env,
 				GITHUB_EVENT_NAME: "push",
 				CI_DEV_PLAN_MODE: "push",
-				CI_DEV_CHANGED_PATHS: changedPaths,
+				CI_DEV_CHANGED_PATHS: changedPaths ?? "",
+				CI_DEV_CHANGED_PATHS_JSON_BASE64: "",
 				...extraEnv,
 			},
 			stdout: "pipe",
@@ -308,6 +309,47 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(matrix.include.every((shard: { key: string }) => shard.key !== "native-linux-x64")).toBe(true);
 	});
 
+	test("pull request planning uses the event base SHA instead of the fork's base branch", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-pr-base-"));
+		tempDirs.push(tempDir);
+		const outputFile = path.join(tempDir, "github-output.txt");
+		const expectedPaths = [
+			".github/workflows/ci.yml",
+			".github/workflows/dev-ci.yml",
+			"packages/coding-agent/CHANGELOG.md",
+			"scripts/ci-dev-affected.test.ts",
+			"scripts/ci-dev-affected.ts",
+			"scripts/gjc-session/create.test.ts",
+			"scripts/release-publish-order.test.ts",
+			"scripts/verify-platform-test-policy.test.ts",
+			"scripts/verify-platform-test-policy.ts",
+		];
+
+		const { exitCode } = await runScript(["--matrix-json"], undefined, {
+			CI_DEV_PLAN_MODE: "pr",
+			CI_DEV_WORKSPACE_SHA: "bfc589b212dbf7857da567d5d214a1e917e60e68",
+			GITHUB_BASE_REF: "dev",
+			GITHUB_BASE_SHA: "96eed5e39347e0778f68afea9872176dc82aa3b6",
+			GITHUB_EVENT_NAME: "pull_request",
+			GITHUB_OUTPUT: outputFile,
+			GITHUB_SHA: "bfc589b212dbf7857da567d5d214a1e917e60e68",
+		});
+		expect(exitCode).toBe(0);
+
+		const output = await Bun.file(outputFile).text();
+		const changedPathsLine = output
+			.trim()
+			.split("\n")
+			.find(line => line.startsWith("changed_paths="));
+		expect(changedPathsLine).toBeDefined();
+		const transportedPaths = (changedPathsLine as string).slice("changed_paths=".length);
+		const plannedPaths = decodeChangedPaths(transportedPaths);
+
+		expect(plannedPaths).toEqual(expectedPaths);
+		expect(Buffer.byteLength(JSON.stringify(plannedPaths), "utf8")).toBeLessThan(48 * 1024);
+		expect(transportedPaths.length).toBeLessThan(64 * 1024);
+	});
+
 	test("base64 path transport cannot forge GitHub planner outputs with newline or delimiter filenames", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ci-dev-affected-hostile-path-"));
 		tempDirs.push(tempDir);
@@ -343,6 +385,14 @@ describe("--matrix-json and --task CLI fan-out", () => {
 			"packages/coding-agent/src/main.ts",
 			"scripts/verify-platform-test-policy.ts",
 		].sort());
+	});
+
+	test("rejects oversized count, serialized-byte, and base64 transports", () => {
+		expect(() =>
+			encodeChangedPaths(Array.from({ length: 1_001 }, (_, index) => `docs/changed-${index}.md`)),
+		).toThrow("limit 1000");
+		expect(() => encodeChangedPaths([`docs/${"x".repeat(48 * 1024)}`])).toThrow("limit 49152 bytes");
+		expect(() => decodeChangedPaths("A".repeat(64 * 1024 + 4))).toThrow("limit 65536");
 	});
 
 	test("--task runs exactly the selected planned task", async () => {
