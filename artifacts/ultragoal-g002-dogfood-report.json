@@ -1,0 +1,58 @@
+{
+	"schemaVersion": 1,
+	"kind": "cli-dogfood-test-report",
+	"story": "G002 dogfood GJC from source before releasing 0.10.1",
+	"checkout": "dev @ c4b9f2b2 (post-G004), run via bun packages/coding-agent/src/cli.ts",
+	"surfaces": [
+		{
+			"id": "version",
+			"invocation": "bun packages/coding-agent/src/cli.ts --version",
+			"observed": "gjc/0.10.0\n",
+			"verdict": "passed",
+			"note": "0.10.0 expected pre-bump; release script performs the 0.10.1 bump"
+		},
+		{
+			"id": "print-mode-basic",
+			"invocation": "bun packages/coding-agent/src/cli.ts -p --no-session \"Reply with exactly the word DOGFOOD-OK and nothing else.\"",
+			"observed": "DOGFOOD-OK\nexit=0",
+			"verdict": "passed"
+		},
+		{
+			"id": "print-mode-epipe-early-close",
+			"invocation": "bun /tmp/g002-epipe-harness.ts (spawns cli.ts -p with piped stdout, destroys the reader after the first chunk to force EPIPE on subsequent writes)",
+			"observed": "{ exitCode: 0, signal: null, closedEarly: true, stderrBytes: 0, crashDump: false }",
+			"verdict": "passed",
+			"note": "Exercises the v0.10.1 EPIPE fix (51b21c16 + 40cc7408 + df190d65): pre-fix behavior was a fatal internal-error dump; observed quiet exit with zero stderr"
+		},
+		{
+			"id": "full-pipe-drain",
+			"invocation": "cli.ts -p --no-session \"Count from 1 to 200...\" | head -c 64 (pipefail)",
+			"observed": "pipestatus=0, empty stderr",
+			"verdict": "passed"
+		},
+		{
+			"id": "context-usage-ssot",
+			"invocation": "bun artifacts/ultragoal-g002-context-ssot-harness.ts (SDK harness: createAgentSession noSession, one real provider turn, inspect getContextUsage before/after)",
+			"observed": "before.source=heuristic tokens=6668; after.source=provider_anchor tokens=4716 contextWindow=1000000 percent~0.47; replyContainsMarker=true",
+			"verdict": "passed",
+			"note": "Exercises the v0.10.1 SSOT change (96f48793 + 555c94ce + 8487b7f1 + 32ef3942): heuristic fallback before any provider anchor exists, provider-anchored snapshot after a successful turn, sane percent"
+		},
+		{
+			"id": "help-surface",
+			"invocation": "bun packages/coding-agent/src/cli.ts --help",
+			"observed": "full help rendered, exit=0",
+			"verdict": "passed"
+		},
+		{
+			"id": "dev-link-check",
+			"invocation": "bun scripts/dev-link.ts --check",
+			"observed": "gjc resolves to workspace source (cli.ts) — OK; natives load smoke-test ok; exit=0",
+			"verdict": "passed",
+			"note": "Exercises e3e861ce fail-loudly path in its passing direction"
+		}
+	],
+	"regressionsFound": [],
+	"operatorNotes": [
+		"gjc status is not a subcommand; invoking it starts an interactive session (expected, documented in --help command list as gjc state)."
+	]
+}
