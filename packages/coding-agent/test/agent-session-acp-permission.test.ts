@@ -834,3 +834,44 @@ it("read tool: requestPermission is never called for non-gated tools", async () 
 	expect(permissionSpy).toHaveBeenCalledTimes(0);
 	expect(readTool.executeCalls).toBe(1);
 });
+
+it("allows guarded tools when prompt mode has no permission provider", async () => {
+	const bashTool = makeFakeTool("bash");
+	session = await createSession([bashTool]);
+
+	await session.setActiveToolsByName(["bash"]);
+	const wrappedBash = session.agent.state.tools.find(tool => tool.name === "bash");
+	expect(wrappedBash).toBeDefined();
+
+	await expect(
+		wrappedBash!.execute(
+			"call-providerless-bash",
+			{ command: "git status" },
+			undefined,
+			undefined as never,
+			undefined as never,
+		),
+	).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+	expect(bashTool.executeCalls).toBe(1);
+});
+
+it("keeps explicit deny fail-closed without a permission provider", async () => {
+	const bashTool = makeFakeTool("bash");
+	session = await createSession([bashTool]);
+	session.setSdkPermissionMode("deny");
+
+	await session.setActiveToolsByName(["bash"]);
+	const wrappedBash = session.agent.state.tools.find(tool => tool.name === "bash");
+	expect(wrappedBash).toBeDefined();
+
+	await expect(
+		wrappedBash!.execute(
+			"call-denied-bash",
+			{ command: "git status" },
+			undefined,
+			undefined as never,
+			undefined as never,
+		),
+	).rejects.toThrow("Tool call rejected by session permission policy (bash)");
+	expect(bashTool.executeCalls).toBe(0);
+});

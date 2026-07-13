@@ -4524,9 +4524,10 @@ export class AgentSession {
 						throw new ToolError(`Tool call rejected by session permission policy (${target.name})`);
 					}
 					if (!requestPermission) {
-						throw new ToolError(
-							`Tool call rejected because no permission provider is connected (${target.name})`,
-						);
+						// Prompt mode is meaningful only while a live permission provider owns
+						// the interaction. Provider-less interactive sessions must remain
+						// usable instead of deadlocking every guarded tool call.
+						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
 					}
 					// Short-circuit on persisted decisions.
 					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
