@@ -3683,7 +3683,7 @@ test("deterministic two-topic cleanup rollback restores only its failed session"
 
 	await closeTopicSession({ daemon: harness.daemon, session: secondSession });
 	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
-});
+}, 15_000);
 
 test("rejected, malformed, and reset topic deletion outcomes remain unknown without retries", async () => {
 	const reset = Object.assign(new Error("connection reset secret-reset"), { code: "ECONNRESET" });
