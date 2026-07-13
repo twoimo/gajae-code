@@ -10,8 +10,6 @@ import {
 	type CloseSessionRequest,
 	type CloseSessionResponse,
 	type CreateElicitationResponse,
-	type DeleteSessionRequest,
-	type DeleteSessionResponse,
 	type ElicitationContentValue,
 	type ElicitationPropertySchema,
 	type ForkSessionRequest,
@@ -72,12 +70,6 @@ import {
 	type StrictInventoryCandidate,
 	type UsageStatistics,
 } from "../../session/session-manager";
-import {
-	FileSessionStorage,
-	type SessionStorageFileIdentity,
-	type VerifiedSessionDeleteResult,
-	type VerifiedSessionDeleteTarget,
-} from "../../session/session-storage";
 import { ACP_BUILTIN_SLASH_COMMANDS, executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { parseThinkingLevel } from "../../thinking";
 import { toAgentWireEventPayload } from "../shared/agent-wire/event-envelope";
@@ -109,16 +101,6 @@ const SESSION_PAGE_SIZE = 50;
 type AcpAuthorityEntry =
 	| { kind: "candidate"; candidate: StrictInventoryCandidate }
 	| { kind: "conflict"; reason: string };
-/**
- * Phase-aware same-connection retry evidence for an incomplete verified delete.
- * The transcript identity is always recorded and re-verified on retry; the
- * artifacts identity is recorded only when the failure occurred at the
- * artifacts phase (the artifact directory still existed at failure time).
- */
-type PendingDeleteEvidence = {
-	transcriptIdentity: SessionStorageFileIdentity;
-	artifactsIdentity?: SessionStorageFileIdentity;
-};
 
 type AcpAuthoritySnapshot = {
 	scope: string;
@@ -180,28 +162,6 @@ function isPromptTurnInFlight(turn: PromptTurnState | undefined): turn is Prompt
 	return turn !== undefined && (!turn.settled || turn.cleanup !== undefined);
 }
 
-/**
- * Per-record terminal state machine for session deletion.
- * - `active`: normal operation; all lifecycle methods allowed.
- * - `deleting`: a terminal delete has reserved the record; prompt/config/close/
- *   load/resume/fork reject, concurrent deletes join the terminal promise.
- * - `pre_dispatch_retryable`: close_failed_retryable before verified-delete
- *   dispatch; normal ops rejected but a subsequent delete may retry.
- * - `cleanup_pending`: verified delete returned cleanup_pending with identity
- *   evidence; normal ops rejected but a subsequent delete may retry.
- * - `terminal_failure`: close_unknown or quiescence failure (or any unexpected
- *   failure); normal ops rejected and delete NEVER reopens — subsequent deletes
- *   share the settled terminal failure error.
- * - `deleted`: verified delete succeeded; record removed from the active map.
- */
-type AcpSessionTerminalState =
-	| "active"
-	| "deleting"
-	| "pre_dispatch_retryable"
-	| "cleanup_pending"
-	| "terminal_failure"
-	| "deleted";
-
 type ManagedSessionRecord = {
 	session: AgentSession;
 	mcpManager: MCPManager | undefined;
@@ -214,17 +174,8 @@ type ManagedSessionRecord = {
 	// Installed after the bootstrap race guard or eagerly when the client starts a prompt;
 	// released in `#disposeSessionRecord`. Lives independent of any prompt turn.
 	lifetimeUnsubscribe: (() => void) | undefined;
-	// Per-record terminal state machine (see AcpSessionTerminalState). After ANY
-	// delete failure the record stays non-`active` so prompt/config/close/load/
-	// resume/fork remain rejected. Only `pre_dispatch_retryable` and
-	// `cleanup_pending` permit a retry delete; `terminal_failure` never reopens.
-	terminalState: AcpSessionTerminalState;
-	// The settled terminal failure error, shared with subsequent delete callers
-	// so a terminal_failure is observable without re-running the terminal op.
-	terminalFailure: Error | undefined;
-	// Resolves when an in-progress terminal delete settles. Concurrent delete
-	// callers and abort/shutdown join this promise.
-	terminalPromise: Promise<DeleteSessionResponse> | undefined;
+	// Serializes extension lifecycle calls that can mutate `session.sessionId`.
+	identityTransition: Promise<void>;
 };
 
 type ReplayableMessage = {
@@ -439,7 +390,9 @@ export function createAcpExtensionUiContext(
 		setFooter: () => {},
 		setHeader: () => {},
 		setTitle: () => {},
-		custom: async () => undefined as never,
+		custom: async () => {
+			throw new Error("Custom UI components are unavailable in ACP mode");
+		},
 		pasteToEditor: () => {},
 		setEditorText: () => {},
 		getEditorText: () => "",
@@ -470,15 +423,6 @@ export class AcpAgent implements Agent {
 	/** Authority snapshot from the last complete strict scoped inventory. Invalidation bumps this. */
 	#authorityGeneration = 0;
 	#authoritySnapshot: AcpAuthoritySnapshot | undefined;
-	/**
-	 * Same-connection retry evidence for an incomplete verified delete. Keyed by
-	 * session id. Phase-aware: every cleanup_pending carries the transcript
-	 * identity at failure time, which is re-verified against the fresh candidate
-	 * on retry so a replaced transcript cannot authorize a replacement; the
-	 * artifacts-phase result additionally carries the artifact directory
-	 * identity to re-accept. Cleared once a delete reaches `kind: "deleted"`.
-	 */
-	#pendingDeleteEvidence = new Map<string, PendingDeleteEvidence>();
 	#shutdownPromise: Promise<void> | undefined;
 	#lifecycleOperations = new Set<Promise<unknown>>();
 	#shuttingDown = false;
@@ -535,7 +479,6 @@ export class AcpAgent implements Agent {
 					fork: {},
 					resume: {},
 					close: {},
-					delete: {},
 				},
 			},
 		};
@@ -696,42 +639,13 @@ export class AcpAgent implements Agent {
 		if (!record) {
 			return {};
 		}
-		this.#rejectIfTerminal(record);
 		await this.#closeManagedSession(params.sessionId, record);
 		this.#invalidateAuthority();
 		return {};
 	}
 
-	/**
-	 * Hard delete an ACP session. `DeleteSessionRequest` carries only `sessionId`;
-	 * the server owns authorization through the immutable canonical cwd scope and
-	 * the complete strict scoped inventory snapshot.
-	 *
-	 * - No scope / unknown / already-deleted id → lookup-free `{}`.
-	 * - Duplicate/conflict id → visible error; neither transcript nor artifacts change.
-	 * - Active session → reserve `deleting`, drain/cancel prompt, flush, strict
-	 *   dispose/close, recheck identity/state, then verified artifact-first deletion.
-	 * - Concurrent delete callers join the terminal promise.
-	 */
-	async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
-		// Before scope: return {} without scanning/listing storage.
-		if (this.#canonicalCwdScope === undefined) {
-			return {};
-		}
-		if (this.#shuttingDown) {
-			throw new Error("ACP session delete is unavailable during shutdown");
-		}
-		const record = this.#sessions.get(params.sessionId);
-		if (record) {
-			return await this.#deleteActiveSession(params.sessionId, record);
-		}
-		// Inactive: read authority from the strict inventory snapshot.
-		return await this.#deleteInactiveSession(params.sessionId);
-	}
-
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
 		const record = this.#getSessionRecord(params.sessionId);
-		this.#rejectIfTerminal(record);
 		this.#applyModeChange(record.session, params.modeId);
 		await this.#connection.sessionUpdate({
 			sessionId: record.session.sessionId,
@@ -743,7 +657,6 @@ export class AcpAgent implements Agent {
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
 		const record = this.#getSessionRecord(params.sessionId);
-		this.#rejectIfTerminal(record);
 		if (typeof params.value === "boolean") {
 			throw new Error(`Unsupported boolean ACP config option: ${params.configId}`);
 		}
@@ -785,7 +698,6 @@ export class AcpAgent implements Agent {
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
 		const record = this.#getSessionRecord(params.sessionId);
-		this.#rejectIfTerminal(record);
 		const activeTurn = record.promptTurn;
 		if (activeTurn && !activeTurn.settled && record.session.isStreaming) {
 			throw new Error("ACP prompt already in progress for this session");
@@ -804,9 +716,9 @@ export class AcpAgent implements Agent {
 
 			const converted = this.#convertPromptBlocks(params.prompt);
 			const pendingPrompt = Promise.withResolvers<PromptResponse>();
-			const metaUserMessageId = params._meta?.userMessageId;
+			const messageId = params.messageId;
 			record.promptTurn = {
-				userMessageId: typeof metaUserMessageId === "string" ? metaUserMessageId : crypto.randomUUID(),
+				userMessageId: typeof messageId === "string" ? messageId : crypto.randomUUID(),
 				cancelRequested: false,
 				settled: false,
 				cleanup: undefined,
@@ -892,7 +804,7 @@ export class AcpAgent implements Agent {
 						this.#cloneUsageStatistics(record.session.sessionManager.getUsageStatistics()),
 					record.session.sessionManager.getUsageStatistics(),
 				),
-				_meta: promptTurn ? { userMessageId: promptTurn.userMessageId } : undefined,
+				userMessageId: promptTurn?.userMessageId,
 			});
 			return;
 		}
@@ -1012,11 +924,6 @@ export class AcpAgent implements Agent {
 		try {
 			await cleanup;
 		} catch (error: unknown) {
-			// A terminal delete owns the record; let the delete handle the failure
-			// rather than racing it with an independent close.
-			if (record.terminalState !== "active") {
-				return;
-			}
 			logger.warn("ACP cancel cleanup timed out; closing session", { sessionId: record.session.sessionId, error });
 			await this.#closeManagedSession(record.session.sessionId, record);
 		}
@@ -1041,7 +948,7 @@ export class AcpAgent implements Agent {
 		this.#finishPrompt(record, {
 			stopReason: "cancelled",
 			usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
-			_meta: { userMessageId: promptTurn.userMessageId },
+			userMessageId: promptTurn.userMessageId,
 		});
 		return cleanup;
 	}
@@ -1161,16 +1068,11 @@ export class AcpAgent implements Agent {
 			"abort",
 			() => {
 				this.#shuttingDown = true;
-				// Mark shutdown under mutex (no actual mutex needed — single-threaded),
-				// reject new scope/inventory/lifecycle work, then await terminal work.
+				// Reject new scope/inventory/lifecycle work, then dispose active sessions.
 				this.#shutdownPromise = (async () => {
 					// Join lifecycle preparation that has not registered yet. Each tracked
 					// operation rechecks shutdown and disposes its prepared session before settling.
 					await Promise.allSettled(Array.from(this.#lifecycleOperations));
-					const terminalPromises = Array.from(this.#sessions.values())
-						.map(r => r.terminalPromise)
-						.filter((p): p is Promise<DeleteSessionResponse> => p !== undefined);
-					await Promise.allSettled(terminalPromises);
 					await this.#disposeAllSessions();
 					// Clear connection-local authority.
 					this.#authoritySnapshot = undefined;
@@ -1182,9 +1084,9 @@ export class AcpAgent implements Agent {
 	}
 
 	/**
-	 * Connection-local shutdown promise. Resolves once all terminal work (dispose,
-	 * active deletes, abort cleanup) has settled. `acp-mode.ts` awaits this after
-	 * transport closure so `process.exit` never kills in-flight deletion/disposal.
+	 * Connection-local shutdown promise. Resolves after lifecycle preparation,
+	 * prompt cancellation, and session disposal settle. `acp-mode.ts` awaits it
+	 * after transport closure so process exit does not interrupt cleanup.
 	 */
 	get shutdownPromise(): Promise<void> {
 		return this.#shutdownPromise ?? Promise.resolve();
@@ -1217,7 +1119,6 @@ export class AcpAgent implements Agent {
 	async #loadManagedSession(sessionId: string, cwd: string, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
 		const existing = this.#sessions.get(sessionId);
 		if (existing) {
-			this.#rejectIfTerminal(existing);
 			this.#assertMatchingCwd(existing.session, cwd);
 			await this.#configureMcpServers(existing, mcpServers);
 			return existing;
@@ -1230,7 +1131,6 @@ export class AcpAgent implements Agent {
 	async #resumeManagedSession(sessionId: string, cwd: string, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
 		const existing = this.#sessions.get(sessionId);
 		if (existing) {
-			this.#rejectIfTerminal(existing);
 			this.#assertMatchingCwd(existing.session, cwd);
 			await this.#configureMcpServers(existing, mcpServers);
 			return existing;
@@ -1336,9 +1236,7 @@ export class AcpAgent implements Agent {
 			toolArgsById: new Map(),
 			extensionsConfigured: false,
 			lifetimeUnsubscribe: undefined,
-			terminalState: "active",
-			terminalFailure: undefined,
-			terminalPromise: undefined,
+			identityTransition: Promise.resolve(),
 		};
 	}
 
@@ -1395,6 +1293,84 @@ export class AcpAgent implements Agent {
 		return record;
 	}
 
+	async #transitionManagedSessionIdentity(
+		record: ManagedSessionRecord,
+		transition: () => Promise<boolean>,
+	): Promise<boolean> {
+		const priorTransition = record.identityTransition;
+		const completion = Promise.withResolvers<void>();
+		record.identityTransition = completion.promise;
+		await priorTransition;
+		try {
+			const previousSessionId = record.session.sessionId;
+			if (this.#sessions.get(previousSessionId) !== record) {
+				throw new Error(`ACP session identity transition rejected: ${previousSessionId} is no longer managed`);
+			}
+
+			let success: boolean;
+			try {
+				success = await transition();
+			} catch (error) {
+				if (record.session.sessionId !== previousSessionId && this.#sessions.get(previousSessionId) === record) {
+					await this.#evictManagedSessionRecord(record, previousSessionId);
+				}
+				throw error;
+			}
+			if (this.#sessions.get(previousSessionId) !== record) {
+				throw new Error(`ACP session identity transition rejected: ${previousSessionId} is no longer managed`);
+			}
+
+			if (!success) {
+				if (record.session.sessionId !== previousSessionId && this.#sessions.get(previousSessionId) === record) {
+					await this.#evictManagedSessionRecord(record, previousSessionId);
+					throw new Error(
+						`ACP session identity transition rejected: ${previousSessionId} changed identity while reporting cancellation`,
+					);
+				}
+				return false;
+			}
+
+			const sessionId = record.session.sessionId;
+			if (sessionId === previousSessionId) {
+				return true;
+			}
+
+			const existing = this.#sessions.get(sessionId);
+			if (existing && existing !== record) {
+				await this.#evictManagedSessionRecord(record, previousSessionId);
+				throw new Error(`ACP session identity conflict: ${sessionId} is already managed`);
+			}
+
+			try {
+				record.session.setClientBridge(
+					createAcpClientBridge(this.#connection, sessionId, this.#clientCapabilities),
+				);
+				this.#sessions.delete(previousSessionId);
+				this.#sessions.set(sessionId, record);
+			} catch (error) {
+				await this.#evictManagedSessionRecord(record, previousSessionId);
+				throw error;
+			}
+			this.#scheduleBootstrapUpdates(sessionId);
+			this.#invalidateAuthority();
+			return true;
+		} finally {
+			completion.resolve();
+		}
+	}
+
+	async #evictManagedSessionRecord(record: ManagedSessionRecord, previousSessionId: string): Promise<void> {
+		if (this.#sessions.get(previousSessionId) === record) {
+			this.#sessions.delete(previousSessionId);
+		}
+		const sessionId = record.session.sessionId;
+		if (sessionId !== previousSessionId && this.#sessions.get(sessionId) === record) {
+			this.#sessions.delete(sessionId);
+		}
+		this.#invalidateAuthority();
+		await this.#disposeSessionRecord(record);
+	}
+
 	#assertMatchingCwd(session: AgentSession, cwd: string): void {
 		const expected = path.resolve(cwd);
 		const actual = path.resolve(session.sessionManager.getCwd());
@@ -1406,9 +1382,6 @@ export class AcpAgent implements Agent {
 	async #resolveForkSourceSessionPath(sessionId: string): Promise<string> {
 		const loaded = this.#sessions.get(sessionId);
 		if (loaded) {
-			if (loaded.terminalState !== "active") {
-				throw new Error(`ACP session fork is unavailable while it is in terminal state: ${sessionId}`);
-			}
 			if (isPromptTurnInFlight(loaded.promptTurn)) {
 				throw new Error(`ACP session fork is unavailable while a prompt is in progress: ${sessionId}`);
 			}
@@ -1472,7 +1445,7 @@ export class AcpAgent implements Agent {
 			this.#finishPrompt(record, {
 				stopReason: this.#resolveStopReason(event, promptTurn.cancelRequested),
 				usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
-				_meta: { userMessageId: promptTurn.userMessageId },
+				userMessageId: promptTurn.userMessageId,
 			});
 		}
 	}
@@ -1625,12 +1598,6 @@ export class AcpAgent implements Agent {
 		this.#authoritySnapshot = undefined;
 	}
 
-	#rejectIfTerminal(record: ManagedSessionRecord): void {
-		if (record.terminalState !== "active") {
-			throw new Error(`ACP session ${record.session.sessionId} is in terminal state: ${record.terminalState}`);
-		}
-	}
-
 	#rejectIfShuttingDown(): void {
 		if (this.#shuttingDown) {
 			throw new Error("ACP session lifecycle is unavailable during shutdown");
@@ -1653,11 +1620,9 @@ export class AcpAgent implements Agent {
 	}
 
 	/**
-	 * Build a FRESH authorization snapshot, ignoring the cached pagination snapshot.
-	 * Destructive authority (delete, inactive fork) must read storage at mutation
-	 * time so an external create/remove/replace/duplicate between list and delete
-	 * cannot yield a stale no-op or wrong mutation. The result is NOT cached: it
-	 * must not poison the generation-aware pagination cursor contract.
+	 * Build a fresh strict inventory for lifecycle operations that must resolve a
+	 * stored session by its exact current identity. The result is not cached, so
+	 * it cannot disturb the generation-aware pagination cursor contract.
 	 */
 	#buildFreshAuthoritySnapshot(scope: string): AcpAuthoritySnapshot {
 		return this.#rebuildAuthoritySnapshot(scope, false);
@@ -1690,186 +1655,6 @@ export class AcpAgent implements Agent {
 			this.#authoritySnapshot = snapshot;
 		}
 		return snapshot;
-	}
-
-	/**
-	 * Delete an active (loaded) session via the per-record terminal state machine.
-	 * Reserves `deleting` before the first await; concurrent deletes join the
-	 * terminal promise. On failure the state transitions to `pre_dispatch_retryable`
-	 * (close_failed_retryable), `cleanup_pending` (verified-delete partial), or
-	 * `terminal_failure` (close_unknown / quiescence / unexpected) — all non-`active`
-	 * states reject prompt/config/close/load/resume/fork. Only `pre_dispatch_retryable`
-	 * and `cleanup_pending` permit a retry delete; `terminal_failure` never reopens.
-	 */
-	async #deleteActiveSession(sessionId: string, record: ManagedSessionRecord): Promise<DeleteSessionResponse> {
-		// Concurrent delete joins the in-progress terminal promise.
-		if (record.terminalPromise) {
-			return await record.terminalPromise;
-		}
-		// terminal_failure: never reopen — share the settled error.
-		if (record.terminalState === "terminal_failure") {
-			throw record.terminalFailure ?? new Error(`ACP session ${sessionId} has a settled terminal failure`);
-		}
-		// Only active / pre_dispatch_retryable / cleanup_pending may start a delete.
-		if (record.terminalState === "deleting") {
-			throw new Error(`ACP session ${sessionId} is being deleted`);
-		}
-		record.terminalState = "deleting";
-		const scope = this.#canonicalCwdScope!;
-		const terminalPromise = (async (): Promise<DeleteSessionResponse> => {
-			try {
-				// Quiesce — failure is terminal (never swallow).
-				try {
-					await this.#quiesceForDelete(sessionId, record);
-				} catch (quiesceError) {
-					record.terminalState = "terminal_failure";
-					record.terminalFailure = quiesceError instanceof Error ? quiesceError : new Error(String(quiesceError));
-					throw quiesceError;
-				}
-				const manager = record.session.sessionManager;
-				// Strict close — outcome determines retryability.
-				const closeOutcome = await record.session.closeWriterStrict();
-				if (closeOutcome.kind !== "closed") {
-					if (closeOutcome.kind === "close_failed_retryable") {
-						record.terminalState = "pre_dispatch_retryable";
-					} else {
-						record.terminalState = "terminal_failure";
-						record.terminalFailure = closeOutcome.error;
-					}
-					const reason =
-						closeOutcome.kind === "close_unknown"
-							? "writer close outcome is unknown"
-							: "writer close failed before dispatch";
-					throw new Error(`ACP session ${sessionId} cannot be deleted: ${reason}`);
-				}
-				// Recheck: the record must still own this exact session.
-				if (this.#sessions.get(sessionId) !== record || record.terminalState !== "deleting") {
-					record.terminalState = "terminal_failure";
-					record.terminalFailure = new Error(`ACP session ${sessionId} state changed during deletion`);
-					throw new Error(`ACP session ${sessionId} state changed during deletion`);
-				}
-				const sessionFile = manager.getSessionFile();
-				const sessionDir = manager.getSessionDir();
-				if (!sessionFile) {
-					record.terminalState = "terminal_failure";
-					record.terminalFailure = new Error(`ACP session ${sessionId} is not persisted and cannot be deleted`);
-					throw new Error(`ACP session ${sessionId} is not persisted and cannot be deleted`);
-				}
-				const snapshot = this.#buildFreshAuthoritySnapshot(scope);
-				const entry = snapshot.entries.get(sessionId);
-				if (entry?.kind !== "candidate") {
-					record.terminalState = "terminal_failure";
-					record.terminalFailure = new Error(`ACP session ${sessionId} is not an exact-one scoped candidate`);
-					throw new Error(`ACP session ${sessionId} is not an exact-one scoped candidate`);
-				}
-				if (entry.candidate.path !== sessionFile) {
-					record.terminalState = "terminal_failure";
-					record.terminalFailure = new Error(`ACP session ${sessionId} transcript path changed during deletion`);
-					throw new Error(`ACP session ${sessionId} transcript path changed during deletion`);
-				}
-				this.#assertPendingTranscriptIdentity(sessionId, entry.candidate.identity);
-				const sessionsRoot = path.dirname(sessionDir);
-				const target: VerifiedSessionDeleteTarget = {
-					sessionsRoot,
-					transcriptPath: sessionFile,
-					sessionId,
-					cwd: manager.getCwd(),
-					transcriptIdentity: {
-						dev: entry.candidate.identity.dev,
-						ino: entry.candidate.identity.ino,
-					},
-					...this.#pendingArtifactsIdentity(sessionId),
-				};
-				const outcome = await manager.deleteSessionVerified(target);
-				if (outcome.kind !== "deleted") {
-					record.terminalState = "cleanup_pending";
-					this.#recordPendingDeleteEvidence(sessionId, outcome);
-					throw new Error(
-						`ACP session ${sessionId} delete is incomplete: ${outcome.phase} cleanup pending (${outcome.error.message})`,
-					);
-				}
-				// Fully deleted: clear retry evidence, remove from active map, dispose.
-				record.terminalState = "deleted";
-				this.#pendingDeleteEvidence.delete(sessionId);
-				this.#sessions.delete(sessionId);
-				this.#invalidateAuthority();
-				await this.#disposeSessionRecord(record);
-				return {};
-			} catch (error) {
-				// terminalState was set at the failure point above. For any
-				// unexpected error that left the state as `deleting`, treat it
-				// as terminal_failure so the record never silently reopens.
-				if (record.terminalState === "deleting") {
-					record.terminalState = "terminal_failure";
-					record.terminalFailure = error instanceof Error ? error : new Error(String(error));
-				}
-				record.terminalPromise = undefined;
-				this.#invalidateAuthority();
-				throw error;
-			}
-		})();
-		record.terminalPromise = terminalPromise;
-		return await terminalPromise;
-	}
-
-	/**
-	 * Delete an inactive (not currently loaded) session. The ID must have been
-	 * issued by the last complete scoped authority snapshot; an absent/unissued ID
-	 * returns lookup-free `{}` with NO inventory scan. Only after issuance may a
-	 * fresh strict inventory revalidate the same exact candidate before mutation.
-	 * A repeat-unknown (issued but gone from the fresh inventory) is also lookup-free `{}`.
-	 */
-	async #deleteInactiveSession(sessionId: string): Promise<DeleteSessionResponse> {
-		const scope = this.#canonicalCwdScope!;
-		// Gate: only IDs issued by the last complete scoped authority snapshot
-		// may trigger a fresh inventory scan. Absent/unissued → lookup-free {}.
-		const issued = this.#authoritySnapshot?.entries.get(sessionId);
-		if (!issued) {
-			return {};
-		}
-		if (issued.kind === "conflict") {
-			throw new Error(`ACP session delete failed: ${issued.reason}`);
-		}
-		// Fresh strict inventory to revalidate the same exact candidate.
-		const snapshot = this.#buildFreshAuthoritySnapshot(scope);
-		const entry = snapshot.entries.get(sessionId);
-		if (!entry) {
-			// Repeat unknown: issued but no longer present in the fresh inventory.
-			return {};
-		}
-		if (entry.kind === "conflict") {
-			throw new Error(`ACP session delete failed: ${entry.reason}`);
-		}
-		const candidate = entry.candidate;
-		if (
-			candidate.path !== issued.candidate.path ||
-			candidate.cwd !== issued.candidate.cwd ||
-			candidate.identity.dev !== issued.candidate.identity.dev ||
-			candidate.identity.ino !== issued.candidate.identity.ino
-		) {
-			throw new Error(`ACP session ${sessionId} changed since authority was issued`);
-		}
-		this.#assertPendingTranscriptIdentity(sessionId, candidate.identity);
-		const sessionsRoot = path.dirname(candidate.path);
-		const target: VerifiedSessionDeleteTarget = {
-			sessionsRoot,
-			transcriptPath: candidate.path,
-			sessionId,
-			cwd: candidate.cwd,
-			transcriptIdentity: { dev: candidate.identity.dev, ino: candidate.identity.ino },
-			...this.#pendingArtifactsIdentity(sessionId),
-		};
-		const storage = new FileSessionStorage();
-		const outcome = await storage.deleteSessionVerified(target);
-		if (outcome.kind !== "deleted") {
-			this.#recordPendingDeleteEvidence(sessionId, outcome);
-			throw new Error(
-				`ACP session ${sessionId} delete is incomplete: ${outcome.phase} cleanup pending (${outcome.error.message})`,
-			);
-		}
-		this.#pendingDeleteEvidence.delete(sessionId);
-		this.#invalidateAuthority();
-		return {};
 	}
 
 	#convertPromptBlocks(blocks: PromptRequest["prompt"]): { text: string; images: AgentImageContent[] } {
@@ -2634,11 +2419,16 @@ export class AcpAgent implements Agent {
 				getContextUsage: () => record.session.getContextUsage(),
 				waitForIdle: () => record.session.agent.waitForIdle(),
 				newSession: async options => {
-					const success = await record.session.newSession({ parentSession: options?.parentSession });
-					if (success && options?.setup) {
+					const success = await this.#transitionManagedSessionIdentity(record, () =>
+						record.session.newSession({ parentSession: options?.parentSession }),
+					);
+					if (!success) {
+						return { cancelled: true };
+					}
+					if (options?.setup) {
 						await options.setup(record.session.sessionManager);
 					}
-					return { cancelled: !success };
+					return { cancelled: false };
 				},
 				branch: async entryId => {
 					const result = await record.session.branch(entryId);
@@ -2649,7 +2439,9 @@ export class AcpAgent implements Agent {
 					return { cancelled: result.cancelled };
 				},
 				switchSession: async sessionPath => {
-					const success = await record.session.switchSession(sessionPath);
+					const success = await this.#transitionManagedSessionIdentity(record, () =>
+						record.session.switchSession(sessionPath),
+					);
 					return { cancelled: !success };
 				},
 				reload: async () => {
@@ -2730,7 +2522,7 @@ export class AcpAgent implements Agent {
 				headers: this.#toNameValueMap(server.headers),
 			};
 		}
-		throw new Error(`Unsupported ACP MCP transport: ${server.type}`);
+		throw new Error("Unsupported ACP MCP transport");
 	}
 
 	#toNameValueMap(values: Array<{ name: string; value: string }>): { [name: string]: string } {
@@ -2757,79 +2549,6 @@ export class AcpAgent implements Agent {
 			await cleanup;
 		} catch (error) {
 			logger.warn("Failed to abort ACP prompt during session close", { error });
-		}
-	}
-	/**
-	 * Delete-specific strict prompt quiescence barrier. Mirrors the cancel setup of
-	 * {@link #cancelPromptForClose} but NEVER swallows abort/timeout failures, then
-	 * waits for full idle + async-delivery drain. A quiescence failure blocks the
-	 * destructive mutation that follows — it is not catch-and-logged. The best-effort
-	 * close path is preserved separately for nondestructive shutdown.
-	 */
-	async #quiesceForDelete(sessionId: string, record: ManagedSessionRecord): Promise<void> {
-		const promptTurn = record.promptTurn;
-		if (isPromptTurnInFlight(promptTurn)) {
-			const cleanup = promptTurn.cleanup ?? this.#beginCancelCleanup(record, promptTurn);
-			await cleanup;
-		}
-		await this.#waitForAcpPromptIdle(record);
-		// Explicit post-drain status check: the drain loop's boolean return is
-		// not trusted as proof. Treat a drain false/timeout/no-progress/max-pass
-		// as unproven and verify the owner-scoped delivery state directly. Any
-		// remaining queued/delivering work blocks the destructive mutation.
-		const delivery = record.session.getAsyncDeliveryStateForAcp();
-		if (delivery.queued > 0 || delivery.delivering) {
-			throw new Error(`ACP session ${sessionId} cannot be deleted: async delivery is not quiesced`);
-		}
-	}
-
-	/**
-	 * Record phase-aware same-connection retry evidence for an incomplete verified
-	 * delete. The transcript identity (carried by every cleanup_pending) is always
-	 * recorded so a retry can reject a replaced transcript; the artifacts identity
-	 * is recorded only at the artifacts phase.
-	 */
-	#recordPendingDeleteEvidence(sessionId: string, result: VerifiedSessionDeleteResult): void {
-		if (result.kind !== "cleanup_pending") {
-			return;
-		}
-		if (result.phase === "artifacts") {
-			this.#pendingDeleteEvidence.set(sessionId, {
-				transcriptIdentity: result.transcriptIdentity,
-				artifactsIdentity: result.artifactsIdentity,
-			});
-		} else {
-			// Transcript phase: artifacts were already removed successfully, so only
-			// the transcript identity remains for retry binding.
-			this.#pendingDeleteEvidence.set(sessionId, {
-				transcriptIdentity: result.transcriptIdentity,
-			});
-		}
-	}
-
-	/** Build the optional `expectedArtifactsIdentity` field for a retry target. */
-	#pendingArtifactsIdentity(sessionId: string): { expectedArtifactsIdentity?: SessionStorageFileIdentity } {
-		const pending = this.#pendingDeleteEvidence.get(sessionId);
-		return pending?.artifactsIdentity ? { expectedArtifactsIdentity: pending.artifactsIdentity } : {};
-	}
-
-	/**
-	 * Phase-aware retry gate: a preserved transcript identity must match the fresh
-	 * candidate's transcript identity before that candidate can authorize a
-	 * replacement. A mismatch (the transcript was externally replaced between the
-	 * cleanup_pending failure and the retry) fails closed — it never authorizes a
-	 * wrong mutation.
-	 */
-	#assertPendingTranscriptIdentity(sessionId: string, candidateIdentity: { dev: bigint; ino: bigint }): void {
-		const pending = this.#pendingDeleteEvidence.get(sessionId);
-		if (
-			pending &&
-			(pending.transcriptIdentity.dev !== candidateIdentity.dev ||
-				pending.transcriptIdentity.ino !== candidateIdentity.ino)
-		) {
-			throw new Error(
-				`ACP session ${sessionId} transcript identity changed since pending cleanup; replacement rejected`,
-			);
 		}
 	}
 

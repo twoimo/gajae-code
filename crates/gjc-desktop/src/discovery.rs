@@ -3,8 +3,6 @@ use std::{fs, path::Path, time::Duration};
 use anyhow::{Context, Result, bail};
 use gjc_app_server::discovery::{DiscoveryRecord, discovery_path};
 
-
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppServerEndpoint {

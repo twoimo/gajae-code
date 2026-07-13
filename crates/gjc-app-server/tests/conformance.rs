@@ -64,17 +64,17 @@ impl AgentBackend for EchoBackend {
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcContextReadResult> {
 		Ok(gjc_app_server::protocol::GjcContextReadResult {
-			tokens: gjc_app_server::protocol::GjcContextTokens {
-				input: 10,
-				output: 5,
-				cache_read: Some(2),
+			tokens:         gjc_app_server::protocol::GjcContextTokens {
+				input:       10,
+				output:      5,
+				cache_read:  Some(2),
 				cache_write: Some(3),
-				total: 20,
+				total:       20,
 			},
 			context_window: Some(100),
-			percent_used: Some(20.0),
-			source: "test".into(),
-			freshness: gjc_app_server::protocol::GjcContextFreshness::Live,
+			percent_used:   Some(20.0),
+			source:         "test".into(),
+			freshness:      gjc_app_server::protocol::GjcContextFreshness::Live,
 		})
 	}
 
@@ -82,7 +82,10 @@ impl AgentBackend for EchoBackend {
 		&self,
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionTreeResult> {
-		Ok(gjc_app_server::protocol::GjcSessionTreeResult { nodes: vec![], active_leaf_id: None })
+		Ok(gjc_app_server::protocol::GjcSessionTreeResult {
+			nodes:          vec![],
+			active_leaf_id: None,
+		})
 	}
 
 	async fn session_navigate(
@@ -91,7 +94,7 @@ impl AgentBackend for EchoBackend {
 		_params: gjc_app_server::protocol::GjcSessionNavigateParams,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionNavigateResult> {
 		Ok(gjc_app_server::protocol::GjcSessionNavigateResult {
-			ok: true,
+			ok:             true,
 			active_leaf_id: Some("leaf-1".into()),
 		})
 	}
@@ -113,12 +116,14 @@ impl AgentBackend for EchoBackend {
 		)
 		.unwrap())
 	}
+
 	async fn read_usage(
 		&self,
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcUsageReadResult> {
 		Ok(serde_json::from_value(serde_json::json!({"perModel":[{"modelId":"m","input":1,"output":2,"cost":0.1}],"totalCost":0.1,"source":"test","freshness":"live"})).unwrap())
 	}
+
 	async fn list_jobs(
 		&self,
 		_c: &BackendCallContext,
@@ -128,6 +133,7 @@ impl AgentBackend for EchoBackend {
 		)
 		.unwrap())
 	}
+
 	async fn list_agents(
 		&self,
 		_c: &BackendCallContext,
@@ -137,6 +143,7 @@ impl AgentBackend for EchoBackend {
 		)
 		.unwrap())
 	}
+
 	async fn list_monitors(
 		&self,
 		_c: &BackendCallContext,
@@ -146,6 +153,7 @@ impl AgentBackend for EchoBackend {
 		)
 		.unwrap())
 	}
+
 	async fn compact_summary(
 		&self,
 		_c: &BackendCallContext,
@@ -165,7 +173,7 @@ impl AgentBackend for EchoBackend {
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcThinkingReadResult> {
 		Ok(gjc_app_server::protocol::GjcThinkingReadResult {
-			level: "medium".into(),
+			level:  "medium".into(),
 			levels: vec!["low".into(), "medium".into(), "high".into()],
 		})
 	}
@@ -183,7 +191,7 @@ impl AgentBackend for EchoBackend {
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcFastReadResult> {
 		Ok(gjc_app_server::protocol::GjcFastReadResult {
-			enabled: false,
+			enabled:        false,
 			affected_roles: Some(vec!["default".into()]),
 		})
 	}
@@ -198,6 +206,7 @@ impl AgentBackend for EchoBackend {
 			affected_roles: Some(vec!["default".into()]),
 		})
 	}
+
 	async fn set_model(
 		&self,
 		_c: &BackendCallContext,
@@ -213,11 +222,12 @@ impl AgentBackend for EchoBackend {
 		params: gjc_app_server::protocol::GjcModelAssignParams,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcModelAssignResult> {
 		Ok(gjc_app_server::protocol::GjcModelAssignResult {
-			ok: true,
-			role: params.role,
+			ok:       true,
+			role:     params.role,
 			model_id: params.model_id,
 		})
 	}
+
 	async fn compact(
 		&self,
 		_c: &BackendCallContext,
@@ -249,7 +259,7 @@ impl AgentBackend for EchoBackend {
 
 #[derive(Clone, Default)]
 struct EchoFactory {
-	notification_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+	notification_calls:  Arc<Mutex<Vec<(String, serde_json::Value)>>>,
 	notification_replay: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
@@ -260,8 +270,8 @@ impl BackendFactory for EchoFactory {
 		_p: serde_json::Value,
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		let info = BackendHandleInfo {
-			thread_id: ThreadId::generate(),
-			generation: BackendGeneration::FIRST,
+			thread_id:        ThreadId::generate(),
+			generation:       BackendGeneration::FIRST,
 			session_metadata: SessionMetadata::default(),
 		};
 		Ok((info, Arc::new(EchoBackend)))
@@ -287,15 +297,15 @@ impl BackendFactory for EchoFactory {
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
 		Ok(gjc_app_server::protocol::GjcSessionListResult {
 			sessions: vec![gjc_app_server::protocol::SessionIndexEntry {
-				id: "s1".into(),
-				title: Some("Title".into()),
+				id:            "s1".into(),
+				title:         Some("Title".into()),
 				first_message: Some("First".into()),
-				cwd: "/tmp/project".into(),
-				path: "/tmp/project/session.jsonl".into(),
-				modified_at: "2026-01-01T00:00:00.000Z".into(),
-				entry_count: Some(2),
+				cwd:           "/tmp/project".into(),
+				path:          "/tmp/project/session.jsonl".into(),
+				modified_at:   "2026-01-01T00:00:00.000Z".into(),
+				entry_count:   Some(2),
 			}],
-			total: 1,
+			total:    1,
 		})
 	}
 
@@ -651,10 +661,10 @@ async fn notifications_subscribe_routes_to_host_and_returns_ok() {
 	let resp = server.dispatch(&conn, req).await.unwrap();
 
 	assert_eq!(resp.result.unwrap(), serde_json::json!({ "ok": true }));
-	assert_eq!(
-		factory.notification_calls(),
-		vec![("notifications.subscribe".to_string(), serde_json::json!({ "client": "fake" }))]
-	);
+	assert_eq!(factory.notification_calls(), vec![(
+		"notifications.subscribe".to_string(),
+		serde_json::json!({ "client": "fake" })
+	)]);
 	let notes = sink.notes.lock();
 	assert_eq!(notes.len(), 2);
 	assert!(notes.iter().all(|n| n.method == "gjc/notifications/event"));
@@ -688,10 +698,10 @@ async fn notifications_reply_routes_to_host_with_notifications_kind() {
 		resp.result.unwrap(),
 		serde_json::json!({ "ok": true, "kind": "notifications.reply" })
 	);
-	assert_eq!(
-		factory.notification_calls(),
-		vec![("notifications.reply".to_string(), serde_json::json!({ "id": "a1", "answer": "yes" }))]
-	);
+	assert_eq!(factory.notification_calls(), vec![(
+		"notifications.reply".to_string(),
+		serde_json::json!({ "id": "a1", "answer": "yes" })
+	)]);
 }
 
 #[tokio::test]
@@ -763,8 +773,8 @@ async fn host_tools_round_trip() {
 
 #[derive(Clone, Default)]
 struct CapturingFactory {
-	created: Arc<Mutex<Vec<serde_json::Value>>>,
-	resumed: Arc<Mutex<Vec<serde_json::Value>>>,
+	created:          Arc<Mutex<Vec<serde_json::Value>>>,
+	resumed:          Arc<Mutex<Vec<serde_json::Value>>>,
 	resume_thread_id: Arc<Mutex<Option<ThreadId>>>,
 }
 
@@ -786,8 +796,8 @@ impl BackendFactory for CapturingFactory {
 		self.created.lock().push(p);
 		Ok((
 			BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(EchoBackend),
@@ -823,15 +833,15 @@ impl BackendFactory for CapturingFactory {
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
 		Ok(gjc_app_server::protocol::GjcSessionListResult {
 			sessions: vec![gjc_app_server::protocol::SessionIndexEntry {
-				id: "s1".into(),
-				title: Some("Title".into()),
+				id:            "s1".into(),
+				title:         Some("Title".into()),
 				first_message: Some("First".into()),
-				cwd: "/tmp/project".into(),
-				path: "/tmp/project/session.jsonl".into(),
-				modified_at: "2026-01-01T00:00:00.000Z".into(),
-				entry_count: Some(2),
+				cwd:           "/tmp/project".into(),
+				path:          "/tmp/project/session.jsonl".into(),
+				modified_at:   "2026-01-01T00:00:00.000Z".into(),
+				entry_count:   Some(2),
 			}],
-			total: 1,
+			total:    1,
 		})
 	}
 
@@ -850,8 +860,8 @@ impl BackendFactory for CapturingFactory {
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		Ok((
 			BackendHandleInfo {
-				thread_id: self.thread_id_for_open_or_resume(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        self.thread_id_for_open_or_resume(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(EchoBackend),
@@ -940,17 +950,17 @@ async fn resume_bumps_generation_rejects_stale() {
 	assert!(resp.error.is_none());
 	assert_eq!(resp.result.unwrap()["thread"]["generation"], 2);
 	let stale = BackendEvent {
-		thread_id: thread.clone(),
+		thread_id:  thread.clone(),
 		generation: BackendGeneration::FIRST,
 		event_type: "text_delta".into(),
-		payload: serde_json::json!({"text":"stale"}),
+		payload:    serde_json::json!({"text":"stale"}),
 	};
 	assert_eq!(server.emit_backend_event(&stale), 0);
 	let current = BackendEvent {
-		thread_id: thread,
+		thread_id:  thread,
 		generation: BackendGeneration(2),
 		event_type: "agent_start".into(),
-		payload: serde_json::json!({}),
+		payload:    serde_json::json!({}),
 	};
 	assert!(server.emit_backend_event(&current) > 0);
 }
@@ -1029,10 +1039,10 @@ async fn duplicate_session_open_bumps_generation_and_rejects_stale() {
 		.to_owned();
 	assert_ne!(new_turn_id, first_turn_id);
 	server.emit_backend_event(&BackendEvent {
-		thread_id: thread.clone(),
+		thread_id:  thread.clone(),
 		generation: BackendGeneration(3),
 		event_type: "agent_end".into(),
-		payload: serde_json::json!({}),
+		payload:    serde_json::json!({}),
 	});
 	let notes = sink.notes.lock();
 	assert!(notes.iter().any(|n| {
@@ -1044,34 +1054,34 @@ async fn duplicate_session_open_bumps_generation_and_rejects_stale() {
 	drop(notes);
 	sink.notes.lock().clear();
 	let stale = BackendEvent {
-		thread_id: thread.clone(),
+		thread_id:  thread.clone(),
 		generation: BackendGeneration::FIRST,
 		event_type: "agent_start".into(),
-		payload: serde_json::json!({}),
+		payload:    serde_json::json!({}),
 	};
 	assert_eq!(server.emit_backend_event(&stale), 0);
 	assert!(sink.notes.lock().is_empty());
 
 	let current = BackendEvent {
-		thread_id: thread,
+		thread_id:  thread,
 		generation: BackendGeneration(3),
 		event_type: "agent_start".into(),
-		payload: serde_json::json!({}),
+		payload:    serde_json::json!({}),
 	};
 	assert!(server.emit_backend_event(&current) > 0);
 }
 
 #[derive(Clone)]
 struct ReleasableFactory {
-	thread_id: ThreadId,
-	releases: Arc<Mutex<Vec<Arc<tokio::sync::Notify>>>>,
-	started: Arc<tokio::sync::Notify>,
+	thread_id:           ThreadId,
+	releases:            Arc<Mutex<Vec<Arc<tokio::sync::Notify>>>>,
+	started:             Arc<tokio::sync::Notify>,
 	started_generations: Arc<Mutex<Vec<BackendGeneration>>>,
 }
 
 struct ReleasableBackend {
-	release: Arc<tokio::sync::Notify>,
-	started: Arc<tokio::sync::Notify>,
+	release:             Arc<tokio::sync::Notify>,
+	started:             Arc<tokio::sync::Notify>,
 	started_generations: Arc<Mutex<Vec<BackendGeneration>>>,
 }
 
@@ -1163,8 +1173,8 @@ impl BackendFactory for ReleasableFactory {
 		self.releases.lock().push(Arc::clone(&release));
 		Ok((
 			BackendHandleInfo {
-				thread_id: self.thread_id.clone(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        self.thread_id.clone(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(ReleasableBackend {
@@ -1213,9 +1223,9 @@ async fn stale_turn_completion_after_generation_bump_is_noop() {
 	let sink = Arc::new(CollectingSink::default());
 	let thread = ThreadId("thr_releasable".into());
 	let factory = ReleasableFactory {
-		thread_id: thread.clone(),
-		releases: Arc::new(Mutex::new(Vec::new())),
-		started: Arc::new(tokio::sync::Notify::new()),
+		thread_id:           thread.clone(),
+		releases:            Arc::new(Mutex::new(Vec::new())),
+		started:             Arc::new(tokio::sync::Notify::new()),
 		started_generations: Arc::new(Mutex::new(Vec::new())),
 	};
 	let server = Arc::new(AppServer::new(
@@ -2228,12 +2238,14 @@ impl AgentBackend for BlockingBackend {
 		)
 		.unwrap())
 	}
+
 	async fn read_usage(
 		&self,
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcUsageReadResult> {
 		Ok(serde_json::from_value(serde_json::json!({"perModel":[{"modelId":"m","input":1,"output":2,"cost":0.1}],"totalCost":0.1,"source":"test","freshness":"live"})).unwrap())
 	}
+
 	async fn list_jobs(
 		&self,
 		_c: &BackendCallContext,
@@ -2243,6 +2255,7 @@ impl AgentBackend for BlockingBackend {
 		)
 		.unwrap())
 	}
+
 	async fn list_agents(
 		&self,
 		_c: &BackendCallContext,
@@ -2252,6 +2265,7 @@ impl AgentBackend for BlockingBackend {
 		)
 		.unwrap())
 	}
+
 	async fn list_monitors(
 		&self,
 		_c: &BackendCallContext,
@@ -2261,12 +2275,14 @@ impl AgentBackend for BlockingBackend {
 		)
 		.unwrap())
 	}
+
 	async fn compact_summary(
 		&self,
 		_c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcCompactSummaryResult> {
 		Ok(serde_json::from_value(serde_json::json!({"summaries":[{"id":"c1","summary":"sum","tokensBefore":3,"timestamp":"2026-01-01T00:00:00.000Z"}]})).unwrap())
 	}
+
 	async fn set_model(
 		&self,
 		_c: &BackendCallContext,
@@ -2313,8 +2329,8 @@ impl BackendFactory for BlockingFactory {
 	) -> gjc_app_server::Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 		Ok((
 			BackendHandleInfo {
-				thread_id: self.thread_id.clone(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        self.thread_id.clone(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			},
 			Arc::new(BlockingBackend),
@@ -2341,15 +2357,15 @@ impl BackendFactory for BlockingFactory {
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSessionListResult> {
 		Ok(gjc_app_server::protocol::GjcSessionListResult {
 			sessions: vec![gjc_app_server::protocol::SessionIndexEntry {
-				id: "s1".into(),
-				title: Some("Title".into()),
+				id:            "s1".into(),
+				title:         Some("Title".into()),
 				first_message: Some("First".into()),
-				cwd: "/tmp/project".into(),
-				path: "/tmp/project/session.jsonl".into(),
-				modified_at: "2026-01-01T00:00:00.000Z".into(),
-				entry_count: Some(2),
+				cwd:           "/tmp/project".into(),
+				path:          "/tmp/project/session.jsonl".into(),
+				modified_at:   "2026-01-01T00:00:00.000Z".into(),
+				entry_count:   Some(2),
 			}],
-			total: 1,
+			total:    1,
 		})
 	}
 

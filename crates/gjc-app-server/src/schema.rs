@@ -591,48 +591,48 @@ mod tests {
 	fn notification_envelope_serializes_new_wire_methods() {
 		let request = crate::protocol::ServerNotificationEnvelope::HostUriRequest(
 			crate::host_uris::HostUriRequestParams {
-				thread_id: "thread-1".into(),
+				thread_id:  "thread-1".into(),
 				generation: 1,
 				request_id: "request-1".into(),
-				operation: crate::host_uris::HostUriOperation::Read,
-				turn_id: "turn-1".into(),
-				url: "file:///tmp/a".into(),
-				content: None,
+				operation:  crate::host_uris::HostUriOperation::Read,
+				turn_id:    "turn-1".into(),
+				url:        "file:///tmp/a".into(),
+				content:    None,
 			},
 		);
 		let cancel = crate::protocol::ServerNotificationEnvelope::HostUriCancel(
 			crate::host_uris::HostUriCancelParams {
-				thread_id: "thread-1".into(),
+				thread_id:  "thread-1".into(),
 				generation: 1,
-				turn_id: Some("turn-1".into()),
+				turn_id:    Some("turn-1".into()),
 				request_id: "request-1".into(),
 			},
 		);
 		let opened = crate::protocol::ServerNotificationEnvelope::WorkflowGateOpened(Box::new(
 			crate::workflow_gate::WorkflowGateOpenedParams {
-				thread_id: "thread-1".into(),
+				thread_id:  "thread-1".into(),
 				generation: 1,
-				gate: crate::workflow_gate::RpcWorkflowGate {
-					frame_type: "workflow-gate".into(),
-					gate_id: "gate-1".into(),
-					stage: crate::workflow_gate::RpcWorkflowStage::Ralplan,
-					kind: crate::workflow_gate::RpcWorkflowGateKind::Approval,
-					schema: serde_json::json!({ "type": "boolean" }),
+				gate:       crate::workflow_gate::RpcWorkflowGate {
+					frame_type:  "workflow-gate".into(),
+					gate_id:     "gate-1".into(),
+					stage:       crate::workflow_gate::RpcWorkflowStage::Ralplan,
+					kind:        crate::workflow_gate::RpcWorkflowGateKind::Approval,
+					schema:      serde_json::json!({ "type": "boolean" }),
 					schema_hash: "hash".into(),
-					options: None,
-					context: crate::workflow_gate::RpcWorkflowGateContext::default(),
-					created_at: "2026-07-04T00:00:00Z".into(),
-					required: true,
+					options:     None,
+					context:     crate::workflow_gate::RpcWorkflowGateContext::default(),
+					created_at:  "2026-07-04T00:00:00Z".into(),
+					required:    true,
 				},
 			},
 		));
 		let jobs_changed = crate::protocol::ServerNotificationEnvelope::JobsChanged(
 			crate::protocol::JobsChangedParams {
-				thread_id: "thread-1".into(),
-				generation: Some(1),
-				kind: "job".into(),
-				id: "job-1".into(),
-				status: "running".into(),
+				thread_id:   "thread-1".into(),
+				generation:  Some(1),
+				kind:        "job".into(),
+				id:          "job-1".into(),
+				status:      "running".into(),
 				description: Some("Build".into()),
 			},
 		);

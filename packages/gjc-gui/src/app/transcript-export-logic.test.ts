@@ -25,12 +25,16 @@ describe("lastAssistantText", () => {
 	});
 
 	test("cleans inline tool-call JSON from copied assistant text", () => {
-		expect(lastAssistantText([item({ content: 'Here is the answer. {"_i":"Calling read","path":"x"}' })])).toBe("Here is the answer.");
+		expect(lastAssistantText([item({ content: 'Here is the answer. {"_i":"Calling read","path":"x"}' })])).toBe(
+			"Here is the answer.",
+		);
 	});
 
 	test("returns undefined for empty input or no assistant content", () => {
 		expect(lastAssistantText([])).toBeUndefined();
-		expect(lastAssistantText([item({ role: "user", content: "hello" }), item({ role: "assistant", content: "" })])).toBeUndefined();
+		expect(
+			lastAssistantText([item({ role: "user", content: "hello" }), item({ role: "assistant", content: "" })]),
+		).toBeUndefined();
 	});
 });
 

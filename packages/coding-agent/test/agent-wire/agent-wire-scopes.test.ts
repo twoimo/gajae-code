@@ -3,6 +3,7 @@ import {
 	type AgentWireCommandType,
 	type BridgeCommandScope,
 	isRpcCommandAllowed,
+	isRpcCommandType,
 	MANDATORY_FLOOR_COMMAND_SCOPES,
 	RPC_COMMAND_TYPES,
 	scopeForRpcCommand,
@@ -104,5 +105,12 @@ describe("agent-wire command scopes", () => {
 		expect(scopeForRpcCommand("set_host_tools")).toBe("host_tools");
 		expect(scopeForRpcCommand("set_host_uri_schemes")).toBe("host_uri");
 		expect(scopeForRpcCommand("handoff")).toBe("admin");
+	});
+
+	it("does not recognize inherited object prototype names as RPC command types", () => {
+		expect(isRpcCommandType("toString")).toBe(false);
+		expect(isRpcCommandType("constructor")).toBe(false);
+		expect(isRpcCommandType("prompt")).toBe(true);
+		expect(isRpcCommandType("workflow_gate_response")).toBe(true);
 	});
 });

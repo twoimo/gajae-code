@@ -1,12 +1,16 @@
-type Reply = { id: string; answerJson: string; idempotencyKey?: string };
+export interface AppServerNotificationReply {
+	id: string;
+	answerJson: string;
+	idempotencyKey?: string;
+}
 
-type ReplyCallback = (err: unknown, reply: Reply | null) => void;
+type ReplyCallback = (err: unknown, reply: AppServerNotificationReply | null) => void;
 
-type Inbound =
+export type AppServerNotificationInbound =
 	| { kind: "user_message"; text?: string; images?: { data: string; mime?: string }[]; updateId?: number }
 	| { kind: "config_command"; verbosity?: "lean" | "verbose"; redact?: boolean };
 
-type InboundCallback = (err: unknown, inbound: Inbound | null) => void;
+type InboundCallback = (err: unknown, inbound: AppServerNotificationInbound | null) => void;
 
 type PendingAction = {
 	frame: Record<string, unknown>;
@@ -174,7 +178,7 @@ export class AppServerNotificationEndpoint {
 		if (sticky) this.replayFrames.push(frame);
 	}
 
-	private emitInbound(inbound: Inbound): void {
+	private emitInbound(inbound: AppServerNotificationInbound): void {
 		for (const cb of this.inboundCallbacks) cb(null, inbound);
 	}
 }
@@ -194,7 +198,7 @@ function serializeAnswer(answer: unknown): string {
 	return typeof answer === "string" ? answer : JSON.stringify(answer);
 }
 
-function userMessagePayload(params: unknown): Inbound {
+function userMessagePayload(params: unknown): AppServerNotificationInbound {
 	const obj = objectOrEmpty(params);
 	const images = Array.isArray(obj.images)
 		? obj.images
@@ -214,7 +218,7 @@ function userMessagePayload(params: unknown): Inbound {
 	};
 }
 
-function configCommandPayload(params: unknown): Inbound {
+function configCommandPayload(params: unknown): AppServerNotificationInbound {
 	const obj = objectOrEmpty(params);
 	const command = objectOrEmpty(obj.command ?? obj);
 	return {

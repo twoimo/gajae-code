@@ -1,0 +1,236 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "reviewer": "architect subagent 25-G002ArchRecheck (initial full review 20-G002ArchReview3)",
+    "commands": [
+      "read packages/gjc-gui/src/app/main.tsx",
+      "read packages/gjc-gui/src/app/directory-logic.ts",
+      "read packages/gjc-gui/src/app/session-actions.tsx",
+      "read packages/gjc-gui/src/app/extensibility-panel.tsx",
+      "read test-results/ultragoal-g002/gui-automation.json"
+    ],
+    "evidence": "Initial architecture/product/code review (20-G002ArchReview3) verified explicit new-chat allocation, /tmp scratch fallback, Help focus trap with Escape and trigger restoration, transport/domain error separation, offline RPC disabling, visible extension inspection, and user-facing deferred copy; it blocked on two MEDIUM findings: case-sensitive drive-qualified Windows redaction and raw thread.title in the SessionActions aria-label. Both were fixed (directory-logic.ts case-insensitive rule + mixed-case tests; SessionActions displayThread redaction for aria-label and both confirmation flows + accessible-label test). Recheck 25-G002ArchRecheck returned Status: CLEAR, Verdict: APPROVE with no findings.",
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "reviewer": "executor subagent 21-G002ExecQa3 (independent) plus leader live automation",
+    "e2eCommands": [
+      "browser open http://127.0.0.1:4178/harness.html?scenario=happy",
+      "browser open http://127.0.0.1:4178/harness.html?scenario=scratch",
+      "bun test src/**/*.test.ts src/**/*.test.tsx (packages/gjc-gui)"
+    ],
+    "redTeamCommands": [
+      "browser open http://127.0.0.1:4178/harness.html?scenario=clipboard-error",
+      "browser open http://127.0.0.1:4178/harness.html?scenario=server-unavailable",
+      "browser open http://127.0.0.1:4178/harness.html?scenario=token-rejected"
+    ],
+    "evidence": "Independent executor red-team (21-G002ExecQa3) passed all five live harness scenarios with six fresh non-uniform 2048x1290 screenshots; leader automation independently verified the same flows and produced a structured schemaVersion-1 transcript plus two 1440x1000 non-uniform screenshots. Scenarios covered blank scratch /tmp start with reply, explicit distinct chat allocation, clipboard failure isolation ('Could not copy' while connected), and secret redaction ([redacted] without synthetic-server-unavailable-key / synthetic-token-rejected-value) with disabled Start/Browse/composer and a Reconnect control.",
+    "changedPaths": [
+      "packages/gjc-gui/src/app/main.tsx",
+      "packages/gjc-gui/src/app/directory-logic.ts",
+      "packages/gjc-gui/src/app/session-actions.tsx",
+      "packages/gjc-gui/src/app/extensibility-panel.tsx",
+      "packages/gjc-gui/src/app/directory-logic.test.ts",
+      "packages/gjc-gui/src/app/session-actions.test.ts",
+      "packages/gjc-gui/src/app/app-host.test.ts",
+      "packages/gjc-gui/src/harness/main.tsx",
+      "packages/gjc-gui/src/harness/main.test.tsx"
+    ],
+    "artifactRefs": [
+      {
+        "id": "transcript-live",
+        "kind": "browser-automation",
+        "description": "Structured schemaVersion-1 live automation transcript across happy/scratch/clipboard-error/server-unavailable/token-rejected harness scenarios",
+        "path": "test-results/ultragoal-g002/gui-automation-transcript.json"
+      },
+      {
+        "id": "shot-happy",
+        "kind": "screenshot",
+        "description": "Live screenshot of the happy scenario after prompt submission (1440x2000 full page JPEG, non-uniform)",
+        "path": "test-results/ultragoal-g002/g002-live-happy.jpg"
+      },
+      {
+        "id": "shot-scratch",
+        "kind": "screenshot",
+        "description": "Live screenshot of the scratch /tmp flow after prompt submission (1440x2000 full page JPEG, non-uniform)",
+        "path": "test-results/ultragoal-g002/g002-live-scratch.jpg"
+      },
+      {
+        "id": "qa-shot-scratch",
+        "kind": "supplementary-image-metadata",
+        "description": "Independent executor QA screenshot of the scratch flow (2048x1290, non-uniform)",
+        "path": "test-results/ultragoal-g002/g002-exec-qa-scratch.png"
+      },
+      {
+        "id": "qa-shot-clipboard",
+        "kind": "supplementary-image-metadata",
+        "description": "Independent executor QA screenshot of the clipboard-error scenario (2048x1290, non-uniform)",
+        "path": "test-results/ultragoal-g002/g002-exec-qa-clipboard-error.png"
+      },
+      {
+        "id": "qa-shot-server-unavailable",
+        "kind": "supplementary-image-metadata",
+        "description": "Independent executor QA screenshot of the server-unavailable redaction scenario (2048x1290, non-uniform)",
+        "path": "test-results/ultragoal-g002/g002-exec-qa-server-unavailable.png"
+      },
+      {
+        "id": "qa-shot-token-rejected",
+        "kind": "supplementary-image-metadata",
+        "description": "Independent executor QA screenshot of the token-rejected redaction scenario (2048x1290, non-uniform)",
+        "path": "test-results/ultragoal-g002/g002-exec-qa-token-rejected.png"
+      },
+      {
+        "id": "flow-summary",
+        "kind": "flow-result-summary",
+        "description": "Leader flow-by-flow live automation result summary with per-check observed values",
+        "path": "test-results/ultragoal-g002/gui-automation.json"
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "gui-live",
+        "contractRef": "G002-gui-live-surface",
+        "surface": "gui-web",
+        "status": "passed",
+        "invocation": "headless Chromium against http://127.0.0.1:4178/harness.html?scenario=happy|scratch|clipboard-error|server-unavailable|token-rejected",
+        "artifactRefs": [
+          "transcript-live",
+          "shot-happy",
+          "shot-scratch",
+          "flow-summary"
+        ],
+        "description": "All live probes passed: scratch /tmp start with reply, explicit distinct chat allocation, help focus trap/Escape/restoration, extension inspection details, clipboard failure isolation, and secret-redacted connection failures with offline control disabling.",
+        "verdict": "passed"
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "adv-clipboard",
+        "contractRef": "G002-clipboard-failure",
+        "scenario": "Clipboard writeText rejects while copying the latest assistant answer",
+        "expectedBehavior": "Copy surfaces a failure status ('Could not copy') without disconnecting; composer and transcript remain usable; no clipboard write recorded",
+        "status": "passed",
+        "artifactRefs": [
+          "transcript-live",
+          "qa-shot-clipboard"
+        ],
+        "description": "Observed 'Could not copy' status, connection badge stayed connected, composer enabled, transcript preserved, zero synthetic clipboard writes.",
+        "verdict": "passed"
+      },
+      {
+        "id": "adv-secret-server",
+        "contractRef": "G002-connection-secret-redaction",
+        "scenario": "Endpoint resolution fails with a secret-bearing server-unavailable error (synthetic-server-unavailable-key)",
+        "expectedBehavior": "Visible error shows [redacted] detail without the synthetic secret; Start/Browse/composer disable; Reconnect stays available",
+        "status": "passed",
+        "artifactRefs": [
+          "transcript-live",
+          "qa-shot-server-unavailable"
+        ],
+        "description": "Observed 'server unavailable: api_key=[redacted]', secret absent, RPC controls disabled, Reconnect enabled.",
+        "verdict": "passed"
+      },
+      {
+        "id": "adv-secret-token",
+        "contractRef": "G002-token-secret-redaction",
+        "scenario": "Connection fails with a secret-bearing token-rejected error (synthetic-token-rejected-value)",
+        "expectedBehavior": "Visible error shows [redacted] detail without the synthetic secret; Start/Browse/composer disable; Reconnect stays available",
+        "status": "passed",
+        "artifactRefs": [
+          "transcript-live",
+          "qa-shot-token-rejected"
+        ],
+        "description": "Observed 'token rejected: token=[redacted]', secret absent, RPC controls disabled, Reconnect enabled.",
+        "verdict": "passed"
+      },
+      {
+        "id": "adv-home-paths",
+        "contractRef": "G002-home-path-redaction",
+        "scenario": "Session titles, recents, and accessible labels carry POSIX and mixed-case Windows home paths",
+        "expectedBehavior": "No username reaches any rendered or accessibility surface; paths collapse to ~ forms",
+        "status": "passed",
+        "artifactRefs": [
+          "transcript-live",
+          "qa-shot-scratch"
+        ],
+        "description": "directory-logic mixed-case tests plus SessionActions accessible-label test pass; live scratch flow observed no raw home path.",
+        "verdict": "passed"
+      }
+    ],
+    "contractCoverage": [
+      {
+        "contractRef": "G002-home-path-redaction",
+        "obligation": "Recent-directory and persisted-session path redaction, including mixed-case Windows drive paths and accessible session-action labels",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "gui-live"
+        ],
+        "adversarialCaseRefs": [
+          "adv-home-paths"
+        ],
+        "id": "cc-1"
+      },
+      {
+        "contractRef": "G002-help-focus-trap",
+        "obligation": "Help dialog implements a real focus trap with Escape handling and trigger focus restoration",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "gui-live"
+        ],
+        "artifactRefs": [
+          "transcript-live",
+          "shot-happy"
+        ],
+        "id": "cc-2"
+      },
+      {
+        "contractRef": "G002-sanitized-failures",
+        "obligation": "Sanitized connection errors and clipboard failures proven with adversarial live evidence",
+        "status": "passed",
+        "adversarialCaseRefs": [
+          "adv-clipboard",
+          "adv-secret-server",
+          "adv-secret-token"
+        ],
+        "id": "cc-3"
+      },
+      {
+        "contractRef": "G002-live-artifacts",
+        "obligation": "Live browser artifacts with scratch-flow/adversarial action-level evidence and screenshot provenance",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "gui-live"
+        ],
+        "artifactRefs": [
+          "transcript-live",
+          "shot-happy",
+          "shot-scratch",
+          "qa-shot-scratch",
+          "flow-summary"
+        ],
+        "id": "cc-4"
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "fullRerun": true,
+    "count": 2,
+    "rerunCommands": [
+      "bun test src/**/*.test.ts src/**/*.test.tsx (packages/gjc-gui: 117 pass, 0 fail)",
+      "bun run check (packages/gjc-gui tsc --noEmit)",
+      "bun run check:ts (root workspace gate)",
+      "git diff --check",
+      "git merge-base --is-ancestor origin/dev HEAD"
+    ],
+    "evidence": "Iteration 1: initial architect review rejected with two MEDIUM findings while executor QA passed. Iteration 2: fixed case-insensitive Windows redaction and SessionActions label redaction, added regression tests, then fully reran the GUI suite (117/117), the gjc-gui type check, the root check:ts workspace gate, and structural rebase checks (clean diff, origin/dev ancestor). Architect recheck approved with no findings.",
+    "blockers": []
+  }
+}

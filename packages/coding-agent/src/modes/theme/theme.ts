@@ -1643,16 +1643,18 @@ function semanticPreviewFromResolved(colors: Record<string, string>): Appearance
 
 export async function getAppearanceThemeCatalog(): Promise<AppearanceThemeCatalogEntry[]> {
 	const infos = await getAvailableThemesWithPaths();
-	return Promise.all(infos.map(async info => {
-		const themeJson = await loadThemeJson(info.name);
-		const semanticPreview = semanticPreviewFromResolved(await getResolvedThemeColors(info.name));
-		return {
-			id: info.name,
-			kind: isThemeJsonLight(themeJson) ? "light" : "dark",
-			semanticPreview,
-			builtin: info.path === undefined,
-		};
-	}));
+	return Promise.all(
+		infos.map(async info => {
+			const themeJson = await loadThemeJson(info.name);
+			const semanticPreview = semanticPreviewFromResolved(await getResolvedThemeColors(info.name));
+			return {
+				id: info.name,
+				kind: isThemeJsonLight(themeJson) ? "light" : "dark",
+				semanticPreview,
+				builtin: info.path === undefined,
+			};
+		}),
+	);
 }
 
 async function loadThemeJson(name: string): Promise<ThemeJson> {

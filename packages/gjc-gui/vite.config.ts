@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import * as url from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 // Tauri's asset protocol serves the frontend from a custom origin; Vite's
@@ -14,6 +16,8 @@ function stripCrossorigin(): Plugin {
 	};
 }
 
+const packageRoot = path.dirname(url.fileURLToPath(import.meta.url));
+
 export default defineConfig({
 	// Relative asset URLs so the built frontend loads under Tauri's asset
 	// protocol (absolute /assets/* whitescreens in the packaged app).
@@ -29,6 +33,13 @@ export default defineConfig({
 	},
 	build: {
 		target: "esnext",
+		rollupOptions: {
+			input: {
+				app: path.resolve(packageRoot, "index.html"),
+				showcase: path.resolve(packageRoot, "showcase.html"),
+				harness: path.resolve(packageRoot, "harness.html"),
+			},
+		},
 	},
 	server: {
 		port: 5178,

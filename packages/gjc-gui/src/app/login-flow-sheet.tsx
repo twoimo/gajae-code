@@ -1,9 +1,10 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { LoginFlowState } from "./login-flow-logic";
 
-
 export type LoginFlowClient = {
-	start(providerId: string): Promise<{ flowId: string; state: LoginFlowState; authUrl?: string; instructions?: string }>;
+	start(
+		providerId: string,
+	): Promise<{ flowId: string; state: LoginFlowState; authUrl?: string; instructions?: string }>;
 	poll(flowId: string): Promise<{ state: LoginFlowState; promptMessage?: string }>;
 	complete(flowId: string, redirectUrl: string): Promise<{ state: LoginFlowState }>;
 	cancel(flowId: string): Promise<{ state: LoginFlowState }>;
@@ -67,13 +68,16 @@ export function LoginFlowSheet({
 		if (!flowId || !["pending-browser", "needs-input"].includes(state)) return;
 		let cancelled = false;
 		const timer = window.setInterval(() => {
-			client.poll(flowId).then(result => {
-				if (cancelled) return;
-				setState(result.state);
-				setPromptMessage(result.promptMessage ?? "");
-			}, caught => {
-				if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
-			});
+			client.poll(flowId).then(
+				result => {
+					if (cancelled) return;
+					setState(result.state);
+					setPromptMessage(result.promptMessage ?? "");
+				},
+				caught => {
+					if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+				},
+			);
 		}, 1500);
 		return () => {
 			cancelled = true;
@@ -120,11 +124,18 @@ export function LoginFlowSheet({
 	return (
 		<div className="sheet-backdrop" role="dialog" aria-modal="true" aria-label={`Login to ${providerId}`}>
 			<section className="login-flow-sheet">
-				<header><strong>Provider login</strong><button type="button" onClick={() => void cancel()}>Close</button></header>
+				<header>
+					<strong>Provider login</strong>
+					<button type="button" onClick={() => void cancel()}>
+						Close
+					</button>
+				</header>
 				<p>Provider: {providerId}</p>
 				<p>State: {state}</p>
 				{error ? <p className="model-panel__hint model-panel__hint--error">{error}</p> : null}
-				{state === "unsupported" ? <p>This provider does not support browser login. Use environment-variable configuration instead.</p> : null}
+				{state === "unsupported" ? (
+					<p>This provider does not support browser login. Use environment-variable configuration instead.</p>
+				) : null}
 				{instructions ? <p>{instructions}</p> : null}
 				{promptMessage ? <p>{promptMessage}</p> : null}
 				{authUrl ? (

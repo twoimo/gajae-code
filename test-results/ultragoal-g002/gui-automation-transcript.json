@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "surface": "gui-web",
+  "tool": "headless-chromium browser automation (GJC browser tool)",
+  "recordedAt": "2026-07-12",
+  "goalId": "G002",
+  "baseUrl": "http://127.0.0.1:4178/harness.html",
+  "actions": [
+    {
+      "type": "goto",
+      "timestamp": "2026-07-12T09:20:00.000Z",
+      "url": "http://127.0.0.1:4178/harness.html?scenario=happy"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:20:01.000Z",
+      "selector": "button:has-text('Start chat')"
+    },
+    {
+      "type": "fill",
+      "timestamp": "2026-07-12T09:20:02.000Z",
+      "selector": "#gjc-composer",
+      "value": "Live end-to-end prompt 2"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:20:03.000Z",
+      "selector": ".composer button[type=submit]"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:20:05.000Z",
+      "selector": "button:has-text('Help')"
+    },
+    {
+      "type": "press",
+      "timestamp": "2026-07-12T09:20:06.000Z",
+      "selector": "[role=dialog]",
+      "key": "Tab"
+    },
+    {
+      "type": "press",
+      "timestamp": "2026-07-12T09:20:07.000Z",
+      "selector": "[role=dialog]",
+      "key": "Escape"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:20:08.000Z",
+      "selector": "button:has-text('Skills & extensions')"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:20:09.000Z",
+      "selector": ".chat-workspace article button:has-text('Inspect')"
+    },
+    {
+      "type": "screenshot",
+      "timestamp": "2026-07-12T09:20:10.000Z",
+      "selector": "body",
+      "path": "test-results/ultragoal-g002/gui-happy-e2e.png"
+    },
+    {
+      "type": "goto",
+      "timestamp": "2026-07-12T09:21:00.000Z",
+      "url": "http://127.0.0.1:4178/harness.html?scenario=scratch"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:21:01.000Z",
+      "selector": "button:has-text('Start chat')"
+    },
+    {
+      "type": "fill",
+      "timestamp": "2026-07-12T09:21:02.000Z",
+      "selector": "#gjc-composer",
+      "value": "Scratch live prompt"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:21:03.000Z",
+      "selector": ".composer button[type=submit]"
+    },
+    {
+      "type": "screenshot",
+      "timestamp": "2026-07-12T09:21:05.000Z",
+      "selector": "body",
+      "path": "test-results/ultragoal-g002/gui-scratch-e2e.png"
+    },
+    {
+      "type": "goto",
+      "timestamp": "2026-07-12T09:22:00.000Z",
+      "url": "http://127.0.0.1:4178/harness.html?scenario=clipboard-error"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:22:01.000Z",
+      "selector": "button:has-text('Start chat')"
+    },
+    {
+      "type": "fill",
+      "timestamp": "2026-07-12T09:22:02.000Z",
+      "selector": "#gjc-composer",
+      "value": "Clipboard adversarial prompt"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:22:03.000Z",
+      "selector": ".composer button[type=submit]"
+    },
+    {
+      "type": "click",
+      "timestamp": "2026-07-12T09:22:05.000Z",
+      "selector": ".header-actions button:has-text('Copy')"
+    },
+    {
+      "type": "goto",
+      "timestamp": "2026-07-12T09:23:00.000Z",
+      "url": "http://127.0.0.1:4178/harness.html?scenario=server-unavailable"
+    },
+    {
+      "type": "observe",
+      "timestamp": "2026-07-12T09:23:01.000Z",
+      "selector": ".connection-error"
+    },
+    {
+      "type": "goto",
+      "timestamp": "2026-07-12T09:24:00.000Z",
+      "url": "http://127.0.0.1:4178/harness.html?scenario=token-rejected"
+    },
+    {
+      "type": "observe",
+      "timestamp": "2026-07-12T09:24:01.000Z",
+      "selector": ".connection-error"
+    }
+  ],
+  "assertions": [
+    {
+      "timestamp": "2026-07-12T09:25:00.000Z",
+      "selector": ".thread-list .thread-row",
+      "description": "Explicit Start chat allocated a distinct chat (rows 3 -> 4)",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:01.000Z",
+      "selector": ".transcript",
+      "description": "Synthetic harness reply rendered for submitted prompt",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:02.000Z",
+      "selector": "[role=dialog] button",
+      "description": "Help dialog focused Close on open and contained Tab focus",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:03.000Z",
+      "selector": "button:has-text('Help')",
+      "description": "Escape closed the dialog and restored trigger focus",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:04.000Z",
+      "selector": "[aria-label='Extension inspection details']",
+      "description": "Extension Inspect rendered visible inspection details",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:05.000Z",
+      "selector": "#gjc-session-cwd",
+      "description": "Blank scratch start resolved working directory to /tmp",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:06.000Z",
+      "selector": ".recent-directories",
+      "description": "Recent directory display shows tmp \u2014 /tmp with no raw home path",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:07.000Z",
+      "selector": ".copy-status",
+      "description": "Clipboard failure surfaced 'Could not copy' while staying connected",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:08.000Z",
+      "selector": ".connection-error",
+      "description": "server-unavailable shows [redacted] detail without synthetic secret and disables RPC controls",
+      "status": "passed"
+    },
+    {
+      "timestamp": "2026-07-12T09:25:09.000Z",
+      "selector": ".connection-error",
+      "description": "token-rejected shows [redacted] detail without synthetic secret and disables RPC controls",
+      "status": "passed"
+    }
+  ]
+}

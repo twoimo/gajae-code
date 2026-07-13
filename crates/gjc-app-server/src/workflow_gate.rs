@@ -35,8 +35,8 @@ pub enum RpcWorkflowGateKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcWorkflowGateOption {
-	pub value: Value,
-	pub label: String,
+	pub value:       Value,
+	pub label:       String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub description: Option<String>,
 }
@@ -44,44 +44,44 @@ pub struct RpcWorkflowGateOption {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct RpcWorkflowGateContext {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub title: Option<String>,
+	pub title:         Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub plan: Option<String>,
+	pub plan:          Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub source: Option<String>,
+	pub source:        Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub prompt: Option<String>,
+	pub prompt:        Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub summary: Option<String>,
+	pub summary:       Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub stage_state: Option<BTreeMap<String, Value>>,
+	pub stage_state:   Option<BTreeMap<String, Value>>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub artifact_refs: Option<Vec<BTreeMap<String, Value>>>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub language: Option<String>,
+	pub language:      Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcWorkflowGate {
 	#[serde(rename = "type")]
-	pub frame_type: String,
-	pub gate_id: String,
-	pub stage: RpcWorkflowStage,
-	pub kind: RpcWorkflowGateKind,
-	pub schema: Value,
+	pub frame_type:  String,
+	pub gate_id:     String,
+	pub stage:       RpcWorkflowStage,
+	pub kind:        RpcWorkflowGateKind,
+	pub schema:      Value,
 	pub schema_hash: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub options: Option<Vec<RpcWorkflowGateOption>>,
-	pub context: RpcWorkflowGateContext,
-	pub created_at: String,
-	pub required: bool,
+	pub options:     Option<Vec<RpcWorkflowGateOption>>,
+	pub context:     RpcWorkflowGateContext,
+	pub created_at:  String,
+	pub required:    bool,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct OpenWorkflowGateInput {
-	pub stage: RpcWorkflowStage,
-	pub kind: RpcWorkflowGateKind,
-	pub schema: Value,
+	pub stage:   RpcWorkflowStage,
+	pub kind:    RpcWorkflowGateKind,
+	pub schema:  Value,
 	#[serde(default)]
 	pub options: Option<Vec<RpcWorkflowGateOption>>,
 	#[serde(default)]
@@ -90,35 +90,35 @@ pub struct OpenWorkflowGateInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcWorkflowGateResponse {
-	pub gate_id: String,
-	pub answer: Value,
+	pub gate_id:         String,
+	pub answer:          Value,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcWorkflowGateResolution {
-	pub gate_id: String,
-	pub status: String,
+	pub gate_id:     String,
+	pub status:      String,
 	pub answer_hash: String,
 	pub resolved_at: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub error: Option<RpcWorkflowGateValidationError>,
+	pub error:       Option<RpcWorkflowGateValidationError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcWorkflowGateValidationError {
-	pub code: String,
-	pub gate_id: String,
+	pub code:        String,
+	pub gate_id:     String,
 	pub schema_hash: String,
-	pub errors: Vec<SchemaValidationIssue>,
+	pub errors:      Vec<SchemaValidationIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SchemaValidationIssue {
-	pub path: String,
-	pub keyword: String,
-	pub message: String,
+	pub path:     String,
+	pub keyword:  String,
+	pub message:  String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub expected: Option<Value>,
 }
@@ -137,9 +137,9 @@ pub struct WorkflowGateListResult {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkflowGateRespondParams {
 	#[serde(rename = "threadId")]
-	pub thread_id: String,
-	pub gate_id: String,
-	pub answer: Value,
+	pub thread_id:       String,
+	pub gate_id:         String,
+	pub answer:          Value,
 	#[serde(default)]
 	pub idempotency_key: Option<String>,
 }
@@ -147,15 +147,15 @@ pub struct WorkflowGateRespondParams {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkflowGateOpenedParams {
 	#[serde(rename = "threadId")]
-	pub thread_id: String,
+	pub thread_id:  String,
 	pub generation: u64,
 	#[serde(flatten)]
-	pub gate: RpcWorkflowGate,
+	pub gate:       RpcWorkflowGate,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct BrokerErrorData {
-	pub code: String,
+	pub code:    String,
 	pub gate_id: String,
 }
 
@@ -166,20 +166,20 @@ pub struct WorkflowGateBroker {
 
 #[derive(Default)]
 struct WorkflowGateState {
-	seq: HashMap<String, u64>,
+	seq:     HashMap<String, u64>,
 	records: HashMap<String, GateRecord>,
-	audit: Vec<Value>,
+	audit:   Vec<Value>,
 }
 
 struct GateRecord {
-	gate: RpcWorkflowGate,
-	status: GateStatus,
+	gate:            RpcWorkflowGate,
+	status:          GateStatus,
 	idempotency_key: Option<String>,
-	response_hash: Option<String>,
-	resolution: Option<RpcWorkflowGateResolution>,
-	answer: Option<Value>,
-	advanced: bool,
-	tx: Option<tokio::sync::oneshot::Sender<Value>>,
+	response_hash:   Option<String>,
+	resolution:      Option<RpcWorkflowGateResolution>,
+	answer:          Option<Value>,
+	advanced:        bool,
+	tx:              Option<tokio::sync::oneshot::Sender<Value>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -209,31 +209,28 @@ impl WorkflowGateBroker {
 		let short = run_short(&thread_id.0);
 		let gate_id = format!("wg_{short}_{stage}_{:06}", *seq);
 		let gate = RpcWorkflowGate {
-			frame_type: "workflow_gate".to_string(),
-			gate_id: gate_id.clone(),
-			stage: input.stage,
-			kind: input.kind,
+			frame_type:  "workflow_gate".to_string(),
+			gate_id:     gate_id.clone(),
+			stage:       input.stage,
+			kind:        input.kind,
 			schema_hash: sha256_hex(canonical_json(&input.schema).as_bytes()),
-			schema: input.schema,
-			options: input.options,
-			context: input.context,
-			created_at: now_string(),
-			required: true,
+			schema:      input.schema,
+			options:     input.options,
+			context:     input.context,
+			created_at:  now_string(),
+			required:    true,
 		};
 		let (tx, rx) = tokio::sync::oneshot::channel();
-		state.records.insert(
-			gate_id.clone(),
-			GateRecord {
-				gate: gate.clone(),
-				status: GateStatus::Pending,
-				idempotency_key: None,
-				response_hash: None,
-				resolution: None,
-				answer: None,
-				advanced: false,
-				tx: Some(tx),
-			},
-		);
+		state.records.insert(gate_id.clone(), GateRecord {
+			gate:            gate.clone(),
+			status:          GateStatus::Pending,
+			idempotency_key: None,
+			response_hash:   None,
+			resolution:      None,
+			answer:          None,
+			advanced:        false,
+			tx:              Some(tx),
+		});
 		state.audit.push(
 			serde_json::json!({"event":"gate_emitted","gate_id":gate_id,"stage":stage,"kind":gate.kind}),
 		);
@@ -303,11 +300,11 @@ impl WorkflowGateBroker {
 		let errors = validate_value(&record.gate.schema, &response.answer, "#");
 		if !errors.is_empty() {
 			let resolution = RpcWorkflowGateResolution {
-				gate_id: response.gate_id.clone(),
-				status: "rejected".to_string(),
+				gate_id:     response.gate_id.clone(),
+				status:      "rejected".to_string(),
 				answer_hash: answer_hash.clone(),
 				resolved_at: now_string(),
-				error: Some(RpcWorkflowGateValidationError {
+				error:       Some(RpcWorkflowGateValidationError {
 					code: "invalid_workflow_gate_answer".to_string(),
 					gate_id: response.gate_id.clone(),
 					schema_hash,
@@ -318,11 +315,11 @@ impl WorkflowGateBroker {
 			return Ok(resolution);
 		}
 		let resolution = RpcWorkflowGateResolution {
-			gate_id: response.gate_id.clone(),
-			status: "accepted".to_string(),
+			gate_id:     response.gate_id.clone(),
+			status:      "accepted".to_string(),
 			answer_hash: answer_hash.clone(),
 			resolved_at: now_string(),
-			error: None,
+			error:       None,
 		};
 		record.status = GateStatus::Accepted;
 		record.idempotency_key = response.idempotency_key;
@@ -349,15 +346,15 @@ impl WorkflowGateBroker {
 			if let Some(record) = state.records.get_mut(&gate_id) {
 				record.status = GateStatus::Rejected;
 				record.resolution = Some(RpcWorkflowGateResolution {
-					gate_id: gate_id.clone(),
-					status: "cancelled".to_string(),
+					gate_id:     gate_id.clone(),
+					status:      "cancelled".to_string(),
 					answer_hash: String::new(),
 					resolved_at: now_string(),
-					error: Some(RpcWorkflowGateValidationError {
-						code: "unattended_aborted".to_string(),
-						gate_id: gate_id.clone(),
+					error:       Some(RpcWorkflowGateValidationError {
+						code:        "unattended_aborted".to_string(),
+						gate_id:     gate_id.clone(),
 						schema_hash: record.gate.schema_hash.clone(),
-						errors: Vec::new(),
+						errors:      Vec::new(),
 					}),
 				});
 				drop(record.tx.take());
@@ -394,7 +391,7 @@ fn broker_error(code: &str, gate_id: &str) -> AppServerError {
 		_ => codes::CONFLICT,
 	};
 	AppServerError::new(status, code).with_data(serde_json::json!(BrokerErrorData {
-		code: code.to_string(),
+		code:    code.to_string(),
 		gate_id: gate_id.to_string(),
 	}))
 }

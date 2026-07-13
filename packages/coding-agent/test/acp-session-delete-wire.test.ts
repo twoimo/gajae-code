@@ -1,18 +1,17 @@
 /**
- * ACP `session/delete` wire oracle — a real child process over stdio.
+ * ACP session lifecycle wire oracle — a real child process over stdio.
  *
  * Spawns `bun packages/coding-agent/src/cli.ts --mode acp --no-extensions`
  * with stdin/stdout pipes and a sanitized, explicitly-owned child environment
  * that NEVER spreads `process.env`. Every HOME/XDG/cache/state/runtime/tmp/agent
  * dir is owned by the test and rooted under an isolated temp root, so session
- * transcripts and artifacts never land in the developer's real `~/.gjc`.
+ * transcripts never land in the developer's real `~/.gjc`.
  *
- * Over the public SDK 1.2.1 surface (`ClientSideConnection` / `ndJsonStream`)
- * this proves the full lifecycle against a real subprocess: capability
- * advertisement → create → explicit scoped list → artifact creation → delete →
- * post-delete list absence → transcript/artifact absence → repeat-delete no-op
- * `{}` → unknown-delete no-op `{}`. Strict unit tests in `acp-agent.test.ts`
- * remain the authority proof for the duplicate/identity/close-state edge cases.
+ * Over the installed public SDK surface (`ClientSideConnection` / `ndJsonStream`)
+ * this proves the supported lifecycle against a real subprocess: capability
+ * advertisement → create → explicit scoped list → close → persisted session
+ * remains available for reload. ACP defines no `session/delete` request, so this
+ * test also confirms it is not advertised.
  *
  * No process-global env mutation, no gates/formatters/commits/pushes.
  */
@@ -153,7 +152,6 @@ function buildChildEnv(root: string): Record<string, string> {
 interface Oracle {
 	proc: AcpProc;
 	connection: ClientSideConnection;
-	root: string;
 	workspace: string;
 	stderrTail: () => string;
 	/** Awaits the full stderr drain (after exit) and rejects if the reader failed. */
@@ -162,7 +160,7 @@ interface Oracle {
 
 /** Spawn the real ACP subprocess and wire the SDK client to its stdio. */
 async function spawnOracle(): Promise<Oracle> {
-	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "gjc-acp-delete-wire-"));
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "gjc-acp-session-wire-"));
 	cleanupRoots.push(root);
 	const env = buildChildEnv(root);
 
@@ -226,7 +224,6 @@ async function spawnOracle(): Promise<Oracle> {
 	const oracle: Oracle = {
 		proc,
 		connection,
-		root,
 		workspace,
 		stderrTail: () => stderrBuf,
 		drainStderr: async () => {
@@ -256,71 +253,45 @@ function rethrowWithStderr(oracle: Oracle, error: unknown): never {
 	throw new Error(`${message}${note}`);
 }
 
-describe("ACP session/delete wire oracle (real subprocess stdio)", () => {
-	it("advertises sessionCapabilities.delete and .list over a real subprocess link", async () => {
+describe("ACP session lifecycle wire oracle (real subprocess stdio)", () => {
+	it("advertises supported session list and close capabilities without delete", async () => {
 		const oracle = await spawnOracle();
 		try {
 			const initialized = await oracle.connection.initialize({
 				protocolVersion: 1,
 				clientCapabilities: {},
 			});
-			expect(initialized.agentCapabilities?.sessionCapabilities?.delete).toEqual({});
-			expect(initialized.agentCapabilities?.sessionCapabilities?.list).toEqual({});
+			const capabilities = initialized.agentCapabilities?.sessionCapabilities;
+			expect(capabilities?.list).toEqual({});
+			expect(capabilities?.close).toEqual({});
+			expect(capabilities).not.toHaveProperty("delete");
 		} catch (error) {
 			rethrowWithStderr(oracle, error);
 		}
 	}, 60_000);
 
-	it("create → list → artifact → delete → absence → repeat/unknown no-op over stdio", async () => {
+	it("create → list → close → list → reload over stdio", async () => {
 		const oracle = await spawnOracle();
-		const { connection, workspace, root } = oracle;
+		const { connection, workspace } = oracle;
 		try {
 			await connection.initialize({ protocolVersion: 1, clientCapabilities: {} });
 
-			// Create a session.
 			const created = await connection.newSession({ cwd: workspace, mcpServers: [] });
 			const sessionId = created.sessionId;
 			expect(typeof sessionId).toBe("string");
 			expect(sessionId.length).toBeGreaterThan(0);
 
-			// Explicit scoped list includes the new session.
-			const listBefore = await connection.listSessions({ cwd: workspace });
-			expect(listBefore.sessions.map(session => session.sessionId)).toContain(sessionId);
+			const listBeforeClose = await connection.listSessions({ cwd: workspace });
+			expect(listBeforeClose.sessions.map(session => session.sessionId)).toContain(sessionId);
 
-			// Exactly one session transcript exists under the isolated root.
-			const transcripts = await Array.fromAsync(
-				new Bun.Glob("**/*.jsonl").scan({ cwd: root, absolute: true, onlyFiles: true }),
-			);
-			expect(transcripts).toHaveLength(1);
-			const sessionPath = transcripts[0]!;
+			// `session/close` releases active resources; it does not delete the
+			// persisted transcript because ACP has no session/delete request.
+			expect(await connection.closeSession({ sessionId })).toEqual({});
+			const listAfterClose = await connection.listSessions({ cwd: workspace });
+			expect(listAfterClose.sessions.map(session => session.sessionId)).toContain(sessionId);
 
-			// Artifact creation in the sibling artifacts directory (strip ".jsonl").
-			const artifactsDir = sessionPath.slice(0, -6);
-			await fs.promises.mkdir(artifactsDir, { recursive: true });
-			const artifactPath = path.join(artifactsDir, "oracle.txt");
-			await fs.promises.writeFile(artifactPath, "artifact");
-			expect(fs.existsSync(artifactPath)).toBe(true);
-
-			// Delete it.
-			const deleteResult = await connection.deleteSession({ sessionId });
-			expect(deleteResult).toEqual({});
-
-			// Post-delete scoped list no longer includes it.
-			const listAfter = await connection.listSessions({ cwd: workspace });
-			expect(listAfter.sessions.map(session => session.sessionId)).not.toContain(sessionId);
-
-			// Transcript and its artifacts directory (and artifact) are gone.
-			expect(fs.existsSync(sessionPath)).toBe(false);
-			expect(fs.existsSync(artifactsDir)).toBe(false);
-			expect(fs.existsSync(artifactPath)).toBe(false);
-
-			// Repeat delete of the now-absent id is a no-op {}.
-			const repeatDelete = await connection.deleteSession({ sessionId });
-			expect(repeatDelete).toEqual({});
-
-			// Delete of an id that never existed is also {}.
-			const unknownDelete = await connection.deleteSession({ sessionId: "never-existed" });
-			expect(unknownDelete).toEqual({});
+			await connection.loadSession({ sessionId, cwd: workspace, mcpServers: [] });
+			expect(await connection.closeSession({ sessionId })).toEqual({});
 		} catch (error) {
 			rethrowWithStderr(oracle, error);
 		}

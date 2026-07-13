@@ -28,15 +28,15 @@ fn classify_tool_item(tool_name: &str) -> &'static str {
 
 /// Per-thread streaming state machine.
 pub struct ThreadStream {
-	thread_id: ThreadId,
-	seq: SeqCounter,
-	active_turn: Option<TurnId>,
+	thread_id:      ThreadId,
+	seq:            SeqCounter,
+	active_turn:    Option<TurnId>,
 	/// The current assistant-message item, if streaming.
-	message_item: Option<ItemId>,
+	message_item:   Option<ItemId>,
 	/// The current reasoning (thinking) item, if streaming, kept separate from
 	/// the assistant-message item so thinking is not merged into the reply.
 	reasoning_item: Option<ItemId>,
-	latch: TerminalLatch,
+	latch:          TerminalLatch,
 }
 
 impl ThreadStream {
@@ -383,7 +383,8 @@ mod tests {
 			"message_update",
 			serde_json::json!({"assistantMessageEvent": {"type": "text_delta", "delta": "the answer"}}),
 		));
-		// First text delta lazily opens the message item (index 0), then streams (index 1).
+		// First text delta lazily opens the message item (index 0), then streams (index
+		// 1).
 		assert_eq!(txd[0].method, "item/started");
 		assert_eq!(txd[0].params.as_ref().unwrap()["itemType"], "agentMessage");
 		assert_eq!(txd[1].method, "item/agentMessage/delta");

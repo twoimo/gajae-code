@@ -1,0 +1,232 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "reviewer": "architect subagents 31-G004ArchReview (full), 33-G004ArchRecheck (store fixes), 34-G004ArchFinal (P2 closure)",
+    "commands": [
+      "read packages/coding-agent/src/modes/acp/acp-agent.ts",
+      "read packages/coding-agent/src/modes/shared/agent-wire/workflow-gate-broker.ts",
+      "read packages/coding-agent/src/notifications/index.ts",
+      "read packages/coding-agent/test/workflow-gate-broker.test.ts",
+      "read test-results/ultragoal-g004/ai-slop-cleaner.txt"
+    ],
+    "evidence": "Iterative review chain: 31-G004ArchReview confirmed the ACP transactional re-key/bridge refresh and notification gate-presentation migration resolved their HIGH findings but blocked on two remaining FileGateStore HIGHs (shallow semantic validation permitting unverified answer replay; non-durable quarantine directory entries). Leader fixed both (full DTO validation with schema compilation/hash verification and dual answer-hash recomputation; fsyncParentDirectory after marker creation and all renames). 33-G004ArchRecheck returned WATCH/APPROVE with one MEDIUM/P2 completeness gap (literal required:true, options entries, telegram ack updatedAt/outcome), which was then closed with targeted validators and quarantine fixtures. Final recheck 34-G004ArchFinal: Status CLEAR, Verdict APPROVE, no findings, and confirmed the post-review rebase onto origin/dev e3e861ce retained every approved fix.",
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "reviewer": "executor subagents 32-G004ExecQa (G004 adversarial) and 27-G003ExecQa (G003 focused probes), plus leader verification",
+    "e2eCommands": [
+      "bun test test/acp-agent.test.ts test/extensions-runner.test.ts test/workflow-gate-broker.test.ts test/agent-wire/agent-wire-scopes.test.ts test/notifications-config.test.ts test/notifications-session-switch.test.ts test/notifications-token.test.ts test/notifications-app-server-unwired.test.ts test/notifications-ask-selected-ack.test.ts test/acp-session-delete-wire.test.ts (171 pass, 0 fail)",
+      "bun x tsc -p packages/coding-agent/tsconfig.json --noEmit"
+    ],
+    "redTeamCommands": [
+      "bun test test/acp-agent.test.ts --test-name-pattern 're-keys the ACP session map|evicts the mutated session|refuses an extension re-key after the source session closes|source record was removed before the lifecycle call'",
+      "bun test test/workflow-gate-broker.test.ts --test-name-pattern 'quarantines|keeps a corrupt FileGateStore locked|loads a structurally valid'",
+      "bun test test/notifications-session-switch.test.ts --test-name-pattern 'session_switch reissues pending workflow-gate presentations'"
+    ],
+    "evidence": "Independent executor red-team (32-G004ExecQa) adversarially probed ACP re-key collision/eviction/no-resurrection with a real bridge request bound to the new id, FileGateStore quarantine + sticky .corrupt.lock + preserved sequence high-water on reopen, and emit-before-switch gate presentation reissue resolving the original gate id; it added one adversarial ACP regression test and recorded every command in test-results/ultragoal-g004/executor-qa.md. Leader verification reran the 10-file affected union (171 pass), package tsc, root check:ts workspace gate, and structural rebase checks after rebasing onto the moved origin/dev tip.",
+    "changedPaths": [
+      "packages/coding-agent/src/modes/acp/acp-agent.ts",
+      "packages/coding-agent/src/extensibility/extensions/runner.ts",
+      "packages/coding-agent/src/modes/shared/agent-wire/workflow-gate-broker.ts",
+      "packages/coding-agent/src/modes/shared/agent-wire/scopes.ts",
+      "packages/coding-agent/src/notifications/index.ts",
+      "packages/coding-agent/src/notifications/config.ts",
+      "packages/coding-agent/test/acp-agent.test.ts",
+      "packages/coding-agent/test/extensions-runner.test.ts",
+      "packages/coding-agent/test/workflow-gate-broker.test.ts",
+      "packages/coding-agent/test/agent-wire/agent-wire-scopes.test.ts",
+      "packages/coding-agent/test/notifications-session-switch.test.ts",
+      "packages/coding-agent/test/notifications-token.test.ts",
+      "packages/coding-agent/test/notifications-app-server-unwired.test.ts",
+      "packages/coding-agent/test/notifications-config.test.ts"
+    ],
+    "artifactRefs": [
+      {
+        "id": "qa-transcript-g004",
+        "kind": "package-test-report",
+        "description": "Independent executor QA command/outcome log for G004 adversarial probes",
+        "path": "test-results/ultragoal-g004/executor-qa.md"
+      },
+      {
+        "id": "qa-transcript-g003",
+        "kind": "package-test-report",
+        "description": "Independent executor QA command/outcome log for the underlying G003 focused probes",
+        "path": "test-results/ultragoal-g003/executor-qa.md"
+      },
+      {
+        "id": "cleaner-g004",
+        "kind": "cleanup-report",
+        "description": "Regenerated ai-slop-cleaner blocking-pass report for the G004 change set",
+        "path": "test-results/ultragoal-g004/ai-slop-cleaner.txt"
+      },
+      {
+        "id": "replay-structural",
+        "kind": "cli-replay",
+        "description": "Deterministic read-only CLI replay computing the merge base of origin/dev and HEAD; a successful exit proves both refs resolve in this worktree and the rebase base is reachable",
+        "command": [
+          "git",
+          "merge-base",
+          "origin/dev",
+          "HEAD"
+        ],
+        "expectedExitCode": 0,
+        "schemaVersion": 1,
+        "replaySafe": true,
+        "recordedStdout": "e3e861ce35c589c00d9de8025c3ba72149c4051a\n",
+        "recordedExitCode": 0
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "api-protocol",
+        "contractRef": "G004-protocol-api-surface",
+        "surface": "api-package",
+        "status": "passed",
+        "invocation": "bun test over the 10-file affected union in packages/coding-agent (171 pass, 0 fail) plus package tsc --noEmit",
+        "verdict": "passed",
+        "description": "All ACP, gate-broker, scopes, and notification behaviors verified through focused package tests and type checks after the rebase onto the current origin/dev tip.",
+        "artifactRefs": [
+          "qa-transcript-g004",
+          "qa-transcript-g003",
+          "cleaner-g004"
+        ]
+      },
+      {
+        "id": "cli-structural",
+        "contractRef": "G004-rebase-structural",
+        "surface": "cli",
+        "status": "passed",
+        "invocation": "git merge-base --is-ancestor origin/dev HEAD; git diff --check",
+        "verdict": "passed",
+        "description": "Structural rebase checks pass on the updated origin/dev tip (e3e861ce): clean diff, ancestor relation holds, no conflict markers.",
+        "artifactRefs": [
+          "replay-structural"
+        ]
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "adv-rekey-collision",
+        "contractRef": "G004-acp-rekey",
+        "scenario": "Extension switchSession targets a session id already owned by another ACP record",
+        "expectedBehavior": "Operation fails closed; pre-existing target record remains functional; mutated source record is evicted and disposed; no half-keyed state",
+        "status": "passed",
+        "verdict": "passed",
+        "description": "Live test drives a real managed-target collision; target lookups still resolve, mutated record rejected, disposal observed.",
+        "artifactRefs": [
+          "qa-transcript-g004"
+        ]
+      },
+      {
+        "id": "adv-rekey-closed-source",
+        "contractRef": "G004-acp-rekey",
+        "scenario": "Extension lifecycle action races a concurrent close of its source session",
+        "expectedBehavior": "Re-key refused before the lifecycle callback runs; closed record is not resurrected",
+        "status": "passed",
+        "verdict": "passed",
+        "description": "Adversarial regression test added by independent QA proves pre-call source-removal rejection.",
+        "artifactRefs": [
+          "qa-transcript-g004"
+        ]
+      },
+      {
+        "id": "adv-store-tamper",
+        "contractRef": "G004-gate-store",
+        "scenario": "Persisted gate state tampered: missing resolution, mismatched answer hashes, wrong schema_hash, missing gate fields, malformed ackPolicy/options, counter rollback",
+        "expectedBehavior": "Every malformed state quarantines with a sticky .corrupt.lock; reopening throws until manual marker removal; valid state still loads; sequences never reuse",
+        "status": "passed",
+        "verdict": "passed",
+        "description": "Nine quarantine fixtures pass, including dual answer-hash recomputation and post-quarantine sequence high-water preservation.",
+        "artifactRefs": [
+          "qa-transcript-g004",
+          "cleaner-g004"
+        ]
+      },
+      {
+        "id": "adv-gate-rebind",
+        "contractRef": "G004-gate-rebind",
+        "scenario": "Workflow gate emitted before a session_switch re-key",
+        "expectedBehavior": "Presentation is migrated to the new session id, old remote action invalidated, reissued action's reply resolves the original gate id",
+        "status": "passed",
+        "verdict": "passed",
+        "description": "Emit-before-switch regression verifies old action invalidation, new-session reissue, and original-gate-id resolution.",
+        "artifactRefs": [
+          "qa-transcript-g004"
+        ]
+      }
+    ],
+    "contractCoverage": [
+      {
+        "id": "cc-1",
+        "contractRef": "G004-acp-rekey",
+        "obligation": "Transactional, fail-closed ACP session re-key with conflict preflight, no resurrection, and client-bridge/authority refresh in the same commit",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "api-protocol"
+        ],
+        "adversarialCaseRefs": [
+          "adv-rekey-collision",
+          "adv-rekey-closed-source"
+        ]
+      },
+      {
+        "id": "cc-2",
+        "contractRef": "G004-gate-store",
+        "obligation": "State-discriminated, hash-verified, crash-durable FileGateStore validation with sticky quarantine",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "api-protocol"
+        ],
+        "adversarialCaseRefs": [
+          "adv-store-tamper"
+        ]
+      },
+      {
+        "id": "cc-3",
+        "contractRef": "G004-gate-rebind",
+        "obligation": "Pre-switch notification gate presentations survive session re-key and remain remotely answerable",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "api-protocol"
+        ],
+        "adversarialCaseRefs": [
+          "adv-gate-rebind"
+        ]
+      },
+      {
+        "id": "cc-4",
+        "contractRef": "G004-rebase-structural",
+        "obligation": "Rebase remains structurally clean on the current origin/dev tip after all protocol fixes",
+        "status": "passed",
+        "surfaceEvidenceRefs": [
+          "cli-structural"
+        ],
+        "artifactRefs": [
+          "replay-structural"
+        ]
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "fullRerun": true,
+    "count": 3,
+    "rerunCommands": [
+      "bun test <10-file affected union> (packages/coding-agent: 171 pass, 0 fail)",
+      "bun x tsc -p packages/coding-agent/tsconfig.json --noEmit",
+      "bun test src/**/*.test.ts src/**/*.test.tsx (packages/gjc-gui: 117 pass, 0 fail)",
+      "bun run check:ts (root workspace gate)",
+      "git diff --check",
+      "git merge-base --is-ancestor origin/dev HEAD"
+    ],
+    "evidence": "Iteration 1: executor-delegated G003 fixes; architect blocked with four HIGH findings (recorded as G004). Iteration 2: executor-delegated G004 fixes resolved the ACP and notification HIGHs; architect re-review blocked on two remaining FileGateStore HIGHs, which the leader fixed (full semantic validation with dual hash recomputation; directory fsync durability), then WATCH/APPROVE with one MEDIUM/P2. Iteration 3: leader closed the P2 (literal required:true, options validation, telegram ack updatedAt/outcome) with quarantine fixtures; final architect recheck CLEAR/APPROVE. After origin/dev moved, the branch was rebased onto the new tip (only upstream delta: scripts/dev-link.ts) and the full verification stack was rerun: GUI 117/117, protocol union 171/171, package tsc, root check:ts, clean diff, ancestor relation.",
+    "blockers": []
+  }
+}

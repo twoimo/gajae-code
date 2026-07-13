@@ -11,10 +11,11 @@
  * fields named in `INTERNAL_DETAILS_FIELDS` are removed; anything else (even
  * `__`-prefixed fields not in the allowlist) is preserved verbatim.
  */
+
+import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "bun:test";
 import { type SkillPromptDetails, stripInternalDetailsFields } from "@gajae-code/coding-agent/session/messages";
 import {
 	type CustomMessageEntry,

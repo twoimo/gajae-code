@@ -721,10 +721,10 @@ function ThreadListEmpty() {
 	);
 }
 
-const root = document.getElementById("root");
+const root = document.querySelector<HTMLElement>("[data-gjc-showcase-root]");
 
 if (!root) {
-	throw new Error("Missing #root element");
+	throw new Error("Missing showcase root element");
 }
 
 createRoot(root).render(

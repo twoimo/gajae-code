@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { cardFromRows, errorCard, mergeExecCards, monitorsCardFromResult, notificationRefreshCause, rowLine, shouldRefreshOnTurnBoundary } from "./exec-state-logic";
+import {
+	cardFromRows,
+	errorCard,
+	mergeExecCards,
+	monitorsCardFromResult,
+	notificationRefreshCause,
+	rowLine,
+	shouldRefreshOnTurnBoundary,
+} from "./exec-state-logic";
 
 describe("exec-state logic", () => {
 	test("maps loading empty populated and CJK rows", () => {
@@ -32,8 +40,12 @@ describe("exec-state logic", () => {
 	});
 
 	test("jobs-changed notification triggers exec-state refresh", () => {
-		expect(notificationRefreshCause({ method: "gjc/jobs/changed", params: { threadId: "thread-1" } })).toBe("jobs-changed");
-		expect(notificationRefreshCause({ method: "gjc/event", params: { eventType: "todo_reminder" } })).toBe("todos-changed");
+		expect(notificationRefreshCause({ method: "gjc/jobs/changed", params: { threadId: "thread-1" } })).toBe(
+			"jobs-changed",
+		);
+		expect(notificationRefreshCause({ method: "gjc/event", params: { eventType: "todo_reminder" } })).toBe(
+			"todos-changed",
+		);
 		expect(notificationRefreshCause({ method: "gjc/event", params: { eventType: "notice" } })).toBeUndefined();
 	});
 

@@ -26,7 +26,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { ImageContent, TextContent } from "@gajae-code/ai";
-import { NotificationServer } from "@gajae-code/natives";
+import { type InboundEvent, NotificationServer } from "@gajae-code/natives";
 import { logger, postmortem } from "@gajae-code/utils";
 import { Settings } from "../config/settings";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../extensibility/extensions";
@@ -46,10 +46,11 @@ import type {
 	AskSettlementResult,
 } from "../tools";
 import { registerAskAnswerSource, registerWorkflowGateEmitterListener } from "../tools/ask-answer-registry";
-import { AppServerNotificationEndpoint } from "./app-server-endpoint";
+import { AppServerNotificationEndpoint, type AppServerNotificationReply } from "./app-server-endpoint";
 import { registerTelegramFileSink } from "./attachment-registry";
 import {
 	getNotificationConfig,
+	hasNonBlankValue,
 	isSessionNotificationsEnabled,
 	isTelegramConfigured,
 	type NotificationConfig,
@@ -360,13 +361,48 @@ interface UnattendedGatePresentation {
 	selectedOptions: string[];
 }
 
+interface NotificationPresentationEndpoint {
+	registerAsk(payloadJson: string, repliable: boolean): void;
+	resolveLocal(id: string, answerJson?: string): void;
+}
+
+interface SharedNotificationInbound {
+	kind: string;
+	text?: string;
+	images?: { data: string; mime?: string }[];
+	updateId?: number;
+	verbosity?: string;
+	redact?: boolean;
+}
+
+interface NotificationControlCommandInbound {
+	requestId: string;
+	commandJson?: string;
+	updateId?: number;
+}
+
+/** The generated native declaration predates control-command fields. Narrow the
+ * native event at the protocol boundary instead of assuming they exist. */
+function notificationControlCommandInbound(inbound: InboundEvent): NotificationControlCommandInbound | undefined {
+	if (inbound.kind !== "control_command") return undefined;
+	const requestId = Reflect.get(inbound, "requestId");
+	if (typeof requestId !== "string") return undefined;
+	const commandJson = Reflect.get(inbound, "commandJson");
+	const updateId = Reflect.get(inbound, "updateId");
+	return {
+		requestId,
+		commandJson: typeof commandJson === "string" ? commandJson : undefined,
+		updateId: typeof updateId === "number" ? updateId : undefined,
+	};
+}
+
 /** Keeps transport interaction ids separate from durable workflow gate ids. */
 class GatePresentationRegistry {
 	private readonly presentations = new Map<string, UnattendedGatePresentation>();
 	private readonly routes = new Map<string, string>();
 
 	constructor(
-		private readonly server: NotificationServer,
+		private readonly server: NotificationPresentationEndpoint,
 		private readonly redact: () => boolean,
 		private readonly tag: string,
 	) {}
@@ -382,6 +418,10 @@ class GatePresentationRegistry {
 	presentationFor(actionId: string): UnattendedGatePresentation | undefined {
 		const gateId = this.routes.get(actionId);
 		return gateId ? this.presentations.get(gateId) : undefined;
+	}
+
+	detachInteraction(actionId: string): void {
+		this.routes.delete(actionId);
 	}
 
 	toggle(actionId: string, label: string): boolean {
@@ -438,6 +478,17 @@ class GatePresentationRegistry {
 		}
 	}
 
+	/** Reissue pending gate presentations under a re-keyed session identity. */
+	rebind(sessionId: string): void {
+		const gateIds = [...this.presentations.keys()];
+		for (const actionId of [...this.routes.keys()]) this.closeInteraction(actionId, "session_switch");
+		for (const gateId of gateIds) {
+			const presentation = this.presentations.get(gateId);
+			if (presentation) presentation.sessionId = sessionId;
+		}
+		for (const gateId of gateIds) this.reissue(gateId);
+	}
+
 	closeInteraction(actionId: string, reason: string): void {
 		this.routes.delete(actionId);
 		try {
@@ -468,6 +519,25 @@ class GatePresentationRegistry {
 
 type NotificationEndpoint = NotificationServer | AppServerNotificationEndpoint;
 
+/** Claims carry native reply receipts. App-server replies do not, so exclude its
+ * endpoint even if a future presentation method happens to share a name. The
+ * remaining checks deliberately accept structural test doubles. */
+function isNotificationClaimServer(endpoint: NotificationEndpoint): endpoint is NotificationServer {
+	return (
+		!(endpoint instanceof AppServerNotificationEndpoint) &&
+		typeof Reflect.get(endpoint, "resolveClaim") === "function" &&
+		typeof Reflect.get(endpoint, "closeClaimInvalid") === "function" &&
+		typeof Reflect.get(endpoint, "requestAskSelectedAck") === "function"
+	);
+}
+
+function supportsRecoveredAskSelectedAck(endpoint: NotificationEndpoint): endpoint is NotificationServer {
+	return (
+		isNotificationClaimServer(endpoint) &&
+		typeof Reflect.get(endpoint, "requestRecoveredAskSelectedAck") === "function"
+	);
+}
+
 interface SessionRuntime {
 	server: NotificationEndpoint;
 	idleSeq: number;
@@ -485,6 +555,7 @@ interface SessionRuntime {
 	disposeGateEmitterListener: () => void;
 	workflowGate?: WorkflowGateEmitter;
 	gatePresentations?: GatePresentationRegistry;
+	rebindWorkflowGate: (sessionId: string, gate: WorkflowGateEmitter | undefined) => void;
 	redact: boolean;
 	verbosity: "lean" | "verbose";
 	sessionTag: string;
@@ -540,7 +611,7 @@ const defaultConfig: NotificationConfig = {
 };
 
 export function notificationsEnabled(): boolean {
-	return process.env.GJC_NOTIFICATIONS === "1" || Boolean(process.env.GJC_NOTIFICATIONS_TOKEN);
+	return process.env.GJC_NOTIFICATIONS === "1" || hasNonBlankValue(process.env.GJC_NOTIFICATIONS_TOKEN);
 }
 
 // Live streaming (opt-in): emit throttled non-finalized `turn_stream` frames as
@@ -580,7 +651,8 @@ function resolveSettings(settingsOverride?: Settings): ResolvedSettings {
 }
 
 function resolveToken(): string {
-	return process.env.GJC_NOTIFICATIONS_TOKEN ?? crypto.randomBytes(24).toString("base64url");
+	const token = process.env.GJC_NOTIFICATIONS_TOKEN;
+	return hasNonBlankValue(token) ? token : crypto.randomBytes(24).toString("base64url");
 }
 
 function parseAnswer(answerJson: string): unknown {
@@ -1001,6 +1073,11 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 		if (!isNotificationEligibleContext(ctx) || !isEnabledForSession(id, cfg)) return "disabled";
 		if (runtimes.has(id)) return "already";
 
+		if (process.env.GJC_NOTIFICATIONS_APP_SERVER === "1") {
+			logger.warn("notifications: app-server notifications refused: pushNotification transport is not wired");
+			return "failed";
+		}
+
 		const stateRoot = path.join(ctx.cwd, ".gjc", "state");
 		const gateOptions = new Map<string, string[]>();
 		const pendingInteractive = new Map<string, PendingInteractiveAsk>();
@@ -1011,185 +1088,14 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 
 		// The SDK can always answer now (interactive via the answer source, or the
 		// unattended gate), so the endpoint advertises a resolver.
-		const server: NotificationEndpoint =
-			process.env.GJC_NOTIFICATIONS_APP_SERVER === "1"
-				? new AppServerNotificationEndpoint({
-						sessionId: id,
-						// TODO(phase7): wire this to the app-server handle once the native
-						// AppServerHandle.pushNotification surface lands in the extension.
-						pushNotification: frame => logger.debug(`notifications app-server frame: ${JSON.stringify(frame)}`),
-					})
-				: new NotificationServer(id, resolveToken(), stateRoot, true);
+		const server = new NotificationServer(id, resolveToken(), stateRoot, true) as NotificationEndpoint;
 		const gatePresentations = new GatePresentationRegistry(server, () => runtime?.redact ?? redact, tag);
 
-		server.onReply((err, reply) => {
-			if (err || !reply) return;
-			const native = server as unknown as {
-				resolveClaim(receiptId: string, answerJson?: string, idempotencyKey?: string): void;
-				closeClaimInvalid(receiptId: string, reason: string): void;
-				requestAskSelectedAck(
-					receiptId: string,
-					requestJson: string,
-				): Promise<{ status: string; messageId?: number; reason?: string }>;
-			};
-			const pending = pendingInteractive.get(reply.id);
-			if (pending) {
-				pendingInteractive.delete(reply.id);
-				let interaction: AskRemoteInteraction | undefined;
-				try {
-					const answer = JSON.parse(reply.answerJson) as unknown;
-					if (typeof answer === "object" && answer && "controlId" in answer) {
-						const controlId = (answer as { controlId?: unknown }).controlId;
-						if (
-							controlId === "navigation_forward" &&
-							pending.controls.some(control => control.id === controlId && control.enabled)
-						) {
-							interaction = { kind: "control", controlId };
-						}
-					} else {
-						const value = mapAnswerToLabel(reply.answerJson, pending.options);
-						if (value !== undefined) interaction = { kind: "value", value };
-					}
-				} catch {}
-				if (!interaction) {
-					try {
-						native.closeClaimInvalid(reply.replyReceiptId, "invalid_answer");
-					} catch {}
-					if (!pending.reissue()) pending.resolve(undefined);
-					return;
-				}
-				let settled: Promise<AskSettlementResult> | undefined;
-				const receipt: AskRemoteReceipt = {
-					source: "remote",
-					interaction,
-					settle(settlement: AskSettlement): Promise<AskSettlementResult> {
-						if (settled) return settled;
-						settled = Promise.resolve().then(async () => {
-							if (settlement.kind === "invalid") {
-								native.closeClaimInvalid(reply.replyReceiptId, settlement.reason);
-								return { kind: "invalid_closed" };
-							}
-							if (settlement.kind === "resolve_without_commit") {
-								native.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey ?? undefined);
-								return { kind: "resolved_without_commit" };
-							}
-							const ack = await requestLiveSelectedAck(native, {
-								replyReceiptId: reply.replyReceiptId,
-								actionId: reply.id,
-								commitKey: `${reply.id}:${reply.idempotencyKey ?? reply.replyReceiptId}`,
-								deadlineAt: Date.now() + 8_000,
-							});
-							native.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey ?? undefined);
-							return { kind: "committed", ack };
-						});
-						return settled;
-					},
-				};
-				pending.resolve(receipt);
-				return;
-			}
-			const gate = runtime?.workflowGate;
-			const unattended =
-				gate?.isUnattended?.() === true &&
-				typeof gate.onGateEmitted === "function" &&
-				typeof gate.resolveGate === "function";
-			const gateId = gatePresentations.routeFor(reply.id);
-			if (unattended && gateId && gate?.resolveGateFromNotification) {
-				const presentation = gatePresentations.presentationFor(reply.id);
-				const rawAnswer = parseAnswer(reply.answerJson);
-				if (presentation?.multi) {
-					const option =
-						typeof rawAnswer === "number"
-							? presentation.options[rawAnswer]
-							: typeof rawAnswer === "string" && presentation.options.includes(rawAnswer)
-								? rawAnswer
-								: undefined;
-					if (option !== undefined) {
-						native.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey ?? undefined);
-						if (!gatePresentations.toggle(reply.id, option)) gatePresentations.reissue(gateId);
-						return;
-					}
-				}
-				let answer: unknown;
-				if (
-					presentation?.multi &&
-					typeof rawAnswer === "object" &&
-					rawAnswer !== null &&
-					(rawAnswer as { controlId?: unknown }).controlId === "navigation_forward"
-				) {
-					if (!presentation.allowEmpty && presentation.selectedOptions.length === 0) {
-						native.closeClaimInvalid(reply.replyReceiptId, "invalid_control");
-						gatePresentations.closeInteraction(reply.id, "invalid_control");
-						gatePresentations.reissue(gateId);
-						return;
-					}
-					answer = { selected: presentation.selectedOptions };
-				} else if (
-					typeof rawAnswer === "object" &&
-					rawAnswer !== null &&
-					(rawAnswer as { action?: unknown }).action === "clarify"
-				) {
-					answer = rawAnswer;
-				} else if (presentation?.multi && typeof rawAnswer === "string") {
-					answer = { selected: presentation.selectedOptions, other: true, custom: rawAnswer };
-				} else {
-					const mapped = mapAnswerToGate(reply.answerJson, gateOptions.get(gateId) ?? []);
-					if (!mapped.ok) {
-						// A numeric selector outside options is invalid (issue #2030): close the
-						// exact claim/receipt and reissue the interaction — never a success ack.
-						native.closeClaimInvalid(reply.replyReceiptId, mapped.reason);
-						gatePresentations.closeInteraction(reply.id, mapped.reason);
-						gatePresentations.reissue(gateId);
-						return;
-					}
-					answer = mapped.answer;
-				}
-				void gate
-					.resolveGateFromNotification(
-						{ gate_id: gateId, answer, idempotency_key: reply.idempotencyKey ?? undefined },
-						{
-							interactionActionId: reply.id,
-							replyReceiptId: reply.replyReceiptId,
-							answerJson: reply.answerJson,
-							idempotencyKey: reply.idempotencyKey ?? undefined,
-							resolveClaim: () =>
-								native.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey ?? undefined),
-							closeClaimInvalid: reason => {
-								native.closeClaimInvalid(reply.replyReceiptId, reason);
-								gatePresentations.closeInteraction(reply.id, reason);
-								gatePresentations.reissue(gateId);
-							},
-							requestSelectedAck: input =>
-								requestLiveSelectedAck(native, {
-									replyReceiptId: input.replyReceiptId,
-									actionId: input.actionId,
-									commitKey: input.commitKey,
-									deadlineAt: input.daemonDeadlineAt,
-								}),
-						},
-					)
-					.catch(error => logger.warn(`notifications: resolveGateFromNotification failed: ${String(error)}`));
-				return;
-			}
-			try {
-				server.closeClaimInvalid(reply.replyReceiptId, "unknown_action");
-			} catch (error) {
-				logger.warn(`notifications: closeClaimInvalid failed: ${String(error)}`);
-			}
-		});
-
-		// Inbound free-text injection / in-thread config command from a session
-		// thread (forwarded by the daemon over the WS, fail-closed at the daemon).
-		server.onInbound((err, inbound) => {
-			if (err || !inbound) return;
+		const handleCommonInbound = (inbound: SharedNotificationInbound): boolean => {
 			if (inbound.kind === "user_message") {
-				// Inject as a user turn (steers/continues the agent; the resulting
-				// turn streams back via the turn_end handler even when not idle).
-				// Record the update id so it can be acked as "consumed" on the next
-				// turn_start, and steer (vs start a fresh turn) when already busy.
 				const text = inbound.text ?? "";
 				const images = inbound.images ?? [];
-				if (!text && images.length === 0) return;
+				if (!text && images.length === 0) return true;
 				if (runtime && typeof inbound.updateId === "number") runtime.pendingInbound.add(inbound.updateId);
 				const content: string | (TextContent | ImageContent)[] =
 					images.length > 0
@@ -1206,45 +1112,209 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 				} catch (e) {
 					logger.warn(`notifications: sendUserMessage failed: ${String(e)}`);
 				}
-				return;
+				return true;
 			}
-			if (inbound.kind === "config_command") {
-				if (!runtime) return;
-				const update: {
-					type: "config_update";
-					sessionId: string;
-					verbosity?: "lean" | "verbose";
-					redact?: boolean;
-				} = {
-					type: "config_update",
-					sessionId: id,
-				};
-				if (inbound.verbosity === "lean" || inbound.verbosity === "verbose") {
-					runtime.verbosity = inbound.verbosity;
-					update.verbosity = inbound.verbosity;
+			if (inbound.kind !== "config_command") return false;
+			if (!runtime) return true;
+			const update: {
+				type: "config_update";
+				sessionId: string;
+				verbosity?: "lean" | "verbose";
+				redact?: boolean;
+			} = {
+				type: "config_update",
+				sessionId: id,
+			};
+			if (inbound.verbosity === "lean" || inbound.verbosity === "verbose") {
+				runtime.verbosity = inbound.verbosity;
+				update.verbosity = inbound.verbosity;
+			}
+			if (typeof inbound.redact === "boolean") {
+				runtime.redact = inbound.redact;
+				update.redact = inbound.redact;
+			}
+			if (update.verbosity !== undefined || update.redact !== undefined) {
+				try {
+					runtime.server.pushFrame(JSON.stringify(update));
+				} catch (e) {
+					logger.warn(`notifications: config_update failed: ${String(e)}`);
 				}
-				if (typeof inbound.redact === "boolean") {
-					runtime.redact = inbound.redact;
-					update.redact = inbound.redact;
-				}
-				if (update.verbosity !== undefined || update.redact !== undefined) {
+			}
+			return true;
+		};
+
+		if (isNotificationClaimServer(server)) {
+			const native = server;
+			native.onReply((err, reply) => {
+				if (err || !reply) return;
+				const pending = pendingInteractive.get(reply.id);
+				if (pending) {
+					pendingInteractive.delete(reply.id);
+					let interaction: AskRemoteInteraction | undefined;
 					try {
-						runtime.server.pushFrame(JSON.stringify(update));
-					} catch (e) {
-						logger.warn(`notifications: config_update failed: ${String(e)}`);
+						const answer = JSON.parse(reply.answerJson) as unknown;
+						if (typeof answer === "object" && answer && "controlId" in answer) {
+							const controlId = (answer as { controlId?: unknown }).controlId;
+							if (
+								controlId === "navigation_forward" &&
+								pending.controls.some(control => control.id === controlId && control.enabled)
+							) {
+								interaction = { kind: "control", controlId };
+							}
+						} else {
+							const value = mapAnswerToLabel(reply.answerJson, pending.options);
+							if (value !== undefined) interaction = { kind: "value", value };
+						}
+					} catch {}
+					if (!interaction) {
+						try {
+							native.closeClaimInvalid(reply.replyReceiptId, "invalid_answer");
+						} catch {}
+						if (!pending.reissue()) pending.resolve(undefined);
+						return;
 					}
+					let settled: Promise<AskSettlementResult> | undefined;
+					const receipt: AskRemoteReceipt = {
+						source: "remote",
+						interaction,
+						settle(settlement: AskSettlement): Promise<AskSettlementResult> {
+							if (settled) return settled;
+							settled = Promise.resolve().then(async () => {
+								if (settlement.kind === "invalid") {
+									native.closeClaimInvalid(reply.replyReceiptId, settlement.reason);
+									return { kind: "invalid_closed" };
+								}
+								if (settlement.kind === "resolve_without_commit") {
+									native.resolveClaim(
+										reply.replyReceiptId,
+										reply.answerJson,
+										reply.idempotencyKey ?? undefined,
+									);
+									return { kind: "resolved_without_commit" };
+								}
+								const ack = await requestLiveSelectedAck(native, {
+									replyReceiptId: reply.replyReceiptId,
+									actionId: reply.id,
+									commitKey: `${reply.id}:${reply.idempotencyKey ?? reply.replyReceiptId}`,
+									deadlineAt: Date.now() + 8_000,
+								});
+								native.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey ?? undefined);
+								return { kind: "committed", ack };
+							});
+							return settled;
+						},
+					};
+					pending.resolve(receipt);
+					return;
 				}
-			}
-			if (inbound.kind === "control_command") {
-				if (!runtime || !inbound.requestId) return;
-				void executeNotificationControlCommand(parseControlCommandPayload(inbound.commandJson), ctx, api)
+				const gate = runtime?.workflowGate;
+				const unattended =
+					gate?.isUnattended?.() === true &&
+					typeof gate.onGateEmitted === "function" &&
+					typeof gate.resolveGate === "function";
+				const gateId = gatePresentations.routeFor(reply.id);
+				if (unattended && gateId && gate?.resolveGateFromNotification) {
+					const presentation = gatePresentations.presentationFor(reply.id);
+					const rawAnswer = parseAnswer(reply.answerJson);
+					if (presentation?.multi) {
+						const option =
+							typeof rawAnswer === "number"
+								? presentation.options[rawAnswer]
+								: typeof rawAnswer === "string" && presentation.options.includes(rawAnswer)
+									? rawAnswer
+									: undefined;
+						if (option !== undefined) {
+							native.resolveClaim(reply.replyReceiptId, reply.answerJson, reply.idempotencyKey ?? undefined);
+							if (!gatePresentations.toggle(reply.id, option)) gatePresentations.reissue(gateId);
+							return;
+						}
+					}
+					let answer: unknown;
+					if (
+						presentation?.multi &&
+						typeof rawAnswer === "object" &&
+						rawAnswer !== null &&
+						(rawAnswer as { controlId?: unknown }).controlId === "navigation_forward"
+					) {
+						if (!presentation.allowEmpty && presentation.selectedOptions.length === 0) {
+							native.closeClaimInvalid(reply.replyReceiptId, "invalid_control");
+							gatePresentations.closeInteraction(reply.id, "invalid_control");
+							gatePresentations.reissue(gateId);
+							return;
+						}
+						answer = { selected: presentation.selectedOptions };
+					} else if (
+						typeof rawAnswer === "object" &&
+						rawAnswer !== null &&
+						(rawAnswer as { action?: unknown }).action === "clarify"
+					) {
+						answer = rawAnswer;
+					} else if (presentation?.multi && typeof rawAnswer === "string") {
+						answer = { selected: presentation.selectedOptions, other: true, custom: rawAnswer };
+					} else {
+						const mapped = mapAnswerToGate(reply.answerJson, gateOptions.get(gateId) ?? []);
+						if (!mapped.ok) {
+							// A numeric selector outside options is invalid (issue #2030): close the
+							// exact claim/receipt and reissue the interaction — never a success ack.
+							native.closeClaimInvalid(reply.replyReceiptId, mapped.reason);
+							gatePresentations.closeInteraction(reply.id, mapped.reason);
+							gatePresentations.reissue(gateId);
+							return;
+						}
+						answer = mapped.answer;
+					}
+					void gate
+						.resolveGateFromNotification(
+							{ gate_id: gateId, answer, idempotency_key: reply.idempotencyKey ?? undefined },
+							{
+								interactionActionId: reply.id,
+								replyReceiptId: reply.replyReceiptId,
+								answerJson: reply.answerJson,
+								idempotencyKey: reply.idempotencyKey ?? undefined,
+								resolveClaim: () =>
+									native.resolveClaim(
+										reply.replyReceiptId,
+										reply.answerJson,
+										reply.idempotencyKey ?? undefined,
+									),
+								closeClaimInvalid: reason => {
+									native.closeClaimInvalid(reply.replyReceiptId, reason);
+									gatePresentations.closeInteraction(reply.id, reason);
+									gatePresentations.reissue(gateId);
+								},
+								requestSelectedAck: input =>
+									requestLiveSelectedAck(native, {
+										replyReceiptId: input.replyReceiptId,
+										actionId: input.actionId,
+										commitKey: input.commitKey,
+										deadlineAt: input.daemonDeadlineAt,
+									}),
+							},
+						)
+						.catch(error => logger.warn(`notifications: resolveGateFromNotification failed: ${String(error)}`));
+					return;
+				}
+				try {
+					native.closeClaimInvalid(reply.replyReceiptId, "unknown_action");
+				} catch (error) {
+					logger.warn(`notifications: closeClaimInvalid failed: ${String(error)}`);
+				}
+			});
+
+			// Inbound free-text injection / in-thread config command from a session
+			// thread (forwarded by the daemon over the WS, fail-closed at the daemon).
+			native.onInbound((err, inbound) => {
+				if (err || !inbound || handleCommonInbound(inbound)) return;
+				const command = notificationControlCommandInbound(inbound);
+				if (!runtime || !command) return;
+				void executeNotificationControlCommand(parseControlCommandPayload(command.commandJson), ctx, api)
 					.then(result => {
 						runtime?.server.pushFrame(
 							JSON.stringify({
 								type: "control_command_result",
 								sessionId: id,
-								requestId: inbound.requestId,
-								updateId: inbound.updateId,
+								requestId: command.requestId,
+								updateId: command.updateId,
 								status: result.status,
 								message: result.message,
 							}),
@@ -1256,8 +1326,8 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 								JSON.stringify({
 									type: "control_command_result",
 									sessionId: id,
-									requestId: inbound.requestId,
-									updateId: inbound.updateId,
+									requestId: command.requestId,
+									updateId: command.updateId,
 									status: "error",
 									message: `Control command failed: ${err instanceof Error ? err.message : String(err)}`,
 								}),
@@ -1266,8 +1336,140 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 							logger.warn(`notifications: control_command_result failed: ${String(pushErr)}`);
 						}
 					});
-			}
-		});
+			});
+		} else {
+			const appServer = server;
+			const rejectAppReply = (reply: AppServerNotificationReply, reason: string): void => {
+				appServer.reject(reply.id, reason);
+				appServer.resolveLocal(reply.id, undefined);
+			};
+			appServer.onReply((err, reply) => {
+				if (err || !reply) return;
+				const pending = pendingInteractive.get(reply.id);
+				if (pending) {
+					pendingInteractive.delete(reply.id);
+					let interaction: AskRemoteInteraction | undefined;
+					try {
+						const answer = JSON.parse(reply.answerJson) as unknown;
+						if (typeof answer === "object" && answer && "controlId" in answer) {
+							const controlId = (answer as { controlId?: unknown }).controlId;
+							if (
+								controlId === "navigation_forward" &&
+								pending.controls.some(control => control.id === controlId && control.enabled)
+							) {
+								interaction = { kind: "control", controlId };
+							}
+						} else {
+							const value = mapAnswerToLabel(reply.answerJson, pending.options);
+							if (value !== undefined) interaction = { kind: "value", value };
+						}
+					} catch {}
+					if (!interaction) {
+						rejectAppReply(reply, "invalid_answer");
+						if (!pending.reissue()) pending.resolve(undefined);
+						return;
+					}
+					let settled: Promise<AskSettlementResult> | undefined;
+					const receipt: AskRemoteReceipt = {
+						source: "remote",
+						interaction,
+						settle(settlement: AskSettlement): Promise<AskSettlementResult> {
+							if (settled) return settled;
+							settled = Promise.resolve().then(() => {
+								if (settlement.kind === "invalid") {
+									rejectAppReply(reply, settlement.reason);
+									return { kind: "invalid_closed" };
+								}
+								appServer.resolveClient(reply.id, reply.answerJson, reply.idempotencyKey);
+								if (settlement.kind === "resolve_without_commit") return { kind: "resolved_without_commit" };
+								return { kind: "committed", ack: { status: "failed", reason: "unsupported" } };
+							});
+							return settled;
+						},
+					};
+					pending.resolve(receipt);
+					return;
+				}
+
+				const gate = runtime?.workflowGate;
+				const unattended =
+					gate?.isUnattended?.() === true &&
+					typeof gate.onGateEmitted === "function" &&
+					typeof gate.resolveGate === "function";
+				const gateId = gatePresentations.routeFor(reply.id);
+				if (unattended && gateId && gate?.resolveGate) {
+					const presentation = gatePresentations.presentationFor(reply.id);
+					const rawAnswer = parseAnswer(reply.answerJson);
+					if (presentation?.multi) {
+						const option =
+							typeof rawAnswer === "number"
+								? presentation.options[rawAnswer]
+								: typeof rawAnswer === "string" && presentation.options.includes(rawAnswer)
+									? rawAnswer
+									: undefined;
+						if (option !== undefined) {
+							appServer.resolveClient(reply.id, reply.answerJson, reply.idempotencyKey);
+							if (!gatePresentations.toggle(reply.id, option)) gatePresentations.reissue(gateId);
+							return;
+						}
+					}
+					let answer: unknown;
+					if (
+						presentation?.multi &&
+						typeof rawAnswer === "object" &&
+						rawAnswer !== null &&
+						(rawAnswer as { controlId?: unknown }).controlId === "navigation_forward"
+					) {
+						if (!presentation.allowEmpty && presentation.selectedOptions.length === 0) {
+							rejectAppReply(reply, "invalid_control");
+							gatePresentations.closeInteraction(reply.id, "invalid_control");
+							gatePresentations.reissue(gateId);
+							return;
+						}
+						answer = { selected: presentation.selectedOptions };
+					} else if (
+						typeof rawAnswer === "object" &&
+						rawAnswer !== null &&
+						(rawAnswer as { action?: unknown }).action === "clarify"
+					) {
+						answer = rawAnswer;
+					} else if (presentation?.multi && typeof rawAnswer === "string") {
+						answer = { selected: presentation.selectedOptions, other: true, custom: rawAnswer };
+					} else {
+						const mapped = mapAnswerToGate(reply.answerJson, gateOptions.get(gateId) ?? []);
+						if (!mapped.ok) {
+							rejectAppReply(reply, mapped.reason);
+							gatePresentations.closeInteraction(reply.id, mapped.reason);
+							gatePresentations.reissue(gateId);
+							return;
+						}
+						answer = mapped.answer;
+					}
+					gatePresentations.detachInteraction(reply.id);
+					void gate
+						.resolveGate({ gate_id: gateId, answer, idempotency_key: reply.idempotencyKey ?? undefined })
+						.then(resolution => {
+							if (resolution.status === "accepted") {
+								appServer.resolveClient(reply.id, reply.answerJson, reply.idempotencyKey);
+								return;
+							}
+							rejectAppReply(reply, resolution.error?.code ?? "invalid_answer");
+							gatePresentations.reissue(gateId);
+						})
+						.catch(error => {
+							rejectAppReply(reply, error instanceof Error ? error.message : "invalid_answer");
+							gatePresentations.reissue(gateId);
+							logger.warn(`notifications: resolveGate failed: ${String(error)}`);
+						});
+					return;
+				}
+				rejectAppReply(reply, "unknown_action");
+			});
+			appServer.onInbound((err, inbound) => {
+				if (err || !inbound) return;
+				handleCommonInbound(inbound);
+			});
+		}
 
 		try {
 			const endpoint = await server.start();
@@ -1314,6 +1516,7 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 				disposeGateEmitterListener: () => {},
 				workflowGate: undefined,
 				gatePresentations,
+				rebindWorkflowGate: () => {},
 				cancelPostmortemCleanup: () => {},
 				redact,
 				verbosity,
@@ -1359,7 +1562,8 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 
 			// Workflow-gate installation occurs after session_start in RPC/bridge modes.
 			// Attach dynamically so those sessions receive the same Telegram gate surface.
-			const attachWorkflowGate = (gate: WorkflowGateEmitter | undefined): void => {
+			let gateSessionId = id;
+			const attachWorkflowGate = (gate: WorkflowGateEmitter | undefined, preservePresentations = false): void => {
 				if (activeRuntime.workflowGate === gate) return;
 				activeRuntime.disposeGateListener();
 				activeRuntime.disposeGateTerminalController();
@@ -1368,8 +1572,10 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 				activeRuntime.disposeGateTerminalController = () => {};
 				activeRuntime.disposeAckRecoveryParticipant = () => {};
 				activeRuntime.workflowGate = undefined;
-				gateOptions.clear();
-				gatePresentations.dispose();
+				if (!preservePresentations) {
+					gateOptions.clear();
+					gatePresentations.dispose();
+				}
 				if (typeof gate?.onGateEmitted !== "function" || typeof gate.resolveGate !== "function") {
 					return;
 				}
@@ -1399,7 +1605,7 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 							: {};
 					gatePresentations.retain({
 						gateId: g.gate_id,
-						sessionId: id,
+						sessionId: gateSessionId,
 						question,
 						options,
 						controls: [],
@@ -1410,12 +1616,8 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 					});
 					gatePresentations.reissue(g.gate_id);
 				});
-				if (gate.setAckRecoveryParticipant) {
-					const native = server as unknown as {
-						requestRecoveredAskSelectedAck(
-							requestJson: string,
-						): Promise<{ status: string; messageId?: number; reason?: string }>;
-					};
+				if (gate.setAckRecoveryParticipant && supportsRecoveredAskSelectedAck(server)) {
+					const native = server;
 					gate.setAckRecoveryParticipant({
 						requestRecoveredAskSelectedAck: input =>
 							requestRecoveredSelectedAck(native, {
@@ -1428,7 +1630,22 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 					activeRuntime.disposeAckRecoveryParticipant = () => gate.setAckRecoveryParticipant?.(null);
 				}
 			};
-			activeRuntime.disposeGateEmitterListener = registerWorkflowGateEmitterListener(id, attachWorkflowGate);
+			const rebindWorkflowGate = (nextId: string, gate: WorkflowGateEmitter | undefined): void => {
+				activeRuntime.disposeGateEmitterListener();
+				activeRuntime.disposeGateEmitterListener = () => {};
+				gateSessionId = nextId;
+				attachWorkflowGate(undefined, true);
+				activeRuntime.disposeGateEmitterListener = registerWorkflowGateEmitterListener(nextId, nextGate =>
+					attachWorkflowGate(nextGate, true),
+				);
+				if (gate) attachWorkflowGate(gate, true);
+				gatePresentations.rebind(nextId);
+			};
+			activeRuntime.rebindWorkflowGate = rebindWorkflowGate;
+			activeRuntime.disposeGateEmitterListener = registerWorkflowGateEmitterListener(
+				gateSessionId,
+				attachWorkflowGate,
+			);
 			if (ctx.workflowGate) attachWorkflowGate(ctx.workflowGate);
 			return "started";
 		} catch (e) {
@@ -1583,6 +1800,7 @@ export function createNotificationsExtension(api: ExtensionAPI, options: { setti
 				return { ok: false, error: e instanceof Error ? e.message : String(e) };
 			}
 		});
+		rt.rebindWorkflowGate(newId, ctx.workflowGate);
 		// Rename the existing topic now when the new session already has a name; a
 		// fresh unnamed session is renamed on its next agent_end re-assert, which
 		// avoids a transient rename to bare "repo/branch".

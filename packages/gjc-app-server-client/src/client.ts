@@ -1,40 +1,58 @@
 import type {
 	AppServerError,
-	GjcCompactParams,
-	GjcCompactResult,
 	EmptyResult,
+	GjcAgentsListResult,
+	GjcAppearanceReadParams,
+	GjcAppearanceReadResult,
+	GjcAppearanceSetParams,
+	GjcAppearanceSetResult,
+	GjcAppearanceThemesListParams,
+	GjcAppearanceThemesListResult,
+	GjcAuthLoginCancelParams,
+	GjcAuthLoginCancelResult,
+	GjcAuthLoginCompleteParams,
+	GjcAuthLoginCompleteResult,
+	GjcAuthLoginPollParams,
+	GjcAuthLoginPollResult,
+	GjcAuthLoginStartParams,
+	GjcAuthLoginStartResult,
+	GjcAuthLogoutParams,
+	GjcAuthLogoutResult,
+	GjcAuthStatusParams,
+	GjcAuthStatusResult,
 	GjcCommandsListParams,
 	GjcCommandsListResult,
+	GjcCompactParams,
+	GjcCompactResult,
+	GjcCompactSummaryResult,
 	GjcContextReadParams,
 	GjcContextReadResult,
-	GjcGoalReadParams,
-	GjcGoalReadResult,
-	GjcRetryParams,
-	GjcRetryResult,
-	GjcSessionListParams,
-	GjcSessionListResult,
-	GjcSessionRenameParams,
-	GjcSessionRenameResult,
-	GjcSessionOpenParams,
-	GjcSessionOpenResult,
-	GjcSessionDeleteParams,
-	GjcSessionDeleteResult,
-	GjcSessionExportParams,
-	GjcSessionExportResult,
-	GjcSessionSearchParams,
-	GjcSessionSearchResult,
-	GjcSessionTreeParams,
-	GjcSessionTreeResult,
-	GjcSessionNavigateParams,
-	GjcSessionNavigateResult,
-	GjcSessionLabelParams,
-	GjcSessionLabelResult,
-	GjcSessionMoveParams,
-	GjcSessionMoveResult,
 	GjcExtensionsInspectParams,
 	GjcExtensionsInspectResult,
 	GjcExtensionsListParams,
 	GjcExtensionsListResult,
+	GjcExtensionsSetEnabledParams,
+	GjcExtensionsSetEnabledResult,
+	GjcFastReadResult,
+	GjcFastSetParams,
+	GjcFastSetResult,
+	GjcGoalReadParams,
+	GjcGoalReadResult,
+	GjcHostToolsResultParams,
+	GjcHostToolsResultResult,
+	GjcHostToolsSetParams,
+	GjcHostToolsSetResult,
+	GjcHostToolsUpdateParams,
+	GjcHostToolsUpdateResult,
+	GjcJobsListResult,
+	GjcMessagesGetParams,
+	GjcMessagesGetResult,
+	GjcModelAssignParams,
+	GjcModelAssignResult,
+	GjcModelCatalogResult,
+	GjcModelSetParams,
+	GjcModelSetResult,
+	GjcMonitorsListResult,
 	GjcPluginsInspectParams,
 	GjcPluginsInspectResult,
 	GjcPluginsListParams,
@@ -45,54 +63,54 @@ import type {
 	GjcPluginsSetFeatureResult,
 	GjcPluginsSetSettingParams,
 	GjcPluginsSetSettingResult,
+	GjcProviderAddParams,
+	GjcProviderAddResult,
+	GjcProviderListParams,
+	GjcProviderListResult,
+	GjcRetryParams,
+	GjcRetryResult,
+	GjcSessionDeleteParams,
+	GjcSessionDeleteResult,
+	GjcSessionExportParams,
+	GjcSessionExportResult,
+	GjcSessionLabelParams,
+	GjcSessionLabelResult,
+	GjcSessionListParams,
+	GjcSessionListResult,
+	GjcSessionMoveParams,
+	GjcSessionMoveResult,
+	GjcSessionNavigateParams,
+	GjcSessionNavigateResult,
+	GjcSessionOpenParams,
+	GjcSessionOpenResult,
+	GjcSessionRenameParams,
+	GjcSessionRenameResult,
+	GjcSessionSearchParams,
+	GjcSessionSearchResult,
+	GjcSessionTreeParams,
+	GjcSessionTreeResult,
+	GjcSettingsReadParams,
+	GjcSettingsReadResult,
+	GjcSettingsSchemaParams,
+	GjcSettingsSchemaResult,
+	GjcSettingsUpdateParams,
+	GjcSettingsUpdateResult,
 	GjcSkillsListParams,
 	GjcSkillsListResult,
 	GjcSkillsSetEnabledParams,
 	GjcSkillsSetEnabledResult,
-	GjcHostToolsResultParams,
-	GjcHostToolsResultResult,
-	GjcHostToolsSetParams,
-	GjcHostToolsSetResult,
-	GjcHostToolsUpdateParams,
-	GjcHostToolsUpdateResult,
-	GjcMessagesGetParams,
-	GjcMessagesGetResult,
-	GjcToolsListParams,
-	GjcToolsListResult,
-	GjcModelSetParams,
-	GjcModelSetResult,
-	GjcModelAssignParams,
-	GjcModelAssignResult,
-	GjcModelCatalogResult,
+	GjcStateReadParams,
+	GjcStateReadResult,
 	GjcThinkingReadResult,
 	GjcThinkingSetParams,
 	GjcThinkingSetResult,
-	GjcFastReadResult,
-	GjcFastSetParams,
-	GjcFastSetResult,
-	GjcSettingsSchemaParams,
-	GjcSettingsSchemaResult,
-	GjcSettingsReadParams,
-	GjcSettingsReadResult,
-	GjcSettingsUpdateParams,
-	GjcSettingsUpdateResult,
-	GjcAppearanceThemesListParams,
-	GjcAppearanceThemesListResult,
-	GjcAppearanceReadParams,
-	GjcAppearanceReadResult,
-	GjcAppearanceSetParams,
-	GjcAppearanceSetResult,
-	GjcStateReadParams,
-	GjcStateReadResult,
-	GjcTodosSetParams,
-	GjcTodosSetResult,
 	GjcThreadReadParams,
 	GjcTodosReadResult,
+	GjcTodosSetParams,
+	GjcTodosSetResult,
+	GjcToolsListParams,
+	GjcToolsListResult,
 	GjcUsageReadResult,
-	GjcJobsListResult,
-	GjcAgentsListResult,
-	GjcMonitorsListResult,
-	GjcCompactSummaryResult,
 	HostUriResultParams,
 	HostUriSchemesSetParams,
 	HostUriSchemesSetResult,
@@ -102,6 +120,7 @@ import type {
 	JsonValue,
 	RequestId,
 	Response,
+	RpcWorkflowGateResolution,
 	ServerNotificationEnvelope,
 	ServerNotificationMap,
 	ServerNotificationMethod,
@@ -121,25 +140,6 @@ import type {
 	TurnStartResult,
 	TurnSteerParams,
 	TurnSteerResult,
-	GjcProviderListParams,
-	GjcProviderListResult,
-	GjcAuthStatusParams,
-	GjcAuthStatusResult,
-	GjcAuthLogoutParams,
-	GjcAuthLogoutResult,
-	GjcProviderAddParams,
-	GjcProviderAddResult,
-	GjcAuthLoginStartParams,
-	GjcAuthLoginStartResult,
-	GjcAuthLoginPollParams,
-	GjcAuthLoginPollResult,
-	GjcAuthLoginCompleteParams,
-	GjcAuthLoginCompleteResult,
-	GjcAuthLoginCancelParams,
-	GjcAuthLoginCancelResult,
-	GjcExtensionsSetEnabledParams,
-	GjcExtensionsSetEnabledResult,
-	RpcWorkflowGateResolution,
 	WorkflowGateListParams,
 	WorkflowGateListResult,
 	WorkflowGateRespondParams,
@@ -422,31 +422,81 @@ export class AppServerClient {
 		return this.request("gjc/goal/read", params);
 	}
 
-	gjcModelCatalog(params: GjcThreadReadParams): Promise<GjcModelCatalogResult> { return this.request("gjc/model/catalog", params); }
-	gjcThinkingRead(params: GjcThreadReadParams): Promise<GjcThinkingReadResult> { return this.request("gjc/thinking/read", params); }
-	gjcThinkingSet(params: GjcThinkingSetParams): Promise<GjcThinkingSetResult> { return this.request("gjc/thinking/set", params); }
-	gjcFastRead(params: GjcThreadReadParams): Promise<GjcFastReadResult> { return this.request("gjc/fast/read", params); }
-	gjcFastSet(params: GjcFastSetParams): Promise<GjcFastSetResult> { return this.request("gjc/fast/set", params); }
-	gjcSettingsSchema(params: GjcSettingsSchemaParams = {}): Promise<GjcSettingsSchemaResult> { return this.request("gjc/settings/schema", params); }
-	gjcSettingsRead(params: GjcSettingsReadParams = {}): Promise<GjcSettingsReadResult> { return this.request("gjc/settings/read", params); }
-	gjcSettingsUpdate(params: GjcSettingsUpdateParams): Promise<GjcSettingsUpdateResult> { return this.request("gjc/settings/update", params); }
-	gjcAppearanceThemesList(params: GjcAppearanceThemesListParams = {}): Promise<GjcAppearanceThemesListResult> { return this.request("gjc/appearance/themes/list", params); }
-	gjcAppearanceRead(params: GjcAppearanceReadParams = {}): Promise<GjcAppearanceReadResult> { return this.request("gjc/appearance/read", params); }
-	gjcAppearanceSet(params: GjcAppearanceSetParams): Promise<GjcAppearanceSetResult> { return this.request("gjc/appearance/set", params); }
-	gjcProviderList(params: GjcProviderListParams = {}): Promise<GjcProviderListResult> { return this.request("gjc/provider/list", params); }
-	gjcAuthStatus(params: GjcAuthStatusParams = {}): Promise<GjcAuthStatusResult> { return this.request("gjc/auth/status", params); }
-	gjcAuthLogout(params: GjcAuthLogoutParams): Promise<GjcAuthLogoutResult> { return this.request("gjc/auth/logout", params); }
-	gjcProviderAdd(params: GjcProviderAddParams): Promise<GjcProviderAddResult> { return this.request("gjc/provider/add", params); }
-	gjcAuthLoginStart(params: GjcAuthLoginStartParams): Promise<GjcAuthLoginStartResult> { return this.request("gjc/auth/login/start", params); }
-	gjcAuthLoginPoll(params: GjcAuthLoginPollParams): Promise<GjcAuthLoginPollResult> { return this.request("gjc/auth/login/poll", params); }
-	gjcAuthLoginComplete(params: GjcAuthLoginCompleteParams): Promise<GjcAuthLoginCompleteResult> { return this.request("gjc/auth/login/complete", params); }
-	gjcAuthLoginCancel(params: GjcAuthLoginCancelParams): Promise<GjcAuthLoginCancelResult> { return this.request("gjc/auth/login/cancel", params); }
-	gjcTodosRead(params: GjcThreadReadParams): Promise<GjcTodosReadResult> { return this.request("gjc/todos/read", params); }
-	gjcUsageRead(params: GjcThreadReadParams): Promise<GjcUsageReadResult> { return this.request("gjc/usage/read", params); }
-	gjcJobsList(params: GjcThreadReadParams): Promise<GjcJobsListResult> { return this.request("gjc/jobs/list", params); }
-	gjcAgentsList(params: GjcThreadReadParams): Promise<GjcAgentsListResult> { return this.request("gjc/agents/list", params); }
-	gjcMonitorsList(params: GjcThreadReadParams): Promise<GjcMonitorsListResult> { return this.request("gjc/monitors/list", params); }
-	gjcCompactSummary(params: GjcThreadReadParams): Promise<GjcCompactSummaryResult> { return this.request("gjc/compact/summary", params); }
+	gjcModelCatalog(params: GjcThreadReadParams): Promise<GjcModelCatalogResult> {
+		return this.request("gjc/model/catalog", params);
+	}
+	gjcThinkingRead(params: GjcThreadReadParams): Promise<GjcThinkingReadResult> {
+		return this.request("gjc/thinking/read", params);
+	}
+	gjcThinkingSet(params: GjcThinkingSetParams): Promise<GjcThinkingSetResult> {
+		return this.request("gjc/thinking/set", params);
+	}
+	gjcFastRead(params: GjcThreadReadParams): Promise<GjcFastReadResult> {
+		return this.request("gjc/fast/read", params);
+	}
+	gjcFastSet(params: GjcFastSetParams): Promise<GjcFastSetResult> {
+		return this.request("gjc/fast/set", params);
+	}
+	gjcSettingsSchema(params: GjcSettingsSchemaParams = {}): Promise<GjcSettingsSchemaResult> {
+		return this.request("gjc/settings/schema", params);
+	}
+	gjcSettingsRead(params: GjcSettingsReadParams = {}): Promise<GjcSettingsReadResult> {
+		return this.request("gjc/settings/read", params);
+	}
+	gjcSettingsUpdate(params: GjcSettingsUpdateParams): Promise<GjcSettingsUpdateResult> {
+		return this.request("gjc/settings/update", params);
+	}
+	gjcAppearanceThemesList(params: GjcAppearanceThemesListParams = {}): Promise<GjcAppearanceThemesListResult> {
+		return this.request("gjc/appearance/themes/list", params);
+	}
+	gjcAppearanceRead(params: GjcAppearanceReadParams = {}): Promise<GjcAppearanceReadResult> {
+		return this.request("gjc/appearance/read", params);
+	}
+	gjcAppearanceSet(params: GjcAppearanceSetParams): Promise<GjcAppearanceSetResult> {
+		return this.request("gjc/appearance/set", params);
+	}
+	gjcProviderList(params: GjcProviderListParams = {}): Promise<GjcProviderListResult> {
+		return this.request("gjc/provider/list", params);
+	}
+	gjcAuthStatus(params: GjcAuthStatusParams = {}): Promise<GjcAuthStatusResult> {
+		return this.request("gjc/auth/status", params);
+	}
+	gjcAuthLogout(params: GjcAuthLogoutParams): Promise<GjcAuthLogoutResult> {
+		return this.request("gjc/auth/logout", params);
+	}
+	gjcProviderAdd(params: GjcProviderAddParams): Promise<GjcProviderAddResult> {
+		return this.request("gjc/provider/add", params);
+	}
+	gjcAuthLoginStart(params: GjcAuthLoginStartParams): Promise<GjcAuthLoginStartResult> {
+		return this.request("gjc/auth/login/start", params);
+	}
+	gjcAuthLoginPoll(params: GjcAuthLoginPollParams): Promise<GjcAuthLoginPollResult> {
+		return this.request("gjc/auth/login/poll", params);
+	}
+	gjcAuthLoginComplete(params: GjcAuthLoginCompleteParams): Promise<GjcAuthLoginCompleteResult> {
+		return this.request("gjc/auth/login/complete", params);
+	}
+	gjcAuthLoginCancel(params: GjcAuthLoginCancelParams): Promise<GjcAuthLoginCancelResult> {
+		return this.request("gjc/auth/login/cancel", params);
+	}
+	gjcTodosRead(params: GjcThreadReadParams): Promise<GjcTodosReadResult> {
+		return this.request("gjc/todos/read", params);
+	}
+	gjcUsageRead(params: GjcThreadReadParams): Promise<GjcUsageReadResult> {
+		return this.request("gjc/usage/read", params);
+	}
+	gjcJobsList(params: GjcThreadReadParams): Promise<GjcJobsListResult> {
+		return this.request("gjc/jobs/list", params);
+	}
+	gjcAgentsList(params: GjcThreadReadParams): Promise<GjcAgentsListResult> {
+		return this.request("gjc/agents/list", params);
+	}
+	gjcMonitorsList(params: GjcThreadReadParams): Promise<GjcMonitorsListResult> {
+		return this.request("gjc/monitors/list", params);
+	}
+	gjcCompactSummary(params: GjcThreadReadParams): Promise<GjcCompactSummaryResult> {
+		return this.request("gjc/compact/summary", params);
+	}
 
 	gjcSessionList(params: GjcSessionListParams = {}): Promise<GjcSessionListResult> {
 		return this.request("gjc/session/list", params);

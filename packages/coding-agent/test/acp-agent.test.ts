@@ -7,19 +7,23 @@ import type {
 	ClientCapabilities,
 	CreateElicitationRequest,
 	CreateElicitationResponse,
+	InitializeRequest,
 	PromptRequest,
 	SessionNotification,
 } from "@agentclientprotocol/sdk";
+
 import type { AssistantMessage, Model } from "@gajae-code/ai";
 import { getAgentDir, setAgentDir } from "@gajae-code/utils";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
+import type { ExtensionCommandContextActions } from "../src/extensibility/extensions/types";
 import { ACP_BOOTSTRAP_RACE_GUARD_MS, AcpAgent, createAcpExtensionUiContext } from "../src/modes/acp/acp-agent";
 import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 import type { PlanModeState } from "../src/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "../src/session/agent-session";
+import type { ClientBridge } from "../src/session/client-bridge";
 import { SILENT_ABORT_MARKER } from "../src/session/messages";
+
 import { SessionManager } from "../src/session/session-manager";
-import { FileSessionStorage } from "../src/session/session-storage";
 
 const SESSION_UPDATE_VARIANTS = new Set([
 	"user_message_chunk",
@@ -44,9 +48,8 @@ function expectSessionNotificationShape(value: unknown): void {
 	expect(SESSION_UPDATE_VARIANTS.has(typeof sessionUpdate === "string" ? sessionUpdate : "")).toBe(true);
 }
 
-function responseUserMessageId(response: { _meta?: { [key: string]: unknown } | null }): string | undefined {
-	const value = response._meta?.userMessageId;
-	return typeof value === "string" ? value : undefined;
+function responseUserMessageId(response: { userMessageId?: string | null }): string | undefined {
+	return typeof response.userMessageId === "string" ? response.userMessageId : undefined;
 }
 
 function formRequestedSchema(
@@ -144,7 +147,8 @@ class FakeAgentSession {
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
-	asyncDeliveryState: { queued: number; delivering: boolean } | undefined;
+	clientBridges: ClientBridge[] = [];
+
 	sendCustomMessage = async (message: { customType: string; content: string; details?: unknown }): Promise<void> => {
 		this.customMessages.push(message);
 	};
@@ -247,9 +251,6 @@ class FakeAgentSession {
 	async drainAsyncJobDeliveriesForAcp(options?: { timeoutMs?: number }): Promise<boolean> {
 		return (await this.asyncJobDrain?.(options)) ?? false;
 	}
-	getAsyncDeliveryStateForAcp(): { queued: number; delivering: boolean } {
-		return this.asyncDeliveryState ?? { queued: 0, delivering: false };
-	}
 
 	async abort(): Promise<void> {
 		this.isStreaming = false;
@@ -294,13 +295,6 @@ class FakeAgentSession {
 		await this.sessionManager.close();
 	}
 
-	async closeWriterStrict(): Promise<
-		{ kind: "closed" } | { kind: "close_failed_retryable"; error: Error } | { kind: "close_unknown"; error: Error }
-	> {
-		await this.sessionManager.flush();
-		return this.sessionManager.closeStrict();
-	}
-
 	async reload(): Promise<void> {}
 
 	async newSession(): Promise<boolean> {
@@ -328,7 +322,11 @@ class FakeAgentSession {
 
 	setActiveToolsByName(_toolNames: string[]): void {}
 
-	setClientBridge(_bridge: unknown): void {}
+	setClientBridge(bridge: ClientBridge | undefined): void {
+		if (bridge) {
+			this.clientBridges.push(bridge);
+		}
+	}
 
 	getPlanModeState(): PlanModeState | undefined {
 		return this.planModeState;
@@ -415,11 +413,20 @@ function holdPromptStreaming(session: FakeAgentSession): () => void {
 	return () => finishPrompt();
 }
 
+type ClientReadRequest = {
+	sessionId: string;
+	path: string;
+	line?: number;
+	limit?: number;
+};
+
 interface AgentHarness {
 	agent: AcpAgent;
 	updates: SessionNotification[];
 	abortController: AbortController;
 	sessions: FakeAgentSession[];
+	clientReadRequests: ClientReadRequest[];
+
 	cwdA: string;
 	cwdB: string;
 	findSession(sessionId: string): FakeAgentSession | undefined;
@@ -465,7 +472,10 @@ afterEach(async () => {
 	}
 });
 
-async function createHarness(options?: { createSessionGate?: Promise<void> }): Promise<AgentHarness> {
+async function createHarness(options?: {
+	createSessionGate?: Promise<void>;
+	configureCreatedSession?: (session: FakeAgentSession) => void;
+}): Promise<AgentHarness> {
 	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "gjc-acp-test-"));
 	cleanupRoots.push(root);
 	const agentDir = path.join(root, "agent");
@@ -480,10 +490,17 @@ async function createHarness(options?: { createSessionGate?: Promise<void> }): P
 	const updates: SessionNotification[] = [];
 	const abortController = new AbortController();
 	const sessions: FakeAgentSession[] = [];
+	const clientReadRequests: ClientReadRequest[] = [];
+
 	const connection = {
 		sessionUpdate: async (notification: SessionNotification) => {
 			updates.push(notification);
 		},
+		readTextFile: async (request: ClientReadRequest) => {
+			clientReadRequests.push(request);
+			return { content: "" };
+		},
+
 		signal: abortController.signal,
 		closed: Promise.withResolvers<void>().promise,
 	} as unknown as AgentSideConnection;
@@ -493,6 +510,7 @@ async function createHarness(options?: { createSessionGate?: Promise<void> }): P
 	const factory = async (cwd: string): Promise<AgentSession> => {
 		await options?.createSessionGate;
 		const session = new FakeAgentSession(cwd);
+		options?.configureCreatedSession?.(session);
 		sessions.push(session);
 		return session as unknown as AgentSession;
 	};
@@ -502,6 +520,7 @@ async function createHarness(options?: { createSessionGate?: Promise<void> }): P
 		updates,
 		abortController,
 		sessions,
+		clientReadRequests,
 		cwdA,
 		cwdB,
 		findSession: (sessionId: string) => sessions.find(session => session.sessionId === sessionId),
@@ -594,6 +613,202 @@ describe("ACP agent", () => {
 		await harness.agent.closeSession({ sessionId: forked.sessionId });
 		await expect(harness.agent.setSessionMode({ sessionId: forked.sessionId, modeId: "default" })).rejects.toThrow(
 			"Unsupported ACP session",
+		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("re-keys the ACP session map after an extension changes sessions", async () => {
+		let commandContextActions: ExtensionCommandContextActions | undefined;
+		const harness = await createHarness({
+			configureCreatedSession: session => {
+				session.extensionRunner = {
+					initialize: (_actions: unknown, _contextActions: unknown, actions?: ExtensionCommandContextActions) => {
+						commandContextActions = actions;
+					},
+					emit: async (_event: unknown) => {},
+				} as never;
+			},
+		});
+		await harness.agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { fs: { readTextFile: true } },
+		} as InitializeRequest);
+
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		const actions = commandContextActions;
+		if (!actions) {
+			throw new Error("extension command bridge was not initialized");
+		}
+
+		const result = await actions.newSession();
+		const rekeyedSessionId = session.sessionId;
+		expect(result).toEqual({ cancelled: false });
+		expect(rekeyedSessionId).not.toBe(created.sessionId);
+		const initialBridge = session.clientBridges[0];
+		expect(session.clientBridges).toHaveLength(2);
+		const rekeyedBridge = session.clientBridges[1];
+		expect(rekeyedBridge).not.toBe(initialBridge);
+		if (!rekeyedBridge?.readTextFile) {
+			throw new Error("re-keyed ACP client bridge did not expose readTextFile");
+		}
+		await rekeyedBridge.readTextFile({ path: "/bridge-rekey-check" });
+		expect(harness.clientReadRequests).toEqual([
+			expect.objectContaining({ sessionId: rekeyedSessionId, path: "/bridge-rekey-check" }),
+		]);
+
+		await expect(harness.agent.setSessionMode({ sessionId: rekeyedSessionId, modeId: "default" })).resolves.toEqual(
+			{},
+		);
+		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
+			`Unsupported ACP session: ${created.sessionId}`,
+		);
+
+		const switchTarget = SessionManager.create(harness.cwdA);
+		await switchTarget.ensureOnDisk();
+		const switchTargetPath = switchTarget.getSessionFile();
+		const switchedSessionId = switchTarget.getSessionId();
+		await switchTarget.close();
+		if (!switchTargetPath) {
+			throw new Error("switch target session was not persisted");
+		}
+
+		const switchResult = await actions.switchSession(switchTargetPath);
+		expect(switchResult).toEqual({ cancelled: false });
+		expect(session.sessionId).toBe(switchedSessionId);
+		await expect(harness.agent.setSessionMode({ sessionId: switchedSessionId, modeId: "default" })).resolves.toEqual(
+			{},
+		);
+		await expect(harness.agent.setSessionMode({ sessionId: rekeyedSessionId, modeId: "default" })).rejects.toThrow(
+			`Unsupported ACP session: ${rekeyedSessionId}`,
+		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("evicts the mutated session when an extension switch collides with a managed target", async () => {
+		let commandContextActions: ExtensionCommandContextActions | undefined;
+		const harness = await createHarness({
+			configureCreatedSession: session => {
+				session.extensionRunner = {
+					initialize: (_actions: unknown, _contextActions: unknown, actions?: ExtensionCommandContextActions) => {
+						commandContextActions = actions;
+					},
+					emit: async (_event: unknown) => {},
+				} as never;
+			},
+		});
+		const source = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const sourceSession = harness.findSession(source.sessionId)!;
+		const sourceActions = commandContextActions;
+		if (!sourceActions) {
+			throw new Error("source extension command bridge was not initialized");
+		}
+		const target = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const targetSession = harness.findSession(target.sessionId)!;
+		const targetPath = targetSession.sessionManager.getSessionFile();
+		if (!targetPath) {
+			throw new Error("managed conflict target session was not persisted");
+		}
+
+		await expect(sourceActions.switchSession(targetPath)).rejects.toThrow(
+			`ACP session identity conflict: ${target.sessionId} is already managed`,
+		);
+		expect(sourceSession.disposed).toBe(true);
+		await expect(harness.agent.setSessionMode({ sessionId: target.sessionId, modeId: "default" })).resolves.toEqual(
+			{},
+		);
+		await expect(harness.agent.setSessionMode({ sessionId: source.sessionId, modeId: "default" })).rejects.toThrow(
+			`Unsupported ACP session: ${source.sessionId}`,
+		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("refuses an extension re-key after the source session closes", async () => {
+		let commandContextActions: ExtensionCommandContextActions | undefined;
+		const harness = await createHarness({
+			configureCreatedSession: session => {
+				session.extensionRunner = {
+					initialize: (_actions: unknown, _contextActions: unknown, actions?: ExtensionCommandContextActions) => {
+						commandContextActions = actions;
+					},
+					emit: async (_event: unknown) => {},
+				} as never;
+			},
+		});
+		const source = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const sourceSession = harness.findSession(source.sessionId)!;
+		const sourceActions = commandContextActions;
+		if (!sourceActions) {
+			throw new Error("source extension command bridge was not initialized");
+		}
+		const lifecycleStarted = Promise.withResolvers<void>();
+		const allowRekey = Promise.withResolvers<void>();
+		const rekeyedSessionId = "concurrently-closed-rekey";
+		sourceSession.newSession = async () => {
+			lifecycleStarted.resolve();
+			await allowRekey.promise;
+			sourceSession.sessionId = rekeyedSessionId;
+			sourceSession.agent.sessionId = rekeyedSessionId;
+			return true;
+		};
+
+		const rekey = sourceActions.newSession();
+		await lifecycleStarted.promise;
+		await harness.agent.closeSession({ sessionId: source.sessionId });
+		allowRekey.resolve();
+		await expect(rekey).rejects.toThrow(
+			`ACP session identity transition rejected: ${source.sessionId} is no longer managed`,
+		);
+		expect(sourceSession.disposed).toBe(true);
+		await expect(harness.agent.setSessionMode({ sessionId: source.sessionId, modeId: "default" })).rejects.toThrow(
+			`Unsupported ACP session: ${source.sessionId}`,
+		);
+		await expect(harness.agent.setSessionMode({ sessionId: rekeyedSessionId, modeId: "default" })).rejects.toThrow(
+			`Unsupported ACP session: ${rekeyedSessionId}`,
+		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("refuses a re-key when the source record was removed before the lifecycle call", async () => {
+		let commandContextActions: ExtensionCommandContextActions | undefined;
+		const harness = await createHarness({
+			configureCreatedSession: session => {
+				session.extensionRunner = {
+					initialize: (_actions: unknown, _contextActions: unknown, actions?: ExtensionCommandContextActions) => {
+						commandContextActions = actions;
+					},
+					emit: async (_event: unknown) => {},
+				} as never;
+			},
+		});
+		const source = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const sourceSession = harness.findSession(source.sessionId)!;
+		const sourceActions = commandContextActions;
+		if (!sourceActions) {
+			throw new Error("source extension command bridge was not initialized");
+		}
+		let lifecycleCalls = 0;
+		sourceSession.newSession = async () => {
+			lifecycleCalls++;
+			return true;
+		};
+
+		await harness.agent.closeSession({ sessionId: source.sessionId });
+		await expect(sourceActions.newSession()).rejects.toThrow(
+			`ACP session identity transition rejected: ${source.sessionId} is no longer managed`,
+		);
+		expect(lifecycleCalls).toBe(0);
+		expect(sourceSession.disposed).toBe(true);
+		await expect(harness.agent.setSessionMode({ sessionId: source.sessionId, modeId: "default" })).rejects.toThrow(
+			`Unsupported ACP session: ${source.sessionId}`,
 		);
 
 		harness.abortController.abort();
@@ -831,7 +1046,7 @@ describe("ACP agent", () => {
 		const live = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const response = await harness.agent.prompt({
 			sessionId: live.sessionId,
-			_meta: { userMessageId: "05b17a6f-b310-4be7-b767-6b4f3a84eb63" },
+			messageId: "05b17a6f-b310-4be7-b767-6b4f3a84eb63",
 			prompt: [{ type: "text", text: "ping" }],
 		} as PromptRequest);
 		expect(typeof response.stopReason).toBe("string");
@@ -1634,7 +1849,7 @@ describe("ACP agent", () => {
 
 		const firstPrompt = harness.agent.prompt({
 			sessionId: created.sessionId,
-			_meta: { userMessageId: "00000000-0000-4000-8000-000000000029" },
+			messageId: "00000000-0000-4000-8000-000000000029",
 			prompt: [{ type: "text", text: "wait for cleanup" }],
 		} as PromptRequest);
 		await idleBlocked;
@@ -1674,7 +1889,7 @@ describe("ACP agent", () => {
 
 		const prompt = harness.agent.prompt({
 			sessionId: created.sessionId,
-			_meta: { userMessageId: "00000000-0000-4000-8000-000000000047" },
+			messageId: "00000000-0000-4000-8000-000000000047",
 			prompt: [{ type: "text", text: "wait for async delivery" }],
 		} as PromptRequest);
 		await deliveryBlocked.promise;
@@ -2038,7 +2253,7 @@ describe("ACP agent", () => {
 
 		const response = await harness.agent.prompt({
 			sessionId: created.sessionId,
-			_meta: { userMessageId: "00000000-0000-4000-8000-000000000002" },
+			messageId: "00000000-0000-4000-8000-000000000002",
 			prompt: [{ type: "text", text: "/fast status" }],
 		} as PromptRequest);
 
@@ -2079,7 +2294,7 @@ describe("ACP agent", () => {
 	});
 
 	// =========================================================================
-	// session/delete — strict scope, authority snapshot, fail-closed behavior
+	// Session inventory and supported lifecycle
 	// =========================================================================
 
 	/**
@@ -2097,538 +2312,91 @@ describe("ACP agent", () => {
 		return { id, path: sessionPath };
 	}
 
-	it("returns {} for delete when no scope has been established (lookup-free)", async () => {
+	it("rejects cross-cwd listing after scope is locked", async () => {
 		const harness = await createHarness();
-		// No explicit-cwd lifecycle/list call yet → scope is undefined.
-		const result = await harness.agent.deleteSession({ sessionId: "nonexistent-id" });
-		expect(result).toEqual({});
-		// Repeat is also a no-op.
-		expect(await harness.agent.deleteSession({ sessionId: "nonexistent-id" })).toEqual({});
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("returns {} for delete of unknown/already-deleted id within scope", async () => {
-		const harness = await createHarness();
-		// Lock scope via scoped list.
 		await harness.agent.listSessions({ cwd: harness.cwdA });
-		expect(await harness.agent.deleteSession({ sessionId: "no-such-id" })).toEqual({});
-		// Repeat no-op.
-		expect(await harness.agent.deleteSession({ sessionId: "no-such-id" })).toEqual({});
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("rejects cross-cwd lifecycle calls after scope is locked", async () => {
-		const harness = await createHarness();
-		// Lock scope to cwdA.
-		await harness.agent.listSessions({ cwd: harness.cwdA });
-		// Cross-cwd list must error before authorization/mutation.
 		await expect(harness.agent.listSessions({ cwd: harness.cwdB })).rejects.toThrow(/scoped to/);
-		// Cross-cwd delete also cannot authorize.
-		expect(await harness.agent.deleteSession({ sessionId: "anything" })).toEqual({});
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
 
-	it("keeps cwd-less listing display-only and non-authorizing for delete", async () => {
+	it("keeps cwd-less listing display-only until a supported lifecycle request establishes scope", async () => {
 		const harness = await createHarness();
-		// Create a real session on disk in cwdA.
 		const { id } = await persistInactiveSession(harness.cwdA);
-		// Cwd-less list works (display-only) but does NOT establish scope.
 		const globalList = await harness.agent.listSessions({});
-		expect(globalList.sessions.some(s => s.sessionId === id)).toBe(true);
-		// Delete without scope → lookup-free {} (the real session is untouched).
-		expect(await harness.agent.deleteSession({ sessionId: id })).toEqual({});
-		// Now lock scope and verify the session is still present.
-		const scopedList = await harness.agent.listSessions({ cwd: harness.cwdA });
-		expect(scopedList.sessions.some(s => s.sessionId === id)).toBe(true);
+		expect(globalList.sessions.some(session => session.sessionId === id)).toBe(true);
+
+		const createdInOtherScope = await harness.agent.newSession({ cwd: harness.cwdB, mcpServers: [] });
+		expect(typeof createdInOtherScope.sessionId).toBe("string");
+		await harness.agent.closeSession({ sessionId: createdInOtherScope.sessionId });
+		await expect(harness.agent.listSessions({ cwd: harness.cwdA })).rejects.toThrow(/scoped to/);
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
 
-	it("deletes an exact-one inactive scoped session via verified deletion", async () => {
+	it("closes an active session without deleting its transcript and allows it to be loaded again", async () => {
 		const harness = await createHarness();
-		const { id, path } = await persistInactiveSession(harness.cwdA, "delete-me");
-		await harness.agent.listSessions({ cwd: harness.cwdA });
-		// File exists before delete.
-		expect(fs.existsSync(path)).toBe(true);
-		const result = await harness.agent.deleteSession({ sessionId: id });
-		expect(result).toEqual({});
-		// Transcript gone.
-		expect(fs.existsSync(path)).toBe(false);
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const sessionPath = harness.findSession(created.sessionId)!.sessionManager.getSessionFile()!;
+
+		await harness.agent.closeSession({ sessionId: created.sessionId });
+		expect(fs.existsSync(sessionPath)).toBe(true);
+		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
+			"Unsupported ACP session",
+		);
+
+		const listed = await harness.agent.listSessions({ cwd: harness.cwdA });
+		expect(listed.sessions.some(session => session.sessionId === created.sessionId)).toBe(true);
+		const loaded = await harness.agent.loadSession({
+			sessionId: created.sessionId,
+			cwd: harness.cwdA,
+			mcpServers: [],
+		});
+		expect(loaded.configOptions).toBeDefined();
+		await harness.agent.closeSession({ sessionId: created.sessionId });
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
 
-	it("conflicts on duplicate session id in scoped inventory (fail-closed)", async () => {
-		const harness = await createHarness();
-		const { id, path: originalPath } = await persistInactiveSession(harness.cwdA, "original");
-		// Create a duplicate file with the same header id in the same directory.
-		const sessionDir = path.dirname(originalPath);
-		const dupPath = path.join(sessionDir, `${id}-dup.jsonl`);
-		const header = JSON.stringify({ type: "session", id, cwd: harness.cwdA, version: 2 });
-		fs.writeFileSync(dupPath, `${header}\n`);
-		// Scoped list succeeds (snapshot sees the conflict).
-		const listResult = await harness.agent.listSessions({ cwd: harness.cwdA });
-		expect(listResult.sessions.some(s => s.sessionId === id)).toBe(true);
-		// Delete must fail-closed — neither transcript is touched.
-		await expect(harness.agent.deleteSession({ sessionId: id })).rejects.toThrow(/Duplicate/);
-		expect(fs.existsSync(originalPath)).toBe(true);
-		expect(fs.existsSync(dupPath)).toBe(true);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("fail-closes scoped list and delete when the inventory is corrupt", async () => {
+	it("rejects a scoped list when the inventory is corrupt", async () => {
 		const harness = await createHarness();
 		const { path: goodPath } = await persistInactiveSession(harness.cwdA, "good");
-		// Write a corrupt file alongside the valid one.
 		const sessionDir = path.dirname(goodPath);
-		const corruptPath = path.join(sessionDir, "corrupt.jsonl");
-		fs.writeFileSync(corruptPath, "{ this is not valid json\n");
-		// Strict scoped list must error — it never grants partial authority.
+		fs.writeFileSync(path.join(sessionDir, "corrupt.jsonl"), "{ this is not valid json\n");
 		await expect(harness.agent.listSessions({ cwd: harness.cwdA })).rejects.toThrow(/incomplete/);
-		// The valid session file is untouched.
 		expect(fs.existsSync(goodPath)).toBe(true);
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
 
-	it("detects duplicate ids beyond page 1 before the first page response", async () => {
+	it("rejects a stale scoped cursor after a supported load invalidates the inventory", async () => {
 		const harness = await createHarness();
-		// Create 51 unique sessions, then a 52nd that duplicates the first id.
-		const first = await persistInactiveSession(harness.cwdA, "first");
-		for (let i = 0; i < 50; i++) {
-			await persistInactiveSession(harness.cwdA, `filler-${i}`);
-		}
-		// Create a duplicate of the first id.
-		const sessionDir = path.dirname(first.path);
-		const dupPath = path.join(sessionDir, `${first.id}-dup2.jsonl`);
-		const header = JSON.stringify({ type: "session", id: first.id, cwd: harness.cwdA, version: 2 });
-		fs.writeFileSync(dupPath, `${header}\n`);
-		// Even page 1 (first 50) must carry the conflict knowledge for the id
-		// that appears beyond page 1 — delete must fail-closed.
-		const page1 = await harness.agent.listSessions({ cwd: harness.cwdA });
-		// Page 1 has at most SESSION_PAGE_SIZE sessions.
-		expect(page1.sessions.length).toBeLessThanOrEqual(50);
-		await expect(harness.agent.deleteSession({ sessionId: first.id })).rejects.toThrow(/Duplicate/);
-		expect(fs.existsSync(first.path)).toBe(true);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("deletes an active session: drains prompt, closes writer, removes transcript", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		const result = await harness.agent.deleteSession({ sessionId: created.sessionId });
-		expect(result).toEqual({});
-		// Transcript removed.
-		expect(fs.existsSync(sessionPath)).toBe(false);
-		// Session removed from active map — subsequent operations fail.
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			"Unsupported ACP session",
-		);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("isolates authority between connections (reconnect starts unscoped)", async () => {
-		// Connection A deletes a session.
-		const harnessA = await createHarness();
-		const { id } = await persistInactiveSession(harnessA.cwdA, "conn-a");
-		await harnessA.agent.listSessions({ cwd: harnessA.cwdA });
-		await harnessA.agent.deleteSession({ sessionId: id });
-		harnessA.abortController.abort();
-		await Bun.sleep(0);
-		// Connection B (fresh agent) starts unscoped.
-		const harnessB = await createHarness();
-		// B's delete without scope is lookup-free {}.
-		expect(await harnessB.agent.deleteSession({ sessionId: id })).toEqual({});
-		harnessB.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("rejects a stale scoped cursor after a lifecycle invalidation between pages", async () => {
-		const harness = await createHarness();
-		// 51 sessions span two pages (page size 50).
 		for (let i = 0; i < 51; i++) {
 			await persistInactiveSession(harness.cwdA, `filler-${i}`);
 		}
 		const page1 = await harness.agent.listSessions({ cwd: harness.cwdA });
 		expect(page1.sessions.length).toBe(50);
-		expect(page1.nextCursor).toBeDefined();
-		// The scoped cursor must carry the generation, not just the offset.
 		expect(page1.nextCursor).toMatch(/:/);
 		const staleCursor = page1.nextCursor!;
-		// Lifecycle invalidation between page 1 and page 2: delete one scoped
-		// session, which bumps the authority generation and discards the snapshot.
-		await harness.agent.deleteSession({ sessionId: page1.sessions[0]!.sessionId });
-		// Page 2 with the old cursor must be rejected — NOT rebuilt at the new gen.
+		const sessionId = page1.sessions[0]!.sessionId;
+
+		await harness.agent.loadSession({ sessionId, cwd: harness.cwdA, mcpServers: [] });
 		await expect(harness.agent.listSessions({ cwd: harness.cwdA, cursor: staleCursor })).rejects.toThrow(/stale/);
+		await harness.agent.closeSession({ sessionId });
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
 
-	it("accepts a still-valid scoped cursor across pages (no false rejection)", async () => {
+	it("accepts a still-valid scoped cursor across pages", async () => {
 		const harness = await createHarness();
 		for (let i = 0; i < 51; i++) {
 			await persistInactiveSession(harness.cwdA, `filler-${i}`);
 		}
 		const page1 = await harness.agent.listSessions({ cwd: harness.cwdA });
 		expect(page1.sessions.length).toBe(50);
-		// No lifecycle change → the minted cursor stays valid for page 2.
 		const page2 = await harness.agent.listSessions({ cwd: harness.cwdA, cursor: page1.nextCursor });
 		expect(page2.sessions.length).toBe(1);
 		expect(page2.nextCursor).toBeUndefined();
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-	// =========================================================================
-	// session/delete — cleanup_pending, fresh destructive authority, scope staging
-	// =========================================================================
-
-	it("active delete surfaces cleanup_pending (artifacts) without removing the record or reporting success", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		// Injectable fake: verified delete cannot complete artifact removal.
-		const realDelete = session.sessionManager.deleteSessionVerified.bind(session.sessionManager);
-		let observedTarget: { expectedArtifactsIdentity?: unknown } | undefined;
-		session.sessionManager.deleteSessionVerified = async (target: unknown) => {
-			observedTarget = target as { expectedArtifactsIdentity?: unknown };
-			return {
-				kind: "cleanup_pending",
-				phase: "artifacts",
-				error: new Error("simulated artifacts rm failure"),
-				artifactsIdentity: { dev: 1n, ino: 2n },
-				transcriptIdentity: { dev: 3n, ino: 4n },
-			};
-		};
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/cleanup pending/);
-		// Transcript untouched and record retained (not removed, not reported {}).
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		// The record is locked in cleanup_pending — operations reject until retry.
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			/terminal state/,
-		);
-		// No retry evidence was supplied on the first attempt.
-		expect(observedTarget?.expectedArtifactsIdentity).toBeUndefined();
-		// Restore so afterEach/dispose can clean up.
-		session.sessionManager.deleteSessionVerified = realDelete;
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("active delete retries after cleanup_pending using preserved artifact identity evidence", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		const realDelete = session.sessionManager.deleteSessionVerified.bind(session.sessionManager);
-		let attempt = 0;
-		let retryTarget: { expectedArtifactsIdentity?: unknown } | undefined;
-		session.sessionManager.deleteSessionVerified = async (target: unknown) => {
-			attempt += 1;
-			if (attempt === 1) {
-				return {
-					kind: "cleanup_pending",
-					phase: "artifacts",
-					error: new Error("simulated artifacts rm failure"),
-					artifactsIdentity: { dev: 9n, ino: 9n },
-					transcriptIdentity: (target as { transcriptIdentity: { dev: bigint; ino: bigint } }).transcriptIdentity,
-				};
-			}
-			retryTarget = target as { expectedArtifactsIdentity?: unknown };
-			// Simulate a successful retry: remove the transcript and report deleted.
-			fs.unlinkSync(sessionPath);
-			return { kind: "deleted" };
-		};
-		// First attempt: partial cleanup → visible error, transcript retained.
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/cleanup pending/);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		// Retry: succeeds, and the preserved artifacts identity was bound to the retry target.
-		const result = await harness.agent.deleteSession({ sessionId: created.sessionId });
-		expect(result).toEqual({});
-		expect(fs.existsSync(sessionPath)).toBe(false);
-		expect(retryTarget?.expectedArtifactsIdentity).toEqual({ dev: 9n, ino: 9n });
-		// Record removed: later operations fail.
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			"Unsupported ACP session",
-		);
-		session.sessionManager.deleteSessionVerified = realDelete;
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("active delete blocks mutation when writer close is unknown (no storage change)", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		// Injectable fake: strict close cannot prove closure.
-		session.closeWriterStrict = async () => ({ kind: "close_unknown", error: new Error("unknown close") });
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/unknown/);
-		// Storage untouched; record locked in terminal_failure — operations reject.
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			/terminal state/,
-		);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("active delete blocks mutation on retryable writer close failure (no storage change)", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		session.closeWriterStrict = async () => ({
-			kind: "close_failed_retryable",
-			error: new Error("retryable close"),
-		});
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(
-			/failed before dispatch/,
-		);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("concurrent active deletes join one verified-delete dispatch", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		const realDelete = session.sessionManager.deleteSessionVerified.bind(session.sessionManager);
-		const gate = Promise.withResolvers<void>();
-		let dispatches = 0;
-		session.sessionManager.deleteSessionVerified = async target => {
-			dispatches += 1;
-			await gate.promise;
-			return realDelete(target);
-		};
-		const first = harness.agent.deleteSession({ sessionId: created.sessionId });
-		await Bun.sleep(0);
-		const second = harness.agent.deleteSession({ sessionId: created.sessionId });
-		await Bun.sleep(0);
-		expect(dispatches).toBe(1);
-		gate.resolve();
-		const [a, b] = await Promise.all([first, second]);
-		expect(a).toEqual({});
-		expect(b).toEqual({});
-		expect(dispatches).toBe(1);
-		expect(fs.existsSync(sessionPath)).toBe(false);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("blocks active deletion while async delivery remains queued", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		session.asyncJobDrain = async () => false;
-		session.asyncDeliveryState = { queued: 1, delivering: false };
-		let dispatches = 0;
-		const realDelete = session.sessionManager.deleteSessionVerified.bind(session.sessionManager);
-		session.sessionManager.deleteSessionVerified = async target => {
-			dispatches += 1;
-			return realDelete(target);
-		};
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/not quiesced/);
-		expect(dispatches).toBe(0);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("rejects an active transcript replacement after cleanup_pending", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		let attempts = 0;
-		session.sessionManager.deleteSessionVerified = async target => {
-			attempts += 1;
-			return {
-				kind: "cleanup_pending",
-				phase: "transcript",
-				error: new Error("simulated transcript failure"),
-				transcriptIdentity: target.transcriptIdentity,
-			};
-		};
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/cleanup pending/);
-		const contents = fs.readFileSync(sessionPath, "utf8");
-		fs.unlinkSync(sessionPath);
-		fs.writeFileSync(sessionPath, contents);
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/identity changed/);
-		expect(attempts).toBe(1);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("unissued inactive delete returns {} without scan (snapshot-gated)", async () => {
-		const harness = await createHarness();
-		// Establish scope with an empty scoped list (caches an empty authority snapshot).
-		const empty = await harness.agent.listSessions({ cwd: harness.cwdA });
-		expect(empty.sessions).toHaveLength(0);
-		// External mutation after the list: a new session lands on disk, but its ID
-		// was never issued by the cached authority snapshot → lookup-free {}.
-		const { id, path } = await persistInactiveSession(harness.cwdA, "created-after-list");
-		expect(await harness.agent.deleteSession({ sessionId: id })).toEqual({});
-		// The file is untouched — no fresh inventory scan was performed.
-		expect(fs.existsSync(path)).toBe(true);
-		// After a fresh list, the ID is issued and a delete can proceed.
-		await harness.agent.listSessions({ cwd: harness.cwdA });
-		expect(await harness.agent.deleteSession({ sessionId: id })).toEqual({});
-		expect(fs.existsSync(path)).toBe(false);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("inactive delete retries cleanup_pending with preserved artifact identity", async () => {
-		const harness = await createHarness();
-		const { id, path: sessionPath } = await persistInactiveSession(harness.cwdA, "partial-inactive");
-		await harness.agent.listSessions({ cwd: harness.cwdA });
-		const proto = FileSessionStorage.prototype;
-		const realDelete = proto.deleteSessionVerified;
-		let attempts = 0;
-		let retryArtifacts: unknown;
-		proto.deleteSessionVerified = async target => {
-			attempts += 1;
-			if (attempts === 1) {
-				return {
-					kind: "cleanup_pending",
-					phase: "artifacts",
-					error: new Error("simulated artifact failure"),
-					artifactsIdentity: { dev: 7n, ino: 8n },
-					transcriptIdentity: target.transcriptIdentity,
-				};
-			}
-			retryArtifacts = target.expectedArtifactsIdentity;
-			fs.unlinkSync(sessionPath);
-			return { kind: "deleted" };
-		};
-		try {
-			await expect(harness.agent.deleteSession({ sessionId: id })).rejects.toThrow(/cleanup pending/);
-			expect(fs.existsSync(sessionPath)).toBe(true);
-			expect(await harness.agent.deleteSession({ sessionId: id })).toEqual({});
-			expect(retryArtifacts).toEqual({ dev: 7n, ino: 8n });
-			expect(attempts).toBe(2);
-			expect(fs.existsSync(sessionPath)).toBe(false);
-		} finally {
-			proto.deleteSessionVerified = realDelete;
-		}
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("rejects an inactive transcript replacement after cleanup_pending", async () => {
-		const harness = await createHarness();
-		const { id, path: sessionPath } = await persistInactiveSession(harness.cwdA, "replaced-inactive");
-		await harness.agent.listSessions({ cwd: harness.cwdA });
-		const proto = FileSessionStorage.prototype;
-		const realDelete = proto.deleteSessionVerified;
-		let attempts = 0;
-		proto.deleteSessionVerified = async target => {
-			attempts += 1;
-			return {
-				kind: "cleanup_pending",
-				phase: "transcript",
-				error: new Error("simulated transcript failure"),
-				transcriptIdentity: target.transcriptIdentity,
-			};
-		};
-		try {
-			await expect(harness.agent.deleteSession({ sessionId: id })).rejects.toThrow(/cleanup pending/);
-			const contents = fs.readFileSync(sessionPath, "utf8");
-			fs.unlinkSync(sessionPath);
-			fs.writeFileSync(sessionPath, contents);
-			await expect(harness.agent.deleteSession({ sessionId: id })).rejects.toThrow(
-				/(identity changed|changed since authority)/,
-			);
-			expect(attempts).toBe(1);
-			expect(fs.existsSync(sessionPath)).toBe(true);
-		} finally {
-			proto.deleteSessionVerified = realDelete;
-		}
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	// =========================================================================
-	// Terminal state machine — failure rejection, no-reopen, duplicate rejection,
-	// abort joining delete, late lifecycle rollback on shutdown
-	// =========================================================================
-
-	it("terminal_failure (close_unknown) rejects operations and never reopens on retry delete", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		session.closeWriterStrict = async () => ({ kind: "close_unknown", error: new Error("unknown close") });
-		// First delete fails with terminal_failure.
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/unknown/);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		// Subsequent delete is rejected — terminal_failure never reopens.
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/unknown/);
-		// Normal operations reject on the terminal state.
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			/terminal state/,
-		);
-		await expect(harness.agent.closeSession({ sessionId: created.sessionId })).rejects.toThrow(/terminal state/);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("quiescence terminal_failure rejects retry and operations", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		session.asyncJobDrain = async () => false;
-		session.asyncDeliveryState = { queued: 1, delivering: false };
-		// First delete fails: quiescence barrier → terminal_failure.
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/not quiesced/);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		// Retry is rejected — terminal_failure never reopens.
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(/not quiesced/);
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			/terminal state/,
-		);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("pre_dispatch_retryable allows a retry delete after close_failed_retryable", async () => {
-		const harness = await createHarness();
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		// First attempt: close_failed_retryable → pre_dispatch_retryable.
-		session.closeWriterStrict = async () => ({
-			kind: "close_failed_retryable",
-			error: new Error("retryable close"),
-		});
-		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).rejects.toThrow(
-			/failed before dispatch/,
-		);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		// Operations reject while in pre_dispatch_retryable.
-		await expect(harness.agent.setSessionMode({ sessionId: created.sessionId, modeId: "default" })).rejects.toThrow(
-			/terminal state/,
-		);
-		// Retry: close succeeds this time → verified delete completes.
-		session.closeWriterStrict = async () => ({ kind: "closed" });
-		expect(await harness.agent.deleteSession({ sessionId: created.sessionId })).toEqual({});
-		expect(fs.existsSync(sessionPath)).toBe(false);
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
@@ -2698,38 +2466,6 @@ describe("ACP agent", () => {
 		// Neither file was opened.
 		expect(fs.existsSync(originalPath)).toBe(true);
 		expect(fs.existsSync(dupPath)).toBe(true);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("connection abort joins terminal delete before disposing records", async () => {
-		const harness = await createHarness();
-		await harness.agent.initialize({ protocolVersion: 1 });
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		const sessionPath = session.sessionManager.getSessionFile()!;
-		const idleGate = Promise.withResolvers<void>();
-		session.waitForIdleBlocker = () => idleGate.promise;
-		const deletePromise = harness.agent.deleteSession({ sessionId: created.sessionId });
-		await Bun.sleep(0);
-		harness.abortController.abort();
-		await Bun.sleep(0);
-		expect(fs.existsSync(sessionPath)).toBe(true);
-		idleGate.resolve();
-		expect(await deletePromise).toEqual({});
-		await harness.agent.shutdownPromise;
-		expect(fs.existsSync(sessionPath)).toBe(false);
-	});
-
-	it("rejects an issued inactive candidate replaced before delete", async () => {
-		const harness = await createHarness();
-		const { id, path: sessionPath } = await persistInactiveSession(harness.cwdA, "issued-replacement");
-		await harness.agent.listSessions({ cwd: harness.cwdA });
-		const contents = fs.readFileSync(sessionPath, "utf8");
-		fs.unlinkSync(sessionPath);
-		fs.writeFileSync(sessionPath, contents);
-		await expect(harness.agent.deleteSession({ sessionId: id })).rejects.toThrow(/changed since authority/);
-		expect(fs.existsSync(sessionPath)).toBe(true);
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});
@@ -2966,6 +2702,17 @@ describe("ACP agent", () => {
 			expect(await ctx.confirm("X", "Y")).toBe(false);
 			expect(await ctx.input("X")).toBeUndefined();
 			expect(calls).toHaveLength(0);
+		});
+
+		it("rejects custom UI components in ACP mode", async () => {
+			const { connection } = createElicitConnection(async () => ({ action: "decline" }));
+			const ctx = createAcpExtensionUiContext(connection, () => "session-custom", FORM_CAPABILITIES);
+
+			await expect(
+				ctx.custom(() => {
+					throw new Error("custom factory must not be invoked");
+				}),
+			).rejects.toThrow("Custom UI components are unavailable in ACP mode");
 		});
 
 		it("treats transport-level elicitation failures as undecided input", async () => {

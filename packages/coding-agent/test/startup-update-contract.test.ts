@@ -20,16 +20,14 @@ import { EventBus } from "../src/utils/event-bus";
 
 const alternateRoutes: Array<{
 	name: StartupUpdateRoute;
-	parsed: { print?: boolean; mode?: "text" | "json" | "rpc" | "rpc-ui" | "acp" | "bridge" };
+	parsed: Pick<Args, "mode" | "print">;
 	autoPrint: boolean;
 }> = [
 	{ name: "print", parsed: { print: true }, autoPrint: false },
 	{ name: "text", parsed: { mode: "text" }, autoPrint: false },
-	{ name: "json", parsed: { mode: "json" }, autoPrint: false },
-	{ name: "rpc", parsed: { mode: "rpc" }, autoPrint: false },
-	{ name: "rpc-ui", parsed: { mode: "rpc-ui" }, autoPrint: false },
+	{ name: "text", parsed: { mode: "json" }, autoPrint: false },
 	{ name: "acp", parsed: { mode: "acp" }, autoPrint: false },
-	{ name: "bridge", parsed: { mode: "bridge" }, autoPrint: false },
+	{ name: "text", parsed: { mode: "app-server" }, autoPrint: false },
 	{ name: "text", parsed: {}, autoPrint: true },
 ];
 
@@ -220,20 +218,17 @@ describe("startup update contract", () => {
 		expect(notifications).toBe(0);
 	});
 
-	it("routes every noninteractive launch through runRootCommand without starting the checker", async () => {
+	it("routes injectable noninteractive launch modes without starting the checker", async () => {
 		const cases: Array<{
 			name: string;
 			args: Partial<Args>;
 			pipedInput?: string;
-			expectedRunner: "acp" | "bridge" | "print" | "rpc";
+			expectedRunner: "acp" | "print";
 		}> = [
 			{ name: "print", args: { print: true }, expectedRunner: "print" },
 			{ name: "text", args: { mode: "text" }, expectedRunner: "print" },
 			{ name: "json", args: { mode: "json" }, expectedRunner: "print" },
-			{ name: "rpc", args: { mode: "rpc" }, expectedRunner: "rpc" },
-			{ name: "rpc-ui", args: { mode: "rpc-ui" }, expectedRunner: "rpc" },
 			{ name: "acp", args: { mode: "acp" }, expectedRunner: "acp" },
-			{ name: "bridge", args: { mode: "bridge" }, expectedRunner: "bridge" },
 			{ name: "auto-print", args: {}, pipedInput: "piped prompt", expectedRunner: "print" },
 		];
 
@@ -260,12 +255,6 @@ describe("startup update contract", () => {
 					runStartupCredentialAutoImportIfNeeded: async () => undefined,
 					runAcpMode: async () => {
 						runners.push("acp");
-					},
-					runRpcMode: async () => {
-						runners.push("rpc");
-					},
-					runBridgeMode: async () => {
-						runners.push("bridge");
 					},
 					runPrintMode: async () => {
 						runners.push("print");

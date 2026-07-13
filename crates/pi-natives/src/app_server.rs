@@ -53,7 +53,7 @@ pub fn app_server_method_lane(method: String) -> String {
 
 /// Shared bridge state: the outbound call TSFN and the pending-call table.
 struct Bridge {
-	on_call: ThreadsafeFunction<String>,
+	on_call:      ThreadsafeFunction<String>,
 	pending:
 		DashMap<String, oneshot::Sender<std::result::Result<serde_json::Value, AppServerError>>>,
 	next_call_id: std::sync::atomic::AtomicU64,
@@ -112,7 +112,7 @@ impl Bridge {
 /// A backend that routes every method to the TS host through the bridge.
 struct TsBackend {
 	thread_id: ThreadId,
-	bridge: Arc<Bridge>,
+	bridge:    Arc<Bridge>,
 }
 
 impl TsBackend {
@@ -192,6 +192,7 @@ impl AgentBackend for TsBackend {
 			})?;
 		Ok(TurnId(turn_id.to_string()))
 	}
+
 	async fn get_state(
 		&self,
 		c: &BackendCallContext,
@@ -225,12 +226,14 @@ impl AgentBackend for TsBackend {
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcModelCatalogResult> {
 		self.typed_call(c, "modelCatalog").await
 	}
+
 	async fn read_thinking(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcThinkingReadResult> {
 		self.typed_call(c, "readThinking").await
 	}
+
 	async fn set_thinking(
 		&self,
 		c: &BackendCallContext,
@@ -243,12 +246,14 @@ impl AgentBackend for TsBackend {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn read_fast(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcFastReadResult> {
 		self.typed_call(c, "readFast").await
 	}
+
 	async fn set_fast(
 		&self,
 		c: &BackendCallContext,
@@ -261,36 +266,42 @@ impl AgentBackend for TsBackend {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn read_todos(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcTodosReadResult> {
 		self.typed_call(c, "readTodos").await
 	}
+
 	async fn read_usage(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcUsageReadResult> {
 		self.typed_call(c, "readUsage").await
 	}
+
 	async fn list_jobs(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcJobsListResult> {
 		self.typed_call(c, "listJobs").await
 	}
+
 	async fn list_agents(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAgentsListResult> {
 		self.typed_call(c, "listAgents").await
 	}
+
 	async fn list_monitors(
 		&self,
 		c: &BackendCallContext,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcMonitorsListResult> {
 		self.typed_call(c, "listMonitors").await
 	}
+
 	async fn compact_summary(
 		&self,
 		c: &BackendCallContext,
@@ -337,6 +348,7 @@ impl AgentBackend for TsBackend {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn get_messages(
 		&self,
 		c: &BackendCallContext,
@@ -367,6 +379,7 @@ impl AgentBackend for TsBackend {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn compact(
 		&self,
 		c: &BackendCallContext,
@@ -520,6 +533,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn settings_schema(
 		&self,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsSchemaResult> {
@@ -531,6 +545,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn settings_read(
 		&self,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcSettingsReadResult> {
@@ -542,6 +557,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn settings_update(
 		&self,
 		params: gjc_app_server::protocol::GjcSettingsUpdateParams,
@@ -559,6 +575,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn appearance_themes_list(
 		&self,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceThemesListResult> {
@@ -570,6 +587,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn appearance_read(
 		&self,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAppearanceReadResult> {
@@ -581,6 +599,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn appearance_set(
 		&self,
 		params: gjc_app_server::protocol::GjcAppearanceSetParams,
@@ -633,6 +652,7 @@ impl BackendFactory for TsFactory {
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthLoginCancelResult> {
 		self.typed_call("factory.authLoginCancel", params).await
 	}
+
 	async fn provider_list(
 		&self,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcProviderListResult> {
@@ -644,6 +664,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn auth_status(
 		&self,
 	) -> gjc_app_server::Result<gjc_app_server::protocol::GjcAuthStatusResult> {
@@ -655,6 +676,7 @@ impl BackendFactory for TsFactory {
 			AppServerError::new(gjc_app_server::error::codes::INTERNAL_ERROR, err.to_string())
 		})
 	}
+
 	async fn auth_logout(
 		&self,
 		params: gjc_app_server::protocol::GjcAuthLogoutParams,
@@ -809,8 +831,8 @@ impl EventSink for TsSink {
 /// `AgentSession` through the bridge callbacks.
 #[napi]
 pub struct AppServer {
-	core: Arc<CoreAppServer>,
-	bridge: Arc<Bridge>,
+	core:      Arc<CoreAppServer>,
+	bridge:    Arc<Bridge>,
 	ws_handle: Mutex<Option<WsServerHandle>>,
 }
 
@@ -921,17 +943,14 @@ impl AppServer {
 				.await
 				.map_err(|err| napi::Error::from_reason(err.to_string()))?;
 		}
-		let handle = start_ws(
-			Arc::clone(&self.core),
-			WsServerConfig {
-				host,
-				port,
-				token,
-				session_id,
-				state_root,
-				allowed_origins: allowed_origins.unwrap_or_default(),
-			},
-		)
+		let handle = start_ws(Arc::clone(&self.core), WsServerConfig {
+			host,
+			port,
+			token,
+			session_id,
+			state_root,
+			allowed_origins: allowed_origins.unwrap_or_default(),
+		})
 		.await
 		.map_err(|err| napi::Error::from_reason(err.to_string()))?;
 		let url = handle.url();

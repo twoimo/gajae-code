@@ -16,8 +16,10 @@ export type AgentWireCommandType =
 	| "set_todos"
 	| "set_host_tools"
 	| "set_host_uri_schemes"
+	| "set_capabilities"
 	| "get_pending_workflow_gates"
 	| "set_model"
+	| "set_default_model_selection"
 	| "cycle_model"
 	| "get_available_models"
 	| "set_thinking_level"
@@ -116,7 +118,7 @@ const RPC_COMMAND_SCOPE_REGISTRY: Record<RpcCommandType, BridgeCommandScope> = {
 
 export const RPC_COMMAND_TYPES: readonly RpcCommandType[] = Object.keys(RPC_COMMAND_SCOPE_REGISTRY) as RpcCommandType[];
 export function isRpcCommandType(value: unknown): value is RpcCommandType {
-	return typeof value === "string" && value in RPC_COMMAND_SCOPE_REGISTRY;
+	return typeof value === "string" && Object.hasOwn(RPC_COMMAND_SCOPE_REGISTRY, value);
 }
 
 export const MANDATORY_FLOOR_COMMAND_SCOPES: readonly BridgeCommandScope[] = ["prompt"];

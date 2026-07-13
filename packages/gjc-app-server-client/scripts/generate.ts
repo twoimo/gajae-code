@@ -23,7 +23,6 @@ type SchemaObject = {
 	items?: Schema;
 };
 
-
 type MethodCatalogEntry = {
 	method: string;
 	paramsDef: string | null;
@@ -196,7 +195,6 @@ export async function checkMethodCatalogDrift(): Promise<string[]> {
 	}
 	return errors;
 }
-
 
 async function main(): Promise<void> {
 	const check = process.argv.includes("--check");

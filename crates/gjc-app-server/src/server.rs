@@ -34,27 +34,27 @@ pub trait EventSink: Send + Sync {
 
 /// Per-thread registry entry: identity + backend + admission + event stream.
 struct ThreadEntry {
-	identity: Mutex<ThreadIdentity>,
-	backend: Arc<dyn AgentBackend>,
-	admission: Mutex<Admission>,
-	stream: Mutex<ThreadStream>,
-	active_turn: Mutex<Option<TurnId>>,
+	identity:       Mutex<ThreadIdentity>,
+	backend:        Arc<dyn AgentBackend>,
+	admission:      Mutex<Admission>,
+	stream:         Mutex<ThreadStream>,
+	active_turn:    Mutex<Option<TurnId>>,
 	/// Serializes non-turn mutating backend calls for this thread (serial
 	/// mutating lane); read/cancel lanes never take it.
-	mutating_lane: Arc<tokio::sync::Mutex<()>>,
-	host_tools: Mutex<HostToolRegistry>,
+	mutating_lane:  Arc<tokio::sync::Mutex<()>>,
+	host_tools:     Mutex<HostToolRegistry>,
 	workflow_gates: Mutex<crate::workflow_gate::WorkflowGateBroker>,
-	unattended: Mutex<crate::unattended::UnattendedController>,
-	host_uris: Mutex<HostUriRegistry>,
+	unattended:     Mutex<crate::unattended::UnattendedController>,
+	host_uris:      Mutex<HostUriRegistry>,
 }
 
 /// Per-connection handshake state.
 #[derive(Default)]
 struct ConnectionState {
 	/// Set once the `initialize` request has been answered.
-	initialize_seen: bool,
+	initialize_seen:          bool,
 	/// Set once the `initialized` notification acks the handshake.
-	initialized: bool,
+	initialized:              bool,
 	/// Set once this connection subscribes to `gjc/notifications/event` frames.
 	notifications_subscriber: bool,
 }
@@ -62,7 +62,7 @@ struct ConnectionState {
 /// Tunables for admission control.
 #[derive(Debug, Clone, Copy)]
 pub struct AppServerConfig {
-	pub max_inflight_turns_per_thread: usize,
+	pub max_inflight_turns_per_thread:   usize,
 	pub max_queued_mutations_per_thread: usize,
 }
 
@@ -203,17 +203,16 @@ impl AppServer {
 		};
 		let call_id = format!("call_{}", crate::ids::TurnId::generate().0);
 		let (tx, rx) = tokio::sync::oneshot::channel();
-		self.pending_host_tool_calls.insert(
-			call_id.clone(),
-			PendingHostToolCall {
+		self
+			.pending_host_tool_calls
+			.insert(call_id.clone(), PendingHostToolCall {
 				thread_id: thread_id.clone(),
 				generation,
 				turn_id: turn_id.clone(),
 				tool: tool.to_string(),
 				progress: Arc::new(Mutex::new(Vec::new())),
 				tx,
-			},
-		);
+			});
 		self.publish(Notification::new(
 			"gjc/hostTools/call",
 			serde_json::json!({
@@ -399,15 +398,14 @@ impl AppServer {
 	) -> Result<HostUriResultParams> {
 		let request_id = format!("host_uri_{}", crate::ids::TurnId::generate().0);
 		let (tx, rx) = tokio::sync::oneshot::channel();
-		self.pending_host_uri_requests.insert(
-			request_id.clone(),
-			PendingHostUriRequest {
+		self
+			.pending_host_uri_requests
+			.insert(request_id.clone(), PendingHostUriRequest {
 				thread_id: thread_id.clone(),
 				generation,
 				turn_id: turn_id.clone(),
 				tx,
-			},
-		);
+			});
 		self.publish(Notification::new(
 			"gjc/hostUris/request",
 			serde_json::json!({
@@ -1091,10 +1089,10 @@ impl AppServer {
 			let result = backend.retry(&ctx).await;
 			if let Err(err) = &result {
 				this.emit_backend_event(&BackendEvent {
-					thread_id: bg_thread.clone(),
+					thread_id:  bg_thread.clone(),
 					generation: ctx.generation,
 					event_type: "error".to_string(),
-					payload: serde_json::json!({ "message": err.to_string() }),
+					payload:    serde_json::json!({ "message": err.to_string() }),
 				});
 			}
 			this.complete_registered_turn(&bg_thread, &bg_turn, ctx.generation);
@@ -1102,6 +1100,7 @@ impl AppServer {
 		serde_json::to_value(crate::protocol::GjcRetryResult { turn_id })
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_turn_steer(
 		&self,
 		params: Option<serde_json::Value>,
@@ -1115,10 +1114,10 @@ impl AppServer {
 			Self::check_expected_turn(entry.value(), params.as_ref())?;
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Mutating,
+				lane:       Lane::Mutating,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -1259,11 +1258,12 @@ impl AppServer {
 		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		crate::field_policy::enforce(
-			method,
-			params.as_ref(),
-			&["threadId", "gate_id", "answer", "idempotency_key"],
-		)?;
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"threadId",
+			"gate_id",
+			"answer",
+			"idempotency_key",
+		])?;
 		let parsed: crate::workflow_gate::WorkflowGateRespondParams =
 			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
 				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
@@ -1273,8 +1273,8 @@ impl AppServer {
 			.get(&thread_id)
 			.ok_or_else(|| AppServerError::not_found("thread not found"))?;
 		let response = crate::workflow_gate::RpcWorkflowGateResponse {
-			gate_id: parsed.gate_id,
-			answer: parsed.answer,
+			gate_id:         parsed.gate_id,
+			answer:          parsed.answer,
 			idempotency_key: parsed.idempotency_key,
 		};
 		let resolution = entry.value().workflow_gates.lock().resolve(response)?;
@@ -1513,11 +1513,12 @@ impl AppServer {
 		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		crate::field_policy::enforce(
-			method,
-			params.as_ref(),
-			&["dark", "light", "symbolPreset", "colorBlindMode"],
-		)?;
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"dark",
+			"light",
+			"symbolPreset",
+			"colorBlindMode",
+		])?;
 		let parsed: crate::protocol::GjcAppearanceSetParams =
 			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
 				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
@@ -1553,17 +1554,22 @@ impl AppServer {
 		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		crate::field_policy::enforce(
-			method,
-			params.as_ref(),
-			&["preset", "compatibility", "providerId", "baseUrl", "apiKeyEnv", "models", "force"],
-		)?;
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"preset",
+			"compatibility",
+			"providerId",
+			"baseUrl",
+			"apiKeyEnv",
+			"models",
+			"force",
+		])?;
 		let parsed: crate::protocol::GjcProviderAddParams =
 			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
 				.map_err(|err| AppServerError::invalid_params(err.to_string()))?;
 		serde_json::to_value(self.factory.provider_add(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_auth_login_start(
 		&self,
 		method: &str,
@@ -1576,6 +1582,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.auth_login_start(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_auth_login_poll(
 		&self,
 		method: &str,
@@ -1588,6 +1595,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.auth_login_poll(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_auth_login_complete(
 		&self,
 		method: &str,
@@ -1600,6 +1608,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.auth_login_complete(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_auth_login_cancel(
 		&self,
 		method: &str,
@@ -1816,6 +1825,7 @@ impl AppServer {
 		serde_json::to_value(backend.session_label(&ctx, parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_tools_list(
 		&self,
 		method: &str,
@@ -1834,8 +1844,8 @@ impl AppServer {
 			.flatten()
 			.filter_map(|tool| {
 				Some(crate::protocol::ToolDescriptor {
-					name: tool.get("name")?.as_str()?.to_string(),
-					active: tool
+					name:        tool.get("name")?.as_str()?.to_string(),
+					active:      tool
 						.get("active")
 						.and_then(|active| active.as_bool())
 						.unwrap_or(false),
@@ -1876,13 +1886,13 @@ impl AppServer {
 			.flatten()
 			.filter_map(|command| {
 				Some(crate::protocol::CommandDescriptor {
-					name: command.get("name")?.as_str()?.to_string(),
-					source: command
+					name:           command.get("name")?.as_str()?.to_string(),
+					source:         command
 						.get("source")
 						.and_then(|source| source.as_str())
 						.unwrap_or("unknown")
 						.to_string(),
-					description: command
+					description:    command
 						.get("description")
 						.and_then(|description| description.as_str())
 						.map(str::to_string),
@@ -1919,8 +1929,8 @@ impl AppServer {
 			.flatten()
 			.filter_map(|skill| {
 				Some(crate::protocol::SkillDescriptor {
-					name: skill.get("name")?.as_str()?.to_string(),
-					source: skill
+					name:        skill.get("name")?.as_str()?.to_string(),
+					source:      skill
 						.get("source")
 						.and_then(|source| source.as_str())
 						.unwrap_or("unknown")
@@ -1929,7 +1939,7 @@ impl AppServer {
 						.get("description")
 						.and_then(|description| description.as_str())
 						.map(str::to_string),
-					enabled: skill.get("enabled").and_then(|enabled| enabled.as_bool()),
+					enabled:     skill.get("enabled").and_then(|enabled| enabled.as_bool()),
 				})
 			})
 			.collect::<Vec<_>>();
@@ -1994,8 +2004,8 @@ impl AppServer {
 			.flatten()
 			.filter_map(|extension| {
 				Some(crate::protocol::ExtensionDescriptor {
-					id: extension.get("id")?.as_str()?.to_string(),
-					name: extension
+					id:              extension.get("id")?.as_str()?.to_string(),
+					name:            extension
 						.get("name")
 						.and_then(|name| name.as_str())
 						.unwrap_or_else(|| {
@@ -2005,21 +2015,21 @@ impl AppServer {
 								.unwrap_or("unknown")
 						})
 						.to_string(),
-					kind: extension
+					kind:            extension
 						.get("kind")
 						.and_then(|kind| kind.as_str())
 						.unwrap_or("extension")
 						.to_string(),
-					source: extension
+					source:          extension
 						.get("source")
 						.and_then(|source| source.as_str())
 						.unwrap_or("unknown")
 						.to_string(),
-					status: extension
+					status:          extension
 						.get("status")
 						.and_then(|status| status.as_str())
 						.map(str::to_string),
-					state: extension
+					state:           extension
 						.get("state")
 						.and_then(|state| state.as_str())
 						.map(str::to_string),
@@ -2027,11 +2037,11 @@ impl AppServer {
 						.get("disabledReason")
 						.and_then(|disabled_reason| disabled_reason.as_str())
 						.map(str::to_string),
-					shadowed_by: extension
+					shadowed_by:     extension
 						.get("shadowedBy")
 						.and_then(|shadowed_by| shadowed_by.as_str())
 						.map(str::to_string),
-					provider: extension
+					provider:        extension
 						.get("provider")
 						.and_then(|provider| provider.as_str())
 						.map(str::to_string),
@@ -2065,11 +2075,11 @@ impl AppServer {
 		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		crate::field_policy::enforce(
-			method,
-			params.as_ref(),
-			&["threadId", "pluginId", "includeSettings"],
-		)?;
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"threadId",
+			"pluginId",
+			"includeSettings",
+		])?;
 		let thread_id = extract_thread_id(params.as_ref())?;
 		let plugin_id = params
 			.as_ref()
@@ -2111,8 +2121,8 @@ impl AppServer {
 			.flatten()
 			.filter_map(|plugin| {
 				let descriptor = crate::protocol::PluginDescriptor {
-					id: plugin.get("id")?.as_str()?.to_string(),
-					name: plugin
+					id:     plugin.get("id")?.as_str()?.to_string(),
+					name:   plugin
 						.get("name")
 						.and_then(|name| name.as_str())
 						.unwrap_or_else(|| {
@@ -2122,7 +2132,7 @@ impl AppServer {
 								.unwrap_or("unknown")
 						})
 						.to_string(),
-					kind: plugin
+					kind:   plugin
 						.get("kind")
 						.and_then(|kind| kind.as_str())
 						.unwrap_or("plugin")
@@ -2138,7 +2148,7 @@ impl AppServer {
 						.map(str::to_string),
 				};
 				Some(crate::protocol::PluginInspection {
-					plugin: descriptor,
+					plugin:   descriptor,
 					settings: include_settings
 						.then(|| plugin.get("settings").cloned())
 						.flatten(),
@@ -2160,6 +2170,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.extensions_set_enabled(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_skills_set_enabled(
 		&self,
 		method: &str,
@@ -2172,6 +2183,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.skills_set_enabled(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_plugins_set_enabled(
 		&self,
 		method: &str,
@@ -2184,6 +2196,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.plugins_set_enabled(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_plugins_set_feature(
 		&self,
 		method: &str,
@@ -2196,6 +2209,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.plugins_set_feature(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_plugins_set_setting(
 		&self,
 		method: &str,
@@ -2208,6 +2222,7 @@ impl AppServer {
 		serde_json::to_value(self.factory.plugins_set_setting(parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_messages_get(
 		&self,
 		method: &str,
@@ -2239,11 +2254,13 @@ impl AppServer {
 		method: &str,
 		params: Option<serde_json::Value>,
 	) -> Result<serde_json::Value> {
-		crate::field_policy::enforce(
-			method,
-			params.as_ref(),
-			&["threadId", "role", "provider", "modelId", "thinkingLevel"],
-		)?;
+		crate::field_policy::enforce(method, params.as_ref(), &[
+			"threadId",
+			"role",
+			"provider",
+			"modelId",
+			"thinkingLevel",
+		])?;
 		let thread_id = extract_thread_id(params.as_ref())?;
 		let parsed: crate::protocol::GjcModelAssignParams =
 			serde_json::from_value(params.unwrap_or(serde_json::Value::Null))
@@ -2252,6 +2269,7 @@ impl AppServer {
 		serde_json::to_value(backend.model_assign(&ctx, parsed).await?)
 			.map_err(|err| AppServerError::new(crate::error::codes::INTERNAL_ERROR, err.to_string()))
 	}
+
 	async fn handle_gjc_todos_set(
 		&self,
 		method: &str,
@@ -2408,24 +2426,21 @@ impl AppServer {
 			let identity = ThreadIdentity::new(info.thread_id.clone(), info.session_metadata.clone());
 			let generation = identity.generation;
 			let stream = ThreadStream::new(info.thread_id.clone());
-			self.threads.insert(
-				info.thread_id.clone(),
-				ThreadEntry {
-					identity: Mutex::new(identity),
-					backend,
-					admission: Mutex::new(Admission::new(
-						self.config.max_inflight_turns_per_thread,
-						self.config.max_queued_mutations_per_thread,
-					)),
-					stream: Mutex::new(stream),
-					active_turn: Mutex::new(None),
-					mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
-					host_tools: Mutex::new(HostToolRegistry::default()),
-					workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
-					unattended: Mutex::new(crate::unattended::UnattendedController::default()),
-					host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
-				},
-			);
+			self.threads.insert(info.thread_id.clone(), ThreadEntry {
+				identity: Mutex::new(identity),
+				backend,
+				admission: Mutex::new(Admission::new(
+					self.config.max_inflight_turns_per_thread,
+					self.config.max_queued_mutations_per_thread,
+				)),
+				stream: Mutex::new(stream),
+				active_turn: Mutex::new(None),
+				mutating_lane: Arc::new(tokio::sync::Mutex::new(())),
+				host_tools: Mutex::new(HostToolRegistry::default()),
+				workflow_gates: Mutex::new(crate::workflow_gate::WorkflowGateBroker::default()),
+				unattended: Mutex::new(crate::unattended::UnattendedController::default()),
+				host_uris: Mutex::new(crate::host_uris::HostUriRegistry::default()),
+			});
 			generation
 		};
 		let mut thread = serde_json::json!({
@@ -2484,10 +2499,10 @@ impl AppServer {
 			identity.status = ThreadStatus::Deleted;
 			identity.reattach(); // bump generation so late events are stale
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Cancel,
+				lane:       Lane::Cancel,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -2556,10 +2571,10 @@ impl AppServer {
 			}
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Mutating,
+				lane:       Lane::Mutating,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -2594,10 +2609,10 @@ impl AppServer {
 			}
 			if let Err(err) = &result {
 				this.emit_backend_event(&BackendEvent {
-					thread_id: bg_thread.clone(),
+					thread_id:  bg_thread.clone(),
 					generation: bg_ctx.generation,
 					event_type: "error".to_string(),
-					payload: serde_json::json!({ "message": err.to_string() }),
+					payload:    serde_json::json!({ "message": err.to_string() }),
 				});
 			}
 			this.complete_registered_turn(&bg_thread, &bg_turn, bg_ctx.generation);
@@ -2628,10 +2643,10 @@ impl AppServer {
 			}
 			let identity = entry.value().identity.lock();
 			let ctx = BackendCallContext {
-				thread_id: thread_id.clone(),
+				thread_id:  thread_id.clone(),
 				generation: identity.generation,
 				request_id: None,
-				lane: Lane::Cancel,
+				lane:       Lane::Cancel,
 			};
 			(Arc::clone(&entry.value().backend), ctx)
 		};
@@ -2731,6 +2746,7 @@ mod tests {
 			tokio::time::sleep(Duration::from_millis(40)).await;
 			Ok(TurnId::generate())
 		}
+
 		async fn get_state(
 			&self,
 			_c: &BackendCallContext,
@@ -2811,8 +2827,8 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, Arc::new(SlowBackend { retry_fails: false })))
@@ -2842,8 +2858,8 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, Arc::new(SlowBackend { retry_fails: true })))
@@ -2868,7 +2884,7 @@ mod tests {
 	/// test can prove same-thread mutations are serialized on the mutating lane.
 	#[derive(Default)]
 	struct GaugeBackend {
-		inflight: std::sync::atomic::AtomicUsize,
+		inflight:     std::sync::atomic::AtomicUsize,
 		max_inflight: std::sync::atomic::AtomicUsize,
 	}
 	#[async_trait]
@@ -2944,8 +2960,8 @@ mod tests {
 			_p: serde_json::Value,
 		) -> Result<(BackendHandleInfo, Arc<dyn AgentBackend>)> {
 			let info = BackendHandleInfo {
-				thread_id: ThreadId::generate(),
-				generation: BackendGeneration::FIRST,
+				thread_id:        ThreadId::generate(),
+				generation:       BackendGeneration::FIRST,
 				session_metadata: SessionMetadata::default(),
 			};
 			Ok((info, self.0.clone()))
@@ -3100,10 +3116,10 @@ mod tests {
 		let conn = init_conn(&s).await;
 		let t = start_thread(&s, &conn).await;
 		let ev = |kind: &str| BackendEvent {
-			thread_id: t.clone(),
+			thread_id:  t.clone(),
 			generation: BackendGeneration::FIRST,
 			event_type: kind.into(),
-			payload: serde_json::json!({}),
+			payload:    serde_json::json!({}),
 		};
 		assert!(s.emit_backend_event(&ev("agent_start")) >= 1);
 		assert!(s.emit_backend_event(&ev("agent_end")) >= 1);
@@ -3119,10 +3135,10 @@ mod tests {
 		let t = start_thread(&s, &conn).await;
 		// Generation 2 has never been attached; event must be rejected.
 		let stale = BackendEvent {
-			thread_id: t,
+			thread_id:  t,
 			generation: BackendGeneration(2),
 			event_type: "agent_start".into(),
-			payload: serde_json::json!({}),
+			payload:    serde_json::json!({}),
 		};
 		assert_eq!(s.emit_backend_event(&stale), 0, "stale-generation event rejected");
 		assert!(sink.notes.lock().is_empty());
@@ -3133,10 +3149,10 @@ mod tests {
 		let (s, sink) = server_with_sink();
 		let _conn = init_conn(&s).await;
 		let ev = BackendEvent {
-			thread_id: ThreadId("thr_missing".into()),
+			thread_id:  ThreadId("thr_missing".into()),
 			generation: BackendGeneration::FIRST,
 			event_type: "agent_start".into(),
-			payload: serde_json::json!({}),
+			payload:    serde_json::json!({}),
 		};
 		assert_eq!(s.emit_backend_event(&ev), 0);
 		assert!(sink.notes.lock().is_empty());
@@ -3867,16 +3883,13 @@ mod tests {
 			let s = Arc::clone(&s);
 			let thread = thread.clone();
 			tokio::spawn(async move {
-				s.open_workflow_gate(
-					&thread,
-					crate::workflow_gate::OpenWorkflowGateInput {
-						stage: crate::workflow_gate::RpcWorkflowStage::Ultragoal,
-						kind: crate::workflow_gate::RpcWorkflowGateKind::Approval,
-						schema: serde_json::json!({"type":"object"}),
-						options: None,
-						context: crate::workflow_gate::RpcWorkflowGateContext::default(),
-					},
-				)
+				s.open_workflow_gate(&thread, crate::workflow_gate::OpenWorkflowGateInput {
+					stage:   crate::workflow_gate::RpcWorkflowStage::Ultragoal,
+					kind:    crate::workflow_gate::RpcWorkflowGateKind::Approval,
+					schema:  serde_json::json!({"type":"object"}),
+					options: None,
+					context: crate::workflow_gate::RpcWorkflowGateContext::default(),
+				})
 				.await
 			})
 		};

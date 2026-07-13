@@ -1,7 +1,5 @@
 import {
 	AppServerClient,
-	AppServerConnectionError,
-	AppServerResponseError,
 	type GjcCommandsListResult,
 	type GjcProviderAddParams,
 	type GjcProviderListResult,
@@ -19,6 +17,25 @@ import "../design-tokens/index.ts";
 import { CommandPalette } from "./command-palette.tsx";
 import type { PaletteCommand, PaletteTool } from "./command-palette-logic";
 import {
+	type ConnectionState,
+	describeFailure,
+	errorMessage,
+	failureCopy,
+	failureTitle,
+	redactDetail,
+	safeEndpoint,
+} from "./connection-state-logic";
+import {
+	basename,
+	DEFAULT_CWD,
+	normalizeDirectoryInput,
+	readRecentDirectories,
+	recentDirectoryDisplay,
+	redactDirectoryPath,
+	rememberDirectoryValue,
+	writeRecentDirectories,
+} from "./directory-logic";
+import {
 	type AppearancePreviewState,
 	type AppearanceSettings,
 	type AppearanceTheme,
@@ -27,7 +44,6 @@ import {
 	type Extension,
 	type Plugin,
 	type PluginInspection,
-	pluginFeaturePayload,
 	pluginSettingPayload,
 	restoreAppearancePreview,
 	type Skill,
@@ -37,6 +53,7 @@ import { ExtensibilityPanel } from "./extensibility-panel.tsx";
 import { LoginFlowSheet } from "./login-flow-sheet.tsx";
 import { Markdown } from "./markdown.tsx";
 import { ModelPanel } from "./model-panel.tsx";
+import { redactHostUri, safeToolText, safeWorkflowGateContext } from "./redaction-logic";
 import { SessionActions } from "./session-actions.tsx";
 import {
 	flattenSessionTree,
@@ -63,21 +80,7 @@ import "./styles.css";
 import { shouldStickToBottom } from "./scroll-follow-logic";
 
 export type EndpointDescriptor = { url: string; token: string };
-type ConnectionKind = "booting" | "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
-type FailureKind =
-	| "origin-rejected"
-	| "token-rejected"
-	| "stale-discovery"
-	| "sidecar-crash"
-	| "server-unavailable"
-	| "unknown";
-
-export type ConnectionState = {
-	kind: ConnectionKind;
-	failure?: FailureKind;
-	detail?: string;
-	endpointUrl?: string;
-};
+export type { ConnectionState } from "./connection-state-logic";
 
 type PaletteData = {
 	commands: PaletteCommand[];
@@ -90,6 +93,7 @@ type ExtensibilityData = {
 	skills: Skill[];
 	extensions: Extension[];
 	plugins: Plugin[];
+	extensionInspection?: Extension;
 	pluginInspection?: PluginInspection;
 	appearance?: AppearancePreviewState;
 	themes: AppearanceTheme[];
@@ -151,22 +155,22 @@ export function createApp(options: { deps?: AppHostDeps; autoConnect?: boolean; 
 	return <App deps={options.deps} autoConnect={options.autoConnect} initialState={options.initialState} />;
 }
 
-const RECENT_DIRECTORIES_KEY = "gjc-gui.recentDirectories";
-const DEFERRED_EXEC_STATE_ROWS = [
-	["todos", "Read surface needs a typed app-server API before GUI rendering."],
-	["context", "Context usage is not exposed on the GUI seam yet."],
-	["usage", "Provider/token usage needs a new typed notification or read API."],
-	["jobs", "Job lifecycle cards need new app-server notifications."],
-	["agents", "Agent roster/state needs a typed GUI API."],
-	["monitors", "Monitor streams need new app-server notifications."],
-	["retry", "gjc/retry is not on the current GUI seam."],
-] as const;
-const MAX_RECENT_DIRECTORIES = 8;
-// Default working directory for a scratch/default session when the user has not
-// picked one, matching the TUI's tmp-rooted default session.
-const DEFAULT_CWD = "/tmp";
+export function startChatDirectory(workingDirectory: string): string | undefined {
+	const normalized = normalizeDirectoryInput(workingDirectory);
+	return normalized || (workingDirectory.trim() ? undefined : DEFAULT_CWD);
+}
 
-const root = typeof document === "undefined" ? null : document.getElementById("root");
+const DEFERRED_EXEC_STATE_ROWS = [
+	["todos", "Task progress will appear here when available."],
+	["context", "Context usage will appear here when available."],
+	["usage", "Provider and token usage will appear here when available."],
+	["jobs", "Background job progress will appear here when available."],
+	["agents", "Active agent status will appear here when available."],
+	["monitors", "Monitor streams will appear here when available."],
+	["retry", "Retry controls are coming later."],
+] as const;
+
+const root = typeof document === "undefined" ? null : document.querySelector<HTMLElement>("[data-gjc-app-root]");
 if (root)
 	createRoot(root).render(
 		<StrictMode>
@@ -197,7 +201,7 @@ function App({
 		extensions: [],
 		plugins: [],
 		themes: [],
-		loading: false,
+		loading: initialState?.workspaceView === "extensibility",
 	});
 	const [sessionBrowser, setSessionBrowser] = useState<SessionBrowserData>({
 		sessions: [],
@@ -208,28 +212,39 @@ function App({
 	const [providerAddOpen, setProviderAddOpen] = useState(false);
 	const [loginProviderId, setLoginProviderId] = useState<string>();
 	const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(initialState?.workspaceView ?? "chat");
+	const [helpOpen, setHelpOpen] = useState(initialState?.helpOpen ?? false);
 	const [workingDirectory, setWorkingDirectory] = useState(initialState?.workingDirectory ?? "");
 	const [recentDirectories, setRecentDirectories] = useState<string[]>(
 		() => initialState?.recentDirectories ?? readRecentDirectories(host.storage),
 	);
 	const [isPickingDirectory, setPickingDirectory] = useState(false);
 	const [isSubmitting, setSubmitting] = useState(false);
-	const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
+	const [setupError, setSetupError] = useState<string>();
+	const [operationError, setOperationError] = useState<string>();
+	const [completionStatus, setCompletionStatus] = useState("");
+	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
 	const copyStatusTimeoutRef = useRef<number | undefined>(undefined);
 	const stopRef = useRef<(() => void) | undefined>(undefined);
 	const connectionGenerationRef = useRef(0);
 	const sessionRequestGenerationRef = useRef(0);
-	const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-	const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const searchDebounceRef = useRef<NodeJS.Timeout | undefined>(undefined);
+	const retryTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const mountedRef = useRef(true);
 	const composerRef = useRef<HTMLTextAreaElement>(null);
+	const helpTriggerRef = useRef<HTMLButtonElement>(null);
 	const transcriptRef = useRef<HTMLElement>(null);
 	const transcriptBottomRef = useRef<HTMLDivElement>(null);
+	const observedTurnRef = useRef(transcript.activeTurnId);
 	const stickToBottomRef = useRef(true);
 	const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
 	const restoreComposerFocus = useCallback(() => {
 		host.timers.requestAnimationFrame(() => composerRef.current?.focus());
+	}, [host.timers]);
+
+	const closeHelp = useCallback(() => {
+		setHelpOpen(false);
+		host.timers.requestAnimationFrame(() => helpTriggerRef.current?.focus());
 	}, [host.timers]);
 
 	const connect = useCallback(async (): Promise<ConnectionState> => {
@@ -384,9 +399,15 @@ function App({
 		}
 	}, [visibleItems.length, visibleApprovals.length]);
 	const connected = connection.kind === "connected";
+	const serverReady = connected && client !== undefined;
+
+	useEffect(() => {
+		if (observedTurnRef.current && !transcript.activeTurnId) setCompletionStatus("Response complete.");
+		observedTurnRef.current = transcript.activeTurnId;
+	}, [transcript.activeTurnId]);
 
 	const loadPaletteData = useCallback(async () => {
-		if (!client || !activeThreadId) return;
+		if (!serverReady || !client || !activeThreadId) return;
 		setPaletteData(current => ({ ...current, loading: true, error: undefined }));
 		try {
 			const [commandsResult, toolsResult]: [GjcCommandsListResult, GjcToolsListResult] = await Promise.all([
@@ -401,10 +422,10 @@ function App({
 		} catch (error) {
 			setPaletteData(current => ({ ...current, loading: false, error: errorMessage(error) }));
 		}
-	}, [activeThreadId, client]);
+	}, [activeThreadId, client, serverReady]);
 
 	const loadExtensibilityData = useCallback(async () => {
-		if (!client || !connected || !activeThreadId) return;
+		if (!serverReady || !client || !activeThreadId) return;
 		setExtData(current => ({ ...current, loading: true, error: undefined }));
 		try {
 			const [skillsResult, extensionsResult, pluginsResult, themesResult, appearanceResult] = await Promise.all([
@@ -419,6 +440,7 @@ function App({
 				skills: skillsResult.skills,
 				extensions: extensionsResult.extensions,
 				plugins: pluginsResult.plugins,
+				extensionInspection: undefined,
 				themes: themesResult.themes,
 				appearance: createAppearancePreviewState(normalizeAppearanceSettings(appearanceResult)),
 				loading: false,
@@ -431,23 +453,28 @@ function App({
 				error: errorMessage(error),
 			}));
 		}
-	}, [activeThreadId, client, connected]);
+	}, [activeThreadId, client, serverReady]);
 
 	const inspectExtension = useCallback(
 		async (extensionId: string) => {
-			if (!client || !connected || !activeThreadId) return;
+			if (!serverReady || !client || !activeThreadId) return;
 			try {
-				await client.gjcExtensionsInspect({ extensionId, threadId: activeThreadId });
+				const result = await client.gjcExtensionsInspect({ extensionId, threadId: activeThreadId });
+				setExtData(current => ({
+					...current,
+					extensionInspection: result.extension ?? undefined,
+					error: undefined,
+				}));
 			} catch (error) {
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[activeThreadId, client, connected],
+		[activeThreadId, client, serverReady],
 	);
 
 	const inspectPlugin = useCallback(
 		async (pluginId: string) => {
-			if (!client || !connected || !activeThreadId) return;
+			if (!serverReady || !client || !activeThreadId) return;
 			try {
 				const result = await client.gjcPluginsInspect({ pluginId, threadId: activeThreadId });
 				setExtData(current => ({ ...current, pluginInspection: result.plugin ?? undefined, error: undefined }));
@@ -455,7 +482,7 @@ function App({
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[activeThreadId, client, connected],
+		[activeThreadId, client, serverReady],
 	);
 	const previewAppearanceSettings = useCallback((next: AppearanceSettings) => {
 		setExtData(current =>
@@ -471,7 +498,7 @@ function App({
 	}, []);
 	const applyAppearanceSettings = useCallback(
 		async (next: AppearanceSettings) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				const applied = await client.gjcAppearanceSet(next);
 				setExtData(current =>
@@ -487,11 +514,11 @@ function App({
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client],
+		[client, serverReady],
 	);
 	const setSkillEnabled = useCallback(
 		async (skillId: string, enabled: boolean) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				await client.gjcSkillsSetEnabled(
 					setEnabledPayload("skillId", skillId, enabled) as { skillId: string; enabled: boolean },
@@ -511,11 +538,11 @@ function App({
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client],
+		[client, serverReady],
 	);
 	const setExtensionEnabled = useCallback(
 		async (extensionId: string, enabled: boolean) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				await client.gjcExtensionsSetEnabled(
 					setEnabledPayload("extensionId", extensionId, enabled) as { extensionId: string; enabled: boolean },
@@ -526,11 +553,11 @@ function App({
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client, loadExtensibilityData],
+		[client, loadExtensibilityData, serverReady],
 	);
 	const setPluginEnabled = useCallback(
 		async (pluginId: string, enabled: boolean) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				await client.gjcPluginsSetEnabled(
 					setEnabledPayload("pluginId", pluginId, enabled) as { pluginId: string; enabled: boolean },
@@ -541,24 +568,11 @@ function App({
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client, loadExtensibilityData],
+		[client, loadExtensibilityData, serverReady],
 	);
-	const setPluginFeature = useCallback(
-		async (pluginId: string, feature: string, enabled: boolean) => {
-			if (!client) return;
-			try {
-				await client.gjcPluginsSetFeature(pluginFeaturePayload(pluginId, feature, enabled));
-				await inspectPlugin(pluginId);
-			} catch (error) {
-				setExtData(current => ({ ...current, error: errorMessage(error) }));
-			}
-		},
-		[client, inspectPlugin],
-	);
-	void setPluginFeature;
 	const setPluginSetting = useCallback(
 		async (pluginId: string, key: string, value: unknown) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				await client.gjcPluginsSetSetting(
 					pluginSettingPayload(pluginId, key, value) as { pluginId: string; key: string; value: JsonValue },
@@ -568,10 +582,10 @@ function App({
 				setExtData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client, inspectPlugin],
+		[client, inspectPlugin, serverReady],
 	);
 	const loadProviders = useCallback(async () => {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		setProviderData(current => ({ ...current, loading: true, error: undefined }));
 		try {
 			const [providers, status] = await Promise.all([client.gjcProviderList({}), client.gjcAuthStatus({})]);
@@ -586,10 +600,10 @@ function App({
 		} catch (error) {
 			setProviderData(current => ({ ...current, loading: false, error: errorMessage(error) }));
 		}
-	}, [client]);
+	}, [client, serverReady]);
 	const logoutProvider = useCallback(
 		async (providerId: string) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				await client.gjcAuthLogout({ providerId });
 				await loadProviders();
@@ -597,11 +611,11 @@ function App({
 				setProviderData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client, loadProviders],
+		[client, loadProviders, serverReady],
 	);
 	const addProvider = useCallback(
 		async (params: GjcProviderAddParams) => {
-			if (!client) return;
+			if (!serverReady || !client) return;
 			try {
 				await client.gjcProviderAdd(params);
 				setProviderAddOpen(false);
@@ -610,11 +624,11 @@ function App({
 				setProviderData(current => ({ ...current, error: errorMessage(error) }));
 			}
 		},
-		[client, loadProviders],
+		[client, loadProviders, serverReady],
 	);
 	const loginClient = useMemo(
 		() =>
-			client
+			serverReady && client
 				? {
 						start: async (providerId: string) => {
 							const result = await client.gjcAuthLoginStart({ providerId });
@@ -634,11 +648,11 @@ function App({
 						cancel: (flowId: string) => client.gjcAuthLoginCancel({ flowId }),
 					}
 				: undefined,
-		[client],
+		[client, serverReady],
 	);
 	useEffect(() => {
-		if (client && connected) void loadProviders();
-	}, [client, connected, loadProviders]);
+		if (serverReady) void loadProviders();
+	}, [loadProviders, serverReady]);
 
 	useEffect(() => {
 		if (workspaceView === "extensibility") void loadExtensibilityData();
@@ -646,7 +660,8 @@ function App({
 
 	useEffect(() => {
 		function handleGlobalKeyDown(event: KeyboardEvent) {
-			if (event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
+			if (!serverReady || !activeThreadId || event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey))
+				return;
 			event.preventDefault();
 			setPaletteOpen(current => {
 				const next = !current;
@@ -656,7 +671,7 @@ function App({
 		}
 		window.addEventListener("keydown", handleGlobalKeyDown);
 		return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-	}, [loadPaletteData]);
+	}, [activeThreadId, loadPaletteData, serverReady]);
 
 	const closePalette = useCallback(() => {
 		setPaletteOpen(false);
@@ -668,66 +683,81 @@ function App({
 		restoreComposerFocus();
 	}, []);
 
-	// Return the active thread id, creating one on demand so the first message
-	// just works. Uses the chosen working directory, or the default scratch
-	// directory (/tmp) when none is picked — matching the TUI's default session.
-	async function ensureActiveThread(): Promise<string | undefined> {
-		if (activeThreadId) return activeThreadId;
-		if (!client) return undefined;
-		const cwd = normalizeDirectoryInput(workingDirectory) || DEFAULT_CWD;
+	async function createNewThread(): Promise<string | undefined> {
+		if (!serverReady || !client) return undefined;
+		const cwd = startChatDirectory(workingDirectory);
+		if (!cwd) {
+			setSetupError("Enter an absolute path or choose a folder.");
+			return undefined;
+		}
 		const result = await client.threadStart({ source: "gjc-gui", cwd });
 		rememberDirectory(cwd, setRecentDirectories, host.storage);
 		setWorkingDirectory(cwd);
+		setSetupError(undefined);
 		setTranscript(current => upsertThread(current, result.thread, cwd));
 		void refreshModelLabel(result.thread.id);
 		return result.thread.id;
 	}
 
+	// Return the active thread id, creating one only for the first submitted message.
+	async function ensureActiveThread(): Promise<string | undefined> {
+		return activeThreadId ?? createNewThread();
+	}
+
 	// The active model isn't carried on ThreadSummary; read it from session state.
 	async function refreshModelLabel(threadId: string): Promise<void> {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			const state = await client.gjcStateRead({ threadId });
 			const label = modelLabelFromStateRead(state);
 			if (label) setTranscript(current => ({ ...current, modelLabel: label }));
-		} catch {
-			// Non-fatal: leave the previous label.
+		} catch (error) {
+			setOperationError(`Could not refresh the active model: ${errorMessage(error)}`);
 		}
 	}
 
 	async function startThread() {
 		try {
-			const id = await ensureActiveThread();
-			if (id) restoreComposerFocus();
+			const id = await createNewThread();
+			if (id) {
+				setCompletionStatus("New chat started.");
+				restoreComposerFocus();
+			}
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setSetupError(errorMessage(error));
 		}
 	}
 
 	async function pickDirectory() {
+		if (!serverReady) return;
 		setPickingDirectory(true);
 		try {
 			const selected = await host.pickDirectory();
-			if (selected) setWorkingDirectory(selected);
+			if (selected) {
+				setWorkingDirectory(selected);
+				setSetupError(undefined);
+			}
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setSetupError(errorMessage(error));
 		} finally {
 			setPickingDirectory(false);
 		}
 	}
 
 	async function resumeThread(threadId: string) {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			const result = await client.threadResume({ threadId });
 			setTranscript(current => upsertThread(current, result.thread));
 			void refreshModelLabel(threadId);
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not resume this chat: ${errorMessage(error)}`);
 		}
 	}
+
 	async function refreshSessionBrowser(sessionClient = client, query = sessionBrowser.query) {
-		if (!sessionClient) return;
+		if (!sessionClient || (sessionClient === client && !serverReady)) return;
 		const generation = ++sessionRequestGenerationRef.current;
 		setSessionBrowser(current => ({ ...current, loading: true, error: undefined }));
 		try {
@@ -739,38 +769,50 @@ function App({
 			setSessionBrowser(current => ({ ...current, sessions: result.sessions, loading: false }));
 		} catch (error) {
 			if (generation !== sessionRequestGenerationRef.current || !mountedRef.current) return;
-			setSessionBrowser(current => ({ ...current, loading: false, error: errorMessage(error) }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, loading: false, error: message }));
+			setOperationError(`Could not load saved chats: ${message}`);
 		}
 	}
+
 	async function openSession(sessionPath: string) {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			const result = await client.gjcSessionOpen({ sessionPath });
 			const readResult = await client.threadRead({ threadId: result.threadId });
 			setTranscript(current => upsertThread(current, readResult.thread));
 			await refreshSessionTree(result.threadId);
 			void refreshModelLabel(result.threadId);
+			setOperationError(undefined);
 		} catch (error) {
-			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, error: message }));
+			setOperationError(`Could not open this saved chat: ${message}`);
 		}
 	}
+
 	async function renameSession(sessionPath: string) {
+		if (!serverReady || !client) return;
 		const title = window.prompt("Rename session") ?? "";
 		const validation = validateRenameTitle(title);
 		if (validation) {
 			setSessionBrowser(current => ({ ...current, error: validation }));
+			setOperationError(validation);
 			return;
 		}
-		if (!client) return;
 		try {
 			await client.gjcSessionRename({ sessionPath, title: title.trim() });
 			await refreshSessionBrowser();
+			setOperationError(undefined);
 		} catch (error) {
-			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, error: message }));
+			setOperationError(`Could not rename this saved chat: ${message}`);
 		}
 	}
+
 	async function exportSession(sessionPath: string) {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			const result = await client.gjcSessionExport({ sessionPath, format: "markdown", redact: true });
 			await host.clipboard.writeText(result.content);
@@ -778,34 +820,46 @@ function App({
 				...current,
 				exportStatus: `Copied markdown export · ${provenanceLabel(result.provenance)}`,
 			}));
+			setOperationError(undefined);
 		} catch (error) {
-			setSessionBrowser(current => ({ ...current, exportStatus: `Export failed: ${errorMessage(error)}` }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, exportStatus: `Export failed: ${message}` }));
+			setOperationError(`Could not export this saved chat: ${message}`);
 		}
 	}
+
 	async function deleteSession(sessionPath: string) {
-		if (!client || !window.confirm("Delete this persisted session?")) return;
+		if (!serverReady || !client || !window.confirm("Delete this persisted session?")) return;
 		try {
 			await client.gjcSessionDelete({ sessionPath });
 			setSessionBrowser(current => ({
 				...current,
 				sessions: current.sessions.filter(session => session.path !== sessionPath),
 			}));
+			setOperationError(undefined);
 		} catch (error) {
-			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, error: message }));
+			setOperationError(`Could not delete this saved chat: ${message}`);
 		}
 	}
+
 	async function refreshSessionTree(threadId = activeThreadId) {
-		if (!client || !threadId) return;
+		if (!serverReady || !client || !threadId) return;
 		try {
 			const tree = await client.gjcSessionTree({ threadId });
 			setSessionBrowser(current => ({ ...current, tree }));
 		} catch (error) {
-			setSessionBrowser(current => ({ ...current, error: errorMessage(error) }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, error: message }));
+			setOperationError(`Could not refresh the session tree: ${message}`);
 		}
 	}
+
 	async function moveThread(threadId: string) {
+		if (!serverReady || !client) return;
 		const targetCwd = window.prompt("Move session to absolute directory");
-		if (!client || !targetCwd) return;
+		if (!targetCwd) return;
 		try {
 			await client.gjcSessionMove({ threadId, targetCwd });
 			let canonicalThread: object | undefined;
@@ -826,14 +880,17 @@ function App({
 			}));
 			await refreshSessionBrowser(client);
 			await refreshSessions(client, threadId);
+			setOperationError(undefined);
 		} catch (error) {
-			setSessionBrowser(current => ({ ...current, error: `Move failed: ${errorMessage(error)}` }));
+			const message = errorMessage(error);
+			setSessionBrowser(current => ({ ...current, error: `Move failed: ${message}` }));
+			setOperationError(`Could not move this chat: ${message}`);
 		}
 	}
 	useEffect(() => {
 		const query = sessionBrowser.query;
 		sessionRequestGenerationRef.current++;
-		if (!client || !connected) return;
+		if (!serverReady || !client) return;
 		host.timers.clearTimeout(searchDebounceRef.current);
 		sessionRequestGenerationRef.current++;
 		searchDebounceRef.current = host.timers.setTimeout(() => void refreshSessionBrowser(client, query), 200);
@@ -841,10 +898,10 @@ function App({
 			host.timers.clearTimeout(searchDebounceRef.current);
 			sessionRequestGenerationRef.current++;
 		};
-	}, [client, connected, host.timers, sessionBrowser.query]);
+	}, [client, host.timers, serverReady, sessionBrowser.query]);
 
 	async function refreshSessions(sessionClient = client, forceThreadId?: string) {
-		if (!sessionClient) return;
+		if (!sessionClient || (sessionClient === client && !serverReady)) return;
 		try {
 			const result = await sessionClient.threadLoadedList({});
 			for (const threadId of result.data) {
@@ -856,41 +913,40 @@ function App({
 							? current
 							: upsertThread(current, readResult.thread),
 					);
-				} catch (readError) {
-					// Do NOT fabricate a placeholder row on a read/hydration failure — that
-					// would hide a real contract failure. Skip the id (it can be resumed
-					// explicitly) and surface the failure for diagnostics.
-					setConnection(describeFailure(readError));
+				} catch (error) {
+					setOperationError(`Could not load a saved chat: ${errorMessage(error)}`);
 				}
 			}
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not refresh saved chats: ${errorMessage(error)}`);
 		}
 	}
 
 	async function forkThread(threadId: string) {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			const result = await client.threadFork({ threadId });
 			setTranscript(current => upsertThread(current, result.thread));
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not fork this chat: ${errorMessage(error)}`);
 		}
 	}
 
 	async function archiveThread(threadId: string) {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			await client.threadArchive({ threadId });
 			setTranscript(current => ({ ...current, threads: markThreadArchived(current.threads, threadId) }));
 			await refreshSessions();
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not archive this chat: ${errorMessage(error)}`);
 		}
 	}
 
 	async function deleteThread(threadId: string) {
-		if (!client) return;
+		if (!serverReady || !client) return;
 		try {
 			await client.threadDelete({ threadId });
 			setTranscript(current => ({
@@ -900,28 +956,28 @@ function App({
 				items: current.items.filter(item => item.threadId !== threadId),
 				approvals: current.approvals.filter(approval => approval.threadId !== threadId),
 			}));
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not delete this chat: ${errorMessage(error)}`);
 		}
 	}
 
 	async function submitComposer() {
-		if (!client || composer.trim().length === 0 || isSubmitting) return;
+		if (!serverReady || !client || composer.trim().length === 0 || isSubmitting) return;
 		const prompt = composer.trim();
 		setSubmitting(true);
 		try {
-			// ChatGPT-style: auto-create a thread (in the default home dir) on the
-			// first message if none is active.
-			const threadId = activeThreadId ?? (await ensureActiveThread());
+			const threadId = await ensureActiveThread();
 			if (!threadId) {
-				setConnection(describeFailure(new Error("Could not resolve a working directory to start a thread.")));
+				setOperationError("Could not start a chat for this message.");
 				return;
 			}
 			setComposer("");
 			setTranscript(current => appendLocalUserMessage(current, threadId, prompt));
 			await client.turnStart({ threadId, text: prompt });
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not send this message: ${errorMessage(error)}`);
 		} finally {
 			setSubmitting(false);
 		}
@@ -945,16 +1001,17 @@ function App({
 	}
 
 	async function stopTurn() {
-		if (!client || !activeThreadId || !transcript.activeTurnId) return;
+		if (!serverReady || !client || !activeThreadId || !transcript.activeTurnId) return;
 		try {
 			await client.turnInterrupt({ threadId: activeThreadId, turnId: transcript.activeTurnId });
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not stop this response: ${errorMessage(error)}`);
 		}
 	}
 
 	async function applyModel(provider: string, modelId: string) {
-		if (!client || !activeThreadId) return;
+		if (!serverReady || !client || !activeThreadId) return;
 		try {
 			await client.gjcModelSet({ threadId: activeThreadId, provider, modelId });
 			setTranscript(current => ({
@@ -964,13 +1021,14 @@ function App({
 					thread.id === activeThreadId ? { ...thread, modelLabel: `${provider}/${modelId}` } : thread,
 				),
 			}));
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not change the model: ${errorMessage(error)}`);
 		}
 	}
 
 	async function resolveApproval(approval: ApprovalGate, approved: boolean) {
-		if (!client || approval.kind !== "host-tool") return;
+		if (!serverReady || !client || approval.kind !== "host-tool") return;
 		setTranscript(current => markApproval(current, approval.id, approved ? "approved" : "rejected"));
 		try {
 			await client.gjcHostToolsResult({
@@ -980,8 +1038,9 @@ function App({
 				result: approved ? { approved: true } : undefined,
 				error: approved ? undefined : { rejected: true, reason: "Rejected in GJC GUI" },
 			});
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not send this approval: ${errorMessage(error)}`);
 		}
 		restoreComposerFocus();
 	}
@@ -991,7 +1050,7 @@ function App({
 		ok: boolean,
 		payload?: { content?: string; contentType?: string },
 	) {
-		if (!client || approval.kind !== "host-uri") return;
+		if (!serverReady || !client || approval.kind !== "host-uri") return;
 		try {
 			await client.gjcHostUrisResult({
 				threadId: approval.threadId,
@@ -1002,14 +1061,15 @@ function App({
 				isError: ok ? undefined : true,
 			});
 			setTranscript(current => markApproval(current, approval.id, ok ? "approved" : "rejected"));
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not send this approval: ${errorMessage(error)}`);
 		}
 		restoreComposerFocus();
 	}
 
 	async function respondWorkflowGate(approval: ApprovalGate, selectedValue: JsonValue) {
-		if (!client || approval.kind !== "workflow-gate") return;
+		if (!serverReady || !client || approval.kind !== "workflow-gate") return;
 		const answer = workflowGateAnswer(approval, selectedValue);
 		if (!answer) {
 			setTranscript(current =>
@@ -1029,40 +1089,48 @@ function App({
 			});
 			if (resolution.status === "accepted") {
 				setTranscript(current => markApproval(current, approval.id, "approved"));
+				setOperationError(undefined);
 			} else {
 				setTranscript(current =>
 					markWorkflowGateFailed(current, approval.id, workflowGateResolutionError(resolution)),
 				);
 			}
 		} catch (error) {
-			setTranscript(current => markWorkflowGateFailed(current, approval.id, errorMessage(error)));
-			setConnection(describeFailure(error));
+			const message = errorMessage(error);
+			setTranscript(current => markWorkflowGateFailed(current, approval.id, message));
+			setOperationError(`Could not send this approval: ${message}`);
 		}
 		restoreComposerFocus();
 	}
 
 	async function compactThread() {
-		if (!client || !activeThreadId) return;
+		if (!serverReady || !client || !activeThreadId) return;
 		try {
 			await client.gjcCompact({ threadId: activeThreadId });
+			setOperationError(undefined);
 		} catch (error) {
-			setConnection(describeFailure(error));
+			setOperationError(`Could not compact this chat: ${errorMessage(error)}`);
 		}
 		restoreComposerFocus();
 	}
 
 	async function copyTranscriptText(text: string | undefined) {
 		if (!text) return;
-		await host.clipboard.writeText(text);
-		setCopyStatus("copied");
-		host.timers.clearTimeout(copyStatusTimeoutRef.current);
-		copyStatusTimeoutRef.current = host.timers.setTimeout(() => setCopyStatus("idle"), 1400) as unknown as number;
-		restoreComposerFocus();
+		try {
+			await host.clipboard.writeText(text);
+			setCopyStatus("copied");
+		} catch {
+			setCopyStatus("failed");
+		} finally {
+			host.timers.clearTimeout(copyStatusTimeoutRef.current);
+			copyStatusTimeoutRef.current = host.timers.setTimeout(() => setCopyStatus("idle"), 1400) as unknown as number;
+			restoreComposerFocus();
+		}
 	}
 
 	return (
 		<main className="app-shell">
-			<aside className="app-sidebar" aria-label="Threads">
+			<aside className="app-sidebar" aria-label="Chats">
 				<div className="brand-lockup">
 					<img className="brand-mark" src="/icon.png" alt="" aria-hidden="true" />
 					<div>
@@ -1071,10 +1139,11 @@ function App({
 					</div>
 				</div>
 				<SessionSetupPanel
-					connected={connected}
+					serverReady={serverReady}
 					workingDirectory={workingDirectory}
 					recentDirectories={recentDirectories}
 					isPickingDirectory={isPickingDirectory}
+					error={setupError}
 					onWorkingDirectoryChange={setWorkingDirectory}
 					onPickDirectory={() => void pickDirectory()}
 					onStart={() => void startThread()}
@@ -1099,7 +1168,7 @@ function App({
 						}
 						type="button"
 						onClick={() => setWorkspaceView("extensibility")}
-						disabled={!connected || !activeThreadId}
+						disabled={!serverReady || !activeThreadId}
 					>
 						Skills & extensions
 					</button>
@@ -1111,23 +1180,22 @@ function App({
 						onChange={event => setSessionBrowser(current => ({ ...current, query: event.target.value }))}
 						placeholder="Search sessions"
 						aria-label="Search sessions"
+						disabled={!serverReady}
 					/>
 					{sessionBrowser.loading ? <div className="empty-inline">Loading sessions…</div> : null}
 					{sessionBrowser.error ? <div className="empty-inline">{sessionBrowser.error}</div> : null}
 					{sessionBrowser.sessions.map(session => (
 						<article className="session-browser__row" key={session.path}>
-							<strong className="session-browser__title">
-								{session.title || session.firstMessage || session.id}
-							</strong>
+							<strong className="session-browser__title">{persistedSessionLabel(session)}</strong>
 							<span className="session-browser__meta">
-								{session.cwd} · {session.modifiedAt}
+								{redactDirectoryPath(session.cwd)} · {session.modifiedAt}
 							</span>
 							<div className="session-browser__actions">
 								<button
 									type="button"
 									className="neutral-action"
 									onClick={() => void openSession(session.path)}
-									disabled={!connected}
+									disabled={!serverReady}
 								>
 									Open
 								</button>
@@ -1135,6 +1203,7 @@ function App({
 									type="button"
 									className="neutral-action"
 									onClick={() => void renameSession(session.path)}
+									disabled={!serverReady}
 								>
 									Rename
 								</button>
@@ -1142,6 +1211,7 @@ function App({
 									type="button"
 									className="neutral-action"
 									onClick={() => void exportSession(session.path)}
+									disabled={!serverReady}
 								>
 									Export
 								</button>
@@ -1149,6 +1219,7 @@ function App({
 									type="button"
 									className="neutral-action session-actions__button--danger"
 									onClick={() => void deleteSession(session.path)}
+									disabled={!serverReady}
 								>
 									Delete
 								</button>
@@ -1159,7 +1230,7 @@ function App({
 					<button
 						type="button"
 						className="neutral-action"
-						disabled={!activeThreadId}
+						disabled={!serverReady || !activeThreadId}
 						onClick={() => void refreshSessionTree()}
 					>
 						Refresh session tree
@@ -1179,9 +1250,9 @@ function App({
 						</div>
 					) : null}
 				</section>
-				<nav className="thread-list" aria-label="Thread list">
+				<nav className="thread-list" aria-label="Chat list">
 					{transcript.threads.length === 0 ? (
-						<div className="empty-inline">No threads yet. Connect, then start a thread.</div>
+						<div className="empty-inline">No chats yet. Connect, then start a chat.</div>
 					) : (
 						transcript.threads.map(thread => (
 							<div
@@ -1192,6 +1263,8 @@ function App({
 									className="thread-row__resume"
 									type="button"
 									onClick={() => void resumeThread(thread.id)}
+									title={thread.cwd ? redactDirectoryPath(thread.cwd) : undefined}
+									disabled={!serverReady}
 								>
 									<span className="thread-title">{threadPrimaryLabel(thread)}</span>
 									<span className="thread-meta">
@@ -1199,8 +1272,9 @@ function App({
 									</span>
 								</button>
 								<SessionActions
+									key={`${thread.id}-${serverReady}`}
 									thread={thread}
-									disabled={!connected}
+									disabled={!serverReady}
 									onFork={id => void forkThread(id)}
 									onMove={id => void moveThread(id)}
 									onArchive={id => void archiveThread(id)}
@@ -1214,7 +1288,7 @@ function App({
 					<summary>Model &amp; settings</summary>
 					<ModelPanel
 						currentModel={transcript.modelLabel}
-						disabled={!connected || !activeThreadId}
+						disabled={!serverReady || !activeThreadId}
 						onApply={applyModel}
 					/>
 				</details>
@@ -1224,14 +1298,19 @@ function App({
 						type="button"
 						className="neutral-action"
 						onClick={() => void loadProviders()}
-						disabled={providerData.loading}
+						disabled={!serverReady || providerData.loading}
 					>
 						Refresh providers
 					</button>
-					<button type="button" className="neutral-action" onClick={() => setProviderAddOpen(current => !current)}>
+					<button
+						type="button"
+						className="neutral-action"
+						onClick={() => setProviderAddOpen(current => !current)}
+						disabled={!serverReady}
+					>
 						{providerAddOpen ? "Cancel provider" : "Add provider"}
 					</button>
-					{providerAddOpen ? <ProviderAddForm onSubmit={addProvider} /> : null}
+					{providerAddOpen ? <ProviderAddForm disabled={!serverReady} onSubmit={addProvider} /> : null}
 					{providerData.error ? (
 						<p className="model-panel__hint model-panel__hint--error">{providerData.error}</p>
 					) : null}
@@ -1241,12 +1320,12 @@ function App({
 								{provider.name} · {provider.authenticated ? "authenticated" : "unauthenticated"}
 							</span>
 							{provider.authKind === "oauth" && !provider.authenticated ? (
-								<button type="button" onClick={() => setLoginProviderId(provider.id)}>
+								<button type="button" onClick={() => setLoginProviderId(provider.id)} disabled={!serverReady}>
 									Log in
 								</button>
 							) : null}
 							{provider.authenticated ? (
-								<button type="button" onClick={() => void logoutProvider(provider.id)}>
+								<button type="button" onClick={() => void logoutProvider(provider.id)} disabled={!serverReady}>
 									Log out
 								</button>
 							) : null}
@@ -1262,26 +1341,31 @@ function App({
 
 			{workspaceView === "extensibility" ? (
 				<section className="chat-workspace" aria-label="Skills and extensions catalog">
-					<ExtensibilityPanel
-						skills={extData.skills}
-						extensions={extData.extensions}
-						plugins={extData.plugins}
-						pluginInspection={extData.pluginInspection}
-						appearanceThemes={extData.themes}
-						appearance={extData.appearance?.candidate}
-						loading={extData.loading}
-						error={extData.error}
-						onRefresh={() => void loadExtensibilityData()}
-						onInspectExtension={id => void inspectExtension(id)}
-						onInspectPlugin={id => void inspectPlugin(id)}
-						onPreviewAppearance={previewAppearanceSettings}
-						onRestoreAppearance={restoreAppearanceSettings}
-						onApplyAppearance={next => void applyAppearanceSettings(next)}
-						onSkillEnabled={(id, enabled) => void setSkillEnabled(id, enabled)}
-						onExtensionEnabled={(id, enabled) => void setExtensionEnabled(id, enabled)}
-						onPluginEnabled={(id, enabled) => void setPluginEnabled(id, enabled)}
-						onPluginSetting={(id, key, value) => void setPluginSetting(id, key, value)}
-					/>
+					{connected ? (
+						<ExtensibilityPanel
+							skills={extData.skills}
+							extensions={extData.extensions}
+							plugins={extData.plugins}
+							extensionInspection={extData.extensionInspection}
+							pluginInspection={extData.pluginInspection}
+							appearanceThemes={extData.themes}
+							appearance={extData.appearance?.candidate}
+							loading={extData.loading}
+							error={extData.error}
+							onRefresh={() => void loadExtensibilityData()}
+							onInspectExtension={id => void inspectExtension(id)}
+							onInspectPlugin={id => void inspectPlugin(id)}
+							onPreviewAppearance={previewAppearanceSettings}
+							onRestoreAppearance={restoreAppearanceSettings}
+							onApplyAppearance={next => void applyAppearanceSettings(next)}
+							onSkillEnabled={(id, enabled) => void setSkillEnabled(id, enabled)}
+							onExtensionEnabled={(id, enabled) => void setExtensionEnabled(id, enabled)}
+							onPluginEnabled={(id, enabled) => void setPluginEnabled(id, enabled)}
+							onPluginSetting={(id, key, value) => void setPluginSetting(id, key, value)}
+						/>
+					) : (
+						<div className="empty-state">Reconnect to browse skills and extensions.</div>
+					)}
 				</section>
 			) : (
 				<section className="chat-workspace" aria-label="Chat transcript">
@@ -1290,11 +1374,19 @@ function App({
 							<p className="eyebrow">Chat</p>
 							<h1>{activeThread ? threadPrimaryLabel(activeThread) : "New chat"}</h1>
 						</div>
+						<button
+							className="neutral-action"
+							type="button"
+							ref={helpTriggerRef}
+							onClick={() => setHelpOpen(true)}
+						>
+							Help
+						</button>
 						<div className="header-actions">
 							<button
 								className="neutral-action"
 								type="button"
-								disabled={!connected || !activeThreadId}
+								disabled={!serverReady || !activeThreadId}
 								onClick={() => void compactThread()}
 							>
 								Compact
@@ -1302,6 +1394,7 @@ function App({
 							<button
 								className="neutral-action"
 								type="button"
+								aria-describedby="copy-export-hint"
 								disabled={!canCopyAssistant}
 								onClick={() => void copyTranscriptText(lastAssistantCopy)}
 							>
@@ -1310,23 +1403,35 @@ function App({
 							<button
 								className="neutral-action"
 								type="button"
+								aria-describedby="copy-export-hint"
 								disabled={!canDumpTranscript}
 								onClick={() => void copyTranscriptText(transcriptDump)}
 							>
 								Dump
 							</button>
 							<span className="copy-status" role="status" aria-live="polite">
-								{copyStatus === "copied" ? "Copied" : ""}
+								{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Could not copy" : ""}
+							</span>
+							<span className="completion-status" role="status" aria-live="polite">
+								{operationError ?? completionStatus}
 							</span>
 							<span className="model-chip" title="Active model (change under Model & settings in the sidebar)">
 								{transcript.modelLabel || "no model"}
 							</span>
+							<p id="copy-export-hint" className="copy-export-hint">
+								Copy and Dump export visible conversation content; the app adds no credentials.
+							</p>
 						</div>
 					</header>
-					{connection.kind !== "connected" ? (
+					{connection.kind === "booting" ||
+					connection.kind === "connecting" ||
+					connection.kind === "reconnecting" ? (
+						<ConnectionBusyPanel reconnecting={connection.kind === "reconnecting"} />
+					) : connection.kind !== "connected" ? (
 						<ConnectionErrorPanel connection={connection} onReconnect={() => void connect()} />
 					) : null}
-					<section className="transcript" aria-live="polite" ref={transcriptRef} onScroll={handleTranscriptScroll}>
+					{operationError ? <p className="operation-status">{operationError}</p> : null}
+					<section className="transcript" ref={transcriptRef} onScroll={handleTranscriptScroll}>
 						{visibleItems.length === 0 && visibleApprovals.length === 0 ? (
 							<EmptyTranscript connected={connected} />
 						) : null}
@@ -1341,6 +1446,7 @@ function App({
 							<ApprovalCard
 								approval={approval}
 								key={approval.id}
+								disabled={!serverReady}
 								onResolve={resolveApproval}
 								onResolveHostUri={resolveHostUri}
 								onRespondWorkflowGate={respondWorkflowGate}
@@ -1361,21 +1467,21 @@ function App({
 							value={composer}
 							onChange={event => setComposer(event.target.value)}
 							onKeyDown={handleComposerKeyDown}
-							disabled={!connected || isSubmitting}
+							disabled={!serverReady || isSubmitting}
 							placeholder={
-								connected
+								serverReady
 									? "Ask gajae to edit, inspect, or explain…  (Enter to send · Ctrl+Enter for newline)"
 									: "Reconnect to start chatting."
 							}
 						/>
 						<footer>
-							<span className="composer-status">{connected ? "" : failureCopy(connection.failure)}</span>
+							<span className="composer-status">{serverReady ? "" : failureCopy(connection.failure)}</span>
 							{isSubmitting || transcript.activeTurnId ? (
 								<button
 									className="neutral-action"
 									type="button"
 									onClick={() => void stopTurn()}
-									disabled={!transcript.activeTurnId}
+									disabled={!serverReady || !transcript.activeTurnId}
 								>
 									Stop
 								</button>
@@ -1383,7 +1489,7 @@ function App({
 								<button
 									className="primary-action"
 									type="submit"
-									disabled={!connected || composer.trim().length === 0}
+									disabled={!serverReady || composer.trim().length === 0}
 								>
 									Submit
 								</button>
@@ -1393,7 +1499,7 @@ function App({
 				</section>
 			)}
 			<CommandPalette
-				open={paletteOpen}
+				open={paletteOpen && serverReady && Boolean(activeThreadId)}
 				commands={paletteData.commands}
 				tools={paletteData.tools}
 				loading={paletteData.loading}
@@ -1401,7 +1507,8 @@ function App({
 				onClose={closePalette}
 				onInsert={insertPaletteText}
 			/>
-			{loginProviderId && loginClient ? (
+			{helpOpen ? <HelpGlossary onClose={closeHelp} /> : null}
+			{loginProviderId && loginClient && serverReady ? (
 				<LoginFlowSheet
 					providerId={loginProviderId}
 					client={loginClient}
@@ -1416,7 +1523,13 @@ function App({
 	);
 }
 
-function ProviderAddForm({ onSubmit }: { onSubmit(params: GjcProviderAddParams): Promise<void> }) {
+function ProviderAddForm({
+	disabled,
+	onSubmit,
+}: {
+	disabled: boolean;
+	onSubmit(params: GjcProviderAddParams): Promise<void>;
+}) {
 	const [mode, setMode] = useState<"preset" | "custom">("preset");
 	const [preset, setPreset] = useState("");
 	const [compatibility, setCompatibility] = useState("");
@@ -1428,6 +1541,7 @@ function ProviderAddForm({ onSubmit }: { onSubmit(params: GjcProviderAddParams):
 	const [error, setError] = useState("");
 	const submit = async (event: FormEvent) => {
 		event.preventDefault();
+		if (disabled) return;
 		const modelList = models
 			.split(",")
 			.map(model => model.trim())
@@ -1466,7 +1580,11 @@ function ProviderAddForm({ onSubmit }: { onSubmit(params: GjcProviderAddParams):
 		<form className="model-panel" onSubmit={submit}>
 			<label>
 				Mode
-				<select value={mode} onChange={event => setMode(event.currentTarget.value as "preset" | "custom")}>
+				<select
+					value={mode}
+					onChange={event => setMode(event.currentTarget.value as "preset" | "custom")}
+					disabled={disabled}
+				>
 					<option value="preset">Preset</option>
 					<option value="custom">Custom compatible provider</option>
 				</select>
@@ -1474,21 +1592,34 @@ function ProviderAddForm({ onSubmit }: { onSubmit(params: GjcProviderAddParams):
 			{mode === "preset" ? (
 				<label>
 					Preset
-					<input value={preset} onChange={event => setPreset(event.currentTarget.value)} />
+					<input value={preset} onChange={event => setPreset(event.currentTarget.value)} disabled={disabled} />
 				</label>
 			) : (
 				<>
 					<label>
 						Compatibility
-						<input value={compatibility} onChange={event => setCompatibility(event.currentTarget.value)} />
+						<input
+							value={compatibility}
+							onChange={event => setCompatibility(event.currentTarget.value)}
+							disabled={disabled}
+						/>
 					</label>
 					<label>
 						Provider ID
-						<input value={providerId} onChange={event => setProviderId(event.currentTarget.value)} />
+						<input
+							value={providerId}
+							onChange={event => setProviderId(event.currentTarget.value)}
+							disabled={disabled}
+						/>
 					</label>
 					<label>
 						Base URL
-						<input type="url" value={baseUrl} onChange={event => setBaseUrl(event.currentTarget.value)} />
+						<input
+							type="url"
+							value={baseUrl}
+							onChange={event => setBaseUrl(event.currentTarget.value)}
+							disabled={disabled}
+						/>
 					</label>
 					<label>
 						API key environment variable
@@ -1496,20 +1627,26 @@ function ProviderAddForm({ onSubmit }: { onSubmit(params: GjcProviderAddParams):
 							value={apiKeyEnv}
 							onChange={event => setApiKeyEnv(event.currentTarget.value)}
 							placeholder="OPENAI_API_KEY"
+							disabled={disabled}
 						/>
 					</label>
 					<label>
 						Models (comma-separated)
-						<input value={models} onChange={event => setModels(event.currentTarget.value)} />
+						<input value={models} onChange={event => setModels(event.currentTarget.value)} disabled={disabled} />
 					</label>
 				</>
 			)}
 			<label>
-				<input type="checkbox" checked={force} onChange={event => setForce(event.currentTarget.checked)} /> Replace
-				existing provider
+				<input
+					type="checkbox"
+					checked={force}
+					onChange={event => setForce(event.currentTarget.checked)}
+					disabled={disabled}
+				/>{" "}
+				Replace existing provider
 			</label>
 			{error ? <p className="model-panel__hint model-panel__hint--error">{error}</p> : null}
-			<button type="submit" className="primary-action">
+			<button type="submit" className="primary-action" disabled={disabled}>
 				Add provider
 			</button>
 		</form>
@@ -1547,34 +1684,11 @@ function websocketUrl(endpoint: EndpointDescriptor): string {
 	return url.toString();
 }
 
-function describeFailure(error: unknown): ConnectionState {
-	const message = errorMessage(error);
-	return { kind: "error", failure: classifyFailure(message), detail: message };
-}
-
-function classifyFailure(message: string): FailureKind {
-	const lower = message.toLowerCase();
-	if (lower.includes("origin") || lower.includes("forbidden")) return "origin-rejected";
-	if (lower.includes("token") || lower.includes("unauthorized")) return "token-rejected";
-	if (lower.includes("stale")) return "stale-discovery";
-	if (lower.includes("crash") || lower.includes("closed") || lower.includes("disconnect")) return "sidecar-crash";
-	if (lower.includes("connect") || lower.includes("unavailable") || lower.includes("readyz"))
-		return "server-unavailable";
-	return "unknown";
-}
-
-function errorMessage(error: unknown): string {
-	if (error instanceof AppServerResponseError || error instanceof AppServerConnectionError || error instanceof Error)
-		return error.message;
-	if (typeof error === "string") return error;
-	return "Unknown app-server failure";
-}
-
 function ConnectionBadge({ connection, modelLabel }: { connection: ConnectionState; modelLabel: string }) {
 	const state =
 		connection.kind === "connected"
 			? "connected"
-			: connection.kind === "connecting" || connection.kind === "reconnecting"
+			: connection.kind === "booting" || connection.kind === "connecting" || connection.kind === "reconnecting"
 				? "reconnecting"
 				: "disconnected";
 	return (
@@ -1585,12 +1699,97 @@ function ConnectionBadge({ connection, modelLabel }: { connection: ConnectionSta
 	);
 }
 
+function ConnectionBusyPanel({ reconnecting = false }: { reconnecting?: boolean }) {
+	return (
+		<section className="connection-error connection-error--booting" role="status" aria-live="polite">
+			<p className="eyebrow">{reconnecting ? "Reconnecting desktop chat" : "Opening desktop chat"}</p>
+			<h2>
+				{reconnecting
+					? "Gajae Code is reconnecting to the local chat connection."
+					: "Gajae Code is opening the local chat connection."}
+			</h2>
+			<p>This normally takes only a moment.</p>
+		</section>
+	);
+}
+
+function HelpGlossary({ onClose }: { onClose(): void }) {
+	const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+	useEffect(() => {
+		closeButtonRef.current?.focus();
+	}, []);
+
+	function trapFocus(event: ReactKeyboardEvent<HTMLElement>) {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			onClose();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		const focusable = Array.from(
+			event.currentTarget.querySelectorAll<HTMLElement>(
+				'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+			),
+		).filter(element => !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true");
+		if (focusable.length === 0) return;
+		const first = focusable[0];
+		const last = focusable[focusable.length - 1];
+		const active = document.activeElement;
+		if (event.shiftKey && (active === first || !event.currentTarget.contains(active))) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && (active === last || !event.currentTarget.contains(active))) {
+			event.preventDefault();
+			first.focus();
+		}
+	}
+
+	return (
+		<section
+			className="sheet-backdrop"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="desktop-chat-help-title"
+			onKeyDown={trapFocus}
+		>
+			<div className="login-flow-sheet">
+				<header>
+					<strong id="desktop-chat-help-title">Desktop chat help</strong>
+					<button type="button" ref={closeButtonRef} onClick={onClose}>
+						Close
+					</button>
+				</header>
+				<dl>
+					<dt>Chat / session</dt>
+					<dd>A conversation and its saved history.</dd>
+					<dt>Scratch chat</dt>
+					<dd>A chat that starts without choosing a project folder.</dd>
+					<dt>Project folder / working directory</dt>
+					<dd>The folder gajae uses for project-scoped work.</dd>
+					<dt>Compact</dt>
+					<dd>Shortens older context while keeping the current conversation usable.</dd>
+					<dt>Copy / Dump</dt>
+					<dd>Copies the latest answer or the visible conversation.</dd>
+					<dt>Approvals</dt>
+					<dd>Requests that need your decision before work continues.</dd>
+					<dt>Coming later</dt>
+					<dd>Disabled controls are visible previews and do not change settings.</dd>
+				</dl>
+			</div>
+		</section>
+	);
+}
+
 function ConnectionErrorPanel({ connection, onReconnect }: { connection: ConnectionState; onReconnect(): void }) {
+	const detail = connection.detail
+		? redactDetail(connection.detail)
+		: "The desktop shell has not provided a usable local chat connection.";
 	return (
 		<section className={`connection-error connection-error--${connection.failure ?? "unknown"}`} role="alert">
 			<p className="eyebrow">{failureTitle(connection.failure)}</p>
 			<h2>{failureCopy(connection.failure)}</h2>
-			<p>{connection.detail ?? "The desktop shell has not provided a usable app-server endpoint."}</p>
+			<p>{detail}</p>
 			<div className="button-row">
 				<button className="primary-action" type="button" onClick={onReconnect}>
 					Reconnect
@@ -1605,7 +1804,7 @@ function EmptyTranscript({ connected }: { connected: boolean }) {
 	return (
 		<section className="empty-state">
 			<p className="eyebrow">gajae</p>
-			<h2>Message gajae to start chatting.</h2>
+			<h2>{connected ? "Start with a scratch chat." : "Message gajae to start chatting."}</h2>
 			<p>
 				{connected
 					? "Just type below and press Enter — a chat starts automatically in a scratch directory. Pick a working directory on the left first if you want a project-scoped chat."
@@ -1616,24 +1815,27 @@ function EmptyTranscript({ connected }: { connected: boolean }) {
 }
 
 function SessionSetupPanel({
-	connected,
+	serverReady,
 	workingDirectory,
 	recentDirectories,
 	isPickingDirectory,
+	error,
 	onWorkingDirectoryChange,
 	onPickDirectory,
 	onStart,
 }: {
-	connected: boolean;
+	serverReady: boolean;
 	workingDirectory: string;
 	recentDirectories: string[];
 	isPickingDirectory: boolean;
+	error?: string;
 	onWorkingDirectoryChange(value: string): void;
 	onPickDirectory(): void;
 	onStart(): void;
 }) {
 	const normalized = normalizeDirectoryInput(workingDirectory);
 	const hasInput = workingDirectory.trim().length > 0;
+	const startDirectory = startChatDirectory(workingDirectory);
 	return (
 		<section className="session-setup" aria-label="Session setup">
 			<label htmlFor="gjc-session-cwd">Working directory</label>
@@ -1650,7 +1852,7 @@ function SessionSetupPanel({
 					className="neutral-action"
 					type="button"
 					onClick={onPickDirectory}
-					disabled={!connected || isPickingDirectory}
+					disabled={!serverReady || isPickingDirectory}
 				>
 					{isPickingDirectory ? "Picking" : "Browse"}
 				</button>
@@ -1660,6 +1862,7 @@ function SessionSetupPanel({
 					? "Enter an absolute path or choose a folder."
 					: "Optional — leave blank to chat in a scratch directory, or pick a folder for a project-scoped chat."}
 			</p>
+			{error ? <p className="model-panel__hint model-panel__hint--error">{error}</p> : null}
 			{recentDirectories.length > 0 ? (
 				<div className="recent-directories" aria-label="Recent directories">
 					{recentDirectories.map(directory => (
@@ -1668,14 +1871,15 @@ function SessionSetupPanel({
 							type="button"
 							key={directory}
 							onClick={() => onWorkingDirectoryChange(directory)}
+							title={redactDirectoryPath(directory)}
 						>
-							{basename(directory)}
+							{recentDirectoryDisplay(directory)}
 						</button>
 					))}
 				</div>
 			) : null}
-			<button className="primary-action" type="button" onClick={onStart} disabled={!connected || !normalized}>
-				Start thread
+			<button className="primary-action" type="button" onClick={onStart} disabled={!serverReady || !startDirectory}>
+				Start chat
 			</button>
 		</section>
 	);
@@ -1693,9 +1897,10 @@ function statusPill(status: TranscriptItem["status"]): string | undefined {
 }
 
 function toolHint(status: TranscriptItem["status"]): string | undefined {
-	if (status === "running") return "running…";
-	if (status === "error") return "error";
-	if (status === "interrupted") return "interrupted";
+	if (status === "running") return "Running…";
+	if (status === "completed" || status === "success") return "Done";
+	if (status === "error") return "Failed";
+	if (status === "interrupted") return "Stopped";
 	return undefined;
 }
 
@@ -1728,7 +1933,7 @@ function TranscriptCard({ item }: { item: TranscriptItem }) {
 
 	const pill = statusPill(item.status);
 	const text = cleanAssistantText(item.content ?? "");
-	const placeholder = item.role === "assistant" ? "gajae is responding…" : "Working…";
+	const placeholder = item.role === "assistant" ? "Writing…" : "Working…";
 	return (
 		<article className={`message message--${item.role} message--${item.status}`} aria-busy={running}>
 			<header>
@@ -1778,7 +1983,7 @@ function TurnCard({ items }: { items: TranscriptItem[] }) {
 					</div>
 				) : null;
 			})}
-			{running && !hasVisibleText ? <p className="message-status">gajae is responding…</p> : null}
+			{running && !hasVisibleText ? <p className="message-status">Writing…</p> : null}
 		</article>
 	);
 }
@@ -1787,7 +1992,12 @@ function ToolCard({ item, nested }: { item: TranscriptItem; nested?: boolean }) 
 	const running = item.status === "running";
 	const hint = toolHint(item.status);
 	const tool = item.tool ?? { name: item.title || itemLabel(item), output: (item.content ?? "").trim() };
-	const diff = isEditTool(tool.name, item.title) ? parseDiff(tool.output ?? item.content ?? "") : undefined;
+	const safeArgs = tool.args ? safeToolText(tool.args) : undefined;
+	const safeOutput = tool.output ? safeToolText(tool.output) : undefined;
+	const safeError = tool.error ? safeToolText(tool.error) : undefined;
+	const diff = isEditTool(tool.name, item.title)
+		? parseDiff(safeOutput ?? safeToolText(item.content ?? ""))
+		: undefined;
 	return (
 		<details
 			className={`message message--${item.role} message--${item.status} tool-card${nested ? " tool-card--nested" : ""}`}
@@ -1795,18 +2005,18 @@ function ToolCard({ item, nested }: { item: TranscriptItem; nested?: boolean }) 
 		>
 			<summary>
 				<span className="tool-card__icon" aria-hidden="true" />
-				<span className="tool-card__title">{tool.name}</span>
+				<span className="tool-card__title">{safeToolText(tool.name, 160)}</span>
 				{hint ? <span className="message__hint tool-card__status">{hint}</span> : null}
 			</summary>
 			<div className="tool-card__sections">
-				{tool.args ? <ToolSection label="args" text={tool.args} collapsed /> : null}
+				{safeArgs ? <ToolSection label="args" text={safeArgs} collapsed /> : null}
 				{diff && diff.lines.length > 0 ? (
 					<DiffBlock diff={diff} />
-				) : tool.output ? (
-					<ToolSection label="output" text={tool.output} />
+				) : safeOutput ? (
+					<ToolSection label="output" text={safeOutput} />
 				) : null}
-				{tool.error ? <ToolSection label="error" text={tool.error} tone="danger" /> : null}
-				{!tool.args && !tool.output && !tool.error ? (
+				{safeError ? <ToolSection label="error" text={safeError} tone="danger" /> : null}
+				{!safeArgs && !safeOutput && !safeError ? (
 					<p className="message-status">{running ? "Running…" : "No output"}</p>
 				) : null}
 			</div>
@@ -1925,11 +2135,13 @@ function prettyToolText(text: string): string {
 
 function ApprovalCard({
 	approval,
+	disabled,
 	onResolve,
 	onResolveHostUri,
 	onRespondWorkflowGate,
 }: {
 	approval: ApprovalGate;
+	disabled: boolean;
 	onResolve(approval: ApprovalGate, approved: boolean): Promise<void>;
 	onResolveHostUri(
 		approval: ApprovalGate,
@@ -1941,17 +2153,19 @@ function ApprovalCard({
 	if (approval.kind === "host-uri") {
 		return (
 			<article className={`hosturi-card hosturi-card--${approval.status}`}>
-				<p className="eyebrow">Host URI · {approval.status}</p>
+				<p className="eyebrow">Host URI · {approvalStatusLabel(approval.status)}</p>
 				<h2>
-					{approval.operation.toUpperCase()} {approval.url}
+					{approval.operation.toUpperCase()} {redactHostUri(approval.url)}
 				</h2>
 				<p>gajae requested host access to this URI.</p>
-				{approval.content ? <pre>{approval.content}</pre> : null}
+				{approval.contentPreview || approval.content ? (
+					<pre>{safeToolText(approval.contentPreview ?? approval.content ?? "")}</pre>
+				) : null}
 				<div className="button-row">
 					<button
 						className="primary-action"
 						type="button"
-						disabled={approval.status !== "pending"}
+						disabled={disabled || approval.status !== "pending"}
 						onClick={() => void onResolveHostUri(approval, true)}
 					>
 						Approve
@@ -1959,7 +2173,7 @@ function ApprovalCard({
 					<button
 						className="neutral-action"
 						type="button"
-						disabled={approval.status !== "pending"}
+						disabled={disabled || approval.status !== "pending"}
 						onClick={() => void onResolveHostUri(approval, false)}
 					>
 						Reject
@@ -1973,15 +2187,16 @@ function ApprovalCard({
 		const options = approval.options?.length ? approval.options : undefined;
 		const question = approval.context.title ?? approval.context.prompt ?? approval.context.summary;
 		const supported = isSupportedWorkflowGate(approval);
+		const gateStatus = supported ? approvalStatusLabel(approval.status) : "Respond in terminal app";
 		return (
 			<article className={`workflow-gate-card workflow-gate-card--${supported ? approval.status : "unsupported"}`}>
-				<p className="eyebrow">Workflow gate · {supported ? approval.status : "manual/unsupported"}</p>
+				<p className="eyebrow">Workflow gate · {gateStatus}</p>
 				<h2>
 					{approval.gateKind} · {approval.stage}
 				</h2>
 				<p>{approval.required ? "Required" : "Optional"} gate awaiting an answer.</p>
-				{question ? <p>{question}</p> : null}
-				{approval.error ? <p className="message-status">{approval.error}</p> : null}
+				{question ? <p>{safeToolText(question, 1200)}</p> : null}
+				{approval.error ? <p className="message-status">{safeToolText(approval.error, 1200)}</p> : null}
 				{supported && options ? (
 					<div className="button-row">
 						{options.map(option => (
@@ -1989,35 +2204,34 @@ function ApprovalCard({
 								className="neutral-action"
 								type="button"
 								key={option.label}
-								disabled={approval.status !== "pending"}
+								disabled={disabled || approval.status !== "pending"}
 								onClick={() => void onRespondWorkflowGate(approval, option.value)}
 							>
-								{option.label}
+								{safeToolText(option.label, 160)}
 							</button>
 						))}
 					</div>
 				) : (
 					<p className="message-status">
-						This workflow gate schema is not one of the GUI-supported answer shapes. Answer it manually outside
-						the GUI.
+						This answer shape is not supported here; respond in the terminal app to continue.
 					</p>
 				)}
-				<pre>{jsonPreview(approval.schema)}</pre>
+				<pre>{safeWorkflowGateContext(approval.schema)}</pre>
 			</article>
 		);
 	}
 
 	return (
 		<article className={`approval-gate approval-gate--${approval.status}`}>
-			<p className="eyebrow">Approval gate · {approval.status}</p>
-			<h2>{approval.tool}</h2>
+			<p className="eyebrow">Host tool approval · {approvalStatusLabel(approval.status)}</p>
+			<h2>{safeToolText(approval.tool, 160)}</h2>
 			<p>gajae requested permission to continue this blocked tool action.</p>
-			<pre>{jsonPreview(approval.args)}</pre>
+			<pre>{safeWorkflowGateContext(approval.args)}</pre>
 			<div className="button-row">
 				<button
 					className="primary-action"
 					type="button"
-					disabled={approval.status !== "pending"}
+					disabled={disabled || approval.status !== "pending"}
 					onClick={() => void onResolve(approval, true)}
 				>
 					Approve
@@ -2025,7 +2239,7 @@ function ApprovalCard({
 				<button
 					className="neutral-action"
 					type="button"
-					disabled={approval.status !== "pending"}
+					disabled={disabled || approval.status !== "pending"}
 					onClick={() => void onResolve(approval, false)}
 				>
 					Reject
@@ -2053,8 +2267,19 @@ function DeferredExecStateList() {
 	);
 }
 
-function jsonPreview(value: JsonValue): string {
-	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+function approvalStatusLabel(status: ApprovalGate["status"]): string {
+	switch (status) {
+		case "pending":
+			return "Waiting";
+		case "approved":
+			return "Approved";
+		case "rejected":
+			return "Rejected";
+		case "cancelled":
+			return "Cancelled";
+		case "failed":
+			return "Failed";
+	}
 }
 
 function isSupportedWorkflowGate(approval: ApprovalGate): boolean {
@@ -2109,33 +2334,11 @@ function itemLabel(item: TranscriptItem): string {
 }
 
 function threadPrimaryLabel(thread: { cwd?: string; title?: string; id: string }): string {
-	return thread.cwd ? basename(thread.cwd) : threadLabel(thread.title, thread.id);
+	return thread.cwd ? basename(redactDirectoryPath(thread.cwd)) : threadLabel(thread.title, thread.id);
 }
 
 function threadSuffix(id: string): string {
 	return id.length > 8 ? id.slice(-8) : id;
-}
-
-function normalizeDirectoryInput(value: string): string {
-	const trimmed = value.trim();
-	if (!trimmed) return "";
-	return trimmed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(trimmed) ? trimmed : "";
-}
-
-function basename(path: string): string {
-	const normalized = path.replace(/[\\/]+$/, "");
-	return normalized.split(/[\\/]/).pop() || normalized || path;
-}
-
-function readRecentDirectories(storage: Pick<Storage, "getItem">): string[] {
-	try {
-		const parsed = JSON.parse(storage.getItem(RECENT_DIRECTORIES_KEY) ?? "[]");
-		return Array.isArray(parsed)
-			? parsed.filter((value): value is string => typeof value === "string").slice(0, MAX_RECENT_DIRECTORIES)
-			: [];
-	} catch {
-		return [];
-	}
 }
 
 function rememberDirectory(
@@ -2143,49 +2346,31 @@ function rememberDirectory(
 	setRecentDirectories: (directories: string[]) => void,
 	storage: Pick<Storage, "getItem" | "setItem">,
 ): void {
-	const next = [directory, ...readRecentDirectories(storage).filter(existing => existing !== directory)].slice(
-		0,
-		MAX_RECENT_DIRECTORIES,
-	);
-	storage.setItem(RECENT_DIRECTORIES_KEY, JSON.stringify(next));
+	const next = rememberDirectoryValue(readRecentDirectories(storage), directory);
+	writeRecentDirectories(storage, next);
 	setRecentDirectories(next);
 }
 
+export function persistedSessionLabel({
+	title,
+	firstMessage,
+	id,
+}: {
+	title?: string | null;
+	firstMessage?: string | null;
+	id: string;
+}): string {
+	return redactDirectoryPath(title || firstMessage || id);
+}
+
 function threadLabel(title: string | undefined, id: string): string {
-	const normalized = title?.trim();
+	const normalized = redactDirectoryPath(title?.trim() ?? "");
 	if (normalized && !looksGeneratedThreadTitle(normalized))
 		return normalized.length > 64 ? `${normalized.slice(0, 61)}…` : normalized;
 	const compactId = id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
-	return `Thread ${compactId}`;
+	return `Chat ${compactId}`;
 }
 
 function looksGeneratedThreadTitle(title: string): boolean {
 	return /^[0-9a-f]{8}-[0-9a-f-]{13,}$/i.test(title) || title.startsWith("thread-") || title.length > 80;
-}
-
-function failureTitle(failure: FailureKind | undefined): string {
-	return failure ? failure.replaceAll("-", " ") : "Connection unavailable";
-}
-
-function failureCopy(failure: FailureKind | undefined): string {
-	switch (failure) {
-		case "origin-rejected":
-			return "Origin was rejected by the app-server allowlist.";
-		case "token-rejected":
-			return "The endpoint token was rejected.";
-		case "stale-discovery":
-			return "The discovery record is stale.";
-		case "sidecar-crash":
-			return "The sidecar disconnected or crashed.";
-		case "server-unavailable":
-			return "The app-server is unavailable.";
-		default:
-			return "The app-server connection is not ready.";
-	}
-}
-
-function safeEndpoint(endpointUrl: string): string {
-	const url = new URL(endpointUrl);
-	url.searchParams.delete("token");
-	return url.toString();
 }

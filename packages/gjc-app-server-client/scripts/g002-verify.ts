@@ -7,7 +7,6 @@
 
 import { AppServerClient, AppServerResponseError } from "../src/client";
 
-
 type Listener = (event: { data: unknown }) => void;
 
 class FakeSocket {

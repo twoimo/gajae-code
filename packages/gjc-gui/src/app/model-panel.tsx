@@ -54,8 +54,8 @@ export function ModelPanel({ currentModel, disabled, onApply }: ModelPanelProps)
 				/>
 				<p id="model-panel-hint" className={`model-panel__hint ${validation.ok ? "" : "model-panel__hint--error"}`}>
 					{disabled
-						? "Connect and select a thread before setting a model."
-						: (validation.error ?? "Calls existing gjc/model/set only.")}
+						? "Connect before setting the model for the selected chat."
+						: (validation.error ?? "Set the model for the selected chat.")}
 				</p>
 				<button className="primary-action" type="submit" disabled={!canApply}>
 					Apply
@@ -66,10 +66,10 @@ export function ModelPanel({ currentModel, disabled, onApply }: ModelPanelProps)
 				<ul>
 					{DEFERRED_MODEL_SURFACES.map(surface => (
 						<li key={surface.name}>
-							<button type="button" disabled title={surface.unblock}>
+							<button type="button" disabled>
 								<strong>{surface.name}</strong>
-								<span>{surface.rationale}</span>
-								<em>{surface.unblock}</em>
+								<span>{deferredModelCopy(surface.name)}</span>
+								<em>Coming later.</em>
 							</button>
 						</li>
 					))}
@@ -77,4 +77,19 @@ export function ModelPanel({ currentModel, disabled, onApply }: ModelPanelProps)
 			</details>
 		</section>
 	);
+}
+
+function deferredModelCopy(name: string): string {
+	switch (name) {
+		case "model-catalog":
+			return "Browse available models.";
+		case "thinking":
+			return "Choose how much reasoning to use.";
+		case "fast":
+			return "Toggle faster responses.";
+		case "settings":
+			return "Adjust advanced model settings.";
+		default:
+			return "Additional controls.";
+	}
 }

@@ -1,4 +1,5 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { redactDirectoryPath } from "./directory-logic";
 import { type ConfirmState, cancelConfirm, confirmSessionAction, openConfirm } from "./session-actions-logic";
 import type { ThreadView } from "./transcript";
 
@@ -13,8 +14,9 @@ type SessionActionsProps = {
 
 export function SessionActions({ thread, onFork, onArchive, onDelete, onMove, disabled = false }: SessionActionsProps) {
 	const [confirm, setConfirm] = useState<ConfirmState>(null);
+	const displayThread = { ...thread, title: redactDirectoryPath(thread.title) };
 	return (
-		<div className="session-actions" aria-label={`Session actions for ${thread.title}`}>
+		<div className="session-actions" aria-label={`Session actions for ${displayThread.title}`}>
 			<div className="session-actions__row">
 				<button
 					className="neutral-action session-actions__button"
@@ -36,7 +38,7 @@ export function SessionActions({ thread, onFork, onArchive, onDelete, onMove, di
 					className="neutral-action session-actions__button session-actions__button--danger"
 					type="button"
 					disabled={disabled || thread.status === "archived"}
-					onClick={() => setConfirm(openConfirm("archive", thread))}
+					onClick={() => setConfirm(openConfirm("archive", displayThread))}
 				>
 					Archive
 				</button>
@@ -44,11 +46,37 @@ export function SessionActions({ thread, onFork, onArchive, onDelete, onMove, di
 					className="neutral-action session-actions__button session-actions__button--danger"
 					type="button"
 					disabled={disabled}
-					onClick={() => setConfirm(openConfirm("delete", thread))}
+					onClick={() => setConfirm(openConfirm("delete", displayThread))}
 				>
 					Delete
 				</button>
 			</div>
+			<details className="session-actions__deferred" open>
+				<summary>More session actions</summary>
+				<ul>
+					<li>
+						<button className="neutral-action session-actions__button" type="button" disabled>
+							<strong>Rename</strong>
+							<span>Change the session name.</span>
+							<em>Coming later.</em>
+						</button>
+					</li>
+					<li>
+						<button className="neutral-action session-actions__button" type="button" disabled>
+							<strong>Provider sign-in</strong>
+							<span>Manage provider sign-in.</span>
+							<em>Coming later.</em>
+						</button>
+					</li>
+					<li>
+						<button className="neutral-action session-actions__button" type="button" disabled>
+							<strong>Share</strong>
+							<span>Share this session with others.</span>
+							<em>Coming later.</em>
+						</button>
+					</li>
+				</ul>
+			</details>
 			{confirm ? (
 				<ConfirmDialog
 					state={confirm}
@@ -108,7 +136,7 @@ export function ConfirmDialog({
 			>
 				<h2 id="session-confirm-title">{action} session?</h2>
 				<p id="session-confirm-copy">
-					{action} <strong>{state.title}</strong> ({state.threadId})?
+					{action} <strong>{state.title}</strong>?
 				</p>
 				<div className="session-confirm__buttons">
 					<button className="neutral-action" type="button" ref={cancelRef} onClick={onCancel}>

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { parseHTML } from "linkedom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { parseHTML } from "linkedom";
-import { LoginFlowSheet, type LoginFlowClient } from "./login-flow-sheet";
+import { type LoginFlowClient, LoginFlowSheet } from "./login-flow-sheet";
 
 let mountedRoot: Root | undefined;
 
@@ -15,7 +15,7 @@ afterEach(() => {
 
 describe("LoginFlowSheet", () => {
 	test("redirect completion is a masked one-shot secret and clears after submit", async () => {
-		const { document, Event } = parseHTML("<main id=\"root\"></main>");
+		const { document, Event } = parseHTML('<main id="root"></main>');
 		globalThis.document = document;
 		globalThis.window = document.defaultView ?? globalThis.window;
 		globalThis.Event = Event;

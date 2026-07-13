@@ -56,6 +56,25 @@ describe("ExtensionRunner", () => {
 		};
 	};
 
+	describe("headless UI", () => {
+		it("rejects custom UI components", async () => {
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			await expect(
+				runner.getUIContext().custom(() => {
+					throw new Error("custom factory must not be invoked");
+				}),
+			).rejects.toThrow("Custom UI components are unavailable in this mode");
+		});
+	});
+
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `

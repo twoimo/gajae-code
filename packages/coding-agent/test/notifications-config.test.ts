@@ -193,6 +193,14 @@ describe("notifications config", () => {
 			}),
 		).toBe(true);
 
+		expect(
+			isSessionNotificationsEnabled({
+				cfg: BASE_CFG,
+				env: { GJC_NOTIFICATIONS_TOKEN: " \t " },
+				sessionDisabled: false,
+			}),
+		).toBe(false);
+
 		expect(isSessionNotificationsEnabled({ cfg: GLOBAL_CFG, env: {}, sessionDisabled: false })).toBe(true);
 		expect(isSessionNotificationsEnabled({ cfg: BASE_CFG, env: {}, sessionDisabled: false })).toBe(false);
 	});
@@ -208,6 +216,9 @@ describe("notifications config", () => {
 		expect(
 			shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: { GJC_NOTIFICATIONS_TOKEN: "legacy-token" } }),
 		).toBe(true);
+		expect(shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: { GJC_NOTIFICATIONS_TOKEN: " \t " } })).toBe(
+			false,
+		);
 		expect(shouldRegisterNotificationsExtension({ cfg: GLOBAL_CFG, env: {} })).toBe(true);
 		expect(shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: {} })).toBe(false);
 		expect(shouldRegisterNotificationsExtension({ env: {} })).toBe(false);

@@ -120,9 +120,11 @@ export class StartupUpdateOrchestrator {
 	}
 
 	attachAfterInteractiveInitialization(notify: (version: string) => void): void {
-		this.#versionCheckPromise?.then(version => {
-			if (version && this.#enabled()) notify(version);
-		}).catch(() => {});
+		this.#versionCheckPromise
+			?.then(version => {
+				if (version && this.#enabled()) notify(version);
+			})
+			.catch(() => {});
 	}
 }
 
@@ -1028,8 +1030,7 @@ export async function runRootCommand(
 		Bun.env.PI_NO_TITLE = "1";
 	}
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
-		const pipedInput =
-			parsedArgs.mode === "app-server" ? undefined : await (deps.readPipedInput ?? readPipedInput)();
+		const pipedInput = parsedArgs.mode === "app-server" ? undefined : await (deps.readPipedInput ?? readPipedInput)();
 		if (parsedArgs.fileArgs.length === 0) {
 			return { pipedInput, fileText: undefined, fileImages: undefined };
 		}

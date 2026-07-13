@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { RpcWorkflowGate } from "@gajae-code/coding-agent/modes/shared/agent-wire/protocol";
@@ -151,6 +151,68 @@ describe("WorkflowGateBroker", () => {
 		);
 	});
 
+	it("completes advance before returning an idempotent replay after a crash", async () => {
+		const store = new MemoryGateStore();
+		let advances = 0;
+		const broker = new WorkflowGateBroker("run-replay-advance", store, {
+			advance: () => {
+				advances++;
+			},
+		});
+		const gate = broker.openGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } });
+		const response = { gate_id: gate.gate_id, answer: "approve", idempotency_key: "replay-key" };
+
+		await expect(
+			broker.resolve(response, {
+				beforeAdvance: async () => {
+					throw new Error("simulated crash before advance");
+				},
+			}),
+		).rejects.toThrow(/crash/);
+		const cachedResolution = store.get(gate.gate_id)?.resolution;
+		expect(store.get(gate.gate_id)).toMatchObject({ status: "accepted", advanced: false });
+		if (!cachedResolution) throw new Error("accepted gate must retain a resolution before replay");
+
+		const replay = await broker.resolve(response);
+		expect(replay).toEqual(cachedResolution);
+		expect(store.get(gate.gate_id)).toMatchObject({ status: "accepted", advanced: true });
+		expect(advances).toBe(1);
+
+		await expect(broker.resolve(response)).resolves.toEqual(replay);
+		expect(advances).toBe(1);
+	});
+
+	it("audits failed emission while preserving the pending gate for a later answer", async () => {
+		const store = new MemoryGateStore();
+		const audit: GateAuditEvent[] = [];
+		const broker = new WorkflowGateBroker("run-emit-failed", store, {
+			emit: () => {
+				throw new Error("emit unavailable");
+			},
+			audit: event => audit.push(event),
+		});
+
+		expect(() => broker.openGate({ stage: "deep-interview", kind: "question", schema: { type: "string" } })).toThrow(
+			/emit unavailable/,
+		);
+		const [persisted] = store.list();
+		expect(persisted).toMatchObject({ status: "pending", advanced: false });
+		expect(audit).toEqual([
+			{
+				event: "gate_emit_failed",
+				gate_id: persisted?.gate.gate_id,
+				stage: "deep-interview",
+				kind: "question",
+			},
+		]);
+
+		await expect(broker.resolve({ gate_id: persisted?.gate.gate_id ?? "", answer: "answer" })).resolves.toMatchObject(
+			{
+				status: "accepted",
+			},
+		);
+	});
+
 	it("throws on unknown gate ids", async () => {
 		const { broker } = makeBroker();
 		await expect(broker.resolve({ gate_id: "wg_x_ralplan_000099", answer: 1 })).rejects.toThrow(
@@ -222,6 +284,202 @@ describe("WorkflowGateBroker", () => {
 		// A second recover() is a no-op (already advanced).
 		expect(await b2.recover()).toEqual([]);
 		expect(advances).toBe(1);
+	});
+
+	async function writeAcceptedUnadvancedState(file: string): Promise<string> {
+		const broker = new WorkflowGateBroker("run-fixture", new FileGateStore(file), {
+			advance: () => {
+				throw new Error("simulated crash during advance");
+			},
+		});
+		const gate = broker.openGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } });
+		await expect(broker.resolve({ gate_id: gate.gate_id, answer: "approve" })).rejects.toThrow(/crash/);
+		return gate.gate_id;
+	}
+
+	function tamperState(file: string, mutate: (state: Record<string, unknown>) => void): void {
+		const state = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+		mutate(state);
+		writeFileSync(file, JSON.stringify(state));
+	}
+
+	it("quarantines accepted records missing their durable resolution", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-accepted-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			delete (state.gates as Record<string, Record<string, unknown>>)[gateId]?.resolution;
+		});
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines an unadvanced accepted answer that no longer matches its hashes", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-answer-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			(state.gates as Record<string, Record<string, unknown>>)[gateId]!.answer = "tampered answer";
+		});
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines a gate whose stored schema_hash does not match its schema", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-schema-hash-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			const gate = (state.gates as Record<string, Record<string, Record<string, unknown>>>)[gateId]!.gate;
+			gate.schema_hash = "not-the-real-hash";
+		});
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines a gate missing required protocol fields", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-fields-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			const gate = (state.gates as Record<string, Record<string, Record<string, unknown>>>)[gateId]!.gate;
+			delete gate.created_at;
+			delete gate.required;
+		});
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines a record carrying a malformed ackPolicy union", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-ack-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			(state.gates as Record<string, Record<string, unknown>>)[gateId]!.ackPolicy = { kind: "bogus" };
+		});
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines a gate advertising malformed options or non-literal required", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-options-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			const gate = (state.gates as Record<string, Record<string, Record<string, unknown>>>)[gateId]!.gate;
+			gate.options = [{ value: "a" }];
+		});
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		unlinkSync(`${file}.corrupt.lock`);
+
+		const gateId2 = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			const gate = (state.gates as Record<string, Record<string, Record<string, unknown>>>)[gateId2]!.gate;
+			gate.required = false;
+		});
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines a telegram ack policy missing updatedAt or carrying a malformed outcome", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-ack-fields-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			(state.gates as Record<string, Record<string, unknown>>)[gateId]!.ackPolicy = {
+				kind: "telegram_selected_v1",
+				commitKey: "commit",
+				actionId: "action",
+				state: "pending",
+			};
+		});
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		unlinkSync(`${file}.corrupt.lock`);
+
+		const gateId2 = await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			(state.gates as Record<string, Record<string, unknown>>)[gateId2]!.ackPolicy = {
+				kind: "telegram_selected_v1",
+				commitKey: "commit",
+				actionId: "action",
+				state: "delivered",
+				updatedAt: "now",
+				outcome: { status: "delivered" },
+			};
+		});
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("quarantines state whose counter could reuse a persisted gate id", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-counter-"));
+		const file = path.join(dir, "gates.json");
+		await writeAcceptedUnadvancedState(file);
+		tamperState(file, state => {
+			(state.counters as Record<string, number>).ralplan = 0;
+		});
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(true);
+	});
+
+	it("keeps a corrupt FileGateStore locked until its marker is manually removed", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-lock-"));
+		const file = path.join(dir, "gates.json");
+		const marker = `${file}.corrupt.lock`;
+		writeFileSync(file, "{ not valid json");
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({
+			quarantinedPath: expect.stringContaining(`${file}.corrupt-`),
+			reason: expect.any(String),
+		});
+		expect(() => new FileGateStore(file)).toThrow(/quarantine marker.*manually remove/);
+
+		unlinkSync(marker);
+		expect(new FileGateStore(file).list()).toEqual([]);
+	});
+
+	it("loads a structurally valid persisted gate state", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-valid-state-"));
+		const file = path.join(dir, "gates.json");
+		const gateId = await writeAcceptedUnadvancedState(file);
+		const pendingGateId = new WorkflowGateBroker("run-fixture", new FileGateStore(file), {}).openGate({
+			stage: "deep-interview",
+			kind: "question",
+			schema: { type: "string" },
+		}).gate_id;
+
+		const reopened = new FileGateStore(file);
+		expect(reopened.get(gateId)).toMatchObject({ status: "accepted", advanced: false });
+		expect(reopened.get(pendingGateId)).toMatchObject({ status: "pending", advanced: false });
+		expect(existsSync(`${file}.corrupt.lock`)).toBe(false);
+	});
+
+	it("quarantines structurally corrupt FileGateStore state", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "gate-corrupt-shape-"));
+		const file = path.join(dir, "gates.json");
+		writeFileSync(
+			file,
+			JSON.stringify({
+				counters: { ralplan: -1 },
+				gates: {
+					wg_wrong_ralplan_000001: {
+						gate: { gate_id: "wg_different_ralplan_000001" },
+						status: "invalid",
+						advanced: "false",
+					},
+				},
+			}),
+		);
+
+		expect(() => new FileGateStore(file)).toThrow(/corrupt gate store/);
+		expect(readdirSync(dir).some(name => name.startsWith("gates.json.corrupt-"))).toBe(true);
 	});
 
 	it("fails closed on a corrupt FileGateStore instead of silently resetting", () => {

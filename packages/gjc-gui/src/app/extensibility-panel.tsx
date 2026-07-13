@@ -44,6 +44,7 @@ export type ExtensibilityPanelProps = {
 	extensions: Extension[];
 	plugins: Plugin[];
 	pluginInspection?: PluginInspection;
+	extensionInspection?: Extension;
 	appearance?: AppearanceSettings;
 	appearanceThemes?: AppearanceTheme[];
 	activeTab?: Tab;
@@ -69,6 +70,7 @@ export function ExtensibilityPanel({
 	extensions,
 	plugins,
 	pluginInspection,
+	extensionInspection,
 	appearance,
 	appearanceThemes = [],
 	activeTab,
@@ -171,7 +173,12 @@ export function ExtensibilityPanel({
 					empty="No extensions match."
 					items={filteredExtensions}
 					render={extension => (
-						<ExtensionRow extension={extension} onInspect={onInspectExtension} onToggle={onExtensionEnabled} />
+						<ExtensionRow
+							extension={extension}
+							inspection={extensionInspection?.id === extension.id ? extensionInspection : undefined}
+							onInspect={onInspectExtension}
+							onToggle={onExtensionEnabled}
+						/>
 					)}
 				/>
 			) : null}
@@ -268,10 +275,12 @@ function SkillRow({ skill, onToggle }: { skill: Skill; onToggle?(id: string, ena
 function ExtensionRow({
 	extension,
 	onInspect,
+	inspection,
 	onToggle,
 }: {
 	extension: Extension;
 	onInspect(id: string): void;
+	inspection?: Extension;
 	onToggle?(id: string, enabled: boolean): void;
 }) {
 	const enabled = extensionEnabled(extension);
@@ -291,6 +300,27 @@ function ExtensionRow({
 					{enabled ? "Disable" : "Enable"}
 				</button>
 			</div>
+			{inspection ? (
+				<section className="extensibility-card__details" aria-label="Extension inspection details">
+					<h3>Inspection details</h3>
+					<dl>
+						<dt>Provider</dt>
+						<dd>{inspection.provider ?? "Not reported"}</dd>
+						<dt>Status</dt>
+						<dd>{inspection.status ?? "Not reported"}</dd>
+						<dt>State</dt>
+						<dd>{inspection.state ?? "Not reported"}</dd>
+						<dt>Disabled reason</dt>
+						<dd>{inspection.disabledReason ?? "None"}</dd>
+						{inspection.shadowedBy ? (
+							<>
+								<dt>Shadowed by</dt>
+								<dd>{inspection.shadowedBy}</dd>
+							</>
+						) : null}
+					</dl>
+				</section>
+			) : null}
 		</article>
 	);
 }

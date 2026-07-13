@@ -2,8 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { RpcWorkflowGate, RpcWorkflowGateResolution, RpcWorkflowGateResponse } from "../src/modes/rpc/rpc-types";
 import type { NotificationGateResolutionOptions } from "../src/modes/shared/agent-wire/unattended-session";
+import type {
+	RpcWorkflowGate,
+	RpcWorkflowGateResolution,
+	RpcWorkflowGateResponse,
+} from "../src/modes/shared/agent-wire/workflow-gate-types";
 import { createNotificationsExtension } from "../src/notifications/index";
 import { getAskAnswerSource, notifyWorkflowGateEmitterChanged } from "../src/tools/ask-answer-registry";
 

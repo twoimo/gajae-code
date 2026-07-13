@@ -15,8 +15,18 @@ describe("login flow logic", () => {
 	});
 
 	test("redacted view preserves state prompts but no credential-shaped fields", () => {
-		const view = redactedLoginFlowView({ state: "needs-input", promptMessage: "Paste redirect URL", authUrl: "https://auth.example/start", instructions: "Open browser" });
-		expect(view).toEqual({ state: "needs-input", promptMessage: "Paste redirect URL", authUrl: "https://auth.example/start", instructions: "Open browser" });
+		const view = redactedLoginFlowView({
+			state: "needs-input",
+			promptMessage: "Paste redirect URL",
+			authUrl: "https://auth.example/start",
+			instructions: "Open browser",
+		});
+		expect(view).toEqual({
+			state: "needs-input",
+			promptMessage: "Paste redirect URL",
+			authUrl: "https://auth.example/start",
+			instructions: "Open browser",
+		});
 		expect(JSON.stringify(view)).not.toContain("token");
 		expect(JSON.stringify(view)).not.toContain("verifier");
 		expect(JSON.stringify(view)).not.toContain("code");

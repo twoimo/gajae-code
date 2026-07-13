@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
+import { SessionActions } from "./session-actions";
 import {
 	cancelConfirm,
 	confirmSessionAction,
@@ -57,5 +60,26 @@ describe("session action helpers", () => {
 			}),
 		).toBeNull();
 		expect(calls).toEqual(["archive:thread-b"]);
+	});
+
+	test("accessible action labels redact home-path titles", () => {
+		const pathTitles = [
+			"Fix /Users/realname/secret-project build",
+			"Fix C:\\Users\\alice\\secret-project build",
+			"Fix c:/users/alice/secret-project build",
+		];
+		for (const title of pathTitles) {
+			const html = renderToString(
+				createElement(SessionActions, {
+					thread: { id: "thread-path", title, status: "idle", lastActivity: "idle" },
+					onFork: () => undefined,
+					onArchive: () => undefined,
+					onDelete: () => undefined,
+				}),
+			);
+			expect(html).not.toContain("realname");
+			expect(html).not.toContain("alice");
+			expect(html).toContain("Session actions for Fix ~");
+		}
 	});
 });

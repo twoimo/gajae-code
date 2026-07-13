@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "gui-browser-automation",
+  "url": "http://localhost:4178/harness.html",
+  "viewport": {
+    "width": 1280,
+    "height": 760,
+    "deviceScaleFactor": 1
+  },
+  "steps": [
+    "Loaded the real multipage product harness",
+    "Verified an error-free initial paint with session browser data",
+    "Verified visible chat/session language with no legacy thread jargon",
+    "Started a project-scoped chat",
+    "Submitted a synthetic prompt through the composer",
+    "Observed the streamed synthetic assistant reply",
+    "Opened and closed the help glossary",
+    "Opened the skills and extensions catalog"
+  ],
+  "assertions": {
+    "noRuntimeMethodErrors": true,
+    "noVisibleThreadJargon": true,
+    "shellRendered": true,
+    "sessionBrowserRendered": true,
+    "startChatWorked": true,
+    "composerWorked": true,
+    "syntheticReplySeen": true,
+    "helpGlossaryWorked": true,
+    "extensibilityCatalogWorked": true
+  },
+  "screenshot": {
+    "path": "test-results/ultragoal-g001/gui-harness.png",
+    "width": 1280,
+    "height": 760,
+    "uniqueColors": 2248,
+    "nonUniform": true
+  },
+  "commands": [
+    "bun --cwd=packages/gjc-gui run test",
+    "bun --cwd=packages/gjc-gui run build",
+    "bun --cwd=packages/gjc-gui run preview",
+    "headless Chromium browser automation against /harness.html"
+  ]
+}

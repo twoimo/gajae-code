@@ -87,7 +87,10 @@ fn hydrate_login_shell_env() {
 	// Dump the full interactive login-shell environment so the sidecar resolves
 	// config, provider credentials (API-key env vars), PATH, and model defaults
 	// exactly like the `gjc` CLI does from a terminal.
-	let Ok(output) = std::process::Command::new(&shell).args(["-lic", "env"]).output() else {
+	let Ok(output) = std::process::Command::new(&shell)
+		.args(["-lic", "env"])
+		.output()
+	else {
 		return;
 	};
 	if !output.status.success() {

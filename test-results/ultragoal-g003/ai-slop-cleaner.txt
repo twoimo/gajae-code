@@ -1,0 +1,19 @@
+AI SLOP CLEANUP REPORT
+======================
+
+Goal: G003 Resolve core protocol review blockers
+Scope: ACP agent custom-UI stubs and session identity, ACP prompt acknowledgement fields, workflow-gate broker replay/durability/emit-failure semantics, RPC command-type guard, notification app-server fail-close, session-rekey gate routing, and blank-token handling
+Mode: blocking cleanup pass over the delegated executor changes followed by leader verification
+Blocking Findings: none
+Fixes Reviewed:
+- acp-agent.ts / runner.ts: `custom: async () => undefined as never` stubs replaced with explicit fail-closed rejections; no undefined-as-never remains in either file.
+- acp-agent.ts: extension newSession/switchSession bridges atomically re-key the ACP session map after successful identity changes, rejecting conflicting target identities; prompt acknowledgement reads top-level PromptRequest.messageId and echoes top-level PromptResponse.userMessageId per the installed ACP SDK contract (types.gen.d.ts:3343-3433).
+- workflow-gate-broker.ts: idempotent same-key/same-body replays now finalize+advance+mark-advanced through a shared helper before returning the cached resolution; FileGateStore.load validates counters/gate-record shape and quarantines malformed state; emit failures audit gate_emit_failed while retaining the pending (answerable) record.
+- scopes.ts: isRpcCommandType uses Object.hasOwn, rejecting prototype names like toString/constructor.
+- notifications/index.ts: the unwired app-server endpoint path fail-closes (logged warning + failed start) instead of silently dropping frames; session_switch rekey disposes and re-registers gate presentations/listeners under the new session id; blank/whitespace GJC_NOTIFICATIONS_TOKEN falls back to a generated token and never enables notifications by itself (config.ts mirrored).
+Unsafe Pattern Scan: no TODO/FIXME/HACK introduced, no console logging, no undefined-as-never, no prototype-inclusive `in` guards, no silent frame drops in the reviewed files.
+Missing Test Findings: none. New/updated focused suites cover custom-UI rejection, prompt messageId echo, session re-keying with stale-key rejection, replay-after-crash exactly-once advance, corrupt-shape quarantine, emit-failure auditability, prototype-key rejection, blank-token handling, rekey gate routing, and unwired app-server refusal.
+Verification: 199 tests pass across the 19 affected coding-agent test files; packages/coding-agent tsc --noEmit passes; biome clean after leader formatting pass; root check:ts full workspace gate passes; git diff --check clean; origin/dev remains an ancestor of HEAD.
+Recursion Guard: no nested workflow spawned.
+Gate Result: PASS
+Remaining Risks: none identified beyond pre-existing advisory items recorded for G001/G002.

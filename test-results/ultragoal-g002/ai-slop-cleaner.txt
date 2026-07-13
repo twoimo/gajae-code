@@ -1,0 +1,25 @@
+AI SLOP CLEANUP REPORT
+======================
+
+Goal: G002 Resolve GUI verification blockers
+Scope: packages/gjc-gui GUI host, readiness helpers/tests, synthetic product harness, extension inspection, deferred-control copy, and multipage mount boundaries
+Mode: blocking cleanup pass followed by direct fixes and full verification
+Blocking Findings: none
+Advisory Findings: 1. Vite 5 still emits its existing warning that the inherited ES2024 TypeScript target is not recognized by esbuild's config parser; the production build succeeds and emits index.html, harness.html, and showcase.html. This warning is not suppressed. Updating the repository language target or Vite major is outside this rebase/readiness goal.
+Fixes Applied During Cleanup:
+- Removed ReturnType<> timeout aliases in favor of the concrete NodeJS.Timeout type required by the repository contract.
+- Removed inline dynamic imports and mock.module() from app-host readiness tests; the auto-connect seam now mounts through real React effects in a bounded LinkeDOM host.
+- Added explicit data-root mount guards for app, harness, and showcase entrypoints so importing an entry module in tests cannot auto-mount into an unrelated #root.
+- Corrected Windows forward-slash home-path redaction so C:/Users/alice/... cannot become C:~/... or expose alice.
+- Removed stale provider-auth copy assertions and retained user-facing Provider sign-in wording.
+- Preserved explicit new-chat allocation, blank scratch /tmp fallback, operation-vs-transport error separation, offline disabling, visible extension inspection, focus trapping/restoration, and persisted-session label redaction.
+Unsafe Pattern Scan: zero TODO/FIXME/HACK markers, console logging, undefined-as-never casts, internal “needs gjc/...” copy, inline imports, mock.module calls, ReturnType aliases, or prohibited any types in the reviewed G002 files.
+UI/Design Findings: none. Existing tokens and components are reused; no parallel component system or speculative abstraction was introduced.
+Missing Test Findings: none. Current verification is 116 GUI tests across 19 files, root TypeScript/workspace checks, successful three-page Vite build, live Chromium happy/scratch/clipboard/error scenarios, focus-trap and focus-restoration checks, visible extension inspection, and non-uniform 1440x1000 screenshots.
+Live Evidence:
+- test-results/ultragoal-g002/gui-automation.json
+- test-results/ultragoal-g002/gui-happy-e2e.png (127603 bytes, 2432 unique colors)
+- test-results/ultragoal-g002/gui-scratch-e2e.png (120153 bytes, 3146 unique colors)
+Recursion Guard: no nested workflow was spawned by this cleanup pass.
+Gate Result: PASS
+Remaining Risks: only the unsuppressed existing Vite 5 ES2024 parser warning described above.

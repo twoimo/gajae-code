@@ -80,7 +80,7 @@ export function getNotificationConfig(settings: Settings): NotificationConfig {
 	};
 }
 
-export function hasNonBlankValue(value: string | undefined): boolean {
+export function hasNonBlankValue(value: string | undefined): value is string {
 	return typeof value === "string" && value.trim().length > 0;
 }
 
@@ -138,7 +138,7 @@ export function shouldRegisterNotificationsExtension(input: {
 	if ((input.taskDepth ?? 0) > 0 || input.parentTaskPrefix || input.currentAgentType) return false;
 	if (completionNotifyDisabledByEnv(input.env)) return false;
 	if (input.env.GJC_NOTIFICATIONS === "0") return false;
-	if (input.env.GJC_NOTIFICATIONS === "1" || input.env.GJC_NOTIFICATIONS_TOKEN) return true;
+	if (input.env.GJC_NOTIFICATIONS === "1" || hasNonBlankValue(input.env.GJC_NOTIFICATIONS_TOKEN)) return true;
 	// Spawned-child suppression sits below explicit opt-in (so Telegram
 	// `/session_create` and cold `/session_resume`, which launch with
 	// GJC_NOTIFICATIONS=1, keep their fully bidirectional topic) and above global
@@ -152,7 +152,7 @@ export function shouldRegisterNotificationsExtension(input: {
  * Precedence (highest first):
  *  1) env.GJC_NOTIFICATIONS === "0"  -> false (hard opt-out)
  *  2) sessionDisabled === true       -> false (local /notify off)
- *  3) env.GJC_NOTIFICATIONS === "1" || env.GJC_NOTIFICATIONS_TOKEN present -> true (legacy explicit)
+ *  3) env.GJC_NOTIFICATIONS === "1" || a non-blank env.GJC_NOTIFICATIONS_TOKEN -> true (legacy explicit)
  *  4) isGloballyConfigured(cfg)      -> true (global auto-on)
  *  5) otherwise false
  */
@@ -163,7 +163,7 @@ export function isSessionNotificationsEnabled(input: {
 }): boolean {
 	if (input.env.GJC_NOTIFICATIONS === "0") return false;
 	if (input.sessionDisabled) return false;
-	if (input.env.GJC_NOTIFICATIONS === "1" || input.env.GJC_NOTIFICATIONS_TOKEN) return true;
+	if (input.env.GJC_NOTIFICATIONS === "1" || hasNonBlankValue(input.env.GJC_NOTIFICATIONS_TOKEN)) return true;
 	return isGloballyConfigured(input.cfg);
 }
 

@@ -13,8 +13,12 @@ export const EXEC_STATE_RAW_REFRESH_EVENTS = new Set(["todo_reminder", "todo_aut
 
 export type ExecStateRefreshCause = "initial" | "turn-boundary" | "jobs-changed" | "todos-changed";
 
-
-export function cardFromRows(key: string, title: string, rows: unknown[] | undefined, empty = "No live items"): ExecStateCard {
+export function cardFromRows(
+	key: string,
+	title: string,
+	rows: unknown[] | undefined,
+	empty = "No live items",
+): ExecStateCard {
 	if (!rows) return { key, title, status: "loading", lines: ["Loading…"] };
 	if (rows.length === 0) return { key, title, status: "empty", lines: [empty] };
 	return { key, title, status: "populated", lines: rows.map(rowLine) };
@@ -34,14 +38,28 @@ export function mergeExecCards(current: ExecStateCard[], next: ExecStateCard[]):
 	});
 }
 
-export function shouldRefreshOnTurnBoundary(previousTurnId: string | undefined, nextTurnId: string | undefined): boolean {
+export function shouldRefreshOnTurnBoundary(
+	previousTurnId: string | undefined,
+	nextTurnId: string | undefined,
+): boolean {
 	return previousTurnId !== nextTurnId;
 }
 
-export function notificationRefreshCause(notification: { method: string; params?: unknown }): ExecStateRefreshCause | undefined {
+export function notificationRefreshCause(notification: {
+	method: string;
+	params?: unknown;
+}): ExecStateRefreshCause | undefined {
 	if (notification.method === GJC_JOBS_CHANGED_METHOD) return "jobs-changed";
-	const params = notification.params && typeof notification.params === "object" ? notification.params as { eventType?: unknown } : undefined;
-	if (notification.method === "gjc/event" && typeof params?.eventType === "string" && EXEC_STATE_RAW_REFRESH_EVENTS.has(params.eventType)) return "todos-changed";
+	const params =
+		notification.params && typeof notification.params === "object"
+			? (notification.params as { eventType?: unknown })
+			: undefined;
+	if (
+		notification.method === "gjc/event" &&
+		typeof params?.eventType === "string" &&
+		EXEC_STATE_RAW_REFRESH_EVENTS.has(params.eventType)
+	)
+		return "todos-changed";
 	return undefined;
 }
 
@@ -52,8 +70,10 @@ export function errorCard(key: string, title: string, error: unknown): ExecState
 export function rowLine(row: unknown): string {
 	if (!row || typeof row !== "object") return String(row ?? "");
 	const wrapped = row as { row?: unknown; kind?: unknown };
-	if (wrapped.kind === "monitor" && wrapped.row && typeof wrapped.row === "object") return monitorRowLine(wrapped.row as Record<string, unknown>);
-	if (wrapped.kind === "cron" && wrapped.row && typeof wrapped.row === "object") return cronRowLine(wrapped.row as Record<string, unknown>);
+	if (wrapped.kind === "monitor" && wrapped.row && typeof wrapped.row === "object")
+		return monitorRowLine(wrapped.row as Record<string, unknown>);
+	if (wrapped.kind === "cron" && wrapped.row && typeof wrapped.row === "object")
+		return cronRowLine(wrapped.row as Record<string, unknown>);
 	const r = row as Record<string, unknown>;
 	const label = firstString(r.content, r.description, r.summary, r.modelId, r.id) ?? "item";
 	const status = firstString(r.status, r.freshness);

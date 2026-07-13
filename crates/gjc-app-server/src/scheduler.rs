@@ -98,10 +98,10 @@ pub fn classify(method: &str) -> Lane {
 /// lanes are never rejected for capacity (they must reach in-flight work).
 #[derive(Debug)]
 pub struct Admission {
-	max_inflight_turns: usize,
-	inflight_turns: usize,
+	max_inflight_turns:   usize,
+	inflight_turns:       usize,
 	max_queued_mutations: usize,
-	queued_mutations: usize,
+	queued_mutations:     usize,
 }
 
 impl Admission {

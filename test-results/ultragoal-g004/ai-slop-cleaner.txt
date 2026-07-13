@@ -1,0 +1,19 @@
+AI SLOP CLEANUP REPORT
+======================
+
+Goal: G004 Resolve architect-identified HIGH blockers in the G003 protocol fixes
+Scope: transactional ACP session re-key with conflict preflight and bridge refresh; state-discriminated crash-durable FileGateStore validation; pre-switch notification gate presentation migration
+Mode: blocking cleanup pass over the delegated executor changes, leader hardening after re-review, and full verification
+Blocking Findings: none
+Fixes Reviewed (iteration 1, executor-delegated):
+- acp-agent.ts: serialized extension newSession/switchSession identity transitions with pre/post source-map ownership checks; concurrently closed source refused without resurrection; target-id collision evicts and disposes only the mutated source record; successful re-keys recreate the ACP client bridge with the new session id, reschedule id-bound bootstrap updates, and invalidate cached authority. Confirmed resolved by architect re-review (31-G004ArchReview).
+- notifications/index.ts: GatePresentationRegistry.rebind migrates retained pre-switch gate presentations to the new session id, closes stale remote action routes, and reissues pending interactions; replies resolve original gate ids. Confirmed resolved by architect re-review.
+Fixes Applied (iteration 2, leader, addressing the re-review's two remaining HIGH findings):
+- workflow-gate-broker.ts isPersistedGate now validates the complete persisted DTO: full RpcWorkflowGate shape (schema_hash, context, created_at, required), schema compilation plus stored schema_hash verification, semanticDisposition/resolutionOrigin/ackPolicy union validation, and — for accepted && !advanced records — recomputation of both answerHashOf(answer) against resolution.answer_hash and answerHashOf({gate_id, answer}) against responseHash so a tampered retained answer can never be replayed by recover().
+- workflow-gate-broker.ts quarantine/flush now fsync the parent directory (marker entry persisted BEFORE the state rename; directory synced after quarantine and state renames), mirroring the repository's lifecycle-control-runtime pattern with the same EINVAL/ENOTSUP/EOPNOTSUPP compatibility diagnostic, closing the power-loss window where neither marker nor original state survived.
+Unsafe Pattern Scan: no TODO/FIXME/HACK, console logging, undefined-as-never, prototype-inclusive guards, or silent resets in the reviewed files.
+Missing Test Findings: none. Adversarial coverage now includes: already-managed-target collision isolation/disposal; concurrently-closed-source refusal; client-bridge recreation with the new id via a real bridge request; accepted-without-resolution quarantine; tampered-answer hash-mismatch quarantine; schema_hash mismatch quarantine; missing required gate fields quarantine; malformed ackPolicy quarantine; counter-rollback quarantine; sticky corruption lock with manual escape; full valid-state (accepted-unadvanced plus pending) reload; emit-before-switch gate presentation reissue resolving the original gate id.
+Verification: 169 tests pass across the 10 affected coding-agent test files (22 in workflow-gate-broker.test.ts alone); packages/coding-agent tsc --noEmit passes; biome clean; git diff --check clean; origin/dev remains an ancestor of HEAD.
+Recursion Guard: no nested workflow spawned.
+Gate Result: PASS
+Remaining Risks: none identified beyond pre-existing advisory items recorded for G001/G002.

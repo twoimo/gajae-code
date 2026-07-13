@@ -67,6 +67,7 @@ export declare class ComputerController {
   keypress(expectedEpoch: number | undefined | null, keys: Array<string>): void
   wait(expectedEpoch: number | undefined | null, ms: number): void
 }
+
 /**
  * Long-lived macOS appearance observer.
  *
@@ -381,13 +382,6 @@ export declare function __piNativesV1_0_0_beta(): void
  */
 export declare function applyBashFixups(command: string): BashFixupResult
 
-/** Typed terminal acknowledgement result returned by acknowledgement promises. */
-export interface AskSelectedAckOutcomeEvent {
-  status: string
-  messageId?: number
-  reason?: string
-}
-
 /**
  * Classify a JSON-RPC method into its scheduling lane (`"mutating"`,
  * `"cancel"`, or `"read"`).
@@ -396,6 +390,13 @@ export declare function appServerMethodLane(method: string): string
 
 /** Return the Rust-derived JSON Schema bundle string for the wire protocol. */
 export declare function appServerSchemaJson(): string
+
+/** Typed terminal acknowledgement result returned by acknowledgement promises. */
+export interface AskSelectedAckOutcomeEvent {
+  status: string
+  messageId?: number
+  reason?: string
+}
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
@@ -1073,11 +1074,11 @@ export interface HtmlToMarkdownOptions {
 }
 
 /**
- * An inbound message forwarded to the TypeScript host: a free-text injection
- * (`user_message`) or an in-thread config command (`config_command`).
+ * An inbound message forwarded to the TypeScript host: a free-text injection,
+ * in-thread config command, or deterministic control command.
  */
 export interface InboundEvent {
-  /** Either `"user_message"` or `"config_command"`. */
+  /** Inbound kind (`user_message`, `config_command`, or `control_command`). */
   kind: string
   /** The session this inbound belongs to. */
   sessionId: string
@@ -1091,6 +1092,10 @@ export interface InboundEvent {
   verbosity?: string
   /** Requested redaction state (`config_command` only). */
   redact?: boolean
+  /** Client-generated request id (`control_command` only). */
+  requestId?: string
+  /** JSON-encoded command payload (`control_command` only). */
+  commandJson?: string
   /**
    * Inline image attachments forwarded with the message (`user_message`
    * only).
@@ -1542,6 +1547,8 @@ export interface PtyStartOptions {
    */
   shell?: string
 }
+
+export declare function ptyTimeoutCount(): bigint
 
 /**
  * Read an image from the system clipboard.

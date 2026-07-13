@@ -25,7 +25,7 @@ async function waitFor(pred: () => boolean, ms = 4000, label = "condition"): Pro
 }
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
-type Frame = { type: string; title?: string; sessionId?: string; state?: string };
+type Frame = { type: string; id?: string; title?: string; sessionId?: string; state?: string; question?: string };
 
 const tempDirs: string[] = [];
 const openSockets: WebSocket[] = [];
@@ -199,6 +199,144 @@ test("session_switch reuses the existing topic instead of spawning a new session
 		if (prevEnv === undefined) delete process.env.GJC_NOTIFICATIONS;
 		else process.env.GJC_NOTIFICATIONS = prevEnv;
 	}
+}, 30000);
+
+test("session_switch reissues pending workflow-gate presentations and replies to their original gates", async () => {
+	await withNotifications(async () => {
+		type GateEvent = {
+			gate_id: string;
+			options?: Array<{ label?: string }>;
+			context: { prompt?: string; stage_state?: Record<string, unknown> };
+		};
+		type GateListener = (gate: GateEvent) => void;
+
+		const harness = createHarness("gjc-notif-switch-gate-");
+		let emitGate: GateListener | undefined;
+		let disposeCalls = 0;
+		const resolvedAnswers: Array<{ gateId: string; answer: unknown }> = [];
+		const workflowGate = {
+			isUnattended: () => true,
+			onGateEmitted: (listener: GateListener): (() => void) => {
+				emitGate = listener;
+				return () => {
+					disposeCalls += 1;
+					if (emitGate === listener) emitGate = undefined;
+				};
+			},
+			resolveGate: async () => ({
+				gate_id: "switch-gate",
+				status: "accepted",
+				answer_hash: "",
+				resolved_at: "now",
+			}),
+			resolveGateFromNotification: async (
+				response: { gate_id: string; answer: unknown },
+				options: { resolveClaim: () => void },
+			) => {
+				resolvedAnswers.push({ gateId: response.gate_id, answer: response.answer });
+				options.resolveClaim();
+				return { gate_id: response.gate_id, status: "accepted", answer_hash: "", resolved_at: "now" };
+			},
+		};
+		(harness.ctx as { workflowGate?: typeof workflowGate }).workflowGate = workflowGate;
+
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		await waitFor(() => fs.existsSync(harness.endpoint()), 4000, "notification endpoint");
+		const { url, token } = readEndpoint(harness.endpoint());
+		const frames: Frame[] = [];
+		const ws = new WebSocket(`${url}/?token=${encodeURIComponent(token)}`);
+		openSockets.push(ws);
+		ws.addEventListener("message", event => frames.push(JSON.parse(String((event as MessageEvent).data))));
+		await new Promise<void>((resolve, reject) => {
+			ws.addEventListener("open", () => resolve());
+			ws.addEventListener("error", () => reject(new Error("ws error")));
+		});
+		await waitFor(() => frames.some(frame => frame.type === "hello"), 4000, "notification hello");
+		ws.send(JSON.stringify({ type: "hello", protocolVersion: 3, capabilities: ["ask_selected_ack_v1"] }));
+
+		const emitBeforeSwitch = emitGate;
+		if (!emitBeforeSwitch) throw new Error("workflow gate listener was not attached");
+		emitBeforeSwitch({
+			gate_id: "switch-gate-before",
+			options: [{ label: "yes" }],
+			context: { prompt: "Before switch?", stage_state: { multi: false, navigation_label: "Done" } },
+		});
+		await waitFor(
+			() => frames.some(frame => frame.type === "action_needed" && frame.question === "Before switch?"),
+			4000,
+			"gate presentation before session switch",
+		);
+		const beforeSwitchAction = frames.find(
+			frame => frame.type === "action_needed" && frame.question === "Before switch?",
+		);
+		if (!beforeSwitchAction?.id) throw new Error("pre-switch gate presentation did not include an action id");
+
+		const previousId = harness.sid;
+		harness.sid = `switch-gate-new-${previousId}`;
+		await harness.handlers.get("session_switch")!(
+			{ type: "session_switch", reason: "new", previousSessionFile: harness.previousSessionFile(previousId) },
+			harness.ctx,
+		);
+		expect(disposeCalls).toBe(1);
+		await waitFor(
+			() =>
+				frames.some(
+					frame =>
+						frame.type === "action_needed" &&
+						frame.sessionId === harness.sid &&
+						frame.question === "Before switch?",
+				),
+			4000,
+			"reissued gate presentation for new session",
+		);
+		const reissuedAction = frames.find(
+			frame =>
+				frame.type === "action_needed" && frame.sessionId === harness.sid && frame.question === "Before switch?",
+		);
+		if (!reissuedAction?.id) throw new Error("reissued gate presentation did not include an action id");
+		expect(reissuedAction.id).not.toBe(beforeSwitchAction.id);
+		await waitFor(
+			() => frames.some(frame => frame.type === "action_resolved" && frame.id === beforeSwitchAction.id),
+			4000,
+			"pre-switch action invalidation",
+		);
+		ws.send(JSON.stringify({ type: "reply", id: reissuedAction.id, answer: 0, token }));
+		await waitFor(() => resolvedAnswers.length === 1, 4000, "reissued gate reply resolution");
+		expect(resolvedAnswers).toEqual([{ gateId: "switch-gate-before", answer: { selected: ["yes"] } }]);
+
+		const emitAfterSwitch = emitGate;
+		if (!emitAfterSwitch) throw new Error("workflow gate listener was not rebound");
+		emitAfterSwitch({
+			gate_id: "switch-gate-after",
+			options: [{ label: "yes" }],
+			context: { prompt: "After switch?", stage_state: { multi: false, navigation_label: "Done" } },
+		});
+		await waitFor(
+			() =>
+				frames.some(
+					frame =>
+						frame.type === "action_needed" &&
+						frame.sessionId === harness.sid &&
+						frame.question === "After switch?",
+				),
+			4000,
+			"gate presentation emitted after session switch",
+		);
+		const afterSwitchAction = frames.find(
+			frame =>
+				frame.type === "action_needed" && frame.sessionId === harness.sid && frame.question === "After switch?",
+		);
+		if (!afterSwitchAction?.id) throw new Error("post-switch gate presentation did not include an action id");
+		ws.send(JSON.stringify({ type: "reply", id: afterSwitchAction.id, answer: 0, token }));
+		await waitFor(() => resolvedAnswers.length === 2, 4000, "post-switch gate reply resolution");
+		expect(resolvedAnswers).toEqual([
+			{ gateId: "switch-gate-before", answer: { selected: ["yes"] } },
+			{ gateId: "switch-gate-after", answer: { selected: ["yes"] } },
+		]);
+
+		ws.close();
+		await harness.handlers.get("session_shutdown")!({ type: "session_shutdown" }, harness.ctx);
+	});
 }, 30000);
 
 test("session_switch with missing previousSessionFile is a safe no-op", async () => {

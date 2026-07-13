@@ -1,0 +1,91 @@
+{
+  "goalId": "G002",
+  "surface": "http://127.0.0.1:4178/harness.html",
+  "runner": "headless Chromium through the live browser automation tool",
+  "recordedAt": "2026-07-12",
+  "flows": [
+    {
+      "scenario": "happy",
+      "passed": true,
+      "checks": {
+        "explicitStartAllocatedDistinctChat": {
+          "before": 3,
+          "after": 4
+        },
+        "promptSubmitted": "Live end-to-end prompt 2",
+        "replyObserved": "Harness reply: created a synthetic plan, ran a tool, and produced a diff.",
+        "helpDialogInitialFocus": "Close",
+        "helpDialogTabFocusTrap": true,
+        "helpDialogEscapeClose": true,
+        "helpTriggerFocusRestored": true,
+        "extensionInspectResult": "Inspection details; Provider Not reported; Status enabled; State enabled; Disabled reason None"
+      },
+      "screenshot": "test-results/ultragoal-g002/gui-happy-e2e.png"
+    },
+    {
+      "scenario": "scratch",
+      "passed": true,
+      "checks": {
+        "initialWorkingDirectory": "",
+        "startEnabled": true,
+        "chatCountBefore": 0,
+        "chatCountAfter": 1,
+        "resolvedWorkingDirectory": "/tmp",
+        "recentDirectoryDisplay": "tmp — /tmp",
+        "promptObserved": "Scratch live prompt",
+        "replyObserved": true,
+        "rawHomePathObserved": false
+      },
+      "screenshot": "test-results/ultragoal-g002/gui-scratch-e2e.png"
+    },
+    {
+      "scenario": "clipboard-error",
+      "passed": true,
+      "checks": {
+        "failureStatus": "Could not copy",
+        "clipboardWrites": 0,
+        "connectionAfterFailure": "synthetic-model · connected",
+        "composerStillEnabled": true,
+        "transcriptPreserved": true
+      }
+    },
+    {
+      "scenario": "server-unavailable",
+      "passed": true,
+      "checks": {
+        "redactionMarkerObserved": true,
+        "syntheticSecretObserved": false,
+        "reconnectAvailable": true,
+        "startDisabled": true,
+        "browseDisabled": true,
+        "composerDisabled": true
+      }
+    },
+    {
+      "scenario": "token-rejected",
+      "passed": true,
+      "checks": {
+        "redactionMarkerObserved": true,
+        "syntheticSecretObserved": false,
+        "reconnectAvailable": true,
+        "startDisabled": true,
+        "browseDisabled": true,
+        "composerDisabled": true
+      }
+    }
+  ],
+  "artifactValidation": {
+    "gui-happy-e2e.png": {
+      "dimensions": [1440, 1000],
+      "bytes": 127603,
+      "uniqueColors": 2432,
+      "nonUniform": true
+    },
+    "gui-scratch-e2e.png": {
+      "dimensions": [1440, 1000],
+      "bytes": 120153,
+      "uniqueColors": 3146,
+      "nonUniform": true
+    }
+  }
+}

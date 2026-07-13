@@ -156,7 +156,9 @@ const noOpUIContext: ExtensionUIContext = {
 	setFooter: () => {},
 	setHeader: () => {},
 	setTitle: () => {},
-	custom: async () => undefined as never,
+	custom: async () => {
+		throw new Error("Custom UI components are unavailable in this mode");
+	},
 	setEditorText: () => {},
 	pasteToEditor: () => {},
 	getEditorText: () => "",

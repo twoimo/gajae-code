@@ -1,0 +1,43 @@
+AI SLOP CLEANUP REPORT
+======================
+
+Scope: Post-rebase working-tree changes for ACP compatibility, agent-wire/schema reconciliation, notification endpoint reconciliation, GUI readiness/harness behavior, generated native bindings, and repository-required formatting
+Mode: read-only detector/report; no edits performed
+Blocking Findings: none
+Advisory Findings: 1. packages/gjc-gui Vite build emits the existing esbuild warning that the inherited ES2024 target is not recognized by Vite 5's config parser; the build still emits all three required pages and the root TypeScript gate passes. This is toolchain noise, not a masked application failure, and changing the workspace language target or Vite major is outside this rebase story.
+Fallback Findings: 1. packages/coding-agent/src/modes/acp/acp-agent.ts -> grounded compatibility fallback/removal -> advisory: unsupported ACP delete-session behavior was removed because the installed protocol SDK exposes list/close/load but no delete request, capability, or client method; focused lifecycle tests cover the retained behavior. 2. packages/coding-agent/src/notifications/index.ts -> grounded compatibility/fail-safe boundary -> advisory: structural capability guards distinguish native claim receipts from app-server replies and accept native test doubles; rebuilt native bindings and focused notification tests cover both paths. 3. packages/gjc-gui/src/app/main.tsx -> grounded fail-safe display handling -> advisory: clipboard, endpoint, path, tool, and approval failures remain visible while sensitive values are redacted; readiness tests cover the branches.
+UI/Design Findings: none. The GUI uses existing design tokens/components, replaces visible thread jargon with chat/session language, exposes deferred controls as disabled with rationale, preserves accessibility labels/live-region boundaries, and has a non-uniform 1280x760 live harness screenshot.
+Missing Test Findings: none. Changed behavior is covered by 110 GUI tests, 80 focused agent-wire/notification/startup tests, 71 ACP lifecycle tests, root TypeScript checks, root Rust checks, native binding build, and live browser automation through chat/help/extensibility flows.
+Recursion Guard: confirmed no nested ralplan/team/deep-interview/ultragoal spawned; broad findings handed to leader
+Changed Files Reviewed:
+- packages/coding-agent/src/modes/acp/acp-agent.ts - reviewed
+- packages/coding-agent/test/acp-agent.test.ts - reviewed
+- packages/coding-agent/test/acp-session-delete-wire.test.ts - reviewed
+- packages/coding-agent/src/modes/shared/agent-wire/scopes.ts - reviewed
+- packages/coding-agent/src/modes/shared/agent-wire/workflow-gate-types.ts - reviewed
+- packages/coding-agent/src/modes/shared/agent-wire/workflow-gate-broker.ts - reviewed
+- packages/coding-agent/src/notifications/index.ts - reviewed
+- packages/coding-agent/src/notifications/app-server-endpoint.ts - reviewed
+- packages/coding-agent/test/notifications-ask-selected-ack.test.ts - reviewed
+- packages/coding-agent/test/rpc-client-default-model-selection.test.ts - reviewed deletion of obsolete legacy-only test
+- packages/coding-agent/test/rpc-compact-message-update.test.ts - reviewed
+- packages/coding-agent/test/resume-confirm-continue.test.ts - reviewed
+- packages/coding-agent/test/startup-update-contract.test.ts - reviewed
+- packages/gjc-gui/src/app/main.tsx - reviewed
+- packages/gjc-gui/src/app/model-panel.tsx - reviewed
+- packages/gjc-gui/src/app/session-actions.tsx - reviewed
+- packages/gjc-gui/src/harness/main.tsx - reviewed
+- packages/gjc-gui/src/harness/main.test.tsx - reviewed
+- packages/gjc-gui/vite.config.ts - reviewed
+- crates/pi-natives/src/lib.rs - reviewed
+- packages/natives/native/index.d.ts - reviewed generated output
+- packages/natives/native/index.js - reviewed generated output
+- crates/gjc-app-server/**/*.rs - repository formatter-only reconciliation reviewed as a group
+- remaining listed TypeScript test/client files - repository formatter/import-order reconciliation reviewed as a group
+
+Gate Result: PASS
+Leader Action:
+- PASS: continue to verification, architect review, and executor red-team QA.
+Remaining Risks:
+- Existing React act(...) warnings remain visible in the GUI SSR test run; they do not fail tests or hide assertions, and were not suppressed.
+- Existing Vite 5 ES2024 parser warning remains visible during build; it was not suppressed.
