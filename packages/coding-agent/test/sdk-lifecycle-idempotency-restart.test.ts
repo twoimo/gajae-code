@@ -20,10 +20,60 @@ describe("SDK lifecycle ledger", () => {
 		await ledger.begin("first", "a");
 		await fs.appendFile(path.join(dir, "sdk", "lifecycle-ledger.jsonl"), "not json\n");
 		const resumed = await new LifecycleLedger(dir).open();
+		expect((await resumed.begin("first", "a")).kind).toBe("terminal_uncertain");
 		await resumed.begin("later", "b");
 		expect(resumed.get("first")).toBeDefined();
 		expect(resumed.get("later")).toBeDefined();
 		expect(resumed.warnings).not.toHaveLength(0);
 		expect(await fs.readFile(path.join(dir, "sdk", "lifecycle-ledger.jsonl.corrupt"), "utf8")).toContain("not json");
+	});
+	it("fails closed when a torn row may hide side-effect authority", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-ledger-torn-"));
+		const ledgerPath = path.join(dir, "sdk", "lifecycle-ledger.jsonl");
+		const ledger = await new LifecycleLedger(dir).open();
+		await ledger.begin("i", "a");
+		await fs.appendFile(
+			ledgerPath,
+			`${JSON.stringify({ version: 1, identity: "i", requestHash: "a", state: "effect_started" }).slice(0, -1)}`,
+		);
+
+		const resumed = await new LifecycleLedger(dir).open();
+		expect((await resumed.begin("i", "a")).kind).toBe("terminal_uncertain");
+		expect(resumed.get("i")?.state).toBe("terminal_uncertain");
+		expect((await new LifecycleLedger(dir).open()).get("i")?.state).toBe("terminal_uncertain");
+	});
+	it("lets a later valid terminal row supersede earlier corruption", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-ledger-corrupt-"));
+		const ledgerPath = path.join(dir, "sdk", "lifecycle-ledger.jsonl");
+		const ledger = await new LifecycleLedger(dir).open();
+		await ledger.begin("i", "a");
+		await fs.appendFile(ledgerPath, "not json\n");
+		await fs.appendFile(
+			ledgerPath,
+			`${JSON.stringify({
+				version: 1,
+				identity: "i",
+				requestHash: "a",
+				state: "terminal_ok",
+				response: { sessionId: "s" },
+				ts: Date.now(),
+			})}\n`,
+		);
+
+		const resumed = await new LifecycleLedger(dir).open();
+		expect((await resumed.begin("i", "a")).kind).toBe("replay");
+		expect(resumed.get("i")?.state).toBe("terminal_ok");
+	});
+	it("persists complete multibyte rows through durable appends", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-ledger-large-"));
+		const ledgerPath = path.join(dir, "sdk", "lifecycle-ledger.jsonl");
+		const response = { payload: "界".repeat(128 * 1024) };
+		const ledger = await new LifecycleLedger(dir).open();
+		await ledger.begin("i", "a");
+		await ledger.transition("i", "terminal_ok", { response });
+
+		const lines = (await fs.readFile(ledgerPath, "utf8")).trimEnd().split("\n");
+		expect(lines.map(line => JSON.parse(line))).toHaveLength(2);
+		expect((await new LifecycleLedger(dir).open()).get("i")?.response).toEqual(response);
 	});
 });

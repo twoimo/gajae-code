@@ -59,8 +59,12 @@ export class LifecycleLedger {
 		this.#entries = [];
 		this.#byIdentity.clear();
 		this.#warnings = [];
+		const uncertainAfterCorruption = new Set<string>();
+		let tornTail = false;
 		try {
-			for (const line of (await fs.readFile(this.#file, "utf8")).split("\n")) {
+			const source = await fs.readFile(this.#file, "utf8");
+			const lines = source.split("\n");
+			for (const [index, line] of lines.entries()) {
 				if (!line) continue;
 				try {
 					const e = JSON.parse(line) as LifecycleLedgerEntry;
@@ -68,12 +72,25 @@ export class LifecycleLedger {
 					if (!e.identity || !e.requestHash || !e.state) throw new Error("invalid ledger entry");
 					this.#entries.push(e);
 					this.#byIdentity.set(e.identity, e);
+					uncertainAfterCorruption.delete(e.identity);
 				} catch {
+					for (const [identity, latest] of this.#byIdentity) {
+						if (!terminal(latest.state) && latest.state !== "terminal_uncertain")
+							uncertainAfterCorruption.add(identity);
+					}
+					tornTail ||= index === lines.length - 1 && !source.endsWith("\n");
 					await this.#quarantine(line);
 				}
 			}
 		} catch (e) {
 			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+		}
+		if (tornTail) await this.#sealTornTail();
+		for (const identity of uncertainAfterCorruption) {
+			const entry = this.#byIdentity.get(identity);
+			if (entry && !terminal(entry.state) && entry.state !== "terminal_uncertain") {
+				await this.#append({ ...entry, state: "terminal_uncertain", ts: Date.now() });
+			}
 		}
 		// Effects may have completed after the last durable marker; do not retry them after a restart.
 		for (const entry of [...this.#byIdentity.values()]) {
@@ -82,10 +99,19 @@ export class LifecycleLedger {
 		}
 		return this;
 	}
+	async #sealTornTail(): Promise<void> {
+		const h = await fs.open(this.#file, "a", 0o600);
+		try {
+			await h.writeFile("\n");
+			await h.sync();
+		} finally {
+			await h.close();
+		}
+	}
 	async #quarantine(line: string): Promise<void> {
 		const h = await fs.open(this.#corruptFile, "a", 0o600);
 		try {
-			await h.write(`${line}\n`);
+			await h.writeFile(`${line}\n`);
 			await h.sync();
 		} finally {
 			await h.close();
@@ -98,7 +124,7 @@ export class LifecycleLedger {
 	async #append(entry: LifecycleLedgerEntry): Promise<LifecycleLedgerEntry> {
 		const h = await fs.open(this.#file, "a", 0o600);
 		try {
-			await h.write(`${JSON.stringify(entry)}\n`);
+			await h.writeFile(`${JSON.stringify(entry)}\n`);
 			await h.sync();
 		} finally {
 			await h.close();
