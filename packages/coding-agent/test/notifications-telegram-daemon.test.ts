@@ -3939,6 +3939,50 @@ test("settlement and local persistence failures never issue a second deletion re
 	expect(cleanup.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
 	expect(readCustodySnapshot(cleanup.agentDir).records).toEqual({});
 });
+test("foreign confirmed custody does not clean up a colliding current-chat topic on restart", async () => {
+	const harness = await createTopicDeletionHarness();
+	const topicId = currentTopicId(harness.agentDir, "S");
+	const custodyPath = path.join(daemonPaths(harness.agentDir).dir, "telegram-deletion-custody.json");
+	fs.writeFileSync(
+		custodyPath,
+		JSON.stringify({
+			version: 3,
+			records: {
+				[`-100:${topicId}`]: {
+					chatId: "-100",
+					topicId,
+					state: "confirmed",
+					updatedAt: 1,
+					custodyEpoch: harness.custodyEpoch,
+					trigger: "session_closed",
+					diagnostic: { kind: "telegram_ok" },
+				},
+			},
+		}),
+	);
+
+	const restarted = new TelegramNotificationDaemon({
+		settings: settings(harness.agentDir),
+		ownerId: "owner",
+		custodyEpoch: harness.custodyEpoch,
+		botToken: "tok",
+		chatId: "42",
+		botApi: harness.bot,
+	});
+	await restarted.loadTopics();
+	harness.bot.calls = [];
+	await restarted.loadCustody();
+
+	expect(harness.bot.calls).toHaveLength(0);
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(0);
+	expect(currentTopicId(harness.agentDir, "S")).toBe(topicId);
+	expect(readCustodySnapshot(harness.agentDir).records[`-100:${topicId}`]).toMatchObject({
+		chatId: "-100",
+		topicId,
+		state: "confirmed",
+		diagnostic: { kind: "telegram_ok" },
+	});
+});
 test("session_closed clears reply message routes for the closed session", async () => {
 	FakeWs.instances = [];
 	const agentDir = tempAgentDir();

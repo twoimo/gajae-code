@@ -2471,6 +2471,7 @@ export class TelegramNotificationDaemon {
 
 		for (const record of this.#custodyStore.list()) {
 			if (record.state !== "confirmed") continue;
+			if (record.chatId !== this.opts.chatId) continue;
 			const sessionId = this.topics
 				.sessionIds()
 				.find(candidate => this.topics.get(candidate)?.topicId === record.topicId);
