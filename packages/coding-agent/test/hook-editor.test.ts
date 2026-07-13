@@ -77,6 +77,10 @@ function createControllerContext() {
 		editor,
 		editorContainer,
 		ui,
+		restoreComposer() {
+			editorContainer.clear();
+			editorContainer.addChild(editor);
+		},
 		hookEditor: undefined,
 	} as unknown as TestContext;
 
@@ -434,7 +438,7 @@ describe("ExtensionUiController hook editor abort", () => {
 			editorContainer.clear();
 			editorContainer.addChild(framedEditor);
 		});
-		(ctx as unknown as { restoreComposer: () => void }).restoreComposer = restoreComposer;
+		ctx.restoreComposer = restoreComposer;
 		const controller = new ExtensionUiController(ctx);
 
 		const promise = controller.showHookSelector("Pick one", ["Alpha", "Beta"]);

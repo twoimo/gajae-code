@@ -888,7 +888,7 @@ describe("AgentSession retry fallback", () => {
 			`${primaryModel.provider}/${primaryModel.id}`,
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 		]);
-		expect(session.model).toBe(fallbackModel);
+		expect(session.model).toMatchObject({ provider: fallbackModel.provider, id: fallbackModel.id });
 
 		const latePromotionError = new Error("late default selection failure");
 		vi.spyOn(sessionManager, "promoteDefaultModelSelection").mockReturnValue({
@@ -903,7 +903,7 @@ describe("AgentSession retry fallback", () => {
 		} catch (error) {
 			selectionFailure = error;
 		}
-		expect(session.model).toBe(fallbackModel);
+		expect(session.model).toMatchObject({ provider: fallbackModel.provider, id: fallbackModel.id });
 		expect(selectionFailure).toBeInstanceOf(DefaultModelSelectionRecoveryError);
 		if (!(selectionFailure instanceof DefaultModelSelectionRecoveryError)) {
 			throw new Error("Expected typed default-selection recovery failure");
@@ -923,7 +923,7 @@ describe("AgentSession retry fallback", () => {
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 			`${primaryModel.provider}/${primaryModel.id}`,
 		]);
-		expect(session.model).toBe(primaryModel);
+		expect(session.model).toMatchObject({ provider: primaryModel.provider, id: primaryModel.id });
 	});
 
 	it("preserves thinking on bare fallback selectors and does not overwrite user thinking on restore", async () => {

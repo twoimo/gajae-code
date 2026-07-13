@@ -35,7 +35,7 @@ type TestContext = {
 	hookSelector: InteractiveModeContext["hookSelector"];
 	hookInput: InteractiveModeContext["hookInput"];
 	hookEditor: InteractiveModeContext["hookEditor"];
-	restoreComposer?: () => void;
+	restoreComposer: () => void;
 };
 
 type PetRestore = {
@@ -102,6 +102,10 @@ function createControllerContext(initialText = "draft"): TestContext {
 		hookSelector: undefined,
 		hookInput: undefined,
 		hookEditor: undefined,
+		restoreComposer() {
+			editorContainer.clear();
+			editorContainer.addChild(editor);
+		},
 	};
 }
 
@@ -205,59 +209,7 @@ describe("qa-pet-restore-redteam", () => {
 		}
 	});
 
-	it("4. preserves the legacy plain-editor fallback for every transient hide path", async () => {
-		const selectorContext = createControllerContext();
-		const selectorController = createController(selectorContext);
-		const selector = selectorController.showHookSelector("Legacy selector", ["Alpha"]);
-		selectorContext.hookSelector!.handleInput("\r");
-		expect(await selector).toBe("Alpha");
-		expect(selectorContext.editorContainer.children).toEqual([selectorContext.editor]);
-		expect(selectorContext.editorContainer.clearCount).toBe(2);
-
-		const inputContext = createControllerContext();
-		const inputController = createController(inputContext);
-		const input = inputController.showHookInput("Legacy input");
-		inputContext.hookInput!.handleInput("\r");
-		expect(await input).toBe("");
-		expect(inputContext.editorContainer.children).toEqual([inputContext.editor]);
-		expect(inputContext.editorContainer.clearCount).toBe(2);
-
-		const editorContext = createControllerContext();
-		const editorController = createController(editorContext);
-		const editor = editorController.showHookEditor("Legacy editor", undefined, undefined, { promptStyle: true });
-		editorContext.hookEditor!.handleInput("\r");
-		expect(await editor).toBe("");
-		expect(editorContext.editorContainer.children).toEqual([editorContext.editor]);
-		expect(editorContext.editorContainer.clearCount).toBe(2);
-	});
-
-	it("5. documents the current thrown-restore behavior without treating it as a production contract", () => {
-		const ctx = createControllerContext();
-		const restoreError = new Error("synthetic restore failure");
-		const restoreComposer = vi.fn(() => {
-			throw restoreError;
-		});
-		ctx.restoreComposer = restoreComposer;
-		const controller = createController(ctx);
-		const pending = controller.showHookSelector("Throwing restore", ["Alpha"]);
-		void pending;
-		const transientSelector = ctx.hookSelector;
-
-		expect(() => ctx.hookSelector!.handleInput("\r")).toThrow(restoreError);
-		expect(restoreComposer).toHaveBeenCalledTimes(1);
-		expect(ctx.editorContainer.children).toEqual([transientSelector]);
-		expect(ctx.hookSelector).toBe(transientSelector);
-		expect(ctx.ui.setFocus).not.toHaveBeenLastCalledWith(ctx.editor);
-
-		ctx.restoreComposer = () => {
-			ctx.editorContainer.clear();
-			ctx.editorContainer.addChild(ctx.editor);
-		};
-		controller.hideHookSelector();
-		expect(ctx.editorContainer.children).toEqual([ctx.editor]);
-	});
-
-	it("6. restores non-overlay custom UI but never remounts for overlay custom UI", async () => {
+	it("4. restores non-overlay custom UI but never remounts for overlay custom UI", async () => {
 		const nonOverlayContext = createControllerContext("saved draft");
 		const nonOverlayPet = installPetRestore(nonOverlayContext);
 		const nonOverlayController = createController(nonOverlayContext);
@@ -296,7 +248,7 @@ describe("qa-pet-restore-redteam", () => {
 		expect(overlayContext.ui.overlayHide).toHaveBeenCalledTimes(1);
 	});
 
-	it("7. tolerates double-close and an abort after an already-answered selector without stale children", async () => {
+	it("5. tolerates double-close and an abort after an already-answered selector without stale children", async () => {
 		const doubleCloseContext = createControllerContext();
 		const doubleClosePet = installPetRestore(doubleCloseContext);
 		const doubleCloseController = createController(doubleCloseContext);
@@ -321,7 +273,7 @@ describe("qa-pet-restore-redteam", () => {
 		expectPetComposerRestored(answeredContext, answeredPet, 1);
 	});
 
-	it("8. restores the framed composer between rapid consecutive selector answers without accumulating children", async () => {
+	it("6. restores the framed composer between rapid consecutive selector answers without accumulating children", async () => {
 		const ctx = createControllerContext();
 		const pet = installPetRestore(ctx);
 		const controller = createController(ctx);

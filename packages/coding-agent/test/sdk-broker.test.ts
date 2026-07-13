@@ -97,11 +97,16 @@ describe("SDK broker identity and discovery", () => {
 		const dir = await temp();
 		const broker = new Broker({ agentDir: dir, heartbeatTtlMs: 45 });
 		const first = await broker.start();
-		await sleep(100);
-		expect(await readBrokerDiscovery(dir, 45)).not.toBeNull();
+		const deadline = Date.now() + 5_000;
+		let refreshed = await readBrokerDiscovery(dir);
+		while ((!refreshed || refreshed.heartbeatAt <= first.heartbeatAt) && Date.now() < deadline) {
+			await sleep(10);
+			refreshed = await readBrokerDiscovery(dir);
+		}
+		expect(refreshed?.heartbeatAt).toBeGreaterThan(first.heartbeatAt);
 		await broker.stop();
 		await expect(fs.stat(brokerDiscoveryPath(dir))).rejects.toThrow();
-		const restarted = await ensureBroker({ agentDir: dir, heartbeatTtlMs: 45 });
+		const restarted = await ensureBroker({ agentDir: dir });
 		expect(restarted.token).not.toBe(first.token);
 		const owner = (await import("../src/sdk/broker/ensure")).brokerOwnerForTest(dir);
 		await owner?.stop();

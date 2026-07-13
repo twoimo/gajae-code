@@ -1,8 +1,10 @@
 # Changelog
 
 ## [Unreleased]
+
 ### Fixed
 
+- Real interactive terminals now repaint only the visible viewport during forced renders instead of clearing and replaying native scrollback.
 - Terminal graphics protocols are no longer assumed under terminal multiplexers: the blind Kitty fallback for `TERM=tmux-*`/`screen-*` (and detected kitty/iTerm2 protocols leaking through multiplexer env) emitted raw graphics escapes the multiplexer consumed, leaving the Gajae composer pet invisible while its out-of-band cursor writes intermittently corrupted the TUI frame. Image protocols are now unconditionally dropped under tmux/screen/zellij (shared multiplexer predicate with the renderer host policy, including `$TMUX_PANE`, `$STY`, `$ZELLIJ`, and `GJC_TMUX_LAUNCHED`) unless `PI_FORCE_IMAGE_PROTOCOL` explicitly forces a protocol, which remains an expert override.
 - Fixed the startup sixel capability probe's response parsing and authority: XTSMGRAPHICS replies are read per spec (`Ps=0` success; `1/2/3` errors — tmux's `CSI ?2;3;0S` error no longer counts as support), the DA1 device-class parameter is no longer misread as the sixel extension attribute (`CSI ?4;6c` identifies a VT132, not sixel), an explicit `PI_FORCE_IMAGE_PROTOCOL` (including `off`) suppresses probing entirely, and the probe never runs inside a multiplexer because tmux advertises DA1 `;4` from compile-time support regardless of the attached client.
 - A configured Gajae pet now re-applies automatically when the asynchronous sixel probe enables graphics after startup (new `onImageProtocolChanged` subscription), instead of staying hidden until `/pet` is re-run; `/pet` also reports multiplexer graphics suppression explicitly instead of suggesting a different terminal.
