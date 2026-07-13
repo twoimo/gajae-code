@@ -2356,6 +2356,104 @@ describe("DiscordNotificationDaemon fake-provider acceptance", () => {
 		});
 	});
 
+	test("retains a receipt with a missing referenced effect for scheduled recovery", async () => {
+		await withDaemon(async (daemon, _provider, agentDir) => {
+			const conversation = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });
+			const store = new ConversationStore<DiscordConversation>({ agentDir, kind: "discord" });
+			const key = `app:guild:parent:${conversation.threadId}`;
+			const mapping = await store.read(key);
+			expect(mapping).toBeDefined();
+			const effectId = `discord:app:guild:parent:${conversation.threadId}:missing-effect`;
+			await store.write(key, mapping!.generation, {
+				...mapping!,
+				generation: mapping!.generation + 1,
+				updatedAt: Date.now(),
+				inboundDispatches: [
+					{
+						key: "missing-effect",
+						eventId: "missing-effect",
+						kind: "command",
+						endpointGeneration: 1,
+						effectId,
+						idempotencyKey: effectId,
+					},
+				],
+			});
+
+			await daemon.start();
+			await Bun.sleep(30);
+			expect((await store.read(key))?.inboundDispatches).toEqual([
+				expect.objectContaining({ effectId, eventId: "missing-effect" }),
+			]);
+		});
+	});
+
+	test("backfills a legacy active mapping's archive effect lineage from its creation nonce", async () => {
+		await withDaemon(async (daemon, provider, agentDir) => {
+			const store = new ConversationStore<DiscordConversation>({ agentDir, kind: "discord" });
+			const threadId = "legacy-active";
+			const createNonce = "legacy-active-cycle";
+			const key = `app:guild:parent:${threadId}`;
+			await store.transact(key, () => ({
+				generation: 1,
+				state: "active",
+				appId: "app",
+				guildId: "guild",
+				parentChannelId: "parent",
+				threadId,
+				sessionId: "legacy-active-session",
+				endpointGeneration: 1,
+				createNonce,
+				updatedAt: 1,
+				seenEventIds: [],
+				seenInteractionIds: [],
+			}));
+
+			await daemon.archive("legacy-active-session");
+			expect(await store.read(key)).toMatchObject({ state: "archived", effectIncarnationId: createNonce });
+			expect(provider.archived).toEqual([{ threadId }]);
+			const archive = (await new ChatEffectJournal({ agentDir, transport: "discord" }).list()).find(
+				effect => effect.kind === "archive" && effect.id.startsWith(`archive:${threadId}:${createNonce}:`),
+			);
+			expect(archive).toBeDefined();
+		});
+	});
+
+	test("backfills a legacy archived mapping before resuming its next lifecycle cycle", async () => {
+		await withDaemon(async (daemon, provider, agentDir) => {
+			const store = new ConversationStore<DiscordConversation>({ agentDir, kind: "discord" });
+			const threadId = "legacy-archived";
+			const createNonce = "legacy-archived-cycle";
+			const key = `app:guild:parent:${threadId}`;
+			await store.transact(key, () => ({
+				generation: 1,
+				state: "archived",
+				appId: "app",
+				guildId: "guild",
+				parentChannelId: "parent",
+				threadId,
+				sessionId: "legacy-archived-session",
+				endpointGeneration: 1,
+				createNonce,
+				updatedAt: 1,
+				seenEventIds: [],
+				seenInteractionIds: [],
+			}));
+
+			const resumed = await daemon.resume("legacy-archived-session", 2);
+			expect(resumed).toMatchObject({ state: "active", effectIncarnationId: createNonce });
+			expect(provider.unarchived).toEqual([threadId]);
+			await daemon.archive("legacy-archived-session");
+			const effects = (await new ChatEffectJournal({ agentDir, transport: "discord" }).list()).filter(
+				effect =>
+					(effect.kind === "archive" || effect.kind === "unarchive") &&
+					effect.id.includes(`:${threadId}:${createNonce}:`),
+			);
+			expect(effects).toHaveLength(2);
+			expect(new Set(effects.map(effect => effect.id)).size).toBe(2);
+		});
+	});
+
 	test("uses a fresh durable archive occurrence for every archive cycle", async () => {
 		await withDaemon(async (daemon, provider, agentDir) => {
 			const conversation = await daemon.notify({ sessionId: "session", endpointGeneration: 1, content: "open" });

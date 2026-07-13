@@ -14,6 +14,31 @@ describe("SDK lifecycle ledger", () => {
 		expect((await resumed.begin("i", "a")).kind).toBe("replay");
 		expect((await resumed.begin("i", "b")).kind).toBe("idempotency_conflict");
 	});
+	it("retries a clean accepted row after restart", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-ledger-accepted-"));
+		const ledger = await new LifecycleLedger(dir).open();
+		await ledger.begin("i", "a");
+
+		const resumed = await new LifecycleLedger(dir).open();
+		expect((await resumed.begin("i", "a")).kind).toBe("new");
+		expect((await resumed.begin("i", "b")).kind).toBe("idempotency_conflict");
+		await resumed.transition("i", "terminal_ok", { response: { sessionId: "s" } });
+		expect((await new LifecycleLedger(dir).open()).get("i")?.state).toBe("terminal_ok");
+	});
+	it("seals a valid row missing its final newline before appending", async () => {
+		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-ledger-unsealed-"));
+		const ledgerPath = path.join(dir, "sdk", "lifecycle-ledger.jsonl");
+		const ledger = await new LifecycleLedger(dir).open();
+		await ledger.begin("i", "a");
+		const source = await fs.readFile(ledgerPath, "utf8");
+		await fs.writeFile(ledgerPath, source.slice(0, -1));
+
+		const resumed = await new LifecycleLedger(dir).open();
+		expect((await resumed.begin("i", "a")).kind).toBe("new");
+		await resumed.transition("i", "terminal_ok", { response: { sessionId: "s" } });
+		const lines = (await fs.readFile(ledgerPath, "utf8")).trimEnd().split("\n");
+		expect(lines.map(line => JSON.parse(line))).toHaveLength(2);
+	});
 	it("quarantines corrupt middle rows and replays later valid rows", async () => {
 		const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-ledger-"));
 		const ledger = await new LifecycleLedger(dir).open();
@@ -40,6 +65,9 @@ describe("SDK lifecycle ledger", () => {
 		const resumed = await new LifecycleLedger(dir).open();
 		expect((await resumed.begin("i", "a")).kind).toBe("terminal_uncertain");
 		expect(resumed.get("i")?.state).toBe("terminal_uncertain");
+		const recoveredLines = (await fs.readFile(ledgerPath, "utf8")).trimEnd().split("\n");
+		expect(() => JSON.parse(recoveredLines.at(-2)!)).toThrow();
+		expect(JSON.parse(recoveredLines.at(-1)!)).toMatchObject({ identity: "i", state: "terminal_uncertain" });
 		expect((await new LifecycleLedger(dir).open()).get("i")?.state).toBe("terminal_uncertain");
 	});
 	it("lets a later valid terminal row supersede earlier corruption", async () => {

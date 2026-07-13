@@ -5758,6 +5758,8 @@ export class SessionManager {
 		}
 
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, snapshot.storage);
+		const removeSessionDirOnFailure =
+			snapshot.storage instanceof FileSessionStorage && !snapshot.storage.existsSync(dir);
 		let manager: SessionManager | undefined;
 		let authorityFailure: StrictSessionOpenFailure | undefined;
 		try {
@@ -5832,6 +5834,15 @@ export class SessionManager {
 						} catch (cleanupError) {
 							if (!isEnoent(cleanupError)) cleanupErrors.push(toError(cleanupError));
 						}
+					}
+				}
+				if (removeSessionDirOnFailure) {
+					try {
+						await fs.promises.rmdir(dir);
+					} catch (cleanupError) {
+						const code = (cleanupError as NodeJS.ErrnoException).code;
+						if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST")
+							cleanupErrors.push(toError(cleanupError));
 					}
 				}
 				if (cleanupErrors.length > 0) {

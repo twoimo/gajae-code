@@ -377,7 +377,7 @@ export class SdkClient {
 			const timer = setTimeout(() => {
 				if (this.#helloSocket !== socket) return;
 				this.#rejectHello?.(
-					this.#deadline !== undefined
+					this.#deadline !== undefined && Date.now() >= this.#deadline
 						? this.#deadlineError()
 						: new SdkClientError("protocol_error", "SDK server did not send a hello frame."),
 				);

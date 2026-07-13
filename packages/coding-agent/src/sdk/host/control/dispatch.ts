@@ -79,6 +79,10 @@ interface IdempotencyEntry {
 }
 const idempotentRequests = new WeakMap<ControlSurface, Map<string, IdempotencyEntry>>();
 
+type PreflightCancellableSurface = ControlSurface & {
+	cancelPendingPreflights?(): void;
+};
+
 function failure(
 	id: string,
 	code: ControlErrorCode,
@@ -292,27 +296,6 @@ function serialize(surface: ControlSurface, work: () => Promise<ControlResponse>
 	return result;
 }
 
-/**
- * An abort-and-prompt must begin its cancellation prelude immediately rather
- * than wait behind the preflight it is meant to cancel. Once that operation
- * reaches its replacement submission, later ordered controls serialize behind
- * its new session boundary.
- */
-function supersedeSessionChain(
-	surface: ControlSurface,
-	work: () => Promise<ControlResponse>,
-): Promise<ControlResponse> {
-	const result = work();
-	sessionChains.set(
-		surface,
-		result.then(
-			() => undefined,
-			() => undefined,
-		),
-	);
-	return result;
-}
-
 function idempotent(
 	surface: ControlSurface,
 	row: Operation,
@@ -374,7 +357,11 @@ export function dispatchControl(
 			failure(request.id, "invalid_input", "confirm: true is required for this destructive operation."),
 		);
 	const work = () => execute(surface, row, request);
-	if (row.sdkId === "turn.abort_and_prompt") return supersedeSessionChain(surface, work);
+	if (row.sdkId === "turn.abort_and_prompt") {
+		const cancellable = surface as PreflightCancellableSurface;
+		if (Object.hasOwn(cancellable, "cancelPendingPreflights")) cancellable.cancelPendingPreflights?.();
+		return serialize(surface, work);
+	}
 	if (row.idempotency === "idempotent" && request.idempotencyKey) return idempotent(surface, row, request, work);
 	return row.idempotency === "ordered" && row.sdkId !== "retry.now" ? serialize(surface, work) : work();
 }

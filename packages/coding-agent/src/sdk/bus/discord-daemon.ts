@@ -129,22 +129,17 @@ type DiscordInboundRouting = {
 	actionNonce?: string;
 };
 
-type DiscordEffectLifecycle = {
-	effectIncarnationId?: string;
-	archiveOccurrenceId?: string;
-	resumeOccurrenceId?: string;
-	archiveEffectId?: string;
-	resumeEffectId?: string;
-};
-
-function effectLifecycle(record: DiscordConversation): DiscordEffectLifecycle {
-	return record as DiscordConversation & DiscordEffectLifecycle;
-}
-
-function effectIncarnationId(record: DiscordConversation): string {
-	const incarnationId = effectLifecycle(record).effectIncarnationId;
-	if (!incarnationId) throw new Error("Discord effect incarnation is unavailable");
-	return incarnationId;
+function backfilledEffectIncarnationId(record: DiscordConversation): string {
+	if (record.effectIncarnationId) return record.effectIncarnationId;
+	if (record.createNonce) return record.createNonce;
+	return `legacy-${createHash("sha256")
+		.update(
+			[record.appId, record.guildId, record.parentChannelId, record.threadId ?? "", record.sessionId ?? ""].join(
+				"\u0000",
+			),
+		)
+		.digest("hex")
+		.slice(0, 32)}`;
 }
 
 type DiscordInboundClaim = {
@@ -213,9 +208,12 @@ export class DiscordNotificationDaemon {
 			const providerRecoveryFailed = await this.#drainProviderEffects();
 			await this.#reconcileTerminalInboundReceipts();
 			const closingAfterProviderRecoveryFailed = await this.#recoverClosingConversations();
+			const inboundRecoveryFailed = await this.#drainPendingDispatches();
 			const recoveryFailed =
-				closingBeforeProviderRecoveryFailed || providerRecoveryFailed || closingAfterProviderRecoveryFailed;
-			await this.#drainPendingDispatches();
+				closingBeforeProviderRecoveryFailed ||
+				providerRecoveryFailed ||
+				closingAfterProviderRecoveryFailed ||
+				inboundRecoveryFailed;
 			if (lifecycleGeneration !== this.#lifecycleGeneration) return;
 
 			this.#started = true;
@@ -352,10 +350,9 @@ export class DiscordNotificationDaemon {
 		if (!record?.threadId || record.state !== "active") return;
 		await this.#requireLiveBinding(record.sessionId!, record.endpointGeneration!);
 		const archiving = await this.#beginArchive(record);
-		const lifecycle = effectLifecycle(archiving);
-		const occurrenceId = lifecycle.archiveOccurrenceId;
-		if (!occurrenceId || !lifecycle.archiveEffectId) throw new Error("Discord archive occurrence is unavailable");
-		await this.#threadEffect(lifecycle.archiveEffectId, archiving, "archive", false, false, occurrenceId);
+		const occurrenceId = archiving.archiveOccurrenceId;
+		if (!occurrenceId || !archiving.archiveEffectId) throw new Error("Discord archive occurrence is unavailable");
+		await this.#threadEffect(archiving.archiveEffectId, archiving, "archive", false, false, occurrenceId);
 		await this.#requireLiveBinding(archiving.sessionId!, archiving.endpointGeneration!);
 		await this.#completeArchive(archiving, occurrenceId);
 	}
@@ -381,23 +378,22 @@ export class DiscordNotificationDaemon {
 		}
 		await this.#requireLiveBinding(sessionId, endpointGeneration);
 		const resumeOccurrenceId = randomUUID();
+		const effectIncarnationId = backfilledEffectIncarnationId(record);
 		const resuming = await this.#replace(record, {
 			...record,
 			state: "resuming",
 			endpointGeneration,
+			effectIncarnationId,
 			resumeOccurrenceId,
-			resumeEffectId: `unarchive:${record.threadId}:${effectIncarnationId(record)}:${resumeOccurrenceId}`,
+			resumeEffectId: `unarchive:${record.threadId}:${effectIncarnationId}:${resumeOccurrenceId}`,
 			pendingActionId: undefined,
 			pendingActionNonce: undefined,
 			pendingActionEffectId: undefined,
-		} as DiscordConversation & DiscordEffectLifecycle);
-
+		});
 		try {
-			const lifecycle = effectLifecycle(resuming);
-			const occurrenceId = lifecycle.resumeOccurrenceId;
-			if (!occurrenceId || !lifecycle.resumeEffectId) throw new Error("Discord resume occurrence is unavailable");
-			await this.#threadEffect(lifecycle.resumeEffectId, resuming, "unarchive", false, false, occurrenceId);
-
+			const occurrenceId = resuming.resumeOccurrenceId;
+			if (!occurrenceId || !resuming.resumeEffectId) throw new Error("Discord resume occurrence is unavailable");
+			await this.#threadEffect(resuming.resumeEffectId, resuming, "unarchive", false, false, occurrenceId);
 			await this.#requireLiveBinding(sessionId, endpointGeneration);
 			return await this.#completeResume(resuming, occurrenceId);
 		} catch {
@@ -410,7 +406,7 @@ export class DiscordNotificationDaemon {
 				pendingActionId: undefined,
 				pendingActionNonce: undefined,
 				pendingActionEffectId: undefined,
-			} as DiscordConversation & DiscordEffectLifecycle);
+			});
 
 			const replacement = await this.#create(sessionId, endpointGeneration, `resume-${randomUUID()}`);
 			await this.#requireLiveBinding(sessionId, endpointGeneration);
@@ -809,8 +805,9 @@ export class DiscordNotificationDaemon {
 		);
 	}
 
-	async #drainPendingDispatches(): Promise<void> {
+	async #drainPendingDispatches(): Promise<boolean> {
 		await this.#reconcileTerminalInboundReceipts();
+		let recoveryFailed = false;
 		const dispatched = new Set<string>();
 		for (const record of Object.values((await this.#store.load()).conversations)) {
 			if (!record.threadId || !record.sessionId || record.state !== "active") continue;
@@ -841,9 +838,9 @@ export class DiscordNotificationDaemon {
 				}
 				const effect = await this.#effects.read(receipt.effectId);
 				if (!effect) {
-					// A terminal effect can be pruned before a crash publishes its mapping
-					// cleanup. Its missing payload is a terminal receipt, never a retry.
-					await this.#finishInbound(record, receipt);
+					// Referenced effects are retained by terminal pruning. Preserve the
+					// receipt and retry recovery rather than acknowledging lost authority.
+					recoveryFailed = true;
 					continue;
 				}
 				if (effect?.state === "terminal") {
@@ -898,6 +895,7 @@ export class DiscordNotificationDaemon {
 			}
 			await this.#dispatchInbound(adopted.record, endpoint, adopted.receipt);
 		}
+		return recoveryFailed;
 	}
 	async #adoptOrphanInbound(
 		effectId: string,
@@ -1315,13 +1313,12 @@ export class DiscordNotificationDaemon {
 				sessionId,
 				endpointGeneration,
 				createNonce: intent.createNonce,
-				effectIncarnationId: effectLifecycle(old ?? intent).effectIncarnationId ?? randomUUID(),
-
+				effectIncarnationId: old?.effectIncarnationId ?? intent.effectIncarnationId ?? randomUUID(),
 				updatedAt: this.#now(),
 				seenEventIds: old?.seenEventIds ?? [],
 				seenInteractionIds: old?.seenInteractionIds ?? [],
 				inboundDispatches: old?.inboundDispatches,
-			} as DiscordConversation & DiscordEffectLifecycle),
+			}),
 		);
 		if (!record) throw new Error("Unable to persist Discord thread mapping");
 		await this.#store.delete(intentKey, intent.generation);
@@ -1469,18 +1466,20 @@ export class DiscordNotificationDaemon {
 				current.endpointGeneration !== record.endpointGeneration
 			)
 				return current;
-			if (effectLifecycle(current).archiveOccurrenceId) {
+			if (current.archiveOccurrenceId) {
 				archiving = current;
 				return current;
 			}
 			const archiveOccurrenceId = randomUUID();
+			const effectIncarnationId = backfilledEffectIncarnationId(current);
 			archiving = normalizeDiscordConversation({
 				...current,
 				generation: current.generation + 1,
 				updatedAt: this.#now(),
+				effectIncarnationId,
 				archiveOccurrenceId,
-				archiveEffectId: `archive:${current.threadId}:${effectIncarnationId(current)}:${archiveOccurrenceId}`,
-			} as DiscordConversation & DiscordEffectLifecycle);
+				archiveEffectId: `archive:${current.threadId}:${effectIncarnationId}:${archiveOccurrenceId}`,
+			});
 
 			return archiving;
 		});
@@ -1498,7 +1497,7 @@ export class DiscordNotificationDaemon {
 			if (
 				current?.state !== "active" ||
 				current.sessionId !== record.sessionId ||
-				effectLifecycle(current).archiveOccurrenceId !== occurrenceId
+				current.archiveOccurrenceId !== occurrenceId
 			)
 				return current;
 			return normalizeDiscordConversation({
@@ -1509,7 +1508,7 @@ export class DiscordNotificationDaemon {
 				archivedAt: this.#now(),
 				archiveOccurrenceId: undefined,
 				archiveEffectId: undefined,
-			} as DiscordConversation & DiscordEffectLifecycle);
+			});
 		});
 	}
 	async #completeResume(record: DiscordConversation, occurrenceId: string): Promise<DiscordConversation> {
@@ -1526,9 +1525,8 @@ export class DiscordNotificationDaemon {
 				current.endpointGeneration !== record.endpointGeneration
 			)
 				return current;
-			if (current.state === "active" && effectLifecycle(current).resumeOccurrenceId === undefined) return current;
-			if (current.state !== "resuming" || effectLifecycle(current).resumeOccurrenceId !== occurrenceId)
-				return current;
+			if (current.state === "active" && current.resumeOccurrenceId === undefined) return current;
+			if (current.state !== "resuming" || current.resumeOccurrenceId !== occurrenceId) return current;
 			return normalizeDiscordConversation({
 				...current,
 				generation: current.generation + 1,
@@ -1537,7 +1535,7 @@ export class DiscordNotificationDaemon {
 				archivedAt: undefined,
 				resumeOccurrenceId: undefined,
 				resumeEffectId: undefined,
-			} as DiscordConversation & DiscordEffectLifecycle);
+			});
 		});
 		if (completed?.state !== "active" || completed.sessionId !== record.sessionId)
 			throw new Error("Discord resume occurrence lost its authority");
@@ -1890,10 +1888,8 @@ export class DiscordNotificationDaemon {
 						current.endpointGeneration === record.endpointGeneration &&
 						(occurrenceId === undefined ||
 							(operation === "archive"
-								? effectLifecycle(current).archiveEffectId === id &&
-									effectLifecycle(current).archiveOccurrenceId === occurrenceId
-								: effectLifecycle(current).resumeEffectId === id &&
-									effectLifecycle(current).resumeOccurrenceId === occurrenceId));
+								? current.archiveEffectId === id && current.archiveOccurrenceId === occurrenceId
+								: current.resumeEffectId === id && current.resumeOccurrenceId === occurrenceId));
 				return (
 					mappingCurrent &&
 					(closing ||
@@ -2010,7 +2006,7 @@ export class DiscordNotificationDaemon {
 					updatedAt: this.#now(),
 					seenEventIds: [],
 					seenInteractionIds: [],
-				} as DiscordConversation & DiscordEffectLifecycle),
+				}),
 		);
 		if (committed) await this.#store.delete(intentKey, intent.generation);
 	}
@@ -2095,15 +2091,14 @@ export class DiscordNotificationDaemon {
 						payload.locked === true &&
 						effect.id === this.#closeArchiveEffectId(record!);
 					const occurrenceId = payload.occurrenceId;
-					const lifecycle = record ? effectLifecycle(record) : undefined;
 					const occurrenceMatches =
 						closeArchive ||
-						(!!lifecycle &&
+						(!!record &&
 							typeof occurrenceId === "string" &&
-							effect.id === (effect.kind === "archive" ? lifecycle.archiveEffectId : lifecycle.resumeEffectId) &&
+							effect.id === (effect.kind === "archive" ? record.archiveEffectId : record.resumeEffectId) &&
 							(effect.kind === "archive"
-								? lifecycle.archiveOccurrenceId === occurrenceId
-								: lifecycle.resumeOccurrenceId === occurrenceId));
+								? record.archiveOccurrenceId === occurrenceId
+								: record.resumeOccurrenceId === occurrenceId));
 					if (
 						!record ||
 						(!closeArchive &&
@@ -2184,7 +2179,7 @@ export class DiscordNotificationDaemon {
 				failed = true;
 			}
 			try {
-				await this.#drainPendingDispatches();
+				failed = (await this.#drainPendingDispatches()) || failed;
 			} catch {
 				failed = true;
 			}

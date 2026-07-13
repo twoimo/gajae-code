@@ -180,6 +180,7 @@ const tmuxMachineIngressOperations = [
 	"send-keys",
 	"load-buffer",
 	"paste-buffer",
+	"set-buffer",
 ] as const;
 const tmuxMachineIngressOperationPattern = new RegExp(`\\b(?:${tmuxMachineIngressOperations.join("|")})\\b`, "g");
 const tmuxMachineIngressOperationTest = new RegExp(tmuxMachineIngressOperationPattern.source);
@@ -451,6 +452,8 @@ const machineTmuxRouteRegressionFixtures = [
 	'const operation = `paste-${"buffer"}`; tmux "$operation" -b owner',
 	'tmux_executable=tmux; operation=load; operation="${operation}-buffer"; argv=("$tmux_executable" "$operation" -b owner); "${argv[@]}"',
 	'run_tmux() { local command=tmux; "$command" "$@"; }; operation=send; operation="${operation}-keys"; run_tmux "$operation" -t owner C-m',
+	"tmux set-buffer prompt",
+	'const operation = ["set", "buffer"].join("-"); tmux "$operation" prompt',
 ];
 const uncoveredMachineTmuxRoutes = machineTmuxRouteRegressionFixtures.filter(
 	fixture => machineTmuxRouteReferences(fixture).length === 0,

@@ -31,6 +31,9 @@ const constructedRetiredIngressPatterns = [
 	/["'](?:\.\/)?modes\/["']\s*\+\s*["'](?:rpc|bridge|unattended)[A-Za-z0-9_.-]*["']/gi,
 	/\[\s*["'](?:\.\/)?modes["']\s*,\s*["'](?:rpc|bridge|unattended)[A-Za-z0-9_.-]*["']\s*\]\.join\(\s*["']\/["']\s*\)/gi,
 ];
+const retiredModeValuePattern = /^(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*$/i;
+const retiredModeArgumentPattern = /^--mode(?:\s+|=)(?:rpc|bridge|unattended)[A-Za-z0-9_.-]*$/i;
+
 const allowedRpcModeInvocationTests = new Set([
 	"packages/coding-agent/test/sdk-downgrade-rollback.test.ts",
 	"packages/coding-agent/test/sdk-removed-ingresses.test.ts",
@@ -157,8 +160,34 @@ function staticStringValue(expression: string, bindings: ReadonlyMap<string, str
 	return undefined;
 }
 
-function tmuxPrimitiveOccurrences(contents: string): TmuxPrimitiveOccurrence[] {
+function staticStringBindings(contents: string): {
+	assignments: StaticStringAssignment[];
+	masked: string;
+	values: ReadonlyMap<string, string>;
+} {
 	const masked = maskCodeComments(contents);
+	const assignments: StaticStringAssignment[] = [];
+	for (const match of masked.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+);?/g)) {
+		const expression = match[2];
+		const start = (match.index ?? 0) + match[0].lastIndexOf(expression);
+		assignments.push({ name: match[1], expression, start });
+	}
+	const values = new Map<string, string>();
+	for (let pass = 0; pass < assignments.length; pass++) {
+		let changed = false;
+		for (const assignment of assignments) {
+			const value = staticStringValue(assignment.expression, values);
+			if (value === undefined || values.get(assignment.name) === value) continue;
+			values.set(assignment.name, value);
+			changed = true;
+		}
+		if (!changed) break;
+	}
+	return { assignments, masked, values };
+}
+
+function tmuxPrimitiveOccurrences(contents: string): TmuxPrimitiveOccurrence[] {
+	const { assignments, masked, values: bindings } = staticStringBindings(contents);
 	const occurrences = new Map<string, TmuxPrimitiveOccurrence>();
 	const add = (primitive: TmuxMachineBusPrimitive, start: number, end: number) => {
 		occurrences.set(`${primitive}:${start}`, { primitive, start, end });
@@ -196,23 +225,6 @@ function tmuxPrimitiveOccurrences(contents: string): TmuxPrimitiveOccurrence[] {
 		for (const match of masked.matchAll(construction)) {
 			add(primitive, match.index ?? 0, (match.index ?? 0) + match[0].length);
 		}
-	}
-	const assignments: StaticStringAssignment[] = [];
-	for (const match of masked.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+);?/g)) {
-		const expression = match[2];
-		const start = (match.index ?? 0) + match[0].lastIndexOf(expression);
-		assignments.push({ name: match[1], expression, start });
-	}
-	const bindings = new Map<string, string>();
-	for (let pass = 0; pass < assignments.length; pass++) {
-		let changed = false;
-		for (const assignment of assignments) {
-			const value = staticStringValue(assignment.expression, bindings);
-			if (value === undefined || bindings.get(assignment.name) === value) continue;
-			bindings.set(assignment.name, value);
-			changed = true;
-		}
-		if (!changed) break;
 	}
 	for (const assignment of assignments) {
 		const value = bindings.get(assignment.name);
@@ -339,12 +351,30 @@ function isExecutableSource(file: string): boolean {
 function rpcModeInvocationViolations(file: string, contents: string): string[] {
 	if (isGeneratedDocumentationIndex(file) || !isExecutableSource(file) || allowedRpcModeInvocationTests.has(file))
 		return [];
+	const { masked, values: bindings } = staticStringBindings(contents);
 	const patterns = [...retiredExternalModeInvocationPatterns, ...constructedRetiredIngressPatterns];
-	return patterns.flatMap(pattern =>
+	const violations = patterns.flatMap(pattern =>
 		[...contents.matchAll(pattern)].map(
 			match => `${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`,
 		),
 	);
+	for (const match of masked.matchAll(/\[[^\]\r\n]*\]/g)) {
+		const argv = match[0].slice(1, -1).split(",");
+		for (let index = 0; index < argv.length; index++) {
+			const expression = argv[index].trim();
+			if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(expression)) continue;
+			const value = staticStringValue(expression, bindings);
+			const preceding = index > 0 ? staticStringValue(argv[index - 1], bindings) : undefined;
+			if (
+				value === undefined ||
+				(!retiredModeArgumentPattern.test(value) &&
+					!(preceding === "--mode" && retiredModeValuePattern.test(value)))
+			)
+				continue;
+			violations.push(`${file}:${lineNumber(contents, match.index ?? 0)}: invokes removed --mode rpc`);
+		}
+	}
+	return violations;
 }
 
 function bridgeClientPackageMetadataViolation(file: string, contents: string): string | undefined {
@@ -844,7 +874,7 @@ function exactTeamRuntimeSendKeysRanges(contents: string): ShellRange[] {
 	];
 	const fallbackPredicateMatches = [
 		...contents.matchAll(
-			/function\s+shouldDispatchWorkerWithSendKeys\([^)]*\)\s*:\s*boolean\s*\{[\s\S]{0,400}?platform\s*===\s*["']win32["'][\s\S]{0,400}?path\.basename\(tmuxCommand\)\.toLowerCase\(\)\s*===\s*["']psmux["'][\s\S]{0,100}?\}/g,
+			/function\s+shouldDispatchWorkerWithSendKeys\([^)]*\)\s*:\s*boolean\s*\{\s*return\s+platform\s*===\s*["']win32["']\s*\|\|\s*path\.basename\(tmuxCommand\)\.toLowerCase\(\)\s*===\s*["']psmux["']\s*;\s*\}/g,
 		),
 	];
 	const useFallbackMatches = [
@@ -1382,6 +1412,23 @@ async function selfTest(): Promise<void> {
 		1,
 		"invokes removed --mode rpc",
 	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/aliased-retired-modes.ts":
+				'const rpcMode = "rpc";\nlet bridgeMode = "bridge-compat";\nvar unattendedMode = "unattended";\nBun.spawnSync(["gjc", "--mode", rpcMode]);\nBun.spawnSync(["gjc", "--mode", bridgeMode]);\nBun.spawnSync(["gjc", "--mode", unattendedMode]);\n',
+		},
+		1,
+		"invokes removed --mode rpc",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/test/fixtures/constructed-aliased-retired-modes.ts":
+				'const rpcPrefix = "r";\nconst rpcMode = rpcPrefix + "pc";\nconst bridgeMode = ["brid", "ge-compat"].join("");\nconst unattendedPrefix = "un";\nvar unattendedMode = unattendedPrefix + "attended";\nconst args = ["gjc", "--mode", rpcMode];\nBun.spawnSync(args);\nBun.spawnSync(["gjc", "--mode", bridgeMode]);\nBun.spawnSync(["gjc", "--mode", unattendedMode]);\n',
+		},
+		1,
+		"invokes removed --mode rpc",
+	);
+
 	await runSelfTestFixture(
 		{ "packages/coding-agent/src/modes/bridge-compat/legacy.ts": "export const retired = true;\n" },
 		1,
@@ -1991,6 +2038,26 @@ if (useSendKeysFallback) {
 	await runSelfTestFixture(
 		{ "packages/coding-agent/src/gjc-runtime/team-runtime.ts": canonicalTeamRuntimeSendKeysFixture },
 		0,
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/gjc-runtime/team-runtime.ts": canonicalTeamRuntimeSendKeysFixture.replace(
+				'return platform === "win32" || path.basename(tmuxCommand).toLowerCase() === "psmux";',
+				"return true;",
+			),
+		},
+		1,
+		"tmux send-keys content injection is outside sanctioned process lifecycle",
+	);
+	await runSelfTestFixture(
+		{
+			"packages/coding-agent/src/gjc-runtime/team-runtime.ts": canonicalTeamRuntimeSendKeysFixture.replace(
+				'return platform === "win32" || path.basename(tmuxCommand).toLowerCase() === "psmux";',
+				'return platform === "win32" || path.basename(tmuxCommand).toLowerCase() === "psmux" || tmuxCommand === "tmux";',
+			),
+		},
+		1,
+		"tmux send-keys content injection is outside sanctioned process lifecycle",
 	);
 	await runSelfTestFixture(
 		{

@@ -41,9 +41,13 @@ mod platform {
 			if pid <= 0 {
 				return None;
 			}
-			let pidfd = open_pidfd(pid)?;
 			let start_time = read_start_time(pid)?;
-			Some(Self { pid, pidfd, start_time })
+			let pidfd = open_pidfd(pid)?;
+			if !start_time_observations_match(start_time, read_start_time(pid)) {
+				return None;
+			}
+			let process = Self { pid, pidfd, start_time };
+			(process.status() == ProcessStatus::Running).then_some(process)
 		}
 
 		pub const fn pid(&self) -> i32 {
@@ -242,6 +246,10 @@ mod platform {
 		rest.split_whitespace().nth(19)?.parse().ok()
 	}
 
+	fn start_time_observations_match(before: u64, after: Option<u64>) -> bool {
+		after == Some(before)
+	}
+
 	fn read_process_state(pid: i32) -> Option<char> {
 		// `/proc/[pid]/stat` field 3 is the process state. The comm field
 		// (between parens) may itself contain spaces and parens, so locate the
@@ -306,6 +314,18 @@ mod platform {
 			}
 		}
 		matches
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::start_time_observations_match;
+
+		#[test]
+		fn from_pid_rejects_mismatched_start_time_observations() {
+			assert!(start_time_observations_match(42, Some(42)));
+			assert!(!start_time_observations_match(42, Some(43)));
+			assert!(!start_time_observations_match(42, None));
+		}
 	}
 }
 

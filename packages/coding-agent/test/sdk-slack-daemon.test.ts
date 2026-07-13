@@ -24,8 +24,11 @@ class FakeSlack {
 	onAck?: (envelopeId: string) => Promise<void>;
 	postGate?: Promise<void>;
 	startGate?: Promise<void>;
+	startUntilStopped = false;
 	postStarts = 0;
 	#postStartWaiters: Array<{ count: number; resolve: () => void }> = [];
+	#startWaiters: Array<{ count: number; resolve: () => void }> = [];
+	#startStopGate = Promise.withResolvers<void>();
 	startCalls = 0;
 	stops = 0;
 	onFind?: (clientMsgId: string) => Promise<void>;
@@ -33,14 +36,17 @@ class FakeSlack {
 
 	async start(handler: (envelope: SlackSocketEnvelope) => void | Promise<void>): Promise<void> {
 		this.startCalls++;
+		this.#resolveStartWaiters();
 		if (this.failStart) throw new Error("Socket Mode disconnected");
-		await this.startGate;
+		if (this.startUntilStopped) await this.#startStopGate.promise;
+		else await this.startGate;
 		this.handler = handler;
 		await this.onStart?.(handler);
 	}
 
 	async stop(): Promise<void> {
 		this.stops++;
+		this.#startStopGate.resolve();
 	}
 
 	async ack(envelopeId: string): Promise<void> {
@@ -53,6 +59,19 @@ class FakeSlack {
 		const waiter = Promise.withResolvers<void>();
 		this.#postStartWaiters.push({ count, resolve: waiter.resolve });
 		return waiter.promise;
+	}
+	waitForStartCount(count: number): Promise<void> {
+		if (this.startCalls >= count) return Promise.resolve();
+		const waiter = Promise.withResolvers<void>();
+		this.#startWaiters.push({ count, resolve: waiter.resolve });
+		return waiter.promise;
+	}
+	#resolveStartWaiters(): void {
+		this.#startWaiters = this.#startWaiters.filter(waiter => {
+			if (this.startCalls < waiter.count) return true;
+			waiter.resolve();
+			return false;
+		});
 	}
 	#resolvePostStartWaiters(): void {
 		this.#postStartWaiters = this.#postStartWaiters.filter(waiter => {
@@ -1157,7 +1176,7 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			const releaseStart = Promise.withResolvers<void>();
 			fake.startGate = releaseStart.promise;
 			const starting = daemon.start();
-			for (let attempt = 0; attempt < 20 && fake.startCalls === 0; attempt++) await Bun.sleep(1);
+			await fake.waitForStartCount(1);
 			expect(fake.startCalls).toBe(1);
 			let stopped = false;
 			const stopping = daemon.stop().then(() => {
@@ -1168,6 +1187,19 @@ describe("SlackNotificationDaemon fake-provider acceptance", () => {
 			releaseStart.resolve();
 			await Promise.all([starting, stopping]);
 			expect(fake.startCalls).toBe(1);
+			expect(fake.stops).toBe(1);
+		});
+	});
+
+	it("stops a Socket Mode open that completes only after provider stop without a duplicate close", async () => {
+		await withDaemon(async (daemon, fake) => {
+			fake.startUntilStopped = true;
+			const starting = daemon.start();
+			await fake.waitForStartCount(1);
+			expect(fake.startCalls).toBe(1);
+
+			const stopping = daemon.stop();
+			await Promise.all([starting, stopping]);
 			expect(fake.stops).toBe(1);
 		});
 	});

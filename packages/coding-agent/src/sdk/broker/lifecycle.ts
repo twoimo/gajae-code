@@ -36,7 +36,8 @@ const DARWIN_PROC_BSDINFO_SIZE = 136;
 const DARWIN_PROC_BSDINFO_START_SECONDS_OFFSET = 120;
 const DARWIN_PROC_BSDINFO_START_MICROSECONDS_OFFSET = 128;
 const POWERSHELL_PROCESS_INCARNATION_COMMAND = "powershell.exe";
-const WIN32_PROCESS_INCARNATION_OUTPUT = /^(\d+)\t(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z)(?:\r?\n)?$/;
+const WIN32_PROCESS_INCARNATION_OUTPUT = /^(\d+)\t(0|[1-9]\d*)(?:\r?\n)?$/;
+const MAX_WINDOWS_FILETIME_TICKS = 18_446_744_073_709_551_615n;
 
 const darwinProcLibrary =
 	process.platform === "darwin"
@@ -457,21 +458,26 @@ function windowsProcessIncarnationCommand(pid: number): { command: string; args:
 				"$ErrorActionPreference = 'Stop'",
 				"$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
 				`$process = Get-Process -Id ${pid} -ErrorAction Stop`,
-				'$startTime = $process.StartTime.ToUniversalTime().ToString("o")',
-				'[Console]::Out.WriteLine(("{0}`t{1}" -f $process.Id, $startTime))',
+				"$filetime = [UInt64]($process.StartTime.ToUniversalTime().ToFileTimeUtc())",
+				'[Console]::Out.WriteLine(("{0}`t{1}" -f $process.Id, $filetime))',
 			].join("; "),
 		],
 	};
 }
 
+function isWindowsFiletimeTicks(value: string): boolean {
+	if (!/^(?:0|[1-9]\d*)$/.test(value)) return false;
+	try {
+		return BigInt(value) <= MAX_WINDOWS_FILETIME_TICKS;
+	} catch {
+		return false;
+	}
+}
+
 function parseWin32ProcessIncarnation(pid: number, output: string): string | undefined {
 	const match = WIN32_PROCESS_INCARNATION_OUTPUT.exec(output);
-	if (!match) return undefined;
-	if (match[1] !== String(pid)) return undefined;
-	const startedAt = match[2];
-	const date = new Date(startedAt);
-	if (!Number.isFinite(date.getTime()) || date.toISOString() !== `${startedAt.slice(0, 23)}Z`) return undefined;
-	return `win32:${startedAt}`;
+	if (!match || match[1] !== String(pid) || !isWindowsFiletimeTicks(match[2])) return undefined;
+	return `windows:${match[2]}`;
 }
 
 /** Parse the microsecond-resolution start timestamp returned by Darwin proc_pidinfo. */
@@ -489,7 +495,11 @@ export function parseDarwinProcessIncarnation(info: Uint8Array): string | undefi
 }
 
 function isProcessIncarnation(value: unknown): value is string {
-	return typeof value === "string" && /^(?:linux:\d+|darwin:[1-9]\d*:\d+|windows:\d+)$/.test(value);
+	return (
+		typeof value === "string" &&
+		(/^(?:linux:\d+|darwin:[1-9]\d*:\d+)$/.test(value) ||
+			(value.startsWith("windows:") && isWindowsFiletimeTicks(value.slice("windows:".length))))
+	);
 }
 
 /** A PID is reusable; bind it to the strongest OS-provided process start incarnation available. */
@@ -1190,6 +1200,8 @@ function sameCloseProcessIdentity(expected: CloseRecord, current: CloseRecord & 
 	return (
 		current.live &&
 		current.pid === expected.pid &&
+		typeof expected.lifecycleRequestId === "string" &&
+		expected.lifecycleRequestId.length > 0 &&
 		current.lifecycleRequestId === expected.lifecycleRequestId &&
 		path.resolve(current.locator.repo) === path.resolve(expected.locator.repo) &&
 		path.resolve(current.locator.stateRoot) === path.resolve(expected.locator.stateRoot)
@@ -1550,11 +1562,13 @@ export async function executeLifecycle(
 		if (!closed) {
 			const stale = await revalidateCloseGeneration(broker, id, record, requestedAuthority.authority);
 			if (stale) return stale;
-			if (!(await signalVerifiedSession(record, id, "SIGKILL")))
+			if (!(await signalVerifiedSession(record, id, "SIGKILL"))) {
+				await recordTerminalUncertain(broker, id, record.locator.stateRoot, record.pid);
 				return fail(
-					"close_refused",
+					"terminal_uncertain",
 					"Session did not close after SIGTERM and its durable process identity could not be verified for SIGKILL.",
 				);
+			}
 			note =
 				"Session teardown did not complete after SIGTERM within the bounded deadline; sent SIGKILL to the durably identified session process.";
 			closed = await waitForClose(broker, id, record, CLOSE_TIMEOUT_MS);

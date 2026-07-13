@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { renameSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { openLifecycleSessionManager } from "../src/commands/sdk";
@@ -227,7 +227,7 @@ test("broker parses Darwin kernel process start timestamps with microsecond prec
 	expect(parseDarwinProcessIncarnation(bsdInfo)).toBe("darwin:1700000000:123456");
 	expect(parseDarwinProcessIncarnation(sameSecondSuccessor)).toBe("darwin:1700000000:123457");
 });
-test("broker reads Windows process incarnations through a PowerShell query", () => {
+test("broker reads Windows process incarnations as canonical FILETIME ticks with 100ns continuity", () => {
 	let invoked = false;
 	const result = processIncarnation(4_242, {
 		platform: "win32",
@@ -239,19 +239,25 @@ test("broker reads Windows process incarnations through a PowerShell query", () 
 				"-NoProfile",
 				"-NonInteractive",
 				"-Command",
-				'$ErrorActionPreference = \'Stop\'; $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $process = Get-Process -Id 4242 -ErrorAction Stop; $startTime = $process.StartTime.ToUniversalTime().ToString("o"); [Console]::Out.WriteLine(("{0}`t{1}" -f $process.Id, $startTime))',
+				"$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $process = Get-Process -Id 4242 -ErrorAction Stop; $filetime = [UInt64]($process.StartTime.ToUniversalTime().ToFileTimeUtc()); [Console]::Out.WriteLine((\"{0}`t{1}\" -f $process.Id, $filetime))",
 			]);
-			return { exitCode: 0, stdout: "4242\t2025-02-03T04:05:06.1234567Z\r\n" };
+			return { exitCode: 0, stdout: "4242\t133830291061234567\r\n" };
 		},
 	});
 	expect(invoked).toBe(true);
-	expect(result).toBe("win32:2025-02-03T04:05:06.1234567Z");
+	expect(result).toBe("windows:133830291061234567");
+	expect(
+		processIncarnation(4_242, {
+			platform: "win32",
+			runCommand: () => ({ exitCode: 0, stdout: "4242\t133830291061234568\n" }),
+		}),
+	).toBe("windows:133830291061234568");
 });
 
-test("broker fails closed when a Windows process-incarnation query fails", () => {
+test("broker fails closed for failed or malformed Windows FILETIME process-incarnation output", () => {
 	const options = {
 		platform: "win32" as const,
-		runCommand: () => ({ exitCode: 1, stdout: "4242\t2025-02-03T04:05:06.1234567Z\n" }),
+		runCommand: () => ({ exitCode: 1, stdout: "4242\t133830291061234567\n" }),
 	};
 	expect(processIncarnation(4_242, options)).toBeUndefined();
 	expect(
@@ -262,16 +268,14 @@ test("broker fails closed when a Windows process-incarnation query fails", () =>
 			},
 		}),
 	).toBeUndefined();
-});
-
-test("broker rejects empty, malformed, and mismatched Windows process-incarnation output", () => {
 	for (const stdout of [
 		"",
-		"4242\t2025-02-03T04:05:06.123Z\n",
-		"4242\t2025-02-30T04:05:06.1234567Z\n",
-		"4243\t2025-02-03T04:05:06.1234567Z\n",
-		"4242\t2025-02-03T04:05:06.1234567Z\r",
-		"4242\t2025-02-03T04:05:06.1234567Z\n\n",
+		"4242\t-1\n",
+		"4242\t0133830291061234567\n",
+		"4242\t18446744073709551616\n",
+		"4243\t133830291061234567\n",
+		"4242\t133830291061234567\r",
+		"4242\t133830291061234567\n\n",
 	]) {
 		expect(
 			processIncarnation(4_242, {
@@ -393,18 +397,18 @@ setInterval(()=>{},1000);
 		const [first, second] = await Promise.all([
 			broker.handleRequest(
 				"session.create",
-				{ stateRoot, cwd: agentDir, readinessTimeoutMs: 100, body: "first", modelPreset: "codex-eco" },
+				{ stateRoot, cwd: agentDir, readinessTimeoutMs: 300, body: "first", modelPreset: "codex-eco" },
 				"create-1",
 			),
 			broker.handleRequest(
 				"session.create",
-				{ stateRoot, cwd: agentDir, readinessTimeoutMs: 100, body: "second", modelPreset: "codex-eco" },
+				{ stateRoot, cwd: agentDir, readinessTimeoutMs: 300, body: "second", modelPreset: "codex-eco" },
 				"create-2",
 			),
 		]);
 		expect(first).toMatchObject({ ok: false, error: { code: "readiness_timeout" } });
 		expect(second).toMatchObject({ ok: false, error: { code: "readiness_timeout" } });
-		expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(500);
 		const fixturePid = Number(await fs.readFile(path.join(agentDir, "fixture.pid"), "utf8"));
 		expect(() => process.kill(fixturePid, 0)).toThrow();
 		expect(JSON.parse(await fs.readFile(path.join(agentDir, "fixture.request.json"), "utf8"))).toMatchObject({
@@ -681,6 +685,66 @@ test("broker refuses same-generation close authority from a prior endpoint incar
 	}
 });
 
+test("broker rebinds implicit close only for a matching non-empty lifecycle request id", async () => {
+	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-close-rebind-"));
+	const stateRoot = path.join(agentDir, "state");
+	const broker = new Broker({ agentDir });
+	const originalHandleRequest = broker.handleRequest.bind(broker);
+	try {
+		await broker.start();
+		for (const [label, initialRequestId, replacementRequestId, expectedCode] of [
+			["same", "request-a", "request-a", "close_refused"],
+			["absent", undefined, undefined, "endpoint_stale"],
+			["different", "request-a", "request-b", "endpoint_stale"],
+		] as const) {
+			const sessionId = `close-rebind-${label}`;
+			const locator = { repo: "fixture", stateRoot };
+			await broker.index.append({
+				type: "host_registered",
+				sessionId,
+				locator,
+				endpointGeneration: 1,
+				pid: process.pid,
+				endpointMtimeMs: 1,
+				...(initialRequestId ? { lifecycleRequestId: initialRequestId } : {}),
+			});
+			await broker.index.append({
+				type: "host_heartbeat",
+				sessionId,
+				locator,
+				endpointGeneration: 1,
+				pid: process.pid,
+			});
+			let injected = false;
+			broker.handleRequest = async (operation, input, idempotencyKey) => {
+				if (operation === "session.get_endpoint" && input.sessionId === sessionId) {
+					if (!injected) {
+						injected = true;
+						await broker.index.append({
+							type: "host_registered",
+							sessionId,
+							locator,
+							endpointGeneration: 2,
+							pid: process.pid,
+							endpointMtimeMs: 2,
+							...(replacementRequestId ? { lifecycleRequestId: replacementRequestId } : {}),
+						});
+						return { ok: false, error: { code: "endpoint_stale", message: "session endpoint is stale" } };
+					}
+					return { ok: false, error: { code: "resource_gone", message: "session endpoint record is gone" } };
+				}
+				return originalHandleRequest(operation, input, idempotencyKey);
+			};
+			const result = await broker.handleRequest("session.close", { sessionId }, `close-rebind-${label}`);
+			expect(injected).toBe(true);
+			expect(result).toMatchObject({ ok: false, error: { code: expectedCode } });
+		}
+	} finally {
+		broker.handleRequest = originalHandleRequest;
+		await broker.stop();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
 test("broker atomically reuses the indexed live owner for distinct resume keys", async () => {
 	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-resume-live-"));
 	const agentDir = path.join(root, "agent");
@@ -773,7 +837,7 @@ test("broker never signals a PID reused after its lifecycle marker was written",
 		await fs.rm(agentDir, { recursive: true, force: true });
 	}
 });
-test("broker preserves endpoint and marker when a durably identified child remains unkillable", async () => {
+test("broker records terminal uncertainty when SIGKILL re-verification fails after SIGTERM", async () => {
 	const agentDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-uncertain-"));
 	const stateRoot = path.join(agentDir, "state");
 	const sessionId = "unkillable";
@@ -805,8 +869,11 @@ test("broker preserves endpoint and marker when a durably identified child remai
 			pid: child.pid,
 			endpointMtimeMs: (await fs.stat(endpoint)).mtimeMs,
 		});
-		process.kill = ((pid: number, signal?: NodeJS.Signals | number) =>
-			signal === 0 || signal === undefined ? originalKill(pid, signal) : undefined) as typeof process.kill;
+		process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+			if (signal === "SIGTERM")
+				writeFileSync(marker, JSON.stringify({ pid: child.pid, effectMarker: "fixture", incarnation: "replaced" }));
+			return signal === 0 || signal === undefined ? originalKill(pid, signal) : undefined;
+		}) as typeof process.kill;
 		expect(await broker.handleRequest("session.close", { sessionId }, "unkillable-close")).toMatchObject({
 			ok: false,
 			error: { code: "terminal_uncertain" },

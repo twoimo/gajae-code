@@ -169,7 +169,11 @@ export class SlackNotificationDaemon {
 	#startedGeneration: number | undefined;
 	#startOperation: Promise<void> | undefined;
 	#startOperationGeneration: number | undefined;
+	#stopOperation: Promise<void> | undefined;
 	#started = false;
+	#providerStarting = false;
+	#providerRunning = false;
+	#providerStopRequestedGeneration: number | undefined;
 	#leaseRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 	#leaseRecoveryAt: number | undefined;
 	#leaseRecoveryFailures = 0;
@@ -222,14 +226,21 @@ export class SlackNotificationDaemon {
 					this.#clearLeaseRecoveryTimer();
 					return;
 				}
-				await this.options.provider.start(async envelope => {
-					await this.#track(this.handleEnvelope(envelope));
-				});
+				this.#providerStarting = true;
+				try {
+					await this.options.provider.start(async envelope => {
+						await this.#track(this.handleEnvelope(envelope));
+					});
+					this.#providerRunning = true;
+				} finally {
+					this.#providerStarting = false;
+				}
 				if (lifecycleGeneration !== this.#lifecycleGeneration || this.#startedGeneration !== lifecycleGeneration) {
 					this.#started = false;
 					this.#startedGeneration = undefined;
+					this.#providerRunning = false;
 					this.#clearLeaseRecoveryTimer();
-					await this.options.provider.stop();
+					if (this.#providerStopRequestedGeneration !== lifecycleGeneration) await this.options.provider.stop();
 				}
 			} catch (error) {
 				if (this.#startedGeneration === lifecycleGeneration) {
@@ -253,20 +264,31 @@ export class SlackNotificationDaemon {
 	}
 
 	async stop(): Promise<void> {
-		this.#lifecycleGeneration++;
-		await this.#enqueueLifecycle(async () => {
-			this.#clearLeaseRecoveryTimer();
-			if (this.#started) {
-				this.#started = false;
-				this.#startedGeneration = undefined;
-				await this.options.provider.stop();
-			}
+		if (this.#stopOperation) return await this.#stopOperation;
+		const lifecycleGeneration = this.#lifecycleGeneration++;
+		const stopProvider = this.#providerStarting || this.#providerRunning;
+		this.#started = false;
+		this.#startedGeneration = undefined;
+		this.#providerRunning = false;
+		this.#clearLeaseRecoveryTimer();
+		if (stopProvider) this.#providerStopRequestedGeneration = lifecycleGeneration;
+		const providerStop = stopProvider ? this.options.provider.stop() : undefined;
+		const operation = this.#enqueueLifecycle(async () => {
+			// Calling provider.stop() before joining the lifecycle queue lets a provider
+			// cancel an open that resolves only after its socket is stopped.
+			if (providerStop) await providerStop;
 			// Drain until quiescent: a tracked task can schedule further tracked work
 			// (recovery/reconciliation) while we await, and any that outlives stop() would
 			// bleed timing pressure into the next daemon/test. #started is already false,
 			// so no new lease-recovery timers can be armed and the loop terminates.
 			while (this.#activeWork.size > 0) await Promise.all([...this.#activeWork]);
 		});
+		this.#stopOperation = operation;
+		try {
+			await operation;
+		} finally {
+			if (this.#stopOperation === operation) this.#stopOperation = undefined;
+		}
 	}
 
 	/** Accepted inbound effects are durably claimed before their Socket Mode ACK. */

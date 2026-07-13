@@ -994,6 +994,12 @@ describe("chat daemon worker", () => {
 			expect(provider.threads).toHaveLength(1);
 			expect(frames).toContainEqual(expect.objectContaining({ type: "event_replay" }));
 
+			const queryResultPosted = provider.waitForMessage(
+				message =>
+					message.threadId === "thread-1" &&
+					message.content ===
+						JSON.stringify({ ok: true, result: { operation: "todo.list", status: "completed" } }),
+			);
 			await provider.handler?.({
 				id: "wire-query",
 				guildId: "guild",
@@ -1002,6 +1008,7 @@ describe("chat daemon worker", () => {
 				authorId: "human",
 				content: "/sdk query todo.list {}",
 			});
+			await queryResultPosted;
 			expect(frames).toContainEqual(
 				expect.objectContaining({ type: "query_request", query: "todo.list", input: {} }),
 			);

@@ -63,8 +63,9 @@ export class LifecycleLedger {
 		let tornTail = false;
 		try {
 			const source = await fs.readFile(this.#file, "utf8");
+			tornTail = source.length > 0 && !source.endsWith("\n");
 			const lines = source.split("\n");
-			for (const [index, line] of lines.entries()) {
+			for (const line of lines) {
 				if (!line) continue;
 				try {
 					const e = JSON.parse(line) as LifecycleLedgerEntry;
@@ -78,7 +79,6 @@ export class LifecycleLedger {
 						if (!terminal(latest.state) && latest.state !== "terminal_uncertain")
 							uncertainAfterCorruption.add(identity);
 					}
-					tornTail ||= index === lines.length - 1 && !source.endsWith("\n");
 					await this.#quarantine(line);
 				}
 			}
