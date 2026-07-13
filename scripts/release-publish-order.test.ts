@@ -200,7 +200,7 @@ describe("release bump set equals publish set", () => {
 });
 
 describe("portable CI test coverage", () => {
-	test("windows smoke runs portable TypeScript gates before the native build", async () => {
+	test("windows smoke builds native addon before portable TypeScript gates", async () => {
 		const jobs = await readCiWorkflowJobs();
 		const windowsSmoke = requireYamlRecord(jobs.windows_smoke, "windows_smoke job");
 		const steps = windowsSmoke.steps;
@@ -240,10 +240,10 @@ describe("portable CI test coverage", () => {
 			run: "bun scripts/verify-platform-test-policy.ts --expect-skipped scripts/gjc-session/create.test.ts",
 		});
 		expect(nativeBuildStep.if).toBe(relevanceGuard);
-		expect(installIndex).toBeLessThan(typeCheckIndex);
+		expect(installIndex).toBeLessThan(nativeBuildIndex);
+		expect(nativeBuildIndex).toBeLessThan(typeCheckIndex);
 		expect(typeCheckIndex).toBeLessThan(portableContractsIndex);
 		expect(portableContractsIndex).toBeLessThan(posixSkipIndex);
-		expect(posixSkipIndex).toBeLessThan(nativeBuildIndex);
 	});
 	test("dev pull requests prove the Linux executed and Windows/macOS skipped policy on the exact head", async () => {
 		const jobs = await readDevWorkflowJobs();
