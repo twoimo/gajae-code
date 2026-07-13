@@ -3601,7 +3601,6 @@ test("concurrent session-close triggers join one claimed topic deletion", async 
 test("deterministic two-topic cleanup rollback restores only its failed session", async () => {
 	const firstTopicWrite = Promise.withResolvers<void>();
 	const releaseFirstTopicWrite = Promise.withResolvers<void>();
-	const secondTopicDeleted = Promise.withResolvers<void>();
 	let holdFirstCleanupWrite = false;
 	let heldTopicWrite = false;
 	let failHeldTopicWrite = false;
@@ -3639,36 +3638,51 @@ test("deterministic two-topic cleanup rollback restores only its failed session"
 	});
 	const firstTopicId = currentTopicId(harness.agentDir, "S");
 	const secondTopicId = currentTopicId(harness.agentDir, "T");
-	const registry = harness.daemon as unknown as { topics: { delete(sessionId: string): boolean } };
-	const deleteTopicRecord = registry.topics.delete.bind(registry.topics);
-	registry.topics.delete = sessionId => {
-		const deleted = deleteTopicRecord(sessionId);
-		if (sessionId === "T") secondTopicDeleted.resolve();
-		return deleted;
+	const registry = harness.daemon as unknown as {
+		topics: {
+			delete(sessionId: string): boolean;
+			get(sessionId: string): { topicId: string } | undefined;
+		};
+		persistTopics(): Promise<void>;
 	};
 	harness.bot.calls = [];
 	holdFirstCleanupWrite = true;
 
 	const firstClose = closeTopicSession(harness);
 	await firstTopicWrite.promise;
-	const secondClose = closeTopicSession({ daemon: harness.daemon, session: secondSession });
-	await secondTopicDeleted.promise;
+
+	// Confirmed local cleanups serialize under the epoch guard. Mutate T directly
+	// through the private registry seam rather than wait for a second cleanup lock.
+	expect(registry.topics.delete("T")).toBe(true);
+	expect(registry.topics.get("T")).toBeUndefined();
 	releaseFirstTopicWrite.resolve();
-	await Promise.all([firstClose, secondClose]);
+	await firstClose;
 
 	expect(heldTopicWrite).toBe(true);
 	expect(failHeldTopicWrite).toBe(false);
-	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(2);
+	expect(registry.topics.get("S")?.topicId).toBe(firstTopicId);
+	expect(registry.topics.get("T")).toBeUndefined();
+
+	// Persist after S releases the guard: targeted rollback must retain T's mutation.
+	await registry.persistTopics();
 	const persistedTopics = JSON.parse(
 		fs.readFileSync(path.join(daemonPaths(harness.agentDir).dir, "telegram-topics.json"), "utf8"),
 	) as { topics: Record<string, { topicId: string }> };
 	expect(persistedTopics.topics.S?.topicId).toBe(firstTopicId);
 	expect(persistedTopics.topics.T).toBeUndefined();
+
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toEqual([
+		{
+			method: "deleteForumTopic",
+			body: { chat_id: "42", message_thread_id: Number(firstTopicId) },
+			opts: { noRetry: true },
+		},
+	]);
 	expect(readCustodySnapshot(harness.agentDir).records[`42:${firstTopicId}`]).toMatchObject({ state: "confirmed" });
 	expect(readCustodySnapshot(harness.agentDir).records[`42:${secondTopicId}`]).toBeUndefined();
 
 	await closeTopicSession({ daemon: harness.daemon, session: secondSession });
-	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(2);
+	expect(harness.bot.calls.filter(call => call.method === "deleteForumTopic")).toHaveLength(1);
 });
 
 test("rejected, malformed, and reset topic deletion outcomes remain unknown without retries", async () => {
