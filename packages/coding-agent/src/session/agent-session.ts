@@ -165,6 +165,7 @@ import { normalizeModelSelectorValue } from "../config/model-selector-value";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import type { GlobalDefaultModelRoleCommit, Settings, SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged } from "../config/settings";
+import { getDefault } from "../config/settings-schema";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
@@ -7638,7 +7639,10 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
-		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
+		const inheritedThinkingLevel = resolveThinkingLevelForModel(this.model, this.#getInheritedThinkingLevel());
+		this.#thinkingLevel = inheritedThinkingLevel;
+		this.agent.setThinkingLevel(toReasoningEffort(inheritedThinkingLevel));
+		this.sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
 		if (this.model) {
 			this.sessionManager.appendModelChange(`${this.model.provider}/${this.model.id}`);
 		}
@@ -7946,9 +7950,12 @@ export class AgentSession {
 		const suppliedScope = options?.providerSessionScope;
 		if (suppliedScope && this.#temporaryProviderSessionScopes.at(-1)?.token !== suppliedScope) return;
 		const previousEditMode = this.#resolveActiveEditMode();
-		const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+		const expectedSessionId = this.sessionId;
+		const apiKey = await this.#modelRegistry.getApiKey(model, expectedSessionId);
 		if (options?.signal?.aborted) return;
-
+		if (this.sessionId !== expectedSessionId) {
+			throw new Error("Session changed while selecting model");
+		}
 		if (!apiKey) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -8084,6 +8091,17 @@ export class AgentSession {
 		}
 	}
 
+	/** Set a model temporarily for a session control surface without exposing credential errors. */
+	async setModelTemporaryForControl(model: Model, expectedSessionId: string = this.sessionId): Promise<boolean> {
+		if (expectedSessionId !== this.sessionId) return false;
+		try {
+			await this.setModelTemporary(model);
+			return expectedSessionId === this.sessionId;
+		} catch {
+			logger.warn("session: temporary model control failed");
+			return false;
+		}
+	}
 	async setDefaultModelSelection(
 		model: Model,
 		thinkingLevel: ThinkingLevel | undefined,
@@ -8322,6 +8340,11 @@ export class AgentSession {
 	// Thinking Level Management
 	// =========================================================================
 
+	#getInheritedThinkingLevel(): ThinkingLevel | undefined {
+		if (this.settings.has("defaultThinkingLevel")) return this.settings.get("defaultThinkingLevel");
+		return this.model?.thinking?.defaultLevel ?? this.settings.get("defaultThinkingLevel");
+	}
+
 	/**
 	 * Set thinking level.
 	 * Saves the effective metadata-clamped level to the session, and to settings when requested.
@@ -8334,13 +8357,91 @@ export class AgentSession {
 		this.agent.setThinkingLevel(toReasoningEffort(effectiveLevel));
 		if (isChanging) this.#defaultModelSelectionMutationRevision++;
 
-		if (persist && effectiveLevel !== undefined) {
-			this.settings.set("defaultThinkingLevel", effectiveLevel);
+		if (persist) {
+			const persistedLevel = level === ThinkingLevel.Inherit ? getDefault("defaultThinkingLevel") : effectiveLevel;
+			if (persistedLevel !== undefined) this.settings.set("defaultThinkingLevel", persistedLevel);
 		}
 
 		if (isChanging) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 			this.#emit({ type: "thinking_level_changed", thinkingLevel: effectiveLevel });
+		}
+	}
+
+	/**
+	 * Set thinking level from a control surface. Global changes are durable or rolled back.
+	 */
+	async setThinkingLevelForControl(level: ThinkingLevel, persist: boolean): Promise<void> {
+		const previousThinkingLevel = this.thinkingLevel;
+		const previousScope = this.getThinkingScopeForControl();
+		if (!persist) {
+			this.setThinkingLevel(level === ThinkingLevel.Inherit ? this.#getInheritedThinkingLevel() : level);
+			if (level === ThinkingLevel.Inherit || this.thinkingLevel === previousThinkingLevel) {
+				this.sessionManager.appendThinkingLevelChange(level);
+			}
+			return;
+		}
+
+		const previousDefaultThinkingLevel = this.settings.getGlobal("defaultThinkingLevel");
+		if (level === ThinkingLevel.Inherit) {
+			const defaultLevel = getDefault("defaultThinkingLevel");
+			this.settings.set("defaultThinkingLevel", defaultLevel);
+			this.setThinkingLevel(this.#getInheritedThinkingLevel());
+		} else {
+			this.setThinkingLevel(level, true);
+		}
+		try {
+			await this.settings.flushOrThrow();
+			this.sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
+		} catch {
+			this.settings.set("defaultThinkingLevel", previousDefaultThinkingLevel ?? getDefault("defaultThinkingLevel"));
+			this.setThinkingLevel(previousThinkingLevel);
+			this.sessionManager.appendThinkingLevelChange(
+				previousScope === "global config" ? ThinkingLevel.Inherit : previousThinkingLevel,
+			);
+			await this.settings.flushOrThrow().catch(() => {});
+			throw new Error("Unable to persist reasoning settings.");
+		}
+	}
+
+	getThinkingScopeForControl(): "session" | "global config" {
+		const latest = this.sessionManager
+			.getBranch()
+			.toReversed()
+			.find(entry => entry.type === "thinking_level_change");
+		return latest && latest.thinkingLevel !== ThinkingLevel.Inherit ? "session" : "global config";
+	}
+
+	getThinkingVisibility(): "visible" | "hidden" {
+		return this.agent.hideThinkingSummary ? "hidden" : "visible";
+	}
+
+	setThinkingVisibility(visibility: "visible" | "hidden", persist: boolean = false): void {
+		this.agent.hideThinkingSummary = visibility === "hidden";
+		if (persist) {
+			this.settings.set("hideThinkingBlock", visibility === "hidden");
+		}
+	}
+
+	/**
+	 * Set thinking visibility from a control surface. Global changes are durable or rolled back.
+	 */
+	async setThinkingVisibilityForControl(visibility: "visible" | "hidden", persist: boolean): Promise<void> {
+		if (!persist) {
+			this.setThinkingVisibility(visibility);
+			return;
+		}
+
+		const previousVisibility = this.getThinkingVisibility();
+		const previousHideThinkingBlock = this.settings.getGlobal("hideThinkingBlock");
+		this.setThinkingVisibility(visibility, true);
+		try {
+			await this.settings.flushOrThrow();
+		} catch {
+			this.settings.set("hideThinkingBlock", previousHideThinkingBlock ?? getDefault("hideThinkingBlock"));
+			this.setThinkingVisibility(previousVisibility);
+			await this.settings.flushOrThrow().catch(() => {});
+			throw new Error("Unable to persist reasoning settings.");
 		}
 	}
 
@@ -12453,9 +12554,14 @@ export class AgentSession {
 				.some(entry => entry.type === "service_tier_change");
 			const defaultThinkingLevel = this.settings.get("defaultThinkingLevel");
 			const configuredServiceTier = this.settings.get("serviceTier");
+			const persistedThinkingLevel = hasThinkingEntry
+				? (sessionContext.thinkingLevel as ThinkingLevel | undefined)
+				: defaultThinkingLevel;
 			const nextThinkingLevel = resolveThinkingLevelForModel(
 				this.model,
-				hasThinkingEntry ? (sessionContext.thinkingLevel as ThinkingLevel | undefined) : defaultThinkingLevel,
+				persistedThinkingLevel === ThinkingLevel.Inherit
+					? this.#getInheritedThinkingLevel()
+					: persistedThinkingLevel,
 			);
 			this.#thinkingLevel = nextThinkingLevel;
 			this.agent.setThinkingLevel(toReasoningEffort(nextThinkingLevel));
@@ -13067,6 +13173,15 @@ export class AgentSession {
 		return authStorage.fetchUsageReports({
 			baseUrlResolver: provider => this.#modelRegistry.getProviderBaseUrl?.(provider),
 			signal,
+		});
+	}
+
+	async fetchUsageReportsForControl(): Promise<UsageReport[] | null> {
+		const authStorage = this.#modelRegistry.authStorage;
+		if (!authStorage.fetchUsageReports) return null;
+		return authStorage.fetchUsageReports({
+			baseUrlResolver: provider => this.#modelRegistry.getProviderBaseUrl?.(provider),
+			logDetails: false,
 		});
 	}
 

@@ -330,7 +330,17 @@ export class ExtensionUiController {
 				return true;
 			},
 			getThinkingLevel: () => this.ctx.session.thinkingLevel,
-			setThinkingLevel: level => this.ctx.session.setThinkingLevel(level),
+			setThinkingLevel: (level, persist) => this.ctx.session.setThinkingLevel(level, persist),
+			getThinkingVisibility: () => this.ctx.session.getThinkingVisibility(),
+			setThinkingVisibility: (visibility, persist) => this.ctx.session.setThinkingVisibility(visibility, persist),
+			cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
+			setThinkingLevelForControl: (level, persist) => this.ctx.session.setThinkingLevelForControl(level, persist),
+			setThinkingVisibilityForControl: (visibility, persist) =>
+				this.ctx.session.setThinkingVisibilityForControl(visibility, persist),
+			setModelTemporaryForControl: (model, expectedSessionId) =>
+				this.ctx.session.setModelTemporaryForControl(model, expectedSessionId),
+			fetchUsageReportsForControl: () => this.ctx.session.fetchUsageReportsForControl(),
+			getThinkingScopeForControl: () => this.ctx.session.getThinkingScopeForControl(),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),
@@ -621,6 +631,16 @@ export class ExtensionUiController {
 			},
 			getThinkingLevel: () => this.ctx.session.thinkingLevel,
 			setThinkingLevel: (level, persist) => this.ctx.session.setThinkingLevel(level, persist),
+			getThinkingVisibility: () => this.ctx.session.getThinkingVisibility(),
+			setThinkingVisibility: (visibility, persist) => this.ctx.session.setThinkingVisibility(visibility, persist),
+			cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
+			setThinkingLevelForControl: (level, persist) => this.ctx.session.setThinkingLevelForControl(level, persist),
+			setThinkingVisibilityForControl: (visibility, persist) =>
+				this.ctx.session.setThinkingVisibilityForControl(visibility, persist),
+			setModelTemporaryForControl: (model, expectedSessionId) =>
+				this.ctx.session.setModelTemporaryForControl(model, expectedSessionId),
+			fetchUsageReportsForControl: () => this.ctx.session.fetchUsageReportsForControl(),
+			getThinkingScopeForControl: () => this.ctx.session.getThinkingScopeForControl(),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),

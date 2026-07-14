@@ -105,6 +105,36 @@ describe("parseTelegramControlCommand", () => {
 		});
 	});
 
+	test("normalizes reasoning aliases and accepts global set and display mutations", () => {
+		expect(parseTelegramControlCommand("/reasoning NONE --global")).toEqual({
+			kind: "command",
+			command: { name: "reasoning", action: "set", level: "off", global: true },
+		});
+		expect(parseTelegramControlCommand("/reasoning reset --global")).toEqual({
+			kind: "command",
+			command: { name: "reasoning", action: "set", level: "inherit", global: true },
+		});
+		expect(parseTelegramControlCommand("/reasoning show")).toEqual({
+			kind: "command",
+			command: { name: "reasoning", action: "show" },
+		});
+		expect(parseTelegramControlCommand("/reasoning hide --global")).toEqual({
+			kind: "command",
+			command: { name: "reasoning", action: "hide", global: true },
+		});
+	});
+
+	test("parses model lists and exact model selectors", () => {
+		expect(parseTelegramControlCommand("/model")).toEqual({
+			kind: "command",
+			command: { name: "model", action: "list" },
+		});
+		expect(parseTelegramControlCommand("/model OpenAI/GPT-5")).toEqual({
+			kind: "command",
+			command: { name: "model", action: "set", selector: "OpenAI/GPT-5" },
+		});
+	});
+
 	test("recognized invalid forms fail closed", () => {
 		expect(parseTelegramControlCommand("/usage now")).toMatchObject({ kind: "invalid", commandName: "usage" });
 		expect(parseTelegramControlCommand("/context extra")).toMatchObject({ kind: "invalid", commandName: "context" });
@@ -112,6 +142,15 @@ describe("parseTelegramControlCommand", () => {
 			kind: "invalid",
 			commandName: "reasoning",
 		});
+		for (const text of [
+			"/reasoning cycle --global",
+			"/reasoning --global high",
+			"/reasoning show later",
+			"/reasoning high --global extra",
+			"/model provider/model extra",
+		]) {
+			expect(parseTelegramControlCommand(text)).toMatchObject({ kind: "invalid" });
+		}
 	});
 
 	test("unknown commands and wrong bot suffix fall through", () => {

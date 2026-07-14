@@ -981,6 +981,522 @@ describe("telegram daemon", () => {
 		expect(bot.calls.some(c => c.method === "answerCallbackQuery")).toBe(true);
 	});
 
+	test("successful model lists render bounded labels and short aliases in the owning topic", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:8",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [
+				{ selector: "provider/gpt-5", label: "GPT\n5" },
+				{ selector: "provider/long", label: "x".repeat(100) },
+				{ selector: "provider/private", label: "https://private.example.invalid/model" },
+			],
+		});
+
+		const sent = bot.calls.find(call => call.method === "sendMessage")!.body;
+		const buttons = sent.reply_markup.inline_keyboard.flat();
+		expect(buttons).toHaveLength(2);
+		expect(sent.message_thread_id).toBeDefined();
+		expect(sent.text).toBe("✅ Select a model.");
+		expect(JSON.stringify(sent)).not.toContain("provider/gpt-5");
+		expect(buttons[0].text).toBe("1. GPT 5");
+		expect(Buffer.byteLength(buttons[1].text, "utf8")).toBeLessThanOrEqual(52);
+		expect(
+			buttons.every((button: { callback_data: string }) => Buffer.byteLength(button.callback_data, "utf8") <= 64),
+		).toBe(true);
+		expect(buttons.every((button: { callback_data: string }) => button.callback_data.startsWith("m:"))).toBe(true);
+	});
+
+	test("model choice callbacks are chat-authorized and forward one session-bound control command", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:8",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const alias = bot.calls.find(call => call.method === "sendMessage")!.body.reply_markup.inline_keyboard[0][0]
+			.callback_data;
+
+		await daemon.handleTelegramUpdate({
+			update_id: 9,
+			callback_query: { id: "wrong", data: alias, message: { chat: { id: 99 } } },
+		});
+		expect(FakeWs.instances[0]!.sent).toHaveLength(0);
+		expect(
+			bot.calls.some(
+				call =>
+					call.method === "answerCallbackQuery" &&
+					call.body.callback_query_id === "wrong" &&
+					call.body.text === "Not authorized",
+			),
+		).toBe(true);
+
+		await daemon.handleTelegramUpdate({
+			update_id: 9,
+			callback_query: { id: "right", data: alias, message: { chat: { id: 42 } } },
+		});
+		expect(JSON.parse(FakeWs.instances[0]!.sent[0]!)).toEqual({
+			type: "control_command",
+			sessionId: "S",
+			token: "ts",
+			requestId: "tg:model:9",
+			updateId: 9,
+			command: { name: "model", action: "set", selector: "provider/gpt-5" },
+		});
+		expect(
+			bot.calls.some(call => call.method === "answerCallbackQuery" && call.body.callback_query_id === "right"),
+		).toBe(true);
+	});
+
+	test("model aliases cannot cross a same-socket logical-session rekey", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("transport", "ws://transport", "tt");
+		const session = daemon.sessions.get("transport")!;
+		await daemon.handleSessionMessage(session, {
+			type: "control_command_result",
+			sessionId: "old-logical",
+			requestId: "tg:model:old",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/old", label: "Old" }],
+		});
+		const staleAlias = bot.calls.find(call => call.method === "sendMessage" && call.body.reply_markup)!.body
+			.reply_markup.inline_keyboard[0][0].callback_data;
+
+		await daemon.handleSessionMessage(session, {
+			type: "config_update",
+			sessionId: "new-logical",
+		});
+		const threadId = bot.calls.find(call => call.method === "sendMessage" && call.body.reply_markup)!.body
+			.message_thread_id;
+		await daemon.handleTelegramUpdate({
+			update_id: 19,
+			message: { chat: { id: 42 }, message_thread_id: threadId, text: "/usage", message_id: 19 },
+		});
+		expect(JSON.parse(FakeWs.instances[0]!.sent[0]!)).toMatchObject({
+			type: "control_command",
+			sessionId: "new-logical",
+			command: { name: "usage" },
+		});
+		FakeWs.instances[0]!.sent = [];
+		await daemon.handleTelegramUpdate({
+			update_id: 20,
+			callback_query: { id: "old-menu", data: staleAlias, message: { chat: { id: 42 } } },
+		});
+		expect(FakeWs.instances[0]!.sent).toHaveLength(0);
+		expect(
+			bot.calls.some(
+				call => call.method === "answerCallbackQuery" && call.body.text === "Button is stale. Run /model again.",
+			),
+		).toBe(true);
+
+		await daemon.handleSessionMessage(session, {
+			type: "control_command_result",
+			sessionId: "new-logical",
+			requestId: "tg:model:new",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/new", label: "New" }],
+		});
+		const freshAlias = bot.calls.filter(call => call.method === "sendMessage" && call.body.reply_markup).at(-1)!.body
+			.reply_markup.inline_keyboard[0][0].callback_data;
+		await daemon.handleTelegramUpdate({
+			update_id: 21,
+			callback_query: { id: "new-menu", data: freshAlias, message: { chat: { id: 42 } } },
+		});
+		expect(JSON.parse(FakeWs.instances[0]!.sent[0]!)).toMatchObject({
+			type: "control_command",
+			sessionId: "new-logical",
+			command: { name: "model", action: "set", selector: "provider/new" },
+		});
+	});
+
+	test("model aliases expire after ten minutes using the injected daemon clock", async () => {
+		FakeWs.instances = [];
+		let now = 0;
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			now: () => now,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:model:ttl",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const alias = bot.calls.find(call => call.method === "sendMessage" && call.body.reply_markup)!.body.reply_markup
+			.inline_keyboard[0][0].callback_data;
+		now = 10 * 60 * 1_000;
+		await daemon.handleTelegramUpdate({
+			update_id: 22,
+			callback_query: { id: "expired", data: alias, message: { chat: { id: 42 } } },
+		});
+		expect(FakeWs.instances[0]!.sent).toHaveLength(0);
+		expect(
+			bot.calls.some(
+				call => call.method === "answerCallbackQuery" && call.body.text === "Button is stale. Run /model again.",
+			),
+		).toBe(true);
+	});
+
+	test("a fresh model menu replaces every prior alias for its logical session", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:model:one",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [
+				{ selector: "provider/old-one", label: "Old one" },
+				{ selector: "provider/old-two", label: "Old two" },
+			],
+		});
+		const oldAliases = bot.calls
+			.find(call => call.method === "sendMessage" && call.body.reply_markup)!
+			.body.reply_markup.inline_keyboard.flat()
+			.map((button: { callback_data: string }) => button.callback_data);
+		await daemon.handleSessionMessage(session, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:model:two",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/fresh", label: "Fresh" }],
+		});
+		const freshAlias = bot.calls.filter(call => call.method === "sendMessage" && call.body.reply_markup).at(-1)!.body
+			.reply_markup.inline_keyboard[0][0].callback_data;
+		for (const [index, alias] of oldAliases.entries()) {
+			await daemon.handleTelegramUpdate({
+				update_id: 30 + index,
+				callback_query: { id: `old-${index}`, data: alias, message: { chat: { id: 42 } } },
+			});
+		}
+		expect(FakeWs.instances[0]!.sent).toHaveLength(0);
+		await daemon.handleTelegramUpdate({
+			update_id: 32,
+			callback_query: { id: "fresh", data: freshAlias, message: { chat: { id: 42 } } },
+		});
+		expect(JSON.parse(FakeWs.instances[0]!.sent[0]!)).toMatchObject({
+			command: { name: "model", action: "set", selector: "provider/fresh" },
+		});
+	});
+
+	test("failed model keyboard delivery falls back to the generic control result", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const originalCall = bot.call.bind(bot);
+		bot.call = async (method: string, body: unknown): Promise<unknown> => {
+			if (method === "sendMessage" && (body as { reply_markup?: unknown }).reply_markup) {
+				bot.calls.push({ method, body });
+				throw new Error("keyboard rejected");
+			}
+			return originalCall(method, body);
+		};
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:model:fallback",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const attemptedKeyboard = bot.calls.find(call => call.method === "sendMessage" && call.body.reply_markup)!;
+		const alias = attemptedKeyboard.body.reply_markup.inline_keyboard[0][0].callback_data;
+		expect(
+			bot.calls.some(
+				call => call.method === "sendMessage" && !call.body.reply_markup && call.body.text === "✅ Select a model.",
+			),
+		).toBe(true);
+		await daemon.handleTelegramUpdate({
+			update_id: 40,
+			callback_query: { id: "failed-menu", data: alias, message: { chat: { id: 42 } } },
+		});
+		expect(FakeWs.instances[0]!.sent).toHaveLength(0);
+		expect(
+			bot.calls.some(
+				call => call.method === "answerCallbackQuery" && call.body.text === "Button is stale. Run /model again.",
+			),
+		).toBe(true);
+	});
+
+	test("model choices from a prior daemon are stale after restart", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const firstBot = new FakeBotApi();
+		const first = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: firstBot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		first.connectSession("S", "ws://s", "ts");
+		await first.handleSessionMessage(first.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:8",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const alias = firstBot.calls.find(call => call.method === "sendMessage")!.body.reply_markup.inline_keyboard[0][0]
+			.callback_data;
+
+		const secondBot = new FakeBotApi();
+		const secondAgentDir = tempAgentDir();
+		const second = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(secondAgentDir), secondAgentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: secondBot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		second.connectSession("S", "ws://s", "ts");
+		await second.handleTelegramUpdate({
+			update_id: 10,
+			callback_query: { id: "stale", data: alias, message: { chat: { id: 42 } } },
+		});
+		expect(FakeWs.instances[1]!.sent).toHaveLength(0);
+		expect(
+			secondBot.calls.some(
+				call => call.method === "answerCallbackQuery" && call.body.text === "Button is stale. Run /model again.",
+			),
+		).toBe(true);
+	});
+
+	test("model choice aliases are one-shot and duplicate taps become stale", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:8",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const alias = bot.calls.find(call => call.method === "sendMessage")!.body.reply_markup.inline_keyboard[0][0]
+			.callback_data;
+		const callback = (updateId: number) =>
+			daemon.handleTelegramUpdate({
+				update_id: updateId,
+				callback_query: { id: `tap-${updateId}`, data: alias, message: { chat: { id: 42 } } },
+			});
+
+		await callback(11);
+		await callback(12);
+		expect(FakeWs.instances[0]!.sent).toHaveLength(1);
+		expect(
+			bot.calls.some(
+				call => call.method === "answerCallbackQuery" && call.body.text === "Button is stale. Run /model again.",
+			),
+		).toBe(true);
+	});
+
+	test("disconnected model-choice sessions fail closed and consume their aliases", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:8",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const alias = bot.calls.find(call => call.method === "sendMessage")!.body.reply_markup.inline_keyboard[0][0]
+			.callback_data;
+		FakeWs.instances[0]!.close();
+
+		await daemon.handleTelegramUpdate({
+			update_id: 13,
+			callback_query: { id: "closed", data: alias, message: { chat: { id: 42 } } },
+		});
+		await daemon.handleTelegramUpdate({
+			update_id: 14,
+			callback_query: { id: "duplicate", data: alias, message: { chat: { id: 42 } } },
+		});
+		expect(FakeWs.instances[0]!.sent).toHaveLength(0);
+		expect(
+			bot.calls.filter(
+				call => call.method === "answerCallbackQuery" && call.body.text === "Button is stale. Run /model again.",
+			),
+		).toHaveLength(2);
+	});
+
+	test("invalid model results keep generic control rendering and create no keyboard", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "repo",
+			branch: "branch",
+		});
+		bot.calls = [];
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:model:9",
+			status: "error",
+			message: "Model is unavailable.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const sent = bot.calls.find(call => call.method === "sendMessage")!.body;
+		expect(sent.text).toBe("❌ Model is unavailable.");
+		expect(sent.reply_markup).toBeUndefined();
+	});
+
+	test("model choice delivery survives a callback acknowledgement failure", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FailingCallbackAckBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			rich: { enabled: false },
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "control_command_result",
+			sessionId: "S",
+			requestId: "tg:8",
+			status: "ok",
+			message: "Select a model.",
+			modelChoices: [{ selector: "provider/gpt-5", label: "GPT 5" }],
+		});
+		const alias = bot.calls.find(call => call.method === "sendMessage")!.body.reply_markup.inline_keyboard[0][0]
+			.callback_data;
+
+		await daemon.handleTelegramUpdate({
+			update_id: 15,
+			callback_query: { id: "ack-fails", data: alias, message: { chat: { id: 42 } } },
+		});
+		expect(JSON.parse(FakeWs.instances[0]!.sent[0]!)).toMatchObject({
+			type: "control_command",
+			command: { name: "model", action: "set", selector: "provider/gpt-5" },
+		});
+		expect(bot.calls.some(call => call.method === "answerCallbackQuery")).toBe(true);
+	});
+
 	test("unknown and expired aliases are stale guidance with zero frames", async () => {
 		FakeWs.instances = [];
 		const agentDir = tempAgentDir();
@@ -2089,10 +2605,17 @@ describe("telegram daemon", () => {
 			options: ["a", "b"],
 		});
 		const threadId = bot.calls.find(c => c.method === "sendMessage")!.body.message_thread_id;
+		const askMessageId = bot.calls.findIndex(c => c.method === "sendMessage") + 1;
 
 		await daemon.handleTelegramUpdate({
 			update_id: 9,
-			message: { chat: { id: 42 }, message_thread_id: threadId, text: "/reasoning impossible", message_id: 102 },
+			message: {
+				chat: { id: 42 },
+				message_thread_id: threadId,
+				text: "/reasoning impossible",
+				message_id: 102,
+				reply_to_message: { message_id: askMessageId },
+			},
 		});
 
 		const sent = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame));
@@ -2507,6 +3030,7 @@ test("daemon registers in-thread config and lifecycle commands and drops stale r
 	expect(cmds).toContain("session_create");
 	expect(cmds).toContain("session_recent");
 	expect(cmds).toContain("session_close");
+	expect(cmds).toContain("model");
 	expect(cmds).toContain("session_resume");
 	expect(cmds).not.toContain("answer");
 	expect(cmds).not.toContain("attach");

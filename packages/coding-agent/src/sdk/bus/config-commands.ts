@@ -20,13 +20,14 @@ export interface ConfigCommandChange {
 	redact?: boolean;
 }
 
-export type TelegramControlCommandName = "reasoning" | "usage" | "context" | "compact";
+export type TelegramControlCommandName = "reasoning" | "usage" | "context" | "compact" | "model";
 
 export type TelegramControlCommand =
-	| { name: "reasoning"; action: "cycle" | "status" | "set"; level?: string }
+	| { name: "reasoning"; action: "cycle" | "status" | "set" | "show" | "hide"; level?: string; global?: boolean }
 	| { name: "usage" }
 	| { name: "context" }
-	| { name: "compact"; instructions?: string };
+	| { name: "compact"; instructions?: string }
+	| { name: "model"; action: "list" | "set"; selector?: string };
 
 export type TelegramControlCommandParseResult =
 	| { kind: "none" }
@@ -34,7 +35,13 @@ export type TelegramControlCommandParseResult =
 	| { kind: "command"; command: TelegramControlCommand }
 	| { kind: "invalid"; commandName: TelegramControlCommandName; usage: string };
 
-const TELEGRAM_CONTROL_COMMANDS = new Set<TelegramControlCommandName>(["reasoning", "usage", "context", "compact"]);
+const TELEGRAM_CONTROL_COMMANDS = new Set<TelegramControlCommandName>([
+	"reasoning",
+	"usage",
+	"context",
+	"compact",
+	"model",
+]);
 const TELEGRAM_REASONING_LEVELS = new Set(["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function splitTelegramBotSuffix(rawCommand: string): { name: string; suffix?: string } {
@@ -45,13 +52,15 @@ function splitTelegramBotSuffix(rawCommand: string): { name: string; suffix?: st
 export function telegramControlCommandUsage(commandName: TelegramControlCommandName): string {
 	switch (commandName) {
 		case "reasoning":
-			return "Usage: /reasoning [cycle|inherit|off|minimal|low|medium|high|xhigh|max]";
+			return "Usage: /reasoning [cycle|inherit|reset|off|none|minimal|low|medium|high|xhigh|max|show|hide] [--global for set/reset/show/hide]";
 		case "usage":
 			return "Usage: /usage";
 		case "context":
 			return "Usage: /context";
 		case "compact":
 			return "Usage: /compact [instructions]";
+		case "model":
+			return "Usage: /model [provider/model]";
 	}
 }
 
@@ -79,14 +88,34 @@ export function parseTelegramControlCommand(text: string, botUsername?: string):
 		}
 		case "reasoning": {
 			if (rest.length === 0) return { kind: "command", command: { name: "reasoning", action: "status" } };
-			if (rest.length !== 1) return { kind: "invalid", commandName, usage };
-			const levelOrAction = rest[0]!.toLowerCase();
-			if (levelOrAction === "cycle") return { kind: "command", command: { name: "reasoning", action: "cycle" } };
-			if (TELEGRAM_REASONING_LEVELS.has(levelOrAction)) {
-				return { kind: "command", command: { name: "reasoning", action: "set", level: levelOrAction } };
+			const action = rest[0]!.toLowerCase();
+			if (action === "cycle") {
+				return rest.length === 1
+					? { kind: "command", command: { name: "reasoning", action: "cycle" } }
+					: { kind: "invalid", commandName, usage };
+			}
+			const global = rest[1]?.toLowerCase() === "--global";
+			if (rest.length > 2 || (rest.length === 2 && !global)) return { kind: "invalid", commandName, usage };
+			if (action === "show" || action === "hide") {
+				return {
+					kind: "command",
+					command: { name: "reasoning", action, ...(global ? { global: true } : {}) },
+				};
+			}
+			const level = action === "none" ? "off" : action === "reset" ? "inherit" : action;
+			if (TELEGRAM_REASONING_LEVELS.has(level)) {
+				return {
+					kind: "command",
+					command: { name: "reasoning", action: "set", level, ...(global ? { global: true } : {}) },
+				};
 			}
 			return { kind: "invalid", commandName, usage };
 		}
+		case "model":
+			if (rest.length === 0) return { kind: "command", command: { name: "model", action: "list" } };
+			return rest.length === 1
+				? { kind: "command", command: { name: "model", action: "set", selector: rest[0]! } }
+				: { kind: "invalid", commandName, usage };
 	}
 }
 

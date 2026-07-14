@@ -6,7 +6,7 @@ import {
 	type AgentTool,
 	type AppendOnlyContextManager,
 	INTENT_FIELD,
-	type ThinkingLevel,
+	ThinkingLevel,
 } from "@gajae-code/agent-core";
 import {
 	type AuthCredentialSelector,
@@ -2370,7 +2370,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						: undefined,
 				);
 			}
-			sessionManager.appendThinkingLevelChange(thinkingLevel);
+			sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
 			if (initialServiceTier) {
 				sessionManager.appendServiceTierChange(initialServiceTier);
 			}

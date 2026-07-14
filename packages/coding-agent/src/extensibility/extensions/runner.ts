@@ -280,6 +280,14 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.getThinkingVisibility = actions.getThinkingVisibility;
+		this.runtime.setThinkingVisibility = actions.setThinkingVisibility;
+		this.runtime.cycleThinkingLevel = actions.cycleThinkingLevel;
+		this.runtime.setThinkingLevelForControl = actions.setThinkingLevelForControl;
+		this.runtime.setThinkingVisibilityForControl = actions.setThinkingVisibilityForControl;
+		this.runtime.setModelTemporaryForControl = actions.setModelTemporaryForControl;
+		this.runtime.fetchUsageReportsForControl = actions.fetchUsageReportsForControl;
+		this.runtime.getThinkingScopeForControl = actions.getThinkingScopeForControl;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
 

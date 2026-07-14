@@ -1554,7 +1554,17 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						getCommands: () => getSessionSlashCommands(session),
 						setModel: model => runExtensionSetModel(session, model),
 						getThinkingLevel: () => session.thinkingLevel,
-						setThinkingLevel: level => session.setThinkingLevel(level),
+						setThinkingLevel: (level, persist) => session.setThinkingLevel(level, persist),
+						getThinkingVisibility: () => session.getThinkingVisibility(),
+						setThinkingVisibility: (visibility, persist) => session.setThinkingVisibility(visibility, persist),
+						cycleThinkingLevel: () => session.cycleThinkingLevel(),
+						setThinkingLevelForControl: (level, persist) => session.setThinkingLevelForControl(level, persist),
+						setThinkingVisibilityForControl: (visibility, persist) =>
+							session.setThinkingVisibilityForControl(visibility, persist),
+						setModelTemporaryForControl: (model, expectedSessionId) =>
+							session.setModelTemporaryForControl(model, expectedSessionId),
+						fetchUsageReportsForControl: () => session.fetchUsageReportsForControl(),
+						getThinkingScopeForControl: () => session.getThinkingScopeForControl(),
 						getSessionName: () => session.sessionManager.getSessionName(),
 						setSessionName: async name => {
 							await session.sessionManager.setSessionName(name, "user");

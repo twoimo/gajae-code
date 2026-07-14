@@ -22,6 +22,7 @@ import type {
 	Static,
 	TextContent,
 	TSchema,
+	UsageReport,
 } from "@gajae-code/ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@gajae-code/ai/utils/oauth/types";
 import type * as piCodingAgent from "@gajae-code/coding-agent";
@@ -1116,7 +1117,31 @@ export interface ExtensionAPI {
 	getThinkingLevel(): ThinkingLevel | undefined;
 
 	/** Set thinking level for the current session. */
-	setThinkingLevel(level: ThinkingLevel): void;
+	setThinkingLevel(level: ThinkingLevel, persist?: boolean): void;
+
+	/** Get whether thinking output is visible in the current session. */
+	getThinkingVisibility(): "visible" | "hidden";
+
+	/** Set whether thinking output is visible for the current session. */
+	setThinkingVisibility(visibility: "visible" | "hidden", persist?: boolean): void;
+
+	/** Cycle the current model's available thinking levels. */
+	cycleThinkingLevel(): ThinkingLevel | undefined;
+
+	/** Set thinking level from a session or durable global control surface. */
+	setThinkingLevelForControl(level: ThinkingLevel, persist: boolean): Promise<void>;
+
+	/** Set thinking visibility from a session or durable global control surface. */
+	setThinkingVisibilityForControl(visibility: "visible" | "hidden", persist: boolean): Promise<void>;
+
+	/** Set the model for this session only. Returns false when it is unavailable. */
+	setModelTemporaryForControl(model: Model, expectedSessionId?: string): Promise<boolean>;
+
+	/** Fetch provider usage through the session's canonical provider resolution. */
+	fetchUsageReportsForControl(): Promise<UsageReport[] | null>;
+
+	/** Report whether the current effort follows global config or a session override. */
+	getThinkingScopeForControl(): "session" | "global config";
 
 	/** Get the current session name. */
 	getSessionName(): string | undefined;
@@ -1286,9 +1311,28 @@ export type SetActiveToolsHandler = (toolNames: string[]) => Promise<void>;
 
 export type SetModelHandler = (model: Model) => Promise<boolean>;
 
+export type CycleThinkingLevelHandler = () => ThinkingLevel | undefined;
+
+export type SetThinkingLevelForControlHandler = (level: ThinkingLevel, persist: boolean) => Promise<void>;
+
+export type SetThinkingVisibilityForControlHandler = (
+	visibility: "visible" | "hidden",
+	persist: boolean,
+) => Promise<void>;
+
+export type SetModelTemporaryForControlHandler = (model: Model, expectedSessionId?: string) => Promise<boolean>;
+
+export type FetchUsageReportsForControlHandler = () => Promise<UsageReport[] | null>;
+
+export type GetThinkingScopeForControlHandler = () => "session" | "global config";
+
 export type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) => void;
+
+export type GetThinkingVisibilityHandler = () => "visible" | "hidden";
+
+export type SetThinkingVisibilityHandler = (visibility: "visible" | "hidden", persist?: boolean) => void;
 
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
@@ -1310,6 +1354,14 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	getThinkingVisibility: GetThinkingVisibilityHandler;
+	setThinkingVisibility: SetThinkingVisibilityHandler;
+	cycleThinkingLevel: CycleThinkingLevelHandler;
+	setThinkingLevelForControl: SetThinkingLevelForControlHandler;
+	setThinkingVisibilityForControl: SetThinkingVisibilityForControlHandler;
+	setModelTemporaryForControl: SetModelTemporaryForControlHandler;
+	fetchUsageReportsForControl: FetchUsageReportsForControlHandler;
+	getThinkingScopeForControl: GetThinkingScopeForControlHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
 }
