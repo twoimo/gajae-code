@@ -1039,7 +1039,7 @@ export async function runRootCommand(
 	}
 
 	if (parsedArgs.listModels !== undefined) {
-		await modelRegistry.refresh("online");
+		await modelRegistry.refresh("online-if-uncached");
 		const searchPattern = typeof parsedArgs.listModels === "string" ? parsedArgs.listModels : undefined;
 		await runListModelsCommand({
 			modelRegistry,
