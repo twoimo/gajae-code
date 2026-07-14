@@ -1268,10 +1268,13 @@ export function buildOrchestratorDeps(input: {
 	/** Root of saved session histories (`<agentDir>/sessions`), for resume resolution. */
 	sessionsRoot?: string;
 	env?: NodeJS.ProcessEnv;
+	/** Test seam for deterministic exclusive prompt filenames. */
+	startupPromptNonce?: () => string;
 }): OrchestratorDeps {
 	if (input.auditRedactionKey.byteLength !== 32) throw new Error("invalid_audit_redaction_key");
 	const env = input.env ?? process.env;
 	const startupPromptNamespace = path.resolve(input.agentNotificationsDir);
+	const startupPromptNonce = input.startupPromptNonce ?? crypto.randomUUID;
 	return {
 		pairedChatId: input.pairedChatId,
 		auditRedactionKey: input.auditRedactionKey,
@@ -1283,12 +1286,46 @@ export function buildOrchestratorDeps(input: {
 		writeStartupPrompt: async (requestId, prompt) => {
 			if (prompt === undefined) return undefined;
 			const requestRef = crypto.createHash("sha256").update(requestId, "utf8").digest("hex");
-			const ref = path.join(startupPromptNamespace, `startup-prompt-${requestRef}`);
-			fs.mkdirSync(path.dirname(ref), { recursive: true });
-			const fd = fs.openSync(ref, "w", 0o600);
-			fs.writeSync(fd, prompt);
-			fs.fsyncSync(fd);
-			fs.closeSync(fd);
+			const nonce = startupPromptNonce();
+			if (!/^[0-9A-Za-z-]+$/.test(nonce)) throw new Error("invalid_startup_prompt_nonce");
+			const ref = path.join(startupPromptNamespace, `startup-prompt-${requestRef}-${nonce}`);
+			fs.mkdirSync(startupPromptNamespace, { recursive: true });
+			let fd: number | undefined;
+			let writeFailure: unknown;
+			let closeFailure: unknown;
+			try {
+				fd = fs.openSync(ref, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+				const encoded = Buffer.from(prompt, "utf8");
+				let offset = 0;
+				while (offset < encoded.length) {
+					const written = fs.writeSync(fd, encoded, offset, encoded.length - offset);
+					if (written === 0) throw new Error("Short write");
+					offset += written;
+				}
+				fs.fsyncSync(fd);
+			} catch (error) {
+				writeFailure = error;
+			} finally {
+				if (fd !== undefined) {
+					try {
+						fs.closeSync(fd);
+					} catch (error) {
+						closeFailure = error;
+					}
+				}
+			}
+			if (writeFailure !== undefined || closeFailure !== undefined) {
+				if (fd !== undefined) {
+					try {
+						fs.unlinkSync(ref);
+					} catch {
+						// Only the exact file created by this call is eligible for cleanup.
+					}
+				}
+				if (writeFailure !== undefined && closeFailure !== undefined)
+					throw new AggregateError([writeFailure, closeFailure], "startup prompt write failed");
+				throw writeFailure ?? closeFailure;
+			}
 			return ref;
 		},
 		spawnCreate: daemonSpawnCreate(env),

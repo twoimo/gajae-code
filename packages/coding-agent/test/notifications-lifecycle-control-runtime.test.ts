@@ -138,12 +138,13 @@ it("maps hostile and normalization-distinct request ids to fixed safe prompt bas
 		pairedChatId: PAIRED,
 		agentNotificationsDir: root,
 		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
 	});
 	try {
 		const refs = await Promise.all(
 			vectors.map(async ([requestId, digest]) => {
 				const ref = await deps.writeStartupPrompt(requestId, "prompt");
-				expect(ref).toBe(path.join(path.resolve(root), `startup-prompt-${digest}`));
+				expect(ref).toBe(path.join(path.resolve(root), `startup-prompt-${digest}-fixed-nonce`));
 				expect(path.dirname(ref!)).toBe(path.resolve(root));
 				expect(fs.readFileSync(ref!, "utf8")).toBe("prompt");
 				return ref;
@@ -154,6 +155,33 @@ it("maps hostile and normalization-distinct request ids to fixed safe prompt bas
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
+
+it.skipIf(process.platform === "win32")(
+	"refuses a pre-planted startup prompt symlink without touching its target",
+	async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-symlink-"));
+		const victim = path.join(root, "victim.txt");
+		const ref = path.join(
+			root,
+			"startup-prompt-31b8f22e2b7d49481ad5e4f8fc7d82def9231d893285b23b0b6788fc3e1f7520-fixed-nonce",
+		);
+		fs.writeFileSync(victim, "SAFE", { mode: 0o600 });
+		fs.symlinkSync(victim, ref, "file");
+		const deps = buildOrchestratorDeps({
+			pairedChatId: PAIRED,
+			agentNotificationsDir: root,
+			auditRedactionKey: new Uint8Array(32).fill(7),
+			startupPromptNonce: () => "fixed-nonce",
+		});
+		try {
+			await expect(deps.writeStartupPrompt("symlink-repro", "PWNED")).rejects.toThrow();
+			expect(fs.lstatSync(ref).isSymbolicLink()).toBe(true);
+			expect(fs.readFileSync(victim, "utf8")).toBe("SAFE");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	},
+);
 
 function daemonSettings(agentDir: string): Settings {
 	const base = Settings.isolated({
