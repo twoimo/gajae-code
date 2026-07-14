@@ -1271,6 +1271,7 @@ export function buildOrchestratorDeps(input: {
 }): OrchestratorDeps {
 	if (input.auditRedactionKey.byteLength !== 32) throw new Error("invalid_audit_redaction_key");
 	const env = input.env ?? process.env;
+	const startupPromptNamespace = path.resolve(input.agentNotificationsDir);
 	return {
 		pairedChatId: input.pairedChatId,
 		auditRedactionKey: input.auditRedactionKey,
@@ -1281,7 +1282,8 @@ export function buildOrchestratorDeps(input: {
 		allowCreate: createRateLimiter(3, 10 * 60 * 1000),
 		writeStartupPrompt: async (requestId, prompt) => {
 			if (prompt === undefined) return undefined;
-			const ref = path.join(input.agentNotificationsDir, `startup-prompt-${requestId}`);
+			const requestRef = crypto.createHash("sha256").update(requestId, "utf8").digest("hex");
+			const ref = path.join(startupPromptNamespace, `startup-prompt-${requestRef}`);
 			fs.mkdirSync(path.dirname(ref), { recursive: true });
 			const fd = fs.openSync(ref, "w", 0o600);
 			fs.writeSync(fd, prompt);

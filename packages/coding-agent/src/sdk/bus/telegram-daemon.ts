@@ -3176,14 +3176,13 @@ export class TelegramNotificationDaemon {
 			if (inbound.kind === "duplicate") return;
 			if (inbound.kind === "inject") {
 				if (!(await this.pairedChatIsPrivate())) return;
-				const unavailableControl = inbound.attachment
+				const preliminaryControl = inbound.attachment
 					? { kind: "none" as const }
 					: parseTelegramControlCommand(inbound.text, this.botUsername);
-				if (unavailableControl.kind === "ignored" || unavailableControl.kind === "invalid") return;
-				if (
-					unavailableControl.kind === "command" &&
-					this.sessions.get(inbound.sessionId)?.ws.readyState !== WebSocket.OPEN
-				) {
+				if (preliminaryControl.kind === "ignored") return;
+				const session = this.sessions.get(inbound.sessionId);
+				if (preliminaryControl.kind === "invalid" && session?.ws.readyState !== WebSocket.OPEN) return;
+				if (preliminaryControl.kind === "command" && session?.ws.readyState !== WebSocket.OPEN) {
 					if (await this.rememberSeenUpdateIdForUnavailableNotice(inbound.updateId)) {
 						try {
 							await this.botApi.call("sendMessage", {
@@ -3197,7 +3196,6 @@ export class TelegramNotificationDaemon {
 					}
 					return;
 				}
-				const session = this.sessions.get(inbound.sessionId);
 				if (session?.ws.readyState === WebSocket.OPEN) {
 					const attachmentResult = inbound.attachment
 						? await this.resolveInboundAttachment(inbound.attachment, inbound.sessionId)
@@ -3216,9 +3214,7 @@ export class TelegramNotificationDaemon {
 					const injectedText = repliedOriginal
 						? `> replied-to message:\n${repliedOriginal}\n\n${baseInjectedText}`
 						: baseInjectedText;
-					const control = hasMedia
-						? { kind: "none" as const }
-						: parseTelegramControlCommand(inbound.text, this.botUsername);
+					const control = hasMedia ? { kind: "none" as const } : preliminaryControl;
 					if (control.kind !== "none") {
 						await this.rememberSeenUpdateId(inbound.updateId);
 						const sendControlNotice = async (body: string): Promise<void> => {
@@ -3233,7 +3229,6 @@ export class TelegramNotificationDaemon {
 								// Best-effort control feedback; never convert to user input.
 							}
 						};
-						if (control.kind === "ignored") return;
 						if (control.kind === "invalid") {
 							await sendControlNotice(control.usage);
 							return;

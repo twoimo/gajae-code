@@ -2051,7 +2051,7 @@ describe("telegram daemon", () => {
 		expect(bot.calls).toEqual([]);
 	});
 
-	test("invalid telegram control command does not answer pending ask", async () => {
+	test("invalid telegram control command returns usage once without answering pending ask", async () => {
 		FakeWs.instances = [];
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
@@ -2083,9 +2083,14 @@ describe("telegram daemon", () => {
 		const sent = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame));
 		expect(sent.some(frame => frame.type === "reply")).toBe(false);
 		expect(sent.some(frame => frame.type === "user_message")).toBe(false);
-		expect(
-			bot.calls.some(c => c.method === "sendMessage" && String(c.body.text).startsWith("Usage: /reasoning")),
-		).toBe(false);
+		const usageMessages = () =>
+			bot.calls.filter(c => c.method === "sendMessage" && String(c.body.text).startsWith("Usage: /reasoning"));
+		expect(usageMessages()).toHaveLength(1);
+		await daemon.handleTelegramUpdate({
+			update_id: 9,
+			message: { chat: { id: 42 }, message_thread_id: threadId, text: "/reasoning impossible", message_id: 102 },
+		});
+		expect(usageMessages()).toHaveLength(1);
 	});
 
 	test("wrong-suffix telegram control command is consumed, not injected or ask-answered", async () => {

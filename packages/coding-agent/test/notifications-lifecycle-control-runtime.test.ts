@@ -122,6 +122,38 @@ it("forwards the supplied 32-byte audit key unchanged and rejects invalid or mis
 		expect(fs.existsSync(auditPath)).toBe(false);
 	}
 });
+it("maps hostile and normalization-distinct request ids to fixed safe prompt basenames", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-path-"));
+	const vectors = [
+		["../escape", "1ba7343c47dc442de7dec43a995deb9a7b62234ecca16d7c6f597b5155bd85b1"],
+		["a/b", "c14cddc033f64b9dea80ea675cf280a015e672516090a5626781153dc68fea11"],
+		["a\\b", "c62016d0f8ee333350283fd879b50b692932e932794e5d686f7d37d67484e199"],
+		["C:\\temp\\x", "86644e259518a4d558f48a0b2eb7bc2e729550494ed79be2b0ba5e69cba09be6"],
+		["\\\\server\\share", "05e24481d49af5ff4b88980216126fdaa1506fb0e7dcdbc60d64e5bcc5a61312"],
+		["CON", "a3dbc4b644a9a2c51e74509ded5c46ccf31d84c65ca417fe0126af1555c66ceb"],
+		["é", "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c"],
+		["é", "bf12767b0f2a56b2190075bae8169f656e3ce8d6357d4aff184bc6c7ea48f9f6"],
+	] as const;
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+	});
+	try {
+		const refs = await Promise.all(
+			vectors.map(async ([requestId, digest]) => {
+				const ref = await deps.writeStartupPrompt(requestId, "prompt");
+				expect(ref).toBe(path.join(path.resolve(root), `startup-prompt-${digest}`));
+				expect(path.dirname(ref!)).toBe(path.resolve(root));
+				expect(fs.readFileSync(ref!, "utf8")).toBe("prompt");
+				return ref;
+			}),
+		);
+		expect(new Set(refs).size).toBe(vectors.length);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
 
 function daemonSettings(agentDir: string): Settings {
 	const base = Settings.isolated({
