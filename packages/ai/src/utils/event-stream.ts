@@ -152,7 +152,10 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	waitForConsumerDrain(signal: AbortSignal): Promise<void> {
 		if (signal.aborted) return Promise.reject(abortReason(signal));
 		if (this.#failed) return Promise.reject(this.#error);
-		if (this.done) return Promise.resolve();
+		if (this.done && this.#activeConsumerCount === 0) {
+			if (this.#queueLength === 0) return Promise.resolve();
+			return Promise.reject(new Error("Event stream ended before queued events could be drained"));
+		}
 
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		let drain!: ConsumerDrain;

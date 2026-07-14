@@ -214,6 +214,75 @@ describe("EventStream.waitForConsumerDrain", () => {
 		await consumer;
 	});
 
+	it("waits for queued events when drain admission happens after end", async () => {
+		const stream = createStream();
+		const enteredA = deferred();
+		const releaseA = deferred();
+		const seen: string[] = [];
+		const consumer = (async () => {
+			for await (const event of stream) {
+				seen.push(event.id);
+				if (event.id === "A") {
+					enteredA.resolve();
+					await releaseA.promise;
+				}
+			}
+		})();
+
+		stream.push({ id: "A" });
+		await enteredA.promise;
+		stream.push({ id: "B" });
+		stream.end();
+		const drain = stream.waitForConsumerDrain(new AbortController().signal);
+		let settled = false;
+		void drain.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		releaseA.resolve();
+		await expect(drain).resolves.toBeUndefined();
+		expect(seen).toEqual(["A", "B"]);
+		await consumer;
+	});
+
+	it("waits for queued events when a terminal event precedes drain admission", async () => {
+		const stream = new EventStream<Event, void>(
+			event => event.id === "done",
+			() => undefined,
+		);
+		const entered = deferred();
+		const release = deferred();
+		const seen: string[] = [];
+		const consumer = (async () => {
+			for await (const event of stream) {
+				seen.push(event.id);
+				if (event.id === "held") {
+					entered.resolve();
+					await release.promise;
+				}
+			}
+		})();
+
+		stream.push({ id: "held" });
+		await entered.promise;
+		stream.push({ id: "queued" });
+		stream.push({ id: "done" });
+		const drain = stream.waitForConsumerDrain(new AbortController().signal);
+		let settled = false;
+		void drain.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		release.resolve();
+		await expect(drain).resolves.toBeUndefined();
+		expect(seen).toEqual(["held", "queued", "done"]);
+		await consumer;
+	});
+
 	it("rejects and detaches unconsumed pending drains when streams end or fail", async () => {
 		const ended = createStream();
 		const endTracked = createTrackedAbortController();
