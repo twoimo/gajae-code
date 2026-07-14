@@ -299,7 +299,7 @@ it("zeroizes startup prompts after fsync or close failure", async () => {
 		}) as typeof fs.fsyncSync);
 		const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
 			closeCalls += 1;
-			if (failurePoint === "close" && closeCalls === 1) {
+			if (failurePoint === "close" && closeCalls <= 3) {
 				unclosedFd = fd;
 				throw new Error("injected close failure");
 			}
@@ -324,6 +324,94 @@ it("zeroizes startup prompts after fsync or close failure", async () => {
 			if (unclosedFd !== undefined) originalClose(unclosedFd);
 			fs.rmSync(root, { recursive: true, force: true });
 		}
+	}
+});
+
+it("returns durable prompt authority when zeroization exhausts retries", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-zeroize-failure-"));
+	const originalWrite = fs.writeSync as (
+		fd: number,
+		buffer: Uint8Array,
+		offset: number,
+		length: number,
+		position?: number | null,
+	) => number;
+	const originalTruncate = fs.ftruncateSync;
+	let writeCalls = 0;
+	const writeSpy = spyOn(fs, "writeSync").mockImplementation(((
+		fd: number,
+		buffer: Uint8Array,
+		offset: number,
+		_length: number,
+	) => {
+		writeCalls += 1;
+		if (writeCalls === 1) return originalWrite(fd, buffer, offset, 1);
+		throw new Error("injected partial write failure");
+	}) as typeof fs.writeSync);
+	const truncateSpy = spyOn(fs, "ftruncateSync").mockImplementation((() => {
+		throw new Error("injected truncate failure");
+	}) as typeof fs.ftruncateSync);
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
+	});
+	let failedRef: string | undefined;
+	try {
+		try {
+			await deps.writeStartupPrompt("zeroize-failure-repro", "SECRET");
+			throw new Error("expected startup prompt write to fail");
+		} catch (error) {
+			failedRef =
+				typeof error === "object" && error !== null
+					? (Reflect.get(error, "startupPromptRef") as string | undefined)
+					: undefined;
+		}
+		expect(failedRef).toBeDefined();
+		expect(fs.readFileSync(failedRef!, "utf8")).toBe("S");
+	} finally {
+		truncateSpy.mockRestore();
+		writeSpy.mockRestore();
+		if (failedRef !== undefined) {
+			const fd = fs.openSync(failedRef, "w");
+			originalTruncate(fd, 0);
+			fs.closeSync(fd);
+		}
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("reports and retries cleanup-descriptor close failures instead of leaking silently", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-cleanup-close-"));
+	const originalClose = fs.closeSync;
+	let closeCalls = 0;
+	let leakedFd: number | undefined;
+	const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
+		closeCalls += 1;
+		if (closeCalls >= 2) {
+			leakedFd = fd;
+			throw new Error("injected cleanup close failure");
+		}
+		return originalClose(fd);
+	}) as typeof fs.closeSync);
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
+	});
+	try {
+		await expect(deps.writeStartupPrompt("cleanup-close-repro", "SECRET")).rejects.toThrow(
+			"injected cleanup close failure",
+		);
+		expect(closeCalls).toBe(4);
+		expect(leakedFd).toBeDefined();
+		expect(() => fs.fstatSync(leakedFd!)).not.toThrow();
+	} finally {
+		closeSpy.mockRestore();
+		if (leakedFd !== undefined) originalClose(leakedFd);
+		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
 

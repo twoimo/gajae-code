@@ -421,6 +421,10 @@ export async function handleLifecycleRequest(
 		await deps.audit({ ...baseAudit, event: "success" });
 		return { status: "ok", entry, mode: resumed.mode };
 	} catch (err) {
+		if (typeof err === "object" && err !== null && "startupPromptRef" in err) {
+			const failedPromptRef = Reflect.get(err, "startupPromptRef");
+			if (typeof failedPromptRef === "string") entry.startupPromptRef = failedPromptRef;
+		}
 		// A side effect may have occurred; do not repeat it automatically. Mark
 		// terminal-uncertain so a retry reconciles instead of duplicating work.
 		let reason: LifecycleErrorReason = "terminal_uncertain";

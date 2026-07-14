@@ -1259,6 +1259,42 @@ export function attachLifecycleControl(server: ControlServerLike, deps: Orchestr
 	});
 }
 
+class StartupPromptWriteError extends AggregateError {
+	readonly startupPromptRef: string;
+
+	constructor(startupPromptRef: string, failures: unknown[]) {
+		super(failures, `startup prompt write failed: ${String(failures[0])}`);
+		this.startupPromptRef = startupPromptRef;
+	}
+}
+
+function closeStartupPromptDescriptor(fd: number): unknown | undefined {
+	let lastFailure: unknown;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		try {
+			fs.closeSync(fd);
+			return undefined;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EBADF") return undefined;
+			lastFailure = error;
+		}
+	}
+	return lastFailure;
+}
+
+function zeroizeStartupPrompt(fd: number): unknown | undefined {
+	let lastFailure: unknown;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		try {
+			fs.ftruncateSync(fd, 0);
+			fs.fsyncSync(fd);
+			return undefined;
+		} catch (error) {
+			lastFailure = error;
+		}
+	}
+	return lastFailure;
+}
 /** Assemble real orchestrator deps for the daemon (ledger/audit under agentDir). */
 export function buildOrchestratorDeps(input: {
 	pairedChatId: string;
@@ -1338,26 +1374,15 @@ export function buildOrchestratorDeps(input: {
 			} catch (error) {
 				failures.push(error);
 			}
-			try {
-				fs.closeSync(fd);
-			} catch (error) {
-				failures.push(error);
-			}
+			const primaryCloseFailure = closeStartupPromptDescriptor(fd);
+			if (primaryCloseFailure !== undefined) failures.push(primaryCloseFailure);
 			if (failures.length > 0) {
-				try {
-					fs.ftruncateSync(cleanupFd, 0);
-					fs.fsyncSync(cleanupFd);
-				} catch (error) {
-					failures.push(error);
-				}
+				const zeroizeFailure = zeroizeStartupPrompt(cleanupFd);
+				if (zeroizeFailure !== undefined) failures.push(zeroizeFailure);
 			}
-			try {
-				fs.closeSync(cleanupFd);
-			} catch (error) {
-				if (failures.length > 0) failures.push(error);
-			}
-			if (failures.length === 1) throw failures[0];
-			if (failures.length > 1) throw new AggregateError(failures, "startup prompt write failed");
+			const cleanupCloseFailure = closeStartupPromptDescriptor(cleanupFd);
+			if (cleanupCloseFailure !== undefined) failures.push(cleanupCloseFailure);
+			if (failures.length > 0) throw new StartupPromptWriteError(ref, failures);
 			return ref;
 		},
 		spawnCreate: daemonSpawnCreate(env),
