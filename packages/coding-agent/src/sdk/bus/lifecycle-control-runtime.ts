@@ -1259,55 +1259,6 @@ export function attachLifecycleControl(server: ControlServerLike, deps: Orchestr
 	});
 }
 
-class StartupPromptWriteError extends AggregateError {
-	readonly startupPromptRef: string;
-
-	constructor(startupPromptRef: string, failures: unknown[]) {
-		super(failures, `startup prompt write failed: ${String(failures[0])}`);
-		this.startupPromptRef = startupPromptRef;
-	}
-}
-
-function closeStartupPromptDescriptor(fd: number): unknown | undefined {
-	try {
-		fs.closeSync(fd);
-		return undefined;
-	} catch (error) {
-		return error;
-	}
-}
-
-function verifyStartupPromptPath(ref: string, identity: fs.BigIntStats): unknown | undefined {
-	let verificationFd: number | undefined;
-	let failure: unknown;
-	try {
-		verificationFd = fs.openSync(ref, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0));
-		const current = fs.fstatSync(verificationFd, { bigint: true });
-		if (current.dev !== identity.dev || current.ino !== identity.ino)
-			failure = new Error("startup_prompt_identity_changed");
-	} catch (error) {
-		failure = error;
-	}
-	if (verificationFd !== undefined) {
-		const closeFailure = closeStartupPromptDescriptor(verificationFd);
-		if (closeFailure !== undefined) return closeFailure;
-	}
-	return failure;
-}
-
-function zeroizeStartupPrompt(fd: number): unknown | undefined {
-	let lastFailure: unknown;
-	for (let attempt = 0; attempt < 3; attempt += 1) {
-		try {
-			fs.ftruncateSync(fd, 0);
-			fs.fsyncSync(fd);
-			return undefined;
-		} catch (error) {
-			lastFailure = error;
-		}
-	}
-	return lastFailure;
-}
 /** Assemble real orchestrator deps for the daemon (ledger/audit under agentDir). */
 export function buildOrchestratorDeps(input: {
 	pairedChatId: string;
@@ -1317,13 +1268,9 @@ export function buildOrchestratorDeps(input: {
 	/** Root of saved session histories (`<agentDir>/sessions`), for resume resolution. */
 	sessionsRoot?: string;
 	env?: NodeJS.ProcessEnv;
-	/** Test seam for deterministic exclusive prompt filenames. */
-	startupPromptNonce?: () => string;
 }): OrchestratorDeps {
 	if (input.auditRedactionKey.byteLength !== 32) throw new Error("invalid_audit_redaction_key");
 	const env = input.env ?? process.env;
-	const startupPromptNamespace = path.resolve(input.agentNotificationsDir);
-	const startupPromptNonce = input.startupPromptNonce ?? crypto.randomUUID;
 	return {
 		pairedChatId: input.pairedChatId,
 		auditRedactionKey: input.auditRedactionKey,
@@ -1332,90 +1279,9 @@ export function buildOrchestratorDeps(input: {
 		audit: fileAudit(path.join(input.agentNotificationsDir, "telegram-lifecycle-audit.jsonl")),
 		isPsmuxProvider: () => resolveGjcTmuxBinary({ env }).isPsmux,
 		allowCreate: createRateLimiter(3, 10 * 60 * 1000),
-		writeStartupPrompt: async (requestId, prompt, persistRef) => {
+		writeStartupPrompt: async (_requestId, prompt, _persistRef) => {
 			if (prompt === undefined) return undefined;
-			const requestRef = crypto.createHash("sha256").update(requestId, "utf8").digest("hex");
-			fs.mkdirSync(startupPromptNamespace, { recursive: true });
-			let ref: string | undefined;
-			let fd: number | undefined;
-			for (let attempt = 0; attempt < 8; attempt += 1) {
-				const nonce = startupPromptNonce();
-				if (!/^[0-9A-Za-z-]+$/.test(nonce)) throw new Error("invalid_startup_prompt_nonce");
-				const candidate = path.join(startupPromptNamespace, `startup-prompt-${requestRef}-${nonce}`);
-				try {
-					fd = fs.openSync(candidate, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-					ref = candidate;
-					break;
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-				}
-			}
-			if (fd === undefined || ref === undefined) throw new Error("startup_prompt_nonce_collisions_exhausted");
-			const identity = fs.fstatSync(fd, { bigint: true });
-			let cleanupFd: number | undefined;
-			try {
-				cleanupFd = fs.openSync(ref, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0));
-				const cleanupIdentity = fs.fstatSync(cleanupFd, { bigint: true });
-				if (cleanupIdentity.dev !== identity.dev || cleanupIdentity.ino !== identity.ino)
-					throw new Error("startup_prompt_identity_changed");
-			} catch (error) {
-				if (cleanupFd !== undefined) {
-					try {
-						fs.closeSync(cleanupFd);
-					} catch {
-						// No prompt bytes have been written, so only descriptor release remains.
-					}
-				}
-				try {
-					fs.closeSync(fd);
-				} catch {
-					// No prompt bytes have been written, so only descriptor release remains.
-				}
-				throw error;
-			}
-			if (cleanupFd === undefined) throw new Error("startup_prompt_cleanup_handle_missing");
-			try {
-				await persistRef(ref);
-			} catch (error) {
-				closeStartupPromptDescriptor(fd);
-				closeStartupPromptDescriptor(cleanupFd);
-				throw error;
-			}
-			const reservedPathFailure = verifyStartupPromptPath(ref, identity);
-			if (reservedPathFailure !== undefined) {
-				const zeroizeFailure = zeroizeStartupPrompt(cleanupFd);
-				closeStartupPromptDescriptor(fd);
-				closeStartupPromptDescriptor(cleanupFd);
-				throw new StartupPromptWriteError(ref, [
-					reservedPathFailure,
-					...(zeroizeFailure === undefined ? [] : [zeroizeFailure]),
-				]);
-			}
-			const failures: unknown[] = [];
-			try {
-				const encoded = Buffer.from(prompt, "utf8");
-				let offset = 0;
-				while (offset < encoded.length) {
-					const written = fs.writeSync(fd, encoded, offset, encoded.length - offset);
-					if (written === 0) throw new Error("Short write");
-					offset += written;
-				}
-				fs.fsyncSync(fd);
-			} catch (error) {
-				failures.push(error);
-			}
-			const handoffPathFailure = verifyStartupPromptPath(ref, identity);
-			if (handoffPathFailure !== undefined) failures.push(handoffPathFailure);
-			const primaryCloseFailure = closeStartupPromptDescriptor(fd);
-			if (primaryCloseFailure !== undefined) failures.push(primaryCloseFailure);
-			if (failures.length > 0) {
-				const zeroizeFailure = zeroizeStartupPrompt(cleanupFd);
-				if (zeroizeFailure !== undefined) failures.push(zeroizeFailure);
-			}
-			const cleanupCloseFailure = closeStartupPromptDescriptor(cleanupFd);
-			if (cleanupCloseFailure !== undefined) failures.push(cleanupCloseFailure);
-			if (failures.length > 0) throw new StartupPromptWriteError(ref, failures);
-			return ref;
+			throw new Error("startup_prompt_capability_transport_unavailable");
 		},
 		spawnCreate: daemonSpawnCreate(env),
 		closeSession: daemonCloseSession(env),
