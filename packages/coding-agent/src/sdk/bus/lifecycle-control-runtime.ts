@@ -1302,8 +1302,30 @@ export function buildOrchestratorDeps(input: {
 				}
 			}
 			if (fd === undefined || ref === undefined) throw new Error("startup_prompt_nonce_collisions_exhausted");
-			let writeFailure: unknown;
-			let closeFailure: unknown;
+			const identity = fs.fstatSync(fd, { bigint: true });
+			let cleanupFd: number | undefined;
+			try {
+				cleanupFd = fs.openSync(ref, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0));
+				const cleanupIdentity = fs.fstatSync(cleanupFd, { bigint: true });
+				if (cleanupIdentity.dev !== identity.dev || cleanupIdentity.ino !== identity.ino)
+					throw new Error("startup_prompt_identity_changed");
+			} catch (error) {
+				if (cleanupFd !== undefined) {
+					try {
+						fs.closeSync(cleanupFd);
+					} catch {
+						// No prompt bytes have been written, so only descriptor release remains.
+					}
+				}
+				try {
+					fs.closeSync(fd);
+				} catch {
+					// No prompt bytes have been written, so only descriptor release remains.
+				}
+				throw error;
+			}
+			if (cleanupFd === undefined) throw new Error("startup_prompt_cleanup_handle_missing");
+			const failures: unknown[] = [];
 			try {
 				const encoded = Buffer.from(prompt, "utf8");
 				let offset = 0;
@@ -1314,17 +1336,28 @@ export function buildOrchestratorDeps(input: {
 				}
 				fs.fsyncSync(fd);
 			} catch (error) {
-				writeFailure = error;
-			} finally {
+				failures.push(error);
+			}
+			try {
+				fs.closeSync(fd);
+			} catch (error) {
+				failures.push(error);
+			}
+			if (failures.length > 0) {
 				try {
-					fs.closeSync(fd);
+					fs.ftruncateSync(cleanupFd, 0);
+					fs.fsyncSync(cleanupFd);
 				} catch (error) {
-					closeFailure = error;
+					failures.push(error);
 				}
 			}
-			if (writeFailure !== undefined && closeFailure !== undefined)
-				throw new AggregateError([writeFailure, closeFailure], "startup prompt write failed");
-			if (writeFailure !== undefined || closeFailure !== undefined) throw writeFailure ?? closeFailure;
+			try {
+				fs.closeSync(cleanupFd);
+			} catch (error) {
+				if (failures.length > 0) failures.push(error);
+			}
+			if (failures.length === 1) throw failures[0];
+			if (failures.length > 1) throw new AggregateError(failures, "startup prompt write failed");
 			return ref;
 		},
 		spawnCreate: daemonSpawnCreate(env),

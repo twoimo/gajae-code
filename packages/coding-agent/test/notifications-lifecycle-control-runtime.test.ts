@@ -237,13 +237,95 @@ it.skipIf(process.platform === "win32")(
 		try {
 			await expect(deps.writeStartupPrompt("symlink-repro", "PROMPT")).rejects.toThrow("injected write failure");
 			expect(fs.readFileSync(ref, "utf8")).toBe("ATTACKER");
-			expect(fs.existsSync(moved)).toBe(true);
+			expect(fs.readFileSync(moved, "utf8")).toBe("");
 		} finally {
 			writeSpy.mockRestore();
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	},
 );
+
+it("zeroizes a partially written startup prompt through its retained file handle", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-zeroize-"));
+	const originalWrite = fs.writeSync as (
+		fd: number,
+		buffer: Uint8Array,
+		offset: number,
+		length: number,
+		position?: number | null,
+	) => number;
+	let writeCalls = 0;
+	const writeSpy = spyOn(fs, "writeSync").mockImplementation(((
+		fd: number,
+		buffer: Uint8Array,
+		offset: number,
+		_length: number,
+	) => {
+		writeCalls += 1;
+		if (writeCalls === 1) return originalWrite(fd, buffer, offset, 1);
+		throw new Error("injected partial write failure");
+	}) as typeof fs.writeSync);
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
+	});
+	try {
+		await expect(deps.writeStartupPrompt("partial-write-repro", "SECRET")).rejects.toThrow(
+			"injected partial write failure",
+		);
+		const promptFiles = fs.readdirSync(root).filter(name => name.startsWith("startup-prompt-"));
+		expect(promptFiles).toHaveLength(1);
+		expect(fs.readFileSync(path.join(root, promptFiles[0]!), "utf8")).toBe("");
+	} finally {
+		writeSpy.mockRestore();
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("zeroizes startup prompts after fsync or close failure", async () => {
+	for (const failurePoint of ["fsync", "close"] as const) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), `gjc-startup-prompt-${failurePoint}-`));
+		const originalFsync = fs.fsyncSync;
+		const originalClose = fs.closeSync;
+		let fsyncCalls = 0;
+		let closeCalls = 0;
+		let unclosedFd: number | undefined;
+		const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation(((fd: number) => {
+			fsyncCalls += 1;
+			if (failurePoint === "fsync" && fsyncCalls === 1) throw new Error("injected fsync failure");
+			return originalFsync(fd);
+		}) as typeof fs.fsyncSync);
+		const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
+			closeCalls += 1;
+			if (failurePoint === "close" && closeCalls === 1) {
+				unclosedFd = fd;
+				throw new Error("injected close failure");
+			}
+			return originalClose(fd);
+		}) as typeof fs.closeSync);
+		const deps = buildOrchestratorDeps({
+			pairedChatId: PAIRED,
+			agentNotificationsDir: root,
+			auditRedactionKey: new Uint8Array(32).fill(7),
+			startupPromptNonce: () => "fixed-nonce",
+		});
+		try {
+			await expect(deps.writeStartupPrompt(`${failurePoint}-repro`, "SECRET")).rejects.toThrow(
+				`injected ${failurePoint} failure`,
+			);
+			const promptFiles = fs.readdirSync(root).filter(name => name.startsWith("startup-prompt-"));
+			expect(promptFiles).toHaveLength(1);
+			expect(fs.readFileSync(path.join(root, promptFiles[0]!), "utf8")).toBe("");
+		} finally {
+			closeSpy.mockRestore();
+			fsyncSpy.mockRestore();
+			if (unclosedFd !== undefined) originalClose(unclosedFd);
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+});
 
 function daemonSettings(agentDir: string): Settings {
 	const base = Settings.isolated({
