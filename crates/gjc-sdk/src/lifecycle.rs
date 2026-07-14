@@ -84,7 +84,8 @@ pub struct SessionCreate {
 	pub token:                String,
 	/// Where the session should run.
 	pub target:               SessionCreateTarget,
-	/// Reference to the daemon-written, once-consumed startup-prompt file.
+	/// Reserved for a future capability transport; non-empty values are rejected
+	/// before lifecycle acceptance.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub startup_prompt_ref:   Option<String>,
 }

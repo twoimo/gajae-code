@@ -774,20 +774,40 @@ describe("lifecycle orchestrator", () => {
 		expect(nonForced).toMatchObject({ status: "error", reason: "invalid_target" });
 		expect([providers, reads, resumes, closes]).toEqual([3, 0, 0, 0]);
 	});
-	it("durably persists startup prompt recovery authority before writer side effects", async () => {
-		let persistedBeforeFailure = false;
-		const { deps: d, store } = deps({
-			writeStartupPrompt: async (_requestId, _prompt, persistRef) => {
-				await persistRef("/notifications/startup-prompt-recovery");
-				persistedBeforeFailure = true;
-				throw new Error("simulated process-boundary failure");
+	it("rejects startup prompt content before audit, ledger, rate limit, writer, or spawn effects", async () => {
+		const calls = { audit: 0, read: 0, write: 0, rateLimit: 0, writer: 0, spawn: 0 };
+		const { deps: d } = deps({
+			store: {
+				read: async () => {
+					calls.read += 1;
+					return { version: 1, entries: {} };
+				},
+				write: async () => {
+					calls.write += 1;
+				},
+			},
+			audit: () => {
+				calls.audit += 1;
+			},
+			allowCreate: () => {
+				calls.rateLimit += 1;
+				return true;
+			},
+			writeStartupPrompt: async () => {
+				calls.writer += 1;
+				throw new Error("must not write");
+			},
+			spawnCreate: async () => {
+				calls.spawn += 1;
+				throw new Error("must not spawn");
 			},
 		});
 		const outcome = await handleLifecycleRequest(createFrame({ startupPromptRef: "SECRET" }), d);
-		expect(outcome).toMatchObject({ status: "error", reason: "terminal_uncertain" });
-		expect(persistedBeforeFailure).toBe(true);
-		const doc = await store.read();
-		expect(Object.values(doc.entries)).toHaveLength(1);
-		expect(Object.values(doc.entries)[0]?.startupPromptRef).toBe("/notifications/startup-prompt-recovery");
+		expect(outcome).toEqual({
+			status: "error",
+			reason: "invalid_target",
+			message: "startup prompt capability transport is unavailable; create the session without a startup prompt",
+		});
+		expect(calls).toEqual({ audit: 0, read: 0, write: 0, rateLimit: 0, writer: 0, spawn: 0 });
 	});
 });

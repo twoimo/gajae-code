@@ -288,6 +288,13 @@ export async function handleLifecycleRequest(
 			message: "session_close requires force=true; graceful close is not supported",
 		};
 	}
+	if (frame.type === "session_create" && frame.startupPromptRef !== undefined) {
+		return {
+			status: "error",
+			reason: "invalid_target",
+			message: "startup prompt capability transport is unavailable; create the session without a startup prompt",
+		};
+	}
 	if (deps.isPsmuxProvider()) {
 		await deps.audit({ ...baseAudit, event: "rejected", reason: "unsupported_platform" });
 		return {
