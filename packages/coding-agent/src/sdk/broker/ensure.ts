@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { type BrokerDiscovery, brokerProcessIncarnation, readBrokerDiscovery } from "./discovery";
-import { resolveSdkInternalSpawnCommand } from "./runtime";
+import { resolveSdkInternalSpawnCommand, type SdkInternalSpawnCommand } from "./runtime";
 export interface EnsureBrokerSettings {
 	agentDir: string;
 	heartbeatTtlMs?: number;
@@ -132,6 +132,15 @@ function registerBrokerOwner(
 	owners.set(agentDir, owner);
 	return owner;
 }
+function brokerSpawnEnvironment(command: SdkInternalSpawnCommand, override?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const environment = { ...(override ?? command.env) };
+	delete environment.BUN_OPTIONS;
+	if (command.kind === "bun-source") {
+		delete environment.PI_COMPILED;
+		delete environment.GJC_COMPILED;
+	}
+	return environment;
+}
 
 async function ensureBrokerOnce(settings: EnsureBrokerSettings): Promise<BrokerDiscovery> {
 	const priorOwner = owners.get(settings.agentDir);
@@ -151,7 +160,8 @@ async function ensureBrokerOnce(settings: EnsureBrokerSettings): Promise<BrokerD
 	const child = spawn(command.file, [...command.args, "--agent-dir", settings.agentDir], {
 		detached: true,
 		stdio: "ignore",
-		env: settings.env ?? process.env,
+		env: brokerSpawnEnvironment(command, settings.env),
+		...(command.kind === "bun-source" ? { cwd: command.cwd } : {}),
 	});
 	child.unref();
 	let spawnError: Error | undefined;
@@ -213,6 +223,7 @@ export function ensureBroker(settings: EnsureBrokerSettings): Promise<BrokerDisc
 	void pending.then(clear, clear);
 	return pending;
 }
+
 /** Test hook: returns a stop handle for the detached broker this process spawned. */
 export function brokerOwnerForTest(agentDir: string): BrokerOwner | undefined {
 	return owners.get(agentDir);
@@ -220,6 +231,13 @@ export function brokerOwnerForTest(agentDir: string): BrokerOwner | undefined {
 /** Test hook: drives the detached-broker reap on a controllable child surface. */
 export function reapSpawnedBrokerForTest(child: ChildProcess, timing: ReapTiming = DEFAULT_REAP_TIMING): Promise<void> {
 	return reapSpawnedBroker(child, timing);
+}
+/** Test hook: resolves the complete broker environment without spawning. */
+export function brokerSpawnEnvironmentForTest(
+	command: SdkInternalSpawnCommand,
+	override?: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+	return brokerSpawnEnvironment(command, override);
 }
 /** Test hook: installs an exact controllable owner to exercise replacement fencing. */
 export function registerBrokerOwnerForTest(

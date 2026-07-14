@@ -17,13 +17,14 @@ import {
 } from "../src/sdk/broker/discovery";
 import {
 	brokerOwnerForTest,
+	brokerSpawnEnvironmentForTest,
 	ensureBroker,
 	reapSpawnedBrokerForTest,
 	registerBrokerOwnerForTest,
 } from "../src/sdk/broker/ensure";
 import { getBrokerIdentityKey } from "../src/sdk/broker/identity";
 import { deriveLifecycleDeadlines, readSessionLifecycleLaunchRequest } from "../src/sdk/broker/lifecycle";
-import { resolveSdkInternalSpawnCommand } from "../src/sdk/broker/runtime";
+import { resolveSdkInternalSpawnCommand, resolveSdkInternalSpawnCommandForTest } from "../src/sdk/broker/runtime";
 import { SessionManager } from "../src/session/session-manager";
 import { FileSessionStorage } from "../src/session/session-storage";
 
@@ -31,22 +32,116 @@ const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broke
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const brokerEntrypoint = path.resolve(import.meta.dir, "../src/cli.ts");
 
-it("SDK internal commands self-spawn compiled binaries without source entrypoints", () => {
-	const compiled = {
-		execPath: "/opt/gjc/gjc",
-		mode: "compiled" as const,
-		argsPrefix: [],
-		reloadPicksUpSourceEdits: false,
-		warning: "Rebuild",
+it("isolates source SDK children and preserves compiled self-spawn", () => {
+	const sourceEnvironment = {
+		...process.env,
+		BUN_OPTIONS: "--inspect",
+		PI_COMPILED: "1",
+		GJC_COMPILED: "1",
 	};
-	expect(resolveSdkInternalSpawnCommand("broker-internal", compiled)).toEqual({
-		file: "/opt/gjc/gjc",
-		args: ["sdk", "broker-internal"],
+	const source = resolveSdkInternalSpawnCommandForTest("broker-internal", { environment: sourceEnvironment });
+	expect(source.kind).toBe("bun-source");
+	expect(source.file).toBe(process.execPath);
+	expect(source.args).toEqual([
+		"--no-env-file",
+		`--config=${path.resolve(import.meta.dir, "../src/sdk/broker/internal-source.bunfig.toml")}`,
+		path.resolve(import.meta.dir, "../src/cli.ts"),
+		"sdk",
+		"broker-internal",
+	]);
+	expect(source.env.BUN_OPTIONS).toBeUndefined();
+	expect(source.env.PI_COMPILED).toBeUndefined();
+	expect(source.env.GJC_COMPILED).toBeUndefined();
+	expect(source.cwd).toBe(path.resolve(import.meta.dir, "../src/sdk/broker"));
+	expect(resolveSdkInternalSpawnCommand("broker-internal")).toMatchObject({
+		kind: "bun-source",
+		file: process.execPath,
 	});
-	expect(resolveSdkInternalSpawnCommand("session-host-internal", compiled)).toEqual({
-		file: "/opt/gjc/gjc",
+
+	const environment = { PATH: process.env.PATH, BUN_OPTIONS: "--inspect", PI_COMPILED: "spoofed" };
+	const markerPath = "/$bunfs/root/internal-source-marker-2178-abcd.txt";
+	const compiled = resolveSdkInternalSpawnCommandForTest("session-host-internal", {
+		execPath: process.execPath,
+		environment,
+		markerPath,
+		embeddedFiles: [{ name: path.basename(markerPath) }],
+	});
+	expect(compiled).toEqual({
+		kind: "compiled",
+		file: process.execPath,
 		args: ["sdk", "session-host-internal"],
+		env: { PATH: process.env.PATH, PI_COMPILED: "spoofed" },
 	});
+	expect(compiled.env.BUN_OPTIONS).toBeUndefined();
+	const windowsMarkerPath = "C:/~BUN/root/internal-source-marker-2178-abcd.txt";
+	expect(
+		resolveSdkInternalSpawnCommandForTest("broker-internal", {
+			execPath: process.execPath,
+			environment,
+			markerPath: windowsMarkerPath,
+			embeddedFiles: [{ name: path.basename(windowsMarkerPath) }],
+		}),
+	).toEqual({
+		kind: "compiled",
+		file: process.execPath,
+		args: ["sdk", "broker-internal"],
+		env: { PATH: process.env.PATH, PI_COMPILED: "spoofed" },
+	});
+});
+
+it("treats explicit broker env as a complete allowlist and still scrubs runtime options", () => {
+	const command = resolveSdkInternalSpawnCommandForTest("broker-internal", {
+		environment: { AMBIENT_SENTINEL: "must-not-leak" },
+	});
+	const environment = brokerSpawnEnvironmentForTest(command, {
+		PATH: process.env.PATH,
+		OWNED_SENTINEL: "kept",
+		BUN_OPTIONS: "--inspect",
+		PI_COMPILED: "spoofed",
+		GJC_COMPILED: "spoofed",
+	});
+	expect(environment).toEqual({ PATH: process.env.PATH, OWNED_SENTINEL: "kept" });
+	expect(environment.AMBIENT_SENTINEL).toBeUndefined();
+});
+
+it("fails closed when compiled marker evidence disagrees", () => {
+	expect(() =>
+		resolveSdkInternalSpawnCommandForTest("broker-internal", {
+			markerPath: "/$bunfs/root/internal-source-marker-2178-abcd.txt",
+			embeddedFiles: [],
+		}),
+	).toThrow("compiled-runtime marker evidence is inconsistent");
+	expect(() =>
+		resolveSdkInternalSpawnCommandForTest("broker-internal", {
+			markerPath: path.join(import.meta.dir, "../src/sdk/broker/internal-source-marker-2178.txt"),
+			embeddedFiles: [{ name: "internal-source-marker-2178.txt" }],
+		}),
+	).toThrow("compiled-runtime marker evidence is inconsistent");
+	for (const evidence of [
+		{
+			markerPath: "/$bunfs/root/nested/internal-source-marker-2178-abcd.txt",
+			embeddedFiles: [{ name: "internal-source-marker-2178-abcd.txt" }],
+		},
+		{
+			markerPath: "/$bunfs/root/internal-source-marker-2178.txt",
+			embeddedFiles: [{ name: "internal-source-marker-2178.txt" }],
+		},
+		{
+			markerPath: "C:/project/~BUN/root/internal-source-marker-2178-abcd.txt",
+			embeddedFiles: [{ name: "internal-source-marker-2178-abcd.txt" }],
+		},
+		{
+			markerPath: "/$bunfs/root/internal-source-marker-2178-abcd.txt",
+			embeddedFiles: [
+				{ name: "internal-source-marker-2178-abcd.txt" },
+				{ name: "internal-source-marker-2178-abcd.txt" },
+			],
+		},
+	]) {
+		expect(() => resolveSdkInternalSpawnCommandForTest("broker-internal", evidence)).toThrow(
+			"compiled-runtime marker evidence is inconsistent",
+		);
+	}
 });
 
 it("SDK lifecycle model presets reach the session host parser", () => {

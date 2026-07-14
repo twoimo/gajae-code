@@ -36,7 +36,7 @@ import {
 	parseDarwinProcessIncarnation,
 	processIncarnation,
 } from "./process-incarnation";
-import { resolveSdkInternalSpawnCommand } from "./runtime";
+import { resolveSdkInternalSpawnCommand, type SdkInternalSpawnCommand } from "./runtime";
 
 export {
 	type ProcessIncarnationCommandRunner,
@@ -98,6 +98,17 @@ const defaultLifecycleTiming: LifecycleTiming = {
 	sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 };
 const lifecycleTimingsForTest = new WeakMap<Broker, LifecycleTiming>();
+type LifecycleCommand = SdkInternalSpawnCommand | { file: string; args: string[] };
+type LifecycleCommandResolver = () => LifecycleCommand;
+const lifecycleCommandResolversForTest = new WeakMap<Broker, LifecycleCommandResolver>();
+
+export function setLifecycleCommandResolverForTest(
+	broker: Broker,
+	resolver: LifecycleCommandResolver | undefined,
+): void {
+	if (resolver) lifecycleCommandResolversForTest.set(broker, resolver);
+	else lifecycleCommandResolversForTest.delete(broker);
+}
 
 export function setLifecycleTimingForTest(broker: Broker, timing: LifecycleTiming | undefined): void {
 	if (timing) lifecycleTimingsForTest.set(broker, timing);
@@ -525,13 +536,13 @@ async function reconcileReadyScope(broker: Broker, id: string, scope: string | u
 	});
 }
 
-function command(): { file: string; args: string[] } {
+function command(broker: Broker): LifecycleCommand {
 	const configured = process.env.GJC_SDK_SESSION_COMMAND;
 	if (configured) {
 		const [file, ...args] = configured.trim().split(/\s+/);
 		if (file) return { file, args };
 	}
-	return resolveSdkInternalSpawnCommand("session-host-internal");
+	return lifecycleCommandResolversForTest.get(broker)?.() ?? resolveSdkInternalSpawnCommand("session-host-internal");
 }
 
 const lifecycleMarkerPath = (root: string, id: string) => path.join(root, "sdk", `${id}.lifecycle.json`);
@@ -1641,7 +1652,7 @@ async function executeLifecycleResponse(
 				"incarnation_unavailable",
 				"OS process incarnation authority is unavailable; refusing to spawn a lifecycle session.",
 			);
-		const cmd = command();
+
 		const request: SessionLifecycleLaunchRequest = {
 			operation,
 			sessionId: launch.id,
@@ -1665,12 +1676,13 @@ async function executeLifecycleResponse(
 		let child: ChildProcess | undefined;
 		let spawnedAuthority: EffectMarker | undefined;
 		try {
+			const cmd = command(broker);
 			const spawned = spawn(cmd.file, cmd.args, {
 				cwd: launch.cwd,
 				detached: true,
 				stdio: "ignore",
 				env: {
-					...process.env,
+					...("kind" in cmd ? cmd.env : process.env),
 					GJC_AGENT_DIR: broker.settings.agentDir,
 					GJC_CODING_AGENT_DIR: broker.settings.agentDir,
 					GJC_SESSION_ID: launch.id,

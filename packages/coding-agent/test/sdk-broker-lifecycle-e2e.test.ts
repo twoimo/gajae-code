@@ -14,6 +14,7 @@ import {
 	hasValidLifecycleDeadlines,
 	parseDarwinProcessIncarnation,
 	processIncarnation,
+	setLifecycleCommandResolverForTest,
 	setProcessIncarnationForTest,
 	writeSessionLifecycleFailure,
 } from "../src/sdk/broker/lifecycle";
@@ -712,6 +713,53 @@ test("broker rejects a cross-workspace cold fork source before spawning", async 
 		});
 		await expect(fs.stat(spawnedPath)).rejects.toThrow();
 	} finally {
+		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
+		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
+		await broker.stop();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
+test("broker terminalizes default command resolver failures", async () => {
+	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-resolver-failure-"));
+	const agentDir = path.join(root, "agent");
+	const previousCommand = process.env.GJC_SDK_SESSION_COMMAND;
+	const broker = new Broker({ agentDir });
+	try {
+		delete process.env.GJC_SDK_SESSION_COMMAND;
+		setLifecycleCommandResolverForTest(broker, () => {
+			throw new Error("SDK internal launch refused: compiled-runtime marker evidence is inconsistent.");
+		});
+		await broker.start();
+		const requestId = "resolver-failure-terminal-receipt";
+		const response = await broker.handleRequest(
+			"session.create",
+			{ cwd: root, stateRoot: path.join(root, ".gjc", "state") },
+			requestId,
+		);
+		expect(response).toEqual({
+			ok: false,
+			error: {
+				code: "spawn_failed",
+				message:
+					"Unable to spawn session: SDK internal launch refused: compiled-runtime marker evidence is inconsistent.",
+			},
+		});
+		expect(
+			await broker.handleRequest(
+				"session.create",
+				{ cwd: root, stateRoot: path.join(root, ".gjc", "state") },
+				requestId,
+			),
+		).toEqual(response);
+		const terminal = (await fs.readFile(path.join(agentDir, "sdk", "lifecycle-ledger.jsonl"), "utf8"))
+			.split("\n")
+			.filter(Boolean)
+			.map(line => JSON.parse(line) as Record<string, unknown>)
+			.findLast(row => row.state === "terminal_error");
+		expect(terminal?.response).toEqual(response);
+	} finally {
+		setLifecycleCommandResolverForTest(broker, undefined);
 		if (previousCommand === undefined) delete process.env.GJC_SDK_SESSION_COMMAND;
 		else process.env.GJC_SDK_SESSION_COMMAND = previousCommand;
 		await broker.stop();
