@@ -352,6 +352,37 @@ describe("tmux owner isolation", () => {
 			}).classification,
 		).toBe("safe");
 		expect(
+			classifyCgroup({
+				platform: "linux",
+				cgroupText:
+					"0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-4006c3d1-0f5c-4ddb-b522-7b73d1f1fb59.scope",
+			}),
+		).toEqual({
+			classification: "safe",
+			scope: "/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-4006c3d1-0f5c-4ddb-b522-7b73d1f1fb59.scope",
+		});
+		expect(
+			classifyCgroup({
+				platform: "linux",
+				cgroupText: "0::/user.slice/user-1001.slice/user@1000.service/app.slice/vte-spawn-4006c3d1.scope",
+			}).classification,
+		).toBe("unverifiable");
+		expect(
+			classifyCgroup({
+				platform: "linux",
+				cgroupText: "0::/system.slice/vte-spawn-4006c3d1.scope",
+			}).classification,
+		).toBe("unverifiable");
+		expect(
+			await planTmuxOwnerIsolation(
+				request,
+				probe(
+					"absent",
+					"0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-4006c3d1.scope",
+				),
+			),
+		).toMatchObject({ ok: true, code: "not_required", classification: { classification: "safe" } });
+		expect(
 			(
 				await planTmuxOwnerIsolation(request, {
 					...probe("safe"),
