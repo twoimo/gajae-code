@@ -75,10 +75,24 @@ function fakeRegistry(options?: { missingProviders?: string[]; profiles?: ModelP
 			}),
 			model("openai-codex", "gpt-5.6-luna", {
 				mode: "effort",
-				minLevel: ThinkingLevel.Medium,
+				minLevel: ThinkingLevel.Low,
 				maxLevel: ThinkingLevel.Max,
 			}),
 			model("openai-codex", "gpt-5.3-codex-spark"),
+			model("anthropic", "claude-opus-4-8", {
+				mode: "effort",
+				minLevel: ThinkingLevel.Low,
+				maxLevel: ThinkingLevel.XHigh,
+			}),
+			model("anthropic", "claude-fable-5", {
+				mode: "effort",
+				minLevel: ThinkingLevel.Low,
+				maxLevel: ThinkingLevel.XHigh,
+			}),
+			model("anthropic", "claude-sonnet-5"),
+			model("opencode-go", "deepseek-v4-pro"),
+			model("opencode-go", "kimi-k2.6"),
+			model("opencode-go", "mimo-v2.5-pro"),
 			model("minimax-code", "minimax-m3"),
 			model("minimax-code-cn", "minimax-m3"),
 			model("kimi-code", "kimi-k2.5"),
@@ -159,21 +173,78 @@ describe("model profile activation", () => {
 			architect: "provider-b/executor",
 		});
 	});
-	test("builtin codex-eco preserves high-effort Luna and Terra selectors", async () => {
-		const registry = fakeRegistry({ profiles: [...BUILTIN_MODEL_PROFILES] });
-		const catalog = BUILTIN_MODEL_PROFILES.find(profile => profile.name === "codex-eco");
-		expect(catalog?.modelMapping.executor).toBe("openai-codex/gpt-5.6-luna:high");
-
+	test.each([
+		[
+			"codex-eco",
+			{
+				default: "openai-codex/gpt-5.6-terra:low",
+				executor: "openai-codex/gpt-5.6-luna:low",
+				planner: "openai-codex/gpt-5.6-luna:high",
+				critic: "openai-codex/gpt-5.6-terra:xhigh",
+				architect: "openai-codex/gpt-5.6-terra:high",
+			},
+		],
+		[
+			"codex-medium",
+			{
+				default: "openai-codex/gpt-5.6-sol:low",
+				executor: "openai-codex/gpt-5.6-terra:low",
+				planner: "openai-codex/gpt-5.6-terra:high",
+				critic: "openai-codex/gpt-5.6-sol:xhigh",
+				architect: "openai-codex/gpt-5.6-sol:high",
+			},
+		],
+		[
+			"codex-pro",
+			{
+				default: "openai-codex/gpt-5.6-sol:medium",
+				executor: "openai-codex/gpt-5.6-terra:medium",
+				planner: "openai-codex/gpt-5.6-sol:high",
+				critic: "openai-codex/gpt-5.6-sol:max",
+				architect: "openai-codex/gpt-5.6-sol:xhigh",
+			},
+		],
+		[
+			"opus-codex",
+			{
+				default: "anthropic/claude-opus-4-8:xhigh",
+				executor: "openai-codex/gpt-5.6-terra:low",
+				planner: "anthropic/claude-sonnet-5",
+				critic: "openai-codex/gpt-5.6-sol:xhigh",
+				architect: "openai-codex/gpt-5.6-sol:high",
+			},
+		],
+		[
+			"codex-opencodego",
+			{
+				default: "openai-codex/gpt-5.6-sol:low",
+				executor: "opencode-go/deepseek-v4-pro",
+				planner: "opencode-go/kimi-k2.6",
+				critic: "opencode-go/mimo-v2.5-pro",
+				architect: "openai-codex/gpt-5.6-sol:high",
+			},
+		],
+		[
+			"fable-opus-codex",
+			{
+				default: "anthropic/claude-fable-5:high",
+				executor: "openai-codex/gpt-5.6-terra:medium",
+				planner: "anthropic/claude-opus-4-8:medium",
+				critic: "anthropic/claude-opus-4-8:high",
+				architect: "openai-codex/gpt-5.6-sol:xhigh",
+			},
+		],
+	] satisfies Array<[string, Record<string, string>]>)
+	("prepares the reconstructed five-role mapping for %s", async (profileName, expected) => {
 		const prepared = await prepareModelProfileActivation({
 			session: fakeSession(),
-			modelRegistry: registry,
+			modelRegistry: fakeRegistry({ profiles: [...BUILTIN_MODEL_PROFILES] }),
 			settings: Settings.isolated(),
-			profileName: "codex-eco",
+			profileName,
 		});
-		expect(prepared.agentModelOverrides.executor).toBe("openai-codex/gpt-5.6-luna:high");
-		expect(prepared.agentModelOverrides.architect).toBe("openai-codex/gpt-5.6-sol:medium");
-		expect(prepared.agentModelOverrides.planner).toBe("openai-codex/gpt-5.6-terra:medium");
-		expect(prepared.agentModelOverrides.critic).toBe("openai-codex/gpt-5.6-terra:high");
+
+		const defaultSelector = `${prepared.defaultModel?.provider}/${prepared.defaultModel?.id}:${prepared.defaultThinkingLevel}`;
+		expect({ default: defaultSelector, ...prepared.agentModelOverrides }).toEqual(expected);
 	});
 
 	test("session-only changes active model and replaces runtime overrides without persisted sets", async () => {
