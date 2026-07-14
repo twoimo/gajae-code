@@ -353,13 +353,13 @@ describe("lifecycle orchestrator", () => {
 		expect(entry?.sessionId).toBe("sess_pre_1");
 		expect(audit.map(a => a.event)).toEqual(["accepted", "spawn_started", "success"]);
 	});
-	it("propagates only the supplied startup prompt reference to the spawned child", async () => {
+	it("propagates no startup prompt reference for supported prompt-less creation", async () => {
 		let writtenPrompt: string | undefined;
 		let spawnedRef: string | undefined;
 		const { deps: d } = deps({
 			writeStartupPrompt: async (_requestId, prompt) => {
 				writtenPrompt = prompt;
-				return prompt === undefined ? undefined : "/private/prompt-ref";
+				return undefined;
 			},
 			spawnCreate: async (_frame, ids) => {
 				spawnedRef = ids.startupPromptRef;
@@ -371,9 +371,10 @@ describe("lifecycle orchestrator", () => {
 				};
 			},
 		});
-		await handleLifecycleRequest(createFrame({ startupPromptRef: "prompt-ref-opaque" }), d);
-		expect(writtenPrompt).toBe("prompt-ref-opaque");
-		expect(spawnedRef).toBe("/private/prompt-ref");
+		const outcome = await handleLifecycleRequest(createFrame(), d);
+		expect(outcome.status).toBe("ok");
+		expect(writtenPrompt).toBeUndefined();
+		expect(spawnedRef).toBeUndefined();
 	});
 
 	it("rejects empty immutable create ids before persistence or effects", async () => {
