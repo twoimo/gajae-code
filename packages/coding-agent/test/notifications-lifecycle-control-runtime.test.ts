@@ -183,6 +183,68 @@ it.skipIf(process.platform === "win32")(
 	},
 );
 
+it("retries startup prompt nonce collisions and fails closed after bounded exhaustion", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-collision-"));
+	const digest = "31b8f22e2b7d49481ad5e4f8fc7d82def9231d893285b23b0b6788fc3e1f7520";
+	const collision = path.join(root, `startup-prompt-${digest}-collision`);
+	fs.writeFileSync(collision, "EXISTING", { mode: 0o600 });
+	try {
+		const nonces = ["collision", "fresh"];
+		const retrying = buildOrchestratorDeps({
+			pairedChatId: PAIRED,
+			agentNotificationsDir: root,
+			auditRedactionKey: new Uint8Array(32).fill(7),
+			startupPromptNonce: () => nonces.shift() ?? "unexpected",
+		});
+		const ref = await retrying.writeStartupPrompt("symlink-repro", "PROMPT");
+		expect(ref).toBe(path.join(root, `startup-prompt-${digest}-fresh`));
+		expect(fs.readFileSync(ref!, "utf8")).toBe("PROMPT");
+		expect(fs.readFileSync(collision, "utf8")).toBe("EXISTING");
+
+		const exhausted = buildOrchestratorDeps({
+			pairedChatId: PAIRED,
+			agentNotificationsDir: root,
+			auditRedactionKey: new Uint8Array(32).fill(7),
+			startupPromptNonce: () => "collision",
+		});
+		await expect(exhausted.writeStartupPrompt("symlink-repro", "IGNORED")).rejects.toThrow(
+			"startup_prompt_nonce_collisions_exhausted",
+		);
+		expect(fs.readFileSync(collision, "utf8")).toBe("EXISTING");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it.skipIf(process.platform === "win32")(
+	"never unlinks an attacker replacement after a startup prompt write failure",
+	async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-replacement-"));
+		const digest = "31b8f22e2b7d49481ad5e4f8fc7d82def9231d893285b23b0b6788fc3e1f7520";
+		const ref = path.join(root, `startup-prompt-${digest}-fixed-nonce`);
+		const moved = path.join(root, "created-file-moved");
+		const writeSpy = spyOn(fs, "writeSync").mockImplementation(() => {
+			fs.renameSync(ref, moved);
+			fs.writeFileSync(ref, "ATTACKER", { mode: 0o600 });
+			throw new Error("injected write failure");
+		});
+		const deps = buildOrchestratorDeps({
+			pairedChatId: PAIRED,
+			agentNotificationsDir: root,
+			auditRedactionKey: new Uint8Array(32).fill(7),
+			startupPromptNonce: () => "fixed-nonce",
+		});
+		try {
+			await expect(deps.writeStartupPrompt("symlink-repro", "PROMPT")).rejects.toThrow("injected write failure");
+			expect(fs.readFileSync(ref, "utf8")).toBe("ATTACKER");
+			expect(fs.existsSync(moved)).toBe(true);
+		} finally {
+			writeSpy.mockRestore();
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	},
+);
+
 function daemonSettings(agentDir: string): Settings {
 	const base = Settings.isolated({
 		"notifications.enabled": true,

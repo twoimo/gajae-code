@@ -1286,15 +1286,25 @@ export function buildOrchestratorDeps(input: {
 		writeStartupPrompt: async (requestId, prompt) => {
 			if (prompt === undefined) return undefined;
 			const requestRef = crypto.createHash("sha256").update(requestId, "utf8").digest("hex");
-			const nonce = startupPromptNonce();
-			if (!/^[0-9A-Za-z-]+$/.test(nonce)) throw new Error("invalid_startup_prompt_nonce");
-			const ref = path.join(startupPromptNamespace, `startup-prompt-${requestRef}-${nonce}`);
 			fs.mkdirSync(startupPromptNamespace, { recursive: true });
+			let ref: string | undefined;
 			let fd: number | undefined;
+			for (let attempt = 0; attempt < 8; attempt += 1) {
+				const nonce = startupPromptNonce();
+				if (!/^[0-9A-Za-z-]+$/.test(nonce)) throw new Error("invalid_startup_prompt_nonce");
+				const candidate = path.join(startupPromptNamespace, `startup-prompt-${requestRef}-${nonce}`);
+				try {
+					fd = fs.openSync(candidate, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+					ref = candidate;
+					break;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				}
+			}
+			if (fd === undefined || ref === undefined) throw new Error("startup_prompt_nonce_collisions_exhausted");
 			let writeFailure: unknown;
 			let closeFailure: unknown;
 			try {
-				fd = fs.openSync(ref, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
 				const encoded = Buffer.from(prompt, "utf8");
 				let offset = 0;
 				while (offset < encoded.length) {
@@ -1306,26 +1316,15 @@ export function buildOrchestratorDeps(input: {
 			} catch (error) {
 				writeFailure = error;
 			} finally {
-				if (fd !== undefined) {
-					try {
-						fs.closeSync(fd);
-					} catch (error) {
-						closeFailure = error;
-					}
+				try {
+					fs.closeSync(fd);
+				} catch (error) {
+					closeFailure = error;
 				}
 			}
-			if (writeFailure !== undefined || closeFailure !== undefined) {
-				if (fd !== undefined) {
-					try {
-						fs.unlinkSync(ref);
-					} catch {
-						// Only the exact file created by this call is eligible for cleanup.
-					}
-				}
-				if (writeFailure !== undefined && closeFailure !== undefined)
-					throw new AggregateError([writeFailure, closeFailure], "startup prompt write failed");
-				throw writeFailure ?? closeFailure;
-			}
+			if (writeFailure !== undefined && closeFailure !== undefined)
+				throw new AggregateError([writeFailure, closeFailure], "startup prompt write failed");
+			if (writeFailure !== undefined || closeFailure !== undefined) throw writeFailure ?? closeFailure;
 			return ref;
 		},
 		spawnCreate: daemonSpawnCreate(env),
