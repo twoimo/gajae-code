@@ -339,28 +339,39 @@ where
 		return send_lifecycle(write, &err).await.is_ok();
 	}
 
-	if let Some(id) = msg.request_id() {
-		let collision = {
-			let mut routes = state.routes.lock();
-			if routes.contains_key(id) {
-				true
-			} else {
-				routes.insert(id.to_owned(), RequestRoute { connection_id, tx: route_tx.clone() });
-				false
-			}
-		};
-		if collision {
-			let err = LifecycleServerMessage::SessionLifecycleError(SessionLifecycleError {
-				request_id: id.to_owned(),
-				status:     LifecycleStatus::Error,
-				reason:     LifecycleErrorReason::DuplicateConflict,
-				message:    "lifecycle request id is already in use".to_owned(),
-				candidates: Vec::new(),
-			});
-			return send_lifecycle(write, &err).await.is_ok();
-		}
-		owned.insert(id.to_owned());
+	let Some(id) = msg.request_id() else {
+		return true;
+	};
+	if id.is_empty() {
+		let err = LifecycleServerMessage::SessionLifecycleError(SessionLifecycleError {
+			request_id: String::new(),
+			status:     LifecycleStatus::Error,
+			reason:     LifecycleErrorReason::InvalidTarget,
+			message:    "lifecycle request id must not be empty".to_owned(),
+			candidates: Vec::new(),
+		});
+		return send_lifecycle(write, &err).await.is_ok();
 	}
+	let collision = {
+		let mut routes = state.routes.lock();
+		if routes.contains_key(id) {
+			true
+		} else {
+			routes.insert(id.to_owned(), RequestRoute { connection_id, tx: route_tx.clone() });
+			false
+		}
+	};
+	if collision {
+		let err = LifecycleServerMessage::SessionLifecycleError(SessionLifecycleError {
+			request_id: id.to_owned(),
+			status:     LifecycleStatus::Error,
+			reason:     LifecycleErrorReason::DuplicateConflict,
+			message:    "lifecycle request id is already in use".to_owned(),
+			candidates: Vec::new(),
+		});
+		return send_lifecycle(write, &err).await.is_ok();
+	}
+	owned.insert(id.to_owned());
 	state.lifecycle_tx.send(msg).is_ok()
 }
 
@@ -527,6 +538,29 @@ mod tests {
 		}
 		// And nothing was forwarded to the host.
 		assert!(rx.try_recv().is_err(), "unauthorized frame must not be forwarded to the host");
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn empty_request_id_is_rejected_without_forwarding() {
+		let handle = start_control(ControlServerConfig::new("control-token", "daemon-1"))
+			.await
+			.expect("start");
+		let mut rx = handle.take_lifecycle_receiver().expect("receiver");
+		let url = format!("ws://{}/?token=control-token", handle.addr());
+		let (mut ws, _) = connect_async(url).await.expect("connect");
+
+		ws.send(Message::Text(close_frame("", "control-token")))
+			.await
+			.expect("send");
+		match next_lifecycle(&mut ws).await {
+			LifecycleServerMessage::SessionLifecycleError(error) => {
+				assert!(error.request_id.is_empty());
+				assert_eq!(error.reason, LifecycleErrorReason::InvalidTarget);
+			},
+			other => panic!("expected invalid target error, got {other:?}"),
+		}
+		assert!(rx.try_recv().is_err(), "empty request id must not be forwarded to the host");
 		handle.stop();
 	}
 
