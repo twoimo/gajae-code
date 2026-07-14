@@ -1269,17 +1269,12 @@ class StartupPromptWriteError extends AggregateError {
 }
 
 function closeStartupPromptDescriptor(fd: number): unknown | undefined {
-	let lastFailure: unknown;
-	for (let attempt = 0; attempt < 3; attempt += 1) {
-		try {
-			fs.closeSync(fd);
-			return undefined;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EBADF") return undefined;
-			lastFailure = error;
-		}
+	try {
+		fs.closeSync(fd);
+		return undefined;
+	} catch (error) {
+		return error;
 	}
-	return lastFailure;
 }
 
 function zeroizeStartupPrompt(fd: number): unknown | undefined {
@@ -1319,7 +1314,7 @@ export function buildOrchestratorDeps(input: {
 		audit: fileAudit(path.join(input.agentNotificationsDir, "telegram-lifecycle-audit.jsonl")),
 		isPsmuxProvider: () => resolveGjcTmuxBinary({ env }).isPsmux,
 		allowCreate: createRateLimiter(3, 10 * 60 * 1000),
-		writeStartupPrompt: async (requestId, prompt) => {
+		writeStartupPrompt: async (requestId, prompt, persistRef) => {
 			if (prompt === undefined) return undefined;
 			const requestRef = crypto.createHash("sha256").update(requestId, "utf8").digest("hex");
 			fs.mkdirSync(startupPromptNamespace, { recursive: true });
@@ -1361,6 +1356,13 @@ export function buildOrchestratorDeps(input: {
 				throw error;
 			}
 			if (cleanupFd === undefined) throw new Error("startup_prompt_cleanup_handle_missing");
+			try {
+				await persistRef(ref);
+			} catch (error) {
+				closeStartupPromptDescriptor(fd);
+				closeStartupPromptDescriptor(cleanupFd);
+				throw error;
+			}
 			const failures: unknown[] = [];
 			try {
 				const encoded = Buffer.from(prompt, "utf8");

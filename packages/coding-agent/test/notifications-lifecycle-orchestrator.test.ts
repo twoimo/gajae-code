@@ -774,16 +774,18 @@ describe("lifecycle orchestrator", () => {
 		expect(nonForced).toMatchObject({ status: "error", reason: "invalid_target" });
 		expect([providers, reads, resumes, closes]).toEqual([3, 0, 0, 0]);
 	});
-	it("persists startup prompt recovery authority from a failed writer", async () => {
+	it("durably persists startup prompt recovery authority before writer side effects", async () => {
+		let persistedBeforeFailure = false;
 		const { deps: d, store } = deps({
-			writeStartupPrompt: async () => {
-				throw Object.assign(new Error("zeroization failed"), {
-					startupPromptRef: "/notifications/startup-prompt-recovery",
-				});
+			writeStartupPrompt: async (_requestId, _prompt, persistRef) => {
+				await persistRef("/notifications/startup-prompt-recovery");
+				persistedBeforeFailure = true;
+				throw new Error("simulated process-boundary failure");
 			},
 		});
 		const outcome = await handleLifecycleRequest(createFrame({ startupPromptRef: "SECRET" }), d);
 		expect(outcome).toMatchObject({ status: "error", reason: "terminal_uncertain" });
+		expect(persistedBeforeFailure).toBe(true);
 		const doc = await store.read();
 		expect(Object.values(doc.entries)).toHaveLength(1);
 		expect(Object.values(doc.entries)[0]?.startupPromptRef).toBe("/notifications/startup-prompt-recovery");

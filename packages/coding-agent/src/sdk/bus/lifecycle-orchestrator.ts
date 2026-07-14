@@ -101,8 +101,12 @@ export interface OrchestratorDeps {
 	isPsmuxProvider: () => boolean;
 	/** Per-chat create rate limiter: returns true when allowed. */
 	allowCreate: (chatId: string, nowMs: number) => boolean;
-	/** Persist the once-consumed 0600 startup-prompt file; returns its ref. */
-	writeStartupPrompt: (requestId: string, prompt: string | undefined) => Promise<string | undefined>;
+	/** Persist the once-consumed 0600 startup-prompt file after durably recording its ref. */
+	writeStartupPrompt: (
+		requestId: string,
+		prompt: string | undefined,
+		persistRef: (ref: string) => Promise<void>,
+	) => Promise<string | undefined>;
 	/** Spawn a session for a create/cold-restart. */
 	spawnCreate: (
 		frame: SessionCreateFrame,
@@ -355,7 +359,10 @@ export async function handleLifecycleRequest(
 
 	try {
 		if (frame.type === "session_create") {
-			startupPromptRef = await deps.writeStartupPrompt(frame.requestId, frame.startupPromptRef);
+			startupPromptRef = await deps.writeStartupPrompt(frame.requestId, frame.startupPromptRef, async ref => {
+				entry.startupPromptRef = ref;
+				await deps.store.write(doc);
+			});
 			entry.startupPromptRef = startupPromptRef;
 			await deps.audit({ ...baseAudit, event: "spawn_started" });
 			const result = await deps.spawnCreate(frame, {

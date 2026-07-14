@@ -25,6 +25,7 @@ import { Settings } from "../src/config/settings";
 import { acquireDaemonOwnership, TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
 
 const PAIRED = "42";
+const persistPromptRef = async (_ref: string): Promise<void> => {};
 
 function tmuxStatus(name: string, sessionId: string) {
 	return {
@@ -143,7 +144,7 @@ it("maps hostile and normalization-distinct request ids to fixed safe prompt bas
 	try {
 		const refs = await Promise.all(
 			vectors.map(async ([requestId, digest]) => {
-				const ref = await deps.writeStartupPrompt(requestId, "prompt");
+				const ref = await deps.writeStartupPrompt(requestId, "prompt", persistPromptRef);
 				expect(ref).toBe(path.join(path.resolve(root), `startup-prompt-${digest}-fixed-nonce`));
 				expect(path.dirname(ref!)).toBe(path.resolve(root));
 				expect(fs.readFileSync(ref!, "utf8")).toBe("prompt");
@@ -174,7 +175,7 @@ it.skipIf(process.platform === "win32")(
 			startupPromptNonce: () => "fixed-nonce",
 		});
 		try {
-			await expect(deps.writeStartupPrompt("symlink-repro", "PWNED")).rejects.toThrow();
+			await expect(deps.writeStartupPrompt("symlink-repro", "PWNED", persistPromptRef)).rejects.toThrow();
 			expect(fs.lstatSync(ref).isSymbolicLink()).toBe(true);
 			expect(fs.readFileSync(victim, "utf8")).toBe("SAFE");
 		} finally {
@@ -196,7 +197,7 @@ it("retries startup prompt nonce collisions and fails closed after bounded exhau
 			auditRedactionKey: new Uint8Array(32).fill(7),
 			startupPromptNonce: () => nonces.shift() ?? "unexpected",
 		});
-		const ref = await retrying.writeStartupPrompt("symlink-repro", "PROMPT");
+		const ref = await retrying.writeStartupPrompt("symlink-repro", "PROMPT", persistPromptRef);
 		expect(ref).toBe(path.join(root, `startup-prompt-${digest}-fresh`));
 		expect(fs.readFileSync(ref!, "utf8")).toBe("PROMPT");
 		expect(fs.readFileSync(collision, "utf8")).toBe("EXISTING");
@@ -207,7 +208,7 @@ it("retries startup prompt nonce collisions and fails closed after bounded exhau
 			auditRedactionKey: new Uint8Array(32).fill(7),
 			startupPromptNonce: () => "collision",
 		});
-		await expect(exhausted.writeStartupPrompt("symlink-repro", "IGNORED")).rejects.toThrow(
+		await expect(exhausted.writeStartupPrompt("symlink-repro", "IGNORED", persistPromptRef)).rejects.toThrow(
 			"startup_prompt_nonce_collisions_exhausted",
 		);
 		expect(fs.readFileSync(collision, "utf8")).toBe("EXISTING");
@@ -235,7 +236,9 @@ it.skipIf(process.platform === "win32")(
 			startupPromptNonce: () => "fixed-nonce",
 		});
 		try {
-			await expect(deps.writeStartupPrompt("symlink-repro", "PROMPT")).rejects.toThrow("injected write failure");
+			await expect(deps.writeStartupPrompt("symlink-repro", "PROMPT", persistPromptRef)).rejects.toThrow(
+				"injected write failure",
+			);
 			expect(fs.readFileSync(ref, "utf8")).toBe("ATTACKER");
 			expect(fs.readFileSync(moved, "utf8")).toBe("");
 		} finally {
@@ -272,7 +275,7 @@ it("zeroizes a partially written startup prompt through its retained file handle
 		startupPromptNonce: () => "fixed-nonce",
 	});
 	try {
-		await expect(deps.writeStartupPrompt("partial-write-repro", "SECRET")).rejects.toThrow(
+		await expect(deps.writeStartupPrompt("partial-write-repro", "SECRET", persistPromptRef)).rejects.toThrow(
 			"injected partial write failure",
 		);
 		const promptFiles = fs.readdirSync(root).filter(name => name.startsWith("startup-prompt-"));
@@ -299,7 +302,7 @@ it("zeroizes startup prompts after fsync or close failure", async () => {
 		}) as typeof fs.fsyncSync);
 		const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
 			closeCalls += 1;
-			if (failurePoint === "close" && closeCalls <= 3) {
+			if (failurePoint === "close" && closeCalls === 1) {
 				unclosedFd = fd;
 				throw new Error("injected close failure");
 			}
@@ -312,7 +315,7 @@ it("zeroizes startup prompts after fsync or close failure", async () => {
 			startupPromptNonce: () => "fixed-nonce",
 		});
 		try {
-			await expect(deps.writeStartupPrompt(`${failurePoint}-repro`, "SECRET")).rejects.toThrow(
+			await expect(deps.writeStartupPrompt(`${failurePoint}-repro`, "SECRET", persistPromptRef)).rejects.toThrow(
 				`injected ${failurePoint} failure`,
 			);
 			const promptFiles = fs.readdirSync(root).filter(name => name.startsWith("startup-prompt-"));
@@ -360,7 +363,7 @@ it("returns durable prompt authority when zeroization exhausts retries", async (
 	let failedRef: string | undefined;
 	try {
 		try {
-			await deps.writeStartupPrompt("zeroize-failure-repro", "SECRET");
+			await deps.writeStartupPrompt("zeroize-failure-repro", "SECRET", persistPromptRef);
 			throw new Error("expected startup prompt write to fail");
 		} catch (error) {
 			failedRef =
@@ -382,7 +385,7 @@ it("returns durable prompt authority when zeroization exhausts retries", async (
 	}
 });
 
-it("reports and retries cleanup-descriptor close failures instead of leaking silently", async () => {
+it("reports cleanup-descriptor close failures instead of leaking silently", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-cleanup-close-"));
 	const originalClose = fs.closeSync;
 	let closeCalls = 0;
@@ -402,15 +405,54 @@ it("reports and retries cleanup-descriptor close failures instead of leaking sil
 		startupPromptNonce: () => "fixed-nonce",
 	});
 	try {
-		await expect(deps.writeStartupPrompt("cleanup-close-repro", "SECRET")).rejects.toThrow(
+		await expect(deps.writeStartupPrompt("cleanup-close-repro", "SECRET", persistPromptRef)).rejects.toThrow(
 			"injected cleanup close failure",
 		);
-		expect(closeCalls).toBe(4);
+		expect(closeCalls).toBe(2);
 		expect(leakedFd).toBeDefined();
 		expect(() => fs.fstatSync(leakedFd!)).not.toThrow();
 	} finally {
 		closeSpy.mockRestore();
 		if (leakedFd !== undefined) originalClose(leakedFd);
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("never retries an ambiguously successful descriptor close", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-ambiguous-close-"));
+	const victim = path.join(root, "victim.txt");
+	const originalClose = fs.closeSync;
+	let firstFd: number | undefined;
+	let victimFd: number | undefined;
+	let closeCalls = 0;
+	const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
+		closeCalls += 1;
+		if (closeCalls === 1) {
+			firstFd = fd;
+			originalClose(fd);
+			victimFd = fs.openSync(victim, "w");
+			const error = new Error("injected ambiguous close") as NodeJS.ErrnoException;
+			error.code = "EINTR";
+			throw error;
+		}
+		return originalClose(fd);
+	}) as typeof fs.closeSync);
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
+	});
+	try {
+		await expect(deps.writeStartupPrompt("ambiguous-close-repro", "SECRET", persistPromptRef)).rejects.toThrow(
+			"injected ambiguous close",
+		);
+		expect(victimFd).toBe(firstFd);
+		expect(() => fs.fstatSync(victimFd!)).not.toThrow();
+		expect(closeCalls).toBe(2);
+	} finally {
+		closeSpy.mockRestore();
+		if (victimFd !== undefined) originalClose(victimFd);
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
