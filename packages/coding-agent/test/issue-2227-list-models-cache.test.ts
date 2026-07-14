@@ -29,6 +29,8 @@ describe("--list-models cache refresh (issue #2227)", () => {
 	test("uses online-if-uncached exactly once through the public root command", async () => {
 		using tempDir = TempDir.createSync("@gjc-issue-2227-");
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const registerProviderSpy = vi.spyOn(ModelRegistry.prototype, "registerProvider");
 		const refreshSpy = vi.spyOn(ModelRegistry.prototype, "refresh").mockResolvedValue(undefined);
 		const stdout: string[] = [];
 		const stderr: string[] = [];
@@ -47,7 +49,7 @@ describe("--list-models cache refresh (issue #2227)", () => {
 
 		try {
 			await expect(
-				runRootCommand(rootArgs("grok-composer-2.5-fast"), [], {
+				runRootCommand(rootArgs("claude-sonnet-4-5"), [], {
 					discoverAuthStorage: async () => authStorage,
 					settings: Settings.isolated({ "marketplace.autoUpdate": "off" }),
 					initTheme: async () => {},
@@ -56,16 +58,18 @@ describe("--list-models cache refresh (issue #2227)", () => {
 
 			expect(refreshSpy).toHaveBeenCalledTimes(1);
 			expect(refreshSpy).toHaveBeenCalledWith("online-if-uncached");
+			expect(registerProviderSpy).toHaveBeenCalledWith("grok-build", expect.any(Object), "bundled:grok-build");
 			expect(exitSpy).toHaveBeenCalledTimes(1);
 			expect(exitSpy).toHaveBeenCalledWith(0);
 			expect(stdout.join("")).toContain("Provider models");
-			expect(stdout.join("")).toContain("grok-composer-2.5-fast");
+			expect(stdout.join("")).toContain("claude-sonnet-4-5");
 			expect(stderr.join("")).toBe("");
 		} finally {
 			stdoutSpy.mockRestore();
 			stderrSpy.mockRestore();
 			exitSpy.mockRestore();
 			refreshSpy.mockRestore();
+			registerProviderSpy.mockRestore();
 			authStorage.close();
 		}
 	});
