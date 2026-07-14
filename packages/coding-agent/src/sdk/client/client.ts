@@ -310,7 +310,11 @@ export class SdkClient {
 	async #openWithRetry(cycle: Cycle): Promise<Incarnation> {
 		let lastError: unknown;
 		for (let attempt = 0; attempt <= this.#reconnectAttempts; attempt++) {
-			this.#throwIfDeadlineElapsed();
+			if (this.#deadline !== undefined && Date.now() >= this.#deadline) {
+				const error = this.#deadlineError();
+				this.#completeCycle(cycle, error);
+				throw error;
+			}
 			if (!this.#isOpening(cycle)) throw new SdkClientError("connection_closed", "SDK client closed");
 			try {
 				const incarnation = await this.#open(cycle);
@@ -347,12 +351,28 @@ export class SdkClient {
 			}
 		}
 		if (!this.#isOpening(cycle)) throw new SdkClientError("connection_closed", "SDK client closed");
-		if (this.#deadline !== undefined && Date.now() >= this.#deadline) throw this.#deadlineError();
+		if (this.#deadline !== undefined && Date.now() >= this.#deadline) {
+			const error = this.#deadlineError();
+			this.#completeCycle(cycle, error);
+			throw error;
+		}
 		cycle.phase = "complete";
 		if (this.#opening === cycle) this.#opening = null;
 		const error = new SdkClientError("reconnect_exhausted", "SDK WebSocket reconnect attempts exhausted", lastError);
 		for (const handler of this.#reconnectFailedHandlers) handler(error);
 		throw error;
+	}
+
+	#completeCycle(cycle: Cycle, error: SdkClientError): void {
+		if (cycle.backoffTimer) clearTimeout(cycle.backoffTimer);
+		cycle.rejectBackoff?.(error);
+		cycle.rejectBackoff = undefined;
+		cycle.backoffTimer = undefined;
+		const candidate = cycle.candidate;
+		if (candidate) this.#retire(candidate, error, true);
+		cycle.candidate = null;
+		cycle.phase = "complete";
+		if (this.#opening === cycle) this.#opening = null;
 	}
 
 	#open(cycle: Cycle): Promise<Incarnation> {
@@ -383,10 +403,10 @@ export class SdkClient {
 					if (!this.#isCandidate(cycle, incarnation) || incarnation.phase !== "opening") return;
 					if (incarnation.openTimer) clearTimeout(incarnation.openTimer);
 					incarnation.phase = "hello";
-					this.#beginHello(incarnation);
 					incarnation.resolveOpen?.();
 					incarnation.resolveOpen = undefined;
 					incarnation.rejectOpen = undefined;
+					this.#beginHello(incarnation);
 				}) as EventListener,
 				true,
 			);

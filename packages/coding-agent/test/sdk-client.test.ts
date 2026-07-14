@@ -328,14 +328,21 @@ class FakeWebSocket {
 }
 
 type FakeTimerHandle = { readonly id: number; unref: () => FakeTimerHandle };
+type FakeTimerTask = { readonly callback: () => void; readonly due: number; readonly order: number };
 
 class FakeClock {
 	#nextId = 1;
-	readonly tasks = new Map<FakeTimerHandle, () => void>();
+	#nextOrder = 1;
+	now = 1_000;
+	readonly tasks = new Map<FakeTimerHandle, FakeTimerTask>();
 
-	setTimeout(callback: (...args: unknown[]) => void, _delay?: number, ...args: unknown[]): FakeTimerHandle {
+	setTimeout(callback: (...args: unknown[]) => void, delay = 0, ...args: unknown[]): FakeTimerHandle {
 		const handle: FakeTimerHandle = { id: this.#nextId++, unref: () => handle };
-		this.tasks.set(handle, () => callback(...args));
+		this.tasks.set(handle, {
+			callback: () => callback(...args),
+			due: this.now + Math.max(0, delay),
+			order: this.#nextOrder++,
+		});
 		return handle;
 	}
 
@@ -343,17 +350,41 @@ class FakeClock {
 		this.tasks.delete(handle);
 	}
 
+	elapse(milliseconds: number): void {
+		this.now += milliseconds;
+	}
+
+	advanceBy(milliseconds: number): void {
+		this.advanceTo(this.now + milliseconds);
+	}
+
+	advanceTo(target: number): void {
+		if (target < this.now) throw new Error("Fake clock cannot move backwards");
+		for (;;) {
+			const entry = [...this.tasks.entries()]
+				.filter(([, task]) => task.due <= target)
+				.sort((left, right) => left[1].due - right[1].due || left[1].order - right[1].order)[0];
+			if (!entry) break;
+			this.now = entry[1].due;
+			this.tasks.delete(entry[0]);
+			entry[1].callback();
+		}
+		this.now = target;
+	}
+
 	runNext(): void {
-		const entry = this.tasks.entries().next().value as [FakeTimerHandle, () => void] | undefined;
+		const entry = [...this.tasks.entries()].sort(
+			(left, right) => left[1].due - right[1].due || left[1].order - right[1].order,
+		)[0];
 		if (!entry) throw new Error("No fake timer is pending");
-		this.tasks.delete(entry[0]);
-		entry[1]();
+		this.advanceTo(entry[1].due);
 	}
 }
 
 async function withFakeTimers(run: (clock: FakeClock) => Promise<void>): Promise<void> {
 	const setTimeoutDescriptor = Object.getOwnPropertyDescriptor(globalThis, "setTimeout");
 	const clearTimeoutDescriptor = Object.getOwnPropertyDescriptor(globalThis, "clearTimeout");
+	const dateNowDescriptor = Object.getOwnPropertyDescriptor(Date, "now");
 	const clock = new FakeClock();
 	Object.defineProperty(globalThis, "setTimeout", {
 		configurable: true,
@@ -363,11 +394,13 @@ async function withFakeTimers(run: (clock: FakeClock) => Promise<void>): Promise
 		configurable: true,
 		value: clock.clearTimeout.bind(clock) as unknown as typeof clearTimeout,
 	});
+	Object.defineProperty(Date, "now", { configurable: true, value: () => clock.now });
 	try {
 		await run(clock);
 	} finally {
 		if (setTimeoutDescriptor) Object.defineProperty(globalThis, "setTimeout", setTimeoutDescriptor);
 		if (clearTimeoutDescriptor) Object.defineProperty(globalThis, "clearTimeout", clearTimeoutDescriptor);
+		if (dateNowDescriptor) Object.defineProperty(Date, "now", dateNowDescriptor);
 	}
 }
 
@@ -487,12 +520,28 @@ test("SdkClient deterministically owns open, hello, request, and backoff timers"
 			requestSocket.open();
 			requestSocket.message({ type: "hello", connectionId: "request-timeout" });
 			await requestConnected;
-			const requestTimeout = requestTimeoutClient.control("timeout", {}, { timeoutMs: 50 });
-			await flush();
-			clock.runNext();
-			await expect(requestTimeout).rejects.toMatchObject({ code: "timeout" });
-			await requestTimeoutClient.close();
 
+			const beforeDeadline = requestTimeoutClient.control("before-deadline", {}, { timeoutMs: 50 });
+			await flush();
+			const beforeDeadlineId = (JSON.parse(requestSocket.sent[0]) as { id: string }).id;
+			expect([...clock.tasks.values()].map(task => task.due - clock.now)).toEqual([50]);
+			clock.setTimeout(
+				() => requestSocket.message({ type: "control_response", id: beforeDeadlineId, ok: true }),
+				49,
+			);
+			clock.advanceBy(49);
+			await expect(beforeDeadline).resolves.toMatchObject({ ok: true });
+			expect(clock.tasks.size).toBe(0);
+
+			const atDeadline = requestTimeoutClient.control("at-deadline", {}, { timeoutMs: 50 });
+			await flush();
+			const atDeadlineId = (JSON.parse(requestSocket.sent[1]) as { id: string }).id;
+			expect([...clock.tasks.values()].map(task => task.due - clock.now)).toEqual([50]);
+			clock.advanceBy(50);
+			await expect(atDeadline).rejects.toMatchObject({ code: "timeout" });
+			requestSocket.message({ type: "control_response", id: atDeadlineId, ok: true });
+			expect(clock.tasks.size).toBe(0);
+			await requestTimeoutClient.close();
 			const backoffClient = new SdkClient("ws://fake", "token", {
 				reconnectAttempts: 1,
 				reconnectBackoffMs: 100,
@@ -507,6 +556,28 @@ test("SdkClient deterministically owns open, hello, request, and backoff timers"
 			replacement.message({ type: "hello", connectionId: "after-backoff" });
 			await backoff;
 			await backoffClient.close();
+		});
+	});
+});
+
+test("SdkClient settles an open-to-hello deadline crossover and releases the retry cycle", async () => {
+	await withFakeWebSockets(async () => {
+		await withFakeTimers(async clock => {
+			const client = new SdkClient("ws://fake", "token", {
+				deadline: clock.now + 10,
+				reconnectAttempts: 0,
+			});
+			const connecting = client.connect();
+			const socket = FakeWebSocket.instances[0];
+			clock.elapse(10);
+			socket.open();
+			await expect(connecting).rejects.toMatchObject({ code: "timeout", message: "SDK client deadline elapsed." });
+			expect(clock.tasks.size).toBe(0);
+			expect(socket.closeCalls).toHaveLength(1);
+			expect([...socket.listeners.values()].every(listeners => listeners.size === 0)).toBe(true);
+			socket.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "hello" }) }));
+			await expect(client.connect()).rejects.toMatchObject({ code: "timeout" });
+			await client.close();
 		});
 	});
 });
