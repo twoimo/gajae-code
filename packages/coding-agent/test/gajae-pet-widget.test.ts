@@ -3,6 +3,7 @@ import {
 	__animationSchedulerTestHooks,
 	Container,
 	getCellDimensions,
+	type PostRenderEmission,
 	setCellDimensions,
 	type TUI,
 } from "@gajae-code/tui";
@@ -23,22 +24,20 @@ function makeStubs(columns = 80, rows = 30) {
 		},
 		invalidate() {},
 	} as unknown as CustomEditor;
-	let emitter: (() => string | null) | undefined;
+	let emitter: (() => PostRenderEmission | null) | undefined;
+	const emitOverlay = (): string | null => {
+		const emission = emitter?.();
+		emission?.onDelivered?.();
+		return emission?.payload ?? null;
+	};
+
+	const cleanupParticipants = new Set<{
+		flush(): boolean;
+		pendingDiagnostic(): string | null;
+	}>();
+
 	let available = true;
 	let failWrites = false;
-	const pendingTerminalCleanup: Array<{ payload: string; onDelivered?: () => void }> = [];
-	const flushTerminalCleanup = () => {
-		while (available && pendingTerminalCleanup.length > 0) {
-			const pending = pendingTerminalCleanup[0];
-			try {
-				terminal.write(pending.payload);
-			} catch {
-				return;
-			}
-			pendingTerminalCleanup.shift();
-			pending.onDelivered?.();
-		}
-	};
 	const terminal = {
 		columns,
 		rows,
@@ -49,12 +48,17 @@ function makeStubs(columns = 80, rows = 30) {
 	};
 	const ui = {
 		requestRender: () => {},
-		setPostRenderEmitter: (fn?: () => string | null) => {
+		setPostRenderEmitter: (fn?: () => PostRenderEmission | null) => {
 			emitter = fn;
 		},
-		queueTerminalCleanup: (payload: string, onDelivered?: () => void) => {
-			pendingTerminalCleanup.push({ payload, onDelivered });
-			flushTerminalCleanup();
+		registerTerminalCleanup: (participant: { flush(): boolean; pendingDiagnostic(): string | null }) => {
+			cleanupParticipants.add(participant);
+			return () => cleanupParticipants.delete(participant);
+		},
+		writeTerminalCleanup: (data: string) => {
+			if (!available || failWrites) return false;
+			written.push(data);
+			return true;
 		},
 		get terminalAvailable() {
 			return available;
@@ -70,7 +74,19 @@ function makeStubs(columns = 80, rows = 30) {
 		editorContainer,
 		floorContainer,
 		written,
-		getEmitter: () => emitter,
+		getEmitter: () => (emitter ? emitOverlay : undefined),
+		getRawEmitter: () => emitter,
+		deliverPostRender: () => {
+			const emission = emitter?.();
+			if (!emission || !available) return false;
+			try {
+				terminal.write(emission.payload);
+			} catch {
+				return false;
+			}
+			emission.onDelivered?.();
+			return true;
+		},
 		getRenderedWidth: () => renderedWidth,
 		setTerminalSize: (nextColumns: number, nextRows: number) => {
 			terminal.columns = nextColumns;
@@ -82,8 +98,11 @@ function makeStubs(columns = 80, rows = 30) {
 		setWriteFailure: (value: boolean) => {
 			failWrites = value;
 		},
-		flushTerminalCleanup,
-		getPendingTerminalCleanupCount: () => pendingTerminalCleanup.length,
+		flushCleanup: () => {
+			for (const participant of cleanupParticipants) participant.flush();
+		},
+		cleanupDiagnostics: () =>
+			[...cleanupParticipants].map(participant => participant.pendingDiagnostic()).filter(Boolean),
 	};
 }
 
@@ -196,7 +215,7 @@ describe("GajaePetWidget", () => {
 	});
 
 	it("retains cleanup authority when the render write that carried it fails, and dispose retries", () => {
-		const { widget, written, getEmitter, setTerminalSize, setTerminalAvailable } = makeWidget();
+		const { widget, written, deliverPostRender, getEmitter, setTerminalSize, setTerminalAvailable } = makeWidget();
 		widget.setMode("red");
 		expect(getEmitter()?.()).toContain("\x1bP0;1;0q");
 		setTerminalSize(12, 30);
@@ -204,9 +223,8 @@ describe("GajaePetWidget", () => {
 		// The emitter hands the cleanup payload to the TUI, but the enclosing
 		// render write fails (availability drops), so delivery is never
 		// acknowledged and the authority must survive.
-		expect(getEmitter()?.()).toContain("\x1b[28;76H\x1b[4X");
 		setTerminalAvailable(false);
-		expect(getEmitter()?.()).toBeNull();
+		expect(deliverPostRender()).toBe(false);
 
 		written.length = 0;
 		setTerminalAvailable(true);
@@ -216,21 +234,20 @@ describe("GajaePetWidget", () => {
 	});
 
 	it("re-emits the retained cleanup through the emitter once the terminal recovers", () => {
-		const { widget, getEmitter, setTerminalSize, setTerminalAvailable } = makeWidget();
+		const { widget, deliverPostRender, getEmitter, setTerminalSize, setTerminalAvailable } = makeWidget();
 		try {
 			widget.setMode("red");
 			expect(getEmitter()?.()).toContain("\x1bP0;1;0q");
 			setTerminalSize(12, 30);
-			expect(getEmitter()?.()).toContain("\x1b[28;76H\x1b[4X");
 
 			// Frame write fails; authority is retained.
 			setTerminalAvailable(false);
-			expect(getEmitter()?.()).toBeNull();
+			expect(deliverPostRender()).toBe(false);
 
 			// Recovered terminal: the emitter carries the erase again, and the
 			// following pass acknowledges the successful delivery.
 			setTerminalAvailable(true);
-			expect(getEmitter()?.()).toContain("\x1b[28;76H\x1b[4X");
+			expect(deliverPostRender()).toBe(true);
 			expect(getEmitter()?.()).toBeNull();
 		} finally {
 			widget.dispose();
@@ -238,20 +255,21 @@ describe("GajaePetWidget", () => {
 	});
 
 	it("retries Sixel cleanup that fails during final disposal", () => {
-		const { flushTerminalCleanup, getEmitter, getPendingTerminalCleanupCount, setWriteFailure, widget, written } =
-			makeWidget();
+		const { cleanupDiagnostics, flushCleanup, getEmitter, setWriteFailure, widget, written } = makeWidget();
 		widget.setMode("red");
 		expect(getEmitter()?.()).toContain("\x1bP0;1;0q");
 		written.length = 0;
 
 		setWriteFailure(true);
 		widget.dispose();
-		expect(getPendingTerminalCleanupCount()).toBe(1);
+		expect(cleanupDiagnostics()).toEqual([
+			"Undeliverable Gajae Pet cleanup at terminal shutdown (Kitty images: 0, Sixel footprints: 1).",
+		]);
 		expect(written).toHaveLength(0);
 
 		setWriteFailure(false);
-		flushTerminalCleanup();
-		expect(getPendingTerminalCleanupCount()).toBe(0);
+		flushCleanup();
+		expect(cleanupDiagnostics()).toEqual([]);
 		expect(written.some(chunk => chunk.includes("\x1b[28;76H\x1b[4X"))).toBe(true);
 	});
 
@@ -286,15 +304,17 @@ describe("GajaePetWidget", () => {
 		expect(stubs.getEmitter()?.()).toContain("i=101");
 		stubs.setWriteFailure(true);
 		first.dispose();
-		expect(stubs.getPendingTerminalCleanupCount()).toBe(1);
+		expect(stubs.cleanupDiagnostics()).toEqual([
+			"Undeliverable Gajae Pet cleanup at terminal shutdown (Kitty images: 1, Sixel footprints: 0).",
+		]);
 
 		const second = makeKitty();
 		second.setMode("red");
 		expect(stubs.getEmitter()?.()).toContain("i=202");
 
 		stubs.setWriteFailure(false);
-		stubs.flushTerminalCleanup();
-		expect(stubs.getPendingTerminalCleanupCount()).toBe(0);
+		stubs.flushCleanup();
+		expect(stubs.cleanupDiagnostics()).toEqual([]);
 		expect(stubs.written.some(chunk => chunk.includes("a=d,d=I,i=101"))).toBe(true);
 
 		const third = makeKitty();
@@ -438,6 +458,275 @@ describe("GajaePetWidget", () => {
 		widget.dispose();
 
 		expect(written.some(chunk => chunk.includes("\x1b[28;76H\x1b[4X"))).toBe(true);
+	});
+
+	it("flushes queued Kitty and Sixel cleanup records together without protocol conflation", () => {
+		const stubs = makeStubs();
+		const sixel = new GajaePetWidget({
+			ui: stubs.ui,
+			editor: stubs.editor,
+			editorContainer: stubs.editorContainer,
+			floorContainer: stubs.floorContainer,
+			isWorking: () => false,
+			getComposerBottomOffset: () => 0,
+			forcePixelProtocol: "sixel",
+			autoFlexGapMs: null,
+		});
+		sixel.setMode("red");
+		expect(stubs.deliverPostRender()).toBe(true);
+
+		stubs.setWriteFailure(true);
+		const kitty = new GajaePetWidget({
+			ui: stubs.ui,
+			editor: stubs.editor,
+			editorContainer: stubs.editorContainer,
+			floorContainer: stubs.floorContainer,
+			isWorking: () => false,
+			getComposerBottomOffset: () => 0,
+			forcePixelProtocol: "kitty",
+			autoFlexGapMs: null,
+		});
+		kitty.setMode("red");
+		stubs.setWriteFailure(false);
+		const kittyPayload = stubs.getRawEmitter()?.()?.payload;
+		const kittyId = kittyPayload?.match(/i=(\d+)/)?.[1];
+		expect(kittyId).toBeDefined();
+		expect(stubs.deliverPostRender()).toBe(true);
+
+		stubs.setWriteFailure(true);
+		kitty.setMode("off");
+		stubs.setWriteFailure(false);
+		stubs.written.length = 0;
+		kitty.dispose();
+
+		const cleanup = stubs.written.join("");
+		expect(cleanup).toContain(`\x1b_Ga=d,d=I,i=${kittyId},q=2\x1b\\`);
+		expect(cleanup).toContain("\x1b[28;76H\x1b[4X");
+
+		expect(cleanup).not.toContain("\x1b_Ga=d,d=I,i=undefined");
+		sixel.dispose();
+	});
+
+	it("retains failed final-dispose Kitty cleanup for diagnostics and a later retry", () => {
+		const { cleanupDiagnostics, deliverPostRender, getRawEmitter, setWriteFailure, widget, written } = makeWidget(
+			80,
+			30,
+			{ protocol: "kitty" },
+		);
+		widget.setMode("red");
+		expect(deliverPostRender()).toBe(true);
+		const imageId = getRawEmitter()?.()?.payload.match(/i=(\d+)/)?.[1];
+		expect(imageId).toBeDefined();
+
+		setWriteFailure(true);
+		widget.dispose();
+		expect(cleanupDiagnostics()).toEqual([
+			"Undeliverable Gajae Pet cleanup at terminal shutdown (Kitty images: 1, Sixel footprints: 0).",
+		]);
+
+		setWriteFailure(false);
+		written.length = 0;
+		widget.dispose();
+		expect(written.filter(chunk => chunk.includes(`a=d,d=I,i=${imageId}`))).toHaveLength(1);
+
+		expect(cleanupDiagnostics()).toEqual([]);
+	});
+
+	it("keeps a pending Kitty delete ID reserved until the coordinator delivers it", () => {
+		const imageIds = [101, 101, 202, 101];
+		vi.spyOn(crypto, "getRandomValues").mockImplementation(values => {
+			if (!values) throw new Error("Expected a typed array");
+			const ids = new Uint32Array(
+				values.buffer,
+				values.byteOffset,
+				values.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+			);
+			ids[0] = imageIds.shift() ?? 303;
+			return values;
+		});
+
+		const stubs = makeStubs();
+		const makeKitty = () =>
+			new GajaePetWidget({
+				ui: stubs.ui,
+				editor: stubs.editor,
+				editorContainer: stubs.editorContainer,
+				floorContainer: stubs.floorContainer,
+				isWorking: () => false,
+				getComposerBottomOffset: () => 0,
+				forcePixelProtocol: "kitty",
+				autoFlexGapMs: null,
+			});
+		const predecessor = makeKitty();
+		predecessor.setMode("red");
+		expect(stubs.deliverPostRender()).toBe(true);
+		stubs.setWriteFailure(true);
+		predecessor.dispose();
+
+		const successor = makeKitty();
+		successor.setMode("red");
+		expect(stubs.getRawEmitter()?.()?.payload).toContain("i=202");
+
+		stubs.setWriteFailure(false);
+		predecessor.dispose();
+		const afterCleanup = makeKitty();
+		afterCleanup.setMode("red");
+		expect(stubs.getRawEmitter()?.()?.payload).toContain("i=101");
+		successor.dispose();
+		afterCleanup.dispose();
+	});
+
+	it("keeps a Kitty ID reserved across a skin replacement until final disposal", () => {
+		const imageIds = [501, 501, 502, 501];
+		vi.spyOn(crypto, "getRandomValues").mockImplementation(values => {
+			if (!values) throw new Error("Expected a typed array");
+			const ids = new Uint32Array(
+				values.buffer,
+				values.byteOffset,
+				values.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+			);
+			ids[0] = imageIds.shift() ?? 503;
+			return values;
+		});
+		const stubs = makeStubs();
+		const makeKitty = () =>
+			new GajaePetWidget({
+				ui: stubs.ui,
+				editor: stubs.editor,
+				editorContainer: stubs.editorContainer,
+				floorContainer: stubs.floorContainer,
+				isWorking: () => false,
+				getComposerBottomOffset: () => 0,
+				forcePixelProtocol: "kitty",
+				autoFlexGapMs: null,
+			});
+		const owner = makeKitty();
+		owner.setMode("red");
+		expect(stubs.deliverPostRender()).toBe(true);
+		owner.setMode("blue");
+		const contender = makeKitty();
+		contender.setMode("red");
+		expect(stubs.getRawEmitter()?.()?.payload).toContain("i=502");
+
+		owner.dispose();
+		const released = makeKitty();
+		released.setMode("red");
+		expect(stubs.getRawEmitter()?.()?.payload).toContain("i=501");
+		contender.dispose();
+		released.dispose();
+	});
+
+	it("keeps a Kitty ID reserved across off and on until final disposal", () => {
+		const imageIds = [601, 601, 602, 601];
+		vi.spyOn(crypto, "getRandomValues").mockImplementation(values => {
+			if (!values) throw new Error("Expected a typed array");
+			const ids = new Uint32Array(
+				values.buffer,
+				values.byteOffset,
+				values.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+			);
+			ids[0] = imageIds.shift() ?? 603;
+			return values;
+		});
+		const stubs = makeStubs();
+		const makeKitty = () =>
+			new GajaePetWidget({
+				ui: stubs.ui,
+				editor: stubs.editor,
+				editorContainer: stubs.editorContainer,
+				floorContainer: stubs.floorContainer,
+				isWorking: () => false,
+				getComposerBottomOffset: () => 0,
+				forcePixelProtocol: "kitty",
+				autoFlexGapMs: null,
+			});
+		const owner = makeKitty();
+		owner.setMode("red");
+		expect(stubs.deliverPostRender()).toBe(true);
+		owner.setMode("off");
+		owner.setMode("red");
+		const contender = makeKitty();
+		contender.setMode("red");
+		expect(stubs.getRawEmitter()?.()?.payload).toContain("i=602");
+
+		owner.dispose();
+		const released = makeKitty();
+		released.setMode("red");
+		expect(stubs.getRawEmitter()?.()?.payload).toContain("i=601");
+		contender.dispose();
+		released.dispose();
+	});
+
+	it("acknowledges post-render cleanup only after the TUI delivers its frame", () => {
+		const { deliverPostRender, getRawEmitter, setTerminalSize, setWriteFailure, widget } = makeWidget();
+
+		try {
+			widget.setMode("red");
+			expect(deliverPostRender()).toBe(true);
+			setTerminalSize(12, 30);
+
+			const pending = getRawEmitter()?.();
+			expect(pending?.payload).toContain("\x1b[28;76H\x1b[4X");
+			setWriteFailure(true);
+			expect(deliverPostRender()).toBe(false);
+			expect(getRawEmitter()?.()?.payload).toContain("\x1b[28;76H\x1b[4X");
+
+			setWriteFailure(false);
+			expect(deliverPostRender()).toBe(true);
+			expect(getRawEmitter()?.()).toBeNull();
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("delivers final-dispose cleanup through the TUI coordinator when a successor installs after recovery", () => {
+		const stubs = makeStubs();
+		const first = new GajaePetWidget({
+			ui: stubs.ui,
+			editor: stubs.editor,
+			editorContainer: stubs.editorContainer,
+			floorContainer: stubs.floorContainer,
+			isWorking: () => false,
+			getComposerBottomOffset: () => 0,
+			forcePixelProtocol: "sixel",
+			autoFlexGapMs: null,
+		});
+		first.setMode("red");
+		expect(stubs.getEmitter()?.()).toContain("\x1bP0;1;0q");
+		stubs.setTerminalAvailable(false);
+		first.dispose();
+		stubs.setTerminalAvailable(true);
+		stubs.written.length = 0;
+
+		const successor = new GajaePetWidget({
+			ui: stubs.ui,
+			editor: stubs.editor,
+			editorContainer: stubs.editorContainer,
+			floorContainer: stubs.floorContainer,
+			isWorking: () => false,
+			getComposerBottomOffset: () => 0,
+			forcePixelProtocol: "sixel",
+			autoFlexGapMs: null,
+		});
+		try {
+			successor.setMode("blue");
+			const erase = stubs.written.findIndex(chunk => chunk.includes("\x1b[28;76H\x1b[4X"));
+			expect(erase).toBeGreaterThanOrEqual(0);
+			expect(stubs.getEmitter()?.()).toContain("\x1bP0;1;0q");
+		} finally {
+			successor.dispose();
+		}
+	});
+
+	it("retains protocol-specific diagnostics when final-dispose cleanup remains undeliverable", () => {
+		const { widget, getEmitter, setTerminalAvailable, cleanupDiagnostics } = makeWidget();
+		widget.setMode("red");
+		expect(getEmitter()?.()).toContain("\x1bP0;1;0q");
+		setTerminalAvailable(false);
+		widget.dispose();
+		expect(cleanupDiagnostics()).toEqual([
+			"Undeliverable Gajae Pet cleanup at terminal shutdown (Kitty images: 0, Sixel footprints: 1).",
+		]);
 	});
 
 	it("hides the overlay instead of covering editor text on a narrow terminal", () => {
