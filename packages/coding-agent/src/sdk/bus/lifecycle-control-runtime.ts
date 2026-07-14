@@ -1277,6 +1277,24 @@ function closeStartupPromptDescriptor(fd: number): unknown | undefined {
 	}
 }
 
+function verifyStartupPromptPath(ref: string, identity: fs.BigIntStats): unknown | undefined {
+	let verificationFd: number | undefined;
+	let failure: unknown;
+	try {
+		verificationFd = fs.openSync(ref, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0));
+		const current = fs.fstatSync(verificationFd, { bigint: true });
+		if (current.dev !== identity.dev || current.ino !== identity.ino)
+			failure = new Error("startup_prompt_identity_changed");
+	} catch (error) {
+		failure = error;
+	}
+	if (verificationFd !== undefined) {
+		const closeFailure = closeStartupPromptDescriptor(verificationFd);
+		if (closeFailure !== undefined) return closeFailure;
+	}
+	return failure;
+}
+
 function zeroizeStartupPrompt(fd: number): unknown | undefined {
 	let lastFailure: unknown;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1363,6 +1381,16 @@ export function buildOrchestratorDeps(input: {
 				closeStartupPromptDescriptor(cleanupFd);
 				throw error;
 			}
+			const reservedPathFailure = verifyStartupPromptPath(ref, identity);
+			if (reservedPathFailure !== undefined) {
+				const zeroizeFailure = zeroizeStartupPrompt(cleanupFd);
+				closeStartupPromptDescriptor(fd);
+				closeStartupPromptDescriptor(cleanupFd);
+				throw new StartupPromptWriteError(ref, [
+					reservedPathFailure,
+					...(zeroizeFailure === undefined ? [] : [zeroizeFailure]),
+				]);
+			}
 			const failures: unknown[] = [];
 			try {
 				const encoded = Buffer.from(prompt, "utf8");
@@ -1376,6 +1404,8 @@ export function buildOrchestratorDeps(input: {
 			} catch (error) {
 				failures.push(error);
 			}
+			const handoffPathFailure = verifyStartupPromptPath(ref, identity);
+			if (handoffPathFailure !== undefined) failures.push(handoffPathFailure);
 			const primaryCloseFailure = closeStartupPromptDescriptor(fd);
 			if (primaryCloseFailure !== undefined) failures.push(primaryCloseFailure);
 			if (failures.length > 0) {

@@ -248,6 +248,66 @@ it.skipIf(process.platform === "win32")(
 	},
 );
 
+it("rejects namespace replacement during durable reservation before writing prompt bytes", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-reservation-race-"));
+	const moved = path.join(root, "created-file-moved");
+	let reservedRef: string | undefined;
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
+	});
+	try {
+		await expect(
+			deps.writeStartupPrompt("reservation-race", "SECRET", async ref => {
+				reservedRef = ref;
+				fs.renameSync(ref, moved);
+				fs.writeFileSync(ref, "ATTACKER", { mode: 0o600 });
+			}),
+		).rejects.toThrow("startup_prompt_identity_changed");
+		expect(fs.readFileSync(reservedRef!, "utf8")).toBe("ATTACKER");
+		expect(fs.readFileSync(moved, "utf8")).toBe("");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("rejects namespace replacement before prompt handoff and zeroizes the written inode", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-handoff-race-"));
+	const moved = path.join(root, "created-file-moved");
+	const originalFsync = fs.fsyncSync;
+	let reservedRef: string | undefined;
+	let fsyncCalls = 0;
+	const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation(((fd: number) => {
+		fsyncCalls += 1;
+		const result = originalFsync(fd);
+		if (fsyncCalls === 1) {
+			fs.renameSync(reservedRef!, moved);
+			fs.writeFileSync(reservedRef!, "ATTACKER", { mode: 0o600 });
+		}
+		return result;
+	}) as typeof fs.fsyncSync);
+	const deps = buildOrchestratorDeps({
+		pairedChatId: PAIRED,
+		agentNotificationsDir: root,
+		auditRedactionKey: new Uint8Array(32).fill(7),
+		startupPromptNonce: () => "fixed-nonce",
+	});
+	try {
+		await expect(
+			deps.writeStartupPrompt("handoff-race", "SECRET", async ref => {
+				reservedRef = ref;
+			}),
+		).rejects.toThrow("startup_prompt_identity_changed");
+		expect(fs.readFileSync(reservedRef!, "utf8")).toBe("ATTACKER");
+		expect(fs.readFileSync(moved, "utf8")).toBe("");
+	} finally {
+		fsyncSpy.mockRestore();
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 it("zeroizes a partially written startup prompt through its retained file handle", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-startup-prompt-zeroize-"));
 	const originalWrite = fs.writeSync as (
@@ -392,7 +452,7 @@ it("reports cleanup-descriptor close failures instead of leaking silently", asyn
 	let leakedFd: number | undefined;
 	const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
 		closeCalls += 1;
-		if (closeCalls >= 2) {
+		if (closeCalls === 4) {
 			leakedFd = fd;
 			throw new Error("injected cleanup close failure");
 		}
@@ -408,7 +468,7 @@ it("reports cleanup-descriptor close failures instead of leaking silently", asyn
 		await expect(deps.writeStartupPrompt("cleanup-close-repro", "SECRET", persistPromptRef)).rejects.toThrow(
 			"injected cleanup close failure",
 		);
-		expect(closeCalls).toBe(2);
+		expect(closeCalls).toBe(4);
 		expect(leakedFd).toBeDefined();
 		expect(() => fs.fstatSync(leakedFd!)).not.toThrow();
 	} finally {
@@ -427,7 +487,7 @@ it("never retries an ambiguously successful descriptor close", async () => {
 	let closeCalls = 0;
 	const closeSpy = spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
 		closeCalls += 1;
-		if (closeCalls === 1) {
+		if (closeCalls === 3) {
 			firstFd = fd;
 			originalClose(fd);
 			victimFd = fs.openSync(victim, "w");
@@ -449,7 +509,7 @@ it("never retries an ambiguously successful descriptor close", async () => {
 		);
 		expect(victimFd).toBe(firstFd);
 		expect(() => fs.fstatSync(victimFd!)).not.toThrow();
-		expect(closeCalls).toBe(2);
+		expect(closeCalls).toBe(4);
 	} finally {
 		closeSpy.mockRestore();
 		if (victimFd !== undefined) originalClose(victimFd);
