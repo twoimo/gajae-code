@@ -1861,16 +1861,7 @@ export class AgentSession {
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.#setGuardedAgentTools(this.agent.state.tools);
-		const workflowGateSessionId = this.sessionManager.getSessionId();
-		assertNonEmptyGjcSessionId(workflowGateSessionId, "AgentSession workflow-gate session");
-		this.setWorkflowGateEmitter(
-			new BrokerWorkflowGateEmitter(
-				workflowGateSessionId,
-				new FileGateStore(
-					path.join(sessionStateDir(this.sessionManager.getCwd(), workflowGateSessionId), "workflow-gates.json"),
-				),
-			),
-		);
+		this.#bindWorkflowGateEmitter();
 		this.yieldQueue = new YieldQueue({
 			isStreaming: () => this.isStreaming,
 			injectStreaming: message => this.agent.followUp(message),
@@ -4331,6 +4322,7 @@ export class AgentSession {
 		]);
 		if (!disposeIdleSettled) this.agent.forceAbort("Session disposed");
 		await admissionClosed;
+		this.#workflowGateEmitter?.fence?.();
 		this.#pendingBackgroundExchanges = [];
 		this.yieldQueue.clear();
 
@@ -5851,6 +5843,36 @@ export class AgentSession {
 
 	getAskAnswerSource(): AskAnswerSource | undefined {
 		return getAskAnswerSourceFromRegistry(this.sessionId);
+	}
+
+	#bindWorkflowGateEmitter(previousSessionId?: string, previousEmitter = this.#workflowGateEmitter): void {
+		const sessionId = this.sessionManager.getSessionId();
+		assertNonEmptyGjcSessionId(sessionId, "AgentSession workflow-gate session");
+		const successorEmitter = new BrokerWorkflowGateEmitter(
+			sessionId,
+			new FileGateStore(path.join(sessionStateDir(this.sessionManager.getCwd(), sessionId), "workflow-gates.json")),
+		);
+		previousEmitter?.fence?.();
+		if (previousEmitter && !previousEmitter.fence) {
+			for (const gate of previousEmitter.listPendingGates?.() ?? []) previousEmitter.quarantineGate?.(gate.gate_id);
+		}
+		if (previousSessionId) notifyWorkflowGateEmitterChanged(previousSessionId, undefined);
+		this.setWorkflowGateEmitter(successorEmitter);
+	}
+
+	#suspendWorkflowGateEmitter(sessionId: string): WorkflowGateEmitter | undefined {
+		const emitter = this.#workflowGateEmitter;
+		if (!emitter) return undefined;
+		emitter.suspend?.();
+		this.#workflowGateEmitter = undefined;
+		notifyWorkflowGateEmitterChanged(sessionId, undefined);
+		return emitter;
+	}
+
+	#restoreWorkflowGateEmitter(emitter: WorkflowGateEmitter | undefined): void {
+		if (!emitter) return;
+		emitter.resume?.();
+		this.setWorkflowGateEmitter(emitter);
 	}
 
 	setWorkflowGateEmitter(emitter: WorkflowGateEmitter | undefined): void {
@@ -7595,6 +7617,7 @@ export class AgentSession {
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
 		const previousSessionFile = this.sessionFile;
+		const previousWorkflowGateSessionId = this.sessionId;
 		const nextDiscoverySessionToolNames = this.#mcpDiscoveryEnabled
 			? [
 					...this.#getActiveNonMCPToolNames(),
@@ -7632,6 +7655,7 @@ export class AgentSession {
 		await this.sessionManager.newSession(options);
 		this.setTodoPhases([]);
 		this.#syncAgentSessionId();
+		this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#steeringMessages = [];
@@ -7727,6 +7751,7 @@ export class AgentSession {
 	 */
 	async fork(): Promise<boolean> {
 		const previousSessionFile = this.sessionFile;
+		const previousWorkflowGateSessionId = this.sessionId;
 
 		// Emit session_before_switch event with reason "fork" (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
@@ -7770,6 +7795,7 @@ export class AgentSession {
 
 		// Update agent session ID
 		this.#syncAgentSessionId();
+		this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 
 		this.#resetIrcRosterDeliveryState();
@@ -12499,6 +12525,9 @@ export class AgentSession {
 		this.#followUpMessages = [];
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
+		const suspendedWorkflowGateEmitter = switchingToDifferentSession
+			? this.#suspendWorkflowGateEmitter(previousSessionState.sessionId)
+			: undefined;
 		let unavailableDefaultChainMessage: string | undefined;
 
 		try {
@@ -12593,11 +12622,14 @@ export class AgentSession {
 					previousSessionFile,
 				});
 			}
+			if (suspendedWorkflowGateEmitter)
+				this.#bindWorkflowGateEmitter(previousSessionState.sessionId, suspendedWorkflowGateEmitter);
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
 			this.#defaultFallbackController = undefined;
 			this.#syncAgentSessionId(previousSessionState.sessionId);
+			this.#restoreWorkflowGateEmitter(suspendedWorkflowGateEmitter);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			let restoreMcpError: unknown;
 			try {
@@ -12659,6 +12691,7 @@ export class AgentSession {
 		cancelled: boolean;
 	}> {
 		const previousSessionFile = this.sessionFile;
+		const previousWorkflowGateSessionId = this.sessionId;
 		const selectedEntry = this.sessionManager.getEntryForFidelity(entryId);
 
 		if (selectedEntry?.type !== "message" || selectedEntry.message.role !== "user") {
@@ -12697,6 +12730,7 @@ export class AgentSession {
 		}
 		this.#syncTodoPhasesFromBranch();
 		this.#syncAgentSessionId();
+		this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#closeAllProviderSessions("session branch");

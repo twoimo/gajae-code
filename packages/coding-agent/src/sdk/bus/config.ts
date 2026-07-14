@@ -278,6 +278,8 @@ export interface RedactableAction {
 	id: string;
 	kind: string;
 	sessionId: string;
+	/** Durable workflow-gate correlation metadata; never generic reply authority. */
+	workflowGateId?: string;
 	question?: string;
 	options?: string[];
 	summary?: string;
