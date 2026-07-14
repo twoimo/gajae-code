@@ -1,0 +1,91 @@
+{
+  "schema": "gajae.post-merge-validation-closure-receipt.v1",
+  "mode": "data-only",
+  "receiptId": "post-merge-validation-pr-2244",
+  "createdAt": "2026-07-14T18:20:00.000Z",
+  "repo": {
+    "owner": "Yeachan-Heo",
+    "name": "gajae-code",
+    "url": "https://github.com/Yeachan-Heo/gajae-code"
+  },
+  "mergedPullRequest": {
+    "number": 2244,
+    "url": "https://github.com/Yeachan-Heo/gajae-code/pull/2244",
+    "mergedAt": "2026-07-14T18:12:28.000Z",
+    "mergeCommitSha": "62997044f7538531f482a5be932f0a787c45798a",
+    "baseBranch": "dev"
+  },
+  "postMergeCheck": {
+    "runId": "29356914836",
+    "runUrl": "https://github.com/Yeachan-Heo/gajae-code/actions/runs/29356914836",
+    "headSha": "62997044f7538531f482a5be932f0a787c45798a",
+    "status": "completed",
+    "conclusion": "success",
+    "observedAt": "2026-07-14T18:20:00.000Z",
+    "summary": "Merged-dev CI passed, including the previously failing coding-agent shard 1 inventory contract.",
+    "evidenceDigest": "sha256:65636f6b3028708c9db68ad6f5b694704833dffd8c1bb0b9096e310ed2bf0c3f"
+  },
+  "followUp": {
+    "state": "none",
+    "summary": "No follow-up issue, PR, or session is linked for this post-merge validation observation.",
+    "evidenceDigest": "sha256:998e95740d313845ec605002679d01e8a2b4c1074baafb65decb0dee4023d263"
+  },
+  "invalidationKeys": {
+    "runId": "29356914836",
+    "headSha": "62997044f7538531f482a5be932f0a787c45798a",
+    "conclusion": "success",
+    "followUpState": "none"
+  },
+  "layers": {
+    "executionHarness": {
+      "kind": "github-actions",
+      "summary": "Post-merge validation was observed through public GitHub Actions or check-suite artifacts.",
+      "evidenceDigest": "sha256:65636f6b3028708c9db68ad6f5b694704833dffd8c1bb0b9096e310ed2bf0c3f"
+    },
+    "runtime": {
+      "state": "green",
+      "observedAt": "2026-07-14T18:20:00.000Z",
+      "summary": "green post-merge validation for PR 2244"
+    },
+    "router": {
+      "decision": "validation-closed-green",
+      "summary": "validation-closed-green for Yeachan-Heo/gajae-code#2244",
+      "sideEffects": false
+    }
+  },
+  "summary": {
+    "repository": "Yeachan-Heo/gajae-code",
+    "pullRequest": 2244,
+    "mergeCommitSha": "62997044f7538531f482a5be932f0a787c45798a",
+    "runId": "29356914836",
+    "decision": "validation-closed-green",
+    "digest": "sha256:331c47dc6271bf553ac450800c97b1d447ab4488778f53aa36c80edce0a76d28"
+  },
+  "sideEffects": false,
+  "effectBoundaries": {
+    "git": false,
+    "githubMutation": false,
+    "commandExecution": false,
+    "rawLogRead": false,
+    "configRead": false,
+    "notify": false,
+    "fileSystemMutation": false
+  },
+  "contract": {
+    "artifact": "post-merge-validation-closure-receipt-data-only",
+    "dataOnly": true,
+    "publicSafe": true,
+    "authorization": false,
+    "sideEffects": false,
+    "publicGithubArtifactsOnly": true,
+    "rawLogs": "rejected",
+    "rawPayloads": "rejected",
+    "rawConfig": "rejected",
+    "channelPayloads": "rejected",
+    "hostPaths": "rejected",
+    "tokens": "rejected",
+    "privateUrls": "rejected",
+    "deterministicRouterDecision": true,
+    "invalidationKeysRequired": true
+  }
+}

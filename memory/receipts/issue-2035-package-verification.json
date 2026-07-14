@@ -1,0 +1,61 @@
+{
+  "schema": "gajae.shell-command-receipt.v1",
+  "mode": "data-only",
+  "receiptId": "issue-2035-package-verification",
+  "createdAt": "2026-07-14T18:20:00.000Z",
+  "purpose": "verification",
+  "command": {
+    "kind": "shell-summary",
+    "summary": "Run focused lifecycle matrices, coding-agent inventory shard, affected package checks and builds, exact-head hosted CI, and merged-dev CI.",
+    "digest": "sha256:87157cbcc18767a847c79a761904a038dd4704966dc96dc42532747a6fafd9a4",
+    "redacted": true
+  },
+  "runner": {
+    "adapter": "gajae-code",
+    "runtime": "bun",
+    "shell": "bash",
+    "cwdLabel": "dedicated issue and hotfix worktrees"
+  },
+  "outcome": {
+    "status": "succeeded",
+    "exitCode": 0,
+    "errorClass": "none",
+    "disposition": "idempotent_success",
+    "retrySafe": true,
+    "noOp": false,
+    "needsHuman": false,
+    "invalidatesArtifact": false
+  },
+  "summaries": {
+    "stdout": {
+      "summary": "Issue #2035 verification passed: focused matrices reached 59 pass and 0 fail twice; coding-agent shard 1 reached 1365 pass, 68 skip, 0 fail; package checks/builds, PR checks, and merged-dev CI run 29356914836 passed.",
+      "digest": "sha256:3f85ddfc69c651b0d3aa2f11b0ed1a4cbaaf763d39239a87aa5a187723df9b8b",
+      "truncated": false
+    },
+    "stderr": {
+      "summary": "No unresolved verification error remained; the earlier native sentinel setup failure and post-merge inventory failure were repaired and rerun.",
+      "digest": "sha256:72b4cf548883488ac73c623496c41008c10a8ce6849215b5575d4a1b28a41d0e",
+      "truncated": false
+    }
+  },
+  "references": {
+    "issue": 2035,
+    "sessionId": "issue-2035-postmerge-recovery",
+    "artifactSchema": "gajae.shell-command-receipt.v1"
+  },
+  "correlation": {},
+  "actor": "gajae-code",
+  "source": "verification",
+  "timestamps": {
+    "observedAt": "2026-07-14T18:20:00.000Z"
+  },
+  "contract": {
+    "authorization": false,
+    "sideEffects": false,
+    "executesCommands": false,
+    "mutatesFiles": false,
+    "rawPayloads": "rejected",
+    "privatePayloads": "rejected"
+  },
+  "diagnostics": []
+}

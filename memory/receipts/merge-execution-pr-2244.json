@@ -1,0 +1,95 @@
+{
+  "schema": "gajae.merge-execution-receipt.v1",
+  "mode": "data-only",
+  "receiptId": "merge-execution-pr-2244",
+  "createdAt": "2026-07-14T18:10:00.000Z",
+  "repo": {
+    "owner": "Yeachan-Heo",
+    "name": "gajae-code"
+  },
+  "pullRequest": {
+    "number": 2244,
+    "headSha": "bcd9466a7080f4c9d0a85fe797e791757429f3d6",
+    "headRef": "fix/dev-sdk-operation-inventory-midrun-seams",
+    "baseRef": "dev"
+  },
+  "reviewSource": {
+    "schema": "gajae.pr-review-receipt.v1",
+    "receiptId": "pr-2244-terminal-hostile-review",
+    "digest": "sha256:4f4060265485a803a470cc9c0ad832becf3c89493b2cf22ebc6c235b070cb4d4",
+    "verdict": "MERGE_READY",
+    "summary": "Fresh exact-head hostile review and hosted CI reported the hotfix blocker-free and merge-ready."
+  },
+  "execution": {
+    "runtime": "gajae-code",
+    "actor": "Yeachan-Heo",
+    "adapter": "github-cli",
+    "authority": {
+      "mode": "repo_owner",
+      "actor": "Yeachan-Heo",
+      "summary": "The repository owner explicitly directed the blocker-free hotfix merge into dev.",
+      "sideEffects": false
+    },
+    "merge": {
+      "method": "squash",
+      "headSha": "bcd9466a7080f4c9d0a85fe797e791757429f3d6",
+      "baseRef": "dev",
+      "mergeCommitSha": "62997044f7538531f482a5be932f0a787c45798a",
+      "completedAt": "2026-07-14T18:12:28.000Z",
+      "commandShape": "GitHub pull request merge by PR number with squash method after exact-head and base verification.",
+      "summary": "PR #2244 was squash-merged into dev to repair deterministic post-merge SDK inventory CI.",
+      "completed": true,
+      "sideEffects": false
+    },
+    "sideEffects": false
+  },
+  "verification": {
+    "prClosed": true,
+    "merged": true,
+    "issueClosed": true,
+    "summary": "PR #2244 is merged; issue #2035 remains closed after the recovery hotfix.",
+    "sideEffects": false
+  },
+  "routerSession": {
+    "trigger": "Post-merge Dev CI regression recovery completed after exact-head review.",
+    "closeNotification": {
+      "status": "observed",
+      "summary": "GitHub reported PR #2244 merged into dev."
+    },
+    "nextArtifactUrl": "https://github.com/Yeachan-Heo/gajae-code/actions/runs/29356914836",
+    "nextSessionId": "issue-2035-postmerge-recovery",
+    "summary": "The session advanced to merged-dev CI verification and durable recovery receipts.",
+    "sideEffects": false
+  },
+  "sideEffects": {
+    "allowed": false,
+    "git": false,
+    "github": false,
+    "merge": false,
+    "push": false,
+    "commandExecution": false
+  },
+  "documentedEffects": {
+    "githubMerge": true,
+    "completedAuthorizedMerge": true
+  },
+  "contract": {
+    "authorizationGrant": false,
+    "permissionGrant": false,
+    "evidenceOnly": true,
+    "completedMergeRequired": true,
+    "authorityContextRequired": true,
+    "sideEffects": false,
+    "helper": "data-only",
+    "git": false,
+    "github": false,
+    "merge": false,
+    "push": false,
+    "commandExecution": false,
+    "rawTranscripts": "rejected",
+    "rawPayloads": "rejected",
+    "tokens": "rejected",
+    "privateUrls": "rejected",
+    "boundedSummaries": true
+  }
+}
