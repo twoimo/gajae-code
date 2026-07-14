@@ -103,6 +103,20 @@ describe("SDK operation inventory", () => {
 		});
 	}
 
+	it("classifies explicit AgentSession test seams as non-public authority", async () => {
+		const source = await Bun.file(path.join(repoRoot, "packages/coding-agent/src/session/agent-session.ts")).text();
+		const sourceIds = scanAgentSessionMethods(source).filter(sourceId => sourceId.endsWith("ForTests"));
+		expect(sourceIds).toEqual(
+			expect.arrayContaining([
+				"agent_session:runMidRunMaintenanceForTests",
+				"agent_session:estimateMidRunContextTokensForTests",
+				"agent_session:activeMidRunBarrierCountForTests",
+				"agent_session:activeMidRunMaintenanceCountForTests",
+			]),
+		);
+		expect(pendingReviewErrors(sourceIds.map(sourceId => ({ sourceId })))).toEqual([]);
+	});
+
 	it("discovers AgentSession method declarations independent of modifiers and layout", () => {
 		const seams = scanAgentSessionMethods(`
 			function decorator(_: unknown, _context: unknown) {}
@@ -116,6 +130,7 @@ describe("SDK operation inventory", () => {
 				override overrideable(): void {}
 				get accessor(): string { return "value"; }
 				set accessor(_value: string) {}
+				get accessorForTests(): number { return 1; }
 				*generatorMethod(): Generator<string> { yield "value"; }
 				@decorator
 				decoratedMethod(): void {}
@@ -132,6 +147,7 @@ describe("SDK operation inventory", () => {
 			"agent_session:privateMethod",
 			"agent_session:staticMethod",
 			"agent_session:overrideable",
+			"agent_session:accessorForTests",
 			"agent_session:generatorMethod",
 			"agent_session:decoratedMethod",
 			"agent_session:multilineMethod",
@@ -168,10 +184,30 @@ describe("SDK operation inventory", () => {
 					yield \`{\${value}}\`;
 				}
 				["computed"]() {}
+				["resetForTests"]() {}
+				get ["stateForTests"](): number { return 1; }
+				[\`templateMethodForTests\`]() {}
+				get [\`templateGetterForTests\`](): number { return 1; }
+				set [\`templateSetterForTests\`](_value: number) {}
+				[dynamicForTests]() {}
 				field = () => ({ text: "notAMethod() {}" });
 			}
 		`);
-		expect(seams).toEqual(["agent_session:decoratedPrivate"]);
+		expect(seams).toEqual([
+			"agent_session:decoratedPrivate",
+			"agent_session:resetForTests",
+			"agent_session:stateForTests",
+			"agent_session:templateMethodForTests",
+			"agent_session:templateGetterForTests",
+			"agent_session:templateSetterForTests",
+		]);
+		expect(pendingReviewErrors(seams.slice(1).map(sourceId => ({ sourceId })))).toEqual([
+			"Pending review source seam: agent_session:resetForTests. Add it to SEAM_TO_SDK or LOCKED_EXCLUSIONS.",
+			"Pending review source seam: agent_session:stateForTests. Add it to SEAM_TO_SDK or LOCKED_EXCLUSIONS.",
+			"Pending review source seam: agent_session:templateMethodForTests. Add it to SEAM_TO_SDK or LOCKED_EXCLUSIONS.",
+			"Pending review source seam: agent_session:templateGetterForTests. Add it to SEAM_TO_SDK or LOCKED_EXCLUSIONS.",
+			"Pending review source seam: agent_session:templateSetterForTests. Add it to SEAM_TO_SDK or LOCKED_EXCLUSIONS.",
+		]);
 	});
 
 	it("finds direct and nested ACP method cases without reading strings or interpolated templates", () => {

@@ -46,6 +46,10 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"agent_session:markPlanCompactAbortPending": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:clearPlanCompactAbortPending": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:enqueueCustomMessageDisplay": "internal accessor/plumbing, not a user-facing control seam",
+	"agent_session:runMidRunMaintenanceForTests": "test-only maintenance seam, not a user-facing SDK control seam",
+	"agent_session:estimateMidRunContextTokensForTests": "test-only estimator seam, not a user-facing SDK control seam",
+	"agent_session:activeMidRunBarrierCountForTests": "read-only test seam, not a user-facing SDK control seam",
+	"agent_session:activeMidRunMaintenanceCountForTests": "read-only test seam, not a user-facing SDK control seam",
 	"agent_session:getAgentId": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:emitNotice": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:subscribe": "internal accessor/plumbing, not a user-facing control seam",
@@ -587,6 +591,22 @@ function nextMemberStart(tokens: readonly Token[], start: number, classEnd: numb
 
 type MethodDeclaration = { end: number; name?: string };
 
+type ParsedMemberName = { computed: boolean; end: number; name?: string };
+
+function parseMemberName(tokens: readonly Token[], start: number): ParsedMemberName | undefined {
+	const direct = tokens[start];
+	if (isMemberName(direct)) return { computed: false, end: start + 1, name: memberName(direct!) };
+	if (direct?.text !== "[" || tokens[start + 2]?.text !== "]") return undefined;
+	const computed = tokens[start + 1];
+	if (computed?.kind === "string" || computed?.kind === "number") {
+		return { computed: true, end: start + 3, name: memberName(computed) };
+	}
+	if (computed?.kind === "template" && !computed.hasSubstitution) {
+		return { computed: true, end: start + 3, name: computed.value };
+	}
+	return undefined;
+}
+
 function scanMethodDeclaration(
 	tokens: readonly Token[],
 	start: number,
@@ -597,20 +617,29 @@ function scanMethodDeclaration(
 	if (tokens[index]?.text === "async" && tokens[index + 1]?.text !== "(") index++;
 	if (tokens[index]?.text === "*") index++;
 	const candidate = tokens[index];
-	if (!isMemberName(candidate)) return undefined;
-
-	const afterName = skipTypeParameters(tokens, index + 1);
-	if ((candidate!.text === "get" || candidate!.text === "set") && isMemberName(tokens[afterName])) {
-		const accessorEnd = skipTypeParameters(tokens, afterName + 1);
-		if (tokens[accessorEnd]?.text === "(") {
-			const close = matchingToken(tokens, accessorEnd, "(", ")");
-			if (close !== undefined) return { end: memberEnd(tokens, close + 1, classEnd) };
-		}
+	if (candidate?.text === "get" || candidate?.text === "set") {
+		const accessor = parseMemberName(tokens, index + 1);
+		if (!accessor) return undefined;
+		const accessorEnd = skipTypeParameters(tokens, accessor.end);
+		if (tokens[accessorEnd]?.text !== "(") return undefined;
+		const close = matchingToken(tokens, accessorEnd, "(", ")");
+		if (close === undefined) return undefined;
+		return {
+			end: memberEnd(tokens, close + 1, classEnd),
+			name: accessor.name?.endsWith("ForTests") ? accessor.name : undefined,
+		};
 	}
+
+	const method = parseMemberName(tokens, index);
+	if (!method) return undefined;
+	const afterName = skipTypeParameters(tokens, method.end);
 	if (tokens[afterName]?.text !== "(") return undefined;
 	const close = matchingToken(tokens, afterName, "(", ")");
 	if (close === undefined) return undefined;
-	return { end: memberEnd(tokens, close + 1, classEnd), name: memberName(candidate!) };
+	return {
+		end: memberEnd(tokens, close + 1, classEnd),
+		name: method.computed && !method.name?.endsWith("ForTests") ? undefined : method.name,
+	};
 }
 
 export function scanAgentSessionMethods(sourceText: string): string[] {
