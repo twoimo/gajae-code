@@ -1,3 +1,4 @@
+import { CODEX_GPT_5_6_CONTEXT_CAP, isCodexGpt56Tier, isCodexProductTransport } from "./context-cap-policy";
 import { resolveOpenAICompat } from "./providers/openai-completions-compat";
 import type { Api, Model as ApiModel, ThinkingConfig } from "./types";
 import { isClaudeForcedToolChoiceIncapableModelId } from "./utils/tool-choice-capability";
@@ -477,15 +478,13 @@ function applyGpt55ContextWindow(model: ApiModel<Api>, parsedModel: OpenAIModel)
 	}
 	return false;
 }
-const GPT_5_6_TIER_VARIANTS: ReadonlySet<OpenAIVariant> = new Set(["base", "sol", "terra", "luna"]);
-
-function applyGpt56ContextWindow(model: ApiModel<Api>, parsedModel: OpenAIModel): boolean {
-	if (!semverGte(parsedModel.version, "5.6") || !GPT_5_6_TIER_VARIANTS.has(parsedModel.variant)) {
+function applyGpt56ContextWindow(model: ApiModel<Api>): boolean {
+	if (!isCodexGpt56Tier(model) || !isCodexProductTransport(model)) {
 		return false;
 	}
-	// GPT-5.6 tiers enforce a ~373K usable prompt budget on both transports
-	// (matches the openai-codex live catalog), despite the 1M+ marketing window.
-	model.contextWindow = 373_000;
+	// Codex product metadata is bounded by the currently enforced prompt cap.
+	// Smaller observed limits remain authoritative; first-party OpenAI is untouched.
+	model.contextWindow = Math.min(model.contextWindow, CODEX_GPT_5_6_CONTEXT_CAP.ceiling);
 	return true;
 }
 
@@ -493,7 +492,7 @@ function applyOpenAICatalogPolicy(model: ApiModel<Api>, parsedModel: OpenAIModel
 	if (applyGpt55ContextWindow(model, parsedModel)) {
 		return;
 	}
-	if (applyGpt56ContextWindow(model, parsedModel)) {
+	if (applyGpt56ContextWindow(model)) {
 		return;
 	}
 	// OpenAI code backend models: 400K figure includes output budget; input window is 272K.

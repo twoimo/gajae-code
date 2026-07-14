@@ -419,32 +419,33 @@ describe("generated model policies", () => {
 		}
 	});
 
-	it("normalizes GPT-5.6 tier context windows to the 373K prompt budget", () => {
+	it("caps only Codex product GPT-5.6 tiers at the 272K prompt budget", () => {
 		const models: Model<Api>[] = [
 			{
-				...createModel({
-					id: "gpt-5.6-sol",
-					api: "openai-codex-responses",
-					provider: "openai-codex",
-				}),
+				...createModel({ id: "gpt-5.6-sol", api: "openai-codex-responses", provider: "openai-codex" }),
 				contextWindow: 1_050_000,
 				maxTokens: 128000,
 			},
 			{
-				...createModel({
-					id: "gpt-5.6-terra",
-					api: "openai-responses",
-					provider: "openai",
-				}),
-				contextWindow: 272000,
+				...createModel({ id: "gpt-5.6-terra", api: "openai-responses", provider: "openai" }),
+				contextWindow: 1_050_000,
+				maxTokens: 128000,
+			},
+			{
+				...createModel({ id: "gpt-5.6-luna", api: "openai-codex-responses", provider: "custom" }),
+				contextWindow: 200_000,
+				maxTokens: 128000,
+			},
+			{
+				...createModel({ id: "gpt-5.6-codex", api: "openai-codex-responses", provider: "openai-codex" }),
+				contextWindow: 373_000,
 				maxTokens: 128000,
 			},
 		];
 
 		applyGeneratedModelPolicies(models);
 
-		expect(models[0]?.contextWindow).toBe(373_000);
-		expect(models[1]?.contextWindow).toBe(373_000);
+		expect(models.map(model => model.contextWindow)).toEqual([272_000, 1_050_000, 200_000, 272_000]);
 		expect(models[0]?.applyPatchToolType).toBe("freeform");
 		expect(models[1]?.applyPatchToolType).toBe("freeform");
 	});

@@ -4,6 +4,7 @@ import {
 	type Api,
 	type AssistantMessageEventStream,
 	type AuthCredentialSelector,
+	applyFinalCodexGpt56ContextCap,
 	type CacheRetention,
 	type Context,
 	createModelManager,
@@ -1182,7 +1183,7 @@ export class ModelRegistry {
 		// Merge runtime extension models so they survive refresh() cycles
 		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
 		const withModelOverrides = this.#applyModelOverrides(combined, this.#modelOverrides);
-		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
+		this.#models = applyFinalCodexGpt56ContextCap(this.#applyRuntimeProviderOverrides(withModelOverrides));
 		this.#rebuildCanonicalIndex();
 		this.#lastStaticLoadMtime = this.#modelsConfigFile.getMtimeMs();
 	}
@@ -1824,7 +1825,7 @@ export class ModelRegistry {
 		// Merge runtime extension models so they survive online discovery completion
 		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
 		const withModelOverrides = this.#applyModelOverrides(combined, this.#modelOverrides);
-		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
+		this.#models = applyFinalCodexGpt56ContextCap(this.#applyRuntimeProviderOverrides(withModelOverrides));
 		this.#rebuildCanonicalIndex();
 	}
 
@@ -1833,6 +1834,7 @@ export class ModelRegistry {
 		strategy: ModelRefreshStrategy,
 	): Promise<Model<Api>[]> {
 		const cached = readModelCache<Api>(providerConfig.provider, 24 * 60 * 60 * 1000, Date.now, this.#cacheDbPath);
+		const cachedModels = applyFinalCodexGpt56ContextCap(cached?.models ?? []);
 		const requiresAuth = !this.#keylessProviders.has(providerConfig.provider);
 		if (requiresAuth) {
 			const apiKey = await this.#peekApiKeyForProvider(providerConfig.provider);
@@ -1843,10 +1845,10 @@ export class ModelRegistry {
 					optional: providerConfig.optional ?? false,
 					stale: cached !== null,
 					fetchedAt: cached?.updatedAt,
-					models: cached?.models.map(model => model.id) ?? [],
+					models: cachedModels.map(model => model.id),
 				});
 				this.#lastDiscoveryWarnings.delete(providerConfig.provider);
-				return cached?.models ?? [];
+				return cachedModels;
 			}
 		}
 
@@ -2899,13 +2901,15 @@ export class ModelRegistry {
 			if (config.oauth?.modifyModels) {
 				const credential = this.authStorage.getOAuthCredential(providerName);
 				if (credential) {
-					this.#models = config.oauth.modifyModels(withRuntimeTransportOverride, credential);
+					this.#models = applyFinalCodexGpt56ContextCap(
+						config.oauth.modifyModels(withRuntimeTransportOverride, credential),
+					);
 					this.#rebuildCanonicalIndex();
 					return;
 				}
 			}
 
-			this.#models = withRuntimeTransportOverride;
+			this.#models = applyFinalCodexGpt56ContextCap(withRuntimeTransportOverride);
 			this.#rebuildCanonicalIndex();
 			return;
 		}

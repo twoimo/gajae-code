@@ -1,3 +1,4 @@
+import { applyFinalCodexGpt56ContextCap } from "./context-cap-policy";
 import { readModelCache, writeModelCache } from "./model-cache";
 import { isRetiredModel, isRetiredModelKey } from "./model-retirements";
 import { applyGeneratedModelPolicies, enrichModelThinking } from "./model-thinking";
@@ -98,7 +99,7 @@ function passModelList<TApi extends Api>(value: unknown): Model<TApi>[] {
 		out.push(enrichModelThinking(item as Model<TApi>));
 	}
 	applyGeneratedModelPolicies(out as Model<Api>[]);
-	return out;
+	return applyFinalCodexGpt56ContextCap(out);
 }
 
 /**
@@ -161,11 +162,13 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	const cacheModels = dynamicFetchSucceeded ? [] : normalizeModelList<TApi>(cache?.models ?? []);
 	const dynamicModels = fetchedDynamicModels ?? [];
 	const mergedWithCache = mergeDynamicModels(mergeModelSources(staticModels, modelsDevModels), cacheModels);
-	const models = mergeDynamicModels(mergedWithCache, dynamicModels);
+	const models = applyFinalCodexGpt56ContextCap(mergeDynamicModels(mergedWithCache, dynamicModels));
 	const dynamicAuthoritative = !hasDynamicFetcher || dynamicFetchSucceeded || shouldUseFreshCacheAsAuthoritative;
 	if (shouldFetchFromNetwork) {
 		if (dynamicFetchSucceeded) {
-			const snapshotModels = mergeDynamicModels(mergeModelSources(staticModels, modelsDevModels), dynamicModels);
+			const snapshotModels = applyFinalCodexGpt56ContextCap(
+				mergeDynamicModels(mergeModelSources(staticModels, modelsDevModels), dynamicModels),
+			);
 			writeModelCache(options.providerId, now(), snapshotModels, true, staticFingerprint, dbPath);
 		} else {
 			// Dynamic fetch failed — update cache with a non-authoritative snapshot so
@@ -174,9 +177,11 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 			writeModelCache(
 				options.providerId,
 				now(),
-				mergeDynamicModels(
-					mergeModelSources(staticModels, modelsDevModels),
-					normalizeModelList<TApi>(latestCache?.models ?? cache?.models ?? []),
+				applyFinalCodexGpt56ContextCap(
+					mergeDynamicModels(
+						mergeModelSources(staticModels, modelsDevModels),
+						normalizeModelList<TApi>(latestCache?.models ?? cache?.models ?? []),
+					),
 				),
 				false,
 				staticFingerprint,
@@ -393,7 +398,7 @@ function normalizeModelList<TApi extends Api>(value: unknown): Model<TApi>[] {
 			models.push(enrichModelThinking(item as Model<TApi>));
 		}
 	}
-	return models;
+	return applyFinalCodexGpt56ContextCap(models);
 }
 
 function isModelLike(value: unknown): value is Model<Api> {
