@@ -288,11 +288,13 @@ export async function handleLifecycleRequest(
 			message: "session_close requires force=true; graceful close is not supported",
 		};
 	}
-	if (frame.type === "session_create" && frame.startupPromptRef !== undefined) {
+	const suppliedStartupPromptRef =
+		frame.type === "session_create" || frame.type === "session_resume" ? frame.startupPromptRef : undefined;
+	if (suppliedStartupPromptRef !== undefined) {
 		return {
 			status: "error",
 			reason: "invalid_target",
-			message: "startup prompt capability transport is unavailable; create the session without a startup prompt",
+			message: "startup prompt capability transport is unavailable; retry without a startup prompt",
 		};
 	}
 	if (deps.isPsmuxProvider()) {

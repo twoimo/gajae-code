@@ -775,7 +775,7 @@ describe("lifecycle orchestrator", () => {
 		expect([providers, reads, resumes, closes]).toEqual([3, 0, 0, 0]);
 	});
 	it("rejects startup prompt content before audit, ledger, rate limit, writer, or spawn effects", async () => {
-		const calls = { audit: 0, read: 0, write: 0, rateLimit: 0, writer: 0, spawn: 0 };
+		const calls = { audit: 0, read: 0, write: 0, rateLimit: 0, writer: 0, spawn: 0, resume: 0 };
 		const { deps: d } = deps({
 			store: {
 				read: async () => {
@@ -801,13 +801,29 @@ describe("lifecycle orchestrator", () => {
 				calls.spawn += 1;
 				throw new Error("must not spawn");
 			},
+			resumeSession: async () => {
+				calls.resume += 1;
+				throw new Error("must not resume");
+			},
 		});
-		const outcome = await handleLifecycleRequest(createFrame({ startupPromptRef: "SECRET" }), d);
-		expect(outcome).toEqual({
-			status: "error",
-			reason: "invalid_target",
-			message: "startup prompt capability transport is unavailable; create the session without a startup prompt",
-		});
-		expect(calls).toEqual({ audit: 0, read: 0, write: 0, rateLimit: 0, writer: 0, spawn: 0 });
+		const createOutcome = await handleLifecycleRequest(createFrame({ startupPromptRef: "SECRET" }), d);
+		const resume: SessionResumeFrame = {
+			type: "session_resume",
+			requestId: "resume-prompt",
+			updateId: 404,
+			chatId: PAIRED,
+			token: "control-token",
+			target: { sessionIdOrPrefix: "sess" },
+			startupPromptRef: "",
+		};
+		const resumeOutcome = await handleLifecycleRequest(resume, d);
+		for (const outcome of [createOutcome, resumeOutcome]) {
+			expect(outcome).toEqual({
+				status: "error",
+				reason: "invalid_target",
+				message: "startup prompt capability transport is unavailable; retry without a startup prompt",
+			});
+		}
+		expect(calls).toEqual({ audit: 0, read: 0, write: 0, rateLimit: 0, writer: 0, spawn: 0, resume: 0 });
 	});
 });

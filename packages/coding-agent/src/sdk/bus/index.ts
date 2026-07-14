@@ -121,7 +121,7 @@ export interface SessionCreateFrame {
 	/** Control-endpoint token authorizing this frame. */
 	token: string;
 	target: SessionCreateTarget;
-	/** Reserved for a future capability transport; non-empty values are rejected before lifecycle acceptance. */
+	/** Reserved for a future capability transport; any supplied value is rejected before lifecycle acceptance. */
 	startupPromptRef?: string;
 	/** Model profile preset to activate for the spawned session (--mpreset). */
 	modelPreset?: string;
@@ -147,6 +147,7 @@ export interface SessionResumeFrame {
 	chatId: string;
 	token: string;
 	target: SessionResumeTarget;
+	/** Reserved for a future capability transport; any supplied value is rejected before lifecycle acceptance. */
 	startupPromptRef?: string;
 }
 

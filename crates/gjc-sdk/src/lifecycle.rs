@@ -84,8 +84,8 @@ pub struct SessionCreate {
 	pub token:                String,
 	/// Where the session should run.
 	pub target:               SessionCreateTarget,
-	/// Reserved for a future capability transport; non-empty values are rejected
-	/// before lifecycle acceptance.
+	/// Reserved for a future capability transport; any supplied value is
+	/// rejected before lifecycle acceptance.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub startup_prompt_ref:   Option<String>,
 }
@@ -123,7 +123,8 @@ pub struct SessionResume {
 	pub token:              String,
 	/// Which session to resume.
 	pub target:             SessionResumeTarget,
-	/// Optional follow-up prompt reference for a cold restart.
+	/// Reserved for a future capability transport; any supplied value is
+	/// rejected before lifecycle acceptance.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub startup_prompt_ref: Option<String>,
 }
