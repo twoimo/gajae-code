@@ -79,6 +79,7 @@ import { HistorySearchComponent } from "../components/history-search";
 import { JobsOverlayComponent } from "../components/jobs-overlay";
 import { ModelSelectorComponent } from "../components/model-selector";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
+import { isPetAvailable } from "../components/pet-capability";
 import { PetSelectorComponent } from "../components/pet-selector";
 import { PluginSelectorComponent } from "../components/plugin-selector";
 import {
@@ -492,6 +493,7 @@ export class SelectorController {
 						availableThemes,
 						availableModelProfiles: [...this.ctx.session.modelRegistry.getModelProfiles().keys()],
 						cwd: getProjectDir(),
+						petAvailable: isPetAvailable(),
 					},
 					{
 						onChange: (id, value) => this.handleSettingChange(id, value),
@@ -514,6 +516,7 @@ export class SelectorController {
 						onPetPreview: mode => {
 							this.ctx.previewPetMode(mode as PetMode);
 						},
+						onPetCommit: mode => this.ctx.commitPetPreviewMode(mode as PetMode),
 						onStatusLinePreview: previewSettings => {
 							// Update status line with preview settings
 							this.ctx.statusLine.updateSettings({
@@ -591,6 +594,7 @@ export class SelectorController {
 	showPetSelector(): void {
 		const stored = settings.get("pet.mode");
 		const initial: PetMode = isPetMode(stored) ? stored : "off";
+		const available = isPetAvailable();
 		this.showSelector(done => {
 			// Live-preview via previewMode (no editor re-mount, so the overlay stays);
 			// Enter commits + persists, Esc restores the initial skin.
@@ -607,6 +611,7 @@ export class SelectorController {
 				mode => {
 					this.ctx.previewPetMode(mode);
 				},
+				available,
 			);
 			return { component: selector, focus: selector.getSelectList() };
 		});
@@ -762,12 +767,6 @@ export class SelectorController {
 				});
 				break;
 			}
-			case "pet.mode":
-				// The settings submenu already persisted the value; apply it to the live
-				// widget via previewMode (the settings overlay is still open, so a full
-				// re-mount would tear it down — restoreComposer re-mounts on close).
-				this.ctx.previewPetMode(value as PetMode);
-				break;
 			case "symbolPreset": {
 				setSymbolPreset(value as "unicode" | "nerd" | "ascii").then(() => {
 					this.ctx.statusLine.invalidate();
@@ -985,20 +984,13 @@ export class SelectorController {
 								assignments,
 							});
 							if (!materializedProfile) {
-								const overrides = this.ctx.settings.get("task.agentModelOverrides");
-								const nextOverrides = { ...overrides };
-								let writesOverrides = false;
 								for (const targetRole of targetRoles) {
 									const target = GJC_MODEL_ASSIGNMENT_TARGETS[targetRole];
 									if (target.settingsPath === "modelRoles") {
 										this.ctx.settings.setModelRole(targetRole, value);
 									} else {
-										nextOverrides[targetRole] = value;
-										writesOverrides = true;
+										this.ctx.settings.setAgentModelOverride(targetRole, value);
 									}
-								}
-								if (writesOverrides) {
-									this.ctx.settings.set("task.agentModelOverrides", nextOverrides);
 								}
 							}
 							modelSelector.refreshRoleAssignments({
@@ -1069,10 +1061,7 @@ export class SelectorController {
 								if (target.settingsPath === "modelRoles") {
 									this.ctx.settings.setModelRole(role, value);
 								} else {
-									this.ctx.settings.set("task.agentModelOverrides", {
-										...this.ctx.settings.get("task.agentModelOverrides"),
-										[role]: value,
-									});
+									this.ctx.settings.setAgentModelOverride(role, value);
 								}
 							}
 							modelSelector.refreshRoleAssignments({
