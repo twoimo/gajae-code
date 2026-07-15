@@ -244,9 +244,10 @@ export function isLegacyBootstrapBase(base: ReadonlyMap<string, string | undefin
 	const contract = base.get(telegramContract);
 	const daemon = base.get(telegramDaemon);
 	const chat = base.get(chatControl);
-	if (!contract || !daemon || chat !== "" || /\b(?:ownershipPhase|acquisitionId)\b/.test(daemon) || !declaration(daemon, "acquireDaemonOwnership")) return false;
+	if (!contract || !daemon || !chat || /\b(?:ownershipPhase|acquisitionId)\b/.test(daemon) || !declaration(daemon, "acquireDaemonOwnership")) return false;
 	try {
 		const program = parse(contract, { sourceType: "module", plugins: ["typescript"] }).program;
+		const chatProgram = parse(chat, { sourceType: "module", plugins: ["typescript"] }).program;
 		const exportedNames = program.body.flatMap((statement: any) => {
 			const declaration = statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
 			if (declaration?.type !== "VariableDeclaration") return [];
@@ -257,10 +258,15 @@ export function isLegacyBootstrapBase(base: ReadonlyMap<string, string | undefin
 		const generation = declarationNode(program, "DAEMON_GENERATION");
 		const protocolDeclaration = protocol?.declarations?.find((item: any) => item.id?.name === "NOTIFICATION_PROTOCOL_VERSION");
 		const generationDeclaration = generation?.declarations?.find((item: any) => item.id?.name === "DAEMON_GENERATION");
+		const controller = declarationNode(chatProgram, "ChatDaemonController");
+		const hasOperate = controller?.type === "ClassDeclaration" && controller.body?.body.some((member: any) => member.type === "ClassMethod" && nodeName(member) === "operate");
 		return protocolDeclaration?.init?.type === "NumericLiteral" &&
 			protocolDeclaration.init.value === 3 &&
 			generationDeclaration?.init?.type === "Identifier" &&
-			generationDeclaration.init.name === "NOTIFICATION_PROTOCOL_VERSION";
+			generationDeclaration.init.name === "NOTIFICATION_PROTOCOL_VERSION" &&
+			!declarationNode(chatProgram, "CHAT_DAEMON_GENERATIONS") &&
+			!declarationNode(chatProgram, "chatDaemonGeneration") &&
+			hasOperate;
 	} catch {
 		return false;
 	}

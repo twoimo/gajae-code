@@ -37,6 +37,23 @@ function files(input: {
 	]);
 }
 
+const legacyChatDaemonControl = `
+export type ChatDaemonKind = "discord" | "slack";
+export type ChatDaemonAction = "stop" | "reload";
+
+export class ChatDaemonController {
+	async operate(action: ChatDaemonAction): Promise<void> {
+		void action;
+	}
+}
+`;
+
+type MutableInventory = { [Family in keyof typeof protectedInventory]: Record<string, string[]> };
+
+function mutableInventory(): MutableInventory {
+	return structuredClone(protectedInventory) as unknown as MutableInventory;
+}
+
 const decide = (base: Map<string, string>, head: Map<string, string>) => evaluate(base, head, inventory);
 
 describe("daemon generation release guard", () => {
@@ -104,7 +121,7 @@ describe("daemon generation release guard", () => {
 		const base = files({ telegramOwnership: "return true;" });
 		base.delete("scripts/telegram-daemon-generation-guard.ts");
 		base.set(telegramContract, "export const NOTIFICATION_PROTOCOL_VERSION = 3;\nexport const DAEMON_GENERATION = NOTIFICATION_PROTOCOL_VERSION;");
-		base.set(chatControl, "");
+		base.set(chatControl, legacyChatDaemonControl);
 		const head = files({ telegramGeneration: 4, telegramOwnership: "return true;", chatLifecycle: "return true;" });
 		expect(isLegacyBootstrapBase(base)).toBe(true);
 		expect(decide(base, head).malformedDeclarations).toEqual([]);
@@ -113,6 +130,8 @@ describe("daemon generation release guard", () => {
 			(candidate: Map<string, string>) => candidate.set(telegramContract, "export const NOTIFICATION_PROTOCOL_VERSION = 3;\nexport const DAEMON_GENERATION = 3;"),
 			(candidate: Map<string, string>) => candidate.set(telegramDaemon, "export function acquireDaemonOwnership() { return true; }\nconst ownershipPhase = 'ready';"),
 			(candidate: Map<string, string>) => candidate.set(chatControl, "export const CHAT_DAEMON_GENERATIONS = { discord: 1, slack: 1 };"),
+			(candidate: Map<string, string>) => candidate.set(chatControl, "export class ChatDaemonController {}"),
+			(candidate: Map<string, string>) => candidate.set(chatControl, "export class ChatDaemonController { async operate( {"),
 			(candidate: Map<string, string>) => candidate.set(telegramDaemon, ""),
 		]) {
 			const candidate = new Map(base);
@@ -124,16 +143,16 @@ describe("daemon generation release guard", () => {
 
 	test("semantic manifest rejects duplicate, moved, and narrowed inventories", () => {
 		expect(() => validateManifest()).not.toThrow();
-		const duplicate = structuredClone(protectedInventory) as typeof protectedInventory;
-		(duplicate.telegram[telegramContract] as string[]).push("DAEMON_GENERATION");
+		const duplicate = mutableInventory();
+		duplicate.telegram[telegramContract]!.push("DAEMON_GENERATION");
 		expect(() => validateInventory(duplicate)).toThrow("invalid telegram contract inventory");
 		expect(() => validateManifest({ contractVersion: 5, inventory: duplicate })).toThrow("invalid telegram contract inventory");
-		const moved = structuredClone(protectedInventory) as typeof protectedInventory;
-		moved.telegram["moved.ts"] = moved.telegram[telegramContract];
+		const moved = mutableInventory();
+		moved.telegram["moved.ts"] = moved.telegram[telegramContract]!;
 		delete moved.telegram[telegramContract];
 		expect(() => validateManifest({ contractVersion: 5, inventory: moved })).toThrow("does not match the protected inventory");
-		const narrowed = structuredClone(protectedInventory) as typeof protectedInventory;
-		(narrowed.telegram[telegramDaemon] as string[]).pop();
+		const narrowed = mutableInventory();
+		narrowed.telegram[telegramDaemon]!.pop();
 		expect(() => validateManifest({ contractVersion: 5, inventory: narrowed })).toThrow("does not match the protected inventory");
 	});
 
