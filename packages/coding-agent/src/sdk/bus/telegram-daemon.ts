@@ -12,6 +12,7 @@ import { getNotificationConfig, isTelegramConfigured, tokenFingerprint } from ".
 import { parseInThreadConfigCommand, parseRichToggleCommand, parseTelegramControlCommand } from "./config-commands";
 import { daemonPaths, HEARTBEAT_TTL_MS } from "./daemon-paths";
 import {
+	buildButtonGrid,
 	buildCompactChoiceGrid,
 	code,
 	splitTelegramHtml,
@@ -178,6 +179,36 @@ const PENDING_TOPIC_FRAME_LIMIT = 20;
 const SEEN_UPDATE_ID_LIMIT = 1_000;
 const ORPHAN_TOPIC_GRACE_MS = 60_000;
 const CONSUMED_REACTION = "✅";
+const MODEL_CALLBACK_PREFIX = "m:";
+const MODEL_CHOICE_TTL_MS = 10 * 60 * 1_000;
+
+const MODEL_BUTTON_LABEL_MAX_BYTES = 48;
+const SENSITIVE_MODEL_LABEL =
+	/(?:\b(?:https?|wss?):\/\/|\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b|\b(?:api[-_ ]?key|access[-_ ]?token|bearer|secret|password|account(?:\s*id)?|email|exception|stack trace)\b|\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b)/i;
+
+/** Inline-keyboard labels are plain text, bounded, and stripped of visual control characters. */
+function safeModelButtonLabel(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value
+		.replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!normalized) return undefined;
+	if (SENSITIVE_MODEL_LABEL.test(normalized)) return undefined;
+	if (Buffer.byteLength(normalized, "utf8") <= MODEL_BUTTON_LABEL_MAX_BYTES) return normalized;
+
+	const marker = "…";
+	const markerBytes = Buffer.byteLength(marker, "utf8");
+	let label = "";
+	let labelBytes = 0;
+	for (const char of normalized) {
+		const charBytes = Buffer.byteLength(char, "utf8");
+		if (labelBytes + charBytes + markerBytes > MODEL_BUTTON_LABEL_MAX_BYTES) break;
+		label += char;
+		labelBytes += charBytes;
+	}
+	return `${label}${marker}`;
+}
 
 function splitTelegramPlainText(text: string, max = TELEGRAM_MESSAGE_LIMIT): string[] {
 	if (text.length <= max) return [text];
@@ -986,7 +1017,10 @@ export interface TelegramDaemonOptions {
 }
 
 interface SessionSocket {
+	/** Immutable key of the transport endpoint that owns this socket. */
 	sessionId: string;
+	/** Current logical session carried by valid threaded frames on this transport. */
+	logicalSessionId: string;
 	token: string;
 	endpointKey: string;
 	ws: WebSocket;
@@ -1004,6 +1038,20 @@ interface SessionSocket {
 	/** Queues live frames until startup replay is applied. */
 	replayPending: boolean;
 	replayQueue: Record<string, unknown>[];
+}
+
+interface ModelChoiceRoute {
+	/** Exact transport socket that rendered this choice. */
+	session: SessionSocket;
+	/** Logical session current when this choice was rendered. */
+	sessionId: string;
+	selector: string;
+	expiresAt: number;
+}
+
+interface RenderedModelChoice {
+	selector: string;
+	label: string;
 }
 
 interface PendingThreadedFrame {
@@ -1040,6 +1088,9 @@ export class TelegramNotificationDaemon {
 	/** Telegram message id backing each streamed `${sessionId}:${coalesceKey}`, for in-place edits. */
 	private readonly liveMessages = new Map<string, number>();
 	readonly sessions = new Map<string, SessionSocket>();
+	/** Ephemeral aliases for model choices; deliberately never serialized across daemon restarts. */
+	#modelChoiceAliases = new Map<string, ModelChoiceRoute>();
+
 	private readonly runtime: NotificationOperatorRuntime;
 	private readonly sessionRouter: OperatorEventRouter<SessionSocket>;
 	private readonly pollConflictBackoff = new OperatorBackoffPolicy({ initialMs: 500, maxMs: 5_000 });
@@ -1792,8 +1843,14 @@ export class TelegramNotificationDaemon {
 		const ws = new WS(`${url}/?token=${encodeURIComponent(token)}`);
 		const endpointKey = endpointGenerationKey(url, token);
 		this.closedEndpointKeys.delete(sessionId);
+		const existing = this.sessions.get(sessionId);
+		if (existing) this.#clearModelChoiceAliasesForSocket(existing);
+		this.#clearModelChoiceAliases(sessionId);
+
 		const session: SessionSocket = {
 			sessionId,
+			logicalSessionId: sessionId,
+
 			token,
 			endpointKey,
 			ws,
@@ -1903,8 +1960,10 @@ export class TelegramNotificationDaemon {
 			this.deleteMessageRoutes(session.sessionId);
 		}
 		if (isCurrentSession) {
+			this.#clearModelChoiceAliasesForSocket(session);
 			this.sessions.delete(session.sessionId);
 		}
+
 		for (const item of new Set(this.selectedAckPending.values())) {
 			if (item.session !== session) continue;
 			if (item.state === "queued") this.pool.removeById(item.itemId);
@@ -1926,6 +1985,39 @@ export class TelegramNotificationDaemon {
 		}
 	}
 
+	#logicalSessionId(session: SessionSocket): string {
+		return session.logicalSessionId ?? session.sessionId;
+	}
+
+	#clearModelChoiceAliases(sessionId: string): void {
+		for (const [alias, route] of this.#modelChoiceAliases) {
+			if (route.sessionId === sessionId) this.#modelChoiceAliases.delete(alias);
+		}
+	}
+
+	#clearModelChoiceAliasesForSocket(session: SessionSocket): void {
+		for (const [alias, route] of this.#modelChoiceAliases) {
+			if (route.session === session) this.#modelChoiceAliases.delete(alias);
+		}
+	}
+
+	#sweepExpiredModelChoiceAliases(): void {
+		const now = this.runtime.now();
+		for (const [alias, route] of this.#modelChoiceAliases) {
+			if (route.expiresAt <= now) this.#modelChoiceAliases.delete(alias);
+		}
+	}
+
+	#putModelChoiceAlias(route: Omit<ModelChoiceRoute, "expiresAt">): string {
+		this.#sweepExpiredModelChoiceAliases();
+		let alias: string;
+		do {
+			alias = `${MODEL_CALLBACK_PREFIX}${crypto.randomBytes(16).toString("base64url")}`;
+		} while (this.#modelChoiceAliases.has(alias));
+		this.#modelChoiceAliases.set(alias, { ...route, expiresAt: this.runtime.now() + MODEL_CHOICE_TTL_MS });
+		return alias;
+	}
+
 	private static readonly THREADED_FRAMES = new Set([
 		"identity_header",
 		"context_update",
@@ -1935,6 +2027,22 @@ export class TelegramNotificationDaemon {
 		"config_update",
 		"control_command_result",
 	]);
+
+	/** Rekey model controls before a valid threaded frame can render or a silent config update can route output. */
+	#updateLogicalSessionForThreadedFrame(session: SessionSocket, msg: Record<string, unknown>): void {
+		if (
+			typeof msg.type !== "string" ||
+			!TelegramNotificationDaemon.THREADED_FRAMES.has(msg.type) ||
+			typeof msg.sessionId !== "string" ||
+			!msg.sessionId.trim() ||
+			msg.sessionId === this.#logicalSessionId(session) ||
+			(msg.type !== "config_update" && !renderThreadedFrame(msg))
+		)
+			return;
+		this.#clearModelChoiceAliasesForSocket(session);
+		this.#clearModelChoiceAliases(msg.sessionId);
+		session.logicalSessionId = msg.sessionId;
+	}
 
 	private topicNameFor(sessionId: string, msg: { title?: unknown; repo?: unknown; branch?: unknown }): string {
 		const repo = typeof msg?.repo === "string" && msg.repo ? msg.repo : undefined;
@@ -2724,6 +2832,65 @@ export class TelegramNotificationDaemon {
 		this.runtime.stopInterval("telegram-typing");
 	}
 
+	/** Render successful `/model` lists as session-bound, one-shot inline choices. */
+	async #renderModelChoices(session: SessionSocket, msg: Record<string, unknown>): Promise<boolean> {
+		const logicalSessionId = this.#logicalSessionId(session);
+		if (
+			msg.type !== "control_command_result" ||
+			msg.status !== "ok" ||
+			msg.sessionId !== logicalSessionId ||
+			!Array.isArray(msg.modelChoices) ||
+			this.sessions.get(session.sessionId) !== session
+		)
+			return false;
+
+		const choices: RenderedModelChoice[] = [];
+		for (const choice of msg.modelChoices) {
+			if (!choice || typeof choice !== "object") continue;
+			const { selector, label } = choice as { selector?: unknown; label?: unknown };
+			const safeLabel = safeModelButtonLabel(label);
+			if (typeof selector !== "string" || !selector.trim() || !safeLabel) continue;
+			choices.push({ selector, label: safeLabel });
+		}
+		if (choices.length === 0) return false;
+
+		const rendered = renderThreadedFrame({ ...msg, type: "control_command_result" });
+		if (!rendered?.text) return false;
+		const topicId =
+			(await this.existingTopicForPrivateChat(session.sessionId)) ??
+			(await this.ensureTopic(session.sessionId, this.topicNameFor(session.sessionId, msg)));
+		if (!topicId) return false;
+
+		// Each logical session owns only its most recently rendered menu.
+		this.#clearModelChoiceAliases(logicalSessionId);
+		const aliases = choices.map(choice =>
+			this.#putModelChoiceAlias({ session, sessionId: logicalSessionId, selector: choice.selector }),
+		);
+		const inline_keyboard = buildButtonGrid(
+			choices.map(choice => choice.label),
+			index => aliases[index]!,
+		);
+		try {
+			const response = await this.botApi.call("sendMessage", {
+				chat_id: this.opts.chatId,
+				message_thread_id: Number(topicId),
+				text: rendered.text,
+				parse_mode: TELEGRAM_PARSE_MODE,
+				reply_markup: { inline_keyboard },
+			});
+			if (response && typeof response === "object" && (response as { ok?: unknown }).ok === false) {
+				for (const alias of aliases) this.#modelChoiceAliases.delete(alias);
+				logger.warn("notifications: failed to send model selection keyboard");
+				return false;
+			}
+		} catch {
+			for (const alias of aliases) this.#modelChoiceAliases.delete(alias);
+			logger.warn("notifications: failed to send model selection keyboard");
+			return false;
+		}
+		return true;
+	}
+
 	async handleSessionMessage(session: SessionSocket, msg: any): Promise<void> {
 		if (session.replayPending) {
 			const matchingReplay = msg?.type === "event_replay_result" && msg.id === session.replayId;
@@ -2784,7 +2951,10 @@ export class TelegramNotificationDaemon {
 			return;
 		}
 		if (msg?.type === "event_replay_result") return;
+		if (msg && typeof msg === "object") this.#updateLogicalSessionForThreadedFrame(session, msg);
 		if (await this.sessionRouter.dispatch(session, msg as Record<string, unknown>)) return;
+		if (await this.#renderModelChoices(session, msg as Record<string, unknown>)) return;
+
 		if (typeof msg?.type === "string" && TelegramNotificationDaemon.THREADED_FRAMES.has(msg.type)) {
 			const send = renderThreadedFrame(msg);
 			if (!send) return;
@@ -2983,6 +3153,80 @@ export class TelegramNotificationDaemon {
 		}
 	}
 
+	/** Claim and forward one session-bound model alias before acknowledging its callback. */
+	async #handleModelChoiceCallback(update: unknown, callbackId: unknown): Promise<boolean> {
+		const callback = (
+			update as {
+				callback_query?: { data?: unknown; message?: { chat?: { id?: unknown } } };
+			}
+		).callback_query;
+		const alias = callback?.data;
+		if (typeof alias !== "string" || !alias.startsWith(MODEL_CALLBACK_PREFIX)) return false;
+		this.#sweepExpiredModelChoiceAliases();
+		if (String(callback?.message?.chat?.id) !== String(this.opts.chatId)) {
+			await this.answerCallbackQueryBestEffort(callbackId, "Not authorized");
+			return true;
+		}
+		if (!(await this.pairedChatIsPrivate())) {
+			await this.answerCallbackQueryBestEffort(callbackId, "Not authorized");
+			return true;
+		}
+
+		const route = this.#modelChoiceAliases.get(alias);
+		if (!route) {
+			await this.#sendModelStaleGuidance(callbackId);
+			return true;
+		}
+		const session = route.session;
+		if (
+			this.sessions.get(session.sessionId) !== session ||
+			this.#logicalSessionId(session) !== route.sessionId ||
+			session.ws.readyState !== WebSocket.OPEN
+		) {
+			this.#modelChoiceAliases.delete(alias);
+			await this.#sendModelStaleGuidance(callbackId);
+			return true;
+		}
+
+		// Delete before send so a duplicate tap can only become stale, never duplicate a control command.
+		this.#modelChoiceAliases.delete(alias);
+		const updateId = (update as { update_id?: unknown }).update_id;
+		const safeUpdateId =
+			typeof updateId === "number" && Number.isSafeInteger(updateId) && updateId >= 0 ? updateId : undefined;
+		try {
+			session.ws.send(
+				JSON.stringify({
+					type: "control_command",
+					sessionId: route.sessionId,
+					token: session.token,
+					requestId: safeUpdateId === undefined ? `tg:model:${alias}` : `tg:model:${safeUpdateId}`,
+					...(safeUpdateId === undefined ? {} : { updateId: safeUpdateId }),
+					command: { name: "model", action: "set", selector: route.selector },
+				}),
+			);
+		} catch {
+			await this.#sendModelStaleGuidance(callbackId);
+			return true;
+		}
+		await this.answerCallbackQueryBestEffort(callbackId);
+		return true;
+	}
+
+	async #sendModelStaleGuidance(callbackId: unknown): Promise<void> {
+		const text = "Button is stale. Run /model again.";
+		await this.answerCallbackQueryBestEffort(callbackId, text);
+		if (!(await this.pairedChatIsPrivate())) return;
+		try {
+			await this.botApi.call("sendMessage", {
+				chat_id: this.opts.chatId,
+				text,
+				parse_mode: TELEGRAM_PARSE_MODE,
+			});
+		} catch {
+			// Best-effort stale guidance must not reject a callback.
+		}
+	}
+
 	private async sendStaleGuidance(callbackId: unknown): Promise<void> {
 		await this.answerCallbackQueryBestEffort(callbackId, "Button is stale");
 		if (!(await this.pairedChatIsPrivate())) return;
@@ -3159,7 +3403,7 @@ export class TelegramNotificationDaemon {
 		// update_id dedupe are all enforced by decideThreadedInbound.
 		const raw = update as {
 			callback_query?: unknown;
-			message?: { reply_to_message?: { message_id?: unknown } };
+			message?: { text?: unknown; reply_to_message?: { message_id?: unknown } };
 		};
 		// A reply to a known ask message routes to that ask (below). Any OTHER
 		// message in a topic (plain text, or a reply to a non-ask message) is a
@@ -3167,7 +3411,12 @@ export class TelegramNotificationDaemon {
 		const replyTo = raw.message?.reply_to_message?.message_id;
 		const isAskReply =
 			replyTo !== undefined && (this.messageRoutes.has(String(replyTo)) || this.messageRoutes.has(Number(replyTo)));
-		if (!raw.callback_query && !isAskReply) {
+		const directControl =
+			typeof raw.message?.text === "string"
+				? parseTelegramControlCommand(raw.message.text, this.botUsername)
+				: ({ kind: "none" } as const);
+		const interceptAskControl = isAskReply && directControl.kind !== "none";
+		if (!raw.callback_query && (!isAskReply || interceptAskControl)) {
 			const inbound = decideThreadedInbound(update as never, {
 				pairedChatId: this.opts.chatId,
 				topicToSession: t => this.topics.sessionForTopic(t),
@@ -3240,7 +3489,7 @@ export class TelegramNotificationDaemon {
 						session.ws.send(
 							JSON.stringify({
 								type: "control_command",
-								sessionId: inbound.sessionId,
+								sessionId: this.#logicalSessionId(session),
 								token: session.token,
 								requestId: `tg:${inbound.updateId}`,
 								updateId: inbound.updateId,
@@ -3297,6 +3546,7 @@ export class TelegramNotificationDaemon {
 			}
 		}
 		const callbackId = (update as { callback_query?: { id?: unknown } }).callback_query?.id;
+		if (await this.#handleModelChoiceCallback(update, callbackId)) return;
 		const decision = routeInboundUpdate(update, {
 			aliasTable: this.aliasTable,
 			messageRoutes: this.messageRoutes,
@@ -3332,6 +3582,7 @@ export class TelegramNotificationDaemon {
 					{ command: "rich", description: "Toggle rich Telegram delivery: /rich <on|off>" },
 					{ command: "reasoning", description: "Show or change reasoning effort in this session" },
 					{ command: "usage", description: "Show provider/local usage for this session" },
+					{ command: "model", description: "Select a model for this session" },
 					{ command: "context", description: "Show current context usage for this session" },
 					{ command: "compact", description: "Compact this session: /compact [instructions]" },
 					{ command: "session_create", description: "Create a GJC session: path, worktree, or dir [--mpreset]" },

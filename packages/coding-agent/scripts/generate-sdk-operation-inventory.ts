@@ -112,6 +112,19 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"agent_session:getSessionDefaultModelSelector": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:recordResumeDefaultModel": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:setModelTemporary": "internal accessor/plumbing, not a user-facing control seam",
+	"agent_session:setModelTemporaryForControl":
+		"internal Telegram control wrapper over the reviewed model.set seam, not an independent public SDK operation",
+	"agent_session:setThinkingLevelForControl":
+		"internal Telegram control wrapper over the reviewed thinking.set seam, not an independent public SDK operation",
+	"agent_session:getThinkingScopeForControl":
+		"internal Telegram control status accessor, not a user-facing SDK operation seam",
+	"agent_session:getThinkingVisibility":
+		"internal extension and Telegram display accessor, not a user-facing SDK operation seam",
+	"agent_session:setThinkingVisibility": "internal extension display mutation without a public SDK registry operation",
+	"agent_session:setThinkingVisibilityForControl":
+		"internal Telegram control wrapper over display state, not an independent public SDK operation",
+	"agent_session:fetchUsageReportsForControl":
+		"internal Telegram control wrapper over the reviewed usage.get seam, not an independent public SDK operation",
 	"agent_session:cycleRoleModels": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:isFastModeEnabled": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:isFastForProvider": "internal accessor/plumbing, not a user-facing control seam",

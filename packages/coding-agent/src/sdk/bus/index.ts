@@ -71,6 +71,7 @@ import {
 	type NotificationConfig,
 	sessionTag,
 } from "./config";
+import { telegramControlCommandUsage } from "./config-commands";
 import { imageAttachmentsFromMessage, notificationActionPayload, summaryFromMessage } from "./helpers";
 import { type EnsureDaemonResult, ensureTelegramDaemonRunning } from "./telegram-daemon";
 
@@ -749,7 +750,15 @@ interface NotificationControlCommandPayload {
 	name?: unknown;
 	action?: unknown;
 	level?: unknown;
+	global?: unknown;
+	selector?: unknown;
 	instructions?: unknown;
+}
+
+export interface NotificationControlCommandResult {
+	status: "ok" | "error" | "unavailable";
+	message: string;
+	modelChoices?: Array<{ selector: string; label: string }>;
 }
 
 function parseControlCommandPayload(json: string | undefined): NotificationControlCommandPayload | undefined {
@@ -791,62 +800,209 @@ function formatLocalUsage(ctx: ExtensionContext): string {
 	].join("\n");
 }
 
-function cycleTelegramThinking(api: ExtensionAPI): ThinkingLevel | undefined {
-	const levels = [
-		ThinkingLevel.Off,
-		ThinkingLevel.Minimal,
-		ThinkingLevel.Low,
-		ThinkingLevel.Medium,
-		ThinkingLevel.High,
-		ThinkingLevel.XHigh,
-		ThinkingLevel.Max,
-	];
-	const current = api.getThinkingLevel() ?? ThinkingLevel.Off;
-	const currentIndex = levels.indexOf(current as (typeof levels)[number]);
-	const next = levels[(currentIndex + 1) % levels.length];
-	if (!next) return undefined;
-	api.setThinkingLevel(next);
-	return api.getThinkingLevel() ?? next;
+interface SafeUsageWindow {
+	kind: "5h" | "7d";
+	usedFraction?: number;
+	resetsAt?: number;
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function classifyUsageWindow(limit: Record<string, unknown>): "5h" | "7d" | undefined {
+	const window = isRecord(limit.window) ? limit.window : undefined;
+	const scope = isRecord(limit.scope) ? limit.scope : undefined;
+	const ids = [window?.id, scope?.windowId, limit.id];
+	for (const id of ids) {
+		if (typeof id !== "string") continue;
+		const normalized = id.toLowerCase();
+		if (normalized === "5h" || normalized === "7d") return normalized;
+	}
+	const durationMs = window?.durationMs;
+	if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) return undefined;
+	if (Math.abs(durationMs - 5 * 60 * 60_000) <= 30 * 60_000) return "5h";
+	if (Math.abs(durationMs - 7 * 24 * 60 * 60_000) <= 12 * 60 * 60_000) return "7d";
+	return undefined;
+}
+
+function getUsageUsedFraction(amount: Record<string, unknown> | undefined): number | undefined {
+	if (!amount) return undefined;
+	const usedFraction = amount.usedFraction;
+	if (typeof usedFraction === "number" && Number.isFinite(usedFraction)) return usedFraction;
+	const used = amount.used;
+	if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+	if (amount.unit === "percent") return used / 100;
+	const limit = amount.limit;
+	return typeof limit === "number" && Number.isFinite(limit) && limit !== 0 ? used / limit : undefined;
+}
+
+function formatStableResetTime(value: number): string | undefined {
+	if (!Number.isFinite(value)) return undefined;
+	try {
+		return new Date(value)
+			.toISOString()
+			.replace("T", " ")
+			.replace(/\.\d{3}Z$/, " UTC");
+	} catch {
+		return undefined;
+	}
+}
+
+function shouldReplaceUsageWindow(current: SafeUsageWindow, candidate: SafeUsageWindow): boolean {
+	if (candidate.usedFraction !== undefined) {
+		if (current.usedFraction === undefined || candidate.usedFraction > current.usedFraction) return true;
+		if (candidate.usedFraction < current.usedFraction) return false;
+	}
+	if (current.usedFraction !== undefined && candidate.usedFraction === undefined) return false;
+	if (candidate.resetsAt === undefined) return false;
+	return current.resetsAt === undefined || candidate.resetsAt < current.resetsAt;
+}
+
+function formatRemoteUsageWindows(reports: unknown): string[] {
+	if (!Array.isArray(reports)) return [];
+	const windows = new Map<SafeUsageWindow["kind"], SafeUsageWindow>();
+	for (const report of reports) {
+		if (!isRecord(report) || !Array.isArray(report.limits)) continue;
+		for (const value of report.limits) {
+			if (!isRecord(value)) continue;
+			const kind = classifyUsageWindow(value);
+			if (!kind) continue;
+			const window = isRecord(value.window) ? value.window : undefined;
+			const amount = isRecord(value.amount) ? value.amount : undefined;
+			const usedFraction = getUsageUsedFraction(amount);
+			const resetsAt = window?.resetsAt;
+			const candidate: SafeUsageWindow = {
+				kind,
+				...(typeof usedFraction === "number" && Number.isFinite(usedFraction) ? { usedFraction } : {}),
+				...(typeof resetsAt === "number" && Number.isFinite(resetsAt) ? { resetsAt } : {}),
+			};
+			const current = windows.get(kind);
+			if (!current || shouldReplaceUsageWindow(current, candidate)) windows.set(kind, candidate);
+		}
+	}
+	return (["5h", "7d"] as const).flatMap(kind => {
+		const window = windows.get(kind);
+		if (!window) return [];
+		const details = [kind === "5h" ? "5-hour limit" : "Weekly limit"];
+		if (window.usedFraction !== undefined) details.push(`${Number((window.usedFraction * 100).toFixed(1))}% used`);
+		const resetTime = window.resetsAt === undefined ? undefined : formatStableResetTime(window.resetsAt);
+		if (resetTime) details.push(`resets ${resetTime}`);
+		return [details.join(" — ")];
+	});
+}
+
+async function formatUsage(ctx: ExtensionContext, api: ExtensionAPI): Promise<string> {
+	const local = formatLocalUsage(ctx);
+	try {
+		const windows = formatRemoteUsageWindows(await api.fetchUsageReportsForControl());
+		return windows.length > 0 ? `${local}\n\nUsage windows\n${windows.join("\n")}` : local;
+	} catch {
+		logger.warn("notifications: usage report fetch failed");
+		return local;
+	}
+}
+
+function formatReasoningSettings(api: ExtensionAPI): string {
+	const level = api.getThinkingLevel() ?? ThinkingLevel.Off;
+	const display = api.getThinkingVisibility() === "visible" ? "on" : "off";
+	return [
+		"🧠 Reasoning Settings",
+		`Effort: ${level}`,
+		`Scope: ${api.getThinkingScopeForControl()}`,
+		`Display: ${display}`,
+		telegramControlCommandUsage("reasoning"),
+	].join("\n");
+}
+
+const TELEGRAM_MODEL_CHOICE_LIMIT = 40;
+
+function getModelChoices(ctx: ExtensionContext): Array<{ selector: string; label: string }> {
+	const choices = new Map<string, { selector: string; label: string }>();
+	for (const model of ctx.modelRegistry.getAvailable()) {
+		const selector = `${model.provider}/${model.id}`;
+		if (!choices.has(selector)) {
+			choices.set(selector, { selector, label: selector.replace(/[\u0000-\u001F\u007F]/g, " ") });
+		}
+	}
+	return [...choices.values()]
+		.sort((left, right) => left.selector.localeCompare(right.selector))
+		.slice(0, TELEGRAM_MODEL_CHOICE_LIMIT);
+}
+
+const CONTROL_COMMAND_FAILURE_MESSAGE = "Control command failed.";
+const STALE_MODEL_BUTTON_MESSAGE = "Button is stale. Run /model again.";
 
 export async function executeNotificationControlCommand(
 	command: NotificationControlCommandPayload | undefined,
 	ctx: ExtensionContext,
 	api: ExtensionAPI,
-): Promise<{ status: "ok" | "error" | "unavailable"; message: string }> {
+	expectedSessionId?: string,
+): Promise<NotificationControlCommandResult> {
+	try {
+		return await executeNotificationControlCommandUnchecked(command, ctx, api, expectedSessionId);
+	} catch {
+		logger.warn("notifications: control command failed");
+		return { status: "error", message: CONTROL_COMMAND_FAILURE_MESSAGE };
+	}
+}
+
+async function executeNotificationControlCommandUnchecked(
+	command: NotificationControlCommandPayload | undefined,
+	ctx: ExtensionContext,
+	api: ExtensionAPI,
+	expectedSessionId?: string,
+): Promise<NotificationControlCommandResult> {
 	if (!command || typeof command.name !== "string") return { status: "error", message: "Invalid control command." };
 	switch (command.name) {
 		case "reasoning": {
-			const current = api.getThinkingLevel() ?? ThinkingLevel.Off;
-			if (command.action === "status") return { status: "ok", message: `Reasoning effort: ${current}` };
+			const global = command.global === true;
+			if (command.action === "status") return { status: "ok", message: formatReasoningSettings(api) };
 			if (command.action === "cycle") {
-				const next = cycleTelegramThinking(api);
+				const next = api.cycleThinkingLevel();
 				return next
-					? { status: "ok", message: `Reasoning effort set to ${next}.` }
+					? { status: "ok", message: formatReasoningSettings(api) }
 					: { status: "unavailable", message: "Reasoning effort unavailable for this session." };
 			}
 			if (command.action === "set" && typeof command.level === "string") {
-				const parsed = parseThinkingLevel(command.level);
+				const requestedLevel = command.level.toLowerCase();
+				const level = requestedLevel === "none" ? "off" : requestedLevel === "reset" ? "inherit" : requestedLevel;
+				const parsed = parseThinkingLevel(level);
 				if (!parsed) return { status: "error", message: "Invalid reasoning effort." };
-				api.setThinkingLevel(parsed);
-				return { status: "ok", message: `Reasoning effort set to ${api.getThinkingLevel() ?? ThinkingLevel.Off}.` };
+				await api.setThinkingLevelForControl(parsed, global);
+				return { status: "ok", message: formatReasoningSettings(api) };
+			}
+			if (command.action === "show" || command.action === "hide") {
+				await api.setThinkingVisibilityForControl(command.action === "show" ? "visible" : "hidden", global);
+				return { status: "ok", message: formatReasoningSettings(api) };
 			}
 			return { status: "error", message: "Invalid reasoning command." };
 		}
 		case "usage":
-			return { status: "ok", message: formatLocalUsage(ctx) };
+			return { status: "ok", message: await formatUsage(ctx, api) };
 		case "context":
 			return { status: "ok", message: formatContextUsageLine(ctx) };
+		case "model": {
+			const choices = getModelChoices(ctx);
+			if (command.action === "list") {
+				return choices.length > 0
+					? { status: "ok", message: "Select a model.", modelChoices: choices }
+					: { status: "unavailable", message: "No models are available for this session." };
+			}
+			if (command.action !== "set" || typeof command.selector !== "string") {
+				return { status: "error", message: "Invalid model selection." };
+			}
+			const model = ctx.modelRegistry
+				.getAvailable()
+				.find(candidate => `${candidate.provider}/${candidate.id}` === command.selector);
+			if (!model) return { status: "error", message: "Invalid model selection." };
+			if (!(await api.setModelTemporaryForControl(model, expectedSessionId)))
+				return { status: "unavailable", message: "Model unavailable for this session." };
+			return { status: "ok", message: `Model set to ${command.selector}.` };
+		}
 		case "compact": {
 			const before = ctx.getContextUsage()?.tokens;
-			try {
-				await ctx.compact(typeof command.instructions === "string" ? command.instructions : undefined);
-			} catch (err) {
-				return {
-					status: "error",
-					message: `Compaction failed: ${err instanceof Error ? err.message : String(err)}`,
-				};
-			}
+			await ctx.compact(typeof command.instructions === "string" ? command.instructions : undefined);
 			const after = ctx.getContextUsage()?.tokens;
 			if (before != null && after != null)
 				return {
@@ -2348,7 +2504,7 @@ export function createNotificationsExtension(
 						redact?: boolean;
 					} = {
 						type: "config_update",
-						sessionId: id,
+						sessionId: runtime.id,
 					};
 					if (inbound.verbosity === "lean" || inbound.verbosity === "verbose") {
 						runtime.verbosity = inbound.verbosity;
@@ -2361,40 +2517,42 @@ export function createNotificationsExtension(
 					if (update.verbosity !== undefined || update.redact !== undefined) {
 						try {
 							pushSessionFrame(runtime, update);
-						} catch (e) {
-							logger.warn(`notifications: config_update failed: ${String(e)}`);
+						} catch (error) {
+							logger.warn(`notifications: config_update failed: ${String(error)}`);
 						}
 					}
 				}
 				if (inbound.kind === "control_command") {
 					if (!runtime || !inbound.requestId) return;
-					void executeNotificationControlCommand(parseControlCommandPayload(inbound.commandJson), ctx, api)
-						.then(result => {
-							if (runtime)
-								pushSessionFrame(runtime, {
-									type: "control_command_result",
-									sessionId: runtime.id,
-									requestId: inbound.requestId,
-									updateId: inbound.updateId,
-									status: result.status,
-									message: result.message,
-								});
-						})
-						.catch(err => {
-							try {
-								if (runtime)
-									pushSessionFrame(runtime, {
-										type: "control_command_result",
-										sessionId: runtime.id,
-										requestId: inbound.requestId,
-										updateId: inbound.updateId,
-										status: "error",
-										message: `Control command failed: ${err instanceof Error ? err.message : String(err)}`,
-									});
-							} catch (pushErr) {
-								logger.warn(`notifications: control_command_result failed: ${String(pushErr)}`);
-							}
+					const activeRuntime = runtime;
+					if (inbound.sessionId !== activeRuntime.id) {
+						pushSessionFrame(activeRuntime, {
+							type: "control_command_result",
+							sessionId: activeRuntime.id,
+							requestId: inbound.requestId,
+							updateId: inbound.updateId,
+							status: "error",
+							message: STALE_MODEL_BUTTON_MESSAGE,
 						});
+						return;
+					}
+					void executeNotificationControlCommand(
+						parseControlCommandPayload(inbound.commandJson),
+						ctx,
+						api,
+						inbound.sessionId,
+					).then(result => {
+						if (runtime !== activeRuntime) return;
+						pushSessionFrame(activeRuntime, {
+							type: "control_command_result",
+							sessionId: activeRuntime.id,
+							requestId: inbound.requestId,
+							updateId: inbound.updateId,
+							status: result.status,
+							message: result.message,
+							modelChoices: result.modelChoices,
+						});
+					});
 				}
 			});
 

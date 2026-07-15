@@ -69,6 +69,7 @@
 - Prevented orphaned background processes by reaping failed detached harness owners and their exact SDK session children with verified TERM/KILL cleanup, giving only the invocation-scoped transport-close capability permission to break a direct owner-stop cycle while every public stop caller awaits truthful teardown, keeping runtime-owner lease/heartbeat authority live while failed teardown retries, binding broker discovery to OS process incarnations before accepting retained ownership, making isolated ACP and broker subprocess tests stop their exact broker before deleting temporary state, and adding a cooperative Telegram daemon watchdog that stops superseded or non-progressing owners.
 - Preserved clipboard image attachments when the interactive editor clears the composer before dispatching the submit callback, so Alt+V image placeholders still send their image blocks instead of placeholder-only text (#2126).
 - Completed bracketed-paste input now returns a manually paged transcript to live output before the paste is dispatched, including asynchronous consumed and unconsumed paste paths.
+- Telegram `/usage` now includes secret-safe 5-hour and weekly limit summaries when normalized provider data is available, `/reasoning` reports effort/scope/display with compatible controls and accurate help, and `/model` offers owner-authorized one-shot inline buttons with stale/invalid callback safeguards (#2095).
 
 ## [0.10.0] - 2026-07-12
 
