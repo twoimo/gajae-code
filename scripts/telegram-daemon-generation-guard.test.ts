@@ -1,104 +1,97 @@
 import { describe, expect, test } from "bun:test";
-import { evaluate, validateSha } from "./telegram-daemon-generation-guard";
+import { declaration, evaluate, validateCiInputs, validateSha } from "./telegram-daemon-generation-guard";
 
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
+const inventory = {
+	telegram: { [telegramContract]: ["DAEMON_GENERATION"], [telegramDaemon]: ["acquireDaemonOwnership"] },
+	discord: { [chatControl]: ["CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "operate"] },
+	slack: { [chatControl]: ["CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "operate"] },
+} as const;
 
 function files(input: {
 	telegramGeneration?: number;
-	chatGeneration?: number;
+	discordGeneration?: number;
+	slackGeneration?: number;
 	telegramOwnership?: string;
 	chatLifecycle?: string;
 } = {}): Map<string, string> {
 	return new Map([
 		[
 			telegramContract,
-			input.telegramGeneration === undefined
-				? ""
-				: `export const NOTIFICATION_PROTOCOL_VERSION = 3;\nexport const DAEMON_GENERATION = ${input.telegramGeneration};\n`,
+			input.telegramGeneration === undefined ? "" : `export const DAEMON_GENERATION = ${input.telegramGeneration};\n`,
 		],
 		[
 			telegramDaemon,
-			input.telegramOwnership === undefined
-				? ""
-				: `export function acquireDaemonOwnership() { ${input.telegramOwnership} }\n`,
+			input.telegramOwnership === undefined ? "" : `export function acquireDaemonOwnership() { ${input.telegramOwnership} }\n`,
 		],
 		[
 			chatControl,
 			[
-				input.chatGeneration === undefined ? "" : `export const CHAT_DAEMON_GENERATION = ${input.chatGeneration};`,
-				input.chatLifecycle === undefined ? "" : `function isPhysicalLiveState() { ${input.chatLifecycle} }`,
+				`export const CHAT_DAEMON_GENERATIONS = { discord: ${input.discordGeneration ?? 1}, slack: ${input.slackGeneration ?? 1} } as const;`,
+				"export function chatDaemonGeneration(kind: \"discord\" | \"slack\") { return CHAT_DAEMON_GENERATIONS[kind]; }",
+				input.chatLifecycle === undefined ? "" : `class ChatDaemonController { async operate() { ${input.chatLifecycle} } }`,
 			].join("\n"),
 		],
 	]);
 }
 
+const decide = (base: Map<string, string>, head: Map<string, string>) => evaluate(base, head, inventory);
+
 describe("daemon generation release guard", () => {
 	test("requires a Telegram bump for protected ownership changes", () => {
-		const missingBump = evaluate(
-			files({ telegramGeneration: 4, telegramOwnership: "return true;" }),
-			files({ telegramGeneration: 4, telegramOwnership: "return false;" }),
-		);
+		const missingBump = decide(files({ telegramGeneration: 4, telegramOwnership: "return true;" }), files({ telegramGeneration: 4, telegramOwnership: "return false;" }));
 		expect(missingBump.protectedChanges).toContain(`telegram:${telegramDaemon}:acquireDaemonOwnership`);
 		expect(missingBump.telegramGenerationBumped).toBe(false);
-		expect(missingBump.chatGenerationBumped).toBe(false);
 
-		const bumped = evaluate(
-			files({ telegramGeneration: 4, telegramOwnership: "return true;" }),
-			files({ telegramGeneration: 5, telegramOwnership: "return false;" }),
-		);
+		const bumped = decide(files({ telegramGeneration: 4, telegramOwnership: "return true;" }), files({ telegramGeneration: 5, telegramOwnership: "return false;" }));
 		expect(bumped.telegramGenerationBumped).toBe(true);
 	});
 
-	test("requires a chat bump for protected lifecycle changes", () => {
-		const missingBump = evaluate(
-			files({ chatGeneration: 1, chatLifecycle: "return true;" }),
-			files({ chatGeneration: 1, chatLifecycle: "return false;" }),
-		);
-		expect(missingBump.protectedChanges).toContain(`chat:${chatControl}:isPhysicalLiveState`);
-		expect(missingBump.chatGenerationBumped).toBe(false);
+	test("requires a bump for the affected chat kind, not the other kind", () => {
+		const missingBump = decide(files({ discordGeneration: 1, slackGeneration: 1, chatLifecycle: "return true;" }), files({ discordGeneration: 1, slackGeneration: 2, chatLifecycle: "return false;" }));
+		expect(missingBump.protectedChanges).toContain(`discord:${chatControl}:operate`);
+		expect(missingBump.chatGenerationBumped).toEqual({ discord: false, slack: true });
 
-		const bumped = evaluate(
-			files({ chatGeneration: 1, chatLifecycle: "return true;" }),
-			files({ chatGeneration: 2, chatLifecycle: "return false;" }),
-		);
-		expect(bumped.chatGenerationBumped).toBe(true);
+		const bumped = decide(files({ discordGeneration: 1, slackGeneration: 1, chatLifecycle: "return true;" }), files({ discordGeneration: 2, slackGeneration: 1, chatLifecycle: "return false;" }));
+		expect(bumped.chatGenerationBumped.discord).toBe(true);
 	});
 
-	test("does not allow a cross-family generation bump", () => {
-		const decision = evaluate(
-			files({ telegramGeneration: 4, chatGeneration: 1, telegramOwnership: "return true;" }),
-			files({ telegramGeneration: 4, chatGeneration: 2, telegramOwnership: "return false;" }),
-		);
-		expect(decision.telegramGenerationBumped).toBe(false);
-		expect(decision.chatGenerationBumped).toBe(true);
+	test("AST extraction ignores strings and comments while preserving typed declarations", () => {
+		const source = `// export function acquireDaemonOwnership() {}\nconst message = "acquireDaemonOwnership()";\nexport async function acquireDaemonOwnership<T>(value: T): Promise<T> { return value; }`;
+		expect(declaration(source, "acquireDaemonOwnership")).toContain("Promise<T>");
+		expect(declaration("const message = 'acquireDaemonOwnership';", "acquireDaemonOwnership")).toBeUndefined();
 	});
 
-	test("ignores protocol, SDK/bus, and guard-only changes", () => {
-		const base = files({ telegramGeneration: 4, chatGeneration: 1 });
-		const head = files({ telegramGeneration: 4, chatGeneration: 1 });
-		head.set(telegramContract, "export const NOTIFICATION_PROTOCOL_VERSION = 4;\nexport const DAEMON_GENERATION = 4;\n");
-		head.set("packages/coding-agent/src/sdk/bus/unrelated.ts", "export const changed = true;\n");
-		expect(evaluate(base, head)).toEqual({
-			protectedChanges: [],
-			telegramGenerationBumped: false,
-			chatGenerationBumped: false,
-		});
-	});
-
-	test("fails closed when a previously protected symbol disappears", () => {
-		const decision = evaluate(
-			files({ telegramGeneration: 4, telegramOwnership: "return true;" }),
-			files({ telegramGeneration: 4 }),
-		);
-		expect(decision.protectedChanges).toContain(`telegram:${telegramDaemon}:acquireDaemonOwnership`);
-		expect(decision.telegramGenerationBumped).toBe(false);
+	test("fails closed for malformed protected declarations", () => {
+		const base = files({ telegramGeneration: 4, telegramOwnership: "return true;" });
+		const head = files({ telegramGeneration: 4, telegramOwnership: "return true;" });
+		head.set(telegramDaemon, "export function acquireDaemonOwnership( {");
+		const result = decide(base, head);
+		expect(result.malformedDeclarations).toContain(`telegram:${telegramDaemon}:acquireDaemonOwnership`);
+		head.set(telegramDaemon, "");
+		expect(decide(base, head).malformedDeclarations).toContain(`telegram:${telegramDaemon}:acquireDaemonOwnership`);
 	});
 
 	test("rejects missing or abbreviated commit objects before diffing", () => {
 		expect(() => validateSha("base SHA", undefined)).toThrow("exact 40-hex commit SHA");
 		expect(() => validateSha("head SHA", "abc123")).toThrow("exact 40-hex commit SHA");
 		expect(validateSha("head SHA", "A".repeat(40))).toBe("a".repeat(40));
+	});
+	test("accepts same-repository push and dispatch, and permits a fork PR head", () => {
+		const sha = "a".repeat(40);
+		for (const input of [
+			{ eventName: "push", baseRepository: "owner/repo", headRepository: "owner/repo" },
+			{ eventName: "workflow_dispatch", baseRepository: "owner/repo", headRepository: "owner/repo" },
+			{ eventName: "pull_request", baseRepository: "owner/repo", headRepository: "fork/repo" },
+		] as const) validateCiInputs({ ...input, baseSha: sha, headSha: sha, repository: "owner/repo" });
+	});
+
+	test("rejects a missing dispatch base, malformed refs, and foreign push heads", () => {
+		const sha = "a".repeat(40);
+		expect(() => validateCiInputs({ eventName: "workflow_dispatch", baseSha: undefined, headSha: sha, baseRepository: "owner/repo", headRepository: "owner/repo", repository: "owner/repo" })).toThrow("base SHA");
+		expect(() => validateCiInputs({ eventName: "push", baseSha: sha, headSha: "short", baseRepository: "owner/repo", headRepository: "owner/repo", repository: "owner/repo" })).toThrow("head SHA");
+		expect(() => validateCiInputs({ eventName: "push", baseSha: sha, headSha: sha, baseRepository: "owner/repo", headRepository: "fork/repo", repository: "owner/repo" })).toThrow("push head repository");
 	});
 });

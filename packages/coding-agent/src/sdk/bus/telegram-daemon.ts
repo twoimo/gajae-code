@@ -82,6 +82,7 @@ export interface DaemonState {
 	acquisitionId?: string;
 	/** A provisional owner is physical-live but MUST NOT be attached as ready. */
 	ownershipPhase?: TelegramDaemonOwnershipPhase;
+
 	tokenFingerprint: string;
 	chatId: string;
 	startedAt: number;
@@ -386,18 +387,26 @@ async function restoreNotificationRootRegistration(input: {
 		paths.roots,
 		async () => {
 			const current =
-				(await readJson<{ roots?: string[]; sessions?: Record<string, string> }>(fsImpl, paths.roots)) ?? {};
+				(await readJson<{ roots?: string[]; managedRoots?: string[]; sessions?: Record<string, string> }>(
+					fsImpl,
+					paths.roots,
+				)) ?? {};
 			const sessions = { ...(current.sessions ?? {}) };
 			if (sessions[input.sessionId] !== input.registeredRoot) return;
 			if (input.previous.root) sessions[input.sessionId] = input.previous.root;
 			else delete sessions[input.sessionId];
 			const referencedRoots = new Set(Object.values(sessions));
 			const roots = new Set(current.roots ?? []);
+			const managedRoots = new Set(current.managedRoots ?? []);
 			if (input.previous.root) roots.add(input.previous.root);
-			if (!referencedRoots.has(input.registeredRoot)) roots.delete(input.registeredRoot);
+			if (managedRoots.has(input.registeredRoot) && !referencedRoots.has(input.registeredRoot)) {
+				roots.delete(input.registeredRoot);
+				managedRoots.delete(input.registeredRoot);
+			}
 			await writeJsonAtomic(fsImpl, paths.roots, {
 				version: 1,
 				roots: Array.from(roots).sort(),
+				managedRoots: Array.from(managedRoots).sort(),
 				sessions,
 			});
 		},
@@ -419,12 +428,18 @@ export async function registerNotificationRoot(input: {
 		paths.roots,
 		async () => {
 			const current =
-				(await readJson<{ roots?: string[]; sessions?: Record<string, string> }>(fsImpl, paths.roots)) ?? {};
+				(await readJson<{ roots?: string[]; managedRoots?: string[]; sessions?: Record<string, string> }>(
+					fsImpl,
+					paths.roots,
+				)) ?? {};
 			const roots = new Set(current.roots ?? []);
+			const managedRoots = new Set(current.managedRoots ?? []);
 			roots.add(root);
+			managedRoots.add(root);
 			await writeJsonAtomic(fsImpl, paths.roots, {
 				version: 1,
 				roots: Array.from(roots).sort(),
+				managedRoots: Array.from(managedRoots).sort(),
 				sessions: { ...(current.sessions ?? {}), [input.sessionId]: root },
 			});
 		},
@@ -453,16 +468,25 @@ export async function unregisterNotificationRoot(input: {
 	await withFileLock(
 		paths.roots,
 		async () => {
-			const current = await readJson<{ roots?: string[]; sessions?: Record<string, string> }>(fsImpl, paths.roots);
+			const current = await readJson<{
+				roots?: string[];
+				managedRoots?: string[];
+				sessions?: Record<string, string>;
+			}>(fsImpl, paths.roots);
 			if (!current) return;
 			const sessions = { ...(current.sessions ?? {}) };
 			delete sessions[input.sessionId];
 			const rootStillReferenced = Object.values(sessions).includes(root);
-			const roots = (current.roots ?? []).filter(candidate => candidate !== root || rootStillReferenced);
+			const managedRoots = new Set(current.managedRoots ?? []);
+			const roots = (current.roots ?? []).filter(
+				candidate => candidate !== root || rootStillReferenced || !managedRoots.has(root),
+			);
+			if (!rootStillReferenced) managedRoots.delete(root);
 			remainingRoots = roots.length;
 			await writeJsonAtomic(fsImpl, paths.roots, {
 				version: 1,
 				roots: Array.from(new Set(roots)).sort(),
+				managedRoots: Array.from(managedRoots).sort(),
 				sessions,
 			});
 		},
@@ -477,11 +501,6 @@ function notificationRootForCwd(cwd: string): string {
 
 function ownerIdentityMatches(state: DaemonState, tokenFingerprint: string, chatId: string): boolean {
 	return state.tokenFingerprint === tokenFingerprint && state.chatId === chatId;
-}
-
-function isReadyDaemonOwner(state: DaemonState | undefined): boolean {
-	// States written before the phase protocol are completed acquisitions, not provisional ones.
-	return state?.ownershipPhase === undefined || state.ownershipPhase === "ready";
 }
 
 function liveOwnerUsesDifferentIdentity(input: {
@@ -526,8 +545,14 @@ export function isCurrentCompatibleOwner(input: {
 	chatId: string;
 	pidAlive: (pid: number) => boolean;
 }): boolean {
-	return (
-		isFreshLiveOwner(input) && isReadyDaemonOwner(input.state) && (input.state?.generation ?? 0) >= DAEMON_GENERATION
+	const state = input.state;
+	return Boolean(
+		isFreshLiveOwner(input) &&
+			state?.ownershipPhase === "ready" &&
+			typeof state.acquisitionId === "string" &&
+			state.acquisitionId.length > 0 &&
+			Number.isSafeInteger(state.generation) &&
+			(state.generation as number) >= DAEMON_GENERATION,
 	);
 }
 
@@ -576,7 +601,11 @@ export async function acquireDaemonOwnership(input: {
 			})
 		)
 			return undefined;
-		if (!isReadyDaemonOwner(state)) return { acquired: false, attached: false, provisional: true };
+		if (!state) return undefined;
+		const generation = state.generation;
+		if (generation === undefined || (Number.isSafeInteger(generation) && generation < DAEMON_GENERATION)) {
+			return { acquired: false, attached: false, reloadRequired: true };
+		}
 		return isCurrentCompatibleOwner({
 			state,
 			now: now(),
@@ -585,7 +614,7 @@ export async function acquireDaemonOwnership(input: {
 			pidAlive,
 		})
 			? { acquired: false, attached: true }
-			: { acquired: false, attached: false, reloadRequired: true };
+			: { acquired: false, attached: false, provisional: true };
 	};
 	const existing = await readJson<DaemonState>(fsImpl, paths.state);
 	if (
@@ -676,6 +705,7 @@ export async function renewDaemonHeartbeat(input: {
 	fs?: TelegramDaemonFs;
 	now?: () => number;
 	pid?: number;
+	generation?: number;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
@@ -683,17 +713,23 @@ export async function renewDaemonHeartbeat(input: {
 	try {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
 		const acquisitionId = input.acquisitionId ?? input.ownerId;
+		const pid = input.pid ?? state?.pid;
+		const generation = input.generation ?? state?.generation;
+		const canBindProvisionalPid = state?.ownershipPhase === "provisional" && state?.pid !== pid;
 		if (
 			!state ||
 			state.ownerId !== input.ownerId ||
-			(state.acquisitionId ?? state.ownerId) !== acquisitionId ||
+			state.acquisitionId !== acquisitionId ||
+			(!canBindProvisionalPid && state.pid !== pid) ||
+			state.generation !== generation ||
+			!Number.isSafeInteger(generation) ||
 			state.stoppedAt !== undefined ||
 			state.ownershipPhase === "retired"
 		)
 			return false;
 		await writeJsonAtomic(fsImpl, paths.state, {
 			...state,
-			pid: input.pid ?? state.pid,
+			pid,
 			ownershipPhase: "ready",
 			heartbeatAt: (input.now ?? Date.now)(),
 		});
@@ -721,8 +757,10 @@ export async function retireProvisionalDaemonOwnership(input: {
 		if (
 			!state ||
 			state.ownerId !== input.ownerId ||
-			(state.acquisitionId ?? state.ownerId) !== acquisitionId ||
+			state.acquisitionId !== acquisitionId ||
 			state.pid !== input.pid ||
+			state.generation !== DAEMON_GENERATION ||
+			!Number.isSafeInteger(state.generation) ||
 			state.ownershipPhase !== "provisional"
 		)
 			return false;
@@ -763,11 +801,8 @@ export async function waitForTelegramDaemonReady(input: {
 		const state = await readDaemonState(input.settings, input.fs);
 		if (
 			state?.ownerId === input.ownerId &&
-			(state.acquisitionId ?? state.ownerId) === (input.acquisitionId ?? input.ownerId) &&
-			isReadyDaemonOwner(state) &&
-			state.generation !== undefined &&
-			state.generation >= DAEMON_GENERATION &&
-			isFreshLiveOwner({
+			state.acquisitionId === input.acquisitionId &&
+			isCurrentCompatibleOwner({
 				state,
 				now: now(),
 				tokenFingerprint: input.tokenFingerprint,
@@ -811,7 +846,7 @@ export async function confirmTelegramDaemonSpawn(input: {
 		timeoutMs: input.timeoutMs,
 	});
 	if (ready) return true;
-	await retireProvisionalDaemonOwnership({
+	const retired = await retireProvisionalDaemonOwnership({
 		settings: input.settings,
 		ownerId: input.spawned.ownerId,
 		acquisitionId: input.spawned.acquisitionId,
@@ -819,21 +854,47 @@ export async function confirmTelegramDaemonSpawn(input: {
 		fs: input.fs,
 		now: input.now,
 	});
-	return false;
+	if (retired) return false;
+	const state = await readDaemonState(input.settings, input.fs);
+	return isCurrentCompatibleOwner({
+		state,
+		now: (input.now ?? Date.now)(),
+		tokenFingerprint: input.tokenFingerprint,
+		chatId: input.chatId,
+		pidAlive: input.pidAlive ?? defaultPidAlive,
+	});
 }
 
 export async function releaseDaemonOwnership(input: {
 	settings: Settings;
 	ownerId: string;
+	acquisitionId?: string;
+	pid?: number;
+	generation?: number;
 	fs?: TelegramDaemonFs;
 	now?: () => number;
 }): Promise<void> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	const state = await readJson<DaemonState>(fsImpl, paths.state);
-	if (state?.ownerId !== input.ownerId) return;
-	await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
-	await fsImpl.unlink(paths.lock).catch(() => undefined);
+	if (!(await tryOpenWx(fsImpl, paths.steal))) return;
+	try {
+		const state = await readJson<DaemonState>(fsImpl, paths.state);
+		const acquisitionId = input.acquisitionId ?? input.ownerId;
+		const pid = input.pid ?? state?.pid;
+		const generation = input.generation ?? state?.generation;
+		if (
+			state?.ownerId !== input.ownerId ||
+			state.acquisitionId !== acquisitionId ||
+			state.pid !== pid ||
+			state.generation !== generation ||
+			!Number.isSafeInteger(generation)
+		)
+			return;
+		await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
+		await fsImpl.unlink(paths.lock).catch(() => undefined);
+	} finally {
+		await fsImpl.unlink(paths.steal).catch(() => undefined);
+	}
 }
 
 /** Read the persisted daemon ownership state (or undefined when absent). */
@@ -1070,8 +1131,8 @@ export async function ensureTelegramDaemonRunningDetailed(
 		const previous = await readNotificationRootRegistration({ ...input, fs: deps.fs });
 		await registerNotificationRoot({ ...input, fs: deps.fs });
 		const controller = new TelegramDaemonController(input.settings, telegramControllerDeps(deps));
-		const result = await controller.reload();
-		if (!result.ok) {
+		const upgrade = await controller.reloadForGenerationUpgrade();
+		if (upgrade.outcome !== "ready") {
 			await restoreNotificationRootRegistration({
 				settings: input.settings,
 				sessionId: input.sessionId,
@@ -1079,7 +1140,7 @@ export async function ensureTelegramDaemonRunningDetailed(
 				previous,
 				fs: deps.fs,
 			});
-			throw new Error(`Unable to replace stale Telegram daemon: ${result.message}`);
+			throw new Error(`Unable to replace stale Telegram daemon: ${upgrade.operation.message}`);
 		}
 		return "reloaded";
 	}
@@ -4142,6 +4203,9 @@ export class TelegramNotificationDaemon {
 			await releaseDaemonOwnership({
 				settings: this.opts.settings,
 				ownerId: this.opts.ownerId,
+				acquisitionId: this.opts.ownerId,
+				pid: this.opts.pid ?? process.pid,
+				generation: DAEMON_GENERATION,
 				fs: this.fsImpl,
 				now: this.opts.now,
 			});

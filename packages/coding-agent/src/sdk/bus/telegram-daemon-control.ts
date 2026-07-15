@@ -26,6 +26,7 @@ import { getNotificationConfig, isTelegramConfigured, tokenFingerprint } from ".
 import {
 	confirmTelegramDaemonSpawn,
 	daemonPaths,
+	isCurrentCompatibleOwner,
 	isFreshLiveOwner,
 	readDaemonRoots,
 	readDaemonState,
@@ -116,6 +117,10 @@ export interface TelegramDaemonControlDeps {
 	readinessTimeoutMs?: number;
 }
 
+export type TelegramGenerationReloadResult =
+	| { outcome: "ready"; operation: DaemonOperationResult }
+	| { outcome: "failed"; operation: DaemonOperationResult };
+
 function defaultPidAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
@@ -173,13 +178,14 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		const roots = await readDaemonRoots(this.settings, this.fsImpl);
 		const live =
 			state !== undefined &&
-			isFreshLiveOwner({
+			isCurrentCompatibleOwner({
 				state,
 				now: this.now(),
 				tokenFingerprint: tokenFingerprint(cfg.botToken as string),
 				chatId: cfg.chatId as string,
 				pidAlive: this.pidAlive,
 			});
+
 		let health: DaemonHealth = "stopped";
 		if (live) health = "running";
 		else if (state && state.stoppedAt === undefined) health = "stale";
@@ -280,6 +286,13 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		return this.stopOrReload("reload", opts);
 	}
 
+	async reloadForGenerationUpgrade(opts: DaemonOperationOptions = {}): Promise<TelegramGenerationReloadResult> {
+		const operation = await this.stopOrReload("reload", opts);
+		if (!operation.ok) return { outcome: "failed", operation };
+		const after = await this.status();
+		return after.health === "running" ? { outcome: "ready", operation } : { outcome: "failed", operation };
+	}
+
 	async stop(opts: DaemonOperationOptions = {}): Promise<DaemonOperationResult> {
 		return this.stopOrReload("stop", opts);
 	}
@@ -298,13 +311,17 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		const gracefulTimeoutMs = opts.gracefulTimeoutMs ?? DEFAULT_GRACEFUL_TIMEOUT_MS;
 		const killTimeoutMs = opts.killTimeoutMs ?? DEFAULT_KILL_TIMEOUT_MS;
 
-		// No running owner.
-		if (before.health !== "running") {
-			if (action === "stop") {
+		const state = await readDaemonState(this.settings, this.fsImpl);
+		const replaceableLiveOwner =
+			action === "reload" &&
+			state !== undefined &&
+			isFreshLiveOwner({ state, now: this.now(), tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
+		// A stale pre-generation owner may only be moved by reload; success remains
+		// gated on the replacement's current-compatible ready state.
+		if (before.health !== "running" && !replaceableLiveOwner) {
+			if (action === "stop")
 				return this.result(action, true, "no running telegram daemon", before, before, warnings);
-			}
-			const spawnIfStopped = opts.spawnIfStopped ?? true;
-			if (!spawnIfStopped) {
+			if (!(opts.spawnIfStopped ?? true)) {
 				return this.result(action, true, "no running telegram daemon to reload", before, before, warnings);
 			}
 			const { spawned, ready } = await this.spawnAndWait(roots, fp, chatId);
@@ -323,7 +340,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			}
 			return this.result(
 				action,
-				spawned.result === "owner_spawned" && ready,
+				spawned.result === "owner_spawned" && ready && after.health === "running",
 				ready
 					? `spawned fresh telegram daemon (${spawned.result})`
 					: "telegram daemon did not become ready after spawning",
@@ -334,8 +351,8 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		}
 
 		// Running owner: capture identity, request cooperative stop, signal, wait.
-		const oldOwnerId = before.ownerId as string;
-		const oldPid = before.pid as number;
+		const oldOwnerId = (state ?? before).ownerId as string;
+		const oldPid = (state ?? before).pid as number;
 		const requestId = this.deps.randomId?.() ?? `${this.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 		await writeTelegramControlRequest(
 			this.settings,
@@ -431,7 +448,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		}
 		return this.result(
 			action,
-			spawned.result !== "disabled" && ready,
+			spawned.result !== "disabled" && ready && after.health === "running",
 			ready ? `reloaded telegram daemon (${spawned.result})` : "telegram daemon did not become ready after spawning",
 			before,
 			after,

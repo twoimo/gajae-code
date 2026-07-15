@@ -528,6 +528,8 @@ describe("telegram daemon", () => {
 				roots: [],
 				version: 1,
 				generation: DAEMON_GENERATION,
+				acquisitionId: "old",
+				ownershipPhase: "ready",
 			}),
 		);
 		const result = await acquireDaemonOwnership({
@@ -618,6 +620,8 @@ describe("telegram daemon", () => {
 			heartbeatAt: 100,
 			roots: [],
 			version: 1,
+			acquisitionId: "old",
+			ownershipPhase: "ready",
 			...extra,
 		};
 	}
@@ -655,6 +659,20 @@ describe("telegram daemon", () => {
 			now: () => 101,
 		});
 		expect(result).toEqual({ acquired: false, attached: true });
+	});
+
+	test("#2028 refuses a phase-less current-generation owner instead of attaching", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		writeLiveOwner(agentDir, { generation: DAEMON_GENERATION, ownershipPhase: undefined });
+		const result = await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pidAlive: () => true,
+			now: () => 101,
+		});
+		expect(result).toEqual({ acquired: false, attached: false, provisional: true });
 	});
 
 	test("#2028 acquire does not downgrade a NEWER-generation live owner (attaches)", async () => {

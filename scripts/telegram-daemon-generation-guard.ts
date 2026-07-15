@@ -1,27 +1,31 @@
 #!/usr/bin/env bun
 import { $ } from "bun";
+import { parse } from "@babel/parser";
 import * as path from "node:path";
 
 const root = path.join(import.meta.dir, "..");
 const SHA = /^[0-9a-f]{40}$/i;
+export const GUARD_CONTRACT_VERSION = 2;
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
 
-type Family = "telegram" | "chat";
-
+type Family = "telegram" | "discord" | "slack";
 type Inventory = Readonly<Record<Family, Readonly<Record<string, readonly string[]>>>>;
+type Declaration = { text: string; valid: boolean } | undefined;
 
 /**
- * Explicit lifecycle inventory only. Session endpoint generations and provider SDK
- * implementations are deliberately excluded: they do not replace daemon owners.
+ * This is a deliberately small, exact lifecycle contract. Do not include session
+ * endpoint or provider generations: they do not replace daemon owners.
  */
 export const protectedInventory = {
 	telegram: {
 		[telegramContract]: ["DAEMON_GENERATION"],
 		"packages/coding-agent/src/sdk/bus/notification-service.ts": ["daemonGenerationRelation"],
 		"packages/coding-agent/src/sdk/bus/telegram-daemon.ts": [
+			"TelegramDaemonOwnershipPhase",
 			"DaemonState",
 			"ownerIdentityMatches",
+			"isReadyDaemonOwner",
 			"liveOwnerUsesDifferentIdentity",
 			"isFreshLiveOwner",
 			"isCurrentCompatibleOwner",
@@ -38,19 +42,19 @@ export const protectedInventory = {
 		"packages/coding-agent/src/sdk/bus/telegram-daemon-control.ts": [
 			"TelegramDaemonController",
 			"status",
-			"spawnAndWait",
 			"stopOrReload",
+			"spawnAndWait",
 			"waitForPidDeath",
 			"signalCapturedOwner",
 			"clearOwnRequest",
 		],
 	},
-	chat: {
+	discord: {
 		[chatControl]: [
-			"CHAT_DAEMON_GENERATION",
+			"CHAT_DAEMON_GENERATIONS",
+			"chatDaemonGeneration",
 			"ChatDaemonState",
 			"readChatDaemonState",
-			"writeJson",
 			"ChatDaemonController",
 			"status",
 			"ensure",
@@ -67,97 +71,168 @@ export const protectedInventory = {
 			"releaseChatDaemonOwnership",
 		],
 		"packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts": ["runChatDaemonInternal"],
+		"packages/coding-agent/src/sdk/bus/discord-daemon.ts": ["DiscordNotificationDaemon", "start", "stop", "notify", "handleInbound", "close", "resume"],
+	},
+	slack: {
+		[chatControl]: [
+			"CHAT_DAEMON_GENERATIONS",
+			"chatDaemonGeneration",
+			"ChatDaemonState",
+			"readChatDaemonState",
+			"ChatDaemonController",
+			"status",
+			"ensure",
+			"operate",
+			"isPhysicalLiveState",
+			"isCurrentCompatibleState",
+			"stopForReplacement",
+			"ownsCapturedState",
+			"signalIfOwner",
+			"waitForDeath",
+			"spawn",
+			"acquireChatDaemonOwnership",
+			"renewChatDaemonHeartbeat",
+			"releaseChatDaemonOwnership",
+		],
+		"packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts": ["runChatDaemonInternal"],
+		"packages/coding-agent/src/sdk/bus/slack-daemon.ts": ["SlackNotificationDaemon", "start", "stop", "handleEnvelope", "postRoot", "notify", "close", "resume"],
 	},
 } as const satisfies Inventory;
+
+function bootstrapGuardContract(): void {
+	if (GUARD_CONTRACT_VERSION !== 2) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
+	for (const [family, files] of Object.entries(protectedInventory)) {
+		for (const [file, symbols] of Object.entries(files)) {
+			if (!file || symbols.length === 0 || new Set(symbols).size !== symbols.length)
+				throw new Error(`telegram-daemon-generation-guard: invalid ${family} contract inventory`);
+		}
+	}
+}
 
 export function validateSha(name: string, value: string | undefined): string {
 	if (!value || !SHA.test(value)) throw new Error(`telegram-daemon-generation-guard: ${name} must be an exact 40-hex commit SHA`);
 	return value.toLowerCase();
 }
 
-function skip(source: string, at: number): number {
-	const quote = source[at];
-	if (quote === "'" || quote === '"' || quote === "`") {
-		for (at++; at < source.length; at++) {
-			if (source[at] === "\\") at++;
-			else if (source[at] === quote) return at + 1;
+const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export function validateCiInputs(input: {
+	eventName: "pull_request" | "push" | "workflow_dispatch";
+	baseSha: string | undefined;
+	headSha: string | undefined;
+	baseRepository: string | undefined;
+	headRepository: string | undefined;
+	repository: string | undefined;
+}): void {
+	validateSha("base SHA", input.baseSha);
+	validateSha("head SHA", input.headSha);
+	for (const [name, value] of Object.entries({ baseRepository: input.baseRepository, headRepository: input.headRepository, repository: input.repository })) {
+		if (!value || !REPOSITORY.test(value)) throw new Error(`telegram-daemon-generation-guard: ${name} must be an owner/repository name`);
+	}
+	if (input.baseRepository !== input.repository) throw new Error("telegram-daemon-generation-guard: base repository must be this repository");
+	if ((input.eventName === "push" || input.eventName === "workflow_dispatch") && input.headRepository !== input.repository)
+		throw new Error(`telegram-daemon-generation-guard: ${input.eventName} head repository must be this repository`);
+}
+
+function nodeName(node: any): string | undefined {
+	if (node?.id?.type === "Identifier") return node.id.name;
+	if (node?.key?.type === "Identifier") return node.key.name;
+	if (node?.key?.type === "StringLiteral") return node.key.value;
+}
+
+function declarationNode(node: any, name: string): any | undefined {
+	if (!node || typeof node !== "object") return undefined;
+	if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") return declarationNode(node.declaration, name);
+	if (node.type === "VariableDeclaration") {
+		return node.declarations.some((declaration: any) => declaration.id?.type === "Identifier" && declaration.id.name === name)
+			? node
+			: undefined;
+	}
+	if (nodeName(node) === name && /(?:Declaration|Method|Property)$/.test(node.type)) return node;
+	for (const value of Object.values(node)) {
+		if (Array.isArray(value)) {
+			for (const child of value) {
+				const found = declarationNode(child, name);
+				if (found) return found;
+			}
+		} else if (value && typeof value === "object" && typeof (value as any).type === "string") {
+			const found = declarationNode(value, name);
+			if (found) return found;
 		}
 	}
-	if (source.startsWith("//", at)) {
-		const end = source.indexOf("\n", at + 2);
-		return end === -1 ? source.length : end + 1;
-	}
-	if (source.startsWith("/*", at)) {
-		const end = source.indexOf("*/", at + 2);
-		return end === -1 ? source.length : end + 2;
-	}
-	return at;
 }
 
-function matching(source: string, open: number, left: string, right: string): number | undefined {
-	let depth = 0;
-	for (let at = open; at < source.length; at++) {
-		const next = skip(source, at);
-		if (next !== at) { at = next - 1; continue; }
-		if (source[at] === left) depth++;
-		if (source[at] === right && --depth === 0) return at + 1;
-	}
-}
-
-/** Extract a TypeScript declaration with balanced delimiters; comments and strings do not affect its shape. */
+/** AST-backed extraction prevents comments, strings, overloads, and similarly named text from matching. */
 export function declaration(source: string, name: string): string | undefined {
-	const found = new RegExp(`(?:export\\s+)?(?:async\\s+)?(?:function|class|interface|type|const)\\s+${name}\\b|(?:async\\s+)?${name}\\s*\\(`).exec(source);
-	if (!found || found.index === undefined) return undefined;
-	const start = found.index;
-	const from = start + found[0].length;
-	if (found[0].includes("const ")) {
-		const end = source.indexOf(";", from);
-		return end === -1 ? undefined : source.slice(start, end + 1);
-	}
-	const paren = source.indexOf("(", from - 1);
-	const brace = source.indexOf("{", from - 1);
-	if (paren !== -1 && (brace === -1 || paren < brace)) {
-		const params = matching(source, paren, "(", ")");
-		if (!params) return undefined;
-		const body = source.indexOf("{", params);
-		if (body === -1) return source.slice(start, source.indexOf(";", params) + 1);
-		const end = matching(source, body, "{", "}");
-		return end === undefined ? undefined : source.slice(start, end);
-	}
-	if (brace !== -1) {
-		const end = matching(source, brace, "{", "}");
-		return end === undefined ? undefined : source.slice(start, end);
-	}
-	const end = source.indexOf(";", from);
-	return end === -1 ? undefined : source.slice(start, end + 1);
+	const result = extractDeclaration(source, name);
+	return result?.text;
 }
 
-function generation(source: string, name: string): number | undefined {
-	const value = new RegExp(`export\\s+const\\s+${name}\\s*=\\s*(\\d+)\\s*;`).exec(source)?.[1];
-	return value === undefined ? undefined : Number(value);
+function extractDeclaration(source: string, name: string): Declaration {
+	try {
+		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
+		const node = declarationNode(ast.program, name);
+		return node && typeof node.start === "number" && typeof node.end === "number"
+			? { text: source.slice(node.start, node.end), valid: true }
+			: undefined;
+	} catch {
+		return { text: "<malformed>", valid: false };
+	}
 }
+
+function generation(source: string | undefined, kind?: "discord" | "slack"): number | undefined {
+	if (!source) return undefined;
+	try {
+		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
+		const variable = declarationNode(ast.program, kind ? "CHAT_DAEMON_GENERATIONS" : "DAEMON_GENERATION");
+		if (!variable) return undefined;
+		if (!kind) {
+			const declaration = variable.declarations?.find((item: any) => item.id?.name === "DAEMON_GENERATION");
+			return declaration?.init?.type === "NumericLiteral" ? declaration.init.value : undefined;
+		}
+		const declaration = variable.declarations?.find((item: any) => item.id?.name === "CHAT_DAEMON_GENERATIONS");
+		const object = declaration?.init?.type === "TSAsExpression" ? declaration.init.expression : declaration?.init;
+		const property = object?.properties?.find((item: any) => nodeName(item) === kind);
+		return property?.value?.type === "NumericLiteral" ? property.value.value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export type Evaluation = {
+	protectedChanges: string[];
+	telegramGenerationBumped: boolean;
+	chatGenerationBumped: Record<"discord" | "slack", boolean>;
+	malformedDeclarations: string[];
+};
 
 export function evaluate(
 	base: ReadonlyMap<string, string | undefined>,
 	head: ReadonlyMap<string, string | undefined>,
 	inventory: Inventory = protectedInventory,
-): { protectedChanges: string[]; telegramGenerationBumped: boolean; chatGenerationBumped: boolean } {
+): Evaluation {
 	const protectedChanges: string[] = [];
+	const malformedDeclarations: string[] = [];
 	for (const [family, files] of Object.entries(inventory) as [Family, Inventory[Family]][]) {
-		for (const [file, symbols] of Object.entries(files)) {
-			for (const symbol of symbols) {
-				if (declaration(base.get(file) ?? "", symbol) !== declaration(head.get(file) ?? "", symbol))
-					protectedChanges.push(`${family}:${file}:${symbol}`);
-			}
+		for (const [file, symbols] of Object.entries(files)) for (const symbol of symbols) {
+			const before = extractDeclaration(base.get(file) ?? "", symbol);
+			const after = extractDeclaration(head.get(file) ?? "", symbol);
+			const label = `${family}:${file}:${symbol}`;
+			if (!before?.valid || !after?.valid || !before || !after) malformedDeclarations.push(label);
+			if (before?.text !== after?.text) protectedChanges.push(label);
 		}
 	}
-	const oldTelegramGeneration = generation(base.get(telegramContract) ?? "", "DAEMON_GENERATION") ?? 0;
-	const newTelegramGeneration = generation(head.get(telegramContract) ?? "", "DAEMON_GENERATION");
-	const oldChatGeneration = generation(base.get(chatControl) ?? "", "CHAT_DAEMON_GENERATION") ?? 0;
-	const newChatGeneration = generation(head.get(chatControl) ?? "", "CHAT_DAEMON_GENERATION");
-	const telegramGenerationBumped = newTelegramGeneration !== undefined && newTelegramGeneration > oldTelegramGeneration;
-	const chatGenerationBumped = newChatGeneration !== undefined && newChatGeneration > oldChatGeneration;
-	return { protectedChanges, telegramGenerationBumped, chatGenerationBumped };
+	const oldTelegramGeneration = generation(base.get(telegramContract));
+	const newTelegramGeneration = generation(head.get(telegramContract));
+	const telegramGenerationBumped = oldTelegramGeneration !== undefined && newTelegramGeneration !== undefined && newTelegramGeneration > oldTelegramGeneration;
+	const chatGenerationBumped = Object.fromEntries(
+		(["discord", "slack"] as const).map(kind => {
+			const before = generation(base.get(chatControl), kind);
+			const after = generation(head.get(chatControl), kind);
+			return [kind, before !== undefined && after !== undefined && after > before];
+		}),
+	) as Evaluation["chatGenerationBumped"];
+	return { protectedChanges, telegramGenerationBumped, chatGenerationBumped, malformedDeclarations };
 }
 
 async function git(args: string[]): Promise<string> {
@@ -179,6 +254,7 @@ async function blob(revision: string, file: string): Promise<string | undefined>
 }
 
 export async function run(baseInput: string | undefined, headInput: string | undefined): Promise<void> {
+	bootstrapGuardContract();
 	const base = validateSha("base SHA", baseInput);
 	const head = validateSha("head SHA", headInput);
 	await verifyObject("base", base);
@@ -189,13 +265,17 @@ export async function run(baseInput: string | undefined, headInput: string | und
 		Promise.all(files.map(async file => [file, await blob(head, file)] as const)),
 	]);
 	const decision = evaluate(new Map(baseFiles), new Map(headFiles));
+	if (decision.malformedDeclarations.length > 0)
+		throw new Error(`telegram-daemon-generation-guard: v${GUARD_CONTRACT_VERSION} protected declaration is missing or malformed: ${decision.malformedDeclarations.join(", ")}`);
 	const telegramChanges = decision.protectedChanges.filter(change => change.startsWith("telegram:"));
-	const chatChanges = decision.protectedChanges.filter(change => change.startsWith("chat:"));
 	if (telegramChanges.length > 0 && !decision.telegramGenerationBumped)
 		throw new Error(`telegram-daemon-generation-guard: protected Telegram lifecycle change requires a strictly higher DAEMON_GENERATION: ${telegramChanges.join(", ")}`);
-	if (chatChanges.length > 0 && !decision.chatGenerationBumped)
-		throw new Error(`telegram-daemon-generation-guard: protected chat lifecycle change requires a strictly higher CHAT_DAEMON_GENERATION: ${chatChanges.join(", ")}`);
-	console.log(`telegram-daemon-generation-guard: ${decision.protectedChanges.length === 0 ? "no protected changes" : "required generation bump verified"}`);
+	for (const kind of ["discord", "slack"] as const) {
+		const changes = decision.protectedChanges.filter(change => change.startsWith(`${kind}:`));
+		if (changes.length > 0 && !decision.chatGenerationBumped[kind])
+			throw new Error(`telegram-daemon-generation-guard: protected ${kind} lifecycle change requires a strictly higher CHAT_DAEMON_GENERATIONS.${kind}: ${changes.join(", ")}`);
+	}
+	console.log(`telegram-daemon-generation-guard: v${GUARD_CONTRACT_VERSION} ${decision.protectedChanges.length === 0 ? "no protected changes" : "required generation bump verified"}`);
 }
 
 if (import.meta.main) {

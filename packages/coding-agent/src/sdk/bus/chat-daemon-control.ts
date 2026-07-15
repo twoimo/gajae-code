@@ -18,10 +18,17 @@ export type ChatDaemonKind = "discord" | "slack";
 export type ChatDaemonAction = "stop" | "reload";
 
 /**
- * Operational generation of the Discord/Slack daemon lifecycle contract.
- * This is intentionally separate from per-session endpoint generations.
+ * Operational generations of the Discord/Slack daemon lifecycle contracts.
+ * These are intentionally separate from per-session endpoint generations.
  */
-export const CHAT_DAEMON_GENERATION = 1;
+export const CHAT_DAEMON_GENERATIONS: Readonly<Record<ChatDaemonKind, number>> = {
+	discord: 1,
+	slack: 1,
+};
+
+export function chatDaemonGeneration(kind: ChatDaemonKind): number {
+	return CHAT_DAEMON_GENERATIONS[kind];
+}
 
 export interface ChatDaemonState {
 	version: 1;
@@ -56,12 +63,14 @@ export interface ChatDaemonControlDeps {
 	randomId?: () => string;
 	pidIncarnation?: (pid: number) => string | undefined;
 	sleep?: (ms: number) => Promise<void>;
+	spawnReadyTimeoutMs?: number;
 }
 
 const HEARTBEAT_TTL_MS = 20_000;
 const DEFAULT_GRACEFUL_TIMEOUT_MS = 8_000;
 const DEFAULT_KILL_TIMEOUT_MS = 3_000;
 const UNPUBLISHED_OWNER_LOCK_STALE_MS = HEARTBEAT_TTL_MS;
+const DEFAULT_SPAWN_READY_TIMEOUT_MS = 2_000;
 
 interface ChatDaemonOwnerLock {
 	pid: number;
@@ -291,6 +300,10 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
 		if (existing && this.isPhysicalLiveState(existing)) {
 			if (this.isCurrentCompatibleState(existing, identity)) return "attached";
+			if (existing.identity !== identity || this.hasMalformedGeneration(existing))
+				throw new Error(`Unable to replace unauthorized ${this.kind} daemon owner`);
+			if (!this.isHealthyFreshState(existing))
+				throw new Error(`Unable to replace unhealthy ${this.kind} daemon owner`);
 			await this.stopForReplacement(existing);
 		}
 		const spawned = await this.spawn();
@@ -315,13 +328,15 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			return this.result(
 				action,
 				spawned,
-				spawned ? `spawned fresh ${this.kind} daemon` : `a live ${this.kind} owner already exists`,
+				spawned
+					? `spawned fresh ${this.kind} daemon`
+					: `${this.kind} daemon did not publish ownership after spawning`,
 				before,
 				await this.status(),
 				warnings,
 			);
 		}
-		if (!this.ownsCapturedState(state, before))
+		if (state.identity !== this.identity() || !this.ownsCapturedState(state, before))
 			return this.result(
 				action,
 				false,
@@ -380,20 +395,27 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			state.version === 1 &&
 			state.kind === this.kind &&
 			!state.stoppedAt &&
-			state.transportHealthy &&
-			Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS &&
 			this.alive(state.pid) &&
 			Boolean(state.incarnation) &&
 			this.incarnation(state.pid) === state.incarnation
 		);
 	}
+	private isHealthyFreshState(state: ChatDaemonState): boolean {
+		return state.transportHealthy && Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS;
+	}
+	private hasValidGeneration(state: ChatDaemonState): boolean {
+		return typeof state.generation === "number" && Number.isSafeInteger(state.generation);
+	}
+	private hasMalformedGeneration(state: ChatDaemonState): boolean {
+		return state.generation !== undefined && !this.hasValidGeneration(state);
+	}
 	private isCurrentCompatibleState(state: ChatDaemonState, identity: string): boolean {
 		return (
 			this.isPhysicalLiveState(state) &&
+			this.isHealthyFreshState(state) &&
 			state.identity === identity &&
-			typeof state.generation === "number" &&
-			Number.isSafeInteger(state.generation) &&
-			state.generation >= CHAT_DAEMON_GENERATION
+			this.hasValidGeneration(state) &&
+			state.generation >= chatDaemonGeneration(this.kind)
 		);
 	}
 	private async stopForReplacement(state: ChatDaemonState): Promise<void> {
@@ -433,14 +455,17 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	}
 	private async signalIfOwner(state: ChatDaemonState, signal: NodeJS.Signals): Promise<boolean> {
 		const current = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
+		const identity = this.identity();
 		if (
+			!identity ||
 			!current ||
 			current.ownerId !== state.ownerId ||
 			current.pid !== state.pid ||
+			current.identity !== identity ||
 			current.identity !== state.identity ||
 			current.incarnation !== state.incarnation ||
 			current.generation !== state.generation ||
-			this.incarnation(state.pid) !== state.incarnation
+			!this.isPhysicalLiveState(current)
 		)
 			return false;
 		(this.deps.sendSignal ?? defaultSignal)(state.pid, signal);
@@ -498,7 +523,26 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			detached: true,
 			stdio: "ignore",
 		}).unref?.();
-		return true;
+		return await this.waitForOwnership(ownerId, identity);
+	}
+	private async waitForOwnership(ownerId: string, identity: string): Promise<boolean> {
+		const timeoutMs = Math.max(this.deps.spawnReadyTimeoutMs ?? DEFAULT_SPAWN_READY_TIMEOUT_MS, 0);
+		const until = Date.now() + timeoutMs;
+		const maxPolls = Math.ceil(timeoutMs / 25);
+		for (let poll = 0; poll <= maxPolls; poll++) {
+			const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
+			if (
+				state &&
+				state.ownerId === ownerId &&
+				state.identity === identity &&
+				state.generation === chatDaemonGeneration(this.kind) &&
+				this.isPhysicalLiveState(state)
+			)
+				return true;
+			if (Date.now() >= until || poll === maxPolls) return false;
+			await this.sleep(25);
+		}
+		return false;
 	}
 }
 
@@ -562,7 +606,7 @@ export async function acquireChatDaemonOwnership(input: {
 				startedAt: Date.now(),
 				heartbeatAt: Date.now(),
 				transportHealthy: false,
-				generation: CHAT_DAEMON_GENERATION,
+				generation: chatDaemonGeneration(input.kind),
 			} satisfies ChatDaemonState),
 	);
 	return true;
