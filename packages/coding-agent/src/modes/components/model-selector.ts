@@ -218,8 +218,8 @@ const PROFILE_ROLE_PREVIEW_ORDER: GjcModelAssignmentTargetId[] = [
 	"critic",
 	"architect",
 ];
-const PRESET_SCOPE_LABELS = ["Apply for this session", "Set as default"];
-const CUSTOM_PRESET_SCOPE_LABELS = ["Apply for this session", "Set as default", "Rename", "Delete"];
+const PRESET_SCOPE_LABELS = ["Set as default"];
+const CUSTOM_PRESET_SCOPE_LABELS = ["Set as default", "Rename", "Delete"];
 
 function isPrintableCharacter(keyData: string): boolean {
 	return keyData.length === 1 && keyData >= " " && keyData !== "\x7f";
@@ -1220,7 +1220,7 @@ export class ModelSelectorComponent extends Container {
 				);
 			}
 		} else {
-			this.#listContainer.addChild(new Text(theme.fg("muted", "  Press Enter to apply this preset"), 0, 0));
+			this.#listContainer.addChild(new Text(theme.fg("muted", "  Press Enter to choose an action"), 0, 0));
 		}
 	}
 
@@ -1606,11 +1606,11 @@ export class ModelSelectorComponent extends Container {
 		if (this.#presetScopeMenuOpen && this.#previewProfileName) {
 			const profile = this.#getProfileByName(this.#previewProfileName);
 			if (!profile) return;
-			if (this.#presetScopeIndex === 2 && isCustomUserProfile(profile)) {
+			if (this.#presetScopeIndex === 1 && isCustomUserProfile(profile)) {
 				this.#onSelectCallback({ kind: "renameProfile", profileName: this.#previewProfileName });
 				return;
 			}
-			if (this.#presetScopeIndex === 3 && isCustomUserProfile(profile)) {
+			if (this.#presetScopeIndex === 2 && isCustomUserProfile(profile)) {
 				this.#onSelectCallback({ kind: "deleteProfile", profileName: this.#previewProfileName });
 				return;
 			}
@@ -1623,7 +1623,7 @@ export class ModelSelectorComponent extends Container {
 			this.#onSelectCallback({
 				kind: "profile",
 				profileName: this.#previewProfileName,
-				setDefault: this.#presetScopeIndex === 1,
+				setDefault: true,
 			});
 			return;
 		}

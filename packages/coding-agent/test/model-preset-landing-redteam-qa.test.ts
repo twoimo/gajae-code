@@ -196,11 +196,11 @@ describe("preset landing adversarial QA", () => {
 		selector.handleInput("\x1b[B");
 		selector.handleInput("\n"); // preview first expanded profile
 		selector.handleInput("\n"); // scope menu
-		expect(normalizeRenderedText(selector.render(260).join("\n"))).toContain("Apply for this session");
+		expect(normalizeRenderedText(selector.render(260).join("\n"))).toContain("Set as default");
 
 		selector.handleInput("\x1b");
 		let text = normalizeRenderedText(selector.render(260).join("\n"));
-		expect(text).not.toContain("Apply for this session");
+		expect(text).not.toContain("Set as default");
 		expect(text).toContain("Preset preview: Codex Eco");
 
 		selector.handleInput("\x1b");
@@ -229,7 +229,7 @@ describe("preset landing adversarial QA", () => {
 		expect(text).toContain("Models");
 		expect(text).toContain("gpt-5.5");
 		expect(text).not.toContain("Preset preview:");
-		expect(text).not.toContain("Apply for this session");
+		expect(text).not.toContain("Set as default");
 	});
 
 	test("up/down wraps at landing boundaries and Browse all preserves model role menu", async () => {

@@ -137,7 +137,7 @@ function createControllerContext(options: { missingCredentials?: boolean } = {})
 	return { ctx, settings, session, flush, setCalls };
 }
 
-async function selectFirstProfile(controller: SelectorController, setDefault = false): Promise<void> {
+async function selectFirstProfile(controller: SelectorController, setDefault = true): Promise<void> {
 	controller.showModelSelector();
 	const selector = (controller as unknown as { ctx: { editorContainer: { addChild: ReturnType<typeof vi.fn> } } }).ctx
 		.editorContainer.addChild.mock.calls[0]?.[0] as ModelSelectorComponent;
@@ -376,8 +376,8 @@ describe("model selector profiles", () => {
 		expect(rendered).not.toContain("DEFAULT: provider-a/default");
 	});
 
-	test("Apply for this session activates profile through setModelTemporary", async () => {
-		const { ctx, settings, session } = createControllerContext();
+	test("selecting a profile persists it as the default", async () => {
+		const { ctx, settings, session, flush, setCalls } = createControllerContext();
 		const controller = new SelectorController(ctx as never);
 		await selectFirstProfile(controller);
 
@@ -385,8 +385,10 @@ describe("model selector profiles", () => {
 		expect(session.model).toBe(defaultModel);
 		expect(session.thinkingLevel).toBe(ThinkingLevel.High);
 		expect(settings.get("task.agentModelOverrides")).toMatchObject({ executor: "provider-a/alternate" });
-		expect(settings.get("modelProfile.default")).toBe("old-profile");
-		expect(ctx.showStatus).toHaveBeenCalledWith("Model profile: Profile Alpha");
+		expect(settings.get("modelProfile.default")).toBe("profile-a");
+		expect(setCalls).toContainEqual({ path: "modelProfile.default", value: "profile-a" });
+		expect(flush).toHaveBeenCalledTimes(1);
+		expect(ctx.showStatus).toHaveBeenCalledWith("Default model profile: Profile Alpha");
 	});
 
 	test("Set as default persists and flushes modelProfile.default", async () => {

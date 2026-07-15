@@ -135,7 +135,7 @@ function createControllerContext(options: { missingCredentials?: boolean } = {})
 	return { ctx, settings, session, flush, setCalls, overrideCalls };
 }
 
-async function selectProfileThroughController(controller: SelectorController, setDefault = false): Promise<void> {
+async function selectProfileThroughController(controller: SelectorController, setDefault = true): Promise<void> {
 	controller.showModelSelector();
 	const selector = (controller as unknown as { ctx: { editorContainer: { addChild: ReturnType<typeof vi.fn> } } }).ctx
 		.editorContainer.addChild.mock.calls[0]?.[0] as ModelSelectorComponent;
@@ -178,45 +178,24 @@ describe("model selector profile red-team", () => {
 		expect(rendered.match(/Profile Alpha/g) ?? []).toHaveLength(1);
 	});
 
-	test("profile actions wire Apply for this session to persistDefault false and Set as default to true", async () => {
+	test("profile actions expose only Set as default", async () => {
 		const selections: ModelSelectorSelection[] = [];
-		const applySelector = createSelector(selection => {
+		const selector = createSelector(selection => {
 			selections.push(selection);
 		});
-		await renderSelector(applySelector);
-		applySelector.handleInput("\x1b[C");
-		applySelector.handleInput("\x1b[B");
-		applySelector.handleInput("\n");
-		applySelector.handleInput("\n");
-		applySelector.handleInput("\n");
+		await renderSelector(selector);
+		selector.handleInput("\x1b[C");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		selector.handleInput("\n");
+		selector.handleInput("\n");
 
-		const defaultSelector = createSelector(selection => {
-			selections.push(selection);
-		});
-		await renderSelector(defaultSelector);
-		defaultSelector.handleInput("\x1b[C");
-		defaultSelector.handleInput("\x1b[B");
-		defaultSelector.handleInput("\n");
-		defaultSelector.handleInput("\n");
-		defaultSelector.handleInput("\x1b[B");
-		defaultSelector.handleInput("\n");
-
-		expect(selections).toEqual([
-			{ kind: "profile", profileName: "profile-a", setDefault: false },
-			{ kind: "profile", profileName: "profile-a", setDefault: true },
-		]);
+		expect(selections).toEqual([{ kind: "profile", profileName: "profile-a", setDefault: true }]);
 	});
 
-	test("controller persists only Set as default and leaves Apply for this session non-default", async () => {
-		const sessionOnly = createControllerContext();
-		await selectProfileThroughController(new SelectorController(sessionOnly.ctx as never), false);
-
-		expect(sessionOnly.setCalls).not.toContainEqual({ path: "modelProfile.default", value: "profile-a" });
-		expect(sessionOnly.settings.get("modelProfile.default")).toBe("old-profile");
-		expect(sessionOnly.ctx.showStatus).toHaveBeenCalledWith("Model profile: Profile Alpha");
-
+	test("controller persists a selected profile as the default", async () => {
 		const persistent = createControllerContext();
-		await selectProfileThroughController(new SelectorController(persistent.ctx as never), true);
+		await selectProfileThroughController(new SelectorController(persistent.ctx as never));
 
 		expect(persistent.setCalls).toContainEqual({ path: "modelProfile.default", value: "profile-a" });
 		expect(persistent.setCalls).toContainEqual({ path: "defaultThinkingLevel", value: ThinkingLevel.High });
