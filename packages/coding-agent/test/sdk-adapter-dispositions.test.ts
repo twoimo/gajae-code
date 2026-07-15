@@ -203,7 +203,7 @@ function inputFor(operation: Operation, secret = false): Record<string, unknown>
 
 async function fixture(): Promise<AdapterFixture> {
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-adapter-dispositions-"));
-	const agentDir = path.join(repo, ".gjc", "agent");
+	const agentDir = path.join(repo, ".gjc", "adapter-agent");
 	const stateRoot = path.join(repo, ".gjc", "state");
 	Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
 	const productionHost = await startProductionSdkHost(repo, { acceptPromptPreflightWithoutExecution: true });

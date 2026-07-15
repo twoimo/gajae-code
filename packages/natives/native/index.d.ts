@@ -255,6 +255,8 @@ export declare class NotificationServer {
   clientCount(): number
   /** Stop the server (idempotent) and remove the endpoint discovery file. */
   stop(): void
+  /** Stop the server and resolve only after all native socket owners exit. */
+  stopAndWait(): Promise<void>
 }
 
 /** Stable process reference. */

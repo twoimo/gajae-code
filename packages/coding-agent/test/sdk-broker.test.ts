@@ -21,6 +21,7 @@ import {
 	ensureBroker,
 	reapSpawnedBrokerForTest,
 	registerBrokerOwnerForTest,
+	startFixtureBrokerWithLeaseForTest,
 } from "../src/sdk/broker/ensure";
 import { getBrokerIdentityKey } from "../src/sdk/broker/identity";
 import { deriveLifecycleDeadlines, readSessionLifecycleLaunchRequest } from "../src/sdk/broker/lifecycle";
@@ -31,6 +32,7 @@ import { FileSessionStorage } from "../src/session/session-storage";
 const temp = () => fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-"));
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const brokerEntrypoint = path.resolve(import.meta.dir, "../src/cli.ts");
+const BROKER_PROCESS_STARTUP_TIMEOUT_MS = 10_000;
 
 it("isolates source SDK children and preserves compiled self-spawn", () => {
 	const sourceEnvironment = {
@@ -166,11 +168,16 @@ it("SDK lifecycle launch requests require a worktree identity", () => {
 		),
 	).toThrow("GJC_SDK_LIFECYCLE_REQUEST is invalid.");
 });
-async function waitForDiscovery(agentDir: string) {
-	const deadline = Date.now() + 5_000;
+async function waitForDiscovery(agentDir: string, children?: Bun.Subprocess[]) {
+	const deadline = Date.now() + BROKER_PROCESS_STARTUP_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		const discovery = await readBrokerDiscovery(agentDir);
 		if (discovery) return discovery;
+		if (children?.every(child => child.exitCode !== null)) {
+			throw new Error(
+				`All broker contenders exited before discovery (codes=${children.map(child => child.exitCode).join(",")}).`,
+			);
+		}
 		await sleep(20);
 	}
 	throw new Error("Timed out waiting for broker discovery.");
@@ -199,6 +206,74 @@ describe("SDK broker identity and discovery", () => {
 		expect(redactBrokerDiscovery(persisted!).token).toBe("[redacted]");
 		if (process.platform !== "win32")
 			expect((await fs.stat(path.join(dir, "sdk", "broker.json"))).mode & 0o777).toBe(0o600);
+	});
+
+	it("keeps the temp broker.json fsync fail-closed even for EPERM (not shared with the directory barrier)", async () => {
+		const dir = await temp();
+		const realOpen = fs.open.bind(fs);
+		const spy = vi.spyOn(fs, "open").mockImplementation((async (p: string, ...rest: unknown[]) => {
+			const handle = await (realOpen as (p: string, ...r: unknown[]) => Promise<fs.FileHandle>)(p, ...rest);
+			if (String(p).endsWith(".tmp"))
+				(handle as unknown as { sync: () => Promise<void> }).sync = async () => {
+					throw Object.assign(new Error("EPERM file fsync"), { code: "EPERM" });
+				};
+			return handle;
+		}) as typeof fs.open);
+		try {
+			await expect(
+				writeBrokerDiscovery(dir, {
+					version: 1,
+					protocolVersion: 3,
+					packageGeneration: "test",
+					ownerId: "x",
+					pid: process.pid,
+					host: "127.0.0.1",
+					port: 1,
+					url: "ws://127.0.0.1:1",
+					token: "secret",
+					startedAt: 1,
+					heartbeatAt: Date.now(),
+				}),
+			).rejects.toMatchObject({ code: "EPERM" });
+		} finally {
+			spy.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not blanket-tolerate directory fsync failures (tolerance is win32-scoped only)", async () => {
+		if (process.platform === "win32") return;
+		const dir = await temp();
+		const sdkDir = path.dirname(brokerDiscoveryPath(dir));
+		const realOpen = fs.open.bind(fs);
+		const spy = vi.spyOn(fs, "open").mockImplementation((async (p: string, ...rest: unknown[]) => {
+			const handle = await (realOpen as (p: string, ...r: unknown[]) => Promise<fs.FileHandle>)(p, ...rest);
+			if (path.resolve(String(p)) === path.resolve(sdkDir))
+				(handle as unknown as { sync: () => Promise<void> }).sync = async () => {
+					throw Object.assign(new Error("EIO dir fsync"), { code: "EIO" });
+				};
+			return handle;
+		}) as typeof fs.open);
+		try {
+			await expect(
+				writeBrokerDiscovery(dir, {
+					version: 1,
+					protocolVersion: 3,
+					packageGeneration: "test",
+					ownerId: "x",
+					pid: process.pid,
+					host: "127.0.0.1",
+					port: 1,
+					url: "ws://127.0.0.1:1",
+					token: "secret",
+					startedAt: 1,
+					heartbeatAt: Date.now(),
+				}),
+			).rejects.toMatchObject({ code: "EIO" });
+		} finally {
+			spy.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects discovery bound to a different process incarnation", async () => {
@@ -460,7 +535,7 @@ describe("SDK broker identity and discovery", () => {
 			}),
 		);
 		try {
-			const discovery = await waitForDiscovery(dir);
+			const discovery = await waitForDiscovery(dir, children);
 			// The losing broker exits once it observes the winner's discovery record.
 			// Poll instead of a fixed delay so the assertion is robust to CI scheduling
 			// (the loser's exit can lag the discovery write under load).
@@ -475,9 +550,10 @@ describe("SDK broker identity and discovery", () => {
 			await Promise.all(children.map(child => child.exited));
 		} finally {
 			for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
+			await Promise.all(children.map(child => child.exited));
 			await fs.rm(dir, { recursive: true, force: true });
 		}
-	});
+	}, 20_000);
 	it("returns only an endpoint bound to the indexed incarnation", async () => {
 		const dir = await temp();
 		const stateRoot = path.join(dir, "state");
@@ -935,6 +1011,85 @@ describe("SDK broker identity and discovery", () => {
 			});
 		} finally {
 			server.stop(true);
+			await broker.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("fixture broker lease authority", () => {
+	it("mints one lease for a fresh child and never mints one from an existing owner", async () => {
+		const dir = await temp();
+		try {
+			const started = await startFixtureBrokerWithLeaseForTest({ agentDir: dir });
+			expect(typeof started.discovery.pid).toBe("number");
+			await expect(startFixtureBrokerWithLeaseForTest({ agentDir: dir })).rejects.toThrow(
+				"fixture_broker_lease_unavailable",
+			);
+			const firstClose = started.lease.close();
+			const secondClose = started.lease.close();
+			expect(secondClose).toBe(firstClose);
+			await firstClose;
+			await started.lease.close();
+			expect(brokerOwnerForTest(dir)).toBeUndefined();
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	it("rejects a fixture lease that joins discovery-mode startup without claiming its owner", async () => {
+		const dir = await temp();
+		try {
+			const discovery = ensureBroker({ agentDir: dir });
+			await expect(startFixtureBrokerWithLeaseForTest({ agentDir: dir })).rejects.toThrow(
+				"fixture_broker_lease_unavailable",
+			);
+			await discovery;
+			const owner = brokerOwnerForTest(dir);
+			expect(owner).toBeDefined();
+			await owner?.stop();
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	it("rejects a concurrent second fixture lease and keeps independent roots isolated", async () => {
+		const leftDir = await temp();
+		const rightDir = await temp();
+		try {
+			const leftStart = startFixtureBrokerWithLeaseForTest({ agentDir: leftDir });
+			await expect(startFixtureBrokerWithLeaseForTest({ agentDir: leftDir })).rejects.toThrow(
+				"fixture_broker_lease_unavailable",
+			);
+			const [left, right] = await Promise.all([
+				leftStart,
+				startFixtureBrokerWithLeaseForTest({ agentDir: rightDir }),
+			]);
+			await left.lease.close();
+			expect(await readBrokerDiscovery(rightDir)).toMatchObject({
+				pid: right.discovery.pid,
+				incarnation: right.discovery.incarnation,
+			});
+			expect(brokerOwnerForTest(rightDir)).toBeDefined();
+			await right.lease.close();
+		} finally {
+			await brokerOwnerForTest(leftDir)?.stop();
+			await brokerOwnerForTest(rightDir)?.stop();
+			await fs.rm(leftDir, { recursive: true, force: true });
+			await fs.rm(rightDir, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	it("rejects external discovery without changing its broker", async () => {
+		const dir = await temp();
+		const broker = new Broker({ agentDir: dir });
+		await broker.start();
+		try {
+			await expect(startFixtureBrokerWithLeaseForTest({ agentDir: dir })).rejects.toThrow(
+				"fixture_broker_lease_unavailable",
+			);
+			expect((await readBrokerDiscovery(dir))?.pid).toBe(process.pid);
+		} finally {
 			await broker.stop();
 			await fs.rm(dir, { recursive: true, force: true });
 		}

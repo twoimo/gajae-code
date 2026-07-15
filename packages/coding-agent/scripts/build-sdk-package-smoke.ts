@@ -8,6 +8,7 @@ const packageDir = path.resolve(import.meta.dir, "..");
 const packageName = "@gajae-code/coding-agent";
 const aiPackageDir = path.resolve(packageDir, "../ai");
 const bridgeClientPackageDir = path.resolve(packageDir, "../bridge-client");
+const tuiPackageDir = path.resolve(packageDir, "../tui");
 const manifestsDir = path.join(packageDir, "test/manifests");
 const baselinePath = path.join(manifestsDir, "sdk-public-surface-v1.json");
 const generatedPath = path.join(manifestsDir, "sdk-public-surface.generated.json");
@@ -34,11 +35,13 @@ async function runSmoke(): Promise<Surface> {
 			["bun", "pm", "pack", "--destination", tempDir, "--quiet"],
 			bridgeClientPackageDir,
 		);
+		const tuiTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], tuiPackageDir);
 		const codingAgentTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], packageDir);
 		const aiTarballPath = path.isAbsolute(aiTarball) ? aiTarball : path.join(aiPackageDir, aiTarball);
 		const bridgeClientTarballPath = path.isAbsolute(bridgeClientTarball)
 			? bridgeClientTarball
 			: path.join(bridgeClientPackageDir, bridgeClientTarball);
+		const tuiTarballPath = path.isAbsolute(tuiTarball) ? tuiTarball : path.join(tuiPackageDir, tuiTarball);
 		const codingAgentTarballPath = path.isAbsolute(codingAgentTarball)
 			? codingAgentTarball
 			: path.join(packageDir, codingAgentTarball);
@@ -52,10 +55,12 @@ async function runSmoke(): Promise<Surface> {
 						"@gajae-code/ai": `file:${aiTarballPath}`,
 						"@gajae-code/bridge-client": `file:${bridgeClientTarballPath}`,
 						[packageName]: `file:${codingAgentTarballPath}`,
+						"@gajae-code/tui": `file:${tuiTarballPath}`,
 					},
 					overrides: {
 						"@gajae-code/ai": `file:${aiTarballPath}`,
 						"@gajae-code/bridge-client": `file:${bridgeClientTarballPath}`,
+						"@gajae-code/tui": `file:${tuiTarballPath}`,
 					},
 				},
 				null,
