@@ -1820,19 +1820,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (options.compactBeforeExecute) {
 			this.session.markPlanCompactAbortPending();
 		}
+		let sessionSwitchCompleted = true;
 		let compactOutcome: CompactionOutcome | undefined;
 		try {
 			await this.#exitPlanMode({ silent: true, paused: false });
 
 			if (!options.preserveContext) {
-				await this.handleClearCommand();
-				// The new session has a fresh local:// root — persist the approved plan there
-				// so `local://<title>.md` resolves correctly in the execution session.
-				const newLocalPath = resolveLocalUrlToPath(options.finalPlanFilePath, {
-					getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
-					getSessionId: () => this.sessionManager.getSessionId(),
-				});
-				await Bun.write(newLocalPath, planContent);
+				sessionSwitchCompleted = await this.handleClearCommand();
+				if (sessionSwitchCompleted) {
+					// The new session has a fresh local:// root — persist the approved plan there
+					// so `local://<title>.md` resolves correctly in the execution session.
+					const newLocalPath = resolveLocalUrlToPath(options.finalPlanFilePath, {
+						getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
+						getSessionId: () => this.sessionManager.getSessionId(),
+					});
+					await Bun.write(newLocalPath, planContent);
+				}
 			} else if (options.compactBeforeExecute) {
 				// Distill the plan-mode transcript before the execution turn is queued so
 				// the plan-approved synthetic prompt lands as a fresh cache anchor.
@@ -1865,6 +1868,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// retired regardless of whether the synthetic prompt fires.
 		if (previousTools.length > 0) {
 			await this.session.setActiveToolsByName(previousTools);
+		}
+		if (!sessionSwitchCompleted) {
+			this.showWarning("Plan approved, but the new session could not be created — execution was not dispatched.");
+			return;
 		}
 		this.session.setPlanReferencePath(options.finalPlanFilePath);
 
@@ -2577,15 +2584,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleContextCommand();
 	}
 
-	#prepareSessionSwitch(): void {
+	#prepareSessionSwitch(cleanupPreviousSessionUi?: () => void): void {
 		this.#btwController.dispose();
-		this.#extensionUiController.clearExtensionTerminalInputListeners();
+		if (cleanupPreviousSessionUi) cleanupPreviousSessionUi();
+		else this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#planReviewContainer = undefined;
 	}
 
-	handleClearCommand(): Promise<void> {
-		this.#prepareSessionSwitch();
-		return this.#commandController.handleClearCommand();
+	async handleClearCommand(): Promise<boolean> {
+		const cleanupPreviousSessionUi = this.#extensionUiController.captureSessionUiCleanup();
+		const switched = await this.#commandController.handleClearCommand();
+		if (switched) this.#prepareSessionSwitch(cleanupPreviousSessionUi);
+		return switched;
 	}
 
 	handleContextClearCommand(): Promise<void> {
@@ -2593,9 +2603,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleContextClearCommand();
 	}
 
-	handleDropCommand(): Promise<void> {
-		this.#prepareSessionSwitch();
-		return this.#commandController.handleDropCommand();
+	async handleDropCommand(): Promise<boolean> {
+		const cleanupPreviousSessionUi = this.#extensionUiController.captureSessionUiCleanup();
+		const switched = await this.#commandController.handleDropCommand();
+		if (switched) this.#prepareSessionSwitch(cleanupPreviousSessionUi);
+		return switched;
 	}
 
 	handleForkCommand(): Promise<void> {

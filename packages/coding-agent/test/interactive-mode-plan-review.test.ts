@@ -159,7 +159,7 @@ describe("InteractiveMode plan review rendering", () => {
 		mode.planModeEnabled = true;
 		mode.planModePlanFilePath = planFilePath;
 		vi.spyOn(mode, "showHookSelector").mockResolvedValue("Approve and keep context");
-		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue(true);
 		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
 
 		await mode.handlePlanApproval({
@@ -188,7 +188,7 @@ describe("InteractiveMode plan review rendering", () => {
 		mode.planModeEnabled = true;
 		mode.planModePlanFilePath = planFilePath;
 		vi.spyOn(mode, "showHookSelector").mockResolvedValue("Approve and execute");
-		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue(true);
 		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
 
 		await mode.handlePlanApproval({
@@ -202,6 +202,35 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(prompt).toHaveBeenCalledWith(expect.any(String), {
 			synthetic: true,
 		});
+	});
+
+	it("does not dispatch an approved plan when fresh-session creation is refused", async () => {
+		const planFilePath = "local://PLAN.md";
+		const finalPlanFilePath = "local://APPROVED.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nDo not dispatch in the retained session.");
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(mode, "showHookSelector").mockResolvedValue("Approve and execute");
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue(false);
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+		const warning = vi.spyOn(mode, "showWarning");
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+			finalPlanFilePath,
+		});
+
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(prompt).not.toHaveBeenCalledWith(expect.any(String), { synthetic: true });
+		expect(warning).toHaveBeenCalledWith(
+			"Plan approved, but the new session could not be created — execution was not dispatched.",
+		);
 	});
 
 	it("Approve and compact context: ok outcome dispatches plan-approved after compaction", async () => {

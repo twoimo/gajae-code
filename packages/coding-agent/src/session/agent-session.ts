@@ -1419,6 +1419,7 @@ export class AgentSession {
 	#providerCacheSessionId: string | undefined;
 	#isDisposed = false;
 	#disposePromise: Promise<void> | undefined;
+	#newSessionTransition: Promise<boolean> | undefined;
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
 
@@ -7621,7 +7622,20 @@ export class AgentSession {
 	 * @param options - Optional initial messages and parent session path
 	 * @returns true if completed, false if cancelled by hook
 	 */
-	async newSession(options?: NewSessionOptions): Promise<boolean> {
+	newSession(options?: NewSessionOptions): Promise<boolean> {
+		if (this.#newSessionTransition) return this.#newSessionTransition;
+
+		const transition = this.#runNewSessionTransition(options);
+		this.#newSessionTransition = transition;
+		void transition
+			.finally(() => {
+				if (this.#newSessionTransition === transition) this.#newSessionTransition = undefined;
+			})
+			.catch(() => {});
+		return transition;
+	}
+
+	async #runNewSessionTransition(options?: NewSessionOptions): Promise<boolean> {
 		const previousSessionFile = this.sessionFile;
 		const previousWorkflowGateSessionId = this.sessionId;
 		const nextDiscoverySessionToolNames = this.#mcpDiscoveryEnabled
@@ -7643,32 +7657,132 @@ export class AgentSession {
 			}
 		}
 
-		this.#disconnectFromAgent();
-		await this.abort();
-		this.#cancelOwnAsyncJobs();
-		this.#closeAllProviderSessions("new session");
-		this.#rebindProviderSessionState(new Map());
-		this.agent.reset();
-		if (options?.drop && previousSessionFile) {
-			try {
-				await this.sessionManager.dropSession(previousSessionFile);
-			} catch (err) {
-				logger.error("Failed to delete session during /drop", { err });
-			}
-		} else {
-			await this.sessionManager.flush();
+		const manager = AsyncJobManager.instance();
+		const ownerId = this.#agentId;
+		const lease = manager && ownerId ? manager.beginOwnerSubagentShutdown(ownerId) : undefined;
+		if (manager && ownerId && !lease) {
+			this.emitNotice(
+				"error",
+				"Cannot start a new session while owned subagent cleanup is already in progress.",
+				"new-session-subagent-cleanup",
+			);
+			return false;
 		}
-		await this.sessionManager.newSession(options);
-		this.setTodoPhases([]);
-		this.#syncAgentSessionId();
-		this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
-		this.#rekeyHindsightMemoryForCurrentSessionId();
-		this.#resetHindsightConversationTrackingIfHindsight();
-		this.#steeringMessages = [];
-		this.#followUpMessages = [];
-		this.#pendingNextTurnMessages = [];
-		this.#scheduledHiddenNextTurnGeneration = undefined;
 
+		if (!lease) {
+			this.#disconnectFromAgent();
+			await this.abort();
+			if (this.isCompacting) {
+				this.abortCompaction();
+				while (this.isCompacting) {
+					await Bun.sleep(10);
+				}
+			}
+			this.#cancelOwnAsyncJobs();
+			this.#closeAllProviderSessions("new session");
+			this.#rebindProviderSessionState(new Map());
+			this.agent.reset();
+			if (!options?.drop) await this.sessionManager.flush();
+			await this.sessionManager.newSession(options);
+			this.setTodoPhases([]);
+			this.#syncAgentSessionId();
+			this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
+			this.#rekeyHindsightMemoryForCurrentSessionId();
+			this.#resetHindsightConversationTrackingIfHindsight();
+			this.#steeringMessages = [];
+			this.#followUpMessages = [];
+			this.#pendingNextTurnMessages = [];
+			this.#scheduledHiddenNextTurnGeneration = undefined;
+			await this.#initializeNewSessionState(nextDiscoverySessionToolNames, previousSessionFile);
+			if (options?.drop && previousSessionFile) {
+				try {
+					await this.sessionManager.dropSession(previousSessionFile);
+				} catch (err) {
+					logger.error("Failed to delete session during /drop", { err });
+				}
+			}
+			return true;
+		}
+
+		if (!manager) throw new Error("Owner subagent shutdown manager became unavailable.");
+		if (!ownerId) throw new Error("Owner subagent shutdown owner became unavailable.");
+		const previousSessionIdentity = this.sessionManager.getSessionId();
+		try {
+			try {
+				manager.runOwnerProducerCleanupsStrict({ ownerId });
+				await this.abort();
+				if (this.isCompacting) {
+					this.abortCompaction();
+					while (this.isCompacting) {
+						await Bun.sleep(10);
+					}
+				}
+				const proof = await manager.cancelAndProveOwnerSubagents(lease);
+				if (!proof.confirmed) {
+					this.emitNotice(
+						"error",
+						"Unable to confirm owned subagent cleanup; session was not replaced. Wait for or inspect remaining subagents, then retry /new.",
+						"new-session-subagent-cleanup",
+					);
+					manager.finishOwnerSubagentShutdown(lease, "release");
+					return false;
+				}
+			} catch {
+				this.emitNotice(
+					"error",
+					"Unable to confirm owned subagent cleanup; session was not replaced. Wait for or inspect remaining subagents, then retry /new.",
+					"new-session-subagent-cleanup",
+				);
+				manager.finishOwnerSubagentShutdown(lease, "release");
+				return false;
+			}
+
+			if (!(await manager.waitForOwnerInFlightDeliveries(ownerId))) {
+				throw new Error("Owned async deliveries did not settle before session replacement.");
+			}
+			if (!options?.drop) await this.sessionManager.flush();
+
+			if (!(await manager.cancelAndSettleOwnerJobs(ownerId))) {
+				throw new Error("Owned async jobs did not settle before session replacement.");
+			}
+
+			this.#disconnectFromAgent();
+			this.#closeAllProviderSessions("new session");
+			this.#rebindProviderSessionState(new Map());
+			this.agent.reset();
+			await this.sessionManager.newSession(options);
+			this.setTodoPhases([]);
+			this.#syncAgentSessionId();
+			this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
+			this.#rekeyHindsightMemoryForCurrentSessionId();
+			this.#resetHindsightConversationTrackingIfHindsight();
+			this.#steeringMessages = [];
+			this.#followUpMessages = [];
+			this.#pendingNextTurnMessages = [];
+			this.#scheduledHiddenNextTurnGeneration = undefined;
+			await this.#initializeNewSessionState(nextDiscoverySessionToolNames, previousSessionFile);
+			if (options?.drop && previousSessionFile) {
+				try {
+					await this.sessionManager.dropSession(previousSessionFile);
+				} catch (err) {
+					logger.error("Failed to delete session during /drop", { err });
+				}
+			}
+			manager.finishOwnerSubagentShutdown(lease, "commit");
+			return true;
+		} catch (error) {
+			manager.finishOwnerSubagentShutdown(
+				lease,
+				this.sessionManager.getSessionId() !== previousSessionIdentity ? "commit" : "release",
+			);
+			throw error;
+		}
+	}
+
+	async #initializeNewSessionState(
+		nextDiscoverySessionToolNames: string[] | undefined,
+		previousSessionFile: string | undefined,
+	): Promise<void> {
 		const inheritedThinkingLevel = resolveThinkingLevelForModel(this.model, this.#getInheritedThinkingLevel());
 		this.#thinkingLevel = inheritedThinkingLevel;
 		this.agent.setThinkingLevel(toReasoningEffort(inheritedThinkingLevel));
@@ -7687,15 +7801,11 @@ export class AgentSession {
 			this.sessionFile,
 			this.#getConfiguredDefaultSelectedMCPToolNames(),
 		);
-
 		this.#todoReminderCount = 0;
 		this.#planReferenceSent = false;
 		this.#planReferencePath = "local://PLAN.md";
 		this.#reconnectToAgent();
-
 		this.#resetIrcRosterDeliveryState();
-
-		// Emit session_switch event with reason "new" to hooks
 		if (this.#extensionRunner) {
 			await this.#extensionRunner.emit({
 				type: "session_switch",
@@ -7703,8 +7813,6 @@ export class AgentSession {
 				previousSessionFile,
 			});
 		}
-
-		return true;
 	}
 
 	/**

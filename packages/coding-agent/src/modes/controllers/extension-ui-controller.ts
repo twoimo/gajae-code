@@ -53,6 +53,40 @@ export class ExtensionUiController {
 		overlay?.hide();
 	}
 
+	captureSessionUiCleanup(): () => void {
+		const terminalInputUnsubscribers = [...this.#extensionTerminalInputUnsubscribers];
+		const widgetsAbove = [...this.#hookWidgetsAbove.entries()];
+		const widgetsBelow = [...this.#hookWidgetsBelow.entries()];
+		const activeHookCustomComponent = this.#activeHookCustomComponent;
+		const activeHookCustomOverlay = this.#activeHookCustomOverlay;
+		return () => {
+			for (const unsubscribe of terminalInputUnsubscribers) {
+				unsubscribe();
+				this.#extensionTerminalInputUnsubscribers.delete(unsubscribe);
+			}
+			let widgetsChanged = false;
+			for (const [key, widget] of widgetsAbove) {
+				if (this.#hookWidgetsAbove.get(key) !== widget) continue;
+				this.#hookWidgetsAbove.delete(key);
+				widget.dispose?.();
+				widgetsChanged = true;
+			}
+			for (const [key, widget] of widgetsBelow) {
+				if (this.#hookWidgetsBelow.get(key) !== widget) continue;
+				this.#hookWidgetsBelow.delete(key);
+				widget.dispose?.();
+				widgetsChanged = true;
+			}
+			if (
+				this.#activeHookCustomComponent === activeHookCustomComponent &&
+				this.#activeHookCustomOverlay === activeHookCustomOverlay
+			) {
+				this.#clearActiveHookCustom();
+			}
+			if (widgetsChanged) this.#rebuildHookWidgets();
+		};
+	}
+
 	#sdkControl = async (operation: string, input: Record<string, unknown>): Promise<unknown> => {
 		const session = this.ctx.session;
 		switch (operation) {
@@ -414,36 +448,30 @@ export class ExtensionUiController {
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
-				// Stop any loading animation
+				const cleanupPreviousSessionUi = this.captureSessionUiCleanup();
+				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
+				if (!success) {
+					return { cancelled: true };
+				}
+				cleanupPreviousSessionUi();
+
 				if (this.ctx.loadingAnimation) {
 					this.ctx.loadingAnimation.stop();
 					this.ctx.loadingAnimation = undefined;
 				}
 				this.ctx.statusContainer.clear();
-
-				// Create new session
-				this.clearExtensionTerminalInputListeners();
-				this.clearHookWidgets();
-				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
-				if (!success) {
-					return { cancelled: true };
-				}
 				this.ctx.resetIrcSidebarSession();
-
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
-				// Call setup callback if provided
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
 				}
 
-				// Reset and update status line
 				this.ctx.statusLine.invalidate();
 				this.ctx.statusLine.setSessionStartTime(Date.now());
 				this.ctx.updateEditorTopBorder();
 				this.ctx.ui.requestRender();
 
-				// Clear UI state
 				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 				this.ctx.chatContainer.clear();
 				this.ctx.pendingMessagesContainer.clear();
@@ -717,28 +745,24 @@ export class ExtensionUiController {
 				if (this.ctx.isBackgrounded) {
 					return { cancelled: true };
 				}
-				// Stop any loading animation
+				const cleanupPreviousSessionUi = this.captureSessionUiCleanup();
+				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
+				if (!success) {
+					return { cancelled: true };
+				}
+				cleanupPreviousSessionUi();
+
 				if (this.ctx.loadingAnimation) {
 					this.ctx.loadingAnimation.stop();
 					this.ctx.loadingAnimation = undefined;
 				}
 				this.ctx.statusContainer.clear();
-
-				// Create new session
-				this.clearExtensionTerminalInputListeners();
-				this.clearHookWidgets();
-				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
-				if (!success) {
-					return { cancelled: true };
-				}
 				this.ctx.resetIrcSidebarSession();
 
-				// Call setup callback if provided
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
 				}
 
-				// Clear UI state
 				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
 				this.ctx.chatContainer.clear();
 				this.ctx.pendingMessagesContainer.clear();

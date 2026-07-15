@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
+import { AsyncJobManager } from "@gajae-code/coding-agent/async";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { InputController } from "@gajae-code/coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext, SubmittedUserInput } from "@gajae-code/coding-agent/modes/types";
+import { SubagentTool, type ToolSession } from "@gajae-code/coding-agent/tools";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -249,6 +251,50 @@ describe("InputController escape behavior", () => {
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("interrupts a live subagent await through Esc without cancelling the child", async () => {
+		const { ctx, editor } = createContext();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {}, retentionMs: 10_000 });
+		AsyncJobManager.setInstance(manager);
+		const child = Promise.withResolvers<string>();
+		const childJobId = manager.register("task", "live child", async () => child.promise, {
+			id: "job-input-controller-live-await",
+			ownerId: "0-Main",
+			metadata: { subagent: { id: "0-InputEsc", agent: "executor", agentSource: "bundled" } },
+		});
+		const parentAbort = new AbortController();
+		(ctx.session as { isStreaming: boolean; abort: () => Promise<void> }).isStreaming = true;
+		(ctx.session as { isStreaming: boolean; abort: () => Promise<void> }).abort = vi.fn(async () => {
+			parentAbort.abort();
+		});
+		const tool = new SubagentTool({
+			cwd: "/tmp",
+			hasUI: false,
+			settings: Settings.isolated({}),
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			getAgentId: () => "0-Main",
+		} as ToolSession);
+		const awaiting = tool.execute(
+			"input-controller-live-await",
+			{ action: "await", ids: ["0-InputEsc"], timeout_ms: 10_000 },
+			parentAbort.signal,
+		);
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+
+		editor.onEscape?.();
+		const receipt = await awaiting;
+
+		expect(receipt.details?.interrupted).toBe(true);
+		expect(receipt.details?.awaitOutcome).toBe("interrupted");
+		expect(receipt.details?.subagents[0]?.status).toBe("running");
+		expect(manager.getJob(childJobId)?.status).toBe("running");
+		child.resolve("completed after Esc");
+		await manager.getJob(childJobId)?.promise;
+		await manager.dispose({ timeoutMs: 100 });
+		AsyncJobManager.resetForTests();
 	});
 
 	it("runs /btw as a builtin side request instead of steering the active stream", async () => {

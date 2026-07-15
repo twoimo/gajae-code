@@ -916,22 +916,15 @@ export class CommandController {
 		}
 	}
 
-	async #runNewSessionFlow(options?: NewSessionOptions, label: string = "New session started"): Promise<void> {
+	async #runNewSessionFlow(options?: NewSessionOptions, label: string = "New session started"): Promise<boolean> {
+		if (!(await this.ctx.session.newSession(options))) return false;
+
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
 		}
 		this.ctx.statusContainer.clear();
-
-		if (this.ctx.session.isCompacting) {
-			this.ctx.session.abortCompaction();
-			while (this.ctx.session.isCompacting) {
-				await Bun.sleep(10);
-			}
-		}
-		if (!(await this.ctx.session.newSession(options))) return;
 		this.ctx.resetIrcSidebarSession();
-
 		this.ctx.resetObserverRegistry();
 		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
@@ -952,10 +945,11 @@ export class CommandController {
 		this.ctx.chatContainer.addChild(new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 0));
 		await this.ctx.reloadTodos();
 		this.ctx.ui.requestRender();
+		return true;
 	}
 
-	async handleClearCommand(): Promise<void> {
-		await this.#runNewSessionFlow();
+	async handleClearCommand(): Promise<boolean> {
+		return this.#runNewSessionFlow();
 	}
 
 	async handleContextClearCommand(): Promise<void> {
@@ -995,12 +989,12 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 	}
 
-	async handleDropCommand(): Promise<void> {
+	async handleDropCommand(): Promise<boolean> {
 		if (!this.ctx.sessionManager.getSessionFile()) {
 			this.ctx.showError("Nothing to drop (in-memory session)");
-			return;
+			return false;
 		}
-		await this.#runNewSessionFlow({ drop: true }, "Session dropped");
+		return this.#runNewSessionFlow({ drop: true }, "Session dropped");
 	}
 
 	async handleForkCommand(): Promise<void> {

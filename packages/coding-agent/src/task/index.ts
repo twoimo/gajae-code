@@ -19,7 +19,7 @@ import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@gajae
 import type { Model, Usage } from "@gajae-code/ai";
 import { $env, prompt, Snowflake } from "@gajae-code/utils";
 import type { ToolSession } from "..";
-import { AsyncJobManager } from "../async";
+import { AsyncJobManager, OwnerSubagentShutdownError } from "../async";
 import { resolveAgentModelPatterns } from "../config/model-resolver";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
@@ -795,7 +795,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					});
 				}
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message =
+					error instanceof OwnerSubagentShutdownError
+						? error.message
+						: error instanceof Error
+							? error.message
+							: String(error);
 				failedSchedules.push(`${taskItem.id}: ${message}`);
 				const progress = progressByTaskId.get(taskItem.id);
 				if (progress) {

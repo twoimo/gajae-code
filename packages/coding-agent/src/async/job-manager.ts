@@ -75,6 +75,47 @@ export type SubagentRunOutcome = { kind: "completed"; text: string } | { kind: "
 /** Canonical lifecycle of a subagent across pause/resume cycles. */
 export type SubagentLifecycle = "running" | "paused" | "queued" | "completed" | "failed" | "cancelled";
 
+/** Maximum time allowed to prove owned subagents have stopped before replacement. */
+export const OWNER_SUBAGENT_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+export class OwnerSubagentShutdownError extends Error {
+	readonly code = "owner_shutdown_in_progress";
+
+	constructor() {
+		super("Cannot start subagent while owner shutdown is in progress.");
+		this.name = "OwnerSubagentShutdownError";
+	}
+}
+
+export interface OwnerSubagentShutdownTarget {
+	subagentId: string;
+	jobId: string | null;
+	source: "record" | "metadata_job";
+}
+
+export interface OwnerSubagentShutdownLease {
+	ownerId: string;
+	id: string;
+	targets: readonly OwnerSubagentShutdownTarget[];
+}
+
+export interface OwnerSubagentShutdownProof {
+	ownerId: string;
+	leaseId: string;
+	confirmed: boolean;
+	reason: "confirmed" | "deadline_exceeded" | "missing_terminal_evidence" | "lease_lost";
+	targets: readonly OwnerSubagentShutdownTarget[];
+	terminalIds: readonly string[];
+	unresolvedIds: readonly string[];
+}
+
+interface OwnerSubagentShutdownLeaseState {
+	lease: OwnerSubagentShutdownLease;
+	backingJobIds: ReadonlyMap<string, readonly string[]>;
+	phase: "active" | "proving" | "proved";
+	proof?: OwnerSubagentShutdownProof;
+}
+
 /**
  * Live, executor-owned control handle for a RUNNING subagent. Registered when a
  * subagent run starts and removed on pause/terminal so a paused subagent retains
@@ -327,6 +368,8 @@ export class AsyncJobManager {
 	#resumeRunner?: (subagentId: string, message?: string, descriptor?: ResumeDescriptor) => string | undefined;
 	readonly #resumeDescriptors = new Map<string, ResumeDescriptor>();
 	readonly #deadLetteredDeliveries = new Map<string, AsyncJobDelivery>();
+	readonly #ownerSubagentShutdownLeases = new Map<string, OwnerSubagentShutdownLeaseState>();
+	#ownerSubagentShutdownSeq = 0;
 	#lastDisposeDiagnostics: AsyncJobDisposeDiagnostics = { stuckJobIds: [], deliveriesDrained: true };
 	/**
 	 * Change listeners notified on any mutation that can alter the live job set
@@ -386,6 +429,9 @@ export class AsyncJobManager {
 	): string {
 		if (this.#disposed) {
 			throw new Error("Async job manager is disposed");
+		}
+		if (options?.ownerId && this.#isOwnerSubagentShutdownFenced(options.ownerId)) {
+			throw new OwnerSubagentShutdownError();
 		}
 		const runningCount = this.getRunningJobs().length;
 		if (runningCount >= this.#maxRunningJobs) {
@@ -704,6 +750,224 @@ export class AsyncJobManager {
 		return descriptor;
 	}
 
+	#isOwnerSubagentShutdownFenced(ownerId: string | undefined): boolean {
+		return ownerId !== undefined && this.#ownerSubagentShutdownLeases.has(ownerId);
+	}
+
+	#isTerminalSubagentStatus(status: SubagentLifecycle): boolean {
+		return status === "completed" || status === "failed" || status === "cancelled";
+	}
+
+	beginOwnerSubagentShutdown(ownerId: string): OwnerSubagentShutdownLease | undefined {
+		if (!ownerId || this.#ownerSubagentShutdownLeases.has(ownerId)) return undefined;
+		const targets = new Map<string, OwnerSubagentShutdownTarget>();
+		const backingJobIds = new Map<string, Set<string>>();
+		const addBackingJob = (subagentId: string, jobId: string | null): void => {
+			if (!jobId) return;
+			const ids = backingJobIds.get(subagentId) ?? new Set<string>();
+			ids.add(jobId);
+			backingJobIds.set(subagentId, ids);
+		};
+		for (const record of this.#subagentRecords.values()) {
+			if (record.ownerId !== ownerId || this.#isTerminalSubagentStatus(record.status)) continue;
+			targets.set(record.subagentId, {
+				subagentId: record.subagentId,
+				jobId: record.status === "queued" ? null : record.currentJobId,
+				source: "record",
+			});
+			if (record.status !== "queued") addBackingJob(record.subagentId, record.currentJobId);
+		}
+		for (const job of this.#jobs.values()) {
+			const subagentId = job.metadata?.subagent?.id;
+			if (
+				job.ownerId !== ownerId ||
+				!subagentId ||
+				(job.status !== "running" && job.status !== "paused" && job.status !== "cancelled")
+			) {
+				continue;
+			}
+			if (!targets.has(subagentId)) {
+				targets.set(subagentId, { subagentId, jobId: job.id, source: "metadata_job" });
+			}
+			addBackingJob(subagentId, job.id);
+		}
+		const lease: OwnerSubagentShutdownLease = {
+			ownerId,
+			id: `owner_shutdown_${++this.#ownerSubagentShutdownSeq}`,
+			targets: Array.from(targets.values()),
+		};
+		this.#ownerSubagentShutdownLeases.set(ownerId, {
+			lease,
+			backingJobIds: new Map<string, readonly string[]>(
+				Array.from(backingJobIds, ([subagentId, jobIds]): [string, readonly string[]] => [
+					subagentId,
+					Array.from(jobIds),
+				]),
+			),
+			phase: "active",
+		});
+		return lease;
+	}
+
+	runOwnerProducerCleanups(filter?: AsyncJobFilter): void {
+		this.#runOwnerProducerCleanups(filter, false);
+	}
+
+	runOwnerProducerCleanupsStrict(filter?: AsyncJobFilter): void {
+		this.#runOwnerProducerCleanups(filter, true);
+	}
+
+	#runOwnerProducerCleanups(filter: AsyncJobFilter | undefined, strict: boolean): void {
+		const ownerId = filter?.ownerId;
+		const targets: Array<[string, Set<() => void>]> = [];
+		if (ownerId) {
+			const bag = this.#ownerCleanups.get(ownerId);
+			if (bag) targets.push([ownerId, bag]);
+		} else {
+			for (const entry of this.#ownerCleanups.entries()) targets.push(entry);
+		}
+		const errors: unknown[] = [];
+		for (const [id, bag] of targets) {
+			const callbacks = Array.from(bag);
+			bag.clear();
+			this.#ownerCleanups.delete(id);
+			for (const cleanup of callbacks) {
+				try {
+					cleanup();
+				} catch (error) {
+					errors.push(error);
+					if (strict) {
+						let retryBag = this.#ownerCleanups.get(id);
+						if (!retryBag) {
+							retryBag = new Set();
+							this.#ownerCleanups.set(id, retryBag);
+						}
+						retryBag.add(cleanup);
+					}
+					logger.warn("Async job owner cleanup failed", {
+						ownerId: id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		}
+		if (strict && errors.length > 0) throw new AggregateError(errors, "Async job owner cleanup failed");
+	}
+
+	async cancelAndProveOwnerSubagents(
+		lease: OwnerSubagentShutdownLease,
+		options?: { timeoutMs?: number },
+	): Promise<OwnerSubagentShutdownProof> {
+		const state = this.#ownerSubagentShutdownLeases.get(lease.ownerId);
+		if (!state || state.lease.id !== lease.id) {
+			return this.#ownerSubagentShutdownProof(
+				lease,
+				"lease_lost",
+				lease.targets.map(target => target.subagentId),
+			);
+		}
+		if (state.phase === "proved" && state.proof) return state.proof;
+		state.phase = "proving";
+		const settled = new Set<string>();
+		const promises: Promise<void>[] = [];
+		for (const target of lease.targets) {
+			const backingJobs = (state.backingJobIds.get(target.subagentId) ?? []).map(jobId => ({
+				jobId,
+				job: this.#jobs.get(jobId),
+			}));
+			if (target.source === "record") this.cancelSubagent(target.subagentId, { ownerId: lease.ownerId });
+			for (const { jobId, job } of backingJobs) {
+				this.cancel(jobId, { ownerId: lease.ownerId });
+				if (!job || job.ownerId !== lease.ownerId) continue;
+				promises.push(
+					job.promise.then(
+						() => {
+							settled.add(jobId);
+						},
+						() => {
+							settled.add(jobId);
+						},
+					),
+				);
+			}
+		}
+		const timeoutMs = Math.max(0, options?.timeoutMs ?? OWNER_SUBAGENT_SHUTDOWN_TIMEOUT_MS);
+		let deadlineExceeded = false;
+		await Promise.race([
+			Promise.allSettled(promises),
+			Bun.sleep(timeoutMs).then(() => {
+				deadlineExceeded = true;
+			}),
+		]);
+		const current = this.#ownerSubagentShutdownLeases.get(lease.ownerId);
+		if (!current || current.lease.id !== lease.id || current.phase !== "proving") {
+			return this.#ownerSubagentShutdownProof(
+				lease,
+				"lease_lost",
+				lease.targets.map(target => target.subagentId),
+			);
+		}
+		const unresolvedIds = lease.targets
+			.filter(target => !this.#hasTerminalShutdownEvidence(target, lease.ownerId, current.backingJobIds, settled))
+			.map(target => target.subagentId);
+		const reason =
+			unresolvedIds.length === 0
+				? "confirmed"
+				: deadlineExceeded
+					? "deadline_exceeded"
+					: "missing_terminal_evidence";
+		const proof = this.#ownerSubagentShutdownProof(lease, reason, unresolvedIds);
+		current.phase = "proved";
+		current.proof = proof;
+		return proof;
+	}
+
+	#hasTerminalShutdownEvidence(
+		target: OwnerSubagentShutdownTarget,
+		ownerId: string,
+		backingJobIds: ReadonlyMap<string, readonly string[]>,
+		settled: ReadonlySet<string>,
+	): boolean {
+		const record = this.#subagentRecords.get(target.subagentId);
+		if (!record || record.ownerId !== ownerId || !this.#isTerminalSubagentStatus(record.status)) return false;
+		return (backingJobIds.get(target.subagentId) ?? []).every(jobId => {
+			if (!settled.has(jobId)) return false;
+			const job = this.#jobs.get(jobId);
+			return job === undefined || job.ownerId === ownerId;
+		});
+	}
+
+	#ownerSubagentShutdownProof(
+		lease: OwnerSubagentShutdownLease,
+		reason: OwnerSubagentShutdownProof["reason"],
+		unresolvedIds: readonly string[],
+	): OwnerSubagentShutdownProof {
+		const unresolved = new Set(unresolvedIds);
+		return {
+			ownerId: lease.ownerId,
+			leaseId: lease.id,
+			confirmed: reason === "confirmed",
+			reason,
+			targets: lease.targets,
+			terminalIds: lease.targets
+				.filter(target => !unresolved.has(target.subagentId))
+				.map(target => target.subagentId),
+			unresolvedIds: [...unresolvedIds],
+		};
+	}
+
+	finishOwnerSubagentShutdown(lease: OwnerSubagentShutdownLease, outcome: "commit" | "release"): void {
+		const state = this.#ownerSubagentShutdownLeases.get(lease.ownerId);
+		if (!state || state.lease.id !== lease.id) return;
+		if (outcome === "commit" && state.proof?.confirmed) {
+			const pendingJobIds = this.getDeliveryState({ ownerId: lease.ownerId }).pendingJobIds;
+			this.acknowledgeDeliveries(pendingJobIds);
+			this.#purgeOwnerSubagentState(lease.ownerId);
+		}
+		this.#ownerSubagentShutdownLeases.delete(lease.ownerId);
+		if (outcome === "release") this.#ensureDeliveryLoop();
+	}
+
 	#recordByJobId(jobId: string): SubagentRecord | undefined {
 		for (const rec of this.#subagentRecords.values()) {
 			if (rec.currentJobId === jobId) return rec;
@@ -758,6 +1022,9 @@ export class AsyncJobManager {
 	): { ok: boolean; status?: SubagentLifecycle; jobId?: string; queued?: boolean; reason?: string } {
 		const rec = this.getSubagentRecord(subagentId, filter);
 		if (!rec) return { ok: false, reason: "not_found" };
+		if (this.#isOwnerSubagentShutdownFenced(rec.ownerId)) {
+			return { ok: false, status: rec.status, reason: "owner_shutdown_in_progress" };
+		}
 		if (rec.status === "running") return { ok: false, status: "running", reason: "already_running" };
 		if (rec.status === "queued") {
 			if (message !== undefined && rec.queued) {
@@ -790,6 +1057,9 @@ export class AsyncJobManager {
 		rec: SubagentRecord,
 		message?: string,
 	): { ok: boolean; status?: SubagentLifecycle; jobId?: string; reason?: string } {
+		if (this.#isOwnerSubagentShutdownFenced(rec.ownerId)) {
+			return { ok: false, status: rec.status, reason: "owner_shutdown_in_progress" };
+		}
 		const prevJobId = rec.currentJobId;
 		// Clear any retained progress from the previous run so a resumed subagent
 		// never renders the prior run's tool/output as live before it emits again.
@@ -803,16 +1073,36 @@ export class AsyncJobManager {
 		return { ok: true, status: rec.status, jobId: newJobId };
 	}
 
-	/** Drain queued resumes (FIFO by seq) while concurrency slots are available. */
+	/** Drain queued resumes while preserving fenced owners and allowing foreign progress. */
 	#drainResumeQueue(): void {
 		if (this.#resumeQueue.length === 0) return;
 		this.#resumeQueue.sort((a, b) => a.seq - b.seq);
-		while (this.#resumeQueue.length > 0 && this.getRunningJobs().length < this.#maxRunningJobs) {
-			const entry = this.#resumeQueue.shift();
-			if (!entry) return;
+		let index = 0;
+		while (index < this.#resumeQueue.length && this.getRunningJobs().length < this.#maxRunningJobs) {
+			const entry = this.#resumeQueue[index];
 			const rec = this.#subagentRecords.get(entry.subagentId);
-			if (rec?.status !== "queued") continue;
-			this.#startResume(rec, entry.message);
+			if (rec?.status !== "queued") {
+				this.#resumeQueue.splice(index, 1);
+				continue;
+			}
+			if (this.#isOwnerSubagentShutdownFenced(entry.ownerId)) {
+				index += 1;
+				continue;
+			}
+			try {
+				const result = this.#startResume(rec, entry.message);
+				if (result.reason === "owner_shutdown_in_progress") {
+					index += 1;
+					continue;
+				}
+				this.#resumeQueue.splice(index, 1);
+			} catch (error) {
+				if (error instanceof OwnerSubagentShutdownError) {
+					index += 1;
+					continue;
+				}
+				throw error;
+			}
 		}
 	}
 
@@ -1011,36 +1301,10 @@ export class AsyncJobManager {
 		};
 	}
 
-	/**
-	 * Run and clear every registered cleanup for the given filter. Idempotent
-	 * and error-isolated: a throwing cleanup does not prevent siblings from
-	 * running and never escalates to the caller.
-	 */
+	/** Run producer cleanups, then perform the legacy destructive subagent purge. */
 	runOwnerCleanups(filter?: AsyncJobFilter): void {
-		const ownerId = filter?.ownerId;
-		const targets: Array<[string, Set<() => void>]> = [];
-		if (ownerId) {
-			const bag = this.#ownerCleanups.get(ownerId);
-			if (bag) targets.push([ownerId, bag]);
-		} else {
-			for (const entry of this.#ownerCleanups.entries()) targets.push(entry);
-		}
-		for (const [id, bag] of targets) {
-			const callbacks = Array.from(bag);
-			bag.clear();
-			this.#ownerCleanups.delete(id);
-			for (const cleanup of callbacks) {
-				try {
-					cleanup();
-				} catch (error) {
-					logger.warn("Async job owner cleanup failed", {
-						ownerId: id,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-			}
-		}
-		this.#purgeOwnerSubagentState(ownerId);
+		this.runOwnerProducerCleanups(filter);
+		this.#purgeOwnerSubagentState(filter?.ownerId);
 	}
 
 	getDeliveryState(filter?: AsyncJobFilter): AsyncJobDeliveryState {
@@ -1084,6 +1348,7 @@ export class AsyncJobManager {
 				removed += 1;
 			}
 		}
+		if (removed > 0) this.#ensureDeliveryLoop();
 		return removed;
 	}
 
@@ -1099,7 +1364,7 @@ export class AsyncJobManager {
 		this.#deliveries.splice(
 			0,
 			this.#deliveries.length,
-			...this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId)),
+			...this.#deliveries.filter(delivery => !this.#isDeliveryAcknowledged(delivery.jobId)),
 		);
 		return before - this.#deliveries.length;
 	}
@@ -1117,6 +1382,48 @@ export class AsyncJobManager {
 			job.abortController.abort();
 			this.#scheduleEviction(job.id);
 		}
+	}
+
+	async waitForOwnerInFlightDeliveries(ownerId: string, options?: { timeoutMs?: number }): Promise<boolean> {
+		const inFlight = this.#inFlightDeliveries
+			.filter(delivery => delivery.ownerId === ownerId)
+			.map(delivery => delivery.promise)
+			.filter((promise): promise is Promise<void> => promise !== undefined);
+		if (inFlight.length === 0) return true;
+		const timeoutMs = Math.max(0, options?.timeoutMs ?? OWNER_SUBAGENT_SHUTDOWN_TIMEOUT_MS);
+		let timedOut = false;
+		await Promise.race([
+			Promise.allSettled(inFlight),
+			Bun.sleep(timeoutMs).then(() => {
+				timedOut = true;
+			}),
+		]);
+		return !timedOut;
+	}
+	async cancelAndSettleOwnerJobs(ownerId: string, options?: { timeoutMs?: number }): Promise<boolean> {
+		const jobs = this.getAllJobs({ ownerId });
+		for (const job of jobs) this.cancel(job.id, { ownerId });
+		const timeoutMs = Math.max(0, options?.timeoutMs ?? OWNER_SUBAGENT_SHUTDOWN_TIMEOUT_MS);
+		let timedOut = false;
+		await Promise.race([
+			Promise.allSettled(jobs.map(job => job.promise)),
+			Bun.sleep(timeoutMs).then(() => {
+				timedOut = true;
+			}),
+		]);
+		const inFlight = this.#inFlightDeliveries
+			.filter(delivery => delivery.ownerId === ownerId)
+			.map(delivery => delivery.promise)
+			.filter((promise): promise is Promise<void> => promise !== undefined);
+		if (inFlight.length === 0) return !timedOut;
+		let deliveryTimedOut = false;
+		await Promise.race([
+			Promise.allSettled(inFlight),
+			Bun.sleep(timeoutMs).then(() => {
+				deliveryTimedOut = true;
+			}),
+		]);
+		return !timedOut && !deliveryTimedOut;
 	}
 
 	getLastDisposeDiagnostics(): AsyncJobDisposeDiagnostics {
@@ -1230,6 +1537,7 @@ export class AsyncJobManager {
 		this.#subagentProgress.clear();
 		this.#resumeDescriptors.clear();
 		this.#resumeQueue.length = 0;
+		this.#ownerSubagentShutdownLeases.clear();
 		this.#notifyChange();
 		this.#changeListeners.clear();
 		return drained && waitResult.completed;
@@ -1315,12 +1623,22 @@ export class AsyncJobManager {
 		);
 	}
 
+	#isDeliveryFenced(delivery: AsyncJobDelivery): boolean {
+		return Boolean(delivery.ownerId && this.#isOwnerSubagentShutdownFenced(delivery.ownerId));
+	}
+
+	#hasDeliverable(): boolean {
+		return this.#deliveries.some(
+			delivery => !this.isDeliverySuppressed(delivery.jobId) && !this.#isDeliveryFenced(delivery),
+		);
+	}
+
 	async #deliverNextFiltered(filter: AsyncJobFilter, deadline: number): Promise<boolean> {
 		while (true) {
 			let selected: AsyncJobDelivery | undefined;
 			for (const delivery of this.#deliveries) {
 				if (delivery.ownerId !== filter.ownerId) continue;
-				if (this.isDeliverySuppressed(delivery.jobId)) continue;
+				if (this.isDeliverySuppressed(delivery.jobId) || this.#isDeliveryFenced(delivery)) continue;
 				if (!selected || delivery.nextAttemptAt < selected.nextAttemptAt) {
 					selected = delivery;
 				}
@@ -1328,7 +1646,7 @@ export class AsyncJobManager {
 
 			if (!selected) {
 				const inFlight = this.#filterInFlightDeliveries(filter);
-				if (inFlight.length === 0) return true;
+				if (inFlight.length === 0) return this.#filterDeliveries(filter).length === 0;
 				return this.#waitForDeliveryPromise(inFlight[0]?.promise, deadline);
 			}
 
@@ -1348,13 +1666,17 @@ export class AsyncJobManager {
 		}
 	}
 
+	#isDeliveryAcknowledged(jobId: string): boolean {
+		return this.#suppressedDeliveries.has(jobId);
+	}
+
 	isDeliverySuppressed(jobId: string): boolean {
-		return this.#suppressedDeliveries.has(jobId) || this.#watchedJobs.has(jobId);
+		return this.#isDeliveryAcknowledged(jobId) || this.#watchedJobs.has(jobId);
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {
 		// Skip delivery if already acknowledged
-		if (this.isDeliverySuppressed(jobId)) {
+		if (this.#isDeliveryAcknowledged(jobId)) {
 			return;
 		}
 		const deliveryText = this.#boundedDeliveryText(text);
@@ -1399,7 +1721,7 @@ export class AsyncJobManager {
 			})
 			.finally(() => {
 				this.#deliveryLoop = undefined;
-				if (!this.#disposed && this.#deliveries.length > 0) {
+				if (!this.#disposed && this.#hasDeliverable()) {
 					this.#ensureDeliveryLoop();
 				}
 			});
@@ -1407,24 +1729,19 @@ export class AsyncJobManager {
 
 	async #runDeliveryLoop(): Promise<void> {
 		while (this.#deliveries.length > 0) {
-			const delivery = this.#deliveries[0];
-			if (this.isDeliverySuppressed(delivery.jobId)) {
-				this.#deliveries.shift();
-				continue;
-			}
+			const delivery = this.#deliveries.find(
+				candidate => !this.isDeliverySuppressed(candidate.jobId) && !this.#isDeliveryFenced(candidate),
+			);
+			if (!delivery) return;
 			const waitMs = delivery.nextAttemptAt - Date.now();
 			if (waitMs > 0) {
 				await Bun.sleep(waitMs);
 			}
-			if (this.#deliveries[0] !== delivery) {
-				continue;
-			}
-			if (this.isDeliverySuppressed(delivery.jobId)) {
-				this.#deliveries.shift();
-				continue;
-			}
+			const index = this.#deliveries.indexOf(delivery);
+			if (index === -1) continue;
+			if (this.isDeliverySuppressed(delivery.jobId) || this.#isDeliveryFenced(delivery)) continue;
 
-			this.#deliveries.shift();
+			this.#deliveries.splice(index, 1);
 			await this.#deliverDelivery(delivery);
 		}
 	}
@@ -1446,7 +1763,7 @@ export class AsyncJobManager {
 					});
 				} else {
 					delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
-					if (!this.isDeliverySuppressed(delivery.jobId)) {
+					if (!this.#isDeliveryAcknowledged(delivery.jobId)) {
 						this.#deliveries.push(delivery);
 					}
 					logger.warn("Async job completion delivery failed", {
@@ -1459,7 +1776,7 @@ export class AsyncJobManager {
 			} finally {
 				const index = this.#inFlightDeliveries.indexOf(delivery);
 				if (index !== -1) this.#inFlightDeliveries.splice(index, 1);
-				if (!this.#disposed && this.#deliveries.length > 0) this.#ensureDeliveryLoop();
+				if (!this.#disposed && this.#hasDeliverable()) this.#ensureDeliveryLoop();
 			}
 		})();
 		delivery.promise = promise;
