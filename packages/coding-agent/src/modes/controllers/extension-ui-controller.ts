@@ -403,6 +403,10 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			runEphemeralTurn: async promptText => {
+				const { replyText } = await this.ctx.session.runEphemeralTurn({ promptText });
+				return { replyText };
+			},
 			clearContext: () => this.ctx.session.clearContext(),
 			cycleModel: () => this.ctx.session.cycleModel(),
 			cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
@@ -697,6 +701,10 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			runEphemeralTurn: async promptText => {
+				const { replyText } = await this.ctx.session.runEphemeralTurn({ promptText });
+				return { replyText };
+			},
 			clearContext: () => this.ctx.session.clearContext(),
 			cycleModel: () => this.ctx.session.cycleModel(),
 			cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
