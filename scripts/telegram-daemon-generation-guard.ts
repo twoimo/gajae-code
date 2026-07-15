@@ -8,6 +8,8 @@ const SHA = /^[0-9a-f]{40}$/i;
 export const GUARD_CONTRACT_VERSION = 2;
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
+const guardScript = "scripts/telegram-daemon-generation-guard.ts";
+
 
 type Family = "telegram" | "discord" | "slack";
 type Inventory = Readonly<Record<Family, Readonly<Record<string, readonly string[]>>>>;
@@ -199,6 +201,19 @@ function generation(source: string | undefined, kind?: "discord" | "slack"): num
 	}
 }
 
+function guardContractVersion(source: string | undefined): number | undefined {
+	if (!source) return undefined;
+	try {
+		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
+		const variable = declarationNode(ast.program, "GUARD_CONTRACT_VERSION");
+		const declaration = variable?.declarations?.find((item: any) => item.id?.name === "GUARD_CONTRACT_VERSION");
+		return declaration?.init?.type === "NumericLiteral" ? declaration.init.value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+
 export type Evaluation = {
 	protectedChanges: string[];
 	telegramGenerationBumped: boolean;
@@ -213,23 +228,28 @@ export function evaluate(
 ): Evaluation {
 	const protectedChanges: string[] = [];
 	const malformedDeclarations: string[] = [];
+	const bootstrapping = guardContractVersion(base.get(guardScript)) === undefined;
 	for (const [family, files] of Object.entries(inventory) as [Family, Inventory[Family]][]) {
 		for (const [file, symbols] of Object.entries(files)) for (const symbol of symbols) {
 			const before = extractDeclaration(base.get(file) ?? "", symbol);
 			const after = extractDeclaration(head.get(file) ?? "", symbol);
 			const label = `${family}:${file}:${symbol}`;
-			if (!before?.valid || !after?.valid || !before || !after) malformedDeclarations.push(label);
+			if (!after?.valid || !after || (!bootstrapping && (!before?.valid || !before))) malformedDeclarations.push(label);
 			if (before?.text !== after?.text) protectedChanges.push(label);
 		}
 	}
 	const oldTelegramGeneration = generation(base.get(telegramContract));
 	const newTelegramGeneration = generation(head.get(telegramContract));
-	const telegramGenerationBumped = oldTelegramGeneration !== undefined && newTelegramGeneration !== undefined && newTelegramGeneration > oldTelegramGeneration;
+	const telegramGenerationBumped =
+		newTelegramGeneration !== undefined && newTelegramGeneration > (oldTelegramGeneration ?? (bootstrapping ? 0 : Number.POSITIVE_INFINITY));
 	const chatGenerationBumped = Object.fromEntries(
 		(["discord", "slack"] as const).map(kind => {
 			const before = generation(base.get(chatControl), kind);
 			const after = generation(head.get(chatControl), kind);
-			return [kind, before !== undefined && after !== undefined && after > before];
+			return [
+				kind,
+				after !== undefined && after > (before ?? (bootstrapping ? 0 : Number.POSITIVE_INFINITY)),
+			];
 		}),
 	) as Evaluation["chatGenerationBumped"];
 	return { protectedChanges, telegramGenerationBumped, chatGenerationBumped, malformedDeclarations };
@@ -259,7 +279,7 @@ export async function run(baseInput: string | undefined, headInput: string | und
 	const head = validateSha("head SHA", headInput);
 	await verifyObject("base", base);
 	await verifyObject("head", head);
-	const files = [...new Set(Object.values(protectedInventory).flatMap(inventory => Object.keys(inventory)))];
+	const files = [guardScript, ...new Set(Object.values(protectedInventory).flatMap(inventory => Object.keys(inventory)))];
 	const [baseFiles, headFiles] = await Promise.all([
 		Promise.all(files.map(async file => [file, await blob(base, file)] as const)),
 		Promise.all(files.map(async file => [file, await blob(head, file)] as const)),
