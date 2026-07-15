@@ -36,7 +36,6 @@ const STEALTH_IGNORE_DEFAULT_ARGS = [
 	"--disable-default-apps",
 	"--disable-component-extensions-with-background-pages",
 ];
-const STEALTH_ACCEPT_LANGUAGE = "en-US,en";
 
 const USER_AGENT_TARGET_TIMEOUT_MS = 5_000;
 const USER_AGENT_TARGET_TYPES = new Set(["page", "webview", "background_page"]);
@@ -348,12 +347,10 @@ function acceptLanguageForLocale(locale: string): string {
 
 async function resolveAcceptLanguage(page: Page, locale?: string): Promise<string> {
 	if (locale) return acceptLanguageForLocale(locale);
-	try {
-		const languages = await page.evaluate(() => [...navigator.languages]);
-		return languages.filter(Boolean).join(",") || STEALTH_ACCEPT_LANGUAGE;
-	} catch {
-		return STEALTH_ACCEPT_LANGUAGE;
-	}
+	const languages = await page.evaluate(() => [...navigator.languages]);
+	const acceptLanguage = languages.filter(Boolean).join(",");
+	if (!acceptLanguage) throw new ToolError("Chromium reported no native navigator languages");
+	return acceptLanguage;
 }
 
 function resolvePageClient(page: Page): PuppeteerCdpClient | null {
