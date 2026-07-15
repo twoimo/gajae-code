@@ -368,23 +368,36 @@ type CreateSessionForMain = (
 	context?: { skipPostCreateModelRefresh?: boolean },
 ) => Promise<CreateAgentSessionResult>;
 
-export async function applyStartupModelProfiles(args: {
+type StartupModelProfileArgs = {
 	session: AgentSession;
 	settings: Settings;
 	modelRegistry: ModelRegistry;
 	parsedArgs: Pick<Args, "default" | "model" | "mpreset" | "thinking">;
 	startupModel?: CreateAgentSessionOptions["model"];
 	startupThinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
-}): Promise<void> {
+};
+
+async function applyStartupModelProfilesWithPolicy(
+	args: StartupModelProfileArgs,
+	onCredentialError?: (error: ModelProfileCredentialError) => void,
+): Promise<void> {
 	const applyProfile = async (
 		profileName: string,
 		persistDefault: boolean,
 		options: { thinkingLevelOverride?: CreateAgentSessionOptions["thinkingLevel"] } = {},
 	): Promise<void> => {
-		await activateModelProfile(
-			{ session: args.session, modelRegistry: args.modelRegistry, settings: args.settings, profileName },
-			{ persistDefault, thinkingLevelOverride: options.thinkingLevelOverride },
-		);
+		try {
+			await activateModelProfile(
+				{ session: args.session, modelRegistry: args.modelRegistry, settings: args.settings, profileName },
+				{ persistDefault, thinkingLevelOverride: options.thinkingLevelOverride },
+			);
+		} catch (error) {
+			if (onCredentialError && error instanceof ModelProfileCredentialError) {
+				onCredentialError(error);
+				return;
+			}
+			throw error;
+		}
 	};
 
 	// Capture the explicitly-selected startup model BEFORE profile activation can
@@ -407,7 +420,7 @@ export async function applyStartupModelProfiles(args: {
 		await applyProfile(args.parsedArgs.mpreset, args.parsedArgs.default === true);
 	}
 
-	// Explicit CLI --model/--thinking must win over any activated profile.
+	// Explicit CLI --model/--thinking must win over any activated or skipped profile.
 	if (explicitModel) {
 		await args.session.setModelTemporary(explicitModel, args.startupThinkingLevel ?? args.parsedArgs.thinking, {
 			persistAsSessionDefault: true,
@@ -421,31 +434,35 @@ export async function applyStartupModelProfiles(args: {
 	}
 }
 
-export async function applyStartupModelProfilesOrExit(
-	args: Parameters<typeof applyStartupModelProfiles>[0] & { recoverCredentialError?: boolean },
-): Promise<{ recoverableError?: string }> {
+export async function applyStartupModelProfiles(args: StartupModelProfileArgs): Promise<void> {
+	await applyStartupModelProfilesWithPolicy(args);
+}
+
+async function exitForStartupModelProfileError(args: StartupModelProfileArgs, error: unknown): Promise<never> {
+	const message = error instanceof Error ? error.message : String(error);
+	process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
+	await args.session.dispose();
+	process.exit(1);
+}
+
+export async function applyStartupModelProfilesOrExit(args: StartupModelProfileArgs): Promise<void> {
 	try {
 		await applyStartupModelProfiles(args);
-		return {};
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		if (args.recoverCredentialError === true && error instanceof ModelProfileCredentialError) {
-			return { recoverableError: message };
-		}
-		process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
-		await args.session.dispose();
-		process.exit(1);
+		await exitForStartupModelProfileError(args, error);
 	}
 }
 
 export function isStartupModelProfileCredentialRecoveryEligible(options: {
 	isInteractive: boolean;
+	hasInteractiveTerminal: boolean;
 	initialMessage: string | undefined;
 	initialMessages: readonly string[];
 	resumeAction: "continue-tail" | "open-idle" | undefined;
 }): boolean {
 	return (
 		options.isInteractive &&
+		options.hasInteractiveTerminal &&
 		options.initialMessage === undefined &&
 		options.initialMessages.length === 0 &&
 		options.resumeAction !== "continue-tail"
@@ -453,17 +470,26 @@ export function isStartupModelProfileCredentialRecoveryEligible(options: {
 }
 
 export async function applyStartupModelProfilesForRoot(
-	args: Parameters<typeof applyStartupModelProfiles>[0] & {
+	args: StartupModelProfileArgs & {
 		isInteractive: boolean;
+		hasInteractiveTerminal: boolean;
 		initialMessage: string | undefined;
 		initialMessages: readonly string[];
 		resumeAction: "continue-tail" | "open-idle" | undefined;
 	},
-): Promise<{ recoverableError?: string }> {
-	return applyStartupModelProfilesOrExit({
-		...args,
-		recoverCredentialError: isStartupModelProfileCredentialRecoveryEligible(args),
-	});
+): Promise<{ recoverableErrors: string[] }> {
+	if (!isStartupModelProfileCredentialRecoveryEligible(args)) {
+		await applyStartupModelProfilesOrExit(args);
+		return { recoverableErrors: [] };
+	}
+
+	const recoverableErrors: string[] = [];
+	try {
+		await applyStartupModelProfilesWithPolicy(args, error => recoverableErrors.push(error.message));
+	} catch (error) {
+		await exitForStartupModelProfileError(args, error);
+	}
+	return { recoverableErrors };
 }
 
 interface InteractiveModeFactoryOptions {
@@ -1345,7 +1371,7 @@ export async function runRootCommand(
 		}
 
 		if (!(parsedArgs.authBootstrap === true && isInteractive)) {
-			const { recoverableError } = await applyStartupModelProfilesForRoot({
+			const { recoverableErrors } = await applyStartupModelProfilesForRoot({
 				session,
 				settings: settingsInstance,
 				modelRegistry,
@@ -1353,11 +1379,12 @@ export async function runRootCommand(
 				startupModel: sessionOptions.model,
 				startupThinkingLevel: sessionOptions.thinkingLevel,
 				isInteractive,
+				hasInteractiveTerminal: hasResumePickerTerminal(),
 				initialMessage,
 				initialMessages: parsedArgs.messages,
 				resumeAction: bareResumeAction,
 			});
-			if (recoverableError) {
+			for (const recoverableError of recoverableErrors) {
 				notifs.push({ kind: "error", message: recoverableError });
 			}
 		}
