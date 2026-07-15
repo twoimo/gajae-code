@@ -17,6 +17,12 @@ import { getNotificationConfig, isDiscordConfigured, isSlackConfigured } from ".
 export type ChatDaemonKind = "discord" | "slack";
 export type ChatDaemonAction = "stop" | "reload";
 
+/**
+ * Operational generation of the Discord/Slack daemon lifecycle contract.
+ * This is intentionally separate from per-session endpoint generations.
+ */
+export const CHAT_DAEMON_GENERATION = 1;
+
 export interface ChatDaemonState {
 	version: 1;
 	kind: ChatDaemonKind;
@@ -27,6 +33,7 @@ export interface ChatDaemonState {
 	startedAt: number;
 	heartbeatAt: number;
 	transportHealthy: boolean;
+	generation: number;
 	stoppedAt?: number;
 }
 
@@ -257,19 +264,9 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	async status(): Promise<DaemonStatus> {
 		const runtime = runtimeInfo(this.deps.execPath);
 		const identity = this.identity();
-		if (!identity) return { kind: this.kind, configured: false, health: "not_configured", runtime };
 		const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		const live = Boolean(
-			state &&
-				state.version === 1 &&
-				state.kind === this.kind &&
-				state.identity === identity &&
-				!state.stoppedAt &&
-				state.transportHealthy &&
-				Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS &&
-				this.alive(state.pid) &&
-				this.incarnation(state.pid) === state.incarnation,
-		);
+		if (!identity) return { kind: this.kind, configured: false, health: "not_configured", runtime };
+		const live = Boolean(state && this.isCurrentCompatibleState(state, identity));
 		const health: DaemonHealth = live ? "running" : state && !state.stoppedAt ? "stale" : "stopped";
 		return {
 			kind: this.kind,
@@ -292,14 +289,14 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const identity = this.identity();
 		if (!identity) return "disabled";
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		if (existing && this.isLiveState(existing)) {
-			if (existing.identity === identity) return "attached";
+		if (existing && this.isPhysicalLiveState(existing)) {
+			if (this.isCurrentCompatibleState(existing, identity)) return "attached";
 			await this.stopForReplacement(existing);
 		}
 		const spawned = await this.spawn();
 		if (spawned) return "owner_spawned";
 		const replacement = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		if (replacement && replacement.identity === identity && this.isLiveState(replacement)) return "attached";
+		if (replacement && this.isCurrentCompatibleState(replacement, identity)) return "attached";
 		throw new Error(`Unable to attach or spawn ${this.kind} daemon owner`);
 	}
 
@@ -308,24 +305,23 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const warnings = before.runtime.warning ? [before.runtime.warning] : [];
 		if (!before.configured)
 			return this.result(action, false, `${this.kind} notifications are not configured`, before, before, warnings);
-		if (before.health !== "running") {
+		const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
+		if (!state || !this.isPhysicalLiveState(state)) {
 			if (action === "stop")
 				return this.result(action, true, `no running ${this.kind} daemon`, before, before, warnings);
 			if (opts.spawnIfStopped === false)
 				return this.result(action, true, `no running ${this.kind} daemon to reload`, before, before, warnings);
 			const spawned = await this.spawn();
-			const after = await this.status();
 			return this.result(
 				action,
 				spawned,
 				spawned ? `spawned fresh ${this.kind} daemon` : `a live ${this.kind} owner already exists`,
 				before,
-				after,
+				await this.status(),
 				warnings,
 			);
 		}
-		const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		if (!state || !this.ownsCapturedState(state, before))
+		if (!this.ownsCapturedState(state, before))
 			return this.result(
 				action,
 				false,
@@ -379,7 +375,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	private incarnation(pid: number): string | undefined {
 		return (this.deps.pidIncarnation ?? defaultPidIncarnation)(pid);
 	}
-	private isLiveState(state: ChatDaemonState): boolean {
+	private isPhysicalLiveState(state: ChatDaemonState): boolean {
 		return (
 			state.version === 1 &&
 			state.kind === this.kind &&
@@ -391,8 +387,17 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			this.incarnation(state.pid) === state.incarnation
 		);
 	}
+	private isCurrentCompatibleState(state: ChatDaemonState, identity: string): boolean {
+		return (
+			this.isPhysicalLiveState(state) &&
+			state.identity === identity &&
+			typeof state.generation === "number" &&
+			Number.isSafeInteger(state.generation) &&
+			state.generation >= CHAT_DAEMON_GENERATION
+		);
+	}
 	private async stopForReplacement(state: ChatDaemonState): Promise<void> {
-		if (!this.isLiveState(state)) return;
+		if (!this.isPhysicalLiveState(state)) return;
 		const requestId = this.deps.randomId?.() ?? crypto.randomUUID();
 		await writeChatDaemonControlRequest(this.settings.getAgentDir(), this.kind, {
 			version: 1,
@@ -432,7 +437,9 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			!current ||
 			current.ownerId !== state.ownerId ||
 			current.pid !== state.pid ||
+			current.identity !== state.identity ||
 			current.incarnation !== state.incarnation ||
+			current.generation !== state.generation ||
 			this.incarnation(state.pid) !== state.incarnation
 		)
 			return false;
@@ -479,15 +486,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const paths = chatDaemonPaths(this.settings.getAgentDir(), this.kind);
 		await fs.promises.mkdir(paths.dir, { recursive: true, mode: 0o700 });
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		if (
-			existing &&
-			!existing.stoppedAt &&
-			existing.identity === identity &&
-			Date.now() - existing.heartbeatAt <= HEARTBEAT_TTL_MS &&
-			this.alive(existing.pid) &&
-			this.incarnation(existing.pid) === existing.incarnation
-		)
-			return false;
+		if (existing && this.isPhysicalLiveState(existing)) return false;
 		const ownerId = `${this.deps.ownerPid ?? process.ppid}-${this.deps.randomId?.() ?? crypto.randomUUID()}`;
 		const { command, args } = buildChatDaemonSpawnArgs({
 			kind: this.kind,
@@ -563,6 +562,7 @@ export async function acquireChatDaemonOwnership(input: {
 				startedAt: Date.now(),
 				heartbeatAt: Date.now(),
 				transportHealthy: false,
+				generation: CHAT_DAEMON_GENERATION,
 			} satisfies ChatDaemonState),
 	);
 	return true;

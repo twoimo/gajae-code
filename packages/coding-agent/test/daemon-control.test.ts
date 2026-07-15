@@ -19,13 +19,14 @@ import { resolveGjcRuntimeSpawnInfo } from "../src/daemon/runtime";
 import {
 	acquireChatDaemonOwnership,
 	buildChatDaemonSpawnArgs,
+	CHAT_DAEMON_GENERATION,
 	ChatDaemonController,
 	chatDaemonPaths,
 	ensureDiscordDaemon,
 	ensureSlackDaemon,
 } from "../src/sdk/bus/chat-daemon-control";
 import { tokenFingerprint } from "../src/sdk/bus/config";
-import { daemonPaths } from "../src/sdk/bus/telegram-daemon";
+import { DAEMON_GENERATION, daemonPaths } from "../src/sdk/bus/telegram-daemon";
 import {
 	clearTelegramControlRequest,
 	readTelegramControlRequest,
@@ -346,7 +347,7 @@ describe("TelegramDaemonController.reload", () => {
 	test("cooperatively stops the old owner and spawns a fresh one", async () => {
 		const agentDir = tempAgentDir();
 		const s = settings(agentDir);
-		writeState(agentDir, freshState());
+		writeState(agentDir, freshState({ generation: DAEMON_GENERATION - 1 }));
 		fs.writeFileSync(daemonPaths(agentDir).lock, "");
 
 		const alive = new Set<number>([999, 4242]);
@@ -373,10 +374,12 @@ describe("TelegramDaemonController.reload", () => {
 		const after = JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8")) as {
 			ownerId: string;
 			pid: number;
+			generation?: number;
 		};
 		expect(after.ownerId).not.toBe("old");
 		expect(after.ownerId.startsWith("4242-")).toBe(true);
 		expect(after.pid).toBe(4242);
+		expect(after.generation).toBe(DAEMON_GENERATION);
 		// No leftover control request after a successful reload.
 		expect(await readTelegramControlRequest(s)).toBeUndefined();
 	});
@@ -390,6 +393,7 @@ describe("TelegramDaemonController.reload", () => {
 		const alive = new Set<number>([999, process.pid]);
 		const signals: Array<[number, string]> = [];
 		const ctrl = new TelegramDaemonController(s, {
+			ownerPid: process.pid,
 			pidAlive: pid => alive.has(pid),
 			sendSignal: (pid, sig) => {
 				signals.push([pid, sig]);
@@ -461,6 +465,30 @@ describe("TelegramDaemonController.reload", () => {
 		expect(result.message).toMatch(/--force/);
 	});
 
+	test("keeps configured credentials out of stale-owner status and reload failure evidence", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		let now = 1_000;
+		writeState(agentDir, freshState({ startedAt: now, heartbeatAt: now }));
+		fs.writeFileSync(daemonPaths(agentDir).lock, "");
+		const ctrl = new TelegramDaemonController(s, {
+			now: () => now,
+			pidAlive: pid => pid === 999,
+			sendSignal: () => undefined,
+			sleep: async () => {
+				now += 5;
+			},
+			waitStepMs: 5,
+		});
+
+		const status = await ctrl.status();
+		const result = await ctrl.reload({ gracefulTimeoutMs: 5 });
+		const observable = JSON.stringify({ status, result });
+		expect(result.ok).toBe(false);
+		expect(observable).not.toContain(BOT_TOKEN);
+		expect(observable).not.toContain("secret-token");
+	});
+
 	test("never spawns while the captured old pid is still alive (stale changed-owner)", async () => {
 		const agentDir = tempAgentDir();
 		const s = settings(agentDir);
@@ -499,6 +527,7 @@ describe("TelegramDaemonController.reload", () => {
 		const alive = new Set<number>([999, process.pid]);
 		let oldAliveAtSpawn: boolean | undefined;
 		const ctrl = new TelegramDaemonController(s, {
+			ownerPid: process.pid,
 			pidAlive: pid => alive.has(pid),
 			sendSignal: (_pid, sig) => {
 				if (sig === "SIGTERM") alive.delete(999);
@@ -689,6 +718,7 @@ describe("ChatDaemonController ownership safety", () => {
 				startedAt: Date.now(),
 				heartbeatAt: Date.now(),
 				transportHealthy: true,
+				generation: CHAT_DAEMON_GENERATION,
 			}),
 		);
 		let spawns = 0;
@@ -825,6 +855,124 @@ describe("ChatDaemonController ownership safety", () => {
 		} finally {
 			fs.promises.readFile = originalReadFile;
 		}
+	});
+	describe.each(["discord", "slack"] as const)("%s chat daemon generation", kind => {
+		function configuredSettings(agentDir: string): Settings {
+			return setPrivateAgentDir(
+				Settings.isolated(
+					kind === "discord"
+						? {
+								"notifications.enabled": true,
+								"notifications.discord.botToken": "discord-token",
+								"notifications.discord.applicationId": "app",
+								"notifications.discord.guildId": "guild",
+								"notifications.discord.parentChannelId": "parent",
+							}
+						: {
+								"notifications.enabled": true,
+								"notifications.slack.botToken": "slack-token",
+								"notifications.slack.appToken": "app-token",
+								"notifications.slack.workspaceId": "workspace",
+								"notifications.slack.channelId": "channel",
+							},
+				) as Settings,
+				agentDir,
+			);
+		}
+
+		function identity(): string {
+			const values =
+				kind === "discord"
+					? ["discord-token", "app", "guild", "parent", "false", "lean"]
+					: ["slack-token", "app-token", "workspace", "channel", "", "false", "lean"];
+			return crypto.createHash("sha256").update(values.join("\0")).digest("hex").slice(0, 16);
+		}
+
+		test.each([
+			["missing", undefined, "owner_spawned", "stale"],
+			["lower", CHAT_DAEMON_GENERATION - 1, "owner_spawned", "stale"],
+			["equal", CHAT_DAEMON_GENERATION, "attached", "running"],
+			["newer", CHAT_DAEMON_GENERATION + 1, "attached", "running"],
+			["malformed", null, "owner_spawned", "stale"],
+		] as const)("%s generation replaces only incompatible physical owners", async (_name, generation, expected, health) => {
+			const agentDir = tempAgentDir();
+			const paths = chatDaemonPaths(agentDir, kind);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			fs.writeFileSync(
+				paths.state,
+				JSON.stringify({
+					version: 1,
+					kind,
+					pid: 91,
+					ownerId: "owner-a",
+					identity: identity(),
+					incarnation: "stable",
+					startedAt: Date.now(),
+					heartbeatAt: Date.now(),
+					transportHealthy: true,
+					...(generation === undefined ? {} : { generation }),
+				}),
+			);
+			const alive = new Set([91]);
+			const signals: NodeJS.Signals[] = [];
+			let spawns = 0;
+			const controller = new ChatDaemonController(configuredSettings(agentDir), kind, {
+				pidAlive: pid => alive.has(pid),
+				pidIncarnation: () => "stable",
+				sleep: async () => undefined,
+				sendSignal: (_pid, signal) => {
+					signals.push(signal);
+					alive.delete(91);
+				},
+				spawn: () => {
+					spawns++;
+					return { unref() {} };
+				},
+			});
+			expect((await controller.status()).health).toBe(health);
+			expect(await controller.ensure()).toBe(expected);
+			expect(signals).toEqual(expected === "attached" ? [] : ["SIGTERM"]);
+			expect(spawns).toBe(expected === "attached" ? 0 : 1);
+		});
+
+		test("refuses replacement when the captured generation changes before TERM", async () => {
+			const agentDir = tempAgentDir();
+			const paths = chatDaemonPaths(agentDir, kind);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			const state = {
+				version: 1,
+				kind,
+				pid: 92,
+				ownerId: "owner-a",
+				identity: identity(),
+				incarnation: "stable",
+				startedAt: Date.now(),
+				heartbeatAt: Date.now(),
+				transportHealthy: true,
+				generation: CHAT_DAEMON_GENERATION,
+			};
+			fs.writeFileSync(paths.state, JSON.stringify(state));
+			let reads = 0;
+			const originalReadFile = fs.promises.readFile;
+			fs.promises.readFile = (async (...args: Parameters<typeof fs.promises.readFile>) => {
+				if (String(args[0]) === paths.state && ++reads === 3)
+					return Buffer.from(JSON.stringify({ ...state, generation: CHAT_DAEMON_GENERATION + 1 }));
+				return await originalReadFile(...args);
+			}) as typeof fs.promises.readFile;
+			try {
+				const signals: NodeJS.Signals[] = [];
+				const result = await new ChatDaemonController(configuredSettings(agentDir), kind, {
+					pidAlive: pid => pid === 92,
+					pidIncarnation: () => "stable",
+					sendSignal: (_pid, signal) => signals.push(signal),
+				}).stop();
+				expect(result.ok).toBe(false);
+				expect(result.message).toContain("ownership changed");
+				expect(signals).toEqual([]);
+			} finally {
+				fs.promises.readFile = originalReadFile;
+			}
+		});
 	});
 });
 

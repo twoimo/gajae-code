@@ -24,6 +24,7 @@ import { OWNERSHIP_MISMATCH_MESSAGE, ownershipMismatchRecovery } from "../../dae
 import { resolveGjcRuntimeSpawnInfo } from "../../daemon/runtime";
 import { getNotificationConfig, isTelegramConfigured, tokenFingerprint } from "./config";
 import {
+	confirmTelegramDaemonSpawn,
 	daemonPaths,
 	isFreshLiveOwner,
 	readDaemonRoots,
@@ -31,6 +32,7 @@ import {
 	spawnTelegramDaemonOwner,
 	type TelegramDaemonDeps,
 	type TelegramDaemonFs,
+	type TelegramSpawnOwnerResult,
 } from "./telegram-daemon";
 
 const nodeFs: TelegramDaemonFs = fs.promises as unknown as TelegramDaemonFs;
@@ -110,6 +112,8 @@ export interface TelegramDaemonControlDeps {
 	randomId?: () => string;
 	sleep?: (ms: number) => Promise<void>;
 	waitStepMs?: number;
+	/** Bounded startup-readiness timeout; injectable for deterministic controller tests. */
+	readinessTimeoutMs?: number;
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -205,6 +209,31 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		};
 	}
 
+	private async spawnAndWait(
+		roots: string[],
+		token: string,
+		chatId: string,
+	): Promise<{ spawned: TelegramSpawnOwnerResult; ready: boolean }> {
+		const spawned = await spawnTelegramDaemonOwner(
+			{ settings: this.settings, roots, tokenFingerprint: token, chatId },
+			this.spawnDeps(),
+		);
+		const ready = await confirmTelegramDaemonSpawn({
+			settings: this.settings,
+			spawned,
+			tokenFingerprint: token,
+			chatId,
+			pid: this.deps.ownerPid ?? process.ppid,
+			fs: this.fsImpl,
+			now: this.now,
+			pidAlive: this.pidAlive,
+			sleep: this.deps.sleep,
+			waitStepMs: this.waitStepMs,
+			timeoutMs: this.deps.readinessTimeoutMs,
+		});
+		return { spawned, ready };
+	}
+
 	private sleep(ms: number): Promise<void> {
 		if (this.deps.sleep) return this.deps.sleep(ms);
 		return new Promise(resolve => setTimeout(resolve, ms));
@@ -217,12 +246,22 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 	 */
 	private async waitForPidDeath(pid: number, timeoutMs: number): Promise<boolean> {
 		if (!this.pidAlive(pid)) return true;
-		const deadline = this.now() + timeoutMs;
-		while (this.now() < deadline) {
-			await this.sleep(this.waitStepMs);
+		const timeout = Math.max(timeoutMs, 0);
+		const waitStepMs = Math.max(this.waitStepMs, 1);
+		const deadline = this.now() + timeout;
+		const maxPolls = Math.ceil(timeout / waitStepMs);
+		for (let poll = 0; poll < maxPolls && this.now() < deadline; poll++) {
+			await this.sleep(waitStepMs);
 			if (!this.pidAlive(pid)) return true;
 		}
 		return !this.pidAlive(pid);
+	}
+
+	private async signalCapturedOwner(ownerId: string, pid: number, signal: NodeJS.Signals): Promise<boolean> {
+		const current = await readDaemonState(this.settings, this.fsImpl);
+		if (!current || current.ownerId !== ownerId || current.pid !== pid || !this.pidAlive(pid)) return false;
+		this.sendSignal(pid, signal);
+		return true;
 	}
 
 	private result(
@@ -268,10 +307,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			if (!spawnIfStopped) {
 				return this.result(action, true, "no running telegram daemon to reload", before, before, warnings);
 			}
-			const spawned = await spawnTelegramDaemonOwner(
-				{ settings: this.settings, roots, tokenFingerprint: fp, chatId },
-				this.spawnDeps(),
-			);
+			const { spawned, ready } = await this.spawnAndWait(roots, fp, chatId);
 			warnings.push(...spawned.warnings);
 			const after = await this.status();
 			if (spawned.result === "blocked") {
@@ -287,8 +323,10 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			}
 			return this.result(
 				action,
-				spawned.result === "owner_spawned",
-				`spawned fresh telegram daemon (${spawned.result})`,
+				spawned.result === "owner_spawned" && ready,
+				ready
+					? `spawned fresh telegram daemon (${spawned.result})`
+					: "telegram daemon did not become ready after spawning",
 				before,
 				after,
 				warnings,
@@ -304,7 +342,17 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			{ version: 1, requestId, action, ownerId: oldOwnerId, pid: oldPid, createdAt: this.now() },
 			this.fsImpl,
 		);
-		if (this.pidAlive(oldPid)) this.sendSignal(oldPid, "SIGTERM");
+		if (!(await this.signalCapturedOwner(oldOwnerId, oldPid, "SIGTERM"))) {
+			await this.clearOwnRequest(requestId, oldOwnerId);
+			return this.result(
+				action,
+				false,
+				"telegram daemon ownership changed; refusing to signal",
+				before,
+				await this.status(),
+				warnings,
+			);
+		}
 
 		let dead = await this.waitForPidDeath(oldPid, gracefulTimeoutMs);
 		if (!dead) {
@@ -340,8 +388,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			// No live replacement. Escalate to SIGKILL only with --force and only when
 			// the captured owner/pid still matches, so we never kill a different owner.
 			const stillSameOwner = current !== undefined && current.ownerId === oldOwnerId && current.pid === oldPid;
-			if (opts.force && stillSameOwner && this.pidAlive(oldPid)) {
-				this.sendSignal(oldPid, "SIGKILL");
+			if (opts.force && stillSameOwner && (await this.signalCapturedOwner(oldOwnerId, oldPid, "SIGKILL"))) {
 				dead = await this.waitForPidDeath(oldPid, killTimeoutMs);
 			}
 			if (!dead) {
@@ -362,10 +409,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			return this.result(action, true, "stopped telegram daemon", before, after, warnings);
 		}
 
-		const spawned = await spawnTelegramDaemonOwner(
-			{ settings: this.settings, roots, tokenFingerprint: fp, chatId },
-			this.spawnDeps(),
-		);
+		const { spawned, ready } = await this.spawnAndWait(roots, fp, chatId);
 		warnings.push(...spawned.warnings);
 		const after = await this.status();
 		if (spawned.result === "attached") {
@@ -387,20 +431,17 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		}
 		return this.result(
 			action,
-			spawned.result !== "disabled",
-			`reloaded telegram daemon (${spawned.result})`,
+			spawned.result !== "disabled" && ready,
+			ready ? `reloaded telegram daemon (${spawned.result})` : "telegram daemon did not become ready after spawning",
 			before,
 			after,
 			warnings,
 		);
 	}
 
-	/** Clear our own control request unless a newer owner-scoped request replaced it. */
-	private async clearOwnRequest(requestId: string, oldOwnerId: string): Promise<void> {
+	/** Clear only our exact control request; a successor request must survive. */
+	private async clearOwnRequest(requestId: string, _oldOwnerId: string): Promise<void> {
 		const current = await readTelegramControlRequest(this.settings, this.fsImpl);
-		if (!current) return;
-		if (current.requestId === requestId || current.ownerId === oldOwnerId) {
-			await clearTelegramControlRequest(this.settings, current.requestId, this.fsImpl);
-		}
+		if (current?.requestId === requestId) await clearTelegramControlRequest(this.settings, requestId, this.fsImpl);
 	}
 }
