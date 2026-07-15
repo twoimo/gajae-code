@@ -2441,7 +2441,9 @@ test("SDK host omits direct workflow controls for a legacy workflow-gate emitter
 		"capabilities response",
 	);
 	const response = JSON.parse(
-		String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === "capabilities")?.message),
+		String(
+			frames.find(frame => frame.type === "control_command_result" && frame.requestId === "capabilities")?.message,
+		),
 	) as { page: { items: Array<{ operations: string[] }> } };
 	const operations = response.page.items[0]!.operations;
 	expect(operations).not.toContain("workflow.gate_answer");
