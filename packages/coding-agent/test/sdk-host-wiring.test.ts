@@ -6,8 +6,8 @@ import { Agent } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
 import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { NotificationServer } from "@gajae-code/natives";
-import { Settings, type Settings } from "../src/config/settings";
 import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import type {
 	ExtensionActions,
@@ -32,14 +32,13 @@ import {
 	SdkStartupRollbackTracker,
 	sanitizeSdkStartupMessage,
 } from "../src/sdk/startup-capability";
-
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
 import type {
 	ClientBridgePermissionOption,
 	ClientBridgePermissionOutcome,
 	ClientBridgePermissionToolCall,
 } from "../src/session/client-bridge";
-import { AgentSession } from "../src/session/agent-session";
-import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
 
@@ -1002,6 +1001,129 @@ test("SDK host directly delivers correlated lifecycle frames for an accepted pro
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
 
+test("SDK host buffers synchronous pre-ack start and end until after acknowledgement", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-pre-ack-end-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-prompt-pre-ack-end-${Date.now()}`;
+	const sessionContext = context(cwd, sessionId);
+	let handlers!: Map<string, (event: unknown, context: unknown) => unknown>;
+	handlers = start(
+		sessionContext,
+		undefined,
+		(_content, options) => {
+			options?.onPreflightAccepted?.();
+			void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+			void handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
+		},
+		true,
+	);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "pre-ack-end",
+			operation: "turn.prompt",
+			input: { text: "finish synchronously" },
+		}),
+	);
+	await waitFor(
+		() =>
+			frames.some(frame => frame.type === "control_response" && frame.id === "pre-ack-end") &&
+			frames.some(frame => frame.type === "agent_end"),
+		"pre-ack end lifecycle",
+	);
+	const acknowledgementIndex = frames.findIndex(
+		frame => frame.type === "control_response" && frame.id === "pre-ack-end",
+	);
+	const acknowledgement = frames[acknowledgementIndex] as { result?: { commandId?: unknown; turnId?: unknown } };
+	const correlation = { commandId: acknowledgement.result?.commandId, turnId: acknowledgement.result?.turnId };
+	const startFrames = frames.filter(frame => frame.type === "agent_start");
+	const terminalFrames = frames.filter(frame => frame.type === "agent_end" || frame.type === "agent_failed");
+	expect(acknowledgement).toMatchObject({
+		ok: true,
+		result: { accepted: true, commandId: expect.any(String), turnId: expect.any(String) },
+	});
+	expect(acknowledgementIndex).toBeLessThan(frames.findIndex(frame => frame.type === "agent_start"));
+	expect(startFrames).toEqual([expect.objectContaining({ type: "agent_start", sessionId, ...correlation })]);
+	expect(terminalFrames).toEqual([expect.objectContaining({ type: "agent_end", sessionId, ...correlation })]);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
+});
+
+test("SDK host buffers synchronous pre-ack accepted failure until after acknowledgement", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-pre-ack-failed-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-prompt-pre-ack-failed-${Date.now()}`;
+	const sessionContext = context(cwd, sessionId);
+	let handlers!: Map<string, (event: unknown, context: unknown) => unknown>;
+	handlers = start(
+		sessionContext,
+		undefined,
+		(_content, options) => {
+			options?.onPreflightAccepted?.();
+			void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+			throw Object.assign(new Error("synchronous accepted failure"), { code: "unavailable" });
+		},
+		true,
+	);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "pre-ack-failed",
+			operation: "turn.prompt",
+			input: { text: "fail synchronously" },
+		}),
+	);
+	await waitFor(
+		() =>
+			frames.some(frame => frame.type === "control_response" && frame.id === "pre-ack-failed") &&
+			frames.some(frame => frame.type === "agent_failed"),
+		"pre-ack accepted failure lifecycle",
+	);
+	const acknowledgementIndex = frames.findIndex(
+		frame => frame.type === "control_response" && frame.id === "pre-ack-failed",
+	);
+	const acknowledgement = frames[acknowledgementIndex] as { result?: { commandId?: unknown; turnId?: unknown } };
+	const correlation = { commandId: acknowledgement.result?.commandId, turnId: acknowledgement.result?.turnId };
+	const startFrames = frames.filter(frame => frame.type === "agent_start");
+	const terminalFrames = frames.filter(frame => frame.type === "agent_end" || frame.type === "agent_failed");
+	expect(acknowledgement).toMatchObject({
+		ok: true,
+		result: { accepted: true, commandId: expect.any(String), turnId: expect.any(String) },
+	});
+	expect(acknowledgementIndex).toBeLessThan(frames.findIndex(frame => frame.type === "agent_start"));
+	expect(startFrames).toEqual([expect.objectContaining({ type: "agent_start", sessionId, ...correlation })]);
+	expect(terminalFrames).toEqual([
+		expect.objectContaining({
+			type: "agent_failed",
+			sessionId,
+			...correlation,
+			error: { code: "unavailable", message: "synchronous accepted failure" },
+		}),
+	]);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
+});
+
 test("SDK host replays an accepted prompt terminal after its requester disconnects", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-disconnect-replay-"));
 	dirs.push(cwd);
@@ -1031,7 +1153,9 @@ test("SDK host replays an accepted prompt terminal after its requester disconnec
 		() => frames.some(frame => frame.type === "control_response" && frame.id === "disconnect-prompt"),
 		"accepted prompt acknowledgement",
 	);
-	const acknowledgement = frames.find(frame => frame.type === "control_response" && frame.id === "disconnect-prompt") as {
+	const acknowledgement = frames.find(
+		frame => frame.type === "control_response" && frame.id === "disconnect-prompt",
+	) as {
 		result?: { commandId?: unknown; turnId?: unknown };
 	};
 	const correlation = { commandId: acknowledgement.result?.commandId, turnId: acknowledgement.result?.turnId };
@@ -1040,7 +1164,9 @@ test("SDK host replays an accepted prompt terminal after its requester disconnec
 		() => frames.some(frame => frame.type === "agent_start" && frame.commandId === correlation.commandId),
 		"correlated agent start",
 	);
-	const requesterClosed = new Promise<void>(resolve => requester.addEventListener("close", () => resolve(), { once: true }));
+	const requesterClosed = new Promise<void>(resolve =>
+		requester.addEventListener("close", () => resolve(), { once: true }),
+	);
 	requester.close();
 	await requesterClosed;
 	await handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
@@ -1057,7 +1183,9 @@ test("SDK host replays an accepted prompt terminal after its requester disconnec
 		() => recoveryFrames.some(frame => frame.type === "event_replay_result" && frame.id === "disconnect-replay"),
 		"disconnected prompt replay",
 	);
-	const replay = recoveryFrames.find(frame => frame.type === "event_replay_result" && frame.id === "disconnect-replay") as {
+	const replay = recoveryFrames.find(
+		frame => frame.type === "event_replay_result" && frame.id === "disconnect-replay",
+	) as {
 		events?: Array<{ payload?: Record<string, unknown> }>;
 	};
 	const lifecycle = replay.events?.filter(
@@ -1071,7 +1199,6 @@ test("SDK host replays an accepted prompt terminal after its requester disconnec
 	]);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
-
 
 test("SDK host serializes concurrent prompt admission and replays correlated lifecycle", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-concurrent-"));
