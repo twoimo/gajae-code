@@ -2,8 +2,12 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Agent } from "@gajae-code/agent-core";
+import { getBundledModel } from "@gajae-code/ai";
+import { createMockModel } from "@gajae-code/ai/providers/mock";
 import { NotificationServer } from "@gajae-code/natives";
-import type { Settings } from "../src/config/settings";
+import { Settings, type Settings } from "../src/config/settings";
+import { ModelRegistry } from "../src/config/model-registry";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import type {
 	ExtensionActions,
@@ -34,6 +38,8 @@ import type {
 	ClientBridgePermissionOutcome,
 	ClientBridgePermissionToolCall,
 } from "../src/session/client-bridge";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
 
@@ -996,7 +1002,78 @@ test("SDK host directly delivers correlated lifecycle frames for an accepted pro
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
 
-test("SDK host serializes concurrent prompt admission without replaying private lifecycle", async () => {
+test("SDK host replays an accepted prompt terminal after its requester disconnects", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-disconnect-replay-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-prompt-disconnect-replay-${Date.now()}`;
+	const sessionContext = context(cwd, sessionId);
+	const handlers = start(sessionContext);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const frames: Record<string, unknown>[] = [];
+	const requester = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(requester);
+	requester.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		requester.addEventListener("open", () => resolve(), { once: true });
+		requester.addEventListener("error", () => reject(new Error("requester WS error")), { once: true });
+	});
+	requester.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "disconnect-prompt",
+			operation: "turn.prompt",
+			input: { text: "recover my terminal" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "disconnect-prompt"),
+		"accepted prompt acknowledgement",
+	);
+	const acknowledgement = frames.find(frame => frame.type === "control_response" && frame.id === "disconnect-prompt") as {
+		result?: { commandId?: unknown; turnId?: unknown };
+	};
+	const correlation = { commandId: acknowledgement.result?.commandId, turnId: acknowledgement.result?.turnId };
+	await handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
+	await waitFor(
+		() => frames.some(frame => frame.type === "agent_start" && frame.commandId === correlation.commandId),
+		"correlated agent start",
+	);
+	const requesterClosed = new Promise<void>(resolve => requester.addEventListener("close", () => resolve(), { once: true }));
+	requester.close();
+	await requesterClosed;
+	await handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
+	const recoveryFrames: Record<string, unknown>[] = [];
+	const recovery = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(recovery);
+	recovery.addEventListener("message", event => recoveryFrames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		recovery.addEventListener("open", () => resolve(), { once: true });
+		recovery.addEventListener("error", () => reject(new Error("recovery WS error")), { once: true });
+	});
+	recovery.send(JSON.stringify({ type: "event_replay", id: "disconnect-replay", sinceGeneration: 1, sinceSeq: 0 }));
+	await waitFor(
+		() => recoveryFrames.some(frame => frame.type === "event_replay_result" && frame.id === "disconnect-replay"),
+		"disconnected prompt replay",
+	);
+	const replay = recoveryFrames.find(frame => frame.type === "event_replay_result" && frame.id === "disconnect-replay") as {
+		events?: Array<{ payload?: Record<string, unknown> }>;
+	};
+	const lifecycle = replay.events?.filter(
+		event =>
+			event.payload?.commandId === correlation.commandId &&
+			(event.payload?.type === "agent_start" || event.payload?.type === "agent_end"),
+	);
+	expect(lifecycle).toEqual([
+		expect.objectContaining({ payload: { type: "agent_start", sessionId, ...correlation } }),
+		expect.objectContaining({ payload: { type: "agent_end", sessionId, ...correlation } }),
+	]);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
+});
+
+
+test("SDK host serializes concurrent prompt admission and replays correlated lifecycle", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-prompt-concurrent-"));
 	dirs.push(cwd);
 	const sessionId = `sdk-prompt-concurrent-${Date.now()}`;
@@ -1107,12 +1184,15 @@ test("SDK host serializes concurrent prompt admission without replaying private 
 	) as {
 		events?: Array<{ payload?: Record<string, unknown> }>;
 	};
-	const privateLifecycle = replay.events?.filter(
+	const replayedLifecycle = replay.events?.filter(
 		event =>
 			event.payload?.commandId === correlation.commandId &&
 			(event.payload?.type === "agent_start" || event.payload?.type === "agent_end"),
 	);
-	expect(privateLifecycle).toHaveLength(0);
+	expect(replayedLifecycle).toEqual([
+		expect.objectContaining({ payload: { type: "agent_start", sessionId, ...correlation } }),
+		expect.objectContaining({ payload: { type: "agent_end", sessionId, ...correlation } }),
+	]);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
 
@@ -1817,7 +1897,7 @@ test("SDK host replay gaps are generation-scoped and sequence gaps remain cohere
 	await host.stop();
 });
 
-test("Q17 returns resource_gone without an assistant and reads the newest persisted assistant message after reopen", async () => {
+test("Q17 returns resource_gone without an assistant and reads a completed persisted turn after reopen", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-last-assistant-"));
 	dirs.push(cwd);
 	const original = SessionManager.create(cwd, cwd);
@@ -1827,7 +1907,28 @@ test("Q17 returns resource_gone without an assistant and reads the newest persis
 	await original.close();
 	const sessionManager = await SessionManager.open(sessionFile, cwd);
 	const sessionId = sessionManager.getSessionId();
-	const handlers = start({ ...context(cwd, sessionId), sessionManager });
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("Expected bundled test model");
+	const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+	authStorage.setRuntimeApiKey(model.provider, "test-key");
+	const agentSession = new AgentSession({
+		agent: new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: createMockModel({ responses: [{ content: ["Completed persisted reply"] }] }).stream,
+		}),
+		sessionManager,
+		settings: Settings.isolated({ "compaction.enabled": false }),
+		modelRegistry: new ModelRegistry(authStorage, path.join(cwd, "models.yml")),
+	});
+	agentSession.subscribe(() => {});
+	const sessionContext = { ...context(cwd, sessionId), sessionManager };
+	const handlers = start(
+		sessionContext,
+		undefined,
+		(content, options) => agentSession.prompt(String(content), options),
+		true,
+	);
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
 	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
 	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
@@ -1865,33 +1966,35 @@ test("Q17 returns resource_gone without an assistant and reads the newest persis
 		ok: false,
 		error: { code: "resource_gone" },
 	});
-	const assistantMessage = (text: string, timestamp: number) => ({
-		role: "assistant" as const,
-		content: [{ type: "text" as const, text }],
-		api: "anthropic-messages" as const,
-		provider: "anthropic" as const,
-		model: "fixture-model",
-		usage: {
-			input: 1,
-			output: 1,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 2,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop" as const,
-		timestamp,
-	});
-	sessionManager.appendMessage(assistantMessage("Older reply", Date.now()));
-	sessionManager.appendMessage(assistantMessage("Newest persisted reply", Date.now() + 1));
+	socket.send(
+		JSON.stringify({
+			type: "control_request",
+			id: "completed-turn",
+			operation: "turn.prompt",
+			input: { text: "Persist a real assistant response" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_response" && frame.id === "completed-turn"),
+		"completed turn acknowledgement",
+	);
+	await agentSession.waitForIdle();
 	await sessionManager.flush();
+	expect(sessionManager.getBranch()).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				type: "message",
+				message: expect.objectContaining({ role: "assistant" }),
+			}),
+		]),
+	);
 	query("after");
 	await waitFor(
 		() =>
 			frames.some(
 				frame => frame.type === "control_command_result" && frame.requestId === "after" && frame.status === "ok",
 			),
-		"message Q17 response",
+		"completed-turn Q17 response",
 	);
 	expect(
 		JSON.parse(
@@ -1899,13 +2002,12 @@ test("Q17 returns resource_gone without an assistant and reads the newest persis
 		),
 	).toMatchObject({
 		ok: true,
-		page: { items: ["Newest persisted reply"] },
+		page: { items: ["Completed persisted reply"] },
 	});
-	await handlers.get("session_shutdown")?.(
-		{ type: "session_shutdown" },
-		{ ...context(cwd, sessionId), sessionManager },
-	);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
+	await agentSession.dispose();
 	await sessionManager.close();
+	authStorage.close();
 });
 
 test("terminal shutdown removes session snapshot spills", async () => {

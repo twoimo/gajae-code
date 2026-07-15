@@ -540,7 +540,7 @@ interface SessionRuntime {
 	/** Records a correlated prompt terminal boundary after agent unwind. */
 	/** Atomically claims a correlated prompt terminal boundary after agent unwind. */
 	recordPromptTerminal: (correlation: { commandId: string; turnId: string } | undefined) => boolean;
-	/** Delivers a correlated lifecycle frame only to its accepted requester after acknowledgement. */
+	/** Records correlated lifecycle frames for replay and delivers them only to the accepted requester after acknowledgement. */
 	emitPromptLifecycle: (
 		correlation: { commandId: string; turnId: string } | undefined,
 		frame:
@@ -2065,6 +2065,7 @@ export function createNotificationsExtension(
 			const key = promptSubmissionKey(correlation);
 			const submission = promptSubmissions.get(key);
 			if (!submission) return;
+			runtime.host.emitEvent({ kind: frame.type, payload: frame });
 			if (submission.abandoned) {
 				if (submission.terminal) finalizePrompt(key, correlation);
 				return;
