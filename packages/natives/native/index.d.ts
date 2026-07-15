@@ -1461,10 +1461,11 @@ export declare function parseKey(data: string, kittyProtocolActive: boolean): st
 export declare function parseKittySequence(data: string): ParsedKittyResult | null
 
 /**
- * Opaque in-process capability returned by
- * [`NotificationServer::register_arbitrated_ask`]. Pass it unchanged to
- * [`NotificationServer::retire_if_unclaimed`]; do not construct, persist,
- * inspect, or treat it as workflow-gate authority.
+ * Opaque in-process presentation capability.
+ *
+ * Returned by [`NotificationServer::register_arbitrated_ask`]. Pass it
+ * unchanged to [`NotificationServer::retire_if_unclaimed`]; do not construct,
+ * persist, inspect, or treat it as workflow-gate authority.
  */
 export interface PresentationLease {
   actionId: string
