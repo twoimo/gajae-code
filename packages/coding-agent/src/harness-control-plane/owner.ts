@@ -93,6 +93,13 @@ function flattenAggregateCauses(errors: readonly unknown[]): unknown[] {
 	return causes;
 }
 
+/**
+ * Nominal sentinel: raised only after #stopOnce has verified teardown so the
+ * retry loop can rethrow it immediately. A private class prevents a lookalike
+ * cleanup AggregateError (message collision) from bypassing verification retries.
+ */
+class FramePumpAfterVerifiedCleanupError extends AggregateError {}
+
 export interface OwnerOptions {
 	root: string;
 	sessionId: string;
@@ -795,18 +802,14 @@ export class RuntimeOwner {
 			try {
 				await this.#stopOnce();
 				if (this.#framePumpFailure !== null) {
-					throw new AggregateError(
+					throw new FramePumpAfterVerifiedCleanupError(
 						[this.#framePumpFailure, ...flattenAggregateCauses(this.#lastStopFailures)],
 						`Runtime owner frame pump failed after verified cleanup: ${String(this.#framePumpFailure)}`,
 					);
 				}
 				return;
 			} catch (error) {
-				if (
-					error instanceof AggregateError &&
-					error.message.startsWith("Runtime owner frame pump failed after verified cleanup:")
-				)
-					throw error;
+				if (error instanceof FramePumpAfterVerifiedCleanupError) throw error;
 				if (this.#lastStopFailures.length === MAX_RETAINED_CLEANUP_FAILURES) this.#lastStopFailures.shift();
 				this.#lastStopFailures.push(error);
 				if (attempt >= this.#opts.cleanupRetryLimit)

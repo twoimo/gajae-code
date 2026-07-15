@@ -20,6 +20,7 @@ class FrameTransport implements HarnessSessionTransport {
 	live = true;
 	closeCalls = 0;
 	closeFailures = 0;
+	closeFailure: (() => unknown) | null = null;
 	closed = false;
 	#cb: ((frame: Record<string, unknown>) => void) | null = null;
 	#lastAt: string | null = null;
@@ -39,7 +40,7 @@ class FrameTransport implements HarnessSessionTransport {
 		this.closeCalls += 1;
 		if (this.closeFailures > 0) {
 			this.closeFailures -= 1;
-			throw new Error("injected transport cleanup failure");
+			throw this.closeFailure?.() ?? new Error("injected transport cleanup failure");
 		}
 		this.closed = true;
 	}
@@ -350,6 +351,68 @@ describe("owner frame -> observability", () => {
 		expect(transport.closeCalls).toBe(2);
 		expect(serverCloseCalls).toBe(2);
 		expect(leaseReleaseCalls).toBe(2);
+		owner = null;
+	});
+
+	it("retries a lookalike frame-pump cleanup aggregate before surfacing the latched failure", async () => {
+		const transport = new FrameTransport();
+		transport.closeFailures = 1;
+		transport.closeFailure = () =>
+			new AggregateError(
+				[new Error("injected lookalike transport cleanup failure")],
+				"Runtime owner frame pump failed after verified cleanup: lookalike",
+			);
+		let serverCloseCalls = 0;
+		let serverClosed = false;
+		let leaseReleaseCalls = 0;
+		let leaseReleased = false;
+		const runtime = new RuntimeOwner({
+			root,
+			sessionId: SID,
+			transport,
+			cleanupRetryMs: 0,
+			cleanupRetryLimit: 4,
+			controlServerFactory(socketPath, handler) {
+				const server = new ControlServer(socketPath, handler);
+				const close = server.close.bind(server);
+				server.close = async () => {
+					serverCloseCalls += 1;
+					await close();
+					serverClosed = true;
+				};
+				return server;
+			},
+			leaseRelease: async (...args) => {
+				leaseReleaseCalls += 1;
+				await releaseLease(...args);
+				leaseReleased = true;
+			},
+			framePersistence: {
+				async appendEvent() {
+					throw new Error("injected latched frame pump failure");
+				},
+			},
+		});
+		owner = runtime;
+		await runtime.start();
+		transport.emit({ type: "agent_start" });
+		await flush();
+
+		const failure = await runtime.stop().then(
+			() => null,
+			error => error,
+		);
+		expect(failure).toBeInstanceOf(AggregateError);
+		expect((failure as Error).message).toContain("Runtime owner frame pump failed after verified cleanup:");
+		const causes = (failure as AggregateError).errors.map(String).join("\n");
+		expect(causes).toContain("injected latched frame pump failure");
+		expect(causes).toContain("injected lookalike transport cleanup failure");
+		expect(transport.closed).toBe(true);
+		expect(serverClosed).toBe(true);
+		expect(leaseReleased).toBe(true);
+		expect(transport.closeCalls).toBe(2);
+		expect(serverCloseCalls).toBe(1);
+		expect(leaseReleaseCalls).toBe(1);
 		owner = null;
 	});
 

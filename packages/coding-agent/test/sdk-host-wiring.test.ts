@@ -2134,6 +2134,48 @@ test("Q17 returns resource_gone without an assistant and reads a completed persi
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 	await agentSession.dispose();
 	await sessionManager.close();
+
+	const reopenedSessionManager = await SessionManager.open(sessionFile, cwd);
+	const reopenedSessionContext = { ...context(cwd, sessionId), sessionManager: reopenedSessionManager };
+	const reopenedHandlers = start(reopenedSessionContext);
+	await waitFor(() => fs.existsSync(endpointFile), "reopened SDK endpoint");
+	const reopenedEndpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const reopenedFrames: Record<string, unknown>[] = [];
+	const reopenedSocket = new WebSocket(
+		`${reopenedEndpoint.url}/?token=${encodeURIComponent(reopenedEndpoint.token)}`,
+	);
+	sockets.push(reopenedSocket);
+	reopenedSocket.addEventListener("message", event => reopenedFrames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		reopenedSocket.addEventListener("open", () => resolve(), { once: true });
+		reopenedSocket.addEventListener("error", () => reject(new Error("reopened WS error")), { once: true });
+	});
+	reopenedSocket.send(
+		JSON.stringify({
+			type: "control_command",
+			sessionId,
+			token: reopenedEndpoint.token,
+			requestId: "reopened",
+			command: { type: "query_request", id: "reopened", query: "Q17" },
+		}),
+	);
+	await waitFor(
+		() =>
+			reopenedFrames.some(
+				frame => frame.type === "control_command_result" && frame.requestId === "reopened" && frame.status === "ok",
+			),
+		"reopened completed-turn Q17 response",
+	);
+	expect(
+		JSON.parse(
+			String(reopenedFrames.find(frame => frame.type === "control_command_result" && frame.requestId === "reopened")?.message),
+		),
+	).toMatchObject({
+		ok: true,
+		page: { items: ["Completed persisted reply"] },
+	});
+	await reopenedHandlers.get("session_shutdown")?.({ type: "session_shutdown" }, reopenedSessionContext);
+	await reopenedSessionManager.close();
 	authStorage.close();
 });
 
