@@ -19,6 +19,8 @@
  * generated), or `GJC_NOTIFICATIONS_TOKEN`.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { execFile } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -536,7 +538,21 @@ interface SessionRuntime {
 	/** Identity bound to the agent lifecycle currently in flight. */
 	activePromptCorrelation?: { commandId: string; turnId: string };
 	/** Records a correlated prompt terminal boundary after agent unwind. */
-	recordPromptTerminal: (correlation: { commandId: string; turnId: string } | undefined) => void;
+	/** Atomically claims a correlated prompt terminal boundary after agent unwind. */
+	recordPromptTerminal: (correlation: { commandId: string; turnId: string } | undefined) => boolean;
+	/** Delivers a correlated lifecycle frame only to its accepted requester after acknowledgement. */
+	emitPromptLifecycle: (
+		correlation: { commandId: string; turnId: string } | undefined,
+		frame:
+			| { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string }
+			| {
+					type: "agent_failed";
+					sessionId: string;
+					commandId: string;
+					turnId: string;
+					error: { code: string; message: string };
+			  },
+	) => void;
 	/** Inbound Telegram update ids injected but not yet consumed by a turn. */
 	pendingInbound: Set<number>;
 	/** Latest assistant text of the in-flight turn (from message_update). */
@@ -558,6 +574,9 @@ interface SessionRuntime {
 	/** Stops optional broker presence heartbeats. */
 	stopBrokerHeartbeat: () => void;
 }
+
+/** Request-local requester authority for stable ControlSurface dispatches. */
+const controlRequesterContext = new AsyncLocalStorage<string>();
 type SessionStartStatus = "started" | "already" | "disabled" | "failed";
 type SessionStartResult = {
 	status: SessionStartStatus;
@@ -576,25 +595,12 @@ function pushSessionFrame(
 /** Agent lifecycle is SDK session truth, independent of optional chat delivery. */
 function emitAgentLifecycle(
 	runtime: Pick<SessionRuntime, "server" | "host">,
-	frame:
-		| { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string }
-		| {
-				type: "agent_failed";
-				sessionId: string;
-				commandId: string;
-				turnId: string;
-				error: { code: string; message: string };
-		  },
-	connectionId?: string,
+	frame: { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string },
 ): void {
-	// Lifecycle terminals remain replayable and are also sent directly to the
-	// requester. ACP/MCP/daemon prompt trackers cannot rely on a later replay to
-	// close an already acknowledged submission.
-	runtime.host.emitEvent({ kind: frame.type, payload: frame });
 	try {
 		const json = JSON.stringify(frame);
-		if (connectionId) runtime.server.sendTo(connectionId, json);
-		else runtime.server.pushFrame(json);
+		runtime.host.emitEvent({ kind: frame.type, payload: frame });
+		runtime.server.pushFrame(json);
 	} catch (error) {
 		logger.warn(`sdk: lifecycle delivery failed: ${String(error)}`);
 	}
@@ -1295,9 +1301,21 @@ function sdkQuerySurface(
 		cwd: ctx.cwd,
 		kind: ctx.sessionMetadata?.kind ?? "main",
 	});
-	const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
-		getLastAssistantText?: () => string | undefined;
-		getLastAssistantMessage?: () => unknown;
+	const lastAssistantText = () => {
+		for (const entry of ctx.sessionManager.getBranch().toReversed()) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const { content } = entry.message;
+			if (typeof content === "string") return content;
+			if (Array.isArray(content))
+				return content
+					.filter(
+						(block): block is { type: "text"; text: string } =>
+							block.type === "text" && typeof block.text === "string",
+					)
+					.map(block => block.text)
+					.join("");
+		}
+		return undefined;
 	};
 	const getDiff = async () => {
 		try {
@@ -1355,7 +1373,8 @@ function sdkQuerySurface(
 		getSessionMetadata: metadata,
 		getStats: () => ctx.sessionManager.getUsageStatistics(),
 		getBranchCandidates: () => ctx.getBranchCandidates(),
-		getLastAssistant: () => sessionManager.getLastAssistantText?.() ?? sessionManager.getLastAssistantMessage?.(),
+		getLastAssistant: lastAssistantText,
+
 		getCapabilities: () => ({
 			operations: [...installedOperations(ctx, "control"), ...installedOperations(ctx, "query")],
 			hostTools: getInstalledDefinitions("host_tools") !== undefined,
@@ -1390,7 +1409,10 @@ function sdkControlSurface(
 	pendingInteractive: Map<string, PendingInteractiveAsk>,
 	api: ExtensionAPI,
 	isBusy: () => boolean,
-	onPromptAccepted: (correlation: { commandId: string; turnId: string }) => void = () => {},
+	onPromptAccepted: (
+		correlation: { commandId: string; turnId: string },
+		requesterConnectionId?: string,
+	) => void = () => {},
 	onPromptFailed: (correlation: { commandId: string; turnId: string }, error: unknown) => void = () => {},
 	settings?: Settings,
 	configOverrides: Map<string, unknown> = new Map(),
@@ -1425,17 +1447,32 @@ function sdkControlSurface(
 		for (const cancel of pendingPreflightCancellations) cancel();
 	};
 	const awaitAbortReady = async () => {
+		cancelPendingPreflights();
 		await (ctx.abort as () => unknown)();
 		while (isBusy() || !ctx.isIdle()) {
 			await Bun.sleep(10);
 		}
 	};
-	const submitPrompt = async (text: string, images: unknown, forceFresh = false, deliverAs?: "steer" | "followUp") => {
+	const submitPrompt = async (
+		text: string,
+		images: unknown,
+		forceFresh = false,
+		deliverAs?: "steer" | "followUp",
+		rejectWhenBusy = false,
+		requesterConnectionId?: string,
+	) => {
 		if (forceFresh && (isBusy() || !ctx.isIdle())) {
 			throw Object.assign(new Error("Previous turn did not finish aborting before replacement prompt submission."), {
 				code: "busy",
 			});
 		}
+		if (rejectWhenBusy && (isBusy() || !ctx.isIdle()))
+			throw Object.assign(
+				new Error("turn.prompt is unavailable while the agent is busy; use turn.steer explicitly."),
+				{
+					code: "busy",
+				},
+			);
 		const promptImages = Array.isArray(images) ? (images as { data: string; mimeType?: string }[]) : [];
 		const content: string | (TextContent | ImageContent)[] =
 			promptImages.length > 0
@@ -1467,7 +1504,7 @@ function sdkControlSurface(
 		const onPreflightAccepted = () => {
 			if (preflightSettled) return;
 			accepted = true;
-			onPromptAccepted(correlation);
+			onPromptAccepted(correlation, requesterConnectionId);
 			settlePreflight({ status: "accepted" });
 		};
 		// Do not acknowledge the prompt until AgentSession's async preflight
@@ -1510,9 +1547,9 @@ function sdkControlSurface(
 		}
 	};
 	const surface: ControlSurface & { cancelPendingPreflights(): void } = {
-		prompt: (text, images) => submitPrompt(text, images),
+		prompt: (text, images) => submitPrompt(text, images, false, undefined, true, controlRequesterContext.getStore()),
 		steer: text => sendSteer(text),
-		followUp: text => submitPrompt(text, undefined, false, "followUp"),
+		followUp: text => submitPrompt(text, undefined, false, "followUp", false, controlRequesterContext.getStore()),
 		abort: () => {
 			cancelPendingPreflights();
 			ctx.abort();
@@ -1520,7 +1557,7 @@ function sdkControlSurface(
 		},
 		abortAndPrompt: async text => {
 			await awaitAbortReady();
-			return await submitPrompt(text, undefined, true);
+			return await submitPrompt(text, undefined, true, undefined, false, controlRequesterContext.getStore());
 		},
 		cancelPendingPreflights,
 		answerAsk: (id, answer) => {
@@ -1959,69 +1996,153 @@ export function createNotificationsExtension(
 
 		const configOverrides = new Map<string, unknown>();
 		const configRevision = { current: 0 };
+		const PROMPT_SUBMISSION_CAPACITY = 128;
+		const PROMPT_SUBMISSION_TTL_MS = 5 * 60_000;
+		const PROMPT_TERMINAL_TOMBSTONE_CAPACITY = 256;
+		const PROMPT_TERMINAL_TOMBSTONE_TTL_MS = 15 * 60_000;
 		const promptSubmissionKey = (correlation: { commandId: string; turnId: string }) =>
 			`${correlation.commandId}:${correlation.turnId}`;
-		const promptSubmissions = new Map<
-			string,
-			{
-				acknowledged: boolean;
-				connectionId?: string;
-				failed: boolean;
-				error: unknown;
-				terminal: boolean;
-			}
-		>();
+		type PromptLifecycleFrame =
+			| { type: "agent_start" | "agent_end"; sessionId: string; commandId?: string; turnId?: string }
+			| {
+					type: "agent_failed";
+					sessionId: string;
+					commandId: string;
+					turnId: string;
+					error: { code: string; message: string };
+			  };
+		type PromptSubmission = {
+			acknowledged: boolean;
+			connectionId: string;
+			abandoned: boolean;
+			failed: boolean;
+			error: unknown;
+			terminal: boolean;
+			createdAt: number;
+			bufferedLifecycle: PromptLifecycleFrame[];
+		};
+		const promptSubmissions = new Map<string, PromptSubmission>();
+		const promptTerminalTombstones = new Map<string, number>();
 		const removePendingPromptCorrelation = (correlation: { commandId: string; turnId: string }) => {
 			const pendingIndex = pendingPromptCorrelations.findIndex(
 				candidate => candidate.commandId === correlation.commandId && candidate.turnId === correlation.turnId,
 			);
 			if (pendingIndex !== -1) pendingPromptCorrelations.splice(pendingIndex, 1);
 		};
-		const emitPromptFailure = (correlation: { commandId: string; turnId: string }, error: unknown) => {
-			const submissionKey = promptSubmissionKey(correlation);
-			const submission = promptSubmissions.get(submissionKey);
-			if (!submission?.acknowledged || !runtime) return;
-			promptSubmissions.delete(submissionKey);
-			const candidate = error as { code?: unknown; message?: unknown };
-			emitAgentLifecycle(
-				runtime,
-				{
-					type: "agent_failed",
-					sessionId: runtime.id,
-					...correlation,
-					error: {
-						code: typeof candidate.code === "string" ? candidate.code : "internal",
-						message: typeof candidate.message === "string" ? candidate.message : "Prompt submission failed.",
-					},
-				},
-				submission.connectionId,
-			);
-			// A submission can fail after preflight without ever reaching agent_start.
-			// Deliver idle directly after agent_failed so all prompt trackers receive a
-			// recognized terminal transition even though no normal agent_end will fire.
-			if (!runtime.busy && submission.connectionId) {
-				const terminal = {
-					type: "activity",
-					sessionId: runtime.id,
-					...correlation,
-					state: "idle",
-				};
-				runtime.host.emitEvent({ kind: terminal.type, payload: terminal });
+		const addTerminalTombstone = (key: string, now = Date.now()) => {
+			promptTerminalTombstones.delete(key);
+			promptTerminalTombstones.set(key, now + PROMPT_TERMINAL_TOMBSTONE_TTL_MS);
+			while (promptTerminalTombstones.size > PROMPT_TERMINAL_TOMBSTONE_CAPACITY)
+				promptTerminalTombstones.delete(promptTerminalTombstones.keys().next().value!);
+		};
+		const finalizePrompt = (key: string, correlation: { commandId: string; turnId: string }) => {
+			promptSubmissions.delete(key);
+			removePendingPromptCorrelation(correlation);
+			addTerminalTombstone(key);
+		};
+		const cleanupPromptRecords = (now = Date.now()) => {
+			for (const [key, expiresAt] of promptTerminalTombstones)
+				if (expiresAt <= now) promptTerminalTombstones.delete(key);
+			for (const [key, submission] of promptSubmissions)
+				if (submission.createdAt + PROMPT_SUBMISSION_TTL_MS <= now) {
+					const [commandId, turnId] = key.split(":", 2);
+					if (commandId && turnId) finalizePrompt(key, { commandId, turnId });
+				}
+		};
+		const abandonPrompt = (submission: PromptSubmission) => {
+			submission.abandoned = true;
+			submission.bufferedLifecycle.length = 0;
+		};
+		const emitPromptLifecycle = (
+			correlation: { commandId: string; turnId: string } | undefined,
+			frame: PromptLifecycleFrame,
+		) => {
+			cleanupPromptRecords();
+			if (!correlation || !runtime) {
+				emitAgentLifecycle(runtime!, frame as Extract<PromptLifecycleFrame, { type: "agent_start" | "agent_end" }>);
+				return;
+			}
+			const key = promptSubmissionKey(correlation);
+			const submission = promptSubmissions.get(key);
+			if (!submission) return;
+			if (submission.abandoned) {
+				if (submission.terminal) finalizePrompt(key, correlation);
+				return;
+			}
+			if (!submission.acknowledged) {
+				submission.bufferedLifecycle.push(frame);
+				return;
+			}
+			try {
+				runtime.server.sendTo(submission.connectionId, JSON.stringify(frame));
+			} catch (error) {
+				logger.warn(`sdk: correlated lifecycle delivery failed: ${String(error)}`);
+				abandonPrompt(submission);
+			}
+			if (submission.terminal) finalizePrompt(key, correlation);
+		};
+		const flushPromptLifecycle = (key: string, submission: PromptSubmission) => {
+			for (const frame of submission.bufferedLifecycle.splice(0)) {
 				try {
-					runtime.server.sendTo(submission.connectionId, JSON.stringify(terminal));
-				} catch (deliveryError) {
-					logger.warn(`sdk: prompt failure terminal delivery failed: ${String(deliveryError)}`);
+					server.sendTo(submission.connectionId, JSON.stringify(frame));
+				} catch (error) {
+					logger.warn(`sdk: buffered correlated lifecycle delivery failed: ${String(error)}`);
+					abandonPrompt(submission);
+					break;
 				}
 			}
+			if (submission.terminal) {
+				const [commandId, turnId] = key.split(":", 2);
+				if (commandId && turnId) finalizePrompt(key, { commandId, turnId });
+			}
 		};
-
-		const recordPromptAccepted = (correlation: { commandId: string; turnId: string }) => {
+		const recordPromptAccepted = (
+			correlation: { commandId: string; turnId: string },
+			requesterConnectionId?: string,
+		) => {
+			if (!requesterConnectionId) return;
+			cleanupPromptRecords();
+			while (promptSubmissions.size >= PROMPT_SUBMISSION_CAPACITY) {
+				const oldest = promptSubmissions.entries().next().value as [string, PromptSubmission] | undefined;
+				if (!oldest) break;
+				const [key] = oldest;
+				const [commandId, turnId] = key.split(":", 2);
+				if (commandId && turnId) finalizePrompt(key, { commandId, turnId });
+			}
 			pendingPromptCorrelations.push(correlation);
 			promptSubmissions.set(promptSubmissionKey(correlation), {
 				acknowledged: false,
+				connectionId: requesterConnectionId,
+				abandoned: false,
 				failed: false,
 				error: undefined,
 				terminal: false,
+				createdAt: Date.now(),
+				bufferedLifecycle: [],
+			});
+		};
+		const recordPromptTerminal = (correlation: { commandId: string; turnId: string } | undefined) => {
+			if (!correlation) return false;
+			cleanupPromptRecords();
+			const key = promptSubmissionKey(correlation);
+			if (promptTerminalTombstones.has(key)) return false;
+			const submission = promptSubmissions.get(key);
+			if (!submission || submission.terminal) return false;
+			submission.terminal = true;
+			return true;
+		};
+		const emitPromptFailure = (correlation: { commandId: string; turnId: string }, error: unknown) => {
+			const submission = promptSubmissions.get(promptSubmissionKey(correlation));
+			if (!submission || !runtime || !recordPromptTerminal(correlation)) return;
+			const candidate = error as { code?: unknown; message?: unknown };
+			emitPromptLifecycle(correlation, {
+				type: "agent_failed",
+				sessionId: runtime.id,
+				...correlation,
+				error: {
+					code: typeof candidate.code === "string" ? candidate.code : "internal",
+					message: typeof candidate.message === "string" ? candidate.message : "Prompt submission failed.",
+				},
 			});
 		};
 		const recordPromptFailure = (correlation: { commandId: string; turnId: string }, error: unknown) => {
@@ -2033,23 +2154,11 @@ export function createNotificationsExtension(
 			emitPromptFailure(correlation, error);
 		};
 		const acknowledgePrompt = (connectionId: string, correlation: { commandId: string; turnId: string }) => {
-			const submission = promptSubmissions.get(promptSubmissionKey(correlation));
-			if (!submission) return;
-			submission.connectionId = connectionId;
+			const key = promptSubmissionKey(correlation);
+			const submission = promptSubmissions.get(key);
+			if (!submission || submission.abandoned || submission.connectionId !== connectionId) return;
 			submission.acknowledged = true;
-			if (submission.failed) {
-				emitPromptFailure(correlation, submission.error);
-			} else if (submission.terminal) {
-				promptSubmissions.delete(promptSubmissionKey(correlation));
-			}
-		};
-
-		const recordPromptTerminal = (correlation: { commandId: string; turnId: string } | undefined) => {
-			if (!correlation) return;
-			const submission = promptSubmissions.get(promptSubmissionKey(correlation));
-			if (!submission) return;
-			submission.terminal = true;
-			if (submission.acknowledged && !submission.failed) promptSubmissions.delete(promptSubmissionKey(correlation));
+			flushPromptLifecycle(key, submission);
 		};
 
 		const cursors = new CursorRegistry(token, revisions);
@@ -2080,13 +2189,31 @@ export function createNotificationsExtension(
 			ctx,
 			pendingInteractive,
 			api,
-			() => runtime?.busy === true,
+			() => runtime?.busy === true || pendingPromptCorrelations.length > 0,
 			recordPromptAccepted,
 			recordPromptFailure,
 			settings,
 			configOverrides,
 			configRevision,
 		);
+		const abandonPromptResponse = (connectionId: string, frame: Record<string, unknown>) => {
+			if (
+				frame.type !== "control_response" ||
+				frame.ok !== true ||
+				!frame.result ||
+				typeof frame.result !== "object"
+			)
+				return;
+			const result = frame.result as { accepted?: unknown; commandId?: unknown; turnId?: unknown };
+			if (result.accepted !== true || typeof result.commandId !== "string" || typeof result.turnId !== "string")
+				return;
+			const submission = promptSubmissions.get(
+				promptSubmissionKey({ commandId: result.commandId, turnId: result.turnId }),
+			);
+			if (!submission || submission.acknowledged || submission.connectionId !== connectionId) return;
+			abandonPrompt(submission);
+		};
+
 		const sendSdkFrame = (connectionId: string, frame: Record<string, unknown>) => {
 			const json = JSON.stringify(frame);
 			if (connectionId.startsWith("seam:")) {
@@ -2100,6 +2227,7 @@ export function createNotificationsExtension(
 					});
 				} catch (error) {
 					logger.warn(`sdk: seam response delivery failed for ${connectionId}: ${String(error)}`);
+					abandonPromptResponse(connectionId, frame);
 					throw error;
 				}
 				return;
@@ -2108,6 +2236,7 @@ export function createNotificationsExtension(
 				server.sendTo(connectionId, json);
 			} catch (error) {
 				logger.warn(`sdk: directed response delivery failed for ${connectionId}: ${String(error)}`);
+				abandonPromptResponse(connectionId, frame);
 				throw error;
 			}
 		};
@@ -2153,7 +2282,7 @@ export function createNotificationsExtension(
 					if (response.ok === true && pending) await rotateSessionAuthority(pending.event, pending.ctx);
 				}
 			},
-			control: async (_connectionId, frame) => {
+			control: async (connectionId, frame) => {
 				const request = frame as {
 					id?: unknown;
 					operation?: unknown;
@@ -2172,17 +2301,20 @@ export function createNotificationsExtension(
 						error: { code: "conflict", message: "session identity mutation is already active" },
 					};
 				if (rotatesIdentity) identityControlInFlight = true;
-				const response = await dispatchControl(
-					controlSurface,
-					OPERATIONS.find(row => row.kind === "control" && row.sdkId === operation),
-					{
-						id: requestId,
-						operation,
-						input: request.input,
-						expectedRevision: typeof request.expectedRevision === "string" ? request.expectedRevision : undefined,
-						idempotencyKey: typeof request.idempotencyKey === "string" ? request.idempotencyKey : undefined,
-						confirm: request.confirm === true,
-					},
+				const response = await controlRequesterContext.run(connectionId, () =>
+					dispatchControl(
+						controlSurface,
+						OPERATIONS.find(row => row.kind === "control" && row.sdkId === operation),
+						{
+							id: requestId,
+							operation,
+							input: request.input,
+							expectedRevision:
+								typeof request.expectedRevision === "string" ? request.expectedRevision : undefined,
+							idempotencyKey: typeof request.idempotencyKey === "string" ? request.idempotencyKey : undefined,
+							confirm: request.confirm === true,
+						},
+					),
 				);
 				if (rotatesIdentity && response.ok !== true) {
 					identityControlInFlight = false;
@@ -2242,6 +2374,7 @@ export function createNotificationsExtension(
 			pendingPromptCorrelations,
 			activePromptCorrelation: undefined,
 			recordPromptTerminal,
+			emitPromptLifecycle,
 			pendingInbound: new Set<number>(),
 		};
 		runtimes.set(id, runtime);
@@ -2285,8 +2418,11 @@ export function createNotificationsExtension(
 					inboundSdkFrame?.(inbound.connectionId, JSON.parse(inbound.json) as Record<string, unknown>);
 				} catch {}
 			});
-			server.onConnectionClose((err, connectionId) => {
-				if (!err && connectionId) host.handleDisconnect(connectionId);
+			server.onConnectionClose((_err, connectionId) => {
+				if (!connectionId) return;
+				host.handleDisconnect(connectionId);
+				for (const submission of promptSubmissions.values())
+					if (submission.connectionId === connectionId) abandonPrompt(submission);
 			});
 
 			server.onReply((err, reply) => {
@@ -2913,7 +3049,7 @@ export function createNotificationsExtension(
 		rt.busy = true;
 		const correlation = rt.pendingPromptCorrelations.shift();
 		rt.activePromptCorrelation = correlation;
-		emitAgentLifecycle(rt, { type: "agent_start", sessionId: id, ...correlation });
+		rt.emitPromptLifecycle(correlation, { type: "agent_start", sessionId: id, ...correlation });
 		try {
 			// `activity` is the native live-host lifecycle surface. The separately
 			// emitted agent_start above is replayable with command/turn correlation.
@@ -2954,9 +3090,12 @@ export function createNotificationsExtension(
 		// Clear the streaming flag for SDK consumers even when notifications are off.
 		rt.busy = false;
 		const correlation = rt.activePromptCorrelation;
-		rt.activePromptCorrelation = undefined;
-		rt.recordPromptTerminal(correlation);
-		emitAgentLifecycle(rt, { type: "agent_end", sessionId: id, ...correlation });
+		if (correlation) {
+			if (rt.recordPromptTerminal(correlation))
+				rt.emitPromptLifecycle(correlation, { type: "agent_end", sessionId: id, ...correlation });
+		} else {
+			rt.emitPromptLifecycle(undefined, { type: "agent_end", sessionId: id });
+		}
 		try {
 			pushSessionFrame(rt, { type: "activity", sessionId: id, state: "idle" });
 		} catch (e) {
