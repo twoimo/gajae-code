@@ -402,6 +402,17 @@ describe("model selector profiles", () => {
 		expect(flush).toHaveBeenCalledTimes(1);
 		expect(ctx.showStatus).toHaveBeenCalledWith("Default model profile: Profile Alpha");
 	});
+	test("Apply for this session does not persist the selected profile", async () => {
+		const { ctx, settings, session, flush, setCalls } = createControllerContext();
+		const controller = new SelectorController(ctx as never);
+		await selectFirstProfile(controller, false);
+
+		expect(session.setModelTemporaryCalls).toHaveLength(1);
+		expect(session.model).toBe(defaultModel);
+		expect(settings.get("modelProfile.default")).toBe("old-profile");
+		expect(setCalls).toEqual([]);
+		expect(flush).not.toHaveBeenCalled();
+	});
 
 	test("credential failure shows error and leaves model and overrides unchanged", async () => {
 		const { ctx, settings, session } = createControllerContext({ missingCredentials: true });

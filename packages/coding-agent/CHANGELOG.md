@@ -4,11 +4,9 @@
 ### Added
 - Double-Esc now clears an idle draft after a confirmation hint, saving it to prompt history; from an empty editor it follows the configured tree, branch, or disabled action.
 
-## [0.11.0] - 2026-07-15
-
 ### Fixed
 - Discord inbound lease recovery now exposes a deterministic scheduler seam, preserves exponential retry wakeups after transient endpoint lookup failures, and cancels pending recovery exactly on daemon stop instead of relying on wall-clock sleeps in regression coverage.
-- Selecting a `/model` preset now persists it as the default, so the preset is restored on fresh startup and after `/new`.
+- Selecting a `/model` preset defaults to durable persistence (`Set as default`), while `Apply for this session` remains available for session-only activation.
 
 ## [0.11.0] - 2026-07-15
 
