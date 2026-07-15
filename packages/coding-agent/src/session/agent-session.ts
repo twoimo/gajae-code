@@ -234,6 +234,7 @@ import { resolveMemoryBackend } from "../memory-backend";
 import {
 	BrokerWorkflowGateEmitter,
 	FileGateStore,
+	MemoryGateStore,
 	type WorkflowGateEmitter,
 } from "../modes/shared/agent-wire/workflow-gate-broker";
 import { getCurrentThemeName, theme } from "../modes/theme/theme";
@@ -5848,10 +5849,10 @@ export class AgentSession {
 	#bindWorkflowGateEmitter(previousSessionId?: string, previousEmitter = this.#workflowGateEmitter): void {
 		const sessionId = this.sessionManager.getSessionId();
 		assertNonEmptyGjcSessionId(sessionId, "AgentSession workflow-gate session");
-		const successorEmitter = new BrokerWorkflowGateEmitter(
-			sessionId,
-			new FileGateStore(path.join(sessionStateDir(this.sessionManager.getCwd(), sessionId), "workflow-gates.json")),
-		);
+		const gateStore = this.sessionManager.getSessionFile()
+			? new FileGateStore(path.join(sessionStateDir(this.sessionManager.getCwd(), sessionId), "workflow-gates.json"))
+			: new MemoryGateStore();
+		const successorEmitter = new BrokerWorkflowGateEmitter(sessionId, gateStore);
 		previousEmitter?.fence?.();
 		if (previousEmitter && !previousEmitter.fence) {
 			for (const gate of previousEmitter.listPendingGates?.() ?? []) previousEmitter.quarantineGate?.(gate.gate_id);
