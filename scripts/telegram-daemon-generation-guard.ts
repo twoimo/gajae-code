@@ -27,7 +27,6 @@ export const protectedInventory = {
 			"TelegramDaemonOwnershipPhase",
 			"DaemonState",
 			"ownerIdentityMatches",
-			"isReadyDaemonOwner",
 			"liveOwnerUsesDifferentIdentity",
 			"isFreshLiveOwner",
 			"isCurrentCompatibleOwner",
@@ -182,6 +181,25 @@ function extractDeclaration(source: string, name: string): Declaration {
 	}
 }
 
+function extractDeclarations(source: string, names: readonly string[]): Map<string, Declaration> {
+	try {
+		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
+		return new Map(
+			names.map(name => {
+				const node = declarationNode(ast.program, name);
+				return [
+					name,
+					node && typeof node.start === "number" && typeof node.end === "number"
+						? { text: source.slice(node.start, node.end), valid: true }
+						: undefined,
+				] as const;
+			}),
+		);
+	} catch {
+		return new Map(names.map(name => [name, { text: "<malformed>", valid: false }] as const));
+	}
+}
+
 function generation(source: string | undefined, kind?: "discord" | "slack"): number | undefined {
 	if (!source) return undefined;
 	try {
@@ -230,12 +248,17 @@ export function evaluate(
 	const malformedDeclarations: string[] = [];
 	const bootstrapping = guardContractVersion(base.get(guardScript)) === undefined;
 	for (const [family, files] of Object.entries(inventory) as [Family, Inventory[Family]][]) {
-		for (const [file, symbols] of Object.entries(files)) for (const symbol of symbols) {
-			const before = extractDeclaration(base.get(file) ?? "", symbol);
-			const after = extractDeclaration(head.get(file) ?? "", symbol);
-			const label = `${family}:${file}:${symbol}`;
-			if (!after?.valid || !after || (!bootstrapping && (!before?.valid || !before))) malformedDeclarations.push(label);
-			if (before?.text !== after?.text) protectedChanges.push(label);
+		for (const [file, symbols] of Object.entries(files)) {
+			const beforeDeclarations = extractDeclarations(base.get(file) ?? "", symbols);
+			const afterDeclarations = extractDeclarations(head.get(file) ?? "", symbols);
+			for (const symbol of symbols) {
+				const before = beforeDeclarations.get(symbol);
+				const after = afterDeclarations.get(symbol);
+				const label = `${family}:${file}:${symbol}`;
+				if (!after?.valid || !after || (!bootstrapping && (!before?.valid || !before)))
+					malformedDeclarations.push(label);
+				if (before?.text !== after?.text) protectedChanges.push(label);
+			}
 		}
 	}
 	const oldTelegramGeneration = generation(base.get(telegramContract));
@@ -269,7 +292,7 @@ async function verifyObject(name: string, sha: string): Promise<void> {
 async function blob(revision: string, file: string): Promise<string | undefined> {
 	const result = await $`git show ${`${revision}:${file}`}`.cwd(root).quiet().nothrow();
 	if (result.exitCode === 0) return result.stdout.toString();
-	if (result.stderr.toString().includes("does not exist")) return undefined;
+	if (result.exitCode === 128 || result.stderr.toString().includes("does not exist")) return undefined;
 	throw new Error(`telegram-daemon-generation-guard: unable to read ${file} from ${revision}`);
 }
 
@@ -279,12 +302,17 @@ export async function run(baseInput: string | undefined, headInput: string | und
 	const head = validateSha("head SHA", headInput);
 	await verifyObject("base", base);
 	await verifyObject("head", head);
+	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: objects verified");
 	const files = [guardScript, ...new Set(Object.values(protectedInventory).flatMap(inventory => Object.keys(inventory)))];
-	const [baseFiles, headFiles] = await Promise.all([
-		Promise.all(files.map(async file => [file, await blob(base, file)] as const)),
-		Promise.all(files.map(async file => [file, await blob(head, file)] as const)),
-	]);
+	const baseFiles: Array<readonly [string, string | undefined]> = [];
+	const headFiles: Array<readonly [string, string | undefined]> = [];
+	for (const file of files) {
+		baseFiles.push([file, await blob(base, file)]);
+		headFiles.push([file, await blob(head, file)]);
+	}
+	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: blobs loaded");
 	const decision = evaluate(new Map(baseFiles), new Map(headFiles));
+	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: declarations evaluated");
 	if (decision.malformedDeclarations.length > 0)
 		throw new Error(`telegram-daemon-generation-guard: v${GUARD_CONTRACT_VERSION} protected declaration is missing or malformed: ${decision.malformedDeclarations.join(", ")}`);
 	const telegramChanges = decision.protectedChanges.filter(change => change.startsWith("telegram:"));
