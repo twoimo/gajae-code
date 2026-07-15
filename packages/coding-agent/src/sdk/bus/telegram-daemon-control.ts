@@ -386,17 +386,33 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 					pidAlive: this.pidAlive,
 				});
 			if (changedToLiveOwner) {
-				// A different, fresh-live owner already supersedes the old one. Do not
-				// kill it or spawn another; attach to the running daemon.
 				await this.clearOwnRequest(requestId, oldOwnerId);
 				const after = await this.status();
-				warnings.push("ownership changed to a live owner; attached without spawning");
+				if (
+					!isCurrentCompatibleOwner({
+						state: current,
+						now: this.now(),
+						tokenFingerprint: fp,
+						chatId,
+						pidAlive: this.pidAlive,
+					})
+				) {
+					return this.result(
+						action,
+						false,
+						"ownership moved to a non-ready or incompatible daemon; reload required",
+						before,
+						after,
+						warnings,
+					);
+				}
+				warnings.push("ownership changed to a ready current-compatible owner; attached without spawning");
 				return this.result(
 					action,
 					true,
 					action === "reload"
-						? "a live owner already exists; attached instead of reloading"
-						: "another live owner already exists",
+						? "a ready current-compatible owner already exists; attached instead of reloading"
+						: "another ready current-compatible owner already exists",
 					before,
 					after,
 					warnings,
@@ -430,8 +446,26 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		warnings.push(...spawned.warnings);
 		const after = await this.status();
 		if (spawned.result === "attached") {
-			// A live owner already exists; attaching to it is a valid running end-state.
-			warnings.push("a live owner already exists; attached instead of spawning");
+			const attachedState = await readDaemonState(this.settings, this.fsImpl);
+			if (
+				!isCurrentCompatibleOwner({
+					state: attachedState,
+					now: this.now(),
+					tokenFingerprint: fp,
+					chatId,
+					pidAlive: this.pidAlive,
+				})
+			) {
+				return this.result(
+					action,
+					false,
+					"ownership moved to a non-ready or incompatible daemon; reload required",
+					before,
+					after,
+					warnings,
+				);
+			}
+			warnings.push("a ready current-compatible owner already exists; attached instead of spawning");
 		} else if (after.ownerId && after.ownerId === oldOwnerId) {
 			warnings.push("owner id unchanged after reload");
 		}
@@ -448,7 +482,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		}
 		return this.result(
 			action,
-			spawned.result !== "disabled" && ready && after.health === "running",
+			(spawned.result === "owner_spawned" || spawned.result === "attached") && ready && after.health === "running",
 			ready ? `reloaded telegram daemon (${spawned.result})` : "telegram daemon did not become ready after spawning",
 			before,
 			after,

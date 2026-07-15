@@ -393,10 +393,10 @@ describe("TelegramDaemonController.reload", () => {
 		writeState(agentDir, freshState());
 		fs.writeFileSync(daemonPaths(agentDir).lock, "");
 
-		const alive = new Set<number>([999, process.pid]);
+		const alive = new Set<number>([999, 4242]);
 		const signals: Array<[number, string]> = [];
 		const ctrl = new TelegramDaemonController(s, {
-			ownerPid: process.pid,
+			ownerPid: 4242,
 			pidAlive: pid => alive.has(pid),
 			sendSignal: (pid, sig) => {
 				signals.push([pid, sig]);
@@ -527,10 +527,10 @@ describe("TelegramDaemonController.reload", () => {
 		const s = settings(agentDir);
 		writeState(agentDir, freshState());
 		fs.writeFileSync(daemonPaths(agentDir).lock, "");
-		const alive = new Set<number>([999, process.pid]);
+		const alive = new Set<number>([999, 4242]);
 		let oldAliveAtSpawn: boolean | undefined;
 		const ctrl = new TelegramDaemonController(s, {
-			ownerPid: process.pid,
+			ownerPid: 4242,
 			pidAlive: pid => alive.has(pid),
 			sendSignal: (_pid, sig) => {
 				if (sig === "SIGTERM") alive.delete(999);
@@ -978,6 +978,110 @@ describe("ChatDaemonController ownership safety", () => {
 				}).ensure(),
 			).rejects.toThrow("unauthorized");
 			expect(signals).toEqual([]);
+		});
+
+		test.each([
+			["negative", -1, identity()],
+			["non-safe", Number.MAX_SAFE_INTEGER + 1, identity()],
+			["non-number", "1", identity()],
+			["different identity", chatDaemonGeneration(kind), "other-identity"],
+		] as const)("fails closed for every public operation: %s", async (_name, generation, stateIdentity) => {
+			const agentDir = tempAgentDir();
+			const paths = chatDaemonPaths(agentDir, kind);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			fs.writeFileSync(
+				paths.state,
+				JSON.stringify({
+					version: 1,
+					kind,
+					pid: 94,
+					ownerId: "owner-a",
+					identity: stateIdentity,
+					incarnation: "stable",
+					startedAt: Date.now(),
+					heartbeatAt: 1,
+					transportHealthy: false,
+					generation,
+				}),
+			);
+			const signals: NodeJS.Signals[] = [];
+			let spawns = 0;
+			const controller = new ChatDaemonController(configuredSettings(agentDir), kind, {
+				pidAlive: pid => pid === 94,
+				pidIncarnation: () => "stable",
+				sendSignal: (_pid, signal) => signals.push(signal),
+				spawn: () => {
+					spawns++;
+					return { unref() {} };
+				},
+			});
+			await expect(controller.ensure()).rejects.toThrow("unauthorized");
+			expect((await controller.stop()).ok).toBe(false);
+			expect((await controller.reload()).ok).toBe(false);
+			expect(signals).toEqual([]);
+			expect(spawns).toBe(0);
+		});
+
+		test.each([
+			["missing", undefined, "stop"],
+			["missing", undefined, "reload"],
+			["lower", chatDaemonGeneration(kind) - 1, "stop"],
+			["lower", chatDaemonGeneration(kind) - 1, "reload"],
+		] as const)("signals matching unhealthy legacy owners for %s %s", async (_name, generation, action) => {
+			const agentDir = tempAgentDir();
+			const paths = chatDaemonPaths(agentDir, kind);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			fs.writeFileSync(
+				paths.state,
+				JSON.stringify({
+					version: 1,
+					kind,
+					pid: 94,
+					ownerId: "owner-a",
+					identity: identity(),
+					incarnation: "stable",
+					startedAt: Date.now(),
+					heartbeatAt: 1,
+					transportHealthy: false,
+					...(generation === undefined ? {} : { generation }),
+				}),
+			);
+			const alive = new Set([94]);
+			const signals: NodeJS.Signals[] = [];
+			let spawns = 0;
+			const controller = new ChatDaemonController(configuredSettings(agentDir), kind, {
+				pidAlive: pid => alive.has(pid),
+				pidIncarnation: () => "stable",
+				sleep: async () => undefined,
+				sendSignal: (_pid, signal) => {
+					signals.push(signal);
+					alive.delete(94);
+				},
+				spawn: (_command, args) => {
+					spawns++;
+					alive.add(95);
+					fs.writeFileSync(
+						paths.state,
+						JSON.stringify({
+							version: 1,
+							kind,
+							pid: 95,
+							ownerId: args[args.indexOf("--owner-id") + 1],
+							identity: identity(),
+							incarnation: "stable",
+							startedAt: Date.now(),
+							heartbeatAt: Date.now(),
+							transportHealthy: false,
+							generation: chatDaemonGeneration(kind),
+						}),
+					);
+					return { unref() {} };
+				},
+			});
+			const result = await controller[action]();
+			expect(result.ok).toBe(true);
+			expect(signals).toEqual(["SIGTERM"]);
+			expect(spawns).toBe(action === "reload" ? 1 : 0);
 		});
 
 		test("refuses replacement when the captured generation changes before TERM", async () => {

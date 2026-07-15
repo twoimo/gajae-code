@@ -255,6 +255,8 @@ export function buildChatDaemonSpawnArgs(input: {
 	};
 }
 
+type ChatDaemonStateClassification = "absent" | "replaceable" | "compatible" | "malformed" | "unauthorized";
+
 export class ChatDaemonController implements BuiltInDaemonController {
 	readonly kind: ChatDaemonKind;
 	constructor(
@@ -298,18 +300,19 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const identity = this.identity();
 		if (!identity) return "disabled";
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
+		const classification = this.classify(existing, identity);
+		if (classification === "malformed" || classification === "unauthorized")
+			throw new Error(`Unable to replace unauthorized ${this.kind} daemon owner`);
 		if (existing && this.isPhysicalLiveState(existing)) {
-			if (this.isCurrentCompatibleState(existing, identity)) return "attached";
-			if (existing.identity !== identity || this.hasMalformedGeneration(existing))
-				throw new Error(`Unable to replace unauthorized ${this.kind} daemon owner`);
-			if (!this.isHealthyFreshState(existing))
-				throw new Error(`Unable to replace unhealthy ${this.kind} daemon owner`);
+			if (classification === "compatible" && this.isHealthyFreshState(existing)) return "attached";
+			if (classification === "compatible") throw new Error(`Unable to replace unhealthy ${this.kind} daemon owner`);
 			await this.stopForReplacement(existing);
 		}
 		const spawned = await this.spawn();
 		if (spawned) return "owner_spawned";
 		const replacement = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		if (replacement && this.isCurrentCompatibleState(replacement, identity)) return "attached";
+		if (this.classify(replacement, identity) === "compatible" && replacement && this.isPhysicalLiveState(replacement))
+			return "attached";
 		throw new Error(`Unable to attach or spawn ${this.kind} daemon owner`);
 	}
 
@@ -319,6 +322,16 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		if (!before.configured)
 			return this.result(action, false, `${this.kind} notifications are not configured`, before, before, warnings);
 		const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
+		const classification = this.classify(state, this.identity());
+		if (classification === "malformed" || classification === "unauthorized")
+			return this.result(
+				action,
+				false,
+				`${this.kind} daemon ownership changed; refusing to signal`,
+				before,
+				await this.status(),
+				warnings,
+			);
 		if (!state || !this.isPhysicalLiveState(state)) {
 			if (action === "stop")
 				return this.result(action, true, `no running ${this.kind} daemon`, before, before, warnings);
@@ -403,19 +416,19 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	private isHealthyFreshState(state: ChatDaemonState): boolean {
 		return state.transportHealthy && Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS;
 	}
-	private hasValidGeneration(state: ChatDaemonState): boolean {
-		return typeof state.generation === "number" && Number.isSafeInteger(state.generation);
-	}
-	private hasMalformedGeneration(state: ChatDaemonState): boolean {
-		return state.generation !== undefined && !this.hasValidGeneration(state);
+	private classify(state: ChatDaemonState | undefined, identity: string | undefined): ChatDaemonStateClassification {
+		if (!state) return "absent";
+		if (!identity || state.kind !== this.kind || state.identity !== identity) return "unauthorized";
+		if (state.generation === undefined) return "replaceable";
+		if (typeof state.generation !== "number" || !Number.isSafeInteger(state.generation) || state.generation < 0)
+			return "malformed";
+		return state.generation < chatDaemonGeneration(this.kind) ? "replaceable" : "compatible";
 	}
 	private isCurrentCompatibleState(state: ChatDaemonState, identity: string): boolean {
 		return (
 			this.isPhysicalLiveState(state) &&
 			this.isHealthyFreshState(state) &&
-			state.identity === identity &&
-			this.hasValidGeneration(state) &&
-			state.generation >= chatDaemonGeneration(this.kind)
+			this.classify(state, identity) === "compatible"
 		);
 	}
 	private async stopForReplacement(state: ChatDaemonState): Promise<void> {
@@ -456,15 +469,16 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	private async signalIfOwner(state: ChatDaemonState, signal: NodeJS.Signals): Promise<boolean> {
 		const current = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
 		const identity = this.identity();
+		const classification = this.classify(current, identity);
 		if (
 			!identity ||
 			!current ||
 			current.ownerId !== state.ownerId ||
 			current.pid !== state.pid ||
-			current.identity !== identity ||
 			current.identity !== state.identity ||
 			current.incarnation !== state.incarnation ||
 			current.generation !== state.generation ||
+			(classification !== "compatible" && classification !== "replaceable") ||
 			!this.isPhysicalLiveState(current)
 		)
 			return false;
@@ -511,6 +525,8 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const paths = chatDaemonPaths(this.settings.getAgentDir(), this.kind);
 		await fs.promises.mkdir(paths.dir, { recursive: true, mode: 0o700 });
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
+		const classification = this.classify(existing, identity);
+		if (classification === "malformed" || classification === "unauthorized") return false;
 		if (existing && this.isPhysicalLiveState(existing)) return false;
 		const ownerId = `${this.deps.ownerPid ?? process.ppid}-${this.deps.randomId?.() ?? crypto.randomUUID()}`;
 		const { command, args } = buildChatDaemonSpawnArgs({
@@ -534,8 +550,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			if (
 				state &&
 				state.ownerId === ownerId &&
-				state.identity === identity &&
-				state.generation === chatDaemonGeneration(this.kind) &&
+				this.classify(state, identity) === "compatible" &&
 				this.isPhysicalLiveState(state)
 			)
 				return true;

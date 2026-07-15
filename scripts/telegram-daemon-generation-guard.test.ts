@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { declaration, evaluate, validateCiInputs, validateSha } from "./telegram-daemon-generation-guard";
+import { declaration, evaluate, validateCiInputs, validateInventory, validateSha } from "./telegram-daemon-generation-guard";
 
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
@@ -62,6 +62,42 @@ describe("daemon generation release guard", () => {
 		const source = `// export function acquireDaemonOwnership() {}\nconst message = "acquireDaemonOwnership()";\nexport async function acquireDaemonOwnership<T>(value: T): Promise<T> { return value; }`;
 		expect(declaration(source, "acquireDaemonOwnership")).toContain("Promise<T>");
 		expect(declaration("const message = 'acquireDaemonOwnership';", "acquireDaemonOwnership")).toBeUndefined();
+	});
+
+	test("canonical AST comparison ignores declaration comments and formatting", () => {
+		const base = files({ telegramGeneration: 4, telegramOwnership: "// stable\nreturn true;" });
+		const head = files({ telegramGeneration: 4, telegramOwnership: "return /* stable */ true;" });
+		expect(decide(base, head).protectedChanges).toEqual([]);
+	});
+
+	test("canonical AST comparison ignores guard policy comments and formatting", () => {
+		const base = files();
+		const head = files();
+		base.set("scripts/telegram-daemon-generation-guard.ts", "// policy\nexport const GUARD_CONTRACT_VERSION = 2;");
+		head.set("scripts/telegram-daemon-generation-guard.ts", "export const GUARD_CONTRACT_VERSION=2 /* policy */;");
+		expect(decide(base, head).guardPolicyChanged).toBe(false);
+	});
+
+	test("requires a contract-version bump for an existing guard policy change without a daemon bump", () => {
+		const base = files({ telegramGeneration: 4, telegramOwnership: "return true;" });
+		const head = files({ telegramGeneration: 4, telegramOwnership: "return true;" });
+		base.set("scripts/telegram-daemon-generation-guard.ts", "export const GUARD_CONTRACT_VERSION = 2;\nexport const policy = true;");
+		head.set("scripts/telegram-daemon-generation-guard.ts", "export const GUARD_CONTRACT_VERSION = 2;\nexport const policy = false;");
+		const unbumped = decide(base, head);
+		expect(unbumped.guardPolicyChanged).toBe(true);
+		expect(unbumped.guardContractBumped).toBe(false);
+		expect(unbumped.telegramGenerationBumped).toBe(false);
+		head.set("scripts/telegram-daemon-generation-guard.ts", "export const GUARD_CONTRACT_VERSION = 3;\nexport const policy = false;");
+		expect(decide(base, head).guardContractBumped).toBe(true);
+	});
+
+	test("only bootstraps when the guard is absent and rejects duplicate inventory symbols", () => {
+		const base = files({ telegramGeneration: 4, telegramOwnership: "return true;" });
+		const head = files({ telegramGeneration: 5 });
+		base.set("scripts/telegram-daemon-generation-guard.ts", "export const unrelated = 1;");
+		head.set("scripts/telegram-daemon-generation-guard.ts", "export const unrelated = 1;");
+		expect(decide(base, head).malformedDeclarations).toContain(`telegram:${telegramDaemon}:acquireDaemonOwnership`);
+		expect(() => validateInventory({ telegram: { [telegramContract]: ["DAEMON_GENERATION", "DAEMON_GENERATION"] }, discord: {}, slack: {} } as any)).toThrow("invalid telegram contract inventory");
 	});
 
 	test("fails closed for malformed protected declarations", () => {

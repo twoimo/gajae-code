@@ -14,6 +14,7 @@ import { deliverRichWithFallback } from "../src/sdk/bus/rich-render";
 import {
 	acquireDaemonOwnership,
 	type BotApi,
+	confirmTelegramDaemonSpawn,
 	DAEMON_GENERATION,
 	DAEMON_VERSION,
 	type DaemonState,
@@ -372,6 +373,23 @@ describe("telegram daemon", () => {
 		};
 		expect(registry.roots).toEqual([path.join(otherCwd, ".gjc", "state")]);
 		expect(registry.sessions).toEqual({ other: path.join(otherCwd, ".gjc", "state") });
+	});
+
+	test("legacy unmanaged roots survive register and unregister", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const legacyRoot = path.join(agentDir, "legacy", ".gjc", "state");
+		fs.mkdirSync(daemonPaths(agentDir).dir, { recursive: true });
+		fs.writeFileSync(daemonPaths(agentDir).roots, JSON.stringify({ version: 1, roots: [legacyRoot], sessions: {} }));
+		await registerNotificationRoot({ settings: s, cwd: path.join(agentDir, "legacy"), sessionId: "legacy-session" });
+		await unregisterNotificationRoot({
+			settings: s,
+			cwd: path.join(agentDir, "legacy"),
+			sessionId: "legacy-session",
+		});
+		const registry = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8"));
+		expect(registry.roots).toEqual([legacyRoot]);
+		expect(registry.managedRoots).toEqual([]);
 	});
 
 	test("fake Bot API observes one getUpdates loop", async () => {
@@ -872,26 +890,27 @@ describe("telegram daemon", () => {
 		});
 	});
 
-	test("detailed ensure keeps a stale-heartbeat live PID attached even when generation is older", async () => {
+	test("detailed ensure refuses a stale-heartbeat live owner instead of attaching", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
-		writeLiveOwner(agentDir, { heartbeatAt: 100 }); // Missing generation, but stale heartbeat is fail-closed.
+		writeLiveOwner(agentDir, { heartbeatAt: 100 });
 		const signals: Array<[number, string]> = [];
 		let spawns = 0;
-		const result = await ensureTelegramDaemonRunningDetailed(
-			{ settings: s, cwd: path.join(agentDir, "new-session"), sessionId: "new-session" },
-			{
-				pid: 4242,
-				now: () => 100_000,
-				pidAlive: () => true,
-				sendSignal: (pid, signal) => signals.push([pid, signal]),
-				spawn: () => {
-					spawns++;
-					return { unref() {} };
+		await expect(
+			ensureTelegramDaemonRunningDetailed(
+				{ settings: s, cwd: path.join(agentDir, "new-session"), sessionId: "new-session" },
+				{
+					pid: 4242,
+					now: () => 100_000,
+					pidAlive: () => true,
+					sendSignal: (pid, signal) => signals.push([pid, signal]),
+					spawn: () => {
+						spawns++;
+						return { unref() {} };
+					},
 				},
-			},
-		);
-		expect(result).toBe("attached");
+			),
+		).rejects.toThrow("Unable to replace stale Telegram daemon");
 		expect(signals).toEqual([]);
 		expect(spawns).toBe(0);
 	});
@@ -931,6 +950,48 @@ describe("telegram daemon", () => {
 			pidAlive: pid => pid === 999,
 		});
 		expect(ownership).toEqual({ acquired: false, attached: false, reloadRequired: true });
+	});
+
+	test("child ready publication wins the readiness-versus-retire race", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		let now = 0;
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: 4242,
+			randomId: () => "race-child",
+			now: () => now,
+		});
+		const ready = await confirmTelegramDaemonSpawn({
+			settings: s,
+			spawned: {
+				result: "owner_spawned",
+				acquisition: Object.freeze({ ownerId: "race-child", acquisitionId: "race-child" }),
+				runtime: { mode: "compiled", execPath: process.execPath, reloadPicksUpSourceEdits: false },
+				warnings: [],
+			},
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: 4242,
+			now: () => now,
+			pidAlive: pid => pid === 4242,
+			waitStepMs: 1,
+			timeoutMs: 1,
+			sleep: async () => {
+				now++;
+				await renewDaemonHeartbeat({
+					settings: s,
+					ownerId: "race-child",
+					acquisitionId: "race-child",
+					pid: 4242,
+					now: () => now,
+				});
+			},
+		});
+		expect(ready).toBe(true);
+		expect(JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8")).ownershipPhase).toBe("ready");
 	});
 
 	test("provisional retirement cannot release a successor that wins the ownership race", async () => {

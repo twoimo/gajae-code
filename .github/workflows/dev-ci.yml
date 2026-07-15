@@ -74,6 +74,8 @@ jobs:
       GITHUB_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       BASE_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.repo.full_name || github.repository }}
       HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+      GUARD_EVENT_NAME: ${{ github.event_name }}
+      GUARD_REPOSITORY: ${{ github.repository }}
     steps:
       - name: Validate exact guard inputs
         shell: bash
@@ -85,9 +87,10 @@ jobs:
           [[ "${GITHUB_HEAD_SHA}" =~ ${sha} ]] || { echo "Guard head SHA must be an exact 40-hex commit"; exit 1; }
           [[ "${BASE_REPOSITORY}" =~ ${repo} ]] || { echo "Guard base repository is invalid"; exit 1; }
           [[ "${HEAD_REPOSITORY}" =~ ${repo} ]] || { echo "Guard head repository is invalid"; exit 1; }
-          case "${{ github.event_name }}" in
-            pull_request) [[ "${BASE_REPOSITORY}" == "${GITHUB_REPOSITORY}" ]] || { echo "PR base repository must be this repository"; exit 1; } ;;
-            push|workflow_dispatch) [[ "${BASE_REPOSITORY}" == "${GITHUB_REPOSITORY}" && "${HEAD_REPOSITORY}" == "${GITHUB_REPOSITORY}" ]] || { echo "Push and dispatch repositories must be this repository"; exit 1; } ;;
+          [[ "${GUARD_REPOSITORY}" =~ ${repo} ]] || { echo "Guard repository is invalid"; exit 1; }
+          case "${GUARD_EVENT_NAME}" in
+            pull_request) [[ "${BASE_REPOSITORY}" == "${GUARD_REPOSITORY}" ]] || { echo "PR base repository must be this repository"; exit 1; } ;;
+            push|workflow_dispatch) [[ "${BASE_REPOSITORY}" == "${GUARD_REPOSITORY}" && "${HEAD_REPOSITORY}" == "${GUARD_REPOSITORY}" ]] || { echo "Push and dispatch repositories must be this repository"; exit 1; } ;;
             *) echo "Unsupported guard event"; exit 1 ;;
           esac
       # Check out the exact PR head: fork PRs otherwise use GitHub's synthetic merge SHA.
