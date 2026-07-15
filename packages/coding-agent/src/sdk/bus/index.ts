@@ -1643,8 +1643,8 @@ function installedOperations(ctx: ExtensionContext, kind: "control" | "query"): 
 			operation.kind === kind &&
 			(kind !== "control" ||
 				(!UNINSTALLED_CONTROL_OPERATIONS.has(operation.sdkId) &&
-						((operation.sdkId !== "workflow.gate_answer" && operation.sdkId !== "workflow.plan_approve") ||
-							hasTerminalArbitrationCapability(ctx.workflowGate)) &&
+					((operation.sdkId !== "workflow.gate_answer" && operation.sdkId !== "workflow.plan_approve") ||
+						hasTerminalArbitrationCapability(ctx.workflowGate)) &&
 					(!required[operation.sdkId] || bindings.has(required[operation.sdkId]!)))),
 	);
 	return new Set(candidates.map(operation => operation.sdkId));
@@ -1855,10 +1855,11 @@ function sdkControlSurface(
 	const cancelPendingPreflights = () => {
 		for (const cancel of pendingPreflightCancellations) cancel();
 	};
+	const isSessionBusy = () => isBusy() || ctx.isIdle?.() === false;
 	const awaitAbortReady = async () => {
 		cancelPendingPreflights();
 		await (ctx.abort as () => unknown)();
-		while (isBusy() || !ctx.isIdle()) {
+		while (isSessionBusy()) {
 			await Bun.sleep(10);
 		}
 	};
@@ -1870,12 +1871,12 @@ function sdkControlSurface(
 		rejectWhenBusy = false,
 		requesterConnectionId?: string,
 	) => {
-		if (forceFresh && (isBusy() || !ctx.isIdle())) {
+		if (forceFresh && isSessionBusy()) {
 			throw Object.assign(new Error("Previous turn did not finish aborting before replacement prompt submission."), {
 				code: "busy",
 			});
 		}
-		if (rejectWhenBusy && (isBusy() || !ctx.isIdle()))
+		if (rejectWhenBusy && isSessionBusy())
 			throw Object.assign(
 				new Error("turn.prompt is unavailable while the agent is busy; use turn.steer explicitly."),
 				{

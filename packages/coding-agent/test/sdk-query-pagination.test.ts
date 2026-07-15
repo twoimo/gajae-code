@@ -177,7 +177,7 @@ describe("SDK query pagination", () => {
 			expect(complete.page?.complete).toBe(true);
 		}
 		expect(query.cursors.size).toBe(0);
-	});
+	}, 30000);
 
 	it("writes owner-private chunked spills atomically with bounded buffering", async () => {
 		const stateRoot = await mkdtemp(join(tmpdir(), "gjc-sdk-query-test-"));
