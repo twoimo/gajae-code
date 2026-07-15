@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { Settings } from "../src/config/settings";
-import { applyStartupModelProfiles } from "../src/main";
+import { applyStartupModelProfiles, applyStartupModelProfilesOrExit } from "../src/main";
 import { parseCliCredentialSelector } from "../src/runtime-credential-selector";
 import type { AgentSession } from "../src/session/agent-session";
 
@@ -264,4 +264,84 @@ test("persisted default thinking overrides startup default profile effort", asyn
 	expect(
 		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
 	).toEqual(["profile-provider/default:xhigh"]);
+});
+
+test("interactive startup surfaces missing-credential profile errors as recoverable notifications instead of exiting", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw new Error("process.exit must not be called in interactive recovery");
+	}) as never);
+	try {
+		const result = await applyStartupModelProfilesOrExit({
+			session,
+			settings,
+			modelRegistry: registry,
+			parsedArgs: {},
+			startupModel: undefined,
+			startupThinkingLevel: undefined,
+			interactive: true,
+		});
+
+		expect(exitSpy).not.toHaveBeenCalled();
+		expect(result.recoverableError).toContain('Model profile "codex-medium" requires credentials for: openai-codex');
+	} finally {
+		exitSpy.mockRestore();
+	}
+});
+
+test("noninteractive startup keeps the exit-on-missing-credential contract", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+
+	const exit = new Error("exit 1");
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw exit;
+	}) as never);
+	const stderr: string[] = [];
+	const stderrSpy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+		stderr.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+		return true;
+	}) as never);
+	try {
+		await expect(
+			applyStartupModelProfilesOrExit({
+				session,
+				settings,
+				modelRegistry: registry,
+				parsedArgs: {},
+				startupModel: undefined,
+				startupThinkingLevel: undefined,
+				interactive: false,
+			}),
+		).rejects.toBe(exit);
+		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(stderr.join("")).toContain('Model profile "codex-medium" requires credentials for: openai-codex');
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
 });

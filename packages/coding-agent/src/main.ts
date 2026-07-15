@@ -420,12 +420,19 @@ export async function applyStartupModelProfiles(args: {
 }
 
 export async function applyStartupModelProfilesOrExit(
-	args: Parameters<typeof applyStartupModelProfiles>[0],
-): Promise<void> {
+	args: Parameters<typeof applyStartupModelProfiles>[0] & { interactive?: boolean },
+): Promise<{ recoverableError?: string }> {
 	try {
 		await applyStartupModelProfiles(args);
+		return {};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		// In interactive mode, never strand the user before the TUI (and its
+		// documented `/login` recovery) is reachable. Surface the error as a
+		// startup notification instead of exiting so the CLI still launches.
+		if (args.interactive) {
+			return { recoverableError: message };
+		}
 		process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 		process.exit(1);
 	}
@@ -1299,14 +1306,18 @@ export async function runRootCommand(
 		}
 
 		if (!(parsedArgs.authBootstrap === true && isInteractive)) {
-			await applyStartupModelProfilesOrExit({
+			const { recoverableError } = await applyStartupModelProfilesOrExit({
 				session,
 				settings: settingsInstance,
 				modelRegistry,
 				parsedArgs,
 				startupModel: sessionOptions.model,
 				startupThinkingLevel: sessionOptions.thinkingLevel,
+				interactive: isInteractive,
 			});
+			if (recoverableError) {
+				notifs.push({ kind: "error", message: recoverableError });
+			}
 		}
 
 		if (modelFallbackMessage) {
