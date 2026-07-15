@@ -1,138 +1,37 @@
 #!/usr/bin/env bun
 import { $ } from "bun";
 import { parse } from "@babel/parser";
+import manifest from "./telegram-daemon-generation-manifest.json" with { type: "json" };
+import * as crypto from "node:crypto";
 import * as path from "node:path";
 
 const root = path.join(import.meta.dir, "..");
 const SHA = /^[0-9a-f]{40}$/i;
-export const GUARD_CONTRACT_VERSION = 4;
+export const GUARD_CONTRACT_VERSION = 5;
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
+const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
 const guardScript = "scripts/telegram-daemon-generation-guard.ts";
-
+const manifestScript = "scripts/telegram-daemon-generation-manifest.json";
 
 type Family = "telegram" | "discord" | "slack";
 type Inventory = Readonly<Record<Family, Readonly<Record<string, readonly string[]>>>>;
- type Declaration = { text: string; canonical: string; valid: boolean } | undefined;
+type Declaration = { text: string; canonical: string; valid: boolean } | undefined;
+type GuardManifest = { contractVersion: number; inventory: Inventory };
 
 /**
  * This is a deliberately small, exact lifecycle contract. Do not include session
  * endpoint or provider generations: they do not replace daemon owners.
  */
-export const protectedInventory = {
-	telegram: {
-		[telegramContract]: ["DAEMON_GENERATION"],
-		"packages/coding-agent/src/sdk/bus/notification-service.ts": ["daemonGenerationRelation"],
-		"packages/coding-agent/src/sdk/bus/telegram-daemon.ts": [
-			"TelegramDaemonOwnershipPhase",
-			"DaemonState",
-			"ownerIdentityMatches",
-			"liveOwnerUsesDifferentIdentity",
-			"isFreshLiveOwner",
-			"isCurrentCompatibleOwner",
-			"acquireDaemonOwnership",
-			"renewDaemonHeartbeat",
-			"retireProvisionalDaemonOwnership",
-			"waitForTelegramDaemonReady",
-			"confirmTelegramDaemonSpawn",
-			"releaseDaemonOwnership",
-			"spawnTelegramDaemonOwner",
-			"ensureTelegramDaemonRunningDetailed",
-			"ensureTelegramDaemonRunning",
-		],
-		"packages/coding-agent/src/sdk/bus/telegram-daemon-control.ts": [
-			"TelegramDaemonController",
-			"status",
-			"stopOrReload",
-			"reloadForGenerationUpgrade",
-			"spawnAndWait",
-			"waitForPidDeath",
-			"signalCapturedOwner",
-			"clearOwnRequest",
-		],
-	},
-	discord: {
-		[chatControl]: [
-			"ChatDaemonKind",
-			"ChatDaemonAction",
-			"CHAT_DAEMON_GENERATIONS",
-			"chatDaemonGeneration",
-			"ChatDaemonState",
-			"chatDaemonPaths",
-			"readChatDaemonState",
-			"readChatDaemonControlRequest",
-			"writeChatDaemonControlRequest",
-			"clearChatDaemonControlRequest",
-			"buildChatDaemonSpawnArgs",
-			"ChatDaemonController",
-			"status",
-			"ensure",
-			"operate",
-			"isPhysicalLiveState",
-			"isCurrentCompatibleState",
-			"stopForReplacement",
-			"ownsCapturedState",
-			"signalIfOwner",
-			"waitForDeath",
-			"spawn",
-			"withStateWriteLock",
-			"acquireChatDaemonOwnership",
-			"createChatDaemonOwnerLock",
-			"reclaimChatDaemonOwnerLock",
-			"acquireChatDaemonReclaimLock",
-			"canReclaimChatDaemonOwnerLock",
-			"isStaleChatDaemonLock",
-			"releaseChatDaemonOwnership",
-			"renewChatDaemonHeartbeat",
-			"ensureDiscordDaemon",
-			"ensureSlackDaemon",
-		],
-		"packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts": ["runChatDaemonInternal"],
-		"packages/coding-agent/src/sdk/bus/discord-daemon.ts": ["DiscordNotificationDaemon", "start", "stop", "notify", "handleInbound", "close", "resume"],
-	},
-	slack: {
-		[chatControl]: [
-			"ChatDaemonKind",
-			"ChatDaemonAction",
-			"CHAT_DAEMON_GENERATIONS",
-			"chatDaemonGeneration",
-			"ChatDaemonState",
-			"chatDaemonPaths",
-			"readChatDaemonState",
-			"readChatDaemonControlRequest",
-			"writeChatDaemonControlRequest",
-			"clearChatDaemonControlRequest",
-			"buildChatDaemonSpawnArgs",
-			"ChatDaemonController",
-			"status",
-			"ensure",
-			"operate",
-			"isPhysicalLiveState",
-			"isCurrentCompatibleState",
-			"stopForReplacement",
-			"ownsCapturedState",
-			"signalIfOwner",
-			"waitForDeath",
-			"spawn",
-			"withStateWriteLock",
-			"acquireChatDaemonOwnership",
-			"createChatDaemonOwnerLock",
-			"reclaimChatDaemonOwnerLock",
-			"acquireChatDaemonReclaimLock",
-			"canReclaimChatDaemonOwnerLock",
-			"isStaleChatDaemonLock",
-			"releaseChatDaemonOwnership",
-			"renewChatDaemonHeartbeat",
-			"ensureDiscordDaemon",
-			"ensureSlackDaemon",
-		],
-		"packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts": ["runChatDaemonInternal"],
-		"packages/coding-agent/src/sdk/bus/slack-daemon.ts": ["SlackNotificationDaemon", "start", "stop", "handleEnvelope", "postRoot", "notify", "close", "resume"],
-	},
-} as const satisfies Inventory;
+export const protectedInventory = manifest.inventory as Inventory;
+const PROTECTED_INVENTORY_SHA256 = "9961b08acbd9f9c6c3a9ce4358629a773774d9a689bb217b4ba35ac46bde0e3b";
+
+function inventoryHash(inventory: Inventory): string {
+	return crypto.createHash("sha256").update(JSON.stringify(inventory)).digest("hex");
+}
 
 export function validateInventory(inventory: Inventory = protectedInventory): void {
-	if (GUARD_CONTRACT_VERSION !== 4) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
+	if (GUARD_CONTRACT_VERSION !== 5) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
 	for (const [family, files] of Object.entries(inventory)) {
 		for (const [file, symbols] of Object.entries(files)) {
 			if (!file || symbols.length === 0 || new Set(symbols).size !== symbols.length)
@@ -141,8 +40,37 @@ export function validateInventory(inventory: Inventory = protectedInventory): vo
 	}
 }
 
+export function validateManifest(value: unknown = manifest): asserts value is GuardManifest {
+	if (!value || typeof value !== "object") throw new Error("telegram-daemon-generation-guard: invalid semantic manifest");
+	const contract = value as GuardManifest;
+	if (contract.contractVersion !== GUARD_CONTRACT_VERSION)
+		throw new Error("telegram-daemon-generation-guard: semantic manifest contract version must match the guard");
+	if (!contract.inventory || typeof contract.inventory !== "object")
+		throw new Error("telegram-daemon-generation-guard: semantic manifest has no inventory");
+	const families = Object.keys(contract.inventory).sort();
+	if (families.join(",") !== "discord,slack,telegram")
+		throw new Error("telegram-daemon-generation-guard: semantic manifest families must be exact");
+	validateInventory(contract.inventory);
+	if (inventoryHash(contract.inventory) !== PROTECTED_INVENTORY_SHA256)
+		throw new Error("telegram-daemon-generation-guard: semantic manifest does not match the protected inventory");
+}
+
+async function validateCurrentTreeManifest(): Promise<void> {
+	validateManifest();
+	for (const files of Object.values(protectedInventory)) {
+		for (const [file, symbols] of Object.entries(files)) {
+			const source = await Bun.file(path.join(root, file)).text();
+			for (const symbol of symbols) {
+				const target = extractDeclaration(source, symbol);
+				if (!target?.valid) throw new Error(`telegram-daemon-generation-guard: semantic manifest target is missing or malformed: ${file}:${symbol}`);
+			}
+		}
+	}
+}
+
 function bootstrapGuardContract(): void {
 	validateInventory();
+	validateManifest();
 }
 
 export function validateSha(name: string, value: string | undefined): string {
@@ -287,6 +215,28 @@ function guardContractVersion(source: string | undefined): number | undefined {
 }
 
 
+export function isLegacyBootstrapBase(base: ReadonlyMap<string, string | undefined>): boolean {
+	if (base.get(guardScript) !== undefined) return false;
+	const contract = base.get(telegramContract);
+	const daemon = base.get(telegramDaemon);
+	const chat = base.get(chatControl);
+	if (!contract || !daemon || chat?.includes("CHAT_DAEMON_GENERATIONS") || chat?.includes("chatDaemonGeneration")) return false;
+	if (/\b(?:ownershipPhase|acquisitionId)\b/.test(daemon) || !declaration(daemon, "acquireDaemonOwnership")) return false;
+	try {
+		const program = parse(contract, { sourceType: "module", plugins: ["typescript"] }).program;
+		const protocol = declarationNode(program, "NOTIFICATION_PROTOCOL_VERSION");
+		const generation = declarationNode(program, "DAEMON_GENERATION");
+		const protocolDeclaration = protocol?.declarations?.find((item: any) => item.id?.name === "NOTIFICATION_PROTOCOL_VERSION");
+		const generationDeclaration = generation?.declarations?.find((item: any) => item.id?.name === "DAEMON_GENERATION");
+		return protocolDeclaration?.init?.type === "NumericLiteral" &&
+			protocolDeclaration.init.value === 3 &&
+			generationDeclaration?.init?.type === "Identifier" &&
+			generationDeclaration.init.name === "NOTIFICATION_PROTOCOL_VERSION";
+	} catch {
+		return false;
+	}
+}
+
 export type Evaluation = {
 	protectedChanges: string[];
 	telegramGenerationBumped: boolean;
@@ -303,7 +253,7 @@ export function evaluate(
 ): Evaluation {
 	const protectedChanges: string[] = [];
 	const malformedDeclarations: string[] = [];
-	const bootstrapping = base.get(guardScript) === undefined;
+	const bootstrapping = isLegacyBootstrapBase(base);
 	for (const [family, files] of Object.entries(inventory) as [Family, Inventory[Family]][]) {
 		for (const [file, symbols] of Object.entries(files)) {
 			const beforeDeclarations = extractDeclarations(base.get(file) ?? "", symbols);
@@ -318,7 +268,10 @@ export function evaluate(
 			}
 		}
 	}
-	const guardPolicyChanged = !bootstrapping && canonicalSource(base.get(guardScript) ?? "") !== canonicalSource(head.get(guardScript) ?? "");
+	const guardPolicyChanged =
+		!bootstrapping &&
+		(canonicalSource(base.get(guardScript) ?? "") !== canonicalSource(head.get(guardScript) ?? "") ||
+			canonicalSource(base.get(manifestScript) ?? "") !== canonicalSource(head.get(manifestScript) ?? ""));
 	const baseGuardContractVersion = guardContractVersion(base.get(guardScript));
 	const headGuardContractVersion = guardContractVersion(head.get(guardScript));
 	const guardContractBumped =
@@ -380,7 +333,7 @@ export async function run(baseInput: string | undefined, headInput: string | und
 	await verifyObject("base", base);
 	await verifyObject("head", head);
 	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: objects verified");
-	const files = [guardScript, ...new Set(Object.values(protectedInventory).flatMap(inventory => Object.keys(inventory)))];
+	const files = [guardScript, manifestScript, ...new Set(Object.values(protectedInventory).flatMap(inventory => Object.keys(inventory)))];
 	const baseFiles: Array<readonly [string, string | undefined]> = [];
 	const headFiles: Array<readonly [string, string | undefined]> = [];
 	for (const file of files) {
@@ -411,6 +364,8 @@ export async function run(baseInput: string | undefined, headInput: string | und
 }
 
 if (import.meta.main) {
-	try { await run(process.env.GITHUB_BASE_SHA ?? process.argv[2], process.env.GITHUB_HEAD_SHA ?? process.argv[3]); }
-	catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
+	try {
+		if (process.argv.includes("--validate-current-tree")) await validateCurrentTreeManifest();
+		else await run(process.env.GITHUB_BASE_SHA ?? process.argv[2], process.env.GITHUB_HEAD_SHA ?? process.argv[3]);
+	} catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
 }

@@ -1,0 +1,23 @@
+{
+  "contractVersion": 5,
+  "inventory": {
+    "telegram": {
+      "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts": ["NOTIFICATION_PROTOCOL_VERSION", "DAEMON_GENERATION"],
+      "packages/coding-agent/src/sdk/bus/daemon-paths.ts": ["HEARTBEAT_TTL_MS", "DaemonPaths", "daemonPaths"],
+      "packages/coding-agent/src/sdk/bus/notification-service.ts": ["daemonGenerationRelation"],
+      "packages/coding-agent/src/sdk/bus/telegram-daemon.ts": ["TelegramDaemonOwnershipPhase", "DaemonState", "restoreNotificationRootRegistration", "registerNotificationRoot", "unregisterNotificationRoot", "ownerIdentityMatches", "liveOwnerUsesDifferentIdentity", "isFreshLiveOwner", "isCurrentCompatibleOwner", "acquireDaemonOwnership", "renewDaemonHeartbeat", "retireProvisionalDaemonOwnership", "waitForTelegramDaemonReady", "confirmTelegramDaemonSpawn", "releaseDaemonOwnership", "spawnTelegramDaemonOwner", "ensureTelegramDaemonRunningDetailed", "ensureTelegramDaemonRunning"],
+      "packages/coding-agent/src/sdk/bus/telegram-daemon-control.ts": ["TelegramDaemonController", "runtimeInfo", "status", "spawnDeps", "spawnAndWait", "sleep", "waitForPidDeath", "signalCapturedOwner", "result", "reload", "reloadForGenerationUpgrade", "stop", "stopOrReload", "clearOwnRequest"],
+      "packages/coding-agent/src/sdk/bus/telegram-daemon-cli.ts": ["createLightweightDaemonSettings", "loadLightweightDaemonSettings", "ownerPidFromOwnerId", "runDaemonSmoke", "runDaemonInternal"]
+    },
+    "discord": {
+      "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts": ["ChatDaemonKind", "ChatDaemonAction", "CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "ChatDaemonState", "chatDaemonPaths", "readChatDaemonState", "readChatDaemonControlRequest", "writeChatDaemonControlRequest", "clearChatDaemonControlRequest", "buildChatDaemonSpawnArgs", "ChatDaemonController", "identity", "alive", "status", "stop", "reload", "ensure", "operate", "incarnation", "isPhysicalLiveState", "isAmbiguouslyLiveState", "isHealthyFreshState", "classify", "isCurrentCompatibleState", "stopForReplacement", "ownsCapturedState", "signalIfOwner", "ownerChanged", "result", "waitForDeath", "sleep", "spawn", "waitForOwnership", "withStateWriteLock", "ensureChatDaemon", "acquireChatDaemonOwnership", "createChatDaemonOwnerLock", "reclaimChatDaemonOwnerLock", "acquireChatDaemonReclaimLock", "canReclaimChatDaemonOwnerLock", "isStaleChatDaemonLock", "releaseChatDaemonOwnership", "renewChatDaemonHeartbeat", "ensureDiscordDaemon", "ensureSlackDaemon"],
+      "packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts": ["runChatDaemonInternal"],
+      "packages/coding-agent/src/sdk/bus/discord-daemon.ts": ["DiscordNotificationDaemon", "start", "stop", "notify", "handleInbound", "close", "resume"]
+    },
+    "slack": {
+      "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts": ["ChatDaemonKind", "ChatDaemonAction", "CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "ChatDaemonState", "chatDaemonPaths", "readChatDaemonState", "readChatDaemonControlRequest", "writeChatDaemonControlRequest", "clearChatDaemonControlRequest", "buildChatDaemonSpawnArgs", "ChatDaemonController", "identity", "alive", "status", "stop", "reload", "ensure", "operate", "incarnation", "isPhysicalLiveState", "isAmbiguouslyLiveState", "isHealthyFreshState", "classify", "isCurrentCompatibleState", "stopForReplacement", "ownsCapturedState", "signalIfOwner", "ownerChanged", "result", "waitForDeath", "sleep", "spawn", "waitForOwnership", "withStateWriteLock", "ensureChatDaemon", "acquireChatDaemonOwnership", "createChatDaemonOwnerLock", "reclaimChatDaemonOwnerLock", "acquireChatDaemonReclaimLock", "canReclaimChatDaemonOwnerLock", "isStaleChatDaemonLock", "releaseChatDaemonOwnership", "renewChatDaemonHeartbeat", "ensureDiscordDaemon", "ensureSlackDaemon"],
+      "packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts": ["runChatDaemonInternal"],
+      "packages/coding-agent/src/sdk/bus/slack-daemon.ts": ["SlackNotificationDaemon", "start", "stop", "handleEnvelope", "postRoot", "notify", "close", "resume"]
+    }
+  }
+}

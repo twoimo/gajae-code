@@ -7,8 +7,28 @@ on:
     branches: [dev]
   workflow_dispatch:
     inputs:
+      base_ref:
+        description: Base branch ref whose tip must equal base_sha.
+        required: true
+        type: string
       base_sha:
-        description: Exact 40-hex base commit SHA to compare against this dispatch head.
+        description: Exact 40-hex base commit SHA to compare against base_ref.
+        required: true
+        type: string
+      base_repository:
+        description: Base owner/repository containing base_ref.
+        required: true
+        type: string
+      head_ref:
+        description: Head branch ref whose tip must equal head_sha.
+        required: true
+        type: string
+      head_sha:
+        description: Exact 40-hex head commit SHA to validate.
+        required: true
+        type: string
+      head_repository:
+        description: Head owner/repository containing head_ref.
         required: true
         type: string
 
@@ -67,13 +87,17 @@ jobs:
 
   telegram-daemon-generation:
     name: Telegram daemon generation guard
+    needs: [affected-plan]
+    if: ${{ needs.affected-plan.outputs.relevant == 'true' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     env:
       GITHUB_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
-      GITHUB_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      BASE_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.repo.full_name || github.repository }}
-      HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+      GITHUB_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'workflow_dispatch' && inputs.head_sha || github.sha }}
+      BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.event_name == 'workflow_dispatch' && inputs.base_ref || github.ref_name }}
+      HEAD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.event_name == 'workflow_dispatch' && inputs.head_ref || github.ref_name }}
+      BASE_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.repo.full_name || github.event_name == 'workflow_dispatch' && inputs.base_repository || github.repository }}
+      HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.event_name == 'workflow_dispatch' && inputs.head_repository || github.repository }}
       GUARD_EVENT_NAME: ${{ github.event_name }}
       GUARD_REPOSITORY: ${{ github.repository }}
     steps:
@@ -88,24 +112,39 @@ jobs:
           [[ "${BASE_REPOSITORY}" =~ ${repo} ]] || { echo "Guard base repository is invalid"; exit 1; }
           [[ "${HEAD_REPOSITORY}" =~ ${repo} ]] || { echo "Guard head repository is invalid"; exit 1; }
           [[ "${GUARD_REPOSITORY}" =~ ${repo} ]] || { echo "Guard repository is invalid"; exit 1; }
+          git check-ref-format --branch "${BASE_REF}" >/dev/null || { echo "Guard base ref is not a valid branch ref"; exit 1; }
+          git check-ref-format --branch "${HEAD_REF}" >/dev/null || { echo "Guard head ref is not a valid branch ref"; exit 1; }
           case "${GUARD_EVENT_NAME}" in
             pull_request) [[ "${BASE_REPOSITORY}" == "${GUARD_REPOSITORY}" ]] || { echo "PR base repository must be this repository"; exit 1; } ;;
             push|workflow_dispatch) [[ "${BASE_REPOSITORY}" == "${GUARD_REPOSITORY}" && "${HEAD_REPOSITORY}" == "${GUARD_REPOSITORY}" ]] || { echo "Push and dispatch repositories must be this repository"; exit 1; } ;;
             *) echo "Unsupported guard event"; exit 1 ;;
           esac
-      # Check out the exact PR head: fork PRs otherwise use GitHub's synthetic merge SHA.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ env.HEAD_REPOSITORY }}
+          ref: ${{ env.GITHUB_HEAD_SHA }}
           fetch-depth: 1
-      - name: Fetch exact base commit from its repository
+      - name: Fetch and prove authoritative guard revisions
         shell: bash
         run: |
           set -euo pipefail
-          git remote add base-repository "https://github.com/${BASE_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 base-repository "${GITHUB_BASE_SHA}"
-          [[ "$(git rev-parse --verify "${GITHUB_BASE_SHA}^{commit}")" == "${GITHUB_BASE_SHA}" ]] || { echo "Fetched base is not the requested exact commit"; exit 1; }
+          git remote add guard-head "https://github.com/${HEAD_REPOSITORY}.git"
+          git remote add guard-base "https://github.com/${BASE_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 guard-head "refs/heads/${HEAD_REF}:refs/remotes/guard-head/${HEAD_REF}"
+          git fetch --no-tags --depth=1 guard-base "refs/heads/${BASE_REF}:refs/remotes/guard-base/${BASE_REF}"
+          git fetch --no-tags --depth=1 guard-base "${GITHUB_BASE_SHA}"
+          checked_out_head="$(git rev-parse --verify HEAD^{commit})"
+          head_ref_sha="$(git rev-parse --verify "refs/remotes/guard-head/${HEAD_REF}^{commit}")"
+          base_ref_sha="$(git rev-parse --verify "refs/remotes/guard-base/${BASE_REF}^{commit}")"
+          base_object_sha="$(git rev-parse --verify "${GITHUB_BASE_SHA}^{commit}")"
+          [[ "${checked_out_head}" == "${GITHUB_HEAD_SHA}" ]] || { echo "Checked out head object does not equal event head SHA"; exit 1; }
+          [[ "${head_ref_sha}" == "${GITHUB_HEAD_SHA}" ]] || { echo "Head ref does not resolve to event head SHA"; exit 1; }
+          [[ "${base_object_sha}" == "${GITHUB_BASE_SHA}" ]] || { echo "Base object does not equal event base SHA"; exit 1; }
+          if [[ "${GUARD_EVENT_NAME}" != push && "${base_ref_sha}" != "${GITHUB_BASE_SHA}" ]]; then
+            echo "Base ref does not resolve to event base SHA"
+            exit 1
+          fi
+          printf 'guard evidence: base %s@%s (object %s); head %s@%s (object %s)\n' "${BASE_REPOSITORY}" "${BASE_REF}" "${base_ref_sha}" "${HEAD_REPOSITORY}" "${HEAD_REF}" "${head_ref_sha}"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
           bun-version: "1.3"
@@ -348,13 +387,13 @@ jobs:
 
   # Branch protection must keep requiring this stable aggregate status. It runs
   # no validation itself; it passes iff the planner, native build, every affected
-  # shard, and every affected shard succeeded (skipped native
-  # and affected shards are fine for no-op or docs-only changes). The job name
-  # must stay exactly "Affected path validation".
+  # shard, every affected shard, and the relevant Telegram daemon generation
+  # guard succeeded (skipped native, shards, and guard are fine for no-op or
+  # docs-only changes). The job name must stay exactly "Affected path validation".
   affected:
     name: Affected path validation
     if: ${{ always() }}
-    needs: [affected-plan, affected-native, affected-shards, windows-dev-doctor]
+    needs: [affected-plan, affected-native, affected-shards, telegram-daemon-generation, windows-dev-doctor]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     env:
@@ -393,12 +432,14 @@ jobs:
           has_native='${{ needs.affected-plan.outputs.has_native }}'
           has_tasks='${{ needs.affected-plan.outputs.has_tasks }}'
           windows_doctor='${{ needs.windows-dev-doctor.result }}'
+          telegram_guard='${{ needs.telegram-daemon-generation.result }}'
           echo "affected-plan: $plan"
           echo "affected-native: $native"
           echo "affected-shards: $shards"
           echo "planned native work: $has_native"
           echo "planned shard work: $has_tasks"
           echo "windows-dev-doctor: $windows_doctor"
+          echo "telegram-daemon-generation: $telegram_guard"
           test "$plan" = success || { echo "planner did not succeed"; exit 1; }
           case "$has_native" in true|false) ;; *) echo "planner emitted invalid has_native=$has_native"; exit 1 ;; esac
           case "$has_tasks" in true|false) ;; *) echo "planner emitted invalid has_tasks=$has_tasks"; exit 1 ;; esac
@@ -413,6 +454,7 @@ jobs:
             test "$shards" = skipped || { echo "unplanned affected shards were not skipped"; exit 1; }
           fi
           case "$windows_doctor" in success|skipped) ;; *) echo "Windows dev:doctor did not pass"; exit 1 ;; esac
+          case "$telegram_guard" in success|skipped) ;; *) echo "Telegram daemon generation guard did not pass"; exit 1 ;; esac
           echo "Affected path validation: all required shards passed"
 
   gjc-state-gates-matrix:

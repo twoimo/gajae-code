@@ -26,7 +26,7 @@ import {
 	ensureSlackDaemon,
 } from "../src/sdk/bus/chat-daemon-control";
 import { tokenFingerprint } from "../src/sdk/bus/config";
-import { DAEMON_GENERATION, daemonPaths } from "../src/sdk/bus/telegram-daemon";
+import { DAEMON_GENERATION, daemonPaths, renewDaemonHeartbeat } from "../src/sdk/bus/telegram-daemon";
 import {
 	clearTelegramControlRequest,
 	readTelegramControlRequest,
@@ -82,6 +82,39 @@ function freshState(extra: Partial<Record<string, unknown>> = {}): Record<string
 		ownershipPhase: "ready",
 		generation: DAEMON_GENERATION,
 		...extra,
+	};
+}
+
+function readyTelegramSpawnFixture({
+	settings,
+	firstChildPid,
+	onSpawn,
+}: {
+	settings: Settings;
+	firstChildPid: number;
+	onSpawn?: (pid: number, command: string, args: string[]) => void;
+}) {
+	let nextChildPid = firstChildPid;
+	let pending: { ownerId: string; pid: number } | undefined;
+	return {
+		spawn: (command: string, args: string[]) => {
+			const ownerId = args[args.indexOf("--owner-id") + 1]!;
+			const pid = nextChildPid++;
+			pending = { ownerId, pid };
+			onSpawn?.(pid, command, args);
+			return { pid, unref() {} };
+		},
+		sleep: async () => {
+			if (!pending) return;
+			expect(
+				await renewDaemonHeartbeat({
+					settings,
+					ownerId: pending.ownerId,
+					acquisitionId: pending.ownerId,
+					pid: pending.pid,
+				}),
+			).toBe(true);
+		},
 	};
 }
 
@@ -356,6 +389,14 @@ describe("TelegramDaemonController.reload", () => {
 		const alive = new Set<number>([999, 4242]);
 		const signals: Array<[number, string]> = [];
 		const spawns: Array<{ command: string; args: string[] }> = [];
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4243,
+			onSpawn: (pid, command, args) => {
+				alive.add(pid);
+				spawns.push({ command, args });
+			},
+		});
 		const ctrl = new TelegramDaemonController(s, {
 			ownerPid: 4242,
 			pidAlive: pid => alive.has(pid),
@@ -363,11 +404,8 @@ describe("TelegramDaemonController.reload", () => {
 				signals.push([pid, sig]);
 				if (sig === "SIGTERM") alive.delete(999);
 			},
-			spawn: (command, args) => {
-				spawns.push({ command, args });
-				return { unref() {} };
-			},
-			sleep: async () => undefined,
+			spawn: child.spawn,
+			sleep: child.sleep,
 		});
 
 		const result = await ctrl.reload();
@@ -381,7 +419,7 @@ describe("TelegramDaemonController.reload", () => {
 		};
 		expect(after.ownerId).not.toBe("old");
 		expect(after.ownerId.startsWith("4242-")).toBe(true);
-		expect(after.pid).toBe(4242);
+		expect(after.pid).toBe(4243);
 		expect(after.generation).toBe(DAEMON_GENERATION);
 		// No leftover control request after a successful reload.
 		expect(await readTelegramControlRequest(s)).toBeUndefined();
@@ -395,6 +433,11 @@ describe("TelegramDaemonController.reload", () => {
 
 		const alive = new Set<number>([999, 4242]);
 		const signals: Array<[number, string]> = [];
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4244,
+			onSpawn: pid => alive.add(pid),
+		});
 		const ctrl = new TelegramDaemonController(s, {
 			ownerPid: 4242,
 			pidAlive: pid => alive.has(pid),
@@ -402,8 +445,8 @@ describe("TelegramDaemonController.reload", () => {
 				signals.push([pid, sig]);
 				if (sig === "SIGKILL") alive.delete(999);
 			},
-			spawn: () => ({ unref() {} }),
-			sleep: async () => undefined,
+			spawn: child.spawn,
+			sleep: child.sleep,
 			waitStepMs: 1,
 		});
 
@@ -529,17 +572,22 @@ describe("TelegramDaemonController.reload", () => {
 		fs.writeFileSync(daemonPaths(agentDir).lock, "");
 		const alive = new Set<number>([999, 4242]);
 		let oldAliveAtSpawn: boolean | undefined;
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4245,
+			onSpawn: pid => {
+				alive.add(pid);
+				oldAliveAtSpawn = alive.has(999);
+			},
+		});
 		const ctrl = new TelegramDaemonController(s, {
 			ownerPid: 4242,
 			pidAlive: pid => alive.has(pid),
 			sendSignal: (_pid, sig) => {
 				if (sig === "SIGTERM") alive.delete(999);
 			},
-			spawn: () => {
-				oldAliveAtSpawn = alive.has(999);
-				return { unref() {} };
-			},
-			sleep: async () => undefined,
+			spawn: child.spawn,
+			sleep: child.sleep,
 		});
 		const result = await ctrl.reload();
 		expect(result.ok).toBe(true);
@@ -564,12 +612,20 @@ describe("TelegramDaemonController.reload", () => {
 		const agentDir = tempAgentDir();
 		const s = settings(agentDir);
 		const spawns: Array<{ command: string; args: string[] }> = [];
-		const ctrl = new TelegramDaemonController(s, {
-			pidAlive: () => true,
-			spawn: (command, args) => {
+		let childPid: number | undefined;
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4246,
+			onSpawn: (pid, command, args) => {
+				childPid = pid;
 				spawns.push({ command, args });
-				return { unref() {} };
 			},
+		});
+		const ctrl = new TelegramDaemonController(s, {
+			pidAlive: pid => pid === childPid,
+			readinessTimeoutMs: 1,
+			spawn: child.spawn,
+			sleep: child.sleep,
 		});
 		const result = await ctrl.reload();
 		expect(result.ok).toBe(true);
@@ -937,7 +993,7 @@ describe("ChatDaemonController ownership safety", () => {
 							incarnation: "stable",
 							startedAt: Date.now(),
 							heartbeatAt: Date.now(),
-							transportHealthy: false,
+							transportHealthy: true,
 							generation: chatDaemonGeneration(kind),
 						}),
 					);
@@ -1071,7 +1127,7 @@ describe("ChatDaemonController ownership safety", () => {
 							incarnation: "stable",
 							startedAt: Date.now(),
 							heartbeatAt: Date.now(),
-							transportHealthy: false,
+							transportHealthy: true,
 							generation: chatDaemonGeneration(kind),
 						}),
 					);
@@ -1293,7 +1349,7 @@ test("configured chat providers auto-start while incomplete providers do not", a
 								: undefined) ?? "unavailable",
 						startedAt: Date.now(),
 						heartbeatAt: Date.now(),
-						transportHealthy: false,
+						transportHealthy: true,
 						generation: chatDaemonGeneration("discord"),
 					}),
 				);

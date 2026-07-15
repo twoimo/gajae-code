@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { declaration, evaluate, validateCiInputs, validateInventory, validateSha } from "./telegram-daemon-generation-guard";
+import { declaration, evaluate, isLegacyBootstrapBase, protectedInventory, validateCiInputs, validateInventory, validateManifest, validateSha } from "./telegram-daemon-generation-guard";
 
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
@@ -98,6 +98,43 @@ describe("daemon generation release guard", () => {
 		head.set("scripts/telegram-daemon-generation-guard.ts", "export const unrelated = 1;");
 		expect(decide(base, head).malformedDeclarations).toContain(`telegram:${telegramDaemon}:acquireDaemonOwnership`);
 		expect(() => validateInventory({ telegram: { [telegramContract]: ["DAEMON_GENERATION", "DAEMON_GENERATION"] }, discord: {}, slack: {} } as any)).toThrow("invalid telegram contract inventory");
+	});
+
+	test("bootstraps only the complete legacy protocol-3 topology", () => {
+		const base = files({ telegramOwnership: "return true;" });
+		base.delete("scripts/telegram-daemon-generation-guard.ts");
+		base.set(telegramContract, "export const NOTIFICATION_PROTOCOL_VERSION = 3;\nexport const DAEMON_GENERATION = NOTIFICATION_PROTOCOL_VERSION;");
+		base.set(chatControl, "");
+		const head = files({ telegramGeneration: 4, telegramOwnership: "return true;", chatLifecycle: "return true;" });
+		expect(isLegacyBootstrapBase(base)).toBe(true);
+		expect(decide(base, head).malformedDeclarations).toEqual([]);
+
+		for (const mutate of [
+			(candidate: Map<string, string>) => candidate.set(telegramContract, "export const NOTIFICATION_PROTOCOL_VERSION = 3;\nexport const DAEMON_GENERATION = 3;"),
+			(candidate: Map<string, string>) => candidate.set(telegramDaemon, "export function acquireDaemonOwnership() { return true; }\nconst ownershipPhase = 'ready';"),
+			(candidate: Map<string, string>) => candidate.set(chatControl, "export const CHAT_DAEMON_GENERATIONS = { discord: 1, slack: 1 };"),
+			(candidate: Map<string, string>) => candidate.set(telegramDaemon, ""),
+		]) {
+			const candidate = new Map(base);
+			mutate(candidate);
+			expect(isLegacyBootstrapBase(candidate)).toBe(false);
+			expect(decide(candidate, head).malformedDeclarations.length).toBeGreaterThan(0);
+		}
+	});
+
+	test("semantic manifest rejects duplicate, moved, and narrowed inventories", () => {
+		expect(() => validateManifest()).not.toThrow();
+		const duplicate = structuredClone(protectedInventory) as typeof protectedInventory;
+		(duplicate.telegram[telegramContract] as string[]).push("DAEMON_GENERATION");
+		expect(() => validateInventory(duplicate)).toThrow("invalid telegram contract inventory");
+		expect(() => validateManifest({ contractVersion: 5, inventory: duplicate })).toThrow("invalid telegram contract inventory");
+		const moved = structuredClone(protectedInventory) as typeof protectedInventory;
+		moved.telegram["moved.ts"] = moved.telegram[telegramContract];
+		delete moved.telegram[telegramContract];
+		expect(() => validateManifest({ contractVersion: 5, inventory: moved })).toThrow("does not match the protected inventory");
+		const narrowed = structuredClone(protectedInventory) as typeof protectedInventory;
+		(narrowed.telegram[telegramDaemon] as string[]).pop();
+		expect(() => validateManifest({ contractVersion: 5, inventory: narrowed })).toThrow("does not match the protected inventory");
 	});
 
 	test("fails closed for malformed protected declarations", () => {

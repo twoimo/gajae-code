@@ -109,6 +109,7 @@ export interface TelegramDaemonFs {
 }
 
 export interface SpawnResult {
+	pid?: number;
 	unref?: () => void;
 }
 
@@ -478,6 +479,12 @@ export async function unregisterNotificationRoot(input: {
 			}>(fsImpl, paths.roots);
 			if (!current) return;
 			const sessions = { ...(current.sessions ?? {}) };
+			// A stale cleanup from a previous registration must not remove a newer
+			// registration for the same session under a different root.
+			if (sessions[input.sessionId] !== root) {
+				remainingRoots = (current.roots ?? []).length;
+				return;
+			}
 			delete sessions[input.sessionId];
 			const rootStillReferenced = Object.values(sessions).includes(root);
 			const managedRoots = new Set(current.managedRoots ?? []);
@@ -788,11 +795,40 @@ export async function retireProvisionalDaemonOwnership(input: {
 	}
 }
 
+/** Bind a launcher-reserved provisional acquisition to its actual detached child. */
+async function bindProvisionalDaemonPid(input: {
+	settings: Settings;
+	ownerId: string;
+	acquisitionId: string;
+	pid: number;
+	fs?: TelegramDaemonFs;
+}): Promise<boolean> {
+	const fsImpl = input.fs ?? nodeFs;
+	const paths = daemonPaths(input.settings.getAgentDir());
+	if (!(await tryOpenWx(fsImpl, paths.steal))) return false;
+	try {
+		const state = await readJson<DaemonState>(fsImpl, paths.state);
+		if (
+			!state ||
+			state.ownerId !== input.ownerId ||
+			state.acquisitionId !== input.acquisitionId ||
+			state.ownershipPhase !== "provisional" ||
+			state.generation !== DAEMON_GENERATION
+		)
+			return false;
+		await writeJsonAtomic(fsImpl, paths.state, { ...state, pid: input.pid });
+		return true;
+	} finally {
+		await fsImpl.unlink(paths.steal).catch(() => undefined);
+	}
+}
+
 /** Wait for the exact newly spawned owner to publish a ready state. */
 export async function waitForTelegramDaemonReady(input: {
 	settings: Settings;
 	ownerId: string;
 	acquisitionId?: string;
+	pid?: number;
 	tokenFingerprint: string;
 	chatId: string;
 	fs?: TelegramDaemonFs;
@@ -814,6 +850,7 @@ export async function waitForTelegramDaemonReady(input: {
 		if (
 			state?.ownerId === input.ownerId &&
 			state.acquisitionId === input.acquisitionId &&
+			(input.pid === undefined || state.pid === input.pid) &&
 			isCurrentCompatibleOwner({
 				state,
 				now: now(),
@@ -848,6 +885,7 @@ export async function confirmTelegramDaemonSpawn(input: {
 		settings: input.settings,
 		ownerId: input.spawned.acquisition.ownerId,
 		acquisitionId: input.spawned.acquisition.acquisitionId,
+		pid: input.spawned.acquisition.pid,
 		tokenFingerprint: input.tokenFingerprint,
 		chatId: input.chatId,
 		fs: input.fs,
@@ -862,19 +900,22 @@ export async function confirmTelegramDaemonSpawn(input: {
 		settings: input.settings,
 		ownerId: input.spawned.acquisition.ownerId,
 		acquisitionId: input.spawned.acquisition.acquisitionId,
-		pid: input.pid,
+		pid: input.spawned.acquisition.pid ?? input.pid,
 		fs: input.fs,
 		now: input.now,
 	});
 	if (retired) return false;
 	const state = await readDaemonState(input.settings, input.fs);
-	return isCurrentCompatibleOwner({
-		state,
-		now: (input.now ?? Date.now)(),
-		tokenFingerprint: input.tokenFingerprint,
-		chatId: input.chatId,
-		pidAlive: input.pidAlive ?? defaultPidAlive,
-	});
+	return (
+		(input.spawned.acquisition.pid === undefined || state?.pid === input.spawned.acquisition.pid) &&
+		isCurrentCompatibleOwner({
+			state,
+			now: (input.now ?? Date.now)(),
+			tokenFingerprint: input.tokenFingerprint,
+			chatId: input.chatId,
+			pidAlive: input.pidAlive ?? defaultPidAlive,
+		})
+	);
 }
 
 export async function releaseDaemonOwnership(input: {
@@ -960,7 +1001,7 @@ function defaultDaemonSpawn(
 	const child = childProcessSpawn(command, args, { detached: opts.detached, stdio });
 	// Best-effort autostart: a spawn failure must never crash the host session.
 	child.on("error", () => undefined);
-	return { unref: () => child.unref() };
+	return { pid: child.pid, unref: () => child.unref() };
 }
 
 export interface TelegramSpawnOwnerInput {
@@ -973,6 +1014,8 @@ export interface TelegramSpawnOwnerInput {
 export interface TelegramSpawnAcquisition {
 	readonly ownerId: string;
 	readonly acquisitionId: string;
+	/** Actual detached child which must publish the ready owner state. */
+	readonly pid?: number;
 }
 
 export type TelegramSpawnOwnerResult =
@@ -1051,14 +1094,14 @@ export async function spawnTelegramDaemonOwner(
 			reloadRequired: ownership.reloadRequired,
 		};
 	}
-	const acquisition: TelegramSpawnAcquisition = Object.freeze({
+	const provisionalAcquisition: TelegramSpawnAcquisition = Object.freeze({
 		ownerId: ownership.ownerId as string,
 		acquisitionId: ownership.acquisitionId as string,
 	});
 	// One source of truth for runtime detection + spawn args (no duplicate resolve).
 	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
 		execPath,
-		ownerId: acquisition.ownerId,
+		ownerId: provisionalAcquisition.ownerId,
 		agentDir,
 	});
 	const spawnImpl = deps.spawn ?? defaultDaemonSpawn;
@@ -1068,25 +1111,20 @@ export async function spawnTelegramDaemonOwner(
 		logPath: path.join(daemonPaths(agentDir).dir, "daemon.log"),
 	});
 	child?.unref?.();
-	// A test may explicitly model a distinct child PID. Never promote the parent
-	// process id: production readiness is always published by the child itself.
-	if (
-		deps.spawn &&
-		deps.pid !== undefined &&
-		deps.pid !== process.pid &&
-		(deps.pidAlive ?? defaultPidAlive)(deps.pid)
-	) {
-		await renewDaemonHeartbeat({
-			settings: input.settings,
-			ownerId: acquisition.ownerId,
-			acquisitionId: acquisition.acquisitionId,
-			fs: deps.fs,
-			now: deps.now,
-			pid: deps.pid,
-		});
-	}
-	// Test seams model process creation only. Readiness is published exclusively
-	// by the daemon child through renewDaemonHeartbeat, never by the parent pid.
+	// A launcher can reserve ownership, but only the actual child can become
+	// ready. Missing PID provenance is intentionally non-ready and times out.
+	const childPid = child?.pid;
+	if (!Number.isSafeInteger(childPid) || (childPid as number) <= 0)
+		return { result: "owner_spawned", acquisition: provisionalAcquisition, runtime, warnings: [] };
+	const pid = childPid as number;
+	const acquisition: TelegramSpawnAcquisition = Object.freeze({ ...provisionalAcquisition, pid });
+	await bindProvisionalDaemonPid({
+		settings: input.settings,
+		ownerId: acquisition.ownerId,
+		acquisitionId: acquisition.acquisitionId,
+		pid,
+		fs: deps.fs,
+	});
 	return { result: "owner_spawned", acquisition, runtime, warnings: [] };
 }
 

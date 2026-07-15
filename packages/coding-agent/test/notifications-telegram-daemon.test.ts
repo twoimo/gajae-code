@@ -69,6 +69,52 @@ function setPrivateAgentDir(s: Settings, agentDir: string) {
 	}) as Settings;
 }
 
+function readyTelegramSpawnFixture({
+	settings,
+	firstChildPid,
+	now,
+	onSpawn,
+}: {
+	settings: Settings;
+	firstChildPid: number;
+	now?: () => number;
+	onSpawn?: (pid: number, command: string, args: string[]) => void;
+}) {
+	let nextChildPid = firstChildPid;
+	let pending: { ownerId: string; pid: number } | undefined;
+	return {
+		spawn: (command: string, args: string[]) => {
+			const ownerId = args[args.indexOf("--owner-id") + 1]!;
+			const pid = nextChildPid++;
+			pending = { ownerId, pid };
+			onSpawn?.(pid, command, args);
+			return { pid, unref() {} };
+		},
+		publishReady: async () => {
+			if (!pending) throw new Error("Telegram child was not spawned");
+			expect(
+				await renewDaemonHeartbeat({
+					settings,
+					ownerId: pending.ownerId,
+					acquisitionId: pending.ownerId,
+					pid: pending.pid,
+					now,
+				}),
+			).toBe(true);
+		},
+		sleep: async () => {
+			if (pending)
+				await renewDaemonHeartbeat({
+					settings,
+					ownerId: pending.ownerId,
+					acquisitionId: pending.ownerId,
+					pid: pending.pid,
+					now,
+				});
+		},
+	};
+}
+
 function topicStateFs(onTopicStateWrite: () => Promise<void>): TelegramDaemonFs {
 	return {
 		mkdir: (file, opts) => fs.promises.mkdir(file, opts).then(() => undefined),
@@ -280,16 +326,19 @@ describe("telegram daemon", () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
 		let spawns = 0;
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 211,
+			onSpawn: () => spawns++,
+		});
 		const results = await Promise.all(
 			Array.from({ length: 8 }, (_, i) =>
 				ensureTelegramDaemonRunning(
 					{ settings: s, cwd: path.join(agentDir, `cwd-${i}`), sessionId: `s${i}` },
 					{
-						spawn: () => {
-							spawns++;
-							return { unref() {} };
-						},
-						pidAlive: () => true,
+						spawn: child.spawn,
+						sleep: child.publishReady,
+						pidAlive: pid => pid === 111 || pid === 211,
 						pid: 111,
 					},
 				),
@@ -373,6 +422,23 @@ describe("telegram daemon", () => {
 		};
 		expect(registry.roots).toEqual([path.join(otherCwd, ".gjc", "state")]);
 		expect(registry.sessions).toEqual({ other: path.join(otherCwd, ".gjc", "state") });
+	});
+
+	test("stale unregister does not delete a session re-registered to another root", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const first = path.join(agentDir, "first");
+		const second = path.join(agentDir, "second");
+		await registerNotificationRoot({ settings: s, cwd: first, sessionId: "session" });
+		await registerNotificationRoot({ settings: s, cwd: second, sessionId: "session" });
+		await unregisterNotificationRoot({ settings: s, cwd: first, sessionId: "session" });
+		const registry = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8")) as {
+			roots: string[];
+			sessions: Record<string, string>;
+		};
+		const secondRoot = path.join(second, ".gjc", "state");
+		expect(registry.sessions).toEqual({ session: secondRoot });
+		expect(registry.roots).toContain(secondRoot);
 	});
 
 	test("legacy unmanaged roots survive register and unregister", async () => {
@@ -782,6 +848,15 @@ describe("telegram daemon", () => {
 		const signals: Array<[number, string]> = [];
 		let oldAliveAtSpawn: boolean | undefined;
 		const spawns: Array<{ command: string; args: string[] }> = [];
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4243,
+			onSpawn: (pid, command, args) => {
+				alive.add(pid);
+				oldAliveAtSpawn = alive.has(999);
+				spawns.push({ command, args });
+			},
+		});
 		const cwd = path.join(agentDir, "new-session");
 		const result = await ensureTelegramDaemonRunning(
 			{ settings: s, cwd, sessionId: "new-session" },
@@ -792,12 +867,8 @@ describe("telegram daemon", () => {
 					signals.push([pid, sig]);
 					if (sig === "SIGTERM") alive.delete(999);
 				},
-				sleep: async () => undefined,
-				spawn: (command, args) => {
-					oldAliveAtSpawn = alive.has(999);
-					spawns.push({ command, args });
-					return { unref() {} };
-				},
+				sleep: child.sleep,
+				spawn: child.spawn,
 			},
 		);
 		expect(result).toBe("owner_spawned");
@@ -820,6 +891,11 @@ describe("telegram daemon", () => {
 		writeLiveOwner(agentDir, { heartbeatAt: Date.now() }); // Missing generation requests #2028 reload.
 		const alive = new Set<number>([999, 4242]);
 		const signals: Array<[number, string]> = [];
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4244,
+			onSpawn: pid => alive.add(pid),
+		});
 		const result = await ensureTelegramDaemonRunningDetailed(
 			{ settings: s, cwd: path.join(agentDir, "new-session"), sessionId: "new-session" },
 			{
@@ -829,8 +905,8 @@ describe("telegram daemon", () => {
 					signals.push([pid, signal]);
 					if (signal === "SIGTERM") alive.delete(999);
 				},
-				sleep: async () => undefined,
-				spawn: () => ({ unref() {} }),
+				sleep: child.sleep,
+				spawn: child.spawn,
 			},
 		);
 		expect(result).toBe("reloaded");
@@ -1020,17 +1096,24 @@ describe("telegram daemon", () => {
 		const paths = daemonPaths(agentDir);
 		let now = 0;
 		let provisionalAlive = false;
+		let replacementAlive = false;
 		let spawns = 0;
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4243,
+			onSpawn: () => (replacementAlive = true),
+		});
 		const deps = {
 			pid: 4242,
 			now: () => now,
-			pidAlive: (pid: number) => pid === 4242 && provisionalAlive,
-			spawn: () => {
+			pidAlive: (pid: number) => (pid === 4242 && provisionalAlive) || (pid === 4243 && replacementAlive),
+			spawn: (...args: Parameters<typeof child.spawn>) => {
 				spawns++;
-				return { unref() {} };
+				return spawns === 1 ? { unref() {} } : child.spawn(...args);
 			},
 			sleep: async () => {
 				now += 8_000;
+				await child.sleep();
 			},
 			waitStepMs: 8_000,
 		};
@@ -1044,6 +1127,7 @@ describe("telegram daemon", () => {
 		expect(fs.existsSync(paths.lock)).toBe(false);
 		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({
 			pid: 4242,
+			ownershipPhase: "retired",
 			stoppedAt: expect.any(Number),
 		});
 
@@ -1053,7 +1137,7 @@ describe("telegram daemon", () => {
 		).resolves.toBe("spawned");
 		expect(spawns).toBe(2);
 		const replacement = JSON.parse(fs.readFileSync(paths.state, "utf8"));
-		expect(replacement).toMatchObject({ generation: DAEMON_GENERATION, pid: 4242 });
+		expect(replacement).toMatchObject({ generation: DAEMON_GENERATION, pid: 4243 });
 		expect(replacement).not.toHaveProperty("stoppedAt");
 	});
 
@@ -3583,13 +3667,18 @@ test("ensureTelegramDaemonRunning spawns the daemon subcommand with owner-id and
 	const agentDir = tempAgentDir();
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
 	let captured: { command: string; args: string[] } | undefined;
+	const child = readyTelegramSpawnFixture({
+		settings: s,
+		firstChildPid: 211,
+		onSpawn: (_pid, command, args) => {
+			captured = { command, args };
+		},
+	});
 	const res = await ensureTelegramDaemonRunning(
 		{ settings: s, cwd: path.join(agentDir, "cwd"), sessionId: "s1" },
 		{
-			spawn: (command, args) => {
-				captured = { command, args };
-				return { unref() {} };
-			},
+			spawn: child.spawn,
+			sleep: child.sleep,
 			pidAlive: () => true,
 			pid: 111,
 		},

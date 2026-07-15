@@ -311,8 +311,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const spawned = await this.spawn();
 		if (spawned) return "owner_spawned";
 		const replacement = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
-		if (this.classify(replacement, identity) === "compatible" && replacement && this.isPhysicalLiveState(replacement))
-			return "attached";
+		if (replacement && this.isCurrentCompatibleState(replacement, identity)) return "attached";
 		throw new Error(`Unable to attach or spawn ${this.kind} daemon owner`);
 	}
 
@@ -412,6 +411,10 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			Boolean(state.incarnation) &&
 			this.incarnation(state.pid) === state.incarnation
 		);
+	}
+	/** A live PID with an invalid ownership record is never safe to overwrite. */
+	private isAmbiguouslyLiveState(state: ChatDaemonState): boolean {
+		return !state.stoppedAt && Number.isSafeInteger(state.pid) && state.pid > 0 && this.alive(state.pid);
 	}
 	private isHealthyFreshState(state: ChatDaemonState): boolean {
 		return state.transportHealthy && Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS;
@@ -527,7 +530,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
 		const classification = this.classify(existing, identity);
 		if (classification === "malformed" || classification === "unauthorized") return false;
-		if (existing && this.isPhysicalLiveState(existing)) return false;
+		if (existing && (this.isPhysicalLiveState(existing) || this.isAmbiguouslyLiveState(existing))) return false;
 		const ownerId = `${this.deps.ownerPid ?? process.ppid}-${this.deps.randomId?.() ?? crypto.randomUUID()}`;
 		const { command, args } = buildChatDaemonSpawnArgs({
 			kind: this.kind,
@@ -551,7 +554,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 				state &&
 				state.ownerId === ownerId &&
 				this.classify(state, identity) === "compatible" &&
-				this.isPhysicalLiveState(state)
+				this.isCurrentCompatibleState(state, identity)
 			)
 				return true;
 			if (Date.now() >= until || poll === maxPolls) return false;
