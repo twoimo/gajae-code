@@ -743,13 +743,40 @@ export async function renewDaemonHeartbeat(input: {
 	now?: () => number;
 	pid?: number;
 	generation?: number;
+	sleep?: (ms: number) => Promise<void>;
+	stealRetries?: number;
+	stealRetryDelayMs?: number;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	if (!(await tryOpenWx(fsImpl, paths.steal))) return false;
+	const acquisitionId = input.acquisitionId ?? input.ownerId;
+	// The steal lock is held only briefly by concurrent lifecycle ops (notably
+	// bindProvisionalDaemonPid right after spawn). Retry before giving up, then —
+	// if still contended — verify ownership rather than treating transient fencing
+	// contention as ownership loss (which would stop a legitimate owner).
+	const sleep = input.sleep ?? (async (ms: number) => await Bun.sleep(ms));
+	const retries = Math.max(input.stealRetries ?? 5, 0);
+	const retryDelayMs = Math.max(input.stealRetryDelayMs ?? 20, 0);
+	let acquired = false;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		if (await tryOpenWx(fsImpl, paths.steal)) {
+			acquired = true;
+			break;
+		}
+		if (attempt < retries) await sleep(retryDelayMs);
+	}
+	if (!acquired) {
+		const contended = await readJson<DaemonState>(fsImpl, paths.state);
+		return Boolean(
+			contended &&
+				contended.ownerId === input.ownerId &&
+				contended.acquisitionId === acquisitionId &&
+				contended.stoppedAt === undefined &&
+				contended.ownershipPhase !== "retired",
+		);
+	}
 	try {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
-		const acquisitionId = input.acquisitionId ?? input.ownerId;
 		const pid = input.pid ?? state?.pid;
 		const generation = input.generation ?? state?.generation;
 		const canBindProvisionalPid = state?.ownershipPhase === "provisional" && state?.pid !== pid;

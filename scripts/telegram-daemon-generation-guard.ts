@@ -26,7 +26,7 @@ type GuardManifest = { contractVersion: number; inventory: Inventory; digests: R
  * endpoint or provider generations: they do not replace daemon owners.
  */
 export const protectedInventory = manifest.inventory as Inventory;
-const PROTECTED_INVENTORY_SHA256 = "464cae180904d8a3c8086221e634f797bce17253d2960679dea49e7544d8f5dc";
+const PROTECTED_INVENTORY_SHA256 = "52fd7333ca1f6b8354bf051873cc433bc9291663399b37b0063766a24cfc6d04";
 
 
 
@@ -121,20 +121,67 @@ export function validateCiInputs(input: {
 		throw new Error(`telegram-daemon-generation-guard: ${input.eventName} head repository must be this repository`);
 }
 
+/**
+ * Prove that a CI run operates on the exact, authoritative event revisions without
+ * coupling to the mutable base branch ref. The event head SHA must match both the
+ * checked-out head and the fetched head-branch ref, and the event base SHA must
+ * resolve to a real object in the authoritative base repository. The live base
+ * branch ref legitimately advances while a pull_request run is queued, so it is
+ * intentionally NOT required to still equal the event base SHA — only the immutable
+ * event base object is proven. Repository/ref provenance and push-event head
+ * ownership are enforced via {@link validateCiInputs}.
+ */
+export function assertGuardAuthority(input: {
+	eventName: string | undefined;
+	baseSha: string | undefined;
+	headSha: string | undefined;
+	baseRepository: string | undefined;
+	headRepository: string | undefined;
+	repository: string | undefined;
+	checkedOutHead: string | undefined;
+	headRefSha: string | undefined;
+	baseObjectSha: string | undefined;
+}): void {
+	if (input.eventName !== "pull_request" && input.eventName !== "push" && input.eventName !== "workflow_dispatch")
+		throw new Error("telegram-daemon-generation-guard: unsupported CI event");
+	validateCiInputs({ ...input, eventName: input.eventName });
+	const headSha = validateSha("head SHA", input.headSha);
+	const baseSha = validateSha("base SHA", input.baseSha);
+	const checkedOutHead = validateSha("checked-out head object", input.checkedOutHead);
+	const headRefSha = validateSha("head ref object", input.headRefSha);
+	const baseObjectSha = validateSha("base object", input.baseObjectSha);
+	if (checkedOutHead !== headSha)
+		throw new Error("telegram-daemon-generation-guard: checked-out head object does not equal event head SHA");
+	if (headRefSha !== headSha)
+		throw new Error("telegram-daemon-generation-guard: head ref does not resolve to event head SHA");
+	if (baseObjectSha !== baseSha)
+		throw new Error("telegram-daemon-generation-guard: base object does not equal event base SHA");
+}
+
 function nodeName(node: any): string | undefined {
 	if (node?.id?.type === "Identifier") return node.id.name;
 	if (node?.key?.type === "Identifier") return node.key.name;
 	if (node?.key?.type === "StringLiteral") return node.key.value;
 }
 
+// Object-literal property/method usages (e.g. `{ ...state, identity }`) share a
+// name with real declarations but are NOT declaration sites; excluding them keeps
+// protected method/type names from resolving ambiguously.
+const NON_DECLARATION_NODE_TYPES = new Set(["ObjectProperty", "ObjectMethod"]);
+
 function declarationNodes(node: any, name: string, found: any[] = []): any[] {
 	if (!node || typeof node !== "object") return found;
+	// Never descend into function/method bodies: protected declarations are module
+	// top-level or class members, never locals. Otherwise a local `const identity`
+	// inside a method body would collide with a protected method of the same name.
+	if (node.type === "BlockStatement") return found;
 	if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") return declarationNodes(node.declaration, name, found);
 	if (node.type === "VariableDeclaration") {
 		if (node.declarations.some((declaration: any) => declaration.id?.type === "Identifier" && declaration.id.name === name)) found.push(node);
 		return found;
 	}
-	if (nodeName(node) === name && /(?:Declaration|Method|Property)$/.test(node.type)) found.push(node);
+	if (nodeName(node) === name && /(?:Declaration|Method|Property)$/.test(node.type) && !NON_DECLARATION_NODE_TYPES.has(node.type))
+		found.push(node);
 	for (const value of Object.values(node)) {
 		if (Array.isArray(value)) for (const child of value) declarationNodes(child, name, found);
 		else if (value && typeof value === "object" && typeof (value as any).type === "string") declarationNodes(value, name, found);
@@ -142,15 +189,23 @@ function declarationNodes(node: any, name: string, found: any[] = []): any[] {
 	return found;
 }
 
-function declarationNode(node: any, name: string): any | undefined {
+function resolveDeclaration(node: any, name: string): { node?: any; ambiguous: boolean } {
 	const [rootName, property] = name.split(".");
 	const matches = declarationNodes(node, rootName);
-	if (matches.length !== 1 && matches.some(match => match.type === "FunctionDeclaration" || match.type === "ClassDeclaration")) return undefined;
-	if (!property) return matches[0];
+	// More than one match is ambiguous and must fail closed as malformed; zero is
+	// simply missing. A protected file that adds a second class method — e.g.
+	// another `stop`/`status` — must never be silently hashed as matches[0].
+	if (matches.length !== 1) return { ambiguous: matches.length > 1 };
+	if (!property) return { node: matches[0], ambiguous: false };
 	const declaration = matches[0].declarations?.find((item: any) => item.id?.name === rootName);
 	const object = declaration?.init?.type === "TSAsExpression" ? declaration.init.expression : declaration?.init;
 	const properties = object?.properties?.filter((item: any) => nodeName(item) === property) ?? [];
-	return properties.length === 1 ? properties[0] : undefined;
+	if (properties.length === 1) return { node: properties[0], ambiguous: false };
+	return { ambiguous: properties.length > 1 };
+}
+
+function declarationNode(node: any, name: string): any | undefined {
+	return resolveDeclaration(node, name).node;
 }
 
 /** AST-backed extraction prevents comments, strings, overloads, and similarly named text from matching. */
@@ -179,34 +234,66 @@ function canonicalSource(source: string): string | undefined {
 	}
 }
 
+function stableJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+	if (value && typeof value === "object")
+		return `{${Object.keys(value as Record<string, unknown>)
+			.sort()
+			.map(key => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`)
+			.join(",")}}`;
+	return JSON.stringify(value ?? null);
+}
+
+/**
+ * Canonical signature of the manifest's guard *policy* — its contract version and
+ * protected inventory — with the declaration-digest attestations removed. Every
+ * legitimate protected lifecycle edit MUST refresh those digests to keep the
+ * manifest byte-matching the tree; such a refresh is not a policy change and must
+ * not force a GUARD_CONTRACT_VERSION bump. Returns undefined for an absent or
+ * unparseable manifest so a genuine policy edit still fails closed.
+ */
+function manifestPolicySignature(source: string | undefined): string | undefined {
+	if (source === undefined) return undefined;
+	try {
+		const parsed = JSON.parse(source);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		const { digests: _digests, ...policy } = parsed as Record<string, unknown>;
+		return stableJson(policy);
+	} catch {
+		return undefined;
+	}
+}
+
+function malformedDeclaration(): Declaration {
+	return { text: "<malformed>", canonical: "<malformed>", valid: false };
+}
+
+function declarationFrom(source: string, resolved: { node?: any; ambiguous: boolean }): Declaration {
+	// Ambiguity is fail-closed identical to an unparseable declaration: both surface
+	// as <malformed> so evaluate()/run() reject them and require a fix, rather than
+	// silently hashing the wrong node.
+	if (resolved.ambiguous) return malformedDeclaration();
+	const node = resolved.node;
+	return node && typeof node.start === "number" && typeof node.end === "number"
+		? { text: source.slice(node.start, node.end), canonical: JSON.stringify(canonicalAst(node)), valid: true }
+		: undefined;
+}
+
 function extractDeclaration(source: string, name: string): Declaration {
 	try {
 		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
-		const node = declarationNode(ast.program, name);
-		return node && typeof node.start === "number" && typeof node.end === "number"
-			? { text: source.slice(node.start, node.end), canonical: JSON.stringify(canonicalAst(node)), valid: true }
-			: undefined;
+		return declarationFrom(source, resolveDeclaration(ast.program, name));
 	} catch {
-		return { text: "<malformed>", canonical: "<malformed>", valid: false };
+		return malformedDeclaration();
 	}
 }
 
 function extractDeclarations(source: string, names: readonly string[]): Map<string, Declaration> {
 	try {
 		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
-		return new Map(
-			names.map(name => {
-				const node = declarationNode(ast.program, name);
-				return [
-					name,
-					node && typeof node.start === "number" && typeof node.end === "number"
-						? { text: source.slice(node.start, node.end), canonical: JSON.stringify(canonicalAst(node)), valid: true }
-						: undefined,
-				] as const;
-			}),
-		);
+		return new Map(names.map(name => [name, declarationFrom(source, resolveDeclaration(ast.program, name))] as const));
 	} catch {
-		return new Map(names.map(name => [name, { text: "<malformed>", canonical: "<malformed>", valid: false }] as const));
+		return new Map(names.map(name => [name, malformedDeclaration()] as const));
 	}
 }
 
@@ -306,7 +393,7 @@ export function evaluate(
 	const guardPolicyChanged =
 		!bootstrapping &&
 		(canonicalSource(base.get(guardScript) ?? "") !== canonicalSource(head.get(guardScript) ?? "") ||
-			canonicalSource(base.get(manifestScript) ?? "") !== canonicalSource(head.get(manifestScript) ?? ""));
+			manifestPolicySignature(base.get(manifestScript)) !== manifestPolicySignature(head.get(manifestScript)));
 	const baseGuardContractVersion = guardContractVersion(base.get(guardScript));
 	const headGuardContractVersion = guardContractVersion(head.get(guardScript));
 	const guardContractBumped =
@@ -367,6 +454,11 @@ export async function run(baseInput: string | undefined, headInput: string | und
 	}
 	await verifyObject("base", base);
 	await verifyObject("head", head);
+	// Digest attestations are exempt from the guard-policy bump, so the committed
+	// head manifest MUST byte-match the checked-out head tree: a stale or tampered
+	// declaration digest fails closed here rather than slipping through as a
+	// no-op policy change.
+	await validateCurrentTreeManifest();
 	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: objects verified");
 	const files = [guardScript, manifestScript, ...new Set(Object.values(protectedInventory).flatMap(inventory => Object.keys(inventory)))];
 	const baseFiles: Array<readonly [string, string | undefined]> = [];
@@ -401,6 +493,18 @@ export async function run(baseInput: string | undefined, headInput: string | und
 if (import.meta.main) {
 	try {
 		if (process.argv.includes("--validate-current-tree")) await validateCurrentTreeManifest();
+		else if (process.argv.includes("--check-authority"))
+			assertGuardAuthority({
+				eventName: process.env.GUARD_EVENT_NAME,
+				baseSha: process.env.GITHUB_BASE_SHA,
+				headSha: process.env.GITHUB_HEAD_SHA,
+				baseRepository: process.env.BASE_REPOSITORY,
+				headRepository: process.env.HEAD_REPOSITORY,
+				repository: process.env.GUARD_REPOSITORY,
+				checkedOutHead: process.env.GUARD_CHECKED_OUT_HEAD,
+				headRefSha: process.env.GUARD_HEAD_REF_SHA,
+				baseObjectSha: process.env.GUARD_BASE_OBJECT_SHA,
+			});
 		else await run(process.env.GITHUB_BASE_SHA ?? process.argv[2], process.env.GITHUB_HEAD_SHA ?? process.argv[3]);
 	} catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
 }

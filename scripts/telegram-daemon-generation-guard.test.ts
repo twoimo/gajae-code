@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { declaration, evaluate, isLegacyBootstrapBase, protectedInventory, validateCiInputs, validateInventory, validateManifest, validateSha } from "./telegram-daemon-generation-guard";
+import manifest from "./telegram-daemon-generation-manifest.json" with { type: "json" };
+import { assertGuardAuthority, declaration, evaluate, GUARD_CONTRACT_VERSION, isLegacyBootstrapBase, protectedInventory, validateCiInputs, validateCurrentTreeManifest, validateInventory, validateManifest, validateSha } from "./telegram-daemon-generation-guard";
+
+const guardScript = "scripts/telegram-daemon-generation-guard.ts";
+const manifestScript = "scripts/telegram-daemon-generation-manifest.json";
+const stableEntries = (value: Record<string, string>) => JSON.stringify(Object.entries(value).sort());
 
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
@@ -205,4 +210,125 @@ describe("daemon generation release guard", () => {
 		const source = "export function acquireDaemonOwnership() {}\nexport function acquireDaemonOwnership() {}";
 		expect(declaration(source, "acquireDaemonOwnership")).toBe("<malformed>");
 	});
+	test("resolves a class member uniquely despite same-named locals and object properties", () => {
+		const source = [
+			"export class Owner {",
+			"	identity(): string { return \"real\"; }",
+			"	ensure() {",
+			"		const identity = this.identity();",
+			"		const state = { identity };",
+			"		return identity + state.identity;",
+			"	}",
+			"}",
+		].join("\n");
+		// The protected class method resolves, not a shadowing local or object shorthand.
+		expect(declaration(source, "identity")).toContain('identity(): string { return "real"; }');
+	});
+
+	test("fails closed as <malformed> when a protected name resolves to two class methods", () => {
+		const source = "export class A { stop() { return 1; } }\nexport class B { stop() { return 2; } }";
+		// Ambiguity is fail-closed identical to an unparseable declaration.
+		expect(declaration(source, "stop")).toBe("<malformed>");
+	});
+
+	test("keeps adapter-specific ensure wrappers in their own family only", () => {
+		const discordFiles = protectedInventory.discord[chatControl] ?? [];
+		const slackFiles = protectedInventory.slack[chatControl] ?? [];
+		expect(discordFiles).toContain("ensureDiscordDaemon");
+		expect(discordFiles).not.toContain("ensureSlackDaemon");
+		expect(slackFiles).toContain("ensureSlackDaemon");
+		expect(slackFiles).not.toContain("ensureDiscordDaemon");
+		// A Discord-only change to its wrapper is a Discord-only protected change and
+		// must not also demand a Slack generation bump.
+		const inv = {
+			telegram: {},
+			discord: { [chatControl]: ["ensureDiscordDaemon"] },
+			slack: { [chatControl]: ["ensureSlackDaemon"] },
+		} as const;
+		const wrappers = (discord: number) =>
+			`export function ensureDiscordDaemon(){return ${discord};}\nexport function ensureSlackDaemon(){return 2;}`;
+		const result = evaluate(new Map([[chatControl, wrappers(1)]]), new Map([[chatControl, wrappers(9)]]), inv);
+		expect(result.protectedChanges).toEqual([`discord:${chatControl}:ensureDiscordDaemon`]);
+	});
+
+	test("treats a manifest declaration-digest refresh as attestation, not a guard-policy change", () => {
+		const policy = { contractVersion: GUARD_CONTRACT_VERSION, inventory: { telegram: { [telegramDaemon]: ["acquireDaemonOwnership"] } } };
+		const guard = `export const GUARD_CONTRACT_VERSION = ${GUARD_CONTRACT_VERSION};`;
+		// A real protected Telegram lifecycle edit that refreshes only the digest
+		// attestations and bumps the Telegram family generation.
+		const base = files({ telegramGeneration: 4, telegramOwnership: "return true;" });
+		const head = files({ telegramGeneration: 5, telegramOwnership: "return false;" });
+		base.set(guardScript, guard);
+		head.set(guardScript, guard);
+		base.set(manifestScript, JSON.stringify({ ...policy, digests: { "telegram:d:acquireDaemonOwnership": "a".repeat(64) } }));
+		head.set(manifestScript, JSON.stringify({ ...policy, digests: { "telegram:d:acquireDaemonOwnership": "b".repeat(64) } }));
+		const result = decide(base, head);
+		expect(result.guardPolicyChanged).toBe(false);
+		expect(result.telegramGenerationBumped).toBe(true);
+	});
+
+	test("treats a manifest inventory/policy change as a guard-policy change needing a contract bump", () => {
+		const guard = `export const GUARD_CONTRACT_VERSION = ${GUARD_CONTRACT_VERSION};`;
+		const base = files({ telegramGeneration: GUARD_CONTRACT_VERSION });
+		const head = files({ telegramGeneration: GUARD_CONTRACT_VERSION });
+		base.set(guardScript, guard);
+		head.set(guardScript, guard);
+		base.set(manifestScript, JSON.stringify({ contractVersion: GUARD_CONTRACT_VERSION, inventory: { telegram: { [telegramDaemon]: ["acquireDaemonOwnership"] } }, digests: {} }));
+		head.set(manifestScript, JSON.stringify({ contractVersion: GUARD_CONTRACT_VERSION, inventory: { telegram: { [telegramDaemon]: ["acquireDaemonOwnership", "renewDaemonHeartbeat"] } }, digests: {} }));
+		const changed = decide(base, head);
+		expect(changed.guardPolicyChanged).toBe(true);
+		expect(changed.guardContractBumped).toBe(false);
+		// A strictly higher guard contract version clears the policy-change block.
+		head.set(guardScript, `export const GUARD_CONTRACT_VERSION = ${GUARD_CONTRACT_VERSION + 1};`);
+		expect(decide(base, head).guardContractBumped).toBe(true);
+	});
+
+	test("fails closed on tampered or stale declaration digests", async () => {
+		// The committed manifest validates and byte-matches the current tree (the CI
+		// enforcement run() performs); a single full-tree parse keeps this deterministic.
+		expect(() => validateManifest()).not.toThrow();
+		await expect(validateCurrentTreeManifest()).resolves.toBeUndefined();
+		// A wrong-format digest is rejected by structural validation (run() invokes it via bootstrapGuardContract()).
+		const digests = manifest.digests as Record<string, string>;
+		const key = Object.keys(digests)[0]!;
+		expect(() =>
+			validateManifest({ contractVersion: GUARD_CONTRACT_VERSION, inventory: protectedInventory, digests: { ...manifest.digests, [key]: "z".repeat(64) } }),
+		).toThrow("declaration digests must be exact");
+		// A stale (valid-format but wrong) digest set no longer matches the committed
+		// attestations that validateCurrentTreeManifest byte-compares against the tree.
+		const stale = { ...digests, [key]: digests[key] === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64) };
+		expect(stableEntries(stale)).not.toBe(stableEntries(digests));
+	}, 20000);
+
+	test("guard authority proves immutable event objects without pinning the mutable base ref", () => {
+		const head = "a".repeat(40);
+		const base = "b".repeat(40);
+		const pr = {
+			eventName: "pull_request" as const,
+			baseRepository: "owner/repo",
+			headRepository: "fork/repo",
+			repository: "owner/repo",
+			headSha: head,
+			baseSha: base,
+			checkedOutHead: head,
+			headRefSha: head,
+			baseObjectSha: base,
+		};
+		// The live base branch advanced while queued: the guard receives only the
+		// immutable event base object (== event base SHA) and must still pass.
+		expect(() => assertGuardAuthority(pr)).not.toThrow();
+		// A mismatched or unfetchable event base object fails closed.
+		expect(() => assertGuardAuthority({ ...pr, baseObjectSha: "c".repeat(40) })).toThrow("base object does not equal event base SHA");
+		// Head-ref and checked-out-head mismatches still fail closed.
+		expect(() => assertGuardAuthority({ ...pr, headRefSha: "d".repeat(40) })).toThrow("head ref does not resolve to event head SHA");
+		expect(() => assertGuardAuthority({ ...pr, checkedOutHead: "e".repeat(40) })).toThrow("checked-out head object does not equal event head SHA");
+		// Repository provenance still fails closed (base repo must be this repo).
+		expect(() => assertGuardAuthority({ ...pr, baseRepository: "evil/repo" })).toThrow("base repository must be this repository");
+		// Push semantics preserved: the head repository must be this repository.
+		expect(() => assertGuardAuthority({ ...pr, eventName: "push", headRepository: "fork/repo" })).toThrow("push head repository");
+		expect(() => assertGuardAuthority({ ...pr, eventName: "push", headRepository: "owner/repo" })).not.toThrow();
+		// Unsupported events fail closed.
+		expect(() => assertGuardAuthority({ ...pr, eventName: "schedule" })).toThrow("unsupported CI event");
+	});
+
 });

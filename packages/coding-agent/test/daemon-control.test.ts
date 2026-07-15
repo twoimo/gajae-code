@@ -623,7 +623,197 @@ describe("TelegramDaemonController.reload", () => {
 		});
 		const ctrl = new TelegramDaemonController(s, {
 			pidAlive: pid => pid === childPid,
+			spawn: child.spawn,
+			sleep: child.sleep,
+		});
+		const result = await ctrl.reload();
+		expect(result.ok).toBe(true);
+		expect(spawns).toHaveLength(1);
+	});
+	test("reloads a physically-live matching owner whose heartbeat is stale (hung owner)", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		// Physically alive (pid 999) but heartbeat far past the TTL: status is "stale",
+		// not "running". A forced reload must still cooperatively signal and replace it.
+		writeState(agentDir, freshState({ heartbeatAt: Date.now() - 60 * 60_000 }));
+		fs.writeFileSync(daemonPaths(agentDir).lock, "");
+
+		const alive = new Set<number>([999, 4242]);
+		const signals: Array<[number, string]> = [];
+		const spawns: Array<{ command: string; args: string[] }> = [];
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4247,
+			onSpawn: (pid, command, args) => {
+				alive.add(pid);
+				spawns.push({ command, args });
+			},
+		});
+		const ctrl = new TelegramDaemonController(s, {
+			ownerPid: 4242,
+			pidAlive: pid => alive.has(pid),
+			sendSignal: (pid, sig) => {
+				signals.push([pid, sig]);
+				if (sig === "SIGTERM") alive.delete(999);
+			},
+			spawn: child.spawn,
+			sleep: child.sleep,
+		});
+
+		expect((await ctrl.status()).health).toBe("stale");
+		const result = await ctrl.reload({ force: true });
+		expect(result.ok).toBe(true);
+		expect(signals).toContainEqual([999, "SIGTERM"]);
+		expect(spawns).toHaveLength(1);
+	});
+	test("reload without --force refuses a stale-heartbeat live owner (no signal)", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState({ heartbeatAt: Date.now() - 60 * 60_000 }));
+		fs.writeFileSync(daemonPaths(agentDir).lock, "");
+
+		const signals: Array<[number, string]> = [];
+		let spawnCalls = 0;
+		const ctrl = new TelegramDaemonController(s, {
+			pidAlive: pid => pid === 999,
+			sendSignal: (pid, sig) => signals.push([pid, sig]),
+			spawn: () => {
+				spawnCalls++;
+				return { unref() {} };
+			},
+			sleep: async () => undefined,
+			waitStepMs: 1,
 			readinessTimeoutMs: 1,
+		});
+
+		expect((await ctrl.status()).health).toBe("stale");
+		const result = await ctrl.reload();
+		expect(result.ok).toBe(false);
+		expect(signals).toEqual([]);
+		expect(spawnCalls).toBe(0);
+	});
+});
+
+describe("renewDaemonHeartbeat steal-lock contention", () => {
+	test("recovers when the steal lock is briefly held then released (bind-vs-heartbeat race)", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState({ heartbeatAt: 1 }));
+		const paths = daemonPaths(agentDir);
+		// A concurrent lifecycle op (e.g. bindProvisionalDaemonPid) holds the steal lock,
+		// releasing it after the first retry sleep.
+		fs.writeFileSync(paths.steal, "");
+		let slept = 0;
+		const ok = await renewDaemonHeartbeat({
+			settings: s,
+			ownerId: "old",
+			acquisitionId: "old",
+			pid: 999,
+			generation: DAEMON_GENERATION,
+			now: () => 5_000,
+			stealRetries: 5,
+			stealRetryDelayMs: 1,
+			sleep: async () => {
+				if (++slept === 1) fs.rmSync(paths.steal);
+			},
+		});
+		expect(ok).toBe(true);
+		const state = JSON.parse(fs.readFileSync(paths.state, "utf8")) as { heartbeatAt: number; ownershipPhase: string };
+		expect(state.heartbeatAt).toBe(5_000);
+		expect(state.ownershipPhase).toBe("ready");
+	});
+
+	test("keeps ownership without stopping when the steal lock stays held but state is unchanged", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState({ heartbeatAt: 1 }));
+		const paths = daemonPaths(agentDir);
+		fs.writeFileSync(paths.steal, ""); // never released
+		const ok = await renewDaemonHeartbeat({
+			settings: s,
+			ownerId: "old",
+			acquisitionId: "old",
+			pid: 999,
+			generation: DAEMON_GENERATION,
+			stealRetries: 2,
+			stealRetryDelayMs: 1,
+			sleep: async () => undefined,
+		});
+		// Transient fencing contention must not be treated as ownership loss.
+		expect(ok).toBe(true);
+		const state = JSON.parse(fs.readFileSync(paths.state, "utf8")) as { heartbeatAt: number };
+		expect(state.heartbeatAt).toBe(1); // heartbeat not updated, but ownership retained
+	});
+
+	test("reports ownership loss when the steal lock is held and ownership changed", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState({ ownerId: "successor", acquisitionId: "successor" }));
+		const paths = daemonPaths(agentDir);
+		fs.writeFileSync(paths.steal, "");
+		const ok = await renewDaemonHeartbeat({
+			settings: s,
+			ownerId: "old",
+			acquisitionId: "old",
+			pid: 999,
+			generation: DAEMON_GENERATION,
+			stealRetries: 2,
+			stealRetryDelayMs: 1,
+			sleep: async () => undefined,
+		});
+		expect(ok).toBe(false);
+	});
+});
+
+describe("cooperative handoff when the captured owner exits before the recheck", () => {
+	test("stop succeeds when the owner exits between the control request and the signal recheck", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState());
+		fs.writeFileSync(daemonPaths(agentDir).lock, "");
+		let ownerAlive = true;
+		const signals: Array<[number, string]> = [];
+		const ctrl = new TelegramDaemonController(s, {
+			// randomId runs immediately after the control request is written and right
+			// before signalCapturedOwner's recheck: flip the owner dead there to model
+			// a cooperative exit that wins the race.
+			pidAlive: pid => pid === 999 && ownerAlive,
+			randomId: () => {
+				ownerAlive = false;
+				return "req-stop";
+			},
+			sendSignal: (pid, sig) => signals.push([pid, sig]),
+			sleep: async () => undefined,
+			waitStepMs: 1,
+		});
+		const result = await ctrl.stop();
+		expect(result.ok).toBe(true);
+		expect(result.message).toContain("stopped telegram daemon");
+	});
+
+	test("reload spawns the replacement when the owner exits before the signal recheck", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState());
+		fs.writeFileSync(daemonPaths(agentDir).lock, "");
+		let ownerAlive = true;
+		const alive = new Set<number>([4242]);
+		const spawns: Array<{ command: string; args: string[] }> = [];
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4250,
+			onSpawn: (pid, command, args) => {
+				alive.add(pid);
+				spawns.push({ command, args });
+			},
+		});
+		const ctrl = new TelegramDaemonController(s, {
+			ownerPid: 4242,
+			pidAlive: pid => (pid === 999 ? ownerAlive : alive.has(pid)),
+			randomId: () => {
+				ownerAlive = false;
+				return "req-reload";
+			},
 			spawn: child.spawn,
 			sleep: child.sleep,
 		});
@@ -820,6 +1010,111 @@ describe("ChatDaemonController ownership safety", () => {
 				},
 			}),
 		).toBe("attached");
+		expect(spawns).toBe(0);
+	});
+
+	test("waits for a compatible mid-startup owner to become healthy instead of failing", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(
+			Settings.isolated({
+				"notifications.enabled": true,
+				"notifications.discord.botToken": "discord-token",
+				"notifications.discord.applicationId": "app",
+				"notifications.discord.guildId": "guild",
+				"notifications.discord.parentChannelId": "parent",
+			}) as Settings,
+			agentDir,
+		);
+		const identity = crypto
+			.createHash("sha256")
+			.update(["discord-token", "app", "guild", "parent", "false", "lean"].join("\0"))
+			.digest("hex")
+			.slice(0, 16);
+		const paths = chatDaemonPaths(agentDir, "discord");
+		fs.mkdirSync(paths.dir, { recursive: true });
+		// A concurrent ensure just acquired ownership: physically live and compatible,
+		// but transportHealthy:false until its transport heartbeats healthy.
+		const baseState = {
+			version: 1 as const,
+			kind: "discord" as const,
+			pid: 90,
+			ownerId: "owner-a",
+			identity,
+			incarnation: "stable",
+			startedAt: Date.now(),
+			heartbeatAt: Date.now(),
+			transportHealthy: false,
+			generation: chatDaemonGeneration("discord"),
+		};
+		fs.writeFileSync(paths.state, JSON.stringify(baseState));
+		let spawns = 0;
+		const result = await ensureDiscordDaemon(s, {
+			pidAlive: pid => pid === 90,
+			pidIncarnation: () => "stable",
+			spawnReadyTimeoutMs: 1_000,
+			sleep: async () => {
+				// The owning process finishes startup and publishes a healthy heartbeat.
+				fs.writeFileSync(
+					paths.state,
+					JSON.stringify({ ...baseState, transportHealthy: true, heartbeatAt: Date.now() }),
+				);
+			},
+			spawn: () => {
+				spawns++;
+				return { unref() {} };
+			},
+		});
+		expect(result).toBe("attached");
+		expect(spawns).toBe(0);
+	});
+
+	test("fails a compatible owner that never becomes healthy within the wait", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(
+			Settings.isolated({
+				"notifications.enabled": true,
+				"notifications.discord.botToken": "discord-token",
+				"notifications.discord.applicationId": "app",
+				"notifications.discord.guildId": "guild",
+				"notifications.discord.parentChannelId": "parent",
+			}) as Settings,
+			agentDir,
+		);
+		const identity = crypto
+			.createHash("sha256")
+			.update(["discord-token", "app", "guild", "parent", "false", "lean"].join("\0"))
+			.digest("hex")
+			.slice(0, 16);
+		const paths = chatDaemonPaths(agentDir, "discord");
+		fs.mkdirSync(paths.dir, { recursive: true });
+		fs.writeFileSync(
+			paths.state,
+			JSON.stringify({
+				version: 1,
+				kind: "discord",
+				pid: 91,
+				ownerId: "owner-a",
+				identity,
+				incarnation: "stable",
+				startedAt: Date.now(),
+				heartbeatAt: Date.now(),
+				transportHealthy: false,
+				generation: chatDaemonGeneration("discord"),
+			}),
+		);
+		let spawns = 0;
+		await expect(
+			ensureDiscordDaemon(s, {
+				pidAlive: pid => pid === 91,
+				pidIncarnation: () => "stable",
+				spawnReadyTimeoutMs: 1,
+				sleep: async () => undefined,
+				spawn: () => {
+					spawns++;
+					return { unref() {} };
+				},
+			}),
+		).rejects.toThrow("unhealthy");
 		expect(spawns).toBe(0);
 	});
 

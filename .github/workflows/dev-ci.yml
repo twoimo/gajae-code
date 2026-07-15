@@ -16,19 +16,7 @@ on:
         required: true
         type: string
       base_repository:
-        description: Base owner/repository containing base_ref.
-        required: true
-        type: string
-      head_ref:
-        description: Head branch ref whose tip must equal head_sha.
-        required: true
-        type: string
-      head_sha:
-        description: Exact 40-hex head commit SHA to validate.
-        required: true
-        type: string
-      head_repository:
-        description: Head owner/repository containing head_ref.
+        description: Base owner/repository containing base_ref (must be this repository).
         required: true
         type: string
 
@@ -93,11 +81,11 @@ jobs:
     timeout-minutes: 10
     env:
       GITHUB_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
-      GITHUB_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'workflow_dispatch' && inputs.head_sha || github.sha }}
+      GITHUB_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.event_name == 'workflow_dispatch' && inputs.base_ref || github.ref_name }}
-      HEAD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.event_name == 'workflow_dispatch' && inputs.head_ref || github.ref_name }}
+      HEAD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
       BASE_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.repo.full_name || github.event_name == 'workflow_dispatch' && inputs.base_repository || github.repository }}
-      HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.event_name == 'workflow_dispatch' && inputs.head_repository || github.repository }}
+      HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
       GUARD_EVENT_NAME: ${{ github.event_name }}
       GUARD_REPOSITORY: ${{ github.repository }}
     steps:
@@ -131,23 +119,29 @@ jobs:
           git remote add guard-head "https://github.com/${HEAD_REPOSITORY}.git"
           git remote add guard-base "https://github.com/${BASE_REPOSITORY}.git"
           git fetch --no-tags --depth=1 guard-head "refs/heads/${HEAD_REF}:refs/remotes/guard-head/${HEAD_REF}"
-          git fetch --no-tags --depth=1 guard-base "refs/heads/${BASE_REF}:refs/remotes/guard-base/${BASE_REF}"
+          # Fetch the immutable event base OBJECT (reachable from the base branch),
+          # never the mutable live base ref: the target branch may advance while a
+          # pull_request run is queued without invalidating this run's authority.
           git fetch --no-tags --depth=1 guard-base "${GITHUB_BASE_SHA}"
-          checked_out_head="$(git rev-parse --verify HEAD^{commit})"
-          head_ref_sha="$(git rev-parse --verify "refs/remotes/guard-head/${HEAD_REF}^{commit}")"
-          base_ref_sha="$(git rev-parse --verify "refs/remotes/guard-base/${BASE_REF}^{commit}")"
-          base_object_sha="$(git rev-parse --verify "${GITHUB_BASE_SHA}^{commit}")"
-          [[ "${checked_out_head}" == "${GITHUB_HEAD_SHA}" ]] || { echo "Checked out head object does not equal event head SHA"; exit 1; }
-          [[ "${head_ref_sha}" == "${GITHUB_HEAD_SHA}" ]] || { echo "Head ref does not resolve to event head SHA"; exit 1; }
-          [[ "${base_object_sha}" == "${GITHUB_BASE_SHA}" ]] || { echo "Base object does not equal event base SHA"; exit 1; }
-          if [[ "${GUARD_EVENT_NAME}" != push && "${base_ref_sha}" != "${GITHUB_BASE_SHA}" ]]; then
-            echo "Base ref does not resolve to event base SHA"
-            exit 1
-          fi
-          printf 'guard evidence: base %s@%s (object %s); head %s@%s (object %s)\n' "${BASE_REPOSITORY}" "${BASE_REF}" "${base_ref_sha}" "${HEAD_REPOSITORY}" "${HEAD_REF}" "${head_ref_sha}"
+          {
+            echo "GUARD_CHECKED_OUT_HEAD=$(git rev-parse --verify HEAD^{commit})"
+            echo "GUARD_HEAD_REF_SHA=$(git rev-parse --verify "refs/remotes/guard-head/${HEAD_REF}^{commit}")"
+            echo "GUARD_BASE_OBJECT_SHA=$(git rev-parse --verify "${GITHUB_BASE_SHA}^{commit}")"
+          } >> "${GITHUB_ENV}"
+          printf 'guard evidence: base %s@%s (event object); head %s@%s\n' "${BASE_REPOSITORY}" "${GITHUB_BASE_SHA}" "${HEAD_REPOSITORY}" "${HEAD_REF}"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
           bun-version: "1.3"
+      - name: Cache bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+      # The guard's AST canonicalization is parser-version sensitive: install the
+      # pinned @babel/parser from the lockfile so the current-tree digest check is
+      # deterministic and matches the committed attestations (no auto-install drift).
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/telegram-daemon-generation-guard.ts --check-authority
       - run: bun scripts/telegram-daemon-generation-guard.ts
   windows-dev-doctor:
     name: Windows dev:doctor

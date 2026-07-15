@@ -269,17 +269,30 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		tokenFingerprint: string,
 		chatId: string,
 		signal: NodeJS.Signals,
-	): Promise<boolean> {
+	): Promise<"signaled" | "already_gone" | "ownership_changed"> {
 		const current = await readDaemonState(this.settings, this.fsImpl);
+		// A different, physically-live owner replaced our captured owner: a real
+		// ownership change that must be fenced — never signal someone else's daemon.
+		if (
+			current &&
+			current.ownerId !== ownerId &&
+			isPhysicalMatchingOwner({ state: current, tokenFingerprint, chatId, pidAlive: this.pidAlive })
+		)
+			return "ownership_changed";
+		// Our captured owner already won the cooperative-stop race: its pid is dead,
+		// its state is stopped/cleared, or the record moved off our exact capture.
+		// Treat as a completed handoff (waitForPidDeath confirms) rather than a false
+		// "ownership changed" that would fail stop and skip the reload replacement.
 		if (
 			!current ||
 			current.ownerId !== ownerId ||
 			current.pid !== pid ||
-			!isPhysicalMatchingOwner({ state: current, tokenFingerprint, chatId, pidAlive: this.pidAlive })
+			current.stoppedAt !== undefined ||
+			!this.pidAlive(pid)
 		)
-			return false;
+			return "already_gone";
 		this.sendSignal(pid, signal);
-		return true;
+		return "signaled";
 	}
 
 	private result(
@@ -327,7 +340,13 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		const replaceableLiveOwner =
 			action === "reload" &&
 			state !== undefined &&
-			isFreshLiveOwner({ state, now: this.now(), tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
+			(isFreshLiveOwner({ state, now: this.now(), tokenFingerprint: fp, chatId, pidAlive: this.pidAlive }) ||
+				// A physically-live matching owner whose heartbeat is stale (hung) may be
+				// past-TTL yet still holding the poller. Autostart/generation-upgrade reloads
+				// stay conservative and refuse it, but an explicit `reload --force` must be
+				// able to signal and replace it rather than deadlock behind the live PID.
+				(opts.force === true &&
+					isPhysicalMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive })));
 		const stoppableLiveOwner =
 			action === "stop" && isPhysicalMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
 		// A stale pre-generation owner may only be moved by reload; manual stop
@@ -373,7 +392,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			{ version: 1, requestId, action, ownerId: oldOwnerId, pid: oldPid, createdAt: this.now() },
 			this.fsImpl,
 		);
-		if (!(await this.signalCapturedOwner(oldOwnerId, oldPid, fp, chatId, "SIGTERM"))) {
+		if ((await this.signalCapturedOwner(oldOwnerId, oldPid, fp, chatId, "SIGTERM")) === "ownership_changed") {
 			await this.clearOwnRequest(requestId, oldOwnerId);
 			return this.result(
 				action,
@@ -384,6 +403,9 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 				warnings,
 			);
 		}
+		// "signaled" or "already_gone" (the owner already exited cooperatively): confirm
+		// death through the normal path — waitForPidDeath returns immediately for a
+		// dead pid, so stop succeeds and reload proceeds to spawn the replacement.
 
 		let dead = await this.waitForPidDeath(oldPid, gracefulTimeoutMs);
 		if (!dead) {
@@ -435,12 +457,14 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			// No live replacement. Escalate to SIGKILL only with --force and only when
 			// the captured owner/pid still matches, so we never kill a different owner.
 			const stillSameOwner = current !== undefined && current.ownerId === oldOwnerId && current.pid === oldPid;
-			if (
-				opts.force &&
-				stillSameOwner &&
-				(await this.signalCapturedOwner(oldOwnerId, oldPid, fp, chatId, "SIGKILL"))
-			) {
-				dead = await this.waitForPidDeath(oldPid, killTimeoutMs);
+			if (opts.force && stillSameOwner) {
+				const killResult = await this.signalCapturedOwner(oldOwnerId, oldPid, fp, chatId, "SIGKILL");
+				// Kill only a still-live matching owner; an owner that exited between the
+				// graceful timeout and this recheck ("already_gone") is confirmed dead by
+				// waitForPidDeath, while a real ownership change stays fenced.
+				if (killResult === "signaled" || killResult === "already_gone") {
+					dead = await this.waitForPidDeath(oldPid, killTimeoutMs);
+				}
 			}
 			if (!dead) {
 				await this.clearOwnRequest(requestId, oldOwnerId);

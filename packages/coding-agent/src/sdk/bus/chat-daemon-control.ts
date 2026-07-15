@@ -304,8 +304,15 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		if (classification === "malformed" || classification === "unauthorized")
 			throw new Error(`Unable to replace unauthorized ${this.kind} daemon owner`);
 		if (existing && this.isPhysicalLiveState(existing)) {
-			if (classification === "compatible" && this.isHealthyFreshState(existing)) return "attached";
-			if (classification === "compatible") throw new Error(`Unable to replace unhealthy ${this.kind} daemon owner`);
+			if (classification === "compatible") {
+				// A compatible, physically-live owner may be mid-startup: a concurrent
+				// ensure can have just acquired ownership and published transportHealthy:false
+				// before its transport heartbeats healthy. Wait bounded for that owner to
+				// become attachable instead of failing a racing startup outright.
+				if (this.isHealthyFreshState(existing) || (await this.waitForOwnership(existing.ownerId, identity)))
+					return "attached";
+				throw new Error(`Unable to replace unhealthy ${this.kind} daemon owner`);
+			}
 			await this.stopForReplacement(existing);
 		}
 		const spawned = await this.spawn();
