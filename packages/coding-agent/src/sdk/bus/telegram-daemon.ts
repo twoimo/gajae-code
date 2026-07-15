@@ -528,6 +528,24 @@ function liveOwnerUsesDifferentIdentity(input: {
 	);
 }
 
+/** True for a physically live owner with this configuration, including legacy generations. */
+export function isPhysicalMatchingOwner(input: {
+	state: DaemonState | undefined;
+	tokenFingerprint: string;
+	chatId: string;
+	pidAlive: (pid: number) => boolean;
+}): boolean {
+	const { state } = input;
+	return Boolean(
+		state &&
+			state.stoppedAt === undefined &&
+			Number.isSafeInteger(state.pid) &&
+			state.pid > 0 &&
+			ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
+			input.pidAlive(state.pid),
+	);
+}
+
 export function isFreshLiveOwner(input: {
 	state: DaemonState | undefined;
 	now: number;

@@ -28,6 +28,7 @@ import {
 	daemonPaths,
 	isCurrentCompatibleOwner,
 	isFreshLiveOwner,
+	isPhysicalMatchingOwner,
 	readDaemonRoots,
 	readDaemonState,
 	spawnTelegramDaemonOwner,
@@ -176,19 +177,18 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		}
 		const state = await readDaemonState(this.settings, this.fsImpl);
 		const roots = await readDaemonRoots(this.settings, this.fsImpl);
-		const live =
-			state !== undefined &&
-			isCurrentCompatibleOwner({
-				state,
-				now: this.now(),
-				tokenFingerprint: tokenFingerprint(cfg.botToken as string),
-				chatId: cfg.chatId as string,
-				pidAlive: this.pidAlive,
-			});
-
-		let health: DaemonHealth = "stopped";
-		if (live) health = "running";
-		else if (state && state.stoppedAt === undefined) health = "stale";
+		const health: DaemonHealth =
+			!state || state.stoppedAt !== undefined || !this.pidAlive(state.pid)
+				? "stopped"
+				: isCurrentCompatibleOwner({
+							state,
+							now: this.now(),
+							tokenFingerprint: tokenFingerprint(cfg.botToken as string),
+							chatId: cfg.chatId as string,
+							pidAlive: this.pidAlive,
+						})
+					? "running"
+					: "stale";
 		return {
 			kind: this.kind,
 			configured: true,
@@ -263,9 +263,21 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		return !this.pidAlive(pid);
 	}
 
-	private async signalCapturedOwner(ownerId: string, pid: number, signal: NodeJS.Signals): Promise<boolean> {
+	private async signalCapturedOwner(
+		ownerId: string,
+		pid: number,
+		tokenFingerprint: string,
+		chatId: string,
+		signal: NodeJS.Signals,
+	): Promise<boolean> {
 		const current = await readDaemonState(this.settings, this.fsImpl);
-		if (!current || current.ownerId !== ownerId || current.pid !== pid || !this.pidAlive(pid)) return false;
+		if (
+			!current ||
+			current.ownerId !== ownerId ||
+			current.pid !== pid ||
+			!isPhysicalMatchingOwner({ state: current, tokenFingerprint, chatId, pidAlive: this.pidAlive })
+		)
+			return false;
 		this.sendSignal(pid, signal);
 		return true;
 	}
@@ -316,9 +328,11 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			action === "reload" &&
 			state !== undefined &&
 			isFreshLiveOwner({ state, now: this.now(), tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
-		// A stale pre-generation owner may only be moved by reload; success remains
-		// gated on the replacement's current-compatible ready state.
-		if (before.health !== "running" && !replaceableLiveOwner) {
+		const stoppableLiveOwner =
+			action === "stop" && isPhysicalMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
+		// A stale pre-generation owner may only be moved by reload; manual stop
+		// also targets a physically live matching legacy owner, but never spawns.
+		if (before.health !== "running" && !replaceableLiveOwner && !stoppableLiveOwner) {
 			if (action === "stop")
 				return this.result(action, true, "no running telegram daemon", before, before, warnings);
 			if (!(opts.spawnIfStopped ?? true)) {
@@ -359,7 +373,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			{ version: 1, requestId, action, ownerId: oldOwnerId, pid: oldPid, createdAt: this.now() },
 			this.fsImpl,
 		);
-		if (!(await this.signalCapturedOwner(oldOwnerId, oldPid, "SIGTERM"))) {
+		if (!(await this.signalCapturedOwner(oldOwnerId, oldPid, fp, chatId, "SIGTERM"))) {
 			await this.clearOwnRequest(requestId, oldOwnerId);
 			return this.result(
 				action,
@@ -421,7 +435,11 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			// No live replacement. Escalate to SIGKILL only with --force and only when
 			// the captured owner/pid still matches, so we never kill a different owner.
 			const stillSameOwner = current !== undefined && current.ownerId === oldOwnerId && current.pid === oldPid;
-			if (opts.force && stillSameOwner && (await this.signalCapturedOwner(oldOwnerId, oldPid, "SIGKILL"))) {
+			if (
+				opts.force &&
+				stillSameOwner &&
+				(await this.signalCapturedOwner(oldOwnerId, oldPid, fp, chatId, "SIGKILL"))
+			) {
 				dead = await this.waitForPidDeath(oldPid, killTimeoutMs);
 			}
 			if (!dead) {

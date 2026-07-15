@@ -17,14 +17,18 @@ const manifestScript = "scripts/telegram-daemon-generation-manifest.json";
 type Family = "telegram" | "discord" | "slack";
 type Inventory = Readonly<Record<Family, Readonly<Record<string, readonly string[]>>>>;
 type Declaration = { text: string; canonical: string; valid: boolean } | undefined;
-type GuardManifest = { contractVersion: number; inventory: Inventory };
+type GuardManifest = { contractVersion: number; inventory: Inventory; digests: Readonly<Record<string, string>> };
+
+
 
 /**
  * This is a deliberately small, exact lifecycle contract. Do not include session
  * endpoint or provider generations: they do not replace daemon owners.
  */
 export const protectedInventory = manifest.inventory as Inventory;
-const PROTECTED_INVENTORY_SHA256 = "9961b08acbd9f9c6c3a9ce4358629a773774d9a689bb217b4ba35ac46bde0e3b";
+const PROTECTED_INVENTORY_SHA256 = "464cae180904d8a3c8086221e634f797bce17253d2960679dea49e7544d8f5dc";
+
+
 
 function inventoryHash(inventory: Inventory): string {
 	return crypto.createHash("sha256").update(JSON.stringify(inventory)).digest("hex");
@@ -53,19 +57,38 @@ export function validateManifest(value: unknown = manifest): asserts value is Gu
 	validateInventory(contract.inventory);
 	if (inventoryHash(contract.inventory) !== PROTECTED_INVENTORY_SHA256)
 		throw new Error("telegram-daemon-generation-guard: semantic manifest does not match the protected inventory");
+	if (!contract.digests || typeof contract.digests !== "object")
+		throw new Error("telegram-daemon-generation-guard: semantic manifest has no declaration digests");
+	const qualified = Object.entries(contract.inventory).flatMap(([family, files]) =>
+		Object.entries(files).flatMap(([file, symbols]) => symbols.map(symbol => `${family}:${file}:${symbol}`)),
+	).sort();
+	const digestKeys = Object.keys(contract.digests).sort();
+	if (digestKeys.join("\n") !== qualified.join("\n") || digestKeys.some(key => !/^[0-9a-f]{64}$/.test(contract.digests[key])))
+		throw new Error("telegram-daemon-generation-guard: semantic manifest declaration digests must be exact and qualified");
 }
 
-async function validateCurrentTreeManifest(): Promise<void> {
-	validateManifest();
-	for (const files of Object.values(protectedInventory)) {
+
+export async function currentTreeDigests(): Promise<Record<string, string>> {
+	const actual: Record<string, string> = {};
+	for (const [family, files] of Object.entries(protectedInventory) as [Family, Inventory[Family]][]) {
 		for (const [file, symbols] of Object.entries(files)) {
 			const source = await Bun.file(path.join(root, file)).text();
 			for (const symbol of symbols) {
 				const target = extractDeclaration(source, symbol);
-				if (!target?.valid) throw new Error(`telegram-daemon-generation-guard: semantic manifest target is missing or malformed: ${file}:${symbol}`);
+				if (!target?.valid) throw new Error(`telegram-daemon-generation-guard: semantic manifest target is missing, ambiguous, or malformed: ${file}:${symbol}`);
+				actual[`${family}:${file}:${symbol}`] = crypto.createHash("sha256").update(target.canonical).digest("hex");
 			}
 		}
 	}
+	return actual;
+}
+
+export async function validateCurrentTreeManifest(): Promise<void> {
+	validateManifest();
+	const actual = await currentTreeDigests();
+	const expected = JSON.stringify(Object.entries(manifest.digests).sort());
+	if (JSON.stringify(Object.entries(actual).sort()) !== expected)
+		throw new Error("telegram-daemon-generation-guard: semantic manifest declaration digests do not byte-match the current tree");
 }
 
 function bootstrapGuardContract(): void {
@@ -104,26 +127,30 @@ function nodeName(node: any): string | undefined {
 	if (node?.key?.type === "StringLiteral") return node.key.value;
 }
 
-function declarationNode(node: any, name: string): any | undefined {
-	if (!node || typeof node !== "object") return undefined;
-	if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") return declarationNode(node.declaration, name);
+function declarationNodes(node: any, name: string, found: any[] = []): any[] {
+	if (!node || typeof node !== "object") return found;
+	if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") return declarationNodes(node.declaration, name, found);
 	if (node.type === "VariableDeclaration") {
-		return node.declarations.some((declaration: any) => declaration.id?.type === "Identifier" && declaration.id.name === name)
-			? node
-			: undefined;
+		if (node.declarations.some((declaration: any) => declaration.id?.type === "Identifier" && declaration.id.name === name)) found.push(node);
+		return found;
 	}
-	if (nodeName(node) === name && /(?:Declaration|Method|Property)$/.test(node.type)) return node;
+	if (nodeName(node) === name && /(?:Declaration|Method|Property)$/.test(node.type)) found.push(node);
 	for (const value of Object.values(node)) {
-		if (Array.isArray(value)) {
-			for (const child of value) {
-				const found = declarationNode(child, name);
-				if (found) return found;
-			}
-		} else if (value && typeof value === "object" && typeof (value as any).type === "string") {
-			const found = declarationNode(value, name);
-			if (found) return found;
-		}
+		if (Array.isArray(value)) for (const child of value) declarationNodes(child, name, found);
+		else if (value && typeof value === "object" && typeof (value as any).type === "string") declarationNodes(value, name, found);
 	}
+	return found;
+}
+
+function declarationNode(node: any, name: string): any | undefined {
+	const [rootName, property] = name.split(".");
+	const matches = declarationNodes(node, rootName);
+	if (matches.length !== 1 && matches.some(match => match.type === "FunctionDeclaration" || match.type === "ClassDeclaration")) return undefined;
+	if (!property) return matches[0];
+	const declaration = matches[0].declarations?.find((item: any) => item.id?.name === rootName);
+	const object = declaration?.init?.type === "TSAsExpression" ? declaration.init.expression : declaration?.init;
+	const properties = object?.properties?.filter((item: any) => nodeName(item) === property) ?? [];
+	return properties.length === 1 ? properties[0] : undefined;
 }
 
 /** AST-backed extraction prevents comments, strings, overloads, and similarly named text from matching. */
@@ -187,16 +214,13 @@ function generation(source: string | undefined, kind?: "discord" | "slack"): num
 	if (!source) return undefined;
 	try {
 		const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
-		const variable = declarationNode(ast.program, kind ? "CHAT_DAEMON_GENERATIONS" : "DAEMON_GENERATION");
+		const variable = declarationNode(ast.program, kind ? `CHAT_DAEMON_GENERATIONS.${kind}` : "DAEMON_GENERATION");
 		if (!variable) return undefined;
 		if (!kind) {
 			const declaration = variable.declarations?.find((item: any) => item.id?.name === "DAEMON_GENERATION");
 			return declaration?.init?.type === "NumericLiteral" ? declaration.init.value : undefined;
 		}
-		const declaration = variable.declarations?.find((item: any) => item.id?.name === "CHAT_DAEMON_GENERATIONS");
-		const object = declaration?.init?.type === "TSAsExpression" ? declaration.init.expression : declaration?.init;
-		const property = object?.properties?.find((item: any) => nodeName(item) === kind);
-		return property?.value?.type === "NumericLiteral" ? property.value.value : undefined;
+		return variable.value?.type === "NumericLiteral" ? variable.value.value : undefined;
 	} catch {
 		return undefined;
 	}
@@ -216,14 +240,19 @@ function guardContractVersion(source: string | undefined): number | undefined {
 
 
 export function isLegacyBootstrapBase(base: ReadonlyMap<string, string | undefined>): boolean {
-	if (base.get(guardScript) !== undefined) return false;
+	if (base.get(guardScript) !== undefined || base.get(manifestScript) !== undefined) return false;
 	const contract = base.get(telegramContract);
 	const daemon = base.get(telegramDaemon);
 	const chat = base.get(chatControl);
-	if (!contract || !daemon || chat?.includes("CHAT_DAEMON_GENERATIONS") || chat?.includes("chatDaemonGeneration")) return false;
-	if (/\b(?:ownershipPhase|acquisitionId)\b/.test(daemon) || !declaration(daemon, "acquireDaemonOwnership")) return false;
+	if (!contract || !daemon || chat !== "" || /\b(?:ownershipPhase|acquisitionId)\b/.test(daemon) || !declaration(daemon, "acquireDaemonOwnership")) return false;
 	try {
 		const program = parse(contract, { sourceType: "module", plugins: ["typescript"] }).program;
+		const exportedNames = program.body.flatMap((statement: any) => {
+			const declaration = statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+			if (declaration?.type !== "VariableDeclaration") return [];
+			return declaration.declarations.map((item: any) => item.id?.name).filter((name: unknown): name is string => typeof name === "string");
+		});
+		if (exportedNames.sort().join(",") !== "DAEMON_GENERATION,NOTIFICATION_PROTOCOL_VERSION") return false;
 		const protocol = declarationNode(program, "NOTIFICATION_PROTOCOL_VERSION");
 		const generation = declarationNode(program, "DAEMON_GENERATION");
 		const protocolDeclaration = protocol?.declarations?.find((item: any) => item.id?.name === "NOTIFICATION_PROTOCOL_VERSION");

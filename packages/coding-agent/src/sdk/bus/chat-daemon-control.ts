@@ -70,7 +70,8 @@ const HEARTBEAT_TTL_MS = 20_000;
 const DEFAULT_GRACEFUL_TIMEOUT_MS = 8_000;
 const DEFAULT_KILL_TIMEOUT_MS = 3_000;
 const UNPUBLISHED_OWNER_LOCK_STALE_MS = HEARTBEAT_TTL_MS;
-const DEFAULT_SPAWN_READY_TIMEOUT_MS = 2_000;
+/** Covers Discord READY plus its first 5-second heartbeat; tests inject a smaller timeout. */
+const DEFAULT_SPAWN_READY_TIMEOUT_MS = 8_000;
 
 interface ChatDaemonOwnerLock {
 	pid: number;
@@ -277,8 +278,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const identity = this.identity();
 		const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
 		if (!identity) return { kind: this.kind, configured: false, health: "not_configured", runtime };
-		const live = Boolean(state && this.isCurrentCompatibleState(state, identity));
-		const health: DaemonHealth = live ? "running" : state && !state.stoppedAt ? "stale" : "stopped";
+		const health: DaemonHealth = this.stateHealth(state, identity);
 		return {
 			kind: this.kind,
 			configured: true,
@@ -402,6 +402,18 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	private incarnation(pid: number): string | undefined {
 		return (this.deps.pidIncarnation ?? defaultPidIncarnation)(pid);
 	}
+	private isDefinitelyStoppedState(state: ChatDaemonState | undefined): boolean {
+		if (!state || state.stoppedAt || !this.alive(state.pid)) return true;
+		const incarnation = this.incarnation(state.pid);
+		return Boolean(incarnation && state.incarnation && incarnation !== state.incarnation);
+	}
+	private stateHealth(state: ChatDaemonState | undefined, identity: string): DaemonHealth {
+		if (this.isDefinitelyStoppedState(state)) return "stopped";
+		if (state && this.isCurrentCompatibleState(state, identity)) return "running";
+		// A PID that is live but cannot prove a matching current incarnation is
+		// ambiguous: do not report it ready or overwrite it.
+		return "stale";
+	}
 	private isPhysicalLiveState(state: ChatDaemonState): boolean {
 		return (
 			state.version === 1 &&
@@ -414,7 +426,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	}
 	/** A live PID with an invalid ownership record is never safe to overwrite. */
 	private isAmbiguouslyLiveState(state: ChatDaemonState): boolean {
-		return !state.stoppedAt && Number.isSafeInteger(state.pid) && state.pid > 0 && this.alive(state.pid);
+		return !this.isDefinitelyStoppedState(state) && !this.isPhysicalLiveState(state);
 	}
 	private isHealthyFreshState(state: ChatDaemonState): boolean {
 		return state.transportHealthy && Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS;

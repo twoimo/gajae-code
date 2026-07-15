@@ -167,4 +167,23 @@ describe("daemon generation release guard", () => {
 		expect(() => validateCiInputs({ eventName: "push", baseSha: sha, headSha: "short", baseRepository: "owner/repo", headRepository: "owner/repo", repository: "owner/repo" })).toThrow("head SHA");
 		expect(() => validateCiInputs({ eventName: "push", baseSha: sha, headSha: sha, baseRepository: "owner/repo", headRepository: "fork/repo", repository: "owner/repo" })).toThrow("push head repository");
 	});
+
+
+	test("isolates shared chat generation-map changes to the matching family", () => {
+		const sharedInventory = {
+			telegram: {},
+			discord: { [chatControl]: ["CHAT_DAEMON_GENERATIONS.discord"] },
+			slack: { [chatControl]: ["CHAT_DAEMON_GENERATIONS.slack"] },
+		} as const;
+		const base = files({ discordGeneration: 1, slackGeneration: 1 });
+		const head = files({ discordGeneration: 2, slackGeneration: 1 });
+		const result = evaluate(base, head, sharedInventory);
+		expect(result.protectedChanges).toEqual([`discord:${chatControl}:CHAT_DAEMON_GENERATIONS.discord`]);
+		expect(result.chatGenerationBumped).toEqual({ discord: true, slack: false });
+	});
+
+	test("rejects duplicate top-level protected declarations", () => {
+		const source = "export function acquireDaemonOwnership() {}\nexport function acquireDaemonOwnership() {}";
+		expect(declaration(source, "acquireDaemonOwnership")).toBe("<malformed>");
+	});
 });

@@ -364,7 +364,7 @@ describe("TelegramDaemonController.status", () => {
 		expect(status.health).toBe("not_configured");
 	});
 
-	test("reports running for a fresh live owner and stale for a dead one", async () => {
+	test("reports running for a fresh live owner and stopped for a dead one", async () => {
 		const agentDir = tempAgentDir();
 		const s = settings(agentDir);
 		writeState(agentDir, freshState());
@@ -374,8 +374,8 @@ describe("TelegramDaemonController.status", () => {
 		expect(running.pid).toBe(999);
 		expect(running.ownerId).toBe("old");
 
-		const stale = await new TelegramDaemonController(s, { pidAlive: () => false }).status();
-		expect(stale.health).toBe("stale");
+		const stopped = await new TelegramDaemonController(s, { pidAlive: () => false }).status();
+		expect(stopped.health).toBe("stopped");
 	});
 });
 
@@ -657,6 +657,33 @@ describe("TelegramDaemonController.stop", () => {
 		expect(result.ok).toBe(true);
 		expect(spawnCalls).toBe(0);
 	});
+
+	test("signals and proves death for a live matching legacy owner without spawning", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState({ generation: DAEMON_GENERATION - 1 }));
+		const alive = new Set<number>([999]);
+		let spawns = 0;
+		const signals: NodeJS.Signals[] = [];
+		const result = await new TelegramDaemonController(s, {
+			pidAlive: pid => alive.has(pid),
+			sendSignal: (pid, signal) => {
+				signals.push(signal);
+				if (signal === "SIGTERM") alive.delete(pid);
+			},
+			spawn: () => {
+				spawns++;
+				return { unref() {} };
+			},
+			sleep: async () => undefined,
+		}).stop();
+		expect(result.ok).toBe(true);
+		expect(signals).toEqual(["SIGTERM"]);
+		expect(spawns).toBe(0);
+		expect((await new TelegramDaemonController(s, { pidAlive: pid => alive.has(pid) }).status()).health).toBe(
+			"stopped",
+		);
+	});
 });
 
 describe("ChatDaemonController ownership safety", () => {
@@ -694,11 +721,13 @@ describe("ChatDaemonController ownership safety", () => {
 			}),
 		);
 		const signals: NodeJS.Signals[] = [];
-		const result = await new ChatDaemonController(s, "discord", {
+		const controller = new ChatDaemonController(s, "discord", {
 			pidAlive: pid => pid === 77,
 			pidIncarnation: () => "reused",
 			sendSignal: (_pid, signal) => signals.push(signal),
-		}).stop();
+		});
+		expect((await controller.status()).health).toBe("stopped");
+		const result = await controller.stop();
 		expect(result.ok).toBe(true);
 		expect(signals).toEqual([]);
 	});
