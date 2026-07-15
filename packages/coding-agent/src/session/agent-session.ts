@@ -8091,14 +8091,17 @@ export class AgentSession {
 		}
 	}
 
-	/** Set a model temporarily for a session control surface without exposing credential errors. */
+	/** Set a durable per-session model from a control surface without exposing credential errors. */
 	async setModelTemporaryForControl(model: Model, expectedSessionId: string = this.sessionId): Promise<boolean> {
 		if (expectedSessionId !== this.sessionId) return false;
 		try {
-			await this.setModelTemporary(model);
+			await this.setModelTemporary(model, undefined, {
+				persistAsSessionDefault: true,
+				cause: "user-selection",
+			});
 			return expectedSessionId === this.sessionId;
 		} catch {
-			logger.warn("session: temporary model control failed");
+			logger.warn("session: model control failed");
 			return false;
 		}
 	}

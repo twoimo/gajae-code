@@ -138,6 +138,15 @@ describe("issue #775: per-model defaultLevel", () => {
 		expect(await session.setModelTemporaryForControl(opus, "retired-session")).toBe(false);
 		expect(session.model?.id).toBe(sonnet.id);
 	});
+	it("persists Telegram model controls as the session default", async () => {
+		const sonnet = getSonnet();
+		const opus = getOpus();
+		await createSession(sonnet, Settings.isolated());
+
+		expect(await session.setModelTemporaryForControl(opus, session.sessionId)).toBe(true);
+		expect(session.model?.id).toBe(opus.id);
+		expect(session.sessionManager.buildSessionContext().models.default).toBe(`${opus.provider}/${opus.id}`);
+	});
 
 	it("records unchanged session overrides and durable inherit intent", async () => {
 		const sonnet = getSonnet();

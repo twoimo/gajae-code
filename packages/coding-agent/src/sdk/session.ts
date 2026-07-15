@@ -1124,12 +1124,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasExplicitDefaultThinkingLevel = settings.has("defaultThinkingLevel");
 	let thinkingLevelFromSchemaDefault = false;
 
-	// If session has data and includes a thinking entry, restore it
-	if (thinkingLevel === undefined && hasExistingSession && hasThinkingEntry) {
-		thinkingLevel = parseThinkingLevel(existingSession.thinkingLevel);
+	// If session has data and includes a thinking entry, restore an explicit session
+	// override. A persisted inherit marker deliberately re-enters the normal
+	// default-role/global/model resolution path instead of resolving to `undefined`.
+	const restoredThinkingLevel =
+		hasExistingSession && hasThinkingEntry ? parseThinkingLevel(existingSession.thinkingLevel) : undefined;
+	if (thinkingLevel === undefined && restoredThinkingLevel !== ThinkingLevel.Inherit) {
+		thinkingLevel = restoredThinkingLevel;
 	}
 
-	if (thinkingLevel === undefined && !hasExplicitModel && !hasThinkingEntry && defaultRoleSpec.explicitThinkingLevel) {
+	if (thinkingLevel === undefined && !hasExplicitModel && defaultRoleSpec.explicitThinkingLevel) {
 		thinkingLevel = defaultRoleSpec.thinkingLevel;
 	}
 
@@ -2370,7 +2374,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						: undefined,
 				);
 			}
-			sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
+			sessionManager.appendThinkingLevelChange(options.thinkingLevel ?? ThinkingLevel.Inherit);
 			if (initialServiceTier) {
 				sessionManager.appendServiceTierChange(initialServiceTier);
 			}
