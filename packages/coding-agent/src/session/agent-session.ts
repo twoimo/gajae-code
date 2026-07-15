@@ -261,6 +261,7 @@ import {
 	selectDiscoverableMCPToolNamesByServer,
 } from "../runtime-mcp/discoverable-tool-metadata";
 import { MCPManager } from "../runtime-mcp/manager";
+import type { NotificationSessionController } from "../sdk/bus/session-control";
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { formatNoCredentialOnboardingError, formatNoModelOnboardingError } from "../setup/model-onboarding-guidance";
 import {
@@ -437,6 +438,8 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
+	/** Shared Gate-A-eligible notification session controller, when this host supports it. */
+	notificationSessionController?: NotificationSessionController;
 	/** Models to cycle through with Alt+N (from --models flag) */
 	scopedModels?: ScopedModelSelection[];
 	/** Initial session thinking selector. */
@@ -1259,6 +1262,7 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
+	readonly notificationSessionController: NotificationSessionController | undefined;
 	readonly taskDepth: number;
 	readonly yieldQueue: YieldQueue;
 
@@ -1798,6 +1802,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.notificationSessionController = config.notificationSessionController;
 		this.taskDepth = config.taskDepth ?? 0;
 		// Register this session with the process-wide resource GC (idle/RSS browser-tab eviction
 		// + stale screenshot cleanup). Session-keyed so concurrent sessions share one timer safely.

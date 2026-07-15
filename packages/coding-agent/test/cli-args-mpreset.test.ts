@@ -341,3 +341,25 @@ test("persisted default thinking overrides startup default profile effort", asyn
 		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
 	).toEqual(["profile-provider/default:xhigh"]);
 });
+
+test("thinking-only startup uses authoritative override semantics", async () => {
+	const settings = Settings.isolated();
+	const session = fakeSession();
+
+	await applyStartupModelProfiles({
+		session,
+		settings,
+		modelRegistry: fakeRegistry([]) as never,
+		parsedArgs: { thinking: ThinkingLevel.High },
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+	});
+
+	expect(session.setModelTemporaryCalls).toEqual([
+		expect.objectContaining({
+			model: session.model,
+			thinkingLevel: ThinkingLevel.High,
+			options: { cause: "startup-override" },
+		}),
+	]);
+});

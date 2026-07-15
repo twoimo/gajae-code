@@ -70,12 +70,14 @@ import {
 	isSlackConfigured,
 	isTelegramConfigured,
 	type NotificationConfig,
+	type NotificationSettingsReader,
 	sessionTag,
 } from "./config";
 import { telegramControlCommandUsage } from "./config-commands";
 import { imageAttachmentsFromMessage, notificationActionPayload, summaryFromMessage } from "./helpers";
 import { assertNativeRuntimeCompatibility } from "./native-runtime-compatibility";
-import { type EnsureDaemonResult, ensureTelegramDaemonRunning } from "./telegram-daemon";
+import { NotificationSessionController, type NotificationSessionRuntime } from "./session-control";
+import { type EnsureDaemonResult, ensureTelegramDaemonRunningDetailed } from "./telegram-daemon";
 
 // ===========================================================================
 // Session lifecycle control protocol (TypeScript mirror of the Rust wire
@@ -999,9 +1001,16 @@ function turnTextMax(): number {
 	if (!Number.isFinite(raw) || raw <= 0) return TURN_TEXT_MAX_CEILING;
 	return Math.min(TURN_TEXT_MAX_CEILING, Math.max(280, raw));
 }
+function resolveNotificationConfig(settings: Settings): NotificationConfig {
+	const reader = settings as Partial<NotificationSettingsReader>;
+	return typeof reader.getNotificationSettingsSnapshot === "function"
+		? getNotificationConfig(reader as NotificationSettingsReader)
+		: defaultConfig;
+}
+
 function resolveSettings(settingsOverride?: Settings): ResolvedSettings {
 	if (settingsOverride)
-		return { settings: settingsOverride, cfg: getNotificationConfig(settingsOverride), settingsAvailable: true };
+		return { settings: settingsOverride, cfg: resolveNotificationConfig(settingsOverride), settingsAvailable: true };
 	try {
 		const settings = Settings.instance;
 		return { settings, cfg: getNotificationConfig(settings), settingsAvailable: true };
@@ -2215,26 +2224,51 @@ export function createNotificationsExtension(
 		}) => Promise<EnsureDaemonResult>;
 		/** Suppress auto-delivery for a GJC-spawned child under `sessionScope=primary`. */
 		spawnedByGjc?: boolean;
+		controller?: NotificationSessionController;
+
 		onSdkRequest?: (kind: "control" | "query", connectionId: string, frame: Record<string, unknown>) => void;
 	} = {},
 ): void {
 	const lifecycleStartupCapability = lifecycleStartupCapabilityForApi(api);
 	const runtimes = new Map<string, SessionRuntime>();
-	const disabledSessions = new Set<string>();
+	const controller =
+		options.controller ??
+		new NotificationSessionController({
+			eligible: true,
+			getConfig: () => resolveSettings(options.settings).cfg,
+		});
+
 	const sessionStartPromises = new Map<string, Promise<SessionStartResult>>();
 	let activeRuntimeId: string | undefined;
 	let identityControlInFlight = false;
 	let deferredIdentityRotation: { event: { previousSessionFile?: string }; ctx: ExtensionContext } | undefined;
-	const ensureTelegramDaemon = options.ensureTelegramDaemon ?? ensureTelegramDaemonRunning;
+
+	async function ensureTelegramOwner(
+		settings: Settings,
+		cwd: string,
+		id: string,
+	): Promise<"ready" | "blocked_identity"> {
+		if (options.ensureTelegramDaemon) {
+			return (await options.ensureTelegramDaemon({ settings, cwd, sessionId: id })) === "blocked"
+				? "blocked_identity"
+				: "ready";
+		}
+		return (await ensureTelegramDaemonRunningDetailed({ settings, cwd, sessionId: id })) === "blocked_identity"
+			? "blocked_identity"
+			: "ready";
+	}
 	async function ensureConfiguredDaemons(
 		settings: Settings,
 		cfg: NotificationConfig,
 		cwd: string,
 		id: string,
-	): Promise<void> {
-		if (isTelegramConfigured(cfg)) await ensureTelegramDaemon({ settings, cwd, sessionId: id });
+	): Promise<boolean> {
+		if (isTelegramConfigured(cfg)) {
+			if ((await ensureTelegramOwner(settings, cwd, id)) === "blocked_identity") return false;
+		}
 		if (isDiscordConfigured(cfg)) await ensureDiscordDaemon(settings);
 		if (isSlackConfigured(cfg)) await ensureSlackDaemon(settings);
+		return true;
 	}
 	const identityControlOperations = new Set([
 		"session.new",
@@ -2359,15 +2393,6 @@ export function createNotificationsExtension(
 		return true;
 	}
 
-	function isEnabledForSession(id: string, cfg: NotificationConfig): boolean {
-		return isSessionNotificationsEnabled({
-			cfg,
-			env: process.env,
-			sessionDisabled: disabledSessions.has(id),
-			spawnedByGjc: options.spawnedByGjc,
-		});
-	}
-
 	function isNotificationEligibleContext(ctx: ExtensionContext): boolean {
 		return ctx.sessionMetadata?.kind !== "sub";
 	}
@@ -2376,7 +2401,7 @@ export function createNotificationsExtension(
 		const id = sessionId(ctx);
 		const lifecycleRequestId = safeLifecycleRequestId(process.env.GJC_LIFECYCLE_REQUEST_ID);
 		const { settings, cfg, settingsAvailable } = resolveSettings(options.settings);
-		const notificationsEnabledForSession = isEnabledForSession(id, cfg);
+		const notificationsEnabledForSession = controller.query(ctx).effectiveEnabled;
 		const sdkEnabledForSession = shouldHostSdk(settings, isNotificationEligibleContext(ctx));
 		const lifecycleRequired = lifecycleStartupCapability !== undefined;
 		const failLifecycleStartup = (
@@ -3149,6 +3174,22 @@ export function createNotificationsExtension(
 				await cleanupAbandonedStartup();
 				return { status: "failed" };
 			}
+			if (notificationsEnabledForSession && settingsAvailable && settings) {
+				try {
+					if (!(await ensureConfiguredDaemons(settings, cfg, ctx.cwd, id))) {
+						const result = failLifecycleStartup("failed", "Telegram daemon ownership is blocked.");
+						finishStartup(result);
+						await cleanupAbandonedStartup();
+						return result;
+					}
+				} catch (error) {
+					const result = failLifecycleStartup("failed", error);
+					finishStartup(result);
+					await cleanupAbandonedStartup();
+					return result;
+				}
+			}
+
 			// Startup contract: identity is committed to the replayable SDK event log
 			// immediately after the host starts, before awaiting notification transport
 			// startup. Native frames are ephemeral, so ensure configured daemon owners
@@ -3167,14 +3208,7 @@ export function createNotificationsExtension(
 				await cleanupAbandonedStartup();
 				return { status: "failed" };
 			}
-			if (notificationsEnabledForSession && settingsAvailable && settings) {
-				try {
-					await ensureConfiguredDaemons(settings, cfg, ctx.cwd, id);
-				} catch (e) {
-					logger.warn(`notifications: failed to ensure notification daemon: ${String(e)}`);
-				}
-				throwIfLifecycleStopped();
-			}
+
 			server.pushFrame(JSON.stringify(identityHeader));
 			const agentDir = lifecycleAgentDir ?? settings?.getAgentDir?.();
 			if (lifecycleRequired && !agentDir) throw new Error("Lifecycle SDK host requires an agent directory.");
@@ -3258,7 +3292,6 @@ export function createNotificationsExtension(
 					}
 				});
 			};
-			if (notificationsEnabledForSession) runtime.enableNotifications();
 			const activeRuntime = runtime;
 			// A native terminal close (SIGHUP), SIGTERM, Ctrl+C exit, or fatal error
 			// skips AgentSession.dispose(), so the `session_shutdown` extension event
@@ -3344,6 +3377,7 @@ export function createNotificationsExtension(
 			};
 			activeRuntime.disposeGateEmitterListener = registerWorkflowGateEmitterListener(id, attachWorkflowGate);
 			if (ctx.workflowGate) attachWorkflowGate(ctx.workflowGate);
+			if (notificationsEnabledForSession) runtime.enableNotifications();
 			finishStartup({ status: "started", runtime });
 			return { status: "started", runtime };
 		} catch (e) {
@@ -3354,6 +3388,40 @@ export function createNotificationsExtension(
 			return { ...result, runtime };
 		}
 	}
+
+	const sessionRuntime: NotificationSessionRuntime<ExtensionContext> = {
+		isRunning: binding => runtimes.get(binding.sessionId)?.notificationsActive === true,
+		start: async binding => {
+			if (sessionStartPromises.has(binding.sessionId)) {
+				const result = await startSession(binding.context);
+				if (result.status !== "started" && result.status !== "already") return result.status;
+				const runtime = runtimes.get(binding.sessionId);
+				if (!runtime || sessionId(binding.context) !== binding.sessionId || activeRuntimeId !== binding.sessionId) {
+					return "failed";
+				}
+				runtime.enableNotifications();
+				return "started";
+			}
+			const runtime = runtimes.get(binding.sessionId);
+			if (runtime) {
+				runtime.enableNotifications();
+				return "started";
+			}
+			const result = await startSession(binding.context);
+			return result.status === "started" || result.status === "already" ? "started" : result.status;
+		},
+		stop: async binding => await stopSession(binding.sessionId, "notifications"),
+		ensureTelegramDaemon: async binding => {
+			const { settings, settingsAvailable } = resolveSettings(options.settings);
+			if (!settingsAvailable || !settings) return "blocked_identity";
+			try {
+				return await ensureTelegramOwner(settings, binding.cwd, binding.sessionId);
+			} catch {
+				return "blocked_identity";
+			}
+		},
+	};
+	controller.attachRuntime(sessionRuntime);
 
 	api.registerCommand("notify", {
 		description: "Control notifications for this session (on, off, status).",
@@ -3368,10 +3436,9 @@ export function createNotificationsExtension(
 			});
 
 			if (command === "off") {
-				disabledSessions.add(id);
-				const stopped = await stopSession(id, "notifications");
+				const result = await controller.setLocalEnabled(ctx, false);
 				ctx.ui.notify(
-					stopped
+					result.outcome === "stopped"
 						? "Notifications disabled for this session."
 						: "Notifications already disabled for this session.",
 					"info",
@@ -3398,38 +3465,19 @@ export function createNotificationsExtension(
 					);
 					return;
 				}
-				disabledSessions.delete(id);
-				const result = await startSession(ctx);
-				const expectedRuntime = result.runtime;
-				const expectedGeneration = expectedRuntime?.host.generation;
-				const enabled =
-					(result.status === "started" || result.status === "already") &&
-					sessionId(ctx) === id &&
-					activeRuntimeId === id &&
-					runtimes.get(id) === expectedRuntime &&
-					expectedRuntime?.host.started === true &&
-					expectedRuntime.host.generation === expectedGeneration &&
-					expectedRuntime.stopping === false;
-				if (enabled) {
-					expectedRuntime.enableNotifications();
-					if (resolved.settingsAvailable && resolved.settings) {
-						try {
-							await ensureConfiguredDaemons(resolved.settings, resolved.cfg, ctx.cwd, id);
-						} catch (error) {
-							logger.warn(`notifications: failed to ensure notification daemon: ${String(error)}`);
-						}
-					}
-				}
-				const startupWasFenced = result.status === "failed" && expectedRuntime?.stopping === true;
+				const result = await controller.setLocalEnabled(ctx, true);
+				const enabled = result.status.running && result.status.effectiveEnabled;
+				const rotated = sessionId(ctx) !== id;
+				const failed = result.outcome === "failed" || (!enabled && !rotated && activeRuntimeId !== id);
 				ctx.ui.notify(
 					enabled
-						? result.status === "started"
-							? "Notifications enabled for this session."
-							: "Notifications already enabled for this session."
-						: result.status === "failed" && !startupWasFenced
-							? "Notifications failed to start for this session."
-							: "Notifications were not enabled because the active session changed during startup.",
-					enabled ? "info" : result.status === "failed" && !startupWasFenced ? "error" : "warning",
+						? "Notifications enabled for this session."
+						: rotated
+							? "Notifications were not enabled because the active session changed during startup."
+							: failed
+								? "Notifications failed to start for this session."
+								: "Notifications were not enabled because daemon ownership could not be proved.",
+					enabled ? "info" : rotated ? "warning" : failed ? "error" : "warning",
 				);
 				return;
 			}
@@ -3439,12 +3487,10 @@ export function createNotificationsExtension(
 				return;
 			}
 
-			const running = runtimes.has(id);
-			const locallyDisabled = disabledSessions.has(id);
-			const enabled = isEnabledForSession(id, resolved.cfg);
+			const status = controller.query(ctx);
 			const runtime = runtimes.get(id);
 			ctx.ui.notify(
-				`Notifications ${running ? "running" : enabled ? "enabled" : "disabled"} for this session; redaction ${(runtime?.redact ?? resolved.cfg.redact) ? "on" : "off"}; verbosity ${runtime?.verbosity ?? resolved.cfg.verbosity}${locallyDisabled ? "; locally off" : ""}.`,
+				`Notifications ${status.running ? "running" : status.effectiveEnabled ? "enabled" : "disabled"} for this session; redaction ${(runtime?.redact ?? resolved.cfg.redact) ? "on" : "off"}; verbosity ${runtime?.verbosity ?? resolved.cfg.verbosity}${status.locallyEnabled ? "" : "; locally off"}.`,
 				"info",
 			);
 		},
@@ -3452,6 +3498,7 @@ export function createNotificationsExtension(
 
 	api.on("session_start", async (_event, ctx) => {
 		await startSession(ctx);
+		await controller.reconcileCurrentSession(ctx);
 	});
 
 	// A session endpoint's token and generation are authority for exactly one
@@ -3465,10 +3512,11 @@ export function createNotificationsExtension(
 		const newId = sessionId(ctx);
 		const prevId = activeRuntimeId ?? sessionIdFromFile(event.previousSessionFile);
 		if (prevId && prevId !== newId) {
-			if (disabledSessions.delete(prevId)) disabledSessions.add(newId);
+			controller.rekeySession(prevId, newId);
 			await stopSession(prevId);
 		}
 		await startSession(ctx);
+		await controller.reconcileCurrentSession(ctx);
 	};
 	api.on("session_switch", async (event, ctx) => {
 		if (identityControlInFlight) {
@@ -3728,6 +3776,9 @@ export function createNotificationsExtension(
 	});
 
 	api.on("session_shutdown", async (_event, ctx) => {
+		const controllerStop =
+			typeof ctx.sessionManager.getCwd === "function" ? controller.stopCurrentSession(ctx) : Promise.resolve(false);
+		void controllerStop.catch(error => logger.warn(`notifications: controller shutdown failed: ${String(error)}`));
 		await stopSession(sessionId(ctx));
 	});
 }

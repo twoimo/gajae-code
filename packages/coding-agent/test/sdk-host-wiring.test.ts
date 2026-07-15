@@ -108,6 +108,7 @@ function context(
 		...(workflowGate ? { workflowGate } : {}),
 		sessionManager: {
 			getSessionId: () => sessionId,
+			getCwd: () => cwd,
 			getSessionName: () => "SDK wiring",
 			getUsageStatistics: () => ({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 }),
 		},

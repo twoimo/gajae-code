@@ -96,10 +96,12 @@ import { MCPManager } from "../runtime-mcp";
 import { createNotificationsExtension } from "../sdk/bus";
 import {
 	getNotificationConfig,
+	isNotificationHostEligible,
 	type NotificationConfig,
 	SPAWN_PROVENANCE_ENV,
 	shouldRegisterNotificationsExtension,
 } from "../sdk/bus/config";
+import { NotificationSessionController } from "../sdk/bus/session-control";
 import { shouldHostSdk } from "../sdk/host";
 import {
 	collectEnvSecrets,
@@ -310,7 +312,6 @@ export interface CreateAgentSessionOptions {
 	gjcSubskillToolContext?: { parent: string; phase: string; sessionId?: string; cwd?: string };
 	/** Inline extensions (merged with discovery). */
 	extensions?: ExtensionFactory[];
-
 	/** Additional extension paths to load (merged with discovery). */
 	additionalExtensionPaths?: string[];
 	/** Disable extension discovery (explicit paths still load). */
@@ -393,6 +394,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
+	/** Whether this host mode can own a notification session endpoint. Default: true. */
+	notificationHostModeSupported?: boolean;
 
 	/**
 	 * Opt-in OpenTelemetry instrumentation forwarded to the underlying Agent.
@@ -1142,15 +1145,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	);
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
-	// If session has data, try to restore model from it.
-	// Skip restore when an explicit model was requested.
-	let restoredDefaultResolution: Awaited<ReturnType<typeof resolveModelChainWithAuth>> | undefined;
-	const configuredDefaultEntries = existingSession.configuredModelChains?.default?.entries;
+	const persistedDefaultChain = existingSession.configuredModelChains.default?.entries;
 	const defaultModelEntries =
-		configuredDefaultEntries ?? (existingSession.models.default ? [existingSession.models.default] : []);
+		persistedDefaultChain && persistedDefaultChain.length > 0
+			? persistedDefaultChain
+			: existingSession.models.default
+				? [existingSession.models.default]
+				: [];
+	// If session has data, restore its configured default chain rather than the
+	// scalar runtime model, which may be a stale fallback from the prior run.
 	if (!hasExplicitModel && !model && hasExistingSession && defaultModelEntries.length > 0) {
 		await logger.time("restoreSessionModel", async () => {
-			restoredDefaultResolution = await resolveModelChainWithAuth(
+			const restoredDefaultResolution = await resolveModelChainWithAuth(
 				defaultModelEntries,
 				modelRegistry,
 				settings,
@@ -1158,9 +1164,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				{ managedFallback: defaultModelEntries.length > 1 },
 			);
 			model = restoredDefaultResolution.model;
-			if (!model) {
-				modelFallbackMessage = `Could not restore model chain ${defaultModelEntries.join(" → ")}`;
-			}
+			if (!model) modelFallbackMessage = `Could not restore model ${defaultModelEntries.join(" -> ")}`;
 		});
 	}
 
@@ -1716,6 +1720,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const spawnProvenance = process.env[SPAWN_PROVENANCE_ENV];
 		const spawnedByGjc = typeof spawnProvenance === "string" && spawnProvenance.trim().length > 0;
 		delete process.env[SPAWN_PROVENANCE_ENV];
+		const notificationHostEligible = isNotificationHostEligible({
+			env: process.env,
+			hostModeSupported: options.notificationHostModeSupported ?? true,
+			taskDepth,
+			parentTaskPrefix: options.parentTaskPrefix,
+			currentAgentType: options.currentAgentType,
+			sessionScope: notificationCfg?.sessionScope,
+			spawnedByGjc,
+		});
+		const notificationSessionController = new NotificationSessionController({
+			eligible: notificationHostEligible,
+			getConfig: () => getNotificationConfig(settings),
+		});
 		if (
 			lifecycleStartupCapability ||
 			shouldRegisterNotificationsExtension({
@@ -1735,6 +1752,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						throw new Error(process.env.GJC_SDK_TEST_FACTORY_SECRET ?? "Lifecycle factory test failure.");
 					createNotificationsExtension(api, {
 						settings,
+						controller: notificationSessionController,
 						spawnedByGjc,
 					});
 				} catch (error) {
@@ -2478,6 +2496,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			thinkingLevel,
 			sessionManager,
 			settings,
+			notificationSessionController,
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).
 			// AgentSession uses this to decide whether it may dispose the global
@@ -2541,12 +2560,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			providerSessionState: options.providerSessionState,
 		});
 		hasSession = true;
-		const restoredModelWasSelected = restoredDefaultResolution?.model === model;
-		if (restoredDefaultResolution && restoredModelWasSelected) {
-			session.seedDefaultFallbackResolution(restoredDefaultResolution.activeIndex, restoredDefaultResolution.skips);
-		} else if (restoredDefaultResolution && model) {
-			session.setDefaultFallbackRuntimeModel(formatModelString(model));
-		}
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => asyncJobManager.isDeliverySuppressed(entry.jobId),

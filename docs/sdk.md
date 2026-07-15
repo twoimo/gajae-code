@@ -331,6 +331,19 @@ GJC ships managed SDK-client adapters for Telegram, Discord, and Slack. They use
 one local SDK endpoint per session; the adapters do not change the wire protocol,
 keep endpoint credentials in provider state, or expose a remote shell.
 
+The recommended interactive path is `/settings` → **Notifications**. It owns
+setup, health, test, recovery, reconnect, local enablement, and Telegram
+removal without exposing stored credentials.
+`gjc notify setup` remains the authoritative CLI fallback for headless and
+automated environments.
+
+Notification credentials and `notifications.*` settings are global-only.
+Project notification keys are
+ignored and runtime notification overrides are rejected. Telegram pairing
+revalidates the complete bot-token/chat identity immediately before polling and
+again before activation. A foreign or unknown owner is never killed, reloaded, or taken over;
+setup fails closed without saving or exposing the raw token.
+
 - [Telegram notification onboarding](./telegram-onboarding.md) documents
   `gjc notify setup` and private-chat pairing.
 - [Discord notification onboarding](./discord-onboarding.md) documents
