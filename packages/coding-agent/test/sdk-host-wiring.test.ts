@@ -2141,9 +2141,7 @@ test("Q17 returns resource_gone without an assistant and reads a completed persi
 	await waitFor(() => fs.existsSync(endpointFile), "reopened SDK endpoint");
 	const reopenedEndpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
 	const reopenedFrames: Record<string, unknown>[] = [];
-	const reopenedSocket = new WebSocket(
-		`${reopenedEndpoint.url}/?token=${encodeURIComponent(reopenedEndpoint.token)}`,
-	);
+	const reopenedSocket = new WebSocket(`${reopenedEndpoint.url}/?token=${encodeURIComponent(reopenedEndpoint.token)}`);
 	sockets.push(reopenedSocket);
 	reopenedSocket.addEventListener("message", event => reopenedFrames.push(JSON.parse(String(event.data))));
 	await new Promise<void>((resolve, reject) => {
@@ -2168,7 +2166,10 @@ test("Q17 returns resource_gone without an assistant and reads a completed persi
 	);
 	expect(
 		JSON.parse(
-			String(reopenedFrames.find(frame => frame.type === "control_command_result" && frame.requestId === "reopened")?.message),
+			String(
+				reopenedFrames.find(frame => frame.type === "control_command_result" && frame.requestId === "reopened")
+					?.message,
+			),
 		),
 	).toMatchObject({
 		ok: true,
