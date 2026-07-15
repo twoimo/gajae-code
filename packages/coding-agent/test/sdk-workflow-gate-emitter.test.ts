@@ -248,6 +248,7 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 			await persistentSession.dispose();
 		}
 	});
+	// Real persisted-session rotation performs disk load, emitter fencing, and authority reminting; keep a local budget without weakening the suite default.
 	it("fences old workflow gates and remints authority after a session switch", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-session-switch-"));
 		tempDirs.push(tempDir);
@@ -327,7 +328,7 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 		} finally {
 			await session.dispose();
 		}
-	});
+	}, 15_000);
 	it("restores suspended predecessor gate authority when a session switch rolls back", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-switch-rollback-"));
 		tempDirs.push(tempDir);
