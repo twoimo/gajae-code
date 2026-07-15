@@ -26,7 +26,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { runListModelsCommand } from "./cli/list-models";
 import { selectSession } from "./cli/session-picker";
 import { findConfigFile } from "./config";
-import { activateModelProfile } from "./config/model-profile-activation";
+import { activateModelProfile, ModelProfileCredentialError } from "./config/model-profile-activation";
 import { ModelRegistry, ModelsConfigFile } from "./config/model-registry";
 import { resolveCliModel, resolveModelRoleValue, resolveModelScope, type ScopedModel } from "./config/model-resolver";
 import { selectorHead } from "./config/model-selector-value";
@@ -422,16 +422,48 @@ export async function applyStartupModelProfiles(args: {
 }
 
 export async function applyStartupModelProfilesOrExit(
-	args: Parameters<typeof applyStartupModelProfiles>[0],
-): Promise<void> {
+	args: Parameters<typeof applyStartupModelProfiles>[0] & { recoverCredentialError?: boolean },
+): Promise<{ recoverableError?: string }> {
 	try {
 		await applyStartupModelProfiles(args);
+		return {};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		if (args.recoverCredentialError === true && error instanceof ModelProfileCredentialError) {
+			return { recoverableError: message };
+		}
 		process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 		await args.session.dispose();
 		process.exit(1);
 	}
+}
+
+export function isStartupModelProfileCredentialRecoveryEligible(options: {
+	isInteractive: boolean;
+	initialMessage: string | undefined;
+	initialMessages: readonly string[];
+	resumeAction: "continue-tail" | "open-idle" | undefined;
+}): boolean {
+	return (
+		options.isInteractive &&
+		options.initialMessage === undefined &&
+		options.initialMessages.length === 0 &&
+		options.resumeAction !== "continue-tail"
+	);
+}
+
+export async function applyStartupModelProfilesForRoot(
+	args: Parameters<typeof applyStartupModelProfiles>[0] & {
+		isInteractive: boolean;
+		initialMessage: string | undefined;
+		initialMessages: readonly string[];
+		resumeAction: "continue-tail" | "open-idle" | undefined;
+	},
+): Promise<{ recoverableError?: string }> {
+	return applyStartupModelProfilesOrExit({
+		...args,
+		recoverCredentialError: isStartupModelProfileCredentialRecoveryEligible(args),
+	});
 }
 
 interface InteractiveModeFactoryOptions {
@@ -1313,14 +1345,21 @@ export async function runRootCommand(
 		}
 
 		if (!(parsedArgs.authBootstrap === true && isInteractive)) {
-			await applyStartupModelProfilesOrExit({
+			const { recoverableError } = await applyStartupModelProfilesForRoot({
 				session,
 				settings: settingsInstance,
 				modelRegistry,
 				parsedArgs,
 				startupModel: sessionOptions.model,
 				startupThinkingLevel: sessionOptions.thinkingLevel,
+				isInteractive,
+				initialMessage,
+				initialMessages: parsedArgs.messages,
+				resumeAction: bareResumeAction,
 			});
+			if (recoverableError) {
+				notifs.push({ kind: "error", message: recoverableError });
+			}
 		}
 
 		if (modelFallbackMessage) {

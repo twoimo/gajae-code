@@ -1,11 +1,16 @@
-import { describe, expect, test, vi } from "bun:test";
+import { describe, expect, spyOn, test, vi } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { Settings } from "../src/config/settings";
-import { applyStartupModelProfiles, applyStartupModelProfilesOrExit } from "../src/main";
+import {
+	applyStartupModelProfiles,
+	applyStartupModelProfilesForRoot,
+	applyStartupModelProfilesOrExit,
+	isStartupModelProfileCredentialRecoveryEligible,
+} from "../src/main";
 import { parseCliCredentialSelector } from "../src/runtime-credential-selector";
 import type { AgentSession } from "../src/session/agent-session";
 
@@ -69,6 +74,7 @@ function fakeSession(initial = model("initial-provider", "initial")) {
 		seedDefaultFallbackResolution(activeIndex: number, skips: Array<{ selector: string; reason: string }>) {
 			session.seedDefaultFallbackResolutionCalls.push({ activeIndex, skips });
 		},
+		async dispose() {},
 	};
 	return session as unknown as AgentSession & {
 		setModelTemporaryCalls: typeof session.setModelTemporaryCalls;
@@ -340,6 +346,211 @@ test("persisted default thinking overrides startup default profile effort", asyn
 	expect(
 		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
 	).toEqual(["profile-provider/default:xhigh"]);
+});
+
+test("interactive startup surfaces missing-credential profile errors as recoverable notifications instead of exiting", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw new Error("process.exit must not be called in interactive recovery");
+	}) as never);
+	try {
+		const result = await applyStartupModelProfilesOrExit({
+			session,
+			settings,
+			modelRegistry: registry,
+			parsedArgs: {},
+			startupModel: undefined,
+			startupThinkingLevel: undefined,
+			recoverCredentialError: true,
+		});
+
+		expect(exitSpy).not.toHaveBeenCalled();
+		expect(result.recoverableError).toContain('Model profile "codex-medium" requires credentials for: openai-codex');
+	} finally {
+		exitSpy.mockRestore();
+	}
+});
+
+test("noninteractive startup keeps the exit-on-missing-credential contract", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+
+	const exit = new Error("exit 1");
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw exit;
+	}) as never);
+	const stderr: string[] = [];
+	const stderrSpy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+		stderr.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+		return true;
+	}) as never);
+	try {
+		await expect(
+			applyStartupModelProfilesOrExit({
+				session,
+				settings,
+				modelRegistry: registry,
+				parsedArgs: {},
+				startupModel: undefined,
+				startupThinkingLevel: undefined,
+				recoverCredentialError: false,
+			}),
+		).rejects.toBe(exit);
+		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(stderr.join("")).toContain('Model profile "codex-medium" requires credentials for: openai-codex');
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
+});
+
+test("credential recovery does not mask unrelated model-profile activation errors", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "missing-profile" });
+	const exit = new Error("exit 1");
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw exit;
+	}) as never);
+	const stderrSpy = spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+	try {
+		await expect(
+			applyStartupModelProfilesOrExit({
+				session,
+				settings,
+				modelRegistry: fakeRegistry([]) as never,
+				parsedArgs: {},
+				startupModel: undefined,
+				startupThinkingLevel: undefined,
+				recoverCredentialError: true,
+			}),
+		).rejects.toBe(exit);
+		expect(exitSpy).toHaveBeenCalledWith(1);
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
+});
+
+describe("startup model-profile credential recovery eligibility", () => {
+	test.each([
+		["ordinary input-free interactive startup", true, undefined, [], undefined, true],
+		["print or text startup", false, undefined, [], undefined, false],
+		["explicit startup prompt", true, "hello", [], undefined, false],
+		["slash or positional startup message", true, undefined, ["/login"], undefined, false],
+		["image-only startup", true, "", [], undefined, false],
+		["automatic resume continuation", true, undefined, [], "continue-tail", false],
+		["idle resume picker selection", true, undefined, [], "open-idle", true],
+	] as const)("%s", (_name, isInteractive, initialMessage, initialMessages, resumeAction, expected) => {
+		expect(
+			isStartupModelProfileCredentialRecoveryEligible({
+				isInteractive,
+				initialMessage,
+				initialMessages,
+				resumeAction,
+			}),
+		).toBe(expected);
+	});
+});
+
+test("root startup recovers a missing credential only for an input-free interactive route", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+
+	const result = await applyStartupModelProfilesForRoot({
+		session,
+		settings,
+		modelRegistry: registry,
+		parsedArgs: {},
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+		isInteractive: true,
+		initialMessage: undefined,
+		initialMessages: [],
+		resumeAction: undefined,
+	});
+
+	expect(result.recoverableError).toContain('Model profile "codex-medium" requires credentials for: openai-codex');
+});
+
+test.each([
+	["print or text", false, undefined, [], undefined],
+	["explicit prompt", true, "hello", [], undefined],
+	["positional or slash input", true, undefined, ["do work"], undefined],
+	["image-only input", true, "", [], undefined],
+	["automatic resume continuation", true, undefined, [], "continue-tail"],
+] as const)("root startup keeps %s credential failures fatal", async (_name, isInteractive, initialMessage, initialMessages, resumeAction) => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+	const exit = new Error("exit 1");
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw exit;
+	}) as never);
+	const stderrSpy = spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+	try {
+		await expect(
+			applyStartupModelProfilesForRoot({
+				session,
+				settings,
+				modelRegistry: registry,
+				parsedArgs: {},
+				startupModel: undefined,
+				startupThinkingLevel: undefined,
+				isInteractive,
+				initialMessage,
+				initialMessages,
+				resumeAction,
+			}),
+		).rejects.toBe(exit);
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
 });
 
 test("thinking-only startup uses authoritative override semantics", async () => {

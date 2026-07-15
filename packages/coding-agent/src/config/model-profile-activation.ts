@@ -220,6 +220,18 @@ export function materializeActiveModelProfileAssignments(options: MaterializeMod
 	return true;
 }
 
+export class ModelProfileCredentialError extends Error {
+	readonly profileLabel: string;
+	readonly providers: readonly string[];
+
+	constructor(profileLabel: string, providers: readonly string[]) {
+		super(formatModelProfileCredentialError(profileLabel, providers));
+		this.name = "ModelProfileCredentialError";
+		this.profileLabel = profileLabel;
+		this.providers = [...providers];
+	}
+}
+
 export function formatModelProfileCredentialError(profileLabel: string, providers: readonly string[]): string {
 	return `Model profile "${profileLabel}" requires credentials for: ${providers.join(", ")}. Run /login and configure the missing provider(s), then retry.`;
 }
@@ -363,12 +375,12 @@ export async function prepareModelProfileActivation(
 	// providers are resolution-time candidates and intentionally do not gate here.
 	const strictMissing = missingProviders.filter(provider => !alternativeSet.has(provider));
 	if (strictMissing.length > 0) {
-		throw new Error(formatModelProfileCredentialError(profileLabel, strictMissing));
+		throw new ModelProfileCredentialError(profileLabel, strictMissing);
 	}
 	for (const group of alternativeGroups) {
 		const groupAuthenticated = group.some(provider => authenticatedProviders.includes(provider));
 		if (!groupAuthenticated) {
-			throw new Error(formatModelProfileCredentialError(profileLabel, [...group]));
+			throw new ModelProfileCredentialError(profileLabel, [...group]);
 		}
 	}
 

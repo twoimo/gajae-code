@@ -1643,8 +1643,8 @@ function installedOperations(ctx: ExtensionContext, kind: "control" | "query"): 
 			operation.kind === kind &&
 			(kind !== "control" ||
 				(!UNINSTALLED_CONTROL_OPERATIONS.has(operation.sdkId) &&
-						((operation.sdkId !== "workflow.gate_answer" && operation.sdkId !== "workflow.plan_approve") ||
-							hasTerminalArbitrationCapability(ctx.workflowGate)) &&
+					((operation.sdkId !== "workflow.gate_answer" && operation.sdkId !== "workflow.plan_approve") ||
+						hasTerminalArbitrationCapability(ctx.workflowGate)) &&
 					(!required[operation.sdkId] || bindings.has(required[operation.sdkId]!)))),
 	);
 	return new Set(candidates.map(operation => operation.sdkId));
