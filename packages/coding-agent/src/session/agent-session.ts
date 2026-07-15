@@ -5849,7 +5849,7 @@ export class AgentSession {
 	#bindWorkflowGateEmitter(previousSessionId?: string, previousEmitter = this.#workflowGateEmitter): void {
 		const sessionId = this.sessionManager.getSessionId();
 		assertNonEmptyGjcSessionId(sessionId, "AgentSession workflow-gate session");
-		const gateStore = this.sessionManager.getSessionFile()
+		const gateStore = this.sessionManager.isPersisted()
 			? new FileGateStore(path.join(sessionStateDir(this.sessionManager.getCwd(), sessionId), "workflow-gates.json"))
 			: new MemoryGateStore();
 		const successorEmitter = new BrokerWorkflowGateEmitter(sessionId, gateStore);

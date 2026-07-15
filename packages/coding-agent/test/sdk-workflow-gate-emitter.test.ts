@@ -6,6 +6,7 @@ import type { AgentToolContext } from "@gajae-code/agent-core";
 import { getBundledModel } from "@gajae-code/ai";
 import { createAgentSession } from "@gajae-code/coding-agent/sdk";
 import { Settings } from "../src/config/settings";
+import { sessionStateDir } from "../src/gjc-runtime/session-layout";
 import {
 	BrokerWorkflowGateEmitter,
 	FileGateStore,
@@ -197,6 +198,54 @@ describe("SDK ToolSession forwards getWorkflowGateEmitter", () => {
 			dispose();
 		} finally {
 			await session.dispose();
+		}
+	});
+	it("keeps in-memory gates ephemeral while persistent sessions use the durable store", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-g011-store-boundary-"));
+		tempDirs.push(tempDir);
+
+		const { session: inMemorySession } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(tempDir),
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			hasUI: false,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+		});
+		const inMemoryGatePath = path.join(sessionStateDir(tempDir, inMemorySession.sessionId), "workflow-gates.json");
+		try {
+			expect(fs.existsSync(inMemoryGatePath)).toBe(false);
+		} finally {
+			await inMemorySession.dispose();
+		}
+
+		const persistentManager = SessionManager.create(tempDir, tempDir);
+		const { session: persistentSession } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: persistentManager,
+			settings: Settings.isolated(),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			hasUI: false,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+		});
+		const persistentGatePath = path.join(
+			sessionStateDir(tempDir, persistentSession.sessionId),
+			"workflow-gates.json",
+		);
+		try {
+			expect(fs.existsSync(persistentGatePath)).toBe(true);
+		} finally {
+			await persistentSession.dispose();
 		}
 	});
 	it("fences old workflow gates and remints authority after a session switch", async () => {
