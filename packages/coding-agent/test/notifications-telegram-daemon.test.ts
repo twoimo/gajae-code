@@ -21,6 +21,7 @@ import {
 	renewDaemonHeartbeat,
 	TelegramBotTransport,
 	type TelegramDaemonFs,
+	type TelegramDaemonOptions,
 	TelegramEventDispatchState,
 	TelegramNotificationDaemon,
 	TelegramUpdatePoller,
@@ -745,12 +746,26 @@ describe("telegram daemon", () => {
 			randomId: () => "owner",
 		});
 		class OneShotDaemon extends TelegramNotificationDaemon {
-			override async scanRoots(): Promise<void> {}
+			#options: TelegramDaemonOptions;
+
+			constructor(options: TelegramDaemonOptions) {
+				super(options);
+				this.#options = options;
+			}
+
+			override async run(): Promise<void> {
+				await renewDaemonHeartbeat({
+					settings: this.#options.settings,
+					ownerId: this.#options.ownerId,
+					pid: this.#options.pid,
+				});
+			}
 		}
 		await runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner"], {
 			SettingsImpl: { init: async () => s },
 			DaemonImpl: OneShotDaemon,
 			processPid: 222,
+			readDaemonState: async () => undefined,
 		});
 		const state = JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8")) as {
 			pid: number;
