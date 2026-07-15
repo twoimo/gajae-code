@@ -18,6 +18,7 @@ import * as path from "node:path";
 
 /** Chromium single-instance lock artifacts — must never be copied. */
 export const CHROME_LOCK_ARTIFACTS = ["SingletonLock", "SingletonSocket", "SingletonCookie"] as const;
+const CHROME_LOCK_ARTIFACT_SET = new Set<string>(CHROME_LOCK_ARTIFACTS);
 
 /**
  * Profile-relative artifacts worth seeding for warm-up. Kept intentionally
@@ -43,12 +44,16 @@ export interface WarmupManifest {
 	excludedLocks: string[];
 }
 
-function copyRecursive(src: string, dest: string): void {
+function copyRecursive(src: string, dest: string, manifest: WarmupManifest): void {
 	const stat = fs.statSync(src);
 	if (stat.isDirectory()) {
 		fs.mkdirSync(dest, { recursive: true });
 		for (const entry of fs.readdirSync(src)) {
-			copyRecursive(path.join(src, entry), path.join(dest, entry));
+			if (CHROME_LOCK_ARTIFACT_SET.has(entry)) {
+				if (!manifest.excludedLocks.includes(entry)) manifest.excludedLocks.push(entry);
+				continue;
+			}
+			copyRecursive(path.join(src, entry), path.join(dest, entry), manifest);
 		}
 	} else {
 		fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -76,6 +81,11 @@ export function collectWarmupArtifacts(sourceProfileDir: string, destDir: string
 	if (!fs.existsSync(sourceProfileDir)) {
 		throw new Error(`source profile directory does not exist: ${sourceProfileDir}`);
 	}
+	const resolvedSource = path.resolve(sourceProfileDir);
+	const resolvedDest = path.resolve(destDir);
+	if (resolvedDest === resolvedSource || resolvedDest.startsWith(`${resolvedSource}${path.sep}`)) {
+		throw new Error("warm-up destination must be outside the source profile directory");
+	}
 	fs.mkdirSync(destDir, { recursive: true });
 
 	// Record (but never copy) any lock artifacts present in the source.
@@ -91,7 +101,7 @@ export function collectWarmupArtifacts(sourceProfileDir: string, destDir: string
 			manifest.skippedMissing.push(artifact);
 			continue;
 		}
-		copyRecursive(src, path.join(destDir, artifact));
+		copyRecursive(src, path.join(destDir, artifact), manifest);
 		manifest.copied.push(artifact);
 	}
 

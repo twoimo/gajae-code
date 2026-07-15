@@ -104,9 +104,9 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 				posture: opts.profileReuse,
 				discoveryEnv: defaultDiscoveryEnv(fs.existsSync),
 			});
+			if (reuse.warning) logger.warn(reuse.warning);
 			if (reuse.mode === "real" && reuse.warmupDir) {
 				profileWarmupDir = reuse.warmupDir;
-				if (reuse.warning) logger.warn(reuse.warning);
 			}
 		}
 		const browser = await launchHeadlessBrowser({

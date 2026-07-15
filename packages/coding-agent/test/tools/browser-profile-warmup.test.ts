@@ -51,6 +51,19 @@ describe("collectWarmupArtifacts", () => {
 		}
 	});
 
+	it("excludes lock artifacts nested inside copied directories", () => {
+		const networkDir = path.join(source, "Network");
+		fs.mkdirSync(networkDir, { recursive: true });
+		fs.writeFileSync(path.join(networkDir, "Cookies"), "cookie-bytes");
+		fs.writeFileSync(path.join(networkDir, "SingletonLock"), "lock");
+
+		const manifest = collectWarmupArtifacts(source, dest);
+
+		expect(manifest.excludedLocks).toContain("SingletonLock");
+		expect(fs.existsSync(path.join(dest, "Network", "SingletonLock"))).toBe(false);
+		expect(fs.readFileSync(path.join(dest, "Network", "Cookies"), "utf8")).toBe("cookie-bytes");
+	});
+
 	it("never mutates the source profile", () => {
 		fs.writeFileSync(path.join(source, "Cookies"), "original");
 		const before = fs.readdirSync(source).sort();
@@ -60,6 +73,13 @@ describe("collectWarmupArtifacts", () => {
 		const after = fs.readdirSync(source).sort();
 		expect(after).toEqual(before);
 		expect(fs.readFileSync(path.join(source, "Cookies"), "utf8")).toBe("original");
+	});
+
+	it("rejects a destination inside the source profile", () => {
+		expect(() => collectWarmupArtifacts(source, path.join(source, "isolated"))).toThrow(
+			"destination must be outside",
+		);
+		expect(fs.existsSync(path.join(source, "isolated"))).toBe(false);
 	});
 
 	it("skips missing artifacts without failing", () => {

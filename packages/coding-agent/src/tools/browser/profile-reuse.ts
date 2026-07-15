@@ -42,6 +42,10 @@ function defaultTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "gjc-profile-warmup-"));
 }
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Resolve profile reuse for a default session. When the posture resolves to
  * `real`, copies an allowlisted, lock-free subset of the discovered profile
@@ -66,15 +70,33 @@ export function resolveProfileReuse(inputs: ResolveProfileReuseInputs): ProfileR
 		};
 	}
 
-	const destDir = inputs.destDir ?? (inputs.makeTempDir ?? defaultTempDir)();
+	const ownsDestDir = inputs.destDir === undefined;
+	let destDir: string | undefined;
 	const copy = inputs.copy ?? collectWarmupArtifacts;
-	const manifest = copy(discovered.profileDir, destDir);
-	return {
-		mode: "real",
-		reason: decision.reason,
-		warning: decision.warning,
-		discovered,
-		warmupDir: destDir,
-		manifest,
-	};
+	try {
+		destDir = inputs.destDir ?? (inputs.makeTempDir ?? defaultTempDir)();
+		const manifest = copy(discovered.profileDir, destDir);
+		return {
+			mode: "real",
+			reason: decision.reason,
+			warning: decision.warning,
+			discovered,
+			warmupDir: destDir,
+			manifest,
+		};
+	} catch (error) {
+		if (ownsDestDir && destDir) {
+			try {
+				fs.rmSync(destDir, { recursive: true, force: true });
+			} catch {}
+		}
+		return {
+			mode: "synthetic",
+			reason: "synthetic-copy-failed",
+			warning: `Could not safely copy the discovered Chrome profile; using synthetic browser state instead: ${errorMessage(error)}`,
+			discovered,
+			warmupDir: null,
+			manifest: null,
+		};
+	}
 }

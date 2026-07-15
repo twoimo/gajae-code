@@ -7,14 +7,12 @@
  * browser; the integration test wires a live puppeteer Page.
  */
 
+import type { Page } from "puppeteer-core";
 import type { DetectorResult, RawProbe } from "./detector-report";
 import { parseProbe } from "./detector-report";
 
 /** Minimal surface of a puppeteer Page that the harness needs. */
-export interface SuitePage {
-	goto(url: string, options?: { waitUntil?: string }): Promise<unknown>;
-	evaluate<T>(fn: () => T): Promise<T>;
-}
+export type SuitePage = Pick<Page, "goto" | "evaluate">;
 
 export interface SuiteFixture {
 	/** file:// (or http://) URL of the offline detector fixture. */
@@ -34,7 +32,7 @@ export async function runOfflineSuite(page: SuitePage, fixtures: readonly SuiteF
 	const results: DetectorResult[] = [];
 	for (const fixture of fixtures) {
 		await page.goto(fixture.url, { waitUntil: "load" });
-		const raw = await page.evaluate<RawProbe>(readProbe);
+		const raw = await page.evaluate(readProbe);
 		results.push(parseProbe(raw));
 	}
 	return results;

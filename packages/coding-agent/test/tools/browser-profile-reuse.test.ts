@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { chromeUserDataRoots, discoverDefaultChromeProfile } from "../../src/tools/browser/profile-discovery";
 import { resolveProfileReuse } from "../../src/tools/browser/profile-reuse";
@@ -67,6 +69,39 @@ describe("resolveProfileReuse", () => {
 		expect(res.mode).toBe("synthetic");
 		expect(res.warmupDir).toBeNull();
 		expect(copyCalled).toBe(false);
+	});
+
+	it("falls back to synthetic and removes an owned temp copy when warm-up fails", () => {
+		const profileDir = "/home/x/.config/google-chrome/Default";
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "profile-reuse-fallback-"));
+		const res = resolveProfileReuse({
+			discoveryEnv: env({ platform: "linux", home: "/home/x", existing: [profileDir] }),
+			makeTempDir: () => tempDir,
+			copy: (_source, dest) => {
+				fs.writeFileSync(path.join(dest, "partial"), "partial");
+				throw new Error("profile changed during copy");
+			},
+		});
+
+		expect(res.mode).toBe("synthetic");
+		expect(res.reason).toBe("synthetic-copy-failed");
+		expect(res.warning).toContain("using synthetic browser state instead");
+		expect(res.warmupDir).toBeNull();
+		expect(fs.existsSync(tempDir)).toBe(false);
+	});
+
+	it("falls back to synthetic when the isolated temp directory cannot be created", () => {
+		const profileDir = "/home/x/.config/google-chrome/Default";
+		const res = resolveProfileReuse({
+			discoveryEnv: env({ platform: "linux", home: "/home/x", existing: [profileDir] }),
+			makeTempDir: () => {
+				throw new Error("temp unavailable");
+			},
+		});
+
+		expect(res.mode).toBe("synthetic");
+		expect(res.reason).toBe("synthetic-copy-failed");
+		expect(res.warning).toContain("temp unavailable");
 	});
 
 	it("opt-in without explicit request stays synthetic even when a profile exists", () => {
