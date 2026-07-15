@@ -13,6 +13,7 @@
 - Gajae Pet selection is now terminal-capability aware: unsupported terminals show an actionable warning (with multiplexer-specific guidance for tmux/screen/zellij, including the `PI_FORCE_IMAGE_PROTOCOL=sixel` expert opt-in), `/pet` and Settings disable the unavailable `RedGajae`/`BlueGajae` choices while `off` stays selectable, a saved-but-unavailable choice is identified as `(saved)`, and the public command names are consistent across execution, completion, and inline hints (`/pet RedGajae`, `/pet BlueGajae`, `/pet off`, case-insensitive).
 - Added the standalone `@gajae-code/bridge-client` transport-only v3 SDK package. It exports `SdkClient` and its associated types; `@gajae-code/coding-agent/sdk` remains a compatibility re-export with the exact same class identity. Historical BridgeClient backend protocol, handshake, commands, SSE, and host-control bypass surfaces remain unavailable.
 - Added explicit `--mcp-config <absolute-path>` support for one trusted, tools-only MCP config in top-level standalone sessions without enabling automatic user or project MCP discovery; exact reads reject links and identity changes, and MCP tool-name collisions fail closed.
+- Added additive v3 workflow-gate correlation compatibility surfaces (#2171): explicit Rust workflow-frame readers/registration preserve `workflowGateId` without changing legacy `ActionNeeded`, `ServerMessage`, or `register_ask`; N-API retains `registerAsk` and adds correlated/arbitrated registration and exact unclaimed-retirement APIs. Private presentation leases, routes, claims, receipts, epochs, and endpoint generations remain non-public.
 
 ### Changed
 
@@ -20,6 +21,8 @@
 - Moved SDK discovery from `.gjc/state/notifications/` to `.gjc/state/sdk/`. Restart sessions and daemons together when upgrading; the runtime does not dual-scan the old and new directories.
 - Removed the `--mode rpc`, `--mode rpc-ui`, and `--mode bridge` external ingress modes. Machine clients must use the SDK WebSocket interfaces documented in `docs/sdk.md`; no RPC or Bridge compatibility path remains.
 - Documented the current GPT-5.6 Codex and combo profile mappings as product judgments, including the durable `opus-codex` `anthropic/claude-sonnet-5` planner override and `fable-opus-codex` `anthropic/claude-opus-4-8:medium` planner.
+- Resolved the SDK v3 workflow-gate shipping classification (#2171): `workflowGateId` and Q12 diagnostics are additive SDK v3 surfaces, while `action_needed.id` remains the transient, generic `reply.id` authority. `expectedSessionId` omission remains accepted and audited for the entire SDK v3 line; new clients must send it, and mandatory enforcement or removal can occur no earlier than SDK v4 only after at least one full published deprecation release/window with deployed-client notice. Explicit session mismatches fail closed before resolution; mismatched sessions, stale/reissued actions, and unsafe ambiguity never regain authority.
+- Documented release pairing: the `@gajae-code/coding-agent` runtime and `@gajae-code/natives` native addon ship from the same source release at exact matching package versions (currently `0.10.2`), with the native loader version sentinel enforcing the pair. Mixed native/runtime versions are unsupported and cannot claim SDK compatibility.
 ### Fixed
 - Startup continuation now participates in the existing managed fallback and in-flight recovery envelope, preventing a retryable resumed turn from publishing `agent_end`/idle before retry success, exhaustion, cancellation, or startup failure has settled (#2092).
 
@@ -49,12 +52,6 @@
 - Accepted or declined initial external credential-import decisions now persist across normal restarts and upgrades, suppressing automatic startup and bare `/login` discovery; same-version legacy markers remain compatible and explicit `/provider` import remains available ([#2117](https://github.com/Yeachan-Heo/gajae-code/issues/2117)).
 
 
-- Resolved the SDK v3 workflow-gate shipping classification (#2171): `workflowGateId` and Q12 diagnostics are additive SDK v3 surfaces, while `action_needed.id` remains the transient, generic `reply.id` authority. `expectedSessionId` omission remains accepted and audited for the entire SDK v3 line; new clients must send it, and mandatory enforcement or removal can occur no earlier than SDK v4 only after at least one full published deprecation release/window with deployed-client notice. Explicit session mismatches fail closed before resolution; mismatched sessions, stale/reissued actions, and unsafe ambiguity never regain authority.
-- Documented release pairing: the `@gajae-code/coding-agent` runtime and `@gajae-code/natives` native addon ship from the same source release at exact matching package versions (currently `0.10.2`), with the native loader version sentinel enforcing the pair. Mixed native/runtime versions are unsupported and cannot claim SDK compatibility.
-
-### Added
-
-- Added additive v3 workflow-gate correlation compatibility surfaces (#2171): explicit Rust workflow-frame readers/registration preserve `workflowGateId` without changing legacy `ActionNeeded`, `ServerMessage`, or `register_ask`; N-API retains `registerAsk` and adds correlated/arbitrated registration and exact unclaimed-retirement APIs. Private presentation leases, routes, claims, receipts, epochs, and endpoint generations remain non-public.
 ## [0.10.1] - 2026-07-13
 
 ### Added

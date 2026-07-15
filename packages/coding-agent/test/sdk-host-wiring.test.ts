@@ -2103,9 +2103,10 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		schema: { type: "string", enum: ["approve"] },
 	});
 	await waitFor(() => gateId !== "", "workflow gate");
+	Object.assign(emitter, { listWorkflowGateQueryRecords: undefined });
 	expect(await request("gates", { type: "query_request", id: "gates", query: "Q12" })).toMatchObject({
 		ok: true,
-		page: { items: [{ gate_id: gateId }] },
+		page: { items: [{ gate_id: gateId, id: `pending:${gateId}`, tag: "pending" }] },
 	});
 	const initialGateId = gateId;
 	const queuedAdvance = emitter.emitGate({
@@ -2142,6 +2143,97 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		}),
 	).toMatchObject({ ok: true, result: { status: "accepted" } });
 	expect(await advance).toBe("approve");
+	const originalResolveGate = emitter.resolveGate!.bind(emitter);
+	const originalListPendingGates = emitter.listPendingGates!.bind(emitter);
+	const originalClearPreparedTerminalization = emitter.clearPreparedTerminalization!.bind(emitter);
+	let rejectDirectOnce = true;
+	let clearedPreparedProofs = 0;
+	Object.assign(emitter, {
+		resolveGate: async (response: Parameters<NonNullable<WorkflowGateEmitter["resolveGate"]>>[0]) => {
+			if (rejectDirectOnce) {
+				rejectDirectOnce = false;
+				throw new Error("transient direct-control failure");
+			}
+			return originalResolveGate(response);
+		},
+		listPendingGates: () => originalListPendingGates(),
+		clearPreparedTerminalization: (id: string) => {
+			clearedPreparedProofs += 1;
+			originalClearPreparedTerminalization(id);
+		},
+	});
+	const failedDirectPriorGateId = gateId;
+	const failedDirectAdvance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+		options: [{ value: "approve", label: "Approve" }],
+	});
+	await waitFor(() => gateId !== failedDirectPriorGateId, "failed-direct workflow gate");
+	const failedDirectGateId = gateId;
+	const actionFramesForGate = () =>
+		frames.filter(frame => frame.type === "action_needed" && frame.workflowGateId === failedDirectGateId);
+	await waitFor(() => actionFramesForGate().length === 1, "initial failed-direct presentation");
+	const initialActionId = String(actionFramesForGate()[0]?.id);
+	expect(
+		await request("failed-direct", {
+			type: "control_request",
+			id: "failed-direct",
+			operation: "workflow.gate_answer",
+			input: { id: failedDirectGateId, response: "approve", expectedSessionId: sessionId },
+		}),
+	).toMatchObject({ ok: false });
+	expect(clearedPreparedProofs).toBe(1);
+	await waitFor(() => actionFramesForGate().length >= 2, "reissued failed-direct presentation");
+	const reissuedActionId = String(actionFramesForGate().at(-1)?.id);
+	expect(reissuedActionId).not.toBe(initialActionId);
+	expect(
+		await emitter.resolveGateFromNotification!(
+			{ gate_id: failedDirectGateId, answer: "approve", idempotency_key: "failed-direct-generic" },
+			{
+				interactionActionId: reissuedActionId,
+				replyReceiptId: "failed-direct-receipt",
+				answerJson: JSON.stringify("approve"),
+				requestSelectedAck: async () => ({ status: "delivered", messageId: 1 }),
+				resolveClaim: () => {},
+				closeClaimInvalid: reason => {
+					throw new Error(`Unexpected invalid generic reply: ${reason}`);
+				},
+			},
+		),
+	).toMatchObject({ status: "accepted" });
+	expect(await failedDirectAdvance).toBe("approve");
+
+	const nextPriorGateId = gateId;
+	const nextAdvance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+		options: [{ value: "approve", label: "Approve" }],
+	});
+	await waitFor(() => gateId !== nextPriorGateId, "post-reissue workflow gate");
+	const nextGateId = gateId;
+	await waitFor(
+		() => frames.some(frame => frame.type === "action_needed" && frame.workflowGateId === nextGateId),
+		"post-reissue presentation",
+	);
+	const nextAction = frames.findLast(frame => frame.type === "action_needed" && frame.workflowGateId === nextGateId);
+	expect(
+		await emitter.resolveGateFromNotification!(
+			{ gate_id: nextGateId, answer: "approve", idempotency_key: "post-reissue-generic" },
+			{
+				interactionActionId: String(nextAction?.id),
+				replyReceiptId: "post-reissue-receipt",
+				answerJson: JSON.stringify("approve"),
+				requestSelectedAck: async () => ({ status: "delivered", messageId: 2 }),
+				resolveClaim: () => {},
+				closeClaimInvalid: reason => {
+					throw new Error(`Unexpected invalid generic reply: ${reason}`);
+				},
+			},
+		),
+	).toMatchObject({ status: "accepted" });
+	expect(await nextAdvance).toBe("approve");
 
 	Object.assign(emitter, {
 		resolveGate: async () => {

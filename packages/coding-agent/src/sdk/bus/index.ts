@@ -1684,7 +1684,19 @@ function sdkQuerySurface(
 			return projectQ10Models({ models, currentModel, currentThinkingLevel });
 		},
 		getSkillState: () => ctx.getSkillState(),
-		getGates: () => ctx.workflowGate?.listWorkflowGateQueryRecords?.() ?? [],
+		getGates: () => {
+			const workflowGate = ctx.workflowGate;
+			if (!workflowGate) return [];
+			return (
+				workflowGate.listWorkflowGateQueryRecords?.() ??
+				workflowGate.listPendingGates?.().map(gate => ({
+					...gate,
+					id: `pending:${gate.gate_id}`,
+					tag: "pending" as const,
+				})) ??
+				[]
+			);
+		},
 		getConfigItems: () => {
 			const items = ctx.getConfigItems();
 			return items && typeof items === "object" && !Array.isArray(items)
@@ -1950,6 +1962,7 @@ function sdkControlSurface(
 				}
 			} catch (error) {
 				const outcome = reconcileDirectControlFailure(id);
+				if (outcome === "rejected") ctx.workflowGate?.clearPreparedTerminalization?.(id);
 				presentations.finishDirectControl(id, prepared, outcome);
 				if (outcome === "unknown")
 					throw Object.assign(new Error("Workflow gate resolution outcome is uncertain."), {
@@ -1958,6 +1971,7 @@ function sdkControlSurface(
 				throw error;
 			}
 			const outcome = reconcileDirectControlFailure(id);
+			if (outcome === "rejected") ctx.workflowGate?.clearPreparedTerminalization?.(id);
 			presentations.finishDirectControl(id, prepared, outcome);
 			logger.warn("workflow_gate_direct_control_uncertain_outcome", {
 				operation: "workflow.gate_answer",
@@ -2013,6 +2027,7 @@ function sdkControlSurface(
 				}
 			} catch (error) {
 				const outcome = reconcileDirectControlFailure(id);
+				if (outcome === "rejected") ctx.workflowGate?.clearPreparedTerminalization?.(id);
 				presentations.finishDirectControl(id, prepared, outcome);
 				if (outcome === "unknown")
 					throw Object.assign(new Error("Workflow plan resolution outcome is uncertain."), {
@@ -2021,6 +2036,7 @@ function sdkControlSurface(
 				throw error;
 			}
 			const outcome = reconcileDirectControlFailure(id);
+			if (outcome === "rejected") ctx.workflowGate?.clearPreparedTerminalization?.(id);
 			presentations.finishDirectControl(id, prepared, outcome);
 			logger.warn("workflow_gate_direct_control_uncertain_outcome", {
 				operation: "workflow.plan_approve",
