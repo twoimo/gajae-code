@@ -14,6 +14,7 @@ import { ExtensionUiController } from "../src/modes/controllers/extension-ui-con
 import {
 	BrokerWorkflowGateEmitter,
 	FileGateStore,
+	MemoryGateStore,
 	type WorkflowGateEmitter,
 } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import type { InteractiveModeContext } from "../src/modes/types";
@@ -2329,6 +2330,124 @@ test("session teardown drains admitted direct gate resolution before detaching i
 		registerController.mockRestore();
 	}
 });
+test("PresentationArbiter drops a retired presentation before terminal persistence recovery", async () => {
+	const publications: string[] = [];
+	const closed: string[] = [];
+	const store = new MemoryGateStore();
+	const originalPut = store.put.bind(store);
+	let failTerminalizedWrite = true;
+	const put = spyOn(store, "put").mockImplementation(record => {
+		if (failTerminalizedWrite && record.terminalized) {
+			failTerminalizedWrite = false;
+			throw new Error("terminalized record write failed");
+		}
+		originalPut(record);
+	});
+	const emitter = new BrokerWorkflowGateEmitter("terminal-recovery", store);
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as { id: string };
+				publications.push(action.id);
+				return { actionId: action.id, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed: () => ({ status: "retired" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	emitter.registerGateTerminalController!({
+		completeGateInteractions: gateId => arbiter.complete(gateId),
+		cancelGateInteractions: gateId => arbiter.cancel(gateId, "terminalization failed"),
+	});
+	const gateIds: string[] = [];
+	emitter.onGateEmitted!(gate => {
+		gateIds.push(gate.gate_id);
+		arbiter.retain({
+			gateId: gate.gate_id,
+			workflowGateId: gate.gate_id,
+			sessionId: "session",
+			question: gate.gate_id,
+			options: ["approve"],
+			controls: [],
+			multi: false,
+			allowEmpty: false,
+			selectedOptions: [],
+			onClosed: () => closed.push(gate.gate_id),
+		});
+	});
+	const firstAdvance = emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } });
+	const secondAdvance = emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } });
+	const [firstGateId, secondGateId] = gateIds;
+
+	try {
+		await expect(
+			emitter.resolveGate!({ gate_id: firstGateId!, answer: "approve", idempotency_key: firstGateId! }),
+		).rejects.toThrow("terminalized record write failed");
+		expect(publications).toHaveLength(2);
+		expect(closed).toEqual([firstGateId]);
+		expect(store.get(firstGateId!)).toMatchObject({ status: "accepted", terminalized: false, advanced: false });
+
+		await expect(emitter.recoverAcceptedGates!()).resolves.toEqual([firstGateId]);
+		expect(await firstAdvance).toBe("approve");
+		expect(arbiter.complete(firstGateId!)).toBe("already_terminal");
+		expect(closed).toEqual([firstGateId]);
+		expect(arbiter.routeFor(publications[1]!)).toBe(secondGateId);
+	} finally {
+		put.mockRestore();
+		void secondAdvance.catch(() => {});
+	}
+});
+
+test("SDK host omits direct workflow controls for a legacy workflow-gate emitter", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-legacy-workflow-gate-"));
+	dirs.push(cwd);
+	const sessionId = `legacy-workflow-gate-${Date.now()}`;
+	const legacyEmitter = {
+		isUnattended: () => true,
+		emitGate: async () => undefined,
+		resolveGate: async () => ({
+			gate_id: "legacy-gate",
+			status: "accepted" as const,
+			answer_hash: "fixture",
+			resolved_at: new Date().toISOString(),
+		}),
+	} as WorkflowGateEmitter;
+	process.env.GJC_NOTIFICATIONS = "1";
+	start(context(cwd, sessionId, "main", {}, legacyEmitter));
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	const frames: Record<string, unknown>[] = [];
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_command",
+			sessionId,
+			token: endpoint.token,
+			requestId: "capabilities",
+			command: { type: "query_request", id: "capabilities", query: "runtime.capabilities" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === "capabilities"),
+		"capabilities response",
+	);
+	const response = JSON.parse(
+		String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === "capabilities")?.message),
+	) as { page: { items: Array<{ operations: string[] }> } };
+	const operations = response.page.items[0]!.operations;
+	expect(operations).not.toContain("workflow.gate_answer");
+	expect(operations).not.toContain("workflow.plan_approve");
+	expect(operations).toContain("model.cycle");
+});
+
 test("PresentationArbiter serializes ordinary and workflow asks, fences queued controls, and fails closed on uncertainty", async () => {
 	const publications: Array<Record<string, unknown>> = [];
 	const retired: Array<{ actionId: string; registrationEpoch: number }> = [];

@@ -806,6 +806,7 @@ export class PresentationArbiter {
 		if (!proof && this.queuedDirectControls.has(gateId)) proof = "not_published";
 		if (!proof && presentation)
 			throw new Error(`workflow gate ${gateId} presentation lacks an active terminal lease`);
+		this.presentations.delete(gateId);
 		this.directControls.delete(gateId);
 		this.queuedDirectControls.delete(gateId);
 		this.retiredProofs.delete(gateId);
@@ -1602,6 +1603,23 @@ const QUERY_BINDINGS: Readonly<Record<string, string | undefined>> = {
 	"runtime.jobs.list": "getJobs",
 };
 
+function hasTerminalArbitrationCapability(
+	workflowGate: WorkflowGateEmitter | undefined,
+): workflowGate is WorkflowGateEmitter &
+	Required<
+		Pick<
+			WorkflowGateEmitter,
+			"resolveGate" | "prepareTerminalization" | "clearPreparedTerminalization" | "registerGateTerminalController"
+		>
+	> {
+	return (
+		typeof workflowGate?.resolveGate === "function" &&
+		typeof workflowGate.prepareTerminalization === "function" &&
+		typeof workflowGate.clearPreparedTerminalization === "function" &&
+		typeof workflowGate.registerGateTerminalController === "function"
+	);
+}
+
 function installedOperations(ctx: ExtensionContext, kind: "control" | "query"): Set<string> {
 	const bindings = new Set(ctx.sdkBindings?.() ?? []);
 	const required = kind === "control" ? CONTROL_BINDINGS : QUERY_BINDINGS;
@@ -1610,8 +1628,8 @@ function installedOperations(ctx: ExtensionContext, kind: "control" | "query"): 
 			operation.kind === kind &&
 			(kind !== "control" ||
 				(!UNINSTALLED_CONTROL_OPERATIONS.has(operation.sdkId) &&
-					((operation.sdkId !== "workflow.gate_answer" && operation.sdkId !== "workflow.plan_approve") ||
-						ctx.workflowGate !== undefined) &&
+						((operation.sdkId !== "workflow.gate_answer" && operation.sdkId !== "workflow.plan_approve") ||
+							hasTerminalArbitrationCapability(ctx.workflowGate)) &&
 					(!required[operation.sdkId] || bindings.has(required[operation.sdkId]!)))),
 	);
 	return new Set(candidates.map(operation => operation.sdkId));
@@ -3287,7 +3305,7 @@ export function createNotificationsExtension(
 					return;
 				}
 				activeRuntime.workflowGate = gate;
-				if (gate.registerGateTerminalController) {
+				if (hasTerminalArbitrationCapability(gate)) {
 					const controller: WorkflowGateTerminalController = {
 						completeGateInteractions: gateId => gatePresentations.complete(gateId),
 						cancelGateInteractions: (gateId, reason) => gatePresentations.cancel(gateId, reason),
